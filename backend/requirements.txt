@@ -1,0 +1,10 @@
+fastapi
+uvicorn
+supabase
+jinja2
+google-cloud-bigquery
+psycopg2-binary
+python-dotenv
+pandas
+sqlalchemy
+requests
