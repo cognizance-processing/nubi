@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from 'react'
+import { useState, useEffect, useRef, useMemo } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
 import { supabase } from '../lib/supabase'
 import { useHeader } from '../contexts/HeaderContext'
@@ -17,20 +17,18 @@ export default function QueryEditor() {
     const [executing, setExecuting] = useState(false)
     const [result, setResult] = useState(null)
     const [error, setError] = useState(null)
-    const codeRef = useRef(null)
+    const preRef = useRef(null)
+    const lineNumRef = useRef(null)
+    const textareaRef = useRef(null)
+
+    const highlightedCode = useMemo(() => {
+        const codeToHighlight = pythonCode + (pythonCode.endsWith('\n') ? ' ' : '\n ')
+        return Prism.highlight(codeToHighlight, Prism.languages.python, 'python')
+    }, [pythonCode])
 
     useEffect(() => {
         loadQuery()
     }, [queryId])
-
-    useEffect(() => {
-        if (codeRef.current) {
-            const codeElement = codeRef.current.querySelector('code')
-            if (codeElement) {
-                Prism.highlightElement(codeElement)
-            }
-        }
-    }, [pythonCode])
 
     const loadQuery = async () => {
         setLoading(true)
@@ -198,70 +196,131 @@ export default function QueryEditor() {
     }
 
     return (
-        <div className="flex flex-col h-screen bg-background-primary overflow-hidden">
+        <div className="flex flex-col h-full bg-background-primary overflow-hidden">
             {/* Code Editor */}
-            <div className="flex-1 flex overflow-hidden">
+            <div className="flex-1 flex overflow-hidden min-h-0">
                 <div className="flex w-full h-full bg-[#0d0f17] font-mono text-sm leading-relaxed">
                     {/* Line numbers */}
-                    <div className="w-14 py-6 bg-[#111420] border-r border-border-primary text-[#4b5563] text-right select-none overflow-hidden">
+                    <div
+                        ref={lineNumRef}
+                        className="w-14 py-6 bg-[#111420] border-r border-border-primary text-[#4b5563] text-right select-none overflow-hidden"
+                    >
                         <pre className="m-0 px-4 font-inherit leading-relaxed">{lineNumbers}</pre>
                     </div>
                     
                     {/* Code editor */}
                     <div className="relative flex-1 overflow-hidden">
                         <textarea
+                            ref={textareaRef}
                             value={pythonCode}
                             onChange={(e) => setPythonCode(e.target.value)}
                             onKeyDown={handleKeyDown}
-                            className="absolute inset-0 w-full h-full p-6 m-0 border-none bg-transparent text-transparent caret-indigo-500 resize-none outline-none z-10 overflow-auto scrollbar-thin scrollbar-thumb-border-primary scrollbar-track-transparent"
+                            onScroll={(e) => {
+                                const { scrollTop, scrollLeft } = e.target
+                                if (preRef.current) {
+                                    preRef.current.scrollTop = scrollTop
+                                    preRef.current.scrollLeft = scrollLeft
+                                }
+                                if (lineNumRef.current) {
+                                    lineNumRef.current.scrollTop = scrollTop
+                                }
+                            }}
+                            className="absolute inset-0 w-full h-full p-6 m-0 border-none bg-transparent resize-none outline-none z-10 overflow-auto scrollbar-thin scrollbar-thumb-border-primary scrollbar-track-transparent font-inherit leading-relaxed whitespace-pre"
+                            style={{
+                                color: 'transparent',
+                                caretColor: '#818cf8',
+                            }}
                             spellCheck="false"
+                            autoComplete="off"
+                            autoCorrect="off"
+                            autoCapitalize="off"
                         />
-                        <pre className="absolute inset-0 p-6 m-0 z-0 pointer-events-none overflow-hidden" ref={codeRef}>
-                            <code className="language-python block pointer-events-none">
-                                {pythonCode + (pythonCode.endsWith('\n') ? ' ' : '')}
-                            </code>
+                        <pre
+                            ref={preRef}
+                            className="absolute inset-0 p-6 m-0 z-0 pointer-events-none overflow-auto font-inherit leading-relaxed"
+                            aria-hidden="true"
+                        >
+                            <code
+                                className="language-python block pointer-events-none"
+                                dangerouslySetInnerHTML={{ __html: highlightedCode }}
+                            />
                         </pre>
                     </div>
                 </div>
             </div>
 
-            {/* Results Panel */}
-            {(result || error) && (
-                <div className="h-80 border-t border-border-primary bg-background-secondary overflow-hidden flex flex-col">
-                    <div className="flex items-center justify-between px-6 py-3 border-b border-border-primary">
+            {/* Results Panel - Always visible */}
+            <div className="h-80 border-t border-border-primary bg-background-secondary overflow-hidden flex flex-col">
+                <div className="flex items-center justify-between px-6 py-3 border-b border-border-primary bg-background-tertiary/30">
+                    <div className="flex items-center gap-3">
                         <h3 className="text-sm font-bold text-text-primary">
-                            {error ? 'Error' : `Results (${result?.count || 0} rows)`}
+                            {executing ? 'Executing...' : error ? 'Error' : result ? `Results (${result?.table?.length || 0} rows)` : 'Query Results'}
                         </h3>
+                        {executing && (
+                            <span className="inline-block w-4 h-4 border-2 border-primary border-t-transparent rounded-full animate-spin" />
+                        )}
+                    </div>
+                    {(result || error) && (
                         <button
                             onClick={() => { setResult(null); setError(null) }}
                             className="p-1.5 rounded-lg text-text-muted hover:text-text-primary hover:bg-background-hover transition-all"
+                            title="Clear results"
                         >
                             <svg width="16" height="16" viewBox="0 0 20 20" fill="currentColor">
                                 <path fillRule="evenodd" d="M4.293 4.293a1 1 0 011.414 0L10 8.586l4.293-4.293a1 1 0 111.414 1.414L11.414 10l4.293 4.293a1 1 0 01-1.414 1.414L10 11.414l-4.293 4.293a1 1 0 01-1.414-1.414L8.586 10 4.293 5.707a1 1 0 010-1.414z" />
                             </svg>
                         </button>
-                    </div>
-                    <div className="flex-1 overflow-auto p-6">
-                        {error ? (
-                            <div className="text-status-error font-mono text-sm whitespace-pre-wrap">
-                                {error}
+                    )}
+                </div>
+                <div className="flex-1 overflow-auto">
+                    {executing ? (
+                        <div className="flex items-center justify-center h-full text-text-muted">
+                            <div className="text-center">
+                                <div className="inline-block w-8 h-8 border-3 border-primary border-t-transparent rounded-full animate-spin mb-3" />
+                                <p className="text-sm font-medium">Executing query...</p>
                             </div>
-                        ) : (
-                            <div className="overflow-x-auto">
+                        </div>
+                    ) : error ? (
+                        <div className="p-6">
+                            <div className="bg-status-error/10 border border-status-error/30 rounded-lg p-4">
+                                <div className="flex items-start gap-3">
+                                    <svg className="w-5 h-5 text-status-error flex-shrink-0 mt-0.5" viewBox="0 0 20 20" fill="currentColor">
+                                        <path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zM8.707 7.293a1 1 0 00-1.414 1.414L8.586 10l-1.293 1.293a1 1 0 101.414 1.414L10 11.414l1.293 1.293a1 1 0 001.414-1.414L11.414 10l1.293-1.293a1 1 0 00-1.414-1.414L10 8.586 8.707 7.293z" />
+                                    </svg>
+                                    <div className="flex-1">
+                                        <h4 className="text-sm font-bold text-status-error mb-2">Query Execution Error</h4>
+                                        <pre className="text-status-error/90 font-mono text-xs whitespace-pre-wrap break-words leading-relaxed">
+                                            {error}
+                                        </pre>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    ) : result?.table?.length > 0 ? (
+                        <div className="p-6">
+                            <div className="overflow-x-auto border border-border-primary rounded-lg">
                                 <table className="w-full text-sm text-left">
-                                    <thead className="text-xs uppercase bg-background-tertiary text-text-secondary">
+                                    <thead className="text-xs uppercase bg-background-tertiary text-text-secondary sticky top-0">
                                         <tr>
-                                            {result?.table?.[0] && Object.keys(result.table[0]).map(key => (
-                                                <th key={key} className="px-4 py-3 font-semibold">{key}</th>
+                                            {Object.keys(result.table[0]).map(key => (
+                                                <th key={key} className="px-4 py-3 font-semibold whitespace-nowrap border-b border-border-primary">{key}</th>
                                             ))}
                                         </tr>
                                     </thead>
                                     <tbody>
-                                        {result?.table?.map((row, idx) => (
-                                            <tr key={idx} className="border-b border-border-primary hover:bg-background-tertiary/50">
+                                        {result.table.map((row, idx) => (
+                                            <tr key={idx} className="border-b border-border-primary hover:bg-background-tertiary/30 transition-colors">
                                                 {Object.values(row).map((val, i) => (
-                                                    <td key={i} className="px-4 py-3 text-text-primary">
-                                                        {val === null ? <span className="text-text-muted italic">null</span> : String(val)}
+                                                    <td key={i} className="px-4 py-3 text-text-primary whitespace-nowrap">
+                                                        {val === null ? (
+                                                            <span className="text-text-muted italic">null</span>
+                                                        ) : typeof val === 'number' ? (
+                                                            <span className="text-accent-blue font-mono">{String(val)}</span>
+                                                        ) : typeof val === 'boolean' ? (
+                                                            <span className={val ? 'text-status-success' : 'text-status-error'}>{String(val)}</span>
+                                                        ) : (
+                                                            String(val)
+                                                        )}
                                                     </td>
                                                 ))}
                                             </tr>
@@ -269,10 +328,25 @@ export default function QueryEditor() {
                                     </tbody>
                                 </table>
                             </div>
-                        )}
-                    </div>
+                            <div className="mt-4 text-xs text-text-muted">
+                                Showing {result.table.length} row{result.table.length !== 1 ? 's' : ''}
+                            </div>
+                        </div>
+                    ) : (
+                        <div className="flex items-center justify-center h-full text-text-muted">
+                            <div className="text-center max-w-md">
+                                <svg className="w-16 h-16 mx-auto mb-4 text-text-muted/50" viewBox="0 0 20 20" fill="currentColor">
+                                    <path fillRule="evenodd" d="M3 3a1 1 0 000 2v8a2 2 0 002 2h2.586l-1.293 1.293a1 1 0 101.414 1.414L10 15.414l2.293 2.293a1 1 0 001.414-1.414L12.414 15H15a2 2 0 002-2V5a1 1 0 100-2H3zm11.707 4.707a1 1 0 00-1.414-1.414L10 9.586 8.707 8.293a1 1 0 00-1.414 0l-2 2a1 1 0 101.414 1.414L8 10.414l1.293 1.293a1 1 0 001.414 0l4-4z" />
+                                </svg>
+                                <p className="text-sm font-medium mb-2">No results yet</p>
+                                <p className="text-xs">
+                                    Click <span className="font-semibold text-primary">Test Run</span> or press <kbd className="px-2 py-1 bg-background-tertiary rounded text-xs font-mono">⌘ + Enter</kbd> to execute your query
+                                </p>
+                            </div>
+                        </div>
+                    )}
                 </div>
-            )}
+            </div>
         </div>
     )
 }

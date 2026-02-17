@@ -1,4 +1,4 @@
-import { createContext, useContext, useState, useEffect, useCallback } from 'react'
+import { createContext, useContext, useState, useEffect, useCallback, useRef } from 'react'
 import { supabase } from '../lib/supabase'
 
 const ChatContext = createContext()
@@ -18,7 +18,12 @@ export function ChatProvider({ children }) {
     const [boardId, setBoardId] = useState(null)
 
     // Callback for when a message is submitted (to be overridden by pages)
-    const [onSubmitCallback, setOnSubmitCallback] = useState(null)
+    // Use a ref so handleChatSubmit always reads the latest callback at call time,
+    // avoiding stale closures when effects re-run (e.g. after code changes)
+    const onSubmitCallbackRef = useRef(null)
+    const setOnSubmitCallback = useCallback((cb) => {
+        onSubmitCallbackRef.current = cb
+    }, [])
     
     // @mention support
     const [showMentionDropdown, setShowMentionDropdown] = useState(false)
@@ -398,9 +403,16 @@ export function ChatProvider({ children }) {
             const mentions = parseMentions(prompt)
             const mentionedContext = mentions.length > 0 ? await fetchMentionedContext(mentions) : []
 
+            // Include the user message in the messages array passed to callback
+            // Filter out the initial greeting message - it's not real chat history
+            const realMessages = chatMessages.filter(m => 
+                !(m.role === 'assistant' && m.content === 'Hi! How can I help you?')
+            )
+            const messagesWithUser = [...realMessages, userMessage]
+
             // Call the page-specific submit handler if one is registered
-            if (onSubmitCallback) {
-                await onSubmitCallback(chatId, prompt, chatMessages, mentionedContext)
+            if (onSubmitCallbackRef.current) {
+                await onSubmitCallbackRef.current(chatId, prompt, messagesWithUser, mentionedContext)
             } else {
                 // Default: just save the message and show a generic response
                 await appendMessage(chatId, 'user', prompt)

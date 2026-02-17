@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from 'react'
+import { useState, useEffect, useRef, useCallback } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
 import { supabase, invokeBoardHelper } from '../lib/supabase'
 import { useHeader } from '../contexts/HeaderContext'
@@ -338,6 +338,8 @@ export default function BoardEditor() {
     const [createQueryName, setCreateQueryName] = useState('')
     const [createQueryDescription, setCreateQueryDescription] = useState('')
     const [creatingQuery, setCreatingQuery] = useState(false)
+    const [deleteConfirm, setDeleteConfirm] = useState(null) // query id to confirm delete
+    const [deleting, setDeleting] = useState(false)
     const iframeRef = useRef(null)
     const codeRef = useRef(null)
     const textareaRef = useRef(null)
@@ -371,11 +373,49 @@ export default function BoardEditor() {
         }
     };
 
+    // Load board code and queries
+    const loadBoardCode = async () => {
+        try {
+            const { data, error } = await supabase
+                .from('board_code')
+                .select('code')
+                .eq('board_id', boardId)
+                .order('version', { ascending: false })
+                .limit(1)
+                .maybeSingle()
+
+            if (error) throw error
+            if (data) {
+                setCode(data.code)
+            }
+        } catch (error) {
+            console.error('Error loading board code:', error)
+        }
+    }
+
+    const loadQueries = useCallback(async () => {
+        setLoadingQueries(true)
+        try {
+            const { data, error } = await supabase
+                .from('board_queries')
+                .select('*')
+                .eq('board_id', boardId)
+                .order('updated_at', { ascending: false })
+
+            if (error) throw error
+            setQueries(data || [])
+        } catch (error) {
+            console.error('Error loading queries:', error)
+        } finally {
+            setLoadingQueries(false)
+        }
+    }, [boardId])
+
     useEffect(() => {
         loadBoardCode()
         loadQueries()
         openChatFor(boardId)
-    }, [boardId, openChatFor])
+    }, [boardId, openChatFor, loadQueries])
     
     // Listen for /templates command
     useEffect(() => {
@@ -408,10 +448,6 @@ export default function BoardEditor() {
             // Use streaming for better UX
             const backendUrl = import.meta.env.VITE_BACKEND_URL || 'http://localhost:8000'
             
-            // Get settings from localStorage
-            const settingsStr = localStorage.getItem('nubi_settings')
-            const settings = settingsStr ? JSON.parse(settingsStr) : {}
-            
             // Add user message to UI immediately
             await appendMessage(chatId, 'user', prompt)
             
@@ -423,10 +459,7 @@ export default function BoardEditor() {
                     user_prompt: prompt + contextString,
                     chat: messages.filter((m) => m.role === 'user' || m.role === 'assistant').map((m) => ({ role: m.role, content: m.content })),
                     context: 'board',
-                    // Pass settings to backend
-                    max_tool_iterations: settings.maxToolIterations || 10,
-                    temperature: settings.temperature || 0.3,
-                    max_output_tokens: settings.maxOutputTokens || 8192,
+                    board_id: boardId,
                     ...(import.meta.env?.VITE_GEMINI_API_KEY && { gemini_api_key: import.meta.env.VITE_GEMINI_API_KEY }),
                 })
             })
@@ -441,7 +474,8 @@ export default function BoardEditor() {
                 content: '',
                 thinking: null,
                 code_delta: null,
-                needs_user_input: null
+                needs_user_input: null,
+                tool_calls: []
             }
             setChatMessages(prev => [...prev, streamingMessage])
 
@@ -450,6 +484,8 @@ export default function BoardEditor() {
             let buffer = ''
             let finalCode = null
             let progressLines = []
+            let finalSummary = '' // Clean summary for DB storage
+            const toolCallsMap = new Map() // Track tool calls by name
 
             try {
                 while (true) {
@@ -467,6 +503,44 @@ export default function BoardEditor() {
                         if (data.type === 'thinking') {
                             streamingMessage.thinking = data.content
                             setChatMessages(prev => [...prev.slice(0, -1), { ...streamingMessage }])
+                        } else if (data.type === 'tool_call') {
+                            // Track tool call started
+                            const toolKey = `${data.tool}_${toolCallsMap.size}`
+                            toolCallsMap.set(toolKey, {
+                                tool: data.tool,
+                                status: data.status,
+                                args: data.args
+                            })
+                            streamingMessage.tool_calls = Array.from(toolCallsMap.values())
+                            setChatMessages(prev => [...prev.slice(0, -1), { ...streamingMessage }])
+                        } else if (data.type === 'tool_result') {
+                            // Update the most recent tool call of this type that doesn't have a result yet
+                            const matchingKeys = Array.from(toolCallsMap.keys()).filter(k => k.startsWith(data.tool + '_'))
+                            const pendingKey = matchingKeys.reverse().find(k => {
+                                const entry = toolCallsMap.get(k)
+                                return entry && entry.status === 'started'
+                            })
+                            const toolKey = pendingKey || matchingKeys[matchingKeys.length - 1]
+                            if (toolKey) {
+                                const existing = toolCallsMap.get(toolKey)
+                                toolCallsMap.set(toolKey, {
+                                    ...existing,
+                                    status: data.status,
+                                    result: data.result,
+                                    error: data.error
+                                })
+                            } else {
+                                // Fallback: create new entry
+                                const newKey = `${data.tool}_${toolCallsMap.size}`
+                                toolCallsMap.set(newKey, {
+                                    tool: data.tool,
+                                    status: data.status,
+                                    result: data.result,
+                                    error: data.error
+                                })
+                            }
+                            streamingMessage.tool_calls = Array.from(toolCallsMap.values())
+                            setChatMessages(prev => [...prev.slice(0, -1), { ...streamingMessage }])
                         } else if (data.type === 'progress') {
                             progressLines.push(data.content)
                             streamingMessage.content = progressLines.join('\n')
@@ -480,6 +554,7 @@ export default function BoardEditor() {
                             setChatMessages(prev => [...prev.slice(0, -1), { ...streamingMessage }])
                         } else if (data.type === 'final') {
                             finalCode = data.code
+                            finalSummary = data.message // Clean summary for DB
                             streamingMessage.content = data.message + '\n\n' + progressLines.join('\n')
                             setChatMessages(prev => [...prev.slice(0, -1), { ...streamingMessage }])
                             
@@ -497,8 +572,12 @@ export default function BoardEditor() {
                     }
                 }
 
-                // Save assistant message to DB
-                await appendMessage(chatId, 'assistant', streamingMessage.content)
+                // Save a clean summary to DB (not progress logs) for chat continuation
+                const messageToSave = finalSummary || streamingMessage.content
+                await appendMessage(chatId, 'assistant', messageToSave)
+                
+                // Reload queries in case any were created/updated/deleted
+                await loadQueries()
                 
             } catch (error) {
                 streamingMessage.content = `Error during streaming: ${error.message}`
@@ -507,10 +586,10 @@ export default function BoardEditor() {
             }
         }
 
-        setOnSubmitCallback(() => handleBoardChatSubmit)
+        setOnSubmitCallback(handleBoardChatSubmit)
 
         return () => setOnSubmitCallback(null)
-    }, [code, setOnSubmitCallback, setChatMessages, appendMessage])
+    }, [code, setOnSubmitCallback, setChatMessages, appendMessage, loadQueries])
 
     useEffect(() => {
         if (activeTab === 'code' && codeRef.current) {
@@ -524,43 +603,6 @@ export default function BoardEditor() {
     const lineNumbersRef = useRef(null);
     const lineNumbers = code.split('\n').map((_, i) => i + 1).join('\n');
 
-    const loadBoardCode = async () => {
-        try {
-            const { data, error } = await supabase
-                .from('board_code')
-                .select('code')
-                .eq('board_id', boardId)
-                .order('version', { ascending: false })
-                .limit(1)
-                .maybeSingle()
-
-            if (error) throw error
-            if (data) {
-                setCode(data.code)
-            }
-        } catch (error) {
-            console.error('Error loading board code:', error)
-        }
-    }
-
-    const loadQueries = async () => {
-        setLoadingQueries(true)
-        try {
-            const { data, error } = await supabase
-                .from('board_queries')
-                .select('*')
-                .eq('board_id', boardId)
-                .order('updated_at', { ascending: false })
-
-            if (error) throw error
-            setQueries(data || [])
-        } catch (error) {
-            console.error('Error loading queries:', error)
-        } finally {
-            setLoadingQueries(false)
-        }
-    }
-
     const handleCreateQuery = async (e) => {
         e.preventDefault()
         if (!createQueryName.trim() || creatingQuery) return
@@ -573,7 +615,7 @@ export default function BoardEditor() {
                     board_id: boardId,
                     name: createQueryName.trim(),
                     description: createQueryDescription.trim() || null,
-                    python_code: '# Write your query code here\n# Use @node comments to define data queries\n#\n# Example:\n# @node: my_query\n# @type: query\n# @connector: your_datastore_id\n# @query: SELECT * FROM your_table LIMIT 100\n\n# The query result will be available as query_result\nresult = query_result\n',
+                    python_code: '# Write your query code here\n# Use @node comments to define data queries\n#\n# Example:\n# @node: my_query\n# @type: query\n# @datastore: your_datastore_id\n# @query: SELECT * FROM dataset.your_table LIMIT 100\n\n# The query result will be available as query_result\n# args dict is available for runtime parameters (e.g. args.get("filter_value", "default"))\nresult = query_result\n',
                     ui_map: {}
                 }])
                 .select()
@@ -599,10 +641,8 @@ export default function BoardEditor() {
         }
     }
 
-    const deleteQuery = async (queryId, e) => {
-        e.stopPropagation()
-        if (!confirm('Are you sure you want to delete this query?')) return
-
+    const deleteQuery = async (queryId) => {
+        setDeleting(true)
         try {
             const { error } = await supabase
                 .from('board_queries')
@@ -610,10 +650,12 @@ export default function BoardEditor() {
                 .eq('id', queryId)
 
             if (error) throw error
+            setDeleteConfirm(null)
             await loadQueries()
         } catch (error) {
             console.error('Error deleting query:', error)
-            alert('Failed to delete query: ' + error.message)
+        } finally {
+            setDeleting(false)
         }
     }
 
@@ -934,7 +976,7 @@ export default function BoardEditor() {
                                                     </div>
                                                     <div className="flex items-center gap-2">
                                                         <button
-                                                            onClick={(e) => deleteQuery(query.id, e)}
+                                                            onClick={(e) => { e.stopPropagation(); setDeleteConfirm(query.id) }}
                                                             className="p-1.5 rounded-md text-text-muted opacity-0 group-hover:opacity-100 hover:bg-status-error/10 hover:text-status-error transition-all"
                                                             title="Delete"
                                                         >
@@ -1020,6 +1062,48 @@ export default function BoardEditor() {
                                 </button>
                             </div>
                         </form>
+                    </div>
+                </div>
+            )}
+
+            {/* Delete Query Confirmation */}
+            {deleteConfirm && (
+                <div className="modal-overlay" onClick={() => !deleting && setDeleteConfirm(null)}>
+                    <div className="modal-container max-w-sm" onClick={(e) => e.stopPropagation()}>
+                        <div className="flex flex-col items-center text-center pt-2 pb-1">
+                            <div className="w-12 h-12 rounded-full bg-status-error/10 flex items-center justify-center mb-4">
+                                <svg width="24" height="24" viewBox="0 0 20 20" fill="currentColor" className="text-status-error">
+                                    <path fillRule="evenodd" d="M9 2a1 1 0 00-.894.553L7.382 4H4a1 1 0 000 2v10a2 2 0 002 2h8a2 2 0 002-2V6a1 1 0 100-2h-3.382l-.724-1.447A1 1 0 0011 2H9zM7 8a1 1 0 012 0v6a1 1 0 11-2 0V8zm5-1a1 1 0 00-1 1v6a1 1 0 102 0V8a1 1 0 00-1-1z" />
+                                </svg>
+                            </div>
+                            <h3 className="text-base font-semibold text-text-primary mb-1.5">Delete Query</h3>
+                            <p className="text-sm text-text-secondary leading-relaxed">
+                                This will permanently remove the query and its data. This action cannot be undone.
+                            </p>
+                        </div>
+                        <div className="flex items-center gap-3 pt-5">
+                            <button
+                                onClick={() => setDeleteConfirm(null)}
+                                disabled={deleting}
+                                className="btn btn-secondary flex-1 py-2.5 h-auto text-sm"
+                            >
+                                Cancel
+                            </button>
+                            <button
+                                onClick={() => deleteQuery(deleteConfirm)}
+                                disabled={deleting}
+                                className="flex-1 py-2.5 h-auto text-sm font-medium rounded-lg bg-status-error hover:bg-status-error/90 text-white transition-colors flex items-center justify-center gap-2 disabled:opacity-50"
+                            >
+                                {deleting ? (
+                                    <span className="inline-block w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin" />
+                                ) : (
+                                    <svg width="15" height="15" viewBox="0 0 20 20" fill="currentColor">
+                                        <path fillRule="evenodd" d="M9 2a1 1 0 00-.894.553L7.382 4H4a1 1 0 000 2v10a2 2 0 002 2h8a2 2 0 002-2V6a1 1 0 100-2h-3.382l-.724-1.447A1 1 0 0011 2H9zM7 8a1 1 0 012 0v6a1 1 0 11-2 0V8zm5-1a1 1 0 00-1 1v6a1 1 0 102 0V8a1 1 0 00-1-1z" />
+                                    </svg>
+                                )}
+                                Delete
+                            </button>
+                        </div>
                     </div>
                 </div>
             )}

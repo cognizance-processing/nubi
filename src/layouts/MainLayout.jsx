@@ -1,17 +1,18 @@
-import { useState } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import { Link, useLocation, Outlet } from 'react-router-dom'
 import { Database } from 'lucide-react'
 import { useAuth } from '../contexts/AuthContext'
 import { useHeader } from '../contexts/HeaderContext'
 import { ChatProvider, useChat } from '../contexts/ChatContext'
 import ChatMessage from '../components/ChatMessage'
-import SettingsPanel from '../components/SettingsPanel'
 
 function MainLayoutContent() {
     const { user, signOut } = useAuth()
     const { headerContent } = useHeader()
     const [sidebarOpen, setSidebarOpen] = useState(true)
     const location = useLocation()
+    const messagesEndRef = useRef(null)
+    const textareaRef = useRef(null)
     
     const {
         chatOpen,
@@ -46,6 +47,21 @@ function MainLayoutContent() {
         insertCommand,
     } = useChat()
 
+    // Auto-scroll to bottom when new messages arrive
+    useEffect(() => {
+        if (messagesEndRef.current) {
+            messagesEndRef.current.scrollIntoView({ behavior: 'smooth' })
+        }
+    }, [chatMessages])
+
+    // Auto-resize textarea as user types
+    useEffect(() => {
+        if (textareaRef.current) {
+            textareaRef.current.style.height = 'auto'
+            textareaRef.current.style.height = Math.min(textareaRef.current.scrollHeight, 150) + 'px'
+        }
+    }, [chatInput])
+
     return (
         <div className="flex h-screen bg-background-primary overflow-hidden">
             {/* Sidebar */}
@@ -70,7 +86,7 @@ function MainLayoutContent() {
                 </div>
 
                 <nav className={`flex-1 flex flex-col gap-1 overflow-y-auto overflow-x-hidden transition-all duration-300 py-4 ${sidebarOpen ? 'px-2' : 'px-[15px]'}`}>
-                    <Link to="/" className={`flex items-center min-h-[44px] px-3 rounded-lg transition-all duration-200 font-medium whitespace-nowrap gap-4 ${location.pathname === '/' ? 'bg-background-tertiary text-accent-primary border border-border-secondary shadow-sm' : 'text-text-secondary hover:bg-background-hover hover:text-text-primary'}`} title="Boards">
+                    <Link to="/portal" className={`flex items-center min-h-[44px] px-3 rounded-lg transition-all duration-200 font-medium whitespace-nowrap gap-4 ${location.pathname === '/portal' || location.pathname === '/' ? 'bg-background-tertiary text-accent-primary border border-border-secondary shadow-sm' : 'text-text-secondary hover:bg-background-hover hover:text-text-primary'}`} title="Boards">
                         <svg className="flex-shrink-0" width="20" height="20" viewBox="0 0 20 20" fill="currentColor">
                             <path d="M3 4a1 1 0 011-1h12a1 1 0 011 1v2a1 1 0 01-1 1H4a1 1 0 01-1-1V4zM3 10a1 1 0 011-1h6a1 1 0 011 1v6a1 1 0 01-1 1H4a1 1 0 01-1-1v-6zM14 9a1 1 0 00-1 1v6a1 1 0 001 1h2a1 1 0 001-1v-6a1 1 0 00-1-1h-2z" />
                         </svg>
@@ -112,7 +128,6 @@ function MainLayoutContent() {
                         </svg>
                     </button>
                     <div className="flex-1">{headerContent}</div>
-                    <SettingsPanel />
                 </header>
 
                 {/* Page Content */}
@@ -232,12 +247,13 @@ function MainLayoutContent() {
                             isStreaming={idx === chatMessages.length - 1 && chatLoading && msg.role === 'assistant'}
                         />
                     ))}
+                    <div ref={messagesEndRef} />
                 </div>
 
                 <form className="p-6 border-t border-border-primary flex gap-3 relative" onSubmit={handleChatSubmit}>
                     <div className="flex-1 relative">
-                        <input
-                            type="text"
+                        <textarea
+                            ref={textareaRef}
                             placeholder="Ask AI for help... (Use @ for mentions, / for commands)"
                             value={chatInput}
                             onChange={(e) => {
@@ -249,9 +265,14 @@ function MainLayoutContent() {
                                     setShowMentionDropdown(false)
                                     setShowCommandDropdown(false)
                                 }
+                                if (e.key === 'Enter' && !e.shiftKey) {
+                                    e.preventDefault()
+                                    handleChatSubmit(e)
+                                }
                             }}
                             disabled={chatLoading}
-                            className="w-full p-3.5 bg-background-tertiary border border-border-primary rounded-xl text-text-primary text-sm focus:border-accent-primary focus:ring-1 focus:ring-accent-primary outline-none transition-all placeholder:text-text-muted/50 disabled:opacity-60"
+                            rows={1}
+                            className="w-full p-3.5 bg-background-tertiary border border-border-primary rounded-xl text-text-primary text-sm focus:border-accent-primary focus:ring-1 focus:ring-accent-primary outline-none transition-all placeholder:text-text-muted/50 disabled:opacity-60 resize-none overflow-hidden"
                         />
                         
                         {/* @mention dropdown */}
