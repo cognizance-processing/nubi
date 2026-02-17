@@ -3,6 +3,7 @@ import { AuthProvider } from './contexts/AuthContext'
 import { HeaderProvider } from './contexts/HeaderContext'
 import ProtectedRoute from './components/ProtectedRoute'
 import MainLayout from './layouts/MainLayout'
+import LandingPage from './pages/LandingPage'
 import Login from './components/Login'
 import BoardsList from './components/BoardsList'
 import BoardEditor from './components/BoardEditor'
@@ -17,12 +18,13 @@ export default function App() {
         <BrowserRouter>
           <Routes>
             {/* Public Routes */}
+            <Route path="/" element={<LandingPage />} />
             <Route path="/login" element={<Login />} />
 
             {/* Protected Routes with Main Layout */}
             <Route element={<ProtectedRoute />}>
               <Route element={<MainLayout />}>
-                <Route path="/" element={<BoardsList />} />
+                <Route path="/portal" element={<BoardsList />} />
                 <Route path="/board/:boardId" element={<BoardEditor />} />
                 <Route path="/board/:boardId/query/:queryId" element={<QueryEditor />} />
                 <Route path="/datastores" element={<DatastoresPage />} />
