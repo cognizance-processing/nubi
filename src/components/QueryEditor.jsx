@@ -127,52 +127,52 @@ export default function QueryEditor() {
     // Header
     useEffect(() => {
         setHeaderContent(
-            <div className="flex items-center gap-6 flex-1 px-4">
+            <div className="flex items-center gap-3 flex-1 px-2">
                 <button
-                    className="flex items-center gap-2 px-3 py-1.5 rounded-lg text-text-secondary hover:text-text-primary hover:bg-background-tertiary transition-all font-medium text-sm"
+                    className="flex items-center gap-1.5 px-2 py-1 rounded-md text-slate-400 hover:text-white hover:bg-slate-800 transition-all font-medium text-xs"
                     onClick={() => navigate(`/board/${boardId}`)}
                 >
-                    <svg width="18" height="18" viewBox="0 0 20 20" fill="currentColor">
+                    <svg width="14" height="14" viewBox="0 0 20 20" fill="currentColor">
                         <path fillRule="evenodd" d="M9.707 16.707a1 1 0 01-1.414 0l-6-6a1 1 0 010-1.414l6-6a1 1 0 011.414 1.414L5.414 9H17a1 1 0 110 2H5.414l4.293 4.293a1 1 0 010 1.414z" />
                     </svg>
-                    <span>Back to Board</span>
+                    <span>Board</span>
                 </button>
 
-                <div className="h-6 w-px bg-border-primary mx-2" />
+                <div className="h-4 w-px bg-border-indigo-500" />
 
                 <div className="flex-1 min-w-0">
-                    <h1 className="text-lg font-bold text-text-primary truncate">
+                    <h1 className="text-[13px] font-semibold text-white truncate">
                         {query?.name || 'Loading...'}
                     </h1>
                     {query?.description && (
-                        <p className="text-xs text-text-secondary truncate">{query.description}</p>
+                        <p className="text-[10px] text-slate-400 truncate">{query.description}</p>
                     )}
                 </div>
 
-                <div className="ml-auto flex items-center gap-3">
+                <div className="ml-auto flex items-center gap-2">
                     <button 
-                        className="btn btn-secondary py-1.5 h-auto text-xs"
+                        className="btn btn-secondary"
                         onClick={executeQuery}
                         disabled={executing}
                     >
                         {executing ? (
-                            <span className="inline-block w-4 h-4 border-2 border-current border-t-transparent rounded-full animate-spin" />
+                            <span className="inline-block w-3.5 h-3.5 border-2 border-current border-t-transparent rounded-full animate-spin" />
                         ) : (
-                            <svg width="16" height="16" viewBox="0 0 20 20" fill="currentColor">
+                            <svg width="13" height="13" viewBox="0 0 20 20" fill="currentColor">
                                 <path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zM9.555 7.168A1 1 0 008 8v4a1 1 0 001.555.832l3-2a1 1 0 000-1.664l-3-2z" />
                             </svg>
                         )}
-                        Test Run
+                        Run
                     </button>
                     <button 
-                        className="btn btn-primary py-1.5 h-auto text-xs"
+                        className="btn btn-primary"
                         onClick={saveQuery}
                         disabled={saving}
                     >
                         {saving ? (
-                            <span className="inline-block w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin" />
+                            <span className="inline-block w-3.5 h-3.5 border-2 border-white/30 border-t-white rounded-full animate-spin" />
                         ) : (
-                            <svg width="16" height="16" viewBox="0 0 20 20" fill="currentColor">
+                            <svg width="13" height="13" viewBox="0 0 20 20" fill="currentColor">
                                 <path d="M7.707 10.293a1 1 0 10-1.414 1.414l3 3a1 1 0 001.414 0l3-3a1 1 0 00-1.414-1.414L11 11.586V6h5a2 2 0 012 2v7a2 2 0 01-2 2H4a2 2 0 01-2-2V8a2 2 0 012-2h5v5.586l-1.293-1.293zM9 4a1 1 0 012 0v2H9V4z" />
                             </svg>
                         )}
@@ -190,20 +190,20 @@ export default function QueryEditor() {
         return (
             <div className="flex flex-col items-center justify-center h-screen gap-4">
                 <div className="spinner" />
-                <p className="text-text-muted text-sm font-medium">Loading query...</p>
+                <p className="text-slate-500 text-sm font-medium">Loading query...</p>
             </div>
         )
     }
 
     return (
-        <div className="flex flex-col h-full bg-background-primary overflow-hidden">
+        <div className="flex flex-col h-full bg-slate-950 overflow-hidden">
             {/* Code Editor */}
             <div className="flex-1 flex overflow-hidden min-h-0">
                 <div className="flex w-full h-full bg-[#0d0f17] font-mono text-sm leading-relaxed">
                     {/* Line numbers */}
                     <div
                         ref={lineNumRef}
-                        className="w-14 py-6 bg-[#111420] border-r border-border-primary text-[#4b5563] text-right select-none overflow-hidden"
+                        className="w-14 py-6 bg-[#111420] border-r border-white/[0.07] text-[#4b5563] text-right select-none overflow-hidden"
                     >
                         <pre className="m-0 px-4 font-inherit leading-relaxed">{lineNumbers}</pre>
                     </div>
@@ -225,7 +225,7 @@ export default function QueryEditor() {
                                     lineNumRef.current.scrollTop = scrollTop
                                 }
                             }}
-                            className="absolute inset-0 w-full h-full p-6 m-0 border-none bg-transparent resize-none outline-none z-10 overflow-auto scrollbar-thin scrollbar-thumb-border-primary scrollbar-track-transparent font-inherit leading-relaxed whitespace-pre"
+                            className="absolute inset-0 w-full h-full p-6 m-0 border-none bg-transparent resize-none outline-none z-10 overflow-auto scrollbar-thin scrollbar-thumb-border-indigo-500 scrollbar-track-transparent font-inherit leading-relaxed whitespace-pre"
                             style={{
                                 color: 'transparent',
                                 caretColor: '#818cf8',
@@ -250,20 +250,20 @@ export default function QueryEditor() {
             </div>
 
             {/* Results Panel - Always visible */}
-            <div className="h-80 border-t border-border-primary bg-background-secondary overflow-hidden flex flex-col">
-                <div className="flex items-center justify-between px-6 py-3 border-b border-border-primary bg-background-tertiary/30">
+            <div className="h-80 border-t border-white/[0.07] bg-slate-900 overflow-hidden flex flex-col">
+                <div className="flex items-center justify-between px-6 py-3 border-b border-white/[0.07] bg-slate-800/30">
                     <div className="flex items-center gap-3">
-                        <h3 className="text-sm font-bold text-text-primary">
+                        <h3 className="text-sm font-bold text-white">
                             {executing ? 'Executing...' : error ? 'Error' : result ? `Results (${result?.table?.length || 0} rows)` : 'Query Results'}
                         </h3>
                         {executing && (
-                            <span className="inline-block w-4 h-4 border-2 border-primary border-t-transparent rounded-full animate-spin" />
+                            <span className="inline-block w-4 h-4 border-2 border-indigo-500 border-t-transparent rounded-full animate-spin" />
                         )}
                     </div>
                     {(result || error) && (
                         <button
                             onClick={() => { setResult(null); setError(null) }}
-                            className="p-1.5 rounded-lg text-text-muted hover:text-text-primary hover:bg-background-hover transition-all"
+                            className="p-1.5 rounded-lg text-slate-500 hover:text-white hover:bg-white/[0.05] transition-all"
                             title="Clear results"
                         >
                             <svg width="16" height="16" viewBox="0 0 20 20" fill="currentColor">
@@ -274,22 +274,22 @@ export default function QueryEditor() {
                 </div>
                 <div className="flex-1 overflow-auto">
                     {executing ? (
-                        <div className="flex items-center justify-center h-full text-text-muted">
+                        <div className="flex items-center justify-center h-full text-slate-500">
                             <div className="text-center">
-                                <div className="inline-block w-8 h-8 border-3 border-primary border-t-transparent rounded-full animate-spin mb-3" />
+                                <div className="inline-block w-8 h-8 border-3 border-indigo-500 border-t-transparent rounded-full animate-spin mb-3" />
                                 <p className="text-sm font-medium">Executing query...</p>
                             </div>
                         </div>
                     ) : error ? (
                         <div className="p-6">
-                            <div className="bg-status-error/10 border border-status-error/30 rounded-lg p-4">
+                            <div className="bg-red-500/10 border border-red-500/30 rounded-lg p-4">
                                 <div className="flex items-start gap-3">
-                                    <svg className="w-5 h-5 text-status-error flex-shrink-0 mt-0.5" viewBox="0 0 20 20" fill="currentColor">
+                                    <svg className="w-5 h-5 text-red-400 flex-shrink-0 mt-0.5" viewBox="0 0 20 20" fill="currentColor">
                                         <path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zM8.707 7.293a1 1 0 00-1.414 1.414L8.586 10l-1.293 1.293a1 1 0 101.414 1.414L10 11.414l1.293 1.293a1 1 0 001.414-1.414L11.414 10l1.293-1.293a1 1 0 00-1.414-1.414L10 8.586 8.707 7.293z" />
                                     </svg>
                                     <div className="flex-1">
-                                        <h4 className="text-sm font-bold text-status-error mb-2">Query Execution Error</h4>
-                                        <pre className="text-status-error/90 font-mono text-xs whitespace-pre-wrap break-words leading-relaxed">
+                                        <h4 className="text-sm font-bold text-red-400 mb-2">Query Execution Error</h4>
+                                        <pre className="text-red-400/90 font-mono text-xs whitespace-pre-wrap break-words leading-relaxed">
                                             {error}
                                         </pre>
                                     </div>
@@ -298,26 +298,26 @@ export default function QueryEditor() {
                         </div>
                     ) : result?.table?.length > 0 ? (
                         <div className="p-6">
-                            <div className="overflow-x-auto border border-border-primary rounded-lg">
+                            <div className="overflow-x-auto border border-white/[0.07] rounded-lg">
                                 <table className="w-full text-sm text-left">
-                                    <thead className="text-xs uppercase bg-background-tertiary text-text-secondary sticky top-0">
+                                    <thead className="text-xs uppercase bg-slate-800 text-slate-400 sticky top-0">
                                         <tr>
                                             {Object.keys(result.table[0]).map(key => (
-                                                <th key={key} className="px-4 py-3 font-semibold whitespace-nowrap border-b border-border-primary">{key}</th>
+                                                <th key={key} className="px-4 py-3 font-semibold whitespace-nowrap border-b border-white/[0.07]">{key}</th>
                                             ))}
                                         </tr>
                                     </thead>
                                     <tbody>
                                         {result.table.map((row, idx) => (
-                                            <tr key={idx} className="border-b border-border-primary hover:bg-background-tertiary/30 transition-colors">
+                                            <tr key={idx} className="border-b border-white/[0.07] hover:bg-slate-800/30 transition-colors">
                                                 {Object.values(row).map((val, i) => (
-                                                    <td key={i} className="px-4 py-3 text-text-primary whitespace-nowrap">
+                                                    <td key={i} className="px-4 py-3 text-white whitespace-nowrap">
                                                         {val === null ? (
-                                                            <span className="text-text-muted italic">null</span>
+                                                            <span className="text-slate-500 italic">null</span>
                                                         ) : typeof val === 'number' ? (
-                                                            <span className="text-accent-blue font-mono">{String(val)}</span>
+                                                            <span className="text-blue-400 font-mono">{String(val)}</span>
                                                         ) : typeof val === 'boolean' ? (
-                                                            <span className={val ? 'text-status-success' : 'text-status-error'}>{String(val)}</span>
+                                                            <span className={val ? 'text-emerald-400' : 'text-red-400'}>{String(val)}</span>
                                                         ) : (
                                                             String(val)
                                                         )}
@@ -328,19 +328,19 @@ export default function QueryEditor() {
                                     </tbody>
                                 </table>
                             </div>
-                            <div className="mt-4 text-xs text-text-muted">
+                            <div className="mt-4 text-xs text-slate-500">
                                 Showing {result.table.length} row{result.table.length !== 1 ? 's' : ''}
                             </div>
                         </div>
                     ) : (
-                        <div className="flex items-center justify-center h-full text-text-muted">
+                        <div className="flex items-center justify-center h-full text-slate-500">
                             <div className="text-center max-w-md">
-                                <svg className="w-16 h-16 mx-auto mb-4 text-text-muted/50" viewBox="0 0 20 20" fill="currentColor">
+                                <svg className="w-16 h-16 mx-auto mb-4 text-slate-500/50" viewBox="0 0 20 20" fill="currentColor">
                                     <path fillRule="evenodd" d="M3 3a1 1 0 000 2v8a2 2 0 002 2h2.586l-1.293 1.293a1 1 0 101.414 1.414L10 15.414l2.293 2.293a1 1 0 001.414-1.414L12.414 15H15a2 2 0 002-2V5a1 1 0 100-2H3zm11.707 4.707a1 1 0 00-1.414-1.414L10 9.586 8.707 8.293a1 1 0 00-1.414 0l-2 2a1 1 0 101.414 1.414L8 10.414l1.293 1.293a1 1 0 001.414 0l4-4z" />
                                 </svg>
                                 <p className="text-sm font-medium mb-2">No results yet</p>
                                 <p className="text-xs">
-                                    Click <span className="font-semibold text-primary">Test Run</span> or press <kbd className="px-2 py-1 bg-background-tertiary rounded text-xs font-mono">⌘ + Enter</kbd> to execute your query
+                                    Click <span className="font-semibold text-indigo-400">Test Run</span> or press <kbd className="px-2 py-1 bg-slate-800 rounded text-xs font-mono">⌘ + Enter</kbd> to execute your query
                                 </p>
                             </div>
                         </div>

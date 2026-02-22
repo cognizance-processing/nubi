@@ -20,8 +20,13 @@ export default function ChatMessage({ message, isStreaming = false }) {
     const getToolIcon = (toolName) => {
         switch(toolName) {
             case 'get_datastore_schema': return <Database size={14} />
+            case 'list_datastores': return <Database size={14} />
             case 'test_query': return <PlayCircle size={14} />
+            case 'execute_query_direct': return <PlayCircle size={14} />
             case 'create_or_update_query': return <Code size={14} />
+            case 'get_query_code': return <Code size={14} />
+            case 'list_board_queries': return <Code size={14} />
+            case 'get_board_code': return <Code size={14} />
             case 'delete_query': return <Trash2 size={14} />
             default: return <Code size={14} />
         }
@@ -29,13 +34,16 @@ export default function ChatMessage({ message, isStreaming = false }) {
 
     const getToolLabel = (toolName) => {
         switch(toolName) {
-            case 'get_datastore_schema': return 'Get Database Schema'
+            case 'get_datastore_schema': return 'Analyze Schema'
             case 'test_query': return 'Test Query'
             case 'create_or_update_query': return 'Save Query'
             case 'delete_query': return 'Delete Query'
             case 'list_datastores': return 'List Datastores'
+            case 'list_boards': return 'List Boards'
             case 'get_board_code': return 'Get Board Code'
             case 'list_board_queries': return 'List Queries'
+            case 'get_query_code': return 'Read Query Code'
+            case 'execute_query_direct': return 'Execute Query'
             default: return toolName.replace(/_/g, ' ').replace(/\b\w/g, l => l.toUpperCase())
         }
     }
@@ -44,14 +52,14 @@ export default function ChatMessage({ message, isStreaming = false }) {
         <div className={`flex ${isUser ? 'justify-end' : 'justify-start'} animate-fade-in`}>
             <div className={`max-w-[85%] rounded-2xl text-sm ${
                 isUser
-                    ? 'bg-accent-gradient text-white shadow-lg rounded-tr-none px-4 py-3'
-                    : 'bg-background-tertiary border border-border-primary text-text-primary rounded-tl-none shadow-sm'
+                    ? 'bg-indigo-600 text-white shadow-lg rounded-tr-none px-4 py-3'
+                    : 'bg-slate-800 border border-white/[0.07] text-white rounded-tl-none shadow-sm'
             }`}>
                 {/* Thinking section (AI only) */}
                 {!isUser && thinking && (
-                    <div className="flex items-start gap-2 mb-3 pb-3 border-b border-border-primary/30">
-                        <Brain size={14} className="mt-0.5 text-accent-primary flex-shrink-0 animate-pulse" />
-                        <div className="text-xs text-text-muted italic leading-relaxed">
+                    <div className="flex items-start gap-2 mb-3 pb-3 border-b border-white/[0.04]">
+                        <Brain size={14} className="mt-0.5 text-indigo-400 flex-shrink-0 animate-pulse" />
+                        <div className="text-xs text-slate-500 italic leading-relaxed">
                             {thinking}
                         </div>
                     </div>
@@ -82,7 +90,7 @@ export default function ChatMessage({ message, isStreaming = false }) {
                                         {String(children).replace(/\n$/, '')}
                                     </SyntaxHighlighter>
                                 ) : (
-                                    <code className={`${isUser ? 'bg-white/20' : 'bg-background-hover'} px-1.5 py-0.5 rounded text-[0.85em]`} {...props}>
+                                    <code className={`${isUser ? 'bg-white/20' : 'bg-white/[0.05]'} px-1.5 py-0.5 rounded text-[0.85em]`} {...props}>
                                         {children}
                                     </code>
                                 )
@@ -93,7 +101,7 @@ export default function ChatMessage({ message, isStreaming = false }) {
                             ol: ({ children }) => <ol className="my-2 space-y-1">{children}</ol>,
                             li: ({ children }) => <li className="leading-relaxed">{children}</li>,
                             a: ({ href, children }) => (
-                                <a href={href} target="_blank" rel="noopener noreferrer" className="text-accent-primary hover:underline">
+                                <a href={href} target="_blank" rel="noopener noreferrer" className="text-indigo-400 hover:underline">
                                     {children}
                                 </a>
                             ),
@@ -121,14 +129,14 @@ export default function ChatMessage({ message, isStreaming = false }) {
 
                 {/* Code diff visualization */}
                 {!isUser && code_delta && (
-                    <div className="mt-3 pt-3 border-t border-border-primary/30">
+                    <div className="mt-3 pt-3 border-t border-white/[0.04]">
                         <CodeDiff oldCode={code_delta.old_code} newCode={code_delta.new_code} />
                     </div>
                 )}
 
                 {/* Test result collapsible section */}
                 {!isUser && test_result && (
-                    <div className="mt-3 pt-3 border-t border-border-primary/30">
+                    <div className="mt-3 pt-3 border-t border-white/[0.04]">
                         <button
                             onClick={() => setShowTestDetails(!showTestDetails)}
                             className={`w-full flex items-center justify-between gap-2 text-xs px-3 py-2 rounded-lg transition-colors ${
@@ -145,26 +153,26 @@ export default function ChatMessage({ message, isStreaming = false }) {
                                     {test_result.success ? 'Query Execution Successful' : 'Query Execution Failed'}
                                 </span>
                                 {test_result.success && test_result.row_count !== undefined && (
-                                    <span className="text-text-muted">• {test_result.row_count} rows returned</span>
+                                    <span className="text-slate-500">• {test_result.row_count} rows returned</span>
                                 )}
                             </div>
                             {showTestDetails ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
                         </button>
                         
                         {showTestDetails && (
-                            <div className="mt-2 px-3 py-2 rounded-lg bg-background-hover text-xs text-text-secondary">
+                            <div className="mt-2 px-3 py-2 rounded-lg bg-white/[0.05] text-xs text-slate-400">
                                 {test_result.success ? (
                                     <div>
                                         <div className="font-medium text-green-400 mb-1">✓ Test Passed</div>
-                                        <div className="text-text-muted">
+                                        <div className="text-slate-500">
                                             The query executed successfully and returned {test_result.row_count || 0} row{test_result.row_count !== 1 ? 's' : ''}.
                                         </div>
                                     </div>
                                 ) : (
                                     <div>
                                         <div className="font-medium text-red-400 mb-1">✗ Test Failed</div>
-                                        <div className="text-text-muted mb-2">The query encountered an error:</div>
-                                        <div className="bg-background-primary rounded px-2 py-1 text-red-300 font-mono text-[11px] whitespace-pre-wrap break-words">
+                                        <div className="text-slate-500 mb-2">The query encountered an error:</div>
+                                        <div className="bg-slate-950 rounded px-2 py-1 text-red-300 font-mono text-[11px] whitespace-pre-wrap break-words">
                                             {test_result.error}
                                         </div>
                                     </div>
@@ -176,7 +184,7 @@ export default function ChatMessage({ message, isStreaming = false }) {
 
                 {/* User input needed indicator */}
                 {!isUser && needs_user_input && (
-                    <div className="mt-3 pt-3 border-t border-border-primary/30">
+                    <div className="mt-3 pt-3 border-t border-white/[0.04]">
                         <div className="bg-amber-500/10 border border-amber-500/30 rounded-lg p-3">
                             <div className="flex items-start gap-2">
                                 <svg className="w-4 h-4 text-amber-400 mt-0.5 flex-shrink-0" fill="currentColor" viewBox="0 0 20 20">
@@ -193,7 +201,7 @@ export default function ChatMessage({ message, isStreaming = false }) {
 
                 {/* Streaming indicator */}
                 {isStreaming && !isUser && (
-                    <div className="flex items-center gap-2 mt-2 text-text-muted text-xs">
+                    <div className="flex items-center gap-2 mt-2 text-slate-500 text-xs">
                         <Loader2 size={12} className="animate-spin" />
                         <span>Thinking...</span>
                     </div>
@@ -209,7 +217,7 @@ function CodeDiff({ oldCode, newCode }) {
 
     if (!hasChanges) {
         return (
-            <div className="text-xs text-text-muted italic">
+            <div className="text-xs text-slate-500 italic">
                 No changes to code
             </div>
         )
@@ -217,8 +225,8 @@ function CodeDiff({ oldCode, newCode }) {
 
     return (
         <div className="space-y-1">
-            <div className="text-xs font-semibold text-text-secondary mb-2">Code changes:</div>
-            <div className="bg-background-primary rounded-lg overflow-hidden border border-border-primary max-h-60 overflow-y-auto">
+            <div className="text-xs font-semibold text-slate-400 mb-2">Code changes:</div>
+            <div className="bg-slate-950 rounded-lg overflow-hidden border border-white/[0.07] max-h-60 overflow-y-auto">
                 <div className="font-mono text-[0.7rem] leading-relaxed">
                     {diff.map((part, index) => {
                         if (part.added) {
@@ -243,11 +251,11 @@ function CodeDiff({ oldCode, newCode }) {
                         const lines = part.value.split('\n').filter(l => l)
                         if (lines.length > 6) {
                             return (
-                                <div key={index} className="text-text-muted">
+                                <div key={index} className="text-slate-500">
                                     {lines.slice(0, 2).map((line, i) => (
                                         <div key={i} className="px-3 py-0.5">  {line}</div>
                                     ))}
-                                    <div className="px-3 py-0.5 text-text-muted/50">... {lines.length - 4} unchanged lines ...</div>
+                                    <div className="px-3 py-0.5 text-slate-600">... {lines.length - 4} unchanged lines ...</div>
                                     {lines.slice(-2).map((line, i) => (
                                         <div key={`end-${i}`} className="px-3 py-0.5">  {line}</div>
                                     ))}
@@ -255,7 +263,7 @@ function CodeDiff({ oldCode, newCode }) {
                             )
                         }
                         return (
-                            <div key={index} className="text-text-muted">
+                            <div key={index} className="text-slate-500">
                                 {lines.map((line, i) => (
                                     <div key={i} className="px-3 py-0.5">  {line}</div>
                                 ))}
@@ -276,40 +284,40 @@ function ToolCallDisplay({ tool, expanded, onToggle, getIcon, getLabel }) {
         <div className={`rounded-lg border ${
             isSuccess ? 'border-green-500/30 bg-green-500/5' : 
             isError ? 'border-red-500/30 bg-red-500/5' : 
-            'border-border-primary bg-background-hover'
+            'border-white/[0.07] bg-white/[0.05]'
         }`}>
             <button
                 onClick={onToggle}
-                className="w-full flex items-center justify-between gap-3 px-3 py-2.5 text-xs hover:bg-background-hover/50 transition-colors rounded-lg"
+                className="w-full flex items-center justify-between gap-3 px-3 py-2.5 text-xs hover:bg-white/[0.03] transition-colors rounded-lg"
             >
                 <div className="flex items-center gap-2 flex-1">
                     <div className={`p-1.5 rounded-md ${
                         isSuccess ? 'bg-green-500/20 text-green-400' :
                         isError ? 'bg-red-500/20 text-red-400' :
-                        'bg-accent-primary/20 text-accent-primary'
+                        'bg-indigo-500/20 text-indigo-400'
                     }`}>
                         {getIcon(tool.tool)}
                     </div>
                     <div className="flex items-center gap-2 text-left">
-                        <span className="font-medium text-text-primary">{getLabel(tool.tool)}</span>
+                        <span className="font-medium text-white">{getLabel(tool.tool)}</span>
                         {isSuccess && <CheckCircle size={14} className="text-green-400" />}
                         {isError && <XCircle size={14} className="text-red-400" />}
                     </div>
                 </div>
-                {expanded ? <ChevronDown size={14} className="text-text-muted" /> : <ChevronRight size={14} className="text-text-muted" />}
+                {expanded ? <ChevronDown size={14} className="text-slate-500" /> : <ChevronRight size={14} className="text-slate-500" />}
             </button>
             
             {expanded && (
                 <div className="px-3 pb-3 space-y-2">
                     {/* Arguments */}
                     {tool.args && Object.keys(tool.args).length > 0 && (
-                        <div className="bg-background-primary rounded-md p-2">
-                            <div className="text-[10px] uppercase font-semibold text-text-muted mb-1">Arguments</div>
-                            <div className="font-mono text-[11px] text-text-secondary space-y-0.5">
+                        <div className="bg-slate-950 rounded-md p-2">
+                            <div className="text-[10px] uppercase font-semibold text-slate-500 mb-1">Arguments</div>
+                            <div className="font-mono text-[11px] text-slate-400 space-y-0.5">
                                 {Object.entries(tool.args).map(([key, value]) => (
                                     <div key={key} className="flex gap-2">
-                                        <span className="text-accent-primary">{key}:</span>
-                                        <span className="text-text-muted truncate">{
+                                        <span className="text-indigo-400">{key}:</span>
+                                        <span className="text-slate-500 truncate">{
                                             typeof value === 'string' && value.length > 80 
                                                 ? value.substring(0, 80) + '...' 
                                                 : JSON.stringify(value)
@@ -322,12 +330,30 @@ function ToolCallDisplay({ tool, expanded, onToggle, getIcon, getLabel }) {
                     
                     {/* Result */}
                     {isSuccess && tool.result && (
-                        <div className="bg-background-primary rounded-md p-2">
-                            <div className="text-[10px] uppercase font-semibold text-text-muted mb-1">Result</div>
+                        <div className="bg-slate-950 rounded-md p-2">
+                            <div className="text-[10px] uppercase font-semibold text-slate-500 mb-1">Result</div>
                             {tool.tool === 'get_datastore_schema' ? (
                                 <SchemaDisplay result={tool.result} />
                             ) : tool.tool === 'test_query' ? (
                                 <TestQueryDisplay result={tool.result} />
+                            ) : tool.tool === 'list_datastores' ? (
+                                <div className="font-mono text-[11px] text-slate-400 space-y-0.5">
+                                    {(tool.result.datastores || []).map((ds, i) => (
+                                        <div key={i} className="flex gap-2"><span className="text-indigo-400">{ds.name}</span><span className="text-slate-500">{ds.type}</span></div>
+                                    ))}
+                                </div>
+                            ) : tool.tool === 'list_board_queries' ? (
+                                <div className="font-mono text-[11px] text-slate-400 space-y-0.5">
+                                    {(tool.result.queries || []).map((q, i) => (
+                                        <div key={i} className="flex gap-2"><span className="text-indigo-400">{q.name}</span>{q.description && <span className="text-slate-500 truncate">{q.description}</span>}</div>
+                                    ))}
+                                    {tool.result.count === 0 && <div className="text-slate-500">No queries found</div>}
+                                </div>
+                            ) : tool.tool === 'get_query_code' ? (
+                                <div className="font-mono text-[11px] text-slate-400">
+                                    <div className="text-indigo-400 mb-1">{tool.result.name}</div>
+                                    <pre className="text-slate-500 text-[10px] max-h-24 overflow-y-auto whitespace-pre-wrap break-words">{tool.result.code || tool.result.python_code}</pre>
+                                </div>
                             ) : (
                                 <div className="font-mono text-[11px] text-green-400">
                                     {tool.result.message || JSON.stringify(tool.result, null, 2)}
@@ -377,39 +403,39 @@ function SchemaDisplay({ result }) {
     return (
         <div className="text-[11px] space-y-2">
             {/* Header */}
-            <div className="flex items-center gap-2 text-text-secondary">
+            <div className="flex items-center gap-2 text-slate-400">
                 <Database size={12} />
                 <span className="font-medium">{result.datastore_name || 'Datastore'}</span>
-                <span className="text-text-muted">• {result.type || result.datastore_type || 'unknown'}</span>
-                {schema.dataset && <span className="text-accent-primary">/ {schema.dataset}</span>}
-                {schema.table && <span className="text-accent-primary">/ {schema.table}</span>}
+                <span className="text-slate-500">• {result.type || result.datastore_type || 'unknown'}</span>
+                {schema.dataset && <span className="text-indigo-400">/ {schema.dataset}</span>}
+                {schema.table && <span className="text-indigo-400">/ {schema.table}</span>}
             </div>
             
             {/* Top-level: Datasets/Schemas with tables */}
             {isTopLevel && (
                 <div className="space-y-1 max-h-72 overflow-y-auto">
                     {topLevel.map((item, idx) => (
-                        <div key={idx} className="bg-background-hover rounded px-2 py-1.5">
+                        <div key={idx} className="bg-white/[0.05] rounded px-2 py-1.5">
                             <button 
                                 onClick={() => toggleExpand(`ds_${idx}`)}
                                 className="w-full flex items-center justify-between text-left"
                             >
                                 <div className="flex items-center gap-1.5">
                                     {expandedItems[`ds_${idx}`] ? <ChevronDown size={10} /> : <ChevronRight size={10} />}
-                                    <span className="font-semibold text-accent-primary">{item.name}</span>
+                                    <span className="font-semibold text-indigo-400">{item.name}</span>
                                     {item.table_count !== undefined && (
-                                        <span className="text-text-muted text-[10px]">({item.table_count} tables)</span>
+                                        <span className="text-slate-500 text-[10px]">({item.table_count} tables)</span>
                                     )}
                                 </div>
                             </button>
                             {expandedItems[`ds_${idx}`] && item.tables && item.tables.length > 0 && (
-                                <div className="ml-4 mt-1 space-y-0.5 text-text-muted">
+                                <div className="ml-4 mt-1 space-y-0.5 text-slate-500">
                                     {item.tables.map((table, tidx) => (
                                         <div key={tidx} className="flex items-baseline gap-1.5">
-                                            <span className="text-text-muted/50 flex-shrink-0 text-[10px]">├</span>
-                                            <span className="text-text-secondary">{table.name}</span>
-                                            {table.column_count && <span className="text-text-muted text-[10px]">({table.column_count} cols)</span>}
-                                            {table.row_count !== undefined && <span className="text-text-muted text-[10px]">~{table.row_count?.toLocaleString()} rows</span>}
+                                            <span className="text-slate-600 flex-shrink-0 text-[10px]">├</span>
+                                            <span className="text-slate-400">{table.name}</span>
+                                            {table.column_count && <span className="text-slate-500 text-[10px]">({table.column_count} cols)</span>}
+                                            {table.row_count !== undefined && <span className="text-slate-500 text-[10px]">~{table.row_count?.toLocaleString()} rows</span>}
                                         </div>
                                     ))}
                                 </div>
@@ -422,17 +448,17 @@ function SchemaDisplay({ result }) {
             {/* Tables list (from dataset drill-down) */}
             {isTableList && (
                 <div className="space-y-0.5 max-h-60 overflow-y-auto">
-                    <div className="text-text-muted mb-1 font-medium">
+                    <div className="text-slate-500 mb-1 font-medium">
                         {schema.dataset && `Dataset: ${schema.dataset}`}
                         {schema.schema && `Schema: ${schema.schema}`}
                         {` (${tables.length} tables)`}
                     </div>
                     {tables.map((table, idx) => (
-                        <div key={idx} className="flex items-baseline gap-1.5 px-2 py-0.5 bg-background-hover rounded">
-                            <span className="text-text-secondary font-medium">{table.name}</span>
-                            {table.type && <span className="text-text-muted text-[10px]">({table.type})</span>}
-                            {table.column_count && <span className="text-text-muted text-[10px]">{table.column_count} cols</span>}
-                            {table.row_count !== undefined && <span className="text-text-muted text-[10px]">~{table.row_count?.toLocaleString()} rows</span>}
+                        <div key={idx} className="flex items-baseline gap-1.5 px-2 py-0.5 bg-white/[0.05] rounded">
+                            <span className="text-slate-400 font-medium">{table.name}</span>
+                            {table.type && <span className="text-slate-500 text-[10px]">({table.type})</span>}
+                            {table.column_count && <span className="text-slate-500 text-[10px]">{table.column_count} cols</span>}
+                            {table.row_count !== undefined && <span className="text-slate-500 text-[10px]">~{table.row_count?.toLocaleString()} rows</span>}
                         </div>
                     ))}
                 </div>
@@ -441,26 +467,26 @@ function SchemaDisplay({ result }) {
             {/* Columns list (from table drill-down) */}
             {isColumnList && (
                 <div className="space-y-0.5 max-h-60 overflow-y-auto">
-                    <div className="text-text-muted mb-1 font-medium">
+                    <div className="text-slate-500 mb-1 font-medium">
                         {schema.table && `Table: ${schema.dataset ? schema.dataset + '.' : ''}${schema.table}`}
                         {schema.row_count !== undefined && ` (~${schema.row_count?.toLocaleString()} rows)`}
                         {` — ${columns.length} columns`}
                     </div>
-                    <div className="bg-background-hover rounded overflow-hidden">
+                    <div className="bg-white/[0.05] rounded overflow-hidden">
                         <table className="w-full text-[10px]">
                             <thead>
-                                <tr className="border-b border-border-primary">
-                                    <th className="px-2 py-1 text-left text-text-secondary font-semibold">Column</th>
-                                    <th className="px-2 py-1 text-left text-text-secondary font-semibold">Type</th>
-                                    <th className="px-2 py-1 text-left text-text-secondary font-semibold">Info</th>
+                                <tr className="border-b border-white/[0.07]">
+                                    <th className="px-2 py-1 text-left text-slate-400 font-semibold">Column</th>
+                                    <th className="px-2 py-1 text-left text-slate-400 font-semibold">Type</th>
+                                    <th className="px-2 py-1 text-left text-slate-400 font-semibold">Info</th>
                                 </tr>
                             </thead>
                             <tbody>
                                 {columns.map((col, idx) => (
-                                    <tr key={idx} className="border-b border-border-primary/20">
-                                        <td className="px-2 py-0.5 text-accent-primary font-medium">{col.name}</td>
-                                        <td className="px-2 py-0.5 text-text-muted">{col.type || col.field_type || ''}</td>
-                                        <td className="px-2 py-0.5 text-text-muted/70">
+                                    <tr key={idx} className="border-b border-white/[0.03]">
+                                        <td className="px-2 py-0.5 text-indigo-400 font-medium">{col.name}</td>
+                                        <td className="px-2 py-0.5 text-slate-500">{col.type || col.field_type || ''}</td>
+                                        <td className="px-2 py-0.5 text-slate-500/70">
                                             {col.mode && col.mode !== 'NULLABLE' && <span className="mr-1">{col.mode}</span>}
                                             {col.nullable === false && <span className="mr-1">NOT NULL</span>}
                                             {col.description && <span>{col.description}</span>}
@@ -475,7 +501,7 @@ function SchemaDisplay({ result }) {
             
             {/* Empty state */}
             {!isTopLevel && !isTableList && !isColumnList && (
-                <div className="text-text-muted text-center py-2">No schema information available</div>
+                <div className="text-slate-500 text-center py-2">No schema information available</div>
             )}
         </div>
     )
@@ -491,18 +517,18 @@ function TestQueryDisplay({ result }) {
             
             {result.columns && result.columns.length > 0 && (
                 <div>
-                    <div className="text-text-muted mb-1">Columns: {result.columns.join(', ')}</div>
+                    <div className="text-slate-500 mb-1">Columns: {result.columns.join(', ')}</div>
                 </div>
             )}
             
             {result.sample_rows && result.sample_rows.length > 0 && (
-                <div className="bg-background-hover rounded overflow-hidden">
+                <div className="bg-white/[0.05] rounded overflow-hidden">
                     <div className="overflow-x-auto max-h-32">
                         <table className="w-full text-[10px]">
-                            <thead className="bg-background-primary sticky top-0">
+                            <thead className="bg-slate-950 sticky top-0">
                                 <tr>
                                     {result.columns.map(col => (
-                                        <th key={col} className="px-2 py-1 text-left text-text-secondary font-semibold border-b border-border-primary">
+                                        <th key={col} className="px-2 py-1 text-left text-slate-400 font-semibold border-b border-white/[0.07]">
                                             {col}
                                         </th>
                                     ))}
@@ -510,9 +536,9 @@ function TestQueryDisplay({ result }) {
                             </thead>
                             <tbody>
                                 {result.sample_rows.map((row, idx) => (
-                                    <tr key={idx} className="border-b border-border-primary/30 hover:bg-background-primary/50">
+                                    <tr key={idx} className="border-b border-white/[0.04] hover:bg-slate-950/50">
                                         {result.columns.map(col => (
-                                            <td key={col} className="px-2 py-1 text-text-muted">
+                                            <td key={col} className="px-2 py-1 text-slate-500">
                                                 {row[col] !== null && row[col] !== undefined ? String(row[col]) : '—'}
                                             </td>
                                         ))}

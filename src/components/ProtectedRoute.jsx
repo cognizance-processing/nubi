@@ -6,23 +6,9 @@ export default function ProtectedRoute() {
 
     if (loading) {
         return (
-            <div style={{
-                display: 'flex',
-                alignItems: 'center',
-                justifyContent: 'center',
-                minHeight: '100vh',
-                flexDirection: 'column',
-                gap: '1.5rem'
-            }}>
-                <div style={{
-                    width: '48px',
-                    height: '48px',
-                    border: '3px solid var(--bg-tertiary)',
-                    borderTopColor: 'var(--accent-primary)',
-                    borderRadius: '50%',
-                    animation: 'spin 0.8s linear infinite'
-                }}></div>
-                <p style={{ color: 'var(--text-secondary)' }}>Loading...</p>
+            <div className="flex items-center justify-center min-h-screen flex-col gap-4 bg-slate-950">
+                <div className="spinner" />
+                <p className="text-slate-400 text-sm">Loading...</p>
             </div>
         )
     }

@@ -2,6 +2,8 @@ import { useState, useEffect } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { supabase } from '../lib/supabase'
 import { useAuth } from '../contexts/AuthContext'
+import { Plus, X } from 'lucide-react'
+
 export default function BoardsList() {
     const navigate = useNavigate()
     const { user } = useAuth()
@@ -11,9 +13,7 @@ export default function BoardsList() {
     const [newBoardName, setNewBoardName] = useState('')
     const [newBoardDescription, setNewBoardDescription] = useState('')
 
-    useEffect(() => {
-        fetchBoards()
-    }, [])
+    useEffect(() => { fetchBoards() }, [])
 
     const fetchBoards = async () => {
         try {
@@ -33,21 +33,13 @@ export default function BoardsList() {
 
     const createBoard = async (e) => {
         e.preventDefault()
-
         try {
             const { data, error } = await supabase
                 .from('boards')
-                .insert([
-                    {
-                        name: newBoardName,
-                        description: newBoardDescription,
-                        profile_id: user.id,
-                    },
-                ])
+                .insert([{ name: newBoardName, description: newBoardDescription, profile_id: user.id }])
                 .select()
 
             if (error) throw error
-
             setBoards([data[0], ...boards])
             setShowCreateModal(false)
             setNewBoardName('')
@@ -58,70 +50,58 @@ export default function BoardsList() {
     }
 
     return (
-        <div className="p-8 max-w-7xl mx-auto">
-            {/* Page Header */}
-            <div className="flex items-center justify-between mb-10">
-                <h1 className="text-3xl font-bold text-text-primary">Boards</h1>
-                <button
-                    className="btn btn-primary"
-                    onClick={() => setShowCreateModal(true)}
-                >
-                    <svg width="20" height="20" viewBox="0 0 20 20" fill="currentColor">
-                        <path fillRule="evenodd" d="M10 3a1 1 0 011 1v5h5a1 1 0 110 2h-5v5a1 1 0 11-2 0v-5H4a1 1 0 110-2h5V4a1 1 0 011-1z" />
-                    </svg>
-                    Create Board
+        <div className="p-6 lg:p-8 max-w-6xl mx-auto">
+            <div className="flex items-center justify-between mb-6">
+                <h1 className="text-lg font-bold text-white">Boards</h1>
+                <button className="btn btn-primary" onClick={() => setShowCreateModal(true)}>
+                    <Plus className="h-3.5 w-3.5" />
+                    New Board
                 </button>
             </div>
 
-            {/* Boards Content */}
-            <div className="min-h-[400px]">
+            <div className="min-h-[300px]">
                 {loading ? (
-                    <div className="flex flex-col items-center justify-center min-h-[400px] gap-6">
-                        <div className="spinner"></div>
-                        <p className="text-text-secondary">Loading boards...</p>
+                    <div className="flex flex-col items-center justify-center min-h-[300px] gap-3">
+                        <div className="spinner" />
+                        <p className="text-slate-500 text-sm">Loading boards...</p>
                     </div>
                 ) : boards.length === 0 ? (
-                    <div className="flex flex-col items-center justify-center min-h-[400px] text-center animate-fade-in">
-                        <div className="w-20 h-20 flex items-center justify-center bg-background-tertiary border border-border-primary rounded-2xl mb-6 text-text-muted">
-                            <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5">
+                    <div className="flex flex-col items-center justify-center min-h-[300px] text-center animate-fade-in">
+                        <div className="w-14 h-14 flex items-center justify-center rounded-xl border border-white/[0.07] bg-white/[0.02] mb-4 text-slate-600">
+                            <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5">
                                 <rect x="3" y="3" width="18" height="18" rx="2" />
                                 <line x1="9" y1="9" x2="15" y2="9" />
                                 <line x1="9" y1="15" x2="15" y2="15" />
                             </svg>
                         </div>
-                        <h3 className="text-2xl font-semibold mb-2">No boards yet</h3>
-                        <p className="text-text-secondary mb-8">Create your first board to get started</p>
-                        <button
-                            className="btn btn-primary"
-                            onClick={() => setShowCreateModal(true)}
-                        >
-                            <svg width="20" height="20" viewBox="0 0 20 20" fill="currentColor">
-                                <path fillRule="evenodd" d="M10 3a1 1 0 011 1v5h5a1 1 0 110 2h-5v5a1 1 0 11-2 0v-5H4a1 1 0 110-2h5V4a1 1 0 011-1z" />
-                            </svg>
+                        <h3 className="text-base font-semibold text-white mb-1">No boards yet</h3>
+                        <p className="text-slate-500 text-sm mb-5">Create your first board to get started</p>
+                        <button className="btn btn-primary" onClick={() => setShowCreateModal(true)}>
+                            <Plus className="h-3.5 w-3.5" />
                             Create Board
                         </button>
                     </div>
                 ) : (
-                    <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6 animate-fade-in">
+                    <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4 animate-fade-in">
                         {boards.map((board) => (
                             <div
                                 key={board.id}
                                 className="card-interactive flex flex-col"
                                 onClick={() => navigate(`/board/${board.id}`)}
                             >
-                                <div className="flex items-start justify-between gap-4 mb-4">
-                                    <h3 className="text-xl font-semibold text-text-primary flex-1">{board.name}</h3>
+                                <div className="flex items-start justify-between gap-3 mb-2">
+                                    <h3 className="text-sm font-semibold text-white flex-1 leading-snug">{board.name}</h3>
                                     <button className="icon-button" onClick={(e) => e.stopPropagation()}>
-                                        <svg width="20" height="20" viewBox="0 0 20 20" fill="currentColor">
+                                        <svg width="16" height="16" viewBox="0 0 20 20" fill="currentColor">
                                             <path d="M10 6a2 2 0 110-4 2 2 0 010 4zM10 12a2 2 0 110-4 2 2 0 010 4zM10 18a2 2 0 110-4 2 2 0 010 4z" />
                                         </svg>
                                     </button>
                                 </div>
                                 {board.description && (
-                                    <p className="text-text-secondary text-sm leading-relaxed mb-6 line-clamp-2">{board.description}</p>
+                                    <p className="text-slate-500 text-xs leading-relaxed mb-3 line-clamp-2">{board.description}</p>
                                 )}
-                                <div className="mt-auto pt-4 border-t border-border-primary">
-                                    <span className="text-[0.75rem] text-text-muted">
+                                <div className="mt-auto pt-3 border-t border-white/[0.06]">
+                                    <span className="text-[11px] text-slate-600">
                                         {new Date(board.created_at).toLocaleDateString()}
                                     </span>
                                 </div>
@@ -131,24 +111,16 @@ export default function BoardsList() {
                 )}
             </div>
 
-            {/* Create Board Modal */}
             {showCreateModal && (
                 <div className="modal-overlay" onClick={() => setShowCreateModal(false)}>
-                    <div className="modal-container" onClick={(e) => e.stopPropagation()}>
-                        <div className="flex items-center justify-between mb-8">
-                            <h3 className="text-2xl font-semibold">Create New Board</h3>
-                            <button
-                                className="icon-button"
-                                onClick={() => setShowCreateModal(false)}
-                            >
-                                <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                                    <line x1="18" y1="6" x2="6" y2="18" />
-                                    <line x1="6" y1="6" x2="18" y2="18" />
-                                </svg>
+                    <div className="modal-container max-w-md" onClick={(e) => e.stopPropagation()}>
+                        <div className="flex items-center justify-between mb-5">
+                            <h3 className="text-base font-semibold text-white">New Board</h3>
+                            <button className="icon-button" onClick={() => setShowCreateModal(false)}>
+                                <X className="h-4 w-4" />
                             </button>
                         </div>
-
-                        <form onSubmit={createBoard} className="flex flex-col gap-6">
+                        <form onSubmit={createBoard} className="flex flex-col gap-4">
                             <div className="form-group">
                                 <label className="form-label" htmlFor="board-name">Board Name</label>
                                 <input
@@ -162,7 +134,6 @@ export default function BoardsList() {
                                     autoFocus
                                 />
                             </div>
-
                             <div className="form-group">
                                 <label className="form-label" htmlFor="board-description">Description (optional)</label>
                                 <textarea
@@ -174,18 +145,9 @@ export default function BoardsList() {
                                     rows="3"
                                 />
                             </div>
-
-                            <div className="flex gap-4 justify-end mt-4">
-                                <button
-                                    type="button"
-                                    className="btn btn-secondary"
-                                    onClick={() => setShowCreateModal(false)}
-                                >
-                                    Cancel
-                                </button>
-                                <button type="submit" className="btn btn-primary">
-                                    Create Board
-                                </button>
+                            <div className="flex gap-3 justify-end mt-2">
+                                <button type="button" className="btn btn-ghost" onClick={() => setShowCreateModal(false)}>Cancel</button>
+                                <button type="submit" className="btn btn-primary">Create</button>
                             </div>
                         </form>
                     </div>

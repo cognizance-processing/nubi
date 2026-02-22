@@ -65,19 +65,19 @@ export default function DatastoresPage() {
     }
 
     return (
-        <div className="p-8 max-w-7xl mx-auto space-y-10">
-            <header className="flex flex-col md:flex-row md:items-end justify-between gap-6">
-                <div className="space-y-2">
-                    <h1 className="text-4xl font-bold gradient-text pb-1">Datastores</h1>
-                    <p className="text-text-secondary text-lg">Configure and verify your distributed data infrastructure</p>
+        <div className="p-5 max-w-6xl mx-auto space-y-5">
+            <header className="flex flex-col md:flex-row md:items-center justify-between gap-4">
+                <div>
+                    <h1 className="text-lg font-semibold text-white">Datastores</h1>
+                    <p className="text-slate-400 text-xs mt-0.5">Configure and manage your data connections</p>
                 </div>
 
-                <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-4">
+                <div className="flex items-center gap-3">
                     <div className="relative group">
-                        <Search size={18} className="absolute left-4 top-1/2 -translate-y-1/2 text-text-muted group-focus-within:text-accent-primary transition-colors" />
+                        <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-500 group-focus-within:text-indigo-400 transition-colors" />
                         <input
-                            className="form-input pl-11 w-full sm:w-72"
-                            placeholder="Identify a node..."
+                            className="form-input pl-8 w-full sm:w-56"
+                            placeholder="Search..."
                             value={searchQuery}
                             onChange={(e) => setSearchQuery(e.target.value)}
                         />
@@ -90,116 +90,107 @@ export default function DatastoresPage() {
                         }}
                         className="btn btn-primary"
                     >
-                        <Plus size={20} /> Provision Store
+                        <Plus size={15} /> Add Store
                     </button>
                 </div>
             </header>
 
             {loading ? (
-                <div className="flex flex-col items-center justify-center py-32 gap-6">
+                <div className="flex flex-col items-center justify-center py-20 gap-3">
                     <div className="spinner"></div>
-                    <p className="text-text-muted font-medium tracking-wide">Scanning ecosystem nodes...</p>
+                    <p className="text-slate-500 text-xs font-medium">Loading datastores...</p>
                 </div>
             ) : (
                 <>
                     {filteredStores.length === 0 ? (
-                        <div className="flex flex-col items-center justify-center py-20 bg-background-secondary/50 rounded-3xl border border-dashed border-border-primary animate-fade-in text-center px-6">
-                            <div className="w-16 h-16 rounded-full bg-background-tertiary flex items-center justify-center text-text-muted mb-6">
-                                <Database size={32} />
+                        <div className="flex flex-col items-center justify-center py-16 bg-slate-900/50 rounded-xl border border-dashed border-white/[0.07] animate-fade-in text-center px-6">
+                            <div className="w-11 h-11 rounded-lg bg-slate-800 flex items-center justify-center text-slate-500 mb-4">
+                                <Database size={22} />
                             </div>
-                            <h3 className="text-xl font-semibold mb-2 text-text-primary">Infrastructure Empty</h3>
-                            <p className="text-text-secondary mb-8 max-w-sm">Connect your first database or warehouse to get started.</p>
+                            <h3 className="text-sm font-semibold mb-1 text-white">No datastores yet</h3>
+                            <p className="text-slate-400 text-xs mb-5 max-w-sm">Connect your first database or warehouse to get started.</p>
                             <button onClick={() => setIsModalOpen(true)} className="btn btn-primary">
-                                <Plus size={18} /> Connect Provider
+                                <Plus size={15} /> Add Store
                             </button>
                         </div>
                     ) : (
-                        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6 animate-fade-in">
+                        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4 animate-fade-in">
                             {filteredStores.map(store => (
                                 <div 
                                     key={store.id} 
                                     className="card-interactive group flex flex-col cursor-pointer"
                                     onClick={() => navigate(`/datastores/${store.id}`)}
                                 >
-                                    <div className="flex items-center gap-4 mb-6">
-                                        <div className="w-12 h-12 flex items-center justify-center bg-background-tertiary border border-border-primary rounded-xl text-accent-primary group-hover:bg-accent-primary/10 transition-all duration-300">
-                                            <Database size={24} />
+                                    <div className="flex items-center gap-3 mb-3">
+                                        <div className="w-9 h-9 flex items-center justify-center bg-slate-800 border border-white/[0.07] rounded-lg text-indigo-400 group-hover:bg-indigo-500/10 transition-all duration-200">
+                                            <Database size={18} />
                                         </div>
                                         <div className="flex-1 min-w-0">
-                                            <div className="flex items-center gap-2 mb-0.5">
-                                                <span className={`text-[0.65rem] font-bold uppercase tracking-widest px-1.5 py-0.5 rounded ${store.type === 'postgres' ? 'bg-indigo-500/10 text-indigo-400' : 'bg-orange-500/10 text-orange-400'}`}>
+                                            <div className="flex items-center gap-1.5 mb-0.5">
+                                                <span className={`text-[10px] font-semibold uppercase tracking-wider px-1.5 py-0.5 rounded ${store.type === 'postgres' ? 'bg-indigo-500/10 text-indigo-400' : 'bg-orange-500/10 text-orange-400'}`}>
                                                     {store.type}
                                                 </span>
-                                                <span className="text-[0.65rem] font-bold uppercase tracking-widest text-text-muted text-opacity-50">Node</span>
                                             </div>
-                                            <h3 className="text-xl font-bold text-text-primary truncate leading-tight">{store.name}</h3>
+                                            <h3 className="text-sm font-semibold text-white truncate leading-tight">{store.name}</h3>
                                         </div>
                                     </div>
 
-                                    <div className="flex-1 mb-8">
-                                        <p className="text-text-secondary text-sm leading-relaxed line-clamp-3">
-                                            Operational endpoint for high-concurrency {store.type} operations. Configured for secure IAM-based identity access.
-                                        </p>
-                                    </div>
+                                    <div className="flex items-center justify-between pt-3 border-t border-white/[0.07]">
+                                        <button
+                                            onClick={(e) => { e.stopPropagation(); testStore(store) }}
+                                            disabled={testingStoreId === store.id}
+                                            className={`text-[11px] font-medium px-2 py-1 rounded-md transition-all flex items-center gap-1.5 border ${testingStoreId === store.id
+                                                ? 'bg-slate-800 text-slate-500 border-white/[0.07] cursor-not-allowed'
+                                                : testResults[store.id] === true
+                                                    ? 'bg-emerald-500/10 text-emerald-400 border-emerald-500/20'
+                                                    : testResults[store.id] === false
+                                                        ? 'bg-red-500/10 text-red-400 border-red-500/20'
+                                                        : 'bg-indigo-500/5 text-indigo-400 border-indigo-500/10 hover:bg-indigo-500/10'
+                                                }`}
+                                        >
+                                            {testingStoreId === store.id ? (
+                                                <>
+                                                    <Loader2 size={11} className="animate-spin" />
+                                                    <span>Testing...</span>
+                                                </>
+                                            ) : testResults[store.id] === true ? (
+                                                <>
+                                                    <CheckCircle2 size={11} />
+                                                    <span>Connected</span>
+                                                </>
+                                            ) : testResults[store.id] === false ? (
+                                                <>
+                                                    <XCircle size={11} />
+                                                    <span>Failed</span>
+                                                </>
+                                            ) : (
+                                                <>
+                                                    <Wifi size={11} />
+                                                    <span>Test</span>
+                                                </>
+                                            )}
+                                        </button>
 
-                                    <div className="flex flex-col gap-4 pt-5 border-t border-border-primary">
-                                        <div className="flex items-center justify-between">
+                                        <div className="flex items-center gap-0.5">
                                             <button
-                                                onClick={() => testStore(store)}
-                                                disabled={testingStoreId === store.id}
-                                                className={`text-xs font-bold px-3 py-1.5 rounded-lg transition-all flex items-center gap-2 border ${testingStoreId === store.id
-                                                    ? 'bg-background-tertiary text-text-muted border-border-primary cursor-not-allowed'
-                                                    : testResults[store.id] === true
-                                                        ? 'bg-status-success/10 text-status-success border-status-success/20'
-                                                        : testResults[store.id] === false
-                                                            ? 'bg-status-error/10 text-status-error border-status-error/20'
-                                                            : 'bg-accent-primary/5 text-accent-primary border-accent-primary/10 hover:bg-accent-primary/10 hover:border-accent-primary/30'
-                                                    }`}
+                                                className="icon-button"
+                                                onClick={(e) => {
+                                                    e.stopPropagation();
+                                                    setEditingStore(store);
+                                                    setFormType(store.type);
+                                                    setIsModalOpen(true);
+                                                }}
+                                                title="Settings"
                                             >
-                                                {testingStoreId === store.id ? (
-                                                    <>
-                                                        <Loader2 size={12} className="animate-spin" />
-                                                        <span>Verifying...</span>
-                                                    </>
-                                                ) : testResults[store.id] === true ? (
-                                                    <>
-                                                        <CheckCircle2 size={12} />
-                                                        <span>Verified</span>
-                                                    </>
-                                                ) : testResults[store.id] === false ? (
-                                                    <>
-                                                        <XCircle size={12} />
-                                                        <span>Failed</span>
-                                                    </>
-                                                ) : (
-                                                    <>
-                                                        <Wifi size={12} />
-                                                        <span>Test Connection</span>
-                                                    </>
-                                                )}
+                                                <Settings size={14} />
                                             </button>
-
-                                            <div className="flex items-center gap-1">
-                                                <button
-                                                    className="icon-button"
-                                                    onClick={(e) => {
-                                                        e.stopPropagation();
-                                                        setEditingStore(store);
-                                                        setFormType(store.type);
-                                                        setIsModalOpen(true);
-                                                    }}
-                                                    title="Environment Config"
-                                                >
-                                                    <Settings size={16} />
-                                                </button>
-                                                <button
-                                                    onClick={(e) => deleteStore(store.id, e)}
-                                                    className="icon-button hover:bg-status-error/10 hover:text-status-error"
-                                                    title="Withdraw Node"
-                                                >
-                                                    <Trash2 size={16} />
-                                                </button>
-                                            </div>
+                                            <button
+                                                onClick={(e) => deleteStore(store.id, e)}
+                                                className="icon-button hover:bg-red-500/10 hover:text-red-400"
+                                                title="Delete"
+                                            >
+                                                <Trash2 size={14} />
+                                            </button>
                                         </div>
                                     </div>
                                 </div>
@@ -211,17 +202,17 @@ export default function DatastoresPage() {
 
             {isModalOpen && (
                 <div className="modal-overlay">
-                    <div className="modal-container max-w-2xl">
-                        <div className="flex items-center justify-between mb-8">
-                            <h2 className="text-2xl font-bold">{editingStore ? 'Node Configuration' : 'Provision Infrastructure'}</h2>
+                    <div className="modal-container max-w-lg">
+                        <div className="flex items-center justify-between mb-5">
+                            <h2 className="text-base font-semibold">{editingStore ? 'Edit Datastore' : 'Add Datastore'}</h2>
                             <button
                                 onClick={() => { setIsModalOpen(false); setEditingStore(null); }}
                                 className="icon-button"
                             >
-                                <X size={24} />
+                                <X size={18} />
                             </button>
                         </div>
-                        <form className="space-y-6" onSubmit={async (e) => {
+                        <form className="space-y-4" onSubmit={async (e) => {
                             e.preventDefault()
                             setIsUploading(true)
                             try {
@@ -271,11 +262,11 @@ export default function DatastoresPage() {
                             }
                         }}>
                             <div className="form-group">
-                                <label className="form-label">Provider Alias</label>
-                                <input name="name" defaultValue={editingStore?.name} className="form-input" placeholder="e.g. Production Warehouse" required />
+                                <label className="form-label">Name</label>
+                                <input name="name" defaultValue={editingStore?.name} className="form-input" placeholder="e.g. Production DB" required />
                             </div>
                             <div className="form-group">
-                                <label className="form-label">Compute Engine</label>
+                                <label className="form-label">Type</label>
                                 <select
                                     name="type"
                                     defaultValue={editingStore?.type || 'postgres'}
@@ -293,13 +284,13 @@ export default function DatastoresPage() {
                                     <input
                                         name="connection_string"
                                         defaultValue={editingStore?.config?.connection_string}
-                                        className="form-input"
+                                        className="form-input font-mono text-xs"
                                         placeholder="postgresql://user:pass@host:port/db"
                                         required
                                     />
                                 </div>
                             ) : (
-                                <div className="space-y-6">
+                                <div className="space-y-4">
                                     <div className="form-group">
                                         <label className="form-label">Project ID</label>
                                         <input
@@ -316,12 +307,12 @@ export default function DatastoresPage() {
                                             <input
                                                 type="file"
                                                 name="keyfile"
-                                                className="form-input file:mr-4 file:py-2 file:px-4 file:rounded-full file:border-0 file:text-sm file:font-semibold file:bg-accent-primary/10 file:text-accent-primary hover:file:bg-accent-primary/20"
+                                                className="form-input file:mr-4 file:py-2 file:px-4 file:rounded-full file:border-0 file:text-sm file:font-semibold file:bg-indigo-500/10 file:text-indigo-400 hover:file:bg-indigo-500/20"
                                                 accept=".json"
                                             />
                                         </div>
                                         {editingStore?.config?.keyfile_path && (
-                                            <p className="text-[10px] text-text-muted mt-1 bg-background-tertiary p-2 rounded border border-border-primary truncate">
+                                            <p className="text-[10px] text-slate-500 mt-1 bg-slate-800 p-2 rounded border border-white/[0.07] truncate">
                                                 Existing: {editingStore.config.keyfile_path}
                                             </p>
                                         )}
@@ -329,26 +320,26 @@ export default function DatastoresPage() {
                                 </div>
                             )}
 
-                            <div className="flex gap-4 justify-end pt-6">
+                            <div className="flex gap-3 justify-end pt-3">
                                 <button
                                     type="button"
                                     onClick={() => setIsModalOpen(false)}
                                     className="btn btn-ghost"
                                 >
-                                    Abort
+                                    Cancel
                                 </button>
                                 <button
                                     type="submit"
-                                    className="btn btn-primary min-w-[180px]"
+                                    className="btn btn-primary"
                                     disabled={isUploading}
                                 >
                                     {isUploading ? (
-                                        <div className="flex items-center gap-2">
-                                            <div className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin"></div>
-                                            <span>Committing...</span>
+                                        <div className="flex items-center gap-1.5">
+                                            <div className="w-3.5 h-3.5 border-2 border-white/30 border-t-white rounded-full animate-spin"></div>
+                                            <span>Saving...</span>
                                         </div>
                                     ) : (
-                                        <span>Commit Architecture</span>
+                                        <span>Save</span>
                                     )}
                                 </button>
                             </div>

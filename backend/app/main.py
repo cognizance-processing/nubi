@@ -1537,7 +1537,6 @@ async def board_helper(
             "systemInstruction": {"parts": [{"text": system_instruction}]},
             "generationConfig": {
                 "temperature": 0.3,
-                "maxOutputTokens": 65536,
                 "responseMimeType": "text/plain"
             }
         }
@@ -2233,8 +2232,7 @@ async def board_helper_stream(
     query_id: Optional[str] = Body(default=None),
     # Settings
     max_tool_iterations: int = Body(default=200),  # Increased from 25 -> 50 -> 200
-    temperature: float = Body(default=0.3),
-    max_output_tokens: int = Body(default=65536)
+    temperature: float = Body(default=0.3)
 ):
     """
     Streaming version of board-helper that sends progress events in real-time.
@@ -2254,7 +2252,7 @@ async def board_helper_stream(
             if context == "query":
                 async for event in _exploration_helper_stream(
                     code, user_prompt, chat, api_key, datastore_id, query_id, board_id,
-                    max_tool_iterations, temperature, max_output_tokens
+                    max_tool_iterations, temperature
                 ):
                     yield f"data: {json.dumps(event)}\n\n"
             else:
@@ -2321,7 +2319,6 @@ async def board_helper_stream(
                     "tools": GEMINI_TOOLS,
                     "generationConfig": {
                         "temperature": 0.3,
-                        "maxOutputTokens": 65536,
                         "responseMimeType": "text/plain"
                     }
                 }
@@ -2333,9 +2330,11 @@ async def board_helper_stream(
                 tool_iteration = 0
                 edited_code = None
                 raw_text = ""  # Initialize to prevent UnboundLocalError
+                accumulated_text = ""  # Accumulate text across MAX_TOKENS continuations
                 query_created = False  # Track if we created a query
                 any_tools_called = False  # Track if any tools were called across iterations
                 last_tool_results = []  # Track last tool results for fallback
+                continuation_count = 0  # Track how many times we've hit MAX_TOKENS
                 
                 while tool_iteration < max_tool_iterations:
                     tool_iteration += 1
@@ -2344,11 +2343,12 @@ async def board_helper_stream(
                     if tool_iteration == max_tool_iterations - 5:
                         yield f"data: {json.dumps({'type': 'progress', 'content': f'⚠️ Approaching iteration limit ({tool_iteration}/{max_tool_iterations})...'})}\n\n"
                     
-                    response = requests.post(
+                    response = await asyncio.to_thread(
+                        requests.post,
                         GEMINI_URL,
                         headers={"Content-Type": "application/json", "x-goog-api-key": api_key},
                         json=payload,
-                        timeout=120  # Increased from 60 seconds
+                        timeout=120
                     )
                     
                     if not response.ok:
@@ -2383,32 +2383,28 @@ async def board_helper_stream(
                             
                             if func_name == "list_datastores":
                                 result = await _get_available_datastores()
-                                yield f"data: {json.dumps({'type': 'progress', 'content': f'✓ Found {len(result)} datastores'})}\n\n"
+                                yield f"data: {json.dumps({'type': 'tool_result', 'tool': 'list_datastores', 'status': 'success', 'result': {'datastores': result, 'count': len(result)}})}\n\n"
                             elif func_name == "list_boards":
                                 result = await _get_available_boards()
-                                yield f"data: {json.dumps({'type': 'progress', 'content': f'✓ Found {len(result)} boards'})}\n\n"
+                                yield f"data: {json.dumps({'type': 'tool_result', 'tool': 'list_boards', 'status': 'success', 'result': {'boards': result, 'count': len(result)}})}\n\n"
                             elif func_name == "list_board_queries":
                                 board_id_arg = fc["functionCall"].get("args", {}).get("board_id")
                                 result = await _get_board_queries(board_id_arg) if board_id_arg else []
-                                yield f"data: {json.dumps({'type': 'progress', 'content': f'✓ Found {len(result)} queries'})}\n\n"
+                                yield f"data: {json.dumps({'type': 'tool_result', 'tool': 'list_board_queries', 'status': 'success', 'result': {'queries': result, 'count': len(result)}})}\n\n"
                             elif func_name == "get_query_code":
                                 query_id_arg = fc["functionCall"].get("args", {}).get("query_id")
                                 result = await _get_query_code(query_id_arg) if query_id_arg else {"error": "Missing query_id"}
                                 if "error" not in result:
-                                    query_name = result.get("name", "query")
-                                    yield f"data: {json.dumps({'type': 'progress', 'content': f'✓ Retrieved code for {query_name}'})}\n\n"
+                                    yield f"data: {json.dumps({'type': 'tool_result', 'tool': 'get_query_code', 'status': 'success', 'result': result})}\n\n"
                                 else:
-                                    error_msg = result["error"]
-                                    yield f"data: {json.dumps({'type': 'progress', 'content': f'✗ {error_msg}'})}\n\n"
+                                    yield f"data: {json.dumps({'type': 'tool_result', 'tool': 'get_query_code', 'status': 'error', 'error': result['error']})}\n\n"
                             elif func_name == "get_board_code":
                                 board_id_arg = fc["functionCall"].get("args", {}).get("board_id")
                                 result = await _get_board_code(board_id_arg) if board_id_arg else {"error": "Missing board_id"}
                                 if "error" not in result:
-                                    board_name = result.get("name", "board")
-                                    yield f"data: {json.dumps({'type': 'progress', 'content': f'✓ Retrieved code for {board_name}'})}\n\n"
+                                    yield f"data: {json.dumps({'type': 'tool_result', 'tool': 'get_board_code', 'status': 'success', 'result': result})}\n\n"
                                 else:
-                                    error_msg = result["error"]
-                                    yield f"data: {json.dumps({'type': 'progress', 'content': f'✗ {error_msg}'})}\n\n"
+                                    yield f"data: {json.dumps({'type': 'tool_result', 'tool': 'get_board_code', 'status': 'error', 'error': result['error']})}\n\n"
                             elif func_name == "create_or_update_query":
                                 args = fc["functionCall"].get("args", {})
                                 result = await _create_or_update_query(
@@ -2514,7 +2510,13 @@ async def board_helper_stream(
                     # Handle MAX_TOKENS - continue the generation
                     if finish_reason == "MAX_TOKENS":
                         if tool_iteration < max_tool_iterations:
-                            yield f"data: {json.dumps({'type': 'progress', 'content': '⏩ Continuing generation (hit token limit)...'})}\n\n"
+                            continuation_count += 1
+                            # Only show message on first continuation
+                            if continuation_count == 1:
+                                yield f"data: {json.dumps({'type': 'progress', 'content': '⏩ Generating long response, please wait...'})}\n\n"
+                            
+                            # Accumulate the partial response
+                            accumulated_text += raw_text
                             
                             # Add the partial response and request continuation
                             contents.append({
@@ -2523,13 +2525,19 @@ async def board_helper_stream(
                             })
                             contents.append({
                                 "role": "user",
-                                "parts": [{"text": "Please continue from where you left off. Output the rest of the code or response."}]
+                                "parts": [{"text": "Continue"}]
                             })
                             payload["contents"] = contents
                             continue
                         else:
                             yield f"data: {json.dumps({'type': 'error', 'content': 'Response was too long and hit iteration limit. Try breaking your request into smaller tasks.'})}\n\n"
                             return
+                    
+                    # If we accumulated text from MAX_TOKENS continuations, add it
+                    if accumulated_text:
+                        raw_text = accumulated_text + raw_text
+                        if continuation_count > 1:
+                            yield f"data: {json.dumps({'type': 'progress', 'content': f'✓ Completed long response ({continuation_count} parts)'})}\n\n"
                     
                     if not raw_text:
                         # If tools were called, Gemini may need a nudge to continue its task
@@ -2580,6 +2588,13 @@ async def board_helper_stream(
                         yield f"data: {json.dumps({'type': 'final', 'code': '', 'message': 'Tools executed but could not generate a final response. Please try again with more details.'})}\n\n"
                         return
                     
+                    # If we created/deleted queries, return the AI's text summary immediately
+                    # without requiring HTML output — the board code hasn't changed
+                    if query_created:
+                        final_message = raw_text.strip() if raw_text else "Query operation completed successfully."
+                        yield f"data: {json.dumps({'type': 'final', 'code': '', 'message': final_message})}\n\n"
+                        return
+
                     edited_code = strip_markdown_code_block(raw_text.strip())
                     
                     # Validate that we actually got HTML code, not just explanatory text
@@ -2606,12 +2621,6 @@ async def board_helper_stream(
                             return
                     
                     break
-                
-                # If we created a query, send final response without HTML validation
-                if query_created:
-                    final_message = raw_text.strip() if raw_text else "Query operation completed successfully."
-                    yield f"data: {json.dumps({'type': 'final', 'code': '', 'message': final_message})}\n\n"
-                    return
                 
                 if not edited_code:
                     yield f"data: {json.dumps({'type': 'error', 'content': 'Failed to generate code'})}\n\n"
@@ -2684,8 +2693,7 @@ async def _exploration_helper_stream(
     query_id: Optional[str],
     board_id: Optional[str] = None,
     max_tool_iterations: int = 200,  # Increased from 25 -> 50 -> 200
-    temperature: float = 0.3,
-    max_output_tokens: int = 65536
+    temperature: float = 0.3
 ) -> AsyncGenerator[Dict[str, Any], None]:
     """
     Streaming version of query helper with function calling support.
@@ -2820,6 +2828,8 @@ async def _exploration_helper_stream(
             # Function calling loop
             generated_code = None
             tool_iteration = 0
+            accumulated_text = ""  # Accumulate text across MAX_TOKENS continuations
+            continuation_count = 0  # Track how many times we've hit MAX_TOKENS
             
             while tool_iteration < max_tool_iterations:
                 tool_iteration += 1
@@ -2835,16 +2845,16 @@ async def _exploration_helper_stream(
                     "tools": GEMINI_TOOLS,
                     "generationConfig": {
                         "temperature": 0.2 if attempt > 1 else temperature,
-                        "maxOutputTokens": max_output_tokens,
                         "responseMimeType": "text/plain"
                     }
                 }
                 
-                response = requests.post(
+                response = await asyncio.to_thread(
+                    requests.post,
                     GEMINI_URL,
                     headers={"Content-Type": "application/json", "x-goog-api-key": api_key},
                     json=payload,
-                    timeout=120  # Increased from 60 seconds
+                    timeout=120
                 )
                 
                 if not response.ok:
@@ -2989,7 +2999,13 @@ async def _exploration_helper_stream(
                 # Handle MAX_TOKENS - continue the generation
                 if finish_reason == "MAX_TOKENS":
                     if tool_iteration < max_tool_iterations:
-                        yield {"type": "progress", "content": "⏩ Continuing generation (hit token limit)..."}
+                        continuation_count += 1
+                        # Only show message on first continuation
+                        if continuation_count == 1:
+                            yield {"type": "progress", "content": "⏩ Generating long response, please wait..."}
+                        
+                        # Accumulate the partial response
+                        accumulated_text += raw_text
                         
                         # Add the partial response and request continuation
                         contents.append({
@@ -2998,11 +3014,17 @@ async def _exploration_helper_stream(
                         })
                         contents.append({
                             "role": "user",
-                            "parts": [{"text": "Please continue from where you left off. Output the rest of the code."}]
+                            "parts": [{"text": "Continue"}]
                         })
                         continue
                     else:
                         raise Exception("Response was too long and hit iteration limit. Try breaking your request into smaller tasks.")
+                
+                # If we accumulated text from MAX_TOKENS continuations, add it
+                if accumulated_text:
+                    raw_text = accumulated_text + raw_text
+                    if continuation_count > 1:
+                        yield {"type": "progress", "content": f"✓ Completed long response ({continuation_count} parts)"}
                 
                 if raw_text.strip():
                     raw_text_stripped = raw_text.strip()
@@ -3078,7 +3100,8 @@ async def _exploration_helper_stream(
                         }).eq("id", test_query_id).execute()
                         
                         # Run the query
-                        test_response = requests.post(
+                        test_response = await asyncio.to_thread(
+                            requests.post,
                             "http://localhost:8000/explore",
                             json={
                                 "query_id": test_query_id,
@@ -3264,16 +3287,16 @@ async def _exploration_helper_with_testing(
                 "systemInstruction": {"parts": [{"text": EXPLORATION_SYSTEM_INSTRUCTION}]},
                 "generationConfig": {
                     "temperature": 0.2 if attempt > 1 else 0.3,
-                    "maxOutputTokens": 65536,
                     "responseMimeType": "text/plain"
                 }
             }
             
-            response = requests.post(
+            response = await asyncio.to_thread(
+                requests.post,
                 GEMINI_URL,
                 headers={"Content-Type": "application/json", "x-goog-api-key": api_key},
                 json=payload,
-                timeout=120  # Increased from 60 seconds
+                timeout=120
             )
             
             if not response.ok:
@@ -3322,7 +3345,8 @@ async def _exploration_helper_with_testing(
                         
                         # Run the query
                         backendUrl = "http://localhost:8000"
-                        test_response = requests.post(
+                        test_response = await asyncio.to_thread(
+                            requests.post,
                             f"{backendUrl}/explore",
                             json={
                                 "query_id": test_query_id,

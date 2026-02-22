@@ -12,7 +12,6 @@ export default function Login() {
     const [error, setError] = useState(null)
     const [message, setMessage] = useState(null)
 
-    // Redirect if already logged in
     useEffect(() => {
         if (user) {
             navigate('/', { replace: true })
@@ -63,17 +62,16 @@ export default function Login() {
     }
 
     return (
-        <div className="relative min-h-screen flex items-center justify-center p-6 bg-background-primary overflow-hidden">
-            {/* Background Orbs */}
+        <div className="relative min-h-screen flex items-center justify-center p-6 bg-slate-950 overflow-hidden">
             <div className="absolute inset-0 overflow-hidden pointer-events-none">
-                <div className="absolute top-[-10%] left-[-10%] w-[40%] h-[40%] bg-accent-primary/20 blur-[120px] rounded-full animate-pulse"></div>
-                <div className="absolute bottom-[-10%] right-[-10%] w-[40%] h-[40%] bg-accent-secondary/20 blur-[120px] rounded-full animate-pulse" style={{ animationDelay: '1s' }}></div>
+                <div className="absolute top-[-10%] left-[-10%] w-[40%] h-[40%] bg-indigo-600/20 blur-[120px] rounded-full animate-pulse"></div>
+                <div className="absolute bottom-[-10%] right-[-10%] w-[40%] h-[40%] bg-purple-600/20 blur-[120px] rounded-full animate-pulse" style={{ animationDelay: '1s' }}></div>
                 <div className="absolute top-[20%] right-[10%] w-[25%] h-[25%] bg-indigo-500/10 blur-[100px] rounded-full animate-pulse" style={{ animationDelay: '2s' }}></div>
             </div>
 
             <div className="card w-full max-w-md p-10 relative z-10 animate-fade-in shadow-2xl border-white/5">
                 <div className="flex flex-col items-center mb-10">
-                    <div className="w-16 h-16 flex items-center justify-center bg-background-tertiary border border-border-primary rounded-2xl p-3 mb-6 shadow-xl">
+                    <div className="w-16 h-16 flex items-center justify-center bg-slate-800 border border-white/[0.07] rounded-2xl p-3 mb-6 shadow-xl">
                         <svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
                             <path d="M12 2L2 7L12 12L22 7L12 2Z" fill="url(#gradient-login)" />
                             <path d="M2 17L12 22L22 17" stroke="url(#gradient-login)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
@@ -87,13 +85,13 @@ export default function Login() {
                         </svg>
                     </div>
                     <h1 className="text-4xl font-bold gradient-text mb-3">Nubi</h1>
-                    <p className="text-text-secondary font-medium tracking-tight">
+                    <p className="text-slate-400 font-medium tracking-tight">
                         {isSignUp ? 'Create your account' : 'Welcome back'}
                     </p>
                 </div>
 
                 {error && (
-                    <div className="mb-6 p-4 bg-status-error/10 border border-status-error/20 text-status-error rounded-xl flex items-center gap-3 animate-fade-in text-sm font-medium">
+                    <div className="mb-6 p-4 bg-red-500/10 border border-red-500/20 text-red-400 rounded-xl flex items-center gap-3 animate-fade-in text-sm font-medium">
                         <svg width="20" height="20" viewBox="0 0 20 20" fill="currentColor">
                             <path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zM8.707 7.293a1 1 0 00-1.414 1.414L8.586 10l-1.293 1.293a1 1 0 101.414 1.414L10 11.414l1.293 1.293a1 1 0 001.414-1.414L11.414 10l1.293-1.293a1 1 0 00-1.414-1.414L10 8.586 8.707 7.293z" />
                         </svg>
@@ -102,7 +100,7 @@ export default function Login() {
                 )}
 
                 {message && (
-                    <div className="mb-6 p-4 bg-status-success/10 border border-status-success/20 text-status-success rounded-xl flex items-center gap-3 animate-fade-in text-sm font-medium">
+                    <div className="mb-6 p-4 bg-emerald-500/10 border border-emerald-500/20 text-emerald-400 rounded-xl flex items-center gap-3 animate-fade-in text-sm font-medium">
                         <svg width="20" height="20" viewBox="0 0 20 20" fill="currentColor">
                             <path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.707-9.293a1 1 0 00-1.414-1.414L9 10.586 7.707 9.293a1 1 0 00-1.414 1.414l2 2a1 1 0 001.414 0l4-4z" />
                         </svg>
@@ -150,10 +148,10 @@ export default function Login() {
 
                 <div className="relative my-8">
                     <div className="absolute inset-0 flex items-center">
-                        <div className="w-full border-t border-border-primary"></div>
+                        <div className="w-full border-t border-white/[0.07]"></div>
                     </div>
                     <div className="relative flex justify-center text-xs uppercase tracking-widest font-bold">
-                        <span className="bg-background-secondary px-4 text-text-muted">or continue with</span>
+                        <span className="bg-slate-900 px-4 text-slate-500">or continue with</span>
                     </div>
                 </div>
 
@@ -172,7 +170,7 @@ export default function Login() {
                 <div className="mt-10 text-center">
                     <button
                         type="button"
-                        className="text-sm font-medium text-text-muted hover:text-accent-primary transition-colors hover:underline underline-offset-4"
+                        className="text-sm font-medium text-slate-500 hover:text-indigo-400 transition-colors hover:underline underline-offset-4"
                         onClick={() => setIsSignUp(!isSignUp)}
                         disabled={loading}
                     >
