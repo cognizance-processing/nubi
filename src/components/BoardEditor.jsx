@@ -733,70 +733,70 @@ export default function BoardEditor() {
     // Modern Header Injection
     useEffect(() => {
         setHeaderContent(
-            <div className="flex items-center gap-6 flex-1 px-4">
+            <div className="flex items-center gap-3 flex-1 px-2">
                 <button
-                    className="flex items-center gap-2 px-3 py-1.5 rounded-lg text-text-secondary hover:text-text-primary hover:bg-background-tertiary transition-all font-medium text-sm"
+                    className="flex items-center gap-1.5 px-2 py-1 rounded-md text-slate-400 hover:text-white hover:bg-slate-800 transition-all font-medium text-xs"
                     onClick={() => navigate('/')}
                 >
-                    <svg width="18" height="18" viewBox="0 0 20 20" fill="currentColor">
+                    <svg width="14" height="14" viewBox="0 0 20 20" fill="currentColor">
                         <path fillRule="evenodd" d="M9.707 16.707a1 1 0 01-1.414 0l-6-6a1 1 0 010-1.414l6-6a1 1 0 011.414 1.414L5.414 9H17a1 1 0 110 2H5.414l4.293 4.293a1 1 0 010 1.414z" />
                     </svg>
                     <span>Back</span>
                 </button>
 
-                <div className="h-6 w-px bg-border-primary mx-2" />
+                <div className="h-4 w-px bg-border-primary" />
 
-                <div className="flex bg-background-tertiary p-1 rounded-xl shadow-inner border border-border-primary/50">
+                <div className="flex bg-slate-800 p-0.5 rounded-lg border border-white/[0.07]/50">
                     {Object.entries(VIEWPORTS).map(([key, value]) => (
                         <button
                             key={key}
-                            className={`flex items-center gap-2 px-4 py-1.5 rounded-lg text-xs font-bold transition-all duration-200 uppercase tracking-wider ${viewport === key
-                                ? 'bg-accent-primary text-white shadow-lg'
-                                : 'text-text-secondary hover:text-text-primary hover:bg-white/5'
+                            className={`flex items-center gap-1.5 px-2.5 py-1 rounded-md text-[11px] font-medium transition-all duration-150 uppercase tracking-wide ${viewport === key
+                                ? 'bg-indigo-600 text-white shadow-sm'
+                                : 'text-slate-400 hover:text-white hover:bg-white/5'
                                 }`}
                             onClick={() => setViewport(key)}
                             title={value.name}
                         >
-                            <span>{value.icon}</span>
+                            <span className="text-xs">{value.icon}</span>
                             <span className="hidden md:inline">{key}</span>
                         </button>
                     ))}
                 </div>
 
-                <div className="flex bg-background-tertiary p-1 rounded-xl mx-4 shadow-inner border border-border-primary/50">
+                <div className="flex bg-slate-800 p-0.5 rounded-lg border border-white/[0.07]/50">
                     <button
-                        className={`flex items-center gap-2 px-5 py-1.5 rounded-lg text-sm font-bold transition-all duration-200 ${activeTab === 'preview'
-                            ? 'bg-background-secondary text-accent-primary shadow-sm border border-border-primary'
-                            : 'text-text-secondary hover:text-text-primary'
+                        className={`flex items-center gap-1.5 px-3 py-1 rounded-md text-xs font-medium transition-all duration-150 ${activeTab === 'preview'
+                            ? 'bg-slate-900 text-indigo-400 shadow-sm'
+                            : 'text-slate-400 hover:text-white'
                             }`}
                         onClick={() => setActiveTab('preview')}
                     >
-                        <svg width="18" height="18" viewBox="0 0 20 20" fill="currentColor">
+                        <svg width="14" height="14" viewBox="0 0 20 20" fill="currentColor">
                             <path d="M10 12a2 2 0 100-4 2 2 0 000 4z" />
                             <path fillRule="evenodd" d="M.458 10C1.732 5.943 5.522 3 10 3s8.268 2.943 9.542 7c-1.274 4.057-5.064 7-9.542 7S1.732 14.057.458 10zM14 10a4 4 0 11-8 0 4 4 0 018 0z" />
                         </svg>
                         <span className="hidden lg:inline">Preview</span>
                     </button>
                     <button
-                        className={`flex items-center gap-2 px-5 py-1.5 rounded-lg text-sm font-bold transition-all duration-200 ${activeTab === 'code'
-                            ? 'bg-background-secondary text-accent-primary shadow-sm border border-border-primary'
-                            : 'text-text-secondary hover:text-text-primary'
+                        className={`flex items-center gap-1.5 px-3 py-1 rounded-md text-xs font-medium transition-all duration-150 ${activeTab === 'code'
+                            ? 'bg-slate-900 text-indigo-400 shadow-sm'
+                            : 'text-slate-400 hover:text-white'
                             }`}
                         onClick={() => setActiveTab('code')}
                     >
-                        <svg width="18" height="18" viewBox="0 0 20 20" fill="currentColor">
+                        <svg width="14" height="14" viewBox="0 0 20 20" fill="currentColor">
                             <path fillRule="evenodd" d="M12.316 3.051a1 1 0 01.633 1.265l-4 12a1 1 0 11-1.898-.632l4-12a1 1 0 011.265-.633zM5.707 6.293a1 1 0 010 1.414L3.414 10l2.293 2.293a1 1 0 11-1.414 1.414l-3-3a1 1 0 010-1.414l3-3a1 1 0 011.414 0zm8.586 0a1 1 0 011.414 0l3 3a1 1 0 010 1.414l-3 3a1 1 0 11-1.414-1.414L16.586 10l-2.293-2.293a1 1 0 010-1.414z" />
                         </svg>
                         <span className="hidden lg:inline">Code</span>
                     </button>
                     <button
-                        className={`flex items-center gap-2 px-5 py-1.5 rounded-lg text-sm font-bold transition-all duration-200 ${activeTab === 'data'
-                            ? 'bg-background-secondary text-accent-primary shadow-sm border border-border-primary'
-                            : 'text-text-secondary hover:text-text-primary'
+                        className={`flex items-center gap-1.5 px-3 py-1 rounded-md text-xs font-medium transition-all duration-150 ${activeTab === 'data'
+                            ? 'bg-slate-900 text-indigo-400 shadow-sm'
+                            : 'text-slate-400 hover:text-white'
                             }`}
                         onClick={() => setActiveTab('data')}
                     >
-                        <svg width="18" height="18" viewBox="0 0 20 20" fill="currentColor">
+                        <svg width="14" height="14" viewBox="0 0 20 20" fill="currentColor">
                             <path d="M3 12v3c0 1.657 3.134 3 7 3s7-1.343 7-3v-3c0 1.657-3.134 3-7 3s-7-1.343-7-3z" />
                             <path d="M3 7v3c0 1.657 3.134 3 7 3s7-1.343 7-3V7c0 1.657-3.134 3-7 3S3 8.657 3 7z" />
                             <path d="M17 5c0 1.657-3.134 3-7 3S3 6.657 3 5s3.134-3 7-3 7 1.343 7 3z" />
@@ -805,15 +805,15 @@ export default function BoardEditor() {
                     </button>
                 </div>
 
-                <div className="ml-auto flex items-center gap-3">
-                    <button className="btn btn-secondary py-1.5 h-auto text-xs" onClick={() => setShowTemplates(!showTemplates)}>
-                        <svg width="16" height="16" viewBox="0 0 20 20" fill="currentColor">
+                <div className="ml-auto flex items-center gap-2">
+                    <button className="btn btn-secondary" onClick={() => setShowTemplates(!showTemplates)}>
+                        <svg width="13" height="13" viewBox="0 0 20 20" fill="currentColor">
                             <path fillRule="evenodd" d="M10 3a1 1 0 011 1v5h5a1 1 0 110 2h-5v5a1 1 0 11-2 0v-5H4a1 1 0 110-2h5V4a1 1 0 011-1z" />
                         </svg>
-                        <span className="hidden sm:inline">Add Component</span>
+                        <span className="hidden sm:inline">Widget</span>
                     </button>
-                    <button className="btn btn-primary py-1.5 h-auto text-xs" onClick={saveCode}>
-                        <svg width="16" height="16" viewBox="0 0 20 20" fill="currentColor">
+                    <button className="btn btn-primary" onClick={saveCode}>
+                        <svg width="13" height="13" viewBox="0 0 20 20" fill="currentColor">
                             <path d="M7.707 10.293a1 1 0 10-1.414 1.414l3 3a1 1 0 001.414 0l3-3a1 1 0 00-1.414-1.414L11 11.586V6h5a2 2 0 012 2v7a2 2 0 01-2 2H4a2 2 0 01-2-2V8a2 2 0 012-2h5v5.586l-1.293-1.293zM9 4a1 1 0 012 0v2H9V4z" />
                         </svg>
                         Save
@@ -826,25 +826,25 @@ export default function BoardEditor() {
     }, [activeTab, showTemplates, code, viewport]) // Update when dependencies change
 
     return (
-        <div className="flex flex-col h-screen bg-background-primary overflow-hidden relative">
+        <div className="flex flex-col h-screen bg-slate-950 overflow-hidden relative">
             {/* Component Templates Dropdown */}
             {showTemplates && (
-                <div className="fixed top-[72px] right-8 w-96 p-6 rounded-2xl z-[100] animate-fade-in glass-effect shadow-2xl border border-border-primary/50">
-                    <h3 className="text-base font-bold text-text-primary mb-6 flex items-center gap-2">
-                        <div className="w-1 bg-accent-primary h-4 rounded-full" />
+                <div className="fixed top-12 right-4 w-72 p-4 rounded-xl z-[100] animate-fade-in bg-slate-900/95 backdrop-blur-xl shadow-xl border border-white/[0.07]/50">
+                    <h3 className="text-xs font-semibold text-white mb-3 flex items-center gap-1.5">
+                        <div className="w-0.5 bg-indigo-600 h-3 rounded-full" />
                         Component Templates
                     </h3>
-                    <div className="grid grid-cols-2 gap-4">
+                    <div className="grid grid-cols-2 gap-2">
                         {COMPONENT_TEMPLATES.map((template) => (
                             <button
                                 key={template.id}
-                                className="bg-background-tertiary border border-border-primary rounded-xl p-6 flex flex-col items-center gap-3 transition-all duration-300 hover:bg-background-secondary hover:border-accent-primary hover:-translate-y-1 group"
+                                className="bg-slate-800 border border-white/[0.07] rounded-lg p-3 flex flex-col items-center gap-2 transition-all duration-200 hover:bg-slate-900 hover:border-indigo-500 group"
                                 onClick={() => insertTemplate(template.template)}
                             >
-                                <div className="text-3xl filter grayscale group-hover:grayscale-0 transition-all duration-300">
+                                <div className="text-xl filter grayscale group-hover:grayscale-0 transition-all duration-200">
                                     {template.type === 'chart' ? '📊' : '📈'}
                                 </div>
-                                <div className="text-xs font-bold text-text-primary uppercase tracking-wider">{template.name}</div>
+                                <div className="text-[10px] font-medium text-white uppercase tracking-wide">{template.name}</div>
                             </button>
                         ))}
                     </div>
@@ -855,8 +855,8 @@ export default function BoardEditor() {
             <div className="flex-1 flex relative overflow-hidden">
                 <div className="flex-1 relative overflow-hidden">
                     {activeTab === 'preview' ? (
-                        <div className="h-full flex flex-col bg-[#0d0f17] relative border-x border-border-primary shadow-2xl transition-all duration-500 mx-auto" style={{ width: VIEWPORTS[viewport].width }}>
-                            <div className="text-[10px] font-bold text-text-muted/50 px-4 py-2 bg-background-primary/80 backdrop-blur-md uppercase tracking-[0.2em] border-b border-border-primary flex items-center justify-between">
+                        <div className="h-full flex flex-col bg-[#0d0f17] relative border-x border-white/[0.07] shadow-2xl transition-all duration-500 mx-auto" style={{ width: VIEWPORTS[viewport].width }}>
+                            <div className="text-[10px] font-bold text-slate-500/50 px-4 py-2 bg-slate-950/80 backdrop-blur-md uppercase tracking-[0.2em] border-b border-white/[0.07] flex items-center justify-between">
                                 <span>{VIEWPORTS[viewport].name} Environment</span>
                                 <span>{VIEWPORTS[viewport].width === '100%' ? 'Adaptive Width' : VIEWPORTS[viewport].width}</span>
                             </div>
@@ -869,7 +869,7 @@ export default function BoardEditor() {
                         </div>
                     ) : activeTab === 'code' ? (
                         <div className="flex w-full h-full bg-[#0d0f17] font-mono text-sm leading-relaxed overflow-hidden">
-                            <div className="w-14 py-6 bg-[#111420] border-r border-border-primary text-[#4b5563] text-right select-none overflow-hidden" ref={lineNumbersRef}>
+                            <div className="w-14 py-6 bg-[#111420] border-r border-white/[0.07] text-[#4b5563] text-right select-none overflow-hidden" ref={lineNumbersRef}>
                                 <pre className="m-0 px-4 font-inherit line-around leading-relaxed">{lineNumbers}</pre>
                             </div>
                             <div className="relative flex-1 overflow-hidden">
@@ -891,18 +891,18 @@ export default function BoardEditor() {
                         </div>
                     ) : (
                         // Data Tab - Queries for this board
-                        <div className="h-full overflow-y-auto p-8">
-                            <div className="max-w-7xl mx-auto">
-                                <div className="mb-8 flex items-end justify-between">
+                        <div className="h-full overflow-y-auto p-5">
+                            <div className="max-w-6xl mx-auto">
+                                <div className="mb-5 flex items-center justify-between">
                                     <div>
-                                        <h2 className="text-2xl font-bold text-text-primary mb-2">Data Queries</h2>
-                                        <p className="text-text-secondary">Manage Python queries for this board. Queries can fetch data from your datastores and transform it.</p>
+                                        <h2 className="text-base font-semibold text-white">Data Queries</h2>
+                                        <p className="text-slate-400 text-xs mt-0.5">Manage Python queries that fetch and transform data from your datastores.</p>
                                     </div>
                                     <button 
                                         onClick={() => setShowCreateQuery(true)}
-                                        className="btn btn-primary py-2 h-auto text-sm"
+                                        className="btn btn-primary"
                                     >
-                                        <svg width="18" height="18" viewBox="0 0 20 20" fill="currentColor">
+                                        <svg width="14" height="14" viewBox="0 0 20 20" fill="currentColor">
                                             <path fillRule="evenodd" d="M10 3a1 1 0 011 1v5h5a1 1 0 110 2h-5v5a1 1 0 11-2 0v-5H4a1 1 0 110-2h5V4a1 1 0 011-1z" />
                                         </svg>
                                         New Query
@@ -912,20 +912,20 @@ export default function BoardEditor() {
                                 {loadingQueries ? (
                                     <div className="flex flex-col items-center justify-center py-32 gap-4">
                                         <div className="spinner" />
-                                        <p className="text-text-muted text-sm font-medium">Loading queries...</p>
+                                        <p className="text-slate-500 text-sm font-medium">Loading queries...</p>
                                     </div>
                                 ) : queries.length === 0 ? (
                                     <div className="flex items-center justify-center py-24 text-center">
                                         <div className="max-w-md">
-                                            <div className="w-20 h-20 rounded-2xl bg-background-tertiary border border-border-primary flex items-center justify-center text-text-muted mb-6 mx-auto">
+                                            <div className="w-20 h-20 rounded-2xl bg-slate-800 border border-white/[0.07] flex items-center justify-center text-slate-500 mb-6 mx-auto">
                                                 <svg width="36" height="36" viewBox="0 0 20 20" fill="currentColor">
                                                     <path d="M3 12v3c0 1.657 3.134 3 7 3s7-1.343 7-3v-3c0 1.657-3.134 3-7 3s-7-1.343-7-3z" />
                                                     <path d="M3 7v3c0 1.657 3.134 3 7 3s7-1.343 7-3V7c0 1.657-3.134 3-7 3S3 8.657 3 7z" />
                                                     <path d="M17 5c0 1.657-3.134 3-7 3S3 6.657 3 5s3.134-3 7-3 7 1.343 7 3z" />
                                                 </svg>
                                             </div>
-                                            <h3 className="text-xl font-semibold mb-2 text-text-primary">No queries yet</h3>
-                                            <p className="text-text-secondary mb-8 text-sm leading-relaxed">
+                                            <h3 className="text-xl font-semibold mb-2 text-white">No queries yet</h3>
+                                            <p className="text-slate-400 mb-8 text-sm leading-relaxed">
                                                 Queries let you fetch and transform data from your datastores. Create your first query to get started.
                                             </p>
                                             <button 
@@ -944,11 +944,11 @@ export default function BoardEditor() {
                                         {queries.map(query => (
                                             <div
                                                 key={query.id}
-                                                className="group relative bg-background-secondary/70 backdrop-blur-sm border border-border-primary rounded-xl p-5 cursor-pointer transition-all duration-200 hover:-translate-y-0.5 hover:shadow-lg hover:border-border-secondary hover:bg-background-secondary"
+                                                className="group relative bg-slate-900/70 backdrop-blur-sm border border-white/[0.07] rounded-xl p-5 cursor-pointer transition-all duration-200 hover:-translate-y-0.5 hover:shadow-lg hover:border-white/[0.12] hover:bg-slate-900"
                                                 onClick={() => navigate(`/board/${boardId}/query/${query.id}`)}
                                             >
                                                 <div className="flex items-start gap-3.5 mb-3">
-                                                    <div className="w-10 h-10 flex-shrink-0 flex items-center justify-center bg-accent-primary/10 border border-accent-primary/20 rounded-lg text-accent-primary group-hover:bg-accent-primary/15 transition-colors">
+                                                    <div className="w-10 h-10 flex-shrink-0 flex items-center justify-center bg-indigo-600/10 border border-indigo-500/20 rounded-lg text-indigo-400 group-hover:bg-indigo-600/15 transition-colors">
                                                         <svg width="20" height="20" viewBox="0 0 20 20" fill="currentColor">
                                                             <path d="M3 12v3c0 1.657 3.134 3 7 3s7-1.343 7-3v-3c0 1.657-3.134 3-7 3s-7-1.343-7-3z" />
                                                             <path d="M3 7v3c0 1.657 3.134 3 7 3s7-1.343 7-3V7c0 1.657-3.134 3-7 3S3 8.657 3 7z" />
@@ -956,18 +956,18 @@ export default function BoardEditor() {
                                                         </svg>
                                                     </div>
                                                     <div className="flex-1 min-w-0">
-                                                        <h3 className="text-base font-semibold text-text-primary truncate leading-tight mb-0.5">
+                                                        <h3 className="text-base font-semibold text-white truncate leading-tight mb-0.5">
                                                             {query.name}
                                                         </h3>
-                                                        <p className="text-text-secondary text-xs leading-relaxed line-clamp-2">
+                                                        <p className="text-slate-400 text-xs leading-relaxed line-clamp-2">
                                                             {query.description || 'No description'}
                                                         </p>
                                                     </div>
                                                 </div>
 
-                                                <div className="flex items-center justify-between pt-3 border-t border-border-primary/60">
+                                                <div className="flex items-center justify-between pt-3 border-t border-white/[0.07]/60">
                                                     <div className="flex items-center gap-3">
-                                                        <span className="flex items-center gap-1.5 text-[11px] text-text-muted">
+                                                        <span className="flex items-center gap-1.5 text-[11px] text-slate-500">
                                                             <svg width="12" height="12" viewBox="0 0 20 20" fill="currentColor">
                                                                 <path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm1-12a1 1 0 10-2 0v4a1 1 0 00.293.707l2.828 2.829a1 1 0 101.415-1.415L11 9.586V6z" />
                                                             </svg>
@@ -977,14 +977,14 @@ export default function BoardEditor() {
                                                     <div className="flex items-center gap-2">
                                                         <button
                                                             onClick={(e) => { e.stopPropagation(); setDeleteConfirm(query.id) }}
-                                                            className="p-1.5 rounded-md text-text-muted opacity-0 group-hover:opacity-100 hover:bg-status-error/10 hover:text-status-error transition-all"
+                                                            className="p-1.5 rounded-md text-slate-500 opacity-0 group-hover:opacity-100 hover:bg-red-500/10 hover:text-red-400 transition-all"
                                                             title="Delete"
                                                         >
                                                             <svg width="14" height="14" viewBox="0 0 20 20" fill="currentColor">
                                                                 <path fillRule="evenodd" d="M9 2a1 1 0 00-.894.553L7.382 4H4a1 1 0 000 2v10a2 2 0 002 2h8a2 2 0 002-2V6a1 1 0 100-2h-3.382l-.724-1.447A1 1 0 0011 2H9zM7 8a1 1 0 012 0v6a1 1 0 11-2 0V8zm5-1a1 1 0 00-1 1v6a1 1 0 102 0V8a1 1 0 00-1-1z" />
                                                             </svg>
                                                         </button>
-                                                        <svg width="16" height="16" viewBox="0 0 20 20" fill="currentColor" className="text-text-muted group-hover:text-accent-primary group-hover:translate-x-0.5 transition-all">
+                                                        <svg width="16" height="16" viewBox="0 0 20 20" fill="currentColor" className="text-slate-500 group-hover:text-indigo-400 group-hover:translate-x-0.5 transition-all">
                                                             <path fillRule="evenodd" d="M7.293 14.707a1 1 0 010-1.414L10.586 10 7.293 6.707a1 1 0 011.414-1.414l4 4a1 1 0 010 1.414l-4 4a1 1 0 01-1.414 0z" />
                                                         </svg>
                                                     </div>
@@ -1004,10 +1004,10 @@ export default function BoardEditor() {
                 <div className="modal-overlay" onClick={() => setShowCreateQuery(false)}>
                     <div className="modal-container max-w-md" onClick={(e) => e.stopPropagation()}>
                         <div className="flex items-center justify-between mb-6">
-                            <h2 className="text-lg font-bold text-text-primary">New Query</h2>
+                            <h2 className="text-lg font-bold text-white">New Query</h2>
                             <button
                                 onClick={() => setShowCreateQuery(false)}
-                                className="p-1.5 rounded-lg text-text-muted hover:text-text-primary hover:bg-background-hover transition-all"
+                                className="p-1.5 rounded-lg text-slate-500 hover:text-white hover:bg-white/[0.05] transition-all"
                             >
                                 <svg width="18" height="18" viewBox="0 0 20 20" fill="currentColor">
                                     <path fillRule="evenodd" d="M4.293 4.293a1 1 0 011.414 0L10 8.586l4.293-4.293a1 1 0 111.414 1.414L11.414 10l4.293 4.293a1 1 0 01-1.414 1.414L10 11.414l-4.293 4.293a1 1 0 01-1.414-1.414L8.586 10 4.293 5.707a1 1 0 010-1.414z" />
@@ -1028,7 +1028,7 @@ export default function BoardEditor() {
                                 />
                             </div>
                             <div className="form-group">
-                                <label className="form-label">Description <span className="text-text-muted font-normal">(optional)</span></label>
+                                <label className="form-label">Description <span className="text-slate-500 font-normal">(optional)</span></label>
                                 <textarea
                                     className="form-input resize-none"
                                     rows={3}
@@ -1071,13 +1071,13 @@ export default function BoardEditor() {
                 <div className="modal-overlay" onClick={() => !deleting && setDeleteConfirm(null)}>
                     <div className="modal-container max-w-sm" onClick={(e) => e.stopPropagation()}>
                         <div className="flex flex-col items-center text-center pt-2 pb-1">
-                            <div className="w-12 h-12 rounded-full bg-status-error/10 flex items-center justify-center mb-4">
-                                <svg width="24" height="24" viewBox="0 0 20 20" fill="currentColor" className="text-status-error">
+                            <div className="w-12 h-12 rounded-full bg-red-500/10 flex items-center justify-center mb-4">
+                                <svg width="24" height="24" viewBox="0 0 20 20" fill="currentColor" className="text-red-400">
                                     <path fillRule="evenodd" d="M9 2a1 1 0 00-.894.553L7.382 4H4a1 1 0 000 2v10a2 2 0 002 2h8a2 2 0 002-2V6a1 1 0 100-2h-3.382l-.724-1.447A1 1 0 0011 2H9zM7 8a1 1 0 012 0v6a1 1 0 11-2 0V8zm5-1a1 1 0 00-1 1v6a1 1 0 102 0V8a1 1 0 00-1-1z" />
                                 </svg>
                             </div>
-                            <h3 className="text-base font-semibold text-text-primary mb-1.5">Delete Query</h3>
-                            <p className="text-sm text-text-secondary leading-relaxed">
+                            <h3 className="text-base font-semibold text-white mb-1.5">Delete Query</h3>
+                            <p className="text-sm text-slate-400 leading-relaxed">
                                 This will permanently remove the query and its data. This action cannot be undone.
                             </p>
                         </div>
@@ -1092,7 +1092,7 @@ export default function BoardEditor() {
                             <button
                                 onClick={() => deleteQuery(deleteConfirm)}
                                 disabled={deleting}
-                                className="flex-1 py-2.5 h-auto text-sm font-medium rounded-lg bg-status-error hover:bg-status-error/90 text-white transition-colors flex items-center justify-center gap-2 disabled:opacity-50"
+                                className="flex-1 py-2.5 h-auto text-sm font-medium rounded-lg bg-red-500 hover:bg-red-500/90 text-white transition-colors flex items-center justify-center gap-2 disabled:opacity-50"
                             >
                                 {deleting ? (
                                     <span className="inline-block w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin" />
