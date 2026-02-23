@@ -18,7 +18,16 @@ async def _init_connection(conn):
 
 async def init_pool():
     global _pool
-    _pool = await asyncpg.create_pool(DATABASE_URL, min_size=2, max_size=10, init=_init_connection)
+    print(f"Connecting to database...")
+    try:
+        _pool = await asyncpg.create_pool(
+            DATABASE_URL, min_size=0, max_size=10,
+            init=_init_connection, timeout=10,
+        )
+        print("Database pool ready")
+    except Exception as e:
+        print(f"FATAL: Database connection failed: {e}")
+        raise
 
 
 async def close_pool():
