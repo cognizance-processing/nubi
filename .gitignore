@@ -25,6 +25,7 @@ dist-ssr
 
 node_modules
 __pycache__/
+*.pyc
 
 # Environment variables
 .env
