@@ -508,7 +508,7 @@ async def board_helper_stream(
                             "role": "user",
                             "content": (
                                 "Gather context by calling the appropriate tools: "
-                                "list_board_queries, get_query_code, etc. Then complete the request."
+                                "list_board_queries, get_code, etc. Then complete the request."
                             ),
                         })
                         continue
