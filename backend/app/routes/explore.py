@@ -1,5 +1,3 @@
-import asyncio
-import json
 from typing import Dict, Any, Optional
 
 import pandas as pd
@@ -9,8 +7,7 @@ from fastapi import APIRouter, HTTPException, Body
 from ..db import get_pool
 from ..helpers import ensure_dict
 from ..query_engine import (
-    get_bigquery_client, get_sa_engine, parse_python_nodes, run_query_logic,
-    SA_TYPES,
+    get_bigquery_client, get_sa_engine, execute_python_query, SA_TYPES,
 )
 
 router = APIRouter(tags=["explore"])
@@ -28,105 +25,33 @@ async def explore(
     Returns: {"result": [...], "error": null} or {"result": null, "error": "error message"}
     """
     try:
-        print(f"DEBUG: Starting query execution for query_id={query_id}")
-
         pool = get_pool()
         query_row = await pool.fetchrow("SELECT * FROM board_queries WHERE id = $1", query_id)
         if not query_row:
-            raise HTTPException(status_code=404, detail="Query not found")
+            return {"result": None, "error": "Query not found"}
 
         query = dict(query_row)
         python_code = query.get("python_code", "")
-        print(f"DEBUG: Found query {query.get('name')}")
 
-        nodes = parse_python_nodes(python_code)
+        exec_result = await execute_python_query(
+            python_code, args=args, datastore_id=datastore_id, limit_rows=0
+        )
 
-        print(f"DEBUG: Parsed {len(nodes)} nodes")
-
-        full_context = {
-            "args": args,
-            "pd": pd,
-            "json": json,
-            **args
-        }
-
-        def is_valid_uuid(val):
-            if not val or not isinstance(val, str):
-                return False
-            try:
-                import uuid
-                uuid.UUID(val)
-                return True
-            except (ValueError, AttributeError):
-                return False
-
-        async def execute_node(node):
-            """Execute a single query node and return (node_name, dataframe)"""
-            if node['type'] != 'query' or not node['query']:
-                return None
-
-            node_ds = node['datastore_id'] if is_valid_uuid(node['datastore_id']) else None
-            request_ds = datastore_id if is_valid_uuid(datastore_id) else None
-            active_datastore_id = node_ds or request_ds
-
-            if not active_datastore_id:
-                ds_row = await pool.fetchrow("SELECT id FROM datastores LIMIT 1")
-                if ds_row:
-                    active_datastore_id = str(ds_row['id'])
-                    print(f"DEBUG: Auto-selected first available datastore: {active_datastore_id}")
-
-            if not active_datastore_id:
-                error_msg = f"No datastore available for query node '{node['name']}'. Please connect a datastore first or provide a valid datastore_id."
-                print(f"DEBUG: {error_msg}")
-                raise HTTPException(status_code=400, detail=error_msg)
-
-            print(f"DEBUG: Executing query for node {node['name']} with datastore {active_datastore_id}")
-            try:
-                result_data = await run_query_logic(active_datastore_id, node['query'], full_context)
-                df = pd.DataFrame(result_data)
-                return (node['name'], df)
-            except Exception as e:
-                print(f"DEBUG: Query error for node {node['name']}: {str(e)}")
-                raise HTTPException(status_code=400, detail=f"Query error in node {node['name']}: {str(e)}")
-
-        query_tasks = [execute_node(node) for node in nodes]
-        query_results = await asyncio.gather(*query_tasks)
-
-        for result in query_results:
-            if result:
-                node_name, df = result
-                full_context['query_result'] = df
-                full_context[node_name] = df
-
-        try:
-            exec(python_code, {}, full_context)
-        except Exception as e:
-            import traceback
-            traceback.print_exc()
-            raise HTTPException(status_code=400, detail=f"Python execution error: {str(e)}")
-
-        result = full_context.get('result')
-        if result is None:
-            raise HTTPException(status_code=400, detail="No 'result' variable found in Python code")
-
-        if isinstance(result, pd.DataFrame):
-            final_table = result.to_dict(orient='records')
-        elif isinstance(result, list):
-            final_table = result
-        else:
-            final_table = [{"result": str(result)}]
+        if not exec_result.get("success"):
+            return {"result": None, "error": exec_result.get("error", "Unknown error")}
 
         return {
-            "result": final_table,
-            "error": None
+            "result": exec_result.get("sample_rows", []),
+            "table": exec_result.get("sample_rows", []),
+            "count": exec_result.get("row_count", 0),
+            "columns": exec_result.get("columns", []),
+            "error": None,
         }
 
     except Exception as e:
         import traceback
         traceback.print_exc()
-        if isinstance(e, HTTPException):
-            raise e
-        raise HTTPException(status_code=500, detail=f"Query execution failed: {str(e)}")
+        return {"result": None, "error": f"Query execution failed: {str(e)}"}
 
 
 @router.post("/test-datastore")

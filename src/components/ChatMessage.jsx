@@ -69,10 +69,10 @@ function ProgressLog({ lines, isStreaming }) {
                     </button>
                 )}
                 {expanded && lines.slice(0, -2).map((line, i) => (
-                    <div key={i} className="text-[11px] text-slate-600 pl-2 border-l border-white/[0.04]">{line}</div>
+                    <div key={i} className="text-[11px] text-slate-600 pl-2 border-l border-white/[0.04] truncate">{line}</div>
                 ))}
                 {visible.map((line, i) => (
-                    <div key={`v-${i}`} className="text-[11px] text-slate-500 pl-2 border-l border-indigo-500/30">{line}</div>
+                    <div key={`v-${i}`} className="text-[11px] text-slate-500 pl-2 border-l border-indigo-500/30 truncate">{line}</div>
                 ))}
             </div>
         )
@@ -82,7 +82,7 @@ function ProgressLog({ lines, isStreaming }) {
         return (
             <div className="mt-1.5 space-y-0.5">
                 {lines.map((line, i) => (
-                    <div key={i} className="text-[11px] text-slate-600 pl-2 border-l border-white/[0.04]">{line}</div>
+                    <div key={i} className="text-[11px] text-slate-600 pl-2 border-l border-white/[0.04] truncate">{line}</div>
                 ))}
             </div>
         )
@@ -100,7 +100,7 @@ function ProgressLog({ lines, isStreaming }) {
             {expanded && (
                 <div className="mt-1 space-y-0.5">
                     {lines.map((line, i) => (
-                        <div key={i} className="text-[11px] text-slate-600 pl-2 border-l border-white/[0.04]">{line}</div>
+                        <div key={i} className="text-[11px] text-slate-600 pl-2 border-l border-white/[0.04] truncate">{line}</div>
                     ))}
                 </div>
             )}
@@ -184,6 +184,36 @@ export default function ChatMessage({ message, isStreaming = false }) {
     const pendingTools = tool_calls.filter(t => t.status === 'started')
     const hasErrors = tool_calls.some(t => t.status === 'error')
 
+    const getToolSummary = (tool) => {
+        if (tool.status === 'error') return tool.error ? tool.error.slice(0, 60) + (tool.error.length > 60 ? '...' : '') : 'failed'
+        const r = tool.result
+        if (!r) return ''
+        switch (tool.tool) {
+            case 'get_datastore_schema': {
+                const s = r.schema || {}
+                if (s.datasets) return `${s.datasets.length} dataset${s.datasets.length !== 1 ? 's' : ''}`
+                if (s.schemas) return `${s.schemas.length} schema${s.schemas.length !== 1 ? 's' : ''}`
+                if (s.tables) return `${s.tables.length} table${s.tables.length !== 1 ? 's' : ''}`
+                if (s.columns) return `${s.columns.length} column${s.columns.length !== 1 ? 's' : ''}`
+                return ''
+            }
+            case 'execute_query_direct': return r.success ? `${r.returned_rows || 0} rows` : ''
+            case 'run_query': return r.success ? `${r.row_count || 0} rows` : ''
+            case 'list_datastores': return `${(r.datastores || []).length} found`
+            case 'list_board_queries': return `${r.count ?? (r.queries || []).length} queries`
+            case 'get_code':
+            case 'get_query_code':
+            case 'get_board_code': return r.total_lines ? `${r.total_lines} lines` : ''
+            case 'search_code':
+            case 'search_board_code':
+            case 'search_query_code': return r.matches ? `${r.matches.length} match${r.matches.length !== 1 ? 'es' : ''}` : ''
+            case 'edit_code': return r.edits_applied ? `${r.edits_applied} edit${r.edits_applied !== 1 ? 's' : ''}` : ''
+            case 'create_or_update_query': return r.success ? (r.name || 'saved') : ''
+            case 'delete_query': return r.success ? 'deleted' : ''
+            default: return r.message ? r.message.slice(0, 40) + (r.message.length > 40 ? '...' : '') : ''
+        }
+    }
+
     return (
         <div className="animate-fade-in w-full">
             {/* Thinking — subtle inline text */}
@@ -191,8 +221,8 @@ export default function ChatMessage({ message, isStreaming = false }) {
                 <div className="text-[11px] text-slate-500 italic mb-1.5">{thinking}</div>
             )}
 
-            {/* Main content */}
-            {content && (
+            {/* Main content — skip if content is raw HTML (should have gone to code editor) */}
+            {content && !content.includes('<!DOCTYPE') && !content.match(/^<html[\s>]/i) && (
                 <div className="prose prose-sm prose-invert max-w-none text-[13px] text-slate-200 leading-relaxed [&_p]:mb-2 [&_p:last-child]:mb-0 [&_ul]:my-2 [&_ol]:my-2 [&_li]:leading-relaxed [&_a]:text-indigo-400 [&_a:hover]:underline">
                     <ReactMarkdown
                         remarkPlugins={[remarkGfm]}
@@ -254,6 +284,7 @@ export default function ChatMessage({ message, isStreaming = false }) {
                                     {completedTools.map((tool, index) => {
                                         const isErr = tool.status === 'error'
                                         const isDetailOpen = expandedToolIdx === index
+                                        const summary = getToolSummary(tool)
                                         return (
                                             <div key={index}>
                                                 <button
@@ -262,8 +293,9 @@ export default function ChatMessage({ message, isStreaming = false }) {
                                                 >
                                                     <span className={isErr ? 'text-red-400' : 'text-slate-500'}>{getToolIcon(tool.tool)}</span>
                                                     <span className={isErr ? 'text-red-400' : 'text-slate-400'}>{getToolLabel(tool.tool)}</span>
-                                                    <span className={`w-1.5 h-1.5 rounded-full ${isErr ? 'bg-red-400' : 'bg-green-400/60'}`} />
-                                                    <ChevronRight size={9} className={`text-slate-600 ml-auto transition-transform ${isDetailOpen ? 'rotate-90' : ''}`} />
+                                                    {summary && <span className="text-slate-600 truncate max-w-[160px]">· {summary}</span>}
+                                                    <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${isErr ? 'bg-red-400' : 'bg-green-400/60'}`} />
+                                                    <ChevronRight size={9} className={`text-slate-600 ml-auto shrink-0 transition-transform ${isDetailOpen ? 'rotate-90' : ''}`} />
                                                 </button>
                                                 {isDetailOpen && (
                                                     <ToolDetail tool={tool} />

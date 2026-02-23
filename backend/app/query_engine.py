@@ -181,85 +181,111 @@ async def run_query_logic(datastore_id: str, query_template: str, context: Dict[
         raise HTTPException(status_code=500, detail=f"Execution error: {error_msg}")
 
 
-async def test_query(python_code: str, limit_rows: int = 5, test_args: Dict[str, Any] = None) -> Dict[str, Any]:
-    """Test execute a query and return first few rows or error."""
+def _is_valid_uuid(val) -> bool:
+    if not val or not isinstance(val, str):
+        return False
     try:
-        nodes = parse_python_nodes(python_code)
+        import uuid as _uuid
+        _uuid.UUID(val)
+        return True
+    except (ValueError, AttributeError):
+        return False
 
-        test_args = test_args or {}
-        full_context = {"pd": pd, "json": json, "args": test_args, **test_args}
+
+async def execute_python_query(
+    python_code: str,
+    args: Dict[str, Any] = None,
+    datastore_id: Optional[str] = None,
+    limit_rows: int = 10,
+) -> Dict[str, Any]:
+    """
+    Execute a Python query exactly the way the dashboard does:
+    parse nodes, resolve datastores (with auto-select fallback),
+    run SQL via run_query_logic, exec the Python code, return results.
+    """
+    try:
+        args = args or {}
+        nodes = parse_python_nodes(python_code)
+        full_context = {"args": args, "pd": pd, "json": json, **args}
+        pool = get_pool()
 
         for node in nodes:
-            if node["type"] == "query":
-                ds_id = node.get("datastore_id")
-                if not ds_id:
-                    return {"error": f"Node '{node['name']}' missing @datastore (use # @datastore: <uuid>)"}
+            if node["type"] != "query" or not node.get("query"):
+                continue
 
-                pool = get_pool()
-                ds_row = await pool.fetchrow("SELECT * FROM datastores WHERE id = $1", ds_id)
-                if not ds_row:
-                    return {"error": f"Datastore {ds_id} not found"}
+            node_ds = node["datastore_id"] if _is_valid_uuid(node.get("datastore_id")) else None
+            request_ds = datastore_id if _is_valid_uuid(datastore_id) else None
+            active_ds = node_ds or request_ds
 
-                datastore = dict(ds_row)
-                query_template = node.get("query", "")
+            if not active_ds:
+                ds_row = await pool.fetchrow("SELECT id FROM datastores LIMIT 1")
+                if ds_row:
+                    active_ds = str(ds_row["id"])
 
-                template = Template(query_template)
-                rendered_query = template.render(**test_args)
+            if not active_ds:
+                return {
+                    "success": False,
+                    "error": f"No datastore available for node '{node['name']}'. Add a @datastore UUID or connect a datastore.",
+                }
 
-                ds_config = ensure_dict(datastore["config"])
-                ds_type = datastore["type"]
-                if ds_type == "bigquery":
-                    client = await get_bigquery_client(ds_config)
-                    query_job = client.query(rendered_query)
-                    df = query_job.to_dataframe()
-                elif ds_type in SA_TYPES:
-                    engine = get_sa_engine(ds_type, ds_config)
-                    df = pd.read_sql(rendered_query, engine)
-                else:
-                    return {"error": f"Unsupported datastore type: {ds_type}"}
+            try:
+                result_data = await run_query_logic(active_ds, node["query"], full_context)
+                df = pd.DataFrame(result_data)
+                full_context["query_result"] = df
+                full_context[node["name"]] = df
+            except Exception as sql_err:
+                error_detail = str(sql_err)
+                if hasattr(sql_err, "detail"):
+                    error_detail = sql_err.detail
+                return {
+                    "success": False,
+                    "error": f"SQL error in '{node['name']}': {error_detail}",
+                }
 
-                full_context['query_result'] = df
-                full_context[node['name']] = df
+        try:
+            exec(python_code, {}, full_context)
+        except Exception as py_err:
+            return {"success": False, "error": f"Python execution error: {str(py_err)}"}
 
-        exec(python_code, {}, full_context)
-        result_df = full_context.get('result')
-
+        result_df = full_context.get("result")
         if result_df is None:
-            return {"error": "Code did not produce a 'result' variable"}
+            return {"success": False, "error": "Code did not produce a 'result' variable"}
 
         if isinstance(result_df, pd.DataFrame):
-            sample_data = clean_dataframe_for_json(result_df.head(limit_rows))
             row_count = len(result_df)
             columns = list(result_df.columns)
+            if limit_rows > 0:
+                sample_data = clean_dataframe_for_json(result_df.head(limit_rows))
+            else:
+                sample_data = clean_dataframe_for_json(result_df)
         elif isinstance(result_df, list):
-            sample_data = result_df[:limit_rows]
             row_count = len(result_df)
             columns = list(result_df[0].keys()) if result_df else []
+            sample_data = result_df[:limit_rows] if limit_rows > 0 else result_df
         else:
-            sample_data = [{"result": str(result_df)}]
             row_count = 1
             columns = ["result"]
+            sample_data = [{"result": str(result_df)}]
 
         return {
             "success": True,
             "row_count": row_count,
-            "sample_rows": sample_data,
             "columns": columns,
-            "message": f"Query executed successfully. Returned {row_count} rows."
+            "sample_rows": sample_data,
+            "message": f"Query executed successfully. Returned {row_count} rows.",
         }
 
     except Exception as e:
         error_str = str(e)
         error_msg = f"Query execution failed: {error_str}"
-
         if "Invalid NUMERIC value" in error_str or "Invalid FLOAT" in error_str or "Invalid INT" in error_str:
-            error_msg += "\n\n💡 DATA QUALITY ISSUE: This column contains mixed data types (e.g., dates or text where numbers are expected). Solution: Use SAFE_CAST instead of CAST. Example: SAFE_CAST(column AS FLOAT64) returns NULL for invalid values instead of failing. You can also filter: WHERE SAFE_CAST(column AS FLOAT64) IS NOT NULL"
+            error_msg += "\n\nDATA QUALITY ISSUE: Mixed data types. Use SAFE_CAST instead of CAST."
+        return {"success": False, "error": error_str, "message": error_msg}
 
-        return {
-            "success": False,
-            "error": error_str,
-            "message": error_msg
-        }
+
+async def test_query(python_code: str, limit_rows: int = 5, test_args: Dict[str, Any] = None) -> Dict[str, Any]:
+    """Test execute a query and return first few rows or error. Uses the same path as the dashboard."""
+    return await execute_python_query(python_code, args=test_args, limit_rows=limit_rows)
 
 async def execute_query_direct(datastore_id: str, sql_query: str, limit: int = 100) -> Dict[str, Any]:
     """Execute a SQL query directly on a datastore and return results."""
@@ -274,17 +300,30 @@ async def execute_query_direct(datastore_id: str, sql_query: str, limit: int = 1
 
         ds_config = ensure_dict(datastore["config"])
         ds_type = datastore["type"]
-        if ds_type == "bigquery":
-            client = await get_bigquery_client(ds_config)
-            query_job = client.query(sql_query)
-            df = query_job.to_dataframe()
-        elif ds_type in SA_TYPES:
-            engine = get_sa_engine(ds_type, ds_config)
-            df = pd.read_sql(sql_query, engine)
-        else:
+
+        try:
+            if ds_type == "bigquery":
+                client = await get_bigquery_client(ds_config)
+                query_job = client.query(sql_query)
+                df = query_job.to_dataframe()
+            elif ds_type in SA_TYPES:
+                engine = get_sa_engine(ds_type, ds_config)
+                df = pd.read_sql(sql_query, engine)
+            else:
+                return {
+                    "success": False,
+                    "error": f"Unsupported datastore type: {ds_type}"
+                }
+        except Exception as sql_err:
+            error_str = str(sql_err)
+            error_msg = f"SQL error: {error_str}"
+            if "Invalid NUMERIC value" in error_str or "Invalid FLOAT" in error_str or "Invalid INT" in error_str:
+                error_msg += "\n\nDATA QUALITY ISSUE: This column contains mixed data types. Try using SAFE_CAST instead of CAST."
             return {
                 "success": False,
-                "error": f"Unsupported datastore type: {ds_type}"
+                "error": error_str,
+                "message": error_msg,
+                "sql_query": sql_query,
             }
 
         total_rows = len(df)
@@ -307,15 +346,10 @@ async def execute_query_direct(datastore_id: str, sql_query: str, limit: int = 1
 
     except Exception as e:
         error_str = str(e)
-        error_msg = f"Query execution failed: {error_str}"
-
-        if "Invalid NUMERIC value" in error_str or "Invalid FLOAT" in error_str or "Invalid INT" in error_str:
-            error_msg += "\n\n💡 DATA QUALITY ISSUE: This column contains mixed data types. Try using SAFE_CAST instead of CAST, or use execute_query_direct to inspect the column values: SELECT DISTINCT problematic_column LIMIT 20"
-
         return {
             "success": False,
             "error": error_str,
-            "message": error_msg
+            "message": f"Execution error: {error_str}"
         }
 
 

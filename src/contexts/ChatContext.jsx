@@ -449,6 +449,9 @@ export function ChatProvider({ children }) {
                         finalSummary = data.message
                         streamingMessage.content = data.message
                         streamingMessage.isStreaming = false
+                        if (data.code) {
+                            streamingMessage.boardCode = data.code
+                        }
                         setChatMessages(prev => [...prev.slice(0, -1), { ...streamingMessage }])
                     } else if (data.type === 'error') {
                         streamingMessage.content = `Error: ${data.content}`
