@@ -11,8 +11,10 @@ Usage:
     python database/migrate.py --env prod --reset    # reset prod (with confirmation)
 """
 
-import argparse, subprocess, sys, os
+import argparse, asyncio, sys, os
 from pathlib import Path
+
+import asyncpg
 
 HERE = Path(__file__).resolve().parent
 BACKEND_DIR = HERE.parent / "backend"
@@ -46,7 +48,6 @@ def init_env(env_name: str):
     env_file = ENV_FILES[env_name]
     base_env = BACKEND_DIR / ".env"
 
-    # Target env file first (highest priority), then base .env for defaults
     _load_dotenv(env_file)
     if env_name != "local" and base_env.exists():
         _load_dotenv(base_env)
@@ -54,7 +55,6 @@ def init_env(env_name: str):
     DB_URL = os.environ.get("DATABASE_URL", "postgresql://pc@localhost:5432/nubi")
 
     label = env_name.upper()
-    # Mask credentials in the displayed URL
     display_url = DB_URL
     if "@" in DB_URL:
         pre, at_rest = DB_URL.split("@", 1)
@@ -66,6 +66,7 @@ def init_env(env_name: str):
     print(f"Database    : {display_url}")
     print()
 
+
 TRACKING_TABLE = """
 CREATE TABLE IF NOT EXISTS _migrations (
     filename TEXT PRIMARY KEY,
@@ -74,55 +75,66 @@ CREATE TABLE IF NOT EXISTS _migrations (
 """
 
 
-def psql_query(sql: str) -> str:
-    r = subprocess.run(
-        ["psql", DB_URL, "-tA", "-v", "ON_ERROR_STOP=1"],
-        input=sql, text=True, capture_output=True,
-    )
-    return r.stdout.strip()
+async def get_connection() -> asyncpg.Connection:
+    return await asyncpg.connect(DB_URL)
 
 
-def psql_exec(sql: str) -> bool:
-    r = subprocess.run(
-        ["psql", DB_URL, "-v", "ON_ERROR_STOP=1"],
-        input=sql, text=True, capture_output=True,
-    )
-    if r.returncode != 0 or (r.stderr and "ERROR" in r.stderr):
-        err = r.stderr.strip() if r.stderr else r.stdout.strip()
-        print(f"    ERROR: {err}")
+async def db_exec(sql: str) -> bool:
+    conn = await get_connection()
+    try:
+        await conn.execute(sql)
+        return True
+    except Exception as e:
+        print(f"    ERROR: {e}")
         return False
-    return True
+    finally:
+        await conn.close()
 
 
-def ensure_tracking():
-    psql_exec(TRACKING_TABLE)
+async def db_query(sql: str) -> list[str]:
+    conn = await get_connection()
+    try:
+        rows = await conn.fetch(sql)
+        return [row[0] for row in rows]
+    except Exception:
+        return []
+    finally:
+        await conn.close()
 
 
-def get_applied() -> set[str]:
-    rows = psql_query("SELECT filename FROM _migrations;")
-    if not rows:
-        return set()
-    return set(rows.splitlines())
+async def ensure_tracking():
+    await db_exec(TRACKING_TABLE)
+
+
+async def get_applied() -> set[str]:
+    rows = await db_query("SELECT filename FROM _migrations;")
+    return set(rows)
 
 
 def get_migration_files() -> list[Path]:
     return sorted(MIGRATIONS_DIR.glob("*.sql"))
 
 
-def apply(sql_file: Path) -> bool:
+async def apply(sql_file: Path) -> bool:
     sql = sql_file.read_text()
-    wrapped = f"""
-BEGIN;
-{sql}
-INSERT INTO _migrations (filename) VALUES ('{sql_file.name}');
-COMMIT;
-"""
-    return psql_exec(wrapped)
+    conn = await get_connection()
+    try:
+        async with conn.transaction():
+            await conn.execute(sql)
+            await conn.execute(
+                "INSERT INTO _migrations (filename) VALUES ($1)", sql_file.name
+            )
+        return True
+    except Exception as e:
+        print(f"    ERROR: {e}")
+        return False
+    finally:
+        await conn.close()
 
 
-def cmd_migrate():
-    ensure_tracking()
-    applied = get_applied()
+async def cmd_migrate():
+    await ensure_tracking()
+    applied = await get_applied()
     files = get_migration_files()
 
     pending = [f for f in files if f.name not in applied]
@@ -135,7 +147,7 @@ def cmd_migrate():
         print(f"{len(pending)} pending migration(s):\n")
         for f in pending:
             print(f"  → {f.name} ... ", end="", flush=True)
-            if apply(f):
+            if await apply(f):
                 print("ok")
             else:
                 print("FAILED — aborting")
@@ -144,7 +156,7 @@ def cmd_migrate():
 
     if SEED_FILE.exists() and "seed.sql" not in applied:
         print("  → seed.sql ... ", end="", flush=True)
-        if apply(SEED_FILE):
+        if await apply(SEED_FILE):
             print("ok")
         else:
             print("FAILED")
@@ -154,9 +166,9 @@ def cmd_migrate():
     print("Done!")
 
 
-def cmd_status():
-    ensure_tracking()
-    applied = get_applied()
+async def cmd_status():
+    await ensure_tracking()
+    applied = await get_applied()
     files = get_migration_files()
 
     print(f"{'FILE':<50} STATUS")
@@ -177,19 +189,19 @@ def cmd_status():
     print(f"\n{len(files)} migrations, {pending_count} pending")
 
 
-def cmd_reset(env_name: str):
+async def cmd_reset(env_name: str):
     if env_name == "prod":
         answer = input("⚠️  You are about to RESET the PRODUCTION database. Type 'yes' to confirm: ")
         if answer.strip().lower() != "yes":
             print("Aborted.")
             sys.exit(0)
     print("Dropping all objects in public schema...")
-    psql_exec("DROP SCHEMA public CASCADE; CREATE SCHEMA public;")
+    await db_exec("DROP SCHEMA public CASCADE; CREATE SCHEMA public;")
     print("Re-running all migrations...\n")
-    cmd_migrate()
+    await cmd_migrate()
 
 
-def main():
+async def async_main():
     parser = argparse.ArgumentParser(description="Database migration runner")
     parser.add_argument(
         "--env", choices=["local", "dev", "prod"], default="local",
@@ -202,12 +214,12 @@ def main():
     init_env(args.env)
 
     if args.status:
-        cmd_status()
+        await cmd_status()
     elif args.reset:
-        cmd_reset(args.env)
+        await cmd_reset(args.env)
     else:
-        cmd_migrate()
+        await cmd_migrate()
 
 
 if __name__ == "__main__":
-    main()
+    asyncio.run(async_main())
