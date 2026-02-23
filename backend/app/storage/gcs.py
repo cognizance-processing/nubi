@@ -9,9 +9,10 @@ class GCSStorageProvider(StorageProvider):
     def _get_bucket(self):
         if self._bucket_obj is None:
             from google.cloud import storage as gcs_storage
-            bucket_name = os.getenv("GCS_BUCKET_NAME", "")
+            bucket_name = os.getenv("GCS_BUCKET_NAME", "").strip()
             if not bucket_name:
                 raise RuntimeError("GCS_BUCKET_NAME environment variable is not set")
+            print(f"GCS bucket: {bucket_name!r}")
             client = gcs_storage.Client()
             self._bucket_obj = client.bucket(bucket_name)
         return self._bucket_obj
