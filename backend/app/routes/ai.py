@@ -27,8 +27,7 @@ from ..ai_tools import (
     get_board_queries, get_query_code, get_board_code,
     search_board_code, search_query_code,
     create_or_update_query, delete_query,
-    create_or_update_datastore, test_datastore_tool,
-    save_keyfile_tool,
+    create_or_update_datastore, test_datastore_tool, save_keyfile_tool,
 )
 from ..llm import call_llm, LLMResponse, DEFAULT_MODEL, get_available_models, get_model_info
 
@@ -85,6 +84,31 @@ async def _execute_tool(func_name: str, func_args: dict, user_id: Optional[str] 
         bid = func_args.get("board_id")
         qs = await get_board_queries(bid) if bid else []
         return {"queries": qs, "count": len(qs)}
+    elif func_name == "get_code":
+        entity_type = func_args.get("type", "")
+        entity_id = func_args.get("id", "")
+        if not entity_id:
+            return {"error": "Missing id"}
+        if entity_type == "query":
+            return await get_query_code(entity_id)
+        elif entity_type == "board":
+            return await get_board_code(entity_id)
+        else:
+            return {"error": f"Unknown type '{entity_type}'. Use 'board' or 'query'."}
+    elif func_name == "search_code":
+        entity_type = func_args.get("type", "")
+        entity_id = func_args.get("id", "")
+        search_term = func_args.get("search_term", "")
+        context_lines = func_args.get("context_lines", 3)
+        if not entity_id or not search_term:
+            return {"error": "Missing id or search_term"}
+        if entity_type == "query":
+            return await search_query_code(entity_id, search_term, context_lines)
+        elif entity_type == "board":
+            return await search_board_code(entity_id, search_term, context_lines)
+        else:
+            return {"error": f"Unknown type '{entity_type}'. Use 'board' or 'query'."}
+    # Backward compat for old tool names
     elif func_name == "get_query_code":
         qid = func_args.get("query_id")
         return await get_query_code(qid) if qid else {"error": "Missing query_id"}
@@ -134,6 +158,29 @@ async def _execute_tool(func_name: str, func_args: dict, user_id: Optional[str] 
             sql_query=func_args.get("sql_query", ""),
             limit=func_args.get("limit", 100),
         )
+    elif func_name == "manage_datastore":
+        action = func_args.get("action", "")
+        if action in ("create", "update"):
+            return await create_or_update_datastore(
+                name=func_args.get("name", ""),
+                ds_type=func_args.get("type", ""),
+                config=func_args.get("config", {}),
+                datastore_id=func_args.get("datastore_id"),
+                user_id=user_id,
+                org_id=org_id,
+            )
+        elif action == "test":
+            ds_id = func_args.get("datastore_id")
+            return await test_datastore_tool(ds_id) if ds_id else {"error": "Missing datastore_id"}
+        elif action == "save_keyfile":
+            return await save_keyfile_tool(
+                json_content=func_args.get("json_content", ""),
+                user_id=user_id,
+                filename=func_args.get("filename", "keyfile.json"),
+            )
+        else:
+            return {"error": f"Unknown manage_datastore action: {action}. Use 'create', 'update', 'test', or 'save_keyfile'."}
+    # Backward compat for old tool names
     elif func_name == "create_or_update_datastore":
         return await create_or_update_datastore(
             name=func_args.get("name", ""),
@@ -321,7 +368,7 @@ async def board_helper_stream(
             if len(user_prompt.strip()) < 30 and board_queries:
                 user_message += (
                     f"\n\nNote: There are {len(board_queries)} queries on this board. "
-                    "If the request is unclear, use list_board_queries and get_query_code."
+                    "If the request is unclear, use list_board_queries and get_code."
                 )
 
             messages = _chat_to_messages(chat[-50:])
