@@ -34,7 +34,7 @@ _PROVIDER_KEYS = {
     "deepseek": DEEPSEEK_API_KEY,
 }
 
-DEFAULT_MODEL = "gemini-2.0-flash"
+DEFAULT_MODEL = "gemini-2.5-flash"
 
 # Models that don't support tool/function calling
 _NO_TOOLS = {"deepseek-reasoner", "o1-mini", "o1-preview"}
