@@ -24,11 +24,13 @@ dist-ssr
 *.sw?
 
 node_modules
-backend/and/__pycache__
+__pycache__/
 
 # Environment variables
 .env
-*.env
+.env.*
 backend/.env
-.env.local
-.env.*.local
+
+# Secret/credential files
+backend/storage/secret-files/
+key.json

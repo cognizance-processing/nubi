@@ -4,7 +4,7 @@ import { useAuth } from '../contexts/AuthContext'
 import {
   Sparkles, Code2, Database, MessageSquare, BarChart3, Zap,
   ArrowRight, Github, CheckCircle2, Send, Layers, BookOpen,
-  Menu, X, Shield, Globe, Play, Table2, PanelTop,
+  Menu, X, Shield, Globe, Play, Table2, PanelTop, Puzzle,
 } from 'lucide-react'
 
 /* ─────────────────────────────────────────────
@@ -458,6 +458,39 @@ function AssistantVisual() {
   )
 }
 
+function WidgetsVisual() {
+  return (
+    <div className="rounded-xl bg-slate-900 border border-white/[0.07] overflow-hidden">
+      <div className="flex items-center gap-2 px-3.5 py-2.5 bg-slate-800/60 border-b border-white/[0.06]">
+        <Puzzle className="h-3.5 w-3.5 text-indigo-400" />
+        <span className="text-[11px] text-slate-300 font-medium">Widget Library</span>
+        <span className="ml-auto text-[9px] text-slate-500">10+ templates</span>
+      </div>
+      <div className="p-2.5 grid grid-cols-2 gap-2">
+        {[
+          { icon: '📊', name: 'Bar Chart', color: 'border-blue-500/20 bg-blue-500/5' },
+          { icon: '📈', name: 'Line Chart', color: 'border-indigo-500/20 bg-indigo-500/5' },
+          { icon: '🍩', name: 'Donut Chart', color: 'border-purple-500/20 bg-purple-500/5' },
+          { icon: '🔢', name: 'Stats Card', color: 'border-emerald-500/20 bg-emerald-500/5' },
+          { icon: '📋', name: 'Data Table', color: 'border-teal-500/20 bg-teal-500/5' },
+          { icon: '⏱️', name: 'Gauge', color: 'border-rose-500/20 bg-rose-500/5' },
+        ].map(({ icon, name, color }) => (
+          <div key={name} className={`flex items-center gap-2 rounded-lg border ${color} px-2.5 py-2`}>
+            <span className="text-sm">{icon}</span>
+            <span className="text-[10px] text-slate-300 font-medium">{name}</span>
+          </div>
+        ))}
+      </div>
+      <div className="px-3 pb-3 pt-1">
+        <div className="flex items-center gap-1.5 px-2.5 py-2 rounded-lg bg-indigo-500/[0.06] border border-indigo-500/15">
+          <Sparkles className="h-2.5 w-2.5 text-indigo-400" />
+          <span className="text-[9px] text-indigo-300">Pick a template, customise data &amp; style, use on any board</span>
+        </div>
+      </div>
+    </div>
+  )
+}
+
 /* ─────────────────────────────────────────────
    Features config
    ───────────────────────────────────────────── */
@@ -480,9 +513,17 @@ const features = [
     visual: <DashboardVisual />,
   },
   {
+    icon: Puzzle,
+    title: 'Pre-Built Widget Library',
+    description: 'Start from 10+ ready-made widget templates — bar charts, line charts, donut charts, KPI stat cards, sortable data tables, gauges, and drill-down views. Pick one, customise the data and styling, and drop it onto any dashboard.',
+    badge: 'Widgets',
+    span: 'sm:col-span-2',
+    visual: <WidgetsVisual />,
+  },
+  {
     icon: Database,
     title: 'Connect Any Data Source',
-    description: 'BigQuery, PostgreSQL, Supabase, or CSV uploads. One unified interface for all your data. Credentials encrypted at rest.',
+    description: 'BigQuery, PostgreSQL, or CSV uploads. One unified interface for all your data. Credentials encrypted at rest.',
     badge: 'Data',
     visual: <DataSourcesVisual />,
   },
@@ -579,9 +620,9 @@ export default function LandingPage() {
       </nav>
 
       {/* ── Hero ── */}
-      <section className="relative pt-32 sm:pt-36 pb-8 px-4 sm:px-6">
+      <section className="relative pt-24 sm:pt-28 pb-6 px-4 sm:px-6">
         <div className="max-w-4xl mx-auto text-center relative z-10">
-          <div className="inline-flex items-center gap-2 px-4 py-1.5 bg-indigo-500/[0.08] border border-indigo-500/20 rounded-full text-indigo-300 text-xs font-medium tracking-wide mb-8 backdrop-blur-sm">
+          <div className="inline-flex items-center gap-2 px-4 py-1.5 bg-indigo-500/[0.08] border border-indigo-500/20 rounded-full text-indigo-300 text-xs font-medium tracking-wide mb-6 backdrop-blur-sm">
             <Sparkles className="w-3.5 h-3.5" />
             Open-Source Business Intelligence Platform
           </div>
@@ -594,8 +635,8 @@ export default function LandingPage() {
             </span>
           </h1>
 
-          <p className="text-base sm:text-lg text-slate-400 max-w-2xl mx-auto mb-10 leading-relaxed">
-            Ask questions in plain English, get SQL-powered answers in seconds, and pin results as live dashboard widgets — all from a single chat interface. Connect BigQuery, PostgreSQL, or upload a CSV to start.
+          <p className="text-base sm:text-lg text-slate-400 max-w-2xl mx-auto mb-7 leading-relaxed">
+            Ask questions in plain English, get SQL-powered answers in seconds, and build dashboards from a library of pre-configured widgets — charts, KPI cards, tables, and more. Connect BigQuery, PostgreSQL, or upload a CSV to start.
           </p>
 
           <div className="flex flex-col sm:flex-row items-center justify-center gap-3 mb-4">
@@ -619,7 +660,7 @@ export default function LandingPage() {
       </section>
 
       {/* ── Animated Demo ── */}
-      <section className="relative z-10 px-4 sm:px-6 pb-24 sm:pb-32">
+      <section className="relative z-10 px-4 sm:px-6 pb-14 sm:pb-16">
         <div className="max-w-3xl mx-auto">
           <HeroDemo />
         </div>
@@ -627,7 +668,7 @@ export default function LandingPage() {
 
       {/* ── Social proof bar ── */}
       <section className="relative z-10 border-y border-white/[0.04] bg-white/[0.01]">
-        <div className="max-w-5xl mx-auto px-4 sm:px-6 py-10 grid grid-cols-2 md:grid-cols-4 gap-6 sm:gap-8 text-center">
+        <div className="max-w-5xl mx-auto px-4 sm:px-6 py-7 grid grid-cols-2 md:grid-cols-4 gap-6 sm:gap-8 text-center">
           {[
             { value: 'Open Source', label: 'Apache 2.0 licensed' },
             { value: '5+ Sources', label: 'BigQuery, Postgres, CSV...' },
@@ -643,9 +684,9 @@ export default function LandingPage() {
       </section>
 
       {/* ── Features ── */}
-      <section id="features" className="relative z-10 py-24 sm:py-32 px-4 sm:px-6">
+      <section id="features" className="relative z-10 py-14 sm:py-18 px-4 sm:px-6">
         <div className="max-w-6xl mx-auto">
-          <div className="text-center mb-16 sm:mb-20">
+          <div className="text-center mb-10 sm:mb-12">
             <span className="inline-flex items-center gap-1.5 rounded-full border border-indigo-500/20 bg-indigo-500/10 px-3 py-1 text-xs font-medium text-indigo-400 mb-5">
               <Layers className="h-3 w-3" />
               Features
@@ -656,7 +697,7 @@ export default function LandingPage() {
               <span className="text-slate-500">in a single conversation</span>
             </h2>
             <p className="max-w-2xl mx-auto text-slate-400 text-base sm:text-lg leading-relaxed">
-              Ask a question, get a SQL query, see results, pin it as a chart — all without leaving the chat. Natural language queries, Python scripting, data pipelines, and interactive dashboards in one platform.
+              Ask a question, get a SQL query, see results, and pin them as dashboard widgets — bar charts, KPI cards, data tables, gauges, and more. Natural language queries, Python scripting, data pipelines, and a full widget library in one platform.
             </p>
           </div>
 
@@ -687,9 +728,9 @@ export default function LandingPage() {
       </section>
 
       {/* ── How it works ── */}
-      <section id="how-it-works" className="relative z-10 py-24 sm:py-32 px-4 sm:px-6">
+      <section id="how-it-works" className="relative z-10 py-14 sm:py-18 px-4 sm:px-6">
         <div className="max-w-5xl mx-auto">
-          <div className="text-center mb-16 sm:mb-20">
+          <div className="text-center mb-10 sm:mb-12">
             <span className="inline-flex items-center gap-1.5 rounded-full border border-indigo-500/20 bg-indigo-500/10 px-3 py-1 text-xs font-medium text-indigo-400 mb-5">
               <Zap className="h-3 w-3" />
               How it Works
@@ -704,12 +745,12 @@ export default function LandingPage() {
 
           <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
             {[
-              { step: '01', icon: Database, title: 'Connect your data', desc: 'Link BigQuery, PostgreSQL, Supabase, or upload a CSV. Nubi introspects your schema automatically — no configuration needed.' },
+              { step: '01', icon: Database, title: 'Connect your data', desc: 'Link BigQuery, PostgreSQL, or upload a CSV. Nubi introspects your schema automatically — no configuration needed.' },
               { step: '02', icon: MessageSquare, title: 'Ask in plain English', desc: 'Type "What were our top products last quarter?" and Nubi generates optimised SQL, runs it, and returns results in under a second.' },
               { step: '03', icon: BarChart3, title: 'Pin to your dashboard', desc: 'One click turns any result into a live dashboard widget — bar chart, line chart, KPI card, or data table. Share it with your team.' },
             ].map(({ step, icon: Icon, title, desc }) => (
-              <div key={step} className="relative rounded-2xl border border-white/[0.07] bg-white/[0.02] p-6 sm:p-8">
-                <div className="flex items-center gap-3 mb-5">
+              <div key={step} className="relative rounded-2xl border border-white/[0.07] bg-white/[0.02] p-5 sm:p-6">
+                <div className="flex items-center gap-3 mb-4">
                   <div className="w-10 h-10 rounded-xl bg-indigo-500/10 border border-indigo-500/15 flex items-center justify-center">
                     <Icon className="w-5 h-5 text-indigo-400" />
                   </div>
@@ -724,9 +765,9 @@ export default function LandingPage() {
       </section>
 
       {/* ── Why Nubi ── */}
-      <section className="relative z-10 py-24 sm:py-32 px-4 sm:px-6">
+      <section className="relative z-10 py-14 sm:py-18 px-4 sm:px-6">
         <div className="max-w-6xl mx-auto">
-          <div className="grid lg:grid-cols-2 gap-16 lg:gap-20 items-center">
+          <div className="grid lg:grid-cols-2 gap-10 lg:gap-14 items-center">
             <div>
               <span className="inline-flex items-center gap-1.5 rounded-full border border-indigo-500/20 bg-indigo-500/10 px-3 py-1 text-xs font-medium text-indigo-400 mb-6">
                 <Shield className="h-3 w-3" />
@@ -737,15 +778,16 @@ export default function LandingPage() {
                 <br />
                 <span className="text-slate-500">replaces your SQL client.</span>
               </h2>
-              <p className="text-base sm:text-lg text-slate-400 mb-10 leading-relaxed">
+              <p className="text-base sm:text-lg text-slate-400 mb-6 leading-relaxed">
                 Most BI tools make you choose between ease-of-use and power. Nubi starts with chat — ask anything in plain English — then lets you drop into SQL or Python whenever you need full control.
               </p>
 
-              <div className="space-y-5">
+              <div className="space-y-3.5">
                 {[
                   { t: 'Chat-first interface', d: 'Ask questions the way you think. The AI handles schema awareness, joins, and aggregations.' },
                   { t: 'SQL & Python when you need it', d: 'Full code editors with autocomplete. Edit generated queries or write from scratch.' },
                   { t: 'One-click dashboards', d: 'Pin any chat result as a live widget. Build a complete dashboard from a conversation.' },
+                  { t: 'Widget template library', d: 'Pick from charts, KPI cards, tables, gauges and more. Customise and reuse across any board.' },
                   { t: 'Self-hosted & private', d: 'Your data never leaves your infrastructure. Apache 2.0 licensed. Deploy in 2 minutes.' },
                 ].map(({ t, d }) => (
                   <div key={t} className="flex items-start gap-3">
@@ -766,7 +808,7 @@ export default function LandingPage() {
                   { icon: Zap, label: 'Instant Setup', desc: 'First query in under 2 minutes', color: 'border-indigo-500/15 bg-gradient-to-br from-indigo-500/10 to-indigo-600/5' },
                   { icon: Globe, label: 'Any Database', desc: 'BigQuery, Postgres, CSV & more', color: 'border-purple-500/15 bg-gradient-to-br from-purple-500/10 to-purple-600/5' },
                   { icon: Shield, label: 'Self-Hosted', desc: 'Your data stays on your servers', color: 'border-emerald-500/15 bg-gradient-to-br from-emerald-500/10 to-emerald-600/5' },
-                  { icon: Layers, label: 'Extensible', desc: 'Chain SQL & Python pipelines', color: 'border-amber-500/15 bg-gradient-to-br from-amber-500/10 to-amber-600/5' },
+                  { icon: Puzzle, label: '10+ Widgets', desc: 'Charts, cards, tables & gauges', color: 'border-amber-500/15 bg-gradient-to-br from-amber-500/10 to-amber-600/5' },
                 ].map(({ icon: Icon, label, desc, color }) => (
                   <div key={label} className={`border rounded-2xl p-5 ${color}`}>
                     <Icon className="w-5 h-5 text-white/50 mb-3" />
@@ -781,16 +823,16 @@ export default function LandingPage() {
       </section>
 
       {/* ── CTA ── */}
-      <section className="relative z-10 py-24 sm:py-32 px-4 sm:px-6">
+      <section className="relative z-10 py-14 sm:py-18 px-4 sm:px-6">
         <div className="max-w-3xl mx-auto">
           <div className="relative rounded-3xl overflow-hidden">
             <div className="absolute inset-0 bg-gradient-to-br from-indigo-600/30 via-purple-600/20 to-pink-600/10" />
             <div className="absolute inset-px rounded-3xl bg-slate-950/90" />
-            <div className="relative px-6 py-16 sm:px-16 sm:py-20 text-center">
+            <div className="relative px-6 py-12 sm:px-16 sm:py-14 text-center">
               <h2 className="text-3xl sm:text-4xl font-extrabold text-white mb-5">
                 Stop writing SQL by hand.<br />Start asking questions.
               </h2>
-              <p className="text-base sm:text-lg text-slate-400 mb-10 max-w-md mx-auto leading-relaxed">
+              <p className="text-base sm:text-lg text-slate-400 mb-7 max-w-md mx-auto leading-relaxed">
                 Connect your database, ask a question in plain English, and pin the answer to a dashboard. It takes 2 minutes.
               </p>
               <div className="flex flex-col sm:flex-row items-center justify-center gap-3">
@@ -816,15 +858,15 @@ export default function LandingPage() {
 
       {/* ── Footer ── */}
       <footer className="relative z-10 border-t border-white/[0.04] bg-slate-950/80">
-        <div className="max-w-6xl mx-auto px-4 sm:px-6 py-16 sm:py-20">
-          <div className="grid grid-cols-2 md:grid-cols-4 gap-10 sm:gap-12 mb-14 sm:mb-16">
+        <div className="max-w-6xl mx-auto px-4 sm:px-6 py-10 sm:py-12">
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-8 sm:gap-10 mb-10 sm:mb-12">
             <div className="col-span-2 md:col-span-1">
               <div className="flex items-center gap-2.5 mb-4">
                 <img src="/nubi.png" alt="Nubi" className="w-7 h-7 rounded-lg" />
                 <span className="text-lg font-bold">Nubi</span>
               </div>
               <p className="text-sm text-slate-500 leading-relaxed">
-                Open-source, AI-powered business intelligence. Chat with your data, build dashboards from conversations.
+                Open-source, AI-powered business intelligence. Chat with your data and build dashboards from pre-configured widgets.
               </p>
             </div>
 
@@ -843,6 +885,7 @@ export default function LandingPage() {
                 <li><Link to="/docs/getting-started" className="text-sm text-slate-500 hover:text-white transition-colors">Quick Start</Link></li>
                 <li><Link to="/docs/data-sources" className="text-sm text-slate-500 hover:text-white transition-colors">Data Sources</Link></li>
                 <li><Link to="/docs/queries" className="text-sm text-slate-500 hover:text-white transition-colors">Writing Queries</Link></li>
+                <li><Link to="/docs/widgets" className="text-sm text-slate-500 hover:text-white transition-colors">Widgets</Link></li>
               </ul>
             </div>
 

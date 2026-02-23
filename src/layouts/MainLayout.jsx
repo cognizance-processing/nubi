@@ -1,7 +1,8 @@
 import { useState, useEffect, useRef } from 'react'
 import { Link, useLocation, Outlet } from 'react-router-dom'
-import { Database, LayoutGrid, Menu, X, LogOut, PanelRightOpen, PanelRightClose, Home } from 'lucide-react'
+import { Database, LayoutGrid, Menu, X, LogOut, PanelRightOpen, PanelRightClose, Home, ChevronDown, Plus, Check, Building2, BarChart3, Puzzle, Paperclip, File as FileIcon } from 'lucide-react'
 import { useAuth } from '../contexts/AuthContext'
+import { useOrg } from '../contexts/OrgContext'
 import { useHeader } from '../contexts/HeaderContext'
 import { ChatProvider, useChat } from '../contexts/ChatContext'
 import ChatMessage from '../components/ChatMessage'
@@ -10,10 +11,194 @@ const navItems = [
     { to: '/portal', label: 'Home', icon: Home, end: true },
     { to: '/boards', label: 'Boards', icon: LayoutGrid },
     { to: '/datastores', label: 'Datastores', icon: Database },
+    { to: '/widgets', label: 'Widgets', icon: Puzzle },
+    { to: '/usage', label: 'Usage', icon: BarChart3 },
 ]
+
+function OrgSelector() {
+    const { organizations, currentOrg, setCurrentOrg, createOrg } = useOrg()
+    const [open, setOpen] = useState(false)
+    const [creating, setCreating] = useState(false)
+    const [newName, setNewName] = useState('')
+    const ref = useRef(null)
+
+    useEffect(() => {
+        const handler = (e) => {
+            if (ref.current && !ref.current.contains(e.target)) {
+                setOpen(false)
+                setCreating(false)
+            }
+        }
+        document.addEventListener('mousedown', handler)
+        return () => document.removeEventListener('mousedown', handler)
+    }, [])
+
+    const handleCreate = async (e) => {
+        e.preventDefault()
+        if (!newName.trim()) return
+        try {
+            const org = await createOrg(newName.trim())
+            setCurrentOrg(org)
+            setNewName('')
+            setCreating(false)
+            setOpen(false)
+        } catch (err) {
+            console.error('Failed to create org:', err)
+        }
+    }
+
+    if (!currentOrg) return null
+
+    return (
+        <div className="relative px-3 py-2" ref={ref}>
+            <button
+                onClick={() => setOpen(!open)}
+                className="w-full flex items-center gap-2.5 rounded-lg px-2.5 py-2 text-left transition hover:bg-white/[0.05] group"
+            >
+                <div className="flex h-7 w-7 items-center justify-center rounded-lg bg-indigo-500/15 text-indigo-400 shrink-0">
+                    <Building2 className="h-3.5 w-3.5" />
+                </div>
+                <span className="flex-1 min-w-0 text-sm font-medium text-slate-200 truncate">
+                    {currentOrg.name}
+                </span>
+                <ChevronDown className={`h-3.5 w-3.5 text-slate-500 shrink-0 transition-transform ${open ? 'rotate-180' : ''}`} />
+            </button>
+
+            {open && (
+                <div className="absolute left-3 right-3 top-full mt-1 z-[60] rounded-xl border border-white/[0.08] bg-slate-900/95 backdrop-blur-xl shadow-2xl shadow-black/40 overflow-hidden">
+                    <div className="py-1 max-h-52 overflow-y-auto scrollbar-none">
+                        {organizations.map((org) => (
+                            <button
+                                key={org.id}
+                                onClick={() => {
+                                    setCurrentOrg(org)
+                                    setOpen(false)
+                                }}
+                                className={`w-full flex items-center gap-2.5 px-3 py-2 text-left text-sm transition ${
+                                    org.id === currentOrg.id
+                                        ? 'bg-indigo-600/10 text-indigo-400'
+                                        : 'text-slate-300 hover:bg-white/[0.04] hover:text-white'
+                                }`}
+                            >
+                                <div className={`flex h-6 w-6 items-center justify-center rounded-md text-[10px] font-bold shrink-0 ${
+                                    org.id === currentOrg.id
+                                        ? 'bg-indigo-500/20 text-indigo-400'
+                                        : 'bg-white/[0.06] text-slate-500'
+                                }`}>
+                                    {org.name[0]?.toUpperCase()}
+                                </div>
+                                <span className="flex-1 min-w-0 truncate font-medium">{org.name}</span>
+                                {org.id === currentOrg.id && (
+                                    <Check className="h-3.5 w-3.5 text-indigo-400 shrink-0" />
+                                )}
+                            </button>
+                        ))}
+                    </div>
+
+                    <div className="border-t border-white/[0.06]">
+                        {creating ? (
+                            <form onSubmit={handleCreate} className="p-2 flex gap-1.5">
+                                <input
+                                    autoFocus
+                                    type="text"
+                                    value={newName}
+                                    onChange={(e) => setNewName(e.target.value)}
+                                    onKeyDown={(e) => e.key === 'Escape' && setCreating(false)}
+                                    placeholder="Organization name"
+                                    className="flex-1 min-w-0 px-2.5 py-1.5 bg-white/[0.04] border border-white/[0.1] rounded-lg text-xs text-slate-200 placeholder:text-slate-600 focus:border-indigo-500/50 focus:outline-none"
+                                />
+                                <button
+                                    type="submit"
+                                    className="px-2.5 py-1.5 rounded-lg bg-indigo-600 text-white text-xs font-medium hover:bg-indigo-500 transition"
+                                >
+                                    Add
+                                </button>
+                            </form>
+                        ) : (
+                            <button
+                                onClick={() => setCreating(true)}
+                                className="w-full flex items-center gap-2 px-3 py-2.5 text-xs font-medium text-slate-400 hover:text-indigo-400 hover:bg-white/[0.04] transition"
+                            >
+                                <Plus className="h-3.5 w-3.5" />
+                                New organization
+                            </button>
+                        )}
+                    </div>
+                </div>
+            )}
+        </div>
+    )
+}
+
+function CreateOrgGate() {
+    const { createOrg, setCurrentOrg } = useOrg()
+    const { user, signOut } = useAuth()
+
+    const defaultName = () => {
+        const base = user?.full_name || user?.email?.split('@')[0] || ''
+        return base ? `${base}'s Workspace` : ''
+    }
+
+    const [name, setName] = useState(defaultName)
+    const [submitting, setSubmitting] = useState(false)
+    const [error, setError] = useState('')
+
+    const handleSubmit = async (e) => {
+        e.preventDefault()
+        if (!name.trim()) return
+        setSubmitting(true)
+        setError('')
+        try {
+            const org = await createOrg(name.trim())
+            setCurrentOrg(org)
+        } catch (err) {
+            setError(err.message || 'Failed to create organization')
+        } finally {
+            setSubmitting(false)
+        }
+    }
+
+    return (
+        <div className="flex min-h-screen items-center justify-center bg-slate-950 px-4">
+            <div className="w-full max-w-md">
+                <div className="text-center mb-8">
+                    <img src="/nubi.png" alt="Nubi" className="h-14 w-14 rounded-2xl mx-auto mb-4" />
+                    <h1 className="text-2xl font-bold text-white">Create your organization</h1>
+                    <p className="mt-2 text-sm text-slate-400">You need an organization to get started. This is where your boards, datastores, and team live.</p>
+                </div>
+                <form onSubmit={handleSubmit} className="space-y-4">
+                    <input
+                        autoFocus
+                        type="text"
+                        value={name}
+                        onChange={(e) => setName(e.target.value)}
+                        placeholder="e.g. Acme Corp, My Team, Personal"
+                        className="w-full rounded-xl border border-white/[0.1] bg-white/[0.04] px-4 py-3 text-sm text-white placeholder:text-slate-500 focus:border-indigo-500/60 focus:outline-none transition"
+                    />
+                    {error && <p className="text-xs text-red-400">{error}</p>}
+                    <button
+                        type="submit"
+                        disabled={submitting || !name.trim()}
+                        className="w-full rounded-xl bg-indigo-600 py-3 text-sm font-semibold text-white shadow-lg shadow-indigo-900/30 hover:bg-indigo-500 active:scale-[0.98] transition disabled:opacity-50 disabled:pointer-events-none"
+                    >
+                        {submitting ? 'Creating...' : 'Create organization'}
+                    </button>
+                </form>
+                <button
+                    onClick={signOut}
+                    className="mt-6 flex items-center justify-center gap-1.5 w-full text-xs text-slate-500 hover:text-slate-300 transition"
+                >
+                    <LogOut className="h-3.5 w-3.5" />
+                    Sign out
+                </button>
+            </div>
+        </div>
+    )
+}
 
 function MainLayoutContent() {
     const { user, signOut } = useAuth()
+    const { organizations, loading: orgLoading } = useOrg()
     const { headerContent } = useHeader()
     const [sidebarOpen, setSidebarOpen] = useState(false)
     const location = useLocation()
@@ -28,10 +213,12 @@ function MainLayoutContent() {
         editingChatId, setEditingChatId,
         editingChatTitle, setEditingChatTitle,
         startNewChat, renameChat, formatChatDate, handleChatSubmit,
+        selectedModel, setSelectedModel, availableModels,
         showMentionDropdown, setShowMentionDropdown,
         mentionOptions, insertMention, handleChatInputChange,
         showCommandDropdown, setShowCommandDropdown,
         commandOptions, insertCommand,
+        attachedFiles, addAttachedFile, removeAttachedFile,
     } = useChat()
 
     useEffect(() => {
@@ -48,6 +235,10 @@ function MainLayoutContent() {
     }, [chatInput])
 
     const initials = (user?.email?.[0] || 'U').toUpperCase()
+
+    if (!orgLoading && organizations.length === 0) {
+        return <CreateOrgGate />
+    }
 
     return (
         <div className="flex h-screen bg-slate-950 text-white antialiased">
@@ -68,6 +259,9 @@ function MainLayoutContent() {
                         <X className="h-5 w-5" />
                     </button>
                 </div>
+
+                {/* Org selector */}
+                <OrgSelector />
 
                 {/* Nav */}
                 <nav className="flex-1 space-y-0.5 overflow-y-auto px-3 py-4 scrollbar-none">
@@ -166,6 +360,9 @@ function MainLayoutContent() {
                                 renameChat={renameChat}
                                 formatChatDate={formatChatDate}
                                 handleChatSubmit={handleChatSubmit}
+                                selectedModel={selectedModel}
+                                setSelectedModel={setSelectedModel}
+                                availableModels={availableModels}
                                 showMentionDropdown={showMentionDropdown}
                                 setShowMentionDropdown={setShowMentionDropdown}
                                 mentionOptions={mentionOptions}
@@ -175,6 +372,9 @@ function MainLayoutContent() {
                                 setShowCommandDropdown={setShowCommandDropdown}
                                 commandOptions={commandOptions}
                                 insertCommand={insertCommand}
+                                attachedFiles={attachedFiles}
+                                addAttachedFile={addAttachedFile}
+                                removeAttachedFile={removeAttachedFile}
                                 messagesEndRef={messagesEndRef}
                                 textareaRef={textareaRef}
                             />
@@ -211,6 +411,9 @@ function MainLayoutContent() {
                                         renameChat={renameChat}
                                         formatChatDate={formatChatDate}
                                         handleChatSubmit={handleChatSubmit}
+                                        selectedModel={selectedModel}
+                                        setSelectedModel={setSelectedModel}
+                                        availableModels={availableModels}
                                         showMentionDropdown={showMentionDropdown}
                                         setShowMentionDropdown={setShowMentionDropdown}
                                         mentionOptions={mentionOptions}
@@ -220,6 +423,9 @@ function MainLayoutContent() {
                                         setShowCommandDropdown={setShowCommandDropdown}
                                         commandOptions={commandOptions}
                                         insertCommand={insertCommand}
+                                        attachedFiles={attachedFiles}
+                                        addAttachedFile={addAttachedFile}
+                                        removeAttachedFile={removeAttachedFile}
                                         messagesEndRef={messagesEndRef}
                                         textareaRef={textareaRef}
                                     />
@@ -239,12 +445,28 @@ function ChatPanelInner({
     showChatListDropdown, setShowChatListDropdown,
     editingChatId, setEditingChatId, editingChatTitle, setEditingChatTitle,
     startNewChat, renameChat, formatChatDate, handleChatSubmit,
+    selectedModel, setSelectedModel, availableModels,
     showMentionDropdown, setShowMentionDropdown,
     mentionOptions, insertMention, handleChatInputChange,
     showCommandDropdown, setShowCommandDropdown,
     commandOptions, insertCommand,
+    attachedFiles, addAttachedFile, removeAttachedFile,
     messagesEndRef, textareaRef,
 }) {
+    const [showModelDropdown, setShowModelDropdown] = useState(false)
+    const modelDropdownRef = useRef(null)
+
+    useEffect(() => {
+        const handler = (e) => {
+            if (modelDropdownRef.current && !modelDropdownRef.current.contains(e.target)) {
+                setShowModelDropdown(false)
+            }
+        }
+        document.addEventListener('mousedown', handler)
+        return () => document.removeEventListener('mousedown', handler)
+    }, [])
+
+    const currentModelName = availableModels?.find(m => m.id === selectedModel)?.name || selectedModel
     return (
         <>
             {/* Chat header */}
@@ -343,7 +565,60 @@ function ChatPanelInner({
             </div>
 
             {/* Input */}
-            <form className="px-4 py-3 border-t border-white/[0.07] flex gap-2 relative" onSubmit={handleChatSubmit}>
+            <div className="px-4 pt-2 pb-0 flex items-center">
+                <div className="relative" ref={modelDropdownRef}>
+                    <button
+                        type="button"
+                        onClick={() => setShowModelDropdown(v => !v)}
+                        className="flex items-center gap-1 rounded-md px-2 py-1 text-[11px] font-medium text-slate-500 hover:text-slate-300 hover:bg-white/[0.04] transition"
+                    >
+                        <svg width="12" height="12" viewBox="0 0 20 20" fill="currentColor" className="shrink-0 opacity-60">
+                            <path fillRule="evenodd" d="M11.3 1.046A1 1 0 0112 2v5h4a1 1 0 01.82 1.573l-7 10A1 1 0 018 18v-5H4a1 1 0 01-.82-1.573l7-10a1 1 0 011.12-.38z" clipRule="evenodd" />
+                        </svg>
+                        <span className="truncate max-w-[160px]">{currentModelName}</span>
+                        <ChevronDown className={`h-3 w-3 shrink-0 transition-transform ${showModelDropdown ? 'rotate-180' : ''}`} />
+                    </button>
+                    {showModelDropdown && availableModels?.length > 0 && (
+                        <div className="absolute left-0 bottom-full mb-1 w-56 max-h-60 overflow-y-auto rounded-xl border border-white/[0.08] bg-slate-900/95 backdrop-blur-xl shadow-2xl z-[70] py-1">
+                            {availableModels.map((m) => (
+                                <button
+                                    key={m.id}
+                                    type="button"
+                                    onClick={() => { setSelectedModel(m.id); setShowModelDropdown(false) }}
+                                    className={`w-full flex items-center gap-2 px-3 py-2 text-left text-xs transition ${
+                                        m.id === selectedModel
+                                            ? 'bg-indigo-600/10 text-indigo-400'
+                                            : 'text-slate-300 hover:bg-white/[0.04] hover:text-white'
+                                    }`}
+                                >
+                                    <div className="flex-1 min-w-0">
+                                        <div className="font-medium truncate">{m.name}</div>
+                                        <div className="text-[9px] text-slate-600 uppercase mt-0.5">{m.provider}</div>
+                                    </div>
+                                    {m.id === selectedModel && (
+                                        <Check className="h-3.5 w-3.5 text-indigo-400 shrink-0" />
+                                    )}
+                                </button>
+                            ))}
+                        </div>
+                    )}
+                </div>
+            </div>
+            {/* Attached files */}
+            {attachedFiles?.length > 0 && (
+                <div className="px-4 pt-2 flex flex-wrap gap-1.5">
+                    {attachedFiles.map((f, i) => (
+                        <div key={i} className="flex items-center gap-1.5 pl-2 pr-1 py-1 bg-indigo-500/10 border border-indigo-500/20 rounded-lg text-[11px]">
+                            <FileIcon size={11} className="text-indigo-400 shrink-0" />
+                            <span className="text-indigo-300 truncate max-w-[120px]">{f.name}</span>
+                            <button type="button" onClick={() => removeAttachedFile(i)} className="p-0.5 rounded hover:bg-white/10 text-slate-500 hover:text-white transition">
+                                <X size={10} />
+                            </button>
+                        </div>
+                    ))}
+                </div>
+            )}
+            <form className="px-4 py-2 border-t border-white/[0.07] flex gap-2 relative" onSubmit={handleChatSubmit}>
                 <div className="flex-1 relative">
                     <textarea
                         ref={textareaRef}
@@ -402,6 +677,15 @@ function ChatPanelInner({
                         </div>
                     )}
                 </div>
+                <label className="p-2 rounded-lg text-slate-500 hover:text-indigo-400 hover:bg-white/[0.05] cursor-pointer transition self-end" title="Attach file">
+                    <Paperclip size={16} />
+                    <input type="file" className="hidden" multiple accept=".json,.csv,.txt,.sql,.parquet,.duckdb,.xlsx" onChange={(e) => {
+                        if (e.target.files) {
+                            Array.from(e.target.files).forEach(f => addAttachedFile(f))
+                            e.target.value = ''
+                        }
+                    }} />
+                </label>
                 <button
                     type="submit"
                     disabled={chatLoading}

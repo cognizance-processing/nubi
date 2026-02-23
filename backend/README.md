@@ -11,11 +11,11 @@ The Stitch Engine is a high-performance query execution and data stitching servi
     ```
 
 2.  **Environment Variables**:
-    Update `backend/.env` with your Supabase URL and Service Role Key.
+    Update `backend/.env` with your `DATABASE_URL`, `JWT_SECRET`, and `GEMINI_API_KEY` (see `.env.example`).
 
 3.  **Run the Server**:
     ```bash
-    python -m app.main
+    python main.py
     ```
 
 ## API Endpoint: `/stitch`
