@@ -7,6 +7,7 @@ bcrypt
 httpx
 google-cloud-storage
 google-cloud-bigquery
+db-dtypes
 google-auth
 jinja2
 psycopg2-binary
