@@ -70,8 +70,6 @@ jobs:
             DATABASE_URL=DATABASE_URL:latest
             JWT_SECRET=JWT_SECRET:latest
             GEMINI_API_KEY=GEMINI_API_KEY:latest
-            ANTHROPIC_API_KEY=ANTHROPIC_API_KEY:latest
-            OPENAI_API_KEY=OPENAI_API_KEY:latest
             GCS_BUCKET_NAME=GCS_BUCKET_NAME:latest
 
       - name: Output URL
