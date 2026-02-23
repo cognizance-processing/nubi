@@ -34,55 +34,31 @@ TOOL_LIST_BOARD_QUERIES = {
     }
 }
 
-TOOL_GET_QUERY_CODE = {
-    "name": "get_query_code",
-    "description": "Get the Python code for a specific query. Returns query ID, name, and full Python code.",
+TOOL_GET_CODE = {
+    "name": "get_code",
+    "description": "Get the full code for a board or query. For type='board' returns HTML/JS code. For type='query' returns Python code.",
     "parameters": {
         "type": "object",
         "properties": {
-            "query_id": {"type": "string", "description": "The UUID of the query to get code for"}
+            "type": {"type": "string", "description": "Entity type: 'board' or 'query'"},
+            "id": {"type": "string", "description": "The UUID of the board or query"},
         },
-        "required": ["query_id"]
+        "required": ["type", "id"]
     }
 }
 
-TOOL_GET_BOARD_CODE = {
-    "name": "get_board_code",
-    "description": "Get the HTML/JavaScript code for a specific board. Returns board ID, name, and full HTML code.",
+TOOL_SEARCH_CODE = {
+    "name": "search_code",
+    "description": "Search for a pattern in a board's HTML or query's Python code. Returns matching lines with line numbers and context. Use instead of get_code when code is large and you only need specific sections.",
     "parameters": {
         "type": "object",
         "properties": {
-            "board_id": {"type": "string", "description": "The UUID of the board to get code for"}
+            "type": {"type": "string", "description": "Entity type: 'board' or 'query'"},
+            "id": {"type": "string", "description": "The UUID of the board or query"},
+            "search_term": {"type": "string", "description": "Text or regex pattern to search for"},
+            "context_lines": {"type": "integer", "description": "Number of lines of context around each match (default: 3)"},
         },
-        "required": ["board_id"]
-    }
-}
-
-TOOL_SEARCH_BOARD_CODE = {
-    "name": "search_board_code",
-    "description": "Search for a pattern in a board's HTML code. Returns matching lines with line numbers. Use this instead of get_board_code when the code is large and you only need specific sections (e.g. find a widget, function, or style).",
-    "parameters": {
-        "type": "object",
-        "properties": {
-            "board_id": {"type": "string", "description": "The UUID of the board"},
-            "search_term": {"type": "string", "description": "Text or regex pattern to search for in the board code"},
-            "context_lines": {"type": "integer", "description": "Number of lines of context to show around each match (default: 3)"}
-        },
-        "required": ["board_id", "search_term"]
-    }
-}
-
-TOOL_SEARCH_QUERY_CODE = {
-    "name": "search_query_code",
-    "description": "Search for a pattern in a query's Python code. Returns matching lines with line numbers. Use this instead of get_query_code when the code is large and you only need specific sections.",
-    "parameters": {
-        "type": "object",
-        "properties": {
-            "query_id": {"type": "string", "description": "The UUID of the query"},
-            "search_term": {"type": "string", "description": "Text or regex pattern to search for in the query code"},
-            "context_lines": {"type": "integer", "description": "Number of lines of context to show around each match (default: 3)"}
-        },
-        "required": ["query_id", "search_term"]
+        "required": ["type", "id", "search_term"]
     }
 }
 
@@ -154,49 +130,37 @@ TOOL_EXECUTE_QUERY_DIRECT = {
     }
 }
 
-TOOL_CREATE_OR_UPDATE_DATASTORE = {
-    "name": "create_or_update_datastore",
-    "description": "Create a new datastore or update an existing one. For new datastores, provide name, type, and config. For updates, also provide datastore_id. Supported types: postgres, mysql, bigquery, athena, mssql, duckdb. For postgres/mysql/mssql use connection_string in config. For bigquery use project_id and optionally keyfile_path. For athena use region, database, s3_output_location, access_key_id, secret_access_key.",
+TOOL_MANAGE_DATASTORE = {
+    "name": "manage_datastore",
+    "description": (
+        "Manage datastores (database connections). Actions:\n"
+        "- 'create': Create a new datastore. Requires name, type, config.\n"
+        "- 'update': Update an existing datastore. Requires datastore_id, plus name/type/config to change.\n"
+        "- 'test': Test connectivity. Requires datastore_id.\n"
+        "- 'save_keyfile': Save a JSON keyfile (e.g. BigQuery service account key). Requires json_content. Returns a path to use in config.\n"
+        "Supported types: postgres, mysql, bigquery, athena, mssql, duckdb. "
+        "For postgres/mysql/mssql use connection_string in config. "
+        "For bigquery use project_id and optionally keyfile_path. "
+        "For athena use region, database, s3_output_location, access_key_id, secret_access_key."
+    ),
     "parameters": {
         "type": "object",
         "properties": {
-            "name": {"type": "string", "description": "Display name for the datastore"},
-            "type": {"type": "string", "description": "Database type: postgres, mysql, bigquery, athena, mssql, or duckdb"},
-            "config": {"type": "object", "description": "Connection config object"},
-            "datastore_id": {"type": "string", "description": "Optional: existing datastore UUID to update instead of creating new"}
+            "action": {"type": "string", "description": "Action to perform: 'create', 'update', 'test', or 'save_keyfile'"},
+            "datastore_id": {"type": "string", "description": "UUID of existing datastore (required for update and test)"},
+            "name": {"type": "string", "description": "Display name for the datastore (for create/update)"},
+            "type": {"type": "string", "description": "Database type: postgres, mysql, bigquery, athena, mssql, or duckdb (for create/update)"},
+            "config": {"type": "object", "description": "Connection config object (for create/update)"},
+            "json_content": {"type": "string", "description": "Full JSON keyfile content (for save_keyfile)"},
+            "filename": {"type": "string", "description": "Descriptive filename for keyfile (default: keyfile.json)"},
         },
-        "required": ["name", "type", "config"]
-    }
-}
-
-TOOL_TEST_DATASTORE = {
-    "name": "test_datastore",
-    "description": "Test connectivity to a datastore. Returns success or failure with error details.",
-    "parameters": {
-        "type": "object",
-        "properties": {
-            "datastore_id": {"type": "string", "description": "The UUID of the datastore to test"}
-        },
-        "required": ["datastore_id"]
-    }
-}
-
-TOOL_SAVE_KEYFILE = {
-    "name": "save_keyfile",
-    "description": "Save a JSON keyfile (e.g. BigQuery service account key) that was provided in the chat. Pass the full JSON content and it will be stored securely. Returns the stored path to use in datastore config.",
-    "parameters": {
-        "type": "object",
-        "properties": {
-            "json_content": {"type": "string", "description": "The full JSON keyfile content to save"},
-            "filename": {"type": "string", "description": "Optional: descriptive filename (default: keyfile.json)"}
-        },
-        "required": ["json_content"]
+        "required": ["action"]
     }
 }
 
 
 # ---------------------------------------------------------------------------
-# Contextual tool sets — each context gets only relevant tools
+# Unified tool set — all 14 tools, every context gets the full set
 # ---------------------------------------------------------------------------
 
 def _wrap_tools(tool_list: list) -> list:
@@ -204,72 +168,25 @@ def _wrap_tools(tool_list: list) -> list:
     return [{"function_declarations": tool_list}]
 
 
-def get_tools_for_context(context: str) -> list:
-    """Return the Gemini-format tool list appropriate for the given page context."""
-    if context == "board":
-        return _wrap_tools([
-            TOOL_LIST_DATASTORES,
-            TOOL_LIST_BOARD_QUERIES,
-            TOOL_GET_QUERY_CODE,
-            TOOL_GET_BOARD_CODE,
-            TOOL_SEARCH_BOARD_CODE,
-            TOOL_SEARCH_QUERY_CODE,
-            TOOL_CREATE_OR_UPDATE_QUERY,
-            TOOL_DELETE_QUERY,
-            TOOL_GET_DATASTORE_SCHEMA,
-            TOOL_RUN_QUERY,
-            TOOL_EXECUTE_QUERY_DIRECT,
-        ])
-    elif context == "query":
-        return _wrap_tools([
-            TOOL_LIST_DATASTORES,
-            TOOL_LIST_BOARD_QUERIES,
-            TOOL_GET_QUERY_CODE,
-            TOOL_SEARCH_QUERY_CODE,
-            TOOL_GET_DATASTORE_SCHEMA,
-            TOOL_RUN_QUERY,
-            TOOL_EXECUTE_QUERY_DIRECT,
-            TOOL_CREATE_OR_UPDATE_QUERY,
-            TOOL_DELETE_QUERY,
-        ])
-    elif context == "datastore":
-        return _wrap_tools([
-            TOOL_LIST_DATASTORES,
-            TOOL_GET_DATASTORE_SCHEMA,
-            TOOL_EXECUTE_QUERY_DIRECT,
-            TOOL_TEST_DATASTORE,
-            TOOL_CREATE_OR_UPDATE_DATASTORE,
-            TOOL_SAVE_KEYFILE,
-        ])
-    else:
-        return _wrap_tools([
-            TOOL_LIST_DATASTORES,
-            TOOL_LIST_BOARD_QUERIES,
-            TOOL_GET_DATASTORE_SCHEMA,
-            TOOL_EXECUTE_QUERY_DIRECT,
-            TOOL_CREATE_OR_UPDATE_DATASTORE,
-            TOOL_TEST_DATASTORE,
-            TOOL_SAVE_KEYFILE,
-        ])
-
-
-# Keep GEMINI_TOOLS as full set for backward compat
-GEMINI_TOOLS = _wrap_tools([
+ALL_TOOLS = [
     TOOL_LIST_DATASTORES,
     TOOL_LIST_BOARD_QUERIES,
-    TOOL_GET_QUERY_CODE,
-    TOOL_GET_BOARD_CODE,
-    TOOL_SEARCH_BOARD_CODE,
-    TOOL_SEARCH_QUERY_CODE,
+    TOOL_GET_CODE,
+    TOOL_SEARCH_CODE,
     TOOL_CREATE_OR_UPDATE_QUERY,
     TOOL_DELETE_QUERY,
     TOOL_GET_DATASTORE_SCHEMA,
     TOOL_RUN_QUERY,
     TOOL_EXECUTE_QUERY_DIRECT,
-    TOOL_CREATE_OR_UPDATE_DATASTORE,
-    TOOL_TEST_DATASTORE,
-    TOOL_SAVE_KEYFILE,
-])
+    TOOL_MANAGE_DATASTORE,
+]
+
+GEMINI_TOOLS = _wrap_tools(ALL_TOOLS)
+
+
+def get_tools_for_context(context: str) -> list:
+    """Return the full tool set regardless of context."""
+    return GEMINI_TOOLS
 
 
 # ---------------------------------------------------------------------------
@@ -333,8 +250,35 @@ async def get_board_code(board_id: str) -> Dict[str, Any]:
         return {"error": str(e)}
 
 
+def _search_lines(code: str, search_term: str, context_lines: int = 3) -> tuple:
+    """Search code string for a pattern. Returns (match_count, total_lines, snippets)."""
+    lines = code.split("\n")
+    try:
+        pattern = re.compile(search_term, re.IGNORECASE)
+    except re.error:
+        pattern = re.compile(re.escape(search_term), re.IGNORECASE)
+
+    match_indices = [i for i, line in enumerate(lines) if pattern.search(line)]
+    if not match_indices:
+        return 0, len(lines), []
+
+    snippets, used = [], set()
+    for idx in match_indices:
+        start = max(0, idx - context_lines)
+        end = min(len(lines), idx + context_lines + 1)
+        snippet_lines = []
+        for i in range(start, end):
+            if i not in used:
+                prefix = ">>> " if i == idx else "    "
+                snippet_lines.append(f"{prefix}{i + 1}: {lines[i]}")
+                used.add(i)
+        if snippet_lines:
+            snippets.append("\n".join(snippet_lines))
+    return len(match_indices), len(lines), snippets[:20]
+
+
 async def search_board_code(board_id: str, search_term: str, context_lines: int = 3) -> Dict[str, Any]:
-    """Search within a board's HTML code for a pattern, returning matching lines with context."""
+    """Search within a board's HTML code for a pattern."""
     try:
         pool = get_pool()
         board = await pool.fetchrow("SELECT id, name FROM boards WHERE id = $1", board_id)
@@ -345,51 +289,21 @@ async def search_board_code(board_id: str, search_term: str, context_lines: int 
         )
         code = code_row["code"] if code_row else ""
         if not code:
-            return {"board_id": str(board["id"]), "matches": [], "total_lines": 0, "message": "Board has no code"}
+            return {"id": str(board["id"]), "type": "board", "matches": [], "total_lines": 0, "message": "Board has no code"}
 
-        lines = code.split("\n")
-        try:
-            pattern = re.compile(search_term, re.IGNORECASE)
-        except re.error:
-            pattern = re.compile(re.escape(search_term), re.IGNORECASE)
-
-        match_indices = [i for i, line in enumerate(lines) if pattern.search(line)]
-        if not match_indices:
-            return {
-                "board_id": str(board["id"]),
-                "board_name": board["name"],
-                "matches": [],
-                "total_lines": len(lines),
-                "message": f"No matches found for '{search_term}'"
-            }
-
-        snippets = []
-        used = set()
-        for idx in match_indices:
-            start = max(0, idx - context_lines)
-            end = min(len(lines), idx + context_lines + 1)
-            snippet_lines = []
-            for i in range(start, end):
-                if i not in used:
-                    prefix = ">>> " if i == idx else "    "
-                    snippet_lines.append(f"{prefix}{i + 1}: {lines[i]}")
-                    used.add(i)
-            if snippet_lines:
-                snippets.append("\n".join(snippet_lines))
-
-        return {
-            "board_id": str(board["id"]),
-            "board_name": board["name"],
-            "match_count": len(match_indices),
-            "total_lines": len(lines),
-            "matches": snippets[:20],
-        }
+        match_count, total_lines, snippets = _search_lines(code, search_term, context_lines)
+        result = {"id": str(board["id"]), "name": board["name"], "type": "board", "total_lines": total_lines}
+        if not match_count:
+            result.update({"matches": [], "message": f"No matches found for '{search_term}'"})
+        else:
+            result.update({"match_count": match_count, "matches": snippets})
+        return result
     except Exception as e:
         return {"error": str(e)}
 
 
 async def search_query_code(query_id: str, search_term: str, context_lines: int = 3) -> Dict[str, Any]:
-    """Search within a query's Python code for a pattern, returning matching lines with context."""
+    """Search within a query's Python code for a pattern."""
     try:
         pool = get_pool()
         row = await pool.fetchrow("SELECT id, name, python_code FROM board_queries WHERE id = $1", query_id)
@@ -398,45 +312,15 @@ async def search_query_code(query_id: str, search_term: str, context_lines: int 
 
         code = row["python_code"] or ""
         if not code:
-            return {"query_id": str(row["id"]), "matches": [], "total_lines": 0, "message": "Query has no code"}
+            return {"id": str(row["id"]), "type": "query", "matches": [], "total_lines": 0, "message": "Query has no code"}
 
-        lines = code.split("\n")
-        try:
-            pattern = re.compile(search_term, re.IGNORECASE)
-        except re.error:
-            pattern = re.compile(re.escape(search_term), re.IGNORECASE)
-
-        match_indices = [i for i, line in enumerate(lines) if pattern.search(line)]
-        if not match_indices:
-            return {
-                "query_id": str(row["id"]),
-                "query_name": row["name"],
-                "matches": [],
-                "total_lines": len(lines),
-                "message": f"No matches found for '{search_term}'"
-            }
-
-        snippets = []
-        used = set()
-        for idx in match_indices:
-            start = max(0, idx - context_lines)
-            end = min(len(lines), idx + context_lines + 1)
-            snippet_lines = []
-            for i in range(start, end):
-                if i not in used:
-                    prefix = ">>> " if i == idx else "    "
-                    snippet_lines.append(f"{prefix}{i + 1}: {lines[i]}")
-                    used.add(i)
-            if snippet_lines:
-                snippets.append("\n".join(snippet_lines))
-
-        return {
-            "query_id": str(row["id"]),
-            "query_name": row["name"],
-            "match_count": len(match_indices),
-            "total_lines": len(lines),
-            "matches": snippets[:20],
-        }
+        match_count, total_lines, snippets = _search_lines(code, search_term, context_lines)
+        result = {"id": str(row["id"]), "name": row["name"], "type": "query", "total_lines": total_lines}
+        if not match_count:
+            result.update({"matches": [], "message": f"No matches found for '{search_term}'"})
+        else:
+            result.update({"match_count": match_count, "matches": snippets})
+        return result
     except Exception as e:
         return {"error": str(e)}
 

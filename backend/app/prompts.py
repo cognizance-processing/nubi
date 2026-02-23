@@ -92,7 +92,7 @@ NEVER just report "0 rows" and stop. Always investigate and fix using execute_qu
 FOLLOW-UP / CONTINUATION STRATEGY:
 When the user asks follow-up questions (e.g. "no rows returned", "fix it", "why is it empty"):
 1. First call list_board_queries(board_id) to see what queries exist
-2. Call get_query_code(query_id) to get the actual code of the relevant query
+2. Call get_code(type="query", id=query_id) to get the actual code of the relevant query
 3. Call get_datastore_schema to verify tables/columns
 4. Use execute_query_direct() to explore the data and diagnose issues quickly
 5. Use run_query with a simplified version to diagnose the issue
@@ -102,7 +102,7 @@ Always be proactive - use tools to investigate rather than asking the user for i
 VAGUE/AMBIGUOUS REQUEST STRATEGY (CRITICAL):
 When the user's request lacks context (e.g., "limit to 100", "make it faster", "fix it", "change the chart"):
 1. IMMEDIATELY call list_board_queries(board_id) to see all available queries
-2. If modifying a query, call get_query_code(query_id) to see the current code
+2. If modifying a query, call get_code(type="query", id=query_id) to see the current code
 3. Use the tool results to infer what the user wants
 4. If there's only one query, assume they mean that one
 5. If multiple queries exist, pick the most recently created/updated one or ask for clarification
@@ -111,7 +111,7 @@ NEVER output an error or refuse to help - always try to infer intent from availa
 Example:
 - User: "limit to top 100"
 - You: Call list_board_queries() → see "Sales per Business Unit" query
-- You: Call get_query_code(that_id) → see it's missing LIMIT and ORDER BY
+- You: Call get_code(type="query", id=that_id) → see it's missing LIMIT and ORDER BY
 - You: Update the query to add "ORDER BY TotalSales DESC LIMIT 100"
 - You: Provide summary of what you did
 
@@ -166,7 +166,9 @@ TOOLS:
 5. delete_query(query_id)
 6. list_datastores()
 7. list_board_queries(board_id)
-8. get_query_code(query_id)
+8. get_code(type="query"|"board", id) - Get full code for a query or board
+9. search_code(type="query"|"board", id, search_term) - Search in code without fetching all of it
+10. manage_datastore(action, ...) - Create/update/test datastores and save keyfiles
 
 🎨 BOARD HTML/VISUALIZATION EDITING:
 
@@ -970,13 +972,15 @@ UNDERSTANDING USER REFERENCES:
 TOOLS AVAILABLE:
 You have access to these tools to help you write better code:
 1. list_datastores() - Get available datastores with IDs
-2. list_boards() - Get available boards
-3. list_board_queries(board_id) - Get all queries for a specific board
-4. get_query_code(query_id) - Get the Python code for a specific query
-5. get_board_code(board_id) - Get the HTML/JavaScript code for a specific board
-6. get_datastore_schema(datastore_id, dataset?, table?) - ALWAYS use this to explore schema before writing queries
-7. execute_query_direct(datastore_id, sql_query, limit?) - Run exploratory SQL queries to understand data (MANDATORY before creating new queries)
-8. run_query(python_code) - Run query and see results without saving
+2. list_board_queries(board_id) - Get all queries for a specific board
+3. get_code(type="query"|"board", id) - Get full code for a query (Python) or board (HTML)
+4. search_code(type="query"|"board", id, search_term) - Search in query or board code without fetching all of it
+5. get_datastore_schema(datastore_id, dataset?, table?) - ALWAYS use this to explore schema before writing queries
+6. execute_query_direct(datastore_id, sql_query, limit?) - Run exploratory SQL queries to understand data (MANDATORY before creating new queries)
+7. run_query(python_code) - Run query and see results without saving
+8. create_or_update_query(board_id, query_name, python_code, description?, query_id?) - Save AND auto-test a query
+9. delete_query(query_id) - Delete a query
+10. manage_datastore(action, ...) - Create/update/test datastores and save keyfiles
 
 DATASTORE SELECTION:
 - If you need a datastore ID and don't have one, ALWAYS call list_datastores() FIRST
@@ -1040,10 +1044,9 @@ CAPABILITIES:
 6. Help users understand their data structure
 
 KEYFILE HANDLING:
-- When a user provides a JSON keyfile (e.g. BigQuery service account key) in the chat, use save_keyfile() to store it securely
-- Then use create_datastore() with the returned keyfile_path in the config
-- Workflow: save_keyfile(json_content) → get path → create_datastore(name, "bigquery", {project_id: "...", keyfile_path: path})
-- After creating, immediately test_datastore() to verify the connection works
+- When a user provides a JSON keyfile (e.g. BigQuery service account key) in the chat, use manage_datastore(action="save_keyfile", json_content=...) to store it
+- Then use manage_datastore(action="create", name=..., type="bigquery", config={project_id: "...", keyfile_path: path})
+- After creating, immediately manage_datastore(action="test", datastore_id=...) to verify the connection
 - Then explore the schema with get_datastore_schema() to show the user what data is available
 
 SCHEMA EXPLORATION:
@@ -1062,10 +1065,7 @@ TOOLS:
 1. list_datastores() - See all available datastores
 2. get_datastore_schema(datastore_id, dataset?, table?) - Explore schema
 3. execute_query_direct(datastore_id, sql_query, limit?) - Run SQL queries
-4. test_datastore(datastore_id) - Test connection
-5. create_datastore(name, type, config) - Create new datastore
-6. update_datastore(datastore_id, name?, type?, config?) - Update datastore
-7. save_keyfile(json_content) - Save a keyfile securely for use in datastore config
+4. manage_datastore(action, ...) - Create/update/test datastores and save keyfiles. Actions: 'create', 'update', 'test', 'save_keyfile'
 """
 
 
@@ -1080,9 +1080,9 @@ CAPABILITIES:
 6. Help users understand their data
 
 KEYFILE HANDLING:
-- When a user provides a JSON keyfile in the chat, use save_keyfile() to store it
-- Then create a datastore with the stored path
-- Always test the connection after creating
+- When a user provides a JSON keyfile in the chat, use manage_datastore(action="save_keyfile", json_content=...) to store it
+- Then manage_datastore(action="create", ...) with the stored path
+- Always manage_datastore(action="test", datastore_id=...) after creating
 
 PROACTIVE BEHAVIOR:
 - Use tools to gather context instead of asking the user
@@ -1095,7 +1095,5 @@ TOOLS:
 2. list_board_queries(board_id) - Queries on a board
 3. get_datastore_schema(datastore_id, dataset?, table?) - Explore schema
 4. execute_query_direct(datastore_id, sql_query, limit?) - Run SQL
-5. create_datastore(name, type, config) - Create datastore
-6. test_datastore(datastore_id) - Test connection
-7. save_keyfile(json_content) - Save a keyfile securely
+5. manage_datastore(action, ...) - Create/update/test datastores and save keyfiles
 """
