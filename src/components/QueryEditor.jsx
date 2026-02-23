@@ -209,6 +209,7 @@ export default function QueryEditor() {
                 code_delta: null,
                 needs_user_input: null,
                 tool_calls: [],
+                progress: [],
                 isStreaming: true,
             }
             setChatMessages(prev => [...prev, streamingMessage])
@@ -217,7 +218,6 @@ export default function QueryEditor() {
             const decoder = new TextDecoder()
             let buffer = ''
             let finalCode = null
-            let progressLines = []
             let finalSummary = ''
             const toolCallsMap = new Map()
 
@@ -256,12 +256,12 @@ export default function QueryEditor() {
                             streamingMessage.tool_calls = Array.from(toolCallsMap.values())
                             setChatMessages(prev => [...prev.slice(0, -1), { ...streamingMessage }])
                         } else if (data.type === 'progress') {
-                            progressLines.push(data.content)
-                            streamingMessage.content = progressLines.join('\n')
+                            streamingMessage.progress = [...(streamingMessage.progress || []), data.content]
                             setChatMessages(prev => [...prev.slice(0, -1), { ...streamingMessage }])
                         } else if (data.type === 'code_delta') {
                             streamingMessage.code_delta = { old_code: data.old_code, new_code: data.new_code }
                             finalCode = data.new_code
+                            setPythonCode(data.new_code)
                             setChatMessages(prev => [...prev.slice(0, -1), { ...streamingMessage }])
                         } else if (data.type === 'test_result') {
                             streamingMessage.test_result = data
@@ -272,7 +272,7 @@ export default function QueryEditor() {
                         } else if (data.type === 'final') {
                             finalCode = data.code || finalCode
                             finalSummary = data.message
-                            streamingMessage.content = data.message + (progressLines.length ? '\n\n' + progressLines.join('\n') : '')
+                            streamingMessage.content = data.message
                             streamingMessage.isStreaming = false
                             setChatMessages(prev => [...prev.slice(0, -1), { ...streamingMessage }])
 

@@ -49,7 +49,6 @@ export default function BoardsList() {
     const [loading, setLoading] = useState(true)
     const [showCreateModal, setShowCreateModal] = useState(false)
     const [newBoardName, setNewBoardName] = useState('')
-    const [newBoardDescription, setNewBoardDescription] = useState('')
     const [search, setSearch] = useState('')
     const [deleteConfirm, setDeleteConfirm] = useState(null)
     const [deleting, setDeleting] = useState(false)
@@ -80,13 +79,11 @@ export default function BoardsList() {
         try {
             const data = await api.boards.create({
                 name: newBoardName,
-                description: newBoardDescription || null,
                 organization_id: currentOrg.id,
             })
             setBoards([data, ...boards])
             setShowCreateModal(false)
             setNewBoardName('')
-            setNewBoardDescription('')
             navigate(`/board/${data.id}`)
         } catch (error) {
             console.error('Error creating board:', error)
@@ -299,19 +296,6 @@ export default function BoardsList() {
                                     onChange={(e) => setNewBoardName(e.target.value)}
                                     required
                                     autoFocus
-                                />
-                            </div>
-                            <div className="form-group">
-                                <label className="form-label" htmlFor="board-description">
-                                    Description <span className="text-slate-500 font-normal">(optional)</span>
-                                </label>
-                                <textarea
-                                    id="board-description"
-                                    className="form-input"
-                                    placeholder="What is this board for?"
-                                    value={newBoardDescription}
-                                    onChange={(e) => setNewBoardDescription(e.target.value)}
-                                    rows="2"
                                 />
                             </div>
                             <div className="flex gap-3 justify-end mt-2">

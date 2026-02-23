@@ -391,6 +391,7 @@ export function ChatProvider({ children }) {
             code_delta: null,
             needs_user_input: null,
             tool_calls: [],
+            progress: [],
             isStreaming: true,
         }
         setChatMessages(prev => [...prev, streamingMessage])
@@ -398,7 +399,6 @@ export function ChatProvider({ children }) {
         const reader = response.body.getReader()
         const decoder = new TextDecoder()
         let buffer = ''
-        let progressLines = []
         let finalSummary = ''
         const toolCallsMap = new Map()
 
@@ -437,8 +437,7 @@ export function ChatProvider({ children }) {
                         streamingMessage.tool_calls = Array.from(toolCallsMap.values())
                         setChatMessages(prev => [...prev.slice(0, -1), { ...streamingMessage }])
                     } else if (data.type === 'progress') {
-                        progressLines.push(data.content)
-                        streamingMessage.content = progressLines.join('\n')
+                        streamingMessage.progress = [...(streamingMessage.progress || []), data.content]
                         setChatMessages(prev => [...prev.slice(0, -1), { ...streamingMessage }])
                     } else if (data.type === 'code_delta') {
                         streamingMessage.code_delta = { old_code: data.old_code, new_code: data.new_code }
@@ -448,7 +447,7 @@ export function ChatProvider({ children }) {
                         setChatMessages(prev => [...prev.slice(0, -1), { ...streamingMessage }])
                     } else if (data.type === 'final') {
                         finalSummary = data.message
-                        streamingMessage.content = data.message + (progressLines.length ? '\n\n' + progressLines.join('\n') : '')
+                        streamingMessage.content = data.message
                         streamingMessage.isStreaming = false
                         setChatMessages(prev => [...prev.slice(0, -1), { ...streamingMessage }])
                     } else if (data.type === 'error') {

@@ -49,7 +49,7 @@ TOOL_GET_CODE = {
 
 TOOL_SEARCH_CODE = {
     "name": "search_code",
-    "description": "Search for a pattern in a board's HTML or query's Python code. Returns matching lines with line numbers and context. Use instead of get_code when code is large and you only need specific sections.",
+    "description": "Search for a pattern in a board's HTML or query's Python code. Returns matching lines with line numbers and context. Use instead of get_code when code is large. Tip: search for 'SECTION:' to find code organization markers.",
     "parameters": {
         "type": "object",
         "properties": {
@@ -130,6 +130,37 @@ TOOL_EXECUTE_QUERY_DIRECT = {
     }
 }
 
+TOOL_EDIT_CODE = {
+    "name": "edit_code",
+    "description": (
+        "Make targeted search/replace edits to a board's HTML or query's Python code. "
+        "Each edit specifies an exact 'search' string to find and a 'replace' string to substitute. "
+        "The search string must match exactly one location in the code. "
+        "Use get_code or search_code first to see the current code and find the right strings to target. "
+        "Prefer small, focused edits over replacing large blocks."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "type": {"type": "string", "description": "Entity type: 'board' or 'query'"},
+            "id": {"type": "string", "description": "The UUID of the board or query"},
+            "edits": {
+                "type": "array",
+                "description": "Array of search/replace edits to apply sequentially",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "search": {"type": "string", "description": "Exact string to find in the code (must match exactly once)"},
+                        "replace": {"type": "string", "description": "Replacement string"},
+                    },
+                    "required": ["search", "replace"],
+                },
+            },
+        },
+        "required": ["type", "id", "edits"]
+    }
+}
+
 TOOL_MANAGE_DATASTORE = {
     "name": "manage_datastore",
     "description": (
@@ -160,7 +191,7 @@ TOOL_MANAGE_DATASTORE = {
 
 
 # ---------------------------------------------------------------------------
-# Unified tool set — all 14 tools, every context gets the full set
+# Tool sets by context
 # ---------------------------------------------------------------------------
 
 def _wrap_tools(tool_list: list) -> list:
@@ -168,25 +199,52 @@ def _wrap_tools(tool_list: list) -> list:
     return [{"function_declarations": tool_list}]
 
 
-ALL_TOOLS = [
+_BOARD_QUERY_TOOLS = [
     TOOL_LIST_DATASTORES,
     TOOL_LIST_BOARD_QUERIES,
     TOOL_GET_CODE,
     TOOL_SEARCH_CODE,
+    TOOL_EDIT_CODE,
     TOOL_CREATE_OR_UPDATE_QUERY,
     TOOL_DELETE_QUERY,
     TOOL_GET_DATASTORE_SCHEMA,
     TOOL_RUN_QUERY,
     TOOL_EXECUTE_QUERY_DIRECT,
+]
+
+_DATASTORE_TOOLS = [
+    TOOL_LIST_DATASTORES,
+    TOOL_GET_DATASTORE_SCHEMA,
+    TOOL_EXECUTE_QUERY_DIRECT,
     TOOL_MANAGE_DATASTORE,
 ]
 
+_GENERAL_TOOLS = [
+    TOOL_LIST_DATASTORES,
+    TOOL_LIST_BOARD_QUERIES,
+    TOOL_GET_CODE,
+    TOOL_SEARCH_CODE,
+    TOOL_GET_DATASTORE_SCHEMA,
+    TOOL_EXECUTE_QUERY_DIRECT,
+    TOOL_MANAGE_DATASTORE,
+]
+
+ALL_TOOLS = _BOARD_QUERY_TOOLS + [TOOL_MANAGE_DATASTORE]
 GEMINI_TOOLS = _wrap_tools(ALL_TOOLS)
+
+_BOARD_QUERY_GEMINI = _wrap_tools(_BOARD_QUERY_TOOLS)
+_DATASTORE_GEMINI = _wrap_tools(_DATASTORE_TOOLS)
+_GENERAL_GEMINI = _wrap_tools(_GENERAL_TOOLS)
 
 
 def get_tools_for_context(context: str) -> list:
-    """Return the full tool set regardless of context."""
-    return GEMINI_TOOLS
+    """Return tool set appropriate for the page context."""
+    if context in ("board", "query"):
+        return _BOARD_QUERY_GEMINI
+    elif context == "datastore":
+        return _DATASTORE_GEMINI
+    else:
+        return _GENERAL_GEMINI
 
 
 # ---------------------------------------------------------------------------
@@ -222,12 +280,25 @@ async def get_board_queries(board_id: str) -> List[Dict[str, Any]]:
     except Exception:
         return []
 
+def _add_line_numbers(code: str) -> str:
+    """Prepend line numbers to each line of code."""
+    lines = code.split("\n")
+    width = len(str(len(lines)))
+    return "\n".join(f"{i + 1:>{width}}: {line}" for i, line in enumerate(lines))
+
+
 async def get_query_code(query_id: str) -> Dict[str, Any]:
     try:
         pool = get_pool()
         row = await pool.fetchrow("SELECT id, name, python_code FROM board_queries WHERE id = $1", query_id)
         if row:
-            return {"id": str(row["id"]), "name": row["name"], "code": row["python_code"]}
+            code = row["python_code"] or ""
+            total_lines = len(code.split("\n")) if code else 0
+            return {
+                "id": str(row["id"]), "name": row["name"],
+                "code": _add_line_numbers(code) if code else "",
+                "total_lines": total_lines,
+            }
         return {"error": "Query not found"}
     except Exception as e:
         return {"error": str(e)}
@@ -241,10 +312,12 @@ async def get_board_code(board_id: str) -> Dict[str, Any]:
         code_row = await pool.fetchrow(
             "SELECT code FROM board_code WHERE board_id = $1 ORDER BY version DESC LIMIT 1", board_id
         )
+        code = code_row["code"] if code_row else ""
+        total_lines = len(code.split("\n")) if code else 0
         return {
-            "id": str(board["id"]),
-            "name": board["name"],
-            "code": code_row["code"] if code_row else "",
+            "id": str(board["id"]), "name": board["name"],
+            "code": _add_line_numbers(code) if code else "",
+            "total_lines": total_lines,
         }
     except Exception as e:
         return {"error": str(e)}
@@ -379,6 +452,80 @@ async def update_board_code(board_id: str, html_code: str) -> Dict[str, Any]:
             board_id, html_code, next_version,
         )
         return {"success": True, "board_id": board_id, "version": next_version, "message": f"Board code updated to version {next_version}"}
+    except Exception as e:
+        return {"error": str(e)}
+
+
+async def apply_code_edits(entity_type: str, entity_id: str, edits: List[Dict[str, str]]) -> Dict[str, Any]:
+    """Apply a list of search/replace edits to board HTML or query Python code."""
+    try:
+        pool = get_pool()
+
+        if entity_type == "board":
+            board = await pool.fetchrow("SELECT id, name FROM boards WHERE id = $1", entity_id)
+            if not board:
+                return {"error": "Board not found"}
+            code_row = await pool.fetchrow(
+                "SELECT code FROM board_code WHERE board_id = $1 ORDER BY version DESC LIMIT 1", entity_id
+            )
+            code = code_row["code"] if code_row else ""
+        elif entity_type == "query":
+            row = await pool.fetchrow("SELECT id, name, python_code FROM board_queries WHERE id = $1", entity_id)
+            if not row:
+                return {"error": "Query not found"}
+            code = row["python_code"] or ""
+        else:
+            return {"error": f"Unknown type '{entity_type}'. Use 'board' or 'query'."}
+
+        if not code:
+            return {"error": f"No existing code found for {entity_type} {entity_id}. Use get_code to create from scratch."}
+
+        old_code = code
+        applied = []
+        failed = []
+
+        for i, edit in enumerate(edits):
+            search = edit.get("search", "")
+            replace = edit.get("replace", "")
+            if not search:
+                failed.append({"index": i, "reason": "Empty search string"})
+                continue
+            count = code.count(search)
+            if count == 0:
+                failed.append({"index": i, "reason": f"Search string not found", "search_preview": search[:80]})
+                continue
+            if count > 1:
+                failed.append({"index": i, "reason": f"Search string matched {count} times (must be unique)", "search_preview": search[:80]})
+                continue
+            code = code.replace(search, replace, 1)
+            applied.append(i)
+
+        if not applied:
+            return {"error": "No edits could be applied", "failed": failed}
+
+        if entity_type == "board":
+            save_result = await update_board_code(entity_id, code)
+            if save_result.get("error"):
+                return save_result
+        else:
+            await pool.execute(
+                "UPDATE board_queries SET python_code=$1 WHERE id=$2", code, entity_id
+            )
+
+        result = {
+            "success": True,
+            "type": entity_type,
+            "id": entity_id,
+            "edits_applied": len(applied),
+            "edits_failed": len(failed),
+            "old_code": old_code,
+            "new_code": code,
+            "total_lines": len(code.split("\n")),
+            "message": f"Applied {len(applied)} edit(s) to {entity_type} code.",
+        }
+        if failed:
+            result["failed"] = failed
+        return result
     except Exception as e:
         return {"error": str(e)}
 
