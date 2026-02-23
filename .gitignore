@@ -36,3 +36,6 @@ backend/.env
 backend/storage/secret-files/
 key.json
 keyfile.json
+
+# Firebase
+.firebase/

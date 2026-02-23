@@ -1,3 +1,7 @@
+import os
+
+_BACKEND_URL = os.getenv("BACKEND_URL", "https://nubi-backend-759628329757.us-central1.run.app")
+
 BOARD_SYSTEM_INSTRUCTION = """You are an intelligent BI assistant, similar to Cursor AI for data. You can perform MULTIPLE operations in a single request.
 
 CORE PRINCIPLE: BE PROACTIVE WITH TOOLS
@@ -895,7 +899,7 @@ TECHNICAL REQUIREMENTS:
 - Fetch data from /explore endpoint with query_id
 - Handle loading and error states with Alpine.js x-show
 - NEVER refuse to edit the HTML - that's your primary job!
-"""
+""".replace("http://localhost:8000", _BACKEND_URL)
 
 EXPLORATION_SYSTEM_INSTRUCTION = """You are an intelligent data query assistant, like Cursor AI for data. You help write and edit Python code for data transformations.
 

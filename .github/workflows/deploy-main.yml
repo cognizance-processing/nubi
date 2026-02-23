@@ -66,6 +66,7 @@ jobs:
             --memory=1Gi
           env_vars: |
             STORAGE_PROVIDER=gcs
+            BACKEND_URL=https://nubi-backend-759628329757.us-central1.run.app
           secrets: |
             DATABASE_URL=DATABASE_URL:latest
             JWT_SECRET=JWT_SECRET:latest
