@@ -20,19 +20,22 @@ while IFS= read -r line || [ -n "$line" ]; do
   [[ -z "$line" || "$line" =~ ^[[:space:]]*# ]] && continue
 
   KEY="${line%%=*}"
+  KEY="${KEY%%[[:space:]]}"
   VALUE="${line#*=}"
+  VALUE="${VALUE%%[[:space:]]}"
+  VALUE="${VALUE%$'\r'}"
 
   # Skip if key or value is empty
   [[ -z "$KEY" || -z "$VALUE" ]] && continue
 
   echo -n "Creating secret: $KEY ... "
 
-  # Create or update the secret
+  # Create or update the secret (printf to avoid trailing newline)
   if gcloud secrets describe "$KEY" &>/dev/null; then
-    echo -n "$VALUE" | gcloud secrets versions add "$KEY" --data-file=- --quiet
+    printf '%s' "$VALUE" | gcloud secrets versions add "$KEY" --data-file=- --quiet
     echo "updated"
   else
-    echo -n "$VALUE" | gcloud secrets create "$KEY" --data-file=- --quiet
+    printf '%s' "$VALUE" | gcloud secrets create "$KEY" --data-file=- --quiet
     echo "created"
   fi
 done < "$ENV_FILE"
