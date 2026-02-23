@@ -18,7 +18,7 @@ from ..prompts import (
 )
 from ..helpers import strip_markdown_code_block, validate_html
 from ..query_engine import (
-    test_query as run_query, execute_query_direct,
+    execute_python_query, execute_query_direct,
     get_datastore_schema, get_bigquery_schema, get_sql_schema,
 )
 from ..ai_tools import (
@@ -152,7 +152,7 @@ async def _execute_tool(func_name: str, func_args: dict, user_id: Optional[str] 
             table=func_args.get("table"),
         )
     elif func_name == "run_query":
-        result = await run_query(func_args.get("python_code", ""))
+        result = await execute_python_query(func_args.get("python_code", ""), limit_rows=5)
         if result.get("success") and result.get("row_count", 0) == 0:
             result["warning"] = (
                 "ZERO ROWS RETURNED. This likely means the query has incorrect column names, "
@@ -392,6 +392,7 @@ async def board_helper_stream(
             latest_edit_code = None
             last_tool_results: List[dict] = []
             continuation_count = 0
+            consecutive_empty = 0
 
             while tool_iteration < max_tool_iterations:
                 tool_iteration += 1
@@ -419,6 +420,7 @@ async def board_helper_stream(
 
                 if resp.function_calls:
                     any_tools_called = True
+                    consecutive_empty = 0
                     last_tool_results = []
 
                     tc_list = [{"name": fc.name, "args": fc.args, "id": fc.name} for fc in resp.function_calls]
@@ -427,7 +429,10 @@ async def board_helper_stream(
                     for fc in resp.function_calls:
                         yield f"data: {json.dumps({'type': 'tool_call', 'tool': fc.name, 'status': 'started', 'args': fc.args})}\n\n"
 
-                        result = await _execute_tool(fc.name, fc.args, user_id=user_id, org_id=organization_id)
+                        try:
+                            result = await _execute_tool(fc.name, fc.args, user_id=user_id, org_id=organization_id)
+                        except Exception as tool_err:
+                            result = {"error": f"Tool execution failed: {str(tool_err)}", "success": False}
 
                         is_error = "error" in result and not result.get("success")
                         if fc.name == "execute_query_direct" and result.get("success"):
@@ -503,17 +508,27 @@ async def board_helper_stream(
                         yield f"data: {json.dumps({'type': 'progress', 'content': f'Completed long response ({continuation_count} parts)'})}\n\n"
 
                 if not raw_text:
+                    consecutive_empty += 1
+
+                    if consecutive_empty >= 5:
+                        if any_tools_called:
+                            yield f"data: {json.dumps({'type': 'final', 'code': '', 'message': 'Operations completed. The AI was unable to generate a summary.'})}\n\n"
+                        else:
+                            yield f"data: {json.dumps({'type': 'error', 'content': 'Could not get a response from the AI. Please try again.'})}\n\n"
+                        return
+
                     if any_tools_called and tool_iteration < max_tool_iterations:
                         yield f"data: {json.dumps({'type': 'progress', 'content': 'Continuing...'})}\n\n"
-                        nudge = (
-                            "You successfully created/updated a query. Now provide a brief summary."
-                            if query_created
-                            else "Continue with the original task. Complete the user's request."
-                        )
+                        if query_created:
+                            nudge = "You successfully created/updated a query. Now provide a brief summary of what you did."
+                        elif consecutive_empty >= 3:
+                            nudge = "You MUST respond now. Summarize what was accomplished or continue with the next step."
+                        else:
+                            nudge = "Continue with the original task. Complete the user's request."
                         messages.append({"role": "user", "content": nudge})
                         continue
 
-                    if not any_tools_called and tool_iteration == 1:
+                    if not any_tools_called and tool_iteration <= 2:
                         yield f"data: {json.dumps({'type': 'progress', 'content': 'Gathering context...'})}\n\n"
                         messages.append({
                             "role": "user",
@@ -531,17 +546,9 @@ async def board_helper_stream(
                     yield f"data: {json.dumps({'type': 'final', 'code': '', 'message': 'Tools executed but could not generate a final response.'})}\n\n"
                     return
 
-                if query_created and not edit_code_used:
-                    yield f"data: {json.dumps({'type': 'final', 'code': '', 'message': raw_text.strip()})}\n\n"
-                    return
-
                 if edit_code_used:
                     summary = raw_text.strip() if raw_text.strip() else "Code updated via targeted edits."
                     yield f"data: {json.dumps({'type': 'final', 'code': latest_edit_code or '', 'message': summary})}\n\n"
-                    return
-
-                if query_created:
-                    yield f"data: {json.dumps({'type': 'final', 'code': '', 'message': raw_text.strip()})}\n\n"
                     return
 
                 edited_code = strip_markdown_code_block(raw_text.strip())
@@ -550,6 +557,9 @@ async def board_helper_stream(
                 is_explanation = len(edited_code) < 100 or ("<" not in edited_code)
 
                 if not is_html or is_explanation:
+                    if query_created or (any_tools_called and not is_html):
+                        yield f"data: {json.dumps({'type': 'final', 'code': '', 'message': raw_text.strip()})}\n\n"
+                        return
                     if tool_iteration < max_tool_iterations:
                         yield f"data: {json.dumps({'type': 'progress', 'content': 'Received text instead of HTML, requesting code...'})}\n\n"
                         messages.append({"role": "assistant", "content": raw_text})
@@ -731,6 +741,7 @@ async def _tool_loop_stream(
     continuation_count = 0
     edit_code_used = False
     latest_edit_code = None
+    consecutive_empty = 0
 
     while tool_iteration < max_tool_iterations:
         tool_iteration += 1
@@ -754,13 +765,18 @@ async def _tool_loop_stream(
 
         if resp.function_calls:
             any_tools_called = True
+            consecutive_empty = 0
             tc_list = [{"name": fc.name, "args": fc.args, "id": fc.name} for fc in resp.function_calls]
             messages.append({"role": "assistant", "tool_calls": tc_list})
 
             for fc in resp.function_calls:
                 yield {"type": "tool_call", "tool": fc.name, "status": "started", "args": fc.args}
 
-                result = await _execute_tool(fc.name, fc.args, user_id=user_id, org_id=organization_id)
+                try:
+                    result = await _execute_tool(fc.name, fc.args, user_id=user_id, org_id=organization_id)
+                except Exception as tool_err:
+                    result = {"error": f"Tool execution failed: {str(tool_err)}", "success": False}
+
                 is_error = "error" in result and not result.get("success")
 
                 if fc.name == "execute_query_direct" and result.get("success"):
@@ -804,10 +820,18 @@ async def _tool_loop_stream(
             raw_text = accumulated_text + raw_text
 
         if not raw_text:
+            consecutive_empty += 1
+            if consecutive_empty >= 5:
+                if any_tools_called:
+                    yield {"type": "final", "code": "", "message": "Operations completed. The AI was unable to generate a summary."}
+                else:
+                    yield {"type": "error", "content": "Could not get a response from the AI. Please try again."}
+                return
             if any_tools_called and tool_iteration < max_tool_iterations:
-                messages.append({"role": "user", "content": "Provide a brief summary of what was done."})
+                nudge = "You MUST respond now. Summarize what was accomplished." if consecutive_empty >= 3 else "Provide a brief summary of what was done."
+                messages.append({"role": "user", "content": nudge})
                 continue
-            if not any_tools_called and tool_iteration == 1:
+            if not any_tools_called and tool_iteration <= 2:
                 messages.append({"role": "user", "content": "Use the available tools to help answer. Then provide a summary."})
                 continue
             yield {"type": "final", "code": "", "message": "No response generated."}
@@ -841,7 +865,6 @@ async def exploration_helper_stream(
     schema_info = None
     if datastore_id:
         try:
-            yield {"type": "progress", "content": "Fetching database schema..."}
             pool = get_pool()
             ds_row = await pool.fetchrow("SELECT * FROM datastores WHERE id = $1", datastore_id)
             if ds_row:
@@ -856,7 +879,8 @@ async def exploration_helper_stream(
                         for t in tables[:20]:
                             schema_parts.append(f"  - {ds['name']}.{t['name']}")
                     schema_info = "\n".join(schema_parts)
-                    yield {"type": "progress", "content": f"Found {len(datasets)} BigQuery datasets with tables"}
+                    total_tables = sum(len(d.get("tables", [])) for d in datasets)
+                    yield {"type": "progress", "content": f"Schema: {len(datasets)} datasets, {total_tables} tables"}
                 elif datastore["type"] == "postgres":
                     schema_result = await get_sql_schema(datastore, None, None)
                     schemas = schema_result.get("schemas", [])
@@ -864,7 +888,7 @@ async def exploration_helper_stream(
                     for s in schemas:
                         schema_parts.append(f"  - {s['name']}")
                     schema_info = "\n".join(schema_parts)
-                    yield {"type": "progress", "content": f"Found {len(schemas)} PostgreSQL schemas"}
+                    yield {"type": "progress", "content": f"Schema: {len(schemas)} schemas"}
         except Exception as e:
             yield {"type": "progress", "content": f"Schema fetch failed: {str(e)}"}
 
@@ -971,7 +995,11 @@ async def exploration_helper_stream(
                     for fc in resp.function_calls:
                         yield {"type": "tool_call", "tool": fc.name, "status": "started", "args": fc.args}
 
-                        result = await _execute_tool(fc.name, fc.args, user_id=user_id)
+                        try:
+                            result = await _execute_tool(fc.name, fc.args, user_id=user_id)
+                        except Exception as tool_err:
+                            result = {"error": f"Tool execution failed: {str(tool_err)}", "success": False}
+
                         is_err = "error" in result and not result.get("success")
 
                         if fc.name == "execute_query_direct" and result.get("success"):
@@ -1080,8 +1108,10 @@ async def exploration_helper_stream(
                             json={"query_id": test_query_id, "args": {}, "datastore_id": datastore_id},
                             timeout=30,
                         )
-                        if test_response.ok:
-                            test_data = test_response.json()
+                        test_data = test_response.json() if test_response.ok else {}
+                        test_error_msg = test_data.get("error") or (test_data.get("detail") if not test_response.ok else None)
+
+                        if not test_error_msg and test_data.get("result") is not None:
                             row_count = test_data.get("count", 0)
                             yield {"type": "progress", "content": f"Test passed! Query returned {row_count} rows"}
                             yield {"type": "test_result", "success": True, "row_count": row_count}
@@ -1096,8 +1126,7 @@ async def exploration_helper_stream(
                             }
                             return
                         else:
-                            error_data = test_response.json()
-                            last_error = error_data.get("detail", "Unknown error")
+                            last_error = test_error_msg or "Unknown error"
                             yield {"type": "progress", "content": f"Test failed: {last_error}"}
                             yield {"type": "test_result", "success": False, "error": last_error}
                             if attempt == max_attempts:
@@ -1228,8 +1257,10 @@ async def exploration_helper_with_testing(
                             requests.post, f"{_BACKEND_URL}/explore",
                             json={"query_id": test_query_id, "args": {}, "datastore_id": datastore_id}, timeout=30,
                         )
-                        if test_response.ok:
-                            test_data = test_response.json()
+                        test_data = test_response.json() if test_response.ok else {}
+                        test_error_msg = test_data.get("error") or (test_data.get("detail") if not test_response.ok else None)
+
+                        if not test_error_msg and test_data.get("result") is not None:
                             row_count = test_data.get("count", 0)
                             progress_log.append(f"Test passed! {row_count} rows")
                             return {
@@ -1238,7 +1269,7 @@ async def exploration_helper_with_testing(
                                 "progress": progress_log, "test_passed": True, "attempts": attempt,
                             }
                         else:
-                            last_error = test_response.json().get("detail", "Unknown error")
+                            last_error = test_error_msg or "Unknown error"
                             progress_log.append(f"Test failed: {last_error}")
                             if attempt == max_attempts:
                                 return {

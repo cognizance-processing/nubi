@@ -78,7 +78,7 @@ def strip_markdown_code_block(raw: str) -> str:
 
         if html_start != -1:
             html_content = trimmed[html_start:]
-            html_end = html_content.lower().rfind('</html>')
+            html_end = html_content.lower().find('</html>')
             if html_end != -1:
                 code_blocks.append(html_content[:html_end + 7].strip())
             else:

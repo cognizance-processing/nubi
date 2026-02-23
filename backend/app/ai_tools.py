@@ -4,7 +4,7 @@ import uuid
 from typing import Dict, Any, Optional, List
 
 from .db import get_pool
-from .query_engine import test_query as _run_test
+from .query_engine import execute_python_query
 
 
 def _row_to_dict(row) -> Dict[str, Any]:
@@ -420,12 +420,17 @@ async def create_or_update_query(board_id: str, query_name: str, python_code: st
                 "name": query_name, "message": f"Query '{query_name}' created successfully",
             }
 
-        test_result = await _run_test(python_code)
-        result["test"] = test_result
-        if test_result.get("success"):
-            result["message"] += f" — test passed, {test_result.get('row_count', 0)} rows returned"
+        exec_result = await execute_python_query(python_code, limit_rows=10)
+        result["test"] = exec_result
+        if exec_result.get("success"):
+            rc = exec_result.get("row_count", 0)
+            result["message"] += f" — executed successfully, {rc} rows returned"
+            if exec_result.get("sample_rows"):
+                result["sample_rows"] = exec_result["sample_rows"]
+            if exec_result.get("columns"):
+                result["columns"] = exec_result["columns"]
         else:
-            result["message"] += f" — saved but test failed: {test_result.get('error', 'unknown error')}"
+            result["message"] += f" — saved but execution failed: {exec_result.get('error', 'unknown error')}"
 
         return result
     except Exception as e:
