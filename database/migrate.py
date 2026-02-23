@@ -1,35 +1,70 @@
 #!/usr/bin/env python3
-"""Run pending SQL migrations against a local Postgres database.
+"""Run pending SQL migrations against a Postgres database.
 
 Tracks applied migrations in a `_migrations` table so each file only runs once.
 Also runs seed.sql if the seed hasn't been applied yet.
 
 Usage:
-    python database/migrate.py           # run pending migrations + seed
-    python database/migrate.py --status  # show migration status
-    python database/migrate.py --reset   # drop tracking table and re-run all
+    python database/migrate.py                      # local (default)
+    python database/migrate.py --env dev             # dev environment
+    python database/migrate.py --env prod --status   # prod migration status
+    python database/migrate.py --env prod --reset    # reset prod (with confirmation)
 """
 
 import argparse, subprocess, sys, os
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
-ENV_FILE = HERE.parent / "backend" / ".env"
-
-def _load_dotenv():
-    if ENV_FILE.exists():
-        for line in ENV_FILE.read_text().splitlines():
-            line = line.strip()
-            if not line or line.startswith("#"):
-                continue
-            key, _, val = line.partition("=")
-            os.environ.setdefault(key.strip(), val.strip())
-
-_load_dotenv()
-
-DB_URL = os.environ.get("DATABASE_URL", "postgresql://pc@localhost:5432/nubi")
+BACKEND_DIR = HERE.parent / "backend"
 MIGRATIONS_DIR = HERE / "migrations"
 SEED_FILE = HERE / "seed.sql"
+
+ENV_FILES = {
+    "local": BACKEND_DIR / ".env",
+    "dev":   BACKEND_DIR / ".env.development",
+    "prod":  BACKEND_DIR / ".env.production",
+}
+
+DB_URL: str = ""
+
+
+def _load_dotenv(path: Path):
+    """Load a .env file into os.environ (existing vars take precedence)."""
+    if not path.exists():
+        print(f"WARNING: env file not found: {path}")
+        return
+    for line in path.read_text().splitlines():
+        line = line.strip()
+        if not line or line.startswith("#"):
+            continue
+        key, _, val = line.partition("=")
+        os.environ.setdefault(key.strip(), val.strip())
+
+
+def init_env(env_name: str):
+    global DB_URL
+    env_file = ENV_FILES[env_name]
+    base_env = BACKEND_DIR / ".env"
+
+    # Target env file first (highest priority), then base .env for defaults
+    _load_dotenv(env_file)
+    if env_name != "local" and base_env.exists():
+        _load_dotenv(base_env)
+
+    DB_URL = os.environ.get("DATABASE_URL", "postgresql://pc@localhost:5432/nubi")
+
+    label = env_name.upper()
+    # Mask credentials in the displayed URL
+    display_url = DB_URL
+    if "@" in DB_URL:
+        pre, at_rest = DB_URL.split("@", 1)
+        proto, _, creds = pre.rpartition("//")
+        display_url = f"{proto}//*****@{at_rest}"
+
+    print(f"Environment : {label}")
+    print(f"Env file    : {env_file.relative_to(HERE.parent)}")
+    print(f"Database    : {display_url}")
+    print()
 
 TRACKING_TABLE = """
 CREATE TABLE IF NOT EXISTS _migrations (
@@ -142,7 +177,12 @@ def cmd_status():
     print(f"\n{len(files)} migrations, {pending_count} pending")
 
 
-def cmd_reset():
+def cmd_reset(env_name: str):
+    if env_name == "prod":
+        answer = input("⚠️  You are about to RESET the PRODUCTION database. Type 'yes' to confirm: ")
+        if answer.strip().lower() != "yes":
+            print("Aborted.")
+            sys.exit(0)
     print("Dropping all objects in public schema...")
     psql_exec("DROP SCHEMA public CASCADE; CREATE SCHEMA public;")
     print("Re-running all migrations...\n")
@@ -151,14 +191,20 @@ def cmd_reset():
 
 def main():
     parser = argparse.ArgumentParser(description="Database migration runner")
+    parser.add_argument(
+        "--env", choices=["local", "dev", "prod"], default="local",
+        help="Target environment (default: local)",
+    )
     parser.add_argument("--status", action="store_true", help="Show migration status")
     parser.add_argument("--reset", action="store_true", help="Drop tracking and re-run all")
     args = parser.parse_args()
 
+    init_env(args.env)
+
     if args.status:
         cmd_status()
     elif args.reset:
-        cmd_reset()
+        cmd_reset(args.env)
     else:
         cmd_migrate()
 
