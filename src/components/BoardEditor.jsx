@@ -346,7 +346,6 @@ export default function BoardEditor() {
     const [loadingQueries, setLoadingQueries] = useState(false)
     const [showCreateQuery, setShowCreateQuery] = useState(false)
     const [createQueryName, setCreateQueryName] = useState('')
-    const [createQueryDescription, setCreateQueryDescription] = useState('')
     const [creatingQuery, setCreatingQuery] = useState(false)
     const [deleteConfirm, setDeleteConfirm] = useState(null)
     const [deleting, setDeleting] = useState(false)
@@ -495,7 +494,9 @@ export default function BoardEditor() {
                 thinking: null,
                 code_delta: null,
                 needs_user_input: null,
-                tool_calls: []
+                tool_calls: [],
+                progress: [],
+                isStreaming: true,
             }
             setChatMessages(prev => [...prev, streamingMessage])
 
@@ -503,9 +504,8 @@ export default function BoardEditor() {
             const decoder = new TextDecoder()
             let buffer = ''
             let finalCode = null
-            let progressLines = []
-            let finalSummary = '' // Clean summary for DB storage
-            const toolCallsMap = new Map() // Track tool calls by name
+            let finalSummary = ''
+            const toolCallsMap = new Map()
 
             try {
                 while (true) {
@@ -562,20 +562,24 @@ export default function BoardEditor() {
                             streamingMessage.tool_calls = Array.from(toolCallsMap.values())
                             setChatMessages(prev => [...prev.slice(0, -1), { ...streamingMessage }])
                         } else if (data.type === 'progress') {
-                            progressLines.push(data.content)
-                            streamingMessage.content = progressLines.join('\n')
+                            streamingMessage.progress = [...(streamingMessage.progress || []), data.content]
                             setChatMessages(prev => [...prev.slice(0, -1), { ...streamingMessage }])
                         } else if (data.type === 'code_delta') {
                             streamingMessage.code_delta = { old_code: data.old_code, new_code: data.new_code }
                             finalCode = data.new_code
+                            setCode(data.new_code)
+                            if (iframeRef.current) {
+                                iframeRef.current.srcdoc = data.new_code
+                            }
                             setChatMessages(prev => [...prev.slice(0, -1), { ...streamingMessage }])
                         } else if (data.type === 'needs_user_input') {
                             streamingMessage.needs_user_input = { message: data.message, error: data.error }
                             setChatMessages(prev => [...prev.slice(0, -1), { ...streamingMessage }])
                         } else if (data.type === 'final') {
                             finalCode = data.code
-                            finalSummary = data.message // Clean summary for DB
-                            streamingMessage.content = data.message + '\n\n' + progressLines.join('\n')
+                            finalSummary = data.message
+                            streamingMessage.content = data.message
+                            streamingMessage.isStreaming = false
                             setChatMessages(prev => [...prev.slice(0, -1), { ...streamingMessage }])
                             
                             // Update the code editor and iframe
@@ -586,9 +590,19 @@ export default function BoardEditor() {
                                 }
                             }
                         } else if (data.type === 'error') {
-                            streamingMessage.content = `❌ Error: ${data.content}`
+                            streamingMessage.content = `Error: ${data.content}`
+                            streamingMessage.isStreaming = false
                             setChatMessages(prev => [...prev.slice(0, -1), { ...streamingMessage }])
                         }
+                    }
+                }
+
+                // Auto-save board code if it was updated
+                if (finalCode && boardId) {
+                    try {
+                        await api.boards.saveCode(boardId, finalCode)
+                    } catch (e) {
+                        console.error('Auto-save failed:', e)
                     }
                 }
 
@@ -620,7 +634,6 @@ export default function BoardEditor() {
         try {
             const data = await api.boards.createQuery(boardId, {
                 name: createQueryName.trim(),
-                description: createQueryDescription.trim() || null,
                 python_code: '# Write your query code here\n# Use @node comments to define data queries\n#\n# Example:\n# @node: my_query\n# @type: query\n# @datastore: your_datastore_id\n# @query: SELECT * FROM dataset.your_table LIMIT 100\n\n# The query result will be available as query_result\n# args dict is available for runtime parameters (e.g. args.get("filter_value", "default"))\nresult = query_result\n',
                 ui_map: {}
             })
@@ -628,7 +641,6 @@ export default function BoardEditor() {
             await loadQueries()
             setShowCreateQuery(false)
             setCreateQueryName('')
-            setCreateQueryDescription('')
             console.log('Query created:', data)
         } catch (error) {
             console.error('Error creating query:', error)
@@ -1182,17 +1194,6 @@ export default function BoardEditor() {
                                     required
                                 />
                             </div>
-                            <div className="form-group">
-                                <label className="form-label">Description <span className="text-slate-500 font-normal">(optional)</span></label>
-                                <textarea
-                                    className="form-input resize-none"
-                                    rows={3}
-                                    placeholder="What does this query do?"
-                                    value={createQueryDescription}
-                                    onChange={(e) => setCreateQueryDescription(e.target.value)}
-                                />
-                            </div>
-
                             <div className="flex items-center gap-3 pt-2">
                                 <button
                                     type="button"

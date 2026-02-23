@@ -26,7 +26,7 @@ from ..ai_tools import (
     get_available_datastores, get_available_boards,
     get_board_queries, get_query_code, get_board_code,
     search_board_code, search_query_code,
-    create_or_update_query, delete_query,
+    create_or_update_query, delete_query, apply_code_edits,
     create_or_update_datastore, test_datastore_tool, save_keyfile_tool,
 )
 from ..llm import call_llm, LLMResponse, DEFAULT_MODEL, get_available_models, get_model_info
@@ -108,6 +108,13 @@ async def _execute_tool(func_name: str, func_args: dict, user_id: Optional[str] 
             return await search_board_code(entity_id, search_term, context_lines)
         else:
             return {"error": f"Unknown type '{entity_type}'. Use 'board' or 'query'."}
+    elif func_name == "edit_code":
+        entity_type = func_args.get("type", "")
+        entity_id = func_args.get("id", "")
+        edits = func_args.get("edits", [])
+        if not entity_id or not edits:
+            return {"error": "Missing id or edits"}
+        return await apply_code_edits(entity_type, entity_id, edits)
     # Backward compat for old tool names
     elif func_name == "get_query_code":
         qid = func_args.get("query_id")
@@ -327,9 +334,6 @@ async def board_helper_stream(
                 return
 
             # --- Board context (default) ---
-            yield f"data: {json.dumps({'type': 'thinking', 'content': 'Analyzing your request...'})}\n\n"
-            await asyncio.sleep(0.1)
-
             system_instruction = BOARD_SYSTEM_INSTRUCTION
             board_queries = []
 
@@ -378,19 +382,20 @@ async def board_helper_stream(
             use_tools = model_info.get("supports_tools", True)
             tools = get_tools_for_context("board") if use_tools else None
 
-            yield f"data: {json.dumps({'type': 'progress', 'content': 'Processing your request...'})}\n\n"
-
             tool_iteration = 0
             edited_code = None
             raw_text = ""
             accumulated_text = ""
             query_created = False
             any_tools_called = False
+            edit_code_used = False
+            latest_edit_code = None
             last_tool_results: List[dict] = []
             continuation_count = 0
 
             while tool_iteration < max_tool_iterations:
                 tool_iteration += 1
+                last_tool_results = []
 
                 if tool_iteration == max_tool_iterations - 5:
                     yield f"data: {json.dumps({'type': 'progress', 'content': f'Approaching iteration limit ({tool_iteration}/{max_tool_iterations})...'})}\n\n"
@@ -439,6 +444,12 @@ async def board_helper_stream(
 
                         if fc.name in ("create_or_update_query", "delete_query") and result.get("success"):
                             query_created = True
+
+                        if fc.name == "edit_code" and result.get("success"):
+                            edit_code_used = True
+                            latest_edit_code = result.get("new_code", "")
+                            old = result.get("old_code", "")
+                            yield f"data: {json.dumps({'type': 'code_delta', 'old_code': old, 'new_code': latest_edit_code})}\n\n"
 
                         last_tool_results.append({"tool": fc.name, "result": result})
 
@@ -520,6 +531,15 @@ async def board_helper_stream(
                     yield f"data: {json.dumps({'type': 'final', 'code': '', 'message': 'Tools executed but could not generate a final response.'})}\n\n"
                     return
 
+                if query_created and not edit_code_used:
+                    yield f"data: {json.dumps({'type': 'final', 'code': '', 'message': raw_text.strip()})}\n\n"
+                    return
+
+                if edit_code_used:
+                    summary = raw_text.strip() if raw_text.strip() else "Code updated via targeted edits."
+                    yield f"data: {json.dumps({'type': 'final', 'code': latest_edit_code or '', 'message': summary})}\n\n"
+                    return
+
                 if query_created:
                     yield f"data: {json.dumps({'type': 'final', 'code': '', 'message': raw_text.strip()})}\n\n"
                     return
@@ -544,6 +564,10 @@ async def board_helper_stream(
 
                 break
 
+            if edit_code_used and latest_edit_code:
+                yield f"data: {json.dumps({'type': 'final', 'code': latest_edit_code, 'message': 'Code updated via targeted edits.'})}\n\n"
+                return
+
             if not edited_code:
                 yield f"data: {json.dumps({'type': 'error', 'content': 'Failed to generate code'})}\n\n"
                 return
@@ -552,9 +576,7 @@ async def board_helper_stream(
                 yield f"data: {json.dumps({'type': 'progress', 'content': f'Reached iteration limit ({max_tool_iterations}).'})}\n\n"
 
             yield f"data: {json.dumps({'type': 'progress', 'content': f'Code generated ({len(edited_code)} characters)'})}\n\n"
-            yield f"data: {json.dumps({'type': 'thinking', 'content': 'Validating code structure...'})}\n\n"
-            await asyncio.sleep(0.1)
-            yield f"data: {json.dumps({'type': 'progress', 'content': 'Checking code...'})}\n\n"
+            yield f"data: {json.dumps({'type': 'progress', 'content': 'Validating code...'})}\n\n"
 
             validation = validate_html(edited_code)
             vsummary = validation["summary"]
@@ -600,9 +622,6 @@ async def _datastore_context_stream(
     chat_id: Optional[str],
     uploaded_file_paths: Optional[List[str]] = None,
 ) -> AsyncGenerator[Dict[str, Any], None]:
-    yield {"type": "thinking", "content": "Analyzing your request..."}
-    await asyncio.sleep(0.1)
-
     system_instruction = DATASTORE_SYSTEM_INSTRUCTION
     context_info = ""
 
@@ -639,8 +658,6 @@ async def _datastore_context_stream(
     use_tools = model_info.get("supports_tools", True)
     tools = get_tools_for_context("datastore") if use_tools else None
 
-    yield {"type": "progress", "content": "Processing..."}
-
     async for event in _tool_loop_stream(
         messages, system_instruction, tools, model, temperature,
         max_tool_iterations, user_id, chat_id, organization_id,
@@ -663,9 +680,6 @@ async def _general_context_stream(
     chat_id: Optional[str],
     uploaded_file_paths: Optional[List[str]] = None,
 ) -> AsyncGenerator[Dict[str, Any], None]:
-    yield {"type": "thinking", "content": "Analyzing your request..."}
-    await asyncio.sleep(0.1)
-
     system_instruction = GENERAL_SYSTEM_INSTRUCTION
     context_info = ""
 
@@ -688,8 +702,6 @@ async def _general_context_stream(
     model_info = get_model_info(model)
     use_tools = model_info.get("supports_tools", True)
     tools = get_tools_for_context("general") if use_tools else None
-
-    yield {"type": "progress", "content": "Processing..."}
 
     async for event in _tool_loop_stream(
         messages, system_instruction, tools, model, temperature,
@@ -717,6 +729,8 @@ async def _tool_loop_stream(
     any_tools_called = False
     accumulated_text = ""
     continuation_count = 0
+    edit_code_used = False
+    latest_edit_code = None
 
     while tool_iteration < max_tool_iterations:
         tool_iteration += 1
@@ -753,6 +767,12 @@ async def _tool_loop_stream(
                     rc = result.get("returned_rows", 0)
                     msg = f"Executed query: {rc} rows returned"
                     yield {"type": "progress", "content": msg}
+
+                if fc.name == "edit_code" and result.get("success"):
+                    edit_code_used = True
+                    latest_edit_code = result.get("new_code", "")
+                    old = result.get("old_code", "")
+                    yield {"type": "code_delta", "old_code": old, "new_code": latest_edit_code}
 
                 if is_error:
                     yield {"type": "tool_result", "tool": fc.name, "status": "error", "error": str(result.get("error", ""))}
@@ -821,8 +841,6 @@ async def exploration_helper_stream(
     schema_info = None
     if datastore_id:
         try:
-            yield {"type": "thinking", "content": "I need to understand your database schema first..."}
-            await asyncio.sleep(0.1)
             yield {"type": "progress", "content": "Fetching database schema..."}
             pool = get_pool()
             ds_row = await pool.fetchrow("SELECT * FROM datastores WHERE id = $1", datastore_id)
@@ -898,11 +916,9 @@ async def exploration_helper_stream(
     for attempt in range(1, max_attempts + 1):
         try:
             if attempt == 1:
-                yield {"type": "thinking", "content": "Now I'll write Python code to fulfill your request..."}
+                yield {"type": "progress", "content": "Generating Python code..."}
             else:
-                yield {"type": "thinking", "content": "Let me fix the error and try again..."}
-            await asyncio.sleep(0.1)
-            yield {"type": "progress", "content": "Generating Python code..."}
+                yield {"type": "progress", "content": f"Retrying (attempt {attempt})..."}
 
             if code:
                 user_message = f"User request: {user_prompt}\n\nCurrent Python code:\n\n{code}"
@@ -925,6 +941,8 @@ async def exploration_helper_stream(
             tool_iteration = 0
             accumulated_text = ""
             continuation_count = 0
+            edit_code_used = False
+            latest_edit_code = None
 
             while tool_iteration < max_tool_iterations:
                 tool_iteration += 1
@@ -963,6 +981,12 @@ async def exploration_helper_stream(
                                 msg += f" (truncated from {result.get('total_rows', 0)} total)"
                             yield {"type": "progress", "content": msg}
 
+                        if fc.name == "edit_code" and result.get("success"):
+                            edit_code_used = True
+                            latest_edit_code = result.get("new_code", "")
+                            old = result.get("old_code", "")
+                            yield {"type": "code_delta", "old_code": old, "new_code": latest_edit_code}
+
                         if is_err:
                             yield {"type": "tool_result", "tool": fc.name, "status": "error", "error": str(result.get("error", ""))}
                         else:
@@ -995,6 +1019,12 @@ async def exploration_helper_stream(
                     if continuation_count > 1:
                         yield {"type": "progress", "content": f"Completed long response ({continuation_count} parts)"}
 
+                if edit_code_used:
+                    summary = raw_text.strip() if raw_text.strip() else "Code updated via targeted edits."
+                    generated_code = latest_edit_code
+                    yield {"type": "final", "code": generated_code or "", "message": summary}
+                    return
+
                 if raw_text.strip():
                     stripped = raw_text.strip()
                     if not stripped.startswith(("#", "@", "import", "from", "def", "class", "if", "for", "while", "try", "with", "result", "```")):
@@ -1012,6 +1042,10 @@ async def exploration_helper_stream(
 
                 raise Exception("Too many iterations without code generation")
 
+            if edit_code_used and latest_edit_code:
+                yield {"type": "final", "code": latest_edit_code, "message": "Code updated via targeted edits."}
+                return
+
             if not generated_code:
                 raise Exception("Failed to generate code")
 
@@ -1022,9 +1056,7 @@ async def exploration_helper_stream(
                 yield {"type": "code_delta", "old_code": "", "new_code": generated_code}
 
             if query_id or datastore_id:
-                yield {"type": "thinking", "content": "Let me test this code to make sure it works..."}
-                await asyncio.sleep(0.1)
-                yield {"type": "progress", "content": "Testing the generated code..."}
+                yield {"type": "progress", "content": "Testing generated code..."}
                 test_query_id = query_id
                 if not test_query_id:
                     yield {"type": "progress", "content": "  Creating temporary test query..."}
