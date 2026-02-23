@@ -1,5 +1,5 @@
-import { createContext, useContext, useEffect, useState } from 'react'
-import { supabase } from '../lib/supabase'
+import { createContext, useContext, useEffect, useState, useCallback } from 'react'
+import api, { setToken } from '../lib/api'
 
 const AuthContext = createContext({})
 
@@ -16,29 +16,46 @@ export const AuthProvider = ({ children }) => {
     const [loading, setLoading] = useState(true)
 
     useEffect(() => {
-        // Get initial session
-        supabase.auth.getSession().then(({ data: { session } }) => {
-            setUser(session?.user ?? null)
+        const token = localStorage.getItem('nubi_token')
+        if (!token) {
             setLoading(false)
-        })
-
-        // Listen for auth changes
-        const {
-            data: { subscription },
-        } = supabase.auth.onAuthStateChange((_event, session) => {
-            setUser(session?.user ?? null)
-        })
-
-        return () => subscription.unsubscribe()
+            return
+        }
+        api.auth.me()
+            .then(({ user: u }) => setUser(u))
+            .catch(() => setToken(null))
+            .finally(() => setLoading(false))
     }, [])
 
-    const signOut = async () => {
-        await supabase.auth.signOut()
-    }
+    const signUp = useCallback(async (email, password) => {
+        const { token, user: u } = await api.auth.signup(email, password)
+        setToken(token)
+        setUser(u)
+    }, [])
+
+    const signIn = useCallback(async (email, password) => {
+        const { token, user: u } = await api.auth.signin(email, password)
+        setToken(token)
+        setUser(u)
+    }, [])
+
+    const signInWithGoogle = useCallback(async (code, redirectUri) => {
+        const { token, user: u } = await api.auth.google(code, redirectUri)
+        setToken(token)
+        setUser(u)
+    }, [])
+
+    const signOut = useCallback(() => {
+        setToken(null)
+        setUser(null)
+    }, [])
 
     const value = {
         user,
         loading,
+        signUp,
+        signIn,
+        signInWithGoogle,
         signOut,
     }
 

@@ -1,15 +1,114 @@
-import { useState, useEffect, useRef, useMemo } from 'react'
+import { useState, useEffect, useCallback, useMemo } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
-import { supabase } from '../lib/supabase'
+import api from '../lib/api'
 import { useHeader } from '../contexts/HeaderContext'
-import Prism from 'prismjs'
-import 'prismjs/themes/prism-tomorrow.css'
-import 'prismjs/components/prism-python'
+import { useChat } from '../contexts/ChatContext'
+import CodeEditor from './CodeEditor'
+
+function extractSqlBlocks(pythonCode) {
+    const blocks = []
+    const lines = pythonCode.split('\n')
+    for (let i = 0; i < lines.length; i++) {
+        const trimmed = lines[i].trim()
+        if (trimmed.startsWith('# @query:')) {
+            const nodeName = findNodeName(lines, i)
+            const sql = trimmed.slice('# @query:'.length).trim()
+            blocks.push({ lineIndex: i, sql, nodeName })
+        }
+    }
+    return blocks
+}
+
+function findNodeName(lines, queryLineIndex) {
+    for (let i = queryLineIndex - 1; i >= 0; i--) {
+        const t = lines[i].trim()
+        if (t.startsWith('# @node:')) return t.slice('# @node:'.length).trim()
+        if (t === '' || (!t.startsWith('#') && t !== '')) break
+    }
+    return 'query'
+}
+
+function buildCombinedSql(blocks) {
+    if (blocks.length === 0) return ''
+    if (blocks.length === 1) return blocks[0].sql
+    return blocks.map(b => `-- ${b.nodeName}\n${b.sql}`).join('\n\n')
+}
+
+function applySqlBackToCode(pythonCode, blocks, newCombinedSql) {
+    if (blocks.length === 0) return pythonCode
+
+    if (blocks.length === 1) {
+        const lines = pythonCode.split('\n')
+        const line = lines[blocks[0].lineIndex]
+        const prefix = line.slice(0, line.indexOf('# @query:')) + '# @query: '
+        lines[blocks[0].lineIndex] = prefix + newCombinedSql.trim()
+        return lines.join('\n')
+    }
+
+    const sqlParts = newCombinedSql
+        .split(/\n\s*--\s*\w[\w\s]*\n/)
+        .map(s => s.replace(/^--\s*\w[\w\s]*\n/, '').trim())
+        .filter(Boolean)
+
+    if (sqlParts.length === 0) return pythonCode
+
+    const lines = pythonCode.split('\n')
+    blocks.forEach((block, idx) => {
+        if (idx < sqlParts.length) {
+            const line = lines[block.lineIndex]
+            const prefix = line.slice(0, line.indexOf('# @query:')) + '# @query: '
+            lines[block.lineIndex] = prefix + sqlParts[idx].replace(/\n/g, ' ').trim()
+        }
+    })
+    return lines.join('\n')
+}
+
+function formatSql(sql) {
+    const keywords = [
+        'SELECT', 'FROM', 'WHERE', 'AND', 'OR', 'ORDER BY', 'GROUP BY',
+        'HAVING', 'LIMIT', 'OFFSET', 'JOIN', 'LEFT JOIN', 'RIGHT JOIN',
+        'INNER JOIN', 'OUTER JOIN', 'FULL JOIN', 'CROSS JOIN', 'ON',
+        'UNION', 'UNION ALL', 'INSERT INTO', 'VALUES', 'UPDATE', 'SET',
+        'DELETE FROM', 'CREATE TABLE', 'ALTER TABLE', 'DROP TABLE',
+        'AS', 'DISTINCT', 'CASE', 'WHEN', 'THEN', 'ELSE', 'END',
+        'IN', 'NOT', 'NULL', 'IS', 'BETWEEN', 'LIKE', 'EXISTS',
+        'WITH', 'PARTITION BY', 'OVER', 'SAFE_CAST', 'CAST',
+    ]
+
+    let formatted = sql.trim()
+
+    keywords.forEach(kw => {
+        const re = new RegExp(`\\b${kw.replace(/\s+/g, '\\s+')}\\b`, 'gi')
+        formatted = formatted.replace(re, kw)
+    })
+
+    const breakBefore = [
+        'FROM', 'WHERE', 'AND', 'OR', 'ORDER BY', 'GROUP BY',
+        'HAVING', 'LIMIT', 'OFFSET', 'LEFT JOIN', 'RIGHT JOIN',
+        'INNER JOIN', 'OUTER JOIN', 'FULL JOIN', 'CROSS JOIN', 'JOIN',
+        'ON', 'UNION ALL', 'UNION', 'SET', 'VALUES',
+    ]
+
+    breakBefore.forEach(kw => {
+        const re = new RegExp(`\\s+(${kw.replace(/\s+/g, '\\s+')})\\b`, 'gi')
+        formatted = formatted.replace(re, (_, matched) => {
+            const indent = ['AND', 'OR', 'ON'].includes(matched.toUpperCase()) ? '  ' : ''
+            return '\n' + indent + matched.toUpperCase()
+        })
+    })
+
+    formatted = formatted.replace(/,\s*/g, ',\n  ')
+
+    const finalLines = formatted.split('\n').map(l => l.trimEnd())
+    return finalLines.join('\n')
+}
+
 
 export default function QueryEditor() {
     const { boardId, queryId } = useParams()
     const navigate = useNavigate()
     const { setHeaderContent } = useHeader()
+    const { openChatFor, setPageContext, setOnSubmitCallback, setChatMessages, appendMessage, selectedModel } = useChat()
     const [query, setQuery] = useState(null)
     const [pythonCode, setPythonCode] = useState('')
     const [loading, setLoading] = useState(true)
@@ -17,29 +116,195 @@ export default function QueryEditor() {
     const [executing, setExecuting] = useState(false)
     const [result, setResult] = useState(null)
     const [error, setError] = useState(null)
-    const preRef = useRef(null)
-    const lineNumRef = useRef(null)
-    const textareaRef = useRef(null)
+    const [activeTab, setActiveTab] = useState('python')
 
-    const highlightedCode = useMemo(() => {
-        const codeToHighlight = pythonCode + (pythonCode.endsWith('\n') ? ' ' : '\n ')
-        return Prism.highlight(codeToHighlight, Prism.languages.python, 'python')
-    }, [pythonCode])
+    const sqlBlocks = useMemo(() => extractSqlBlocks(pythonCode), [pythonCode])
+    const combinedSql = useMemo(() => buildCombinedSql(sqlBlocks), [sqlBlocks])
+    const hasSql = sqlBlocks.length > 0
+
+    const [sqlEditorValue, setSqlEditorValue] = useState('')
+    const [sqlDirty, setSqlDirty] = useState(false)
+
+    useEffect(() => {
+        if (!sqlDirty) {
+            setSqlEditorValue(combinedSql)
+        }
+    }, [combinedSql, sqlDirty])
+
+    const handleSqlChange = useCallback((val) => {
+        setSqlEditorValue(val)
+        setSqlDirty(true)
+    }, [])
+
+    const applySqlEdits = useCallback(() => {
+        const newCode = applySqlBackToCode(pythonCode, sqlBlocks, sqlEditorValue)
+        setPythonCode(newCode)
+        setSqlDirty(false)
+    }, [pythonCode, sqlBlocks, sqlEditorValue])
+
+    const handleFormatSql = useCallback(() => {
+        const formatted = formatSql(sqlEditorValue)
+        setSqlEditorValue(formatted)
+        setSqlDirty(true)
+    }, [sqlEditorValue])
+
+    const handleApplyAndFormat = useCallback(() => {
+        const formatted = formatSql(sqlEditorValue)
+        const newCode = applySqlBackToCode(pythonCode, sqlBlocks, formatted.replace(/\n/g, ' ').replace(/\s+/g, ' '))
+        setPythonCode(newCode)
+        setSqlEditorValue(formatted)
+        setSqlDirty(false)
+    }, [pythonCode, sqlBlocks, sqlEditorValue])
 
     useEffect(() => {
         loadQuery()
     }, [queryId])
 
+    useEffect(() => {
+        openChatFor(boardId)
+        setPageContext({ type: 'query', boardId, queryId })
+        return () => setPageContext({ type: 'general' })
+    }, [boardId, queryId, openChatFor, setPageContext])
+
+    useEffect(() => {
+        const handleQueryChatSubmit = async (chatId, prompt, messages, mentionedContext = []) => {
+            const backendUrl = import.meta.env.VITE_BACKEND_URL || 'http://localhost:8000'
+            const token = localStorage.getItem('nubi_token')
+            const streamHeaders = { 'Content-Type': 'application/json' }
+            if (token) streamHeaders['Authorization'] = `Bearer ${token}`
+
+            await appendMessage(chatId, 'user', prompt)
+
+            let contextString = ''
+            if (mentionedContext.length > 0) {
+                contextString = '\n\nReferenced content:\n'
+                mentionedContext.forEach(ctx => {
+                    contextString += `\n--- ${ctx.type}: ${ctx.name} ---\n`
+                    if (ctx.description) contextString += `Description: ${ctx.description}\n`
+                    contextString += `${ctx.content}\n`
+                })
+            }
+
+            const response = await fetch(`${backendUrl}/board-helper-stream`, {
+                method: 'POST',
+                headers: streamHeaders,
+                body: JSON.stringify({
+                    code: pythonCode,
+                    user_prompt: prompt + contextString,
+                    chat: messages.filter(m => m.role === 'user' || m.role === 'assistant').map(m => ({ role: m.role, content: m.content })),
+                    context: 'query',
+                    board_id: boardId,
+                    query_id: queryId,
+                    model: selectedModel,
+                    chat_id: chatId,
+                })
+            })
+
+            if (!response.ok) throw new Error('Stream request failed')
+
+            const streamingMessage = {
+                role: 'assistant',
+                content: '',
+                thinking: null,
+                code_delta: null,
+                needs_user_input: null,
+                tool_calls: [],
+                isStreaming: true,
+            }
+            setChatMessages(prev => [...prev, streamingMessage])
+
+            const reader = response.body.getReader()
+            const decoder = new TextDecoder()
+            let buffer = ''
+            let finalCode = null
+            let progressLines = []
+            let finalSummary = ''
+            const toolCallsMap = new Map()
+
+            try {
+                while (true) {
+                    const { done, value } = await reader.read()
+                    if (done) break
+
+                    buffer += decoder.decode(value, { stream: true })
+                    const lines = buffer.split('\n')
+                    buffer = lines.pop() || ''
+
+                    for (const line of lines) {
+                        if (!line.startsWith('data: ')) continue
+                        let data
+                        try { data = JSON.parse(line.slice(6)) } catch { continue }
+
+                        if (data.type === 'thinking') {
+                            streamingMessage.thinking = data.content
+                            setChatMessages(prev => [...prev.slice(0, -1), { ...streamingMessage }])
+                        } else if (data.type === 'tool_call') {
+                            const toolKey = `${data.tool}_${toolCallsMap.size}`
+                            toolCallsMap.set(toolKey, { tool: data.tool, status: data.status, args: data.args })
+                            streamingMessage.tool_calls = Array.from(toolCallsMap.values())
+                            setChatMessages(prev => [...prev.slice(0, -1), { ...streamingMessage }])
+                        } else if (data.type === 'tool_result') {
+                            const matchingKeys = Array.from(toolCallsMap.keys()).filter(k => k.startsWith(data.tool + '_'))
+                            const pendingKey = matchingKeys.reverse().find(k => toolCallsMap.get(k)?.status === 'started')
+                            const toolKey = pendingKey || matchingKeys[matchingKeys.length - 1]
+                            if (toolKey) {
+                                const existing = toolCallsMap.get(toolKey)
+                                toolCallsMap.set(toolKey, { ...existing, status: data.status, result: data.result, error: data.error })
+                            } else {
+                                toolCallsMap.set(`${data.tool}_${toolCallsMap.size}`, { tool: data.tool, status: data.status, result: data.result, error: data.error })
+                            }
+                            streamingMessage.tool_calls = Array.from(toolCallsMap.values())
+                            setChatMessages(prev => [...prev.slice(0, -1), { ...streamingMessage }])
+                        } else if (data.type === 'progress') {
+                            progressLines.push(data.content)
+                            streamingMessage.content = progressLines.join('\n')
+                            setChatMessages(prev => [...prev.slice(0, -1), { ...streamingMessage }])
+                        } else if (data.type === 'code_delta') {
+                            streamingMessage.code_delta = { old_code: data.old_code, new_code: data.new_code }
+                            finalCode = data.new_code
+                            setChatMessages(prev => [...prev.slice(0, -1), { ...streamingMessage }])
+                        } else if (data.type === 'test_result') {
+                            streamingMessage.test_result = data
+                            setChatMessages(prev => [...prev.slice(0, -1), { ...streamingMessage }])
+                        } else if (data.type === 'needs_user_input') {
+                            streamingMessage.needs_user_input = { message: data.message, error: data.error }
+                            setChatMessages(prev => [...prev.slice(0, -1), { ...streamingMessage }])
+                        } else if (data.type === 'final') {
+                            finalCode = data.code || finalCode
+                            finalSummary = data.message
+                            streamingMessage.content = data.message + (progressLines.length ? '\n\n' + progressLines.join('\n') : '')
+                            streamingMessage.isStreaming = false
+                            setChatMessages(prev => [...prev.slice(0, -1), { ...streamingMessage }])
+
+                            if (finalCode) {
+                                setPythonCode(finalCode)
+                            }
+                        } else if (data.type === 'error') {
+                            streamingMessage.content = `Error: ${data.content}`
+                            streamingMessage.isStreaming = false
+                            setChatMessages(prev => [...prev.slice(0, -1), { ...streamingMessage }])
+                        }
+                    }
+                }
+
+                const messageToSave = finalSummary || streamingMessage.content
+                await appendMessage(chatId, 'assistant', messageToSave)
+            } catch (error) {
+                streamingMessage.content = `Error during streaming: ${error.message}`
+                streamingMessage.isStreaming = false
+                setChatMessages(prev => [...prev.slice(0, -1), { ...streamingMessage }])
+                throw error
+            }
+        }
+
+        setOnSubmitCallback(handleQueryChatSubmit)
+        return () => setOnSubmitCallback(null)
+    }, [pythonCode, boardId, queryId, setOnSubmitCallback, setChatMessages, appendMessage, selectedModel])
+
     const loadQuery = async () => {
         setLoading(true)
         try {
-            const { data, error } = await supabase
-                .from('board_queries')
-                .select('*')
-                .eq('id', queryId)
-                .single()
-
-            if (error) throw error
+            const data = await api.queries.get(queryId)
             setQuery(data)
             setPythonCode(data.python_code || '')
         } catch (err) {
@@ -53,15 +318,7 @@ export default function QueryEditor() {
     const saveQuery = async () => {
         setSaving(true)
         try {
-            const { error } = await supabase
-                .from('board_queries')
-                .update({
-                    python_code: pythonCode,
-                    updated_at: new Date().toISOString()
-                })
-                .eq('id', queryId)
-
-            if (error) throw error
+            await api.queries.update(queryId, { python_code: pythonCode })
             console.log('Query saved successfully!')
         } catch (err) {
             console.error('Error saving query:', err)
@@ -77,7 +334,6 @@ export default function QueryEditor() {
         setResult(null)
         
         try {
-            // Save first
             await saveQuery()
             
             const backendUrl = import.meta.env.VITE_BACKEND_URL || 'http://localhost:8000'
@@ -105,26 +361,6 @@ export default function QueryEditor() {
         }
     }
 
-    const handleKeyDown = (e) => {
-        if (e.key === 'Tab') {
-            e.preventDefault()
-            const start = e.target.selectionStart
-            const end = e.target.selectionEnd
-            const newCode = pythonCode.substring(0, start) + '    ' + pythonCode.substring(end)
-            setPythonCode(newCode)
-            setTimeout(() => {
-                e.target.selectionStart = e.target.selectionEnd = start + 4
-            }, 0)
-        } else if ((e.metaKey || e.ctrlKey) && e.key === 's') {
-            e.preventDefault()
-            saveQuery()
-        } else if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') {
-            e.preventDefault()
-            executeQuery()
-        }
-    }
-
-    // Header
     useEffect(() => {
         setHeaderContent(
             <div className="flex items-center gap-3 flex-1 px-2">
@@ -184,8 +420,6 @@ export default function QueryEditor() {
         return () => setHeaderContent(null)
     }, [query, saving, executing, boardId])
 
-    const lineNumbers = pythonCode.split('\n').map((_, i) => i + 1).join('\n')
-
     if (loading) {
         return (
             <div className="flex flex-col items-center justify-center h-screen gap-4">
@@ -197,59 +431,97 @@ export default function QueryEditor() {
 
     return (
         <div className="flex flex-col h-full bg-slate-950 overflow-hidden">
-            {/* Code Editor */}
-            <div className="flex-1 flex overflow-hidden min-h-0">
-                <div className="flex w-full h-full bg-[#0d0f17] font-mono text-sm leading-relaxed">
-                    {/* Line numbers */}
-                    <div
-                        ref={lineNumRef}
-                        className="w-14 py-6 bg-[#111420] border-r border-white/[0.07] text-[#4b5563] text-right select-none overflow-hidden"
-                    >
-                        <pre className="m-0 px-4 font-inherit leading-relaxed">{lineNumbers}</pre>
-                    </div>
-                    
-                    {/* Code editor */}
-                    <div className="relative flex-1 overflow-hidden">
-                        <textarea
-                            ref={textareaRef}
-                            value={pythonCode}
-                            onChange={(e) => setPythonCode(e.target.value)}
-                            onKeyDown={handleKeyDown}
-                            onScroll={(e) => {
-                                const { scrollTop, scrollLeft } = e.target
-                                if (preRef.current) {
-                                    preRef.current.scrollTop = scrollTop
-                                    preRef.current.scrollLeft = scrollLeft
-                                }
-                                if (lineNumRef.current) {
-                                    lineNumRef.current.scrollTop = scrollTop
-                                }
-                            }}
-                            className="absolute inset-0 w-full h-full p-6 m-0 border-none bg-transparent resize-none outline-none z-10 overflow-auto scrollbar-thin scrollbar-thumb-border-indigo-500 scrollbar-track-transparent font-inherit leading-relaxed whitespace-pre"
-                            style={{
-                                color: 'transparent',
-                                caretColor: '#818cf8',
-                            }}
-                            spellCheck="false"
-                            autoComplete="off"
-                            autoCorrect="off"
-                            autoCapitalize="off"
-                        />
-                        <pre
-                            ref={preRef}
-                            className="absolute inset-0 p-6 m-0 z-0 pointer-events-none overflow-auto font-inherit leading-relaxed"
-                            aria-hidden="true"
+            {/* Editor area with tabs */}
+            <div className="flex-1 flex flex-col overflow-hidden min-h-0">
+                {/* Tab bar */}
+                <div className="flex items-center justify-between px-1 border-b border-white/[0.07] bg-[#0c0e16] shrink-0">
+                    <div className="flex items-center">
+                        <button
+                            onClick={() => { if (sqlDirty) applySqlEdits(); setActiveTab('python') }}
+                            className={`flex items-center gap-2 px-4 py-2.5 text-xs font-medium border-b-2 transition-all ${
+                                activeTab === 'python'
+                                    ? 'border-indigo-500 text-indigo-400'
+                                    : 'border-transparent text-slate-500 hover:text-slate-300'
+                            }`}
                         >
-                            <code
-                                className="language-python block pointer-events-none"
-                                dangerouslySetInnerHTML={{ __html: highlightedCode }}
-                            />
-                        </pre>
+                            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                                <path d="M12 2C6.5 2 2 6.5 2 12s4.5 10 10 10 10-4.5 10-10S17.5 2 12 2" />
+                                <path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3" />
+                                <path d="M12 17h.01" />
+                            </svg>
+                            Python
+                        </button>
+                        {hasSql && (
+                            <button
+                                onClick={() => { setSqlDirty(false); setSqlEditorValue(combinedSql); setActiveTab('sql') }}
+                                className={`flex items-center gap-2 px-4 py-2.5 text-xs font-medium border-b-2 transition-all ${
+                                    activeTab === 'sql'
+                                        ? 'border-emerald-500 text-emerald-400'
+                                        : 'border-transparent text-slate-500 hover:text-slate-300'
+                                }`}
+                            >
+                                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                                    <ellipse cx="12" cy="5" rx="9" ry="3" />
+                                    <path d="M3 5v14c0 1.66 4.03 3 9 3s9-1.34 9-3V5" />
+                                    <path d="M3 12c0 1.66 4.03 3 9 3s9-1.34 9-3" />
+                                </svg>
+                                SQL
+                            </button>
+                        )}
                     </div>
+
+                    {/* SQL tab actions */}
+                    {activeTab === 'sql' && (
+                        <div className="flex items-center gap-1.5 pr-2">
+                            <button
+                                onClick={handleFormatSql}
+                                className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-md text-[11px] font-medium text-slate-400 hover:text-white hover:bg-white/[0.06] transition-all"
+                                title="Format SQL"
+                            >
+                                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                                    <path d="M21 10H3" /><path d="M21 6H3" /><path d="M21 14H3" /><path d="M21 18H3" />
+                                </svg>
+                                Format
+                            </button>
+                            {sqlDirty && (
+                                <button
+                                    onClick={handleApplyAndFormat}
+                                    className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-md text-[11px] font-medium bg-emerald-500/15 text-emerald-400 hover:bg-emerald-500/25 transition-all"
+                                    title="Apply changes back to Python code"
+                                >
+                                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                                        <polyline points="20 6 9 17 4 12" />
+                                    </svg>
+                                    Apply to Code
+                                </button>
+                            )}
+                        </div>
+                    )}
+                </div>
+
+                {/* Editor */}
+                <div className="flex-1 min-h-0">
+                    {activeTab === 'python' ? (
+                        <CodeEditor
+                            value={pythonCode}
+                            onChange={setPythonCode}
+                            language="python"
+                            onSave={saveQuery}
+                            onRun={executeQuery}
+                        />
+                    ) : (
+                        <CodeEditor
+                            value={sqlEditorValue}
+                            onChange={handleSqlChange}
+                            language="sql"
+                            onSave={() => { applySqlEdits(); saveQuery() }}
+                            onRun={() => { applySqlEdits(); executeQuery() }}
+                        />
+                    )}
                 </div>
             </div>
 
-            {/* Results Panel - Always visible */}
+            {/* Results panel */}
             <div className="h-80 border-t border-white/[0.07] bg-slate-900 overflow-hidden flex flex-col">
                 <div className="flex items-center justify-between px-6 py-3 border-b border-white/[0.07] bg-slate-800/30">
                     <div className="flex items-center gap-3">
@@ -340,7 +612,7 @@ export default function QueryEditor() {
                                 </svg>
                                 <p className="text-sm font-medium mb-2">No results yet</p>
                                 <p className="text-xs">
-                                    Click <span className="font-semibold text-indigo-400">Test Run</span> or press <kbd className="px-2 py-1 bg-slate-800 rounded text-xs font-mono">⌘ + Enter</kbd> to execute your query
+                                    Click <span className="font-semibold text-indigo-400">Run</span> or press <kbd className="px-2 py-1 bg-slate-800 rounded text-xs font-mono">Cmd + Enter</kbd> to execute your query
                                 </p>
                             </div>
                         </div>

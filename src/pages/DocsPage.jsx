@@ -5,6 +5,7 @@ import {
   Search, Command, Rocket, MessageSquare, Database,
   BarChart2, Sparkles, Shield, FileText, Code2,
   Home, Layers, BookOpen, ArrowLeft, ArrowRight, Terminal, Zap,
+  Puzzle,
 } from 'lucide-react'
 
 /* ═══════════════════════════════════════════════════════════
@@ -28,6 +29,7 @@ const nav = [
       { label: 'Data Sources', href: '/docs/data-sources', icon: Database },
       { label: 'Writing Queries', href: '/docs/queries', icon: MessageSquare },
       { label: 'Boards & Dashboards', href: '/docs/boards', icon: BarChart2 },
+      { label: 'Widgets', href: '/docs/widgets', icon: Puzzle },
     ],
   },
   {
@@ -438,7 +440,7 @@ function PageIntro({ onOpenSearch }) {
             Build with <span className="bg-gradient-to-r from-indigo-400 via-blue-400 to-purple-400 bg-clip-text text-transparent">Nubi</span>
           </h1>
           <p className="text-lg text-slate-400 leading-relaxed max-w-lg mx-auto mb-8">
-            Everything you need to connect your data, ask questions in plain English, and build visual dashboards.
+            Everything you need to connect your data, ask questions in plain English, and build dashboards from pre-configured widgets.
           </p>
           <button
             onClick={onOpenSearch}
@@ -462,6 +464,7 @@ function PageIntro({ onOpenSearch }) {
             { icon: Database, label: 'Data Sources', desc: 'Connect BigQuery, PostgreSQL, CSV & more', href: '/docs/data-sources', color: 'from-emerald-500/20 to-teal-500/20' },
             { icon: MessageSquare, label: 'Writing Queries', desc: 'Natural language, SQL, or Python', href: '/docs/queries', color: 'from-purple-500/20 to-pink-500/20' },
             { icon: BarChart2, label: 'Dashboards', desc: 'Pin widgets, build visual boards', href: '/docs/boards', color: 'from-amber-500/20 to-orange-500/20' },
+            { icon: Puzzle, label: 'Widgets', desc: 'Charts, KPI cards, tables & more', href: '/docs/widgets', color: 'from-pink-500/20 to-rose-500/20' },
           ].map(({ icon: Icon, label, desc, href, color }) => (
             <Link key={href} to={href} className="group relative flex items-start gap-4 rounded-xl border border-white/[0.07] bg-white/[0.015] p-5 hover:border-white/[0.12] hover:bg-white/[0.03] transition-all duration-200 overflow-hidden">
               <div className={`absolute inset-0 bg-gradient-to-br ${color} opacity-0 group-hover:opacity-100 transition-opacity duration-300`} />
@@ -485,14 +488,15 @@ function PageIntro({ onOpenSearch }) {
         <h2 className="text-sm font-semibold text-slate-500 uppercase tracking-widest mb-4" id="what-is-nubi">What is Nubi?</h2>
         <div className="rounded-xl border border-white/[0.07] bg-white/[0.015] p-6 mb-6">
           <p className="text-[15px] text-slate-400 leading-relaxed">
-            Nubi is an open-source, LLM-first business intelligence platform. Connect your databases, ask questions in plain English, and get visual insights in seconds. No SQL required — but it's there when you want it.
+            Nubi is an open-source, LLM-first business intelligence platform. Connect your databases, ask questions in plain English, and build dashboards from a library of pre-configured widgets — charts, KPI cards, tables, gauges, and more. No SQL required, but it's there when you want it.
           </p>
         </div>
-        <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+        <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
           {[
             { icon: Sparkles, title: 'AI-Powered', desc: 'Natural language to SQL with Google Gemini' },
-            { icon: Layers, title: 'Data Stitching', desc: 'Chain SQL & Python into multi-step pipelines' },
-            { icon: Shield, title: 'Self-Hosted', desc: 'Your data stays on your infrastructure' },
+            { icon: Puzzle, title: 'Widget Library', desc: '10+ chart, card & table templates' },
+            { icon: Layers, title: 'Data Stitching', desc: 'Chain SQL & Python pipelines' },
+            { icon: Shield, title: 'Self-Hosted', desc: 'Your data stays on your servers' },
           ].map(({ icon: Icon, title, desc }) => (
             <div key={title} className="rounded-xl border border-white/[0.06] bg-white/[0.01] p-4 text-center">
               <div className="w-9 h-9 rounded-lg bg-indigo-500/10 flex items-center justify-center mx-auto mb-3">
@@ -540,7 +544,7 @@ function PageGettingStarted() {
         <BulletList items={[
           <><strong className="text-white">Node.js</strong> 18+ and npm</>,
           <><strong className="text-white">Python</strong> 3.10+</>,
-          <><strong className="text-white">PostgreSQL</strong> (or a Supabase account)</>,
+          <><strong className="text-white">PostgreSQL</strong> database</>,
           <>A <strong className="text-white">Google Cloud</strong> account (for BigQuery and Gemini API access)</>,
         ]} />
       </DocSection>
@@ -558,7 +562,7 @@ pip install -r requirements.txt
 
 # Start the development servers
 npm run dev          # Frontend on :5173
-python -m app.main   # Backend on :8000`}</CodeBlock>
+python main.py       # Backend on :8000`}</CodeBlock>
       </DocSection>
       <DocSection title="First steps" id="first-steps">
         <NumberedList items={[
@@ -579,10 +583,12 @@ function PageEnvironment() {
       <DocSection title="Environment variables" id="env-vars">
         <p>Create a <code className="bg-white/[0.06] px-1.5 py-0.5 rounded text-indigo-300 text-xs">.env</code> file in the project root:</p>
         <EnvTable rows={[
-          ['VITE_SUPABASE_URL', 'Your Supabase project URL'],
-          ['VITE_SUPABASE_ANON_KEY', 'Supabase anonymous key'],
-          ['GOOGLE_APPLICATION_CREDENTIALS', 'Path to GCP service account JSON'],
-          ['GEMINI_API_KEY', 'Google Gemini API key'],
+          ['VITE_BACKEND_URL', 'Backend API URL (default http://localhost:8000)'],
+          ['VITE_GOOGLE_CLIENT_ID', 'Google OAuth client ID (for login)'],
+          ['DATABASE_URL', 'PostgreSQL connection string (backend)'],
+          ['JWT_SECRET', 'Secret key for signing JWTs (backend)'],
+          ['GEMINI_API_KEY', 'Google Gemini API key (backend)'],
+          ['STORAGE_PROVIDER', 'Storage provider: "local" or "gcs" (backend)'],
         ]} />
       </DocSection>
     </>
@@ -592,13 +598,12 @@ function PageEnvironment() {
 function PageDataSources() {
   return (
     <>
-      <DocHeading title="Data Sources" description="Connect BigQuery, PostgreSQL, Supabase, or upload CSVs." badge="Data" />
+      <DocHeading title="Data Sources" description="Connect BigQuery, PostgreSQL, or upload CSVs." badge="Data" />
       <DocSection title="Supported connectors" id="connectors">
         <BulletList items={[
           <><strong className="text-white">BigQuery</strong> — Connect with a GCP service account. Nubi reads your schema and lets you query with natural language or SQL.</>,
           <><strong className="text-white">PostgreSQL</strong> — Direct connection via connection string. Supports SSL.</>,
           <><strong className="text-white">CSV Upload</strong> — Upload CSV files directly. Nubi creates a temporary table and infers column types.</>,
-          <><strong className="text-white">Supabase</strong> — Native integration with Supabase PostgreSQL databases.</>,
           <><strong className="text-white">Coming soon</strong> — MySQL, SQLite, Snowflake, and DuckDB are on the roadmap.</>,
         ]} />
       </DocSection>
@@ -653,6 +658,73 @@ function PageBoards() {
           <><strong className="text-white">Pie Chart</strong> — Proportional breakdowns</>,
           <><strong className="text-white">KPI Card</strong> — Single metric with optional comparison</>,
         ]} />
+      </DocSection>
+    </>
+  )
+}
+
+function PageWidgets() {
+  return (
+    <>
+      <DocHeading title="Widgets" description="Pre-configured dashboard components — charts, KPI cards, tables, gauges, and more — ready to drop onto any board." badge="Components" />
+      <DocSection title="What are widgets?" id="what-are-widgets">
+        <p>
+          Widgets are the building blocks of your dashboards. Each widget is a pre-configured visual component — a bar chart, line chart, KPI card, data table, gauge, or other visualization — with specific data and styling settings that you can save and reuse across boards.
+        </p>
+        <p>
+          Think of the Widgets page as your component library. You browse it, pick a template you like, customise it with your own data and style, and then it's ready to use on any dashboard.
+        </p>
+      </DocSection>
+      <DocSection title="Available widget types" id="widget-types">
+        <p>Nubi ships with 10+ widget templates covering the most common dashboard visualizations:</p>
+        <BulletList items={[
+          <><strong className="text-white">Bar Chart</strong> — vertical bar chart with labeled axes, great for comparisons</>,
+          <><strong className="text-white">Line Chart</strong> — smooth time-series with gradient fill, ideal for trends</>,
+          <><strong className="text-white">Donut Chart</strong> — proportional breakdowns with a center summary label</>,
+          <><strong className="text-white">Stats / KPI Card</strong> — single metrics with trend indicators (up/down arrows, percentages)</>,
+          <><strong className="text-white">Data Table</strong> — sortable, interactive table with status badges</>,
+          <><strong className="text-white">Stacked Area Chart</strong> — multi-series data layered with a legend</>,
+          <><strong className="text-white">Gauge / Progress</strong> — animated progress rings for performance metrics</>,
+          <><strong className="text-white">Drill Down Chart</strong> — click a bar to reveal a detail breakdown underneath</>,
+          <><strong className="text-white">Drill Down Section</strong> — expandable accordion with nested rows</>,
+          <><strong className="text-white">Plain Text</strong> — rich formatted text block for annotations and summaries</>,
+        ]} />
+      </DocSection>
+      <DocSection title="Creating a widget" id="creating-widget">
+        <NumberedList items={[
+          'Navigate to Widgets from the sidebar.',
+          'Click New Widget to start from a blank canvas, or pick a template to start with a pre-filled component.',
+          'The editor opens with a live preview and a code tab where you can tweak HTML, CSS, and JavaScript.',
+          'Use the viewport switcher (Desktop / Tablet / Mobile) to make sure it looks good at every size.',
+          'Save your widget — it\'s now in your library and ready to use.',
+        ]} />
+      </DocSection>
+      <DocSection title="Customising widgets" id="customising">
+        <p>
+          Every widget is plain HTML, CSS, and JavaScript under the hood. The code editor gives you full control to:
+        </p>
+        <BulletList items={[
+          'Swap out the sample data for your real data or connect it to a query',
+          'Change colours, fonts, spacing, and layout to match your brand',
+          'Adjust chart options — axis labels, legends, tooltips, animations',
+          'Add interactivity like drill-downs, hover effects, or click handlers',
+        ]} />
+        <p>
+          The editor includes <strong className="text-white">autocomplete</strong> for HTML tags, attributes, and CSS properties, plus <strong className="text-white">syntax highlighting</strong> and keyboard shortcuts (<code className="bg-white/[0.06] px-1.5 py-0.5 rounded text-indigo-300 text-xs">Cmd+S</code> to save).
+        </p>
+      </DocSection>
+      <DocSection title="Using widgets on boards" id="widgets-on-boards">
+        <p>
+          Boards are where widgets come together into a full dashboard. Inside any board, click the <strong className="text-white">+ Widget</strong> button to insert a component template — KPI cards, bar charts, line charts, or pie charts — directly into the board's HTML canvas. Each widget on a board is draggable and resizable.
+        </p>
+        <p>
+          You can also ask the AI board helper to add or modify widgets via chat — for example, <em>"Add a bar chart showing monthly revenue"</em> and the assistant will generate and insert the right widget code.
+        </p>
+      </DocSection>
+      <DocSection title="Starting from templates" id="templates">
+        <p>
+          On the Widgets page, expand the <strong className="text-white">Start from a template</strong> section to see all available templates. Click any template to instantly create a new widget pre-filled with that code. From there, just customise the data and styling to make it yours.
+        </p>
       </DocSection>
     </>
   )
@@ -722,9 +794,9 @@ function PagePrivacy() {
       <DocHeading title="Privacy Policy" description={`How ${COMPANY} handles your data.`} />
       <p className="text-xs text-slate-500 -mt-6 mb-10">Last updated: {LAST_UPDATED}</p>
       <DocSection title="Introduction" id="intro"><p>This Privacy Policy explains how {COMPANY} trading as Nubi ("we", "us") collects, uses, and protects your information. Nubi is designed as a self-hosted platform — your data stays on your infrastructure by default.</p></DocSection>
-      <DocSection title="Information we collect" id="info-collect"><BulletList items={[<><strong className="text-white">Account info</strong> — email address and authentication credentials (via Supabase Auth).</>,<><strong className="text-white">Usage data</strong> — anonymized analytics to improve the product. Does not include query contents or database records.</>,<><strong className="text-white">Database metadata</strong> — table names, column names, data types to enable natural language queries. Stored locally.</>,<><strong className="text-white">Query history</strong> — stored within your deployment for history and caching. In self-hosted mode, never leaves your servers.</>]} /></DocSection>
+      <DocSection title="Information we collect" id="info-collect"><BulletList items={[<><strong className="text-white">Account info</strong> — email address and authentication credentials.</>,<><strong className="text-white">Usage data</strong> — anonymized analytics to improve the product. Does not include query contents or database records.</>,<><strong className="text-white">Database metadata</strong> — table names, column names, data types to enable natural language queries. Stored locally.</>,<><strong className="text-white">Query history</strong> — stored within your deployment for history and caching. In self-hosted mode, never leaves your servers.</>]} /></DocSection>
       <DocSection title="How we use your information" id="how-use"><BulletList items={['Provide and maintain the Service','Authenticate users and manage sessions','Enable natural language to SQL translation','Improve the product through anonymized analytics','We do not sell your personal information to third parties.']} /></DocSection>
-      <DocSection title="Third-party services" id="third-party"><BulletList items={[<><strong className="text-white">Google Gemini API</strong> — questions and schema context are sent for processing. No raw database data is sent.</>,<><strong className="text-white">Supabase</strong> — authentication and metadata storage.</>,<><strong className="text-white">Database providers</strong> — direct connections from your deployment. Credentials encrypted at rest.</>]} /></DocSection>
+      <DocSection title="Third-party services" id="third-party"><BulletList items={[<><strong className="text-white">Google Gemini API</strong> — questions and schema context are sent for processing. No raw database data is sent.</>,<><strong className="text-white">Database providers</strong> — direct connections from your deployment. Credentials encrypted at rest.</>]} /></DocSection>
       <DocSection title="Data security" id="security"><BulletList items={['All data in transit encrypted via TLS/HTTPS','Database credentials encrypted at rest','Self-hosted deployments keep all data within your infrastructure','Authentication via industry-standard protocols','Principle of least privilege for all data access']} /></DocSection>
       <DocSection title="Your rights" id="rights"><BulletList items={['Access personal information we hold about you','Request correction of inaccurate information','Request deletion of your account and data','Export your data in a portable format','Opt out of non-essential data collection']} /><p>To exercise these rights, contact us at <strong className="text-white">privacy@cognizanceprocessing.co.za</strong>.</p></DocSection>
       <DocSection title="Contact" id="contact-privacy"><p>Questions about this policy? Email <strong className="text-white">privacy@cognizanceprocessing.co.za</strong> or write to {COMPANY}, South Africa.</p></DocSection>
@@ -839,6 +911,7 @@ const routeContent = {
   '/docs/data-sources': PageDataSources,
   '/docs/queries': PageQueries,
   '/docs/boards': PageBoards,
+  '/docs/widgets': PageWidgets,
   '/docs/data-stitching': PageDataStitching,
   '/docs/llm-assistant': PageLLM,
   '/docs/code-editor': PageCodeEditor,

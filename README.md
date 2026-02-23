@@ -50,10 +50,23 @@ Chat with your data. Ask follow-up questions. Iterate on queries. All powered by
 
 ### Prerequisites
 
-- Node.js 18+ 
-- Python 3.9+
-- Supabase account (for authentication & metadata)
-- BigQuery or PostgreSQL database
+- Node.js 18+
+- Python 3.10+
+- PostgreSQL 15+
+- BigQuery or PostgreSQL database for your data
+
+### Database Setup
+
+```bash
+# Create the database
+createdb nubi
+
+# Run migrations
+python database/migrate.py
+
+# Check migration status
+python database/migrate.py --status
+```
 
 ### Frontend Setup
 
@@ -63,10 +76,7 @@ npm install
 
 # Create environment file
 cp .env.example .env
-
-# Add your Supabase credentials to .env
-# VITE_SUPABASE_URL=your_supabase_url
-# VITE_SUPABASE_ANON_KEY=your_anon_key
+# Edit .env — set VITE_BACKEND_URL and VITE_GOOGLE_CLIENT_ID
 
 # Start development server
 npm run dev
@@ -83,14 +93,14 @@ cd backend
 # Install Python dependencies
 pip install -r requirements.txt
 
-# Configure environment
-# Add to backend/.env:
-# SUPABASE_URL=your_supabase_url
-# SUPABASE_SERVICE_ROLE_KEY=your_service_role_key
+# Configure environment (see .env.example for all variables)
+# Key variables:
+# DATABASE_URL=postgresql://localhost:5432/nubi
+# JWT_SECRET=change-me-in-production
 # GEMINI_API_KEY=your_gemini_api_key
 
-# Start the Stitch Engine
-python -m app.main
+# Start the backend
+python main.py
 ```
 
 The API will be available at `http://localhost:8000`
@@ -106,17 +116,13 @@ The API will be available at `http://localhost:8000`
 │  React Frontend │  ← User Interface (Vite + React + TailwindCSS)
 └────────┬────────┘
          │
-    ┌────▼────┐
-    │ Supabase│  ← Auth, Metadata, Real-time
-    └────┬────┘
-         │
 ┌────────▼────────┐
-│  Stitch Engine  │  ← Query Execution (FastAPI + Python)
-└────────┬────────┘
-         │
-    ┌────▼────┐
-    │BigQuery │  ← Your Data
-    └─────────┘
+│  FastAPI Backend│  ← Auth (JWT), API, Query Engine
+└───┬─────────┬───┘
+    │         │
+┌───▼───┐ ┌──▼─────┐
+│Postgres│ │BigQuery│  ← Your Data
+└───────┘ └────────┘
 ```
 
 ### Key Concepts
@@ -179,15 +185,17 @@ const response = await fetch('http://localhost:8000/chat/stream', {
 - **Monaco Editor** - Code editing
 - **Chart.js** - Visualizations
 - **React Flow** - Node-based flows
-- **Supabase** - Authentication & database
 
 ### Backend
 - **FastAPI** - API framework
-- **Python 3.9+** - Runtime
+- **Python 3.10+** - Runtime
+- **asyncpg** - PostgreSQL driver
 - **Pandas** - Data manipulation
 - **BigQuery** - Data warehouse
 - **Jinja2** - SQL templating
 - **Google Gemini** - LLM integration
+- **JWT / bcrypt** - Authentication
+- **Pluggable storage** - Google Cloud Storage or local filesystem
 
 ---
 

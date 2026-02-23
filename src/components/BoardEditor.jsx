@@ -1,13 +1,16 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
-import { supabase, invokeBoardHelper } from '../lib/supabase'
+import api, { invokeBoardHelper } from '../lib/api'
 import { useHeader } from '../contexts/HeaderContext'
 import { useChat } from '../contexts/ChatContext'
-import Prism from 'prismjs'
-import 'prismjs/themes/prism-tomorrow.css'
-import 'prismjs/components/prism-markup'
-import 'prismjs/components/prism-javascript'
-import 'prismjs/components/prism-css'
+import { useOrg } from '../contexts/OrgContext'
+import CodeEditor from './CodeEditor'
+import widgetTemplates from '../pages/Widgets/widgetTemplates'
+import {
+    ArrowLeft, Monitor, Tablet, Smartphone,
+    Eye, Code2, Database, Plus, Save, X,
+    Puzzle, LayoutGrid, Search, Pencil, Check,
+} from 'lucide-react'
 
 
 // ... existing COMPONENT_TEMPLATES and DEFAULT_HTML_TEMPLATE ...
@@ -211,8 +214,10 @@ const DEFAULT_HTML_TEMPLATE = `<!DOCTYPE html>
     
     .chart-container canvas { max-height: 100%; width: 100% !important; }
 
-    /* Hide resize handles when in specific fixed layouts if needed */
-    [data-viewport="sm"] .widget::after { display: none; }
+    @media (max-width: 480px) {
+      body { padding: 1rem; }
+      .widget { min-width: 120px; min-height: 60px; }
+    }
   </style>
 </head>
 <body x-data="boardManager()" @resize.window="detectViewport()">
@@ -275,6 +280,9 @@ const DEFAULT_HTML_TEMPLATE = `<!DOCTYPE html>
           interact(el)
             .draggable({
               inertia: true,
+              modifiers: [
+                interact.modifiers.restrictRect({ restriction: 'parent' })
+              ],
               listeners: {
                 start: (e) => e.target.classList.add('interacting'),
                 end: (e) => e.target.classList.remove('interacting'),
@@ -287,14 +295,14 @@ const DEFAULT_HTML_TEMPLATE = `<!DOCTYPE html>
                   target.style.transform = 'translate(' + x + 'px, ' + y + 'px)';
                   target.setAttribute('data-' + v + '-x', x);
                   target.setAttribute('data-' + v + '-y', y);
-                  
-                  // Update current style for immediate feedback
-                  target.style.transform = 'translate(' + x + 'px, ' + y + 'px)';
                 }
               }
             })
             .resizable({
               edges: { left: false, right: true, bottom: true, top: false },
+              modifiers: [
+                interact.modifiers.restrictSize({ min: { width: 120, height: 60 } })
+              ],
               listeners: {
                 start: (e) => e.target.classList.add('interacting'),
                 end: (e) => e.target.classList.remove('interacting'),
@@ -318,18 +326,20 @@ const DEFAULT_HTML_TEMPLATE = `<!DOCTYPE html>
 </html>`
 
 const VIEWPORTS = {
-    lg: { name: 'Desktop', width: '100%', icon: '💻' },
-    md: { name: 'Tablet', width: '768px', icon: '📱' },
-    sm: { name: 'Mobile', width: '375px', icon: '📱' }
+    lg: { name: 'Desktop', width: '100%', icon: Monitor },
+    md: { name: 'Tablet', width: '768px', icon: Tablet },
+    sm: { name: 'Mobile', width: '375px', icon: Smartphone },
 }
 
 export default function BoardEditor() {
     const { boardId } = useParams()
     const navigate = useNavigate()
     const { setHeaderContent } = useHeader()
-    const { openChatFor, setOnSubmitCallback, chatMessages, setChatMessages, setChatLoading, ensureCurrentChat, appendMessage } = useChat()
+    const { currentOrg } = useOrg()
+    const { openChatFor, setOnSubmitCallback, chatMessages, setChatMessages, setChatLoading, ensureCurrentChat, appendMessage, selectedModel, setPageContext } = useChat()
+    const [board, setBoard] = useState(null)
     const [code, setCode] = useState(DEFAULT_HTML_TEMPLATE)
-    const [activeTab, setActiveTab] = useState('preview') // 'preview', 'code', or 'data'
+    const [activeTab, setActiveTab] = useState('preview')
     const [viewport, setViewport] = useState('lg')
     const [showTemplates, setShowTemplates] = useState(false)
     const [queries, setQueries] = useState([])
@@ -338,54 +348,61 @@ export default function BoardEditor() {
     const [createQueryName, setCreateQueryName] = useState('')
     const [createQueryDescription, setCreateQueryDescription] = useState('')
     const [creatingQuery, setCreatingQuery] = useState(false)
-    const [deleteConfirm, setDeleteConfirm] = useState(null) // query id to confirm delete
+    const [deleteConfirm, setDeleteConfirm] = useState(null)
     const [deleting, setDeleting] = useState(false)
+    const [userWidgets, setUserWidgets] = useState([])
+    const [pickerTab, setPickerTab] = useState('templates')
+    const [pickerSearch, setPickerSearch] = useState('')
+    const [editingName, setEditingName] = useState(false)
+    const [nameValue, setNameValue] = useState('')
+    const nameInputRef = useRef(null)
     const iframeRef = useRef(null)
-    const codeRef = useRef(null)
-    const textareaRef = useRef(null)
 
-    // Sync scroll between textarea, highlight, and line numbers
-    const handleScroll = (e) => {
-        const { scrollTop, scrollLeft } = e.target;
-        if (codeRef.current) {
-            codeRef.current.scrollTop = scrollTop;
-            codeRef.current.scrollLeft = scrollLeft;
+    const handleSaveShortcut = useCallback(() => { saveCode() }, [code])
+
+    const loadBoard = async () => {
+        try {
+            const data = await api.boards.get(boardId)
+            setBoard(data)
+        } catch (error) {
+            console.error('Error loading board:', error)
         }
-        if (lineNumbersRef.current) {
-            lineNumbersRef.current.scrollTop = scrollTop;
+    }
+
+    const loadUserWidgets = async () => {
+        try {
+            const data = await api.widgets.list(currentOrg?.id)
+            setUserWidgets(data || [])
+        } catch (error) {
+            console.error('Error loading user widgets:', error)
         }
-    };
+    }
 
-    const handleKeyDown = (e) => {
-        if (e.key === 'Tab') {
-            e.preventDefault();
-            const start = e.target.selectionStart;
-            const end = e.target.selectionEnd;
+    const startEditingName = () => {
+        setNameValue(board?.name || '')
+        setEditingName(true)
+        setTimeout(() => nameInputRef.current?.select(), 0)
+    }
 
-            // Set textarea value to: text before caret + tab + text after caret
-            const newCode = code.substring(0, start) + '  ' + code.substring(end);
-            setCode(newCode);
-
-            // Put caret at right position again
-            setTimeout(() => {
-                e.target.selectionStart = e.target.selectionEnd = start + 2;
-            }, 0);
+    const saveBoardName = async () => {
+        const trimmed = nameValue.trim()
+        if (!trimmed || trimmed === board?.name) {
+            setEditingName(false)
+            return
         }
-    };
+        try {
+            const updated = await api.boards.update(boardId, { name: trimmed })
+            setBoard(updated)
+        } catch (error) {
+            console.error('Error updating board name:', error)
+        }
+        setEditingName(false)
+    }
 
-    // Load board code and queries
     const loadBoardCode = async () => {
         try {
-            const { data, error } = await supabase
-                .from('board_code')
-                .select('code')
-                .eq('board_id', boardId)
-                .order('version', { ascending: false })
-                .limit(1)
-                .maybeSingle()
-
-            if (error) throw error
-            if (data) {
+            const data = await api.boards.getCode(boardId)
+            if (data && data.code) {
                 setCode(data.code)
             }
         } catch (error) {
@@ -396,13 +413,7 @@ export default function BoardEditor() {
     const loadQueries = useCallback(async () => {
         setLoadingQueries(true)
         try {
-            const { data, error } = await supabase
-                .from('board_queries')
-                .select('*')
-                .eq('board_id', boardId)
-                .order('updated_at', { ascending: false })
-
-            if (error) throw error
+            const data = await api.boards.listQueries(boardId)
             setQueries(data || [])
         } catch (error) {
             console.error('Error loading queries:', error)
@@ -412,10 +423,14 @@ export default function BoardEditor() {
     }, [boardId])
 
     useEffect(() => {
+        loadBoard()
         loadBoardCode()
         loadQueries()
+        loadUserWidgets()
         openChatFor(boardId)
-    }, [boardId, openChatFor, loadQueries])
+        setPageContext({ type: 'board', boardId })
+        return () => setPageContext({ type: 'general' })
+    }, [boardId, openChatFor, loadQueries, setPageContext])
     
     // Listen for /templates command
     useEffect(() => {
@@ -451,16 +466,21 @@ export default function BoardEditor() {
             // Add user message to UI immediately
             await appendMessage(chatId, 'user', prompt)
             
+            const token = localStorage.getItem('nubi_token')
+            const streamHeaders = { 'Content-Type': 'application/json' }
+            if (token) streamHeaders['Authorization'] = `Bearer ${token}`
             const response = await fetch(`${backendUrl}/board-helper-stream`, {
                 method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
+                headers: streamHeaders,
                 body: JSON.stringify({
                     code: codeToSend,
                     user_prompt: prompt + contextString,
                     chat: messages.filter((m) => m.role === 'user' || m.role === 'assistant').map((m) => ({ role: m.role, content: m.content })),
                     context: 'board',
                     board_id: boardId,
-                    ...(import.meta.env?.VITE_GEMINI_API_KEY && { gemini_api_key: import.meta.env.VITE_GEMINI_API_KEY }),
+                    model: selectedModel,
+                    chat_id: chatId,
+                    organization_id: currentOrg?.id,
                 })
             })
 
@@ -589,19 +609,8 @@ export default function BoardEditor() {
         setOnSubmitCallback(handleBoardChatSubmit)
 
         return () => setOnSubmitCallback(null)
-    }, [code, setOnSubmitCallback, setChatMessages, appendMessage, loadQueries])
+    }, [code, setOnSubmitCallback, setChatMessages, appendMessage, loadQueries, currentOrg?.id])
 
-    useEffect(() => {
-        if (activeTab === 'code' && codeRef.current) {
-            const codeElement = codeRef.current.querySelector('code');
-            if (codeElement) {
-                Prism.highlightElement(codeElement);
-            }
-        }
-    }, [code, activeTab]);
-
-    const lineNumbersRef = useRef(null);
-    const lineNumbers = code.split('\n').map((_, i) => i + 1).join('\n');
 
     const handleCreateQuery = async (e) => {
         e.preventDefault()
@@ -609,29 +618,17 @@ export default function BoardEditor() {
         setCreatingQuery(true)
 
         try {
-            const { data, error } = await supabase
-                .from('board_queries')
-                .insert([{
-                    board_id: boardId,
-                    name: createQueryName.trim(),
-                    description: createQueryDescription.trim() || null,
-                    python_code: '# Write your query code here\n# Use @node comments to define data queries\n#\n# Example:\n# @node: my_query\n# @type: query\n# @datastore: your_datastore_id\n# @query: SELECT * FROM dataset.your_table LIMIT 100\n\n# The query result will be available as query_result\n# args dict is available for runtime parameters (e.g. args.get("filter_value", "default"))\nresult = query_result\n',
-                    ui_map: {}
-                }])
-                .select()
-                .single()
+            const data = await api.boards.createQuery(boardId, {
+                name: createQueryName.trim(),
+                description: createQueryDescription.trim() || null,
+                python_code: '# Write your query code here\n# Use @node comments to define data queries\n#\n# Example:\n# @node: my_query\n# @type: query\n# @datastore: your_datastore_id\n# @query: SELECT * FROM dataset.your_table LIMIT 100\n\n# The query result will be available as query_result\n# args dict is available for runtime parameters (e.g. args.get("filter_value", "default"))\nresult = query_result\n',
+                ui_map: {}
+            })
 
-            if (error) throw error
-            
-            // Reload queries
             await loadQueries()
-            
-            // Close modal
             setShowCreateQuery(false)
             setCreateQueryName('')
             setCreateQueryDescription('')
-            
-            // TODO: Navigate to query editor
             console.log('Query created:', data)
         } catch (error) {
             console.error('Error creating query:', error)
@@ -644,12 +641,7 @@ export default function BoardEditor() {
     const deleteQuery = async (queryId) => {
         setDeleting(true)
         try {
-            const { error } = await supabase
-                .from('board_queries')
-                .delete()
-                .eq('id', queryId)
-
-            if (error) throw error
+            await api.queries.delete(queryId)
             setDeleteConfirm(null)
             await loadQueries()
         } catch (error) {
@@ -661,7 +653,6 @@ export default function BoardEditor() {
 
     const saveCode = async () => {
         try {
-            // Request latest HTML from iframe if in preview mode
             let finalCode = code;
             if (activeTab === 'preview' && iframeRef.current) {
                 finalCode = await new Promise((resolve) => {
@@ -673,32 +664,13 @@ export default function BoardEditor() {
                     };
                     window.addEventListener('message', handler);
                     iframeRef.current.contentWindow.postMessage({ type: 'GET_HTML' }, '*');
-                    setTimeout(() => resolve(code), 1000); // Timeout fallback
+                    setTimeout(() => resolve(code), 1000);
                 });
                 setCode(finalCode);
             }
 
-            const { data: latestVersion } = await supabase
-                .from('board_code')
-                .select('version')
-                .eq('board_id', boardId)
-                .order('version', { ascending: false })
-                .limit(1)
-                .maybeSingle()
+            await api.boards.saveCode(boardId, finalCode)
 
-            const newVersion = latestVersion ? latestVersion.version + 1 : 1
-
-            const { error } = await supabase
-                .from('board_code')
-                .insert([
-                    {
-                        board_id: boardId,
-                        version: newVersion,
-                        code: code,
-                    },
-                ])
-
-            if (error) throw error
             console.log('Code saved successfully!')
         } catch (error) {
             console.error('Error saving code:', error)
@@ -706,18 +678,16 @@ export default function BoardEditor() {
     }
 
     const insertTemplate = (template) => {
-        // Find existing widgets to determine next position
         const widgetCount = (code.match(/class="widget"/g) || []).length
         const offset = widgetCount * 40
         const id = `widget-${Date.now()}`
 
-        // Add default layout for all breakpoints
         const positionedTemplate = template.replace(
             'class="widget"',
             `class="widget" id="${id}" 
                 data-lg-x="${offset}" data-lg-y="${offset}" data-lg-w="300" data-lg-h="220"
                 data-md-x="${offset}" data-md-y="${offset}" data-md-w="280" data-md-h="200"
-                data-sm-x="0" data-sm-y="0" data-sm-w="100%" data-sm-h="150"
+                data-sm-x="${offset}" data-sm-y="${offset}" data-sm-w="250" data-sm-h="180"
                 style="transform: translate(${offset}px, ${offset}px); width: 300px; height: 220px;"`
         )
 
@@ -730,123 +700,306 @@ export default function BoardEditor() {
         setShowTemplates(false)
     }
 
-    // Modern Header Injection
+    const insertFullWidget = (htmlCode, name) => {
+        const widgetCount = (code.match(/class="widget"/g) || []).length
+        const offset = widgetCount * 40
+        const id = `widget-${Date.now()}`
+        const escaped = htmlCode.replace(/"/g, '&quot;')
+
+        const snippet = `<div class="widget" id="${id}"
+            data-lg-x="${offset}" data-lg-y="${offset}" data-lg-w="420" data-lg-h="320"
+            data-md-x="${offset}" data-md-y="${offset}" data-md-w="350" data-md-h="280"
+            data-sm-x="${offset}" data-sm-y="${offset}" data-sm-w="280" data-sm-h="220"
+            style="transform: translate(${offset}px, ${offset}px); width: 420px; height: 320px;"
+            x-data="canvasWidget()" x-init="initWidget($el)">
+  <iframe srcdoc="${escaped}" style="width:100%;height:100%;border:none;border-radius:0.75rem;background:#0f172a;pointer-events:none;" title="${name}"></iframe>
+</div>`
+
+        const boardEndIndex = code.indexOf('<!-- Add your components here -->')
+        if (boardEndIndex !== -1) {
+            const before = code.substring(0, boardEndIndex)
+            const after = code.substring(boardEndIndex)
+            setCode(before + snippet + '\n    ' + after)
+        }
+        setShowTemplates(false)
+    }
+
     useEffect(() => {
         setHeaderContent(
-            <div className="flex items-center gap-3 flex-1 px-2">
+            <div className="flex items-center gap-1.5 sm:gap-2 flex-1 min-w-0">
                 <button
-                    className="flex items-center gap-1.5 px-2 py-1 rounded-md text-slate-400 hover:text-white hover:bg-slate-800 transition-all font-medium text-xs"
-                    onClick={() => navigate('/')}
+                    onClick={() => navigate('/boards')}
+                    className="flex items-center gap-1.5 px-2 py-1 rounded-md text-slate-400 hover:text-white hover:bg-white/[0.05] transition text-xs font-medium shrink-0"
                 >
-                    <svg width="14" height="14" viewBox="0 0 20 20" fill="currentColor">
-                        <path fillRule="evenodd" d="M9.707 16.707a1 1 0 01-1.414 0l-6-6a1 1 0 010-1.414l6-6a1 1 0 011.414 1.414L5.414 9H17a1 1 0 110 2H5.414l4.293 4.293a1 1 0 010 1.414z" />
-                    </svg>
-                    <span>Back</span>
+                    <ArrowLeft className="h-3.5 w-3.5" />
+                    <span className="hidden sm:inline">Boards</span>
                 </button>
 
-                <div className="h-4 w-px bg-border-primary" />
+                <div className="h-4 w-px bg-white/[0.07] shrink-0 hidden sm:block" />
 
-                <div className="flex bg-slate-800 p-0.5 rounded-lg border border-white/[0.07]/50">
-                    {Object.entries(VIEWPORTS).map(([key, value]) => (
-                        <button
-                            key={key}
-                            className={`flex items-center gap-1.5 px-2.5 py-1 rounded-md text-[11px] font-medium transition-all duration-150 uppercase tracking-wide ${viewport === key
-                                ? 'bg-indigo-600 text-white shadow-sm'
-                                : 'text-slate-400 hover:text-white hover:bg-white/5'
-                                }`}
-                            onClick={() => setViewport(key)}
-                            title={value.name}
+                {board && (
+                    editingName ? (
+                        <form
+                            className="hidden sm:flex items-center gap-1 min-w-0 flex-1 max-w-xs"
+                            onSubmit={(e) => { e.preventDefault(); saveBoardName() }}
                         >
-                            <span className="text-xs">{value.icon}</span>
-                            <span className="hidden md:inline">{key}</span>
+                            <input
+                                ref={nameInputRef}
+                                value={nameValue}
+                                onChange={(e) => setNameValue(e.target.value)}
+                                onBlur={saveBoardName}
+                                onKeyDown={(e) => e.key === 'Escape' && setEditingName(false)}
+                                className="flex-1 min-w-0 px-2 py-0.5 rounded-md bg-white/[0.06] border border-white/[0.12] text-sm font-semibold text-white focus:border-indigo-500/50 focus:outline-none transition"
+                                autoFocus
+                            />
+                            <button type="submit" className="p-1 rounded-md text-emerald-400 hover:bg-white/[0.05] transition shrink-0">
+                                <Check className="h-3.5 w-3.5" />
+                            </button>
+                        </form>
+                    ) : (
+                        <button
+                            onClick={startEditingName}
+                            className="hidden sm:flex group items-center gap-1.5 min-w-0 max-w-xs hover:bg-white/[0.04] rounded-md px-1.5 py-0.5 transition"
+                            title="Click to rename"
+                        >
+                            <span className="text-sm font-semibold text-white truncate">{board.name}</span>
+                            <Pencil className="h-3 w-3 text-slate-600 group-hover:text-slate-400 transition shrink-0" />
                         </button>
-                    ))}
-                </div>
+                    )
+                )}
 
-                <div className="flex bg-slate-800 p-0.5 rounded-lg border border-white/[0.07]/50">
+                <div className="h-4 w-px bg-white/[0.07] shrink-0 hidden sm:block" />
+
+                {/* Tab switcher */}
+                <div className="flex items-center bg-white/[0.03] p-0.5 rounded-lg border border-white/[0.07]">
                     <button
-                        className={`flex items-center gap-1.5 px-3 py-1 rounded-md text-xs font-medium transition-all duration-150 ${activeTab === 'preview'
-                            ? 'bg-slate-900 text-indigo-400 shadow-sm'
-                            : 'text-slate-400 hover:text-white'
-                            }`}
                         onClick={() => setActiveTab('preview')}
+                        className={`flex items-center gap-1.5 px-2 sm:px-2.5 py-1 rounded-md text-[11px] font-medium transition-all ${
+                            activeTab === 'preview'
+                                ? 'bg-slate-800 text-indigo-400 shadow-sm'
+                                : 'text-slate-500 hover:text-white'
+                        }`}
                     >
-                        <svg width="14" height="14" viewBox="0 0 20 20" fill="currentColor">
-                            <path d="M10 12a2 2 0 100-4 2 2 0 000 4z" />
-                            <path fillRule="evenodd" d="M.458 10C1.732 5.943 5.522 3 10 3s8.268 2.943 9.542 7c-1.274 4.057-5.064 7-9.542 7S1.732 14.057.458 10zM14 10a4 4 0 11-8 0 4 4 0 018 0z" />
-                        </svg>
-                        <span className="hidden lg:inline">Preview</span>
+                        <Eye className="h-3.5 w-3.5" />
+                        <span className="hidden sm:inline">Preview</span>
                     </button>
                     <button
-                        className={`flex items-center gap-1.5 px-3 py-1 rounded-md text-xs font-medium transition-all duration-150 ${activeTab === 'code'
-                            ? 'bg-slate-900 text-indigo-400 shadow-sm'
-                            : 'text-slate-400 hover:text-white'
-                            }`}
                         onClick={() => setActiveTab('code')}
+                        className={`flex items-center gap-1.5 px-2 sm:px-2.5 py-1 rounded-md text-[11px] font-medium transition-all ${
+                            activeTab === 'code'
+                                ? 'bg-slate-800 text-indigo-400 shadow-sm'
+                                : 'text-slate-500 hover:text-white'
+                        }`}
                     >
-                        <svg width="14" height="14" viewBox="0 0 20 20" fill="currentColor">
-                            <path fillRule="evenodd" d="M12.316 3.051a1 1 0 01.633 1.265l-4 12a1 1 0 11-1.898-.632l4-12a1 1 0 011.265-.633zM5.707 6.293a1 1 0 010 1.414L3.414 10l2.293 2.293a1 1 0 11-1.414 1.414l-3-3a1 1 0 010-1.414l3-3a1 1 0 011.414 0zm8.586 0a1 1 0 011.414 0l3 3a1 1 0 010 1.414l-3 3a1 1 0 11-1.414-1.414L16.586 10l-2.293-2.293a1 1 0 010-1.414z" />
-                        </svg>
-                        <span className="hidden lg:inline">Code</span>
+                        <Code2 className="h-3.5 w-3.5" />
+                        <span className="hidden sm:inline">Code</span>
                     </button>
                     <button
-                        className={`flex items-center gap-1.5 px-3 py-1 rounded-md text-xs font-medium transition-all duration-150 ${activeTab === 'data'
-                            ? 'bg-slate-900 text-indigo-400 shadow-sm'
-                            : 'text-slate-400 hover:text-white'
-                            }`}
                         onClick={() => setActiveTab('data')}
+                        className={`flex items-center gap-1.5 px-2 sm:px-2.5 py-1 rounded-md text-[11px] font-medium transition-all ${
+                            activeTab === 'data'
+                                ? 'bg-slate-800 text-indigo-400 shadow-sm'
+                                : 'text-slate-500 hover:text-white'
+                        }`}
                     >
-                        <svg width="14" height="14" viewBox="0 0 20 20" fill="currentColor">
-                            <path d="M3 12v3c0 1.657 3.134 3 7 3s7-1.343 7-3v-3c0 1.657-3.134 3-7 3s-7-1.343-7-3z" />
-                            <path d="M3 7v3c0 1.657 3.134 3 7 3s7-1.343 7-3V7c0 1.657-3.134 3-7 3S3 8.657 3 7z" />
-                            <path d="M17 5c0 1.657-3.134 3-7 3S3 6.657 3 5s3.134-3 7-3 7 1.343 7 3z" />
-                        </svg>
-                        <span className="hidden lg:inline">Data</span>
+                        <Database className="h-3.5 w-3.5" />
+                        <span className="hidden sm:inline">Data</span>
                     </button>
                 </div>
 
-                <div className="ml-auto flex items-center gap-2">
-                    <button className="btn btn-secondary" onClick={() => setShowTemplates(!showTemplates)}>
-                        <svg width="13" height="13" viewBox="0 0 20 20" fill="currentColor">
-                            <path fillRule="evenodd" d="M10 3a1 1 0 011 1v5h5a1 1 0 110 2h-5v5a1 1 0 11-2 0v-5H4a1 1 0 110-2h5V4a1 1 0 011-1z" />
-                        </svg>
-                        <span className="hidden sm:inline">Widget</span>
-                    </button>
-                    <button className="btn btn-primary" onClick={saveCode}>
-                        <svg width="13" height="13" viewBox="0 0 20 20" fill="currentColor">
-                            <path d="M7.707 10.293a1 1 0 10-1.414 1.414l3 3a1 1 0 001.414 0l3-3a1 1 0 00-1.414-1.414L11 11.586V6h5a2 2 0 012 2v7a2 2 0 01-2 2H4a2 2 0 01-2-2V8a2 2 0 012-2h5v5.586l-1.293-1.293zM9 4a1 1 0 012 0v2H9V4z" />
-                        </svg>
-                        Save
-                    </button>
-                </div>
+                <div className="flex-1" />
+
+                <button
+                    onClick={() => setShowTemplates(!showTemplates)}
+                    className="hidden sm:flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-medium border border-white/[0.08] bg-white/[0.02] text-slate-400 hover:bg-white/[0.05] hover:text-white transition-all"
+                >
+                    <Plus className="h-3.5 w-3.5" />
+                    <span className="hidden sm:inline">Widget</span>
+                </button>
+                <button className="btn btn-primary text-xs shrink-0" onClick={saveCode}>
+                    <Save className="h-3.5 w-3.5" />
+                    <span className="hidden sm:inline">Save</span>
+                </button>
             </div>
         )
-        // Cleanup when leaving the editor
         return () => setHeaderContent(null)
-    }, [activeTab, showTemplates, code, viewport]) // Update when dependencies change
+    }, [board, activeTab, showTemplates, code, editingName, nameValue])
+
+    const filteredTemplates = widgetTemplates.filter(t =>
+        t.name.toLowerCase().includes(pickerSearch.toLowerCase()) ||
+        t.description?.toLowerCase().includes(pickerSearch.toLowerCase())
+    )
+    const filteredUserWidgets = userWidgets.filter(w =>
+        w.name?.toLowerCase().includes(pickerSearch.toLowerCase())
+    )
 
     return (
         <div className="flex flex-col h-screen bg-slate-950 overflow-hidden relative">
-            {/* Component Templates Dropdown */}
+            {/* Widget Picker Modal */}
             {showTemplates && (
-                <div className="fixed top-12 right-4 w-72 p-4 rounded-xl z-[100] animate-fade-in bg-slate-900/95 backdrop-blur-xl shadow-xl border border-white/[0.07]/50">
-                    <h3 className="text-xs font-semibold text-white mb-3 flex items-center gap-1.5">
-                        <div className="w-0.5 bg-indigo-600 h-3 rounded-full" />
-                        Component Templates
-                    </h3>
-                    <div className="grid grid-cols-2 gap-2">
-                        {COMPONENT_TEMPLATES.map((template) => (
-                            <button
-                                key={template.id}
-                                className="bg-slate-800 border border-white/[0.07] rounded-lg p-3 flex flex-col items-center gap-2 transition-all duration-200 hover:bg-slate-900 hover:border-indigo-500 group"
-                                onClick={() => insertTemplate(template.template)}
-                            >
-                                <div className="text-xl filter grayscale group-hover:grayscale-0 transition-all duration-200">
-                                    {template.type === 'chart' ? '📊' : '📈'}
+                <div className="fixed inset-0 z-[100] flex items-center justify-center p-3 sm:p-6" onClick={() => { setShowTemplates(false); setPickerSearch('') }}>
+                    <div className="absolute inset-0 bg-black/60 backdrop-blur-sm" />
+                    <div
+                        className="relative w-full max-w-3xl max-h-[85vh] rounded-2xl border border-white/[0.08] bg-slate-900 shadow-2xl shadow-black/50 flex flex-col animate-fade-in overflow-hidden"
+                        onClick={(e) => e.stopPropagation()}
+                    >
+                        {/* Modal header */}
+                        <div className="flex items-center justify-between gap-3 px-5 py-4 border-b border-white/[0.07] shrink-0">
+                            <div className="flex items-center gap-2.5">
+                                <div className="w-8 h-8 rounded-lg bg-indigo-500/10 border border-indigo-500/20 flex items-center justify-center">
+                                    <Puzzle className="h-4 w-4 text-indigo-400" />
                                 </div>
-                                <div className="text-[10px] font-medium text-white uppercase tracking-wide">{template.name}</div>
+                                <div>
+                                    <h2 className="text-sm font-semibold text-white">Add Widget</h2>
+                                    <p className="text-[11px] text-slate-500">Choose a template or pick from your widgets</p>
+                                </div>
+                            </div>
+                            <button
+                                onClick={() => { setShowTemplates(false); setPickerSearch('') }}
+                                className="p-1.5 rounded-lg text-slate-500 hover:text-white hover:bg-white/[0.05] transition"
+                            >
+                                <X className="h-4 w-4" />
                             </button>
-                        ))}
+                        </div>
+
+                        {/* Tabs + Search */}
+                        <div className="flex items-center gap-3 px-5 py-3 border-b border-white/[0.06] shrink-0">
+                            <div className="flex items-center bg-white/[0.03] p-0.5 rounded-lg border border-white/[0.07]">
+                                <button
+                                    onClick={() => setPickerTab('templates')}
+                                    className={`flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-medium transition-all ${
+                                        pickerTab === 'templates'
+                                            ? 'bg-slate-800 text-indigo-400 shadow-sm'
+                                            : 'text-slate-500 hover:text-white'
+                                    }`}
+                                >
+                                    <LayoutGrid className="h-3.5 w-3.5" />
+                                    Templates
+                                </button>
+                                <button
+                                    onClick={() => setPickerTab('my')}
+                                    className={`flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-medium transition-all ${
+                                        pickerTab === 'my'
+                                            ? 'bg-slate-800 text-indigo-400 shadow-sm'
+                                            : 'text-slate-500 hover:text-white'
+                                    }`}
+                                >
+                                    <Puzzle className="h-3.5 w-3.5" />
+                                    My Widgets
+                                    {userWidgets.length > 0 && (
+                                        <span className="ml-1 text-[10px] px-1.5 py-0.5 rounded-full bg-white/[0.06] text-slate-400">{userWidgets.length}</span>
+                                    )}
+                                </button>
+                            </div>
+                            <div className="flex-1" />
+                            <div className="relative">
+                                <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-slate-500" />
+                                <input
+                                    type="text"
+                                    placeholder="Search..."
+                                    value={pickerSearch}
+                                    onChange={(e) => setPickerSearch(e.target.value)}
+                                    className="pl-8 pr-3 py-1.5 rounded-lg border border-white/[0.08] bg-white/[0.02] text-xs text-slate-200 placeholder:text-slate-600 focus:border-indigo-500/50 focus:outline-none transition w-40"
+                                />
+                            </div>
+                        </div>
+
+                        {/* Content */}
+                        <div className="flex-1 overflow-y-auto p-5">
+                            {pickerTab === 'templates' && (
+                                <div>
+                                    <div className="grid grid-cols-2 sm:grid-cols-3 gap-2.5">
+                                        {filteredTemplates.map((tmpl) => (
+                                            <button
+                                                key={tmpl.id}
+                                                onClick={() => insertFullWidget(tmpl.code, tmpl.name)}
+                                                className="group text-left rounded-xl border border-white/[0.06] bg-white/[0.015] p-3 transition-all relative overflow-hidden hover:border-indigo-500/30 hover:bg-indigo-500/[0.04]"
+                                            >
+                                                <div className="w-full h-20 rounded-lg overflow-hidden mb-2.5 bg-[#0f172a] border border-white/[0.04]">
+                                                    <iframe
+                                                        srcDoc={tmpl.code}
+                                                        className="w-[400%] h-[400%] border-none pointer-events-none"
+                                                        style={{ transform: 'scale(0.25)', transformOrigin: 'top left' }}
+                                                        title={tmpl.name}
+                                                        sandbox="allow-scripts"
+                                                        tabIndex={-1}
+                                                    />
+                                                </div>
+                                                <div className="flex items-center gap-2">
+                                                    <div className={`w-6 h-6 rounded-md border flex items-center justify-center text-xs shrink-0 ${tmpl.color}`}>
+                                                        {tmpl.icon}
+                                                    </div>
+                                                    <div className="min-w-0">
+                                                        <h4 className="text-xs font-semibold text-white truncate leading-tight">{tmpl.name}</h4>
+                                                        <p className="text-[10px] text-slate-500 truncate">{tmpl.description}</p>
+                                                    </div>
+                                                </div>
+                                            </button>
+                                        ))}
+                                        {filteredTemplates.length === 0 && (
+                                            <div className="col-span-full text-center py-8 text-slate-500 text-sm">No templates match your search.</div>
+                                        )}
+                                    </div>
+                                </div>
+                            )}
+
+                            {pickerTab === 'my' && (
+                                <div>
+                                    {filteredUserWidgets.length === 0 ? (
+                                        <div className="flex flex-col items-center justify-center py-12 text-center">
+                                            <div className="w-14 h-14 rounded-2xl border border-white/[0.07] bg-white/[0.02] flex items-center justify-center mb-4">
+                                                <Puzzle className="h-6 w-6 text-slate-600" />
+                                            </div>
+                                            <h3 className="text-sm font-semibold text-white mb-1">
+                                                {pickerSearch ? 'No widgets match your search' : 'No widgets yet'}
+                                            </h3>
+                                            <p className="text-xs text-slate-500 mb-4 max-w-xs">
+                                                {pickerSearch ? 'Try a different search term.' : 'Create widgets in the Widgets section, then use them on any board.'}
+                                            </p>
+                                            {!pickerSearch && (
+                                                <button onClick={() => navigate('/widgets')} className="btn btn-secondary text-xs">
+                                                    Go to Widgets
+                                                </button>
+                                            )}
+                                        </div>
+                                    ) : (
+                                        <div className="grid grid-cols-2 sm:grid-cols-3 gap-2.5">
+                                            {filteredUserWidgets.map((widget) => (
+                                                <button
+                                                    key={widget.id}
+                                                    onClick={() => widget.html_code && insertFullWidget(widget.html_code, widget.name)}
+                                                    disabled={!widget.html_code}
+                                                    className="group text-left rounded-xl border border-white/[0.06] bg-white/[0.015] p-3 transition-all relative overflow-hidden hover:border-indigo-500/30 hover:bg-indigo-500/[0.04] disabled:opacity-40 disabled:cursor-not-allowed"
+                                                >
+                                                    <div className="w-full h-20 rounded-lg overflow-hidden mb-2.5 bg-[#0f172a] border border-white/[0.04]">
+                                                        {widget.html_code ? (
+                                                            <iframe
+                                                                srcDoc={widget.html_code}
+                                                                className="w-[400%] h-[400%] border-none pointer-events-none"
+                                                                style={{ transform: 'scale(0.25)', transformOrigin: 'top left' }}
+                                                                title={widget.name}
+                                                                sandbox="allow-scripts"
+                                                                tabIndex={-1}
+                                                            />
+                                                        ) : (
+                                                            <div className="w-full h-full flex items-center justify-center text-slate-600">
+                                                                <Puzzle className="h-5 w-5" />
+                                                            </div>
+                                                        )}
+                                                    </div>
+                                                    <div className="flex items-center gap-2">
+                                                        <div className="w-6 h-6 rounded-md bg-indigo-500/10 border border-indigo-500/20 flex items-center justify-center shrink-0">
+                                                            <Puzzle className="h-3 w-3 text-indigo-400" />
+                                                        </div>
+                                                        <h4 className="text-xs font-semibold text-white truncate leading-tight">{widget.name}</h4>
+                                                    </div>
+                                                </button>
+                                            ))}
+                                        </div>
+                                    )}
+                                </div>
+                            )}
+                        </div>
                     </div>
                 </div>
             )}
@@ -855,42 +1008,44 @@ export default function BoardEditor() {
             <div className="flex-1 flex relative overflow-hidden">
                 <div className="flex-1 relative overflow-hidden">
                     {activeTab === 'preview' ? (
-                        <div className="h-full flex flex-col bg-[#0d0f17] relative border-x border-white/[0.07] shadow-2xl transition-all duration-500 mx-auto" style={{ width: VIEWPORTS[viewport].width }}>
-                            <div className="text-[10px] font-bold text-slate-500/50 px-4 py-2 bg-slate-950/80 backdrop-blur-md uppercase tracking-[0.2em] border-b border-white/[0.07] flex items-center justify-between">
-                                <span>{VIEWPORTS[viewport].name} Environment</span>
-                                <span>{VIEWPORTS[viewport].width === '100%' ? 'Adaptive Width' : VIEWPORTS[viewport].width}</span>
+                        <div className="h-full flex flex-col bg-[#0d0f17]">
+                            {/* Viewport switcher bar */}
+                            <div className="flex items-center justify-center gap-1 px-3 py-1.5 bg-slate-950/80 backdrop-blur-md border-b border-white/[0.07] shrink-0">
+                                {Object.entries(VIEWPORTS).map(([key, { name, icon: Icon }]) => (
+                                    <button
+                                        key={key}
+                                        onClick={() => setViewport(key)}
+                                        className={`flex items-center gap-1.5 px-2.5 py-1 rounded-md text-[11px] font-medium transition-all ${
+                                            viewport === key
+                                                ? 'bg-indigo-600 text-white shadow-sm shadow-indigo-900/40'
+                                                : 'text-slate-500 hover:text-white hover:bg-white/[0.05]'
+                                        }`}
+                                        title={name}
+                                    >
+                                        <Icon className="h-3.5 w-3.5" />
+                                        <span className="hidden sm:inline">{name}</span>
+                                    </button>
+                                ))}
                             </div>
-                            <iframe
-                                ref={iframeRef}
-                                className="w-full flex-1 border-none bg-[#0a0e1a]"
-                                title="Board Preview"
-                                srcDoc={code}
-                            />
+                            <div className="flex-1 overflow-hidden relative">
+                                <div className="h-full border-x border-white/[0.07] shadow-2xl transition-all duration-500 mx-auto" style={{ width: VIEWPORTS[viewport].width }}>
+                                    <iframe
+                                        ref={iframeRef}
+                                        className="w-full h-full border-none bg-[#0a0e1a]"
+                                        title="Board Preview"
+                                        srcDoc={code}
+                                    />
+                                </div>
+                            </div>
                         </div>
                     ) : activeTab === 'code' ? (
-                        <div className="flex w-full h-full bg-[#0d0f17] font-mono text-sm leading-relaxed overflow-hidden">
-                            <div className="w-14 py-6 bg-[#111420] border-r border-white/[0.07] text-[#4b5563] text-right select-none overflow-hidden" ref={lineNumbersRef}>
-                                <pre className="m-0 px-4 font-inherit line-around leading-relaxed">{lineNumbers}</pre>
-                            </div>
-                            <div className="relative flex-1 overflow-hidden">
-                                <textarea
-                                    ref={textareaRef}
-                                    value={code}
-                                    onChange={(e) => setCode(e.target.value)}
-                                    onScroll={handleScroll}
-                                    onKeyDown={handleKeyDown}
-                                    className="absolute inset-0 w-full h-full p-6 m-0 border-none bg-transparent text-transparent caret-indigo-500 resize-none outline-none z-10 overflow-auto scrollbar-thin scrollbar-thumb-border-primary scrollbar-track-transparent"
-                                    spellCheck="false"
-                                />
-                                <pre className="absolute inset-0 p-6 m-0 z-0 pointer-events-none overflow-hidden" ref={codeRef}>
-                                    <code className="language-markup block pointer-events-none">
-                                        {code + (code.endsWith('\n') ? ' ' : '')}
-                                    </code>
-                                </pre>
-                            </div>
-                        </div>
+                        <CodeEditor
+                            value={code}
+                            onChange={setCode}
+                            language="html"
+                            onSave={handleSaveShortcut}
+                        />
                     ) : (
-                        // Data Tab - Queries for this board
                         <div className="h-full overflow-y-auto p-5">
                             <div className="max-w-6xl mx-auto">
                                 <div className="mb-5 flex items-center justify-between">

@@ -6,6 +6,50 @@ import { Loader2, Brain, ChevronDown, ChevronRight, Database, PlayCircle, CheckC
 import * as Diff from 'diff'
 import { useState } from 'react'
 
+function CollapsibleCode({ language, children }) {
+    const [expanded, setExpanded] = useState(false)
+    const code = String(children).replace(/\n$/, '')
+    const lineCount = code.split('\n').length
+    const isLong = lineCount > 8
+
+    return (
+        <div className="relative group">
+            <div
+                className={`overflow-hidden transition-[max-height] duration-300 ease-in-out ${isLong && !expanded ? 'max-h-[12rem]' : ''}`}
+            >
+                <SyntaxHighlighter
+                    style={vscDarkPlus}
+                    language={language || 'python'}
+                    PreTag="div"
+                    customStyle={{
+                        margin: 0,
+                        borderRadius: '0.5rem',
+                        fontSize: '0.75rem',
+                        background: '#0f1219',
+                        border: '1px solid rgba(255,255,255,0.06)',
+                    }}
+                >
+                    {code}
+                </SyntaxHighlighter>
+            </div>
+            {isLong && (
+                <>
+                    {!expanded && (
+                        <div className="absolute bottom-0 left-0 right-0 h-12 bg-gradient-to-t from-[#0f1219] to-transparent rounded-b-lg pointer-events-none" />
+                    )}
+                    <button
+                        onClick={() => setExpanded(!expanded)}
+                        className="absolute bottom-1.5 left-1/2 -translate-x-1/2 flex items-center gap-1 px-2.5 py-1 rounded-md bg-slate-800/90 border border-white/[0.08] text-[10px] font-medium text-slate-400 hover:text-white hover:bg-slate-700/90 transition z-10"
+                    >
+                        {expanded ? <ChevronDown size={11} /> : <ChevronRight size={11} />}
+                        {expanded ? 'Collapse' : `${lineCount} lines`}
+                    </button>
+                </>
+            )}
+        </div>
+    )
+}
+
 export default function ChatMessage({ message, isStreaming = false }) {
     const { role, content, thinking, code_delta, test_result, needs_user_input, tool_calls = [] } = message
     const [showTestDetails, setShowTestDetails] = useState(false)
@@ -19,194 +63,179 @@ export default function ChatMessage({ message, isStreaming = false }) {
 
     const getToolIcon = (toolName) => {
         switch(toolName) {
-            case 'get_datastore_schema': return <Database size={14} />
-            case 'list_datastores': return <Database size={14} />
-            case 'test_query': return <PlayCircle size={14} />
-            case 'execute_query_direct': return <PlayCircle size={14} />
-            case 'create_or_update_query': return <Code size={14} />
-            case 'get_query_code': return <Code size={14} />
-            case 'list_board_queries': return <Code size={14} />
-            case 'get_board_code': return <Code size={14} />
-            case 'delete_query': return <Trash2 size={14} />
-            default: return <Code size={14} />
+            case 'get_datastore_schema': return <Database size={13} />
+            case 'list_datastores': return <Database size={13} />
+            case 'create_or_update_datastore': return <Database size={13} />
+            case 'test_datastore': return <Database size={13} />
+            case 'run_query': return <PlayCircle size={13} />
+            case 'execute_query_direct': return <PlayCircle size={13} />
+            case 'create_or_update_query': return <Code size={13} />
+            case 'get_query_code': return <Code size={13} />
+            case 'search_query_code': return <Code size={13} />
+            case 'list_board_queries': return <Code size={13} />
+            case 'get_board_code': return <Code size={13} />
+            case 'search_board_code': return <Code size={13} />
+            case 'delete_query': return <Trash2 size={13} />
+            case 'save_keyfile': return <Database size={13} />
+            default: return <Code size={13} />
         }
     }
 
     const getToolLabel = (toolName) => {
         switch(toolName) {
             case 'get_datastore_schema': return 'Analyze Schema'
-            case 'test_query': return 'Test Query'
+            case 'run_query': return 'Run Query'
             case 'create_or_update_query': return 'Save Query'
             case 'delete_query': return 'Delete Query'
             case 'list_datastores': return 'List Datastores'
             case 'list_boards': return 'List Boards'
             case 'get_board_code': return 'Get Board Code'
+            case 'search_board_code': return 'Search Board Code'
             case 'list_board_queries': return 'List Queries'
             case 'get_query_code': return 'Read Query Code'
+            case 'search_query_code': return 'Search Query Code'
             case 'execute_query_direct': return 'Execute Query'
+            case 'create_or_update_datastore': return 'Save Datastore'
+            case 'test_datastore': return 'Test Connection'
+            case 'save_keyfile': return 'Save Keyfile'
             default: return toolName.replace(/_/g, ' ').replace(/\b\w/g, l => l.toUpperCase())
         }
     }
 
-    return (
-        <div className={`flex ${isUser ? 'justify-end' : 'justify-start'} animate-fade-in`}>
-            <div className={`max-w-[85%] rounded-2xl text-sm ${
-                isUser
-                    ? 'bg-indigo-600 text-white shadow-lg rounded-tr-none px-4 py-3'
-                    : 'bg-slate-800 border border-white/[0.07] text-white rounded-tl-none shadow-sm'
-            }`}>
-                {/* Thinking section (AI only) */}
-                {!isUser && thinking && (
-                    <div className="flex items-start gap-2 mb-3 pb-3 border-b border-white/[0.04]">
-                        <Brain size={14} className="mt-0.5 text-indigo-400 flex-shrink-0 animate-pulse" />
-                        <div className="text-xs text-slate-500 italic leading-relaxed">
-                            {thinking}
+    if (isUser) {
+        return (
+            <div className="flex justify-end animate-fade-in">
+                <div className="max-w-[80%]">
+                    {message.files?.length > 0 && (
+                        <div className="flex flex-wrap gap-1 mb-1 justify-end">
+                            {message.files.map((f, i) => (
+                                <span key={i} className="inline-flex items-center gap-1 px-2 py-0.5 bg-indigo-500/20 rounded text-[10px] text-indigo-300">
+                                    <svg width="10" height="10" viewBox="0 0 20 20" fill="currentColor"><path fillRule="evenodd" d="M4 4a2 2 0 012-2h4.586A2 2 0 0112 2.586L15.414 6A2 2 0 0116 7.414V16a2 2 0 01-2 2H6a2 2 0 01-2-2V4z" /></svg>
+                                    {f}
+                                </span>
+                            ))}
                         </div>
+                    )}
+                    <div className="rounded-2xl rounded-tr-sm bg-indigo-600 text-white shadow-lg px-4 py-2.5 text-[13px] leading-relaxed">
+                        {content}
                     </div>
-                )}
+                </div>
+            </div>
+        )
+    }
 
-                {/* Main content with markdown */}
-                <div className={`prose prose-sm max-w-none ${isUser ? 'prose-invert' : 'prose-neutral'}`}>
+    return (
+        <div className="animate-fade-in w-full">
+            {/* Thinking section */}
+            {thinking && (
+                <div className="flex items-center gap-2 mb-2">
+                    <Brain size={12} className="text-indigo-400 animate-pulse" />
+                    <span className="text-[11px] text-slate-500 italic">{thinking}</span>
+                </div>
+            )}
+
+            {/* Main content with markdown */}
+            {content && (
+                <div className="prose prose-sm prose-invert max-w-none text-[13px] text-slate-200 leading-relaxed [&_p]:mb-2 [&_p:last-child]:mb-0 [&_ul]:my-2 [&_ol]:my-2 [&_li]:leading-relaxed [&_a]:text-indigo-400 [&_a:hover]:underline">
                     <ReactMarkdown
                         remarkPlugins={[remarkGfm]}
                         components={{
                             code({ node, inline, className, children, ...props }) {
                                 const match = /language-(\w+)/.exec(className || '')
                                 const language = match ? match[1] : ''
-                                
+
                                 return !inline ? (
-                                    <SyntaxHighlighter
-                                        style={vscDarkPlus}
-                                        language={language || 'python'}
-                                        PreTag="div"
-                                        customStyle={{
-                                            margin: 0,
-                                            borderRadius: '0.5rem',
-                                            fontSize: '0.8rem',
-                                            background: '#1e1e1e'
-                                        }}
-                                        {...props}
-                                    >
-                                        {String(children).replace(/\n$/, '')}
-                                    </SyntaxHighlighter>
+                                    <CollapsibleCode language={language}>{children}</CollapsibleCode>
                                 ) : (
-                                    <code className={`${isUser ? 'bg-white/20' : 'bg-white/[0.05]'} px-1.5 py-0.5 rounded text-[0.85em]`} {...props}>
+                                    <code className="bg-white/[0.06] px-1.5 py-0.5 rounded text-[0.85em] text-indigo-300" {...props}>
                                         {children}
                                     </code>
                                 )
                             },
                             pre: ({ children }) => <div className="my-2">{children}</div>,
-                            p: ({ children }) => <p className="mb-2 last:mb-0 leading-relaxed">{children}</p>,
-                            ul: ({ children }) => <ul className="my-2 space-y-1">{children}</ul>,
-                            ol: ({ children }) => <ol className="my-2 space-y-1">{children}</ol>,
-                            li: ({ children }) => <li className="leading-relaxed">{children}</li>,
-                            a: ({ href, children }) => (
-                                <a href={href} target="_blank" rel="noopener noreferrer" className="text-indigo-400 hover:underline">
-                                    {children}
-                                </a>
-                            ),
                         }}
                     >
                         {content}
                     </ReactMarkdown>
                 </div>
+            )}
 
-                {/* Tool calls section */}
-                {!isUser && tool_calls && tool_calls.length > 0 && (
-                    <div className="mt-3 space-y-2">
-                        {tool_calls.map((tool, index) => (
-                            <ToolCallDisplay 
-                                key={index} 
-                                tool={tool} 
-                                expanded={expandedTools[index]} 
-                                onToggle={() => toggleToolExpand(index)}
-                                getIcon={getToolIcon}
-                                getLabel={getToolLabel}
-                            />
-                        ))}
-                    </div>
-                )}
+            {/* Tool calls section */}
+            {tool_calls && tool_calls.length > 0 && (
+                <div className="mt-3 space-y-1.5">
+                    {tool_calls.map((tool, index) => (
+                        <ToolCallDisplay 
+                            key={index} 
+                            tool={tool} 
+                            expanded={expandedTools[index]} 
+                            onToggle={() => toggleToolExpand(index)}
+                            getIcon={getToolIcon}
+                            getLabel={getToolLabel}
+                        />
+                    ))}
+                </div>
+            )}
 
-                {/* Code diff visualization */}
-                {!isUser && code_delta && (
-                    <div className="mt-3 pt-3 border-t border-white/[0.04]">
-                        <CodeDiff oldCode={code_delta.old_code} newCode={code_delta.new_code} />
-                    </div>
-                )}
+            {/* Code diff visualization */}
+            {code_delta && (
+                <div className="mt-3">
+                    <CodeDiff oldCode={code_delta.old_code} newCode={code_delta.new_code} />
+                </div>
+            )}
 
-                {/* Test result collapsible section */}
-                {!isUser && test_result && (
-                    <div className="mt-3 pt-3 border-t border-white/[0.04]">
-                        <button
-                            onClick={() => setShowTestDetails(!showTestDetails)}
-                            className={`w-full flex items-center justify-between gap-2 text-xs px-3 py-2 rounded-lg transition-colors ${
-                                test_result.success 
-                                    ? 'bg-green-500/10 hover:bg-green-500/20 text-green-400' 
-                                    : 'bg-red-500/10 hover:bg-red-500/20 text-red-400'
-                            }`}
-                        >
-                            <div className="flex items-center gap-2">
-                                <span className={`w-2 h-2 rounded-full ${
-                                    test_result.success ? 'bg-green-400' : 'bg-red-400'
-                                }`} />
-                                <span className="font-medium">
-                                    {test_result.success ? 'Query Execution Successful' : 'Query Execution Failed'}
-                                </span>
-                                {test_result.success && test_result.row_count !== undefined && (
-                                    <span className="text-slate-500">• {test_result.row_count} rows returned</span>
-                                )}
-                            </div>
-                            {showTestDetails ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
-                        </button>
-                        
-                        {showTestDetails && (
-                            <div className="mt-2 px-3 py-2 rounded-lg bg-white/[0.05] text-xs text-slate-400">
-                                {test_result.success ? (
-                                    <div>
-                                        <div className="font-medium text-green-400 mb-1">✓ Test Passed</div>
-                                        <div className="text-slate-500">
-                                            The query executed successfully and returned {test_result.row_count || 0} row{test_result.row_count !== 1 ? 's' : ''}.
-                                        </div>
-                                    </div>
-                                ) : (
-                                    <div>
-                                        <div className="font-medium text-red-400 mb-1">✗ Test Failed</div>
-                                        <div className="text-slate-500 mb-2">The query encountered an error:</div>
-                                        <div className="bg-slate-950 rounded px-2 py-1 text-red-300 font-mono text-[11px] whitespace-pre-wrap break-words">
-                                            {test_result.error}
-                                        </div>
-                                    </div>
-                                )}
-                            </div>
-                        )}
-                    </div>
-                )}
-
-                {/* User input needed indicator */}
-                {!isUser && needs_user_input && (
-                    <div className="mt-3 pt-3 border-t border-white/[0.04]">
-                        <div className="bg-amber-500/10 border border-amber-500/30 rounded-lg p-3">
-                            <div className="flex items-start gap-2">
-                                <svg className="w-4 h-4 text-amber-400 mt-0.5 flex-shrink-0" fill="currentColor" viewBox="0 0 20 20">
-                                    <path fillRule="evenodd" d="M8.257 3.099c.765-1.36 2.722-1.36 3.486 0l5.58 9.92c.75 1.334-.213 2.98-1.742 2.98H4.42c-1.53 0-2.493-1.646-1.743-2.98l5.58-9.92zM11 13a1 1 0 11-2 0 1 1 0 012 0zm-1-8a1 1 0 00-1 1v3a1 1 0 002 0V6a1 1 0 00-1-1z" />
-                                </svg>
-                                <div className="flex-1 text-xs text-amber-200 leading-relaxed">
-                                    <strong className="font-semibold">Needs your input</strong>
-                                    <p className="mt-1 text-amber-200/90">The code is ready but needs refinement. Reply with more details or instructions to continue.</p>
-                                </div>
-                            </div>
+            {/* Test result */}
+            {test_result && (
+                <div className="mt-3">
+                    <button
+                        onClick={() => setShowTestDetails(!showTestDetails)}
+                        className={`w-full flex items-center justify-between gap-2 text-xs px-3 py-2 rounded-lg transition-colors ${
+                            test_result.success 
+                                ? 'bg-green-500/10 hover:bg-green-500/15 text-green-400' 
+                                : 'bg-red-500/10 hover:bg-red-500/15 text-red-400'
+                        }`}
+                    >
+                        <div className="flex items-center gap-2">
+                            {test_result.success ? <CheckCircle size={13} /> : <XCircle size={13} />}
+                            <span className="font-medium">
+                                {test_result.success ? `Query passed — ${test_result.row_count || 0} rows` : 'Query failed'}
+                            </span>
                         </div>
-                    </div>
-                )}
+                        {showTestDetails ? <ChevronDown size={13} /> : <ChevronRight size={13} />}
+                    </button>
+                    
+                    {showTestDetails && (
+                        <div className="mt-1.5 px-3 py-2 rounded-lg bg-white/[0.03] text-xs text-slate-400">
+                            {test_result.success ? (
+                                <div className="text-slate-500">
+                                    Returned {test_result.row_count || 0} row{test_result.row_count !== 1 ? 's' : ''}.
+                                </div>
+                            ) : (
+                                <div className="bg-red-500/5 rounded px-2 py-1.5 text-red-300 font-mono text-[11px] whitespace-pre-wrap break-words">
+                                    {test_result.error}
+                                </div>
+                            )}
+                        </div>
+                    )}
+                </div>
+            )}
 
-                {/* Streaming indicator */}
-                {isStreaming && !isUser && (
-                    <div className="flex items-center gap-2 mt-2 text-slate-500 text-xs">
-                        <Loader2 size={12} className="animate-spin" />
-                        <span>Thinking...</span>
-                    </div>
-                )}
-            </div>
+            {/* User input needed */}
+            {needs_user_input && (
+                <div className="mt-3 flex items-start gap-2 rounded-lg bg-amber-500/10 border border-amber-500/20 px-3 py-2.5 text-xs text-amber-200/90">
+                    <svg className="w-3.5 h-3.5 text-amber-400 mt-0.5 shrink-0" fill="currentColor" viewBox="0 0 20 20">
+                        <path fillRule="evenodd" d="M8.257 3.099c.765-1.36 2.722-1.36 3.486 0l5.58 9.92c.75 1.334-.213 2.98-1.742 2.98H4.42c-1.53 0-2.493-1.646-1.743-2.98l5.58-9.92zM11 13a1 1 0 11-2 0 1 1 0 012 0zm-1-8a1 1 0 00-1 1v3a1 1 0 002 0V6a1 1 0 00-1-1z" />
+                    </svg>
+                    <span>Needs your input — reply with more details to continue.</span>
+                </div>
+            )}
+
+            {/* Streaming indicator */}
+            {isStreaming && (
+                <div className="flex items-center gap-2 mt-2 text-indigo-400/70 text-xs">
+                    <Loader2 size={12} className="animate-spin" />
+                    <span>Thinking...</span>
+                </div>
+            )}
         </div>
     )
 }
@@ -282,42 +311,38 @@ function ToolCallDisplay({ tool, expanded, onToggle, getIcon, getLabel }) {
     
     return (
         <div className={`rounded-lg border ${
-            isSuccess ? 'border-green-500/30 bg-green-500/5' : 
-            isError ? 'border-red-500/30 bg-red-500/5' : 
-            'border-white/[0.07] bg-white/[0.05]'
+            isSuccess ? 'border-green-500/15 bg-green-500/[0.03]' : 
+            isError ? 'border-red-500/15 bg-red-500/[0.03]' : 
+            'border-white/[0.06] bg-white/[0.02]'
         }`}>
             <button
                 onClick={onToggle}
-                className="w-full flex items-center justify-between gap-3 px-3 py-2.5 text-xs hover:bg-white/[0.03] transition-colors rounded-lg"
+                className="w-full flex items-center justify-between gap-2 px-2.5 py-2 text-[11px] hover:bg-white/[0.02] transition-colors rounded-lg"
             >
-                <div className="flex items-center gap-2 flex-1">
-                    <div className={`p-1.5 rounded-md ${
-                        isSuccess ? 'bg-green-500/20 text-green-400' :
-                        isError ? 'bg-red-500/20 text-red-400' :
-                        'bg-indigo-500/20 text-indigo-400'
+                <div className="flex items-center gap-2 min-w-0">
+                    <div className={`p-1 rounded ${
+                        isSuccess ? 'text-green-400' :
+                        isError ? 'text-red-400' :
+                        'text-indigo-400'
                     }`}>
                         {getIcon(tool.tool)}
                     </div>
-                    <div className="flex items-center gap-2 text-left">
-                        <span className="font-medium text-white">{getLabel(tool.tool)}</span>
-                        {isSuccess && <CheckCircle size={14} className="text-green-400" />}
-                        {isError && <XCircle size={14} className="text-red-400" />}
-                    </div>
+                    <span className="font-medium text-slate-300 truncate">{getLabel(tool.tool)}</span>
+                    {isSuccess && <CheckCircle size={12} className="text-green-400/60 shrink-0" />}
+                    {isError && <XCircle size={12} className="text-red-400/60 shrink-0" />}
                 </div>
-                {expanded ? <ChevronDown size={14} className="text-slate-500" /> : <ChevronRight size={14} className="text-slate-500" />}
+                <ChevronRight size={12} className={`text-slate-600 shrink-0 transition-transform ${expanded ? 'rotate-90' : ''}`} />
             </button>
             
             {expanded && (
-                <div className="px-3 pb-3 space-y-2">
-                    {/* Arguments */}
+                <div className="px-2.5 pb-2.5 space-y-1.5">
                     {tool.args && Object.keys(tool.args).length > 0 && (
-                        <div className="bg-slate-950 rounded-md p-2">
-                            <div className="text-[10px] uppercase font-semibold text-slate-500 mb-1">Arguments</div>
-                            <div className="font-mono text-[11px] text-slate-400 space-y-0.5">
+                        <div className="bg-slate-950/50 rounded-md px-2 py-1.5">
+                            <div className="font-mono text-[10px] text-slate-500 space-y-0.5">
                                 {Object.entries(tool.args).map(([key, value]) => (
-                                    <div key={key} className="flex gap-2">
-                                        <span className="text-indigo-400">{key}:</span>
-                                        <span className="text-slate-500 truncate">{
+                                    <div key={key} className="flex gap-1.5">
+                                        <span className="text-indigo-400/80 shrink-0">{key}:</span>
+                                        <span className="text-slate-600 truncate">{
                                             typeof value === 'string' && value.length > 80 
                                                 ? value.substring(0, 80) + '...' 
                                                 : JSON.stringify(value)
@@ -328,45 +353,41 @@ function ToolCallDisplay({ tool, expanded, onToggle, getIcon, getLabel }) {
                         </div>
                     )}
                     
-                    {/* Result */}
                     {isSuccess && tool.result && (
-                        <div className="bg-slate-950 rounded-md p-2">
-                            <div className="text-[10px] uppercase font-semibold text-slate-500 mb-1">Result</div>
+                        <div className="bg-slate-950/50 rounded-md px-2 py-1.5">
                             {tool.tool === 'get_datastore_schema' ? (
                                 <SchemaDisplay result={tool.result} />
-                            ) : tool.tool === 'test_query' ? (
+                            ) : tool.tool === 'run_query' ? (
                                 <TestQueryDisplay result={tool.result} />
                             ) : tool.tool === 'list_datastores' ? (
-                                <div className="font-mono text-[11px] text-slate-400 space-y-0.5">
+                                <div className="font-mono text-[10px] text-slate-400 space-y-0.5">
                                     {(tool.result.datastores || []).map((ds, i) => (
-                                        <div key={i} className="flex gap-2"><span className="text-indigo-400">{ds.name}</span><span className="text-slate-500">{ds.type}</span></div>
+                                        <div key={i} className="flex gap-2"><span className="text-indigo-400">{ds.name}</span><span className="text-slate-600">{ds.type}</span></div>
                                     ))}
                                 </div>
                             ) : tool.tool === 'list_board_queries' ? (
-                                <div className="font-mono text-[11px] text-slate-400 space-y-0.5">
+                                <div className="font-mono text-[10px] text-slate-400 space-y-0.5">
                                     {(tool.result.queries || []).map((q, i) => (
-                                        <div key={i} className="flex gap-2"><span className="text-indigo-400">{q.name}</span>{q.description && <span className="text-slate-500 truncate">{q.description}</span>}</div>
+                                        <div key={i} className="flex gap-2"><span className="text-indigo-400">{q.name}</span>{q.description && <span className="text-slate-600 truncate">{q.description}</span>}</div>
                                     ))}
-                                    {tool.result.count === 0 && <div className="text-slate-500">No queries found</div>}
+                                    {tool.result.count === 0 && <div className="text-slate-600">No queries found</div>}
                                 </div>
                             ) : tool.tool === 'get_query_code' ? (
-                                <div className="font-mono text-[11px] text-slate-400">
+                                <div className="font-mono text-[10px] text-slate-400">
                                     <div className="text-indigo-400 mb-1">{tool.result.name}</div>
-                                    <pre className="text-slate-500 text-[10px] max-h-24 overflow-y-auto whitespace-pre-wrap break-words">{tool.result.code || tool.result.python_code}</pre>
+                                    <pre className="text-slate-600 max-h-20 overflow-y-auto whitespace-pre-wrap break-words">{tool.result.code || tool.result.python_code}</pre>
                                 </div>
                             ) : (
-                                <div className="font-mono text-[11px] text-green-400">
+                                <div className="font-mono text-[10px] text-green-400/80">
                                     {tool.result.message || JSON.stringify(tool.result, null, 2)}
                                 </div>
                             )}
                         </div>
                     )}
                     
-                    {/* Error */}
                     {isError && tool.error && (
-                        <div className="bg-red-500/10 rounded-md p-2 border border-red-500/30">
-                            <div className="text-[10px] uppercase font-semibold text-red-400 mb-1">Error</div>
-                            <div className="font-mono text-[11px] text-red-300 whitespace-pre-wrap break-words">
+                        <div className="bg-red-500/5 rounded-md px-2 py-1.5 border border-red-500/15">
+                            <div className="font-mono text-[10px] text-red-300/80 whitespace-pre-wrap break-words">
                                 {tool.error}
                             </div>
                         </div>

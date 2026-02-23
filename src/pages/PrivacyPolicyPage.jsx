@@ -12,7 +12,7 @@ const sections = [
     title: '2. Information We Collect',
     content: `When you use Nubi, we may collect the following types of information:
 
-Account Information — When you create an account, we collect your email address and authentication credentials (managed through Supabase Auth).
+Account Information — When you create an account, we collect your email address and authentication credentials.
 
 Usage Data — We collect anonymized usage analytics to improve the product, including pages visited, features used, and general interaction patterns. This data does not include query contents or database records.
 
@@ -38,8 +38,6 @@ We do not sell your personal information or data to third parties.`,
 
 Google Gemini API — When you use natural language queries, your question and relevant schema context are sent to Google's Gemini API for processing. Google's AI data usage policies apply. No raw data from your database is sent — only the question and schema metadata needed to generate a query.
 
-Supabase — Used for authentication and metadata storage. Subject to Supabase's privacy policy.
-
 Database Providers — Connections to your databases (BigQuery, PostgreSQL, etc.) are direct from your Nubi deployment. Credentials are encrypted at rest.`,
   },
   {
@@ -49,7 +47,7 @@ Database Providers — Connections to your databases (BigQuery, PostgreSQL, etc.
 • All data in transit is encrypted using TLS/HTTPS
 • Database credentials are encrypted at rest
 • Self-hosted deployments keep all data within your infrastructure
-• Authentication is handled through industry-standard protocols (Supabase Auth)
+• Authentication is handled through industry-standard protocols (JWT)
 • We follow the principle of least privilege for all data access
 
 We retain your account information for as long as your account is active. You can request deletion of your account and associated data at any time.`,

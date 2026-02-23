@@ -1,5 +1,6 @@
 import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom'
 import { AuthProvider } from './contexts/AuthContext'
+import { OrgProvider } from './contexts/OrgContext'
 import { HeaderProvider } from './contexts/HeaderContext'
 import ProtectedRoute from './components/ProtectedRoute'
 import MainLayout from './layouts/MainLayout'
@@ -12,11 +13,15 @@ import BoardEditor from './components/BoardEditor'
 import QueryEditor from './components/QueryEditor'
 import DatastoresPage from './pages/Datastores/DatastoresPage'
 import DatastoreDetailPage from './pages/Datastores/DatastoreDetailPage'
+import WidgetsPage from './pages/Widgets/WidgetsPage'
+import WidgetDetailPage from './pages/Widgets/WidgetDetailPage'
+import UsagePage from './pages/UsagePage'
 
 export default function App() {
   return (
     <HeaderProvider>
       <AuthProvider>
+        <OrgProvider>
         <BrowserRouter>
           <Routes>
             {/* Public Routes */}
@@ -38,6 +43,9 @@ export default function App() {
                 <Route path="/board/:boardId/query/:queryId" element={<QueryEditor />} />
                 <Route path="/datastores" element={<DatastoresPage />} />
                 <Route path="/datastores/:datastoreId" element={<DatastoreDetailPage />} />
+                <Route path="/widgets" element={<WidgetsPage />} />
+                <Route path="/widgets/:widgetId" element={<WidgetDetailPage />} />
+                <Route path="/usage" element={<UsagePage />} />
               </Route>
             </Route>
 
@@ -45,6 +53,7 @@ export default function App() {
             <Route path="*" element={<Navigate to="/" replace />} />
           </Routes>
         </BrowserRouter>
+        </OrgProvider>
       </AuthProvider>
     </HeaderProvider>
   )
