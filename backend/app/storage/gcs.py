@@ -4,15 +4,16 @@ from . import StorageProvider
 
 class GCSStorageProvider(StorageProvider):
     def __init__(self):
-        self._client = None
         self._bucket_obj = None
 
     def _get_bucket(self):
-        if self._client is None:
+        if self._bucket_obj is None:
             from google.cloud import storage as gcs_storage
-            self._client = gcs_storage.Client()
             bucket_name = os.getenv("GCS_BUCKET_NAME", "")
-            self._bucket_obj = self._client.bucket(bucket_name)
+            if not bucket_name:
+                raise RuntimeError("GCS_BUCKET_NAME environment variable is not set")
+            client = gcs_storage.Client()
+            self._bucket_obj = client.bucket(bucket_name)
         return self._bucket_obj
 
     def _blob_path(self, bucket: str, path: str) -> str:

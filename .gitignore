@@ -35,3 +35,4 @@ backend/.env
 # Secret/credential files
 backend/storage/secret-files/
 key.json
+keyfile.json
