@@ -1,5 +1,6 @@
 import asyncio
 import json
+import os
 import time
 from typing import Dict, Any, Optional, List, AsyncGenerator
 
@@ -8,6 +9,8 @@ from fastapi import APIRouter, HTTPException, Body, Depends, Request
 from fastapi.responses import StreamingResponse
 
 from ..db import get_pool
+
+_BACKEND_URL = os.getenv("BACKEND_URL", "https://nubi-backend-759628329757.us-central1.run.app")
 from ..auth import get_optional_user
 from ..prompts import (
     BOARD_SYSTEM_INSTRUCTION, EXPLORATION_SYSTEM_INSTRUCTION,
@@ -994,7 +997,7 @@ async def exploration_helper_stream(
                         await pool.execute("UPDATE board_queries SET python_code=$1 WHERE id=$2", generated_code, test_query_id)
                         test_response = await asyncio.to_thread(
                             requests.post,
-                            "http://localhost:8000/explore",
+                            f"{_BACKEND_URL}/explore",
                             json={"query_id": test_query_id, "args": {}, "datastore_id": datastore_id},
                             timeout=30,
                         )
@@ -1143,7 +1146,7 @@ async def exploration_helper_with_testing(
                         pool = get_pool()
                         await pool.execute("UPDATE board_queries SET python_code=$1 WHERE id=$2", generated_code, test_query_id)
                         test_response = await asyncio.to_thread(
-                            requests.post, "http://localhost:8000/explore",
+                            requests.post, f"{_BACKEND_URL}/explore",
                             json={"query_id": test_query_id, "args": {}, "datastore_id": datastore_id}, timeout=30,
                         )
                         if test_response.ok:
