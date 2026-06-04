@@ -1,0 +1,14 @@
+README.md
+setup.py
+nubi_cli/__init__.py
+nubi_cli/client.py
+nubi_cli/config.py
+nubi_cli/main.py
+nubi_cli.egg-info/PKG-INFO
+nubi_cli.egg-info/SOURCES.txt
+nubi_cli.egg-info/dependency_links.txt
+nubi_cli.egg-info/entry_points.txt
+nubi_cli.egg-info/requires.txt
+nubi_cli.egg-info/top_level.txt
+tests/__init__.py
+tests/test_cli.py

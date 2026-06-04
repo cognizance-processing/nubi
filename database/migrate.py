@@ -1,225 +1,170 @@
-#!/usr/bin/env python3
-"""Run pending SQL migrations against a Postgres database.
+"""
+database/migrate.py — forward-only SQL migration runner using asyncpg.
 
-Tracks applied migrations in a `_migrations` table so each file only runs once.
-Also runs seed.sql if the seed hasn't been applied yet.
+Usage
+-----
+Apply pending migrations:
+    python database/migrate.py
 
-Usage:
-    python database/migrate.py                      # local (default)
-    python database/migrate.py --env dev             # dev environment
-    python database/migrate.py --env prod --status   # prod migration status
-    python database/migrate.py --env prod --reset    # reset prod (with confirmation)
+Show applied vs pending migrations:
+    python database/migrate.py --status
+
+Requirements
+------------
+- DATABASE_URL env var (Neon Postgres URL, e.g. postgresql://user:pass@host/db?sslmode=require)
+- asyncpg installed  (pip install asyncpg)
+
+Behaviour
+---------
+- On first run, creates the schema_migrations ledger table.
+- Scans database/migrations/*.sql in lexical order.
+- Applies only those not already recorded in schema_migrations.
+- Each migration runs inside its own transaction; failure rolls back that
+  migration and stops the runner (no partial state).
+- Idempotent: safe to run multiple times.
 """
 
-import argparse, asyncio, sys, os
+import argparse
+import asyncio
+import os
+import sys
 from pathlib import Path
 
 import asyncpg
 
-HERE = Path(__file__).resolve().parent
-BACKEND_DIR = HERE.parent / "backend"
-MIGRATIONS_DIR = HERE / "migrations"
-SEED_FILE = HERE / "seed.sql"
+MIGRATIONS_DIR = Path(__file__).parent / "migrations"
 
-ENV_FILES = {
-    "local": BACKEND_DIR / ".env",
-    "dev":   BACKEND_DIR / ".env.development",
-    "prod":  BACKEND_DIR / ".env.production",
-}
-
-DB_URL: str = ""
-
-
-def _load_dotenv(path: Path):
-    """Load a .env file into os.environ (existing vars take precedence)."""
-    if not path.exists():
-        print(f"WARNING: env file not found: {path}")
-        return
-    for line in path.read_text().splitlines():
-        line = line.strip()
-        if not line or line.startswith("#"):
-            continue
-        key, _, val = line.partition("=")
-        os.environ.setdefault(key.strip(), val.strip())
-
-
-def init_env(env_name: str):
-    global DB_URL
-    env_file = ENV_FILES[env_name]
-    base_env = BACKEND_DIR / ".env"
-
-    _load_dotenv(env_file)
-    if env_name != "local" and base_env.exists():
-        _load_dotenv(base_env)
-
-    DB_URL = os.environ.get("DATABASE_URL", "postgresql://pc@localhost:5432/nubi")
-
-    label = env_name.upper()
-    display_url = DB_URL
-    if "@" in DB_URL:
-        pre, at_rest = DB_URL.split("@", 1)
-        proto, _, creds = pre.rpartition("//")
-        display_url = f"{proto}//*****@{at_rest}"
-
-    print(f"Environment : {label}")
-    print(f"Env file    : {env_file.relative_to(HERE.parent)}")
-    print(f"Database    : {display_url}")
-    print()
-
-
-TRACKING_TABLE = """
-CREATE TABLE IF NOT EXISTS _migrations (
-    filename TEXT PRIMARY KEY,
-    applied_at TIMESTAMPTZ NOT NULL DEFAULT now()
+CREATE_LEDGER_SQL = """
+CREATE TABLE IF NOT EXISTS schema_migrations (
+    version    text        PRIMARY KEY,
+    applied_at timestamptz NOT NULL DEFAULT now()
 );
 """
 
 
-async def get_connection() -> asyncpg.Connection:
-    return await asyncpg.connect(DB_URL)
+def get_database_url() -> str:
+    """Read DATABASE_URL from the environment; abort if absent."""
+    url = os.environ.get("DATABASE_URL", "").strip()
+    if not url:
+        print("ERROR: DATABASE_URL environment variable is not set.", file=sys.stderr)
+        sys.exit(1)
+    return url
 
 
-async def db_exec(sql: str) -> bool:
-    conn = await get_connection()
+def discover_migrations() -> list[Path]:
+    """Return all *.sql files in MIGRATIONS_DIR, sorted lexically."""
+    if not MIGRATIONS_DIR.is_dir():
+        print(
+            f"ERROR: migrations directory not found: {MIGRATIONS_DIR}",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+    files = sorted(MIGRATIONS_DIR.glob("*.sql"))
+    return files
+
+
+async def ensure_ledger(conn: asyncpg.Connection) -> None:
+    """Create the schema_migrations table if it does not yet exist."""
+    await conn.execute(CREATE_LEDGER_SQL)
+
+
+async def applied_versions(conn: asyncpg.Connection) -> set[str]:
+    """Return the set of migration versions already recorded in the ledger."""
+    rows = await conn.fetch("SELECT version FROM schema_migrations ORDER BY version")
+    return {row["version"] for row in rows}
+
+
+async def apply_migrations(url: str) -> None:
+    """Apply all pending migrations to the database."""
+    conn: asyncpg.Connection = await asyncpg.connect(url)
     try:
-        await conn.execute(sql)
-        return True
-    except Exception as e:
-        print(f"    ERROR: {e}")
-        return False
+        await ensure_ledger(conn)
+        done = await applied_versions(conn)
+        pending = [f for f in discover_migrations() if f.name not in done]
+
+        if not pending:
+            print("No pending migrations — database is up to date.")
+            return
+
+        for migration_file in pending:
+            sql = migration_file.read_text(encoding="utf-8")
+            version = migration_file.name
+            print(f"  Applying {version} ...", end=" ", flush=True)
+            async with conn.transaction():
+                await conn.execute(sql)
+                await conn.execute(
+                    "INSERT INTO schema_migrations (version) VALUES ($1)",
+                    version,
+                )
+            print("done")
+
+        print(f"\nApplied {len(pending)} migration(s) successfully.")
     finally:
         await conn.close()
 
 
-async def db_query(sql: str) -> list[str]:
-    conn = await get_connection()
+async def show_status(url: str) -> None:
+    """Print a table of applied vs pending migration files."""
+    conn: asyncpg.Connection = await asyncpg.connect(url)
     try:
-        rows = await conn.fetch(sql)
-        return [row[0] for row in rows]
-    except Exception:
-        return []
-    finally:
-        await conn.close()
+        await ensure_ledger(conn)
+        done = await applied_versions(conn)
+        all_files = discover_migrations()
 
+        print(f"{'VERSION':<40}  {'STATUS':<10}  APPLIED_AT")
+        print("-" * 70)
 
-async def ensure_tracking():
-    await db_exec(TRACKING_TABLE)
+        # Print applied rows (with timestamp) in order
+        rows = await conn.fetch(
+            "SELECT version, applied_at FROM schema_migrations ORDER BY version"
+        )
+        applied_map = {row["version"]: row["applied_at"] for row in rows}
 
+        file_names = {f.name for f in all_files}
 
-async def get_applied() -> set[str]:
-    rows = await db_query("SELECT filename FROM _migrations;")
-    return set(rows)
-
-
-def get_migration_files() -> list[Path]:
-    return sorted(MIGRATIONS_DIR.glob("*.sql"))
-
-
-async def apply(sql_file: Path) -> bool:
-    sql = sql_file.read_text()
-    conn = await get_connection()
-    try:
-        async with conn.transaction():
-            await conn.execute(sql)
-            await conn.execute(
-                "INSERT INTO _migrations (filename) VALUES ($1)", sql_file.name
-            )
-        return True
-    except Exception as e:
-        print(f"    ERROR: {e}")
-        return False
-    finally:
-        await conn.close()
-
-
-async def cmd_migrate():
-    await ensure_tracking()
-    applied = await get_applied()
-    files = get_migration_files()
-
-    pending = [f for f in files if f.name not in applied]
-
-    if not pending and "seed.sql" in applied:
-        print("Everything up to date.")
-        return
-
-    if pending:
-        print(f"{len(pending)} pending migration(s):\n")
-        for f in pending:
-            print(f"  → {f.name} ... ", end="", flush=True)
-            if await apply(f):
-                print("ok")
+        # Show all known files first (lexical order)
+        for migration_file in all_files:
+            name = migration_file.name
+            if name in applied_map:
+                ts = applied_map[name].strftime("%Y-%m-%d %H:%M:%S UTC")
+                print(f"{name:<40}  {'applied':<10}  {ts}")
             else:
-                print("FAILED — aborting")
-                sys.exit(1)
+                print(f"{name:<40}  {'pending':<10}  —")
+
+        # Any applied versions not found on disk (e.g. after a rollback of file)
+        for version, ts in sorted(applied_map.items()):
+            if version not in file_names:
+                ts_str = ts.strftime("%Y-%m-%d %H:%M:%S UTC")
+                print(f"{version:<40}  {'applied*':<10}  {ts_str}  [file missing]")
+
         print()
-
-    if SEED_FILE.exists() and "seed.sql" not in applied:
-        print("  → seed.sql ... ", end="", flush=True)
-        if await apply(SEED_FILE):
-            print("ok")
-        else:
-            print("FAILED")
-            sys.exit(1)
-        print()
-
-    print("Done!")
+        pending_count = len([f for f in all_files if f.name not in done])
+        print(
+            f"{len(done)} applied, {pending_count} pending"
+            + (" — run without --status to apply" if pending_count else "")
+        )
+    finally:
+        await conn.close()
 
 
-async def cmd_status():
-    await ensure_tracking()
-    applied = await get_applied()
-    files = get_migration_files()
-
-    print(f"{'FILE':<50} STATUS")
-    print("-" * 62)
-    for f in files:
-        status = "applied" if f.name in applied else "PENDING"
-        marker = "✓" if f.name in applied else "•"
-        print(f"  {marker} {f.name:<48} {status}")
-
-    if SEED_FILE.exists():
-        status = "applied" if "seed.sql" in applied else "PENDING"
-        marker = "✓" if "seed.sql" in applied else "•"
-        print(f"  {marker} {'seed.sql':<48} {status}")
-
-    pending_count = sum(1 for f in files if f.name not in applied)
-    if SEED_FILE.exists() and "seed.sql" not in applied:
-        pending_count += 1
-    print(f"\n{len(files)} migrations, {pending_count} pending")
-
-
-async def cmd_reset(env_name: str):
-    if env_name == "prod":
-        answer = input("⚠️  You are about to RESET the PRODUCTION database. Type 'yes' to confirm: ")
-        if answer.strip().lower() != "yes":
-            print("Aborted.")
-            sys.exit(0)
-    print("Dropping all objects in public schema...")
-    await db_exec("DROP SCHEMA public CASCADE; CREATE SCHEMA public;")
-    print("Re-running all migrations...\n")
-    await cmd_migrate()
-
-
-async def async_main():
-    parser = argparse.ArgumentParser(description="Database migration runner")
-    parser.add_argument(
-        "--env", choices=["local", "dev", "prod"], default="local",
-        help="Target environment (default: local)",
+def main() -> None:
+    parser = argparse.ArgumentParser(
+        description="Forward-only SQL migration runner for Nubi (asyncpg / Neon Postgres)."
     )
-    parser.add_argument("--status", action="store_true", help="Show migration status")
-    parser.add_argument("--reset", action="store_true", help="Drop tracking and re-run all")
+    parser.add_argument(
+        "--status",
+        action="store_true",
+        help="List applied and pending migrations without applying anything.",
+    )
     args = parser.parse_args()
 
-    init_env(args.env)
+    url = get_database_url()
 
     if args.status:
-        await cmd_status()
-    elif args.reset:
-        await cmd_reset(args.env)
+        asyncio.run(show_status(url))
     else:
-        await cmd_migrate()
+        asyncio.run(apply_migrations(url))
 
 
 if __name__ == "__main__":
-    asyncio.run(async_main())
+    main()

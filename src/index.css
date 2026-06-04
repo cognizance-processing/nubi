@@ -1,116 +1,91 @@
-@import url('https://fonts.googleapis.com/css2?family=Figtree:wght@300;400;500;600;700;800&display=swap');
+/* ── Fonts ─────────────────────────────────────────────────────────────────── */
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=Space+Grotesk:wght@300;400;500;600;700&display=swap');
 
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
 
+/* ── Design tokens ─────────────────────────────────────────────────────────── */
 @layer base {
+
+  /* ── Brand constants (never change) ─────────────────────────────────────── */
+  :root {
+    --brand-navy:  #1b2363;
+    --brand-blue:  #2456a6;
+    --brand-teal:  #17b3a3;
+    --brand-cyan:  #2dd4bf;
+    --brand-gradient: linear-gradient(135deg, #1b2363, #2456a6, #17b3a3);
+  }
+
+  /* ── LIGHT mode (default) ────────────────────────────────────────────────── */
+  :root {
+    --bg:         #f6f8fb;
+    --surface:    #ffffff;
+    --surface-2:  #eef2f7;
+    --text:       #0e1729;
+    --text-muted: #566377;
+    --border:     #e2e8f0;
+    --primary:    #2456a6;
+    --primary-fg: #ffffff;
+    --accent:     #0f9e90;
+    --ring:       #17b3a3;
+
+    color-scheme: light;
+  }
+
+  /* ── DARK mode — applied by adding .dark to <html> ──────────────────────── */
+  .dark {
+    --bg:         #0a1020;
+    --surface:    #111a2e;
+    --surface-2:  #16223b;
+    --text:       #e7edf6;
+    --text-muted: #93a4bd;
+    --border:     #21304a;
+    --primary:    #4d8de0;
+    --primary-fg: #06101f;
+    --accent:     #2dd4bf;
+    --ring:       #2dd4bf;
+
+    color-scheme: dark;
+  }
+
+  /* ── Box model ───────────────────────────────────────────────────────────── */
+  *,
+  *::before,
+  *::after {
+    box-sizing: border-box;
+  }
+
+  /* ── Font rendering ──────────────────────────────────────────────────────── */
+  html {
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+  }
+
+  /* ── Base body styles — use semantic tokens ──────────────────────────────── */
   body {
-    font-family: 'Figtree', system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-    @apply antialiased bg-slate-950 text-slate-200 leading-relaxed;
+    background-color: var(--bg);
+    color: var(--text);
+    font-family: Inter, system-ui, sans-serif;
+    min-height: 100vh;
+
+    /* Smooth palette transition when toggling theme */
+    transition:
+      background-color 200ms ease,
+      color 200ms ease;
   }
 
-  #root {
-    @apply min-h-screen flex flex-col;
+  /* Smooth transition on all elements that use CSS vars */
+  *,
+  *::before,
+  *::after {
+    transition-property: background-color, border-color, color, fill, stroke;
+    transition-duration: 150ms;
+    transition-timing-function: ease;
   }
 
-  ::-webkit-scrollbar {
-    @apply w-1.5 h-1.5;
+  /* Opt-out for elements where transitions cause layout jank */
+  input, textarea, select, button, a {
+    transition-duration: 100ms;
   }
-  ::-webkit-scrollbar-track {
-    @apply bg-transparent;
-  }
-  ::-webkit-scrollbar-thumb {
-    @apply bg-white/[0.08] rounded-full hover:bg-white/[0.15];
-  }
-}
-
-@layer components {
-  .btn {
-    @apply flex items-center justify-center gap-1.5 px-3.5 py-1.5 rounded-lg text-[13px] font-medium transition cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed;
-  }
-  .btn-primary {
-    @apply bg-indigo-600 text-white shadow-lg shadow-indigo-900/30 hover:bg-indigo-500 active:scale-[0.98];
-  }
-  .btn-secondary {
-    @apply bg-white/[0.04] text-slate-300 border border-white/[0.08] hover:bg-white/[0.08] hover:text-white;
-  }
-  .btn-ghost {
-    @apply bg-transparent text-slate-400 hover:bg-white/[0.05] hover:text-white;
-  }
-  .icon-button {
-    @apply p-1.5 rounded-lg transition text-slate-500 hover:bg-white/[0.05] hover:text-white;
-  }
-
-  .card {
-    @apply rounded-xl border border-white/[0.07] bg-white/[0.02] p-4 transition;
-  }
-  .card-interactive {
-    @apply card cursor-pointer hover:border-white/[0.12] hover:bg-white/[0.04] hover:-translate-y-0.5 hover:shadow-lg hover:shadow-black/20;
-  }
-
-  .form-group {
-    @apply flex flex-col gap-1.5;
-  }
-  .form-label {
-    @apply text-xs font-medium text-slate-400;
-  }
-  .form-input {
-    @apply px-3 py-2 bg-white/[0.03] border border-white/[0.08] rounded-lg text-[13px] text-slate-200 transition placeholder:text-slate-600 hover:border-white/[0.12] focus:border-indigo-500/50 focus:bg-white/[0.04] focus:outline-none;
-  }
-
-  .modal-overlay {
-    @apply fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm;
-  }
-  .modal-container {
-    @apply w-full max-w-lg rounded-xl border border-white/[0.08] bg-slate-900/95 backdrop-blur-xl p-6 shadow-2xl shadow-black/40;
-  }
-
-  .spinner {
-    @apply w-6 h-6 border-2 border-white/[0.08] border-t-indigo-500 rounded-full animate-spin;
-  }
-
-  .gradient-text {
-    @apply bg-gradient-to-r from-indigo-400 to-purple-400 bg-clip-text text-transparent;
-  }
-
-  .prose { @apply text-slate-300; }
-  .prose p { @apply mb-3 leading-relaxed; }
-  .prose h1 { @apply text-xl font-bold mb-3 text-white; }
-  .prose h2 { @apply text-lg font-bold mb-2 text-white; }
-  .prose h3 { @apply text-base font-bold mb-2 text-white; }
-  .prose code { @apply bg-white/[0.06] px-1.5 py-0.5 rounded text-[0.85em] text-indigo-300; }
-  .prose pre { @apply my-3 rounded-lg overflow-x-auto; }
-  .prose pre code { @apply bg-transparent p-0 text-slate-300; }
-  .prose strong { @apply font-semibold text-white; }
-  .prose em { @apply italic; }
-  .prose ul { @apply my-2 pl-5 space-y-1 list-disc; }
-  .prose ol { @apply my-2 pl-5 space-y-1 list-decimal; }
-  .prose li { @apply leading-relaxed; }
-  .prose blockquote { @apply border-l-4 border-indigo-500 pl-4 my-3 italic text-slate-400; }
-  .prose a { @apply text-indigo-400 hover:underline; }
-  .prose-invert code { @apply bg-white/20 text-white; }
-  .prose-invert strong { @apply text-white; }
-  .prose-invert a { @apply text-white underline; }
-}
-
-@layer base {
-  * { @apply m-0 p-0 box-border; }
-}
-
-@keyframes fadeIn {
-  from { opacity: 0; transform: translateY(8px); }
-  to { opacity: 1; transform: translateY(0); }
-}
-
-.animate-fade-in {
-  animation: fadeIn 0.2s ease-out;
-}
-
-.scrollbar-none {
-  scrollbar-width: none;
-  -ms-overflow-style: none;
-}
-.scrollbar-none::-webkit-scrollbar {
-  display: none;
 }

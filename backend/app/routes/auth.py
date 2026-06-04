@@ -1,65 +1,528 @@
-from typing import Optional
+"""Auth routes — all endpoints under /auth.
 
-from fastapi import APIRouter, HTTPException, Body, Depends
+Endpoints
+---------
+POST   /auth/register          Register a new user (email+password).
+POST   /auth/login             Authenticate with email+password.
+POST   /auth/refresh           Rotate the refresh cookie → new access token.
+POST   /auth/logout            Revoke session family, clear cookie.
+GET    /auth/me                Return the current user (Bearer required).
+GET    /auth/google/start      Initiate Google OAuth (redirect).
+GET    /auth/google/callback   Handle Google OAuth callback (redirect).
 
-from ..db import get_pool
-from ..auth import (
-    get_current_user, hash_password, verify_password,
-    create_token, exchange_google_code,
+This module attaches itself to the shared ``api_router`` at import time so
+that ``main.py``'s ``include_router(api_router, prefix="/api/v1")`` picks it
+up automatically.
+"""
+
+from __future__ import annotations
+
+import hmac
+import uuid
+from typing import Any
+
+from fastapi import APIRouter, Cookie, Depends, Request, Response
+from fastapi.responses import RedirectResponse
+from pydantic import BaseModel, EmailStr, field_validator
+
+from app.auth.cookies import (
+    REFRESH_COOKIE_NAME,
+    clear_refresh_cookie,
+    set_refresh_cookie,
 )
+from app.auth.deps import current_user
+from app.auth.google import (
+    build_authorize_url,
+    exchange_code,
+    generate_pkce_pair,
+    generate_state,
+)
+from app.auth.jwt import mint_access_token
+from app.auth.passwords import hash_password, verify_password
+from app.auth.sessions import issue_refresh, revoke_by_token, rotate_refresh
+from app.config import get_settings
+from app.db import execute, fetchrow
+from app.errors import AppError
+from app.routes import api_router
 
-router = APIRouter(tags=["auth"])
+# A pre-computed argon2id hash of an arbitrary dummy string.  Used so that
+# the login path always performs an argon2 verification regardless of whether
+# the email exists or has a password — preventing timing-based user enumeration.
+_DUMMY_HASH: str = hash_password("nubi-dummy-constant-timing-sentinel")
+
+# ── Sub-router ────────────────────────────────────────────────────────────────
+router = APIRouter(prefix="/auth", tags=["auth"])
+
+# ── Cookie names for PKCE state ───────────────────────────────────────────────
+_OAUTH_STATE_COOKIE = "nubi_oauth_state"
+_OAUTH_VERIFIER_COOKIE = "nubi_oauth_verifier"
+_OAUTH_COOKIE_PATH = "/api/v1/auth/google"
+_OAUTH_COOKIE_MAX_AGE = 600  # 10 minutes; enough time to complete the flow
 
 
-@router.post("/auth/signup")
-async def auth_signup(email: str = Body(...), password: str = Body(...), full_name: Optional[str] = Body(default=None)):
-    pool = get_pool()
-    existing = await pool.fetchrow("SELECT id FROM users WHERE email = $1", email)
-    if existing:
-        raise HTTPException(status_code=409, detail="Email already registered")
-    hashed = hash_password(password)
-    row = await pool.fetchrow(
-        "INSERT INTO users (email, password_hash, full_name) VALUES ($1,$2,$3) RETURNING id, email, full_name",
-        email, hashed, full_name,
+# ── Pydantic request schemas ──────────────────────────────────────────────────
+
+class RegisterIn(BaseModel):
+    """Request body for POST /auth/register."""
+
+    email: EmailStr
+    password: str
+    name: str | None = None
+
+    @field_validator("password")
+    @classmethod
+    def _password_min_length(cls, value: str) -> str:
+        if len(value) < 8:
+            raise ValueError("Password must be at least 8 characters.")
+        return value
+
+
+class LoginIn(BaseModel):
+    """Request body for POST /auth/login."""
+
+    email: EmailStr
+    password: str
+
+
+# ── Helpers ───────────────────────────────────────────────────────────────────
+
+def _serialize_user(row: Any) -> dict[str, Any]:
+    """Convert a DB row (or dict) into the API user shape.
+
+    ``created_at`` is serialized to ISO 8601 string so it survives JSON
+    encoding regardless of the asyncpg datetime type.
+    """
+    created_at = row["created_at"]
+    if hasattr(created_at, "isoformat"):
+        created_at = created_at.isoformat()
+
+    return {
+        "id": str(row["id"]),
+        "email": str(row["email"]),
+        "name": row["name"],
+        "avatar_url": row["avatar_url"],
+        "email_verified": bool(row["email_verified"]),
+        "created_at": created_at,
+    }
+
+
+async def _create_personal_org(user_id: str, name: str | None, email: str) -> None:
+    """Create a personal org and an owner org_member row for *user_id*.
+
+    The org slug is derived from the email local-part, made unique by
+    appending the first 8 characters of the user's UUID.
+    """
+    org_id = str(uuid.uuid4())
+    base_slug = email.split("@")[0].lower()
+    # Sanitize slug: keep only alphanumerics and hyphens.
+    safe_slug = "".join(c if c.isalnum() or c == "-" else "-" for c in base_slug)
+    slug = f"{safe_slug}-{user_id[:8]}"
+    org_name = f"{name or email.split('@')[0]}'s workspace"
+
+    await execute(
+        """
+        INSERT INTO orgs (id, name, slug)
+        VALUES ($1, $2, $3)
+        """,
+        org_id,
+        org_name,
+        slug,
     )
-    token = create_token(str(row["id"]), row["email"])
-    return {"token": token, "user": {"id": str(row["id"]), "email": row["email"], "full_name": row["full_name"]}}
+    await execute(
+        """
+        INSERT INTO org_members (org_id, user_id, role)
+        VALUES ($1, $2, 'owner')
+        """,
+        org_id,
+        user_id,
+    )
 
 
-@router.post("/auth/signin")
-async def auth_signin(email: str = Body(...), password: str = Body(...)):
-    pool = get_pool()
-    row = await pool.fetchrow("SELECT id, email, password_hash, full_name FROM users WHERE email = $1", email)
-    if not row or not row["password_hash"]:
-        raise HTTPException(status_code=401, detail="Invalid email or password")
-    if not verify_password(password, row["password_hash"]):
-        raise HTTPException(status_code=401, detail="Invalid email or password")
-    token = create_token(str(row["id"]), row["email"])
-    return {"token": token, "user": {"id": str(row["id"]), "email": row["email"], "full_name": row["full_name"]}}
+def _client_ip(request: Request) -> str | None:
+    """Extract the client IP, respecting X-Forwarded-For if set."""
+    forwarded_for = request.headers.get("x-forwarded-for")
+    if forwarded_for:
+        return forwarded_for.split(",")[0].strip()
+    if request.client:
+        return request.client.host
+    return None
 
 
-@router.post("/auth/google")
-async def auth_google(code: str = Body(...), redirect_uri: str = Body(...)):
-    info = await exchange_google_code(code, redirect_uri)
-    google_id = info.get("id")
-    email = info.get("email")
-    name = info.get("name")
+# ── Routes ────────────────────────────────────────────────────────────────────
 
-    pool = get_pool()
-    row = await pool.fetchrow("SELECT id, email, full_name FROM users WHERE google_id = $1", google_id)
-    if not row:
-        row = await pool.fetchrow("SELECT id, email, full_name, google_id FROM users WHERE email = $1", email)
-        if row:
-            await pool.execute("UPDATE users SET google_id=$1, full_name=COALESCE(full_name,$2) WHERE id=$3", google_id, name, row["id"])
-        else:
-            row = await pool.fetchrow(
-                "INSERT INTO users (email, google_id, full_name) VALUES ($1,$2,$3) RETURNING id, email, full_name",
-                email, google_id, name,
+@router.post("/register", status_code=201)
+async def register(
+    body: RegisterIn,
+    request: Request,
+    response: Response,
+) -> dict[str, Any]:
+    """Register a new user with email and password.
+
+    - Hashes the password with argon2id.
+    - Creates a personal org + owner membership.
+    - Issues an access JWT and sets a refresh cookie.
+
+    Returns
+    -------
+    201 {user, access_token}
+    """
+    email = str(body.email).lower()
+
+    # Check for existing account (same generic error to prevent user enumeration).
+    existing = await fetchrow("SELECT id FROM users WHERE email = $1", email)
+    if existing is not None:
+        raise AppError("email_taken", "An account with that email already exists.", 409)
+
+    user_id = str(uuid.uuid4())
+    pw_hash = hash_password(body.password)
+
+    await execute(
+        """
+        INSERT INTO users (id, email, password_hash, name, email_verified)
+        VALUES ($1, $2, $3, $4, false)
+        """,
+        user_id,
+        email,
+        pw_hash,
+        body.name,
+    )
+
+    # Create personal org + membership.
+    await _create_personal_org(user_id, body.name, email)
+
+    # Fetch the full user row to build the response.
+    user_row = await fetchrow(
+        "SELECT id, email, name, avatar_url, email_verified, created_at FROM users WHERE id = $1::uuid",
+        user_id,
+    )
+    if user_row is None:
+        raise AppError("internal_error", "User creation failed.", 500)
+
+    access_token = mint_access_token(user_id)
+    raw_refresh, expires_at = await issue_refresh(
+        user_id,
+        user_agent=request.headers.get("user-agent"),
+        ip=_client_ip(request),
+    )
+    set_refresh_cookie(response, raw_refresh, expires_at)
+
+    return {"user": _serialize_user(user_row), "access_token": access_token}
+
+
+@router.post("/login")
+async def login(
+    body: LoginIn,
+    request: Request,
+    response: Response,
+) -> dict[str, Any]:
+    """Authenticate with email and password.
+
+    Uses the same generic error for both unknown-user and wrong-password to
+    prevent user enumeration.
+
+    Returns
+    -------
+    200 {user, access_token}
+    """
+    email = str(body.email).lower()
+
+    user_row = await fetchrow(
+        "SELECT id, email, password_hash, name, avatar_url, email_verified, created_at FROM users WHERE email = $1",
+        email,
+    )
+
+    # Always call verify_password regardless of whether the user exists or has a
+    # password hash.  This ensures a constant-time response that prevents:
+    #   - User-existence enumeration (unknown email vs wrong password timing).
+    #   - Account-type enumeration (OAuth-only accounts have no password_hash
+    #     and previously short-circuited the argon2 work, leaking the difference).
+    # _DUMMY_HASH is a valid argon2id hash — verify_password always does full work.
+    stored_hash: str = (
+        user_row["password_hash"]
+        if (user_row is not None and user_row["password_hash"] is not None)
+        else _DUMMY_HASH
+    )
+    password_ok = verify_password(stored_hash, body.password)
+
+    if user_row is None or user_row["password_hash"] is None or not password_ok:
+        raise AppError("invalid_credentials", "Invalid email or password.", 401)
+
+    user_id = str(user_row["id"])
+    access_token = mint_access_token(user_id)
+    raw_refresh, expires_at = await issue_refresh(
+        user_id,
+        user_agent=request.headers.get("user-agent"),
+        ip=_client_ip(request),
+    )
+    set_refresh_cookie(response, raw_refresh, expires_at)
+
+    return {"user": _serialize_user(user_row), "access_token": access_token}
+
+
+@router.post("/refresh")
+async def refresh(
+    request: Request,
+    response: Response,
+    nubi_refresh: str | None = Cookie(default=None, alias=REFRESH_COOKIE_NAME),
+) -> dict[str, Any]:
+    """Rotate the refresh cookie and return a new access token.
+
+    On reuse of a consumed token the entire session family is revoked and
+    the cookie is cleared.
+
+    Returns
+    -------
+    200 {access_token}
+    """
+    if not nubi_refresh:
+        raise AppError("unauthorized", "No refresh token.", 401)
+
+    try:
+        new_raw, user_id, new_expires = await rotate_refresh(
+            nubi_refresh,
+            user_agent=request.headers.get("user-agent"),
+            ip=_client_ip(request),
+        )
+    except AppError:
+        # On reuse or invalid token, clear the cookie before re-raising.
+        clear_refresh_cookie(response)
+        raise
+
+    set_refresh_cookie(response, new_raw, new_expires)
+    access_token = mint_access_token(user_id)
+
+    return {"access_token": access_token}
+
+
+@router.post("/logout", status_code=204)
+async def logout(
+    response: Response,
+    nubi_refresh: str | None = Cookie(default=None, alias=REFRESH_COOKIE_NAME),
+) -> None:
+    """Revoke the session family and clear the refresh cookie.
+
+    Returns 204 No Content regardless of whether a cookie was present.
+    """
+    if nubi_refresh:
+        await revoke_by_token(nubi_refresh)
+    clear_refresh_cookie(response)
+
+
+@router.get("/me")
+async def me(
+    user: dict[str, Any] = Depends(current_user),
+) -> dict[str, Any]:
+    """Return the currently authenticated user.
+
+    Returns
+    -------
+    200 {user}
+    """
+    return {"user": _serialize_user(user)}
+
+
+@router.get("/google/start")
+async def google_start(response: Response) -> RedirectResponse:
+    """Initiate the Google OAuth flow.
+
+    - Generates a PKCE code_verifier + S256 code_challenge.
+    - Generates a random state value.
+    - Stores both in short-lived HttpOnly cookies (10 min).
+    - Redirects the browser to Google's authorization endpoint.
+
+    Returns
+    -------
+    302 → Google authorization URL
+    """
+    settings = get_settings()
+    state = generate_state()
+    code_verifier, code_challenge = generate_pkce_pair()
+    authorize_url = build_authorize_url(state, code_challenge)
+
+    redirect = RedirectResponse(url=authorize_url, status_code=302)
+
+    # Store state and verifier in HttpOnly cookies so the callback can verify them.
+    _set_oauth_cookie(redirect, _OAUTH_STATE_COOKIE, state, settings.COOKIE_SECURE)
+    _set_oauth_cookie(redirect, _OAUTH_VERIFIER_COOKIE, code_verifier, settings.COOKIE_SECURE)
+
+    return redirect
+
+
+@router.get("/google/callback")
+async def google_callback(
+    request: Request,
+    code: str | None = None,
+    state: str | None = None,
+    error: str | None = None,
+    nubi_oauth_state: str | None = Cookie(default=None, alias=_OAUTH_STATE_COOKIE),
+    nubi_oauth_verifier: str | None = Cookie(default=None, alias=_OAUTH_VERIFIER_COOKIE),
+) -> RedirectResponse:
+    """Handle the Google OAuth callback.
+
+    - Verifies state cookie (CSRF protection).
+    - Exchanges the authorization code + PKCE verifier for user info.
+    - Finds the user by email or creates a new one (OAuth-only account).
+    - Upserts the ``oauth_accounts`` row.
+    - Issues a refresh cookie and redirects to the frontend.
+
+    The SPA receives the refresh cookie and immediately calls ``POST /refresh``
+    to obtain an access token (the token-in-memory pattern).
+
+    Returns
+    -------
+    302 → settings.FRONTEND_URL
+    """
+    settings = get_settings()
+
+    # ── Error from Google (user denied, etc.) ─────────────────────────────────
+    if error:
+        return _oauth_error_redirect(settings.FRONTEND_URL, "oauth_denied")
+
+    # ── Validate required parameters ──────────────────────────────────────────
+    if not code or not state:
+        return _oauth_error_redirect(settings.FRONTEND_URL, "oauth_failed")
+
+    # ── CSRF state verification ───────────────────────────────────────────────
+    if not nubi_oauth_state or not nubi_oauth_verifier:
+        return _oauth_error_redirect(settings.FRONTEND_URL, "oauth_state_missing")
+
+    # Use constant-time comparison to prevent a timing oracle on the state value.
+    if not hmac.compare_digest(state, nubi_oauth_state):
+        return _oauth_error_redirect(settings.FRONTEND_URL, "oauth_state_mismatch")
+
+    # ── Exchange code for profile ─────────────────────────────────────────────
+    try:
+        profile = await exchange_code(code, nubi_oauth_verifier)
+    except AppError:
+        return _oauth_error_redirect(settings.FRONTEND_URL, "oauth_failed")
+
+    email: str = profile["email"].lower()
+    provider_account_id: str = profile["provider_account_id"]
+    email_verified: bool = profile["email_verified"]
+    name: str | None = profile["name"]
+    picture: str | None = profile["picture"]
+
+    # ── Enforce email_verified before any account access or linking ───────────
+    # If Google reports the email is not verified, we must not link this OAuth
+    # identity to an existing account — doing so would let an attacker who
+    # controls an unverified Google account for victim@example.com log in as
+    # the victim's Nubi account.  New-user creation is also blocked: we only
+    # accept Google identities with a verified email address.
+    if not email_verified:
+        return _oauth_error_redirect(settings.FRONTEND_URL, "oauth_email_unverified")
+
+    # ── Find or create user by email ──────────────────────────────────────────
+    user_row = await fetchrow(
+        "SELECT id, email, name, avatar_url, email_verified, created_at FROM users WHERE email = $1",
+        email,
+    )
+
+    if user_row is None:
+        # New user — create account (password_hash = NULL for OAuth-only).
+        user_id = str(uuid.uuid4())
+        await execute(
+            """
+            INSERT INTO users (id, email, password_hash, name, avatar_url, email_verified)
+            VALUES ($1, $2, NULL, $3, $4, $5)
+            """,
+            user_id,
+            email,
+            name,
+            picture,
+            email_verified,
+        )
+        await _create_personal_org(user_id, name, email)
+        user_row = await fetchrow(
+            "SELECT id, email, name, avatar_url, email_verified, created_at FROM users WHERE id = $1::uuid",
+            user_id,
+        )
+        if user_row is None:
+            return _oauth_error_redirect(settings.FRONTEND_URL, "oauth_failed")
+    else:
+        user_id = str(user_row["id"])
+        # Update avatar/name if Google provides newer info and user has none.
+        if picture and not user_row["avatar_url"]:
+            await execute(
+                "UPDATE users SET avatar_url = $1, updated_at = now() WHERE id = $2::uuid",
+                picture,
+                user_id,
             )
-    token = create_token(str(row["id"]), row["email"])
-    return {"token": token, "user": {"id": str(row["id"]), "email": row["email"], "full_name": row.get("full_name", name)}}
+
+    # ── Upsert oauth_accounts ─────────────────────────────────────────────────
+    oauth_id = str(uuid.uuid4())
+    await execute(
+        """
+        INSERT INTO oauth_accounts (id, user_id, provider, provider_account_id)
+        VALUES ($1, $2, 'google', $3)
+        ON CONFLICT (provider, provider_account_id)
+        DO UPDATE SET user_id = EXCLUDED.user_id
+        """,
+        oauth_id,
+        user_id,
+        provider_account_id,
+    )
+
+    # ── Issue refresh cookie ──────────────────────────────────────────────────
+    raw_refresh, expires_at = await issue_refresh(
+        user_id,
+        user_agent=request.headers.get("user-agent"),
+        ip=_client_ip(request),
+    )
+
+    redirect = RedirectResponse(url=settings.FRONTEND_URL, status_code=302)
+    set_refresh_cookie(redirect, raw_refresh, expires_at)
+
+    # Clear the ephemeral PKCE/state cookies.
+    settings_obj = get_settings()
+    _clear_oauth_cookie(redirect, _OAUTH_STATE_COOKIE, settings_obj.COOKIE_SECURE)
+    _clear_oauth_cookie(redirect, _OAUTH_VERIFIER_COOKIE, settings_obj.COOKIE_SECURE)
+
+    return redirect
 
 
-@router.get("/auth/me")
-async def auth_me(user=Depends(get_current_user)):
-    return {"user": user}
+# ── Private OAuth cookie helpers ──────────────────────────────────────────────
+
+def _set_oauth_cookie(
+    response: Response,
+    name: str,
+    value: str,
+    secure: bool,
+) -> None:
+    """Set a short-lived HttpOnly cookie for PKCE/state storage."""
+    response.set_cookie(
+        key=name,
+        value=value,
+        max_age=_OAUTH_COOKIE_MAX_AGE,
+        path=_OAUTH_COOKIE_PATH,
+        secure=secure,
+        httponly=True,
+        samesite="lax",
+    )
+
+
+def _clear_oauth_cookie(response: Response, name: str, secure: bool) -> None:
+    """Expire an OAuth PKCE/state cookie."""
+    response.set_cookie(
+        key=name,
+        value="",
+        max_age=0,
+        path=_OAUTH_COOKIE_PATH,
+        secure=secure,
+        httponly=True,
+        samesite="lax",
+    )
+
+
+def _oauth_error_redirect(frontend_url: str, error_code: str) -> RedirectResponse:
+    """Redirect to the frontend with an error query parameter."""
+    return RedirectResponse(
+        url=f"{frontend_url.rstrip('/')}?auth_error={error_code}",
+        status_code=302,
+    )
+
+
+# ── Attach to the shared api_router ──────────────────────────────────────────
+# This runs at import time.  ``main.py`` imports ``api_router`` after this
+# module is loaded (via ``app.routes.auth``), so the routes are present when
+# the application starts.
+api_router.include_router(router)

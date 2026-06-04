@@ -1,60 +1,94 @@
-import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom'
-import { AuthProvider } from './contexts/AuthContext'
-import { OrgProvider } from './contexts/OrgContext'
-import { HeaderProvider } from './contexts/HeaderContext'
-import ProtectedRoute from './components/ProtectedRoute'
-import MainLayout from './layouts/MainLayout'
-import LandingPage from './pages/LandingPage'
-import DocsPage from './pages/DocsPage'
-import HomePage from './pages/HomePage'
-import Login from './components/Login'
-import BoardsList from './components/BoardsList'
-import BoardEditor from './components/BoardEditor'
-import QueryEditor from './components/QueryEditor'
-import DatastoresPage from './pages/Datastores/DatastoresPage'
-import DatastoreDetailPage from './pages/Datastores/DatastoreDetailPage'
-import WidgetsPage from './pages/Widgets/WidgetsPage'
-import WidgetDetailPage from './pages/Widgets/WidgetDetailPage'
-import UsagePage from './pages/UsagePage'
+import { Routes, Route } from 'react-router-dom'
+import { AuthProvider } from './contexts/AuthContext.jsx'
+import MainLayout from './layouts/MainLayout.jsx'
+import LandingPage from './pages/LandingPage.jsx'
+import Login from './pages/Login.jsx'
+import Register from './pages/Register.jsx'
+import Dashboard from './pages/Dashboard.jsx'
+import Playground from './pages/Playground.jsx'
+import DashboardViewPage from './pages/DashboardViewPage.jsx'
+import EditorPage from './pages/EditorPage.jsx'
+import DocsPage from './pages/DocsPage.jsx'
+import ComparePage from './pages/ComparePage.jsx'
+import NotFound from './pages/NotFound.jsx'
+import ProtectedRoute from './components/ProtectedRoute.jsx'
 
+/**
+ * Route structure:
+ *
+ *   /            → LandingPage          (public, inside MainLayout)
+ *   /login       → Login                (public)
+ *   /register    → Register             (public)
+ *   /docs        → DocsPage             (public)
+ *   /docs/:slug  → DocsPage             (public)
+ *   /compare     → ComparePage          (public)
+ *   /dashboard   → ProtectedRoute > Dashboard
+ *   /playground  → ProtectedRoute > Playground
+ *   /d/:id       → ProtectedRoute > DashboardViewPage  (spec + HTML fallback)
+ *   /editor      → ProtectedRoute > EditorPage         (new board)
+ *   /editor/:id  → ProtectedRoute > EditorPage         (edit board)
+ *   *            → NotFound             (outside MainLayout)
+ */
 export default function App() {
   return (
-    <HeaderProvider>
-      <AuthProvider>
-        <OrgProvider>
-        <BrowserRouter>
-          <Routes>
-            {/* Public Routes */}
-            <Route path="/" element={<LandingPage />} />
-            <Route path="/login" element={<Login />} />
-            <Route path="/docs" element={<DocsPage />} />
-            <Route path="/docs/*" element={<DocsPage />} />
+    <AuthProvider>
+      <Routes>
+        <Route element={<MainLayout />}>
+          <Route index element={<LandingPage />} />
+          <Route path="login" element={<Login />} />
+          <Route path="register" element={<Register />} />
 
-            {/* Legacy redirects */}
-            <Route path="/terms" element={<Navigate to="/docs/terms" replace />} />
-            <Route path="/privacy" element={<Navigate to="/docs/privacy" replace />} />
+          {/* Public content routes */}
+          <Route path="docs" element={<DocsPage />} />
+          <Route path="docs/:slug" element={<DocsPage />} />
+          <Route path="compare" element={<ComparePage />} />
 
-            {/* Protected Routes with Main Layout */}
-            <Route element={<ProtectedRoute />}>
-              <Route element={<MainLayout />}>
-                <Route path="/portal" element={<HomePage />} />
-                <Route path="/boards" element={<BoardsList />} />
-                <Route path="/board/:boardId" element={<BoardEditor />} />
-                <Route path="/board/:boardId/query/:queryId" element={<QueryEditor />} />
-                <Route path="/datastores" element={<DatastoresPage />} />
-                <Route path="/datastores/:datastoreId" element={<DatastoreDetailPage />} />
-                <Route path="/widgets" element={<WidgetsPage />} />
-                <Route path="/widgets/:widgetId" element={<WidgetDetailPage />} />
-                <Route path="/usage" element={<UsagePage />} />
-              </Route>
-            </Route>
+          {/* Protected routes */}
+          <Route
+            path="dashboard"
+            element={
+              <ProtectedRoute>
+                <Dashboard />
+              </ProtectedRoute>
+            }
+          />
+          <Route
+            path="playground"
+            element={
+              <ProtectedRoute>
+                <Playground />
+              </ProtectedRoute>
+            }
+          />
+          <Route
+            path="d/:id"
+            element={
+              <ProtectedRoute>
+                <DashboardViewPage />
+              </ProtectedRoute>
+            }
+          />
+          <Route
+            path="editor"
+            element={
+              <ProtectedRoute>
+                <EditorPage />
+              </ProtectedRoute>
+            }
+          />
+          <Route
+            path="editor/:id"
+            element={
+              <ProtectedRoute>
+                <EditorPage />
+              </ProtectedRoute>
+            }
+          />
+        </Route>
 
-            {/* Catch all */}
-            <Route path="*" element={<Navigate to="/" replace />} />
-          </Routes>
-        </BrowserRouter>
-        </OrgProvider>
-      </AuthProvider>
-    </HeaderProvider>
+        {/* Catch-all — outside MainLayout so 404 has full viewport */}
+        <Route path="*" element={<NotFound />} />
+      </Routes>
+    </AuthProvider>
   )
 }

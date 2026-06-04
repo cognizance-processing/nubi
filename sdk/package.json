@@ -1,0 +1,35 @@
+{
+  "name": "@nubi/sdk",
+  "version": "0.1.0",
+  "description": "Framework-agnostic JavaScript SDK for the Nubi API — query, resources, and embed.",
+  "type": "module",
+  "main": "./dist/nubi-sdk.umd.cjs",
+  "module": "./dist/nubi-sdk.js",
+  "exports": {
+    ".": {
+      "import": "./dist/nubi-sdk.js",
+      "require": "./dist/nubi-sdk.umd.cjs"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "vite build",
+    "test": "node --test src/index.test.mjs",
+    "prepublishOnly": "npm run build"
+  },
+  "keywords": [
+    "nubi",
+    "analytics",
+    "arrow",
+    "sdk"
+  ],
+  "license": "Apache-2.0",
+  "dependencies": {
+    "apache-arrow": "^21.1.0"
+  },
+  "devDependencies": {
+    "vite": "^7.3.1"
+  }
+}

@@ -1,171 +1,209 @@
-const BACKEND_URL = import.meta.env.VITE_BACKEND_URL || 'http://localhost:8000'
-const TOKEN_KEY = 'nubi_token'
+/**
+ * API client for Nubi backend.
+ *
+ * Base URL:  import.meta.env.VITE_BACKEND_URL + "/api/v1"
+ *
+ * Access token is held in memory only (never localStorage/sessionStorage).
+ * Refresh token is an HttpOnly cookie managed by the browser automatically.
+ *
+ * On any 401 the client will attempt one silent refresh via POST /auth/refresh,
+ * update the in-memory token, and replay the original request.
+ * If the refresh also fails the token is cleared and the error is re-thrown
+ * so the caller (AuthContext) can redirect to /login.
+ */
 
-function getToken() {
-    return localStorage.getItem(TOKEN_KEY)
+const BASE = (import.meta.env.VITE_BACKEND_URL ?? 'http://localhost:8000') + '/api/v1'
+
+// ---------------------------------------------------------------------------
+// In-memory token store
+// ---------------------------------------------------------------------------
+
+/** @type {string | null} */
+let _accessToken = null
+
+/** @returns {string | null} */
+export function getAccessToken() {
+  return _accessToken
 }
 
-export function setToken(token) {
-    if (token) localStorage.setItem(TOKEN_KEY, token)
-    else localStorage.removeItem(TOKEN_KEY)
+/** @param {string | null} token */
+export function setAccessToken(token) {
+  _accessToken = token
 }
 
-async function request(method, path, body = null, opts = {}) {
-    const headers = { ...(opts.headers || {}) }
-    const token = getToken()
-    if (token) headers['Authorization'] = `Bearer ${token}`
+// ---------------------------------------------------------------------------
+// Core fetch wrapper
+// ---------------------------------------------------------------------------
 
-    const config = { method, headers }
+/**
+ * Internal fetch helper.
+ * @param {string} path   — path relative to BASE, must start with "/"
+ * @param {RequestInit} options
+ * @param {boolean} [_isRetry] — true when replaying after a token refresh
+ * @returns {Promise<any>}
+ */
+async function request(path, options = {}, _isRetry = false) {
+  const headers = new Headers(options.headers ?? {})
 
-    if (body instanceof FormData) {
-        config.body = body
-    } else if (body !== null) {
-        headers['Content-Type'] = 'application/json'
-        config.body = JSON.stringify(body)
-    }
+  if (!headers.has('Content-Type') && options.body !== undefined) {
+    headers.set('Content-Type', 'application/json')
+  }
 
-    const res = await fetch(`${BACKEND_URL}${path}`, config)
-    if (res.status === 401) {
-        setToken(null)
-        window.location.href = '/login'
-        throw new Error('Session expired')
-    }
-    const data = await res.json()
-    if (!res.ok) throw new Error(data.detail || 'Request failed')
-    return data
-}
+  if (_accessToken) {
+    headers.set('Authorization', `Bearer ${_accessToken}`)
+  }
 
-const api = {
-    get: (path) => request('GET', path),
-    post: (path, body) => request('POST', path, body),
-    patch: (path, body) => request('PATCH', path, body),
-    delete: (path) => request('DELETE', path),
+  const response = await fetch(`${BASE}${path}`, {
+    ...options,
+    headers,
+    credentials: 'include', // send & receive the HttpOnly refresh cookie
+  })
 
-    auth: {
-        signup: (email, password, full_name) => request('POST', '/auth/signup', { email, password, full_name }),
-        signin: (email, password) => request('POST', '/auth/signin', { email, password }),
-        google: (code, redirect_uri) => request('POST', '/auth/google', { code, redirect_uri }),
-        me: () => request('GET', '/auth/me'),
-    },
-
-    organizations: {
-        list: () => request('GET', '/organizations'),
-        create: (name) => request('POST', '/organizations', { name }),
-        update: (id, name) => request('PATCH', `/organizations/${id}`, { name }),
-    },
-
-    boards: {
-        list: (orgId) => request('GET', `/boards?organization_id=${orgId}`),
-        create: (data) => request('POST', '/boards', data),
-        get: (id) => request('GET', `/boards/${id}`),
-        update: (id, data) => request('PATCH', `/boards/${id}`, data),
-        getCode: (id) => request('GET', `/boards/${id}/code`),
-        saveCode: (id, code) => request('POST', `/boards/${id}/code`, { code }),
-        listQueries: (id) => request('GET', `/boards/${id}/queries`),
-        createQuery: (id, data) => request('POST', `/boards/${id}/queries`, data),
-    },
-
-    queries: {
-        get: (id) => request('GET', `/queries/${id}`),
-        update: (id, data) => request('PATCH', `/queries/${id}`, data),
-        delete: (id) => request('DELETE', `/queries/${id}`),
-    },
-
-    datastores: {
-        list: (orgId) => request('GET', orgId ? `/datastores?organization_id=${orgId}` : '/datastores'),
-        create: (data) => request('POST', '/datastores', data),
-        get: (id) => request('GET', `/datastores/${id}`),
-        update: (id, data) => request('PATCH', `/datastores/${id}`, data),
-        delete: (id) => request('DELETE', `/datastores/${id}`),
-    },
-
-    chats: {
-        list: (boardId, orgId) => {
-            const params = new URLSearchParams()
-            if (boardId) params.set('board_id', boardId)
-            if (orgId) params.set('organization_id', orgId)
-            const qs = params.toString()
-            return request('GET', qs ? `/chats?${qs}` : '/chats')
-        },
-        create: (data) => request('POST', '/chats', data),
-        update: (id, title) => request('PATCH', `/chats/${id}`, { title }),
-        listMessages: (id) => request('GET', `/chats/${id}/messages`),
-        createMessage: (id, role, content) => request('POST', `/chats/${id}/messages`, { role, content }),
-    },
-
-    widgets: {
-        list: (orgId) => request('GET', orgId ? `/widgets?organization_id=${orgId}` : '/widgets'),
-        create: (data) => request('POST', '/widgets', data),
-        get: (id) => request('GET', `/widgets/${id}`),
-        update: (id, data) => request('PATCH', `/widgets/${id}`, data),
-        delete: (id) => request('DELETE', `/widgets/${id}`),
-    },
-
-    models: {
-        list: () => request('GET', '/models'),
-    },
-
-    usage: {
-        summary: (days = 30) => request('GET', `/usage?days=${days}`),
-        details: (days = 7, limit = 100) => request('GET', `/usage/details?days=${days}&limit=${limit}`),
-        daily: (days = 30) => request('GET', `/usage/daily?days=${days}`),
-    },
-
-    stats: (orgId) => request('GET', `/stats?organization_id=${orgId}`),
-
-    upload: async (file) => {
-        const form = new FormData()
-        form.append('file', file)
-        const token = getToken()
-        const headers = {}
-        if (token) headers['Authorization'] = `Bearer ${token}`
-        const res = await fetch(`${BACKEND_URL}/upload/keyfile`, { method: 'POST', headers, body: form })
-        if (!res.ok) { const d = await res.json(); throw new Error(d.detail || 'Upload failed') }
-        return res.json()
-    },
-}
-
-export default api
-
-export async function invokeBoardHelper(options) {
-    const { code = '', user_prompt, chat = [], gemini_api_key, context = 'board', datastore_id, exploration_id } = options
+  // -- Silent refresh on 401 -----------------------------------------------
+  if (response.status === 401 && !_isRetry) {
+    let refreshed = false
     try {
-        const response = await fetch(`${BACKEND_URL}/board-helper`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-                code, user_prompt, chat, context,
-                ...(datastore_id && { datastore_id }),
-                ...(exploration_id && { exploration_id }),
-                ...(gemini_api_key && { gemini_api_key })
-            })
-        })
-        const data = await response.json()
-        if (!response.ok) return { error: new Error(data.detail || 'AI helper request failed'), data: null }
-        return { data, error: null }
-    } catch (err) {
-        return { error: err, data: null }
+      const data = await _doRefresh()
+      setAccessToken(data.access_token)
+      refreshed = true
+    } catch {
+      setAccessToken(null)
+      // surface a consistent error
+      const err = new Error('Session expired. Please log in again.')
+      err.status = 401
+      throw err
     }
-}
 
-export async function getSchema(options) {
-    const { datastore_id, connector_id, database, table } = options
+    if (refreshed) {
+      // replay the original request with the new token
+      return request(path, options, true)
+    }
+  }
+
+  // -- Parse and surface errors --------------------------------------------
+  if (!response.ok) {
+    let errPayload
     try {
-        const response = await fetch(`${BACKEND_URL}/get-schema`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-                datastore_id: datastore_id || connector_id,
-                connector_id: connector_id || datastore_id,
-                database, table
-            })
-        })
-        const data = await response.json()
-        if (!response.ok) return { error: new Error(data.detail || 'Schema request failed'), data: null }
-        return { data, error: null }
-    } catch (err) {
-        return { error: err, data: null }
+      errPayload = await response.json()
+    } catch {
+      errPayload = null
     }
+    const message =
+      errPayload?.error?.message ??
+      errPayload?.detail ??
+      `Request failed: ${response.status} ${response.statusText}`
+    const err = new Error(message)
+    err.status = response.status
+    err.payload = errPayload
+    throw err
+  }
+
+  // 204 No Content
+  if (response.status === 204) return null
+
+  return response.json()
 }
 
-export const GOOGLE_CLIENT_ID = import.meta.env.VITE_GOOGLE_CLIENT_ID || ''
+// ---------------------------------------------------------------------------
+// HTTP verb helpers
+// ---------------------------------------------------------------------------
+
+/** GET /path */
+export function get(path) {
+  return request(path, { method: 'GET' })
+}
+
+/** POST /path with JSON body */
+export function post(path, body) {
+  return request(path, { method: 'POST', body: body !== undefined ? JSON.stringify(body) : undefined })
+}
+
+/** PUT /path with JSON body */
+export function put(path, body) {
+  return request(path, { method: 'PUT', body: body !== undefined ? JSON.stringify(body) : undefined })
+}
+
+/** DELETE /path (named 'del' to avoid reserved-word clash) */
+export function del(path) {
+  return request(path, { method: 'DELETE' })
+}
+
+// ---------------------------------------------------------------------------
+// Internal refresh (called only by the 401 interceptor — not exported)
+// ---------------------------------------------------------------------------
+
+/**
+ * POST /auth/refresh — uses the HttpOnly cookie; returns { access_token }.
+ * Throws on failure. Called internally; consumers use the auth helpers below.
+ */
+function _doRefresh() {
+  // bypass the interceptor loop: pass _isRetry = true
+  return request('/auth/refresh', { method: 'POST' }, true)
+}
+
+// ---------------------------------------------------------------------------
+// Auth API helpers (consumed by C1 — AuthContext)
+// ---------------------------------------------------------------------------
+
+/**
+ * Register a new account.
+ * @param {{ email: string, password: string, name: string }} body
+ * @returns {Promise<{ user: User, access_token: string }>}
+ *   Side-effect: backend sets the HttpOnly refresh cookie.
+ */
+export function register(body) {
+  return post('/auth/register', body)
+}
+
+/**
+ * Log in with email + password.
+ * @param {{ email: string, password: string }} body
+ * @returns {Promise<{ user: User, access_token: string }>}
+ *   Side-effect: backend sets the HttpOnly refresh cookie.
+ */
+export function login(body) {
+  return post('/auth/login', body)
+}
+
+/**
+ * Silently exchange the HttpOnly refresh cookie for a new access token.
+ * Also rotates the refresh cookie.
+ * @returns {Promise<{ access_token: string }>}
+ */
+export function refresh() {
+  return post('/auth/refresh')
+}
+
+/**
+ * Log out — revokes the full session family and clears the refresh cookie.
+ * @returns {Promise<null>}
+ */
+export function logout() {
+  return post('/auth/logout')
+}
+
+/**
+ * Fetch the currently authenticated user.
+ * Requires a valid in-memory access token (attaches Authorization header).
+ * @returns {Promise<{ user: User }>}
+ */
+export function me() {
+  return get('/auth/me')
+}
+
+/**
+ * Build the URL to start Google OAuth (redirect-based, PKCE on the backend).
+ * Navigate to this URL; no fetch needed.
+ * @returns {string}
+ */
+export function googleStartUrl() {
+  return `${BASE}/auth/google/start`
+}
+
+// ---------------------------------------------------------------------------
+// JSDoc type stub (no TypeScript; gives IDE hints to C1)
+// ---------------------------------------------------------------------------
+
+/**
+ * @typedef {{ id: string, email: string, name: string | null, avatar_url: string | null, email_verified: boolean, created_at: string }} User
+ */

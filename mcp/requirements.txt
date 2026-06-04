@@ -1,0 +1,10 @@
+# MCP Python SDK (Model Context Protocol)
+mcp>=1.0
+
+# Re-use backend connector deps so this package is installable standalone
+pyarrow>=14.0
+sqlglot>=25.0
+duckdb>=1.0
+
+# Test dependencies
+pytest>=8.0

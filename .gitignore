@@ -39,3 +39,6 @@ keyfile.json
 
 # Firebase
 .firebase/
+
+# Internal billing/pricing scenarios — not part of the product, not for git
+billing-model/

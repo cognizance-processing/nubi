@@ -1,0 +1,66 @@
+networks:
+  nubi:
+    driver: bridge
+
+volumes:
+  pg_data:
+
+services:
+  # ── Database ───────────────────────────────────────────────────────────────
+  db:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: nubi
+      POSTGRES_PASSWORD: nubi
+      POSTGRES_DB: nubi
+    volumes:
+      - pg_data:/var/lib/postgresql/data
+    networks:
+      - nubi
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U nubi -d nubi"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+      start_period: 10s
+
+  # ── Backend ────────────────────────────────────────────────────────────────
+  backend:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgresql://nubi:nubi@db:5432/nubi
+      JWT_SECRET: dev-secret-key-min-32-bytes-long-000000
+      ENV: development
+      COOKIE_SECURE: "false"
+      CORS_ORIGINS: http://localhost:8080
+      FRONTEND_URL: http://localhost:8080
+      GOOGLE_CLIENT_ID: dummy-google-client-id
+      GOOGLE_CLIENT_SECRET: dummy-google-client-secret
+      GOOGLE_REDIRECT_URI: http://localhost:8000/api/v1/auth/google/callback
+      KERNEL_LOCAL_ENABLED: "true"
+    ports:
+      - "8000:8000"
+    networks:
+      - nubi
+
+  # ── Frontend ───────────────────────────────────────────────────────────────
+  frontend:
+    build:
+      context: .
+      dockerfile: frontend/Dockerfile
+      args:
+        VITE_BACKEND_URL: http://localhost:8000
+    restart: unless-stopped
+    ports:
+      - "8080:80"
+    networks:
+      - nubi
+    depends_on:
+      - backend

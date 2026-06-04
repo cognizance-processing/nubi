@@ -1,0 +1,278 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Nubi Dashboard Embed — Demo</title>
+
+  <!--
+    Demo page for <nubi-dashboard> — M3-C
+    ======================================
+    This page loads the pre-built embed bundle from dist-embed/ and exercises
+    the web component in "no live backend" mode.
+
+    The component's built-in sample-data fallback guarantees a visible table
+    even without a running Nubi backend:
+      • window.mockGetToken returns a fake (non-verifiable) JWT.
+      • The POST to http://localhost:8000/api/v1/query will fail (CORS / network).
+      • The component catches any fetch/parse error and renders SAMPLE_TABLE.
+      • The orange "preview (sample data)" banner confirms fallback mode.
+
+    To see real data: start the Nubi backend and replace the backend attribute
+    with its URL, and swap mockGetToken for a real createGetToken() call.
+  -->
+
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      font-family: system-ui, -apple-system, 'Segoe UI', sans-serif;
+      background: #090c14;
+      color: #e2e8f0;
+      min-height: 100vh;
+      padding: 40px 24px;
+    }
+
+    header {
+      max-width: 900px;
+      margin: 0 auto 36px;
+    }
+
+    header h1 {
+      font-size: 22px;
+      font-weight: 700;
+      letter-spacing: -0.01em;
+      margin-bottom: 6px;
+    }
+
+    header p {
+      font-size: 13px;
+      color: #94a3b8;
+      line-height: 1.6;
+    }
+
+    header code {
+      font-family: 'Fira Code', 'Cascadia Code', monospace;
+      font-size: 12px;
+      background: #1e2433;
+      padding: 1px 5px;
+      border-radius: 3px;
+      color: #93c5fd;
+    }
+
+    .section {
+      max-width: 900px;
+      margin: 0 auto 48px;
+    }
+
+    .section h2 {
+      font-size: 13px;
+      font-weight: 600;
+      letter-spacing: 0.06em;
+      text-transform: uppercase;
+      color: #64748b;
+      margin-bottom: 12px;
+    }
+
+    /* ------------------------------------------------------------------ */
+    /* Theming example 1 — default dark theme (CSS vars not overridden)    */
+    /* ------------------------------------------------------------------ */
+    nubi-dashboard {
+      display: block;
+      height: 260px;
+      border-radius: 10px;
+    }
+
+    /* ------------------------------------------------------------------ */
+    /* Theming example 2 — custom accent colour via CSS custom properties  */
+    /* ------------------------------------------------------------------ */
+    .theme-indigo nubi-dashboard {
+      --nubi-bg:      #0d0f1e;
+      --nubi-fg:      #c7d2fe;
+      --nubi-accent:  #1e1b4b;
+      --nubi-border:  #312e81;
+      height: 260px;
+    }
+
+    /* ------------------------------------------------------------------ */
+    /* Theming example 3 — slate / neutral light-ish theme                 */
+    /* ------------------------------------------------------------------ */
+    .theme-slate nubi-dashboard {
+      --nubi-bg:      #1e293b;
+      --nubi-fg:      #f1f5f9;
+      --nubi-accent:  #0f172a;
+      --nubi-border:  #334155;
+      height: 260px;
+    }
+
+    .theme-label {
+      font-size: 11px;
+      color: #475569;
+      margin-top: 8px;
+      font-family: monospace;
+    }
+
+    .events-log {
+      background: #0f1117;
+      border: 1px solid #2d3748;
+      border-radius: 8px;
+      padding: 12px 16px;
+      font-family: 'Fira Code', monospace;
+      font-size: 11px;
+      color: #94a3b8;
+      min-height: 80px;
+      max-height: 160px;
+      overflow-y: auto;
+    }
+
+    .events-log p {
+      margin: 2px 0;
+    }
+
+    .events-log .ev-ready  { color: #6ee7b7; }
+    .events-log .ev-error  { color: #f87171; }
+    .events-log .ev-run    { color: #93c5fd; }
+  </style>
+</head>
+<body>
+
+<header>
+  <h1>Nubi Dashboard Embed — Demo</h1>
+  <p>
+    This page demonstrates the <code>&lt;nubi-dashboard&gt;</code> web component (M3-C).
+    No live backend is required — the component always shows a table via its built-in
+    sample-data fallback when the backend is unreachable.
+    Open DevTools to see the <code>nubi:ready</code> / <code>nubi:query-run</code> events.
+  </p>
+</header>
+
+<!-- ======================================================================
+     Section 1 — Default theme (no CSS overrides)
+     ====================================================================== -->
+<div class="section">
+  <h2>Default dark theme</h2>
+
+  <nubi-dashboard
+    id="dash1"
+    query="SELECT * FROM demo"
+    get-token="mockGetToken"
+    backend="http://localhost:8000"
+  ></nubi-dashboard>
+
+  <p class="theme-label">No CSS custom properties set — uses built-in defaults.</p>
+</div>
+
+<!-- ======================================================================
+     Section 2 — Indigo theme
+     ====================================================================== -->
+<div class="section theme-indigo">
+  <h2>Indigo theme (--nubi-accent: #1e1b4b)</h2>
+
+  <nubi-dashboard
+    id="dash2"
+    query="SELECT name, value, category FROM products ORDER BY value DESC"
+    get-token="mockGetToken"
+    backend="http://localhost:8000"
+  ></nubi-dashboard>
+
+  <p class="theme-label">
+    --nubi-bg: #0d0f1e &nbsp;|&nbsp;
+    --nubi-fg: #c7d2fe &nbsp;|&nbsp;
+    --nubi-accent: #1e1b4b &nbsp;|&nbsp;
+    --nubi-border: #312e81
+  </p>
+</div>
+
+<!-- ======================================================================
+     Section 3 — Slate theme
+     ====================================================================== -->
+<div class="section theme-slate">
+  <h2>Slate theme</h2>
+
+  <nubi-dashboard
+    id="dash3"
+    query="SELECT id, name, active FROM users WHERE active = true"
+    token="eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJkZW1vIiwiZXhwIjo5OTk5OTk5OTk5fQ.fake"
+    backend="http://localhost:8000"
+  ></nubi-dashboard>
+
+  <p class="theme-label">
+    Uses static <code>token</code> attribute instead of <code>get-token</code>.
+    --nubi-bg: #1e293b &nbsp;|&nbsp; --nubi-fg: #f1f5f9
+  </p>
+</div>
+
+<!-- ======================================================================
+     Section 4 — Event log
+     ====================================================================== -->
+<div class="section">
+  <h2>Component events</h2>
+  <div class="events-log" id="eventLog">
+    <p style="color:#475569">Waiting for component events…</p>
+  </div>
+</div>
+
+<!-- ======================================================================
+     Load the embed bundle
+     ====================================================================== -->
+<script src="../dist-embed/nubi-dashboard.js"></script>
+
+<script>
+  // -----------------------------------------------------------------------
+  // Mock getToken — returns a fake JWT.
+  //
+  // The JWT payload is: { sub: "demo-user", exp: 9999999999 }
+  // The signature is intentionally invalid — the Nubi backend will reject it,
+  // which causes the component to fall back to sample data. This is the
+  // intended demo behaviour: always render something.
+  //
+  // In production, replace this with createGetToken({ mintUrl: '/api/embed-token' })
+  // from getToken.reference.js, pointing at your real token-mint endpoint.
+  // -----------------------------------------------------------------------
+  window.mockGetToken = async function mockGetToken() {
+    // Simulate a small async delay (as a real token mint would have)
+    await new Promise(resolve => setTimeout(resolve, 50))
+
+    // Header:  { "alg": "HS256", "typ": "JWT" }
+    // Payload: { "sub": "demo-user", "exp": 9999999999,
+    //            "iss": "https://demo.example.com",
+    //            "aud": "nubi:demo-project",
+    //            "scope": ["read:*"],
+    //            "policies": {},
+    //            "embed_origin": "http://localhost:5174" }
+    return [
+      'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9',
+      'eyJzdWIiOiJkZW1vLXVzZXIiLCJleHAiOjk5OTk5OTk5OTksImlzcyI6Imh0dHBzOi8vZGVtby5leGFtcGxlLmNvbSIsImF1ZCI6Im51Ymk6ZGVtby1wcm9qZWN0Iiwic2NvcGUiOlsicmVhZDoqIl0sInBvbGljaWVzIjp7fSwiZW1iZWRfb3JpZ2luIjoiaHR0cDovL2xvY2FsaG9zdDo1MTc0In0',
+      'INVALID_SIGNATURE_FOR_DEMO_ONLY'
+    ].join('.')
+  }
+
+  // -----------------------------------------------------------------------
+  // Listen for component events and display them in the log
+  // -----------------------------------------------------------------------
+  const log = document.getElementById('eventLog')
+  let logEmpty = true
+
+  function logEvent(evName, detail, cls) {
+    if (logEmpty) { log.innerHTML = ''; logEmpty = false }
+    const ts = new Date().toISOString().slice(11, 23)
+    const p = document.createElement('p')
+    p.className = cls
+    p.textContent = `[${ts}] ${evName} — ${JSON.stringify(detail)}`
+    log.appendChild(p)
+    log.scrollTop = log.scrollHeight
+  }
+
+  document.addEventListener('nubi:ready', e => {
+    logEvent('nubi:ready', e.detail, 'ev-ready')
+  })
+  document.addEventListener('nubi:error', e => {
+    logEvent('nubi:error', e.detail, 'ev-error')
+  })
+  document.addEventListener('nubi:query-run', e => {
+    logEvent('nubi:query-run', e.detail, 'ev-run')
+  })
+</script>
+
+</body>
+</html>
