@@ -1,60 +1,70 @@
 /**
- * Docs registry — loads all markdown sources via Vite import.meta.glob
- * and builds a structured navigation with groups.
+ * Docs registry — loads all markdown sources from docs/*.md via Vite
+ * import.meta.glob and builds a structured navigation with groups.
+ *
+ * All doc content lives under /docs/ in the repo root.
+ * Slugs are derived from filenames; the home doc uses the slug "home".
  */
 
-// Eagerly load all markdown files as raw strings
+// ── Load markdown files eagerly ───────────────────────────────────────────────
+
+const homeMd = import.meta.glob(
+  '/docs/index.md',
+  { query: '?raw', import: 'default', eager: true }
+)
+
 const overviewMds = import.meta.glob(
-  ['/README.md', '/ROADMAP.md'],
+  [
+    '/docs/getting-started.md',
+  ],
   { query: '?raw', import: 'default', eager: true }
 )
 
-const backendMds = import.meta.glob(
-  '/backend/docs/*.md',
+const coreMds = import.meta.glob(
+  [
+    '/docs/connectors.md',
+    '/docs/queries-and-params.md',
+    '/docs/dashboards.md',
+    '/docs/exports-and-jobs.md',
+    '/docs/flows.md',
+    '/docs/cache-key-spec.md',
+    '/docs/kernel-security.md',
+    '/docs/conformance.md',
+    '/docs/connector-security.md',
+  ],
   { query: '?raw', import: 'default', eager: true }
 )
 
-const sdkMd = import.meta.glob(
-  '/sdk/README.md',
+const buildMds = import.meta.glob(
+  [
+    '/docs/ai-and-mcp.md',
+    '/docs/embedding.md',
+    '/docs/git-sync.md',
+    '/docs/bridges.md',
+    '/docs/sdk-and-cli.md',
+  ],
   { query: '?raw', import: 'default', eager: true }
 )
 
-const cliMd = import.meta.glob(
-  '/cli/README.md',
-  { query: '?raw', import: 'default', eager: true }
-)
+// ── Helpers ───────────────────────────────────────────────────────────────────
 
-const mcpMd = import.meta.glob(
-  '/mcp/README.md',
-  { query: '?raw', import: 'default', eager: true }
-)
-
-const embedMd = import.meta.glob(
-  '/embed/README.md',
-  { query: '?raw', import: 'default', eager: true }
-)
-
-/** Extract the first H1 heading from markdown content, or fall back to filename */
+/** Extract the first H1 heading from markdown content */
 function extractTitle(content, filePath) {
   const h1Match = content.match(/^#\s+(.+)$/m)
   if (h1Match) return h1Match[1].trim()
-  // Fall back to filename without extension
   const parts = filePath.split('/')
   const filename = parts[parts.length - 1].replace(/\.md$/, '')
   return filename.charAt(0).toUpperCase() + filename.slice(1).replace(/-/g, ' ')
 }
 
-/** Build a slug from a file path */
+/** Build a slug from a docs/ file path: /docs/foo-bar.md → "foo-bar" */
 function pathToSlug(filePath) {
-  return filePath
-    .replace(/^\//, '')          // strip leading /
-    .replace(/\.md$/, '')        // strip .md
-    .replace(/\//g, '-')         // slashes → dashes
-    .replace(/[^a-z0-9-]/gi, '-') // sanitise
-    .toLowerCase()
+  const parts = filePath.split('/')
+  const filename = parts[parts.length - 1].replace(/\.md$/, '')
+  return filename.toLowerCase()
 }
 
-/** Build doc entries for a glob result map */
+/** Build doc entries from a glob result map */
 function buildEntries(globMap, group) {
   return Object.entries(globMap).map(([path, content]) => {
     const slug = pathToSlug(path)
@@ -63,38 +73,51 @@ function buildEntries(globMap, group) {
   })
 }
 
-// --- Assemble all docs ---
+// ── Assemble docs ─────────────────────────────────────────────────────────────
+
+// Home doc — always slug "home"
+const rawHomeDocs = buildEntries(homeMd, 'Home')
+const homeDocs = rawHomeDocs.map(doc => ({
+  ...doc,
+  slug: 'home',
+  title: 'Nubi Docs',
+}))
 
 const overviewDocs = buildEntries(overviewMds, 'Overview')
-const backendDocs = buildEntries(backendMds, 'Backend & Architecture')
-const sdkDocs = buildEntries(sdkMd, 'SDKs & Tools')
-const cliDocs = buildEntries(cliMd, 'SDKs & Tools')
-const mcpDocs = buildEntries(mcpMd, 'SDKs & Tools')
-const embedDocs = buildEntries(embedMd, 'SDKs & Tools')
 
-// Custom ordering for Overview group
-const overviewOrder = ['readme', 'roadmap']
-overviewDocs.sort((a, b) => {
-  const ai = overviewOrder.findIndex(k => a.slug.includes(k))
-  const bi = overviewOrder.findIndex(k => b.slug.includes(k))
+// Core platform docs — explicit order
+const coreDocsRaw = buildEntries(coreMds, 'Core Platform')
+const coreOrder = [
+  'connectors',
+  'connector-security',
+  'queries-and-params',
+  'dashboards',
+  'exports-and-jobs',
+  'flows',
+  'cache-key-spec',
+  'kernel-security',
+  'conformance',
+]
+const coreDocs = [...coreDocsRaw].sort((a, b) => {
+  const ai = coreOrder.indexOf(a.slug)
+  const bi = coreOrder.indexOf(b.slug)
   return (ai === -1 ? 99 : ai) - (bi === -1 ? 99 : bi)
 })
 
-// Custom ordering for Backend group
-const backendOrder = ['readme', 'connectors', 'kernel-security', 'conformance', 'cache-key-spec']
-backendDocs.sort((a, b) => {
-  const ai = backendOrder.findIndex(k => a.slug.includes(k))
-  const bi = backendOrder.findIndex(k => b.slug.includes(k))
+// SDK / embed / AI docs — explicit order
+const buildDocsRaw = buildEntries(buildMds, 'Build & Integrate')
+const buildOrder = ['ai-and-mcp', 'embedding', 'git-sync', 'bridges', 'sdk-and-cli']
+const buildDocs = [...buildDocsRaw].sort((a, b) => {
+  const ai = buildOrder.indexOf(a.slug)
+  const bi = buildOrder.indexOf(b.slug)
   return (ai === -1 ? 99 : ai) - (bi === -1 ? 99 : bi)
 })
 
 const ALL_DOCS = [
+  ...homeDocs,
   ...overviewDocs,
-  ...backendDocs,
-  ...sdkDocs,
-  ...cliDocs,
-  ...mcpDocs,
-  ...embedDocs,
+  ...coreDocs,
+  ...buildDocs,
 ]
 
 // Deduplicate by slug (safety net)
@@ -105,24 +128,24 @@ const DOCS = ALL_DOCS.filter(doc => {
   return true
 })
 
-console.log(`[Nubi Docs] Loaded ${DOCS.length} documents across groups:`, {
-  Overview: DOCS.filter(d => d.group === 'Overview').length,
-  'Backend & Architecture': DOCS.filter(d => d.group === 'Backend & Architecture').length,
-  'SDKs & Tools': DOCS.filter(d => d.group === 'SDKs & Tools').length,
-})
+// ── Exported groups ───────────────────────────────────────────────────────────
 
 export const DOC_GROUPS = [
+  {
+    name: 'Home',
+    docs: DOCS.filter(d => d.group === 'Home'),
+  },
   {
     name: 'Overview',
     docs: DOCS.filter(d => d.group === 'Overview'),
   },
   {
-    name: 'Backend & Architecture',
-    docs: DOCS.filter(d => d.group === 'Backend & Architecture'),
+    name: 'Core Platform',
+    docs: DOCS.filter(d => d.group === 'Core Platform'),
   },
   {
-    name: 'SDKs & Tools',
-    docs: DOCS.filter(d => d.group === 'SDKs & Tools'),
+    name: 'Build & Integrate',
+    docs: DOCS.filter(d => d.group === 'Build & Integrate'),
   },
 ]
 

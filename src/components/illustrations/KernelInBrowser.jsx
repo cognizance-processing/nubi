@@ -1,175 +1,216 @@
 /**
- * KernelInBrowser — Large illustration contrasting browser-native kernel vs cloud kernel.
- * Shows: browser frame → Pyodide/DuckDB-WASM inside → Arrow IPC → viz output
- * vs faded cloud rack on right showing cold start / cost.
- * viewBox 560×380 — parent controls display size (aim ~320px+ height).
+ * KernelInBrowser — a compute kernel (processor chip) running inside a browser.
+ * Browser chrome at top with address bar + traffic lights. Central chip with
+ * grid of compute cores, circuit traces radiating outward, pin pads on edges,
+ * and a soft teal glow halo. Textless. Reads on white and dark-navy cards.
  */
 export default function KernelInBrowser({ className = '' }) {
+  // Chip center
+  const cx = 210
+  const cy = 170
+
+  // Circuit traces: clean, symmetric pin-outs — 3 per edge, evenly spaced.
+  const TRACE_OUT = 40            // how far traces extend past the chip edge
+  const edgeOff = [-26, 0, 26]    // even offsets along each edge
+  const traces = []
+  edgeOff.forEach((d) => {
+    traces.push({ x1: cx + d, y1: cy - 52, x2: cx + d, y2: cy - 52 - TRACE_OUT }) // top
+    traces.push({ x1: cx + d, y1: cy + 52, x2: cx + d, y2: cy + 52 + TRACE_OUT }) // bottom
+    traces.push({ x1: cx - 52, y1: cy + d, x2: cx - 52 - TRACE_OUT, y2: cy + d }) // left
+    traces.push({ x1: cx + 52, y1: cy + d, x2: cx + 52 + TRACE_OUT, y2: cy + d }) // right
+  })
+
+  // One pad dot at each trace's outer end
+  const pads = traces.map((t) => ({ cx: t.x2, cy: t.y2 }))
+
+  // Chip internal grid of compute cores (3x3). Center core is the bright kernel;
+  // the rest are calm base tiles — no busy inner highlights.
+  const cores = []
+  for (let row = 0; row < 3; row++) {
+    for (let col = 0; col < 3; col++) {
+      cores.push({
+        x: cx - 30 + col * 30,
+        y: cy - 30 + row * 30,
+        key: `c${row}${col}`,
+        accent: row === 1 && col === 1,   // only the center core glows
+      })
+    }
+  }
+
   return (
     <svg
-      viewBox="0 0 560 380"
+      viewBox="0 0 420 320"
       fill="none"
       xmlns="http://www.w3.org/2000/svg"
       className={className}
       aria-hidden="true"
-      style={{ width: '100%', height: 'auto' }}
+      width="100%"
+      height="auto"
+      preserveAspectRatio="xMidYMid meet"
     >
       <defs>
-        <linearGradient id="kib-brand" x1="0" y1="0" x2="1" y2="0">
+        {/* Brand signature */}
+        <linearGradient id="kib-brand" x1="0" y1="1" x2="1" y2="0">
           <stop offset="0%" stopColor="#1b2363" />
-          <stop offset="50%" stopColor="#2456a6" />
+          <stop offset="45%" stopColor="#2456a6" />
+          <stop offset="80%" stopColor="#17b3a3" />
+          <stop offset="100%" stopColor="#2dd4bf" />
+        </linearGradient>
+
+        {/* Chip body fill */}
+        <linearGradient id="kib-chip-fill" x1="0" y1="0" x2="1" y2="1">
+          <stop offset="0%" stopColor="#2456a6" />
+          <stop offset="50%" stopColor="#1e3b8a" />
           <stop offset="100%" stopColor="#17b3a3" />
         </linearGradient>
-        <linearGradient id="kib-bg" x1="0" y1="0" x2="560" y2="380" gradientUnits="userSpaceOnUse">
-          <stop offset="0%" stopColor="#0a1020" />
-          <stop offset="100%" stopColor="#0c1422" />
+
+        {/* Core accent fill */}
+        <linearGradient id="kib-core-accent" x1="0" y1="0" x2="1" y2="1">
+          <stop offset="0%" stopColor="#2dd4bf" />
+          <stop offset="100%" stopColor="#17b3a3" />
         </linearGradient>
-        <linearGradient id="kib-browser-bg" x1="0" y1="0" x2="0" y2="1">
-          <stop offset="0%" stopColor="#111a2e" />
-          <stop offset="100%" stopColor="#0d1526" />
+
+        {/* Core base fill */}
+        <linearGradient id="kib-core-base" x1="0" y1="0" x2="1" y2="1">
+          <stop offset="0%" stopColor="#2456a6" stopOpacity="0.7" />
+          <stop offset="100%" stopColor="#17b3a3" stopOpacity="0.5" />
         </linearGradient>
-        <filter id="kib-glow">
-          <feGaussianBlur stdDeviation="3" result="blur" />
-          <feMerge><feMergeNode in="blur" /><feMergeNode in="SourceGraphic" /></feMerge>
+
+        {/* Browser glass panel */}
+        <linearGradient id="kib-glass" x1="0" y1="0" x2="1" y2="1">
+          <stop offset="0%" stopColor="#2456a6" stopOpacity="0.14" />
+          <stop offset="100%" stopColor="#1b2363" stopOpacity="0.04" />
+        </linearGradient>
+
+        {/* Glass border */}
+        <linearGradient id="kib-border" x1="0" y1="0" x2="1" y2="1">
+          <stop offset="0%" stopColor="#2dd4bf" stopOpacity="0.5" />
+          <stop offset="50%" stopColor="#2456a6" stopOpacity="0.35" />
+          <stop offset="100%" stopColor="#17b3a3" stopOpacity="0.2" />
+        </linearGradient>
+
+        {/* Trace gradient */}
+        <linearGradient id="kib-trace" x1="0" y1="0" x2="1" y2="1">
+          <stop offset="0%" stopColor="#2dd4bf" stopOpacity="0.7" />
+          <stop offset="100%" stopColor="#2456a6" stopOpacity="0.4" />
+        </linearGradient>
+
+        {/* Halo bloom */}
+        <radialGradient id="kib-halo" cx="50%" cy="50%" r="50%">
+          <stop offset="0%" stopColor="#17b3a3" stopOpacity="0.3" />
+          <stop offset="60%" stopColor="#2456a6" stopOpacity="0.1" />
+          <stop offset="100%" stopColor="#17b3a3" stopOpacity="0.0" />
+        </radialGradient>
+
+        {/* Ambient teal top-right */}
+        <radialGradient id="kib-amb" cx="75%" cy="22%" r="45%">
+          <stop offset="0%" stopColor="#2dd4bf" stopOpacity="0.2" />
+          <stop offset="100%" stopColor="#2dd4bf" stopOpacity="0.0" />
+        </radialGradient>
+
+        {/* Chip glow filter */}
+        <filter id="kib-chip-glow" x="-40%" y="-40%" width="180%" height="180%">
+          <feDropShadow dx="0" dy="0" stdDeviation="14" floodColor="#17b3a3" floodOpacity="0.5" />
         </filter>
-        <filter id="kib-glow-sm">
-          <feGaussianBlur stdDeviation="1.5" result="blur" />
-          <feMerge><feMergeNode in="blur" /><feMergeNode in="SourceGraphic" /></feMerge>
+
+        {/* Card shadow */}
+        <filter id="kib-shadow" x="-25%" y="-25%" width="150%" height="150%">
+          <feDropShadow dx="0" dy="6" stdDeviation="10" floodColor="#1b2363" floodOpacity="0.22" />
         </filter>
-        <marker id="kib-arr" markerWidth="7" markerHeight="7" refX="3.5" refY="3.5" orient="auto">
-          <path d="M 0 0 L 7 3.5 L 0 7 Z" fill="#2dd4bf" fillOpacity="0.8" />
-        </marker>
-        <marker id="kib-arr-dim" markerWidth="7" markerHeight="7" refX="3.5" refY="3.5" orient="auto">
-          <path d="M 0 0 L 7 3.5 L 0 7 Z" fill="#4a6fa5" fillOpacity="0.5" />
-        </marker>
+
+        {/* Safe clip */}
+        <clipPath id="kib-safe-clip">
+          <rect x="8" y="8" width="404" height="304" rx="24" />
+        </clipPath>
       </defs>
 
-      {/* Background */}
-      <rect width="560" height="380" rx="12" fill="url(#kib-bg)" />
-      <rect width="560" height="380" rx="12" stroke="url(#kib-brand)" strokeOpacity="0.3" strokeWidth="1" fill="none" />
+      {/* Ambient blooms */}
+      <rect x="8" y="8" width="404" height="304" rx="24" fill="url(#kib-amb)" />
+      <circle cx={cx} cy={cy} r="130" fill="url(#kib-halo)" />
 
-      {/* Section label */}
-      <text x="280" y="26" textAnchor="middle" fill="#4d8de0" fontSize="11" fontWeight="600" fontFamily="'Space Grotesk', sans-serif" letterSpacing="1">KERNEL ARCHITECTURE</text>
+      <g clipPath="url(#kib-safe-clip)">
 
-      {/* ═══════════════════════════════════
-          LEFT PANEL: Browser-native kernel
-      ═══════════════════════════════════ */}
-      <rect x="16" y="38" width="300" height="300" rx="10"
-        fill="url(#kib-browser-bg)" stroke="#2456a6" strokeOpacity="0.5" strokeWidth="1.5" />
-      {/* Top brand accent */}
-      <rect x="16" y="38" width="300" height="4" rx="2"
-        fill="url(#kib-brand)" />
-
-      {/* Browser chrome */}
-      <rect x="16" y="42" width="300" height="28" rx="0" fill="#070d1a" />
-      <circle cx="36" cy="56" r="5" fill="#ff5f57" fillOpacity="0.85" />
-      <circle cx="52" cy="56" r="5" fill="#febc2e" fillOpacity="0.85" />
-      <circle cx="68" cy="56" r="5" fill="#28c840" fillOpacity="0.85" />
-      <rect x="88" y="48" width="168" height="16" rx="8" fill="#0c1828" stroke="#2456a6" strokeOpacity="0.3" strokeWidth="0.5" />
-      <text x="172" y="59.5" textAnchor="middle" fill="#2dd4bf" fillOpacity="0.75" fontSize="8" fontFamily="monospace">app.nubi.dev</text>
-
-      {/* Kernel box: Pyodide */}
-      <rect x="30" y="88" width="120" height="72" rx="8"
-        fill="#0d1526" stroke="#2456a6" strokeOpacity="0.6" strokeWidth="1" />
-      <text x="90" y="108" textAnchor="middle" fill="#4d8de0" fontSize="12" fontWeight="700" fontFamily="'Space Grotesk', sans-serif">Pyodide</text>
-      <text x="90" y="122" textAnchor="middle" fill="#93a4bd" fontSize="9" fontFamily="monospace">Python 3.12</text>
-      <text x="90" y="134" textAnchor="middle" fill="#93a4bd" fontSize="9" fontFamily="monospace">in WebAssembly</text>
-      {/* Pulse rings */}
-      <circle cx="90" cy="148" r="10" fill="#2456a6" fillOpacity="0.12" />
-      <circle cx="90" cy="148" r="6" fill="#2456a6" fillOpacity="0.2" />
-      <circle cx="90" cy="148" r="3.5" fill="#4d8de0" filter="url(#kib-glow-sm)" />
-
-      {/* DuckDB-WASM box */}
-      <rect x="162" y="88" width="140" height="72" rx="8"
-        fill="#0d1526" stroke="#17b3a3" strokeOpacity="0.6" strokeWidth="1" />
-      <text x="232" y="106" textAnchor="middle" fill="#2dd4bf" fontSize="11" fontWeight="700" fontFamily="'Space Grotesk', sans-serif">DuckDB-WASM</text>
-      <text x="232" y="120" textAnchor="middle" fill="#93a4bd" fontSize="9" fontFamily="monospace">columnar engine</text>
-      {/* Mini column chart */}
-      {[0.4, 0.7, 0.5, 0.9, 0.65, 0.8, 1.0].map((h, i) => (
-        <rect key={i} x={176 + i * 17} y={152 - h * 26} width="12" height={h * 26} rx="2"
-          fill="#17b3a3" fillOpacity={0.3 + h * 0.35} />
-      ))}
-      <line x1="170" y1="152" x2="298" y2="152" stroke="#17b3a3" strokeOpacity="0.2" strokeWidth="0.5" />
-
-      {/* Arrow: Pyodide → DuckDB */}
-      <line x1="152" y1="124" x2="160" y2="124"
-        stroke="#2dd4bf" strokeOpacity="0.7" strokeWidth="1.5" markerEnd="url(#kib-arr)" />
-
-      {/* Arrow IPC section */}
-      <rect x="30" y="178" width="272" height="48" rx="7"
-        fill="#070d1a" stroke="#17b3a3" strokeOpacity="0.4" strokeWidth="0.75" />
-      <text x="44" y="196" fill="#2dd4bf" fontSize="11" fontWeight="600" fontFamily="'Space Grotesk', sans-serif">Arrow IPC</text>
-      <text x="44" y="210" fill="#93a4bd" fontSize="9" fontFamily="monospace">columnar wire format · zero copy · WebSocket</text>
-      {/* Arrow stream dots */}
-      {[130, 152, 174, 196, 218, 240, 262, 284].map((x, i) => (
-        <circle key={i} cx={x} cy="200" r="3" fill="#2dd4bf"
-          fillOpacity={i % 2 === 0 ? 0.7 : 0.3} />
-      ))}
-      <line x1="120" y1="200" x2="290" y2="200"
-        stroke="#2dd4bf" strokeOpacity="0.15" strokeWidth="1" />
-
-      {/* Viz output mini chart */}
-      <rect x="30" y="238" width="272" height="60" rx="7"
-        fill="#0d1526" stroke="#2456a6" strokeOpacity="0.3" strokeWidth="0.75" />
-      <text x="44" y="254" fill="#4d8de0" fontSize="9" fontFamily="'Inter', sans-serif">Chart output (WebGL/regl)</text>
-      {/* Sparkline */}
-      <path d="M 42 288 L 58 272 L 78 280 L 98 262 L 118 268 L 138 252 L 158 256 L 178 240 L 198 244 L 218 232 L 238 236 L 258 225 L 278 228 L 290 226"
-        stroke="#17b3a3" strokeWidth="2" fill="none" strokeLinecap="round" />
-      {/* Area */}
-      <path d="M 42 292 L 58 272 L 78 280 L 98 262 L 118 268 L 138 252 L 158 256 L 178 240 L 198 244 L 218 232 L 238 236 L 258 225 L 278 228 L 290 226 L 290 292 Z"
-        fill="#17b3a3" fillOpacity="0.1" />
-
-      {/* Cost badge */}
-      <rect x="30" y="308" width="272" height="24" rx="6"
-        fill="#17b3a3" fillOpacity="0.1" stroke="#17b3a3" strokeOpacity="0.5" strokeWidth="0.75" />
-      <circle cx="48" cy="320" r="5" fill="#2dd4bf" fillOpacity="0.8" />
-      <text x="60" y="323.5" fill="#2dd4bf" fontSize="11" fontWeight="600" fontFamily="'Space Grotesk', sans-serif">Marginal cost per view ≈ $0</text>
-
-      {/* Label */}
-      <text x="166" y="350" textAnchor="middle" fill="#4d8de0" fontSize="11" fontWeight="600" fontFamily="'Space Grotesk', sans-serif">Browser-native kernel</text>
-      <text x="166" y="364" textAnchor="middle" fill="#4a6fa5" fontSize="9" fontFamily="'Inter', sans-serif">Zero cold starts · Zero per-session cost</text>
-
-      {/* ═══════════════════════════════════
-          RIGHT PANEL: Cloud kernel (contrast)
-      ═══════════════════════════════════ */}
-      <rect x="326" y="38" width="218" height="300" rx="10"
-        fill="#080e18" stroke="#21304a" strokeOpacity="0.6" strokeWidth="1" />
-
-      {/* Dim label */}
-      <text x="435" y="60" textAnchor="middle" fill="#4a6fa5" fillOpacity="0.6" fontSize="10" fontWeight="600" fontFamily="'Space Grotesk', sans-serif">Cloud kernel</text>
-      <text x="435" y="74" textAnchor="middle" fill="#4a6fa5" fillOpacity="0.4" fontSize="8" fontFamily="'Inter', sans-serif">(Hex model)</text>
-
-      {/* Server rack */}
-      {[90, 108, 126, 144, 162, 180, 198, 216, 234, 252, 270, 288].map((y, i) => (
-        <g key={y}>
-          <rect x="346" y={y} width="178" height="14" rx="2"
-            fill="#0c1422" stroke="#21304a" strokeOpacity="0.5" strokeWidth="0.5" />
-          <rect x="346" y={y} width="6" height="14"
-            fill="#1b2363" fillOpacity="0.4" />
-          <circle cx="512" cy={y + 7} r="2.5"
-            fill={i % 3 === 0 ? '#2456a6' : '#21304a'} fillOpacity={i % 3 === 0 ? 0.5 : 0.3} />
-          <circle cx="502" cy={y + 7} r="2.5"
-            fill={i % 5 === 0 ? '#17b3a3' : '#21304a'} fillOpacity={i % 5 === 0 ? 0.4 : 0.2} />
+        {/* ── Browser window card ── */}
+        <g filter="url(#kib-shadow)">
+          <rect x="18" y="18" width="384" height="284" rx="20" fill="url(#kib-glass)" />
         </g>
-      ))}
+        <rect x="18" y="18" width="384" height="284" rx="20" stroke="url(#kib-border)" strokeWidth="1.5" />
+        {/* top highlight */}
+        <path d="M 42 19 L 380 19" stroke="#ffffff" strokeOpacity="0.18" strokeWidth="1.5" strokeLinecap="round" />
 
-      {/* Cold start warning */}
-      <rect x="346" y="306" width="178" height="22" rx="5"
-        fill="#1a0a0a" stroke="#f87171" strokeOpacity="0.4" strokeWidth="0.75" />
-      <text x="435" y="320.5" textAnchor="middle" fill="#f87171" fillOpacity="0.7" fontSize="10" fontFamily="'Inter', sans-serif">10–30s cold start · $$ / session</text>
+        {/* Browser chrome bar */}
+        <rect x="18" y="18" width="384" height="44" rx="20" fill="url(#kib-glass)" />
+        <rect x="18" y="50" width="384" height="12" fill="url(#kib-glass)" />
+        {/* Divider line */}
+        <line x1="18" y1="62" x2="402" y2="62" stroke="#2456a6" strokeOpacity="0.25" strokeWidth="1.2" />
 
-      {/* X cross overlay */}
-      <line x1="336" y1="44" x2="536" y2="332" stroke="#f87171" strokeOpacity="0.12" strokeWidth="2" strokeLinecap="round" />
-      <line x1="536" y1="44" x2="336" y2="332" stroke="#f87171" strokeOpacity="0.12" strokeWidth="2" strokeLinecap="round" />
+        {/* Traffic lights */}
+        <circle cx="42" cy="40" r="5.5" fill="#2456a6" fillOpacity="0.45" />
+        <circle cx="58" cy="40" r="5.5" fill="#2456a6" fillOpacity="0.3" />
+        <circle cx="74" cy="40" r="5.5" fill="#17b3a3" fillOpacity="0.55" />
 
-      {/* Label */}
-      <text x="435" y="352" textAnchor="middle" fill="#4a6fa5" fillOpacity="0.5" fontSize="10" fontFamily="'Space Grotesk', sans-serif">Their cloud</text>
-      <text x="435" y="366" textAnchor="middle" fill="#4a6fa5" fillOpacity="0.35" fontSize="9" fontFamily="'Inter', sans-serif">Session-scoped · $$$ warm</text>
+        {/* Address bar */}
+        <rect x="100" y="29" width="220" height="22" rx="8" fill="url(#kib-glass)" stroke="#2456a6" strokeOpacity="0.25" strokeWidth="1" />
+        {/* Address bar shield icon dots */}
+        <circle cx="116" cy="40" r="4" fill="#17b3a3" fillOpacity="0.55" />
+        <rect x="126" y="37" width="60" height="5" rx="2.5" fill="#2456a6" fillOpacity="0.3" />
+        <rect x="190" y="37" width="30" height="5" rx="2.5" fill="#2456a6" fillOpacity="0.18" />
 
-      {/* VS divider */}
-      <rect x="314" y="155" width="24" height="24" rx="12"
-        fill="#111a2e" stroke="#21304a" strokeWidth="1" />
-      <text x="326" y="171" textAnchor="middle" fill="#4a6fa5" fontSize="10" fontWeight="700" fontFamily="'Space Grotesk', sans-serif">vs</text>
+        {/* Reload + menu icons (right side of chrome) */}
+        <circle cx="350" cy="40" r="4.5" stroke="#2456a6" strokeOpacity="0.3" strokeWidth="1.5" />
+        <circle cx="366" cy="40" r="4.5" stroke="#2456a6" strokeOpacity="0.3" strokeWidth="1.5" />
+        <circle cx="382" cy="40" r="4.5" stroke="#2456a6" strokeOpacity="0.3" strokeWidth="1.5" />
+
+        {/* ── Circuit traces ── */}
+        {traces.map((t, i) => (
+          <line key={i}
+            x1={t.x1} y1={t.y1} x2={t.x2} y2={t.y2}
+            stroke="url(#kib-trace)" strokeWidth="1.75" strokeLinecap="round" strokeOpacity="0.7" />
+        ))}
+
+        {/* Terminal pads */}
+        {pads.map((p, i) => (
+          <circle key={i} cx={p.cx} cy={p.cy} r="3"
+            fill="url(#kib-core-accent)" fillOpacity="0.7" />
+        ))}
+
+        {/* ── Chip body (main chip) ── */}
+        <g filter="url(#kib-chip-glow)">
+          <rect x={cx - 52} y={cy - 52} width="104" height="104" rx="16"
+            fill="url(#kib-chip-fill)" />
+        </g>
+        {/* Chip border */}
+        <rect x={cx - 52} y={cy - 52} width="104" height="104" rx="16"
+          stroke="#ffffff" strokeOpacity="0.18" strokeWidth="1.5" />
+        {/* Chip top highlight */}
+        <path d={`M ${cx - 36} ${cy - 51} L ${cx + 36} ${cy - 51}`}
+          stroke="#ffffff" strokeOpacity="0.22" strokeWidth="1.5" strokeLinecap="round" />
+
+        {/* Internal grid lines */}
+        <line x1={cx - 52} y1={cy - 16} x2={cx + 52} y2={cy - 16}
+          stroke="#2dd4bf" strokeOpacity="0.18" strokeWidth="1" />
+        <line x1={cx - 52} y1={cy + 16} x2={cx + 52} y2={cy + 16}
+          stroke="#2dd4bf" strokeOpacity="0.18" strokeWidth="1" />
+        <line x1={cx - 16} y1={cy - 52} x2={cx - 16} y2={cy + 52}
+          stroke="#2dd4bf" strokeOpacity="0.18" strokeWidth="1" />
+        <line x1={cx + 16} y1={cy - 52} x2={cx + 16} y2={cy + 52}
+          stroke="#2dd4bf" strokeOpacity="0.18" strokeWidth="1" />
+
+        {/* Compute cores (3×3 grid) — clean tiles, center core is the kernel */}
+        {cores.map((core) => (
+          <rect key={core.key}
+            x={core.x - 10} y={core.y - 10} width="20" height="20" rx="5"
+            fill={core.accent ? 'url(#kib-core-accent)' : 'url(#kib-core-base)'}
+            stroke={core.accent ? '#a5f3ec' : 'none'}
+            strokeWidth={core.accent ? 1.25 : 0}
+            strokeOpacity="0.6" />
+        ))}
+
+        {/* Center kernel pulse — soft glow on the active core */}
+        <circle cx={cx} cy={cy} r="13" fill="url(#kib-core-accent)" fillOpacity="0.0" />
+        <circle cx={cx} cy={cy} r="20" fill="url(#kib-halo)" />
+
+      </g>
     </svg>
   )
 }

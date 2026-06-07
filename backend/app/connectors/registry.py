@@ -173,10 +173,64 @@ def _bootstrap(registry: ConnectorRegistry) -> None:
         ``HttpJsonConnector`` — REST/JSON API source; post-fetch RLS via
         ``apply_rls_postfetch`` (fail-closed).  No predicate push-down.
     """
+    from app.connectors.bigquery import BigQueryConnector
     from app.connectors.duckdb_conn import DuckDBConnector
     from app.connectors.http_json import HttpJsonConnector
+    from app.connectors.jdbc import JDBCConnector
+    from app.connectors.mariadb import MariaDBConnector
+    from app.connectors.mysql import MySQLConnector
     from app.connectors.postgres import PostgresConnector
+    from app.connectors.snowflake import SnowflakeConnector
 
     registry.register("postgres", PostgresConnector)
     registry.register("duckdb", DuckDBConnector)
     registry.register("http_json", lambda config: HttpJsonConnector(config))
+
+    # MySQL / MariaDB: the connector takes a MySQL-URI DSN, but the registry
+    # factory is invoked with the datastore config dict (the route's
+    # ``else: factory(cfg)`` path).  These wrappers assemble the DSN from the
+    # config parts (host/port/database/user/password) so query.py needs no
+    # MySQL-specific DSN-assembly branch.  MariaDB is wire-compatible with MySQL
+    # and reuses the same DSN scheme.
+    registry.register("mysql", lambda config: MySQLConnector(_mysql_dsn_from_config(config)))
+    registry.register("mariadb", lambda config: MariaDBConnector(_mysql_dsn_from_config(config)))
+
+    # JDBC: optional, JVM-backed.  Takes the config dict directly
+    # (jdbc_url / driver_class / jar_path); driver import is lazy.
+    registry.register("jdbc", lambda config: JDBCConnector(config))
+
+    # BigQuery / Snowflake: cloud warehouses.  Both take the datastore config
+    # dict straight through (they read project/account/etc. from it) and import
+    # their heavy SDKs lazily, so the registry imports cleanly without the
+    # drivers installed.  query.py reaches them via its ``else: factory(cfg)``
+    # path.  BigQuery auth comes from config['service_account_json'] (injected by
+    # query.py's bigquery secret branch) else ADC; Snowflake's password arrives
+    # via query.py's generic secret-fallback merge.
+    registry.register("bigquery", lambda config: BigQueryConnector(config))
+    registry.register("snowflake", lambda config: SnowflakeConnector(config))
+
+
+def _mysql_dsn_from_config(config: dict[str, Any]) -> str:
+    """Assemble a ``mysql://`` DSN from a datastore config dict.
+
+    Accepts either a pre-built ``dsn`` key (used verbatim) or the individual
+    host/port/database/user/password parts.  Credentials are URL-encoded so
+    special characters in the password do not corrupt the URI.  The same scheme
+    serves MariaDB (wire-compatible with MySQL).
+    """
+    dsn = config.get("dsn")
+    if dsn:
+        return str(dsn)
+
+    from urllib.parse import quote
+
+    host = config.get("host", "localhost")
+    port = config.get("port", 3306)
+    database = config.get("database") or config.get("dbname") or ""
+    user = config.get("user") or config.get("username") or "root"
+    password = config.get("password", "")
+
+    userinfo = quote(str(user), safe="")
+    if password:
+        userinfo += ":" + quote(str(password), safe="")
+    return f"mysql://{userinfo}@{host}:{port}/{database}"

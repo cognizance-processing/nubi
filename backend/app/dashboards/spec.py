@@ -4,8 +4,10 @@ Public API
 ----------
 WidgetPos
     Grid position/size for a widget.
+Variable
+    A dashboard-level variable (name, type, default).
 Widget
-    A single dashboard widget (kpi | table | chart).
+    A single dashboard widget (kpi | table | chart | filter | text).
 DashboardSpec
     The complete dashboard specification document.
 
@@ -14,7 +16,8 @@ validate_spec(data) -> (DashboardSpec | None, list[str])
 
 spec_to_html(spec) -> str
     Compile a DashboardSpec into a CSS-grid HTML fragment composed exclusively
-    of ``<nubi-kpi>``, ``<nubi-table>``, and ``<nubi-chart>`` custom elements.
+    of ``<nubi-kpi>``, ``<nubi-table>``, ``<nubi-chart>``, ``<nubi-filter>``,
+    and ``<nubi-text>`` custom elements.
     The output survives the frontend DOMPurify sanitizer in
     ``src/dashboards/sanitize.js``.
 
@@ -58,6 +61,31 @@ class WidgetPos(BaseModel):
     h: int = Field(ge=1, description="Row span.")
 
 
+class Variable(BaseModel):
+    """A dashboard-level variable.
+
+    Variables are declared at the spec level and can be referenced by widget
+    ``params`` via ``{ref: '<varName>'}``.  Filter widgets write to variables;
+    data widgets re-query when their referenced variables change.
+
+    Attributes
+    ----------
+    name:
+        Unique variable name within this spec (e.g. ``"region"``).
+    type:
+        Value type — ``'text'``, ``'number'``, ``'date'``, ``'daterange'``,
+        ``'select'``, or ``'multiselect'``.
+    default:
+        Optional default value for the variable.
+    """
+
+    name: str = Field(min_length=1, description="Unique variable name.")
+    type: Literal["text", "number", "date", "daterange", "select", "multiselect"] = (
+        Field(description="Variable value type.")
+    )
+    default: Any = Field(default=None, description="Default value for the variable.")
+
+
 class Widget(BaseModel):
     """A single dashboard widget.
 
@@ -66,9 +94,12 @@ class Widget(BaseModel):
     id:
         Stable, unique string identifier within this spec (e.g. ``"w1"``).
     type:
-        Widget kind — ``'kpi'``, ``'table'``, or ``'chart'``.
+        Widget kind — ``'kpi'``, ``'table'``, ``'chart'``, ``'filter'``,
+        or ``'text'``.
     query_id:
-        Registered query id that backs this widget (must exist in the registry).
+        Registered query id that backs this widget (must exist in the
+        registry).  Required for ``kpi``, ``table``, ``chart``; optional for
+        ``filter`` (when it uses ``options_query_id`` instead) and ``text``.
     chart_type:
         Chart variant — required when ``type == 'chart'``.  One of
         ``'line'``, ``'bar'``, ``'scatter'``, ``'area'``, ``'pie'``.
@@ -79,15 +110,74 @@ class Widget(BaseModel):
         Arbitrary extra widget props (e.g. ``label``, ``limit``, ``format``).
     pos:
         Grid position/size.
+    subtype:
+        Filter widget sub-type — ``'select'``, ``'multiselect'``,
+        ``'daterange'``, or ``'text'``.  Required when ``type == 'filter'``.
+    options_query_id:
+        Registered query id that provides option values for a ``filter``
+        widget of sub-type ``'select'`` or ``'multiselect'``.  Optional.
+    target_var:
+        The variable name this filter writes to.  Required when
+        ``type == 'filter'``.
+    content:
+        Markdown content for a ``text`` widget.  Required when
+        ``type == 'text'``.
+    params:
+        Named parameter bindings for this widget.  Each value is either a
+        ``{ref: '<varName>'}`` reference or a literal scalar.  Ref names must
+        resolve to declared ``variables`` on the spec.
     """
 
     id: str = Field(min_length=1)
-    type: Literal["kpi", "table", "chart"]
-    query_id: str = Field(min_length=1)
+    type: Literal[
+        "kpi", "table", "chart", "filter", "text",
+        # Extended widget types (rendered by the frontend SpecRenderer):
+        "metric", "pivot", "section", "html",
+    ]
+    query_id: str = Field(default="", description="Backing query id (empty for text widgets).")
     chart_type: Literal["line", "bar", "scatter", "area", "pie"] | None = None
     encoding: dict[str, str] = Field(default_factory=dict)
     props: dict[str, Any] = Field(default_factory=dict)
     pos: WidgetPos
+    # ── drawer / drilldown placement ──────────────────────────────────────
+    # A widget with ``drawer=True`` is NOT placed on the main grid; instead it
+    # is rendered inside a slide-out drawer keyed by ``drawer_group``:
+    #   - ``"filters"``        — the shared dashboard filters drawer.
+    #   - ``"dg_<id>"``        — a drilldown drawer opened by a trigger widget
+    #                            (a ``section`` widget whose props carry
+    #                            ``drilldown_group`` matching this id).
+    # ``order`` sorts widgets within a drawer.
+    drawer: bool = Field(default=False, description="Render inside a drawer, not the grid.")
+    drawer_group: str | None = Field(
+        default=None,
+        description="Drawer this widget belongs to ('filters' or a 'dg_*' drilldown id).",
+    )
+    order: int = Field(default=0, description="Sort order within a drawer.")
+    # filter-specific fields
+    subtype: Literal["select", "multiselect", "daterange", "text"] | None = Field(
+        default=None,
+        description="Filter sub-type (required for filter widgets).",
+    )
+    options_query_id: str | None = Field(
+        default=None,
+        description="Query providing dropdown options for select/multiselect filters.",
+    )
+    target_var: str | None = Field(
+        default=None,
+        description="Variable name this filter widget writes to.",
+    )
+    # text-specific fields
+    content: str | None = Field(
+        default=None,
+        description="Markdown content for text widgets.",
+    )
+    # variable binding
+    params: dict[str, Any] = Field(
+        default_factory=dict,
+        description=(
+            "Named param bindings: {paramName: {ref:'<varName>'} | <literal>}."
+        ),
+    )
 
 
 class DashboardSpec(BaseModel):
@@ -104,6 +194,9 @@ class DashboardSpec(BaseModel):
         Human-readable dashboard title.
     layout:
         Grid layout config.  ``cols`` defaults to 12; ``row_height`` to 60 (px).
+    variables:
+        Optional list of dashboard-level variables.  Widgets can reference
+        these via ``params: {paramName: {ref: '<varName>'}}``.
     widgets:
         Ordered list of widgets to render on the dashboard.
     """
@@ -112,6 +205,10 @@ class DashboardSpec(BaseModel):
     title: str = Field(min_length=1)
     layout: dict[str, Any] = Field(
         default_factory=lambda: {"cols": 12, "row_height": 60}
+    )
+    variables: list[Variable] = Field(
+        default_factory=list,
+        description="Dashboard-level variables (optional).",
     )
     widgets: list[Widget] = Field(default_factory=list)
 
@@ -130,7 +227,11 @@ def validate_spec(data: Any) -> tuple[DashboardSpec | None, list[str]]:
     2. Widget ``id`` uniqueness — duplicate ids produce a warning.
     3. Chart widgets must have ``chart_type`` and ``encoding`` with at least
        ``x`` and ``y`` keys.
-    4. Each ``query_id`` is checked against the live query registry.
+    4. Filter widgets must have ``subtype`` and ``target_var``.
+    5. Text widgets must have ``content``.
+    6. Widget ``params`` that use ``{ref: '<varName>'}`` must reference a
+       declared variable name — undeclared refs are a hard error.
+    7. Each ``query_id`` is checked against the live query registry.
        Unknown ids produce a warning (not a hard failure — forward compat).
 
     Parameters
@@ -165,6 +266,9 @@ def validate_spec(data: Any) -> tuple[DashboardSpec | None, list[str]]:
             issues.append(str(exc))
         return None, issues
 
+    # Build a set of declared variable names for ref-checking.
+    declared_var_names: set[str] = {v.name for v in spec.variables}
+
     # ── Step 2: Unique widget ids ──────────────────────────────────────────
     seen_ids: set[str] = set()
     for widget in spec.widgets:
@@ -191,17 +295,60 @@ def validate_spec(data: Any) -> tuple[DashboardSpec | None, list[str]]:
                     f"Widget {widget.id!r} (chart): encoding must include 'y' column."
                 )
 
-    # ── Step 4: Query id registry check (soft warning) ───────────────────
+    # ── Step 4: Filter widget requirements ───────────────────────────────
+    for widget in spec.widgets:
+        if widget.type == "filter":
+            if widget.subtype is None:
+                issues.append(
+                    f"Widget {widget.id!r} (filter): 'subtype' is required "
+                    "for filter widgets ('select'|'multiselect'|'daterange'|'text')."
+                )
+            if not widget.target_var:
+                issues.append(
+                    f"Widget {widget.id!r} (filter): 'target_var' is required "
+                    "for filter widgets."
+                )
+
+    # ── Step 5: Text widget requirements ─────────────────────────────────
+    for widget in spec.widgets:
+        if widget.type == "text":
+            if not widget.content:
+                issues.append(
+                    f"Widget {widget.id!r} (text): 'content' is required "
+                    "for text widgets."
+                )
+
+    # ── Step 6: Widget params ref validation (hard error) ─────────────────
+    for widget in spec.widgets:
+        for param_name, param_val in widget.params.items():
+            if isinstance(param_val, dict) and "ref" in param_val:
+                ref_var = param_val["ref"]
+                if ref_var not in declared_var_names:
+                    issues.append(
+                        f"Widget {widget.id!r} param {param_name!r}: "
+                        f"ref {ref_var!r} is not declared in spec 'variables'. "
+                        f"Declared variables: {sorted(declared_var_names) or '[]'}."
+                    )
+
+    # ── Step 7: Query id registry check (soft warning) ───────────────────
     try:
         from app.queries.registry import get_query_registry  # noqa: PLC0415
 
         registry = get_query_registry()
         known_ids = {rq.id for rq in registry.all()}
         for widget in spec.widgets:
-            if widget.query_id not in known_ids:
+            # Only check non-empty query_ids; text/filter may have empty query_id.
+            if widget.query_id and widget.query_id not in known_ids:
                 issues.append(
                     f"Widget {widget.id!r}: query_id {widget.query_id!r} is not in "
                     "the registered query registry (may be a forward reference)."
+                )
+            # Also check options_query_id for filter widgets.
+            if widget.options_query_id and widget.options_query_id not in known_ids:
+                issues.append(
+                    f"Widget {widget.id!r}: options_query_id "
+                    f"{widget.options_query_id!r} is not in the registered query "
+                    "registry (may be a forward reference)."
                 )
     except Exception:  # noqa: BLE001 — registry unavailable; skip silently
         pass
@@ -297,18 +444,62 @@ def _chart_tag(widget: Widget) -> str:
     return "".join(parts)
 
 
+def _filter_tag(widget: Widget) -> str:
+    """Render a ``<nubi-filter>`` element from a filter widget.
+
+    Emitted attributes
+    ------------------
+    subtype:
+        Filter sub-type (``select`` | ``multiselect`` | ``daterange`` | ``text``).
+    target-var:
+        The variable name this filter writes to.
+    query-id:
+        Optional — backing query for the widget (if set and non-empty).
+    options-query-id:
+        Optional — query that provides select/multiselect option values.
+    label:
+        Human-readable label from ``props.label`` (if set).
+    """
+    parts = ["<nubi-filter"]
+    if widget.subtype:
+        parts.append(f' subtype="{_esc(widget.subtype)}"')
+    if widget.target_var:
+        parts.append(f' target-var="{_esc(widget.target_var)}"')
+    if widget.query_id:
+        parts.append(f' query-id="{_esc(widget.query_id)}"')
+    if widget.options_query_id:
+        parts.append(f' options-query-id="{_esc(widget.options_query_id)}"')
+    label = widget.props.get("label", "")
+    if label:
+        parts.append(f' label="{_esc(label)}"')
+    parts.append("></nubi-filter>")
+    return "".join(parts)
+
+
+def _text_tag(widget: Widget) -> str:
+    """Render a ``<nubi-text>`` element from a text widget.
+
+    The markdown ``content`` is placed as the text content of the element,
+    HTML-escaped so it is safe for innerHTML.  The frontend custom element is
+    responsible for rendering the markdown.
+    """
+    content = html.escape(widget.content or "", quote=False)
+    return f"<nubi-text>{content}</nubi-text>"
+
+
 def spec_to_html(spec: DashboardSpec) -> str:
     """Compile a DashboardSpec to a sanitizer-safe CSS-grid HTML fragment.
 
     The output consists exclusively of standard layout tags (``<div>``) and
-    the three allowed ``<nubi-*>`` custom elements.  It contains:
+    the five allowed ``<nubi-*>`` custom elements.  It contains:
 
     - No ``<script>`` tags.
     - No ``on*=`` inline event handlers.
     - No ``javascript:`` or ``data:`` URIs.
     - Only attributes from the sanitizer's allowlist (``query-id``,
       ``value-col``, ``label``, ``format``, ``limit``, ``columns``, ``type``,
-      ``x``, ``y``, ``color``, ``style``, ``class``).
+      ``x``, ``y``, ``color``, ``subtype``, ``target-var``,
+      ``options-query-id``, ``style``, ``class``).
 
     Grid layout is expressed via inline ``style`` attributes containing only
     numeric values and CSS grid shorthand — safe per the sanitizer config.
@@ -356,6 +547,10 @@ def spec_to_html(spec: DashboardSpec) -> str:
             inner = _table_tag(widget)
         elif widget.type == "chart":
             inner = _chart_tag(widget)
+        elif widget.type == "filter":
+            inner = _filter_tag(widget)
+        elif widget.type == "text":
+            inner = _text_tag(widget)
         else:
             # Unreachable due to Literal type, but be defensive.
             continue

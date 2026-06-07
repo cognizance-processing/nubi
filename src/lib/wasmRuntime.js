@@ -104,9 +104,13 @@ export function initDuckDB() {
  * @param {((rowsSoFar: number) => void) | undefined} [onBatch]
  *   Optional callback invoked after each record batch arrives with the
  *   running total of rows accumulated so far.
+ * @param {{ datastoreId?: string }} [opts]
+ *   Optional execution options.  `datastoreId` binds the query to a specific
+ *   datastore (connector); when omitted the backend uses the demo connector.
  * @returns {Promise<{ table: arrow.Table, cacheStatus: string, elapsedMs: number }>}
  */
-export async function runArrowQuery(sql, onBatch) {
+export async function runArrowQuery(sql, onBatch, opts) {
+  const datastoreId = opts && typeof opts === 'object' ? opts.datastoreId : undefined
   const url = `${BACKEND_URL}/api/v1/query`
 
   const headers = {
@@ -121,13 +125,16 @@ export async function runArrowQuery(sql, onBatch) {
 
   const t0 = performance.now()
 
+  const reqBody = { sql }
+  if (datastoreId) reqBody.datastore_id = datastoreId
+
   let response
   try {
     response = await fetch(url, {
       method: 'POST',
       headers,
       credentials: 'include',
-      body: JSON.stringify({ sql }),
+      body: JSON.stringify(reqBody),
     })
   } catch (cause) {
     // Network failure — fall back to sample
@@ -195,11 +202,27 @@ export async function runArrowQuery(sql, onBatch) {
  * Identical streaming / fallback path to runArrowQuery, but sends
  * { query_id } instead of { sql } so the backend resolves the registered query.
  *
+ * CONTRACT (M13-B): accepts an optional second argument `{ namedParams }` — a
+ * dict of named parameter values to pass as `named_params` in the request body.
+ * When absent, `named_params` is omitted from the body (backward-compatible).
+ *
  * @param {string} queryId  — Registered query id (e.g. "demo_all").
- * @param {((rowsSoFar: number) => void) | undefined} [onBatch]
+ * @param {{ namedParams?: Record<string, unknown>, onBatch?: (rowsSoFar: number) => void }} [opts]
  * @returns {Promise<{ table: arrow.Table, cacheStatus: string, elapsedMs: number }>}
  */
-export async function runArrowQueryById(queryId, onBatch) {
+export async function runArrowQueryById(queryId, opts) {
+  // Support legacy positional (queryId, onBatch) as well as new (queryId, { namedParams, datastoreId, onBatch })
+  let namedParams
+  let onBatch
+  let datastoreId
+  if (typeof opts === 'function') {
+    onBatch = opts
+  } else if (opts && typeof opts === 'object') {
+    namedParams = opts.namedParams
+    onBatch = opts.onBatch
+    datastoreId = opts.datastoreId
+  }
+
   const url = `${BACKEND_URL}/api/v1/query`
 
   const headers = {
@@ -214,13 +237,20 @@ export async function runArrowQueryById(queryId, onBatch) {
 
   const t0 = performance.now()
 
+  // Build request body — only include named_params when provided
+  const reqBody = { query_id: queryId }
+  if (namedParams && typeof namedParams === 'object' && Object.keys(namedParams).length > 0) {
+    reqBody.named_params = namedParams
+  }
+  if (datastoreId) reqBody.datastore_id = datastoreId
+
   let response
   try {
     response = await fetch(url, {
       method: 'POST',
       headers,
       credentials: 'include',
-      body: JSON.stringify({ query_id: queryId }),
+      body: JSON.stringify(reqBody),
     })
   } catch (cause) {
     console.warn('[wasmRuntime] runArrowQueryById network error; using SAMPLE_TABLE:', cause.message)
@@ -267,9 +297,15 @@ export async function runArrowQueryById(queryId, onBatch) {
 /**
  * POST /api/v1/compute/run with a first-party Bearer token.
  *
- * Sends { code, input_query_id?, timeout_s? } and expects an Arrow IPC stream
+ * Sends { code, inputs?, timeout_s? } and expects an Arrow IPC stream
  * response with header X-Nubi-Tier indicating which execution tier handled
  * the request ('local_kernel', 'remote_kernel', etc.).
+ *
+ * The `inputs` argument is the canonical named-inputs contract: a map of
+ * { name: query_id } where each registered query's rows are bound as
+ * inputs[<name>] in the sandbox. For back-compat a bare string is also
+ * accepted and treated as the legacy single input bound as inputs['input']
+ * (sent as input_query_id, which the backend still honours).
  *
  * On any failure (network, non-2xx, parse error) returns a graceful fallback:
  *   { table: SAMPLE_TABLE, tier: 'sample', elapsedMs, error }
@@ -277,8 +313,10 @@ export async function runArrowQueryById(queryId, onBatch) {
  * Embed tokens are rejected by the backend with 403; the error field will
  * describe the failure so the UI can surface it.
  *
- * @param {string} code          — Python snippet that assigns `result` to a pyarrow Table
- * @param {string|undefined} [inputQueryId] — optional registered query ID bound as inputs['input']
+ * @param {string} code — Python snippet that assigns `result` to a pyarrow Table
+ * @param {Record<string,string>|string|undefined} [inputs]
+ *   Named inputs map { name: query_id }; or a legacy single query_id string
+ *   bound as inputs['input'].
  * @returns {Promise<{
  *   table: import('apache-arrow').Table,
  *   tier: string,
@@ -286,7 +324,7 @@ export async function runArrowQueryById(queryId, onBatch) {
  *   error?: string
  * }>}
  */
-export async function runPythonCell(code, inputQueryId) {
+export async function runPythonCell(code, inputs) {
   const url = `${BACKEND_URL}/api/v1/compute/run`
 
   const headers = {
@@ -300,8 +338,18 @@ export async function runPythonCell(code, inputQueryId) {
   }
 
   const body = { code }
-  if (inputQueryId) {
-    body.input_query_id = inputQueryId
+  if (typeof inputs === 'string') {
+    // Legacy single-input shorthand → inputs['input'].
+    if (inputs) body.input_query_id = inputs
+  } else if (inputs && typeof inputs === 'object') {
+    // Named-inputs map: drop empty names/query_ids before sending.
+    const named = {}
+    for (const [name, queryId] of Object.entries(inputs)) {
+      const n = String(name).trim()
+      const q = String(queryId ?? '').trim()
+      if (n && q) named[n] = q
+    }
+    if (Object.keys(named).length > 0) body.inputs = named
   }
 
   const t0 = performance.now()
@@ -450,4 +498,29 @@ export async function queryLocal(sql) {
   } finally {
     await conn.close()
   }
+}
+
+// ---------------------------------------------------------------------------
+// runLocalSqlForCell — run SQL against in-browser DuckDB with timing
+// ---------------------------------------------------------------------------
+
+/**
+ * Run SQL against the in-browser DuckDB-WASM instance (which may contain
+ * previously registered cell result tables) and return a result object
+ * compatible with the QueryWorkspace cell format.
+ *
+ * This is the cross-cell data flow path: after cell_N runs and registers its
+ * result via registerArrowTable('cell_N', table), a later SQL cell can do
+ * SELECT * FROM cell_N and this function will execute it locally.
+ *
+ * Returns { table, cacheStatus: 'LOCAL', elapsedMs } on success, or throws.
+ *
+ * @param {string} sql
+ * @returns {Promise<{ table: arrow.Table, cacheStatus: string, elapsedMs: number }>}
+ */
+export async function runLocalSqlForCell(sql) {
+  const t0 = performance.now()
+  const table = await queryLocal(sql)
+  const elapsedMs = Math.round(performance.now() - t0)
+  return { table, cacheStatus: 'LOCAL', elapsedMs }
 }

@@ -580,3 +580,467 @@ class TestDashboardSchemaEndpoint:
         props = resp.json().get("properties", {})
         assert "widgets" in props
         assert "title" in props
+
+
+# ---------------------------------------------------------------------------
+# 7. M14-A — variables + filter/text widget types + widget params
+# ---------------------------------------------------------------------------
+
+# Helper spec dicts for the new widget types.
+
+
+def _make_variable_spec() -> dict[str, Any]:
+    """Spec with variables + a filter widget + a text widget."""
+    return {
+        "version": 1,
+        "title": "Interactive Dashboard",
+        "layout": {"cols": 12, "row_height": 60},
+        "variables": [
+            {"name": "region", "type": "select", "default": "all"},
+            {"name": "start_date", "type": "date", "default": None},
+        ],
+        "widgets": [
+            {
+                "id": "f1",
+                "type": "filter",
+                "subtype": "select",
+                "target_var": "region",
+                "options_query_id": "demo_all",
+                "query_id": "",
+                "pos": {"x": 1, "y": 1, "w": 3, "h": 1},
+                "props": {"label": "Region"},
+            },
+            {
+                "id": "t1",
+                "type": "text",
+                "content": "## Hello\n\nThis is **markdown** content.",
+                "query_id": "",
+                "pos": {"x": 4, "y": 1, "w": 9, "h": 1},
+            },
+            {
+                "id": "w1",
+                "type": "kpi",
+                "query_id": "demo_all",
+                "encoding": {"value": "id"},
+                "props": {"label": "Count"},
+                "params": {"region": {"ref": "region"}},
+                "pos": {"x": 1, "y": 2, "w": 4, "h": 2},
+            },
+        ],
+    }
+
+
+class TestM14Variables:
+    """M14-A: spec variables field validation."""
+
+    def test_spec_with_variables_is_valid(self):
+        spec, issues = validate_spec(_make_variable_spec())
+        hard_issues = [
+            i for i in issues
+            if "not in the registered" not in i and "forward reference" not in i
+        ]
+        assert spec is not None, f"Expected valid spec; issues: {issues}"
+        assert hard_issues == [], f"Unexpected hard issues: {hard_issues}"
+
+    def test_variables_are_parsed_as_variable_objects(self):
+        from app.dashboards.spec import Variable
+        spec, _ = validate_spec(_make_variable_spec())
+        assert spec is not None
+        assert len(spec.variables) == 2
+        for v in spec.variables:
+            assert isinstance(v, Variable)
+
+    def test_variable_names_and_types(self):
+        spec, _ = validate_spec(_make_variable_spec())
+        assert spec is not None
+        names = {v.name: v for v in spec.variables}
+        assert "region" in names
+        assert names["region"].type == "select"
+        assert names["region"].default == "all"
+        assert "start_date" in names
+        assert names["start_date"].type == "date"
+
+    def test_spec_without_variables_still_valid(self):
+        """Backward compat: existing specs without variables key must still parse."""
+        spec, issues = validate_spec(_good_spec_dict())
+        hard_issues = [i for i in issues if "not in the registered" not in i]
+        assert spec is not None, f"Expected valid spec; issues: {issues}"
+        assert hard_issues == [], f"Unexpected hard issues: {hard_issues}"
+        assert spec.variables == []
+
+    def test_variable_default_none_is_allowed(self):
+        data = _make_variable_spec()
+        data["variables"][0]["default"] = None
+        spec, issues = validate_spec(data)
+        hard_issues = [i for i in issues if "not in the registered" not in i]
+        assert spec is not None
+        assert hard_issues == []
+
+    def test_invalid_variable_type_rejected(self):
+        data = _make_variable_spec()
+        data["variables"][0]["type"] = "not_a_type"
+        spec, issues = validate_spec(data)
+        assert spec is None, "Expected parse failure for invalid variable type"
+        assert len(issues) > 0
+
+
+class TestM14FilterWidget:
+    """M14-A: filter widget type validation."""
+
+    def test_filter_widget_validates(self):
+        spec, issues = validate_spec(_make_variable_spec())
+        hard_issues = [
+            i for i in issues
+            if "not in the registered" not in i and "forward reference" not in i
+        ]
+        assert spec is not None
+        assert hard_issues == [], f"Unexpected hard issues: {hard_issues}"
+        filter_widgets = [w for w in spec.widgets if w.type == "filter"]
+        assert len(filter_widgets) == 1
+
+    def test_filter_widget_has_subtype(self):
+        spec, _ = validate_spec(_make_variable_spec())
+        assert spec is not None
+        fw = next(w for w in spec.widgets if w.type == "filter")
+        assert fw.subtype == "select"
+
+    def test_filter_widget_has_target_var(self):
+        spec, _ = validate_spec(_make_variable_spec())
+        assert spec is not None
+        fw = next(w for w in spec.widgets if w.type == "filter")
+        assert fw.target_var == "region"
+
+    def test_filter_widget_missing_subtype_produces_issue(self):
+        data = _make_variable_spec()
+        data["widgets"][0]["subtype"] = None
+        spec, issues = validate_spec(data)
+        assert any("subtype" in i for i in issues), (
+            f"Expected subtype issue, got: {issues}"
+        )
+
+    def test_filter_widget_missing_target_var_produces_issue(self):
+        data = _make_variable_spec()
+        data["widgets"][0]["target_var"] = None
+        spec, issues = validate_spec(data)
+        assert any("target_var" in i for i in issues), (
+            f"Expected target_var issue, got: {issues}"
+        )
+
+    def test_filter_subtypes_accepted(self):
+        for subtype in ("select", "multiselect", "daterange", "text"):
+            data = _make_variable_spec()
+            data["widgets"][0]["subtype"] = subtype
+            spec, issues = validate_spec(data)
+            hard_issues = [
+                i for i in issues
+                if "not in the registered" not in i
+                and "forward reference" not in i
+                and "subtype" not in i
+                and "target_var" not in i
+            ]
+            assert spec is not None, (
+                f"subtype={subtype!r} should be accepted; issues: {issues}"
+            )
+
+    def test_invalid_filter_subtype_rejected(self):
+        data = _make_variable_spec()
+        data["widgets"][0]["subtype"] = "slider"
+        spec, issues = validate_spec(data)
+        assert spec is None, "Expected parse failure for invalid filter subtype"
+
+    def test_options_query_id_stored(self):
+        spec, _ = validate_spec(_make_variable_spec())
+        assert spec is not None
+        fw = next(w for w in spec.widgets if w.type == "filter")
+        assert fw.options_query_id == "demo_all"
+
+
+class TestM14TextWidget:
+    """M14-A: text widget type validation."""
+
+    def test_text_widget_validates(self):
+        spec, issues = validate_spec(_make_variable_spec())
+        hard_issues = [
+            i for i in issues
+            if "not in the registered" not in i and "forward reference" not in i
+        ]
+        assert spec is not None
+        assert hard_issues == [], f"Unexpected hard issues: {hard_issues}"
+        text_widgets = [w for w in spec.widgets if w.type == "text"]
+        assert len(text_widgets) == 1
+
+    def test_text_widget_has_content(self):
+        spec, _ = validate_spec(_make_variable_spec())
+        assert spec is not None
+        tw = next(w for w in spec.widgets if w.type == "text")
+        assert tw.content is not None
+        assert "Hello" in tw.content
+
+    def test_text_widget_missing_content_produces_issue(self):
+        data = _make_variable_spec()
+        # Remove content from the text widget.
+        data["widgets"][1]["content"] = None
+        spec, issues = validate_spec(data)
+        assert any("content" in i for i in issues), (
+            f"Expected content issue, got: {issues}"
+        )
+
+    def test_text_widget_empty_content_produces_issue(self):
+        data = _make_variable_spec()
+        data["widgets"][1]["content"] = ""
+        spec, issues = validate_spec(data)
+        assert any("content" in i for i in issues), (
+            f"Expected content issue for empty string, got: {issues}"
+        )
+
+
+class TestM14WidgetParams:
+    """M14-A: widget params with ref validation."""
+
+    def test_params_ref_to_declared_var_passes(self):
+        spec, issues = validate_spec(_make_variable_spec())
+        hard_issues = [
+            i for i in issues
+            if "not in the registered" not in i and "forward reference" not in i
+        ]
+        assert spec is not None
+        assert hard_issues == [], f"Unexpected hard issues: {hard_issues}"
+        kpi = next(w for w in spec.widgets if w.id == "w1")
+        assert kpi.params == {"region": {"ref": "region"}}
+
+    def test_params_ref_to_undeclared_var_fails(self):
+        data = _make_variable_spec()
+        # Reference a variable that is NOT declared.
+        data["widgets"][2]["params"] = {"country": {"ref": "country"}}
+        spec, issues = validate_spec(data)
+        assert any("country" in i and "not declared" in i for i in issues), (
+            f"Expected undeclared var issue, got: {issues}"
+        )
+
+    def test_params_literal_value_passes(self):
+        data = _make_variable_spec()
+        data["widgets"][2]["params"] = {"limit": 42}
+        spec, issues = validate_spec(data)
+        hard_issues = [
+            i for i in issues
+            if "not in the registered" not in i and "forward reference" not in i
+        ]
+        assert spec is not None
+        assert hard_issues == [], f"Unexpected hard issues: {hard_issues}"
+
+    def test_params_mixed_ref_and_literal_passes(self):
+        data = _make_variable_spec()
+        data["widgets"][2]["params"] = {
+            "region": {"ref": "region"},
+            "limit": 100,
+        }
+        spec, issues = validate_spec(data)
+        hard_issues = [
+            i for i in issues
+            if "not in the registered" not in i and "forward reference" not in i
+        ]
+        assert spec is not None
+        assert hard_issues == [], f"Unexpected hard issues: {hard_issues}"
+
+    def test_params_ref_to_one_of_multiple_declared_vars(self):
+        data = _make_variable_spec()
+        # Reference the second declared variable.
+        data["widgets"][2]["params"] = {"date": {"ref": "start_date"}}
+        spec, issues = validate_spec(data)
+        hard_issues = [
+            i for i in issues
+            if "not in the registered" not in i and "forward reference" not in i
+        ]
+        assert spec is not None
+        assert hard_issues == [], f"Unexpected hard issues for ref to start_date: {hard_issues}"
+
+    def test_multiple_undeclared_refs_all_reported(self):
+        data = _make_variable_spec()
+        data["widgets"][2]["params"] = {
+            "a": {"ref": "missing_a"},
+            "b": {"ref": "missing_b"},
+        }
+        spec, issues = validate_spec(data)
+        ref_issues = [i for i in issues if "not declared" in i]
+        assert len(ref_issues) >= 2, (
+            f"Expected two undeclared-ref issues, got: {ref_issues}"
+        )
+
+    def test_empty_params_is_valid(self):
+        data = _make_variable_spec()
+        data["widgets"][2]["params"] = {}
+        spec, issues = validate_spec(data)
+        hard_issues = [
+            i for i in issues
+            if "not in the registered" not in i and "forward reference" not in i
+        ]
+        assert spec is not None
+        assert hard_issues == []
+
+    def test_params_ref_no_variables_declared_fails(self):
+        """If spec has no variables, any ref is undeclared."""
+        data = _make_variable_spec()
+        data["variables"] = []
+        data["widgets"][2]["params"] = {"region": {"ref": "region"}}
+        spec, issues = validate_spec(data)
+        assert any("not declared" in i for i in issues), (
+            f"Expected undeclared ref issue when no variables declared: {issues}"
+        )
+
+
+class TestM14SpecToHtmlNewWidgets:
+    """M14-A: spec_to_html emits <nubi-filter> and <nubi-text> elements."""
+
+    def _compile_variable_spec(self) -> str:
+        spec, issues = validate_spec(_make_variable_spec())
+        hard_issues = [
+            i for i in issues
+            if "not in the registered" not in i and "forward reference" not in i
+        ]
+        assert spec is not None, f"Spec parse failed: {issues}"
+        assert hard_issues == [], f"Hard issues: {hard_issues}"
+        return spec_to_html(spec)
+
+    def test_contains_nubi_filter(self):
+        output = self._compile_variable_spec()
+        assert "<nubi-filter" in output, f"Expected <nubi-filter in output:\n{output[:600]}"
+
+    def test_contains_nubi_text(self):
+        output = self._compile_variable_spec()
+        assert "<nubi-text>" in output or "<nubi-text " in output, (
+            f"Expected <nubi-text in output:\n{output[:600]}"
+        )
+
+    def test_filter_has_subtype_attribute(self):
+        output = self._compile_variable_spec()
+        assert 'subtype="select"' in output, (
+            f"Expected subtype=select on nubi-filter:\n{output[:600]}"
+        )
+
+    def test_filter_has_target_var_attribute(self):
+        output = self._compile_variable_spec()
+        assert 'target-var="region"' in output, (
+            f"Expected target-var=region on nubi-filter:\n{output[:600]}"
+        )
+
+    def test_filter_has_options_query_id_attribute(self):
+        output = self._compile_variable_spec()
+        assert 'options-query-id="demo_all"' in output, (
+            f"Expected options-query-id=demo_all on nubi-filter:\n{output[:600]}"
+        )
+
+    def test_text_has_content(self):
+        output = self._compile_variable_spec()
+        # The markdown should be HTML-escaped inside the element.
+        assert "Hello" in output, (
+            f"Expected text content in nubi-text:\n{output[:600]}"
+        )
+
+    def test_text_content_is_escaped(self):
+        data = _make_variable_spec()
+        data["widgets"][1]["content"] = '<script>alert("xss")</script>'
+        spec, _ = validate_spec(data)
+        assert spec is not None
+        output = spec_to_html(spec)
+        assert "<script>" not in output, "Script tag must be escaped in text content"
+        assert "&lt;script&gt;" in output
+
+    def test_no_script_tag(self):
+        output = self._compile_variable_spec()
+        assert "<script" not in output.lower()
+
+    def test_no_inline_event_handler(self):
+        output = self._compile_variable_spec()
+        match = re.search(r"\bon\w+=", output, re.IGNORECASE)
+        assert match is None, f"Output contains inline handler: {match.group()!r}"
+
+    def test_grid_column_present(self):
+        output = self._compile_variable_spec()
+        assert "grid-column:" in output
+
+    def test_nubi_widget_wrapper_classes(self):
+        output = self._compile_variable_spec()
+        assert 'nubi-widget--filter' in output, (
+            f"Expected nubi-widget--filter class:\n{output[:600]}"
+        )
+        assert 'nubi-widget--text' in output, (
+            f"Expected nubi-widget--text class:\n{output[:600]}"
+        )
+
+    def test_filter_label_attribute(self):
+        output = self._compile_variable_spec()
+        assert 'label="Region"' in output, (
+            f"Expected label=Region on nubi-filter:\n{output[:600]}"
+        )
+
+
+class TestM14Regression:
+    """M14-A regression: existing kpi/table/chart specs are unaffected."""
+
+    def test_existing_kpi_spec_validates(self):
+        data = _good_spec_dict()
+        spec, issues = validate_spec(data)
+        hard_issues = [i for i in issues if "not in the registered" not in i]
+        assert spec is not None, f"Regression: kpi spec should validate; issues: {issues}"
+        assert hard_issues == [], f"Regression: unexpected hard issues: {hard_issues}"
+
+    def test_existing_table_spec_validates(self):
+        data = {
+            "version": 1,
+            "title": "Table Only",
+            "widgets": [
+                {
+                    "id": "t1",
+                    "type": "table",
+                    "query_id": "demo_all",
+                    "pos": {"x": 1, "y": 1, "w": 12, "h": 4},
+                }
+            ],
+        }
+        spec, issues = validate_spec(data)
+        hard_issues = [i for i in issues if "not in the registered" not in i]
+        assert spec is not None, f"Regression: table spec should validate; issues: {issues}"
+        assert hard_issues == [], f"Unexpected hard issues: {hard_issues}"
+
+    def test_existing_chart_spec_validates(self):
+        data = {
+            "version": 1,
+            "title": "Chart Only",
+            "widgets": [
+                {
+                    "id": "c1",
+                    "type": "chart",
+                    "query_id": "demo_points_10k",
+                    "chart_type": "scatter",
+                    "encoding": {"x": "x", "y": "y"},
+                    "pos": {"x": 1, "y": 1, "w": 12, "h": 4},
+                }
+            ],
+        }
+        spec, issues = validate_spec(data)
+        hard_issues = [i for i in issues if "not in the registered" not in i]
+        assert spec is not None, f"Regression: chart spec should validate; issues: {issues}"
+        assert hard_issues == [], f"Unexpected hard issues: {hard_issues}"
+
+    def test_spec_to_html_still_emits_kpi_table_chart(self):
+        spec, _ = validate_spec(_good_spec_dict())
+        assert spec is not None
+        output = spec_to_html(spec)
+        assert "<nubi-kpi" in output
+        assert "<nubi-table" in output
+        assert "<nubi-chart" in output
+
+    def test_spec_without_variables_field_still_parses(self):
+        """Specs created before M14 (no 'variables' key) must parse without error."""
+        data = _good_spec_dict()
+        assert "variables" not in data
+        spec, issues = validate_spec(data)
+        assert spec is not None
+        assert spec.variables == []
+
+    def test_spec_json_schema_includes_variables(self):
+        schema = spec_json_schema()
+        props = schema.get("properties", {})
+        assert "variables" in props, (
+            f"Schema should expose 'variables'; props: {list(props.keys())}"
+        )

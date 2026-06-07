@@ -35,6 +35,7 @@ from __future__ import annotations
 
 import time
 from collections import deque
+from dataclasses import dataclass, field
 from typing import Any
 
 import sqlglot
@@ -156,6 +157,189 @@ def compute_groupby_sig(sql: str, dialect: str = "postgres") -> str | None:
     aggs_str = ",".join(sorted(agg_exprs))
 
     return f"{tables_str}|dims={dims_str}|aggs={aggs_str}"
+
+
+# ---------------------------------------------------------------------------
+# Structured shape extraction (for the pre-agg miner + router)
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class QueryShape:
+    """A structured, normalised description of an aggregating SELECT.
+
+    This is the richer counterpart to :func:`compute_groupby_sig`.  Where the
+    sig is a single opaque string keyed for exact-match routing, ``QueryShape``
+    keeps the parsed components so the miner can cluster compatible shapes and
+    the router can reason about superset-rewrites (group-by ⊆ rollup dims,
+    measures derivable, filters on rollup columns).
+
+    Attributes
+    ----------
+    base_table:
+        The single source table name (lower-cased).  ``None`` if the query has
+        zero or more than one base table (joins are out of scope for routing —
+        we only mine/route single-fact aggregations conservatively).
+    dimensions:
+        Sorted list of bare GROUP BY column names (lower-cased).  Only simple
+        column references are kept; expression group-bys (e.g. ``date_trunc(..)``)
+        are recorded in ``dimension_exprs`` instead and make the shape
+        non-routable (we refuse to reason about derived grains).
+    dimension_exprs:
+        Sorted list of non-trivial GROUP BY expressions (anything that is not a
+        plain column).  A non-empty list marks the shape as non-routable.
+    measures:
+        Sorted list of ``(func, column)`` tuples for each aggregate in the
+        SELECT list, e.g. ``("sum", "amount")``.  ``column`` is ``"*"`` for
+        ``COUNT(*)``.  An aggregate whose argument is an expression is recorded
+        with ``column=None`` and makes the shape non-routable.
+    filter_columns:
+        Sorted list of bare column names referenced in the WHERE clause.  Used
+        by the router to ensure a candidate rollup carries every filtered
+        column (so the predicate can still be applied post-rollup).
+    routable:
+        ``True`` only when the shape is a simple single-table aggregation with
+        plain-column dimensions and plain-column (or ``*``) measures.  The
+        router MUST refuse anything with ``routable=False``.
+    """
+
+    base_table: str | None
+    dimensions: tuple[str, ...] = ()
+    dimension_exprs: tuple[str, ...] = ()
+    measures: tuple[tuple[str, str | None], ...] = ()
+    filter_columns: tuple[str, ...] = ()
+    routable: bool = False
+
+    def to_dict(self) -> dict[str, Any]:
+        """JSON-serialisable view (measures rendered as ``func(col)`` strings)."""
+        return {
+            "base_table": self.base_table,
+            "dimensions": list(self.dimensions),
+            "dimension_exprs": list(self.dimension_exprs),
+            "measures": [_measure_str(f, c) for (f, c) in self.measures],
+            "filter_columns": list(self.filter_columns),
+            "routable": self.routable,
+        }
+
+
+def _measure_str(func: str, col: str | None) -> str:
+    """Render a ``(func, col)`` measure tuple back to a ``func(col)`` string."""
+    return f"{func}({col if col is not None else '?'})"
+
+
+def _agg_func_name(node: exp.Expression) -> str | None:
+    """Return the lower-case aggregate function name for *node*, or None."""
+    if isinstance(node, exp.Anonymous):
+        name = node.name.upper()
+        return name.lower() if name in _AGG_FUNC_NAMES else None
+    if isinstance(node, _AGG_TYPED_CLASSES):
+        # Map the typed class to a canonical SQL function name.
+        return type(node).__name__.lower()
+    return None
+
+
+def _agg_arg_column(node: exp.Expression) -> str | None:
+    """Return the bare column argument of an aggregate, ``"*"`` for COUNT(*),
+    or ``None`` when the argument is a non-column expression."""
+    # COUNT(*) → exp.Count with a Star arg (or no expression).
+    if isinstance(node, exp.Count):
+        inner = node.this
+        if inner is None or isinstance(inner, exp.Star):
+            return "*"
+    arg = node.this if not isinstance(node, exp.Anonymous) else (
+        node.expressions[0] if node.expressions else None
+    )
+    if arg is None:
+        return "*"
+    if isinstance(arg, exp.Star):
+        return "*"
+    if isinstance(arg, exp.Column):
+        return arg.name.lower()
+    if isinstance(arg, exp.Distinct):
+        exprs = arg.expressions
+        if len(exprs) == 1 and isinstance(exprs[0], exp.Column):
+            return exprs[0].name.lower()
+    return None  # expression argument → not derivable
+
+
+def extract_shape(sql: str, dialect: str = "postgres") -> QueryShape | None:
+    """Parse *sql* into a :class:`QueryShape`, or return ``None``.
+
+    Returns ``None`` when the SQL is not a single-statement SELECT with a GROUP
+    BY clause (those are the only queries the pre-agg system cares about).  A
+    parseable aggregating query that is too complex to route soundly is still
+    returned, but with ``routable=False`` so the router rejects it while the
+    miner can still surface it as a (non-routable) candidate.
+    """
+    try:
+        tree = sqlglot.parse_one(sql, dialect=dialect)
+    except Exception:
+        return None
+    if not isinstance(tree, exp.Select):
+        return None
+    group_node = tree.args.get("group")
+    if group_node is None:
+        return None
+
+    # ── Base table(s): only a single table is routable. ──────────────────────
+    table_names = sorted({t.name.lower() for t in tree.find_all(exp.Table)})
+    base_table = table_names[0] if len(table_names) == 1 else None
+
+    # ── Dimensions ───────────────────────────────────────────────────────────
+    dims: list[str] = []
+    dim_exprs: list[str] = []
+    for item in group_node.expressions:
+        target = item.this if isinstance(item, exp.Alias) else item
+        if isinstance(target, exp.Column):
+            dims.append(target.name.lower())
+        else:
+            dim_exprs.append(_expr_to_str(target))
+
+    # ── Measures (aggregates in the SELECT list) ─────────────────────────────
+    measures: list[tuple[str, str | None]] = []
+    has_bad_measure = False
+    has_non_agg_non_dim = False
+    dim_set = set(dims)
+    for sel_item in tree.expressions:
+        inner = sel_item.this if isinstance(sel_item, exp.Alias) else sel_item
+        func = _agg_func_name(inner)
+        if func is not None:
+            col = _agg_arg_column(inner)
+            if col is None:
+                has_bad_measure = True
+            measures.append((func, col))
+        elif isinstance(inner, exp.Column):
+            if inner.name.lower() not in dim_set:
+                has_non_agg_non_dim = True
+        else:
+            # A bare expression (e.g. CASE / arithmetic) in the SELECT list.
+            has_non_agg_non_dim = True
+
+    # ── Filter columns (WHERE clause bare columns) ───────────────────────────
+    filter_cols: set[str] = set()
+    where_node = tree.args.get("where")
+    if where_node is not None:
+        for col in where_node.find_all(exp.Column):
+            filter_cols.add(col.name.lower())
+
+    # A shape is routable only when it is a clean single-table aggregation.
+    routable = (
+        base_table is not None
+        and not dim_exprs
+        and not has_bad_measure
+        and not has_non_agg_non_dim
+        and tree.args.get("having") is None
+        and tree.args.get("distinct") is None
+    )
+
+    return QueryShape(
+        base_table=base_table,
+        dimensions=tuple(sorted(dims)),
+        dimension_exprs=tuple(sorted(dim_exprs)),
+        measures=tuple(sorted(measures)),
+        filter_columns=tuple(sorted(filter_cols)),
+        routable=routable,
+    )
 
 
 # ---------------------------------------------------------------------------

@@ -26,24 +26,25 @@ export default function EditorPage() {
   }
 
   return (
-    <div className="flex flex-col min-h-screen">
+    <div className="flex flex-col h-full min-h-0 overflow-x-hidden">
       {/* Success banner */}
       {savedBoard && (
-        <div className="bg-green-50 border-b border-green-200 px-4 py-2 flex items-center gap-3 text-sm text-green-800">
-          <span>Dashboard saved.</span>
+        <div className="shrink-0 bg-surface border-b border-border px-4 py-2 flex items-center gap-3 text-sm text-fg" style={{ background: 'color-mix(in srgb, #22c55e 8%, transparent)', borderColor: 'color-mix(in srgb, #22c55e 25%, transparent)', color: '#15803d' }}>
+          <span className="font-medium">Dashboard saved.</span>
           {savedBoard.id && (
             <Link
               to={`/d/${savedBoard.id}`}
-              className="text-green-700 font-medium underline hover:text-green-900"
+              className="font-semibold underline hover:opacity-80 transition-opacity"
             >
-              View live &rarr;
+              View live →
             </Link>
           )}
           <button
-            className="ml-auto text-green-600 hover:text-green-900"
+            className="ml-auto opacity-70 hover:opacity-100 transition-opacity text-lg leading-none"
             onClick={() => setSavedBoard(null)}
+            aria-label="Dismiss"
           >
-            &times;
+            ×
           </button>
         </div>
       )}

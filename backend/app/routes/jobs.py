@@ -29,11 +29,12 @@ All job state is held in an ``InMemoryJobStore`` (singleton via
 
 from __future__ import annotations
 
+import json
 from datetime import datetime, timezone
 from typing import Any
 
 from fastapi import APIRouter, Depends, Response
-from pydantic import BaseModel, field_validator
+from pydantic import BaseModel, EmailStr, field_validator, model_validator
 
 from app.auth.deps import current_user
 from app.db import fetchrow
@@ -89,21 +90,110 @@ async def _get_user_org(user_id: str, repo: Repo) -> str:
 # ---------------------------------------------------------------------------
 
 
+class ReportTarget(BaseModel):
+    """Validated shape of ``target`` for ``kind='report'`` jobs.
+
+    Attributes
+    ----------
+    board_id:
+        UUID string of the board to render.
+    params:
+        Named param overrides passed to the board's widget queries.
+    format:
+        Output format — ``'csv'`` or ``'pdf'``.
+    recipients:
+        List of recipient email addresses (at least one required).
+    subject:
+        Email subject line.
+    body:
+        Plain-text email body.
+    apply_user_permissions:
+        When ``True``, the executor injects per-recipient locked params from
+        ``locked_params`` before rendering so each recipient sees only their
+        own data.
+    locked_params:
+        Optional per-recipient param overrides: ``{email: {param_name: value}}``.
+        Only used when ``apply_user_permissions=True``.
+    """
+
+    board_id: str
+    params: dict[str, Any] = {}
+    format: str = "csv"
+    recipients: list[str]
+    subject: str = "Nubi Report"
+    body: str = ""
+    apply_user_permissions: bool = False
+    locked_params: dict[str, dict[str, Any]] = {}
+
+    @field_validator("format")
+    @classmethod
+    def _validate_format(cls, v: str) -> str:
+        if v not in ("csv", "pdf"):
+            raise ValueError("format must be 'csv' or 'pdf'")
+        return v
+
+    @field_validator("recipients")
+    @classmethod
+    def _validate_recipients(cls, v: list[str]) -> list[str]:
+        if not v:
+            raise ValueError("recipients must contain at least one email address")
+        return v
+
+
 class CreateJobIn(BaseModel):
-    """Request body for POST /jobs."""
+    """Request body for POST /jobs.
+
+    The ``target`` field is polymorphic:
+
+    - For ``kind='query'`` or ``kind='python'``: a plain string (query_id or
+      Python source code).
+    - For ``kind='report'``: a dict matching :class:`ReportTarget`.
+    """
 
     name: str
     kind: str
-    target: str
+    target: str | dict[str, Any]
     schedule: str
     enabled: bool = True
 
     @field_validator("kind")
     @classmethod
     def _validate_kind(cls, v: str) -> str:
-        if v not in ("query", "python"):
-            raise ValueError("kind must be 'query' or 'python'")
+        if v not in ("query", "python", "report"):
+            raise ValueError("kind must be 'query', 'python', or 'report'")
         return v
+
+    @model_validator(mode="after")
+    def _validate_target_for_kind(self) -> "CreateJobIn":
+        """Validate that target matches the expected shape for the given kind."""
+        if self.kind in ("query", "python"):
+            if not isinstance(self.target, str):
+                raise ValueError(
+                    f"target must be a string for kind={self.kind!r}"
+                )
+        elif self.kind == "report":
+            if isinstance(self.target, str):
+                raise ValueError(
+                    "target must be an object (dict) for kind='report'"
+                )
+            # Validate via ReportTarget — raises ValueError on bad shape.
+            try:
+                ReportTarget.model_validate(self.target)
+            except Exception as exc:
+                raise ValueError(f"invalid report target: {exc}") from exc
+        return self
+
+    def target_as_str(self) -> str:
+        """Return target serialised as a string (for storage in JobStore)."""
+        if isinstance(self.target, str):
+            return self.target
+        return json.dumps(self.target)
+
+    def target_dict(self) -> dict[str, Any] | None:
+        """Return target as a dict if it is one, else None."""
+        if isinstance(self.target, dict):
+            return self.target
+        return None
 
 
 # ---------------------------------------------------------------------------
@@ -199,12 +289,21 @@ async def create_job(
     now = datetime.now(timezone.utc)
     first_next = next_run(body.schedule, now)
 
+    # For report jobs, embed org_id into the target dict so the executor can
+    # resolve the board without needing an async context (the executor is sync).
+    target_payload: str
+    if body.kind == "report" and isinstance(body.target, dict):
+        target_with_org = {**body.target, "org_id": org_id}
+        target_payload = json.dumps(target_with_org)
+    else:
+        target_payload = body.target_as_str()
+
     job = store.create_job(
         org_id=org_id,
         created_by=str(user["id"]),
         name=body.name,
         kind=body.kind,
-        target=body.target,
+        target=target_payload,
         schedule=body.schedule,
         enabled=body.enabled,
         next_run_at=first_next,

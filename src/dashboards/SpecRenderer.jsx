@@ -7,11 +7,26 @@
  *
  * Behaviour
  * ---------
+ * - Wraps the entire widget tree in <VariableProvider> seeded from spec.variables defaults.
  * - Uses react-grid-layout ResponsiveGridLayout with useContainerWidth for responsive layout.
  * - isDraggable and isResizable are both false — this is a read-only viewer.
- * - Each widget is dispatched to ChartWidget, KpiWidget, or TableWidget based on widget.type.
+ * - Dispatches each widget to the appropriate component:
+ *     chart  → <ChartWidget>
+ *     kpi    → <KpiWidget>
+ *     table  → <TableWidget>
+ *     filter → <FilterWidget>  (options fetched one-shot from options_query_id if present)
+ *     text   → <TextWidget>
  * - On small screens (sm breakpoint) all widgets stack in a single column.
  * - Converts the backend 1-based pos (x,y,w,h) to RGL's 0-based x,y.
+ *
+ * Spec → Props normalization (M14-C)
+ * ------------------------------------
+ * The backend spec stores filter/text fields at the WIDGET TOP LEVEL:
+ *   widget.subtype, widget.target_var, widget.options_query_id, widget.content
+ * The M14-B components (FilterWidget, TextWidget) read from widget.props.*
+ * SpecRenderer bridges this by building a normalized `props` object from the
+ * top-level spec fields before passing the widget to each component. Canonical
+ * location remains the top-level spec fields; the props shim is renderer-internal.
  *
  * NOTE: react-grid-layout v2 no longer exports WidthProvider.
  * Instead we use the useContainerWidth hook and pass width as a prop.
@@ -20,61 +35,272 @@
 import 'react-grid-layout/css/styles.css'
 import 'react-resizable/css/styles.css'
 
-import { useMemo } from 'react'
-import { ResponsiveGridLayout, useContainerWidth } from 'react-grid-layout'
+import { useState, useEffect, useMemo } from 'react'
+import { ResponsiveGridLayout, useContainerWidth, noCompactor } from 'react-grid-layout'
 import ChartWidget from './widgets/ChartWidget.jsx'
 import KpiWidget from './widgets/KpiWidget.jsx'
 import TableWidget from './widgets/TableWidget.jsx'
+import FilterWidget from './widgets/FilterWidget.jsx'
+import TextWidget from './widgets/TextWidget.jsx'
+import HtmlWidget from './widgets/HtmlWidget.jsx'
+import MetricWidget from './widgets/MetricWidget.jsx'
+import PivotWidget from './widgets/PivotWidget.jsx'
+import SectionWidget from './widgets/SectionWidget.jsx'
+import { VariableProvider } from './VariableStore.jsx'
+import { runArrowQueryById } from '../lib/wasmRuntime.js'
+import { backgroundToCss, styleToCss } from './widgetHtml.js'
+import { buildResponsiveLayouts } from './responsiveLayout.js'
+
+// ---------------------------------------------------------------------------
+// react-grid-layout option resolution (spec.layout.*)
+// ---------------------------------------------------------------------------
+
+/**
+ * Resolve RGL compaction props from a spec.layout.compaction string.
+ *   'vertical' (default) | 'horizontal' | 'none' | 'free' (free-place)
+ * 'free' uses the noCompactor so widgets stay exactly where placed.
+ */
+function resolveCompaction(mode) {
+  switch (mode) {
+    case 'horizontal': return { compactType: 'horizontal' }
+    case 'none':       return { compactType: null }
+    case 'free':       return { compactor: noCompactor }
+    case 'vertical':
+    default:           return { compactType: 'vertical' }
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Spec → props normalization
+// ---------------------------------------------------------------------------
+
+/**
+ * Normalize a raw spec widget into the shape expected by each component.
+ *
+ * Backend spec stores filter/text widget-specific fields at the top level:
+ *   widget.subtype, widget.target_var, widget.options_query_id, widget.content
+ *
+ * The M14-B components read from widget.props.* so SpecRenderer merges those
+ * top-level fields into the props object before dispatch.  Other widget types
+ * (chart, kpi, table) already have their spec fields at the right path; this
+ * merge is additive/non-destructive for them.
+ */
+function normalizeWidget(raw) {
+  const existing = raw.props ?? {}
+  const merged = {
+    // top-level filter/text fields → props (canonical source wins over any
+    // duplicate in props, since the spec's top-level is authoritative per M14-A)
+    subtype:    raw.subtype    ?? existing.subtype,
+    target_var: raw.target_var ?? existing.target_var,
+    content:    raw.content    ?? existing.content,
+    label:      raw.label      ?? existing.label,
+    placeholder: raw.placeholder ?? existing.placeholder,
+    // Keep any other props the author set
+    ...existing,
+  }
+
+  return { ...raw, props: merged }
+}
+
+// ---------------------------------------------------------------------------
+// FilterWidget wrapper — fetches options from options_query_id on mount
+// ---------------------------------------------------------------------------
+
+/**
+ * Loads options for a filter widget from options_query_id (if set) then
+ * renders <FilterWidget>.  This is a one-shot fetch; it does NOT re-run when
+ * variables change (the options list itself is not parameterised here).
+ */
+function FilterWidgetLoader({ widget }) {
+  const optionsQueryId = widget.options_query_id ?? widget.props?.options_query_id
+  const [options, setOptions] = useState([])
+
+  useEffect(() => {
+    if (!optionsQueryId) return
+    let cancelled = false
+
+    async function fetchOptions() {
+      try {
+        const { table } = await runArrowQueryById(optionsQueryId)
+        if (cancelled || !table || table.numRows === 0) return
+
+        // Map the first two columns to {value, label}; if only one col, use it for both.
+        const fields = table.schema.fields.map(f => f.name)
+        const valueField = fields[0]
+        const labelField = fields[1] ?? fields[0]
+
+        const opts = []
+        for (let i = 0; i < table.numRows; i++) {
+          const valueCol = table.getChild(valueField)
+          const labelCol = table.getChild(labelField)
+          const v = valueCol ? valueCol.get(i) : null
+          const l = labelCol ? labelCol.get(i) : v
+          if (v != null) {
+            opts.push({ value: String(v), label: l != null ? String(l) : String(v) })
+          }
+        }
+        if (!cancelled) setOptions(opts)
+      } catch (err) {
+        // Non-fatal — widget renders with empty options list
+        console.warn('[SpecRenderer] FilterWidget options fetch failed:', err.message)
+      }
+    }
+
+    fetchOptions()
+    return () => { cancelled = true }
+  }, [optionsQueryId])
+
+  return <FilterWidget widget={widget} options={options} />
+}
+
+// ---------------------------------------------------------------------------
+// Widget dispatcher
+// ---------------------------------------------------------------------------
 
 /** Map widget type to the right component. */
-function WidgetComponent({ widget }) {
-  switch (widget.type) {
-    case 'chart': return <ChartWidget widget={widget} />
-    case 'kpi':   return <KpiWidget widget={widget} />
-    case 'table': return <TableWidget widget={widget} />
+function WidgetComponent({ widget, onOpenDrawer }) {
+  // Normalize top-level spec fields into widget.props before dispatch
+  const w = useMemo(() => normalizeWidget(widget), [widget])
+
+  // A custom HTML template overrides the default widget body (any type).
+  if (w.html) return <HtmlWidget widget={w} />
+
+  // A section widget that declares a drilldown_group is a drilldown TRIGGER:
+  // clicking it opens the matching drawer (the legacy BasicWidgetGroupStepper).
+  if (w.type === 'section' && w.props?.drilldown_group) {
+    return (
+      <button
+        type="button"
+        onClick={() => onOpenDrawer?.(w.props.drilldown_group)}
+        className="flex items-center justify-center gap-2 w-full h-full px-3 text-sm font-medium text-fg bg-surface hover:bg-border/40 transition-colors"
+      >
+        <span className="i">⤢</span>
+        {w.props.title || 'Drill down'}
+        <span className="text-muted text-xs">▸</span>
+      </button>
+    )
+  }
+
+  switch (w.type) {
+    case 'chart':   return <ChartWidget  widget={w} />
+    case 'kpi':     return <KpiWidget    widget={w} />
+    case 'metric':  return <MetricWidget widget={w} />
+    case 'table':   return <TableWidget  widget={w} />
+    case 'pivot':   return <PivotWidget  widget={w} />
+    case 'filter':  return <FilterWidgetLoader widget={w} />
+    case 'text':    return <TextWidget   widget={w} />
+    case 'section': return <SectionWidget widget={w} />
     default:
       return (
         <div className="flex items-center justify-center h-full text-sm text-muted">
-          Unknown widget type: {widget.type}
+          Unknown widget type: {w.type}
         </div>
       )
   }
 }
 
+// ---------------------------------------------------------------------------
+// Slide-over drawer (filters panel + drilldown panels)
+// ---------------------------------------------------------------------------
+
 /**
- * Convert a spec widget list into RGL layout arrays per breakpoint.
- * Backend pos uses 1-based x and y (column / row start).
- * RGL uses 0-based x and y.
+ * Right-side slide-over panel. Renders a list of drawer widgets stacked
+ * vertically. Used for the shared "Filters" drawer and for per-trigger
+ * drilldown drawers (legacy renderToDrawer / BasicWidgetGroup).
  */
-function buildLayouts(widgets, cols) {
-  const lg = widgets.map(w => ({
-    i: w.id,
-    x: Math.max(0, (w.pos?.x ?? 1) - 1),
-    y: Math.max(0, (w.pos?.y ?? 1) - 1),
-    w: Math.min(w.pos?.w ?? 4, cols),
-    h: w.pos?.h ?? 4,
-    isDraggable: false,
-    isResizable: false,
-  }))
-
-  // Single-column layout for small screens
-  const sm = widgets.map((w, idx) => ({
-    i: w.id,
-    x: 0,
-    y: idx * (w.pos?.h ?? 4),
-    w: 1,
-    h: w.pos?.h ?? 4,
-    isDraggable: false,
-    isResizable: false,
-  }))
-
-  return { lg, md: lg, sm }
+function SlideOver({ open, title, widgets, onClose, wide }) {
+  if (!open) return null
+  const sorted = [...widgets].sort((a, b) => (a.order ?? 0) - (b.order ?? 0))
+  return (
+    <div className="fixed inset-0 z-50 flex justify-end" role="dialog" aria-modal="true">
+      <div className="absolute inset-0 bg-black/30" onClick={onClose} />
+      <div
+        className="relative h-full bg-bg border-l border-border shadow-xl overflow-y-auto"
+        style={{ width: wide ? 'min(880px, 92vw)' : 'min(420px, 92vw)' }}
+      >
+        <div className="sticky top-0 z-10 flex items-center justify-between px-4 py-3 bg-surface border-b border-border">
+          <h3 className="text-sm font-semibold text-fg">{title}</h3>
+          <button type="button" onClick={onClose} className="text-muted hover:text-fg text-lg leading-none">×</button>
+        </div>
+        <div className="p-4 space-y-4">
+          {sorted.length === 0 ? (
+            <div className="text-sm text-muted py-8 text-center">Nothing to show.</div>
+          ) : sorted.map(w => (
+            <div
+              key={w.id}
+              className="rounded-lg border border-border bg-surface overflow-hidden"
+              style={{ minHeight: w.type === 'filter' ? undefined : 280 }}
+            >
+              <WidgetComponent widget={w} />
+            </div>
+          ))}
+        </div>
+      </div>
+    </div>
+  )
 }
 
+// ---------------------------------------------------------------------------
+// Layout builder
+// ---------------------------------------------------------------------------
+
 /**
- * @param {{ spec: object }} props
+ * Convert a spec widget list into RGL layout arrays per breakpoint, applying
+ * spec.responsive overrides for md/sm with a fallback to the layout derived
+ * from widget.pos (lg is always the canonical desktop layout).
+ *
+ * Backend pos uses 1-based x and y (column / row start). RGL uses 0-based.
+ * The viewer is read-only so every item is non-draggable / non-resizable.
  */
-export default function SpecRenderer({ spec }) {
+function buildLayouts(spec, cols) {
+  return buildResponsiveLayouts(spec, cols, () => ({
+    extra: { isDraggable: false, isResizable: false },
+  }))
+}
+
+// ---------------------------------------------------------------------------
+// Build initial variable values from spec.variables
+// ---------------------------------------------------------------------------
+
+/**
+ * Extract the default values map from spec.variables.
+ * spec.variables shape: [{ name, type, default? }, ...]
+ *
+ * Returns a flat { [varName]: defaultValue } object used to seed the store.
+ * Variables without a default get undefined (the store skips them so
+ * resolveParams returns undefined for unset refs, which is correct).
+ */
+function buildVariableDefaults(specVariables) {
+  if (!Array.isArray(specVariables)) return {}
+  const defaults = {}
+  for (const v of specVariables) {
+    if (v?.name) {
+      defaults[v.name] = v.default ?? undefined
+    }
+  }
+  return defaults
+}
+
+// ---------------------------------------------------------------------------
+// SpecRenderer
+// ---------------------------------------------------------------------------
+
+/**
+ * @param {{
+ *   spec: object,
+ *   initialVariables?: Record<string, unknown>,
+ *   onVariableChange?: (name: string, value: unknown) => void,
+ * }} props
+ *
+ * initialVariables — externally supplied variable values (e.g. from URL params
+ * or an embed token) that LAYER OVER the spec defaults.  See DashboardViewPage
+ * for the precedence ordering.
+ *
+ * onVariableChange — optional callback fired when any filter widget changes a
+ * variable.  Used by DashboardViewPage to write the new value back to URL search
+ * params so the state survives a refresh and is shareable.
+ */
+export default function SpecRenderer({ spec, initialVariables = {}, onVariableChange }) {
   if (!spec) {
     return (
       <div className="flex items-center justify-center py-16 text-sm text-muted">
@@ -85,10 +311,58 @@ export default function SpecRenderer({ spec }) {
 
   const cols = spec.layout?.cols ?? 12
   const rowHeight = spec.layout?.row_height ?? 60
-  const widgets = spec.widgets ?? []
+  const allWidgets = spec.widgets ?? []
+
+  // Partition out drawer widgets (drawer:true) — they render in slide-overs,
+  // not on the main grid. Group them by drawer_group ('filters' or 'dg_*').
+  // eslint-disable-next-line react-hooks/rules-of-hooks
+  const { widgets, drawerGroups } = useMemo(() => {
+    const grid = []
+    const groups = {}
+    for (const w of allWidgets) {
+      if (w.drawer) {
+        const g = w.drawer_group || 'filters'
+        ;(groups[g] ??= []).push(w)
+      } else {
+        grid.push(w)
+      }
+    }
+    return { widgets: grid, drawerGroups: groups }
+  }, [JSON.stringify(allWidgets)])
 
   // eslint-disable-next-line react-hooks/rules-of-hooks
-  const layouts = useMemo(() => buildLayouts(widgets, cols), [widgets, cols])
+  const [openDrawer, setOpenDrawer] = useState(null)
+  const hasFilters = (drawerGroups.filters?.length ?? 0) > 0
+  const drawerTitle = openDrawer === 'filters'
+    ? (spec.drawer?.title || 'Filters')
+    : (widgets.find(w => w.props?.drilldown_group === openDrawer)?.props?.title || 'Drill down')
+
+  // Build the initial values for the VariableProvider:
+  //   spec.variables defaults  (lowest precedence)
+  //   + initialVariables prop  (URL params / embed token — higher precedence)
+  //
+  // NOTE: embed-token-locked params should be passed in initialVariables with
+  // the locked values. The DashboardViewPage is responsible for ensuring that
+  // locked params from an embed token cannot be overridden by URL params.
+  // A future embed integration should populate initialVariables from the token
+  // and strip the same keys from the URL before passing the remainder here.
+  // eslint-disable-next-line react-hooks/rules-of-hooks
+  const variableDefaults = useMemo(
+    () => ({
+      ...buildVariableDefaults(spec.variables),
+      ...initialVariables,
+    }),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [JSON.stringify(spec.variables), JSON.stringify(initialVariables)],
+  )
+
+  // eslint-disable-next-line react-hooks/rules-of-hooks
+  const layouts = useMemo(
+    () => buildLayouts({ ...spec, widgets }, cols),
+    // Rebuild when grid widgets or the per-breakpoint overrides change.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [widgets, cols, JSON.stringify(spec.responsive)],
+  )
 
   // eslint-disable-next-line react-hooks/rules-of-hooks
   const { width, containerRef } = useContainerWidth({ initialWidth: 1200 })
@@ -96,35 +370,88 @@ export default function SpecRenderer({ spec }) {
   const breakpoints = { lg: 1200, md: 768, sm: 480 }
   const colsCfg = { lg: cols, md: cols, sm: 1 }
 
+  // RGL flexibility options (spec.layout.*) — compaction mode, margin & padding.
+  const compactionMode = spec.layout?.compaction ?? 'free'   // default: free-place (preserves authored positions)
+  const compactionProps = resolveCompaction(compactionMode)
+  const margin = Array.isArray(spec.layout?.margin)
+    ? spec.layout.margin
+    : [spec.layout?.margin_x ?? 12, spec.layout?.margin_y ?? 12]
+  const containerPadding = Array.isArray(spec.layout?.container_padding)
+    ? spec.layout.container_padding
+    : [spec.layout?.padding_x ?? 0, spec.layout?.padding_y ?? 0]
+
+  // eslint-disable-next-line react-hooks/rules-of-hooks
+  const bgStyle = useMemo(() => backgroundToCss(spec.background), [JSON.stringify(spec.background)])
+
   return (
-    <div className="w-full" ref={containerRef}>
-      {spec.title && (
-        <h2 className="text-xl font-bold font-display text-fg px-1 mb-4">{spec.title}</h2>
-      )}
-      {widgets.length === 0 ? (
-        <div className="flex items-center justify-center py-16 text-sm text-muted border-2 border-dashed border-border rounded-xl bg-surface">
-          No widgets in this dashboard.
-        </div>
-      ) : (
-        <ResponsiveGridLayout
-          width={width}
-          className="layout"
-          layouts={layouts}
-          breakpoints={breakpoints}
-          cols={colsCfg}
-          rowHeight={rowHeight}
-          isDraggable={false}
-          isResizable={false}
-          margin={[12, 12]}
-          containerPadding={[0, 0]}
-        >
-          {widgets.map(widget => (
-            <div key={widget.id} className="overflow-hidden rounded-xl bg-surface border border-border shadow-sm">
-              <WidgetComponent widget={widget} />
-            </div>
-          ))}
-        </ResponsiveGridLayout>
-      )}
-    </div>
+    <VariableProvider initialValues={variableDefaults} onVariableChange={onVariableChange}>
+      <div
+        className="w-full"
+        ref={containerRef}
+        style={bgStyle ? { ...bgStyle, padding: 16, borderRadius: 12 } : undefined}
+      >
+        {(spec.title || hasFilters) && (
+          <div className="flex items-center justify-between px-1 mb-4 gap-3">
+            {spec.title && (
+              <h2 className="text-xl font-bold font-display text-fg">{spec.title}</h2>
+            )}
+            {hasFilters && (
+              <button
+                type="button"
+                onClick={() => setOpenDrawer('filters')}
+                className="shrink-0 inline-flex items-center gap-1.5 px-3 py-1.5 text-sm font-medium rounded-lg border border-border bg-surface text-fg hover:bg-border/40 transition-colors"
+              >
+                <span aria-hidden>⚲</span> {spec.drawer?.title || 'Filters'}
+                <span className="text-xs text-muted">({drawerGroups.filters.length})</span>
+              </button>
+            )}
+          </div>
+        )}
+        {widgets.length === 0 ? (
+          <div className="flex items-center justify-center py-16 text-sm text-muted border-2 border-dashed border-border rounded-xl bg-surface">
+            No widgets in this dashboard.
+          </div>
+        ) : (
+          <ResponsiveGridLayout
+            width={width}
+            className="layout"
+            layouts={layouts}
+            breakpoints={breakpoints}
+            cols={colsCfg}
+            rowHeight={rowHeight}
+            isDraggable={false}
+            isResizable={false}
+            margin={margin}
+            containerPadding={containerPadding}
+            {...compactionProps}
+          >
+            {widgets.map(widget => {
+              // When a widget declares its own style (incl. transparent bg) don't
+              // force the opaque default surface — let the style win.
+              const customStyle = styleToCss(widget.style)
+              const hasCustomBg = customStyle && (
+                'background' in customStyle || 'backgroundColor' in customStyle || 'backgroundImage' in customStyle
+              )
+              return (
+              <div
+                key={widget.id}
+                className={`overflow-hidden rounded-xl ${hasCustomBg ? '' : 'bg-surface border border-border shadow-sm'}`}
+                style={customStyle}
+              >
+                <WidgetComponent widget={widget} onOpenDrawer={setOpenDrawer} />
+              </div>
+              )
+            })}
+          </ResponsiveGridLayout>
+        )}
+      </div>
+      <SlideOver
+        open={openDrawer != null}
+        title={drawerTitle}
+        widgets={openDrawer != null ? (drawerGroups[openDrawer] ?? []) : []}
+        wide={openDrawer != null && openDrawer !== 'filters'}
+        onClose={() => setOpenDrawer(null)}
+      />
+    </VariableProvider>
   )
 }

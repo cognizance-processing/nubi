@@ -11,6 +11,7 @@ decode_access_token(token: str) -> dict
 
 from __future__ import annotations
 
+import uuid
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
@@ -54,6 +55,7 @@ def mint_access_token(
         "iat": now,
         "exp": exp,
         "typ": _TOKEN_TYPE,
+        "jti": str(uuid.uuid4()),
     }
     if extra_claims:
         # extra_claims must not override core claims
@@ -91,7 +93,7 @@ def decode_access_token(token: str) -> dict[str, Any]:
             token,
             settings.JWT_SECRET,
             algorithms=[_ALGORITHM],  # pinned — rejects "none" and RS256 etc.
-            options={"require": ["sub", "iat", "exp", "typ"]},
+            options={"require": ["sub", "iat", "exp", "typ", "jti"]},
         )
     except PyJWTError:
         raise AppError("invalid_token", "Token is invalid or has expired.", 401)

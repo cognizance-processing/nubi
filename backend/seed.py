@@ -17,12 +17,16 @@ import asyncio
 import uuid
 
 from app.auth.passwords import hash_password
+from app.config import get_settings
 from app.db import close_db, execute, fetchrow, init_db
 from app.routes.auth import _create_personal_org
 
-TEST_EMAIL = "test@nubi.dev"
-TEST_PASSWORD = "nubitest123"  # >= 8 chars (matches RegisterIn policy)
-TEST_NAME = "Test User"
+# Superuser credentials come from the environment (SUPERUSER_* in the root .env),
+# so the DB reset/seed flow always provisions the same known admin login.
+_s = get_settings()
+TEST_EMAIL = _s.SUPERUSER_EMAIL
+TEST_PASSWORD = _s.SUPERUSER_PASSWORD
+TEST_NAME = _s.SUPERUSER_NAME
 
 
 async def main() -> None:

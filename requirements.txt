@@ -1,0 +1,72 @@
+# Pins aligned to the locally-tested environment (the env where the full suite passes).
+fastapi==0.131.0
+uvicorn[standard]==0.40.0
+asyncpg==0.31.0
+pydantic==2.12.4
+pydantic-settings==2.12.0
+email-validator==2.2.0
+argon2-cffi==21.3.0
+PyJWT==2.10.1
+httpx==0.28.1
+python-multipart==0.0.22
+PyYAML>=6.0  # portability: YAML-primary export/import envelope (app/portability.py)
+
+# Connector / query pipeline (M1)
+sqlglot>=25.0
+pyarrow>=14.0
+duckdb>=1.0
+adbc-driver-postgresql>=1.0
+adbc-driver-manager>=1.0
+
+# M-CONN: MySQL / MariaDB connectors (lazy-imported in app/connectors/mysql.py).
+# connectorx is the native-Arrow fast path for no-params queries; PyMySQL is the
+# bound-parameter path. Both are optional at import time — install to enable the
+# 'mysql'/'mariadb' datastore types.
+connectorx>=0.3.3
+PyMySQL>=1.1
+
+# M-CONN: optional JDBC connector (app/connectors/jdbc.py). Requires a JVM.
+# Imported lazily; only needed for the 'jdbc' datastore type. The vendor JDBC
+# driver .jar is supplied per-datastore via config['jar_path'], not pip.
+# JayDeBeApi>=1.2
+# JPype1>=1.5
+
+# M-CONN: optional cloud-warehouse connectors (lazy-imported).
+#   - app/connectors/bigquery.py  → google-cloud-bigquery (+ google-auth for
+#     service-account creds; pulled in transitively). Needed for the 'bigquery'
+#     datastore type; native Arrow via RowIterator.to_arrow().
+#   - app/connectors/snowflake.py → snowflake-connector-python. Needed for the
+#     'snowflake' datastore type; native Arrow via cursor.fetch_arrow_all()
+#     (the [pandas] extra brings the pyarrow result path).
+# Both are heavy and imported lazily — the app and tests run without them.
+# Uncomment to enable the corresponding datastore type.
+# google-cloud-bigquery>=3.11
+# snowflake-connector-python[pandas]>=3.0
+
+# M3: RS256/ES256 support for embed JWT verification
+cryptography>=42.0
+
+# M4-REMOTE: optional remote kernel providers (lazy — not required; mocked in tests)
+# Install whichever provider you configure via KERNEL_REMOTE_PROVIDER env var.
+# e2b-code-interpreter>=2.0  # for E2BRunner (KERNEL_REMOTE_PROVIDER=e2b, E2B_API_KEY)
+# modal>=0.60                 # for ModalRunner (KERNEL_REMOTE_PROVIDER=modal, MODAL_TOKEN_ID/SECRET)
+
+# M7-B: optional LLM providers (lazy — app and tests run fine without them)
+# Uncomment and install whichever provider you configure via LLM_PROVIDER env var.
+# anthropic>=0.25          # for AnthropicProvider (ANTHROPIC_API_KEY)
+# openai>=1.0              # for OpenAIProvider (OPENAI_API_KEY)
+# google-generativeai>=0.5 # for GeminiProvider (GEMINI_API_KEY)
+
+# M11: cron schedule support (lazy import in app/jobs/schedule.py)
+croniter>=2.0
+
+# M22: chart rendering for the headless chat gateway
+matplotlib>=3.7
+
+# M22-B: reverse-tunnel bridge transport (TCP-over-WebSocket)
+websockets>=12.0
+
+# Test dependencies
+pytest>=8.0
+pytest-asyncio>=1.0
+# httpx is already listed above (needed for both runtime and tests)

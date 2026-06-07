@@ -60,14 +60,29 @@ class PgRepo:
     org-scoped via ``WHERE org_id = $N``.
     """
 
-    async def list(self, resource: str, org_id: str) -> list[dict[str, Any]]:
-        """Return all rows for *resource* in *org_id*, ordered by ``created_at``."""
+    async def list(
+        self, resource: str, org_id: str, project_id: str | None = None
+    ) -> list[dict[str, Any]]:
+        """Return all rows for *resource* in *org_id*, ordered by ``created_at``.
+
+        When *project_id* is provided the result is additionally scoped to that
+        project; when ``None`` all of the org's rows are returned (preserving
+        existing behaviour).
+        """
         table = _validate_resource(resource)
         # Table name comes from the allowlist — safe to format into the query.
-        rows = await fetch(
-            f"SELECT * FROM {table} WHERE org_id = $1::uuid ORDER BY created_at ASC",
-            org_id,
-        )
+        if project_id is not None:
+            rows = await fetch(
+                f"SELECT * FROM {table} WHERE org_id = $1::uuid "
+                f"AND project_id = $2::uuid ORDER BY created_at ASC",
+                org_id,
+                project_id,
+            )
+        else:
+            rows = await fetch(
+                f"SELECT * FROM {table} WHERE org_id = $1::uuid ORDER BY created_at ASC",
+                org_id,
+            )
         return [_record_to_dict(r) for r in rows]
 
     async def get(
@@ -91,20 +106,22 @@ class PgRepo:
         created_by: str,
         name: str,
         config: dict[str, Any],
+        project_id: str | None = None,
     ) -> dict[str, Any]:
         """Insert a new row and return the created dict (with DB-generated id/timestamps)."""
         table = _validate_resource(resource)
         config_json = json.dumps(config)
         row = await fetchrow(
             f"""
-            INSERT INTO {table} (org_id, created_by, name, config)
-            VALUES ($1::uuid, $2::uuid, $3, $4::jsonb)
+            INSERT INTO {table} (org_id, created_by, name, config, project_id)
+            VALUES ($1::uuid, $2::uuid, $3, $4::jsonb, $5::uuid)
             RETURNING *
             """,
             org_id,
             created_by,
             name,
             config_json,
+            project_id,
         )
         if row is None:  # pragma: no cover — INSERT RETURNING always returns a row
             raise AppError("internal_error", "Failed to create resource.", 500)

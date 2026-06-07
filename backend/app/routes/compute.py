@@ -1,7 +1,9 @@
 """Compute endpoint — POST /compute/run (M4-A, M4-SEC hardened, M4-REMOTE).
 
 Executes user Python code in an E2B/Modal remote sandbox or a local subprocess,
-optionally pre-loading an Arrow table from a registered query as ``inputs['input']``.
+optionally pre-loading Arrow tables from registered queries as named
+``inputs[<name>]`` bindings (via the ``inputs`` map; ``input_query_id`` is a
+back-compat shorthand for ``inputs['input']``).
 
 Security contract
 -----------------
@@ -41,10 +43,12 @@ Pipeline
 4. Parse and validate request body (``ComputeRunIn``).
 5. Reject oversized code (> 100,000 chars) → 413.
 6. Choose runner (see above).
-7. If ``input_query_id`` is provided:
-   a. Look up the registered query in ``QueryRegistry``.
-   b. Execute it via the DuckDB demo connector to obtain a ``pyarrow.Table``.
-   c. Bind the table as ``inputs['input']``.
+7. Resolve named inputs into a ``{name: query_id}`` binding spec:
+   a. ``input_query_id`` (back-compat) seeds ``{'input': input_query_id}``.
+   b. The ``inputs`` map overrides/extends it (named map is canonical).
+   c. For each entry, look up the registered query in ``QueryRegistry``,
+      execute it via the DuckDB demo connector, and bind the resulting
+      ``pyarrow.Table`` as ``inputs[<name>]``.
 8. Run the chosen runner.
 9. Record kernel usage via ``record_kernel_usage``.
 10. Return the result as an Arrow IPC stream with
@@ -136,16 +140,23 @@ class ComputeRunIn(BaseModel):
         namespace.  The code MUST assign ``result`` to a ``pyarrow.Table`` (or
         a pandas ``DataFrame`` if pandas is installed).
         Maximum length: 100,000 characters (enforced at the route layer).
-    input_query_id:
-        Optional id of a server-registered query.  When provided the query is
+    inputs:
+        Optional map of ``{name: query_id}``.  Each registered query is
         executed via the DuckDB demo connector and the resulting Arrow table is
-        bound as ``inputs['input']`` before the user code runs.
+        bound as ``inputs[<name>]`` in the sandbox.  This is the canonical
+        named-inputs contract.
+    input_query_id:
+        Deprecated single-input shorthand (back-compat).  When provided the
+        query is executed and bound as ``inputs['input']``.  Equivalent to
+        ``inputs={'input': input_query_id}``.  Entries in ``inputs`` take
+        precedence over ``input_query_id`` for the ``'input'`` name.
     timeout_s:
         Hard wall-clock timeout in seconds.  Capped at 120.  Default 30.
     """
 
     code: str
     input_query_id: str | None = None
+    inputs: dict[str, str] | None = None
     timeout_s: Annotated[int, Field(ge=1, le=_MAX_TIMEOUT_S)] = 30
 
 
@@ -322,25 +333,36 @@ async def compute_run(
     runner = _choose_runner()
 
     # ── Resolve inputs ─────────────────────────────────────────────────────────
+    # ONE rule: ``inputs[name]`` holds named data.  The named ``inputs`` map is
+    # canonical; ``input_query_id`` is back-compat sugar for ``{'input': id}``.
+    # Build a single ``{name: query_id}`` binding spec, then resolve each.
+    binding_spec: dict[str, str] = {}
+    if body.input_query_id is not None:
+        binding_spec["input"] = body.input_query_id
+    if body.inputs:
+        # Named map takes precedence over the legacy shorthand for 'input'.
+        binding_spec.update(body.inputs)
+
     inputs: dict[str, pa.Table] = {}
 
-    if body.input_query_id is not None:
+    if binding_spec:
         registry = get_query_registry()
-        registered = registry.get(body.input_query_id)
-        if registered is None:
-            raise AppError(
-                "query_not_found",
-                f"No registered query found for id={body.input_query_id!r}.",
-                404,
-            )
-
         # Execute via the DuckDB demo connector.
         from app.connectors import plan as planner_plan
 
-        physical_plan = planner_plan(sql=registered.sql, claims={})
         demo_conn = _get_demo_connector()
-        input_table = demo_conn.execute(physical_plan)
-        inputs["input"] = input_table
+        for name, query_id in binding_spec.items():
+            registered = registry.get(query_id)
+            if registered is None:
+                raise AppError(
+                    "query_not_found",
+                    f"No registered query found for id={query_id!r} "
+                    f"(input name {name!r}).",
+                    404,
+                )
+
+            physical_plan = planner_plan(sql=registered.sql, claims={})
+            inputs[name] = demo_conn.execute(physical_plan)
 
     # ── Run the kernel ─────────────────────────────────────────────────────────
     timeout_s = min(body.timeout_s, _MAX_TIMEOUT_S)

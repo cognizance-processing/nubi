@@ -3,8 +3,10 @@
  *
  * Behaviour:
  *   1. User enters a Python snippet (default: `result = inputs['input']`) and
- *      an optional input query ID (default: 'demo_all').
- *   2. Clicks Run -> calls runPythonCell(code, inputQueryId).
+ *      an editable map of named inputs { name → query_id } (default one row:
+ *      name 'input' → query 'demo_all').
+ *   2. Clicks Run -> calls runPythonCell(code, inputsMap), where inputsMap is
+ *      { name: query_id }. Each query's rows are bound as inputs[<name>].
  *   3. Displays the resulting Arrow Table (first 100 rows) with:
  *        - Tier badge: local_kernel (blue) / sample (gray)
  *        - "elapsed: N ms" timing
@@ -15,7 +17,7 @@
  * The server-side contract (M4 spec):
  *   POST /api/v1/compute/run
  *   Authorization: Bearer <first-party token>   (embed tokens get 403)
- *   Body: { code, input_query_id?, timeout_s? }
+ *   Body: { code, inputs?: { name: query_id }, timeout_s? }
  *   Response: Arrow IPC stream + X-Nubi-Tier header
  */
 
@@ -23,7 +25,9 @@ import { useState, useCallback } from 'react'
 import { runPythonCell, SAMPLE_TABLE } from '../lib/wasmRuntime.js'
 
 const DEFAULT_CODE = "result = inputs['input']"
-const DEFAULT_INPUT_QUERY_ID = 'demo_all'
+// Default named-inputs map: one row binding query 'demo_all' as inputs['input']
+// (back-compat with the previous single-input behaviour).
+const DEFAULT_INPUTS = [{ name: 'input', queryId: 'demo_all' }]
 const MAX_ROWS = 100
 
 // ---------------------------------------------------------------------------
@@ -64,13 +68,25 @@ function TierBadge({ tier }) {
 
 export default function PythonCell() {
   const [code, setCode] = useState(DEFAULT_CODE)
-  const [inputQueryId, setInputQueryId] = useState(DEFAULT_INPUT_QUERY_ID)
+  // Editable list of { name, queryId } rows → sent as { name: query_id } map.
+  const [inputRows, setInputRows] = useState(DEFAULT_INPUTS)
 
   const [result, setResult]       = useState(null)   // arrow.Table
   const [tier, setTier]           = useState(null)   // 'local_kernel' | 'sample' | ...
   const [elapsedMs, setElapsedMs] = useState(null)
   const [notice, setNotice]       = useState(null)   // non-blocking notice
   const [loading, setLoading]     = useState(false)
+
+  // -- input-row editing helpers ------------------------------------------
+  const updateRow = useCallback((idx, patch) => {
+    setInputRows(rows => rows.map((r, i) => (i === idx ? { ...r, ...patch } : r)))
+  }, [])
+  const addRow = useCallback(() => {
+    setInputRows(rows => [...rows, { name: '', queryId: '' }])
+  }, [])
+  const removeRow = useCallback((idx) => {
+    setInputRows(rows => rows.filter((_, i) => i !== idx))
+  }, [])
 
   const handleRun = useCallback(async () => {
     setLoading(true)
@@ -79,9 +95,15 @@ export default function PythonCell() {
     setTier(null)
     setElapsedMs(null)
 
-    const queryId = inputQueryId.trim() || undefined
+    // Build the named-inputs map { name: query_id }, skipping blank rows.
+    const inputs = {}
+    for (const { name, queryId } of inputRows) {
+      const n = name.trim()
+      const q = queryId.trim()
+      if (n && q) inputs[n] = q
+    }
 
-    const { table, tier: t, elapsedMs: ms, error } = await runPythonCell(code, queryId)
+    const { table, tier: t, elapsedMs: ms, error } = await runPythonCell(code, inputs)
 
     setResult(table)
     setTier(t)
@@ -92,7 +114,7 @@ export default function PythonCell() {
     }
 
     setLoading(false)
-  }, [code, inputQueryId])
+  }, [code, inputRows])
 
   // Derived table rendering helpers
   const columns = result ? result.schema.fields.map(f => f.name) : []
@@ -127,20 +149,59 @@ export default function PythonCell() {
           aria-label="Python code input"
         />
 
-        {/* Input query ID field */}
+        {/* Named inputs map: { name → query_id } */}
         <div className="mt-3">
           <label className="block text-xs font-medium text-gray-500 mb-1 uppercase tracking-wide">
-            Input query ID
-            <span className="ml-1 font-normal normal-case text-gray-400">(optional — bound as <code className="font-mono bg-gray-100 px-1 rounded">inputs[&#39;input&#39;]</code>)</span>
+            Inputs
+            <span className="ml-1 font-normal normal-case text-gray-400">(each row binds a query&#39;s rows as <code className="font-mono bg-gray-100 px-1 rounded">inputs[&#39;&lt;name&gt;&#39;]</code>)</span>
           </label>
-          <input
-            type="text"
-            className="w-full sm:w-64 font-mono text-sm text-gray-800 bg-gray-50 border border-gray-200 rounded-lg px-3 py-1.5 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent transition"
-            value={inputQueryId}
-            onChange={e => setInputQueryId(e.target.value)}
-            placeholder="demo_all"
-            aria-label="Input query ID"
-          />
+
+          <div className="space-y-2">
+            {/* Column headers */}
+            <div className="flex items-center gap-2 text-[10px] font-medium text-gray-400 uppercase tracking-wide">
+              <span className="w-40">Name</span>
+              <span className="flex-1">Query ID</span>
+              <span className="w-7" aria-hidden="true" />
+            </div>
+
+            {inputRows.map((row, idx) => (
+              <div key={idx} className="flex items-center gap-2">
+                <input
+                  type="text"
+                  className="w-40 font-mono text-sm text-gray-800 bg-gray-50 border border-gray-200 rounded-lg px-3 py-1.5 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent transition"
+                  value={row.name}
+                  onChange={e => updateRow(idx, { name: e.target.value })}
+                  placeholder="input"
+                  aria-label={`Input name ${idx + 1}`}
+                />
+                <input
+                  type="text"
+                  className="flex-1 font-mono text-sm text-gray-800 bg-gray-50 border border-gray-200 rounded-lg px-3 py-1.5 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent transition"
+                  value={row.queryId}
+                  onChange={e => updateRow(idx, { queryId: e.target.value })}
+                  placeholder="demo_all"
+                  aria-label={`Input query ID ${idx + 1}`}
+                />
+                <button
+                  type="button"
+                  onClick={() => removeRow(idx)}
+                  className="w-7 h-7 shrink-0 flex items-center justify-center text-gray-400 hover:text-red-600 hover:bg-red-50 rounded-lg transition-colors focus:outline-none focus:ring-2 focus:ring-red-300"
+                  aria-label={`Remove input ${idx + 1}`}
+                  title="Remove input"
+                >
+                  &times;
+                </button>
+              </div>
+            ))}
+          </div>
+
+          <button
+            type="button"
+            onClick={addRow}
+            className="mt-2 text-xs font-medium text-blue-600 hover:text-blue-700 focus:outline-none focus:underline"
+          >
+            + Add input
+          </button>
         </div>
 
         {/* Run button row */}
@@ -159,7 +220,7 @@ export default function PythonCell() {
       {/* Helper note */}
       <div className="px-4 py-2 bg-blue-50 border-b border-blue-100 text-xs text-blue-700">
         Code runs server-side in an on-demand kernel. Bind <code className="font-mono bg-blue-100 px-1 rounded">result</code> to a pyarrow Table;{' '}
-        <code className="font-mono bg-blue-100 px-1 rounded">inputs[&#39;input&#39;]</code> holds the input query&#39;s rows.
+        each input row binds that query&#39;s rows as <code className="font-mono bg-blue-100 px-1 rounded">inputs[&#39;&lt;name&gt;&#39;]</code> (e.g. <code className="font-mono bg-blue-100 px-1 rounded">inputs[&#39;input&#39;]</code>).
       </div>
 
       {/* Loading spinner */}

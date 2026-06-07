@@ -2,6 +2,7 @@ import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter'
 import { oneDark } from 'react-syntax-highlighter/dist/esm/styles/prism'
+import { Link } from 'react-router-dom'
 
 /**
  * Anchored heading helper — creates an id from text content
@@ -113,12 +114,17 @@ const components = {
   // ── Links ────────────────────────────────────────────────────────────────
   a({ href, children }) {
     const isExternal = href && (href.startsWith('http') || href.startsWith('//'))
+    const isInternal = href && href.startsWith('/')
+    const cls = "text-accent hover:text-brand-teal underline underline-offset-2 decoration-accent/40 hover:decoration-brand-teal transition-colors"
+    if (isInternal) {
+      return <Link to={href} className={cls}>{children}</Link>
+    }
     return (
       <a
         href={href}
         target={isExternal ? '_blank' : undefined}
         rel={isExternal ? 'noopener noreferrer' : undefined}
-        className="text-accent hover:text-brand-teal underline underline-offset-2 decoration-accent/40 hover:decoration-brand-teal transition-colors"
+        className={cls}
       >
         {children}
       </a>

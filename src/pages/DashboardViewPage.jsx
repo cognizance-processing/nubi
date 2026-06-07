@@ -10,12 +10,32 @@
  *   /d/sample  — renders the built-in sample dashboard without a backend request.
  *   Any fetch failure (no backend, 404, etc.) — falls back to the same sample.
  *
- * The sample dashboard demonstrates all three Nubi widget types in a responsive
- * CSS grid layout, each pointing at the built-in "demo_all" registered query.
+ * Variable / URL integration (M14-C)
+ * ------------------------------------
+ * For spec dashboards, DashboardViewPage manages the variable store seed values:
+ *
+ *   Precedence (highest → lowest):
+ *     1. Embed-token-locked params (HOOK — not yet wired; see comment below)
+ *     2. URL search params (?varName=value)
+ *     3. spec.variables defaults
+ *
+ * When a filter widget changes a variable, the new value is written back to the
+ * URL via setSearchParams (shallow replace, so no extra history entry).
+ *
+ * Embed-token integration hook:
+ *   A future embed integration can call SpecRenderer with locked initialVariables
+ *   sourced from a verified embed JWT.  Those locked values must:
+ *     a) Override URL params (the token wins).
+ *     b) Not be writable by filter widgets in the page (the store should be
+ *        initialised with those values and the filter widget's setVariable call
+ *        should be a no-op for locked names).
+ *   Until that integration lands, the hook is represented by the
+ *   `embedLockedParams` constant below (always {} for now).  Wire it once the
+ *   embed token is verified server-side and passed to this page as a prop.
  */
 
-import { useState, useEffect } from 'react'
-import { useParams, Link } from 'react-router-dom'
+import { useState, useEffect, useMemo, useCallback } from 'react'
+import { useParams, Link, useSearchParams } from 'react-router-dom'
 import { get } from '../lib/api.js'
 import DashboardView from '../dashboards/DashboardView.jsx'
 import SpecRenderer from '../dashboards/SpecRenderer.jsx'
@@ -77,11 +97,37 @@ export const SAMPLE_DASHBOARD_HTML = `
 `
 
 // ---------------------------------------------------------------------------
+// URL ↔ variable store sync helpers
+// ---------------------------------------------------------------------------
+
+/**
+ * Extract variable values from URLSearchParams.
+ * All URL param values are strings; callers should cast if needed.
+ *
+ * @param {URLSearchParams} searchParams
+ * @param {string[]} knownVarNames — variable names declared in spec.variables.
+ *   Only these names are extracted to avoid polluting the store with unrelated
+ *   query params (e.g. ?utm_source=…).
+ * @returns {Record<string, string>}
+ */
+function extractVarsFromURL(searchParams, knownVarNames) {
+  const values = {}
+  for (const name of knownVarNames) {
+    const val = searchParams.get(name)
+    if (val !== null) {
+      values[name] = val
+    }
+  }
+  return values
+}
+
+// ---------------------------------------------------------------------------
 // DashboardViewPage
 // ---------------------------------------------------------------------------
 
 export default function DashboardViewPage() {
   const { id } = useParams()
+  const [searchParams, setSearchParams] = useSearchParams()
 
   // What to render — 'spec' | 'html' | null (loading / fallback)
   const [renderMode, setRenderMode] = useState(null)
@@ -145,6 +191,91 @@ export default function DashboardViewPage() {
   }, [id])
 
   // ---------------------------------------------------------------------------
+  // Variable ↔ URL sync
+  // ---------------------------------------------------------------------------
+
+  // EMBED-TOKEN HOOK:
+  // When an embed token is verified and passed to this page (e.g. via a prop or
+  // a future EmbedContext), populate embedLockedParams with the token's locked
+  // variable values.  These MUST take precedence over URL params and cannot be
+  // written by filter widgets.
+  //
+  // Implementation plan for embed integration:
+  //   1. Verify the embed JWT server-side (M3 flow).
+  //   2. Pass locked param names+values to this component (prop / context).
+  //   3. Merge them into initialVariables AFTER urlVars (so they win).
+  //   4. Strip locked param names from the URL before extracting urlVars so the
+  //      URL cannot shadow a locked param.
+  //
+  // For now (non-embed flow), this is always an empty object.
+  const embedLockedParams = {}
+
+  // Names of variables declared in the spec that participate in URL sync.
+  // A variable opts in via `url_bind: true`. For backward-compatibility, if NO
+  // variable declares url_bind, ALL declared variables sync (prior behaviour).
+  const knownVarNames = useMemo(() => {
+    if (!spec?.variables) return []
+    const named = spec.variables.filter(v => v.name)
+    const anyOptIn = named.some(v => v.url_bind)
+    const eligible = anyOptIn ? named.filter(v => v.url_bind) : named
+    return eligible.map(v => v.name)
+  }, [spec])
+
+  // Extract variable values from the URL, restricted to declared variable names.
+  const urlVars = useMemo(
+    () => extractVarsFromURL(searchParams, knownVarNames),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [searchParams.toString(), knownVarNames],
+  )
+
+  // Compose the initialVariables prop for SpecRenderer:
+  //   spec defaults (inside SpecRenderer)  ←  lowest precedence
+  //   URL params                           ←  middle
+  //   embed-token locked params            ←  highest (overrides URL)
+  //
+  // SpecRenderer merges these over spec.variable defaults internally.
+  const initialVariables = useMemo(
+    () => ({ ...urlVars, ...embedLockedParams }),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [JSON.stringify(urlVars), JSON.stringify(embedLockedParams)],
+  )
+
+  /**
+   * Called by filter widgets (via the VariableStore) when a variable changes.
+   * Writes the new value back to the URL as a search param (shallow replace).
+   *
+   * NOTE: VariableProvider handles internal state; this callback propagates
+   * changes to the URL so the state survives a page refresh / is shareable.
+   * The VariableProvider itself is the source of truth while the page is mounted;
+   * the URL is the persistence layer.
+   *
+   * This callback is not yet plumbed to the VariableProvider directly — that
+   * wiring belongs in a future URLSyncVariableProvider wrapper.  For M14-C we
+   * seed the store from the URL on mount; full two-way sync (filter → URL) is
+   * the next step and is left as a clearly-marked hook here.
+   *
+   * TODO(M14-C-sync): wrap VariableProvider in a URLSyncProvider that intercepts
+   *   setVariable calls and also calls setSearchParams for non-locked names.
+   */
+  const handleVariableChange = useCallback((name, value) => {
+    // Do not write embed-locked params back to the URL
+    if (Object.prototype.hasOwnProperty.call(embedLockedParams, name)) return
+    // Only sync URL-bound variables (see knownVarNames opt-in logic).
+    if (!knownVarNames.includes(name)) return
+
+    setSearchParams(prev => {
+      const next = new URLSearchParams(prev)
+      if (value === undefined || value === null || value === '') {
+        next.delete(name)
+      } else {
+        next.set(name, String(value))
+      }
+      return next
+    }, { replace: true })
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [setSearchParams, JSON.stringify(embedLockedParams), knownVarNames])
+
+  // ---------------------------------------------------------------------------
   // Render states
   // ---------------------------------------------------------------------------
 
@@ -159,11 +290,12 @@ export default function DashboardViewPage() {
   }
 
   return (
-    <div className="max-w-6xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
+    <div className="max-w-6xl mx-auto px-4 sm:px-6 lg:px-8 py-8" data-testid="dashboard-view-page">
 
       {/* Fallback / error notice */}
       {error && (
         <div className="mb-4 px-4 py-3 rounded-lg text-sm flex items-start gap-2 border"
+          data-testid="dashboard-view-error"
           style={{ background: 'color-mix(in srgb, #f59e0b 8%, transparent)', color: '#d97706', borderColor: 'color-mix(in srgb, #f59e0b 25%, transparent)' }}>
           <span className="shrink-0 mt-0.5" aria-hidden="true">&#9888;</span>
           <span>{error}</span>
@@ -184,11 +316,19 @@ export default function DashboardViewPage() {
 
       {/* Dashboard content */}
       {renderMode === 'spec' && spec && (
-        <SpecRenderer spec={spec} />
+        <div data-testid="dashboard-spec-renderer">
+          <SpecRenderer
+            spec={spec}
+            initialVariables={initialVariables}
+            onVariableChange={handleVariableChange}
+          />
+        </div>
       )}
 
       {renderMode === 'html' && html != null && (
-        <DashboardView html={html} />
+        <div data-testid="dashboard-html-renderer">
+          <DashboardView html={html} />
+        </div>
       )}
     </div>
   )

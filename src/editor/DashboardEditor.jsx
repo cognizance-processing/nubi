@@ -1,85 +1,152 @@
 /**
- * DashboardEditor.jsx — Drag-and-drop DashboardSpec editor (Wave EDITOR-2C).
+ * DashboardEditor.jsx — Drag-and-drop DashboardSpec editor (Wave EDITOR-3A).
  *
- * Props
- * -----
- * boardId   {string|null}  If set, loads the board via GET /boards/:id on mount.
- * onSaved   {function}     Called with the saved board object after a successful save.
+ * What's new vs EDITOR-2C
+ * ------------------------
+ * 1. Per-widget hover toolbar (Duplicate + Delete + drag handle)
+ * 2. Full keyboard shortcuts (Delete/Backspace, ⌘D, Esc, arrows, ⇧+arrows)
+ * 3. All 8 resize handles + per-type minimum sizes (minW / minH)
+ * 4. Grid settings popover (columns + row height) in top bar
+ * 5. Live widget previews on canvas using real widget components, memoised by
+ *    query_id+encoding — no re-fetch during drag/resize
+ * 6. Dirty/unsaved indicator + beforeunload guard + clear on save
+ * 7. Empty-state quick-add, click-outside to deselect
  *
- * Layout
- * ------
- * ┌──────────────────── top bar ──────────────────────────────────────────┐
- * │ title input          [Preview toggle]   [Save]                        │
- * ├── palette (left) ──┬──── RGL canvas (center) ──┬── config panel (right)─┤
- * │ + KPI              │  drag / resize widgets    │  selected widget cfg  │
- * │ + Table            │                           │                       │
- * │ + Chart            │                           │                       │
- * └────────────────────┴───────────────────────────┴───────────────────────┘
- *
- * Spec shape (matches backend spec.py DashboardSpec EXACTLY):
- * {
- *   version: 1,
- *   title: string,
- *   layout: { cols: 12, row_height: 60 },
- *   widgets: [{ id, type, query_id, chart_type, encoding, props, pos:{x,y,w,h} }]
- * }
- *
- * NOTE: pos is 1-based (spec.py) but RGL is 0-based; conversions happen at the
- * RGL boundary (specToRgl / rglToSpec helpers).
+ * PRESERVED from EDITOR-2C (DO NOT TOUCH):
+ *   - dragConfig={{ enabled:true, handle:'.drag-handle' }}
+ *   - resizeConfig={{ enabled:true, handles:[...] }}
+ *   - compactor={noCompactor}
+ *   - onDragStart/Stop + onResizeStart/Stop stop-only commits
+ *   - vite.config.js process.env define (react-draggable bug)
+ *   - frozenLayoutsRef while dragging
  */
 
 import 'react-grid-layout/css/styles.css'
 import 'react-resizable/css/styles.css'
 
-import { useState, useEffect, useCallback, useMemo } from 'react'
-import { ResponsiveGridLayout, useContainerWidth } from 'react-grid-layout'
+import {
+  useState,
+  useEffect,
+  useCallback,
+  useMemo,
+  useRef,
+  memo,
+} from 'react'
+import { createPortal } from 'react-dom'
+import { useUi } from '../contexts/UiContext.jsx'
+import {
+  PanelRightClose, PanelRightOpen, Plus, Trash2, X, GripVertical,
+  Database, SlidersHorizontal, Palette, Code2, TrendingUp, Settings2,
+  BarChart3, LineChart, AreaChart, ScatterChart, PieChart, Gauge, Grid3x3,
+  BarChartHorizontal, Table2, Hash, Filter as FilterIcon, Type, Heading,
+  Monitor, Tablet, Smartphone, ChevronDown, Settings, LayoutGrid, MessageSquare,
+} from 'lucide-react'
+
+// Device viewport presets for the editor's responsive preview/edit switcher.
+const DEVICES = [
+  { id: 'desktop', label: 'Desktop', Icon: Monitor, width: null },
+  { id: 'tablet', label: 'Tablet', Icon: Tablet, width: 834 },
+  { id: 'mobile', label: 'Mobile', Icon: Smartphone, width: 390 },
+]
+const DEVICE_WIDTHS = { desktop: null, tablet: 834, mobile: 390 }
+
+// Icon maps shared across the palette, chart-type grid, and config header.
+const WIDGET_ICONS = {
+  kpi: Hash, metric: TrendingUp, chart: BarChart3, table: Table2,
+  pivot: Grid3x3, filter: FilterIcon, text: Type, section: Heading,
+}
+const CHART_ICONS = {
+  line: LineChart, bar: BarChart3, hbar: BarChartHorizontal, scatter: ScatterChart,
+  area: AreaChart, pie: PieChart, donut: PieChart, heatmap: Grid3x3, gauge: Gauge,
+}
+import { ResponsiveGridLayout, useContainerWidth, noCompactor } from 'react-grid-layout'
 import { get, post, put } from '../lib/api.js'
 import { runArrowQueryById } from '../lib/wasmRuntime.js'
+import ChartWidget from '../dashboards/widgets/ChartWidget.jsx'
+import KpiWidget from '../dashboards/widgets/KpiWidget.jsx'
+import TableWidget from '../dashboards/widgets/TableWidget.jsx'
+import FilterWidget from '../dashboards/widgets/FilterWidget.jsx'
+import TextWidget from '../dashboards/widgets/TextWidget.jsx'
+import HtmlWidget from '../dashboards/widgets/HtmlWidget.jsx'
+import MetricWidget from '../dashboards/widgets/MetricWidget.jsx'
+import PivotWidget from '../dashboards/widgets/PivotWidget.jsx'
+import SectionWidget from '../dashboards/widgets/SectionWidget.jsx'
+import ExportShareMenu from '../components/ExportShareMenu.jsx'
+import SpecIO from '../components/SpecIO.jsx'
+import { VariableProvider } from '../dashboards/VariableStore.jsx'
 import SpecRenderer from '../dashboards/SpecRenderer.jsx'
-import AskAIPanel from './AskAIPanel.jsx'
+import { backgroundToCss, styleToCss } from '../dashboards/widgetHtml.js'
+import {
+  DEVICE_TO_BREAKPOINT,
+  buildResponsiveLayouts,
+  applyLayoutCommit,
+  clearBreakpointOverrides,
+  hasOverrides,
+} from '../dashboards/responsiveLayout.js'
+import ChatPanel from './ChatPanel.jsx'
+import {
+  createHistory,
+  push as historyPush,
+  undo as historyUndo,
+  redo as historyRedo,
+  canUndo,
+  canRedo,
+} from './history.js'
 
 // ---------------------------------------------------------------------------
 // Constants
 // ---------------------------------------------------------------------------
 
 const DEMO_QUERY_IDS = ['demo_all', 'demo_active', 'demo_points_10k', 'demo_points_100k']
+const CHART_TYPES = ['line', 'bar', 'hbar', 'scatter', 'area', 'pie', 'donut', 'heatmap', 'gauge']
+const SERIES_TYPES = ['bar', 'line', 'area', 'scatter']
+const FILTER_SUBTYPES = ['select', 'multiselect', 'daterange', 'text']
+const VARIABLE_TYPES = ['text', 'number', 'date', 'daterange', 'select', 'multiselect']
 
-const CHART_TYPES = ['line', 'bar', 'scatter', 'area', 'pie']
+// Conditional-formatting operators (mirror conditionalFormat.js evalRules)
+const FORMAT_OPS = ['eq', 'ne', 'gt', 'gte', 'lt', 'lte', 'between', 'contains']
+// Per-column value-format types (mirror conditionalFormat.js formatValue)
+const COLUMN_FORMAT_TYPES = ['number', 'currency', 'percent', 'date']
+const BACKGROUND_TYPES = ['none', 'transparent', 'solid', 'gradient', 'image', 'css']
+const PIVOT_AGGS = ['sum', 'avg', 'count', 'min', 'max']
+// react-grid-layout compaction modes exposed in the Dashboard panel.
+const COMPACTION_MODES = [
+  { id: 'free',       label: 'Free place', hint: 'Keep widgets exactly where placed' },
+  { id: 'vertical',   label: 'Vertical',   hint: 'Pack upward' },
+  { id: 'horizontal', label: 'Horizontal', hint: 'Pack leftward' },
+  { id: 'none',       label: 'None',       hint: 'No compaction (collisions allowed)' },
+]
 
 const DEFAULT_SPEC = {
   version: 1,
   title: 'New Dashboard',
   layout: { cols: 12, row_height: 60 },
+  variables: [],
   widgets: [],
 }
+
+// Minimum sizes per type (in grid cells)
+const WIDGET_MIN_SIZES = {
+  kpi:     { minW: 2, minH: 2 },
+  metric:  { minW: 2, minH: 2 },
+  table:   { minW: 3, minH: 3 },
+  pivot:   { minW: 3, minH: 3 },
+  chart:   { minW: 3, minH: 3 },
+  filter:  { minW: 2, minH: 2 },
+  text:    { minW: 2, minH: 2 },
+  section: { minW: 2, minH: 1 },
+}
+
+const COLUMN_OPTIONS = [6, 8, 12, 16, 24]
+const ROW_HEIGHT_OPTIONS = [40, 60, 80, 100]
 
 // ---------------------------------------------------------------------------
 // Helpers: spec <-> RGL layout conversions
 // ---------------------------------------------------------------------------
 
-/** Convert a spec widget pos (1-based) to an RGL layout item (0-based). */
-function specToRgl(widget) {
-  const pos = widget.pos ?? { x: 1, y: 1, w: 4, h: 4 }
-  return {
-    i: widget.id,
-    x: Math.max(0, pos.x - 1),
-    y: Math.max(0, pos.y - 1),
-    w: pos.w,
-    h: pos.h,
-  }
-}
+// NOTE: spec ↔ RGL conversion now lives in ../dashboards/responsiveLayout.js
+// (shared with SpecRenderer) so per-breakpoint overrides are handled in one place.
 
-/** Merge RGL layout item back into the spec widget pos (convert 0-based → 1-based). */
-function rglToPos(item) {
-  return {
-    x: item.x + 1,
-    y: item.y + 1,
-    w: item.w,
-    h: item.h,
-  }
-}
-
-/** Generate a unique widget id. */
 let _idCounter = 0
 function genId(type) {
   _idCounter += 1
@@ -87,60 +154,160 @@ function genId(type) {
 }
 
 // ---------------------------------------------------------------------------
+// findFreeSpot
+// ---------------------------------------------------------------------------
+
+function findFreeSpot(widgets, newW, newH, cols = 12) {
+  const MAX_SCAN_ROWS = 200
+  const occupied = {}
+  for (const w of widgets) {
+    const rx = Math.max(0, (w.pos?.x ?? 1) - 1)
+    const ry = Math.max(0, (w.pos?.y ?? 1) - 1)
+    const rw = w.pos?.w ?? 4
+    const rh = w.pos?.h ?? 4
+    for (let row = ry; row < ry + rh; row++) {
+      for (let col = rx; col < rx + rw; col++) {
+        if (!occupied[row]) occupied[row] = {}
+        occupied[row][col] = true
+      }
+    }
+  }
+
+  const fits = (rx, ry, rw, rh) => {
+    if (rx + rw > cols) return false
+    for (let row = ry; row < ry + rh; row++) {
+      for (let col = rx; col < rx + rw; col++) {
+        if (occupied[row]?.[col]) return false
+      }
+    }
+    return true
+  }
+
+  for (let row = 0; row < MAX_SCAN_ROWS; row++) {
+    for (let col = 0; col <= cols - newW; col++) {
+      if (fits(col, row, newW, newH)) return { x: col + 1, y: row + 1 }
+    }
+  }
+
+  const maxBottom = widgets.reduce((m, w) => {
+    const bottom = (w.pos?.y ?? 1) - 1 + (w.pos?.h ?? 4)
+    return Math.max(m, bottom)
+  }, 0)
+  return { x: 1, y: maxBottom + 1 }
+}
+
+// ---------------------------------------------------------------------------
 // Default widget factories
 // ---------------------------------------------------------------------------
 
-function makeKpiWidget() {
+const WIDGET_SIZES = {
+  kpi:     { w: 3, h: 3 },
+  metric:  { w: 3, h: 3 },
+  table:   { w: 6, h: 5 },
+  pivot:   { w: 6, h: 5 },
+  chart:   { w: 6, h: 5 },
+  filter:  { w: 3, h: 2 },
+  text:    { w: 6, h: 3 },
+  section: { w: 12, h: 1 },
+}
+
+function makeKpiWidget(pos) {
   return {
-    id: genId('kpi'),
-    type: 'kpi',
-    query_id: 'demo_all',
-    chart_type: null,
-    encoding: { value: '' },
-    props: { label: 'KPI', format: 'number' },
-    pos: { x: 1, y: 1, w: 3, h: 3 },
+    id: genId('kpi'), type: 'kpi', query_id: 'demo_all',
+    chart_type: null, encoding: { value: '' }, props: { label: 'KPI', format: 'number' },
+    pos: { ...WIDGET_SIZES.kpi, ...pos },
+  }
+}
+function makeTableWidget(pos) {
+  return {
+    id: genId('table'), type: 'table', query_id: 'demo_all',
+    chart_type: null, encoding: {}, props: { limit: 50, columns: '' },
+    pos: { ...WIDGET_SIZES.table, ...pos },
+  }
+}
+function makeChartWidget(pos) {
+  return {
+    id: genId('chart'), type: 'chart', query_id: 'demo_all',
+    chart_type: 'bar', encoding: { x: '', y: '', color: '' }, props: {}, params: {},
+    pos: { ...WIDGET_SIZES.chart, ...pos },
+  }
+}
+function makeFilterWidget(pos) {
+  return {
+    id: genId('filter'), type: 'filter', subtype: 'select', target_var: '',
+    options_query_id: '', query_id: null, props: { label: 'Filter' },
+    pos: { ...WIDGET_SIZES.filter, ...pos },
+  }
+}
+function makeTextWidget(pos) {
+  return {
+    id: genId('text'), type: 'text',
+    content: '## Heading\n\nAdd your markdown content here.',
+    query_id: null, pos: { ...WIDGET_SIZES.text, ...pos },
+  }
+}
+function makeMetricWidget(pos) {
+  return {
+    id: genId('metric'), type: 'metric', query_id: 'demo_all',
+    chart_type: null, encoding: { value: '', compare: '', spark: '' },
+    props: { label: 'Metric', format: 'number', deltaFormat: 'percent' }, params: {},
+    pos: { ...WIDGET_SIZES.metric, ...pos },
+  }
+}
+function makePivotWidget(pos) {
+  return {
+    id: genId('pivot'), type: 'pivot', query_id: 'demo_all',
+    chart_type: null, encoding: { rows: '', cols: '', value: '' },
+    props: { agg: 'sum' }, params: {},
+    pos: { ...WIDGET_SIZES.pivot, ...pos },
+  }
+}
+function makeSectionWidget(pos) {
+  return {
+    id: genId('section'), type: 'section', query_id: null,
+    props: { title: 'Section', subtitle: '', align: 'left', divider: true },
+    pos: { ...WIDGET_SIZES.section, ...pos },
   }
 }
 
-function makeTableWidget() {
-  return {
-    id: genId('table'),
-    type: 'table',
-    query_id: 'demo_all',
-    chart_type: null,
-    encoding: {},
-    props: { limit: 50, columns: '' },
-    pos: { x: 1, y: 1, w: 6, h: 5 },
-  }
-}
-
-function makeChartWidget() {
-  return {
-    id: genId('chart'),
-    type: 'chart',
-    query_id: 'demo_all',
-    chart_type: 'bar',
-    encoding: { x: '', y: '', color: '' },
-    props: {},
-    pos: { x: 1, y: 1, w: 6, h: 5 },
-  }
+function makeWidget(type, pos) {
+  if (type === 'kpi') return makeKpiWidget(pos)
+  if (type === 'metric') return makeMetricWidget(pos)
+  if (type === 'table') return makeTableWidget(pos)
+  if (type === 'pivot') return makePivotWidget(pos)
+  if (type === 'filter') return makeFilterWidget(pos)
+  if (type === 'text') return makeTextWidget(pos)
+  if (type === 'section') return makeSectionWidget(pos)
+  return makeChartWidget(pos)
 }
 
 // ---------------------------------------------------------------------------
-// Shared input class helpers (token-based)
+// Shared input classes
 // ---------------------------------------------------------------------------
 
-const inputCls = 'w-full text-sm border border-border rounded-lg px-2.5 py-1.5 bg-surface text-fg focus:outline-none focus:ring-2 focus:ring-ring focus:border-transparent transition-colors'
-const selectCls = inputCls
+// Shared control styling. Targets a consistent ~32px control height across
+// inputs and selects, with calm focus rings and the app's design tokens.
+const inputCls = 'w-full h-8 text-sm border border-border rounded-lg px-2.5 bg-surface text-fg placeholder:text-muted/50 focus:outline-none focus:ring-2 focus:ring-ring/60 focus:border-ring/40 hover:border-border/80 transition-colors'
+
+// Native <select> with a custom chevron (appearance-none) so it matches the
+// inputs exactly. The chevron is a STATIC, fully percent-encoded SVG data URL
+// (quotes → %22, spaces → %20) so (a) Tailwind's static scanner picks up the
+// arbitrary value and (b) the CSS minifier sees no raw quotes/parens in url().
+const selectCls =
+  'w-full h-8 text-sm border border-border rounded-lg pl-2.5 pr-8 bg-surface text-fg appearance-none cursor-pointer ' +
+  'focus:outline-none focus:ring-2 focus:ring-ring/60 focus:border-ring/40 hover:border-border/80 transition-colors ' +
+  'bg-[length:14px] bg-[right_0.5rem_center] bg-no-repeat ' +
+  'bg-[url(data:image/svg+xml,%3Csvg%20xmlns=%22http://www.w3.org/2000/svg%22%20viewBox=%220%200%2012%2012%22%20fill=%22none%22%20stroke=%22%238895a8%22%20stroke-width=%221.4%22%20stroke-linecap=%22round%22%20stroke-linejoin=%22round%22%3E%3Cpath%20d=%22M3%204.5%206%207.5%209%204.5%22/%3E%3C/svg%3E)]'
+
+// A field label used above inputs/selects. Consistent weight + spacing.
+function FieldLabel({ children, className = '' }) {
+  return <label className={`block text-[11px] font-medium text-muted mb-1 ${className}`}>{children}</label>
+}
 
 // ---------------------------------------------------------------------------
-// QueryPicker sub-component
+// QueryPicker
 // ---------------------------------------------------------------------------
 
-/**
- * A combined <select> + free-text input for picking a query_id.
- * Shows DEMO_QUERY_IDS as well as any additional ids passed via `extraIds`.
- */
 function QueryPicker({ value, onChange, extraIds = [] }) {
   const [freeText, setFreeText] = useState('')
   const allIds = useMemo(() => {
@@ -154,13 +321,9 @@ function QueryPicker({ value, onChange, extraIds = [] }) {
       <select
         className={selectCls}
         value={allIds.includes(value) ? value : '__custom__'}
-        onChange={e => {
-          if (e.target.value !== '__custom__') onChange(e.target.value)
-        }}
+        onChange={e => { if (e.target.value !== '__custom__') onChange(e.target.value) }}
       >
-        {allIds.map(id => (
-          <option key={id} value={id}>{id}</option>
-        ))}
+        {allIds.map(id => <option key={id} value={id}>{id}</option>)}
         <option value="__custom__">Custom...</option>
       </select>
       {(!allIds.includes(value) || !value) && (
@@ -169,10 +332,7 @@ function QueryPicker({ value, onChange, extraIds = [] }) {
           placeholder="Enter query_id..."
           className={inputCls}
           value={freeText || value}
-          onChange={e => {
-            setFreeText(e.target.value)
-            onChange(e.target.value)
-          }}
+          onChange={e => { setFreeText(e.target.value); onChange(e.target.value) }}
         />
       )}
     </div>
@@ -180,82 +340,241 @@ function QueryPicker({ value, onChange, extraIds = [] }) {
 }
 
 // ---------------------------------------------------------------------------
-// useColumnIntrospection — run a query once, return field names
+// useColumnIntrospection
 // ---------------------------------------------------------------------------
 
 function useColumnIntrospection(queryId) {
   const [columns, setColumns] = useState([])
   const [introspecting, setIntrospecting] = useState(false)
-
   useEffect(() => {
     if (!queryId) { setColumns([]); return }
     let cancelled = false
     setIntrospecting(true)
     runArrowQueryById(queryId).then(({ table }) => {
-      if (!cancelled) {
-        setColumns(table.schema.fields.map(f => f.name))
-        setIntrospecting(false)
-      }
-    }).catch(() => {
-      if (!cancelled) { setColumns([]); setIntrospecting(false) }
-    })
+      if (!cancelled) { setColumns(table.schema.fields.map(f => f.name)); setIntrospecting(false) }
+    }).catch(() => { if (!cancelled) { setColumns([]); setIntrospecting(false) } })
     return () => { cancelled = true }
   }, [queryId])
-
   return { columns, introspecting }
 }
 
 // ---------------------------------------------------------------------------
-// ColumnSelect — a small dropdown for picking a column from an introspected list
+// ColumnSelect
 // ---------------------------------------------------------------------------
 
 function ColumnSelect({ label, value, onChange, columns, optional = false }) {
   return (
-    <div className="space-y-1">
-      <label className="block text-xs font-medium text-muted">{label}</label>
-      <select
-        className={selectCls}
-        value={value || ''}
-        onChange={e => onChange(e.target.value)}
-      >
+    <div>
+      <FieldLabel>{label}</FieldLabel>
+      <select className={selectCls} value={value || ''} onChange={e => onChange(e.target.value)}>
         {optional && <option value="">— none —</option>}
-        {!optional && !value && <option value="">Select column...</option>}
-        {columns.map(col => (
-          <option key={col} value={col}>{col}</option>
-        ))}
+        {!optional && !value && <option value="">Select column…</option>}
+        {columns.map(col => <option key={col} value={col}>{col}</option>)}
       </select>
     </div>
   )
 }
 
 // ---------------------------------------------------------------------------
-// ChartConfig, KpiConfig, TableConfig — config panel for each widget type
+// ChartConfig / KpiConfig / TableConfig / FilterConfig / TextConfig
 // ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
+// Small shared config primitives
+// ---------------------------------------------------------------------------
+
+function SectionLabel({ children }) {
+  return <p className="text-[10px] font-semibold text-muted/80 uppercase tracking-[0.08em]">{children}</p>
+}
+
+/** A collapsible <details> section with a consistent header. */
+function Section({ title, icon: Icon, children, defaultOpen = true, right = null }) {
+  return (
+    <details open={defaultOpen} className="group rounded-xl border border-border bg-surface-2/30 overflow-hidden">
+      <summary className="flex items-center justify-between gap-2 px-3 h-9 cursor-pointer select-none list-none hover:bg-surface-2/50 transition-colors">
+        <span className="flex items-center gap-2 text-xs font-semibold text-fg">
+          {Icon && <Icon size={13} className="text-muted shrink-0" />}
+          {title}
+        </span>
+        <span className="flex items-center gap-2">
+          {right}
+          <svg className="w-3 h-3 text-muted/70 transition-transform group-open:rotate-90" viewBox="0 0 12 12" fill="none" stroke="currentColor" strokeWidth="1.5">
+            <path d="M4.5 3l3 3-3 3" strokeLinecap="round" strokeLinejoin="round" />
+          </svg>
+        </span>
+      </summary>
+      <div className="px-3 pb-3 pt-2 space-y-3 border-t border-border/60">{children}</div>
+    </details>
+  )
+}
+
+function ToggleRow({ label, checked, onChange, hint }) {
+  return (
+    <label className="flex items-center justify-between gap-3 cursor-pointer py-0.5">
+      <span className="text-xs font-medium text-fg">
+        {label}
+        {hint && <span className="block text-[10px] text-muted/70 font-normal mt-0.5">{hint}</span>}
+      </span>
+      <button
+        type="button"
+        role="switch"
+        aria-checked={checked}
+        onClick={() => onChange(!checked)}
+        className={`relative inline-flex h-5 w-9 shrink-0 items-center rounded-full transition-colors focus:outline-none focus:ring-2 focus:ring-ring/50 focus:ring-offset-1 focus:ring-offset-surface ${checked ? 'bg-primary' : 'bg-border'}`}
+      >
+        <span className={`inline-block h-4 w-4 rounded-full bg-white shadow transform transition-transform ${checked ? 'translate-x-4' : 'translate-x-0.5'}`} />
+      </button>
+    </label>
+  )
+}
+
+// ---------------------------------------------------------------------------
+// Chart series builder (combo / dual-axis) — writes encoding.y
+// ---------------------------------------------------------------------------
+
+/** Normalise encoding.y (string | SeriesDef[]) into an editable SeriesDef[]. */
+function normalizeSeries(encY, baseType) {
+  if (Array.isArray(encY)) {
+    return encY.map(s => ({ col: s.col ?? '', type: s.type ?? baseType, axis: s.axis === 'right' ? 'right' : 'left' }))
+  }
+  if (typeof encY === 'string' && encY) return [{ col: encY, type: baseType, axis: 'left' }]
+  return []
+}
+
+/** Serialise a SeriesDef[] back to the most compact encoding.y form. */
+function serializeSeries(list, baseType) {
+  if (list.length === 0) return ''
+  if (list.length === 1 && list[0].axis !== 'right' && list[0].type === baseType) return list[0].col
+  return list.map(s => ({ col: s.col, type: s.type, axis: s.axis }))
+}
 
 function ChartConfig({ widget, onChange }) {
   const { columns, introspecting } = useColumnIntrospection(widget.query_id)
   const enc = widget.encoding ?? {}
   const props = widget.props ?? {}
-
+  const baseType = widget.chart_type || 'bar'
   const setEncoding = (key, val) => onChange({ ...widget, encoding: { ...enc, [key]: val } })
-  const setChartType = val => onChange({ ...widget, chart_type: val })
+  const setProps = (key, val) => onChange({ ...widget, props: { ...props, [key]: val } })
+
+  const series = normalizeSeries(enc.y, baseType)
+  const writeSeries = (list) => onChange({ ...widget, encoding: { ...enc, y: serializeSeries(list, baseType) } })
+  const setSeries = (idx, patch) => writeSeries(series.map((s, i) => i === idx ? { ...s, ...patch } : s))
+  const addSeries = () => writeSeries([...series, { col: columns[0] ?? '', type: baseType, axis: 'left' }])
+  const removeSeries = (idx) => writeSeries(series.filter((_, i) => i !== idx))
+
+  // Pie & donut share the category + single-value model.
+  const isPie = baseType === 'pie' || baseType === 'donut'
+  const isHeatmap = baseType === 'heatmap'
+  const isGauge = baseType === 'gauge'
+  // Charts that use the cartesian series builder (X + Y series + color).
+  const usesSeries = !isPie && !isHeatmap && !isGauge
 
   return (
     <div className="space-y-3">
-      <div className="space-y-1">
-        <label className="block text-xs font-medium text-muted">Chart type</label>
-        <select
-          className={selectCls}
-          value={widget.chart_type || 'bar'}
-          onChange={e => setChartType(e.target.value)}
-        >
-          {CHART_TYPES.map(t => <option key={t} value={t}>{t}</option>)}
-        </select>
-      </div>
-      {introspecting && <p className="text-xs text-muted animate-pulse">Introspecting columns…</p>}
-      <ColumnSelect label="X column" value={enc.x} onChange={v => setEncoding('x', v)} columns={columns} />
-      <ColumnSelect label="Y column" value={enc.y} onChange={v => setEncoding('y', v)} columns={columns} />
-      <ColumnSelect label="Color column" value={enc.color} onChange={v => setEncoding('color', v)} columns={columns} optional />
+      <Section title="Chart type" icon={BarChart3}>
+        <div className="grid grid-cols-3 gap-1.5">
+          {CHART_TYPES.map(t => {
+            const Icon = CHART_ICONS[t] ?? BarChart3
+            const active = baseType === t
+            return (
+              <button key={t} onClick={() => onChange({ ...widget, chart_type: t })}
+                className={`flex flex-col items-center justify-center gap-1 h-14 px-1 text-[11px] font-medium rounded-lg border capitalize transition-all focus:outline-none focus:ring-2 focus:ring-ring/50 ${
+                  active ? 'bg-primary text-primary-fg border-primary shadow-sm' : 'bg-surface text-muted border-border hover:border-primary/60 hover:text-primary'
+                }`}>
+                <Icon size={17} className={active ? '' : 'text-muted'} />
+                {t}
+              </button>
+            )
+          })}
+        </div>
+      </Section>
+
+      <Section title="Data" icon={Database}>
+        {introspecting && <p className="text-xs text-muted animate-pulse">Introspecting columns…</p>}
+
+        {isGauge ? (
+          <ColumnSelect label="Value column" value={enc.value} onChange={v => setEncoding('value', v)} columns={columns} />
+        ) : isHeatmap ? (
+          <>
+            <ColumnSelect label="X column (category)" value={enc.x} onChange={v => setEncoding('x', v)} columns={columns} />
+            <ColumnSelect label="Y column (category)" value={typeof enc.y === 'string' ? enc.y : ''} onChange={v => setEncoding('y', v)} columns={columns} />
+            <ColumnSelect label="Value column (heat)" value={enc.value} onChange={v => setEncoding('value', v)} columns={columns} />
+          </>
+        ) : (
+          <>
+            <ColumnSelect label={isPie ? 'Category column' : (baseType === 'hbar' ? 'Category (Y) column' : 'X column')} value={enc.x} onChange={v => setEncoding('x', v)} columns={columns} />
+
+        {isPie ? (
+          <ColumnSelect label="Value column" value={typeof enc.y === 'string' ? enc.y : ''} onChange={v => setEncoding('y', v)} columns={columns} />
+        ) : (
+          <div className="space-y-2">
+            <div className="flex items-center justify-between">
+              <FieldLabel className="mb-0">Series (Y)</FieldLabel>
+              <button onClick={addSeries}
+                className="flex items-center gap-1 text-[11px] font-medium pl-1.5 pr-2 h-6 rounded-lg border border-dashed border-border hover:border-primary text-muted hover:text-primary transition-colors focus:outline-none focus:ring-2 focus:ring-ring/50">
+                <Plus size={12} /> Add series
+              </button>
+            </div>
+            {series.length === 0 && (
+              <p className="text-xs text-muted/70 rounded-lg border border-dashed border-border bg-surface-2/30 px-3 py-2 text-center">
+                No series yet — add one to plot data.
+              </p>
+            )}
+            {series.map((s, idx) => (
+              <div key={idx} className="rounded-lg border border-border p-2 space-y-1.5 bg-surface">
+                <div className="flex items-center gap-1.5">
+                  <select className={`${selectCls} flex-1`} value={s.col || ''} onChange={e => setSeries(idx, { col: e.target.value })}>
+                    {!s.col && <option value="">Select column…</option>}
+                    {columns.map(c => <option key={c} value={c}>{c}</option>)}
+                  </select>
+                  <button onClick={() => removeSeries(idx)} title="Remove series"
+                    className="w-7 h-7 shrink-0 flex items-center justify-center rounded-lg border border-transparent hover:border-red-300 hover:bg-red-50 text-muted hover:text-red-500 transition-colors">
+                    <Trash2 size={13} />
+                  </button>
+                </div>
+                <div className="flex gap-1.5">
+                  <select className={`${selectCls} flex-1`} value={s.type} onChange={e => setSeries(idx, { type: e.target.value })}>
+                    {SERIES_TYPES.map(t => <option key={t} value={t}>{t}</option>)}
+                  </select>
+                  <div className="flex h-8 rounded-lg border border-border overflow-hidden shrink-0">
+                    {['left', 'right'].map(ax => (
+                      <button key={ax} onClick={() => setSeries(idx, { axis: ax })}
+                        className={`w-8 text-[11px] font-medium transition-colors ${s.axis === ax ? 'bg-primary text-primary-fg' : 'bg-surface text-muted hover:text-primary'}`}
+                        title={`${ax} y-axis`}>
+                        {ax === 'left' ? 'L' : 'R'}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+
+            {usesSeries && <ColumnSelect label="Group / color column" value={enc.color} onChange={v => setEncoding('color', v)} columns={columns} optional />}
+          </>
+        )}
+      </Section>
+
+      {(usesSeries || isGauge) && (
+        <Section title="Display" defaultOpen={false} icon={SlidersHorizontal}>
+          {usesSeries && (
+            <ToggleRow label="Stack series" hint="Bar / line / area share a stack" checked={props.stack === true || typeof props.stack === 'string'} onChange={v => setProps('stack', v)} />
+          )}
+          {isGauge && (
+            <div>
+              <FieldLabel>Max (gauge range)</FieldLabel>
+              <input type="number" className={inputCls} value={props.max ?? ''} placeholder="auto (value × 1.5)"
+                onChange={e => setProps('max', e.target.value === '' ? undefined : (parseFloat(e.target.value) || undefined))} />
+            </div>
+          )}
+          <div>
+            <FieldLabel>Height (px)</FieldLabel>
+            <input type="number" min={120} max={1200} className={inputCls} value={props.height ?? 260}
+              onChange={e => setProps('height', parseInt(e.target.value, 10) || 260)} />
+          </div>
+        </Section>
+      )}
     </div>
   )
 }
@@ -264,204 +583,968 @@ function KpiConfig({ widget, onChange }) {
   const { columns, introspecting } = useColumnIntrospection(widget.query_id)
   const enc = widget.encoding ?? {}
   const props = widget.props ?? {}
-
   const setEncoding = (key, val) => onChange({ ...widget, encoding: { ...enc, [key]: val } })
   const setProps = (key, val) => onChange({ ...widget, props: { ...props, [key]: val } })
-
+  const deltaFormat = props.deltaFormat || 'percent'
   return (
     <div className="space-y-3">
-      {introspecting && <p className="text-xs text-muted animate-pulse">Introspecting columns…</p>}
-      <ColumnSelect label="Value column" value={enc.value} onChange={v => setEncoding('value', v)} columns={columns} />
-      <div className="space-y-1">
-        <label className="block text-xs font-medium text-muted">Label</label>
-        <input
-          type="text"
-          className={inputCls}
-          value={props.label ?? ''}
-          onChange={e => setProps('label', e.target.value)}
-        />
-      </div>
-      <div className="space-y-1">
-        <label className="block text-xs font-medium text-muted">Format</label>
-        <select
-          className={selectCls}
-          value={props.format ?? 'number'}
-          onChange={e => setProps('format', e.target.value)}
-        >
-          {['number', 'integer', 'percent', 'currency'].map(f => (
-            <option key={f} value={f}>{f}</option>
-          ))}
-        </select>
-      </div>
+      <Section title="Data" icon={Database}>
+        {introspecting && <p className="text-xs text-muted animate-pulse">Introspecting columns…</p>}
+        <ColumnSelect label="Value column" value={enc.value} onChange={v => setEncoding('value', v)} columns={columns} />
+        <div>
+          <FieldLabel>Label</FieldLabel>
+          <input type="text" className={inputCls} value={props.label ?? ''} placeholder="e.g. Total revenue" onChange={e => setProps('label', e.target.value)} />
+        </div>
+        <div>
+          <FieldLabel>Format</FieldLabel>
+          <select className={selectCls} value={props.format ?? 'number'} onChange={e => setProps('format', e.target.value)}>
+            {['number', 'integer', 'percent', 'currency'].map(f => <option key={f} value={f}>{f}</option>)}
+          </select>
+        </div>
+      </Section>
+
+      <Section title="Delta & sparkline" defaultOpen={false} icon={TrendingUp}>
+        <ColumnSelect label="Comparison column" value={enc.compare} onChange={v => setEncoding('compare', v)} columns={columns} optional />
+        {enc.compare && (
+          <div>
+            <FieldLabel>Delta format</FieldLabel>
+            <div className="flex h-8 rounded-lg border border-border overflow-hidden">
+              {['percent', 'absolute'].map(f => (
+                <button key={f} onClick={() => setProps('deltaFormat', f)}
+                  className={`flex-1 text-[11px] font-medium capitalize transition-colors ${deltaFormat === f ? 'bg-primary text-primary-fg' : 'bg-surface text-muted hover:text-primary'}`}>
+                  {f}
+                </button>
+              ))}
+            </div>
+          </div>
+        )}
+        <ColumnSelect label="Sparkline column" value={enc.spark} onChange={v => setEncoding('spark', v)} columns={columns} optional />
+      </Section>
     </div>
   )
+}
+
+/** Coerce props.columns (array | comma-string | undefined) to a string[]. */
+function columnsToArray(raw) {
+  if (Array.isArray(raw)) return raw
+  if (typeof raw === 'string' && raw) return raw.split(',').map(c => c.trim()).filter(Boolean)
+  return []
 }
 
 function TableConfig({ widget, onChange }) {
+  const { columns: allCols, introspecting } = useColumnIntrospection(widget.query_id)
   const props = widget.props ?? {}
   const setProps = (key, val) => onChange({ ...widget, props: { ...props, [key]: val } })
 
+  const selected = columnsToArray(props.columns)
+  const toggleCol = (col) => {
+    const next = selected.includes(col) ? selected.filter(c => c !== col) : [...selected, col]
+    setProps('columns', next)
+  }
+  // Columns the formatting editors operate on: explicit selection, else all.
+  const fmtCols = selected.length > 0 ? selected : allCols
+
   return (
     <div className="space-y-3">
-      <div className="space-y-1">
-        <label className="block text-xs font-medium text-muted">Row limit</label>
-        <input
-          type="number"
-          min={1}
-          max={10000}
-          className={inputCls}
-          value={props.limit ?? 50}
-          onChange={e => setProps('limit', parseInt(e.target.value, 10) || 50)}
+      <Section title="Rows & columns" icon={Table2}>
+        <div>
+          <FieldLabel>Row limit</FieldLabel>
+          <input type="number" min={1} max={10000} className={inputCls} value={props.limit ?? 50}
+            onChange={e => setProps('limit', parseInt(e.target.value, 10) || 50)} />
+        </div>
+        <div className="space-y-1.5">
+          <div className="flex items-center justify-between">
+            <FieldLabel className="mb-0">Visible columns</FieldLabel>
+            {selected.length > 0 && (
+              <button onClick={() => setProps('columns', [])} className="text-[10px] font-medium text-muted hover:text-primary transition-colors">show all</button>
+            )}
+          </div>
+          {introspecting && <p className="text-xs text-muted animate-pulse">Introspecting columns…</p>}
+          {!introspecting && allCols.length === 0 && (
+            <p className="text-xs text-muted/70 rounded-lg border border-dashed border-border bg-surface-2/30 px-3 py-2 text-center">Pick a query to list columns.</p>
+          )}
+          <div className="flex flex-wrap gap-1.5">
+            {allCols.map(col => {
+              const on = selected.length === 0 || selected.includes(col)
+              return (
+                <button key={col} onClick={() => toggleCol(col)}
+                  className={`px-2 h-7 text-[11px] font-mono rounded-lg border transition-all focus:outline-none focus:ring-2 focus:ring-ring/50 ${
+                    on && selected.includes(col) ? 'bg-primary text-primary-fg border-primary'
+                      : on ? 'bg-surface text-fg border-border hover:border-primary'
+                      : 'bg-surface text-muted/50 border-border line-through'
+                  }`}>
+                  {col}
+                </button>
+              )
+            })}
+          </div>
+          {allCols.length > 0 && <p className="text-[10px] text-muted/70">None selected → all columns shown.</p>}
+        </div>
+      </Section>
+
+      <Section title="Column formats" defaultOpen={false} icon={Hash}>
+        <ColumnFormatsEditor
+          columns={fmtCols}
+          value={widget.columnFormats ?? {}}
+          onChange={cf => onChange({ ...widget, columnFormats: cf })}
         />
-      </div>
-      <div className="space-y-1">
-        <label className="block text-xs font-medium text-muted">Columns (comma-separated, optional)</label>
-        <input
-          type="text"
-          placeholder="e.g. id, name, value"
-          className={inputCls}
-          value={props.columns ?? ''}
-          onChange={e => setProps('columns', e.target.value)}
+      </Section>
+
+      <Section title="Conditional formatting" defaultOpen={false} icon={Palette}>
+        <ConditionalRulesEditor
+          columns={fmtCols}
+          rules={widget.formattingRules ?? []}
+          onChange={rules => onChange({ ...widget, formattingRules: rules })}
         />
-      </div>
+      </Section>
     </div>
   )
 }
 
 // ---------------------------------------------------------------------------
-// ConfigPanel — right-side panel for the selected widget
+// ColumnFormatsEditor — widget.columnFormats: { col: { type, decimals, ... } }
 // ---------------------------------------------------------------------------
 
-function ConfigPanel({ widget, onChange, onRemove, extraQueryIds }) {
+function ColumnFormatsEditor({ columns, value, onChange }) {
+  const setFmt = (col, patch) => {
+    const next = { ...value }
+    const merged = { ...(next[col] ?? {}), ...patch }
+    if (!merged.type) delete next[col]
+    else next[col] = merged
+    onChange(next)
+  }
+  if (columns.length === 0) return <p className="text-xs text-muted/70 rounded-lg border border-dashed border-border bg-surface-2/30 px-3 py-2 text-center">No columns to format yet.</p>
+  return (
+    <div className="space-y-2">
+      {columns.map(col => {
+        const fmt = value[col] ?? {}
+        return (
+          <div key={col} className="rounded-lg border border-border p-2 space-y-1.5 bg-surface">
+            <div className="flex items-center gap-1.5">
+              <span className="flex-1 text-xs font-mono text-fg truncate">{col}</span>
+              <select className={`${selectCls} w-28`} value={fmt.type ?? ''} onChange={e => setFmt(col, { type: e.target.value })}>
+                <option value="">raw</option>
+                {COLUMN_FORMAT_TYPES.map(t => <option key={t} value={t}>{t}</option>)}
+              </select>
+            </div>
+            {(fmt.type === 'number' || fmt.type === 'currency' || fmt.type === 'percent') && (
+              <div className="flex gap-1.5">
+                <input type="number" min={0} max={10} placeholder="decimals" className={`${inputCls} flex-1`}
+                  value={fmt.decimals ?? ''} onChange={e => setFmt(col, { decimals: e.target.value === '' ? undefined : parseInt(e.target.value, 10) })} />
+                {fmt.type === 'currency' && (
+                  <input type="text" placeholder="USD" className={`${inputCls} w-20`}
+                    value={fmt.currency ?? ''} onChange={e => setFmt(col, { currency: e.target.value || undefined })} />
+                )}
+              </div>
+            )}
+            {fmt.type === 'date' && (
+              <select className={selectCls} value={fmt.dateStyle ?? 'short'} onChange={e => setFmt(col, { dateStyle: e.target.value })}>
+                {['short', 'medium', 'long', 'full'].map(s => <option key={s} value={s}>{s}</option>)}
+              </select>
+            )}
+          </div>
+        )
+      })}
+    </div>
+  )
+}
+
+// ---------------------------------------------------------------------------
+// ConditionalRulesEditor — widget.formattingRules: [{ column, op, value, ... }]
+// ---------------------------------------------------------------------------
+
+function ConditionalRulesEditor({ columns, rules, onChange }) {
+  const addRule = () => onChange([...rules, {
+    column: columns[0] ?? '', op: 'gt', value: '', scope: 'cell',
+    style: { backgroundColor: '#dcfce7', color: '#166534' },
+  }])
+  const setRule = (idx, patch) => onChange(rules.map((r, i) => i === idx ? { ...r, ...patch } : r))
+  const setStyle = (idx, patch) => onChange(rules.map((r, i) => i === idx ? { ...r, style: { ...r.style, ...patch } } : r))
+  const removeRule = (idx) => onChange(rules.filter((_, i) => i !== idx))
+
+  return (
+    <div className="space-y-2">
+      <div className="flex items-center justify-between">
+        <p className="text-[10px] text-muted/70">When a cell matches, apply a style.</p>
+        <button onClick={addRule}
+          className="text-[11px] font-medium px-2 h-6 rounded-lg border border-dashed border-border hover:border-primary text-muted hover:text-primary transition-colors focus:outline-none focus:ring-2 focus:ring-ring/50">+ Add rule</button>
+      </div>
+      {rules.length === 0 && <p className="text-xs text-muted/70 rounded-lg border border-dashed border-border bg-surface-2/30 px-3 py-2 text-center">No rules yet.</p>}
+      {rules.map((r, idx) => (
+        <div key={idx} className="rounded-lg border border-border p-2 space-y-1.5 bg-surface">
+          <div className="flex items-center gap-1.5">
+            <select className={`${selectCls} flex-1`} value={r.column ?? ''} onChange={e => setRule(idx, { column: e.target.value })}>
+              {!r.column && <option value="">column…</option>}
+              {columns.map(c => <option key={c} value={c}>{c}</option>)}
+            </select>
+            <select className={`${selectCls} w-24`} value={r.op ?? 'gt'} onChange={e => setRule(idx, { op: e.target.value })}>
+              {FORMAT_OPS.map(o => <option key={o} value={o}>{o}</option>)}
+            </select>
+            <button onClick={() => removeRule(idx)} title="Remove rule"
+              className="w-7 h-7 shrink-0 flex items-center justify-center text-xs rounded-lg border border-transparent hover:border-border hover:bg-surface-2 text-muted hover:text-fg transition-colors">✕</button>
+          </div>
+          <div className="flex gap-1.5">
+            <input type="text" placeholder="value" className={`${inputCls} flex-1`} value={r.value ?? ''} onChange={e => setRule(idx, { value: e.target.value })} />
+            {r.op === 'between' && (
+              <input type="text" placeholder="and" className={`${inputCls} flex-1`} value={r.value2 ?? ''} onChange={e => setRule(idx, { value2: e.target.value })} />
+            )}
+          </div>
+          <div className="flex items-center gap-2">
+            <div className="flex h-7 rounded-lg border border-border overflow-hidden">
+              {['cell', 'row'].map(sc => (
+                <button key={sc} onClick={() => setRule(idx, { scope: sc })}
+                  className={`px-2.5 text-[11px] font-medium capitalize transition-colors ${(r.scope ?? 'cell') === sc ? 'bg-primary text-primary-fg' : 'bg-surface text-muted hover:text-primary'}`}>{sc}</button>
+              ))}
+            </div>
+            <label className="flex items-center gap-1 text-[10px] text-muted cursor-pointer">bg
+              <input type="color" className="h-6 w-6 rounded border border-border bg-surface cursor-pointer" value={r.style?.backgroundColor ?? '#dcfce7'} onChange={e => setStyle(idx, { backgroundColor: e.target.value })} />
+            </label>
+            <label className="flex items-center gap-1 text-[10px] text-muted cursor-pointer">text
+              <input type="color" className="h-6 w-6 rounded border border-border bg-surface cursor-pointer" value={r.style?.color ?? '#166534'} onChange={e => setStyle(idx, { color: e.target.value })} />
+            </label>
+            <button onClick={() => setStyle(idx, { fontWeight: r.style?.fontWeight === 'bold' ? undefined : 'bold' })}
+              className={`w-7 h-7 text-[11px] rounded-lg border font-bold transition-colors ${r.style?.fontWeight === 'bold' ? 'border-primary text-primary bg-primary/5' : 'border-border text-muted hover:text-fg'}`}>B</button>
+          </div>
+        </div>
+      ))}
+    </div>
+  )
+}
+
+function FilterConfig({ widget, onChange }) {
+  const setField = (key, val) => onChange({ ...widget, [key]: val })
+  const props = widget.props ?? {}
+  const setProps = (key, val) => onChange({ ...widget, props: { ...props, [key]: val } })
+  return (
+    <div className="space-y-3">
+      <div>
+        <FieldLabel>Label</FieldLabel>
+        <input type="text" className={inputCls} value={props.label ?? ''} onChange={e => setProps('label', e.target.value)} />
+      </div>
+      <div>
+        <FieldLabel>Subtype</FieldLabel>
+        <select className={selectCls} value={widget.subtype ?? 'select'} onChange={e => setField('subtype', e.target.value)}>
+          {FILTER_SUBTYPES.map(s => <option key={s} value={s}>{s}</option>)}
+        </select>
+      </div>
+      <div>
+        <FieldLabel>Target variable</FieldLabel>
+        <input type="text" placeholder="e.g. selected_region" className={inputCls}
+          value={widget.target_var ?? ''} onChange={e => setField('target_var', e.target.value)} />
+      </div>
+      {(widget.subtype === 'select' || widget.subtype === 'multiselect') && (
+        <div>
+          <FieldLabel>Options query ID</FieldLabel>
+          <QueryPicker value={widget.options_query_id ?? ''} onChange={v => setField('options_query_id', v)} />
+        </div>
+      )}
+    </div>
+  )
+}
+
+function TextConfig({ widget, onChange }) {
+  return (
+    <div className="space-y-3">
+      <div>
+        <FieldLabel>Markdown content</FieldLabel>
+        <textarea rows={8} className={`${inputCls} h-auto py-1.5 resize-y font-mono text-xs leading-relaxed`}
+          value={widget.content ?? ''} onChange={e => onChange({ ...widget, content: e.target.value })}
+          placeholder="# Heading&#10;&#10;Enter **markdown** here..." />
+      </div>
+      <p className="text-[10px] text-muted/70">Supports standard Markdown.</p>
+    </div>
+  )
+}
+
+function PivotConfig({ widget, onChange }) {
+  const { columns, introspecting } = useColumnIntrospection(widget.query_id)
+  const enc = widget.encoding ?? {}
+  const props = widget.props ?? {}
+  const setEncoding = (key, val) => onChange({ ...widget, encoding: { ...enc, [key]: val } })
+  const setProps = (key, val) => onChange({ ...widget, props: { ...props, [key]: val } })
+  return (
+    <div className="space-y-3">
+      <Section title="Pivot dimensions" icon={Grid3x3}>
+        {introspecting && <p className="text-xs text-muted animate-pulse">Introspecting columns…</p>}
+        <ColumnSelect label="Rows (dimension)" value={enc.rows} onChange={v => setEncoding('rows', v)} columns={columns} />
+        <ColumnSelect label="Columns (dimension)" value={enc.cols} onChange={v => setEncoding('cols', v)} columns={columns} />
+        <ColumnSelect label="Value (measure)" value={enc.value} onChange={v => setEncoding('value', v)} columns={columns} optional />
+        <div>
+          <FieldLabel>Aggregation</FieldLabel>
+          <select className={selectCls} value={props.agg ?? 'sum'} onChange={e => setProps('agg', e.target.value)}>
+            {PIVOT_AGGS.map(a => <option key={a} value={a}>{a}</option>)}
+          </select>
+          <p className="text-[10px] text-muted/70 mt-1">With no value column, cells show the row count.</p>
+        </div>
+      </Section>
+    </div>
+  )
+}
+
+function SectionConfig({ widget, onChange }) {
+  const props = widget.props ?? {}
+  const setProps = (key, val) => onChange({ ...widget, props: { ...props, [key]: val } })
+  const align = props.align ?? 'left'
+  return (
+    <div className="space-y-3">
+      <div>
+        <FieldLabel>Title</FieldLabel>
+        <input type="text" className={inputCls} value={props.title ?? ''} placeholder="Section title" onChange={e => setProps('title', e.target.value)} />
+      </div>
+      <div>
+        <FieldLabel>Subtitle</FieldLabel>
+        <input type="text" className={inputCls} value={props.subtitle ?? ''} placeholder="Optional subtitle" onChange={e => setProps('subtitle', e.target.value)} />
+      </div>
+      <div>
+        <FieldLabel>Alignment</FieldLabel>
+        <div className="flex h-8 rounded-lg border border-border overflow-hidden">
+          {['left', 'center', 'right'].map(a => (
+            <button key={a} onClick={() => setProps('align', a)}
+              className={`flex-1 text-[11px] font-medium capitalize transition-colors ${align === a ? 'bg-primary text-primary-fg' : 'bg-surface text-muted hover:text-primary'}`}>{a}</button>
+          ))}
+        </div>
+      </div>
+      <ToggleRow label="Show divider line" checked={props.divider !== false} onChange={v => setProps('divider', v)} />
+    </div>
+  )
+}
+
+// ---------------------------------------------------------------------------
+// DrilldownSection — chart click sets a target variable (cross-widget filter)
+// ---------------------------------------------------------------------------
+
+function DrilldownSection({ widget, onChange }) {
+  const dd = widget.drilldown ?? {}
+  const enabled = !!dd.target_var
+  const enc = widget.encoding ?? {}
+  // Candidate value fields = the chart's encoding columns (x is the usual one).
+  const fieldOptions = [enc.x, enc.color, enc.value, typeof enc.y === 'string' ? enc.y : null].filter(Boolean)
+  const setDD = (patch) => {
+    const next = { ...dd, ...patch }
+    onChange({ ...widget, drilldown: next.target_var ? next : undefined })
+  }
+  return (
+    <Section title="Drilldown / cross-filter" defaultOpen={false}
+      right={enabled ? <span className="text-[10px] text-primary font-medium">on</span> : null}>
+      <p className="text-[10px] text-muted/70 leading-relaxed">
+        Make this chart a filter source. Clicking a data point sets a dashboard
+        variable; other widgets bound to it (via Parameters) re-query.
+      </p>
+      <ToggleRow label="Enable click-to-filter" checked={enabled}
+        onChange={v => setDD({ target_var: v ? (dd.target_var || '') : '' })} />
+      {enabled && (
+        <>
+          <div>
+            <FieldLabel>Target variable</FieldLabel>
+            <input type="text" placeholder="e.g. region" className={inputCls}
+              value={dd.target_var ?? ''} onChange={e => setDD({ target_var: e.target.value })} />
+          </div>
+          <div>
+            <FieldLabel>Value field (optional)</FieldLabel>
+            <select className={selectCls} value={dd.value_field ?? ''} onChange={e => setDD({ value_field: e.target.value || undefined })}>
+              <option value="">— clicked category (x) —</option>
+              {fieldOptions.map(f => <option key={f} value={f}>{f}</option>)}
+            </select>
+            <p className="text-[10px] text-muted/70 mt-1">Defaults to the clicked point's category value.</p>
+          </div>
+        </>
+      )}
+    </Section>
+  )
+}
+
+// ---------------------------------------------------------------------------
+// WidgetLayoutSection — per-widget RGL constraints (static / min / max)
+// ---------------------------------------------------------------------------
+
+function WidgetLayoutSection({ widget, onChange }) {
+  const pos = widget.pos ?? {}
+  const setPos = (patch) => {
+    const next = { ...pos, ...patch }
+    Object.keys(next).forEach(k => { if (next[k] === '' || next[k] == null) delete next[k] })
+    onChange({ ...widget, pos: next })
+  }
+  const numField = (key, label, placeholder) => (
+    <div>
+      <FieldLabel>{label}</FieldLabel>
+      <input type="number" min={1} className={inputCls} placeholder={placeholder}
+        value={pos[key] ?? ''} onChange={e => setPos({ [key]: e.target.value === '' ? undefined : (parseInt(e.target.value, 10) || undefined) })} />
+    </div>
+  )
+  return (
+    <Section title="Layout constraints" defaultOpen={false}>
+      <ToggleRow label="Static (pin in place)" hint="Cannot be dragged or resized"
+        checked={!!pos.static} onChange={v => setPos({ static: v || undefined })} />
+      <div className="grid grid-cols-2 gap-2">
+        {numField('minW', 'Min width', 'cells')}
+        {numField('minH', 'Min height', 'cells')}
+        {numField('maxW', 'Max width', 'cells')}
+        {numField('maxH', 'Max height', 'cells')}
+      </div>
+    </Section>
+  )
+}
+
+// ---------------------------------------------------------------------------
+// ParamBindingSection
+// ---------------------------------------------------------------------------
+
+function ParamBindingSection({ widget, onChange, specVariables }) {
+  const params = widget.params ?? {}
+  const varNames = (specVariables ?? []).map(v => v.name)
+
+  const setParam = (paramName, value) => onChange({ ...widget, params: { ...params, [paramName]: value } })
+  const removeParam = (paramName) => { const next = { ...params }; delete next[paramName]; onChange({ ...widget, params: next }) }
+  const addParam = () => { const name = `param${Object.keys(params).length + 1}`; if (!(name in params)) setParam(name, '') }
+  const entries = Object.entries(params)
+
+  return (
+    <div className="space-y-2">
+      <div className="flex items-center justify-between">
+        <SectionLabel>Param bindings</SectionLabel>
+        <button onClick={addParam}
+          className="text-[11px] font-medium px-2 h-6 rounded-lg border border-dashed border-border hover:border-primary text-muted hover:text-primary transition-colors focus:outline-none focus:ring-2 focus:ring-ring/50">
+          + Add
+        </button>
+      </div>
+      {entries.length === 0 && <p className="text-xs text-muted/70 rounded-lg border border-dashed border-border bg-surface-2/30 px-3 py-2 text-center">No params bound.</p>}
+      {entries.map(([paramName, binding]) => {
+        const isRef = binding !== null && typeof binding === 'object' && 'ref' in binding
+        return (
+          <div key={paramName} className="rounded-lg border border-border p-2 space-y-1.5 bg-surface-2">
+            <div className="flex items-center gap-1.5">
+              <input type="text" className={`${inputCls} flex-1 font-mono text-xs`} value={paramName}
+                onChange={e => {
+                  const newName = e.target.value
+                  if (!newName || newName === paramName) return
+                  const next = {}
+                  for (const [k, v] of Object.entries(params)) next[k === paramName ? newName : k] = v
+                  onChange({ ...widget, params: next })
+                }} placeholder="param name" />
+              <button onClick={() => removeParam(paramName)}
+                className="text-xs px-1.5 py-0.5 rounded border border-transparent hover:border-border text-muted hover:text-fg transition-colors" title="Remove binding">✕</button>
+            </div>
+            <div className="flex gap-1">
+              <button onClick={() => setParam(paramName, isRef ? '' : { ref: varNames[0] ?? '' })}
+                className={`flex-1 text-xs py-0.5 rounded border transition-colors ${isRef ? 'border-primary text-primary bg-surface' : 'border-border text-muted hover:border-primary hover:text-primary'}`}>
+                {isRef ? '↔ Variable' : 'Variable'}
+              </button>
+              <button onClick={() => setParam(paramName, isRef ? '' : binding)}
+                className={`flex-1 text-xs py-0.5 rounded border transition-colors ${!isRef ? 'border-primary text-primary bg-surface' : 'border-border text-muted hover:border-primary hover:text-primary'}`}>
+                {!isRef ? '↔ Literal' : 'Literal'}
+              </button>
+            </div>
+            {isRef ? (
+              <select className={selectCls} value={binding.ref ?? ''} onChange={e => setParam(paramName, { ref: e.target.value })}>
+                {varNames.length === 0 && <option value="">— no variables defined —</option>}
+                {varNames.map(v => <option key={v} value={v}>{v}</option>)}
+                {binding.ref && !varNames.includes(binding.ref) && <option value={binding.ref}>{binding.ref} (not found)</option>}
+              </select>
+            ) : (
+              <input type="text" className={`${inputCls} font-mono text-xs`} placeholder="literal value"
+                value={typeof binding === 'string' ? binding : JSON.stringify(binding)}
+                onChange={e => {
+                  const raw = e.target.value
+                  try { setParam(paramName, JSON.parse(raw)) } catch { setParam(paramName, raw) }
+                }} />
+            )}
+          </div>
+        )
+      })}
+    </div>
+  )
+}
+
+// ---------------------------------------------------------------------------
+// VariablesEditor
+// ---------------------------------------------------------------------------
+
+function VariablesEditor({ variables, onChange }) {
+  const vars = variables ?? []
+  const addVar = () => onChange([...vars, { name: `var${vars.length + 1}`, type: 'text', default: '' }])
+  const removeVar = idx => onChange(vars.filter((_, i) => i !== idx))
+  const setVar = (idx, key, val) => onChange(vars.map((v, i) => i === idx ? { ...v, [key]: val } : v))
+
+  return (
+    <div className="space-y-2">
+      <div className="flex items-center justify-between">
+        <SectionLabel>Dashboard variables</SectionLabel>
+        <button onClick={addVar}
+          className="text-[11px] font-medium px-2 h-6 rounded-lg border border-dashed border-border hover:border-primary text-muted hover:text-primary transition-colors focus:outline-none focus:ring-2 focus:ring-ring/50">
+          + Add
+        </button>
+      </div>
+      {vars.length === 0 && <p className="text-xs text-muted/70 rounded-lg border border-dashed border-border bg-surface-2/30 px-3 py-2 text-center">No variables defined.</p>}
+      {vars.map((v, idx) => (
+        <div key={idx} className="rounded-lg border border-border p-2 space-y-1.5 bg-surface-2">
+          <div className="flex items-center gap-1.5">
+            <input type="text" className={`${inputCls} flex-1 font-mono text-xs`} placeholder="name"
+              value={v.name} onChange={e => setVar(idx, 'name', e.target.value)} />
+            <button onClick={() => removeVar(idx)}
+              className="text-xs px-1.5 py-0.5 rounded border border-transparent hover:border-border text-muted hover:text-fg transition-colors" title="Remove variable">✕</button>
+          </div>
+          <div className="flex gap-1.5">
+            <select className={`${selectCls} flex-1`} value={v.type ?? 'text'} onChange={e => setVar(idx, 'type', e.target.value)}>
+              {VARIABLE_TYPES.map(t => <option key={t} value={t}>{t}</option>)}
+            </select>
+            <input type="text" className={`${inputCls} flex-1`} placeholder="default"
+              value={v.default ?? ''} onChange={e => setVar(idx, 'default', e.target.value)} />
+          </div>
+          <ToggleRow label="Bind to URL" checked={!!v.url_bind} onChange={val => setVar(idx, 'url_bind', val || undefined)} />
+        </div>
+      ))}
+      <p className="text-[10px] text-muted/70 leading-relaxed">
+        URL-bound variables are seeded from <span className="font-mono text-muted">/d/:id?var=value</span> (URL wins
+        over the default) and filter changes update the URL so the view is shareable &amp; refresh-safe.
+      </p>
+    </div>
+  )
+}
+
+// ---------------------------------------------------------------------------
+// ConfigPanel
+// ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
+// BackgroundEditor — edits a background descriptor (dashboard or widget)
+// ---------------------------------------------------------------------------
+
+function BackgroundEditor({ value, onChange }) {
+  const bg = value ?? {}
+  const type = bg.type ?? 'none'
+  const set = (patch) => onChange({ ...bg, ...patch })
+  return (
+    <div className="space-y-2">
+      <div className="grid grid-cols-5 gap-1">
+        {BACKGROUND_TYPES.map(t => (
+          <button key={t} onClick={() => set({ type: t === 'none' ? undefined : t })}
+            className={`h-7 px-1.5 text-[11px] font-medium rounded-lg border capitalize transition-all focus:outline-none focus:ring-2 focus:ring-ring/50 ${
+              (type === t || (t === 'none' && !bg.type)) ? 'bg-primary text-primary-fg border-primary' : 'bg-surface text-muted border-border hover:border-primary hover:text-primary'
+            }`}>{t}</button>
+        ))}
+      </div>
+      {type === 'solid' && (
+        <div className="flex items-center gap-2">
+          <input type="color" className="h-8 w-10 shrink-0 rounded-lg border border-border bg-surface cursor-pointer" value={bg.color ?? '#0b0f1a'} onChange={e => set({ color: e.target.value })} />
+          <input type="text" className={`${inputCls} flex-1`} value={bg.color ?? ''} placeholder="#0b0f1a or any CSS color" onChange={e => set({ color: e.target.value })} />
+        </div>
+      )}
+      {type === 'gradient' && (
+        <div className="flex items-center gap-2">
+          <input type="color" className="h-8 w-10 shrink-0 rounded-lg border border-border bg-surface cursor-pointer" value={bg.from ?? '#6366f1'} onChange={e => set({ from: e.target.value })} />
+          <span className="text-xs text-muted">→</span>
+          <input type="color" className="h-8 w-10 shrink-0 rounded-lg border border-border bg-surface cursor-pointer" value={bg.to ?? '#ec4899'} onChange={e => set({ to: e.target.value })} />
+          <input type="number" className={`${inputCls} flex-1`} placeholder="angle" value={bg.angle ?? 135} onChange={e => set({ angle: parseInt(e.target.value, 10) })} />
+          <span className="text-xs text-muted">°</span>
+        </div>
+      )}
+      {type === 'image' && (
+        <input type="text" className={inputCls} placeholder="https://…/image.png" value={bg.imageUrl ?? ''} onChange={e => set({ imageUrl: e.target.value })} />
+      )}
+      {type === 'css' && (
+        <textarea rows={3} className={`${inputCls} h-auto py-1.5 font-mono text-xs resize-y`} placeholder="background: radial-gradient(…); border-radius: 16px;"
+          value={bg.css ?? ''} onChange={e => set({ css: e.target.value })} />
+      )}
+    </div>
+  )
+}
+
+// ---------------------------------------------------------------------------
+// WidgetAppearanceSection — widget.style + widget.html (full HTML flexibility)
+// ---------------------------------------------------------------------------
+
+const HTML_CHEATSHEET = '{{value}} · {{col:NAME}} · {{row.0.NAME}} · {{prop:NAME}}'
+
+function WidgetAppearanceSection({ widget, onChange }) {
+  const style = widget.style ?? {}
+  const setStyle = (patch) => {
+    const next = { ...style, ...patch }
+    Object.keys(next).forEach(k => { if (next[k] === '' || next[k] == null) delete next[k] })
+    onChange({ ...widget, style: Object.keys(next).length ? next : undefined })
+  }
+  const setBg = (bgVal) => {
+    const hasBg = bgVal && bgVal.type
+    setStyle({ background: hasBg ? bgVal : '' })
+  }
+  return (
+    <div className="space-y-3">
+      <Section title="Appearance" defaultOpen={false} icon={Palette}>
+        <div className="space-y-1">
+          <SectionLabel>Card background</SectionLabel>
+          <BackgroundEditor value={typeof style.background === 'object' ? style.background : undefined} onChange={setBg} />
+        </div>
+        <div className="grid grid-cols-2 gap-2">
+          <div>
+            <FieldLabel>Border</FieldLabel>
+            <input type="text" className={inputCls} placeholder="1px solid #333" value={typeof style.border === 'string' ? style.border : ''} onChange={e => setStyle({ border: e.target.value })} />
+          </div>
+          <div>
+            <FieldLabel>Radius</FieldLabel>
+            <input type="text" className={inputCls} placeholder="12px" value={style.borderRadius ?? ''} onChange={e => setStyle({ borderRadius: e.target.value })} />
+          </div>
+        </div>
+        <div>
+          <FieldLabel>Padding</FieldLabel>
+          <input type="text" className={inputCls} placeholder="8px 12px" value={style.padding ?? ''} onChange={e => setStyle({ padding: e.target.value })} />
+        </div>
+      </Section>
+
+      <Section title="Custom HTML" defaultOpen={false}
+        right={widget.html ? <span className="text-[10px] text-primary font-medium">active</span> : null}>
+        <p className="text-[10px] text-muted/70 leading-relaxed">
+          Replaces the default widget body with your own sanitized HTML. Tokens pull live query data:
+          <span className="block font-mono text-muted mt-0.5">{HTML_CHEATSHEET}</span>
+        </p>
+        <textarea rows={6} className={`${inputCls} h-auto py-1.5 font-mono text-xs resize-y`}
+          placeholder={'<div class="p-4">\n  <h2>{{prop:label}}</h2>\n  <p class="text-2xl">{{value}}</p>\n</div>'}
+          value={widget.html ?? ''} onChange={e => onChange({ ...widget, html: e.target.value || undefined })} />
+        {widget.html && (
+          <button onClick={() => onChange({ ...widget, html: undefined })}
+            className="text-xs text-muted hover:text-red-500 transition-colors">Clear custom HTML → use default widget</button>
+        )}
+      </Section>
+    </div>
+  )
+}
+
+// ---------------------------------------------------------------------------
+// DashboardPanel — dashboard-level settings: background, grid, variables
+// ---------------------------------------------------------------------------
+
+function DashboardPanel({ spec, onSpecChange }) {
+  const cols = spec.layout?.cols ?? 12
+  const rowHeight = spec.layout?.row_height ?? 60
+  const setLayout = (patch) => onSpecChange({ ...spec, layout: { ...spec.layout, ...patch } })
+  return (
+    <div className="p-4 space-y-3 overflow-y-auto h-full">
+      <h3 className="text-sm font-semibold text-fg">Dashboard</h3>
+
+      <Section title="Background" icon={Palette}>
+        <BackgroundEditor value={spec.background} onChange={bg => onSpecChange({ ...spec, background: bg && bg.type ? bg : undefined })} />
+      </Section>
+
+      <Section title="Grid" icon={Grid3x3}>
+        <div className="space-y-1">
+          <SectionLabel>Columns</SectionLabel>
+          <div className="flex flex-wrap gap-1.5">
+            {COLUMN_OPTIONS.map(c => (
+              <button key={c} onClick={() => setLayout({ cols: c })}
+                className={`px-2.5 py-1 text-xs font-medium rounded-lg border transition-all ${cols === c ? 'bg-primary text-primary-fg border-primary' : 'bg-surface text-fg border-border hover:border-primary hover:text-primary'}`}>{c}</button>
+            ))}
+          </div>
+        </div>
+        <div className="space-y-1">
+          <SectionLabel>Row height</SectionLabel>
+          <div className="flex flex-wrap gap-1.5">
+            {ROW_HEIGHT_OPTIONS.map(rh => (
+              <button key={rh} onClick={() => setLayout({ row_height: rh })}
+                className={`px-2.5 py-1 text-xs font-medium rounded-lg border transition-all ${rowHeight === rh ? 'bg-primary text-primary-fg border-primary' : 'bg-surface text-fg border-border hover:border-primary hover:text-primary'}`}>{rh}</button>
+            ))}
+          </div>
+        </div>
+      </Section>
+
+      <Section title="Layout & compaction" defaultOpen={false} icon={SlidersHorizontal}>
+        <div className="space-y-1">
+          <SectionLabel>Compaction mode</SectionLabel>
+          <div className="grid grid-cols-2 gap-1.5">
+            {COMPACTION_MODES.map(m => {
+              const active = (spec.layout?.compaction ?? 'free') === m.id
+              return (
+                <button key={m.id} onClick={() => setLayout({ compaction: m.id })} title={m.hint}
+                  className={`px-2 py-1.5 text-xs font-medium rounded-lg border text-left transition-all ${active ? 'bg-primary text-primary-fg border-primary' : 'bg-surface text-fg border-border hover:border-primary hover:text-primary'}`}>
+                  {m.label}
+                </button>
+              )
+            })}
+          </div>
+          <p className="text-[10px] text-muted/70">{COMPACTION_MODES.find(m => m.id === (spec.layout?.compaction ?? 'free'))?.hint}</p>
+        </div>
+        <div className="grid grid-cols-2 gap-2">
+          <div>
+            <FieldLabel>Margin X (px)</FieldLabel>
+            <input type="number" min={0} className={inputCls} value={spec.layout?.margin_x ?? 12}
+              onChange={e => setLayout({ margin_x: parseInt(e.target.value, 10) || 0 })} />
+          </div>
+          <div>
+            <FieldLabel>Margin Y (px)</FieldLabel>
+            <input type="number" min={0} className={inputCls} value={spec.layout?.margin_y ?? 12}
+              onChange={e => setLayout({ margin_y: parseInt(e.target.value, 10) || 0 })} />
+          </div>
+          <div>
+            <FieldLabel>Padding X (px)</FieldLabel>
+            <input type="number" min={0} className={inputCls} value={spec.layout?.padding_x ?? 0}
+              onChange={e => setLayout({ padding_x: parseInt(e.target.value, 10) || 0 })} />
+          </div>
+          <div>
+            <FieldLabel>Padding Y (px)</FieldLabel>
+            <input type="number" min={0} className={inputCls} value={spec.layout?.padding_y ?? 0}
+              onChange={e => setLayout({ padding_y: parseInt(e.target.value, 10) || 0 })} />
+          </div>
+        </div>
+      </Section>
+
+      <Section title="Variables" defaultOpen={false} icon={SlidersHorizontal}>
+        <VariablesEditor variables={spec?.variables} onChange={vars => onSpecChange?.({ ...spec, variables: vars })} />
+      </Section>
+    </div>
+  )
+}
+
+// ---------------------------------------------------------------------------
+// ConfigPanel — per-widget configuration
+// ---------------------------------------------------------------------------
+
+function ConfigPanel({ widget, onChange, onRemove, extraQueryIds, spec }) {
   if (!widget) {
     return (
       <div className="flex flex-col items-center justify-center h-full text-sm text-muted py-8 px-4 text-center">
         <svg className="w-8 h-8 text-muted/40 mb-3" fill="none" viewBox="0 0 24 24" stroke="currentColor">
           <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2" />
         </svg>
-        <p className="text-xs">Click a widget to configure it.</p>
+        <p className="text-xs">Select a widget to configure it.</p>
+        <p className="text-xs text-muted/60 mt-1">Background, grid &amp; variables live in the <span className="text-fg font-medium">Dashboard</span> tab.</p>
       </div>
     )
   }
 
+  const isDataWidget = ['kpi', 'metric', 'table', 'pivot', 'chart'].includes(widget.type)
   const setQueryId = qid => onChange({ ...widget, query_id: qid })
 
   return (
-    <div className="p-4 space-y-5 overflow-y-auto h-full">
-      <div className="flex items-center justify-between">
-        <h3 className="text-sm font-semibold text-fg capitalize">{widget.type} widget</h3>
-        <button
-          onClick={onRemove}
-          className="text-xs px-2 py-0.5 rounded-lg border border-transparent hover:border-border transition-colors"
-          style={{ color: '#ef4444' }}
-        >
-          Remove
+    <div className="p-4 space-y-4 overflow-y-auto h-full">
+      <div className="flex items-center justify-between gap-2">
+        <h3 className="flex items-center gap-2 text-sm font-semibold text-fg capitalize">
+          {(() => { const I = WIDGET_ICONS[widget.type]; return I ? <I size={15} className="text-primary" /> : null })()}
+          {widget.type} widget
+        </h3>
+        <button onClick={onRemove} title="Remove widget"
+          className="flex items-center gap-1 text-xs px-2 h-7 rounded-lg border border-transparent text-muted hover:text-red-500 hover:border-red-300 hover:bg-red-50 transition-colors">
+          <Trash2 size={13} /> Remove
         </button>
       </div>
 
-      {/* Query picker */}
-      <div className="space-y-1.5">
-        <label className="block text-xs font-medium text-muted">Query ID</label>
-        <QueryPicker value={widget.query_id} onChange={setQueryId} extraIds={extraQueryIds} />
-      </div>
-
-      <hr className="border-border" />
-
-      {/* Type-specific config */}
-      {widget.type === 'chart' && (
-        <ChartConfig widget={widget} onChange={onChange} />
-      )}
-      {widget.type === 'kpi' && (
-        <KpiConfig widget={widget} onChange={onChange} />
-      )}
-      {widget.type === 'table' && (
-        <TableConfig widget={widget} onChange={onChange} />
+      {isDataWidget && (
+        <div className="space-y-1.5">
+          <FieldLabel className="flex items-center gap-1.5"><Database size={12} /> Query</FieldLabel>
+          <QueryPicker value={widget.query_id} onChange={setQueryId} extraIds={extraQueryIds} />
+        </div>
       )}
 
-      {/* Widget id info */}
-      <p className="text-xs text-muted/60 pt-2">ID: {widget.id}</p>
+      {widget.type === 'chart' && <ChartConfig widget={widget} onChange={onChange} />}
+      {(widget.type === 'kpi' || widget.type === 'metric') && <KpiConfig widget={widget} onChange={onChange} />}
+      {widget.type === 'table' && <TableConfig widget={widget} onChange={onChange} />}
+      {widget.type === 'pivot' && <PivotConfig widget={widget} onChange={onChange} />}
+      {widget.type === 'filter' && <FilterConfig widget={widget} onChange={onChange} />}
+      {widget.type === 'text' && <TextConfig widget={widget} onChange={onChange} />}
+      {widget.type === 'section' && <SectionConfig widget={widget} onChange={onChange} />}
+
+      {widget.type === 'chart' && <DrilldownSection widget={widget} onChange={onChange} />}
+
+      {isDataWidget && (
+        <Section title="Parameters" defaultOpen={false} icon={SlidersHorizontal}>
+          <ParamBindingSection widget={widget} onChange={onChange} specVariables={spec?.variables} />
+        </Section>
+      )}
+
+      <WidgetLayoutSection widget={widget} onChange={onChange} />
+
+      <WidgetAppearanceSection widget={widget} onChange={onChange} />
+
+      <p className="text-[10px] text-muted/50 pt-1 font-mono">{widget.id}</p>
     </div>
   )
 }
 
 // ---------------------------------------------------------------------------
-// Palette — left sidebar
+// AddPanel — widget palette (lives in the right sidebar's "Add" mode)
 // ---------------------------------------------------------------------------
 
-function Palette({ onAdd }) {
-  const items = [
-    { type: 'kpi',   label: 'KPI',   icon: '▣', desc: 'Single big number' },
-    { type: 'table', label: 'Table', icon: '☰', desc: 'Data grid' },
-    { type: 'chart', label: 'Chart', icon: '▨', desc: 'Bar / line / scatter...' },
-  ]
+// Widget palette items — shared by AddPanel (sidebar) and the mobile bar.
+const PALETTE_ITEMS = [
+  { type: 'kpi',     label: 'KPI',     icon: Hash,        desc: 'Single big number' },
+  { type: 'metric',  label: 'Metric',  icon: TrendingUp,  desc: 'Stat tile: value + delta + spark' },
+  { type: 'table',   label: 'Table',   icon: Table2,      desc: 'Data grid' },
+  { type: 'pivot',   label: 'Pivot',   icon: Grid3x3,     desc: 'Rows × cols × measure matrix' },
+  { type: 'chart',   label: 'Chart',   icon: BarChart3,   desc: 'Bar / line / scatter…' },
+  { type: 'filter',  label: 'Filter',  icon: FilterIcon,  desc: 'Select / date / text filter' },
+  { type: 'text',    label: 'Text',    icon: Type,        desc: 'Markdown content block' },
+  { type: 'section', label: 'Section', icon: Heading,     desc: 'Section header / divider' },
+]
+
+/**
+ * AddPanel — the widget palette, styled to live inside the right sidebar.
+ * Clicking an item appends the widget via addWidget(type) and (because
+ * addWidget selects the new widget) the parent switches to the config tab.
+ */
+function AddPanel({ onAdd }) {
+  return (
+    <div className="p-3 space-y-3 overflow-y-auto h-full">
+      <p className="text-xs text-muted/80 leading-relaxed">
+        Pick a widget to drop onto the canvas. You'll jump straight to its settings.
+      </p>
+      <div className="space-y-2">
+        {PALETTE_ITEMS.map(item => {
+          const Icon = item.icon
+          return (
+          <button key={item.type} onClick={() => onAdd(item.type)} data-testid={`palette-add-${item.type}`}
+            className="w-full flex items-center gap-3 px-3 py-2.5 rounded-xl border border-border bg-surface hover:bg-surface-2 hover:border-primary text-fg transition-all group text-left focus:outline-none focus:ring-2 focus:ring-ring/60">
+            <span className="w-8 h-8 shrink-0 flex items-center justify-center rounded-lg bg-surface-2 text-muted group-hover:text-primary group-hover:bg-primary/10 transition-colors"><Icon size={16} /></span>
+            <div className="min-w-0">
+              <p className="text-sm font-medium text-fg group-hover:text-primary transition-colors">{item.label}</p>
+              <p className="text-[11px] text-muted truncate">{item.desc}</p>
+            </div>
+            <svg className="w-3.5 h-3.5 ml-auto shrink-0 text-muted/40 group-hover:text-primary transition-colors" viewBox="0 0 14 14" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M7 3v8M3 7h8" />
+            </svg>
+          </button>
+          )
+        })}
+      </div>
+    </div>
+  )
+}
+
+// ---------------------------------------------------------------------------
+// Live widget preview — memoised so it won't re-mount during drag/resize
+// ---------------------------------------------------------------------------
+
+/**
+ * Normalise a raw spec widget into the shape expected by each widget component.
+ * (Mirrors SpecRenderer's normalizeWidget.)
+ */
+function normalizeWidget(raw) {
+  const existing = raw.props ?? {}
+  const merged = {
+    subtype:     raw.subtype     ?? existing.subtype,
+    target_var:  raw.target_var  ?? existing.target_var,
+    content:     raw.content     ?? existing.content,
+    label:       raw.label       ?? existing.label,
+    placeholder: raw.placeholder ?? existing.placeholder,
+    ...existing,
+  }
+  return { ...raw, props: merged }
+}
+
+/**
+ * WidgetPreview — renders the REAL widget component for a given spec widget.
+ * Memoised on a stable `cacheKey` that is only `query_id + JSON(encoding)`.
+ * Position changes (x/y/w/h) do NOT trigger a re-render.
+ */
+const WidgetPreview = memo(function WidgetPreview({ widget }) {
+  const w = useMemo(() => normalizeWidget(widget), [widget])
+
+  // Wrap in VariableProvider so hooks inside widgets don't throw.
+  // Editor has no filter state, so variables are empty here.
+  try {
+    return (
+      <VariableProvider initialValues={{}}>
+        <div className="h-full w-full overflow-hidden">
+          {w.html ? <HtmlWidget widget={w} /> : (
+            <>
+              {w.type === 'chart'   && <ChartWidget   widget={w} />}
+              {w.type === 'kpi'     && <KpiWidget     widget={w} />}
+              {w.type === 'metric'  && <MetricWidget  widget={w} />}
+              {w.type === 'table'   && <TableWidget   widget={w} />}
+              {w.type === 'pivot'   && <PivotWidget   widget={w} />}
+              {w.type === 'filter'  && <FilterWidget  widget={w} options={[]} />}
+              {w.type === 'text'    && <TextWidget    widget={w} />}
+              {w.type === 'section' && <SectionWidget widget={w} />}
+              {!['chart','kpi','metric','table','pivot','filter','text','section'].includes(w.type) && (
+                <div className="flex items-center justify-center h-full text-xs text-muted">{w.type}</div>
+              )}
+            </>
+          )}
+        </div>
+      </VariableProvider>
+    )
+  } catch {
+    return <WidgetCardFallback widget={widget} />
+  }
+}, (prev, next) => {
+  // Only re-render if query_id, encoding, chart_type, props, or content changed.
+  // Do NOT re-render on pos changes (that's just a drag/resize).
+  const p = prev.widget
+  const n = next.widget
+  return (
+    p.query_id === n.query_id &&
+    p.chart_type === n.chart_type &&
+    JSON.stringify(p.encoding) === JSON.stringify(n.encoding) &&
+    JSON.stringify(p.props) === JSON.stringify(n.props) &&
+    p.content === n.content &&
+    p.html === n.html &&
+    JSON.stringify(p.columnFormats) === JSON.stringify(n.columnFormats) &&
+    JSON.stringify(p.formattingRules) === JSON.stringify(n.formattingRules) &&
+    // style must be in the comparator so per-widget background/transparent edits
+    // actually re-render the live preview (previously omitted → BUG).
+    JSON.stringify(p.style) === JSON.stringify(n.style) &&
+    JSON.stringify(p.drilldown) === JSON.stringify(n.drilldown) &&
+    p.type === n.type &&
+    p.subtype === n.subtype
+  )
+})
+
+/** Fallback card shown while loading or on error. */
+function WidgetCardFallback({ widget }) {
+  const accentCls = {
+    kpi:    'text-emerald-500',
+    table:  'text-primary',
+    chart:  'text-cyan-500',
+    filter: 'text-amber-500',
+    text:   'text-muted',
+  }[widget.type] ?? 'text-muted'
 
   return (
-    <div className="p-3 space-y-2">
-      <p className="text-xs font-semibold text-muted uppercase tracking-wider mb-3">Add widget</p>
-      {items.map(item => (
-        <button
-          key={item.type}
-          onClick={() => onAdd(item.type)}
-          className="w-full flex items-center gap-3 px-3 py-2.5 rounded-xl border border-dashed border-border bg-surface hover:bg-surface-2 hover:border-primary text-fg transition-all group text-left focus:outline-none focus:ring-2 focus:ring-ring"
-        >
-          <span className="text-lg leading-none group-hover:scale-110 transition-transform text-muted">{item.icon}</span>
-          <div>
-            <p className="text-sm font-medium text-fg group-hover:text-primary transition-colors">{item.label}</p>
-            <p className="text-xs text-muted">{item.desc}</p>
-          </div>
-        </button>
-      ))}
+    <div className="h-full w-full bg-surface overflow-hidden flex flex-col">
+      <div className="px-3 py-1.5 flex items-center gap-2 border-b border-border/50">
+        <span className={`text-[10px] font-bold uppercase tracking-widest ${accentCls}`}>{widget.type}</span>
+        {widget.query_id && <span className="text-[10px] text-muted/70 truncate">{widget.query_id}</span>}
+      </div>
+      <div className="px-3 py-2 text-xs text-muted flex-1 overflow-hidden">
+        {widget.type === 'chart' && <p className="truncate">{widget.chart_type ?? 'chart'} — <span className="font-mono">{widget.encoding?.x ?? '?'}</span> vs <span className="font-mono">{widget.encoding?.y ?? '?'}</span></p>}
+        {widget.type === 'kpi' && <p className="truncate">{widget.props?.label ?? 'KPI'} · <span className="font-mono">{widget.encoding?.value || '(no column)'}</span></p>}
+        {widget.type === 'table' && <p>Table · limit <span className="font-mono">{widget.props?.limit ?? 50}</span></p>}
+        {widget.type === 'filter' && <p className="truncate">{widget.subtype ?? 'select'} → <span className="font-mono">{widget.target_var || '(no var)'}</span></p>}
+        {widget.type === 'text' && <p className="line-clamp-3 italic text-muted/70">{(widget.content ?? '').split('\n')[0] || 'Empty text block'}</p>}
+      </div>
     </div>
   )
 }
 
 // ---------------------------------------------------------------------------
-// WidgetCard — the widget as shown on the canvas (while dragging)
+// WidgetHoverToolbar — top-right actions: duplicate + delete
 // ---------------------------------------------------------------------------
 
-function WidgetCard({ widget, selected, onClick }) {
-  // Token-based type accents using CSS custom properties
-  const typeStyle = {
-    kpi:   { accent: 'text-brand-teal', bg: 'bg-surface-2' },
-    table: { accent: 'text-primary',    bg: 'bg-surface-2' },
-    chart: { accent: 'text-brand-cyan', bg: 'bg-surface-2' },
-  }
-
-  const style = typeStyle[widget.type] ?? { accent: 'text-muted', bg: 'bg-surface-2' }
-
+function WidgetHoverToolbar({ widget, onDuplicate, onDelete, visible }) {
   return (
     <div
-      className={`
-        h-full w-full rounded-xl border-2 cursor-pointer select-none transition-all overflow-hidden bg-surface
-        ${selected
-          ? 'border-primary shadow-lg'
-          : 'border-border hover:border-primary/50'
-        }
-      `}
-      onClick={onClick}
+      className={`absolute top-1 right-1 flex items-center gap-1 z-10 transition-opacity ${visible ? 'opacity-100' : 'opacity-0 pointer-events-none'}`}
+      style={{ transition: 'opacity 0.15s' }}
     >
-      {/* Header */}
-      <div className={`px-3 py-2 border-b border-border flex items-center gap-2 ${selected ? 'bg-surface-2' : 'bg-surface'}`}>
-        <span className={`text-xs font-semibold uppercase tracking-wider ${style.accent}`}>{widget.type}</span>
-        {widget.query_id && (
-          <span className="text-xs text-muted truncate">{widget.query_id}</span>
-        )}
-        {selected && (
-          <span className="ml-auto text-xs text-primary font-medium">selected</span>
-        )}
-      </div>
-      {/* Body preview */}
-      <div className="px-3 py-2 text-xs text-muted">
-        {widget.type === 'chart' && (
-          <span>{widget.chart_type ?? 'chart'} — {widget.encoding?.x ?? '?'} vs {widget.encoding?.y ?? '?'}</span>
-        )}
-        {widget.type === 'kpi' && (
-          <span>{widget.props?.label ?? 'KPI'} ({widget.encoding?.value ?? '?'})</span>
-        )}
-        {widget.type === 'table' && (
-          <span>Table · limit {widget.props?.limit ?? 50}</span>
-        )}
-      </div>
+      <button
+        title="Duplicate widget (⌘D)"
+        onMouseDown={e => { e.stopPropagation(); e.preventDefault() }}
+        onClick={e => { e.stopPropagation(); onDuplicate(widget.id) }}
+        className="w-6 h-6 flex items-center justify-center rounded-md bg-surface border border-border hover:border-primary hover:text-primary text-muted shadow-sm transition-all text-xs"
+        data-testid={`widget-duplicate-${widget.id}`}
+      >
+        <svg width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round">
+          <rect x="1" y="3" width="7" height="8" rx="1"/>
+          <path d="M4 3V2a1 1 0 0 1 1-1h6a1 1 0 0 1 1 1v7a1 1 0 0 1-1 1h-1"/>
+        </svg>
+      </button>
+      <button
+        title="Delete widget (Delete)"
+        onMouseDown={e => { e.stopPropagation(); e.preventDefault() }}
+        onClick={e => { e.stopPropagation(); onDelete(widget.id) }}
+        className="w-6 h-6 flex items-center justify-center rounded-md bg-surface border border-border hover:border-red-400 hover:text-red-500 text-muted shadow-sm transition-all text-xs"
+        data-testid={`widget-delete-${widget.id}`}
+      >
+        <svg width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round">
+          <path d="M2 3h8M5 3V2h2v1M4.5 5l.5 4M7.5 5l-.5 4"/>
+          <rect x="2.5" y="3" width="7" height="7" rx="1"/>
+        </svg>
+      </button>
     </div>
   )
 }
@@ -474,7 +1557,40 @@ function WidgetCard({ widget, selected, onClick }) {
  * @param {{ boardId?: string|null, onSaved?: (board: object) => void }} props
  */
 export default function DashboardEditor({ boardId = null, onSaved }) {
-  const [spec, setSpec] = useState(DEFAULT_SPEC)
+  // ── History state ─────────────────────────────────────────────────────────
+  const [hist, setHist] = useState(() => createHistory(DEFAULT_SPEC))
+  const spec = hist.present
+
+  const pendingSpecRef = useRef(null)
+  const dragDebounceRef = useRef(null)
+  const isDraggingRef = useRef(false)
+  const frozenLayoutsRef = useRef(null)
+
+  // ── Dirty tracking ────────────────────────────────────────────────────────
+  // We track the spec at last save time to compute dirtyness.
+  const savedSpecRef = useRef(null) // null = never saved
+  const dirty = useMemo(() => {
+    if (savedSpecRef.current === null && spec.widgets.length === 0) return false
+    return JSON.stringify(spec) !== JSON.stringify(savedSpecRef.current)
+  }, [spec])
+
+  // beforeunload guard
+  useEffect(() => {
+    const handler = (e) => {
+      if (!dirty) return
+      e.preventDefault()
+      e.returnValue = 'You have unsaved changes. Leave?'
+    }
+    window.addEventListener('beforeunload', handler)
+    return () => window.removeEventListener('beforeunload', handler)
+  }, [dirty])
+
+  const commitSpec = useCallback((newSpec) => {
+    setHist(h => historyPush(h, typeof newSpec === 'function' ? newSpec(h.present) : newSpec))
+  }, [])
+
+  const setSpec = commitSpec
+
   const [selectedId, setSelectedId] = useState(null)
   const [preview, setPreview] = useState(false)
   const [saving, setSaving] = useState(false)
@@ -482,13 +1598,164 @@ export default function DashboardEditor({ boardId = null, onSaved }) {
   const [loading, setLoading] = useState(!!boardId)
   const [loadError, setLoadError] = useState(null)
   const [savedBoardId, setSavedBoardId] = useState(boardId)
-  // AI panel — toggles open/closed; 'ai' or 'config' determines right-panel mode
-  const [rightPanel, setRightPanel] = useState('config') // 'config' | 'ai'
+  // rightPanel ∈ {'add','config','chat','board'} — drives the single RHS panel.
+  const [rightPanel, setRightPanel] = useState('add')
+  const [rightCollapsed, setRightCollapsed] = useState(false)
+  const [hoveredId, setHoveredId] = useState(null)
+  // Mobile/tablet sheet state: which sheet is open (null = closed)
+  // 'palette' | 'config' | 'chat' | 'board' | null
+  const [mobileSheet, setMobileSheet] = useState(null)
 
-  // RGL needs explicit width — measure the canvas container
   const { width: canvasWidth, containerRef: canvasRef } = useContainerWidth({ initialWidth: 900 })
+  const { topbarSlot, setPageOwnsChat } = useUi()
+  const [device, setDevice] = useState('desktop')
+  // Mirror `device` into a ref so RGL's stable callbacks (commitLayout etc.)
+  // always route commits to the CURRENTLY active breakpoint without re-creating.
+  const deviceRef = useRef(device)
+  useEffect(() => { deviceRef.current = device }, [device])
 
-  // ── Load existing board ─────────────────────────────────────────────────
+  // Claim exclusive chat ownership while the editor is mounted so the global
+  // chat button + panel are suppressed (editor has its own Chat tab in the RHS).
+  useEffect(() => {
+    setPageOwnsChat(true)
+    return () => setPageOwnsChat(false)
+  }, [setPageOwnsChat])
+
+  // Active RGL breakpoint follows the device frame width (desktop→lg, …).
+  const activeBreakpoint = DEVICE_TO_BREAKPOINT[device]
+
+  // ── Responsive device frame ────────────────────────────────────────────────
+  // The canvas (canvasRef → canvasWidth) reflows automatically when the RHS
+  // sidebar opens/closes (flex + ResizeObserver). For tablet/mobile we constrain
+  // the grid to the device width so layouts can be designed responsively; when
+  // the device frame is wider than the available canvas (e.g. editing on a phone)
+  // it is scaled down to a zoomed-out view.
+  const frameWidth = device === 'desktop' ? (canvasWidth || 0) : DEVICE_WIDTHS[device]
+  const deviceZoom =
+    device !== 'desktop' && frameWidth > canvasWidth && canvasWidth > 0
+      ? canvasWidth / frameWidth
+      : 1
+  // Reserve vertical space for the scaled (zoomed-out) frame so the canvas
+  // scrolls. Use the active breakpoint's effective layout (override or fallback)
+  // so a taller tablet/mobile arrangement still reserves enough height.
+  const _rowH = spec.layout?.row_height ?? 60
+  const _bpOverrides = spec.responsive?.[activeBreakpoint] ?? {}
+  const _maxBottom = spec.widgets.reduce((m, w) => {
+    const o = _bpOverrides[w.id]
+    const y = (o?.y ?? w.pos?.y ?? 1) - 1
+    const h = o?.h ?? w.pos?.h ?? 4
+    return Math.max(m, y + h)
+  }, 0)
+  const deviceDashHeight = _maxBottom * (_rowH + 12) + 48
+
+  // ── Keyboard shortcuts ────────────────────────────────────────────────────
+  useEffect(() => {
+    const handleKeyDown = (e) => {
+      const tag = e.target?.tagName?.toLowerCase()
+      if (
+        tag === 'input' || tag === 'textarea' ||
+        e.target?.isContentEditable ||
+        e.target?.closest?.('.monaco-editor')
+      ) return
+
+      const isMac = navigator.platform?.toUpperCase().includes('MAC') || navigator.userAgent?.includes('Mac')
+      const ctrl = isMac ? e.metaKey : e.ctrlKey
+
+      // ── Ctrl-shortcuts ────────────────────────────────────────────────────
+      if (ctrl) {
+        if (e.key === 'z' && !e.shiftKey) {
+          e.preventDefault()
+          setHist(h => canUndo(h) ? historyUndo(h) : h)
+          return
+        }
+        if ((e.key === 'z' && e.shiftKey) || (!isMac && e.key === 'y')) {
+          e.preventDefault()
+          setHist(h => canRedo(h) ? historyRedo(h) : h)
+          return
+        }
+        if (e.key === 'd' || e.key === 'D') {
+          e.preventDefault()
+          if (selectedId) {
+            setHist(h => {
+              const prev = h.present
+              const source = prev.widgets.find(w => w.id === selectedId)
+              if (!source) return h
+              const cols = prev.layout?.cols ?? 12
+              const size = source.pos ?? WIDGET_SIZES[source.type] ?? WIDGET_SIZES.chart
+              const pos = findFreeSpot(prev.widgets, size.w, size.h, cols)
+              const clone = { ...source, id: genId(source.type), pos: { ...size, ...pos } }
+              const newSpec = { ...prev, widgets: [...prev.widgets, clone] }
+              setTimeout(() => setSelectedId(clone.id), 0)
+              return historyPush(h, newSpec)
+            })
+          }
+          return
+        }
+        return
+      }
+
+      // ── Non-ctrl shortcuts (need a selected widget for most) ──────────────
+
+      if (e.key === 'Escape') {
+        setSelectedId(null)
+        return
+      }
+
+      if ((e.key === 'Delete' || e.key === 'Backspace') && selectedId) {
+        e.preventDefault()
+        setHist(h => {
+          const newSpec = { ...h.present, widgets: h.present.widgets.filter(w => w.id !== selectedId) }
+          return historyPush(h, newSpec)
+        })
+        setSelectedId(null)
+        return
+      }
+
+      // Arrow keys — nudge (1 cell) or resize (shift + 1 cell). Edits apply to
+      // the ACTIVE breakpoint only: desktop writes widget.pos, tablet/mobile
+      // write the matching spec.responsive override for the selected widget.
+      if (['ArrowLeft','ArrowRight','ArrowUp','ArrowDown'].includes(e.key) && selectedId) {
+        e.preventDefault()
+        const dx = e.key === 'ArrowLeft' ? -1 : e.key === 'ArrowRight' ? 1 : 0
+        const dy = e.key === 'ArrowUp'   ? -1 : e.key === 'ArrowDown'  ? 1 : 0
+        const bp = DEVICE_TO_BREAKPOINT[deviceRef.current]
+
+        setHist(h => {
+          const prev = h.present
+          const isSm = bp === 'sm'
+          const cols = isSm ? 1 : (prev.layout?.cols ?? 12)
+          const w = prev.widgets.find(x => x.id === selectedId)
+          if (!w) return h
+          // Start from the effective pos at this breakpoint (override if any,
+          // else the canonical desktop pos), then nudge.
+          const base = bp === 'lg'
+            ? (w.pos ?? { x: 1, y: 1, w: 4, h: 4 })
+            : { ...(w.pos ?? { x: 1, y: 1, w: 4, h: 4 }), ...(prev.responsive?.[bp]?.[selectedId] ?? {}) }
+          const pos = { ...base }
+          const mins = WIDGET_MIN_SIZES[w.type] ?? { minW: 2, minH: 2 }
+          if (e.shiftKey) {
+            pos.w = Math.max(isSm ? 1 : mins.minW, Math.min(cols - pos.x + 1, pos.w + dx))
+            pos.h = Math.max(mins.minH, pos.h + dy)
+          } else {
+            pos.x = Math.max(1, Math.min(cols - pos.w + 1, pos.x + dx))
+            pos.y = Math.max(1, pos.y + dy)
+          }
+          // Route via the same single-breakpoint commit used by drag/resize.
+          const item = { i: selectedId, x: pos.x - 1, y: pos.y - 1, w: pos.w, h: pos.h }
+          return historyPush(h, applyLayoutCommit(prev, bp, [item]))
+        })
+        return
+      }
+    }
+
+    window.addEventListener('keydown', handleKeyDown)
+    return () => window.removeEventListener('keydown', handleKeyDown)
+  }, [selectedId])
+
+  const handleUndo = useCallback(() => setHist(h => canUndo(h) ? historyUndo(h) : h), [])
+  const handleRedo = useCallback(() => setHist(h => canRedo(h) ? historyRedo(h) : h), [])
+
+  // ── Load existing board ───────────────────────────────────────────────────
   useEffect(() => {
     if (!boardId) { setLoading(false); return }
     let cancelled = false
@@ -498,74 +1765,121 @@ export default function DashboardEditor({ boardId = null, onSaved }) {
         if (cancelled) return
         const loadedSpec = board?.config?.spec
         if (loadedSpec) {
-          setSpec(loadedSpec)
+          setHist(createHistory(loadedSpec))
+          savedSpecRef.current = loadedSpec
         } else {
-          // Board has no spec (legacy html-only board)
           setLoadError('This board has no spec yet. Starting with a blank canvas.')
         }
         setSavedBoardId(board.id ?? boardId)
         setLoading(false)
       })
       .catch(err => {
-        if (!cancelled) {
-          setLoadError(`Failed to load board: ${err.message}`)
-          setLoading(false)
-        }
+        if (!cancelled) { setLoadError(`Failed to load board: ${err.message}`); setLoading(false) }
       })
     return () => { cancelled = true }
   }, [boardId])
 
-  // ── Derived state ────────────────────────────────────────────────────────
+  // ── Derived state ─────────────────────────────────────────────────────────
   const selectedWidget = spec.widgets.find(w => w.id === selectedId) ?? null
 
+  // Per-breakpoint layouts: lg from canonical widget.pos; md/sm apply
+  // spec.responsive overrides with a fallback to the lg-derived layout. Each
+  // item keeps its per-type min sizes + authored static/min/max constraints.
   const rglLayouts = useMemo(() => {
-    const lg = spec.widgets.map(specToRgl)
-    const sm = spec.widgets.map((w, idx) => ({
-      i: w.id,
-      x: 0,
-      y: idx * (w.pos?.h ?? 4),
-      w: 1,
-      h: w.pos?.h ?? 4,
+    if (isDraggingRef.current && frozenLayoutsRef.current) return frozenLayoutsRef.current
+    const layouts = buildResponsiveLayouts(spec, spec.layout?.cols ?? 12, (w) => ({
+      minDefaults: WIDGET_MIN_SIZES[w.type] ?? { minW: 2, minH: 2 },
     }))
-    return { lg, md: lg, sm }
-  }, [spec.widgets])
+    frozenLayoutsRef.current = layouts
+    return layouts
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [spec.widgets, JSON.stringify(spec.responsive), spec.layout?.cols])
 
-  // ── Mutations ────────────────────────────────────────────────────────────
+  // RGL flexibility options (spec.layout.*). The editor defaults to free-place
+  // (noCompactor) so drag-to-place keeps working; authors can opt into packing.
+  const editorCompaction = spec.layout?.compaction ?? 'free'
+  const editorCompactionProps = editorCompaction === 'free'
+    ? { compactor: noCompactor }
+    : editorCompaction === 'horizontal' ? { compactType: 'horizontal' }
+    : editorCompaction === 'none' ? { compactType: null }
+    : { compactType: 'vertical' }
+  const editorMargin = [spec.layout?.margin_x ?? 12, spec.layout?.margin_y ?? 12]
+  const editorPadding = [spec.layout?.padding_x ?? 0, spec.layout?.padding_y ?? 0]
+
+  // ── Mutations ─────────────────────────────────────────────────────────────
 
   const addWidget = useCallback((type) => {
-    let widget
-    if (type === 'kpi') widget = makeKpiWidget()
-    else if (type === 'table') widget = makeTableWidget()
-    else widget = makeChartWidget()
-
-    setSpec(prev => ({ ...prev, widgets: [...prev.widgets, widget] }))
-    setSelectedId(widget.id)
+    setHist(h => {
+      const prev = h.present
+      const cols = prev.layout?.cols ?? 12
+      const size = WIDGET_SIZES[type] ?? WIDGET_SIZES.chart
+      const pos = findFreeSpot(prev.widgets, size.w, size.h, cols)
+      const widget = makeWidget(type, pos)
+      const newSpec = { ...prev, widgets: [...prev.widgets, widget] }
+      setTimeout(() => setSelectedId(widget.id), 0)
+      return historyPush(h, newSpec)
+    })
     setPreview(false)
   }, [])
 
   const removeWidget = useCallback((id) => {
-    setSpec(prev => ({ ...prev, widgets: prev.widgets.filter(w => w.id !== id) }))
+    setHist(h => historyPush(h, { ...h.present, widgets: h.present.widgets.filter(w => w.id !== id) }))
     setSelectedId(prev => prev === id ? null : prev)
   }, [])
 
-  const updateWidget = useCallback((updated) => {
-    setSpec(prev => ({
-      ...prev,
-      widgets: prev.widgets.map(w => w.id === updated.id ? updated : w),
-    }))
+  const duplicateWidget = useCallback((id) => {
+    setHist(h => {
+      const prev = h.present
+      const source = prev.widgets.find(w => w.id === id)
+      if (!source) return h
+      const cols = prev.layout?.cols ?? 12
+      const size = source.pos ?? WIDGET_SIZES[source.type] ?? WIDGET_SIZES.chart
+      const pos = findFreeSpot(prev.widgets, size.w, size.h, cols)
+      const clone = { ...source, id: genId(source.type), pos: { ...size, ...pos } }
+      const newSpec = { ...prev, widgets: [...prev.widgets, clone] }
+      setTimeout(() => setSelectedId(clone.id), 0)
+      return historyPush(h, newSpec)
+    })
   }, [])
 
-  /** Called by RGL when layout changes due to drag / resize. */
-  const handleLayoutChange = useCallback((currentLayout) => {
-    setSpec(prev => ({
-      ...prev,
-      widgets: prev.widgets.map(w => {
-        const item = currentLayout.find(l => l.i === w.id)
-        if (!item) return w
-        return { ...w, pos: rglToPos(item) }
-      }),
-    }))
+  const updateWidget = useCallback((updated) => {
+    setSpec(prev => ({ ...prev, widgets: prev.widgets.map(w => w.id === updated.id ? updated : w) }))
   }, [])
+
+  // Commit a drag/resize/arrow-nudge into the ACTIVE breakpoint only.
+  //   desktop (lg) → writes widget.pos (canonical)
+  //   tablet (md) / mobile (sm) → writes spec.responsive[bp][id] for moved
+  //   widgets, leaving the other breakpoints + untouched widgets alone.
+  const commitLayout = useCallback((finalLayout) => {
+    const bp = DEVICE_TO_BREAKPOINT[deviceRef.current]
+    setHist(h => {
+      const newSpec = applyLayoutCommit(h.present, bp, finalLayout)
+      frozenLayoutsRef.current = null
+      // Skip no-op commits (e.g. RGL's onLayoutChange firing on mount / device
+      // switch with the unchanged fallback layout) so we don't (a) pollute the
+      // undo history or (b) bake the inherited layout into an override and make
+      // a never-edited breakpoint look "customised".
+      if (JSON.stringify(newSpec) === JSON.stringify(h.present)) return h
+      return historyPush(h, newSpec)
+    })
+  }, [])
+
+  const handleLayoutChange = useCallback((currentLayout) => {
+    if (isDraggingRef.current) return
+    commitLayout(currentLayout)
+  }, [commitLayout])
+
+  const handleDragStart = useCallback(() => { isDraggingRef.current = true }, [])
+  const handleDragStop = useCallback((finalLayout) => {
+    isDraggingRef.current = false
+    commitLayout(finalLayout)
+  }, [commitLayout])
+
+  const handleResizeStart = useCallback(() => { isDraggingRef.current = true }, [])
+  const handleResizeStop = useCallback((finalLayout) => {
+    isDraggingRef.current = false
+    commitLayout(finalLayout)
+  }, [commitLayout])
 
   const handleSave = async () => {
     setSaving(true)
@@ -578,6 +1892,7 @@ export default function DashboardEditor({ boardId = null, onSaved }) {
         board = await post('/boards', { name: spec.title, config: { spec } })
         setSavedBoardId(board.id)
       }
+      savedSpecRef.current = spec  // mark clean
       onSaved?.(board)
     } catch (err) {
       setSaveError(err.message ?? 'Save failed.')
@@ -586,12 +1901,8 @@ export default function DashboardEditor({ boardId = null, onSaved }) {
     }
   }
 
-  /**
-   * Called by AskAIPanel when the user clicks "Replace canvas" or "Merge widgets".
-   */
   const handleAIApply = useCallback((aiSpec, mode) => {
     if (!aiSpec) return
-
     if (mode === 'replace') {
       setSpec({
         ...DEFAULT_SPEC,
@@ -603,121 +1914,209 @@ export default function DashboardEditor({ boardId = null, onSaved }) {
       setPreview(false)
       return
     }
-
     // mode === 'merge'
     setSpec(prev => {
-      const existingMaxY = prev.widgets.reduce((max, w) => {
-        const bottom = (w.pos?.y ?? 1) + (w.pos?.h ?? 4)
-        return Math.max(max, bottom)
-      }, 1)
-
+      const existingMaxY = prev.widgets.reduce((max, w) => Math.max(max, (w.pos?.y ?? 1) + (w.pos?.h ?? 4)), 1)
       const existingIds = new Set(prev.widgets.map(w => w.id))
-
       const incomingWidgets = (aiSpec.widgets ?? []).map(w => {
         let newId = w.id
-        if (existingIds.has(newId)) {
-          _idCounter += 1
-          newId = `${w.type ?? 'w'}_ai_${_idCounter}`
-        }
+        if (existingIds.has(newId)) { _idCounter += 1; newId = `${w.type ?? 'w'}_ai_${_idCounter}` }
         existingIds.add(newId)
-
-        const origY = w.pos?.y ?? 1
-        const minOrigY = (aiSpec.widgets ?? []).reduce(
-          (mn, iw) => Math.min(mn, iw.pos?.y ?? 1),
-          origY,
-        )
+        const minOrigY = (aiSpec.widgets ?? []).reduce((mn, iw) => Math.min(mn, iw.pos?.y ?? 1), w.pos?.y ?? 1)
         const offsetY = existingMaxY - minOrigY
-
-        return {
-          ...w,
-          id: newId,
-          pos: {
-            ...(w.pos ?? { x: 1, y: 1, w: 4, h: 4 }),
-            y: (w.pos?.y ?? 1) + offsetY,
-          },
-        }
+        return { ...w, id: newId, pos: { ...(w.pos ?? { x: 1, y: 1, w: 4, h: 4 }), y: (w.pos?.y ?? 1) + offsetY } }
       })
-
-      return {
-        ...prev,
-        widgets: [...prev.widgets, ...incomingWidgets],
-      }
+      return { ...prev, widgets: [...prev.widgets, ...incomingWidgets] }
     })
     setPreview(false)
   }, [])
 
-  // ── Loading state ───────────────────────────────────────────────────────
+  // Apply a full DashboardSpec (e.g. from SpecIO's view-as-code / import). This
+  // replaces the in-editor spec wholesale, normalising defaults like AI replace.
+  const applySpec = useCallback((nextSpec) => {
+    if (!nextSpec || typeof nextSpec !== 'object') return
+    setSpec({
+      ...DEFAULT_SPEC,
+      ...nextSpec,
+      layout: { cols: 12, row_height: 60, ...(nextSpec.layout ?? {}) },
+      widgets: Array.isArray(nextSpec.widgets) ? nextSpec.widgets : [],
+    })
+    setSelectedId(null)
+    setPreview(false)
+  }, [])
+
+  // ── Right-panel body (shared by desktop sidebar + mobile sheet) ───────────
+  const RIGHT_PANEL_TITLES = { add: 'Add widget', config: 'Configure', chat: 'Chat', board: 'Dashboard' }
+  const renderRightPanelBody = () => {
+    if (rightPanel === 'add') return <AddPanel onAdd={addWidget} />
+    if (rightPanel === 'board') return <DashboardPanel spec={spec} onSpecChange={setSpec} />
+    if (rightPanel === 'chat') return <ChatPanel boardId={savedBoardId} spec={spec} onApplySpec={handleAIApply} />
+    return (
+      <ConfigPanel
+        widget={selectedWidget}
+        onChange={updateWidget}
+        onRemove={() => selectedWidget && removeWidget(selectedWidget.id)}
+        extraQueryIds={[]}
+        spec={spec}
+      />
+    )
+  }
+
+  // ── Loading state ─────────────────────────────────────────────────────────
   if (loading) {
     return (
-      <div className="flex items-center justify-center py-24 text-sm text-muted animate-pulse bg-bg min-h-screen">
+      <div className="flex items-center justify-center flex-1 min-h-0 text-sm text-muted animate-pulse bg-bg">
         Loading board…
       </div>
     )
   }
 
-  // ── Render ───────────────────────────────────────────────────────────────
-  return (
-    <div className="flex flex-col h-full min-h-screen bg-bg">
+  // ── Render ────────────────────────────────────────────────────────────────
+  // Static shell: the whole editor is a fixed h-screen flex column that never
+  // scrolls. Only the center <main> canvas (and scrollable regions *inside*
+  // the fixed-width sidebar) scroll. Topbar + sidebar stay put on resize.
+  // The editor's toolbar is portaled INTO the single app top bar (AppTopbar's
+  // slot) so there is one bar, not a stacked second one. It closes over live
+  // editor state, so it updates normally.
+  const editorToolbar = (
+    <div className="flex items-center gap-1.5 w-full min-w-0 overflow-x-auto">
+      <input
+        type="text"
+        data-testid="editor-title"
+        className="min-w-[80px] max-w-[180px] sm:max-w-[260px] flex-shrink h-8 text-sm font-semibold border border-border rounded-lg px-2.5 bg-surface text-fg placeholder:text-muted/60 focus:outline-none focus:ring-2 focus:ring-ring/60 focus:border-transparent transition-colors font-display"
+        value={spec.title}
+        onChange={e => setSpec(prev => ({ ...prev, title: e.target.value }))}
+        placeholder="Dashboard title…"
+      />
 
-      {/* ── Top Bar ── */}
-      <header className="shrink-0 bg-surface border-b border-border px-4 py-3 flex items-center gap-3 flex-wrap">
-        <input
-          type="text"
-          className="flex-1 min-w-[160px] text-sm font-semibold border border-border rounded-lg px-3 py-1.5 bg-surface text-fg placeholder:text-muted focus:outline-none focus:ring-2 focus:ring-ring focus:border-transparent transition-colors font-display"
-          value={spec.title}
-          onChange={e => setSpec(prev => ({ ...prev, title: e.target.value }))}
-          placeholder="Dashboard title…"
-        />
+      {loadError && (
+        <span className="hidden lg:inline text-xs px-2 py-1 rounded-lg border whitespace-nowrap"
+          style={{ background: 'color-mix(in srgb, #f59e0b 8%, transparent)', color: '#d97706', borderColor: 'color-mix(in srgb, #f59e0b 20%, transparent)' }}>
+          {loadError}
+        </span>
+      )}
 
-        {loadError && (
-          <span className="text-xs px-2 py-1 rounded-lg border"
-            style={{ background: 'color-mix(in srgb, #f59e0b 8%, transparent)', color: '#d97706', borderColor: 'color-mix(in srgb, #f59e0b 20%, transparent)' }}>
-            {loadError}
+      <div className="flex items-center gap-1 ml-auto shrink-0">
+        {dirty && !saving && (
+          <span className="hidden sm:inline text-[11px] px-2 h-7 leading-7 rounded-lg border whitespace-nowrap"
+            style={{ background: 'color-mix(in srgb, #f59e0b 8%, transparent)', color: '#d97706', borderColor: 'color-mix(in srgb, #f59e0b 20%, transparent)' }}
+            title="You have unsaved changes">
+            Unsaved
           </span>
         )}
+        {saveError && <span className="hidden lg:inline text-xs whitespace-nowrap" style={{ color: '#ef4444' }}>{saveError}</span>}
 
-        <div className="flex items-center gap-2 ml-auto flex-wrap">
-          {saveError && (
-            <span className="text-xs" style={{ color: '#ef4444' }}>{saveError}</span>
-          )}
+        {!preview && (
+          <div className="flex items-center gap-1">
+            <button onClick={handleUndo} disabled={!canUndo(hist)} title="Undo (⌘Z / Ctrl+Z)"
+              className="w-8 h-8 flex items-center justify-center text-sm rounded-lg border border-border bg-surface text-fg hover:bg-surface-2 disabled:opacity-40 disabled:cursor-not-allowed transition-all">↩</button>
+            <button onClick={handleRedo} disabled={!canRedo(hist)} title="Redo (⇧⌘Z / Ctrl+Y)"
+              className="w-8 h-8 flex items-center justify-center text-sm rounded-lg border border-border bg-surface text-fg hover:bg-surface-2 disabled:opacity-40 disabled:cursor-not-allowed transition-all">↪</button>
+          </div>
+        )}
 
-          {/* Ask AI toggle — only shown in edit mode */}
-          {!preview && (
-            <button
-              onClick={() => setRightPanel(p => p === 'ai' ? 'config' : 'ai')}
-              className={`px-3 py-1.5 text-sm font-medium rounded-lg border transition-all focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-1 ${
-                rightPanel === 'ai'
-                  ? 'bg-primary text-primary-fg border-primary hover:opacity-90'
-                  : 'bg-surface text-fg border-border hover:bg-surface-2'
-              }`}
-              title="Toggle the Ask AI panel"
-            >
-              ✨ Ask AI
-            </button>
-          )}
+        {/* Panel toggle icon buttons — Add / Configure / Layout / Chat.
+            Visible on ALL breakpoints (desktop, tablet, mobile) in the topbar.
+            Each button toggles the RHS sidebar (desktop/tablet) or bottom sheet
+            (mobile) to the corresponding panel; clicking the active one collapses. */}
+        {!preview && (
+          <div className="flex items-center gap-0.5" data-testid="editor-panel-toggles">
+            {[
+              { id: 'add',    Icon: Plus,             mobileSheet: 'palette', title: 'Add widget',                   ariaLabel: 'Add widget panel'      },
+              { id: 'config', Icon: Settings2,         mobileSheet: 'config',  title: 'Configure selected widget',    ariaLabel: 'Configure panel'       },
+              { id: 'board',  Icon: LayoutGrid,        mobileSheet: 'board',   title: 'Layout, grid & variables',     ariaLabel: 'Layout panel'          },
+              { id: 'chat',   Icon: MessageSquare,     mobileSheet: 'chat',    title: 'AI Chat',                      ariaLabel: 'Chat panel'            },
+            ].map(seg => {
+              const isActiveDesktop = rightPanel === seg.id && !rightCollapsed
+              const isActiveMobile = mobileSheet === seg.mobileSheet
+              return (
+                <button
+                  key={seg.id}
+                  data-testid={`panel-toggle-${seg.id}`}
+                  title={seg.title}
+                  aria-label={seg.ariaLabel}
+                  aria-pressed={isActiveDesktop || isActiveMobile}
+                  onClick={() => {
+                    // Desktop/tablet: toggle RHS sidebar
+                    if (window.innerWidth >= 768) {
+                      if (rightPanel === seg.id && !rightCollapsed) {
+                        setRightCollapsed(true)
+                      } else {
+                        setRightPanel(seg.id)
+                        setRightCollapsed(false)
+                      }
+                    }
+                    // Mobile: toggle bottom sheet
+                    setMobileSheet(s => s === seg.mobileSheet ? null : seg.mobileSheet)
+                  }}
+                  className={`
+                    flex items-center justify-center w-9 h-8 rounded-lg border
+                    transition-colors duration-150 focus:outline-none focus:ring-2 focus:ring-ring/60
+                    ${(isActiveDesktop || isActiveMobile)
+                      ? 'bg-primary text-primary-fg border-primary shadow-sm'
+                      : 'bg-surface text-muted border-border hover:text-fg hover:bg-surface-2'
+                    }
+                  `}
+                >
+                  <seg.Icon size={15} strokeWidth={2} />
+                </button>
+              )
+            })}
+          </div>
+        )}
 
-          {/* Preview toggle */}
-          <button
-            onClick={() => setPreview(p => !p)}
-            className={`px-3 py-1.5 text-sm font-medium rounded-lg border transition-all focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-1 ${
-              preview
-                ? 'bg-primary text-primary-fg border-primary hover:opacity-90'
-                : 'bg-surface text-fg border-border hover:bg-surface-2'
-            }`}
-          >
-            {preview ? 'Edit' : 'Preview'}
-          </button>
+        <button onClick={() => setPreview(p => !p)}
+          className={`px-2.5 h-8 text-xs font-medium rounded-lg border transition-all focus:outline-none whitespace-nowrap ${
+            preview ? 'bg-primary text-primary-fg border-primary hover:opacity-90' : 'bg-surface text-fg border-border hover:bg-surface-2'
+          }`}>
+          {preview ? 'Edit' : 'Preview'}
+        </button>
 
-          {/* Save */}
-          <button
-            onClick={handleSave}
-            disabled={saving}
-            className="px-4 py-1.5 text-sm font-medium bg-primary text-primary-fg rounded-lg hover:opacity-90 disabled:opacity-60 transition-opacity focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-1"
-          >
-            {saving ? 'Saving…' : savedBoardId ? 'Save' : 'Create'}
-          </button>
+        <div className="hidden sm:block">
+          <SpecIO kind="dashboard" spec={spec} onApply={applySpec} board={savedBoardId} />
         </div>
-      </header>
+
+        <div className="hidden sm:block">
+          <ExportShareMenu board={savedBoardId} spec={spec} />
+        </div>
+
+        <button onClick={handleSave} disabled={saving} data-testid="editor-save-btn"
+          className="px-3 h-8 text-xs font-medium bg-primary text-primary-fg rounded-lg hover:opacity-90 disabled:opacity-60 transition-opacity focus:outline-none whitespace-nowrap">
+          {saving ? 'Saving…' : savedBoardId ? 'Save' : 'Create'}
+        </button>
+      </div>
+    </div>
+  )
+
+  // Render the mobile/tablet sheet body based on mobileSheet state
+  const renderSheetBody = () => {
+    if (mobileSheet === 'palette') return <AddPanel onAdd={(t) => { addWidget(t); setMobileSheet(null) }} />
+    if (mobileSheet === 'board') return <DashboardPanel spec={spec} onSpecChange={setSpec} />
+    if (mobileSheet === 'chat') return <ChatPanel boardId={savedBoardId} spec={spec} onApplySpec={handleAIApply} />
+    if (mobileSheet === 'config') return (
+      <ConfigPanel
+        widget={selectedWidget}
+        onChange={updateWidget}
+        onRemove={() => { if (selectedWidget) { removeWidget(selectedWidget.id); setMobileSheet(null) } }}
+        extraQueryIds={[]}
+        spec={spec}
+      />
+    )
+    return null
+  }
+
+  const SHEET_TITLES = {
+    palette: '+ Add Widget',
+    config: selectedWidget ? `Configure · ${selectedWidget.type}` : 'Configure',
+    chat: 'Chat',
+    board: 'Layout',
+  }
+
+  return (
+    <div className="flex flex-col flex-1 min-h-0 overflow-hidden bg-bg">
+
+      {/* Editor toolbar lives in the single app top bar (portaled into AppTopbar). */}
+      {topbarSlot && createPortal(editorToolbar, topbarSlot)}
 
       {/* ── Preview mode ── */}
       {preview ? (
@@ -726,152 +2125,261 @@ export default function DashboardEditor({ boardId = null, onSaved }) {
         </div>
       ) : (
         /* ── Edit mode ── */
-        <div className="flex flex-1 overflow-hidden">
-          {/* Left: palette */}
-          <aside className="w-48 shrink-0 border-r border-border bg-surface overflow-y-auto hidden sm:block">
-            <Palette onAdd={addWidget} />
-          </aside>
+        <div className="flex flex-1 min-h-0 overflow-hidden relative">
 
-          {/* Center: RGL canvas */}
-          <main ref={canvasRef} className="flex-1 overflow-auto p-4 bg-bg">
-            {/* Mobile palette */}
-            <div className="flex gap-2 mb-3 sm:hidden flex-wrap">
-              {['kpi', 'table', 'chart'].map(t => (
-                <button
-                  key={t}
-                  onClick={() => addWidget(t)}
-                  className="px-3 py-1.5 text-xs font-medium rounded-lg border border-dashed border-border bg-surface text-fg hover:bg-surface-2 hover:border-primary transition-all focus:outline-none focus:ring-2 focus:ring-ring"
-                >
-                  + {t.toUpperCase()}
-                </button>
-              ))}
+          {/* ── Tablet slide-over backdrop (md only, not on lg+) ── */}
+          {!rightCollapsed && (
+            <div
+              className="hidden md:block lg:hidden fixed inset-0 z-20 bg-black/30"
+              onClick={() => setRightCollapsed(true)}
+            />
+          )}
+
+          {/* Center: RGL canvas — the ONLY scrolling region in edit mode */}
+          <main
+            className="flex-1 min-w-0 overflow-auto p-3 sm:p-4 bg-bg"
+            data-testid="editor-canvas"
+            style={backgroundToCss(spec.background)}
+            onClick={(e) => {
+              // Click on empty canvas → deselect
+              if (e.target === e.currentTarget) setSelectedId(null)
+            }}
+          >
+            {/* Canvas top bar: device switcher + mobile action buttons */}
+            <div className="flex items-center gap-2 mb-3 flex-wrap">
+              {/* Device viewport switcher */}
+              <div className="flex items-center rounded-lg border border-border bg-surface overflow-hidden">
+                {DEVICES.map((d, i) => (
+                  <button key={d.id} onClick={() => setDevice(d.id)} title={d.label}
+                    className={`flex items-center gap-1.5 px-2.5 h-8 text-xs font-medium transition-colors ${i > 0 ? 'border-l border-border' : ''} ${
+                      device === d.id ? 'bg-primary text-primary-fg' : 'bg-surface text-muted hover:text-fg'
+                    }`}>
+                    <d.Icon size={14} />
+                    <span className="hidden sm:inline">{d.label}</span>
+                  </button>
+                ))}
+              </div>
+              {device !== 'desktop' && (
+                <span className="text-[10px] text-muted whitespace-nowrap">
+                  {DEVICE_WIDTHS[device]}px{deviceZoom < 1 ? ` · ${Math.round(deviceZoom * 100)}%` : ''}
+                </span>
+              )}
+              {device !== 'desktop' && (() => {
+                const custom = hasOverrides(spec, activeBreakpoint)
+                return (
+                  <div className="flex items-center gap-1.5 flex-wrap">
+                    <span
+                      title={custom
+                        ? 'This size has a custom layout — edits here only affect this breakpoint.'
+                        : 'This size inherits the desktop layout. Move/resize a widget to start a custom layout.'}
+                      className={`inline-flex items-center gap-1 text-[10px] font-medium px-1.5 h-5 rounded-md border whitespace-nowrap ${
+                        custom
+                          ? 'bg-primary/10 text-primary border-primary/30'
+                          : 'bg-surface-2 text-muted border-border'
+                      }`}>
+                      <span className={`w-1.5 h-1.5 rounded-full ${custom ? 'bg-primary' : 'bg-muted/50'}`} />
+                      {custom ? 'Custom layout' : 'Inherits desktop'}
+                    </span>
+                    {custom && (
+                      <button
+                        onClick={() => setSpec(prev => clearBreakpointOverrides(prev, activeBreakpoint))}
+                        title="Reset this size to the desktop layout"
+                        className="text-[10px] font-medium px-1.5 h-5 rounded-md border border-border bg-surface text-muted hover:text-fg hover:border-primary transition-colors focus:outline-none focus:ring-2 focus:ring-ring/50">
+                        Reset to desktop
+                      </button>
+                    )}
+                  </div>
+                )
+              })()}
+
+              {/* Mobile panel toggles are now in the topbar (panel-toggle-* buttons) */}
             </div>
 
             {spec.widgets.length === 0 ? (
-              <div className="flex flex-col items-center justify-center py-24 text-center bg-surface border-2 border-dashed border-border rounded-xl mx-2">
-                <svg className="w-10 h-10 text-muted/30 mb-3" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <div className="flex flex-col items-center justify-center py-16 sm:py-24 text-center bg-surface/60 border-2 border-dashed border-border rounded-2xl mx-2 h-full min-h-[50vh]">
+                <svg className="w-12 h-12 text-muted/25 mb-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1} d="M4 5a1 1 0 011-1h4a1 1 0 011 1v4a1 1 0 01-1 1H5a1 1 0 01-1-1V5zM14 5a1 1 0 011-1h4a1 1 0 011 1v4a1 1 0 01-1 1h-4a1 1 0 01-1-1V5zM4 15a1 1 0 011-1h4a1 1 0 011 1v4a1 1 0 01-1 1H5a1 1 0 01-1-1v-4zM14 15a1 1 0 011-1h4a1 1 0 011 1v4a1 1 0 01-1 1h-4a1 1 0 01-1-1v-4z" />
                 </svg>
-                <p className="text-sm text-muted mb-1">No widgets yet.</p>
-                <p className="text-xs text-muted/60">Add a widget from the palette on the left.</p>
+                <p className="text-sm font-medium text-fg mb-1">Your dashboard is empty</p>
+                <p className="text-xs text-muted/70 mb-5 px-4">
+                  <span className="md:hidden">Tap <strong>Add</strong> below, or </span>
+                  <span className="hidden md:inline">Use the <strong>Add</strong> panel, or </span>
+                  ask <span className="text-fg font-medium">Chat</span> to build one.
+                </p>
+                <div className="flex flex-wrap gap-2 justify-center px-4">
+                  {['kpi', 'table', 'chart', 'text'].map(t => (
+                    <button key={t} onClick={() => addWidget(t)}
+                      className="px-3 py-1.5 min-h-[44px] sm:min-h-0 text-xs font-medium rounded-lg border border-border bg-surface hover:border-primary hover:text-primary text-muted transition-all focus:outline-none focus:ring-2 focus:ring-ring/50">
+                      + {t.toUpperCase()}
+                    </button>
+                  ))}
+                </div>
               </div>
             ) : (
-              <ResponsiveGridLayout
-                width={canvasWidth}
-                className="layout"
-                layouts={rglLayouts}
-                breakpoints={{ lg: 1200, md: 768, sm: 0 }}
-                cols={{ lg: spec.layout.cols, md: spec.layout.cols, sm: 1 }}
-                rowHeight={spec.layout.row_height}
-                onLayoutChange={handleLayoutChange}
-                isDraggable
-                isResizable
-                margin={[12, 12]}
-                containerPadding={[0, 0]}
-                draggableHandle=".drag-handle"
+              <div
+                ref={canvasRef}
+                className="w-full"
+                onClick={(e) => {
+                  // Click directly on the RGL container background → deselect
+                  if (e.target === e.currentTarget) setSelectedId(null)
+                }}
               >
-                {spec.widgets.map(widget => (
-                  <div key={widget.id}>
-                    {/* Drag handle bar */}
-                    <div className="drag-handle h-5 bg-surface-2 hover:bg-surface cursor-grab active:cursor-grabbing flex items-center justify-center rounded-t-xl border-b border-border transition-colors">
-                      <span className="text-muted/50 text-xs select-none">⋮⋮⋮</span>
-                    </div>
-                    <div className="h-[calc(100%-1.25rem)]">
-                      <WidgetCard
-                        widget={widget}
-                        selected={selectedId === widget.id}
-                        onClick={() => setSelectedId(widget.id)}
-                      />
-                    </div>
-                  </div>
-                ))}
-              </ResponsiveGridLayout>
+                <div
+                  className={device === 'desktop' ? '' : 'mx-auto transition-all'}
+                  style={device === 'desktop' ? undefined : {
+                    width: frameWidth * deviceZoom,
+                    height: deviceZoom < 1 ? deviceDashHeight * deviceZoom : undefined,
+                  }}
+                >
+                <div
+                  className={device === 'desktop' ? '' : 'rounded-2xl border border-border shadow-md bg-bg overflow-hidden'}
+                  style={device === 'desktop' ? undefined : {
+                    width: frameWidth,
+                    transform: deviceZoom < 1 ? `scale(${deviceZoom})` : undefined,
+                    transformOrigin: 'top left',
+                  }}
+                >
+                <ResponsiveGridLayout
+                  width={frameWidth}
+                  className="layout"
+                  layouts={rglLayouts}
+                  breakpoints={{ lg: 1200, md: 768, sm: 0 }}
+                  cols={{ lg: spec.layout.cols, md: spec.layout.cols, sm: 1 }}
+                  rowHeight={spec.layout.row_height}
+                  onLayoutChange={handleLayoutChange}
+                  onDragStart={handleDragStart}
+                  onDragStop={handleDragStop}
+                  onResizeStart={handleResizeStart}
+                  onResizeStop={handleResizeStop}
+                  dragConfig={{ enabled: true, handle: '.drag-handle' }}
+                  resizeConfig={{ enabled: true, handles: ['s', 'e', 'se', 'sw', 'ne', 'n', 'w', 'nw'] }}
+                  {...editorCompactionProps}
+                  margin={editorMargin}
+                  containerPadding={editorPadding}
+                >
+                  {spec.widgets.map(widget => {
+                    const isSelected = selectedId === widget.id
+                    const isHovered = hoveredId === widget.id
+                    return (
+                      // Note: NO overflow-hidden here — the hover toolbar uses position:absolute
+                      // and must not be clipped. Inner areas handle their own overflow.
+                      <div
+                        key={widget.id}
+                        data-testid={`widget-${widget.id}`}
+                        onClick={(e) => { e.stopPropagation(); setSelectedId(widget.id); setRightCollapsed(false); setRightPanel(p => p === 'chat' ? p : 'config'); setMobileSheet('config') }}
+                        onMouseEnter={() => setHoveredId(widget.id)}
+                        onMouseLeave={() => setHoveredId(null)}
+                        style={styleToCss(widget.style)}
+                        className={`rounded-xl border-2 bg-surface transition-all relative flex flex-col ${
+                          isSelected ? 'border-primary shadow-lg' : 'border-border hover:border-primary/40'
+                        }`}
+                      >
+                        {/* Hover toolbar: duplicate + delete — positioned outside overflow area */}
+                        <WidgetHoverToolbar
+                          widget={widget}
+                          onDuplicate={duplicateWidget}
+                          onDelete={removeWidget}
+                          visible={isHovered || isSelected}
+                        />
+
+                        {/* Drag handle — top strip */}
+                        <div
+                          className="drag-handle h-6 shrink-0 bg-surface-2 hover:bg-primary/10 cursor-grab active:cursor-grabbing flex items-center gap-1.5 px-3 border-b border-border transition-colors select-none rounded-t-xl"
+                          title="Drag to move"
+                        >
+                          <svg width="12" height="12" viewBox="0 0 12 12" fill="none" className="text-muted/60 shrink-0">
+                            <circle cx="3" cy="3" r="1.2" fill="currentColor"/>
+                            <circle cx="9" cy="3" r="1.2" fill="currentColor"/>
+                            <circle cx="3" cy="6" r="1.2" fill="currentColor"/>
+                            <circle cx="9" cy="6" r="1.2" fill="currentColor"/>
+                            <circle cx="3" cy="9" r="1.2" fill="currentColor"/>
+                            <circle cx="9" cy="9" r="1.2" fill="currentColor"/>
+                          </svg>
+                          <span className="text-xs text-muted/70 truncate flex-1 capitalize">{widget.type}</span>
+                          {isSelected && (
+                            <span className="text-[10px] text-primary font-medium">selected</span>
+                          )}
+                        </div>
+
+                        {/* Live widget preview — scrolls/clips independently */}
+                        <div className="flex-1 min-h-0 overflow-hidden rounded-b-xl">
+                          <WidgetPreview widget={widget} />
+                        </div>
+                      </div>
+                    )
+                  })}
+                </ResponsiveGridLayout>
+                </div>
+                </div>
+              </div>
             )}
           </main>
 
-          {/* Right: config panel or Ask AI panel */}
-          <aside className={`shrink-0 border-l border-border bg-surface overflow-y-auto hidden md:flex md:flex-col transition-all ${rightPanel === 'ai' ? 'w-80' : 'w-64'}`}>
-            {/* Tab switcher */}
-            <div className="flex border-b border-border shrink-0">
-              <button
-                onClick={() => setRightPanel('config')}
-                className={`flex-1 py-2.5 text-xs font-medium transition-colors focus:outline-none ${
-                  rightPanel === 'config'
-                    ? 'text-primary border-b-2 border-primary bg-surface-2'
-                    : 'text-muted hover:text-fg hover:bg-surface-2'
-                }`}
-              >
-                Configure
-              </button>
-              <button
-                onClick={() => setRightPanel('ai')}
-                className={`flex-1 py-2.5 text-xs font-medium transition-colors focus:outline-none ${
-                  rightPanel === 'ai'
-                    ? 'text-primary border-b-2 border-primary bg-surface-2'
-                    : 'text-muted hover:text-fg hover:bg-surface-2'
-                }`}
-              >
-                ✨ Ask AI
-              </button>
-            </div>
-
-            {rightPanel === 'config' ? (
-              <ConfigPanel
-                widget={selectedWidget}
-                onChange={updateWidget}
-                onRemove={() => selectedWidget && removeWidget(selectedWidget.id)}
-                extraQueryIds={[]}
-              />
-            ) : (
-              <AskAIPanel onApply={handleAIApply} />
-            )}
-          </aside>
+          {/* ── Right sidebar ──
+              Desktop (lg+): always-visible 320px panel.
+              Tablet (md–lg): slide-over drawer (fixed, z-30), toggled by the top-bar buttons.
+              Mobile (<md): hidden — uses the bottom sheet instead. */}
+          {!rightCollapsed && (
+            <aside className={`
+              border-l border-border bg-surface flex flex-col overflow-hidden
+              hidden md:flex
+              lg:static lg:w-80 lg:shrink-0
+              md:fixed md:inset-y-0 md:right-0 md:z-30 md:w-80 md:shadow-2xl
+              lg:shadow-none
+            `}>
+              <div className="flex items-center justify-between px-3 h-9 border-b border-border shrink-0">
+                <span className="text-[11px] font-semibold uppercase tracking-wider text-muted">
+                  {RIGHT_PANEL_TITLES[rightPanel] ?? 'Configure'}
+                </span>
+                <button
+                  onClick={() => setRightCollapsed(true)}
+                  title="Collapse panel"
+                  aria-label="Collapse side panel"
+                  className="flex items-center justify-center w-7 h-7 rounded-lg text-muted hover:text-fg hover:bg-surface-2 transition-colors focus:outline-none focus:ring-2 focus:ring-ring"
+                >
+                  <PanelRightClose size={16} />
+                </button>
+              </div>
+              {/* Body scrolls WITHIN the fixed-width sidebar; the sidebar itself is static. */}
+              <div className="flex-1 min-h-0 overflow-y-auto flex flex-col">
+                {renderRightPanelBody()}
+              </div>
+            </aside>
+          )}
         </div>
       )}
 
-      {/* Mobile bottom sheet — config or Ask AI panel */}
-      {!preview && (rightPanel === 'ai' || selectedWidget) && (
-        <div className="md:hidden shrink-0 border-t border-border bg-surface max-h-72 overflow-y-auto flex flex-col">
-          {/* Tab switcher */}
-          <div className="flex border-b border-border shrink-0">
-            <button
-              onClick={() => setRightPanel('config')}
-              className={`flex-1 py-2.5 text-xs font-medium transition-colors focus:outline-none ${
-                rightPanel === 'config'
-                  ? 'text-primary border-b-2 border-primary bg-surface-2'
-                  : 'text-muted hover:text-fg hover:bg-surface-2'
-              }`}
-            >
-              Configure
-            </button>
-            <button
-              onClick={() => setRightPanel('ai')}
-              className={`flex-1 py-2.5 text-xs font-medium transition-colors focus:outline-none ${
-                rightPanel === 'ai'
-                  ? 'text-primary border-b-2 border-primary bg-surface-2'
-                  : 'text-muted hover:text-fg hover:bg-surface-2'
-              }`}
-            >
-              ✨ Ask AI
-            </button>
+      {/* ── Mobile bottom sheet (<md) ──
+          Slides up from the bottom when mobileSheet is set. A fixed overlay with
+          a drag handle and scrollable body. Tap the backdrop or × to dismiss. */}
+      {!preview && mobileSheet && (
+        <div className="md:hidden fixed inset-0 z-40 flex flex-col justify-end" style={{ pointerEvents: 'auto' }}>
+          {/* Backdrop */}
+          <div
+            className="absolute inset-0 bg-black/40"
+            onClick={() => setMobileSheet(null)}
+          />
+          {/* Sheet */}
+          <div className="relative bg-surface rounded-t-2xl border-t border-border flex flex-col max-h-[75vh] shadow-2xl">
+            {/* Sheet handle + header */}
+            <div className="flex items-center justify-between px-4 py-3 border-b border-border shrink-0">
+              <div className="w-10 h-1 rounded-full bg-border mx-auto absolute left-1/2 -translate-x-1/2 top-2" />
+              <span className="text-sm font-semibold text-fg mt-1">
+                {SHEET_TITLES[mobileSheet] ?? 'Panel'}
+              </span>
+              <button
+                onClick={() => setMobileSheet(null)}
+                aria-label="Close sheet"
+                className="w-8 h-8 flex items-center justify-center rounded-lg text-muted hover:text-fg hover:bg-surface-2 transition-colors"
+              >
+                <X size={16} />
+              </button>
+            </div>
+            {/* Sheet body — scrollable */}
+            <div className="flex-1 min-h-0 overflow-y-auto">
+              {renderSheetBody()}
+            </div>
           </div>
-
-          {rightPanel === 'config' ? (
-            selectedWidget ? (
-              <ConfigPanel
-                widget={selectedWidget}
-                onChange={updateWidget}
-                onRemove={() => removeWidget(selectedWidget.id)}
-                extraQueryIds={[]}
-              />
-            ) : (
-              <div className="flex items-center justify-center py-6 text-xs text-muted">
-                Select a widget to configure it.
-              </div>
-            )
-          ) : (
-            <AskAIPanel onApply={handleAIApply} />
-          )}
         </div>
       )}
     </div>

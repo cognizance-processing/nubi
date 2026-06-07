@@ -87,13 +87,20 @@ class InMemoryRepo:
     # Repo protocol implementation
     # ------------------------------------------------------------------
 
-    async def list(self, resource: str, org_id: str) -> list[dict[str, Any]]:
-        """Return all rows in *resource* that belong to *org_id*, sorted by created_at."""
+    async def list(
+        self, resource: str, org_id: str, project_id: str | None = None
+    ) -> list[dict[str, Any]]:
+        """Return all rows in *resource* that belong to *org_id*, sorted by created_at.
+
+        When *project_id* is provided the result is additionally scoped to that
+        project; when ``None`` all of the org's rows are returned.
+        """
         table = _validate_resource(resource)
         rows = [
             deepcopy(row)
             for row in self._store[table].values()
             if str(row["org_id"]) == str(org_id)
+            and (project_id is None or str(row.get("project_id")) == str(project_id))
         ]
         rows.sort(key=lambda r: r["created_at"])
         return rows
@@ -115,6 +122,7 @@ class InMemoryRepo:
         created_by: str,
         name: str,
         config: dict[str, Any],
+        project_id: str | None = None,
     ) -> dict[str, Any]:
         """Insert a new row and return the created dict."""
         table = _validate_resource(resource)
@@ -123,6 +131,7 @@ class InMemoryRepo:
         row: dict[str, Any] = {
             "id": row_id,
             "org_id": str(org_id),
+            "project_id": str(project_id) if project_id is not None else None,
             "created_by": str(created_by),
             "name": name,
             "config": deepcopy(config),

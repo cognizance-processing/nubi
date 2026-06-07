@@ -1,53 +1,101 @@
 /**
  * TableWidget.jsx — Spec-driven table widget for the SpecRenderer.
  *
+ * Renders the dashboard `table` widget on top of the shared, headless
+ * <DataGrid> (TanStack Table + react-virtual) so it gains MUI-DataGrid-Premium
+ * class features (multi-sort, per-column + global filter, pagination AND
+ * virtualization, column resize / reorder / pin / show-hide, row grouping +
+ * aggregation subtotals, CSV + Excel export, density toggle, sticky header)
+ * while PRESERVING every existing dashboard behaviour:
+ *
+ *   - param binding        → runArrowQueryById + useResolvedParams
+ *   - props.columns        → column selection / ordering
+ *   - props.limit          → row cap
+ *   - widget.columnFormats → value formatting via formatValue()
+ *   - widget.formattingRules → conditional cell/row styling via evalRules()
+ *
  * Props
  * -----
  * widget  {object}  A spec Widget object with type === 'table'.
- *                   Shape: { id, type, query_id, encoding, props:{limit,columns}, pos }
+ *                   Shape: { id, type, query_id, encoding,
+ *                            props:{limit,columns}, params?, columnFormats?,
+ *                            formattingRules?, pos }
  *
- * Behaviour
- * ---------
- * - Fetches query_id via runArrowQuery.
- * - Renders an HTML table limited to props.limit rows (default 50).
- * - If props.columns (array or comma-string) is provided, only those columns show.
- * - Scrollable container — fills widget height.
- * - Loading skeleton and error notice.
+ * The widget card background is intentionally transparent so widget.style
+ * (set by the SpecRenderer) shows through.
  */
 
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useMemo, useCallback } from 'react'
 import { runArrowQueryById } from '../../lib/wasmRuntime.js'
+import { evalRules, formatValue } from './conditionalFormat.js'
+import { useResolvedParams } from '../VariableStore.jsx'
+import DataGrid from '../../components/DataGrid.jsx'
+import { arrowTypeToColumnType } from '../../components/dataTableUtils.js'
 
-/** Convert an Arrow Table to a plain array of row objects (for the given columns). */
-function tableToRows(arrowTable, columns, limit) {
-  const cols = columns && columns.length > 0 ? columns : arrowTable.schema.fields.map(f => f.name)
-  const rows = []
+/**
+ * Convert an Arrow Table to { cols:[{key,label,type}], rows:[{...}] } limited
+ * to `limit` rows and (optionally) restricted/ordered by `columns`.
+ */
+function tableToGrid(arrowTable, columns, limit) {
+  const fields = arrowTable.schema.fields
+  const typeByName = {}
+  for (const f of fields) typeByName[f.name] = arrowTypeToColumnType(f.type)
+
+  const colNames =
+    columns && columns.length > 0 ? columns : fields.map((f) => f.name)
+
+  const cols = colNames.map((name) => ({
+    key: name,
+    label: name,
+    type: typeByName[name] ?? 'string',
+  }))
+
   const maxRows = Math.min(arrowTable.numRows, limit)
+  const vectors = {}
+  for (const c of cols) vectors[c.key] = arrowTable.getChild(c.key)
+
+  const rows = []
   for (let i = 0; i < maxRows; i++) {
     const row = {}
-    for (const col of cols) {
-      const child = arrowTable.getChild(col)
-      row[col] = child ? child.get(i) : null
+    for (const c of cols) {
+      const v = vectors[c.key]
+      const val = v ? v.get(i) : null
+      row[c.key] = typeof val === 'bigint' ? Number(val) : val
     }
     rows.push(row)
   }
   return { cols, rows }
 }
 
-function renderCell(val) {
-  if (val == null) return <span className="text-muted/50">—</span>
-  if (typeof val === 'boolean') return val ? 'true' : 'false'
-  if (typeof val === 'number') return val.toLocaleString()
-  return String(val)
-}
-
 export default function TableWidget({ widget }) {
-  const { query_id, props: wProps = {} } = widget
+  const {
+    query_id,
+    props: wProps = {},
+    formattingRules,
+    columnFormats,
+    params: widgetParams,
+  } = widget
+
   const limit = wProps.limit ?? 50
   const columnsRaw = wProps.columns ?? ''
   const columns = Array.isArray(columnsRaw)
     ? columnsRaw
-    : columnsRaw ? columnsRaw.split(',').map(c => c.trim()).filter(Boolean) : []
+    : columnsRaw
+    ? columnsRaw.split(',').map((c) => c.trim()).filter(Boolean)
+    : []
+
+  // Normalise so downstream code is always safe (stable refs for hook deps).
+  const rules = useMemo(
+    () => (Array.isArray(formattingRules) ? formattingRules : []),
+    [formattingRules],
+  )
+  const fmtMap = useMemo(
+    () => (columnFormats && typeof columnFormats === 'object' ? columnFormats : {}),
+    [columnFormats],
+  )
+
+  // Resolve widget params against the variable store — re-renders on var change.
+  const resolvedParams = useResolvedParams(widgetParams)
 
   const [data, setData] = useState(null) // { cols, rows }
   const [loading, setLoading] = useState(false)
@@ -61,9 +109,13 @@ export default function TableWidget({ widget }) {
       setLoading(true)
       setError(null)
       try {
-        const { table, cacheStatus } = await runArrowQueryById(query_id)
+        const hasParams = Object.keys(resolvedParams).length > 0
+        const { table, cacheStatus } = await runArrowQueryById(
+          query_id,
+          hasParams ? { namedParams: resolvedParams } : undefined,
+        )
         if (!cancelled) {
-          setData(tableToRows(table, columns, limit))
+          setData(tableToGrid(table, columns, limit))
           if (cacheStatus === 'SAMPLE') setError('Using sample data.')
         }
       } catch (err) {
@@ -75,71 +127,86 @@ export default function TableWidget({ widget }) {
 
     fetchData()
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [query_id, limit, columnsRaw])
+  }, [query_id, limit, columnsRaw, JSON.stringify(resolvedParams)])
 
-  if (loading) {
-    return (
-      <div className="flex items-center justify-center h-full text-sm text-muted animate-pulse">
-        Loading table…
-      </div>
-    )
-  }
+  // ── Column descriptors with columnFormats applied via renderCell ──────────
+  const gridColumns = useMemo(() => {
+    if (!data) return []
+    return data.cols.map((col) => {
+      const fmt = fmtMap[col.key]
+      const descriptor = { ...col }
+      if (fmt) {
+        // Apply column format both on-screen and on export.
+        descriptor.renderCell = (val) => {
+          if (val == null) return <span className="text-muted/50">—</span>
+          return formatValue(val, fmt)
+        }
+        descriptor.exportValue = (val) => (val == null ? '' : formatValue(val, fmt))
+      }
+      // Sensible aggregation default for numeric columns when grouping is used.
+      if (col.type === 'number') descriptor.aggregation = 'sum'
+      return descriptor
+    })
+  }, [data, fmtMap])
 
-  if (!data) {
-    return (
-      <div className="flex items-center justify-center h-full text-sm text-muted/60">
-        No data
-      </div>
-    )
-  }
+  // ── Conditional formatting: evalRules → per-row + per-cell styles ─────────
+  const colKeys = useMemo(() => (data ? data.cols.map((c) => c.key) : []), [data])
 
-  const { cols, rows } = data
+  // Cache evalRules() per row object so getRowStyle/getCellStyle share one pass.
+  // Intentionally rebuild the cache when `data` or `rules` change (cache keyed
+  // by row identity; stale entries would otherwise survive a rules edit).
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  const evalCache = useMemo(() => new WeakMap(), [data, rules])
+  const evalRow = useCallback(
+    (row) => {
+      let r = evalCache.get(row)
+      if (!r) {
+        r = evalRules(rules, row, colKeys)
+        evalCache.set(row, r)
+      }
+      return r
+    },
+    [evalCache, rules, colKeys],
+  )
+
+  const getRowStyle = useMemo(() => {
+    if (rules.length === 0) return undefined
+    return (row) => evalRow(row).rowStyle ?? null
+  }, [evalRow, rules.length])
+
+  const getCellStyle = useMemo(() => {
+    if (rules.length === 0) return undefined
+    return (row, colKey) => evalRow(row).cellStyles[colKey] ?? null
+  }, [evalRow, rules.length])
 
   return (
-    <div className="flex flex-col h-full overflow-hidden rounded-xl border border-border bg-surface">
+    <div className="flex flex-col h-full overflow-hidden">
       {error && (
-        <div className="px-3 py-1.5 text-xs border-b shrink-0"
-          style={{ background: 'color-mix(in srgb, #f59e0b 8%, transparent)', color: '#d97706', borderColor: 'color-mix(in srgb, #f59e0b 20%, transparent)' }}>
+        <div
+          className="px-3 py-1.5 text-xs border border-b-0 rounded-t-xl shrink-0"
+          style={{
+            background: 'color-mix(in srgb, #f59e0b 8%, transparent)',
+            color: '#d97706',
+            borderColor: 'color-mix(in srgb, #f59e0b 20%, transparent)',
+          }}
+        >
           {error}
         </div>
       )}
-      <div className="flex-1 overflow-auto">
-        <table className="w-full text-xs">
-          <thead className="sticky top-0 bg-surface-2 z-10">
-            <tr>
-              {cols.map(col => (
-                <th
-                  key={col}
-                  className="px-3 py-2 text-left font-semibold text-muted whitespace-nowrap border-b border-border"
-                >
-                  {col}
-                </th>
-              ))}
-            </tr>
-          </thead>
-          <tbody>
-            {rows.map((row, i) => (
-              <tr
-                key={i}
-                className={i % 2 === 0 ? 'bg-surface' : 'bg-surface-2'}
-              >
-                {cols.map(col => (
-                  <td key={col} className="px-3 py-1.5 text-fg whitespace-nowrap border-b border-border/50">
-                    {renderCell(row[col])}
-                  </td>
-                ))}
-              </tr>
-            ))}
-          </tbody>
-        </table>
-        {rows.length === 0 && (
-          <div className="flex items-center justify-center py-8 text-xs text-muted">
-            No rows returned.
-          </div>
-        )}
-      </div>
-      <div className="shrink-0 px-3 py-1.5 border-t border-border text-xs text-muted bg-surface-2">
-        {rows.length} rows shown (limit: {limit})
+      <div className="flex-1 min-h-0">
+        <DataGrid
+          columns={gridColumns}
+          rows={data ? data.rows : []}
+          loading={loading}
+          // Transparent card so widget.style (set by SpecRenderer) shows through.
+          className={error ? 'rounded-t-none' : ''}
+          pageSize={50}
+          density="compact"
+          exportFileName={`table-${query_id ?? 'widget'}`}
+          getRowStyle={getRowStyle}
+          getCellStyle={getCellStyle}
+          emptyMessage="No rows returned."
+        />
       </div>
     </div>
   )

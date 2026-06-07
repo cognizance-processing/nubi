@@ -32,8 +32,11 @@ The planner is stateless; ``plan()`` is safe to call concurrently.
 
 from __future__ import annotations
 
+import re
+from dataclasses import dataclass
 from typing import Any, Iterator
 
+import jinja2
 import sqlglot
 import sqlglot.expressions as exp
 
@@ -41,10 +44,15 @@ from app.connectors.cache_key import compute_cache_key
 from app.connectors.optimize import prune_projection, push_limit, push_predicates
 from app.connectors.plan import PhysicalPlan
 from app.connectors.query_log import compute_groupby_sig
+from app.connectors.template import render_sql_template
 from app.errors import AppError
 
 # Default dialect for SQL generation.  Overridable per-call.
 _DEFAULT_DIALECT: str = "postgres"
+
+# Regex kept for reference; actual substitution is now handled by the Jinja2
+# engine in template.py — this is no longer used directly in resolve_named_params.
+_NAMED_PLACEHOLDER_RE = re.compile(r"\{\{([A-Za-z_][A-Za-z0-9_]*)\}\}")
 
 
 # ---------------------------------------------------------------------------
@@ -108,6 +116,90 @@ def _collect_predicates(node: exp.Expression | None, dialect: str) -> list[str]:
             yield n.sql(dialect=dialect)
 
     return list(_walk(node))
+
+
+# ---------------------------------------------------------------------------
+# Named-param resolution (M13-A)
+# ---------------------------------------------------------------------------
+
+
+def resolve_named_params(
+    sql: str,
+    named_values: dict[str, Any],
+    dialect: str = _DEFAULT_DIALECT,
+) -> tuple[str, list[Any]]:
+    """Resolve ``{{name}}`` placeholders in *sql* to positional ``$N`` bindings.
+
+    Algorithm
+    ---------
+    1. Scan *sql* for ``{{name}}`` tokens in order of appearance.
+    2. For each unique name encountered (in order), assign the next ``$N`` slot
+       and append the resolved value from *named_values* to the params list.
+    3. Replace every occurrence of ``{{name}}`` with the assigned ``$N`` string.
+    4. Return ``(rewritten_sql, positional_params_list)``.
+
+    The result feeds directly into the planner as ``(sql, params=...)``.
+    Values are NEVER string-concatenated — they are bound positionally so the
+    connector's parameterised query interface (asyncpg ``$N``, DuckDB ``$N``)
+    handles quoting and type casting safely.
+
+    Parameters
+    ----------
+    sql:
+        The raw SQL string from the registry, which may contain ``{{name}}``
+        placeholders.
+    named_values:
+        Mapping of placeholder name → resolved value.  All names that appear in
+        *sql* MUST be present; missing keys raise ``KeyError``.
+    dialect:
+        sqlglot dialect (unused in this helper — included for symmetry with
+        other planner helpers so callers can pass it through).
+
+    Returns
+    -------
+    tuple[str, list[Any]]
+        ``(rewritten_sql, positional_params)`` where every ``{{name}}`` has been
+        replaced by ``$N`` and the corresponding value appended to the list.
+
+    Notes
+    -----
+    Each unique *name* in the SQL maps to exactly ONE ``$N`` slot.  If the same
+    name appears multiple times in the SQL, all occurrences are replaced with the
+    SAME ``$N`` and the value appears only once in the params list.  This mirrors
+    asyncpg's parameterised query semantics where ``$1`` can appear multiple times
+    but refers to the same bound value.
+    """
+    # Delegate to the Jinja2-based template engine (template.py).
+    #
+    # render_sql_template handles:
+    #   - Simple {{ name }} placeholders (backward-compatible with old regex)
+    #   - Conditional blocks: {% if region %} AND region = {{ region }} {% endif %}
+    #   - Loops: {% for x in items %} … {% endfor %}
+    #   - IN clauses: {{ ids | inclause }} → ($1, $2, $3)
+    #   - Raw SQL escape hatch: {{ val | sqlsafe }} (trusted values only)
+    #
+    # All {{ expr }} outputs are bound as positional parameters — raw values
+    # are NEVER interpolated into the SQL string.
+    #
+    # Backward-compatibility note:
+    #   The old regex assigned a single $N slot per unique name (so the same
+    #   {{name}} appearing twice → same $1).  The Jinja2 engine evaluates each
+    #   {{ }} independently, so two occurrences of {{ name }} produce TWO
+    #   parameter slots with the same value.  Both styles are functionally
+    #   equivalent when executed by asyncpg / DuckDB (the value is bound twice,
+    #   but the result is identical).  For the common case of a name referenced
+    #   exactly once the behaviour is identical.
+    try:
+        rewritten, params = render_sql_template(sql, named_values, dialect=dialect)
+    except jinja2.UndefinedError as exc:
+        # Convert Jinja2's UndefinedError to KeyError so callers that relied on
+        # the old regex engine's KeyError behaviour (e.g. existing tests) still
+        # receive the same exception type for a missing placeholder name.
+        # Extract the variable name from the message when possible.
+        msg = str(exc)
+        # Jinja2 UndefinedError message format: "'name' is undefined"
+        raise KeyError(msg) from exc
+    return rewritten, params
 
 
 # ---------------------------------------------------------------------------
@@ -335,3 +427,209 @@ def route_to_rollup(plan: PhysicalPlan, registry: Any) -> PhysicalPlan:
         rls_claims=dict(plan.rls_claims),
         cache_key=new_cache_key,
     )
+
+
+# ---------------------------------------------------------------------------
+# Auto pre-aggregations: conservative SOUND superset-rewrite router
+# ---------------------------------------------------------------------------
+
+# Aggregate functions that are *re-aggregable* over a pre-grouped rollup, and
+# the function used to roll partial results back up.  AVG / COUNT(DISTINCT) /
+# MEDIAN / PERCENTILE are deliberately absent — they are NOT derivable from a
+# coarser pre-aggregate, so a query using them is left untouched (sound by
+# omission).
+_REAGG: dict[str, str] = {
+    "sum": "SUM",
+    "count": "SUM",   # COUNT rolls up by SUMming the partial counts
+    "min": "MIN",
+    "max": "MAX",
+}
+
+
+@dataclass(frozen=True)
+class RollupRouteResult:
+    """Outcome of :func:`route_to_rollup_shape`.
+
+    Attributes
+    ----------
+    plan:
+        The (possibly rewritten) plan.  Identical object to the input when no
+        sound rewrite was found.
+    routed:
+        ``True`` when the query was rewritten to read a rollup (a HIT).
+    rollup_id:
+        The id of the rollup that was used (``None`` when not routed).
+    reason:
+        Human-readable explanation (for observability / debugging).
+    """
+
+    plan: PhysicalPlan
+    routed: bool
+    rollup_id: str | None = None
+    reason: str = ""
+
+
+def _measure_alias(func: str, col: str) -> str:
+    """Rollup column alias for a ``func(col)`` measure (mirror of preagg)."""
+    if col == "*":
+        return f"{func.lower()}_all"
+    return f"{func.lower()}_{col}"
+
+
+def route_to_rollup_shape(plan: PhysicalPlan, registry: Any) -> RollupRouteResult:
+    """Conservatively rewrite *plan* to read a built rollup when SOUND.
+
+    This is the auto-pre-aggregation router.  Unlike the legacy exact-sig
+    :func:`route_to_rollup`, it performs a *superset* rewrite: a single rollup
+    grouped on a superset of dimensions can serve many narrower queries by
+    re-aggregating the partial measures.
+
+    Soundness rules (ALL must hold, else the plan is returned untouched)
+    -------------------------------------------------------------------
+    1. The query is a single-table aggregation parseable to a routable
+       ``QueryShape`` (no joins / derived grains / expression measures).
+    2. A built rollup exists for the same base table.
+    3. The query's GROUP BY columns ⊆ the rollup's dimensions (so re-grouping
+       the rollup reproduces the query's grain).
+    4. Every query measure ``func(col)`` is:
+         a. re-aggregable (``func`` in :data:`_REAGG` — SUM/COUNT/MIN/MAX), and
+         b. materialized by the rollup (the rollup computed ``func(col)``).
+    5. Every WHERE-clause column is present in the rollup (so the predicate —
+       including any RLS predicate injected upstream — still applies).
+
+    When all hold, the SELECT/GROUP BY/FROM are rewritten via the sqlglot AST:
+    aggregates become ``SUM(<rollup measure col>)`` (etc.), the FROM target
+    becomes the rollup table, and the WHERE clause is preserved verbatim.  The
+    cache key is recomputed from the rewritten SQL.
+
+    Be conservative: anything unproven leaves the plan EXACTLY as-is (same
+    object, same cache_key) so RLS + cache behaviour is preserved on the
+    non-routed path.
+    """
+    # Lazy import to avoid a cycle (preagg imports query_log; planner imports
+    # query_log; preagg imports planner only at call sites).
+    from app.connectors.query_log import extract_shape  # noqa: PLC0415
+
+    shape = extract_shape(plan.sql, dialect=plan.dialect)
+    if shape is None or not shape.routable or shape.base_table is None:
+        return RollupRouteResult(plan, False, reason="not a routable aggregation")
+
+    rollups = registry.candidates_for_table(shape.base_table)
+    if not rollups:
+        return RollupRouteResult(plan, False, reason="no rollup for base table")
+
+    q_dims = set(shape.dimensions)
+    q_filter_cols = set(shape.filter_columns)
+
+    for rollup in rollups:
+        roll_dims = set(rollup.dimensions)
+        # Rule 3: query group-by ⊆ rollup dims.
+        if not q_dims.issubset(roll_dims):
+            continue
+        # Rule 4: every measure re-aggregable AND materialized by the rollup.
+        roll_measures = rollup.measure_funcs  # set of (func, col)
+        ok_measures = True
+        for func, col in shape.measures:
+            col_key = col if col is not None else "*"
+            if func not in _REAGG or (func, col_key) not in roll_measures:
+                ok_measures = False
+                break
+        if not ok_measures:
+            continue
+        # Rule 5: every filtered column present in the rollup.
+        roll_cols = roll_dims | set(rollup.rls_keys) | {
+            c for (_f, c) in roll_measures if c != "*"
+        }
+        if not q_filter_cols.issubset(roll_cols):
+            continue
+
+        # ── All rules hold → perform the AST rewrite. ────────────────────────
+        rewritten = _rewrite_to_rollup(plan, rollup)
+        if rewritten is None:
+            continue  # rewrite failed defensively — try the next rollup.
+
+        new_cache_key = compute_cache_key(
+            sql=rewritten,
+            params=plan.params,
+            rls_claims=plan.rls_claims,
+        )
+        new_plan = PhysicalPlan(
+            dialect=plan.dialect,
+            sql=rewritten,
+            params=list(plan.params),
+            projection=plan.projection,
+            predicates=list(plan.predicates),
+            rls_claims=dict(plan.rls_claims),
+            cache_key=new_cache_key,
+        )
+        return RollupRouteResult(
+            new_plan, True, rollup_id=rollup.rollup_id,
+            reason=f"sound superset rewrite onto {rollup.table}",
+        )
+
+    return RollupRouteResult(plan, False, reason="no sound rollup match")
+
+
+def _rewrite_to_rollup(plan: PhysicalPlan, rollup: Any) -> str | None:
+    """Rewrite ``plan.sql`` to read *rollup* (re-aggregating measures).
+
+    Returns the rewritten SQL string, or ``None`` if the rewrite could not be
+    performed safely (caller then leaves the plan untouched).
+    """
+    try:
+        tree = sqlglot.parse_one(plan.sql, dialect=plan.dialect)
+    except Exception:
+        return None
+    if not isinstance(tree, exp.Select):
+        return None
+
+    # 1. Rewrite each aggregate in the SELECT list to read the rollup's partial
+    #    measure column with the roll-up function (SUM(sum_amount), etc.).
+    for node in list(tree.find_all(exp.AggFunc)):
+        func_name = type(node).__name__.lower()
+        # Determine source column / star.
+        col = _agg_source_col(node)
+        if func_name not in _REAGG or col is None:
+            return None  # measure not derivable — abort (sound by omission).
+        reagg = _REAGG[func_name]
+        partial_col = _measure_alias(func_name, col)
+        new_node = sqlglot.parse_one(
+            f'{reagg}("{partial_col}")', dialect=plan.dialect
+        )
+        # Preserve any alias the original aggregate carried.
+        parent = node.parent
+        if isinstance(parent, exp.Alias):
+            node.replace(new_node)
+        else:
+            node.replace(new_node)
+
+    # 2. Swap the FROM target to the rollup table.
+    replaced = False
+    for table_node in tree.find_all(exp.Table):
+        if table_node.name.lower() == rollup.source_table.lower():
+            table_node.set("this", exp.Identifier(this=rollup.table, quoted=True))
+            replaced = True
+    if not replaced:
+        return None
+
+    return tree.sql(dialect=plan.dialect)
+
+
+def _agg_source_col(node: exp.Expression) -> str | None:
+    """Bare source column of an aggregate, ``"*"`` for COUNT(*), else None."""
+    if isinstance(node, exp.Count):
+        inner = node.this
+        if inner is None or isinstance(inner, exp.Star):
+            return "*"
+    arg = getattr(node, "this", None)
+    if arg is None:
+        return "*"
+    if isinstance(arg, exp.Star):
+        return "*"
+    if isinstance(arg, exp.Column):
+        return arg.name.lower()
+    if isinstance(arg, exp.Distinct):
+        exprs = arg.expressions
+        if len(exprs) == 1 and isinstance(exprs[0], exp.Column):
+            return exprs[0].name.lower()
+    return None

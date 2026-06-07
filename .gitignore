@@ -36,9 +36,18 @@ backend/.env
 backend/storage/secret-files/
 key.json
 keyfile.json
+keyfile*.json
+*.scoped.json
+backend/migration_cognizance/keyfile*.json
+backend/migration_cognizance/*.scoped.json
 
 # Firebase
 .firebase/
 
 # Internal billing/pricing scenarios — not part of the product, not for git
 billing-model/
+
+legacy/
+# Generated DuckDB seed data files (built by backend/seed_data_duckdb.py)
+backend/seed_data/
+*.duckdb

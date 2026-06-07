@@ -30,6 +30,7 @@ from app.auth.cookies import (
     clear_refresh_cookie,
     set_refresh_cookie,
 )
+from app.auth.denylist import get_token_denylist
 from app.auth.deps import current_user
 from app.auth.google import (
     build_authorize_url,
@@ -37,12 +38,13 @@ from app.auth.google import (
     generate_pkce_pair,
     generate_state,
 )
-from app.auth.jwt import mint_access_token
+from app.auth.jwt import decode_access_token, mint_access_token
 from app.auth.passwords import hash_password, verify_password
 from app.auth.sessions import issue_refresh, revoke_by_token, rotate_refresh
 from app.config import get_settings
 from app.db import execute, fetchrow
 from app.errors import AppError
+from app.repos import projects as projects_repo
 from app.routes import api_router
 
 # A pre-computed argon2id hash of an arbitrary dummy string.  Used so that
@@ -68,6 +70,10 @@ class RegisterIn(BaseModel):
     email: EmailStr
     password: str
     name: str | None = None
+    # Supabase-style optional naming at signup. When omitted we fall back to the
+    # default org naming and a "Default" project, respectively.
+    org_name: str | None = None
+    project_name: str | None = None
 
     @field_validator("password")
     @classmethod
@@ -106,18 +112,41 @@ def _serialize_user(row: Any) -> dict[str, Any]:
     }
 
 
-async def _create_personal_org(user_id: str, name: str | None, email: str) -> None:
-    """Create a personal org and an owner org_member row for *user_id*.
+async def _create_personal_org(
+    user_id: str,
+    name: str | None,
+    email: str,
+    org_name: str | None = None,
+    project_name: str | None = None,
+) -> str:
+    """Create a personal org, owner membership, and a default project.
 
     The org slug is derived from the email local-part, made unique by
     appending the first 8 characters of the user's UUID.
+
+    A "Default" project (or *project_name* when supplied) is created for the
+    new org so resource creation is frictionless — every org owns at least one
+    project from the moment it exists.
+
+    Parameters
+    ----------
+    org_name:
+        Optional explicit org name (Supabase-style signup). Falls back to the
+        existing ``"<name>'s workspace"`` convention.
+    project_name:
+        Optional first-project name. Falls back to ``"Default"``.
+
+    Returns
+    -------
+    str
+        The new org's id.
     """
     org_id = str(uuid.uuid4())
     base_slug = email.split("@")[0].lower()
     # Sanitize slug: keep only alphanumerics and hyphens.
     safe_slug = "".join(c if c.isalnum() or c == "-" else "-" for c in base_slug)
     slug = f"{safe_slug}-{user_id[:8]}"
-    org_name = f"{name or email.split('@')[0]}'s workspace"
+    final_org_name = (org_name or "").strip() or f"{name or email.split('@')[0]}'s workspace"
 
     await execute(
         """
@@ -125,7 +154,7 @@ async def _create_personal_org(user_id: str, name: str | None, email: str) -> No
         VALUES ($1, $2, $3)
         """,
         org_id,
-        org_name,
+        final_org_name,
         slug,
     )
     await execute(
@@ -136,6 +165,24 @@ async def _create_personal_org(user_id: str, name: str | None, email: str) -> No
         org_id,
         user_id,
     )
+
+    # Default project — keeps the org → project → resources model frictionless.
+    await projects_repo.create_project(
+        org_id=org_id,
+        name=(project_name or "").strip() or "Default",
+        created_by=user_id,
+    )
+
+    return org_id
+
+
+async def get_default_project(org_id: str) -> dict[str, Any] | None:
+    """Return the org's default (oldest) project, or ``None``.
+
+    Convenience re-export of ``app.repos.projects.get_default_project`` so other
+    modules can import it from the auth layer alongside ``_create_personal_org``.
+    """
+    return await projects_repo.get_default_project(org_id)
 
 
 def _client_ip(request: Request) -> str | None:
@@ -187,8 +234,14 @@ async def register(
         body.name,
     )
 
-    # Create personal org + membership.
-    await _create_personal_org(user_id, body.name, email)
+    # Create personal org + membership + default project (Supabase-style names).
+    await _create_personal_org(
+        user_id,
+        body.name,
+        email,
+        org_name=body.org_name,
+        project_name=body.project_name,
+    )
 
     # Fetch the full user row to build the response.
     user_row = await fetchrow(
@@ -296,16 +349,43 @@ async def refresh(
 
 @router.post("/logout", status_code=204)
 async def logout(
+    request: Request,
     response: Response,
     nubi_refresh: str | None = Cookie(default=None, alias=REFRESH_COOKIE_NAME),
 ) -> None:
-    """Revoke the session family and clear the refresh cookie.
+    """Revoke the session family, denylist the access token, and clear the cookie.
 
-    Returns 204 No Content regardless of whether a cookie was present.
+    In addition to revoking the refresh-token family (existing behaviour),
+    we now extract the caller's access-token ``jti`` from the ``Authorization``
+    header (if present) and add it to the denylist so it is rejected immediately
+    on every subsequent authenticated request — closing the stateless-JWT gap.
+
+    Returns 204 No Content regardless of whether a cookie or token was present.
     """
+    # ── Revoke refresh-token family (existing behaviour) ─────────────────────
     if nubi_refresh:
         await revoke_by_token(nubi_refresh)
     clear_refresh_cookie(response)
+
+    # ── Denylist the access token so it cannot be reused post-logout ──────────
+    auth_header: str | None = request.headers.get("authorization")
+    if auth_header and auth_header.lower().startswith("bearer "):
+        raw_token = auth_header[7:].strip()
+        try:
+            claims = decode_access_token(raw_token)
+            jti: str = claims["jti"]
+            from datetime import datetime, timezone
+            # exp from PyJWT is an integer (epoch seconds) or datetime; normalise.
+            raw_exp = claims["exp"]
+            if isinstance(raw_exp, datetime):
+                exp_dt = raw_exp if raw_exp.tzinfo else raw_exp.replace(tzinfo=timezone.utc)
+            else:
+                exp_dt = datetime.fromtimestamp(int(raw_exp), tz=timezone.utc)
+            await get_token_denylist().revoke(jti, exp_dt)
+        except Exception:
+            # Never fail a logout because of denylist issues; the refresh
+            # revocation already limits damage.
+            pass
 
 
 @router.get("/me")

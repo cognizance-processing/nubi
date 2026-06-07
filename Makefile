@@ -8,9 +8,9 @@ up:
 down:
 	docker compose down -v
 
-# Run database migrations inside the running backend container
+# Run database migrations inside the running app container
 migrate:
-	docker compose exec backend python /app/database/migrate.py
+	docker compose exec app python /app/database/migrate.py
 
 # Stream logs from all services (Ctrl-C to stop)
 logs:

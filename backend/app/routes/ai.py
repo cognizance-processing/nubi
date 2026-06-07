@@ -1,4 +1,4 @@
-"""AI grounding endpoints (M7-B + M8-C + EDITOR-2A).
+"""AI grounding endpoints (M7-B + M8-C + EDITOR-2A + M21-A).
 
 Endpoints
 ---------
@@ -18,6 +18,14 @@ POST /ai/dashboard
 GET /ai/dashboard/schema
     Returns the JSON Schema for DashboardSpec.  Used by the frontend editor
     and the LLM authoring pipeline to know the exact spec format.
+
+POST /ai/chat
+    Agentic chat endpoint (M21-A).  Accepts ``{messages, board_id?}``, resolves
+    the LLM provider (default NullProvider) and the caller's claims from the
+    Bearer token, runs ``agent.run_agent``, and returns ``{reply, actions}``.
+
+    With NullProvider the response is deterministic (scripted tool sequence
+    based on intent extracted from the last user message).
 
 Response shape (/ai/ask)
 ------------------------
@@ -53,9 +61,11 @@ fully deterministic and require no network access.
 
 from __future__ import annotations
 
+import re
 from typing import Any
 
 from fastapi import Depends
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
 from app.ai.grounding import build_catalog, build_prompt, ground
@@ -252,3 +262,282 @@ async def dashboard_schema(
     from app.dashboards.spec import spec_json_schema  # noqa: PLC0415
 
     return spec_json_schema()
+
+
+# ---------------------------------------------------------------------------
+# POST /ai/chat — agentic chat with tool registry (M21-A)
+# ---------------------------------------------------------------------------
+
+
+class ChatMessage(BaseModel):
+    """A single conversation message."""
+
+    role: str  # "user" or "assistant"
+    content: str
+
+
+class ChatRequest(BaseModel):
+    """Request body for POST /ai/chat."""
+
+    messages: list[ChatMessage]
+    board_id: str | None = None
+    model: str | None = None
+    """Optional model identifier to route the request to a specific LLM model.
+
+    When provided this value is echoed back in the response as ``model`` so
+    the frontend can confirm which model was used.  Provider-level model
+    routing is deferred to a future milestone.
+
+    TODO: thread ``model`` through to the provider/agent once providers
+    expose per-request model selection (e.g. AnthropicProvider.complete
+    accepts a ``model`` kwarg).
+    """
+
+
+class ChatAction(BaseModel):
+    """A single tool call recorded by the agent."""
+
+    tool: str
+    arguments: dict[str, Any]
+    result: dict[str, Any]
+
+
+class ChatResponse(BaseModel):
+    """Response body for POST /ai/chat."""
+
+    reply: str
+    actions: list[dict[str, Any]]
+    model: str | None = None
+    """The model that was used (or requested).  Echoes ``ChatRequest.model``
+    when supplied; ``None`` when the caller did not specify a model.
+
+    TODO: once provider-level model routing is wired in, this field will
+    reflect the model that actually processed the request.
+    """
+
+
+@api_router.post("/ai/chat", response_model=ChatResponse, tags=["ai"])
+async def ai_chat(
+    body: ChatRequest,
+    _user: dict[str, Any] = Depends(current_user),
+) -> ChatResponse:
+    """Run the agentic AI chat loop and return a reply + the tool actions taken.
+
+    Pipeline
+    --------
+    1. Resolve the LLM provider (default NullProvider when no API key is set).
+    2. Build caller claims from the authenticated user (first-party scope).
+    3. Call ``run_agent(messages, provider, claims, max_steps=8)``.
+       - With NullProvider the agent follows a deterministic scripted path.
+       - With a real provider the agent calls the tool registry in a loop.
+    4. Return ``{reply, actions}`` where ``actions`` records every tool call.
+
+    Parameters
+    ----------
+    body:
+        ``{messages: [{role, content}, ...], board_id?: str}``
+    _user:
+        Injected by ``current_user``; ensures the endpoint requires auth.
+
+    Returns
+    -------
+    ChatResponse
+        ``{reply: str, actions: list[dict]}``
+
+    Raises
+    ------
+    AppError("unauthorized", 401)
+        If no valid Bearer token is provided.
+    """
+    from app.ai.agent import run_agent  # noqa: PLC0415
+
+    provider = get_provider()
+
+    # Build first-party claims from the authenticated user.
+    # For first-party callers, policies are empty (no RLS restrictions).
+    claims: dict[str, Any] = {
+        "kind": "access",
+        "sub": str(_user.get("id", "")),
+        "policies": {},
+        "scope": ["read:*", "write:*"],
+    }
+
+    # Convert Pydantic ChatMessage objects to plain dicts for the agent.
+    messages = [{"role": m.role, "content": m.content} for m in body.messages]
+
+    result = run_agent(messages, provider, claims, max_steps=8)
+
+    return ChatResponse(
+        reply=result["reply"],
+        actions=result["actions"],
+        # Echo the requested model back so the frontend can confirm it.
+        # TODO: once providers support per-request model selection, pass
+        # body.model into run_agent/provider instead of only echoing it.
+        model=body.model,
+    )
+
+
+@api_router.post("/ai/chat/stream", tags=["ai"])
+async def ai_chat_stream(
+    body: ChatRequest,
+    _user: dict[str, Any] = Depends(current_user),
+) -> StreamingResponse:
+    """Streaming variant of POST /ai/chat — Server-Sent Events.
+
+    Runs the agent loop and emits live events (``text/event-stream``) so the UI
+    can render tool calls + the streamed reply as they happen (Claude-Code
+    style). Each event is a JSON object on a ``data:`` line; event types:
+    ``status``, ``tool_start``, ``tool_result``, ``text``, ``done``, ``error``
+    (see ``agent.run_agent_stream``).
+    """
+    import json as _json  # noqa: PLC0415
+
+    from starlette.concurrency import iterate_in_threadpool  # noqa: PLC0415
+
+    from app.ai.agent import run_agent_stream  # noqa: PLC0415
+
+    provider = get_provider()
+    claims: dict[str, Any] = {
+        "kind": "access",
+        "sub": str(_user.get("id", "")),
+        "policies": {},
+        "scope": ["read:*", "write:*"],
+    }
+    messages = [{"role": m.role, "content": m.content} for m in body.messages]
+
+    def _sync_events():
+        try:
+            for ev in run_agent_stream(messages, provider, claims, max_steps=8):
+                yield "data: " + _json.dumps(ev) + "\n\n"
+        except Exception as exc:  # noqa: BLE001
+            yield "data: " + _json.dumps({"type": "error", "message": str(exc)}) + "\n\n"
+
+    async def _event_stream():
+        # Iterate the blocking generator in a threadpool so tool calls / pacing
+        # sleeps never block the event loop.
+        async for chunk in iterate_in_threadpool(_sync_events()):
+            yield chunk
+
+    return StreamingResponse(
+        _event_stream(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",  # disable proxy buffering (nginx)
+        },
+    )
+
+
+# ---------------------------------------------------------------------------
+# POST /ai/sql — text-to-SQL with catalog grounding (M18-A)
+# ---------------------------------------------------------------------------
+
+#: Regex to extract ``{{name}}`` placeholders from generated SQL.
+_PLACEHOLDER_RE = re.compile(r"\{\{(\w+)\}\}")
+
+
+class SqlRequest(BaseModel):
+    """Request body for POST /ai/sql."""
+
+    question: str
+    datastore_id: str | None = None
+    save_as: str | None = None
+
+
+class SqlResponse(BaseModel):
+    """Response body for POST /ai/sql."""
+
+    sql: str
+    valid: bool
+    issues: list[str]
+    provider: str
+    grounding: dict[str, Any]
+    registered_id: str | None = None
+
+
+@api_router.post("/ai/sql", response_model=SqlResponse, tags=["ai"])
+async def generate_sql_endpoint(
+    body: SqlRequest,
+    _user: dict[str, Any] = Depends(current_user),
+) -> SqlResponse:
+    """Generate a grounded SQL SELECT from a natural-language question (M18-A).
+
+    Pipeline
+    --------
+    1. Build the catalog from the live query registry + lineage graph.
+    2. Run deterministic grounding (token-overlap scoring) to find the most
+       relevant tables and columns for the question.
+    3. Call ``generate_sql`` which builds a SQL-focused grounded prompt, calls
+       the configured LLM provider, and validates the result with sqlglot.
+       With ``NullProvider`` (the default when no API key is set) this is a
+       pure in-memory operation — no network call.
+    4. If ``save_as`` is provided, register the generated SQL into the query
+       registry under that id.  Named ``{{name}}`` placeholders found in the
+       SQL are inferred as ``QueryParam`` descriptors (type ``'text'``, not
+       required, no default).  Returns the registered id in ``registered_id``.
+
+    Parameters
+    ----------
+    body:
+        ``{question, datastore_id?, save_as?}``
+    _user:
+        Injected by ``current_user``; ensures the endpoint requires auth.
+
+    Returns
+    -------
+    SqlResponse
+        ``{sql, valid, issues, provider, grounding, registered_id}``
+
+    Raises
+    ------
+    AppError("unauthorized", 401)
+        If no valid Bearer token is provided.
+    AppError("llm_not_configured", 503)
+        If ``LLM_PROVIDER`` is explicitly set but the corresponding API key is
+        absent.
+    """
+    from app.ai.sql import generate_sql  # noqa: PLC0415
+    from app.queries.registry import QueryParam, get_query_registry  # noqa: PLC0415
+
+    catalog = build_catalog()
+    grounding = ground(body.question, catalog)
+    provider = get_provider()
+
+    result = generate_sql(
+        question=body.question,
+        catalog=catalog,
+        provider=provider,
+        datastore_id=body.datastore_id,
+    )
+
+    sql: str = result["sql"]
+    valid: bool = result["valid"]
+    issues: list[str] = result["issues"]
+
+    registered_id: str | None = None
+
+    if body.save_as:
+        # Infer named params from {{name}} placeholders in the SQL.
+        placeholder_names = list(dict.fromkeys(_PLACEHOLDER_RE.findall(sql)))
+        params = [
+            QueryParam(name=name, type="text", required=False)
+            for name in placeholder_names
+        ]
+        registry = get_query_registry()
+        registry.register(
+            id=body.save_as,
+            sql=sql,
+            name=body.question[:200],
+            params=params if params else None,
+        )
+        registered_id = body.save_as
+
+    return SqlResponse(
+        sql=sql,
+        valid=valid,
+        issues=issues,
+        provider=provider.name,
+        grounding=grounding,
+        registered_id=registered_id,
+    )

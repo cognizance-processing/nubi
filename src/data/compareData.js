@@ -18,6 +18,20 @@
  *             https://azure.microsoft.com/en-us/pricing/details/power-bi-embedded/
  *             https://powerbiconsulting.com/blog/power-bi-pricing-licensing-guide-2026
  *   Preset:   https://preset.io/pricing/
+ *
+ * Orchestration section (NUBI_FLOWS + ORCHESTRATORS) — web-researched 2026-06-07:
+ *   Prefect:  https://www.prefect.io/pricing
+ *             https://github.com/PrefectHQ/prefect
+ *             https://automationatlas.io/answers/prefect-pricing-explained-2026/
+ *   Airflow:  https://airflow.apache.org/
+ *             https://aws.amazon.com/managed-workflows-for-apache-airflow/
+ *             https://tasrieit.com/blog/managed-airflow-services-compared-2026
+ *   Dagster:  https://dagster.io/pricing
+ *             https://docs.dagster.io/deployment
+ *             https://support.dagster.io/articles/3171123463-dagster-solo-and-starter-pricing-updates-may-2026
+ *   n8n:      https://n8n.io/pricing/
+ *             https://automationatlas.io/answers/n8n-pricing-self-hosted-vs-cloud-2026/
+ *             https://dancumberlandlabs.com/blog/n8n-ai-workflows/
  */
 
 // ---------------------------------------------------------------------------
@@ -25,29 +39,29 @@
 // ---------------------------------------------------------------------------
 export const NUBI = {
   name: "Nubi",
-  tagline: "Browser-first analytics kernel — marginal cost per dashboard view ≈ $0",
+  tagline: "Browser-first analytics kernel — near-zero marginal cost per embedded view at high cache-hit rates",
   kernel:
-    "Pyodide (Python) + DuckDB-WASM in the browser by default; on-demand server kernel (E2B/Modal, scale-to-zero) only for workloads that need it. Cost driver: connector throughput + embed views + AI calls + kernel-seconds.",
+    "Pyodide (Python) + DuckDB-WASM in the browser by default; on-demand server kernel (E2B/Modal, scale-to-zero) only for the ~10% of workloads that need it. Cost drivers: connector throughput + embed views + AI calls + kernel-seconds.",
   transport:
     "Arrow IPC over WebSocket — columnar buffers land directly in the browser; viz reads buffers without re-serialisation.",
   viz:
     "WebGL/WebGPU on Arrow buffers via regl; <nubi-chart> auto-upgrades to WebGL above a configurable row threshold. 1M+ point scatter at 60 fps. LLM-authorable HTML/CSS dashboards with sanitised custom elements (<nubi-kpi>, <nubi-table>, <nubi-chart>).",
   caching:
-    "Content-hashed edge cache keyed on (serialised plan + RLS-affecting JWT claims) — N viewers of the same dashboard collapse to 1 warehouse hit. Automatic pre-aggregations mined from query log (rollup suggester + routing).",
+    "Content-hashed edge cache keyed on (serialised plan + RLS-affecting JWT claims) — N viewers of the same dashboard collapse to 1 warehouse hit. Automatic pre-aggregations mined from query log (rollup suggester + routing) extend the advantage to diverse-slice workloads.",
   embedding:
     "Core product surface: read-only <nubi-dashboard> (iframe + web component, JWT-scoped, CSS-var theming) → cell-level <nubi-widget> → embedded <nubi-editor> → headless PNG/PDF render → bring-your-own-frontend (engine as library). Auth-as-code: host publishes JWKS, implements getToken(), mounts component. No separate embed SDK required.",
   modeling:
-    "Low — point at a warehouse and go. No hand-written semantic model required to start. Auth policies live as TypeScript/SQL in the repo (diffable, PR-reviewable). SQL-first connector SDK; Python connector SDK for arbitrary Arrow-returning sources.",
+    "Low — point at a warehouse and go. No hand-written semantic model required to start. Auth policies live as TypeScript/SQL in the repo (diffable, PR-reviewable). SQL-first connector SDK; Python connector SDK for arbitrary Arrow-returning sources. NoSQL is deliberately out of scope.",
   ai:
     "Lineage-indexed retrieval + LLM generation grounded on real catalog. POST /ai/ask. MCP server (4 tools): agents author dashboards via HTML/CSS + <nubi-*> custom elements. AI calls metered per-token (cost passed through at margin). LLM-authorable dashboard output is HTML/CSS sanitised by DOMPurify.",
   pricing:
-    "Connector throughput (bytes/queries) + embed views (per-thousand) + AI calls (per-token) + on-demand kernel time (per-second, scale-to-zero) + scheduled jobs (separate SKU). Generous free tier structurally viable (browser compute is free to Nubi). Billed in ZAR via Paystack.",
+    "Usage-based: connector throughput (bytes/queries) + embed views (per-thousand) + AI calls (per-token) + on-demand kernel time (per-second, scale-to-zero) + scheduled jobs (separate SKU). Genuine free tier structurally viable — browser compute is free to Nubi, so Hex can't match it without bleeding kernel cost. Billed in ZAR via Paystack.",
   selfHost:
-    "Yes — fully self-hosted (VPC, regulated) planned in M10 (Docker Compose stack). Intermediate: hosted control plane + self-hosted connector so warehouse creds never leave customer network.",
+    "Planned (M10 — Docker Compose stack, not yet shipped). Intermediate today: hosted control plane + self-hosted connector so warehouse credentials never leave the customer's network.",
   strength:
-    "Near-zero marginal cost per embedded view (compute is the user's browser). Arrow IPC + WebGL enables 1M+ point rendering. Auto pre-aggregations match Cube's core weapon without requiring hand-written semantic model. Auth-as-code with JWT/JWKS is simpler than bolt-on embed SDKs.",
+    "Near-zero marginal cost per embedded view at high cache-hit rates (compute is the user's browser). Arrow IPC + WebGL/WebGPU enables 1M+ point rendering. Auto pre-aggregations replicate Cube's core weapon without requiring a hand-written semantic model. Auth-as-code with JWT/JWKS is structurally simpler than bolt-on embed SDKs.",
   limitation:
-    "Browser memory cap (~4GB) requires aggressive pushdown. Pyodide native-wheel gaps mean on-demand kernel is a launch requirement, not optional. NoSQL deliberately out of scope. M10 self-host stack not yet shipped.",
+    "Cost advantage is real only at high cache-hit / pre-aggregation rates — 500 analysts each slicing differently reverts to warehouse scans. Browser memory cap (~4 GB) requires aggressive pushdown. Pyodide native-wheel gaps mean on-demand kernel is a launch requirement, not optional. NoSQL deliberately out of scope. M10 self-host stack not yet shipped.",
 };
 
 // ---------------------------------------------------------------------------
@@ -385,7 +399,7 @@ export const COMPARE_DIMENSIONS = [
 export const MATRIX = {
   // Rows = dimension keys; columns = tool names
   kernel: {
-    Nubi:    "Pyodide+DuckDB-WASM in browser; on-demand server (E2B/Modal) only when needed",
+    Nubi:    "Pyodide+DuckDB-WASM in browser by default; on-demand server (E2B/Modal, scale-to-zero) for ~10% of workloads",
     Hex:     "Python kernel per session, Hex cloud; 10–30s cold starts; per-minute billing",
     Cube:    "No kernel; warehouse + Cube Store for pre-aggs; hourly infra billing",
     Metabase:"Server-side SQL push to warehouse; no in-browser compute",
@@ -418,7 +432,7 @@ export const MATRIX = {
     "Preset / Superset": "40+ ECharts SVG/Canvas; no WebGL; community custom charts",
   },
   caching: {
-    Nubi:    "Content-hashed edge cache (plan+RLS claims key); automatic pre-agg from query log",
+    Nubi:    "Content-hashed edge cache (plan+RLS claims key); automatic pre-agg mined from query log — extends advantage to diverse-slice workloads",
     Hex:     "Per-session result cache; weak cross-user sharing; no auto pre-agg",
     Cube:    "Pre-aggregations in Cube Store (hand-written schema required); in-memory cache",
     Metabase:"Query/model cache all tiers; granular caching Pro+; preemptive caching v53; no auto pre-agg",
@@ -440,7 +454,7 @@ export const MATRIX = {
     "Preset / Superset": "iframe + Guest Token; Preset viewer licenses from $500/month for 50 viewers",
   },
   modeling: {
-    Nubi:    "Low — point at warehouse, go; auth-as-code (TypeScript/SQL in repo); no mandatory schema",
+    Nubi:    "Low — point at warehouse, go; auth-as-code (TypeScript/SQL in repo); no mandatory schema; NoSQL deliberately out of scope",
     Hex:     "Medium — notebook cells; AI Semantic Model agent (Team+); no formal semantic layer",
     Cube:    "High — must write cube schema (JS/YAML) before any query works; proprietary language",
     Metabase:"Low-medium — point-and-click + SQL; Data Studio semantic layer (v59, 2026)",
@@ -462,7 +476,7 @@ export const MATRIX = {
     "Preset / Superset": "NL-to-SQL via optional LLM plugin; Preset AI roadmap unverified; limited GA AI",
   },
   pricing: {
-    Nubi:    "Usage-based: connector bytes + embed views + AI tokens + kernel-seconds; generous free tier",
+    Nubi:    "Usage-based: connector bytes + embed views/1k + AI tokens + kernel-seconds; genuine free tier (browser compute is free to Nubi); billed ZAR via Paystack",
     Hex:     "Per-seat: Community free; Professional $36/editor/month; Team $75/editor/month; compute add-on",
     Cube:    "Per-developer + hourly infra: Free hobbyist; Starter $40/dev/month; Premium $80/dev/month",
     Metabase:"Tiered: OSS free; Starter $100+$6/user/month; Pro $575+$12/user/month; Enterprise $20k+/year",
@@ -473,7 +487,7 @@ export const MATRIX = {
     "Preset / Superset": "Superset: free OSS; Preset: Starter free (5 users); Pro $20/user/month; embed viewers from $500/month/50",
   },
   selfHost: {
-    Nubi:    "Planned (M10 Docker Compose); intermediate: hosted control plane + self-hosted connector",
+    Nubi:    "Planned — M10 Docker Compose stack not yet shipped; intermediate: hosted control plane + self-hosted connector (warehouse creds never leave customer network)",
     Hex:     "No — cloud-only SaaS",
     Cube:    "Yes — Cube Core open source (MIT); production requires Redis + Cube Store cluster",
     Metabase:"Yes — OSS free (AGPL v3); Pro self-hosted same license fee as cloud",
@@ -484,3 +498,148 @@ export const MATRIX = {
     "Preset / Superset": "Yes — Apache Superset free self-host; Preset Certified Superset (managed self-host) on Enterprise",
   },
 };
+
+// ---------------------------------------------------------------------------
+// NUBI FLOWS — Nubi's workflow orchestration offering
+// Compared against Prefect, Airflow, Dagster, n8n in the orchestration section.
+// See FLOWS_TASKS.md for the full spec.
+// ---------------------------------------------------------------------------
+export const NUBI_FLOWS = {
+  name: "Nubi Flows",
+  tagline: "Lightweight, LLM-native workflow orchestrator embedded in Nubi — no Redis, no Celery",
+  dagDefinition:
+    "Declarative JSON FlowSpec (DAG of tasks): query | python | agent | noop task kinds. Visual React Flow DAG builder. LLM agent can author + run flows in natural language via AI tools.",
+  execution:
+    "Postgres-backed state with SKIP LOCKED claim worker — no Redis, no Celery, no separate message broker. Retries, timeout, per-task caching (cache_ttl_s). Workers claim ready tasks atomically.",
+  scheduling:
+    "Interval or cron schedule stored in the flows table; clock-injected tick loop advances next_run_at. Deterministic, testable (explicit `now` parameter, never datetime.now() inside core logic).",
+  rlsAndMultiTenant:
+    "RLS-aware by design: JWT claims are passed to every query/agent task; data tasks execute via app.connectors.planner which enforces row-level security. Flows are org-scoped; cross-org returns 404.",
+  llmIntegration:
+    "Agent task kind calls run_agent() with the caller's JWT claims. AI tools (create_flow, run_flow, generate_flow) let an LLM author and trigger flows in natural language. NullProvider keeps it deterministic in tests.",
+  selfHost:
+    "Ships inside Nubi — uses Nubi's existing Postgres. No additional broker infrastructure required. FLOWS_WORKER_ENABLED flag gates the background worker.",
+  pricing:
+    "Included in Nubi's usage-based pricing (no separate SKU for the orchestration engine). Flow runs consume connector bytes + AI tokens + kernel-seconds depending on task kinds used.",
+  strength:
+    "Zero additional infra overhead — runs on Nubi's existing Postgres with no Redis/Celery/K8s. RLS-aware multi-tenant execution (JWT claims flow through to every data task). LLM-native: an agent can author and run flows in natural language. Visual React Flow DAG builder like Prefect/n8n.",
+  limitation:
+    "Intentionally narrower than Prefect/Airflow — not designed for large-scale distributed ETL or thousands of concurrent tasks. No cross-org workflow sharing. Python tasks run via LocalSubprocessRunner (sandboxed); no distributed Celery worker pool. Best suited for analytics workflows embedded inside a Nubi-powered product.",
+};
+
+// ---------------------------------------------------------------------------
+// ORCHESTRATORS — Prefect, Airflow, Dagster, n8n
+// Different category from BI competitors above; consumed by the separate
+// "Workflow orchestration" section in ComparePage.jsx.
+// Sources in the file header comment block above.
+// ---------------------------------------------------------------------------
+export const ORCHESTRATORS = [
+  {
+    name: "Prefect",
+    tagline: "Python-native workflow orchestration — decorators, not YAML",
+    dagDefinition:
+      "@flow + @task Python decorators; flows are ordinary Python functions. No YAML required. Prefect 3 (OSS) supports full async, subflows, and task dependencies expressed as code.",
+    execution:
+      "Prefect Server (OSS): Postgres metadata DB + workers (Docker, K8s, cloud VMs — customer-managed). Prefect Cloud: managed API + UI. Serverless compute available at $0.01/minute. No Redis required for basic local deployment.",
+    scheduling:
+      "Cron / interval / rrule schedules via the Prefect API. Deployments define where and when flows run. Automations trigger flows on events.",
+    rlsAndMultiTenant:
+      "No native per-user RLS. Flows run as a service account; multi-tenant data isolation is not a built-in concept. Workspaces provide logical separation (Prefect Cloud).",
+    llmIntegration:
+      "No native LLM task kind. Community integrations for calling LLM APIs exist as regular Python tasks. Prefect has no 'agent' task kind or built-in MCP/AI tooling.",
+    selfHost:
+      "Yes — Prefect Server is Apache 2.0 open source. Requires Postgres. Execution infra (workers) is always customer-managed.",
+    pricing:
+      "Hobby: free (2 users, 1 workspace, 500 serverless mins/month). Paid plans from ~$75–$100/month (seat/workspace-based, not usage-based). Enterprise: custom. Compute is separate.",
+    strength:
+      "Excellent Python-native DX; @flow/@task decorators require minimal boilerplate. Rich UI (Prefect Cloud/Server) for task-level observability, logs, artifacts, automations. Large and active community.",
+    limitation:
+      "No built-in multi-tenant RLS or per-user data isolation. Execution infra is out of scope — you provision compute separately. No LLM/agent task kind. Flows are code-only (no visual DAG builder). Embedding inside a product requires significant custom plumbing.",
+    sourceUrls: [
+      "https://www.prefect.io/pricing",
+      "https://www.prefect.io/prefect/open-source",
+      "https://github.com/PrefectHQ/prefect",
+    ],
+  },
+  {
+    name: "Apache Airflow",
+    tagline: "Battle-tested DAG orchestration — the industry default for data engineering",
+    dagDefinition:
+      "Python DAG files; tasks are Operators instantiated at module level. DAGs defined as code (PythonOperator, BashOperator, 80+ provider packages). YAML/config via connections and variables.",
+    execution:
+      "Scheduler + webserver + workers (CeleryExecutor: requires Redis/RabbitMQ; KubernetesExecutor: K8s pods). Metadata DB: Postgres or MySQL. Significant infrastructure footprint. Managed: AWS MWAA, Cloud Composer, Astronomer Astro.",
+    scheduling:
+      "Cron expressions per DAG. Sensor tasks for event-driven triggering. Backfill and catchup for historical runs. Data-aware scheduling (Dataset triggers) since Airflow 2.4.",
+    rlsAndMultiTenant:
+      "Basic RBAC on the Airflow UI; no per-user row-level security on task execution. Single-tenant execution model — all tasks run as the same service account.",
+    llmIntegration:
+      "No native LLM task kind. PythonOperator can call any LLM API; community-built LLM operators exist (Weaviate, OpenAI providers). No first-class agent or MCP tooling.",
+    selfHost:
+      "Yes — Apache 2.0 open source. Self-host requires Postgres + Redis (Celery) or K8s. Managed: AWS MWAA ~$350–$1,400/month; Cloud Composer ~$300/month; Astronomer from ~$100/month.",
+    pricing:
+      "Airflow OSS: free. Managed services priced by environment capacity: MWAA from ~$350/month (mw1.small); Cloud Composer from ~$300/month; Astronomer Astro from ~$100/month.",
+    strength:
+      "Largest ecosystem (80+ provider packages, thousands of production deployments). Every cloud, warehouse, and data tool has an Airflow operator. Proven at scale. Code-based DAGs are version-controlled.",
+    limitation:
+      "Heavy infra footprint (Postgres + Redis/Celery or K8s). Global-scope DAG parsing is error-prone and slow at scale. No data asset lineage. No per-user RLS. No LLM task kind. Overkill for product-embedded workflows.",
+    sourceUrls: [
+      "https://airflow.apache.org/",
+      "https://aws.amazon.com/managed-workflows-for-apache-airflow/",
+      "https://tasrieit.com/blog/managed-airflow-services-compared-2026",
+    ],
+  },
+  {
+    name: "Dagster",
+    tagline: "Asset-centric orchestration — software-defined assets, lineage, and data quality",
+    dagDefinition:
+      "Software-Defined Assets (SDAs): Python functions decorated with @asset declare what data they produce. Jobs orchestrate assets. Sensor + schedule triggers. Full type checking and configurable resources.",
+    execution:
+      "dagster-daemon (scheduler + sensor process) + Dagit webserver + Postgres (event log + run storage). No Redis required. Dagster+ Serverless at $0.01/compute-minute; Hybrid (BYOC) has no compute charge.",
+    scheduling:
+      "Cron / interval schedules via ScheduleDefinition. Sensors for event-driven triggers (file arrival, DB row count, etc.). Partition-aware scheduling for time-windowed assets.",
+    rlsAndMultiTenant:
+      "No native per-user RLS. Code locations provide logical separation; RBAC available on Dagster+ (per deployment/project). Single execution context — no JWT-scoped data isolation.",
+    llmIntegration:
+      "No native LLM/agent task kind. PythonAsset can call any LLM API. Community integrations for OpenAI, Anthropic, and Langchain exist as resources. No built-in MCP tooling.",
+    selfHost:
+      "Yes — Apache 2.0 open source. Requires Postgres + dagster-daemon + Dagit. No Redis needed. Dagster+ (cloud) adds managed hosting, branching, and CI/CD.",
+    pricing:
+      "OSS: free to self-host. Dagster+ Solo: $10/month + $0.040/credit. Starter: $100/month + $0.035/credit. Pro: custom. Credits = asset materializations + ops executed.",
+    strength:
+      "Asset-centric model is structurally better than task-centric for dbt/lakehouse workflows — automatic lineage, freshness, partition-aware re-materialization. Modern DX with type-checked resources and first-class dbt integration.",
+    limitation:
+      "Steeper learning curve than Prefect — asset/job/resource/sensor abstraction hierarchy. Credit-based pricing can be surprising for high-frequency pipelines. No per-user RLS. No LLM/agent task kind. Overkill for lightweight product-embedded workflows.",
+    sourceUrls: [
+      "https://dagster.io/pricing",
+      "https://dagster.io/vs/dagster-vs-airflow",
+      "https://docs.dagster.io/deployment",
+    ],
+  },
+  {
+    name: "n8n",
+    tagline: "Visual workflow automation — 400+ integrations, self-hostable, AI-native nodes",
+    dagDefinition:
+      "Visual node-canvas DAG builder (drag-and-drop). 400+ pre-built integration nodes. Code nodes (JavaScript/Python) for custom logic. Trigger → node chain execution model; not task-dependency DAG in the data-eng sense.",
+    execution:
+      "Node.js process + Postgres or SQLite for state. No separate broker required. Execution is per-workflow-run; no distributed worker pool. Fair-code license for self-host; cloud execution capped by plan tier.",
+    scheduling:
+      "Cron triggers, webhook triggers, polling triggers, and event-driven triggers via the node canvas. No concept of data partitions or backfill.",
+    rlsAndMultiTenant:
+      "No per-user RLS or multi-tenant data isolation. Workflows run as a single service credential. Projects provide workspace-level separation on Business/Enterprise.",
+    llmIntegration:
+      "First-class AI agent nodes: LLM Chain, AI Agent, Memory nodes. Connects to 12+ LLM providers (OpenAI, Anthropic, Gemini, Ollama, Mistral, Groq, etc.). AI Workflow Builder UI for NL-to-workflow generation (50–1,000 credits/month by plan).",
+    selfHost:
+      "Yes — Community Edition free to self-host (fair-code, not Apache/MIT). Docker image; Postgres or SQLite. Business/Enterprise license required for SSO, Git, and environments even when self-hosted.",
+    pricing:
+      "Community (self-host): free, unlimited executions. Cloud: Starter €20/month (2,500 executions), Pro €50/month (10,000), Business €667/month (40,000 + self-host license), Enterprise custom.",
+    strength:
+      "Best-in-class visual DAG canvas; 400+ integration nodes; first-class AI agent nodes supporting 12+ LLM providers; fair-code self-host is free with unlimited runs; strong community.",
+    limitation:
+      "Integration automation tool, not a data pipeline orchestrator — no data assets, lineage, or warehouse-native query execution. Cloud execution is capped per tier (not unlimited). Fair-code license restricts building competing products. No per-user RLS.",
+    sourceUrls: [
+      "https://n8n.io/pricing/",
+      "https://automationatlas.io/answers/n8n-pricing-self-hosted-vs-cloud-2026/",
+      "https://dancumberlandlabs.com/blog/n8n-ai-workflows/",
+    ],
+  },
+];

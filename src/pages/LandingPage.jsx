@@ -1,5 +1,5 @@
 /**
- * LandingPage — Nubi redesign using real design tokens.
+ * LandingPage — Nubi marketing site.
  *
  * Token reference (tailwind.config.js + src/index.css):
  * ──────────────────────────────────────────────────────
@@ -12,14 +12,16 @@
  *  bg-brand-gradient / text-brand-gradient
  *  font-display (Space Grotesk) / font-sans (Inter)
  *
- * Sections
- * ─────────
- * 1. Hero — two-column: copy left, large HeroIllustration right
- * 2. Stats / proof band — bg-brand-gradient
- * 3. Differentiators — alternating left/right, BIG illustrations
- * 4. How it works — 3-step
- * 5. vs Hex / Cube comparison table
- * 6. Closing CTA
+ * Section IDs (scroll targets for footer / navbar links):
+ * ────────────────────────────────────────────────────────
+ *  #hero         — Hero
+ *  #features     — Differentiators ("Why Nubi" / six decisions)
+ *  #embedding    — Auth-as-code embedding diff row
+ *  #connectors   — SQL-first connector SDK diff row
+ *  #how-it-works — How it works
+ *  #pricing      — Closing CTA / pricing callout
+ *  #compare      — Comparison table section
+ *  #about        — Footer brand tagline (re-used for about anchor)
  */
 
 import { Link } from 'react-router-dom'
@@ -31,9 +33,19 @@ import {
   Code2,
   Globe,
   Bot,
+  Workflow,
   ChevronRight,
   Check,
   X,
+  Minus,
+  PlugZap,
+  SearchCode,
+  Layers,
+  Lock,
+  KeyRound,
+  Filter,
+  Sparkles,
+  ArrowRightCircle,
 } from 'lucide-react'
 import HeroIllustration from '../components/illustrations/HeroIllustration.jsx'
 import KernelInBrowser from '../components/illustrations/KernelInBrowser.jsx'
@@ -41,6 +53,7 @@ import EdgeCache from '../components/illustrations/EdgeCache.jsx'
 import EmbedAuth from '../components/illustrations/EmbedAuth.jsx'
 import LlmDashboards from '../components/illustrations/LlmDashboards.jsx'
 import ConnectorSdk from '../components/illustrations/ConnectorSdk.jsx'
+import FlowOrchestration from '../components/illustrations/FlowOrchestration.jsx'
 import WebGLPerf from '../components/illustrations/WebGLPerf.jsx'
 
 /* ─────────────────────────────────────────────────────────────────────────── */
@@ -80,6 +93,63 @@ const ScopedStyles = () => (
     /* ── Compare table row striping ── */
     .lp-compare-row:nth-child(even) { background: rgba(36, 86, 166, 0.04); }
     .lp-compare-row:hover           { background: rgba(36, 86, 166, 0.08); }
+
+    /* ── Smooth scroll for the whole page ── */
+    html { scroll-behavior: smooth; }
+
+    /* ── Compare table — mobile horizontal scroll ── */
+    .lp-compare-table-wrap {
+      overflow-x: auto;
+      -webkit-overflow-scrolling: touch;
+    }
+    .lp-compare-table-inner {
+      min-width: 620px;
+    }
+
+    /* ── Compare table — Nubi column highlight ── */
+    .lp-nubi-col {
+      background: linear-gradient(180deg,
+        rgba(23,179,163,0.07) 0%,
+        rgba(36,86,166,0.05) 100%);
+      border-left: 1.5px solid rgba(23,179,163,0.25);
+      border-right: 1.5px solid rgba(23,179,163,0.25);
+    }
+    .lp-nubi-col-header {
+      background: linear-gradient(180deg,
+        rgba(23,179,163,0.15) 0%,
+        rgba(36,86,166,0.10) 100%);
+      border-left: 1.5px solid rgba(23,179,163,0.35);
+      border-right: 1.5px solid rgba(23,179,163,0.35);
+      border-top: 2px solid #17b3a3;
+    }
+
+    /* ── How-it-works step card ── */
+    .lp-step-card {
+      transition: box-shadow 0.2s ease, transform 0.2s ease;
+    }
+    .lp-step-card:hover {
+      transform: translateY(-2px);
+    }
+
+    /* ── Step connector arrow ── */
+    .lp-step-arrow {
+      color: #17b3a3;
+      opacity: 0.5;
+    }
+
+    /* ── Chip badges ── */
+    .lp-chip {
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      font-size: 0.7rem;
+      font-weight: 600;
+      padding: 3px 9px;
+      border-radius: 999px;
+      border: 1px solid;
+      line-height: 1.4;
+      white-space: nowrap;
+    }
   `}</style>
 )
 
@@ -89,64 +159,141 @@ const ScopedStyles = () => (
 
 function EyebrowBadge({ children }) {
   return (
-    <div className="inline-flex items-center gap-2 text-xs font-semibold tracking-widest uppercase px-3 py-1.5 rounded-full mb-6 bg-surface-2 border border-border text-muted">
+    <div className="inline-flex items-center gap-2 text-xs font-semibold tracking-widest uppercase px-3 py-1.5 rounded-full mb-5 sm:mb-6 bg-surface-2 border border-border text-muted">
       <span className="w-1.5 h-1.5 rounded-full bg-accent inline-block" />
       {children}
     </div>
   )
 }
 
-function StatBadge({ value, label, accent = 'text-brand-teal' }) {
+function StatBadge({ value, label }) {
   return (
-    <div className="flex flex-col items-center px-6 py-5 text-white">
-      <span className={`font-display text-4xl sm:text-5xl font-bold leading-none mb-1.5 ${accent}`}>
+    <div className="flex flex-col items-center px-4 py-5 sm:px-6 text-white">
+      <span className="font-display text-3xl sm:text-4xl lg:text-5xl font-bold leading-none mb-1.5 text-white">
         {value}
       </span>
-      <span className="text-xs sm:text-sm font-medium tracking-wide uppercase text-white/60 text-center max-w-[10rem]">
+      <span className="text-xs font-medium tracking-wide uppercase text-white/60 text-center max-w-[9rem]">
         {label}
       </span>
     </div>
   )
 }
 
-function CompareCheck({ yes }) {
-  return yes ? (
-    <Check size={14} strokeWidth={2.5} className="mx-auto text-accent" />
-  ) : (
-    <X size={14} strokeWidth={2.5} className="mx-auto text-muted opacity-40" />
+function CompareCell({ value, isNubi = false }) {
+  if (value === true) {
+    return (
+      <span className="inline-flex items-center justify-center w-6 h-6 rounded-full bg-accent/15 mx-auto">
+        <Check size={13} strokeWidth={3} className="text-accent" />
+      </span>
+    )
+  }
+  if (value === false) {
+    return (
+      <span className="inline-flex items-center justify-center w-6 h-6 rounded-full bg-border/60 mx-auto">
+        <X size={12} strokeWidth={2.5} className="text-muted opacity-40" />
+      </span>
+    )
+  }
+  if (value === 'partial') {
+    return (
+      <span className="inline-flex items-center justify-center w-6 h-6 rounded-full bg-surface-2 mx-auto">
+        <Minus size={12} strokeWidth={2.5} className="text-muted" />
+      </span>
+    )
+  }
+  return (
+    <span className={`text-xs leading-snug ${isNubi ? 'font-medium text-brand-teal' : 'text-muted opacity-70'}`}>
+      {value}
+    </span>
   )
 }
 
-function Step({ num, title, desc, code }) {
+function Chip({ icon: Icon, children, accent = false }) {
   return (
-    <div className="flex flex-col items-center text-center max-w-sm">
-      <div className="w-14 h-14 rounded-2xl flex items-center justify-center text-2xl font-bold font-display mb-5 bg-brand-gradient text-white shadow-lg">
-        {num}
+    <span
+      className={`lp-chip ${
+        accent
+          ? 'bg-accent/10 border-accent/30 text-brand-teal'
+          : 'bg-surface-2 border-border text-muted'
+      }`}
+    >
+      {Icon && <Icon size={10} strokeWidth={2.5} />}
+      {children}
+    </span>
+  )
+}
+
+function HowItWorksStep({ num, icon: Icon, title, color, tagline, bullets, code, chips }) {
+  return (
+    <div className="lp-step-card flex flex-col bg-surface rounded-2xl border border-border overflow-hidden flex-1 min-w-0">
+      {/* Card header strip */}
+      <div
+        className="px-6 pt-6 pb-5"
+        style={{ borderBottom: '1px solid var(--border)' }}
+      >
+        <div className="flex items-center gap-3 mb-3">
+          <span
+            className="shrink-0 w-10 h-10 rounded-xl flex items-center justify-center text-white shadow"
+            style={{ background: color }}
+          >
+            <Icon size={19} strokeWidth={2} />
+          </span>
+          <span className="font-mono text-xs font-bold tracking-widest text-muted uppercase">
+            Step {num}
+          </span>
+        </div>
+        <h3 className="font-display font-bold text-xl sm:text-2xl text-fg mb-1">{title}</h3>
+        <p className="text-sm leading-relaxed text-muted">{tagline}</p>
       </div>
-      <h3 className="font-display font-semibold text-xl mb-3 text-fg">{title}</h3>
-      <p className="text-sm leading-relaxed mb-4 text-muted">{desc}</p>
+
+      {/* Bullets */}
+      <div className="px-6 py-5 flex flex-col gap-3 flex-1">
+        {bullets.map(({ icon: BIcon, text }) => (
+          <div key={text} className="flex items-start gap-2.5">
+            <span className="shrink-0 mt-0.5 w-5 h-5 rounded-md bg-surface-2 border border-border flex items-center justify-center">
+              <BIcon size={11} strokeWidth={2.5} className="text-accent" />
+            </span>
+            <span className="text-xs leading-relaxed text-muted">{text}</span>
+          </div>
+        ))}
+
+        {/* Chips */}
+        {chips && (
+          <div className="flex flex-wrap gap-1.5 mt-1">
+            {chips.map((c) => (
+              <Chip key={c.label} icon={c.icon} accent={c.accent}>
+                {c.label}
+              </Chip>
+            ))}
+          </div>
+        )}
+      </div>
+
+      {/* Code snippet */}
       {code && (
-        <code className="text-xs px-3 py-2 rounded-lg font-mono bg-surface-2 border border-border text-brand-teal">
-          {code}
-        </code>
+        <div className="px-6 pb-6">
+          <code className="block text-xs font-mono px-3 py-2.5 rounded-lg bg-surface-2 border border-border text-brand-teal break-all leading-relaxed">
+            {code}
+          </code>
+        </div>
       )}
     </div>
   )
 }
 
 /**
- * DiffRow — alternating illustration left/right layout for large visibility.
- * odd = illustration on left, copy on right
- * even = copy on left, illustration on right
+ * DiffRow — alternating illustration left/right layout.
+ * On mobile/tablet: always stacks (illustration on top, copy below).
+ * On desktop (lg+): alternates left/right based on `reverse` prop.
  */
-function DiffRow({ icon: Icon, title, desc, Illustration, reverse = false, badge }) {
+function DiffRow({ icon: Icon, title, desc, Illustration, reverse = false, badge, id }) {
   const IllustrationBlock = (
-    <div className="w-full min-h-[320px] lg:min-h-[380px] flex items-center">
+    <div className="w-full min-h-[240px] sm:min-h-[300px] lg:min-h-[380px] flex items-center">
       <Illustration className="w-full h-auto" />
     </div>
   )
   const CopyBlock = (
-    <div className={`flex flex-col gap-5 ${reverse ? 'lg:pr-8' : 'lg:pl-8'}`}>
+    <div className={`flex flex-col gap-4 sm:gap-5 ${reverse ? 'lg:pr-8' : 'lg:pl-8'}`}>
       {badge && (
         <span className="inline-flex items-center self-start gap-1.5 text-xs font-semibold px-2.5 py-1 rounded-full bg-surface-2 border border-border text-muted tracking-widest uppercase">
           {badge}
@@ -156,29 +303,28 @@ function DiffRow({ icon: Icon, title, desc, Illustration, reverse = false, badge
         <span className="shrink-0 inline-flex items-center justify-center w-10 h-10 rounded-xl bg-surface-2 border border-border text-accent">
           <Icon size={20} strokeWidth={1.75} />
         </span>
-        <h3 className="font-display font-bold text-2xl lg:text-3xl text-fg leading-tight">{title}</h3>
+        <h3 className="font-display font-bold text-xl sm:text-2xl lg:text-3xl text-fg leading-tight">{title}</h3>
       </div>
-      <p className="text-base lg:text-lg leading-relaxed text-muted">{desc}</p>
+      <p className="text-sm sm:text-base lg:text-lg leading-relaxed text-muted">{desc}</p>
     </div>
   )
 
+  // Render each block ONCE and reorder with CSS on desktop. Rendering the
+  // illustration twice (mobile + desktop copies) duplicates its gradient ids in
+  // the DOM; Chrome won't build gradient paint-servers from the display:none
+  // copy, so the visible copy's gradient fills vanish. Single-render avoids it.
   return (
-    <div className={`grid lg:grid-cols-2 gap-10 lg:gap-16 items-center ${reverse ? 'direction-rtl' : ''}`}>
-      {reverse ? (
-        <>
-          <div>{CopyBlock}</div>
-          <div className="bg-surface rounded-2xl border border-border overflow-hidden p-2">
-            {IllustrationBlock}
-          </div>
-        </>
-      ) : (
-        <>
-          <div className="bg-surface rounded-2xl border border-border overflow-hidden p-2">
-            {IllustrationBlock}
-          </div>
-          <div>{CopyBlock}</div>
-        </>
-      )}
+    <div
+      id={id}
+      className={`grid grid-cols-1 lg:grid-cols-2 gap-8 sm:gap-10 lg:gap-16 items-center ${id ? 'scroll-mt-20' : ''}`}
+    >
+      {/* Mobile: illustration always first. Desktop: side depends on `reverse`. */}
+      <div className={`order-1 bg-surface rounded-2xl border border-border overflow-hidden p-2 ${reverse ? 'lg:order-2' : 'lg:order-1'}`}>
+        {IllustrationBlock}
+      </div>
+      <div className={`order-2 ${reverse ? 'lg:order-1' : 'lg:order-2'}`}>
+        {CopyBlock}
+      </div>
     </div>
   )
 }
@@ -197,7 +343,7 @@ export default function LandingPage() {
         {/* ════════════════════════════════════════════════════════════════════
             §1  HERO — two-column: copy | large illustration
         ════════════════════════════════════════════════════════════════════ */}
-        <section className="relative min-h-[92vh] flex items-center bg-bg">
+        <section id="hero" className="relative flex items-center bg-bg scroll-mt-14">
           {/* Subtle brand gradient wash behind illustration */}
           <div
             className="pointer-events-none absolute inset-0"
@@ -208,14 +354,14 @@ export default function LandingPage() {
             }}
           />
 
-          <div className="relative max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-20 sm:py-28 w-full">
-            <div className="grid lg:grid-cols-[1fr_1.25fr] gap-12 lg:gap-20 items-center">
+          <div className="relative max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-14 sm:py-20 lg:py-28 w-full">
+            <div className="grid grid-cols-1 lg:grid-cols-[1fr_1.25fr] gap-10 lg:gap-20 items-center">
 
               {/* ── Left: copy ── */}
               <div>
                 <EyebrowBadge>Open beta · real free tier</EyebrowBadge>
 
-                <h1 className="font-display text-5xl sm:text-6xl lg:text-[4.25rem] xl:text-7xl font-bold leading-[1.04] tracking-tight mb-6 text-fg">
+                <h1 className="font-display text-4xl sm:text-5xl lg:text-[4.25rem] xl:text-7xl font-bold leading-[1.06] tracking-tight mb-5 sm:mb-6 text-fg">
                   BI that runs{' '}
                   <span className="text-brand-gradient">
                     in your browser.
@@ -225,8 +371,8 @@ export default function LandingPage() {
                   cost per view.
                 </h1>
 
-                <p className="text-lg sm:text-xl leading-relaxed mb-10 max-w-lg text-muted">
-                  Pyodide + DuckDB run inside the user&rsquo;s tab —
+                <p className="text-base sm:text-lg lg:text-xl leading-relaxed mb-8 sm:mb-10 max-w-lg text-muted">
+                  Pyodide + DuckDB-WASM run inside the user&rsquo;s tab —
                   no per-session cloud kernel, no cold starts.
                   Embed a cross-filtering, million-point dashboard inside
                   your SaaS for a{' '}
@@ -234,30 +380,30 @@ export default function LandingPage() {
                 </p>
 
                 {/* CTAs */}
-                <div className="flex flex-col sm:flex-row gap-3 mb-10">
+                <div className="flex flex-col sm:flex-row flex-wrap gap-3 mb-8 sm:mb-10">
                   <Link
                     to="/register"
-                    className="lp-cta-pulse inline-flex items-center justify-center gap-2 px-7 py-3.5 rounded-xl text-base font-semibold transition-all bg-brand-gradient text-white hover:opacity-90 hover:-translate-y-0.5"
+                    className="lp-cta-pulse inline-flex items-center justify-center gap-2 px-6 py-3.5 rounded-xl text-base font-semibold transition-all bg-brand-gradient text-white hover:opacity-90 hover:-translate-y-0.5 min-h-[48px]"
                   >
                     Get started free
                     <ArrowRight size={16} strokeWidth={2.5} />
                   </Link>
                   <Link
                     to="/docs"
-                    className="inline-flex items-center justify-center gap-2 px-7 py-3.5 rounded-xl text-base font-semibold transition-all bg-surface-2 border border-border text-fg hover:border-brand-blue hover:text-brand-blue"
+                    className="inline-flex items-center justify-center gap-2 px-6 py-3.5 rounded-xl text-base font-semibold transition-all bg-surface-2 border border-border text-fg hover:border-brand-blue hover:text-brand-blue min-h-[48px]"
                   >
                     View docs
                   </Link>
                   <Link
                     to="/compare"
-                    className="inline-flex items-center justify-center gap-1.5 px-5 py-3.5 rounded-xl text-sm font-medium transition-all text-muted hover:text-fg"
+                    className="inline-flex items-center justify-center gap-1.5 px-4 py-3.5 rounded-xl text-sm font-medium transition-all text-muted hover:text-fg min-h-[48px]"
                   >
                     Compare vs Hex &amp; Cube <ChevronRight size={13} />
                   </Link>
                 </div>
 
                 {/* Trust strip */}
-                <div className="flex flex-wrap gap-5 text-xs font-medium text-muted">
+                <div className="flex flex-wrap gap-x-5 gap-y-2 text-xs font-medium text-muted">
                   {[
                     'Arrow IPC wire format',
                     'WebGL · 1M+ points',
@@ -273,7 +419,7 @@ export default function LandingPage() {
               </div>
 
               {/* ── Right: LARGE hero illustration ── */}
-              <div className="lp-hero-illo relative">
+              <div className="lp-hero-illo relative mt-6 lg:mt-0">
                 {/* Glow halo behind illustration */}
                 <div
                   className="absolute inset-0 -m-6 rounded-3xl pointer-events-none"
@@ -283,7 +429,7 @@ export default function LandingPage() {
                   }}
                 />
                 <div className="relative bg-surface rounded-2xl border border-border overflow-hidden p-1 shadow-2xl">
-                  <HeroIllustration className="w-full h-auto" style={{ minHeight: 480 }} />
+                  <HeroIllustration className="w-full h-auto" style={{ minHeight: 280 }} />
                 </div>
               </div>
             </div>
@@ -293,7 +439,7 @@ export default function LandingPage() {
         {/* ════════════════════════════════════════════════════════════════════
             §2  PROOF BAND — key metrics
         ════════════════════════════════════════════════════════════════════ */}
-        <section className="relative py-16 sm:py-20 bg-brand-gradient overflow-hidden">
+        <section className="relative py-12 sm:py-16 lg:py-20 bg-brand-gradient overflow-hidden">
           {/* Subtle pattern */}
           <svg className="absolute inset-0 w-full h-full opacity-5 pointer-events-none" aria-hidden="true">
             <defs>
@@ -305,47 +451,50 @@ export default function LandingPage() {
           </svg>
 
           <div className="relative max-w-6xl mx-auto px-4 sm:px-6 lg:px-8">
-            <p className="text-center text-xs font-semibold tracking-widest uppercase mb-10 text-white/60">
-              The structural advantage
+            <p className="text-center text-xs font-semibold tracking-widest uppercase mb-8 sm:mb-10 text-white/60">
+              The structural advantage — what kernel-in-the-browser actually means
             </p>
 
             <div className="grid grid-cols-2 sm:grid-cols-4 divide-x divide-y sm:divide-y-0 divide-white/10">
-              <StatBadge value="≈ $0" label="marginal cost per dashboard view" accent="text-white" />
-              <StatBadge value="1M+" label="points rendered at 60 fps via WebGL" accent="text-white" />
-              <StatBadge value="10–50×" label="cost reduction vs naive warehouse usage¹" accent="text-white" />
-              <StatBadge value="0 s" label="cold-start time for browser kernel" accent="text-white" />
+              <StatBadge value="≈ $0" label="marginal cost per dashboard view" />
+              <StatBadge value="1M+" label="data points at 60 fps via WebGL" />
+              <StatBadge value="10–50×" label="cost reduction vs naive warehouse usage¹" />
+              <StatBadge value="0 s" label="cold-start — kernel runs in the tab" />
             </div>
 
             <p className="text-center text-xs mt-8 text-white/30">
-              ¹ Real at high cache-hit / pre-aggregation rates — e.g. 500 viewers of the same dashboard.
+              ¹ Real at high cache-hit / pre-aggregation rates — e.g. 500 viewers of the same dashboard collapsing to 1 warehouse hit.
             </p>
           </div>
         </section>
 
         {/* ════════════════════════════════════════════════════════════════════
             §3  DIFFERENTIATORS — alternating left/right, LARGE illustrations
+            id="features" — scroll target for footer "Dashboards" link
         ════════════════════════════════════════════════════════════════════ */}
-        <section className="py-24 sm:py-32 bg-bg">
+        <section id="features" className="py-16 sm:py-24 lg:py-32 bg-bg scroll-mt-14">
           <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
 
             {/* Section header */}
-            <div className="text-center mb-20 max-w-2xl mx-auto">
+            <div className="text-center mb-12 sm:mb-16 lg:mb-20 max-w-2xl mx-auto">
               <p className="text-xs font-semibold tracking-widest uppercase mb-4 text-brand-teal">
                 Why Nubi
               </p>
-              <h2 className="font-display text-4xl sm:text-5xl font-bold leading-tight mb-5 text-fg">
-                Six decisions that make{' '}
+              <h2 className="font-display text-3xl sm:text-4xl lg:text-5xl font-bold leading-tight mb-4 sm:mb-5 text-fg">
+                Seven decisions that make{' '}
                 <span className="text-brand-gradient">everything cheaper.</span>
               </h2>
-              <p className="text-base leading-relaxed text-muted">
-                Each feature flows from one structural bet: push compute to the browser,
-                fall through to a server only when you must.
+              <p className="text-sm sm:text-base leading-relaxed text-muted">
+                Each feature flows from one structural bet: push compute to the browser and
+                fall through to a server only when you must. The result is near-zero marginal
+                cost per dashboard view — regardless of how many viewers you have.
               </p>
             </div>
 
-            {/* Alternating rows — each illustration is min ~380px tall on desktop */}
-            <div className="flex flex-col gap-24 sm:gap-32">
+            {/* Alternating rows */}
+            <div className="flex flex-col gap-16 sm:gap-20 lg:gap-32">
               <DiffRow
+                id="kernel"
                 icon={Zap}
                 title="Kernel in the browser"
                 badge="Core architecture"
@@ -364,6 +513,7 @@ export default function LandingPage() {
               />
 
               <DiffRow
+                id="cache"
                 icon={Database}
                 title="Edge cache + auto pre-agg"
                 badge="Cost architecture"
@@ -373,6 +523,7 @@ export default function LandingPage() {
               />
 
               <DiffRow
+                id="embedding"
                 icon={Shield}
                 title="Auth-as-code embedding"
                 badge="Security"
@@ -391,6 +542,7 @@ export default function LandingPage() {
               />
 
               <DiffRow
+                id="connectors"
                 icon={Code2}
                 title="SQL-first connector SDK"
                 badge="Extensibility"
@@ -398,56 +550,139 @@ export default function LandingPage() {
                 Illustration={ConnectorSdk}
                 reverse={true}
               />
+
+              <DiffRow
+                id="flows"
+                icon={Workflow}
+                title="Flows · LLM-native orchestration"
+                badge="Workflows"
+                desc="A lightweight Prefect alternative built in. Compose queries, Python, and AI agents into a visual DAG that runs on Postgres alone — no Redis, no Celery. Retries, timeouts, and result caching per task; RLS-aware execution. Agents can author and run flows in natural language, or drag them together in the builder."
+                Illustration={FlowOrchestration}
+                reverse={false}
+              />
             </div>
           </div>
         </section>
 
         {/* ════════════════════════════════════════════════════════════════════
             §4  HOW IT WORKS — 3-step
+            id="how-it-works" — scroll target for footer link
         ════════════════════════════════════════════════════════════════════ */}
-        <section className="py-24 sm:py-32 bg-surface-2">
+        <section id="how-it-works" className="py-16 sm:py-24 lg:py-32 bg-surface-2 scroll-mt-14">
           <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
-            <div className="text-center mb-16">
+            <div className="text-center mb-12 sm:mb-16">
               <p className="text-xs font-semibold tracking-widest uppercase mb-4 text-brand-teal">
                 How it works
               </p>
-              <h2 className="font-display text-4xl sm:text-5xl font-bold text-fg">
-                Connect → Query → Embed
+              <h2 className="font-display text-3xl sm:text-4xl lg:text-5xl font-bold text-fg">
+                Connect <span className="text-muted opacity-40 font-normal">→</span> Query <span className="text-muted opacity-40 font-normal">→</span> Embed
               </h2>
+              <p className="text-sm sm:text-base leading-relaxed mt-4 text-muted max-w-2xl mx-auto">
+                Three stages from zero to a live, cross-filtering, multi-tenant dashboard.
+                No proprietary semantic model. No cold-start cloud kernel. No per-view compute cost.
+              </p>
             </div>
 
-            <div className="relative flex flex-col lg:flex-row items-start justify-center gap-10 lg:gap-0">
-              {/* Connector line */}
-              <div className="lp-connector hidden lg:block absolute top-7 left-1/2 -translate-x-1/2 h-0.5 opacity-30" style={{ width: '56%' }} />
+            {/* Three step cards with connector arrows */}
+            <div className="flex flex-col lg:flex-row items-stretch gap-4 lg:gap-3 xl:gap-5">
 
-              <Step
-                num="1"
-                title="Connect your warehouse"
-                desc="Point Nubi at BigQuery, Snowflake, Redshift, Postgres, or any Arrow-returning Python function. No semantic model required to start."
+              <HowItWorksStep
+                num={1}
+                icon={PlugZap}
+                color="linear-gradient(135deg, #1b2363, #2456a6)"
+                title="Connect"
+                tagline="Bring your warehouse. Secrets stay in your network."
+                bullets={[
+                  { icon: Database, text: 'BigQuery, Snowflake, Redshift, Postgres, ClickHouse — point and go, no semantic model required.' },
+                  { icon: Lock, text: 'Warehouse credentials never leave the connector. Self-host in your VPC or use Nubi-managed regional connectors near your data.' },
+                  { icon: Code2, text: 'Python connector SDK: any Arrow-returning function is a first-class source. Wrap a proprietary store, a dataframe job, or a REST feed.' },
+                  { icon: Shield, text: 'Capability contract enforces a security floor — connectors without predicate-RLS support are refused (501), not silently trusted.' },
+                ]}
+                chips={[
+                  { label: 'BigQuery', accent: false },
+                  { label: 'Snowflake', accent: false },
+                  { label: 'Postgres', accent: false },
+                  { label: 'Python SDK', accent: true },
+                  { label: 'Private VPC bridge', accent: true },
+                ]}
                 code="nubi connector add bigquery --project my-project"
               />
 
-              <div className="hidden lg:block w-24 shrink-0" />
+              {/* Arrow connector */}
+              <div className="flex lg:flex-col items-center justify-center shrink-0 py-1 lg:py-0 px-0 lg:px-1">
+                <div className="hidden lg:flex flex-col items-center gap-2">
+                  <div className="w-px h-8 bg-gradient-to-b from-transparent via-border to-transparent" />
+                  <ArrowRightCircle size={22} strokeWidth={1.5} className="lp-step-arrow -rotate-90" />
+                  <div className="w-px h-8 bg-gradient-to-b from-transparent via-border to-transparent" />
+                </div>
+                <div className="lg:hidden flex items-center gap-2">
+                  <div className="h-px w-8 bg-gradient-to-r from-transparent via-border to-transparent" />
+                  <ArrowRightCircle size={22} strokeWidth={1.5} className="lp-step-arrow" />
+                  <div className="h-px w-8 bg-gradient-to-r from-transparent via-border to-transparent" />
+                </div>
+              </div>
 
-              <Step
-                num="2"
-                title="Query in SQL, Python, or plain English"
-                desc="The DuckDB-WASM kernel runs in the browser. Results stream back as Arrow IPC. Cross-filters update in milliseconds — no round trip to a server kernel."
-                code="SELECT month, SUM(revenue) FROM events GROUP BY 1"
+              <HowItWorksStep
+                num={2}
+                icon={SearchCode}
+                color="linear-gradient(135deg, #2456a6, #17b3a3)"
+                title="Query"
+                tagline="SQL, named params, and AI text-to-SQL — all in the browser."
+                bullets={[
+                  { icon: Database, text: 'DuckDB-WASM kernel runs in the user\'s tab — zero cold starts, zero per-session cloud cost. Results stream as Arrow IPC.' },
+                  { icon: Sparkles, text: 'AI text-to-SQL grounded on your actual catalog and lineage graph — not hallucinated schemas. Four MCP tools for agent authoring.' },
+                  { icon: SearchCode, text: 'Named-parameter registered queries keep your SQL versioned and reusable. The query planner pushes predicates and projections to the warehouse.' },
+                  { icon: Globe, text: 'Content-hashed edge cache: 500 viewers of the same dashboard collapse to 1 warehouse hit. Auto pre-aggregation mines query logs to build rollups automatically.' },
+                ]}
+                chips={[
+                  { label: 'DuckDB-WASM', accent: true },
+                  { label: 'Arrow IPC', accent: true },
+                  { label: 'AI text-to-SQL', accent: false },
+                  { label: 'Named params', accent: false },
+                  { label: 'Edge cache', accent: false },
+                ]}
+                code="SELECT month, SUM(revenue) FROM events WHERE {{tenant_id}} GROUP BY 1"
               />
 
-              <div className="hidden lg:block w-24 shrink-0" />
+              {/* Arrow connector */}
+              <div className="flex lg:flex-col items-center justify-center shrink-0 py-1 lg:py-0 px-0 lg:px-1">
+                <div className="hidden lg:flex flex-col items-center gap-2">
+                  <div className="w-px h-8 bg-gradient-to-b from-transparent via-border to-transparent" />
+                  <ArrowRightCircle size={22} strokeWidth={1.5} className="lp-step-arrow -rotate-90" />
+                  <div className="w-px h-8 bg-gradient-to-b from-transparent via-border to-transparent" />
+                </div>
+                <div className="lg:hidden flex items-center gap-2">
+                  <div className="h-px w-8 bg-gradient-to-r from-transparent via-border to-transparent" />
+                  <ArrowRightCircle size={22} strokeWidth={1.5} className="lp-step-arrow" />
+                  <div className="h-px w-8 bg-gradient-to-r from-transparent via-border to-transparent" />
+                </div>
+              </div>
 
-              <Step
-                num="3"
-                title="Embed anywhere, auth-as-code"
-                desc="Mount <nubi-dashboard> in your host app, pass a getToken() callback, and row-level security is enforced server-side from JWT claims. Near-zero marginal cost per view."
-                code={'<nubi-dashboard basePath getToken />'}
+              <HowItWorksStep
+                num={3}
+                icon={Layers}
+                color="linear-gradient(135deg, #17b3a3, #2dd4bf)"
+                title="Embed"
+                tagline="One JWT primitive. Per-viewer RLS. Cross-filtering dashboards."
+                bullets={[
+                  { icon: KeyRound, text: 'Signed JWT carries per-viewer claims. Predicate injection is AST-based — never string concat. Policies live as code in your repo, PR-reviewable.' },
+                  { icon: Filter, text: 'Token-locked params prevent viewers from escaping their data scope. Column masking and row-level security enforced server-side before any data leaves the connector.' },
+                  { icon: Globe, text: 'Cross-filtering, 1M+ point WebGL scatter plots at 60fps. The <nubi-chart> element auto-upgrades to GPU rendering — authors never touch WebGL code.' },
+                  { icon: Code2, text: 'Mount <nubi-dashboard basePath getToken /> in your host app. CSS-var theming, iframe or web component, short-lived JWTs with silent refresh.' },
+                ]}
+                chips={[
+                  { label: 'JWT RLS', accent: true },
+                  { label: 'AST predicate inject', accent: true },
+                  { label: 'Token-locked params', accent: false },
+                  { label: 'WebGL cross-filter', accent: false },
+                  { label: 'Web component', accent: false },
+                ]}
+                code={'<nubi-dashboard basePath="/api" getToken={getToken} />'}
               />
             </div>
 
             {/* Architecture note */}
-            <div className="mt-16 mx-auto max-w-3xl rounded-2xl p-6 text-sm leading-relaxed text-center bg-surface border border-border">
+            <div className="mt-10 sm:mt-12 mx-auto max-w-3xl rounded-2xl p-5 sm:p-6 text-sm leading-relaxed text-center bg-surface border border-border">
               <strong className="text-brand-blue font-semibold">One language, one engine, one wire format.</strong>
               {' '}Python everywhere (FastAPI + Pyodide + connector planner). DuckDB everywhere (WASM in browser, embedded in connector).
               Arrow IPC at every boundary — so a result hops browser ↔ edge ↔ kernel with no serialization tax.
@@ -458,110 +693,188 @@ export default function LandingPage() {
 
         {/* ════════════════════════════════════════════════════════════════════
             §5  POSITIONING vs Hex / Cube
+            id="compare" — scroll target, also has a full /compare page
         ════════════════════════════════════════════════════════════════════ */}
-        <section className="py-24 sm:py-32 bg-bg">
+        <section id="compare" className="py-16 sm:py-24 lg:py-32 bg-bg scroll-mt-14">
           <div className="max-w-5xl mx-auto px-4 sm:px-6 lg:px-8">
-            <div className="text-center mb-12">
+            <div className="text-center mb-10 sm:mb-14">
               <p className="text-xs font-semibold tracking-widest uppercase mb-4 text-brand-teal">
                 Honest comparison
               </p>
-              <h2 className="font-display text-4xl sm:text-5xl font-bold mb-4 text-fg">
+              <h2 className="font-display text-3xl sm:text-4xl lg:text-5xl font-bold mb-4 text-fg">
                 Nubi vs the field
               </h2>
-              <p className="text-base text-muted">
+              <p className="text-sm sm:text-base text-muted max-w-xl mx-auto mb-4">
                 Hex is great. Cube is great. But both run compute in their cloud —
-                and that shapes everything about their pricing.
+                and that single decision shapes everything about their pricing and architecture.
               </p>
+              <Link
+                to="/compare"
+                className="inline-flex items-center gap-1 text-sm font-medium text-brand-teal hover:underline"
+              >
+                Full comparison page <ChevronRight size={13} />
+              </Link>
             </div>
 
-            <div className="rounded-2xl overflow-hidden border border-border">
-              {/* Table header */}
-              <div className="grid grid-cols-4 text-xs font-semibold tracking-wide uppercase py-3 px-4 bg-surface-2 border-b border-border text-muted">
-                <span>Dimension</span>
-                <span className="text-center">Hex</span>
-                <span className="text-center">Cube</span>
-                <span className="text-center text-brand-teal">Nubi</span>
-              </div>
+            {/* Horizontally scrollable on mobile */}
+            <div className="lp-compare-table-wrap rounded-2xl border border-border overflow-hidden shadow-sm">
+              <div className="lp-compare-table-inner">
 
-              {[
-                {
-                  dim: 'Compute kernel',
-                  hex: 'Python/session, their cloud (10–30s cold)',
-                  cube: 'n/a — warehouse + Cube Store',
-                  nubi: 'Pyodide in browser; on-demand server kernel only',
-                },
-                {
-                  dim: 'Wire format',
-                  hex: 'JSON via pandas',
-                  cube: 'JSON / SQL API',
-                  nubi: 'Arrow IPC over WebSocket',
-                },
-                {
-                  dim: 'Visualization',
-                  hex: 'Plotly/SVG, chokes past ~50k rows',
-                  cube: 'Bring your own',
-                  nubi: 'WebGL/WebGPU on Arrow buffers, 1M+ pts',
-                },
-                {
-                  dim: 'Edge caching',
-                  hex: 'Per-session, weak cross-user',
-                  cube: 'Pre-aggs in Cube Store',
-                  nubi: 'Content-hashed edge cache + auto pre-aggs',
-                },
-                {
-                  dim: 'Modeling tax',
-                  hex: 'Medium',
-                  cube: 'High (define cubes first)',
-                  nubi: 'Low — point at a warehouse and go',
-                },
-                {
-                  dim: 'Embedding',
-                  hex: 'Separate product, bolt-on auth',
-                  cube: 'Core strength, headless only',
-                  nubi: 'Core surface; editor embeddable, not just output',
-                },
-                {
-                  dim: 'LLM / MCP',
-                  hex: '–',
-                  cube: '–',
-                  nubi: 'MCP server · 4 tools · LLM-authorable HTML dashboards',
-                },
-                {
-                  dim: 'Real free tier',
-                  hex: false,
-                  cube: false,
-                  nubi: true,
-                  isBool: true,
-                },
-              ].map(({ dim, hex, cube, nubi, isBool }, i, arr) => (
-                <div
-                  key={dim}
-                  className={`lp-compare-row grid grid-cols-4 py-3 px-4 text-xs ${i < arr.length - 1 ? 'border-b border-border' : ''}`}
-                >
-                  <span className="font-medium text-fg">{dim}</span>
-                  <span className="text-center text-muted opacity-60">
-                    {isBool ? <CompareCheck yes={hex} /> : hex}
-                  </span>
-                  <span className="text-center text-muted opacity-60">
-                    {isBool ? <CompareCheck yes={cube} /> : cube}
-                  </span>
-                  <span className="text-center font-medium text-brand-teal">
-                    {isBool ? <CompareCheck yes={nubi} /> : nubi}
-                  </span>
+                {/* Column headers */}
+                <div className="grid grid-cols-[1.6fr_1fr_1fr_1.15fr] text-xs font-semibold">
+                  {/* Dimension label */}
+                  <div className="py-4 px-5 bg-surface-2 border-b border-border">
+                    <span className="text-muted uppercase tracking-widest">Dimension</span>
+                  </div>
+                  {/* Hex */}
+                  <div className="py-4 px-4 bg-surface-2 border-b border-l border-border text-center">
+                    <span className="text-muted tracking-wide">Hex</span>
+                    <p className="text-muted opacity-50 font-normal normal-case tracking-normal mt-0.5 text-[10px]">Notebook + apps</p>
+                  </div>
+                  {/* Cube */}
+                  <div className="py-4 px-4 bg-surface-2 border-b border-l border-border text-center">
+                    <span className="text-muted tracking-wide">Cube</span>
+                    <p className="text-muted opacity-50 font-normal normal-case tracking-normal mt-0.5 text-[10px]">Semantic layer</p>
+                  </div>
+                  {/* Nubi — highlighted */}
+                  <div className="lp-nubi-col-header py-4 px-4 border-b text-center">
+                    <span className="text-brand-teal tracking-wide">Nubi</span>
+                    <p className="text-brand-teal opacity-60 font-normal normal-case tracking-normal mt-0.5 text-[10px]">BI + embed</p>
+                  </div>
                 </div>
-              ))}
+
+                {/* Rows */}
+                {[
+                  {
+                    category: 'Architecture',
+                    dim: 'Compute kernel',
+                    hex: 'Python/session, their cloud (10–30s cold)',
+                    cube: 'n/a — warehouse + Cube Store',
+                    nubi: 'Pyodide in browser; on-demand server kernel only when needed',
+                  },
+                  {
+                    dim: 'Wire format',
+                    hex: 'JSON via pandas',
+                    cube: 'JSON / SQL API',
+                    nubi: 'Arrow IPC over WebSocket',
+                  },
+                  {
+                    dim: 'Cold-start',
+                    hex: '10–30 s per session',
+                    cube: 'n/a',
+                    nubi: '0 s — kernel is in the tab',
+                  },
+                  {
+                    category: 'Data & Caching',
+                    dim: 'Edge caching',
+                    hex: 'Per-session, weak cross-user',
+                    cube: 'Pre-aggs in Cube Store',
+                    nubi: 'Content-hashed edge cache + auto pre-aggs',
+                  },
+                  {
+                    dim: 'Modeling tax',
+                    hex: 'Medium',
+                    cube: 'High — define cubes first',
+                    nubi: 'Low — point at a warehouse and go',
+                  },
+                  {
+                    dim: 'Auto pre-aggregation',
+                    hex: false,
+                    cube: 'partial',
+                    nubi: true,
+                    isBool: true,
+                  },
+                  {
+                    category: 'Visualization',
+                    dim: 'Rendering engine',
+                    hex: 'Plotly / SVG, chokes past ~50k rows',
+                    cube: 'Bring your own',
+                    nubi: 'WebGL on Arrow buffers — 1M+ pts at 60fps',
+                  },
+                  {
+                    dim: 'Cross-filter at scale',
+                    hex: false,
+                    cube: false,
+                    nubi: true,
+                    isBool: true,
+                  },
+                  {
+                    category: 'Auth & Embedding',
+                    dim: 'Embedding',
+                    hex: 'Separate product, bolt-on auth',
+                    cube: 'Core strength — headless only',
+                    nubi: 'Core surface; editor + output embeddable',
+                  },
+                  {
+                    dim: 'Auth-as-code RLS',
+                    hex: false,
+                    cube: 'partial',
+                    nubi: true,
+                    isBool: true,
+                  },
+                  {
+                    category: 'AI & Pricing',
+                    dim: 'LLM / MCP authoring',
+                    hex: false,
+                    cube: false,
+                    nubi: 'MCP server · 4 tools · LLM-authorable HTML dashboards',
+                    isBool: false,
+                  },
+                  {
+                    dim: 'Real free tier',
+                    hex: false,
+                    cube: false,
+                    nubi: true,
+                    isBool: true,
+                  },
+                ].map(({ category, dim, hex, cube, nubi, isBool }, i, arr) => {
+                  const isLastInBlock = i === arr.length - 1 || arr[i + 1]?.category
+                  return (
+                    <div key={dim}>
+                      {/* Category separator row */}
+                      {category && (
+                        <div className="grid grid-cols-[1.6fr_1fr_1fr_1.15fr] bg-surface-2 border-t border-border">
+                          <div className="py-1.5 px-5 col-span-1">
+                            <span className="text-[10px] font-bold uppercase tracking-widest text-muted opacity-60">{category}</span>
+                          </div>
+                          <div className="border-l border-border" />
+                          <div className="border-l border-border" />
+                          <div className="lp-nubi-col" />
+                        </div>
+                      )}
+                      {/* Data row */}
+                      <div className={`lp-compare-row grid grid-cols-[1.6fr_1fr_1fr_1.15fr] ${!isLastInBlock ? 'border-b border-border' : ''}`}>
+                        <div className="py-3.5 px-5 flex items-center">
+                          <span className="text-xs font-medium text-fg">{dim}</span>
+                        </div>
+                        <div className="py-3.5 px-4 border-l border-border flex items-center justify-center">
+                          <CompareCell value={isBool ? hex : hex} />
+                        </div>
+                        <div className="py-3.5 px-4 border-l border-border flex items-center justify-center">
+                          <CompareCell value={isBool ? cube : cube} />
+                        </div>
+                        <div className="lp-nubi-col py-3.5 px-4 flex items-center justify-center">
+                          <CompareCell value={isBool ? nubi : nubi} isNubi />
+                        </div>
+                      </div>
+                    </div>
+                  )
+                })}
+
+              </div>
             </div>
 
-            <p className="text-center text-xs mt-6 text-muted opacity-50">
+            <p className="text-center text-xs mt-5 text-muted opacity-50">
               Data sourced from public documentation and the Nubi roadmap. We&rsquo;re honest: check primary sources before switching.
             </p>
           </div>
         </section>
 
         {/* ════════════════════════════════════════════════════════════════════
-            §6  CLOSING CTA
+            §6  CLOSING CTA / PRICING CALLOUT
+            id="pricing" — scroll target for footer "Pricing" link
         ════════════════════════════════════════════════════════════════════ */}
-        <section className="relative py-28 sm:py-36 overflow-hidden bg-surface-2">
+        <section id="pricing" className="relative py-20 sm:py-28 lg:py-36 overflow-hidden bg-surface-2 scroll-mt-14">
           {/* Brand gradient accent strip at top */}
           <div className="absolute top-0 left-0 right-0 h-1 bg-brand-gradient" />
 
@@ -577,37 +890,84 @@ export default function LandingPage() {
 
           <div className="relative max-w-3xl mx-auto px-4 sm:px-6 text-center">
             <p className="text-xs font-semibold tracking-widest uppercase mb-6 text-brand-teal">
-              Get started today
+              Pricing
             </p>
-            <h2 className="font-display text-4xl sm:text-6xl font-bold leading-tight mb-6 text-fg">
+            <h2 className="font-display text-3xl sm:text-5xl lg:text-6xl font-bold leading-tight mb-5 sm:mb-6 text-fg">
               Your first dashboard
               <br />
               <span className="text-brand-gradient">is free. Really.</span>
             </h2>
-            <p className="text-base sm:text-lg leading-relaxed mb-10 text-muted">
-              Marginal cost per dashboard view is ≈ $0. We charge for connector throughput,
-              embed views, AI calls, and on-demand kernel time — not for compute that runs
-              in your users&rsquo; browsers.
+            <p className="text-sm sm:text-base lg:text-lg leading-relaxed mb-8 text-muted">
+              Marginal cost per dashboard view is ≈ $0 — compute runs in the user&rsquo;s browser,
+              not our cloud. We charge for <strong className="text-fg font-medium">connector throughput</strong>,{' '}
+              <strong className="text-fg font-medium">embed views</strong>,{' '}
+              <strong className="text-fg font-medium">AI calls</strong>, and{' '}
+              <strong className="text-fg font-medium">on-demand server kernel time</strong> — never for
+              compute that runs in your users&rsquo; browsers.
             </p>
 
-            <div className="flex flex-col sm:flex-row gap-4 justify-center mb-12">
+            {/* Pricing tiers */}
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 mb-10 text-left">
+              {[
+                {
+                  tier: 'Free',
+                  note: 'Real free tier, no gotchas',
+                  bullets: ['Unlimited dashboard views', 'DuckDB-WASM kernel', '1 connector'],
+                },
+                {
+                  tier: 'Pro',
+                  note: 'For growing teams',
+                  bullets: ['Multiple connectors', 'Edge cache + pre-aggs', 'AI / MCP tools'],
+                  highlight: true,
+                },
+                {
+                  tier: 'Enterprise',
+                  note: 'Self-host or managed',
+                  bullets: ['Unlimited connectors', 'SSO + audit log', 'SLA + support'],
+                },
+              ].map(({ tier, note, bullets, highlight }) => (
+                <div
+                  key={tier}
+                  className={`rounded-xl p-5 border flex flex-col gap-3 ${
+                    highlight
+                      ? 'bg-brand-gradient text-white border-transparent'
+                      : 'bg-surface border-border'
+                  }`}
+                >
+                  <div>
+                    <p className={`font-display font-bold text-lg ${highlight ? 'text-white' : 'text-fg'}`}>{tier}</p>
+                    <p className={`text-xs mt-0.5 ${highlight ? 'text-white/70' : 'text-muted'}`}>{note}</p>
+                  </div>
+                  <ul className="flex flex-col gap-1.5">
+                    {bullets.map(b => (
+                      <li key={b} className={`flex items-center gap-2 text-xs ${highlight ? 'text-white/90' : 'text-muted'}`}>
+                        <Check size={11} strokeWidth={3} className={highlight ? 'text-white' : 'text-accent'} />
+                        {b}
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              ))}
+            </div>
+
+            <div className="flex flex-col sm:flex-row gap-3 sm:gap-4 justify-center mb-10">
               <Link
                 to="/register"
-                className="lp-cta-pulse inline-flex items-center justify-center gap-2 px-8 py-4 rounded-xl text-base font-semibold transition-all bg-brand-gradient text-white hover:opacity-90 hover:-translate-y-0.5"
+                className="lp-cta-pulse inline-flex items-center justify-center gap-2 px-6 sm:px-8 py-4 rounded-xl text-base font-semibold transition-all bg-brand-gradient text-white hover:opacity-90 hover:-translate-y-0.5 min-h-[52px]"
               >
                 Create free account
                 <ArrowRight size={16} strokeWidth={2.5} />
               </Link>
               <Link
                 to="/compare"
-                className="inline-flex items-center justify-center gap-2 px-8 py-4 rounded-xl text-base font-semibold transition-all bg-surface border border-border text-fg hover:border-brand-blue hover:text-brand-blue"
+                className="inline-flex items-center justify-center gap-2 px-6 sm:px-8 py-4 rounded-xl text-base font-semibold transition-all bg-surface border border-border text-fg hover:border-brand-blue hover:text-brand-blue min-h-[52px]"
               >
-                See pricing
+                Full comparison →
               </Link>
             </div>
 
             {/* Micro-features */}
-            <div className="flex flex-wrap justify-center gap-x-8 gap-y-2 text-xs font-medium text-muted">
+            <div className="flex flex-wrap justify-center gap-x-6 sm:gap-x-8 gap-y-2 text-xs font-medium text-muted">
               {[
                 'No credit card required',
                 'Free tier — no gotchas',
@@ -620,6 +980,28 @@ export default function LandingPage() {
                 </span>
               ))}
             </div>
+          </div>
+        </section>
+
+        {/* ════════════════════════════════════════════════════════════════════
+            §7  ABOUT — minimal "about" anchor for footer link
+        ════════════════════════════════════════════════════════════════════ */}
+        <section id="about" className="py-14 sm:py-16 bg-bg scroll-mt-14">
+          <div className="max-w-3xl mx-auto px-4 sm:px-6 text-center">
+            <p className="text-xs font-semibold tracking-widest uppercase mb-4 text-brand-teal">About Nubi</p>
+            <h2 className="font-display text-2xl sm:text-3xl lg:text-4xl font-bold mb-4 sm:mb-5 text-fg">
+              Built on one structural bet.
+            </h2>
+            <p className="text-sm sm:text-base leading-relaxed text-muted mb-6">
+              The analytics kernel runs in the user&rsquo;s browser by default. That single decision
+              makes the marginal cost of a dashboard view ≈ $0 — not a marketing claim, a
+              consequence of where compute runs. Hex runs a Python kernel per session in their
+              cloud. Cube runs the data plane in their cloud. Nubi pushes compute to the browser
+              and only falls through to a server kernel for the ~10% of workloads that need it.
+            </p>
+            <p className="text-sm text-muted opacity-70">
+              Apache-2.0 open source &middot; Real free tier &middot; Self-hostable connectors
+            </p>
           </div>
         </section>
 

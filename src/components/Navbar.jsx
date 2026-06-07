@@ -2,23 +2,27 @@
  * Navbar — sticky app shell header.
  *
  * Left:   Logo (links to /)
- * Center: nav links — Docs, Compare, Playground, Editor + Dashboard (auth-only)
+ * Center: nav links — Docs, Compare, Pricing (scroll), Playground, Editor, Dashboard (auth-only)
  * Right:  theme toggle (Sun/Moon) + user menu (avatar+logout) or login/register
  *
- * Responsive: collapses to a hamburger menu on mobile (< lg).
+ * Responsive: collapses to a hamburger menu on mobile/tablet (< lg).
+ * Mobile drawer slides down with CSS transition; tap targets ≥ 44px.
  */
 
-import { useState } from 'react'
-import { Link, NavLink, useNavigate } from 'react-router-dom'
+import { useState, useEffect, useRef } from 'react'
+import { Link, NavLink, useLocation, useNavigate } from 'react-router-dom'
 import { Sun, Moon, Menu, X, LogOut, LayoutDashboard, ChevronDown } from 'lucide-react'
 import { useTheme } from '../contexts/ThemeContext.jsx'
 import { useAuth } from '../contexts/AuthContext.jsx'
 import Logo from './Logo.jsx'
 
 // ── Nav link data ─────────────────────────────────────────────────────────────
+// scrollTo: if set, clicking the link smooth-scrolls to that section ID on the
+//           landing page (or navigates to /#id if not already on /).
 const NAV_LINKS = [
   { label: 'Docs',       to: '/docs' },
   { label: 'Compare',    to: '/compare' },
+  { label: 'Pricing',    to: '/',        scrollTo: 'pricing' },
   { label: 'Playground', to: '/playground', authOnly: true },
   { label: 'Editor',     to: '/editor',     authOnly: true },
   { label: 'Dashboard',  to: '/dashboard',  authOnly: true },
@@ -34,7 +38,7 @@ function ThemeToggle() {
       onClick={toggleTheme}
       aria-label={isDark ? 'Switch to light mode' : 'Switch to dark mode'}
       className="
-        flex items-center justify-center w-8 h-8 rounded-lg
+        flex items-center justify-center w-11 h-11 rounded-lg
         text-muted hover:text-fg
         bg-surface-2 hover:bg-surface
         border border-border
@@ -43,8 +47,8 @@ function ThemeToggle() {
       "
     >
       {isDark
-        ? <Sun size={15} strokeWidth={2} />
-        : <Moon size={15} strokeWidth={2} />
+        ? <Sun size={16} strokeWidth={2} />
+        : <Moon size={16} strokeWidth={2} />
       }
     </button>
   )
@@ -54,6 +58,7 @@ function ThemeToggle() {
 function UserMenu({ user, logout }) {
   const [open, setOpen] = useState(false)
   const navigate = useNavigate()
+  const menuRef = useRef(null)
 
   const initial = (user.name || user.email || '?')[0].toUpperCase()
 
@@ -63,14 +68,25 @@ function UserMenu({ user, logout }) {
     navigate('/')
   }
 
+  // Close on outside click
+  useEffect(() => {
+    if (!open) return
+    function onDown(e) {
+      if (menuRef.current && !menuRef.current.contains(e.target)) setOpen(false)
+    }
+    document.addEventListener('mousedown', onDown)
+    return () => document.removeEventListener('mousedown', onDown)
+  }, [open])
+
   return (
-    <div className="relative">
+    <div className="relative" ref={menuRef}>
       <button
         onClick={() => setOpen(v => !v)}
         className="
           flex items-center gap-1.5 px-2 py-1 rounded-lg
           text-sm text-fg hover:bg-surface-2
           border border-border
+          min-h-[44px]
           transition-colors duration-150
           focus:outline-none focus:ring-2 focus:ring-ring
         "
@@ -79,7 +95,7 @@ function UserMenu({ user, logout }) {
       >
         {/* Avatar circle */}
         <span
-          className="flex items-center justify-center w-6 h-6 rounded-full text-xs font-semibold text-primary-fg"
+          className="flex items-center justify-center w-6 h-6 rounded-full text-xs font-semibold text-primary-fg shrink-0"
           style={{ background: 'linear-gradient(135deg, #1b2363, #2456a6, #17b3a3)' }}
           aria-hidden="true"
         >
@@ -109,14 +125,14 @@ function UserMenu({ user, logout }) {
             <Link
               to="/dashboard"
               onClick={() => setOpen(false)}
-              className="flex items-center gap-2 px-3 py-2 text-sm text-fg hover:bg-surface-2 transition-colors"
+              className="flex items-center gap-2 px-3 py-2.5 text-sm text-fg hover:bg-surface-2 transition-colors min-h-[44px]"
             >
               <LayoutDashboard size={14} className="text-muted" />
               Dashboard
             </Link>
             <button
               onClick={handleLogout}
-              className="flex items-center gap-2 w-full px-3 py-2 text-sm text-fg hover:bg-surface-2 transition-colors text-left"
+              className="flex items-center gap-2 w-full px-3 py-2.5 text-sm text-fg hover:bg-surface-2 transition-colors text-left min-h-[44px]"
             >
               <LogOut size={14} className="text-muted" />
               Log out
@@ -128,8 +144,33 @@ function UserMenu({ user, logout }) {
   )
 }
 
-// ── Desktop nav link ──────────────────────────────────────────────────────────
-function DesktopNavLink({ to, label }) {
+// ── Scroll-aware nav link ─────────────────────────────────────────────────────
+// For links with scrollTo, clicking while on "/" scrolls to the section.
+// If not on "/", navigates to "/" then the browser follows the hash.
+function DesktopNavLink({ to, label, scrollTo }) {
+  const location = useLocation()
+
+  if (scrollTo) {
+    function handleClick(e) {
+      if (location.pathname === '/') {
+        e.preventDefault()
+        const el = document.getElementById(scrollTo)
+        if (el) el.scrollIntoView({ behavior: 'smooth', block: 'start' })
+      }
+      // else let the link navigate to /#scrollTo naturally
+    }
+
+    return (
+      <a
+        href={`/#${scrollTo}`}
+        onClick={handleClick}
+        className="text-sm font-medium transition-colors duration-150 px-2 py-1 rounded-md text-muted hover:text-fg hover:bg-surface-2"
+      >
+        {label}
+      </a>
+    )
+  }
+
   return (
     <NavLink
       to={to}
@@ -150,9 +191,26 @@ function DesktopNavLink({ to, label }) {
 export default function Navbar() {
   const [mobileOpen, setMobileOpen] = useState(false)
   const { user, logout } = useAuth()
+  const location = useLocation()
+  const navigate = useNavigate()
+
+  // Close mobile menu on route change
+  useEffect(() => {
+    setMobileOpen(false)
+  }, [location.pathname])
 
   // Filter links based on auth
   const visibleLinks = NAV_LINKS.filter(l => !l.authOnly || user)
+
+  function handleMobileScrollLink(e, scrollTo) {
+    setMobileOpen(false)
+    if (location.pathname === '/') {
+      e.preventDefault()
+      const el = document.getElementById(scrollTo)
+      if (el) el.scrollIntoView({ behavior: 'smooth', block: 'start' })
+    }
+    // else navigate to /#id naturally
+  }
 
   return (
     <header className="
@@ -161,7 +219,7 @@ export default function Navbar() {
       border-b border-border
       shadow-sm
     ">
-      <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 h-14 flex items-center justify-between gap-4">
+      <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 h-14 flex items-center justify-between gap-3">
 
         {/* ── Left: Logo ────────────────────────────────────────────────── */}
         <Link to="/" aria-label="Nubi home" className="shrink-0">
@@ -169,18 +227,18 @@ export default function Navbar() {
         </Link>
 
         {/* ── Center: Desktop nav ───────────────────────────────────────── */}
-        <nav className="hidden lg:flex items-center gap-1" aria-label="Main navigation">
+        <nav className="hidden lg:flex items-center gap-1 flex-1 justify-center" aria-label="Main navigation">
           {visibleLinks.map(link => (
-            <DesktopNavLink key={link.to} to={link.to} label={link.label} />
+            <DesktopNavLink key={link.label} to={link.to} label={link.label} scrollTo={link.scrollTo} />
           ))}
         </nav>
 
         {/* ── Right: actions ────────────────────────────────────────────── */}
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-2 shrink-0">
           <ThemeToggle />
 
-          {/* Auth controls — desktop */}
-          <div className="hidden sm:flex items-center gap-2">
+          {/* Auth controls — desktop only */}
+          <div className="hidden lg:flex items-center gap-2">
             {user ? (
               <UserMenu user={user} logout={logout} />
             ) : (
@@ -194,11 +252,11 @@ export default function Navbar() {
                 <Link
                   to="/register"
                   className="
-                    text-sm font-medium px-3 py-1.5 rounded-lg
+                    text-sm font-medium px-3 py-2 rounded-lg
                     bg-primary text-primary-fg
                     hover:opacity-90
                     transition-opacity
-                    shadow-sm
+                    shadow-sm min-h-[36px] flex items-center
                   "
                 >
                   Get started
@@ -207,69 +265,137 @@ export default function Navbar() {
             )}
           </div>
 
-          {/* Hamburger — mobile */}
+          {/* Hamburger — visible below lg ── */}
           <button
-            className="lg:hidden flex items-center justify-center w-8 h-8 rounded-lg text-muted hover:text-fg hover:bg-surface-2 transition-colors"
+            className="
+              lg:hidden flex items-center justify-center
+              w-11 h-11 rounded-lg
+              text-muted hover:text-fg hover:bg-surface-2
+              transition-colors duration-150
+              focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-1
+            "
             onClick={() => setMobileOpen(v => !v)}
-            aria-label="Toggle mobile menu"
+            aria-label={mobileOpen ? 'Close menu' : 'Open menu'}
             aria-expanded={mobileOpen}
+            aria-controls="mobile-nav"
           >
-            {mobileOpen ? <X size={18} /> : <Menu size={18} />}
+            {mobileOpen ? <X size={20} /> : <Menu size={20} />}
           </button>
         </div>
       </div>
 
-      {/* ── Mobile menu ─────────────────────────────────────────────────── */}
-      {mobileOpen && (
-        <div className="lg:hidden bg-surface border-t border-border px-4 py-4 flex flex-col gap-1">
-          {visibleLinks.map(link => (
-            <NavLink
-              key={link.to}
-              to={link.to}
-              onClick={() => setMobileOpen(false)}
-              className={({ isActive }) =>
-                `block px-3 py-2 rounded-lg text-sm font-medium transition-colors
-                 ${isActive
-                   ? 'bg-surface-2 text-primary'
-                   : 'text-fg hover:bg-surface-2'
-                 }`
-              }
-            >
-              {link.label}
-            </NavLink>
-          ))}
-
-          {/* Mobile auth */}
-          <div className="mt-3 pt-3 border-t border-border flex flex-col gap-2">
-            {user ? (
-              <button
-                onClick={async () => { setMobileOpen(false); await logout() }}
-                className="flex items-center gap-2 px-3 py-2 rounded-lg text-sm text-fg hover:bg-surface-2 transition-colors text-left"
+      {/* ── Mobile menu drawer ──────────────────────────────────────────── */}
+      {/*  CSS max-height transition for open/close animation              */}
+      <div
+        id="mobile-nav"
+        role="region"
+        aria-label="Mobile navigation"
+        className={`
+          lg:hidden
+          overflow-hidden
+          bg-surface border-t border-border
+          transition-all duration-300 ease-in-out
+          ${mobileOpen ? 'max-h-[600px] opacity-100' : 'max-h-0 opacity-0'}
+        `}
+      >
+        <div className="px-4 py-3 flex flex-col gap-1">
+          {visibleLinks.map(link =>
+            link.scrollTo ? (
+              <a
+                key={link.label}
+                href={`/#${link.scrollTo}`}
+                onClick={(e) => handleMobileScrollLink(e, link.scrollTo)}
+                className="
+                  flex items-center px-3 py-3 rounded-lg
+                  text-sm font-medium
+                  text-fg hover:bg-surface-2
+                  transition-colors duration-150
+                  min-h-[44px]
+                "
               >
-                <LogOut size={14} className="text-muted" />
-                Log out ({user.name || user.email})
-              </button>
+                {link.label}
+              </a>
+            ) : (
+              <NavLink
+                key={link.to}
+                to={link.to}
+                onClick={() => setMobileOpen(false)}
+                className={({ isActive }) =>
+                  `flex items-center px-3 py-3 rounded-lg text-sm font-medium transition-colors duration-150 min-h-[44px]
+                   ${isActive
+                     ? 'bg-surface-2 text-primary'
+                     : 'text-fg hover:bg-surface-2'
+                   }`
+                }
+              >
+                {link.label}
+              </NavLink>
+            )
+          )}
+
+          {/* Mobile auth actions */}
+          <div className="mt-2 pt-3 border-t border-border flex flex-col gap-2">
+            {user ? (
+              <>
+                <div className="px-3 py-2 text-xs text-muted truncate">
+                  Signed in as {user.name || user.email}
+                </div>
+                <Link
+                  to="/dashboard"
+                  onClick={() => setMobileOpen(false)}
+                  className="
+                    flex items-center gap-2 px-3 py-3 rounded-lg
+                    text-sm font-medium text-fg hover:bg-surface-2
+                    transition-colors duration-150 min-h-[44px]
+                  "
+                >
+                  <LayoutDashboard size={15} className="text-muted" />
+                  Dashboard
+                </Link>
+                <button
+                  onClick={async () => { setMobileOpen(false); await logout(); navigate('/') }}
+                  className="
+                    flex items-center gap-2 px-3 py-3 rounded-lg
+                    text-sm font-medium text-fg hover:bg-surface-2
+                    transition-colors duration-150 text-left min-h-[44px] w-full
+                  "
+                >
+                  <LogOut size={15} className="text-muted" />
+                  Log out
+                </button>
+              </>
             ) : (
               <>
                 <Link
                   to="/login"
                   onClick={() => setMobileOpen(false)}
-                  className="px-3 py-2 rounded-lg text-sm font-medium text-fg hover:bg-surface-2 transition-colors"
+                  className="
+                    flex items-center justify-center px-4 py-3 rounded-lg
+                    text-sm font-medium text-fg
+                    border border-border hover:bg-surface-2
+                    transition-colors duration-150 min-h-[44px]
+                  "
                 >
                   Log in
                 </Link>
                 <Link
                   to="/register"
                   onClick={() => setMobileOpen(false)}
-                  className="px-3 py-2 rounded-lg text-sm font-medium bg-primary text-primary-fg hover:opacity-90 transition-opacity text-center"
+                  className="
+                    flex items-center justify-center px-4 py-3 rounded-lg
+                    text-sm font-semibold
+                    bg-primary text-primary-fg
+                    hover:opacity-90 transition-opacity
+                    min-h-[44px]
+                  "
                 >
-                  Get started
+                  Get started free
                 </Link>
               </>
             )}
           </div>
         </div>
-      )}
+      </div>
     </header>
   )
 }

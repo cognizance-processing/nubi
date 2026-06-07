@@ -1,167 +1,131 @@
 /**
- * EmbedAuth — Large illustration of auth-as-code embedding.
- * Shows: host app code → JWT → <nubi-dashboard> component → RLS predicate injection.
- * Policy YAML panel on left; shield/lock motif.
- * viewBox 560×380
+ * EmbedAuth — Auth-as-code embedding.
+ * A JWT token written as code (segmented header.payload.signature chain with a
+ * </> mark) plugs through a bold shield-check lock into a solid embedded
+ * dashboard window. One strong focal (secured embed), one distinctive auth
+ * element (the code-token). Premium, high-contrast. Textless. Light + dark safe.
  */
 export default function EmbedAuth({ className = '' }) {
+  // JWT token segments (header . payload . signature) — auth as code
+  const segs = [
+    { x: 84, w: 30, fill: 'url(#ea-seg-a)' },
+    { x: 120, w: 30, fill: 'url(#ea-seg-b)' },
+    { x: 156, w: 26, fill: 'url(#ea-seg-c)' },
+  ]
   return (
-    <svg
-      viewBox="0 0 560 380"
-      fill="none"
-      xmlns="http://www.w3.org/2000/svg"
-      className={className}
-      aria-hidden="true"
-      style={{ width: '100%', height: 'auto' }}
-    >
+    <svg viewBox="0 0 480 300" fill="none" xmlns="http://www.w3.org/2000/svg"
+      className={className} aria-hidden="true" width="100%" height="auto"
+      preserveAspectRatio="xMidYMid meet">
       <defs>
-        <linearGradient id="ea-brand" x1="0" y1="0" x2="1" y2="0">
-          <stop offset="0%" stopColor="#1b2363" />
-          <stop offset="50%" stopColor="#2456a6" />
-          <stop offset="100%" stopColor="#17b3a3" />
+        <linearGradient id="ea-glass" x1="0" y1="0" x2="1" y2="1">
+          <stop offset="0%" stopColor="#2456a6" stopOpacity="0.2" />
+          <stop offset="100%" stopColor="#1b2363" stopOpacity="0.08" />
         </linearGradient>
-        <linearGradient id="ea-bg" x1="0" y1="0" x2="0" y2="1">
-          <stop offset="0%" stopColor="#0a1020" />
-          <stop offset="100%" stopColor="#0c1422" />
+        <linearGradient id="ea-chrome" x1="0" y1="0" x2="1" y2="0">
+          <stop offset="0%" stopColor="#2456a6" stopOpacity="0.26" />
+          <stop offset="100%" stopColor="#17b3a3" stopOpacity="0.16" />
         </linearGradient>
-        <linearGradient id="ea-code-bg" x1="0" y1="0" x2="0" y2="1">
-          <stop offset="0%" stopColor="#070d1a" />
-          <stop offset="100%" stopColor="#0a1020" />
+        <linearGradient id="ea-border" x1="0" y1="0" x2="1" y2="1">
+          <stop offset="0%" stopColor="#2dd4bf" stopOpacity="0.7" />
+          <stop offset="60%" stopColor="#2456a6" stopOpacity="0.4" />
+          <stop offset="100%" stopColor="#17b3a3" stopOpacity="0.3" />
         </linearGradient>
-        <filter id="ea-glow">
-          <feGaussianBlur stdDeviation="4" result="blur" />
-          <feMerge><feMergeNode in="blur" /><feMergeNode in="SourceGraphic" /></feMerge>
+        <linearGradient id="ea-shield" x1="0" y1="0" x2="1" y2="1">
+          <stop offset="0%" stopColor="#2dd4bf" />
+          <stop offset="55%" stopColor="#17b3a3" />
+          <stop offset="100%" stopColor="#2456a6" />
+        </linearGradient>
+        <linearGradient id="ea-area" x1="0" y1="0" x2="0" y2="1">
+          <stop offset="0%" stopColor="#2dd4bf" stopOpacity="0.4" />
+          <stop offset="100%" stopColor="#17b3a3" stopOpacity="0" />
+        </linearGradient>
+        <linearGradient id="ea-line" x1="0" y1="0" x2="1" y2="0">
+          <stop offset="0%" stopColor="#2456a6" />
+          <stop offset="55%" stopColor="#17b3a3" />
+          <stop offset="100%" stopColor="#2dd4bf" />
+        </linearGradient>
+        <linearGradient id="ea-seg-a" x1="0" y1="0" x2="1" y2="1">
+          <stop offset="0%" stopColor="#2456a6" /><stop offset="100%" stopColor="#1b2363" />
+        </linearGradient>
+        <linearGradient id="ea-seg-b" x1="0" y1="0" x2="1" y2="1">
+          <stop offset="0%" stopColor="#3b6fd4" /><stop offset="100%" stopColor="#2456a6" />
+        </linearGradient>
+        <linearGradient id="ea-seg-c" x1="0" y1="0" x2="1" y2="1">
+          <stop offset="0%" stopColor="#2dd4bf" /><stop offset="100%" stopColor="#17b3a3" />
+        </linearGradient>
+        <radialGradient id="ea-bloom" cx="50%" cy="50%" r="50%">
+          <stop offset="0%" stopColor="#17b3a3" stopOpacity="0.42" />
+          <stop offset="55%" stopColor="#2456a6" stopOpacity="0.12" />
+          <stop offset="100%" stopColor="#17b3a3" stopOpacity="0" />
+        </radialGradient>
+        <filter id="ea-shadow" x="-30%" y="-30%" width="160%" height="160%">
+          <feDropShadow dx="0" dy="7" stdDeviation="12" floodColor="#1b2363" floodOpacity="0.28" />
         </filter>
-        <marker id="ea-arr" markerWidth="7" markerHeight="7" refX="3.5" refY="3.5" orient="auto">
-          <path d="M 0 0 L 7 3.5 L 0 7 Z" fill="#4d8de0" fillOpacity="0.8" />
-        </marker>
-        <marker id="ea-arr-teal" markerWidth="7" markerHeight="7" refX="3.5" refY="3.5" orient="auto">
-          <path d="M 0 0 L 7 3.5 L 0 7 Z" fill="#2dd4bf" fillOpacity="0.8" />
-        </marker>
+        <filter id="ea-glow" x="-80%" y="-80%" width="260%" height="260%">
+          <feGaussianBlur stdDeviation="5" result="b" />
+          <feMerge><feMergeNode in="b" /><feMergeNode in="SourceGraphic" /></feMerge>
+        </filter>
+        <clipPath id="ea-clip">
+          <rect x="8" y="8" width="464" height="284" rx="22" />
+        </clipPath>
       </defs>
 
-      {/* Background */}
-      <rect width="560" height="380" rx="12" fill="url(#ea-bg)" />
-      <rect width="560" height="380" rx="12" stroke="url(#ea-brand)" strokeOpacity="0.3" strokeWidth="1" fill="none" />
+      <g clipPath="url(#ea-clip)">
+        {/* Ambient bloom behind the shield */}
+        <ellipse cx="212" cy="150" rx="160" ry="130" fill="url(#ea-bloom)" />
 
-      {/* Title */}
-      <text x="280" y="26" textAnchor="middle" fill="#4d8de0" fontSize="11" fontWeight="600" fontFamily="'Space Grotesk', sans-serif" letterSpacing="1">AUTH-AS-CODE EMBEDDING</text>
+        {/* ── Embedded dashboard window (hero, right) ── */}
+        <g filter="url(#ea-shadow)">
+          <rect x="214" y="68" width="220" height="168" rx="18" fill="url(#ea-glass)" />
+        </g>
+        <rect x="214" y="68" width="220" height="168" rx="18" stroke="url(#ea-border)" strokeWidth="2" />
+        {/* chrome bar */}
+        <path d="M 214 92 L 214 86 Q 214 68 232 68 L 416 68 Q 434 68 434 86 L 434 92 Z" fill="url(#ea-chrome)" />
+        <line x1="214" y1="96" x2="434" y2="96" stroke="#2dd4bf" strokeOpacity="0.25" strokeWidth="1" />
+        <circle cx="234" cy="84" r="3.5" fill="#2dd4bf" fillOpacity="0.8" />
+        <circle cx="246" cy="84" r="3.5" fill="#17b3a3" fillOpacity="0.65" />
+        <circle cx="258" cy="84" r="3.5" fill="#2456a6" fillOpacity="0.6" />
+        <rect x="276" y="80" width="120" height="9" rx="4.5" fill="#2456a6" fillOpacity="0.2" />
+        {/* embedded chart */}
+        <path d="M 248 200 C 274 192, 292 204, 320 176 C 350 146, 380 162, 412 132 L 412 218 L 248 218 Z"
+          fill="url(#ea-area)" />
+        <path d="M 248 200 C 274 192, 292 204, 320 176 C 350 146, 380 162, 412 132"
+          stroke="url(#ea-line)" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round" />
+        <line x1="248" y1="218" x2="412" y2="218" stroke="#2456a6" strokeOpacity="0.22" strokeWidth="1" />
+        <circle cx="320" cy="176" r="4" fill="#17b3a3" stroke="#ffffff" strokeWidth="1.5" strokeOpacity="0.8" />
+        <g filter="url(#ea-glow)"><circle cx="412" cy="132" r="5.5" fill="#2dd4bf" /></g>
 
-      {/* ═══════════════════════════════════
-          LEFT: Host app code panel
-      ═══════════════════════════════════ */}
-      <rect x="16" y="38" width="238" height="210" rx="8"
-        fill="url(#ea-code-bg)" stroke="#21304a" strokeWidth="1" />
-      {/* File tab */}
-      <rect x="16" y="38" width="100" height="20" rx="4" fill="#111a2e" />
-      <text x="66" y="51" textAnchor="middle" fill="#4a6fa5" fontSize="8" fontFamily="monospace">host-app.ts</text>
-      <rect x="16" y="55" width="238" height="1" fill="#21304a" />
+        {/* ── Auth-as-code token chain (left) ── */}
+        {/* </> mark */}
+        <path d="M 50 142 L 43 150 L 50 158 M 58 160 L 66 140 M 74 142 L 81 150 L 74 158"
+          stroke="#2dd4bf" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" />
+        {/* segments + connector dots — aligned on one line into the shield */}
+        {segs.map((s, i) => (
+          <g key={`seg${i}`}>
+            {i > 0 && <circle cx={s.x - 4} cy="150" r="2.5" fill="#2dd4bf" fillOpacity="0.7" />}
+            <rect x={s.x} y="142" width={s.w} height="16" rx="8" fill={s.fill} />
+            <line x1={s.x + 7} y1="150" x2={s.x + s.w - 7} y2="150"
+              stroke="#ffffff" strokeOpacity="0.4" strokeWidth="1.5" strokeDasharray="2 3" strokeLinecap="round" />
+          </g>
+        ))}
 
-      {/* Code content */}
-      {[
-        { y: 76, color: '#4d8de0', text: 'async function getToken() {' },
-        { y: 92, color: '#4d8de0', text: '  return await sign({' },
-        { y: 108, color: '#2dd4bf', text: '    sub:    user.id,' },
-        { y: 124, color: '#2dd4bf', text: '    tenant: org.slug,' },
-        { y: 140, color: '#17b3a3', text: '    rls: {' },
-        { y: 156, color: '#17b3a3', text: '      col: "tenant_id",' },
-        { y: 172, color: '#17b3a3', text: '      val: org.id' },
-        { y: 188, color: '#17b3a3', text: '    },' },
-        { y: 204, color: '#4d8de0', text: '  }, SECRET, { expiresIn: "15m" })' },
-        { y: 220, color: '#4d8de0', text: '}' },
-      ].map(({ y, color, text }) => (
-        <text key={y} x="26" y={y} fill={color} fillOpacity="0.85" fontSize="10" fontFamily="monospace">{text}</text>
-      ))}
+        {/* ── Shield-check lock (clamped on window's left edge) ── */}
+        <circle cx="212" cy="150" r="44" fill="url(#ea-bloom)" />
+        <g filter="url(#ea-glow)">
+          <path d="M 212 110 L 240 122 L 240 150 C 240 173, 228 187, 212 195
+                   C 196 187, 184 173, 184 150 L 184 122 Z" fill="url(#ea-shield)" />
+        </g>
+        <path d="M 212 116 L 234 125 L 234 150 C 234 169, 224 181, 212 188"
+          stroke="#ffffff" strokeOpacity="0.22" strokeWidth="1.75" strokeLinecap="round" fill="none" />
+        <path d="M 199 151 L 208 160 L 226 139"
+          stroke="#ffffff" strokeWidth="3.6" strokeLinecap="round" strokeLinejoin="round" />
 
-      {/* Line numbers */}
-      {[76, 92, 108, 124, 140, 156, 172, 188, 204, 220].map((y, i) => (
-        <text key={y} x="20" y={y} fill="#21304a" fontSize="8" fontFamily="monospace">{i + 1}</text>
-      ))}
-
-      {/* ═══════════════════════════════════
-          LEFT BOTTOM: Policy YAML
-      ═══════════════════════════════════ */}
-      <rect x="16" y="260" width="238" height="104" rx="8"
-        fill="url(#ea-code-bg)" stroke="#21304a" strokeWidth="1" />
-      <rect x="16" y="260" width="120" height="20" rx="4" fill="#111a2e" />
-      <text x="76" y="273" textAnchor="middle" fill="#4a6fa5" fontSize="8" fontFamily="monospace">policies/revenue.yaml</text>
-      <rect x="16" y="277" width="238" height="1" fill="#21304a" />
-
-      {[
-        { y: 296, color: '#4a6fa5', text: '# policy as code — PR-reviewable' },
-        { y: 310, color: '#93a4bd', text: 'rls:' },
-        { y: 324, color: '#2dd4bf', text: '  - col: tenant_id' },
-        { y: 338, color: '#2dd4bf', text: '    val: $claims.tenant' },
-        { y: 352, color: '#17b3a3', text: '  # AST injection · no string concat' },
-      ].map(({ y, color, text }) => (
-        <text key={y} x="26" y={y} fill={color} fillOpacity="0.85" fontSize="10" fontFamily="monospace">{text}</text>
-      ))}
-
-      {/* ═══════════════════════════════════
-          CENTER: JWT flow
-      ═══════════════════════════════════ */}
-      {/* Arrow: host app → JWT */}
-      <line x1="254" y1="142" x2="286" y2="142"
-        stroke="#4d8de0" strokeOpacity="0.7" strokeWidth="2" markerEnd="url(#ea-arr)" />
-
-      {/* JWT badge */}
-      <rect x="288" y="122" width="120" height="40" rx="8"
-        fill="#111a2e" stroke="#2456a6" strokeOpacity="0.6" strokeWidth="1.5" />
-      <text x="348" y="140" textAnchor="middle" fill="#4d8de0" fontSize="12" fontWeight="700" fontFamily="'Space Grotesk', sans-serif">JWT · HS256</text>
-      <text x="348" y="154" textAnchor="middle" fill="#4a6fa5" fontSize="9" fontFamily="monospace">exp: 15m · tenant claim</text>
-
-      {/* Arrow down: JWT → component */}
-      <line x1="348" y1="162" x2="348" y2="196"
-        stroke="#4d8de0" strokeOpacity="0.6" strokeWidth="2" markerEnd="url(#ea-arr)" />
-
-      {/* nubi-dashboard component */}
-      <rect x="270" y="198" width="188" height="64" rx="8"
-        fill="#0d1526" stroke="#2456a6" strokeOpacity="0.7" strokeWidth="1.5" />
-      <rect x="270" y="198" width="188" height="4" rx="2"
-        fill="url(#ea-brand)" />
-      <text x="364" y="222" textAnchor="middle" fill="#4d8de0" fontSize="11" fontWeight="700" fontFamily="'Space Grotesk', sans-serif">&lt;nubi-dashboard&gt;</text>
-      <text x="364" y="238" textAnchor="middle" fill="#93a4bd" fontSize="9" fontFamily="monospace">basePath  getToken  scopes</text>
-      <text x="364" y="252" textAnchor="middle" fill="#4a6fa5" fontSize="8" fontFamily="monospace">origin-pinned · auto-refresh</text>
-
-      {/* Arrow down: component → RLS */}
-      <line x1="364" y1="262" x2="364" y2="294"
-        stroke="#2dd4bf" strokeOpacity="0.6" strokeWidth="2" markerEnd="url(#ea-arr-teal)" />
-
-      {/* RLS predicate injection */}
-      <rect x="256" y="296" width="216" height="68" rx="8"
-        fill="#070d1a" stroke="#17b3a3" strokeOpacity="0.6" strokeWidth="1.5" />
-      <rect x="256" y="296" width="216" height="4" rx="2"
-        fill="#17b3a3" fillOpacity="0.6" />
-      <text x="364" y="316" textAnchor="middle" fill="#2dd4bf" fontSize="12" fontWeight="700" fontFamily="'Space Grotesk', sans-serif">Predicate injection (AST)</text>
-      <text x="364" y="332" textAnchor="middle" fill="#17b3a3" fillOpacity="0.8" fontSize="9" fontFamily="monospace">WHERE tenant_id = :claim</text>
-      <text x="364" y="346" textAnchor="middle" fill="#4a6fa5" fontSize="9" fontFamily="monospace">server-side · never string concat</text>
-      <text x="364" y="358" textAnchor="middle" fill="#2dd4bf" fillOpacity="0.5" fontSize="8" fontFamily="monospace">diffable · PR-reviewable</text>
-
-      {/* Shield icon — right side */}
-      <path d="M 500 60 L 544 78 L 544 114 Q 544 148 522 164 Q 500 148 500 114 Z"
-        fill="#2456a6" fillOpacity="0.08" stroke="#2456a6" strokeOpacity="0.4" strokeWidth="1" />
-      {/* Shield inner glow */}
-      <path d="M 508 76 L 536 90 L 536 118 Q 536 142 522 154 Q 508 142 508 118 Z"
-        fill="#17b3a3" fillOpacity="0.06" />
-      {/* Lock body */}
-      <rect x="514" y="112" width="16" height="14" rx="3" fill="#2dd4bf" fillOpacity="0.7" filter="url(#ea-glow)" />
-      <path d="M 517 112 a 5 5 0 0 1 10 0 v -4 a 5 5 0 0 0 -10 0 Z"
-        fill="#2dd4bf" fillOpacity="0.5" />
-
-      <text x="522" y="178" textAnchor="middle" fill="#2dd4bf" fontSize="10" fontWeight="600" fontFamily="'Space Grotesk', sans-serif">Zero-trust</text>
-      <text x="522" y="192" textAnchor="middle" fill="#4a6fa5" fontSize="8" fontFamily="'Inter', sans-serif">embed security</text>
-
-      {/* Token lifecycle */}
-      <rect x="478" y="210" width="76" height="64" rx="8"
-        fill="#111a2e" stroke="#21304a" strokeWidth="0.75" />
-      <text x="516" y="228" textAnchor="middle" fill="#4a6fa5" fontSize="9" fontWeight="600" fontFamily="'Space Grotesk', sans-serif">Lifecycle</text>
-      {[
-        { y: 242, text: '✓ sign' },
-        { y: 254, text: '✓ verify' },
-        { y: 266, text: '✓ refresh' },
-      ].map(({ y, text }) => (
-        <text key={y} x="494" y={y} fill="#2dd4bf" fillOpacity="0.7" fontSize="9" fontFamily="monospace">{text}</text>
-      ))}
+        {/* Ambient particles */}
+        <circle cx="28" cy="76" r="2.5" fill="#2dd4bf" fillOpacity="0.3" />
+        <circle cx="30" cy="220" r="2" fill="#17b3a3" fillOpacity="0.28" />
+        <circle cx="120" cy="110" r="2" fill="#2dd4bf" fillOpacity="0.3" />
+        <circle cx="452" cy="250" r="2" fill="#2456a6" fillOpacity="0.3" />
+      </g>
     </svg>
   )
 }

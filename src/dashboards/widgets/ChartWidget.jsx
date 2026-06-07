@@ -4,25 +4,62 @@
  * Props
  * -----
  * widget  {object}  A spec Widget object with type === 'chart'.
- *                   Shape: { id, type, query_id, chart_type, encoding:{x,y,color}, props, pos }
+ *                   Shape: { id, type, query_id, chart_type, encoding, props, params?, pos }
+ *
+ * encoding shape:
+ *   {
+ *     x:     string,                           // x-axis / category column
+ *     y:     string | SeriesDef[],             // single col OR array for combo charts
+ *     color: string,                           // optional categorical-color grouping
+ *     stack: string,                           // optional stack-group id
+ *   }
+ *
+ *   SeriesDef: { col: string, type?: 'bar'|'line'|'area'|'scatter', axis?: 'left'|'right' }
+ *
+ * props shape (all optional):
+ *   {
+ *     height:        number,          // chart height in px (default 260)
+ *     stack:         boolean|string,  // true → 'total'; string → custom stack id
+ *     series:        SeriesDef[],     // explicit per-series combo spec (overrides encoding.y array)
+ *     secondaryAxis: string[],        // column names to bind to the right y-axis
+ *   }
  *
  * Behaviour
  * ---------
- * - On mount (and when query_id changes) calls runArrowQuery(query_id) to fetch data.
- * - Renders <Chart> with the loaded Arrow Table and encoding columns.
+ * - On mount (and when query_id or resolved params change) fetches data via
+ *   runArrowQueryById(query_id, { namedParams }).
+ * - Re-queries whenever any referenced variable changes via useResolvedParams.
+ * - Builds an ECharts option via buildChartOption() — supports stacking, combo, dual y-axis.
  * - Shows a loading spinner, error state, or empty state as appropriate.
  * - Falls back gracefully to SAMPLE_TABLE when the query fails.
+ * - Widgets without params behave identically to before (regression-safe).
  */
 
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useMemo, useCallback } from 'react'
 import { runArrowQueryById } from '../../lib/wasmRuntime.js'
-import Chart from '../../components/Chart.jsx'
+import { buildChartOption } from '../../viz/chartOption.js'
+import EChart from '../../viz/EChart.jsx'
+import { useResolvedParams, useSetVariable } from '../VariableStore.jsx'
 
 export default function ChartWidget({ widget }) {
-  const { query_id, chart_type = 'scatter', encoding = {}, props: wProps = {} } = widget
-  const xCol = encoding.x || ''
-  const yCol = encoding.y || ''
+  const {
+    query_id,
+    chart_type = 'scatter',
+    encoding = {},
+    props: wProps = {},
+    params: widgetParams,
+    drilldown,
+  } = widget
+
+  // Resolve x / y / color from encoding (backward-compatible)
+  const xCol    = encoding.x || ''
+  // encoding.y can be a string (simple) or an array (combo) — chartOption handles both
+  const yCol    = typeof encoding.y === 'string' ? encoding.y : ''
   const colorCol = encoding.color || undefined
+
+  // Resolve widget params against the variable store — re-renders when vars change.
+  // Widgets with no params get {} and behave identically to pre-M14-C (regression-safe).
+  const resolvedParams = useResolvedParams(widgetParams)
 
   const [table, setTable] = useState(null)
   const [loading, setLoading] = useState(false)
@@ -36,7 +73,13 @@ export default function ChartWidget({ widget }) {
       setLoading(true)
       setError(null)
       try {
-        const { table: t, cacheStatus } = await runArrowQueryById(query_id)
+        // Pass resolved params as { namedParams } — M13-B wires this signature.
+        // Empty resolvedParams → passes undefined so existing call path is used.
+        const hasParams = Object.keys(resolvedParams).length > 0
+        const { table: t, cacheStatus } = await runArrowQueryById(
+          query_id,
+          hasParams ? { namedParams: resolvedParams } : undefined,
+        )
         if (!cancelled) {
           setTable(t)
           if (cacheStatus === 'SAMPLE') {
@@ -52,9 +95,50 @@ export default function ChartWidget({ widget }) {
 
     fetchData()
     return () => { cancelled = true }
-  }, [query_id])
+  // resolvedParams is a new object each render; JSON.stringify gives a stable dep
+  // so the effect only re-fires when actual param values change.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [query_id, JSON.stringify(resolvedParams)])
 
   const height = wProps.height ?? 260
+
+  // ── Drilldown (cross-widget filtering) ──────────────────────────────────
+  // When widget.drilldown = { target_var, value_field? } is set, clicking a
+  // data point writes the clicked value into the named dashboard variable so
+  // other widgets bound to that variable re-query.
+  const setVariable = useSetVariable()
+  const onEvents = useMemo(() => {
+    const targetVar = drilldown?.target_var
+    if (!targetVar) return undefined
+    return {
+      click: (params) => {
+        // Prefer an explicit value_field from the clicked row's data object,
+        // else fall back to the category name (params.name = x value).
+        const field = drilldown.value_field
+        let val
+        if (field && params?.data && typeof params.data === 'object' && field in params.data) {
+          val = params.data[field]
+        } else {
+          val = params?.name ?? params?.value
+        }
+        if (val !== undefined && val !== null) setVariable(targetVar, val)
+      },
+    }
+  }, [drilldown?.target_var, drilldown?.value_field, setVariable])
+
+  // Build ECharts option — threading encoding + props through for advanced features
+  const option = useMemo(() => {
+    if (!table || !xCol) return null
+    return buildChartOption({
+      chartType: chart_type,
+      table,
+      x: xCol,
+      y: yCol || undefined,
+      color: colorCol,
+      encoding,
+      props: wProps,
+    })
+  }, [table, xCol, yCol, colorCol, chart_type, encoding, wProps])
 
   if (loading) {
     return (
@@ -65,7 +149,7 @@ export default function ChartWidget({ widget }) {
   }
 
   return (
-    <div className="flex flex-col h-full overflow-hidden bg-surface">
+    <div className="flex flex-col h-full overflow-hidden">
       {error && (
         <div className="px-3 py-1.5 text-xs border-b shrink-0"
           style={{ background: 'color-mix(in srgb, #f59e0b 8%, transparent)', color: '#d97706', borderColor: 'color-mix(in srgb, #f59e0b 20%, transparent)' }}>
@@ -73,14 +157,14 @@ export default function ChartWidget({ widget }) {
         </div>
       )}
       <div className="flex-1 min-h-0">
-        <Chart
-          table={table}
-          xCol={xCol || undefined}
-          yCol={yCol || undefined}
-          colorCol={colorCol}
-          chartType={chart_type}
-          height={height}
-        />
+        {option
+          ? <EChart option={option} height={height} onEvents={onEvents} />
+          : (
+            <div className="flex items-center justify-center h-full text-sm text-gray-400" style={{ height }}>
+              No data — select columns to render the chart.
+            </div>
+          )
+        }
       </div>
     </div>
   )

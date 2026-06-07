@@ -1,187 +1,169 @@
 /**
- * EdgeCache — Large illustration of content-hashed edge cache + auto pre-aggregations.
- * Shows: 500 viewer nodes fan-in → edge cache node (HIT/MISS) → 1 warehouse hit
- * + auto pre-agg rollup at bottom.
- * viewBox 560×380
+ * EdgeCache — Edge cache + auto pre-aggregation.
+ * Many granular requests converge into a glass "cache" module that rolls raw
+ * rows up into a few aggregated bars (auto pre-agg), flagged by a lightning
+ * edge badge, and serves an instant cached result. Premium glass + glow,
+ * grounded in the Hero panel language. Textless. Light + dark safe.
  */
 export default function EdgeCache({ className = '' }) {
+  // Incoming request nodes (left)
+  const inputs = [
+    { x: 44, y: 96 },
+    { x: 38, y: 132 },
+    { x: 38, y: 168 },
+    { x: 44, y: 204 },
+  ]
+  // Convergence point at the module's left edge
+  const CX = 168, CY = 150
+
+  // Raw table rows inside the module (granular data)
+  const rows = [
+    { y: 114, w: 46 }, { y: 124, w: 38 }, { y: 134, w: 44 },
+    { y: 144, w: 34 }, { y: 154, w: 42 }, { y: 164, w: 30 },
+    { y: 174, w: 40 }, { y: 184, w: 36 },
+  ]
+  // Aggregated output bars (auto pre-agg result)
+  const aggBars = [
+    { x: 272, h: 46 }, { x: 300, h: 72 }, { x: 328, h: 58 },
+  ]
+  const baseY = 194
+
   return (
-    <svg
-      viewBox="0 0 560 380"
-      fill="none"
-      xmlns="http://www.w3.org/2000/svg"
-      className={className}
-      aria-hidden="true"
-      style={{ width: '100%', height: 'auto' }}
-    >
+    <svg viewBox="0 0 480 300" fill="none" xmlns="http://www.w3.org/2000/svg"
+      className={className} aria-hidden="true" width="100%" height="auto"
+      preserveAspectRatio="xMidYMid meet">
       <defs>
-        <linearGradient id="ec-brand" x1="0" y1="0" x2="1" y2="0">
+        {/* Brand signature */}
+        <linearGradient id="ec-brand" x1="0" y1="1" x2="1" y2="0">
           <stop offset="0%" stopColor="#1b2363" />
-          <stop offset="50%" stopColor="#2456a6" />
+          <stop offset="45%" stopColor="#2456a6" />
+          <stop offset="80%" stopColor="#17b3a3" />
+          <stop offset="100%" stopColor="#2dd4bf" />
+        </linearGradient>
+        {/* Glass panel */}
+        <linearGradient id="ec-glass" x1="0" y1="0" x2="1" y2="1">
+          <stop offset="0%" stopColor="#2456a6" stopOpacity="0.14" />
+          <stop offset="100%" stopColor="#1b2363" stopOpacity="0.05" />
+        </linearGradient>
+        {/* Glass border */}
+        <linearGradient id="ec-border" x1="0" y1="0" x2="1" y2="1">
+          <stop offset="0%" stopColor="#2dd4bf" stopOpacity="0.55" />
+          <stop offset="60%" stopColor="#2456a6" stopOpacity="0.32" />
+          <stop offset="100%" stopColor="#17b3a3" stopOpacity="0.2" />
+        </linearGradient>
+        {/* Aggregated bar fill */}
+        <linearGradient id="ec-bar" x1="0" y1="0" x2="0" y2="1">
+          <stop offset="0%" stopColor="#2dd4bf" />
+          <stop offset="100%" stopColor="#17b3a3" stopOpacity="0.55" />
+        </linearGradient>
+        {/* Lightning badge fill */}
+        <linearGradient id="ec-bolt" x1="0" y1="0" x2="1" y2="1">
+          <stop offset="0%" stopColor="#2dd4bf" />
           <stop offset="100%" stopColor="#17b3a3" />
         </linearGradient>
-        <linearGradient id="ec-bg" x1="0" y1="0" x2="0" y2="1">
-          <stop offset="0%" stopColor="#0a1020" />
-          <stop offset="100%" stopColor="#0c1422" />
-        </linearGradient>
-        <linearGradient id="ec-cache-glow" x1="0" y1="0" x2="0" y2="1">
-          <stop offset="0%" stopColor="#111a2e" />
-          <stop offset="100%" stopColor="#0d1526" />
-        </linearGradient>
-        <filter id="ec-glow">
-          <feGaussianBlur stdDeviation="3" result="blur" />
-          <feMerge><feMergeNode in="blur" /><feMergeNode in="SourceGraphic" /></feMerge>
+        {/* Node fill */}
+        <radialGradient id="ec-node" cx="32%" cy="30%" r="70%">
+          <stop offset="0%" stopColor="#a5f3ec" />
+          <stop offset="55%" stopColor="#2dd4bf" />
+          <stop offset="100%" stopColor="#17b3a3" />
+        </radialGradient>
+        {/* Source node */}
+        <radialGradient id="ec-src" cx="35%" cy="30%" r="70%">
+          <stop offset="0%" stopColor="#4a90d4" />
+          <stop offset="100%" stopColor="#2456a6" />
+        </radialGradient>
+        {/* Hub bloom */}
+        <radialGradient id="ec-bloom" cx="50%" cy="50%" r="50%">
+          <stop offset="0%" stopColor="#17b3a3" stopOpacity="0.34" />
+          <stop offset="55%" stopColor="#2456a6" stopOpacity="0.10" />
+          <stop offset="100%" stopColor="#17b3a3" stopOpacity="0" />
+        </radialGradient>
+        <filter id="ec-shadow" x="-30%" y="-30%" width="160%" height="160%">
+          <feDropShadow dx="0" dy="6" stdDeviation="10" floodColor="#1b2363" floodOpacity="0.22" />
         </filter>
-        <marker id="ec-arr-teal" markerWidth="7" markerHeight="7" refX="3.5" refY="3.5" orient="auto">
-          <path d="M 0 0 L 7 3.5 L 0 7 Z" fill="#2dd4bf" fillOpacity="0.7" />
-        </marker>
-        <marker id="ec-arr-blue" markerWidth="7" markerHeight="7" refX="3.5" refY="3.5" orient="auto">
-          <path d="M 0 0 L 7 3.5 L 0 7 Z" fill="#4d8de0" fillOpacity="0.7" />
-        </marker>
-        <marker id="ec-arr-dim" markerWidth="7" markerHeight="7" refX="3.5" refY="3.5" orient="auto">
-          <path d="M 0 0 L 7 3.5 L 0 7 Z" fill="#4a6fa5" fillOpacity="0.5" />
-        </marker>
+        <filter id="ec-glow" x="-80%" y="-80%" width="260%" height="260%">
+          <feGaussianBlur stdDeviation="4.5" result="b" />
+          <feMerge><feMergeNode in="b" /><feMergeNode in="SourceGraphic" /></feMerge>
+        </filter>
+        <clipPath id="ec-clip">
+          <rect x="8" y="8" width="464" height="284" rx="22" />
+        </clipPath>
       </defs>
 
-      {/* Background */}
-      <rect width="560" height="380" rx="12" fill="url(#ec-bg)" />
-      <rect width="560" height="380" rx="12" stroke="url(#ec-brand)" strokeOpacity="0.3" strokeWidth="1" fill="none" />
+      <g clipPath="url(#ec-clip)">
+        {/* Ambient bloom behind the cache module */}
+        <ellipse cx="258" cy="150" rx="180" ry="140" fill="url(#ec-bloom)" />
 
-      {/* Title */}
-      <text x="280" y="26" textAnchor="middle" fill="#4d8de0" fontSize="11" fontWeight="600" fontFamily="'Space Grotesk', sans-serif" letterSpacing="1">EDGE CACHE + AUTO PRE-AGGREGATIONS</text>
+        {/* ── Incoming requests (left) — converge into the module ── */}
+        {inputs.map((p, i) => (
+          <path key={`flow${i}`}
+            d={`M ${p.x + 8} ${p.y} C ${(p.x + CX) / 2} ${p.y}, ${CX - 46} ${CY}, ${CX - 8} ${CY}`}
+            stroke="url(#ec-brand)" strokeWidth="2" strokeLinecap="round"
+            strokeOpacity="0.5" strokeDasharray="5 8" />
+        ))}
+        {inputs.map((p, i) => (
+          <circle key={`src${i}`} cx={p.x} cy={p.y} r="5.5" fill="url(#ec-src)" />
+        ))}
+        {/* convergence node */}
+        <circle cx={CX - 8} cy={CY} r="5.5" fill="url(#ec-node)" />
 
-      {/* ═══════════════════════════════════
-          LEFT: Viewer nodes
-      ═══════════════════════════════════ */}
-      <text x="64" y="50" textAnchor="middle" fill="#17b3a3" fillOpacity="0.8" fontSize="10" fontWeight="600" fontFamily="'Space Grotesk', sans-serif">500 viewers</text>
-
-      {/* 8 viewer nodes */}
-      {[
-        { y: 58, label: 'User A', offset: 0 },
-        { y: 84, label: 'User B', offset: 4 },
-        { y: 110, label: 'User C', offset: -3 },
-        { y: 136, label: 'User D', offset: 6 },
-        { y: 162, label: 'User E', offset: -2 },
-        { y: 188, label: 'User F', offset: 5 },
-        { y: 214, label: 'User G', offset: -4 },
-        { y: 240, label: '…496 more', offset: 2 },
-      ].map(({ y, label, offset }, i) => (
-        <g key={label}>
-          <rect x="10" y={y} width="108" height="22" rx="6"
-            fill="#111a2e" stroke="#21304a" strokeWidth="0.75"
-            opacity={i === 7 ? 0.5 : 1} />
-          {/* Avatar */}
-          <circle cx="24" cy={y + 11} r="7" fill="#1b2363" fillOpacity="0.6" />
-          <circle cx="24" cy={y + 11} r="4" fill="#2456a6" fillOpacity="0.6" />
-          <text x="36" y={y + 15.5} fill="#93a4bd" fontSize="9" fontFamily="'Inter', sans-serif">{label}</text>
-          {/* Fan-in line to cache */}
-          <line
-            x1="118" y1={y + 11}
-            x2="198" y2="170"
-            stroke="#2456a6" strokeOpacity={i === 7 ? 0.1 : 0.25} strokeWidth="1"
-            markerEnd="url(#ec-arr-dim)"
-          />
+        {/* ── Cache module (glass panel) ── */}
+        <g filter="url(#ec-shadow)">
+          <rect x="168" y="78" width="180" height="144" rx="20" fill="url(#ec-glass)" />
         </g>
-      ))}
+        <rect x="168" y="78" width="180" height="144" rx="20"
+          stroke="url(#ec-border)" strokeWidth="1.75" />
+        <path d="M 190 79 L 326 79" stroke="#ffffff" strokeOpacity="0.18"
+          strokeWidth="1.5" strokeLinecap="round" />
 
-      {/* ═══════════════════════════════════
-          CENTER: Edge cache
-      ═══════════════════════════════════ */}
-      <rect x="200" y="100" width="156" height="140" rx="10"
-        fill="url(#ec-cache-glow)" stroke="#2456a6" strokeOpacity="0.7" strokeWidth="2" />
-      {/* Top accent */}
-      <rect x="200" y="100" width="156" height="4" rx="2"
-        fill="url(#ec-brand)" />
+        {/* Raw table rows (granular data) */}
+        {rows.map((r, i) => (
+          <line key={`row${i}`} x1="190" y1={r.y} x2={190 + r.w} y2={r.y}
+            stroke="#2456a6" strokeOpacity="0.32" strokeWidth="2" strokeLinecap="round" />
+        ))}
 
-      <text x="278" y="124" textAnchor="middle" fill="#4d8de0" fontSize="13" fontWeight="700" fontFamily="'Space Grotesk', sans-serif">Edge Cache</text>
-      <text x="278" y="138" textAnchor="middle" fill="#4a6fa5" fontSize="9" fontFamily="monospace">content-addressed</text>
+        {/* Rollup arrow — raw rows → aggregates */}
+        <path d="M 244 150 L 256 150 M 251 145 L 257 150 L 251 155"
+          stroke="#2dd4bf" strokeOpacity="0.9" strokeWidth="2"
+          strokeLinecap="round" strokeLinejoin="round" />
 
-      {/* Hash key visual */}
-      <rect x="212" y="144" width="132" height="20" rx="5" fill="#0a1020" stroke="#21304a" strokeWidth="0.75" />
-      <text x="278" y="157.5" textAnchor="middle" fill="#93a4bd" fillOpacity="0.7" fontSize="8" fontFamily="monospace">sha256(plan + JWT claims)</text>
+        {/* Aggregated bars (auto pre-agg result) */}
+        <line x1="266" y1={baseY} x2="342" y2={baseY}
+          stroke="#2456a6" strokeOpacity="0.22" strokeWidth="1.5" strokeLinecap="round" />
+        {aggBars.map((b, i) => (
+          <rect key={`agg${i}`} x={b.x} y={baseY - b.h} width="17" height={b.h} rx="4"
+            fill="url(#ec-bar)" />
+        ))}
 
-      {/* HIT badge */}
-      <rect x="212" y="170" width="56" height="22" rx="6"
-        fill="#17b3a3" fillOpacity="0.12" stroke="#17b3a3" strokeOpacity="0.6" strokeWidth="1" />
-      <circle cx="224" cy="181" r="4" fill="#2dd4bf" fillOpacity="0.8" filter="url(#ec-glow)" />
-      <text x="244" y="184.5" textAnchor="middle" fill="#2dd4bf" fontSize="11" fontWeight="700" fontFamily="'Space Grotesk', sans-serif">HIT</text>
-
-      {/* MISS badge */}
-      <rect x="276" y="170" width="68" height="22" rx="6"
-        fill="#2456a6" fillOpacity="0.1" stroke="#2456a6" strokeOpacity="0.4" strokeWidth="0.75" />
-      <text x="310" y="184.5" textAnchor="middle" fill="#4d8de0" fontSize="11" fontFamily="'Space Grotesk', sans-serif">MISS →</text>
-
-      {/* 1 warehouse hit stat */}
-      <rect x="212" y="200" width="132" height="30" rx="7"
-        fill="#17b3a3" fillOpacity="0.08" stroke="#17b3a3" strokeOpacity="0.4" strokeWidth="0.75" />
-      <text x="278" y="217" textAnchor="middle" fill="#2dd4bf" fontSize="16" fontWeight="700" fontFamily="'Space Grotesk', sans-serif">1</text>
-      <text x="278" y="228" textAnchor="middle" fill="#17b3a3" fillOpacity="0.7" fontSize="8" fontFamily="'Inter', sans-serif">warehouse hit for 500 viewers</text>
-
-      {/* Hit-back arrows: cache → viewers */}
-      <text x="278" y="252" textAnchor="middle" fill="#2dd4bf" fillOpacity="0.6" fontSize="8" fontFamily="monospace">← serve from cache →</text>
-
-      {/* ═══════════════════════════════════
-          RIGHT: Warehouse
-      ═══════════════════════════════════ */}
-      <rect x="380" y="88" width="164" height="152" rx="10"
-        fill="#080e1c" stroke="#21304a" strokeOpacity="0.6" strokeWidth="1" />
-
-      <text x="462" y="110" textAnchor="middle" fill="#4a6fa5" fontSize="11" fontWeight="600" fontFamily="'Space Grotesk', sans-serif">Warehouse</text>
-
-      {/* Cylinder */}
-      <ellipse cx="462" cy="130" rx="44" ry="12" fill="#0d1526" stroke="#21304a" strokeWidth="1" />
-      <rect x="418" y="130" width="88" height="64" fill="#0d1526" />
-      <ellipse cx="462" cy="194" rx="44" ry="12" fill="#0d1526" stroke="#21304a" strokeWidth="1" />
-
-      {/* DB label */}
-      <text x="462" y="156" textAnchor="middle" fill="#4a6fa5" fillOpacity="0.6" fontSize="9" fontFamily="monospace">BigQuery</text>
-      <text x="462" y="170" textAnchor="middle" fill="#4a6fa5" fillOpacity="0.5" fontSize="9" fontFamily="monospace">Snowflake</text>
-      <text x="462" y="184" textAnchor="middle" fill="#4a6fa5" fillOpacity="0.4" fontSize="9" fontFamily="monospace">Redshift</text>
-
-      {/* Miss arrow: cache → warehouse */}
-      <line x1="356" y1="178" x2="376" y2="162"
-        stroke="#4d8de0" strokeOpacity="0.6" strokeWidth="1.5" strokeDasharray="5,3"
-        markerEnd="url(#ec-arr-blue)" />
-      <text x="367" y="168" textAnchor="middle" fill="#4d8de0" fontSize="8" fontFamily="monospace">MISS</text>
-
-      {/* Result back arrow: warehouse → cache */}
-      <line x1="378" y1="200" x2="358" y2="216"
-        stroke="#2dd4bf" strokeOpacity="0.5" strokeWidth="1.5"
-        markerEnd="url(#ec-arr-teal)" />
-
-      {/* ═══════════════════════════════════
-          BOTTOM: Auto pre-agg section
-      ═══════════════════════════════════ */}
-      <line x1="278" y1="244" x2="278" y2="274"
-        stroke="#2456a6" strokeOpacity="0.4" strokeWidth="1.5" markerEnd="url(#ec-arr-blue)" />
-
-      <rect x="60" y="276" width="440" height="80" rx="10"
-        fill="#0d1526" stroke="#17b3a3" strokeOpacity="0.5" strokeWidth="1.5" />
-      <rect x="60" y="276" width="440" height="4" rx="2"
-        fill="url(#ec-brand)" fillOpacity="0.5" />
-
-      <text x="280" y="298" textAnchor="middle" fill="#2dd4bf" fontSize="13" fontWeight="700" fontFamily="'Space Grotesk', sans-serif">Auto Pre-aggregations</text>
-      <text x="280" y="312" textAnchor="middle" fill="#4a6fa5" fontSize="9" fontFamily="'Inter', sans-serif">Query log feeds rollup suggester → builds pre-agg tables automatically</text>
-
-      {/* Rollup bar chart mini */}
-      {[
-        { x: 90, h: 26, label: 'daily' },
-        { x: 142, h: 40, label: 'weekly' },
-        { x: 194, h: 20, label: 'monthly' },
-        { x: 246, h: 50, label: 'by region' },
-        { x: 298, h: 32, label: 'by product' },
-        { x: 350, h: 44, label: 'by channel' },
-        { x: 402, h: 22, label: 'cohorts' },
-        { x: 454, h: 36, label: 'funnels' },
-      ].map(({ x, h, label }, i) => (
-        <g key={label}>
-          <rect x={x} y={348 - h} width="36" height={h} rx="3"
-            fill="#2456a6" fillOpacity={0.2 + (i / 7) * 0.4} />
-          <rect x={x} y={348 - h} width="36" height="3" rx="1.5"
-            fill="url(#ec-brand)" fillOpacity="0.7" />
-          <text x={x + 18} y="355" textAnchor="middle" fill="#4a6fa5" fontSize="7" fontFamily="monospace">{label}</text>
+        {/* ── Lightning edge badge (top-right corner) ── */}
+        <g filter="url(#ec-glow)">
+          <rect x="322" y="62" width="38" height="38" rx="11" fill="url(#ec-bolt)" />
         </g>
-      ))}
+        <rect x="322" y="62" width="38" height="38" rx="11"
+          stroke="#ffffff" strokeOpacity="0.35" strokeWidth="1.25" />
+        <path d="M 343 69 L 333 84 L 340 84 L 337 95 L 349 79 L 342 79 Z"
+          fill="#ffffff" fillOpacity="0.95" />
+
+        {/* ── Instant serve (right) ── */}
+        <line x1="348" y1="150" x2="384" y2="150"
+          stroke="url(#ec-bar)" strokeWidth="3" strokeLinecap="round" />
+        {/* fast double chevron */}
+        <path d="M 388 142 L 396 150 L 388 158 M 398 142 L 406 150 L 398 158"
+          stroke="#2dd4bf" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" />
+        {/* served result node */}
+        <circle cx="436" cy="150" r="22" fill="url(#ec-bloom)" />
+        <g filter="url(#ec-glow)">
+          <circle cx="436" cy="150" r="13" fill="url(#ec-node)" />
+        </g>
+        <circle cx="436" cy="150" r="13" stroke="#ffffff" strokeOpacity="0.5" strokeWidth="1.5" />
+        <circle cx="436" cy="150" r="4.5" fill="#ffffff" fillOpacity="0.8" />
+
+        {/* Ambient particles */}
+        <circle cx="26" cy="56" r="2.5" fill="#2dd4bf" fillOpacity="0.3" />
+        <circle cx="26" cy="248" r="2" fill="#17b3a3" fillOpacity="0.28" />
+        <circle cx="258" cy="40" r="2.5" fill="#2dd4bf" fillOpacity="0.26" />
+        <circle cx="258" cy="262" r="2" fill="#2456a6" fillOpacity="0.3" />
+      </g>
     </svg>
   )
 }

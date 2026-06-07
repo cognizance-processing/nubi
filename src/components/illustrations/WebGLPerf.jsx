@@ -1,220 +1,209 @@
 /**
- * WebGLPerf — Large illustration of 1M+ point scatter via Arrow → WebGL.
- * Shows: scatter plot with clusters, stats panel, data pipeline.
- * viewBox 560×380
+ * WebGLPerf — GPU point-cloud rendered at speed.
+ * A clean comet of data particles flows along converging streamlines from the
+ * left and resolves into a bright focal node on the right — the moment a frame
+ * is rasterized. Deterministic LCG, fully clipped, no text. Reads on light + dark.
  */
 export default function WebGLPerf({ className = '' }) {
-  // Deterministic pseudo-random scatter points
-  const points = []
-  let seed = 137
-  function rand() {
-    seed = (seed * 1664525 + 1013904223) & 0xffffffff
-    return ((seed >>> 0) / 0xffffffff)
+  // Seeded LCG — deterministic, no Math.random at runtime
+  let s = 0x51ed270b
+  const rnd = () => {
+    s = (Math.imul(1664525, s) + 1013904223) >>> 0
+    return s / 0x100000000
   }
 
-  const clusters = [
-    { cx: 80,  cy: 120, rx: 52, ry: 38, color: '#4d8de0', opacity: 0.75 },
-    { cx: 190, cy: 90,  rx: 48, ry: 42, color: '#2dd4bf', opacity: 0.7 },
-    { cx: 140, cy: 170, rx: 44, ry: 36, color: '#17b3a3', opacity: 0.65 },
-    { cx: 250, cy: 130, rx: 40, ry: 34, color: '#2456a6', opacity: 0.7 },
-  ]
+  const W = 480
+  const H = 320
 
-  for (let i = 0; i < 200; i++) {
-    const c = clusters[i % clusters.length]
-    const angle = rand() * Math.PI * 2
-    const radius = rand()
-    const px = c.cx + Math.cos(angle) * c.rx * radius
-    const py = c.cy + Math.sin(angle) * c.ry * radius
-    const clampedX = Math.max(22, Math.min(292, px))
-    const clampedY = Math.max(60, Math.min(244, py))
-    points.push({ x: clampedX, y: clampedY, c: i % clusters.length })
+  // Safe inset bounds
+  const X0 = 24
+  const X1 = W - 24
+  const Y0 = 24
+  const Y1 = H - 24
+
+  // Focal attractor — upper-right; the comet lifts toward it for energy
+  const FX = 358
+  const FY = 138
+
+  // Cubic bezier helper
+  const bez = (P0, P1, P2, P3, t) => {
+    const mt = 1 - t
+    return {
+      x: mt*mt*mt*P0.x + 3*mt*mt*t*P1.x + 3*mt*t*t*P2.x + t*t*t*P3.x,
+      y: mt*mt*mt*P0.y + 3*mt*mt*t*P1.y + 3*mt*t*t*P2.y + t*t*t*P3.y,
+    }
+  }
+
+  // Build organized streamlines fanning from the left edge into the focal.
+  // Particles ride these lines (small perpendicular jitter) → a coherent comet,
+  // not a chaotic dust field.
+  const LINES = 7
+  const PER = 64
+  const focal = { x: FX, y: FY }
+  const pts = []
+
+  for (let li = 0; li < LINES; li++) {
+    const f = LINES === 1 ? 0.5 : li / (LINES - 1)        // 0..1 across the fan
+    const sy = (FY + 34) + (f - 0.5) * 150                  // source sits lower → upward lift
+    const sx = 56 + (f - 0.5) * 18
+    const P0 = { x: sx, y: sy }
+    // pull up/in early, then neck-converge toward focal
+    const P1 = { x: sx + 70, y: sy + (FY - sy) * 0.25 }
+    const P2 = { x: FX - 118, y: FY + (sy - FY) * 0.18 }
+
+    for (let j = 0; j < PER; j++) {
+      const u = j / (PER - 1)
+      const t = Math.pow(u, 0.78)                           // bias density toward focal
+      const base = bez(P0, P1, P2, focal, t)
+
+      // perpendicular jitter — wide in the tail, tightening to nothing at head
+      const spread = (1 - t) * (10 + (1 - f) * 6) + 1.5
+      const jx = (rnd() - 0.5) * 2 * spread
+      const jy = (rnd() - 0.5) * 2 * spread
+
+      const x = Math.max(X0 + 2, Math.min(X1 - 2, base.x + jx))
+      const y = Math.max(Y0 + 2, Math.min(Y1 - 2, base.y + jy))
+
+      const r = 0.6 + Math.pow(t, 1.4) * 2.3 + rnd() * 0.5
+      const o = Math.min(0.06 + Math.pow(t, 1.25) * 0.82 + rnd() * 0.08, 0.95)
+
+      pts.push({ x, y, r, o, t, k: li * PER + j })
+    }
+  }
+
+  // Color ramp: tail blue → head cyan
+  const col = (t) => {
+    if (t > 0.74) return '#2dd4bf'
+    if (t > 0.48) return '#17b3a3'
+    if (t > 0.24) return '#2b6cb0'
+    return '#2456a6'
+  }
+
+  // A few elongated motion streaks just behind the focal — sense of velocity
+  const streaks = []
+  for (let i = 0; i < 6; i++) {
+    const t = 0.62 + rnd() * 0.22
+    const off = (rnd() - 0.5) * 30
+    const p = bez({ x: 56, y: FY }, { x: 140, y: FY }, { x: FX - 118, y: FY }, focal, t)
+    streaks.push({
+      x1: p.x - 22, y1: p.y + off * 0.5,
+      x2: p.x + 6, y2: p.y + off * 0.5 + off * 0.06,
+      o: 0.10 + rnd() * 0.10, k: i,
+    })
   }
 
   return (
     <svg
-      viewBox="0 0 560 380"
+      viewBox={`0 0 ${W} ${H}`}
       fill="none"
       xmlns="http://www.w3.org/2000/svg"
       className={className}
       aria-hidden="true"
-      style={{ width: '100%', height: 'auto' }}
+      width="100%"
+      height="auto"
+      preserveAspectRatio="xMidYMid meet"
     >
       <defs>
-        <linearGradient id="wgl-brand" x1="0" y1="0" x2="1" y2="0">
-          <stop offset="0%" stopColor="#1b2363" />
-          <stop offset="50%" stopColor="#2456a6" />
+        {/* Focal bloom */}
+        <radialGradient id="wgl-bloom" cx="50%" cy="50%" r="50%">
+          <stop offset="0%"   stopColor="#2dd4bf" stopOpacity="0.55" />
+          <stop offset="38%"  stopColor="#17b3a3" stopOpacity="0.22" />
+          <stop offset="100%" stopColor="#2dd4bf" stopOpacity="0"    />
+        </radialGradient>
+
+        {/* Soft brand halo behind the comet head */}
+        <radialGradient id="wgl-halo" cx="50%" cy="50%" r="50%">
+          <stop offset="0%"   stopColor="#2456a6" stopOpacity="0.20" />
+          <stop offset="100%" stopColor="#2456a6" stopOpacity="0"    />
+        </radialGradient>
+
+        {/* Lead node fill */}
+        <radialGradient id="wgl-node" cx="32%" cy="30%" r="70%">
+          <stop offset="0%"   stopColor="#a5f3ec" />
+          <stop offset="55%"  stopColor="#2dd4bf" />
           <stop offset="100%" stopColor="#17b3a3" />
+        </radialGradient>
+
+        {/* Streak gradient — fades into the head */}
+        <linearGradient id="wgl-streak" x1="0" y1="0" x2="1" y2="0">
+          <stop offset="0%"   stopColor="#2dd4bf" stopOpacity="0" />
+          <stop offset="100%" stopColor="#2dd4bf" stopOpacity="1" />
         </linearGradient>
-        <linearGradient id="wgl-bg" x1="0" y1="0" x2="0" y2="1">
-          <stop offset="0%" stopColor="#0a1020" />
-          <stop offset="100%" stopColor="#0c1422" />
-        </linearGradient>
-        <filter id="wgl-glow">
-          <feGaussianBlur stdDeviation="3" result="blur" />
-          <feMerge><feMergeNode in="blur" /><feMergeNode in="SourceGraphic" /></feMerge>
+
+        {/* Glow filter */}
+        <filter id="wgl-glow" x="-120%" y="-120%" width="340%" height="340%">
+          <feGaussianBlur stdDeviation="4.5" result="blur" />
+          <feMerge>
+            <feMergeNode in="blur" />
+            <feMergeNode in="SourceGraphic" />
+          </feMerge>
         </filter>
-        <filter id="wgl-glow-sm">
-          <feGaussianBlur stdDeviation="1.5" result="blur" />
-          <feMerge><feMergeNode in="blur" /><feMergeNode in="SourceGraphic" /></feMerge>
-        </filter>
-        <marker id="wgl-arr" markerWidth="7" markerHeight="7" refX="3.5" refY="3.5" orient="auto">
-          <path d="M 0 0 L 7 3.5 L 0 7 Z" fill="#2dd4bf" fillOpacity="0.7" />
-        </marker>
+
+        {/* Clip — inset rounded rect */}
+        <clipPath id="wgl-clip">
+          <rect x="12" y="12" width={W - 24} height={H - 24} rx="22" />
+        </clipPath>
       </defs>
 
-      {/* Background */}
-      <rect width="560" height="380" rx="12" fill="url(#wgl-bg)" />
-      <rect width="560" height="380" rx="12" stroke="url(#wgl-brand)" strokeOpacity="0.3" strokeWidth="1" fill="none" />
+      <g clipPath="url(#wgl-clip)">
+        {/* Transparent background — only soft atmosphere, no opaque panel */}
+        <ellipse cx={FX - 10} cy={FY} rx="190" ry="150" fill="url(#wgl-halo)" />
 
-      {/* Title */}
-      <text x="280" y="26" textAnchor="middle" fill="#4d8de0" fontSize="11" fontWeight="600" fontFamily="'Space Grotesk', sans-serif" letterSpacing="1">WEBGL RENDERING · 1M+ POINTS AT 60 FPS</text>
+        {/* Subtle render-canvas grid (even, very faint) */}
+        {[0.25, 0.5, 0.75].map((g, i) => (
+          <line key={`gh${i}`}
+            x1={X0} y1={Y0 + g * (Y1 - Y0)} x2={X1} y2={Y0 + g * (Y1 - Y0)}
+            stroke="#2456a6" strokeOpacity="0.08" strokeWidth="1" />
+        ))}
+        {[0.25, 0.5, 0.75].map((g, i) => (
+          <line key={`gv${i}`}
+            x1={X0 + g * (X1 - X0)} y1={Y0} x2={X0 + g * (X1 - X0)} y2={Y1}
+            stroke="#2456a6" strokeOpacity="0.06" strokeWidth="1" />
+        ))}
 
-      {/* ═══════════════════════════════════
-          LEFT: Scatter plot
-      ═══════════════════════════════════ */}
-      <rect x="14" y="38" width="316" height="248" rx="10"
-        fill="#080e1c" stroke="#21304a" strokeWidth="1" />
-      {/* Chart header */}
-      <rect x="14" y="38" width="316" height="26" rx="10" fill="#070d1a" />
-      <rect x="14" y="56" width="316" height="8" fill="#070d1a" />
-      <text x="172" y="54" textAnchor="middle" fill="#4a6fa5" fontSize="9" fontFamily="'Space Grotesk', sans-serif">scatter · 1.24M points · Arrow→WebGL→regl</text>
+        {/* Motion streaks behind the head */}
+        {streaks.map((st) => (
+          <line key={`st${st.k}`}
+            x1={st.x1} y1={st.y1} x2={st.x2} y2={st.y2}
+            stroke="url(#wgl-streak)" strokeOpacity={st.o}
+            strokeWidth="2" strokeLinecap="round" />
+        ))}
 
-      {/* Chart grid */}
-      {[80, 110, 140, 170, 200, 230, 260].map(y => (
-        <line key={y} x1="30" y1={y} x2="320" y2={y}
-          stroke="#21304a" strokeWidth="0.4" strokeDasharray="4,4" />
-      ))}
-      {[50, 100, 150, 200, 250, 300].map(x => (
-        <line key={x} x1={x} y1="66" x2={x} y2="278"
-          stroke="#21304a" strokeWidth="0.4" strokeDasharray="4,4" />
-      ))}
+        {/* Main point cloud — back-to-front (tail first, head on top) */}
+        {pts.map((p) => (
+          <circle key={`p${p.k}`}
+            cx={p.x} cy={p.y} r={p.r}
+            fill={col(p.t)} fillOpacity={p.o} />
+        ))}
 
-      {/* Cluster glow backgrounds */}
-      {clusters.map(({ cx, cy, rx, ry, color }, i) => (
-        <ellipse key={i} cx={cx + 30} cy={cy + 10} rx={rx * 1.4} ry={ry * 1.4}
-          fill={color} fillOpacity="0.06" />
-      ))}
+        {/* Focal bloom + concentric rings */}
+        <circle cx={FX} cy={FY} r="50" fill="url(#wgl-bloom)" />
+        <circle cx={FX} cy={FY} r="26"
+          stroke="#2dd4bf" strokeOpacity="0.20" strokeWidth="1.5" />
+        <circle cx={FX} cy={FY} r="16"
+          stroke="#2dd4bf" strokeOpacity="0.42" strokeWidth="1.5" />
 
-      {/* Scatter points */}
-      {points.map((p, i) => {
-        const c = clusters[p.c]
-        const r = i % 11 === 0 ? 3.5 : i % 5 === 0 ? 2.5 : 1.5
-        return (
-          <circle
-            key={i}
-            cx={p.x + 30}
-            cy={p.y + 10}
-            r={r}
-            fill={c.color}
-            fillOpacity={c.opacity * (0.4 + (i % 7) / 10)}
-          />
-        )
-      })}
-
-      {/* Highlighted point with tooltip */}
-      <circle cx="225" cy="100" r="7" fill="#2dd4bf" fillOpacity="0.2" />
-      <circle cx="225" cy="100" r="4" fill="#2dd4bf" filter="url(#wgl-glow)" />
-      <rect x="180" y="76" width="100" height="22" rx="5"
-        fill="#0d1526" stroke="#2dd4bf" strokeOpacity="0.6" strokeWidth="0.75" />
-      <text x="230" y="89" textAnchor="middle" fill="#2dd4bf" fontSize="9" fontFamily="monospace">revenue: $48.2K</text>
-      <text x="230" y="99" textAnchor="middle" fill="#4a6fa5" fontSize="8" fontFamily="monospace">session: 8.4 min</text>
-
-      {/* Axes */}
-      <line x1="30" y1="270" x2="320" y2="270" stroke="#21304a" strokeWidth="1" />
-      <line x1="30" y1="66" x2="30" y2="270" stroke="#21304a" strokeWidth="1" />
-
-      {/* Axis labels */}
-      <text x="172" y="282" textAnchor="middle" fill="#4a6fa5" fontSize="8" fontFamily="monospace">session_duration_ms</text>
-      <text x="14" y="168" textAnchor="middle" fill="#4a6fa5" fontSize="8" fontFamily="monospace"
-        transform="rotate(-90, 14, 168)">revenue_usd</text>
-
-      {/* Legend */}
-      {[
-        { label: 'Enterprise', color: '#4d8de0' },
-        { label: 'Mid-market', color: '#2dd4bf' },
-        { label: 'SMB', color: '#17b3a3' },
-        { label: 'Self-serve', color: '#2456a6' },
-      ].map(({ label, color }, i) => (
-        <g key={label}>
-          <circle cx="42" cy={74 + i * 14} r="4" fill={color} fillOpacity="0.8" />
-          <text x="52" y={78 + i * 14} fill={color} fillOpacity="0.8" fontSize="8" fontFamily="'Inter', sans-serif">{label}</text>
+        {/* Lead node with glow */}
+        <g filter="url(#wgl-glow)">
+          <circle cx={FX} cy={FY} r="8.5" fill="url(#wgl-node)" />
+          <circle cx={FX} cy={FY} r="8.5"
+            stroke="#caf7f1" strokeWidth="1.5" strokeOpacity="0.8" />
         </g>
-      ))}
 
-      {/* Cross-filter bar at bottom */}
-      <rect x="14" y="288" width="316" height="28" rx="6"
-        fill="#0d1526" stroke="#17b3a3" strokeOpacity="0.35" strokeWidth="0.75" />
-      <text x="80" y="300" fill="#2dd4bf" fontSize="9" fontFamily="'Space Grotesk', sans-serif">Cross-filter active</text>
-      <text x="80" y="310" fill="#4a6fa5" fontSize="8" fontFamily="monospace">1.24M → 48.2K visible · 48ms rerender</text>
-      <circle cx="36" cy="302" r="5" fill="#2dd4bf" fillOpacity="0.25" />
-      <circle cx="36" cy="302" r="3" fill="#2dd4bf" filter="url(#wgl-glow-sm)" />
+        {/* Status dots — top-left corner */}
+        {[0, 1, 2].map((i) => (
+          <circle key={`dot${i}`}
+            cx={X0 + 14 + i * 11} cy={Y0 + 14} r="3.5"
+            fill={['#2456a6', '#17b3a3', '#2dd4bf'][i]}
+            fillOpacity="0.7" />
+        ))}
 
-      {/* ═══════════════════════════════════
-          RIGHT: Stats panel
-      ═══════════════════════════════════ */}
-      <rect x="340" y="38" width="206" height="164" rx="10"
-        fill="#080e1c" stroke="#21304a" strokeWidth="1" />
-      <rect x="340" y="38" width="206" height="4" rx="2"
-        fill="url(#wgl-brand)" />
-
-      <text x="443" y="56" textAnchor="middle" fill="#4a6fa5" fontSize="9" fontWeight="600" fontFamily="'Space Grotesk', sans-serif">Render Stats</text>
-
-      {[
-        { label: 'Points rendered', val: '1.24M', color: '#2dd4bf' },
-        { label: 'Frame rate', val: '60 fps', color: '#17b3a3' },
-        { label: 'Arrow buffer size', val: '48 MB', color: '#4d8de0' },
-        { label: 'Query time', val: '112 ms', color: '#4d8de0' },
-        { label: 'Render tier', val: 'WebGL', color: '#2dd4bf' },
-      ].map(({ label, val, color }, i) => (
-        <g key={label}>
-          <rect x="350" y={62 + i * 28} width="186" height="24" rx="5"
-            fill="#0d1526" stroke={color} strokeOpacity="0.2" strokeWidth="0.75" />
-          <text x="362" y={75 + i * 28} fill="#4a6fa5" fontSize="8" fontFamily="'Inter', sans-serif">{label}</text>
-          <text x="522" y={75 + i * 28} textAnchor="end" fill={color} fontSize="12" fontWeight="700" fontFamily="'Space Grotesk', sans-serif">{val}</text>
-        </g>
-      ))}
-
-      {/* ═══════════════════════════════════
-          RIGHT BOTTOM: Arrow data pipeline
-      ═══════════════════════════════════ */}
-      <rect x="340" y="212" width="206" height="160" rx="10"
-        fill="#080e1c" stroke="#21304a" strokeWidth="1" />
-      <rect x="340" y="212" width="206" height="4" rx="2"
-        fill="url(#wgl-brand)" fillOpacity="0.5" />
-
-      <text x="443" y="230" textAnchor="middle" fill="#4a6fa5" fontSize="9" fontWeight="600" fontFamily="'Space Grotesk', sans-serif">Data pipeline</text>
-
-      {/* Vertical pipeline */}
-      {[
-        { label: 'DuckDB-WASM', sub: 'columnar scan', color: '#4d8de0', y: 242 },
-        { label: 'Arrow IPC', sub: 'zero-copy buffer', color: '#2dd4bf', y: 296 },
-        { label: 'GPU buffers', sub: 'regl / WebGL', color: '#17b3a3', y: 322 },
-      ].map(({ label, sub, color, y }) => (
-        <g key={label}>
-          <rect x="356" y={y} width="174" height="34" rx="6"
-            fill="#0d1526" stroke={color} strokeOpacity="0.35" strokeWidth="1" />
-          <circle cx="372" cy={y + 17} r="5" fill={color} fillOpacity="0.25" />
-          <circle cx="372" cy={y + 17} r="3" fill={color} fillOpacity="0.7" />
-          <text x="382" y={y + 13} fill={color} fillOpacity="0.9" fontSize="10" fontWeight="600" fontFamily="'Space Grotesk', sans-serif">{label}</text>
-          <text x="382" y={y + 25} fill={color} fillOpacity="0.5" fontSize="8" fontFamily="monospace">{sub}</text>
-        </g>
-      ))}
-
-      {/* Connecting lines between pipeline stages */}
-      <line x1="443" y1="276" x2="443" y2="296" stroke="#2dd4bf" strokeOpacity="0.3" strokeWidth="1.5" strokeDasharray="3,2" markerEnd="url(#wgl-arr)" />
-      <line x1="443" y1="330" x2="443" y2="322" stroke="none" />
-      <line x1="443" y1="330" x2="443" y2="350" stroke="none" />
-
-      {/* Auto-upgrade badge */}
-      <rect x="356" y="360" width="174" height="20" rx="5"
-        fill="#17b3a3" fillOpacity="0.1" stroke="#17b3a3" strokeOpacity="0.4" strokeWidth="0.75" />
-      <text x="443" y="373.5" textAnchor="middle" fill="#2dd4bf" fontSize="8" fontFamily="monospace">auto-upgrades to WebGL at threshold</text>
-
-      {/* Bottom pipeline (full width) */}
-      <rect x="14" y="326" width="316" height="40" rx="7"
-        fill="#070d1a" stroke="#21304a" strokeWidth="0.75" />
-      <text x="172" y="340" textAnchor="middle" fill="#4a6fa5" fontSize="8" fontWeight="600" fontFamily="'Space Grotesk', sans-serif">Author never touches WebGL code</text>
-      <text x="172" y="354" textAnchor="middle" fill="#4a6fa5" fillOpacity="0.6" fontSize="8" fontFamily="monospace">&lt;nubi-chart type="scatter"&gt; auto-selects renderer</text>
+        {/* Frame border + top shimmer */}
+        <rect x="12" y="12" width={W - 24} height={H - 24} rx="22"
+          stroke="#2456a6" strokeOpacity="0.30" strokeWidth="1.5" />
+        <line x1="38" y1="12" x2={W - 38} y2="12"
+          stroke="#2dd4bf" strokeOpacity="0.20" strokeWidth="1.5" strokeLinecap="round" />
+      </g>
     </svg>
   )
 }

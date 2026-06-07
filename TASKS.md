@@ -732,3 +732,179 @@ becomes the prod path.
     HTML dashboards; an in-editor "Ask AI" panel that calls `/ai/dashboard` → spec → applies
     to the canvas (round-trip proof). LLM context: ship the spec schema + a system prompt so
     generated dashboards are always editor-compatible.
+
+---
+
+# M13–M18 — Builder feature layer (legacy parity, modern) — see ROADMAP.md §11
+
+Audit 2026-06-05: foundations existed for M13/M15/M17/M18; M14/M16 were greenfield.
+**Re-audit 2026-06-07: M13–M18 are all ✅ DONE** (the per-milestone status lines below have
+been updated; the task detail is kept as the implementation record). **Wave rule:** agents in
+the same wave own DISJOINT files; shared hub files
+(`src/editor/DashboardEditor.jsx`, `src/dashboards/SpecRenderer.jsx`, `backend/app/routes/
+query.py`, `routes/ai.py`, `routes/jobs.py`) are edited by exactly ONE agent per wave.
+
+## Shared contracts (read before building)
+- **Param model (M13)**: extend `RegisteredQuery` with `params: list[QueryParam]` where
+  `QueryParam = {name, type:'text'|'number'|'date'|'daterange'|'select'|'multiselect',
+  default?, required?, options_query_id?}`. Named placeholders in registry SQL use
+  **`{{name}}`**; the planner renders them to the connector's positional `$1/$2…` (NEVER
+  string-concat the value — bind positionally) BEFORE the existing param path. `/query` body
+  gains `params: dict` (named) — resolved against the registry's declared params; unknown
+  names rejected; missing required → 400. **Resolver precedence (security-critical):**
+  `token/RLS claims (locked) > body.params (named) > query default`. Token-claim names are
+  reserved and cannot be set by `body.params`. Cache key already includes positional params;
+  ensure named→positional resolution feeds the SAME key.
+- **Variable model (M14)**: dashboard spec gains optional `variables: [{name, type, default}]`
+  and widgets may set `params: {paramName: {ref:'<varName>'} | <literal>}`. A lightweight
+  `VariableStore` (React context, no Redux) holds `{var: value}`. Filter widgets write vars;
+  data widgets whose `params` ref a var re-query on change. `DashboardViewPage` seeds the
+  store from `useSearchParams()` and writes changes back to the URL. Precedence at view time:
+  `embed-token locked param > URL ?var= > filter widget > variable default`.
+- **Widget set (M14)**: add `type:'filter'` (`subtype:'select'|'multiselect'|'daterange'|
+  'text'`, `options_query_id?`, `target_var`) and `type:'text'` (markdown) to the spec
+  validator (`backend/app/dashboards/spec.py`), `SpecRenderer`, the editor palette, and
+  `spec_to_html` (`<nubi-filter>`, `<nubi-text>`). Keep the element set to these 5 archetypes.
+
+## M13 — Query library + typed/named params (✅ Done)
+Done: `/query` positional params + cache-key; `@monaco-editor/react` dep.
+- **M13-A** (backend, owns `queries/registry.py`, `connectors/planner.py`, `routes/query.py`):
+  add `QueryParam` + `params` to `RegisteredQuery`; `{{name}}` → positional binding in the
+  planner; named `params` dict on `/query` body with precedence + validation; `GET /query/
+  registry` (list registered queries w/ their declared params, org-scoped). Tests
+  `test_query_params.py`: named param binds positionally; required-missing → 400; a token
+  claim name cannot be overridden by body.params; cache key identical for same resolved
+  params; unknown param name → 400.
+- **M13-B** (frontend, owns `src/lib/wasmRuntime.js`, `src/lib/api.js`, NEW `src/editor/
+  QueryLibrary.jsx`, NEW `src/components/SqlEditor.jsx`): thread `params` through
+  `runArrowQueryById(queryId, {params})`; a Query Library page (Monaco SQL editor, list/save/
+  name queries via the registry endpoint, declare params); promote `/playground` query cell
+  to use `<SqlEditor>` (Monaco) instead of `<textarea>`. No edits to DashboardEditor here.
+
+## M14 — Interactivity: filters, variables, route params (✅ Done)
+- **M14-A** (backend, owns `backend/app/dashboards/spec.py`): extend spec validator + schema
+  with `variables`, `filter`/`text` widget types, widget `params` (`{ref}`|literal);
+  `spec_to_html` emits `<nubi-filter>`/`<nubi-text>`. Tests in existing spec test file.
+- **M14-B** (frontend, owns NEW `src/dashboards/VariableStore.jsx`, NEW `src/dashboards/
+  widgets/FilterWidget.jsx`, NEW `src/dashboards/widgets/TextWidget.jsx`): variable context
+  + filter/text widgets; filter writes a var; `vitest`/dash test for store + filter.
+- **M14-C** (frontend, owns `src/dashboards/SpecRenderer.jsx`, `src/pages/DashboardViewPage
+  .jsx`): wrap render tree in `VariableStore`; data widgets read referenced vars into their
+  query `params` and re-query on change; seed store from `useSearchParams`, write back to URL
+  with token-locked-param precedence. (Runs AFTER M14-A/B land — wave 2.)
+- **M14-D** (frontend, owns `src/editor/DashboardEditor.jsx`): palette entries + config panels
+  for filter & text widgets; bind widget `params` to a variable or literal in the config UI.
+  (Wave 2 — sole owner of the editor hub this wave.)
+
+## M15 — Widget depth: conditional formatting + chart depth (✅ Done)
+Done: multi-series via categorical color.
+- **M15-A** (frontend, owns `src/viz/chartOption.js`, `src/dashboards/widgets/ChartWidget
+  .jsx`): add `stack`, `combo` (per-series type), and dual `yAxis` support driven by
+  `encoding`/`props`. `test:dash` cases for stacked + combo option shape.
+- **M15-B** (frontend, owns `src/dashboards/widgets/TableWidget.jsx`, NEW `src/dashboards/
+  widgets/conditionalFormat.js`): conditional formatting rules `[{column, op, value, style}]`
+  + column number/date/currency formatting from `props`. Unit test the rule evaluator.
+
+## M16 — Exports (✅ Done — CSV/PNG/PDF; Excel deferred)
+- **M16-A** (frontend, owns NEW `src/lib/exports.js`, NEW `src/dashboards/WidgetToolbar.jsx`;
+  add deps `papaparse`, `jspdf`, `html2canvas`): CSV from an Arrow table, PNG via ECharts
+  `getDataURL` / regl canvas, dashboard PDF (html2canvas+jsPDF). A per-widget toolbar exposes
+  export actions; mount it in the widget wrapper WITHOUT editing widget internals (M15 owns
+  those). `vitest` for the Arrow→CSV function. (Excel/ExcelJS deferred — CSV+PNG+PDF first.)
+
+## M17 — Scheduled email reporting (✅ Done)
+- **M17-A** (backend, owns `backend/app/jobs/executor.py`, NEW `backend/app/jobs/report.py`,
+  `backend/app/jobs/store.py`, `routes/jobs.py`): add job `kind:'report'` with `target =
+  {board_id, params, format:'pdf'|'csv', recipients:[email], subject, body,
+  apply_user_permissions}`; `render_report(board, params, format)` (CSV from the board's
+  query results now; PDF stub via a headless render hook); `send_email` behind an
+  `EmailSender` provider (NullSender for tests, logs). Per-recipient RLS reuses the
+  locked-param resolver. Tests `test_report_jobs.py`: report job renders CSV + calls sender
+  per recipient (NullSender capture); apply_user_permissions injects locked params; bad
+  board → error run.
+
+## M18 — AI text-to-SQL (✅ Done)
+- **M18-A** (backend, owns NEW `backend/app/ai/sql.py`, `routes/ai.py`): `POST /ai/sql
+  {question, datastore_id?}` → ground on catalog/lineage (M7) → `LLMProvider.complete` →
+  candidate SQL; validate via sqlglot parse; optionally `save_as` to register it (with
+  inferred params). NullProvider returns a deterministic safe `SELECT` over a real table so
+  tests pass offline. Tests `test_ai_sql.py`: returns parseable SQL; NullProvider
+  deterministic; save_as registers a query retrievable via the registry.
+
+## M13–M18 execution waves (this is what the agent swarm runs)
+- **Wave 1 (parallel, disjoint):** M13-A, M14-A, M15-A, M15-B, M16-A, M17-A, M18-A, M14-B.
+- **Wave 2 (parallel, disjoint; depends on Wave 1):** M13-B, M14-C, M14-D.
+- **Wave 3 (verify/integrate):** full backend pytest + `npm run build` + `test:dash`;
+  wire AI-SQL + query library into the editor's Ask-AI panel; fix breakage. Update README
+  feature list. NO git commits unless asked.
+
+---
+
+# M19–M22 — Extended builder scope (2026-06-05) — see ROADMAP.md §12
+
+**DECISION: no visual query builder** (SQL editor + AI text-to-SQL only). Each milestone has a
+testable, offline core; external creds (git remote auth, Slack/WhatsApp tokens) are adapters.
+
+## M19 — Deep undo/redo in the editor (✅ Done — `src/editor/history.js` + editor wiring)
+- **M19-A** (frontend, owns `src/editor/DashboardEditor.jsx` ONLY): add an undo/redo history
+  over the dashboard `spec`. Past+future stacks, depth ≥200 (or memory-bounded), ⌘Z / ⇧⌘Z(or
+  ⌘Y) shortcuts, toolbar buttons (disabled when empty). Snapshot spec on each mutation;
+  COALESCE rapid drag/resize bursts into one entry (e.g. debounce/commit-on-drop). No
+  regressions to existing editor behavior. Add a small node-test for the pure history reducer
+  if you extract one (`src/editor/history.test.mjs`). Verify `npm run build`.
+
+## M20 — Git sync for queries & dashboards (✅ Done — `backend/app/git/`, `routes/git.py`)
+- **M20-A** (backend, owns NEW `backend/app/git/__init__.py`, `backend/app/git/sync.py`,
+  NEW `backend/app/routes/git.py`, NEW `backend/tests/test_git_sync.py`; register router in
+  `backend/app/main.py` — coordinate: ONLY this agent touches main.py this wave):
+  - `GitSync` over a workspace repo path: `serialize_resource(kind, resource) -> {path,
+    content}` (`queries/<id>.sql` + a sibling `queries/<id>.meta.json` for name/params;
+    `dashboards/<id>.json` for board spec), `commit_resources(repo, items, message, author)`,
+    `history(path)`, `restore(path, sha)`. Use `git` via subprocess OR GitPython (lazy
+    import); operate on a LOCAL repo dir from config. Provider seam (`RemoteAuth`) for future
+    GitHub-App/deploy-key push — stub now (no network).
+  - Routes: `POST /git/sync` (commit current queries+boards for the org), `GET /git/history`,
+    `POST /git/restore`. Auth + org-scoped like other routes.
+  - Tests: init a temp repo (tmp_path), serialize a query + a board, commit, assert files +
+    one commit exist; history returns the commit; restore returns prior content; round-trip a
+    board spec byte-stably. No network.
+
+## M21 — Agentic AI chat with a tool registry (✅ Done — `backend/app/ai/agent.py` + `ai/tools.py`)
+- **M21-A** (backend, owns NEW `backend/app/ai/tools.py`, NEW `backend/app/ai/agent.py`,
+  `backend/app/routes/ai.py`, NEW `backend/tests/test_ai_agent.py`): a **tool registry** of
+  callables the model can invoke — `get_schema`, `generate_sql`(reuse M18), `create_query`/
+  `list_queries`(registry), `run_query`(planner+connector), `create_dashboard`(reuse M8
+  spec gen), `edit_dashboard`(mutate a spec: add/move/configure widgets, validate via
+  `dashboards/spec.py`). Each tool has a JSON-schema signature and RECEIVES the caller's
+  claims (a tool can never exceed caller scope — pass claims through, enforce in run_query).
+  `agent.py`: a tool-calling loop `run_agent(messages, provider, claims) -> {reply, actions}`
+  — provider returns tool calls → execute → append results → repeat until a final text reply;
+  bounded max-steps. `POST /ai/chat {messages, board_id?}`. NullProvider: a DETERMINISTIC
+  scripted path (e.g. recognizes "make a chart of X" → calls generate_sql then create_dashboard)
+  so tests pass offline. Tests: registry tool schemas valid; run_query tool respects claims;
+  edit_dashboard adds a widget and the result validates; agent loop terminates and returns a
+  reply + the actions it took; NullProvider deterministic.
+
+## M22 — Conversational gateway (Slack/WhatsApp) + chart→image (✅ Done — `backend/app/chat/`, `routes/chat.py`)
+- **M22-A** (backend, owns NEW `backend/app/chat/__init__.py`, `backend/app/chat/render.py`,
+  `backend/app/chat/gateway.py`, NEW `backend/app/routes/chat.py`, NEW
+  `backend/tests/test_chat_gateway.py`):
+  - `render.py`: `render_chart_png(chart_spec, table) -> bytes` — server-side chart image
+    (use matplotlib if available via lazy import; keep a clean interface so a headless-ECharts
+    renderer can replace it). Returns valid PNG bytes.
+  - `gateway.py`: `handle_inbound(platform, payload) -> OutboundMessage` — verify signature
+    (provider hook), normalize to text, call the M21 agent (`run_agent`), and if the agent
+    produced a chart action, attach a rendered PNG. `ChatTransport` provider interface with
+    `NullTransport` (records sends) default; Slack/WhatsApp adapters are thin + lazy (tokens
+    from config; no network in tests).
+  - Routes: `POST /chat/slack`, `POST /chat/whatsapp` (verify → handle_inbound → transport).
+  - Tests: an inbound "chart of revenue by region" → agent invoked (NullProvider) → outbound
+    has text + non-empty PNG bytes (assert PNG magic header); NullTransport captured the send;
+    bad signature → 401. No network.
+
+## M19–M22 execution wave
+- **Single parallel wave (disjoint files):** M19-A (frontend editor), M20-A (backend git +
+  main.py), M21-A (backend ai), M22-A (backend chat). M22 depends on M21's `run_agent` at
+  RUNTIME, not file-level — give M22 the agreed `run_agent(messages, provider, claims)`
+  signature so it codes against it; integration verified in the follow-up full-suite run.
+  Then: full backend pytest + `npm run build`. NO git commits unless asked.

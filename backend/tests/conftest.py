@@ -29,7 +29,15 @@ from httpx import ASGITransport, AsyncClient
 # Environment must be set BEFORE importing ANY app modules.
 # ---------------------------------------------------------------------------
 
-os.environ["DATABASE_URL"] = "postgresql://fake:fake@localhost/fake"
+# Tests are hermetic: never read the shared root .env file (it would inject
+# optional vars and make tests environment-dependent). Point ENV_FILE at a path
+# that does not exist so pydantic-settings falls back to process env only.
+os.environ.setdefault("ENV_FILE", "/nonexistent/nubi-tests.env")
+
+# When RUN_PG_TESTS=1, honor a real DATABASE_URL provided by the caller (the PG
+# integration suite connects to a live Postgres). Otherwise use the in-memory fake.
+if not (os.getenv("RUN_PG_TESTS") and os.getenv("DATABASE_URL")):
+    os.environ["DATABASE_URL"] = "postgresql://fake:fake@localhost/fake"
 os.environ["JWT_SECRET"] = "test-jwt-secret-that-is-at-least-32-bytes-long-abcdef"
 os.environ["JWT_ACCESS_TTL_MIN"] = "15"
 os.environ["GOOGLE_CLIENT_ID"] = "fake-google-client-id"
@@ -394,6 +402,20 @@ def _reset_state():
         except Exception:
             pass
 
+        # ── Flow store ────────────────────────────────────────────────────────
+        try:
+            from app.flows.store import set_flow_store, InMemoryFlowStore
+            set_flow_store(InMemoryFlowStore())
+        except Exception:
+            pass
+
+        # ── Task-kind registry ────────────────────────────────────────────────
+        try:
+            from app.flows.registry import reset_for_tests as _reset_task_reg
+            _reset_task_reg()
+        except Exception:
+            pass
+
         # ── Repo provider ─────────────────────────────────────────────────────
         try:
             from app.repos.provider import set_repo
@@ -450,3 +472,81 @@ async def client(app):
 def fake_db() -> FakeDB:
     """Expose the FakeDB singleton for per-test inspection."""
     return _fake_db
+
+
+# ---------------------------------------------------------------------------
+# Opt-in PG fixtures (only active when RUN_PG_TESTS=1 + DATABASE_URL set)
+#
+# These fixtures do NOT affect the default in-memory test suite:
+# - They are NOT autouse.
+# - They are skipped when RUN_PG_TESTS is unset.
+# - test_pg_integration.py declares its own session-scoped copies; these
+#   function-scoped versions are available for ad-hoc use in other tests
+#   that want a real PG connection without the full session-scoped setup.
+# ---------------------------------------------------------------------------
+
+_RUN_PG = bool(os.getenv("RUN_PG_TESTS"))
+
+
+@pytest_asyncio.fixture
+async def pg_pool():
+    """Function-scoped asyncpg pool against a real PG.
+
+    Skipped when RUN_PG_TESTS is not set.  Use DATABASE_URL to configure the
+    connection.  The pool is closed after the test finishes.
+    """
+    if not _RUN_PG:
+        pytest.skip("Set RUN_PG_TESTS=1 + DATABASE_URL to use the pg_pool fixture.")
+
+    db_url = os.environ.get("DATABASE_URL", "")
+    if not db_url or "fake" in db_url:
+        pytest.skip("DATABASE_URL is not a real PG URL — skipping pg_pool fixture.")
+
+    import asyncpg  # noqa: PLC0415
+
+    pool = await asyncpg.create_pool(dsn=db_url, min_size=1, max_size=3)
+    try:
+        yield pool
+    finally:
+        await pool.close()
+
+
+@pytest_asyncio.fixture
+async def pg_db(pg_pool):
+    """Function-scoped fixture: run migrations then yield the pool.
+
+    Depends on pg_pool; also skipped when RUN_PG_TESTS is not set.
+    Migrations run against the schema referenced by DATABASE_URL (typically
+    the public schema of a throwaway DB).
+    """
+    from pathlib import Path  # noqa: PLC0415
+
+    migrations_dir = (
+        Path(__file__).parent.parent.parent / "database" / "migrations"
+    )
+
+    async with pg_pool.acquire() as conn:
+        await conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS schema_migrations (
+                version    text        PRIMARY KEY,
+                applied_at timestamptz NOT NULL DEFAULT now()
+            )
+            """
+        )
+        applied = {
+            r["version"]
+            for r in await conn.fetch("SELECT version FROM schema_migrations")
+        }
+        for sql_file in sorted(migrations_dir.glob("*.sql")):
+            if sql_file.name in applied:
+                continue
+            sql = sql_file.read_text(encoding="utf-8")
+            async with conn.transaction():
+                await conn.execute(sql)
+                await conn.execute(
+                    "INSERT INTO schema_migrations (version) VALUES ($1)",
+                    sql_file.name,
+                )
+
+    yield pg_pool

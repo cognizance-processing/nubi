@@ -41,7 +41,9 @@ class Repo(Protocol):
     other orgs can never leak through.
     """
 
-    async def list(self, resource: str, org_id: str) -> list[dict[str, Any]]:
+    async def list(
+        self, resource: str, org_id: str, project_id: str | None = None
+    ) -> list[dict[str, Any]]:
         """Return all rows for *resource* that belong to *org_id*.
 
         Parameters
@@ -50,6 +52,10 @@ class Repo(Protocol):
             One of the keys in ``RESOURCE_TABLE_MAP``.
         org_id:
             UUID string of the caller's organisation.
+        project_id:
+            Optional project filter. When provided, only rows whose
+            ``project_id`` matches are returned; when ``None`` all of the org's
+            rows are returned (existing behaviour preserved).
 
         Returns
         -------
@@ -86,6 +92,7 @@ class Repo(Protocol):
         created_by: str,
         name: str,
         config: dict[str, Any],
+        project_id: str | None = None,
     ) -> dict[str, Any]:
         """Insert a new row and return the created row dict.
 
@@ -101,6 +108,9 @@ class Repo(Protocol):
             Human-readable name for the resource.
         config:
             Arbitrary JSON-serialisable config dict (stored as ``jsonb``).
+        project_id:
+            Optional project the resource belongs to. When ``None`` the
+            ``project_id`` column is left NULL.
 
         Returns
         -------

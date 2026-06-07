@@ -96,11 +96,41 @@ from app.connectors import plan as planner_plan
 from app.connectors.arrow_io import ipc_stream_from_bytes, table_to_ipc_bytes
 from app.connectors.cache import get_cache
 from app.connectors.duckdb_conn import DuckDBConnector
+from app.connectors.planner import resolve_named_params
 from app.connectors.query_log import get_query_log
 from app.connectors.registry import get_connector_registry
 from app.queries import get_query_registry
+from app.queries.registry import QueryParam, RegisteredQuery, ensure_persisted_query
 from app.repos.provider import get_repo
 from app.routes import api_router
+
+# ---------------------------------------------------------------------------
+# Token-claim-reserved param names (M13-A security contract)
+# ---------------------------------------------------------------------------
+# These names map to fields on VerifiedIdentity that come from the verified
+# token.  A caller CANNOT override them via body.named_params — they are
+# controlled exclusively by the token issuer.  Attempting to set one of these
+# names via named_params raises HTTP 400.
+#
+# Extend this set if more identity fields should be locked in future.
+_TOKEN_CLAIM_RESERVED_NAMES: frozenset[str] = frozenset(
+    {
+        "policies",
+        "user_id",
+        "sub",
+        "org",
+        "org_id",
+        "project",
+        "roles",
+        "scope",
+        "iss",
+        "aud",
+        "exp",
+        "iat",
+        "embed_origin",
+        "kind",
+    }
+)
 
 router = APIRouter(tags=["query"])
 
@@ -165,6 +195,18 @@ class QueryIn(BaseModel):
     params:
         Positional query parameters bound to ``$1`` / ``$2`` … placeholders
         in *sql*.  Empty list when the query has no parameters.
+        For first-party (kind='access') raw-SQL callers this remains the
+        primary param mechanism.  When a ``query_id`` is given and the
+        registered query declares named params, use ``named_params`` instead.
+    named_params:
+        Optional dict of named parameter values.  Resolved against the
+        registered query's declared ``params`` list (M13-A):
+        - Unknown name → 400
+        - Missing ``required`` param with no default → 400
+        - Resolver precedence (SECURITY): token/RLS claim names (locked) >
+          ``named_params`` values > query param ``default``.
+          A name that collides with a token-claim-reserved name CANNOT be set
+          via ``named_params`` (rejected with 400).
     claims:
         Optional hints dict from the request body.  NOTE (M3-B security):
         any ``policies`` key inside this dict is IGNORED — RLS policies come
@@ -180,6 +222,7 @@ class QueryIn(BaseModel):
     sql: str = ""
     query_id: str | None = None
     params: list = []
+    named_params: dict | None = None
     claims: dict | None = None
     datastore_id: str | None = None
 
@@ -280,7 +323,7 @@ async def query(
                 "raw SQL is not permitted.",
                 403,
             )
-        registered = registry.get(body.query_id)
+        registered = registry.get(body.query_id) or await ensure_persisted_query(body.query_id)
         if registered is None:
             raise _AppError(
                 "query_not_registered",
@@ -299,7 +342,7 @@ async def query(
     else:
         # First-party (kind='access'): may optionally use a registered query.
         if body.query_id:
-            registered = registry.get(body.query_id)
+            registered = registry.get(body.query_id) or await ensure_persisted_query(body.query_id)
             if registered is None:
                 raise _AppError(
                     "query_not_registered",
@@ -308,6 +351,7 @@ async def query(
                 )
             effective_sql = registered.sql
         else:
+            registered = None
             effective_sql = body.sql
 
     # ── SECURITY: derive RLS policies from the VERIFIED identity ─────────────
@@ -317,11 +361,92 @@ async def query(
     # is the same behaviour as the pre-M3 endpoint.
     claims = {"policies": identity.policies}
 
+    # ── NAMED PARAM RESOLUTION (M13-A) ──────────────────────────────────────
+    # When a registered query is in scope (query_id was resolved) and the query
+    # declares named params, resolve them regardless of whether body.named_params
+    # is provided.  This ensures:
+    #   - required params are always validated (→ 400 if missing)
+    #   - defaults are always applied (so {{name}} placeholders are replaced)
+    #   - unknown names in body.named_params are rejected (→ 400)
+    #   - reserved token-claim names in body.named_params are rejected (→ 400)
+    #
+    # Resolution precedence (security-critical):
+    #   token/RLS claims (locked) > body.named_params > query default
+    #
+    # If there is no registered query in scope (raw SQL path), body.named_params
+    # is silently ignored and body.params (positional) is used as-is.
+    effective_params: list = list(body.params)
+
+    if registered is not None and registered.params:
+        # named_input is the caller-supplied values (may be empty dict or None).
+        named_input: dict = dict(body.named_params) if body.named_params else {}
+
+        # Step 1: reject any name that collides with a token-claim-reserved name.
+        for forbidden in named_input:
+            if forbidden in _TOKEN_CLAIM_RESERVED_NAMES:
+                raise _AppError(
+                    "param_name_reserved",
+                    f"Parameter name {forbidden!r} is reserved by the token/auth "
+                    "layer and cannot be set via named_params.",
+                    400,
+                )
+
+        # Step 2: validate that all caller-supplied keys are declared.
+        declared_names: set[str] = {p.name for p in registered.params}
+
+        for key in named_input:
+            if key not in declared_names:
+                raise _AppError(
+                    "unknown_param",
+                    f"Unknown parameter {key!r} for query {registered.id!r}. "
+                    f"Declared params: {sorted(declared_names)!r}.",
+                    400,
+                )
+
+        # Step 3: resolve each declared param in order:
+        #   caller-supplied > default > required-missing → 400
+        resolved: dict[str, object] = {}
+        for param in registered.params:
+            if param.name in named_input:
+                resolved[param.name] = named_input[param.name]
+            elif param.default is not None:
+                resolved[param.name] = param.default
+            elif param.required:
+                raise _AppError(
+                    "missing_required_param",
+                    f"Required parameter {param.name!r} for query "
+                    f"{registered.id!r} was not supplied.",
+                    400,
+                )
+            else:
+                # Optional param, not supplied, no default → bind as None so it
+                # is DEFINED in the Jinja template context. This is what makes
+                # conditional templates work: `{% if active %}` / `{{ active }}`
+                # see a None (falsy) value instead of raising on StrictUndefined.
+                resolved[param.name] = None
+
+        # Step 4: resolve {{name}} → $N and build positional params list.
+        # This runs even when resolved is {} to strip any stale {{}} tokens
+        # from queries that declare no required params.
+        effective_sql, effective_params = resolve_named_params(effective_sql, resolved)
+
+    elif body.named_params:
+        # Caller supplied named_params but there is no registered query / no
+        # declared params.  Validate reserved names even in this case.
+        for forbidden in body.named_params:
+            if forbidden in _TOKEN_CLAIM_RESERVED_NAMES:
+                raise _AppError(
+                    "param_name_reserved",
+                    f"Parameter name {forbidden!r} is reserved by the token/auth "
+                    "layer and cannot be set via named_params.",
+                    400,
+                )
+
     # ── 1. Plan ──────────────────────────────────────────────────────────────
     physical_plan = planner_plan(
         sql=effective_sql,
         claims=claims,
-        params=body.params,
+        params=effective_params,
     )
 
     # ── 2. Cache lookup ──────────────────────────────────────────────────────
@@ -340,12 +465,35 @@ async def query(
             headers={"X-Nubi-Cache": "HIT"},
         )
 
-    # ── 3. Pick connector (M12-A) ────────────────────────────────────────────
+    # ── 3. Pick connector (M12-A + M22-A) ───────────────────────────────────
     # If a datastore_id is provided: resolve the datastore from the repo (org-
     # scoped) and build the connector via the registry.
+    # M22-A additions:
+    #   (a) fetch the decrypted secret for the datastore and merge credentials
+    #       into the connector config before construction;
+    #   (b) resolve network_mode via resolve_network() — 'direct' passes
+    #       through; non-direct modes raise 501 until bridges ship.
     # If no datastore_id: use the built-in DuckDB demo dataset (unchanged from
     # the pre-M12 path — byte-identical behaviour for existing tests).
-    if body.datastore_id is not None:
+    #
+    # EFFECTIVE DATASTORE (M22+): a registered query may itself carry a
+    # datastore_id.  The request body takes precedence (explicit override),
+    # otherwise the registered query's bound datastore is used.  This lets a
+    # dashboard widget send only {query_id} and still execute against the
+    # correct real datastore.  Org-scoping is preserved: whatever id we resolve
+    # is fetched via repo.get(..., org_id, ...) — a query can never reference
+    # another org's datastore.
+    effective_datastore_id = body.datastore_id or (
+        registered.datastore_id if registered is not None else None
+    )
+
+    # ``_net_cleanup`` tears down any ephemeral network proxy (e.g. a bridge
+    # reverse-tunnel) opened while resolving the datastore's network_mode.  It
+    # defaults to a no-op so the demo path and the direct path can invoke it
+    # unconditionally in the finally block around execute().
+    _net_cleanup = lambda: None  # noqa: E731
+
+    if effective_datastore_id is not None:
         # Resolve org_id: embed tokens carry it in the token claim; first-party
         # tokens require a DB lookup via get_user_org.
         from app.routes.resources import get_user_org as _get_user_org
@@ -356,21 +504,147 @@ async def query(
         else:
             org_id = await _get_user_org(identity.user_id, repo)
 
-        ds = await repo.get("datastores", org_id, body.datastore_id)
+        ds = await repo.get("datastores", org_id, effective_datastore_id)
         if ds is None:
             raise _AppError(
                 "datastore_not_found",
-                f"Datastore {body.datastore_id!r} not found.",
+                f"Datastore {effective_datastore_id!r} not found.",
                 404,
             )
-        cfg: dict = ds.get("config") or {}
+        cfg: dict = dict(ds.get("config") or {})
         ctype: str | None = cfg.get("type")
+
+        # ── (a) Secret injection (M22-A) ──────────────────────────────────────
+        # Fetch the decrypted secret for this datastore (if any) and merge the
+        # credential fields that each connector type expects into cfg.
+        # Lazy import: secret_store may not be available in all environments.
+        try:
+            from app.connectors.secret_store import get_secret_store as _get_secret_store
+            _secret_store = _get_secret_store()
+            _secret: dict | None = await _secret_store.get(effective_datastore_id, org_id)
+        except ImportError:
+            _secret = None
+
+        if _secret:
+            # Merge decrypted credentials into the connector config based on
+            # connector type.  The non-secret fields (host, port, dbname, user,
+            # url, etc.) remain in cfg unchanged; we only inject secrets.
+            if ctype == "postgres":
+                # Build a full DSN from non-secret host/port/db/user + decrypted
+                # password.  If cfg already contains a 'dsn' key we leave it as-is
+                # because the secret store would have provided the full DSN there;
+                # otherwise we assemble one from the config parts.
+                if "dsn" not in cfg and "password" not in cfg:
+                    cfg["password"] = _secret.get("password", "")
+                elif "password" not in cfg:
+                    cfg["password"] = _secret.get("password", "")
+            elif ctype == "http_json":
+                # Inject token / bearer into headers (or other header fields).
+                _headers: dict = dict(cfg.get("headers") or {})
+                if "token" in _secret:
+                    _headers["Authorization"] = f"Bearer {_secret['token']}"
+                elif "api_key" in _secret:
+                    _headers["X-API-Key"] = _secret["api_key"]
+                cfg["headers"] = _headers
+            elif ctype == "bigquery":
+                if "service_account_json" in _secret:
+                    cfg["service_account_json"] = _secret["service_account_json"]
+            else:
+                # Generic fallback: merge all secret keys not already in cfg.
+                for k, v in _secret.items():
+                    if k not in cfg:
+                        cfg[k] = v
+
+        # ── (b) Network-mode resolution (M22-A / M22-B VPC bridge) ────────────
+        # resolve_network() / resolve_network_async() inspect cfg["network_mode"]
+        # (default 'direct').
+        #   'direct'  → host/port pass-through, NO proxy, NO overhead.
+        #   'bridge'  → if a bridge row exists AND its agent is connected, open
+        #               an ephemeral local TCP proxy via the BridgeBroker and
+        #               rewrite cfg['host']/cfg['port'] to point at that proxy so
+        #               the connector dials the reverse tunnel. The proxy is torn
+        #               down in the finally block after execute() (success OR error).
+        #   bridge w/o connected agent, ssh_tunnel, psc, cloudsql_proxy, unknown →
+        #               the sync resolve_network() surfaces a clear 501/400 before
+        #               any connector is built (no silent fall-through).
+        from app.connectors.network import (
+            resolve_network as _resolve_network,
+            resolve_network_async as _resolve_network_async,
+        )
+
+        # Propagate network_mode / bridge_id from the datastore row into cfg
+        # so the resolver can inspect them.  If the migration hasn't run yet
+        # these keys will simply be absent (treated as 'direct').
+        if "network_mode" not in cfg:
+            cfg["network_mode"] = ds.get("network_mode") or "direct"
+        _mode: str = (cfg.get("network_mode") or "direct").strip().lower()
+        _bridge_id: str | None = ds.get("bridge_id") or cfg.get("bridge_id")
+        _bridge: dict | None = None
+        if _bridge_id:
+            # Pre-fetch the bridge row (org-scoped) for the transport layer.
+            try:
+                from app.routes.bridges import _get_bridge as _fetch_bridge  # type: ignore[attr-defined]
+                _bridge = await _fetch_bridge(org_id, _bridge_id, repo)
+            except (ImportError, AttributeError, _AppError):
+                _bridge = None
+
+        if _mode == "direct":
+            # Direct mode: unchanged behaviour — verbatim host/port, no proxy.
+            _resolve_network(cfg, _bridge)
+        elif _mode == "bridge" and _bridge is not None:
+            # Bridge mode WITH a provisioned bridge row: open the reverse tunnel
+            # via the async resolver.  This returns a NetworkTarget whose
+            # host/port point at a local 127.0.0.1 proxy.  If the agent is not
+            # connected, resolve_network_async raises (503 bridge_not_connected),
+            # which propagates as a clear error — no silent fall-through.
+            _target = await _resolve_network_async(cfg, _bridge)
+            # Substitute the connector's dial target with the local proxy
+            # endpoint BEFORE the connector is built, so it dials the tunnel.
+            cfg["host"] = _target.host
+            cfg["port"] = _target.port
+            _net_cleanup = _target.cleanup
+        else:
+            # bridge-without-bridge-row, ssh_tunnel, psc, cloudsql_proxy, or an
+            # unknown mode: the sync resolver raises the appropriate 501/400.
+            _resolve_network(cfg, _bridge)
+
+        # ── Build the connector ───────────────────────────────────────────────
         factory = get_connector_registry().get(ctype)
-        # DuckDBConnector takes an optional connection, not a config dict;
-        # construct it with no arguments (fresh in-memory DB).  All other
-        # connectors registered in the registry accept a config dict.
+        # DuckDBConnector takes an optional connection, not a config dict.
+        # Real-connector path: when the datastore config names a database file
+        # (config.database / config.path), open it READ-ONLY and run queries
+        # against it through the same connector path as every other source.
+        # Falls back to a fresh in-memory DB when no path is configured, which
+        # preserves demo/fixture/conformance parity.
         if ctype == "duckdb":
-            connector = factory()
+            _db_path = cfg.get("database") or cfg.get("path")
+            if _db_path and _db_path != ":memory:":
+                import duckdb
+
+                _conn = duckdb.connect(database=_db_path, read_only=True)
+                try:
+                    # Defence-in-depth: a read-only file source has no need to
+                    # touch the local FS / network at query time.
+                    _conn.execute("SET enable_external_access=false")
+                except Exception:
+                    pass
+                connector = factory(_conn)
+            else:
+                connector = factory()
+        elif ctype == "postgres":
+            # PostgresConnector takes a DSN string, not a raw config dict.
+            # Assemble the DSN from the (now secret-enriched) config dict.
+            _dsn: str | None = cfg.get("dsn")
+            if _dsn is None:
+                _host = cfg.get("host", "localhost")
+                _port = cfg.get("port", 5432)
+                _dbname = cfg.get("dbname") or cfg.get("database") or "postgres"
+                _user = cfg.get("user") or cfg.get("username") or "postgres"
+                _password = cfg.get("password", "")
+                _dsn = (
+                    f"postgresql://{_user}:{_password}@{_host}:{_port}/{_dbname}"
+                )
+            connector = factory(_dsn)
         else:
             connector = factory(cfg)
 
@@ -383,6 +657,12 @@ async def query(
         # no connector execute() call is ever made for unsecurable sources.)
         policies = (physical_plan.rls_claims or {}).get("policies") or {}
         if policies and connector.capabilities().get("predicate_rls") is False:
+            # Refusing before execute() — tear down any proxy we already opened
+            # (bridge mode) so the 501 path does not leak an ephemeral tunnel.
+            try:
+                _net_cleanup()
+            except Exception:  # noqa: BLE001
+                pass
             raise _AppError(
                 "source_unsupported_rls",
                 "This source does not support Row-Level Security (predicate_rls=False). "
@@ -396,10 +676,21 @@ async def query(
         connector = _get_demo_connector()
 
     # ── 4. Execute ───────────────────────────────────────────────────────────
-    arrow_table = connector.execute(physical_plan)
+    # try/finally guarantees the ephemeral network proxy (bridge reverse-tunnel)
+    # is torn down whether the query SUCCEEDS or RAISES — we never leak proxies.
+    # For 'direct' mode / the demo path, _net_cleanup is a no-op.  Serialisation
+    # runs inside the guard too because a connector may materialise the table
+    # lazily and could still touch the tunnel during table_to_ipc_bytes.
+    try:
+        arrow_table = connector.execute(physical_plan)
 
-    # ── 5. Serialise to Arrow IPC stream bytes ───────────────────────────────
-    full_bytes = table_to_ipc_bytes(arrow_table)
+        # ── 5. Serialise to Arrow IPC stream bytes ───────────────────────────
+        full_bytes = table_to_ipc_bytes(arrow_table)
+    finally:
+        try:
+            _net_cleanup()
+        except Exception:  # noqa: BLE001 — cleanup must never mask the query result/error.
+            pass
 
     # ── 6. Cache the result ───────────────────────────────────────────────────
     cache.put(physical_plan.cache_key, full_bytes)
@@ -416,6 +707,282 @@ async def query(
         media_type=_ARROW_STREAM_MEDIA_TYPE,
         headers={"X-Nubi-Cache": "MISS"},
     )
+
+
+# ---------------------------------------------------------------------------
+# GET /query/registry — list registered queries with their declared params
+# ---------------------------------------------------------------------------
+
+
+@router.get("/query/registry")
+async def list_query_registry(
+    identity: VerifiedIdentity = Depends(verified_identity),
+) -> dict:
+    """Return all registered queries with their declared params.
+
+    Auth mirrors the POST /query endpoint: requires a valid verified identity
+    (first-party HS256 or embed RS256/ES256) with at least one read scope.
+    The list is the same for all authenticated callers (org-scoped in the sense
+    that registration is server-side and not per-org; a future version could
+    filter by org if per-org query libraries are introduced).
+
+    Returns
+    -------
+    dict
+        ``{"queries": [...]}`` where each entry is:
+        ``{id, name, required_scope, params: [{name, type, default, required,
+        options_query_id}]}``.
+    """
+    from app.errors import AppError as _AppError
+
+    # Scope gate — same requirement as POST /query.
+    _scopes = identity.scope
+    _has_read = has_scope(_scopes, "read:query") or any(
+        s.startswith("read:") for s in _scopes
+    )
+    if not _has_read:
+        raise _AppError(
+            "insufficient_scope",
+            "Token does not carry the required scope: read:query",
+            403,
+        )
+
+    registry = get_query_registry()
+    queries = []
+    for rq in registry.all():
+        queries.append(
+            {
+                "id": rq.id,
+                "name": rq.name,
+                "sql": rq.sql,
+                "required_scope": rq.required_scope,
+                "datastore_id": rq.datastore_id,
+                "params": [
+                    {
+                        "name": p.name,
+                        "type": p.type,
+                        "default": p.default,
+                        "required": p.required,
+                        "options_query_id": p.options_query_id,
+                    }
+                    for p in rq.params
+                ],
+            }
+        )
+    return {"queries": queries}
+
+
+# ---------------------------------------------------------------------------
+# POST /query/registry — register or update a query in the runtime registry
+# ---------------------------------------------------------------------------
+
+
+class QueryParamIn(BaseModel):
+    """A single typed/named parameter declaration for a query."""
+
+    name: str
+    type: str = "text"
+    default: object = None
+    required: bool = False
+    options_query_id: str | None = None
+
+
+class RegisterQueryIn(BaseModel):
+    """Request body for POST /query/registry.
+
+    Attributes
+    ----------
+    id:
+        Optional stable URL-safe identifier.  When omitted a slug is derived
+        from *name* (lower-cased, spaces→underscores, non-alnum stripped).
+        When provided and a query with that id already exists it is overwritten
+        (upsert behaviour).
+    name:
+        Human-readable label.
+    sql:
+        The SELECT SQL for this query.  Named placeholders use ``{{name}}``
+        syntax.  Must be a non-empty string.
+    params:
+        Ordered list of named parameter descriptors for the ``{{name}}``
+        placeholders in *sql*.
+    required_scope:
+        Optional extra scope required to run this query beyond the base read gate.
+    datastore_id:
+        Optional id of the datastore (connector) this query is bound to.  When
+        set the query executes against that org-scoped datastore (unless a
+        request body overrides it with its own ``datastore_id``).  It is stored
+        into the persisted ``queries.config`` so that ``ensure_persisted_query``
+        re-binds it after a restart.
+    """
+
+    id: str | None = None
+    name: str
+    sql: str
+    params: list[QueryParamIn] = []
+    required_scope: str | None = None
+    datastore_id: str | None = None
+
+
+@router.post("/query/registry", status_code=201)
+async def register_query(
+    body: RegisterQueryIn,
+    identity: VerifiedIdentity = Depends(verified_identity),
+) -> dict:
+    """Register (or update) a query in the runtime QueryRegistry.
+
+    Auth: first-party tokens only (kind='access') with a write scope or read:*.
+    Embed tokens are not permitted to alter the registry.
+
+    The query is registered in the in-memory singleton immediately so it is
+    available to POST /query callers right away.  Persistence is best-effort:
+    if the ``queries`` resource table is available (PgRepo), the query is also
+    written there so it survives restarts (loaded by the startup hook in
+    ``get_query_registry``).  In the in-memory test repo the registry mutation
+    alone is sufficient.
+
+    Returns
+    -------
+    dict
+        ``{id, name, sql, params, required_scope}`` — the registered query.
+
+    Raises
+    ------
+    AppError("forbidden", 403)
+        If the caller is an embed token (kind='embed').
+    AppError("validation_error", 400)
+        If *sql* is empty or *name* is empty.
+    """
+    import re as _re
+
+    from app.errors import AppError as _AppError
+
+    # Only first-party (kind='access') identities may write to the registry.
+    if identity.kind == "embed":
+        raise _AppError(
+            "forbidden",
+            "Embed tokens cannot register queries.",
+            403,
+        )
+
+    # Scope gate — require at least a read scope (first-party tokens carry read:*).
+    _scopes = identity.scope
+    _has_read = has_scope(_scopes, "read:query") or any(
+        s.startswith("read:") for s in _scopes
+    )
+    if not _has_read:
+        raise _AppError(
+            "insufficient_scope",
+            "Token does not carry the required scope: read:query",
+            403,
+        )
+
+    # Validate inputs.
+    if not body.name.strip():
+        raise _AppError("validation_error", "name must not be empty.", 400)
+    if not body.sql.strip():
+        raise _AppError("validation_error", "sql must not be empty.", 400)
+
+    # Derive a stable id from the name when not provided.
+    query_id: str
+    if body.id and body.id.strip():
+        query_id = body.id.strip()
+    else:
+        # slug: lowercase, replace spaces/hyphens with underscores, strip non-alnum_
+        slug = body.name.lower()
+        slug = _re.sub(r"[\s\-]+", "_", slug)
+        slug = _re.sub(r"[^a-z0-9_]", "", slug)
+        slug = slug.strip("_") or "query"
+        query_id = slug
+
+    # Build the QueryParam list.
+    param_objs = [
+        QueryParam(
+            name=p.name,
+            type=p.type,  # type: ignore[arg-type]
+            default=p.default,
+            required=p.required,
+            options_query_id=p.options_query_id,
+        )
+        for p in body.params
+    ]
+
+    # Normalise the optional datastore binding.
+    datastore_id = (
+        body.datastore_id.strip()
+        if body.datastore_id and body.datastore_id.strip()
+        else None
+    )
+
+    # Register in the in-memory singleton (immediately runnable).
+    registry = get_query_registry()
+    rq = registry.register(
+        id=query_id,
+        sql=body.sql,
+        name=body.name,
+        required_scope=body.required_scope,
+        params=param_objs,
+        datastore_id=datastore_id,
+    )
+
+    # ── Best-effort persistence into the queries table ──────────────────────
+    # Write the query into the org-scoped ``queries`` resource so it survives a
+    # restart.  The persisted ``config`` carries {sql, name, params, datastore_id}
+    # which is exactly the shape ``ensure_persisted_query`` / ``load_persisted_
+    # queries`` expect — so the datastore binding is restored on the next boot.
+    # This is wrapped in a broad try/except so the in-memory test repo path and
+    # any DB hiccup never fail the registration (the in-memory registry mutation
+    # above is sufficient for the request to succeed).
+    config = {
+        "sql": body.sql,
+        "name": body.name,
+        "datastore_id": datastore_id,
+        "params": [
+            {
+                "name": p.name,
+                "type": p.type,
+                "default": p.default,
+                "required": p.required,
+                "options_query_id": p.options_query_id,
+            }
+            for p in body.params
+        ],
+    }
+    try:
+        from app.routes.resources import get_user_org as _get_user_org
+
+        repo = get_repo()
+        org_id = await _get_user_org(identity.user_id, repo)
+        existing = await repo.get("queries", org_id, query_id)
+        if existing is not None:
+            await repo.update("queries", org_id, query_id, {"name": body.name, "config": config})
+        else:
+            await repo.create(
+                resource="queries",
+                org_id=org_id,
+                created_by=identity.user_id,
+                name=body.name,
+                config=config,
+            )
+    except Exception:  # noqa: BLE001 — persistence is best-effort.
+        pass
+
+    return {
+        "id": rq.id,
+        "name": rq.name,
+        "sql": rq.sql,
+        "required_scope": rq.required_scope,
+        "datastore_id": rq.datastore_id,
+        "params": [
+            {
+                "name": p.name,
+                "type": p.type,
+                "default": p.default,
+                "required": p.required,
+                "options_query_id": p.options_query_id,
+            }
+            for p in rq.params
+        ],
+    }
 
 
 # ---------------------------------------------------------------------------

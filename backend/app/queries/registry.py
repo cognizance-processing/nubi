@@ -5,9 +5,13 @@ First-party (kind='access') identities may still run arbitrary SELECT SQL.
 
 Design
 ------
-- ``RegisteredQuery`` is an immutable dataclass: id, sql, name, and an optional
-  ``required_scope``.  When ``required_scope`` is set the caller must carry that
-  scope (or a wildcard that covers it) in addition to the base read scope gate.
+- ``RegisteredQuery`` is an immutable dataclass: id, sql, name, an optional
+  ``required_scope``, and an optional ``params`` list of ``QueryParam`` objects.
+  When ``required_scope`` is set the caller must carry that scope (or a wildcard
+  that covers it) in addition to the base read scope gate.
+- Named placeholders in registry SQL use ``{{name}}`` syntax (M13-A).  The
+  planner resolves these to the connector's positional ``$1``, ``$2``, … before
+  execution — values are NEVER string-concatenated into SQL.
 - ``QueryRegistry`` is a plain dict wrapper with register / unregister / get /
   all operations.  It is NOT thread-safe for concurrent writes (registration
   happens at module import time, which is single-threaded in CPython).
@@ -36,7 +40,48 @@ id="demo_points_500k"  — 500 000 points (stress test / large-data demo)
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from typing import Literal
+
+
+# ---------------------------------------------------------------------------
+# QueryParam — typed/named parameter descriptor (M13-A)
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class QueryParam:
+    """Descriptor for a single typed/named query parameter.
+
+    Attributes
+    ----------
+    name:
+        Parameter name (must match a ``{{name}}`` placeholder in the query SQL).
+    type:
+        One of ``'text'``, ``'number'``, ``'date'``, ``'daterange'``,
+        ``'select'``, or ``'multiselect'``.
+    default:
+        Default value to use when the caller does not supply this parameter.
+        ``None`` means no default.
+    required:
+        When ``True`` the caller MUST supply a value (no default accepted).
+        A missing required param with no default → HTTP 400.
+    options_query_id:
+        Optional id of another registered query whose results populate the
+        select/multiselect option list (for UI rendering).  Not validated at
+        the backend param-resolution layer — the frontend uses it.
+    """
+
+    name: str
+    type: Literal["text", "number", "date", "daterange", "select", "multiselect"] = "text"
+    default: object = None
+    required: bool = False
+    options_query_id: str | None = None
+
+
+# ---------------------------------------------------------------------------
+# RegisteredQuery
+# ---------------------------------------------------------------------------
 
 
 @dataclass(frozen=True)
@@ -52,6 +97,8 @@ class RegisteredQuery:
         The canonical SELECT SQL that the server will execute.  This is the
         ONLY SQL that will run for a given id — any ``sql`` field in the request
         body is completely ignored for embed-kind callers.
+        Named placeholders use ``{{name}}`` syntax; the planner resolves them
+        to positional ``$1``/``$2``/… bindings before execution.
     name:
         Human-readable label (for introspection / admin UIs).
     required_scope:
@@ -60,12 +107,31 @@ class RegisteredQuery:
         route handler calls ``has_scope(identity.scope, required_scope)`` before
         executing.  Example: ``"read:query:demo_active"`` could restrict this
         query to tokens explicitly granted that scope.
+    params:
+        Ordered list of :class:`QueryParam` descriptors for the named
+        placeholders declared in *sql*.  Empty list means no named params.
+        Backward-compatible: existing ``register(...)`` calls without *params*
+        still work (defaults to ``[]``).
+    datastore_id:
+        Optional id of the datastore this query should execute against.  When
+        set (and the request body does not override it with its own
+        ``datastore_id``), the route handler resolves this datastore — org-
+        scoped — and executes the query through the real connector path instead
+        of the in-memory demo connector.  ``None`` means the query has no bound
+        datastore and falls back to the demo connector when the request body
+        also omits ``datastore_id``.
     """
 
     id: str
     sql: str
     name: str
     required_scope: str | None = None
+    params: tuple[QueryParam, ...] = field(default_factory=tuple)
+    datastore_id: str | None = None
+
+    def params_as_list(self) -> list[QueryParam]:
+        """Return params as a plain list (convenience helper)."""
+        return list(self.params)
 
 
 class QueryRegistry:
@@ -90,6 +156,8 @@ class QueryRegistry:
         sql: str,
         name: str,
         required_scope: str | None = None,
+        params: list[QueryParam] | None = None,
+        datastore_id: str | None = None,
     ) -> RegisteredQuery:
         """Register a query and return the ``RegisteredQuery`` object.
 
@@ -101,18 +169,35 @@ class QueryRegistry:
         id:
             Stable, URL-safe identifier.
         sql:
-            The canonical SELECT SQL string.
+            The canonical SELECT SQL string.  Named placeholders use
+            ``{{name}}`` syntax; the planner resolves them to positional
+            ``$1``/``$2``/… bindings before execution.
         name:
             Human-readable label.
         required_scope:
             Optional additional scope required beyond the base read gate.
+        params:
+            Optional list of :class:`QueryParam` descriptors for the named
+            placeholders in *sql*.  When ``None`` or omitted defaults to ``[]``
+            (backward-compatible: existing callers without *params* still work).
+        datastore_id:
+            Optional id of the datastore this query is bound to.  When set the
+            query executes against that (org-scoped) datastore unless the
+            request body supplies its own ``datastore_id``.
 
         Returns
         -------
         RegisteredQuery
             The newly registered query object.
         """
-        rq = RegisteredQuery(id=id, sql=sql, name=name, required_scope=required_scope)
+        rq = RegisteredQuery(
+            id=id,
+            sql=sql,
+            name=name,
+            required_scope=required_scope,
+            params=tuple(params) if params else (),
+            datastore_id=datastore_id,
+        )
         self._store[id] = rq
         return rq
 
@@ -216,4 +301,181 @@ def get_query_registry() -> QueryRegistry:
             name="Point cloud — 500 000 points",
             required_scope=None,
         )
+        # ── Demo query with region/variable binding (M14-C) ──────────────────
+        # Used to demonstrate end-to-end variable routing: a filter widget sets
+        # the `region` variable, which is passed as named_params.region to this
+        # query.  The demo table has a `name` column; we treat name = region
+        # value as the filter to keep the demo self-contained with no extra tables.
+        # When region is NULL (no value supplied / default) the query returns all rows.
+        # NOTE: {{region}} appears once → resolves to $1.  The `OR $1 IS NULL`
+        # arm lets us use a single positional slot without confusing sqlglot's
+        # dollar-quote tokeniser (which trips on `$1 = ''` patterns).
+        _registry.register(
+            id="demo_by_region",
+            sql=(
+                "SELECT * FROM demo WHERE (name = {{region}} OR {{region}} IS NULL)"
+            ),
+            name="Demo — filtered by region",
+            required_scope=None,
+            params=[
+                QueryParam(
+                    name="region",
+                    type="text",
+                    default=None,
+                    required=False,
+                ),
+            ],
+        )
     return _registry
+
+
+# ---------------------------------------------------------------------------
+# Persisted-query loader (DB → runtime registry)
+# ---------------------------------------------------------------------------
+
+
+def _params_from_config(raw: object) -> list[QueryParam]:
+    """Build a list of :class:`QueryParam` from a persisted config value.
+
+    The persisted form is a list of dicts (as written by the seeder), e.g.::
+
+        [{"name": "region", "type": "select", "default": "north",
+          "required": False, "options_query_id": None}]
+
+    Unknown/missing keys fall back to sensible defaults.  Non-list / malformed
+    input yields an empty list (best-effort — never raises).
+    """
+    if not isinstance(raw, list):
+        return []
+    out: list[QueryParam] = []
+    for item in raw:
+        if not isinstance(item, dict) or "name" not in item:
+            continue
+        try:
+            out.append(
+                QueryParam(
+                    name=str(item["name"]),
+                    type=item.get("type", "text"),
+                    default=item.get("default"),
+                    required=bool(item.get("required", False)),
+                    options_query_id=item.get("options_query_id"),
+                )
+            )
+        except Exception:
+            # Skip a single malformed param rather than dropping the whole query.
+            continue
+    return out
+
+
+async def load_persisted_queries() -> int:
+    """Load queries from the ``queries`` table into the runtime registry.
+
+    Each row's config is expected to carry ``{"sql", "datastore_id", "params",
+    "name"}`` (as written by the seeder).  The row ``id`` becomes the registered
+    query id and the row ``name`` (or ``config.name``) becomes the label.
+
+    This is best-effort: any failure to reach the DB or parse a row is logged
+    as a warning and never propagated, so it can be wired into startup without
+    risking the app failing to boot when the DB/table is unavailable.
+
+    Returns
+    -------
+    int
+        The number of queries successfully registered.
+    """
+    import logging
+
+    logger = logging.getLogger(__name__)
+
+    try:
+        # Lazy import so importing the registry module never requires the DB
+        # layer (keeps unit tests / import-time seeding side-effect free).
+        from app.db import fetch
+
+        rows = await fetch("SELECT id, name, config FROM queries")
+    except Exception as exc:  # noqa: BLE001 — best-effort; never crash startup.
+        logger.warning("load_persisted_queries: could not read queries table: %s", exc)
+        return 0
+
+    registry = get_query_registry()
+    loaded = 0
+    for row in rows:
+        try:
+            cfg = row["config"]
+            if isinstance(cfg, str):
+                import json
+
+                cfg = json.loads(cfg)
+            if not isinstance(cfg, dict):
+                continue
+
+            sql = cfg.get("sql")
+            if not sql:
+                # A query row with no SQL is not executable — skip it.
+                continue
+
+            datastore_id = cfg.get("datastore_id")
+            registry.register(
+                id=str(row["id"]),
+                sql=str(sql),
+                name=str(cfg.get("name") or row["name"] or row["id"]),
+                params=_params_from_config(cfg.get("params")),
+                datastore_id=str(datastore_id) if datastore_id is not None else None,
+            )
+            loaded += 1
+        except Exception as exc:  # noqa: BLE001 — skip one bad row, keep going.
+            logger.warning(
+                "load_persisted_queries: skipping malformed query row: %s", exc
+            )
+            continue
+
+    if loaded:
+        logger.info("load_persisted_queries: registered %d persisted queries", loaded)
+    return loaded
+
+
+async def ensure_persisted_query(query_id: str):
+    """Lazily load a single persisted query into the registry on a cache miss.
+
+    The runtime registry is populated at startup, so queries seeded/registered
+    while the server is running are invisible until restart.  The query route
+    calls this on a ``registry.get()`` miss to load just that row from the DB,
+    making freshly-seeded queries resolve without a restart.
+
+    Best-effort: returns the ``RegisteredQuery`` if found+loaded, else ``None``.
+    """
+    import logging
+
+    logger = logging.getLogger(__name__)
+    registry = get_query_registry()
+    try:
+        from app.db import fetchrow
+
+        row = await fetchrow(
+            "SELECT id, name, config FROM queries WHERE id = $1::uuid", query_id
+        )
+    except Exception as exc:  # noqa: BLE001 — best-effort; never crash the request.
+        logger.warning("ensure_persisted_query(%s): DB read failed: %s", query_id, exc)
+        return None
+    if row is None:
+        return None
+    try:
+        cfg = row["config"]
+        if isinstance(cfg, str):
+            import json
+
+            cfg = json.loads(cfg)
+        if not isinstance(cfg, dict) or not cfg.get("sql"):
+            return None
+        datastore_id = cfg.get("datastore_id")
+        registry.register(
+            id=str(row["id"]),
+            sql=str(cfg["sql"]),
+            name=str(cfg.get("name") or row["name"] or row["id"]),
+            params=_params_from_config(cfg.get("params")),
+            datastore_id=str(datastore_id) if datastore_id is not None else None,
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("ensure_persisted_query(%s): register failed: %s", query_id, exc)
+        return None
+    return registry.get(query_id)

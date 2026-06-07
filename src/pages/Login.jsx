@@ -6,12 +6,16 @@
  *
  * Provides a "Sign in with Google" button that redirects to the backend OAuth
  * start endpoint (PKCE flow handled entirely server-side).
+ *
+ * Renders inside <AuthLayout> — a standalone full-viewport split-screen
+ * (no Navbar, no Footer).
  */
 
 import { useState } from 'react'
 import { Link, useNavigate, useLocation } from 'react-router-dom'
 import { useAuth } from '../contexts/AuthContext.jsx'
 import { googleStartUrl } from '../lib/api.js'
+import AuthLayout from '../components/AuthLayout.jsx'
 
 export default function Login() {
   const { login } = useAuth()
@@ -45,121 +49,111 @@ export default function Login() {
   }
 
   return (
-    <div className="min-h-[calc(100vh-3.5rem)] flex items-center justify-center px-4 py-12 bg-bg">
-      <div className="w-full max-w-sm">
-
-        {/* Brand mark */}
-        <div className="text-center mb-8">
-          <div className="inline-flex items-center gap-2 mb-4">
-            <div className="w-8 h-8 rounded-lg bg-brand-gradient flex items-center justify-center">
-              <span className="text-white text-sm font-bold font-display">N</span>
-            </div>
-            <span className="font-display font-bold text-lg text-fg">nubi</span>
-          </div>
-          <h1 className="text-2xl font-bold font-display text-fg">Welcome back</h1>
-          <p className="mt-1 text-sm text-muted">Sign in to your Nubi account</p>
-        </div>
-
-        {/* Card */}
-        <div className="bg-surface border border-border rounded-xl p-6 shadow-sm">
-
-          {/* Google button */}
-          <button
-            type="button"
-            onClick={handleGoogle}
-            className="w-full flex items-center justify-center gap-3 px-4 py-2.5 border border-border rounded-lg text-sm font-medium text-fg bg-surface hover:bg-surface-2 transition-colors mb-5 focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-1"
-          >
-            <GoogleIcon />
-            Sign in with Google
-          </button>
-
-          {/* Divider */}
-          <div className="relative mb-5">
-            <div className="absolute inset-0 flex items-center">
-              <div className="w-full border-t border-border" />
-            </div>
-            <div className="relative flex justify-center text-xs text-muted bg-surface px-3">
-              or continue with email
-            </div>
-          </div>
-
-          {/* Error banner */}
-          {error && (
-            <div
-              role="alert"
-              className="mb-4 rounded-lg border px-4 py-3 text-sm"
-              style={{
-                background: 'color-mix(in srgb, #ef4444 10%, transparent)',
-                borderColor: 'color-mix(in srgb, #ef4444 30%, transparent)',
-                color: '#ef4444',
-              }}
-            >
-              {error}
-            </div>
-          )}
-
-          {/* Form */}
-          <form onSubmit={handleSubmit} className="space-y-4" noValidate>
-            <div>
-              <label htmlFor="email" className="block text-sm font-medium text-fg mb-1.5">
-                Email
-              </label>
-              <input
-                id="email"
-                type="email"
-                autoComplete="email"
-                required
-                value={email}
-                onChange={e => setEmail(e.target.value)}
-                className="w-full px-3 py-2.5 bg-surface border border-border rounded-lg text-sm text-fg placeholder:text-muted focus:outline-none focus:ring-2 focus:ring-ring focus:border-transparent disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
-                placeholder="you@example.com"
-                disabled={pending}
-              />
-            </div>
-
-            <div>
-              <label htmlFor="password" className="block text-sm font-medium text-fg mb-1.5">
-                Password
-              </label>
-              <input
-                id="password"
-                type="password"
-                autoComplete="current-password"
-                required
-                value={password}
-                onChange={e => setPassword(e.target.value)}
-                className="w-full px-3 py-2.5 bg-surface border border-border rounded-lg text-sm text-fg placeholder:text-muted focus:outline-none focus:ring-2 focus:ring-ring focus:border-transparent disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
-                placeholder="••••••••"
-                disabled={pending}
-              />
-            </div>
-
-            <button
-              type="submit"
-              disabled={pending}
-              className="w-full flex items-center justify-center gap-2 px-4 py-2.5 bg-primary text-primary-fg text-sm font-semibold rounded-lg hover:opacity-90 disabled:opacity-60 disabled:cursor-not-allowed transition-opacity focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-1"
-            >
-              {pending ? (
-                <>
-                  <span className="h-4 w-4 rounded-full border-2 border-current border-t-transparent animate-spin" />
-                  Signing in…
-                </>
-              ) : (
-                'Sign in'
-              )}
-            </button>
-          </form>
-        </div>
-
-        {/* Footer link */}
-        <p className="mt-5 text-center text-sm text-muted">
+    <AuthLayout
+      title="Welcome back"
+      subtitle="Sign in to your Nubi account to continue"
+      artTagline="Your data story, beautifully told"
+      footer={
+        <>
           Don&apos;t have an account?{' '}
-          <Link to="/register" className="font-medium text-primary hover:opacity-80 transition-opacity">
+          <Link
+            to="/register"
+            className="font-semibold text-primary hover:opacity-80 transition-opacity"
+          >
             Create one
           </Link>
-        </p>
+        </>
+      }
+    >
+      {/* Google sign-in */}
+      <button
+        type="button"
+        onClick={handleGoogle}
+        className="w-full flex items-center justify-center gap-3 px-4 py-3 border border-border rounded-xl text-sm font-medium text-fg bg-surface hover:bg-surface-2 transition-colors focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-1 min-h-[48px]"
+      >
+        <GoogleIcon />
+        Continue with Google
+      </button>
+
+      {/* Divider */}
+      <div className="relative my-5">
+        <div className="absolute inset-0 flex items-center">
+          <div className="w-full border-t border-border" />
+        </div>
+        <div className="relative flex justify-center">
+          <span className="bg-bg px-3 text-xs text-muted">or sign in with email</span>
+        </div>
       </div>
-    </div>
+
+      {/* Error banner */}
+      {error && (
+        <div
+          role="alert"
+          className="mb-5 rounded-xl border px-4 py-3 text-sm"
+          style={{
+            background: 'color-mix(in srgb, #ef4444 8%, transparent)',
+            borderColor: 'color-mix(in srgb, #ef4444 28%, transparent)',
+            color: '#ef4444',
+          }}
+        >
+          {error}
+        </div>
+      )}
+
+      {/* Form */}
+      <form onSubmit={handleSubmit} className="space-y-4" noValidate>
+        <div>
+          <label htmlFor="email" className="block text-sm font-medium text-fg mb-1.5">
+            Email address
+          </label>
+          <input
+            id="email"
+            type="email"
+            autoComplete="email"
+            required
+            value={email}
+            onChange={e => setEmail(e.target.value)}
+            className="w-full px-4 py-3 bg-surface border border-border rounded-xl text-sm text-fg placeholder:text-muted focus:outline-none focus:ring-2 focus:ring-ring focus:border-transparent disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+            placeholder="you@example.com"
+            disabled={pending}
+          />
+        </div>
+
+        <div>
+          <div className="flex items-center justify-between mb-1.5">
+            <label htmlFor="password" className="block text-sm font-medium text-fg">
+              Password
+            </label>
+          </div>
+          <input
+            id="password"
+            type="password"
+            autoComplete="current-password"
+            required
+            value={password}
+            onChange={e => setPassword(e.target.value)}
+            className="w-full px-4 py-3 bg-surface border border-border rounded-xl text-sm text-fg placeholder:text-muted focus:outline-none focus:ring-2 focus:ring-ring focus:border-transparent disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+            placeholder="••••••••"
+            disabled={pending}
+          />
+        </div>
+
+        <button
+          type="submit"
+          disabled={pending}
+          className="w-full flex items-center justify-center gap-2 px-4 py-3 bg-primary text-primary-fg text-sm font-semibold rounded-xl hover:opacity-90 disabled:opacity-60 disabled:cursor-not-allowed transition-opacity focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-1 min-h-[48px]"
+        >
+          {pending ? (
+            <>
+              <span className="h-4 w-4 rounded-full border-2 border-current border-t-transparent animate-spin" />
+              Signing in…
+            </>
+          ) : (
+            'Sign in'
+          )}
+        </button>
+      </form>
+    </AuthLayout>
   )
 }
 

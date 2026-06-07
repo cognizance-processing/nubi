@@ -2,67 +2,116 @@ import { Link } from 'react-router-dom'
 import { Github, Twitter, Linkedin } from 'lucide-react'
 import Logo from './Logo'
 
+/**
+ * Smooth-scroll helper — scrolls to a section on the current page if possible,
+ * otherwise navigates to "/" then attempts the scroll after a brief tick.
+ */
+function scrollToId(id) {
+  const el = document.getElementById(id)
+  if (el) {
+    el.scrollIntoView({ behavior: 'smooth', block: 'start' })
+  }
+}
+
 // ─── Navigation columns ───────────────────────────────────────────────────────
+//
+// Link kinds:
+//   internal: true   → react-router <Link to={to}>
+//   scroll: 'id'     → smooth-scroll to #id on the landing page (href="/#id")
+//   external: true   → plain <a> with target="_blank"
+//   (none / #)       → removed or replaced
+//
 const NAV_COLUMNS = [
   {
     label: 'Product',
     links: [
-      { text: 'Dashboards', to: '#' },
-      { text: 'Editor',     to: '/editor', internal: true },
-      { text: 'Embedding',  to: '#' },
-      { text: 'Connectors', to: '#' },
+      { text: 'Dashboards', href: '/#features',    scroll: 'features' },
+      { text: 'Embedding',  href: '/#embedding',   scroll: 'embedding' },
+      { text: 'Connectors', href: '/#connectors',  scroll: 'connectors' },
+      { text: 'Pricing',    href: '/#pricing',     scroll: 'pricing' },
     ],
   },
   {
     label: 'Developers',
     links: [
-      { text: 'Docs', to: '/docs',  internal: true },
-      { text: 'SDK',  to: '#' },
-      { text: 'CLI',  to: '#' },
-      { text: 'MCP',  to: '#' },
+      { text: 'Docs',      to: '/docs',             internal: true },
+      { text: 'SDK',       to: '/docs/connector-sdk', internal: true },
+      { text: 'CLI',       to: '/docs/cli',          internal: true },
+      { text: 'MCP tools', to: '/docs/mcp',          internal: true },
     ],
   },
   {
     label: 'Compare',
     links: [
-      { text: 'Overview',    to: '/compare', internal: true },
-      { text: 'vs Metabase', to: '#' },
-      { text: 'vs Superset', to: '#' },
-      { text: 'vs Tableau',  to: '#' },
+      { text: 'Overview',     to: '/compare',    internal: true },
+      { text: 'vs Hex',       to: '/compare',    internal: true },
+      { text: 'vs Cube',      to: '/compare',    internal: true },
+      { text: 'vs Metabase',  to: '/compare',    internal: true },
     ],
   },
   {
     label: 'Company',
     links: [
-      { text: 'About',   to: '#' },
-      { text: 'Blog',    to: '#' },
-      { text: 'Careers', to: '#' },
+      { text: 'About',    href: '/#about',   scroll: 'about' },
+      { text: 'Roadmap',  to: '/docs/roadmap', internal: true },
+      { text: 'Sign up',  to: '/register',     internal: true },
     ],
   },
   {
     label: 'Resources',
     links: [
-      { text: 'GitHub',    to: '#' },
-      { text: 'Changelog', to: '#' },
-      { text: 'Status',    to: '#' },
+      { text: 'GitHub',    href: 'https://github.com/exo-explore/nubi', external: true },
+      { text: 'Changelog', to: '/docs/changelog',  internal: true },
+      { text: 'Status',    href: '/#uptime',        scroll: 'uptime' },
     ],
   },
 ]
 
 const SOCIAL = [
-  { Icon: Github,   href: '#', label: 'GitHub' },
-  { Icon: Twitter,  href: '#', label: 'X (Twitter)' },
-  { Icon: Linkedin, href: '#', label: 'LinkedIn' },
+  { Icon: Github,   href: 'https://github.com/exo-explore/nubi', label: 'GitHub' },
+  { Icon: Twitter,  href: 'https://twitter.com/nubi_dev',         label: 'X (Twitter)' },
+  { Icon: Linkedin, href: 'https://linkedin.com/company/nubi-dev', label: 'LinkedIn' },
 ]
 
-// ─── Utility: nav link (internal = react-router Link, else <a>) ───────────────
-function NavLink({ text, to, internal }) {
+// ─── Utility: nav link ────────────────────────────────────────────────────────
+function NavLink({ text, to, href, internal, external, scroll }) {
   const cls =
     'text-sm text-muted hover:text-fg transition-colors duration-150 leading-relaxed'
+
   if (internal) {
     return <Link to={to} className={cls}>{text}</Link>
   }
-  return <a href={to} className={cls}>{text}</a>
+
+  if (external) {
+    return (
+      <a href={href} className={cls} target="_blank" rel="noopener noreferrer">
+        {text}
+      </a>
+    )
+  }
+
+  // scroll-to-section link — uses /#id href so it works on fresh loads too
+  if (scroll) {
+    return (
+      <a
+        href={href}
+        className={cls}
+        onClick={(e) => {
+          const el = document.getElementById(scroll)
+          if (el) {
+            e.preventDefault()
+            el.scrollIntoView({ behavior: 'smooth', block: 'start' })
+          }
+          // else: let the browser follow href="/#id" naturally
+        }}
+      >
+        {text}
+      </a>
+    )
+  }
+
+  // Fallback — plain anchor
+  return <a href={href ?? '#'} className={cls}>{text}</a>
 }
 
 // ─── Main component ───────────────────────────────────────────────────────────
@@ -83,7 +132,7 @@ export default function Footer() {
           {/* Brand block */}
           <div className="flex flex-col gap-5">
 
-            {/* Logo with wordmark using the real Logo component */}
+            {/* Logo with wordmark */}
             <Link to="/" aria-label="Nubi home" className="w-fit group">
               <Logo size={34} showName className="group-hover:opacity-90 transition-opacity duration-150" />
             </Link>
@@ -94,8 +143,9 @@ export default function Footer() {
             </p>
 
             {/* Short descriptor */}
-            <p className="text-sm text-muted leading-relaxed max-w-[210px]">
-              Open-source, embeddable analytics — no server required.
+            <p className="text-sm text-muted leading-relaxed max-w-[220px]">
+              Embeddable analytics with near-zero marginal cost per view.
+              Powered by Pyodide, DuckDB-WASM, and Arrow IPC.
             </p>
 
             {/* Social icons */}
@@ -105,6 +155,8 @@ export default function Footer() {
                   key={label}
                   href={href}
                   aria-label={label}
+                  target="_blank"
+                  rel="noopener noreferrer"
                   className="
                     flex items-center justify-center w-8 h-8 rounded-md
                     text-muted hover:text-fg
@@ -149,14 +201,32 @@ export default function Footer() {
           </p>
 
           <nav className="flex items-center gap-4" aria-label="Legal navigation">
-            {[
-              { text: 'Docs',    to: '/docs',    internal: true },
-              { text: 'Compare', to: '/compare', internal: true },
-              { text: 'Privacy', to: '#' },
-              { text: 'Terms',   to: '#' },
-            ].map(({ text, to, internal }) => (
-              <NavLink key={text} text={text} to={to} internal={internal} />
-            ))}
+            <Link to="/docs" className="text-xs text-muted hover:text-fg transition-colors duration-150">
+              Docs
+            </Link>
+            <Link to="/compare" className="text-xs text-muted hover:text-fg transition-colors duration-150">
+              Compare
+            </Link>
+            <a
+              href="/#privacy"
+              className="text-xs text-muted hover:text-fg transition-colors duration-150"
+              onClick={(e) => {
+                const el = document.getElementById('privacy')
+                if (el) { e.preventDefault(); el.scrollIntoView({ behavior: 'smooth' }) }
+              }}
+            >
+              Privacy
+            </a>
+            <a
+              href="/#terms"
+              className="text-xs text-muted hover:text-fg transition-colors duration-150"
+              onClick={(e) => {
+                const el = document.getElementById('terms')
+                if (el) { e.preventDefault(); el.scrollIntoView({ behavior: 'smooth' }) }
+              }}
+            >
+              Terms
+            </a>
           </nav>
         </div>
 

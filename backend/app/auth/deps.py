@@ -30,6 +30,7 @@ from typing import Any
 from fastapi import Depends, Request
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
+from app.auth.denylist import get_token_denylist
 from app.auth.jwt import decode_access_token
 from app.auth.verify import VerifiedIdentity, verify_token
 from app.db import fetchrow
@@ -66,6 +67,19 @@ async def current_user(
 
     claims = decode_access_token(credentials.credentials)
     user_id: str = claims["sub"]
+
+    # Denylist check: reject tokens that have been explicitly revoked (e.g.
+    # after logout) even if they are otherwise valid JWTs.
+    jti: str = claims["jti"]
+    try:
+        if await get_token_denylist().is_revoked(jti):
+            raise AppError("unauthorized", "Authentication required.", 401)
+    except AppError:
+        raise
+    except Exception:
+        # Fail-safe: if the denylist store raises unexpectedly, let the request
+        # through rather than causing an outage.  Log in production environments.
+        pass
 
     row = await fetchrow(
         """
@@ -124,4 +138,22 @@ async def verified_identity(
     # pinning without any additional logic here.
     expected_origin: str | None = request.headers.get("origin")
 
-    return verify_token(credentials.credentials, expected_origin=expected_origin)
+    identity = verify_token(credentials.credentials, expected_origin=expected_origin)
+
+    # Denylist check for first-party (HS256) access tokens only.
+    # Embed tokens are short-lived, audience-scoped and host-signed; they
+    # cannot be revoked via Nubi logout so we skip the check for them.
+    if identity.kind == "access":
+        jti: str | None = identity.raw_claims.get("jti")
+        if jti:
+            try:
+                if await get_token_denylist().is_revoked(jti):
+                    raise AppError("unauthorized", "Authentication required.", 401)
+            except AppError:
+                raise
+            except Exception:
+                # Fail-safe: if the denylist store raises unexpectedly, let the
+                # request through rather than causing an outage.
+                pass
+
+    return identity

@@ -70,6 +70,12 @@ def execute_job(job: dict[str, Any], now: datetime | None = None) -> dict[str, A
             row_count, message = _run_query_job(target)
         elif kind == "python":
             row_count, message = _run_python_job(target, job_id)
+        elif kind == "report":
+            target_dict: dict[str, Any] = job.get("target", {})
+            if isinstance(target_dict, str):
+                import json as _json
+                target_dict = _json.loads(target_dict)
+            row_count, message = _run_report_job(target_dict)
         else:
             raise AppError("bad_job_kind", f"Unknown job kind: {kind!r}", 400)
 
@@ -164,6 +170,94 @@ def _run_query_job(target: str) -> tuple[int, str]:
 
     row_count: int = table.num_rows
     return row_count, f"Query '{target}' completed successfully."
+
+
+def _run_report_job(target: dict[str, Any]) -> tuple[int, str]:
+    """Execute a report job: render a board and email it to recipients.
+
+    Parameters
+    ----------
+    target:
+        The job's ``target`` dict.  Expected keys (all validated at route
+        creation time by ``CreateJobIn``):
+
+        ``board_id``        (str) — the board to render.
+        ``params``          (dict) — named param overrides; may be ``{}``.
+        ``format``          (str) — ``'csv'`` or ``'pdf'``.
+        ``recipients``      (list[str]) — email addresses.
+        ``subject``         (str) — email subject.
+        ``body``            (str) — email body.
+        ``apply_user_permissions`` (bool) — when True, inject per-recipient
+                            locked params from ``target["locked_params"]``.
+
+    Returns
+    -------
+    tuple[int, str]
+        ``(emails_sent, message)`` on success.
+
+    Raises
+    ------
+    AppError / Exception
+        Propagated to the caller which records an error run.
+    """
+    from app.jobs.report import (
+        NullSender,
+        inject_locked_params,
+        render_report,
+        resolve_board_sync,
+        send_report,
+    )
+    from app.errors import AppError
+
+    board_id: str = target.get("board_id", "")
+    if not board_id:
+        raise AppError("bad_report_target", "report target must include 'board_id'.", 400)
+
+    params: dict[str, Any] = target.get("params") or {}
+    fmt: str = target.get("format", "csv")
+    recipients: list[str] = target.get("recipients") or []
+    apply_user_permissions: bool = bool(target.get("apply_user_permissions", False))
+    locked_params_map: dict[str, dict[str, Any]] = target.get("locked_params") or {}
+
+    # Resolve the org_id from the target; callers may embed it for the executor.
+    # The route layer embeds org_id when constructing the job target dict.
+    org_id: str = target.get("org_id", "")
+
+    # Resolve the board via the repo.
+    board = resolve_board_sync(board_id, org_id)
+    if board is None:
+        raise AppError(
+            "board_not_found",
+            f"Board {board_id!r} not found (org={org_id!r}).",
+            404,
+        )
+
+    # Build a NullSender (no SMTP config in M17-A; production wires SMTP/SES here).
+    sender = NullSender()
+
+    total_sent = 0
+
+    if apply_user_permissions and recipients:
+        # Per-recipient render: inject locked params for each recipient separately.
+        # TODO: when M13 named-param RLS resolver is merged, replace inject_locked_params
+        # with a call to the claims/policies resolver so the full precedence chain is
+        # honoured: token/RLS claims (locked) > body.params > query default.
+        for recipient in recipients:
+            locked = locked_params_map.get(recipient, {})
+            effective_params = inject_locked_params(params, locked)
+            rendered = render_report(board, effective_params, fmt)
+            sent = send_report(sender, {**target, "recipients": [recipient]}, rendered)
+            total_sent += sent
+    else:
+        # Single render for all recipients.
+        rendered = render_report(board, params, fmt)
+        total_sent = send_report(sender, target, rendered)
+
+    message = (
+        f"Report job completed: board={board_id!r}, format={fmt!r}, "
+        f"recipients={len(recipients)}, emails_sent={total_sent}."
+    )
+    return total_sent, message
 
 
 def _run_python_job(target: str, job_id: str) -> tuple[int, str]:
