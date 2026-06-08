@@ -1,28 +1,33 @@
 /**
- * DashboardEditor.jsx — Drag-and-drop DashboardSpec editor (Wave EDITOR-3A).
+ * DashboardEditor.jsx — Drag-and-drop DashboardSpec editor (Wave EDITOR-3B).
  *
- * What's new vs EDITOR-2C
+ * GRID ENGINE: dnd-kit + native CSS Grid via the headless <GridCanvas> (see
+ * src/dashboards/grid/). This replaces the old react-grid-layout <GridLayout> +
+ * createScaledStrategy. GridCanvas owns all drag/resize math and zoom scaling; the
+ * editor only supplies the layout + commit callbacks and owns history.
+ *
+ * What's new vs EDITOR-3A
  * ------------------------
- * 1. Per-widget hover toolbar (Duplicate + Delete + drag handle)
- * 2. Full keyboard shortcuts (Delete/Backspace, ⌘D, Esc, arrows, ⇧+arrows)
- * 3. All 8 resize handles + per-type minimum sizes (minW / minH)
- * 4. Grid settings popover (columns + row height) in top bar
- * 5. Live widget previews on canvas using real widget components, memoised by
- *    query_id+encoding — no re-fetch during drag/resize
- * 6. Dirty/unsaved indicator + beforeunload guard + clear on save
- * 7. Empty-state quick-add, click-outside to deselect
+ * 1. CSS-Grid engine (GridCanvas) — desktop/tablet free-drag + 8-handle resize
+ *    (mode="grid"), mobile drag-to-reorder stack (mode="reorder") with a height
+ *    stepper instead of tiny corner handles.
+ * 2. Zoom controls + Reset moved into the app top bar; below md the whole toolbar
+ *    cluster collapses behind a hamburger that opens a slide-out sidebar.
+ * 3. Configure-dashboard panel expanded: per-device columns, row height, gap, and
+ *    an Advanced group (compaction + dense, padding, breakpoint thresholds, max
+ *    content width).
  *
- * PRESERVED from EDITOR-2C (DO NOT TOUCH):
- *   - dragConfig={{ enabled:true, handle:'.drag-handle' }}
- *   - resizeConfig={{ enabled:true, handles:[...] }}
- *   - compactor={noCompactor}
- *   - onDragStart/Stop + onResizeStart/Stop stop-only commits
- *   - vite.config.js process.env define (react-draggable bug)
- *   - frozenLayoutsRef while dragging
+ * PRESERVED — THE COMMIT CONTRACT (DO NOT TOUCH):
+ *   - GridCanvas.onLayoutCommit(finalLayout) → commitLayout(finalLayout), which
+ *     routes via deviceRef/activeBreakpoint through applyLayoutCommit
+ *     (lg → widget.pos, md/sm → spec.responsive[bp]), with the no-op JSON-equality
+ *     skip so mount/device-switch re-renders don't pollute history or bake
+ *     fallback layouts into overrides.
+ *   - onInteractionStart/End → handleInteractionStart/End (isDraggingRef +
+ *     frozenLayoutsRef freeze while dragging).
+ *   - The arrow-key nudge handler + ConfigPanel numeric x/y/w/h fields still call
+ *     commitLayout([item]) directly (not via GridCanvas) — unchanged.
  */
-
-import 'react-grid-layout/css/styles.css'
-import 'react-resizable/css/styles.css'
 
 import {
   useState,
@@ -40,6 +45,7 @@ import {
   BarChart3, LineChart, AreaChart, ScatterChart, PieChart, Gauge, Grid3x3,
   BarChartHorizontal, Table2, Hash, Filter as FilterIcon, Type, Heading,
   Monitor, Tablet, Smartphone, ChevronDown, Settings, LayoutGrid, MessageSquare,
+  ZoomIn, ZoomOut, Maximize2, Menu, ChevronUp,
 } from 'lucide-react'
 
 // Device viewport presets for the editor's responsive preview/edit switcher.
@@ -49,6 +55,13 @@ const DEVICES = [
   { id: 'mobile', label: 'Mobile', Icon: Smartphone, width: 390 },
 ]
 const DEVICE_WIDTHS = { desktop: null, tablet: 834, mobile: 390 }
+// Canvas zoom bounds + the design-width floor for the desktop frame (so the full
+// desktop grid stays visible/editable — zoomed out — on small screens).
+const MIN_ZOOM = 0.25
+const MAX_ZOOM = 2
+const DESKTOP_MIN_WIDTH = 1024
+// Common device widths offered as quick chips when editing tablet/mobile.
+const WIDTH_PRESETS = [390, 412, 768, 834, 1024]
 
 // Icon maps shared across the palette, chart-type grid, and config header.
 const WIDGET_ICONS = {
@@ -59,7 +72,7 @@ const CHART_ICONS = {
   line: LineChart, bar: BarChart3, hbar: BarChartHorizontal, scatter: ScatterChart,
   area: AreaChart, pie: PieChart, donut: PieChart, heatmap: Grid3x3, gauge: Gauge,
 }
-import { ResponsiveGridLayout, useContainerWidth, noCompactor } from 'react-grid-layout'
+import { GridCanvas } from '../dashboards/grid/index.js'
 import { get, post, put } from '../lib/api.js'
 import { runArrowQueryById } from '../lib/wasmRuntime.js'
 import ChartWidget from '../dashboards/widgets/ChartWidget.jsx'
@@ -82,6 +95,8 @@ import {
   applyLayoutCommit,
   clearBreakpointOverrides,
   hasOverrides,
+  effectivePos,
+  isHiddenAt,
 } from '../dashboards/responsiveLayout.js'
 import ChatPanel from './ChatPanel.jsx'
 import {
@@ -138,7 +153,16 @@ const WIDGET_MIN_SIZES = {
 }
 
 const COLUMN_OPTIONS = [6, 8, 12, 16, 24]
+// Mobile/tablet column presets — mobile is no longer hard-locked to a single
+// column (the historical default of 1 stays available + is the fallback).
+const COLUMN_OPTIONS_SM = [1, 2, 3, 4, 6]
+const COLUMN_OPTIONS_MD = [4, 6, 8, 12]
 const ROW_HEIGHT_OPTIONS = [40, 60, 80, 100]
+const GAP_OPTIONS = [0, 8, 12, 16, 24]
+
+// Default breakpoint width thresholds (mirror GridCanvas DEFAULT_BREAKPOINTS /
+// SpecRenderer's breakpoints). Authors can override per-spec in the Advanced group.
+const DEFAULT_BREAKPOINTS_PX = { lg: 1200, md: 768, sm: 480 }
 
 // ---------------------------------------------------------------------------
 // Helpers: spec <-> RGL layout conversions
@@ -151,6 +175,33 @@ let _idCounter = 0
 function genId(type) {
   _idCounter += 1
   return `${type}_${_idCounter}`
+}
+
+// ---------------------------------------------------------------------------
+// useElementWidth — local ResizeObserver width hook
+// ---------------------------------------------------------------------------
+
+// Replaces RGL's useContainerWidth (which lived in react-grid-layout). Tracks the
+// measured pixel width of a ref'd element; GridCanvas itself does NOT need this for
+// placement (columns are 1fr) — we use it only to compute the desktop design width
+// and the auto-fit zoom.
+function useElementWidth(initialWidth = 900) {
+  const containerRef = useRef(null)
+  const [width, setWidth] = useState(initialWidth)
+  useEffect(() => {
+    const el = containerRef.current
+    if (!el || typeof ResizeObserver === 'undefined') return
+    const ro = new ResizeObserver(entries => {
+      const w = entries[0]?.contentRect?.width
+      if (w && w > 0) setWidth(w)
+    })
+    ro.observe(el)
+    // Seed immediately so the first paint isn't stuck on the initial value.
+    const w0 = el.getBoundingClientRect().width
+    if (w0 > 0) setWidth(w0)
+    return () => ro.disconnect()
+  }, [])
+  return { width, containerRef }
 }
 
 // ---------------------------------------------------------------------------
@@ -954,10 +1005,13 @@ function DrilldownSection({ widget, onChange }) {
 }
 
 // ---------------------------------------------------------------------------
-// WidgetLayoutSection — per-widget RGL constraints (static / min / max)
+// WidgetLayoutSection — per-breakpoint position/size + visibility + constraints
 // ---------------------------------------------------------------------------
 
-function WidgetLayoutSection({ widget, onChange }) {
+const BP_LABEL = { lg: 'Desktop', md: 'Tablet', sm: 'Mobile' }
+const ALL_BREAKPOINTS = ['lg', 'md', 'sm']
+
+function WidgetLayoutSection({ widget, onChange, spec, activeBreakpoint = 'lg', onLayoutCommit }) {
   const pos = widget.pos ?? {}
   const setPos = (patch) => {
     const next = { ...pos, ...patch }
@@ -971,15 +1025,62 @@ function WidgetLayoutSection({ widget, onChange }) {
         value={pos[key] ?? ''} onChange={e => setPos({ [key]: e.target.value === '' ? undefined : (parseInt(e.target.value, 10) || undefined) })} />
     </div>
   )
+
+  // Position & size for the ACTIVE breakpoint — edits route through the same
+  // single-breakpoint commit path as drag/resize (lg → widget.pos,
+  // tablet/mobile → spec.responsive[bp]).
+  const eff = effectivePos(widget, spec, activeBreakpoint) ?? {}
+  const base = { x: eff.x ?? 1, y: eff.y ?? 1, w: eff.w ?? 4, h: eff.h ?? 4 }
+  const setLayoutField = (key, raw) => {
+    const v = Math.max(1, parseInt(raw, 10) || 1)
+    const next = { ...base, [key]: v }
+    onLayoutCommit?.({ i: widget.id, x: next.x - 1, y: next.y - 1, w: next.w, h: next.h })
+  }
+  const layoutField = (key, label) => (
+    <div>
+      <FieldLabel>{label}</FieldLabel>
+      <input type="number" min={1} className={inputCls}
+        value={base[key]} onChange={e => setLayoutField(key, e.target.value)} />
+    </div>
+  )
+
+  // Per-breakpoint visibility (widget.hidden = ['lg'|'md'|'sm', …]).
+  const hidden = Array.isArray(widget.hidden) ? widget.hidden : []
+  const toggleHidden = (bp, on) => {
+    const next = on ? [...hidden.filter(b => b !== bp), bp] : hidden.filter(b => b !== bp)
+    onChange({ ...widget, hidden: next.length ? next : undefined })
+  }
+
   return (
-    <Section title="Layout constraints" defaultOpen={false}>
-      <ToggleRow label="Static (pin in place)" hint="Cannot be dragged or resized"
-        checked={!!pos.static} onChange={v => setPos({ static: v || undefined })} />
-      <div className="grid grid-cols-2 gap-2">
-        {numField('minW', 'Min width', 'cells')}
-        {numField('minH', 'Min height', 'cells')}
-        {numField('maxW', 'Max width', 'cells')}
-        {numField('maxH', 'Max height', 'cells')}
+    <Section title="Layout & size" defaultOpen={false}>
+      <FieldLabel>Position &amp; size · {BP_LABEL[activeBreakpoint]}</FieldLabel>
+      <div className="grid grid-cols-4 gap-2">
+        {layoutField('x', 'X')}
+        {layoutField('y', 'Y')}
+        {layoutField('w', 'W')}
+        {layoutField('h', 'H')}
+      </div>
+      {activeBreakpoint !== 'lg' && (
+        <p className="text-[10px] text-muted/60 -mt-1">Edits apply to {BP_LABEL[activeBreakpoint]} only.</p>
+      )}
+
+      <div className="pt-1">
+        <FieldLabel>Visibility</FieldLabel>
+        {ALL_BREAKPOINTS.map(bp => (
+          <ToggleRow key={bp} label={`Hide on ${BP_LABEL[bp]}`}
+            checked={hidden.includes(bp)} onChange={v => toggleHidden(bp, v)} />
+        ))}
+      </div>
+
+      <div className="pt-1">
+        <ToggleRow label="Static (pin in place)" hint="Cannot be dragged or resized"
+          checked={!!pos.static} onChange={v => setPos({ static: v || undefined })} />
+        <div className="grid grid-cols-2 gap-2">
+          {numField('minW', 'Min width', 'cells')}
+          {numField('minH', 'Min height', 'cells')}
+          {numField('maxW', 'Max width', 'cells')}
+          {numField('maxH', 'Max height', 'cells')}
+        </div>
       </div>
     </Section>
   )
@@ -1211,10 +1312,40 @@ function WidgetAppearanceSection({ widget, onChange }) {
 // DashboardPanel — dashboard-level settings: background, grid, variables
 // ---------------------------------------------------------------------------
 
+// A compact preset-chip row used across the Grid section (columns, row height, …).
+function ChipRow({ options, value, onChange, suffix = '' }) {
+  return (
+    <div className="flex flex-wrap gap-1.5">
+      {options.map(opt => (
+        <button key={opt} onClick={() => onChange(opt)}
+          className={`px-2.5 py-1 text-xs font-medium rounded-lg border transition-all ${value === opt ? 'bg-primary text-primary-fg border-primary' : 'bg-surface text-fg border-border hover:border-primary hover:text-primary'}`}>
+          {opt}{suffix}
+        </button>
+      ))}
+    </div>
+  )
+}
+
 function DashboardPanel({ spec, onSpecChange }) {
-  const cols = spec.layout?.cols ?? 12
-  const rowHeight = spec.layout?.row_height ?? 60
+  const layout = spec.layout ?? {}
+  // Per-device column counts. Desktop = `cols` (canonical, default 12); tablet =
+  // `cols_md` (falls back to desktop); mobile = `cols_sm` (falls back to the
+  // historical single column). Mobile is no longer hard-locked to 1.
+  const cols = layout.cols ?? 12
+  const colsMd = layout.cols_md ?? cols
+  const colsSm = layout.cols_sm ?? 1
+  const rowHeight = layout.row_height ?? 60
+  // Single scalar gap (CSS Grid `gap`, both axes) — GridCanvas takes one number.
+  // Falls back to the legacy margin_x so old specs keep their gutters.
+  const gap = layout.gap ?? layout.margin_x ?? 12
+  const dense = !!layout.dense
+  const bp = { ...DEFAULT_BREAKPOINTS_PX, ...(layout.breakpoints ?? {}) }
+
   const setLayout = (patch) => onSpecChange({ ...spec, layout: { ...spec.layout, ...patch } })
+  const setBreakpoint = (key, raw) => {
+    const v = parseInt(raw, 10)
+    setLayout({ breakpoints: { ...bp, [key]: Number.isFinite(v) ? v : DEFAULT_BREAKPOINTS_PX[key] } })
+  }
   return (
     <div className="p-4 space-y-3 overflow-y-auto h-full">
       <h3 className="text-sm font-semibold text-fg">Dashboard</h3>
@@ -1224,32 +1355,36 @@ function DashboardPanel({ spec, onSpecChange }) {
       </Section>
 
       <Section title="Grid" icon={Grid3x3}>
+        {/* Columns per device — independent counts (mobile no longer locked to 1). */}
         <div className="space-y-1">
-          <SectionLabel>Columns</SectionLabel>
-          <div className="flex flex-wrap gap-1.5">
-            {COLUMN_OPTIONS.map(c => (
-              <button key={c} onClick={() => setLayout({ cols: c })}
-                className={`px-2.5 py-1 text-xs font-medium rounded-lg border transition-all ${cols === c ? 'bg-primary text-primary-fg border-primary' : 'bg-surface text-fg border-border hover:border-primary hover:text-primary'}`}>{c}</button>
-            ))}
-          </div>
+          <SectionLabel>Columns · Desktop</SectionLabel>
+          <ChipRow options={COLUMN_OPTIONS} value={cols} onChange={c => setLayout({ cols: c })} />
+        </div>
+        <div className="space-y-1">
+          <SectionLabel>Columns · Tablet</SectionLabel>
+          <ChipRow options={COLUMN_OPTIONS_MD} value={colsMd} onChange={c => setLayout({ cols_md: c })} />
+        </div>
+        <div className="space-y-1">
+          <SectionLabel>Columns · Mobile</SectionLabel>
+          <ChipRow options={COLUMN_OPTIONS_SM} value={colsSm} onChange={c => setLayout({ cols_sm: c })} />
         </div>
         <div className="space-y-1">
           <SectionLabel>Row height</SectionLabel>
-          <div className="flex flex-wrap gap-1.5">
-            {ROW_HEIGHT_OPTIONS.map(rh => (
-              <button key={rh} onClick={() => setLayout({ row_height: rh })}
-                className={`px-2.5 py-1 text-xs font-medium rounded-lg border transition-all ${rowHeight === rh ? 'bg-primary text-primary-fg border-primary' : 'bg-surface text-fg border-border hover:border-primary hover:text-primary'}`}>{rh}</button>
-            ))}
-          </div>
+          <ChipRow options={ROW_HEIGHT_OPTIONS} value={rowHeight} onChange={rh => setLayout({ row_height: rh })} />
+        </div>
+        <div className="space-y-1">
+          <SectionLabel>Gap (px)</SectionLabel>
+          <ChipRow options={GAP_OPTIONS} value={gap} onChange={g => setLayout({ gap: g })} />
         </div>
       </Section>
 
-      <Section title="Layout & compaction" defaultOpen={false} icon={SlidersHorizontal}>
+      <Section title="Advanced" defaultOpen={false} icon={SlidersHorizontal}>
+        {/* Compaction + dense packing */}
         <div className="space-y-1">
           <SectionLabel>Compaction mode</SectionLabel>
           <div className="grid grid-cols-2 gap-1.5">
             {COMPACTION_MODES.map(m => {
-              const active = (spec.layout?.compaction ?? 'free') === m.id
+              const active = (layout.compaction ?? 'free') === m.id
               return (
                 <button key={m.id} onClick={() => setLayout({ compaction: m.id })} title={m.hint}
                   className={`px-2 py-1.5 text-xs font-medium rounded-lg border text-left transition-all ${active ? 'bg-primary text-primary-fg border-primary' : 'bg-surface text-fg border-border hover:border-primary hover:text-primary'}`}>
@@ -1258,29 +1393,53 @@ function DashboardPanel({ spec, onSpecChange }) {
               )
             })}
           </div>
-          <p className="text-[10px] text-muted/70">{COMPACTION_MODES.find(m => m.id === (spec.layout?.compaction ?? 'free'))?.hint}</p>
+          <p className="text-[10px] text-muted/70">{COMPACTION_MODES.find(m => m.id === (layout.compaction ?? 'free'))?.hint}</p>
+          <ToggleRow label="Dense packing" hint="Back-fill gaps when packing (vertical / horizontal only)"
+            checked={dense} onChange={v => setLayout({ dense: v || undefined })} />
         </div>
-        <div className="grid grid-cols-2 gap-2">
-          <div>
-            <FieldLabel>Margin X (px)</FieldLabel>
-            <input type="number" min={0} className={inputCls} value={spec.layout?.margin_x ?? 12}
-              onChange={e => setLayout({ margin_x: parseInt(e.target.value, 10) || 0 })} />
+
+        {/* Container padding */}
+        <div className="space-y-1">
+          <SectionLabel>Container padding</SectionLabel>
+          <div className="grid grid-cols-2 gap-2">
+            <div>
+              <FieldLabel>Padding X (px)</FieldLabel>
+              <input type="number" min={0} className={inputCls} value={layout.padding_x ?? 0}
+                onChange={e => setLayout({ padding_x: parseInt(e.target.value, 10) || 0 })} />
+            </div>
+            <div>
+              <FieldLabel>Padding Y (px)</FieldLabel>
+              <input type="number" min={0} className={inputCls} value={layout.padding_y ?? 0}
+                onChange={e => setLayout({ padding_y: parseInt(e.target.value, 10) || 0 })} />
+            </div>
           </div>
-          <div>
-            <FieldLabel>Margin Y (px)</FieldLabel>
-            <input type="number" min={0} className={inputCls} value={spec.layout?.margin_y ?? 12}
-              onChange={e => setLayout({ margin_y: parseInt(e.target.value, 10) || 0 })} />
+        </div>
+
+        {/* Breakpoint width thresholds (px) — used by the viewer to pick a layout. */}
+        <div className="space-y-1">
+          <SectionLabel>Breakpoint widths (px)</SectionLabel>
+          <div className="grid grid-cols-3 gap-2">
+            <div>
+              <FieldLabel>Desktop ≥</FieldLabel>
+              <input type="number" min={0} className={inputCls} value={bp.lg} onChange={e => setBreakpoint('lg', e.target.value)} />
+            </div>
+            <div>
+              <FieldLabel>Tablet ≥</FieldLabel>
+              <input type="number" min={0} className={inputCls} value={bp.md} onChange={e => setBreakpoint('md', e.target.value)} />
+            </div>
+            <div>
+              <FieldLabel>Mobile ≥</FieldLabel>
+              <input type="number" min={0} className={inputCls} value={bp.sm} onChange={e => setBreakpoint('sm', e.target.value)} />
+            </div>
           </div>
-          <div>
-            <FieldLabel>Padding X (px)</FieldLabel>
-            <input type="number" min={0} className={inputCls} value={spec.layout?.padding_x ?? 0}
-              onChange={e => setLayout({ padding_x: parseInt(e.target.value, 10) || 0 })} />
-          </div>
-          <div>
-            <FieldLabel>Padding Y (px)</FieldLabel>
-            <input type="number" min={0} className={inputCls} value={spec.layout?.padding_y ?? 0}
-              onChange={e => setLayout({ padding_y: parseInt(e.target.value, 10) || 0 })} />
-          </div>
+        </div>
+
+        {/* Max content width — caps the rendered dashboard's width in the viewer. */}
+        <div>
+          <FieldLabel>Max content width (px)</FieldLabel>
+          <input type="number" min={0} className={inputCls} placeholder="unbounded"
+            value={layout.max_width ?? ''}
+            onChange={e => setLayout({ max_width: e.target.value === '' ? undefined : (parseInt(e.target.value, 10) || undefined) })} />
         </div>
       </Section>
 
@@ -1295,7 +1454,7 @@ function DashboardPanel({ spec, onSpecChange }) {
 // ConfigPanel — per-widget configuration
 // ---------------------------------------------------------------------------
 
-function ConfigPanel({ widget, onChange, onRemove, extraQueryIds, spec }) {
+function ConfigPanel({ widget, onChange, onRemove, extraQueryIds, spec, activeBreakpoint = 'lg', onLayoutCommit }) {
   if (!widget) {
     return (
       <div className="flex flex-col items-center justify-center h-full text-sm text-muted py-8 px-4 text-center">
@@ -1347,7 +1506,8 @@ function ConfigPanel({ widget, onChange, onRemove, extraQueryIds, spec }) {
         </Section>
       )}
 
-      <WidgetLayoutSection widget={widget} onChange={onChange} />
+      <WidgetLayoutSection widget={widget} onChange={onChange} spec={spec}
+        activeBreakpoint={activeBreakpoint} onLayoutCommit={onLayoutCommit} />
 
       <WidgetAppearanceSection widget={widget} onChange={onChange} />
 
@@ -1515,12 +1675,32 @@ function WidgetCardFallback({ widget }) {
 // WidgetHoverToolbar — top-right actions: duplicate + delete
 // ---------------------------------------------------------------------------
 
-function WidgetHoverToolbar({ widget, onDuplicate, onDelete, visible }) {
+function WidgetHoverToolbar({ widget, onDuplicate, onDelete, visible, reorder = false, onHeightStep }) {
   return (
     <div
       className={`absolute top-1 right-1 flex items-center gap-1 z-10 transition-opacity ${visible ? 'opacity-100' : 'opacity-0 pointer-events-none'}`}
       style={{ transition: 'opacity 0.15s' }}
     >
+      {/* Mobile (reorder) height stepper — replaces the tiny corner resize handles
+          that are too fiddly on touch. Steps widget height by ±1 grid row. */}
+      {reorder && (
+        <span className="flex items-center rounded-md bg-surface border border-border shadow-sm overflow-hidden">
+          <button
+            title="Shorter"
+            onMouseDown={e => { e.stopPropagation(); e.preventDefault() }}
+            onClick={e => { e.stopPropagation(); onHeightStep?.(widget.id, -1) }}
+            className="w-6 h-6 flex items-center justify-center text-muted hover:text-primary transition-colors"
+            data-testid={`widget-shorter-${widget.id}`}
+          ><ChevronDown size={13} /></button>
+          <button
+            title="Taller"
+            onMouseDown={e => { e.stopPropagation(); e.preventDefault() }}
+            onClick={e => { e.stopPropagation(); onHeightStep?.(widget.id, 1) }}
+            className="w-6 h-6 flex items-center justify-center text-muted hover:text-primary transition-colors border-l border-border"
+            data-testid={`widget-taller-${widget.id}`}
+          ><ChevronUp size={13} /></button>
+        </span>
+      )}
       <button
         title="Duplicate widget (⌘D)"
         onMouseDown={e => { e.stopPropagation(); e.preventDefault() }}
@@ -1605,14 +1785,36 @@ export default function DashboardEditor({ boardId = null, onSaved }) {
   // Mobile/tablet sheet state: which sheet is open (null = closed)
   // 'palette' | 'config' | 'chat' | 'board' | null
   const [mobileSheet, setMobileSheet] = useState(null)
+  // Below md the toolbar cluster (device switcher, zoom controls, panel toggles)
+  // collapses behind a hamburger that opens this slide-out menu.
+  const [mobileMenu, setMobileMenu] = useState(false)
 
-  const { width: canvasWidth, containerRef: canvasRef } = useContainerWidth({ initialWidth: 900 })
+  const { width: canvasWidth, containerRef: canvasRef } = useElementWidth(900)
+  // The scrollable canvas viewport (pan surface + pinch-zoom target).
+  const mainRef = useRef(null)
   const { topbarSlot, setPageOwnsChat } = useUi()
   const [device, setDevice] = useState('desktop')
   // Mirror `device` into a ref so RGL's stable callbacks (commitLayout etc.)
   // always route commits to the CURRENTLY active breakpoint without re-creating.
   const deviceRef = useRef(device)
-  useEffect(() => { deviceRef.current = device }, [device])
+  // Sync DURING render (not via an effect): when the keyed grid remounts on a
+  // device switch and fires its mount onLayoutChange / a drag stop, commits must
+  // route to the CURRENT breakpoint. Child effects run before parent effects, so
+  // an effect-based mirror would lag one commit and write a tablet/mobile layout
+  // into the canonical desktop pos (the "bundle to the left" corruption).
+  deviceRef.current = device
+  // Editor-local preview width per device (not persisted to the spec) + canvas
+  // zoom (`'fit'` auto-scales to the available width; a number is an explicit
+  // zoom set by the buttons or a pinch gesture).
+  const [deviceWidths, setDeviceWidths] = useState({ tablet: DEVICE_WIDTHS.tablet, mobile: DEVICE_WIDTHS.mobile })
+  const [zoomMode, setZoomMode] = useState('fit')
+  // Mirror into a ref so the (passive-free) pinch handler can read/update it
+  // without re-binding the listener every render.
+  const zoomModeRef = useRef(zoomMode)
+  useEffect(() => { zoomModeRef.current = zoomMode }, [zoomMode])
+  // NOTE: the drag-time column-guide + ghost overlay is now owned by GridCanvas
+  // (its .grid-dragging class + --grid-col-w var), so the editor no longer needs a
+  // boolean `isDragging` state — only the ref (frozenLayoutsRef freeze) matters.
 
   // Claim exclusive chat ownership while the editor is mounted so the global
   // chat button + panel are suppressed (editor has its own Chat tab in the RHS).
@@ -1624,26 +1826,75 @@ export default function DashboardEditor({ boardId = null, onSaved }) {
   // Active RGL breakpoint follows the device frame width (desktop→lg, …).
   const activeBreakpoint = DEVICE_TO_BREAKPOINT[device]
 
-  // ── Responsive device frame ────────────────────────────────────────────────
-  // The canvas (canvasRef → canvasWidth) reflows automatically when the RHS
-  // sidebar opens/closes (flex + ResizeObserver). For tablet/mobile we constrain
-  // the grid to the device width so layouts can be designed responsively; when
-  // the device frame is wider than the available canvas (e.g. editing on a phone)
-  // it is scaled down to a zoomed-out view.
-  const frameWidth = device === 'desktop' ? (canvasWidth || 0) : DEVICE_WIDTHS[device]
-  const deviceZoom =
-    device !== 'desktop' && frameWidth > canvasWidth && canvasWidth > 0
-      ? canvasWidth / frameWidth
-      : 1
-  // Reserve vertical space for the scaled (zoomed-out) frame so the canvas
-  // scrolls. Use the active breakpoint's effective layout (override or fallback)
-  // so a taller tablet/mobile arrangement still reserves enough height.
+  // ── Device frame + zoom/pan canvas ─────────────────────────────────────────
+  // The grid always renders at its true DESIGN width for the active breakpoint
+  // (so the displayed breakpoint is chosen by the device, never by pixel width —
+  // this is what fixes the "everything bundles to the left" bug). The whole frame
+  // is then CSS-scaled by `effectiveZoom` to fit / zoom the available canvas, and
+  // the scrollable <main> acts as the pan viewport.
+  //   desktop → max(canvasWidth, floor) so it stays editable (zoomed out) on a phone
+  //   tablet/mobile → the editor-local custom width
+  const designWidth = device === 'desktop'
+    ? Math.max(canvasWidth || DESKTOP_MIN_WIDTH, DESKTOP_MIN_WIDTH)
+    : (deviceWidths[device] ?? DEVICE_WIDTHS[device])
+  const fitZoom = canvasWidth > 0 && designWidth > canvasWidth ? canvasWidth / designWidth : 1
+  const effectiveZoom = zoomMode === 'fit'
+    ? fitZoom
+    : Math.min(MAX_ZOOM, Math.max(MIN_ZOOM, zoomMode))
+  // Mirror the live zoom so the (once-bound) pinch handler can read it.
+  const effectiveZoomRef = useRef(effectiveZoom)
+  useEffect(() => { effectiveZoomRef.current = effectiveZoom }, [effectiveZoom])
+
+  // Reset to "fit" when switching devices so each size starts framed.
+  useEffect(() => { setZoomMode('fit') }, [device])
+
+  // Pinch-to-zoom (two fingers) + ctrl/⌘-wheel zoom on the canvas viewport.
+  // Bound once with { passive:false } so we can preventDefault the browser's
+  // own page-zoom/scroll. One-finger drags fall through to native scroll (pan).
+  useEffect(() => {
+    const el = mainRef.current
+    if (!el) return
+    const dist = (t) => Math.hypot(t[0].clientX - t[1].clientX, t[0].clientY - t[1].clientY)
+    const pinch = { startDist: null, startZoom: 1 }
+    const clampZoom = (z) => Math.min(MAX_ZOOM, Math.max(MIN_ZOOM, z))
+    const onTouchStart = (e) => {
+      if (e.touches.length === 2) {
+        pinch.startDist = dist(e.touches)
+        pinch.startZoom = effectiveZoomRef.current
+      }
+    }
+    const onTouchMove = (e) => {
+      if (e.touches.length !== 2 || pinch.startDist == null) return
+      e.preventDefault()
+      setZoomMode(clampZoom(pinch.startZoom * (dist(e.touches) / pinch.startDist)))
+    }
+    const onTouchEnd = (e) => { if (e.touches.length < 2) pinch.startDist = null }
+    const onWheel = (e) => {
+      if (!e.ctrlKey && !e.metaKey) return   // ctrl/⌘+wheel (incl. trackpad pinch) only
+      e.preventDefault()
+      setZoomMode(clampZoom(effectiveZoomRef.current * (e.deltaY < 0 ? 1.05 : 0.95)))
+    }
+    el.addEventListener('touchstart', onTouchStart, { passive: false })
+    el.addEventListener('touchmove', onTouchMove, { passive: false })
+    el.addEventListener('touchend', onTouchEnd, { passive: false })
+    el.addEventListener('wheel', onWheel, { passive: false })
+    return () => {
+      el.removeEventListener('touchstart', onTouchStart)
+      el.removeEventListener('touchmove', onTouchMove)
+      el.removeEventListener('touchend', onTouchEnd)
+      el.removeEventListener('wheel', onWheel)
+    }
+  }, [preview])
+
+  // Reserve vertical space for the (scaled) frame so the canvas scrolls/pans.
+  // Use the active breakpoint's effective layout (override or fallback) and skip
+  // widgets hidden at this breakpoint so the reserved height is accurate.
   const _rowH = spec.layout?.row_height ?? 60
-  const _bpOverrides = spec.responsive?.[activeBreakpoint] ?? {}
   const _maxBottom = spec.widgets.reduce((m, w) => {
-    const o = _bpOverrides[w.id]
-    const y = (o?.y ?? w.pos?.y ?? 1) - 1
-    const h = o?.h ?? w.pos?.h ?? 4
+    if (isHiddenAt(w, activeBreakpoint)) return m
+    const p = effectivePos(w, spec, activeBreakpoint) ?? {}
+    const y = (p.y ?? 1) - 1
+    const h = p.h ?? 4
     return Math.max(m, y + h)
   }, 0)
   const deviceDashHeight = _maxBottom * (_rowH + 12) + 48
@@ -1782,29 +2033,43 @@ export default function DashboardEditor({ boardId = null, onSaved }) {
   // ── Derived state ─────────────────────────────────────────────────────────
   const selectedWidget = spec.widgets.find(w => w.id === selectedId) ?? null
 
+  // Per-device column counts (independent now — mobile is no longer locked to 1).
+  //   lg = cols (canonical), md = cols_md (fallback cols), sm = cols_sm (fallback 1).
+  const lgCols = spec.layout?.cols ?? 12
+  const mdCols = spec.layout?.cols_md ?? lgCols
+  const smCols = spec.layout?.cols_sm ?? 1
+
   // Per-breakpoint layouts: lg from canonical widget.pos; md/sm apply
   // spec.responsive overrides with a fallback to the lg-derived layout. Each
   // item keeps its per-type min sizes + authored static/min/max constraints.
-  const rglLayouts = useMemo(() => {
+  // The 0-based {i,x,y,w,h,...} items are EXACTLY the shape GridCanvas's `layout`
+  // prop expects (identical to what RGL consumed) — the commit contract is unchanged.
+  const gridLayouts = useMemo(() => {
     if (isDraggingRef.current && frozenLayoutsRef.current) return frozenLayoutsRef.current
-    const layouts = buildResponsiveLayouts(spec, spec.layout?.cols ?? 12, (w) => ({
+    const layouts = buildResponsiveLayouts(spec, lgCols, (w) => ({
       minDefaults: WIDGET_MIN_SIZES[w.type] ?? { minW: 2, minH: 2 },
-    }))
+    }), { lg: lgCols, md: mdCols, sm: smCols })
     frozenLayoutsRef.current = layouts
     return layouts
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [spec.widgets, JSON.stringify(spec.responsive), spec.layout?.cols])
+  }, [spec.widgets, JSON.stringify(spec.responsive), lgCols, mdCols, smCols])
 
-  // RGL flexibility options (spec.layout.*). The editor defaults to free-place
-  // (noCompactor) so drag-to-place keeps working; authors can opt into packing.
+  // Grid flexibility options (spec.layout.*). The editor defaults to free-place
+  // so drag-to-place keeps working; authors can opt into packing via the Advanced
+  // group. GridCanvas applies compaction to the COMMITTED layout before
+  // onLayoutCommit fires ('free'/'none' are identity → byte-identical commits).
   const editorCompaction = spec.layout?.compaction ?? 'free'
-  const editorCompactionProps = editorCompaction === 'free'
-    ? { compactor: noCompactor }
-    : editorCompaction === 'horizontal' ? { compactType: 'horizontal' }
-    : editorCompaction === 'none' ? { compactType: null }
-    : { compactType: 'vertical' }
-  const editorMargin = [spec.layout?.margin_x ?? 12, spec.layout?.margin_y ?? 12]
-  const editorPadding = [spec.layout?.padding_x ?? 0, spec.layout?.padding_y ?? 0]
+  const editorDense = !!spec.layout?.dense
+  // GridCanvas takes a single scalar gap for both axes — map from the new `gap`
+  // field, falling back to the legacy margin_x (they were equal in practice).
+  const editorGap = spec.layout?.gap ?? spec.layout?.margin_x ?? 12
+  const editorPadding = { x: spec.layout?.padding_x ?? 0, y: spec.layout?.padding_y ?? 0 }
+  // Column count for the ACTIVE breakpoint — drives the grid geometry.
+  const editorGridCols = activeBreakpoint === 'sm' ? smCols
+    : activeBreakpoint === 'md' ? mdCols : lgCols
+  // Mobile (sm) edits as a touch-friendly drag-to-reorder stack; desktop/tablet
+  // use full 2-D grid editing.
+  const gridMode = activeBreakpoint === 'sm' ? 'reorder' : 'grid'
 
   // ── Mutations ─────────────────────────────────────────────────────────────
 
@@ -1855,31 +2120,55 @@ export default function DashboardEditor({ boardId = null, onSaved }) {
     setHist(h => {
       const newSpec = applyLayoutCommit(h.present, bp, finalLayout)
       frozenLayoutsRef.current = null
-      // Skip no-op commits (e.g. RGL's onLayoutChange firing on mount / device
-      // switch with the unchanged fallback layout) so we don't (a) pollute the
-      // undo history or (b) bake the inherited layout into an override and make
+      // Skip no-op commits (e.g. a gesture that ended exactly where it started, or
+      // a stray commit with the unchanged fallback layout) so we don't (a) pollute
+      // the undo history or (b) bake the inherited layout into an override and make
       // a never-edited breakpoint look "customised".
       if (JSON.stringify(newSpec) === JSON.stringify(h.present)) return h
       return historyPush(h, newSpec)
     })
   }, [])
 
-  const handleLayoutChange = useCallback((currentLayout) => {
-    if (isDraggingRef.current) return
-    commitLayout(currentLayout)
-  }, [commitLayout])
+  // NOTE: GridCanvas only fires onLayoutCommit at the END of a real drag/resize (or
+  // a reorder), never on mount or on the keyed remount that happens when switching
+  // device — so there is no spurious "full layout" commit to guard against the way
+  // RGL's onLayoutChange required. The no-op JSON skip above is still a cheap
+  // belt-and-braces. All other edits (arrow-key nudges, Configure numeric fields)
+  // commit via commitLayout([item]) directly.
 
-  const handleDragStart = useCallback(() => { isDraggingRef.current = true }, [])
-  const handleDragStop = useCallback((finalLayout) => {
+  // GridCanvas signals the START / END of a drag-or-resize gesture via
+  // onInteractionStart / onInteractionEnd (the latter fires on commit AND cancel).
+  // We mirror the old RGL drag/resize start/stop bookkeeping: freeze the layouts
+  // during the gesture (frozenLayoutsRef, read in the gridLayouts memo) and drive
+  // the column-guide overlay. The actual geometry commit arrives separately via
+  // onLayoutCommit → commitLayout, so the freeze is cleared inside commitLayout.
+  const handleInteractionStart = useCallback(() => { isDraggingRef.current = true }, [])
+  const handleInteractionEnd = useCallback(() => {
     isDraggingRef.current = false
-    commitLayout(finalLayout)
-  }, [commitLayout])
+    // A cancelled gesture fires onInteractionEnd WITHOUT a commit; drop the freeze
+    // so the next render reflects the unchanged spec.
+    frozenLayoutsRef.current = null
+  }, [])
 
-  const handleResizeStart = useCallback(() => { isDraggingRef.current = true }, [])
-  const handleResizeStop = useCallback((finalLayout) => {
-    isDraggingRef.current = false
-    commitLayout(finalLayout)
-  }, [commitLayout])
+  // Mobile (reorder) height stepper: bump a widget's height by ±1 grid row at the
+  // ACTIVE breakpoint, routed through the same single-breakpoint commit path.
+  const handleHeightStep = useCallback((id, delta) => {
+    const bp = DEVICE_TO_BREAKPOINT[deviceRef.current]
+    setHist(h => {
+      const prev = h.present
+      const w = prev.widgets.find(x => x.id === id)
+      if (!w) return h
+      const base = bp === 'lg'
+        ? (w.pos ?? { x: 1, y: 1, w: 4, h: 4 })
+        : { ...(w.pos ?? { x: 1, y: 1, w: 4, h: 4 }), ...(prev.responsive?.[bp]?.[id] ?? {}) }
+      const mins = WIDGET_MIN_SIZES[w.type] ?? { minW: 2, minH: 2 }
+      const nextH = Math.max(mins.minH, (base.h ?? 4) + delta)
+      const item = { i: id, x: (base.x ?? 1) - 1, y: (base.y ?? 1) - 1, w: base.w ?? 4, h: nextH }
+      const newSpec = applyLayoutCommit(prev, bp, [item])
+      if (JSON.stringify(newSpec) === JSON.stringify(prev)) return h
+      return historyPush(h, newSpec)
+    })
+  }, [])
 
   const handleSave = async () => {
     setSaving(true)
@@ -1958,6 +2247,8 @@ export default function DashboardEditor({ boardId = null, onSaved }) {
         onRemove={() => selectedWidget && removeWidget(selectedWidget.id)}
         extraQueryIds={[]}
         spec={spec}
+        activeBreakpoint={activeBreakpoint}
+        onLayoutCommit={(item) => commitLayout([item])}
       />
     )
   }
@@ -1978,6 +2269,101 @@ export default function DashboardEditor({ boardId = null, onSaved }) {
   // The editor's toolbar is portaled INTO the single app top bar (AppTopbar's
   // slot) so there is one bar, not a stacked second one. It closes over live
   // editor state, so it updates normally.
+  // Reset the canvas view: snap zoom back to automatic "fit" AND drop any custom
+  // per-device width overrides (back to the DEVICE_WIDTHS defaults).
+  const resetView = () => {
+    setZoomMode('fit')
+    setDeviceWidths({ tablet: DEVICE_WIDTHS.tablet, mobile: DEVICE_WIDTHS.mobile })
+  }
+
+  // Zoom controls (out / fit / in) + Reset — moved out of the floating canvas bar
+  // into the app top bar. `compact` renders the same controls inside the mobile
+  // slide-out menu. Pinch / ctrl+wheel zoom still works via the canvas effect.
+  const zoomControls = (compact = false) => (
+    <div className={`flex items-center gap-0.5 ${compact ? '' : ''}`} data-testid="zoom-control">
+      <button onClick={() => setZoomMode(z => Math.max(MIN_ZOOM, (z === 'fit' ? fitZoom : z) - 0.1))}
+        title="Zoom out" aria-label="Zoom out"
+        className="w-8 h-8 flex items-center justify-center rounded-lg border border-border bg-surface text-muted hover:text-fg transition-colors"><ZoomOut size={14} /></button>
+      <button onClick={() => setZoomMode('fit')}
+        title="Fit to screen"
+        className={`text-[11px] font-medium px-2 h-8 rounded-lg border transition-colors whitespace-nowrap ${
+          zoomMode === 'fit' ? 'bg-primary text-primary-fg border-primary' : 'bg-surface text-muted border-border hover:text-fg'
+        }`}>{zoomMode === 'fit' ? `Fit · ${Math.round(effectiveZoom * 100)}%` : `${Math.round(effectiveZoom * 100)}%`}</button>
+      <button onClick={() => setZoomMode(z => Math.min(MAX_ZOOM, (z === 'fit' ? fitZoom : z) + 0.1))}
+        title="Zoom in" aria-label="Zoom in"
+        className="w-8 h-8 flex items-center justify-center rounded-lg border border-border bg-surface text-muted hover:text-fg transition-colors"><ZoomIn size={14} /></button>
+      <button onClick={resetView} title="Reset view (fit zoom + default widths)" aria-label="Reset view"
+        data-testid="reset-view"
+        className="w-8 h-8 flex items-center justify-center rounded-lg border border-border bg-surface text-muted hover:text-fg transition-colors"><Maximize2 size={13} /></button>
+    </div>
+  )
+
+  // Device viewport switcher — shared by the top bar and the mobile slide-out.
+  const deviceSwitcher = (
+    <div className="flex items-center rounded-lg border border-border bg-surface overflow-hidden" data-testid="device-switcher">
+      {DEVICES.map((d, i) => (
+        <button key={d.id} onClick={() => setDevice(d.id)} title={d.label} aria-label={d.label} aria-pressed={device === d.id}
+          className={`flex items-center justify-center w-8 h-8 transition-colors ${i > 0 ? 'border-l border-border' : ''} ${
+            device === d.id ? 'bg-primary text-primary-fg' : 'bg-surface text-muted hover:text-fg'
+          }`}>
+          <d.Icon size={15} />
+        </button>
+      ))}
+    </div>
+  )
+
+  // Panel toggle icon buttons — Add / Configure / Layout / Chat. Shared by the top
+  // bar (md+) and the mobile slide-out. `compact` stacks them as full-width rows.
+  const PANEL_SEGMENTS = [
+    { id: 'add',    Icon: Plus,         mobileSheet: 'palette', label: 'Add widget', title: 'Add widget',                ariaLabel: 'Add widget panel' },
+    { id: 'config', Icon: Settings2,    mobileSheet: 'config',  label: 'Configure',  title: 'Configure selected widget', ariaLabel: 'Configure panel' },
+    { id: 'board',  Icon: LayoutGrid,   mobileSheet: 'board',   label: 'Layout',     title: 'Layout, grid & variables',  ariaLabel: 'Layout panel' },
+    { id: 'chat',   Icon: MessageSquare,mobileSheet: 'chat',    label: 'Chat',       title: 'AI Chat',                   ariaLabel: 'Chat panel' },
+  ]
+  const panelToggles = (compact = false) => (
+    <div className={compact ? 'flex flex-col gap-1' : 'flex items-center gap-0.5'} data-testid="editor-panel-toggles">
+      {PANEL_SEGMENTS.map(seg => {
+        const isActiveDesktop = rightPanel === seg.id && !rightCollapsed
+        const isActiveMobile = mobileSheet === seg.mobileSheet
+        return (
+          <button
+            key={seg.id}
+            data-testid={`panel-toggle-${seg.id}`}
+            title={seg.title}
+            aria-label={seg.ariaLabel}
+            aria-pressed={isActiveDesktop || isActiveMobile}
+            onClick={() => {
+              // Desktop/tablet: toggle RHS sidebar
+              if (window.innerWidth >= 768) {
+                if (rightPanel === seg.id && !rightCollapsed) {
+                  setRightCollapsed(true)
+                } else {
+                  setRightPanel(seg.id)
+                  setRightCollapsed(false)
+                }
+              }
+              // Mobile: toggle bottom sheet + close the slide-out menu
+              setMobileSheet(s => s === seg.mobileSheet ? null : seg.mobileSheet)
+              if (compact) setMobileMenu(false)
+            }}
+            className={`
+              ${compact ? 'w-full h-9 justify-start gap-2 px-3' : 'w-9 h-8 justify-center'}
+              flex items-center rounded-lg border
+              transition-colors duration-150 focus:outline-none focus:ring-2 focus:ring-ring/60
+              ${(isActiveDesktop || isActiveMobile)
+                ? 'bg-primary text-primary-fg border-primary shadow-sm'
+                : 'bg-surface text-muted border-border hover:text-fg hover:bg-surface-2'
+              }
+            `}
+          >
+            <seg.Icon size={15} strokeWidth={2} />
+            {compact && <span className="text-sm font-medium">{seg.label}</span>}
+          </button>
+        )
+      })}
+    </div>
+  )
+
   const editorToolbar = (
     <div className="flex items-center gap-1.5 w-full min-w-0 overflow-x-auto">
       <input
@@ -2015,55 +2401,24 @@ export default function DashboardEditor({ boardId = null, onSaved }) {
           </div>
         )}
 
-        {/* Panel toggle icon buttons — Add / Configure / Layout / Chat.
-            Visible on ALL breakpoints (desktop, tablet, mobile) in the topbar.
-            Each button toggles the RHS sidebar (desktop/tablet) or bottom sheet
-            (mobile) to the corresponding panel; clicking the active one collapses. */}
-        {!preview && (
-          <div className="flex items-center gap-0.5" data-testid="editor-panel-toggles">
-            {[
-              { id: 'add',    Icon: Plus,             mobileSheet: 'palette', title: 'Add widget',                   ariaLabel: 'Add widget panel'      },
-              { id: 'config', Icon: Settings2,         mobileSheet: 'config',  title: 'Configure selected widget',    ariaLabel: 'Configure panel'       },
-              { id: 'board',  Icon: LayoutGrid,        mobileSheet: 'board',   title: 'Layout, grid & variables',     ariaLabel: 'Layout panel'          },
-              { id: 'chat',   Icon: MessageSquare,     mobileSheet: 'chat',    title: 'AI Chat',                      ariaLabel: 'Chat panel'            },
-            ].map(seg => {
-              const isActiveDesktop = rightPanel === seg.id && !rightCollapsed
-              const isActiveMobile = mobileSheet === seg.mobileSheet
-              return (
-                <button
-                  key={seg.id}
-                  data-testid={`panel-toggle-${seg.id}`}
-                  title={seg.title}
-                  aria-label={seg.ariaLabel}
-                  aria-pressed={isActiveDesktop || isActiveMobile}
-                  onClick={() => {
-                    // Desktop/tablet: toggle RHS sidebar
-                    if (window.innerWidth >= 768) {
-                      if (rightPanel === seg.id && !rightCollapsed) {
-                        setRightCollapsed(true)
-                      } else {
-                        setRightPanel(seg.id)
-                        setRightCollapsed(false)
-                      }
-                    }
-                    // Mobile: toggle bottom sheet
-                    setMobileSheet(s => s === seg.mobileSheet ? null : seg.mobileSheet)
-                  }}
-                  className={`
-                    flex items-center justify-center w-9 h-8 rounded-lg border
-                    transition-colors duration-150 focus:outline-none focus:ring-2 focus:ring-ring/60
-                    ${(isActiveDesktop || isActiveMobile)
-                      ? 'bg-primary text-primary-fg border-primary shadow-sm'
-                      : 'bg-surface text-muted border-border hover:text-fg hover:bg-surface-2'
-                    }
-                  `}
-                >
-                  <seg.Icon size={15} strokeWidth={2} />
-                </button>
-              )
-            })}
-          </div>
-        )}
+        {/* Toolbar cluster (device switcher · zoom · panel toggles).
+            md+ : shown inline in the top bar.
+            <md : collapsed behind the hamburger → mobile slide-out menu. */}
+        <div className="hidden md:flex items-center gap-1.5">
+          {/* Device viewport switcher — shown in edit + preview so preview frames per-device. */}
+          {deviceSwitcher}
+          {/* Canvas zoom controls + Reset (edit mode only). */}
+          {!preview && zoomControls()}
+          {/* Panel toggles — Add / Configure / Layout / Chat. */}
+          {!preview && panelToggles()}
+        </div>
+
+        {/* Hamburger (<md): opens the slide-out with the whole toolbar cluster. */}
+        <button onClick={() => setMobileMenu(true)} title="Menu" aria-label="Open editor menu"
+          data-testid="editor-hamburger"
+          className="md:hidden flex items-center justify-center w-9 h-8 rounded-lg border border-border bg-surface text-muted hover:text-fg hover:bg-surface-2 transition-colors focus:outline-none focus:ring-2 focus:ring-ring/60">
+          <Menu size={16} />
+        </button>
 
         <button onClick={() => setPreview(p => !p)}
           className={`px-2.5 h-8 text-xs font-medium rounded-lg border transition-all focus:outline-none whitespace-nowrap ${
@@ -2100,6 +2455,8 @@ export default function DashboardEditor({ boardId = null, onSaved }) {
         onRemove={() => { if (selectedWidget) { removeWidget(selectedWidget.id); setMobileSheet(null) } }}
         extraQueryIds={[]}
         spec={spec}
+        activeBreakpoint={activeBreakpoint}
+        onLayoutCommit={(item) => commitLayout([item])}
       />
     )
     return null
@@ -2118,11 +2475,30 @@ export default function DashboardEditor({ boardId = null, onSaved }) {
       {/* Editor toolbar lives in the single app top bar (portaled into AppTopbar). */}
       {topbarSlot && createPortal(editorToolbar, topbarSlot)}
 
-      {/* ── Preview mode ── */}
+      {/* ── Preview mode — rendered inside the same device frame + zoom ── */}
       {preview ? (
-        <div className="flex-1 overflow-auto p-6 bg-bg">
-          <SpecRenderer spec={spec} />
-        </div>
+        <main ref={mainRef} className="flex-1 overflow-auto p-3 sm:p-6 bg-bg" style={{ touchAction: 'pan-x pan-y' }}>
+          <div ref={canvasRef} className="w-full">
+            <div
+              className="mx-auto transition-[width,height]"
+              style={{
+                width: designWidth * effectiveZoom,
+                height: effectiveZoom !== 1 ? deviceDashHeight * effectiveZoom : undefined,
+              }}
+            >
+              <div
+                className={device === 'desktop' ? '' : 'rounded-2xl border border-border shadow-md bg-bg overflow-hidden'}
+                style={{
+                  width: designWidth,
+                  transform: effectiveZoom !== 1 ? `scale(${effectiveZoom})` : undefined,
+                  transformOrigin: 'top left',
+                }}
+              >
+                <SpecRenderer spec={spec} forceBreakpoint={activeBreakpoint} />
+              </div>
+            </div>
+          </div>
+        </main>
       ) : (
         /* ── Edit mode ── */
         <div className="flex flex-1 min-h-0 overflow-hidden relative">
@@ -2135,35 +2511,42 @@ export default function DashboardEditor({ boardId = null, onSaved }) {
             />
           )}
 
-          {/* Center: RGL canvas — the ONLY scrolling region in edit mode */}
+          {/* Center: grid canvas — the ONLY scrolling region in edit mode. Doubles
+              as the zoom/pan viewport (pinch to zoom, one-finger drag to pan). */}
           <main
+            ref={mainRef}
             className="flex-1 min-w-0 overflow-auto p-3 sm:p-4 bg-bg"
             data-testid="editor-canvas"
-            style={backgroundToCss(spec.background)}
+            style={{ ...backgroundToCss(spec.background), touchAction: 'pan-x pan-y' }}
             onClick={(e) => {
               // Click on empty canvas → deselect
               if (e.target === e.currentTarget) setSelectedId(null)
             }}
           >
-            {/* Canvas top bar: device switcher + mobile action buttons */}
-            <div className="flex items-center gap-2 mb-3 flex-wrap">
-              {/* Device viewport switcher */}
-              <div className="flex items-center rounded-lg border border-border bg-surface overflow-hidden">
-                {DEVICES.map((d, i) => (
-                  <button key={d.id} onClick={() => setDevice(d.id)} title={d.label}
-                    className={`flex items-center gap-1.5 px-2.5 h-8 text-xs font-medium transition-colors ${i > 0 ? 'border-l border-border' : ''} ${
-                      device === d.id ? 'bg-primary text-primary-fg' : 'bg-surface text-muted hover:text-fg'
-                    }`}>
-                    <d.Icon size={14} />
-                    <span className="hidden sm:inline">{d.label}</span>
-                  </button>
-                ))}
-              </div>
+            {/* Canvas top bar: viewport width + custom-layout indicators
+                (device switcher now lives in the app top bar) */}
+            <div className="flex items-center gap-2 mb-3 flex-wrap empty:hidden">
+              {/* Custom screen width (tablet/mobile only) */}
               {device !== 'desktop' && (
-                <span className="text-[10px] text-muted whitespace-nowrap">
-                  {DEVICE_WIDTHS[device]}px{deviceZoom < 1 ? ` · ${Math.round(deviceZoom * 100)}%` : ''}
-                </span>
+                <div className="flex items-center gap-1" data-testid="device-width-control">
+                  {WIDTH_PRESETS.map(w => (
+                    <button key={w} onClick={() => setDeviceWidths(s => ({ ...s, [device]: w }))}
+                      title={`${w}px wide`}
+                      className={`text-[10px] font-medium px-1.5 h-6 rounded-md border transition-colors ${
+                        deviceWidths[device] === w ? 'bg-primary text-primary-fg border-primary' : 'bg-surface text-muted border-border hover:text-fg'
+                      }`}>{w}</button>
+                  ))}
+                  <input
+                    type="number" min={200} max={2000}
+                    value={deviceWidths[device]}
+                    onChange={e => { const v = parseInt(e.target.value, 10); if (v) setDeviceWidths(s => ({ ...s, [device]: v })) }}
+                    className="w-14 h-6 text-[10px] px-1.5 rounded-md border border-border bg-surface text-fg focus:outline-none focus:ring-1 focus:ring-ring/50"
+                  />
+                  <span className="text-[10px] text-muted">px</span>
+                </div>
               )}
+
+              {/* Zoom controls now live in the app top bar (and mobile slide-out). */}
               {device !== 'desktop' && (() => {
                 const custom = hasOverrides(spec, activeBreakpoint)
                 return (
@@ -2220,72 +2603,86 @@ export default function DashboardEditor({ boardId = null, onSaved }) {
                 ref={canvasRef}
                 className="w-full"
                 onClick={(e) => {
-                  // Click directly on the RGL container background → deselect
+                  // Click directly on the grid container background → deselect
                   if (e.target === e.currentTarget) setSelectedId(null)
                 }}
               >
+                {/* Outer: reserves the scaled frame's footprint so the viewport
+                    scrolls/pans. Inner: the true-design-width frame, CSS-scaled. */}
                 <div
-                  className={device === 'desktop' ? '' : 'mx-auto transition-all'}
-                  style={device === 'desktop' ? undefined : {
-                    width: frameWidth * deviceZoom,
-                    height: deviceZoom < 1 ? deviceDashHeight * deviceZoom : undefined,
+                  className="mx-auto transition-[width,height]"
+                  style={{
+                    width: designWidth * effectiveZoom,
+                    height: effectiveZoom !== 1 ? deviceDashHeight * effectiveZoom : undefined,
                   }}
                 >
                 <div
                   className={device === 'desktop' ? '' : 'rounded-2xl border border-border shadow-md bg-bg overflow-hidden'}
-                  style={device === 'desktop' ? undefined : {
-                    width: frameWidth,
-                    transform: deviceZoom < 1 ? `scale(${deviceZoom})` : undefined,
+                  style={{
+                    width: designWidth,
+                    transform: effectiveZoom !== 1 ? `scale(${effectiveZoom})` : undefined,
                     transformOrigin: 'top left',
                   }}
                 >
-                <ResponsiveGridLayout
-                  width={frameWidth}
-                  className="layout"
-                  layouts={rglLayouts}
-                  breakpoints={{ lg: 1200, md: 768, sm: 0 }}
-                  cols={{ lg: spec.layout.cols, md: spec.layout.cols, sm: 1 }}
-                  rowHeight={spec.layout.row_height}
-                  onLayoutChange={handleLayoutChange}
-                  onDragStart={handleDragStart}
-                  onDragStop={handleDragStop}
-                  onResizeStart={handleResizeStart}
-                  onResizeStop={handleResizeStop}
-                  dragConfig={{ enabled: true, handle: '.drag-handle' }}
-                  resizeConfig={{ enabled: true, handles: ['s', 'e', 'se', 'sw', 'ne', 'n', 'w', 'nw'] }}
-                  {...editorCompactionProps}
-                  margin={editorMargin}
-                  containerPadding={editorPadding}
-                >
-                  {spec.widgets.map(widget => {
+                {/* CSS-Grid engine (dnd-kit). GridCanvas owns drag/resize math + zoom
+                    scaling and the column-guide / ghost overlays. We feed it the SAME
+                    0-based layout array RGL consumed and the SAME commit callback, so
+                    the commit contract is byte-for-byte preserved. Desktop/tablet =
+                    free 2-D editing; mobile = drag-to-reorder stack. Keyed by
+                    activeBreakpoint so a device switch remounts with fresh geometry. */}
+                <GridCanvas
+                  key={activeBreakpoint}
+                  layout={gridLayouts[activeBreakpoint]}
+                  cols={editorGridCols}
+                  rowHeight={spec.layout.row_height ?? 60}
+                  gap={editorGap}
+                  padding={editorPadding}
+                  width={designWidth}
+                  zoom={effectiveZoom}
+                  draggable
+                  resizable={gridMode === 'grid'}
+                  mode={gridMode}
+                  compaction={editorCompaction}
+                  dense={editorDense}
+                  selectedId={selectedId}
+                  dragHandle=".drag-handle"
+                  onInteractionStart={handleInteractionStart}
+                  onInteractionEnd={handleInteractionEnd}
+                  onLayoutCommit={commitLayout}
+                  renderItem={(item) => {
+                    const widget = spec.widgets.find(w => w.id === item.i)
+                    if (!widget) return null
                     const isSelected = selectedId === widget.id
                     const isHovered = hoveredId === widget.id
+                    const reorder = gridMode === 'reorder'
                     return (
                       // Note: NO overflow-hidden here — the hover toolbar uses position:absolute
                       // and must not be clipped. Inner areas handle their own overflow.
                       <div
-                        key={widget.id}
                         data-testid={`widget-${widget.id}`}
                         onClick={(e) => { e.stopPropagation(); setSelectedId(widget.id); setRightCollapsed(false); setRightPanel(p => p === 'chat' ? p : 'config'); setMobileSheet('config') }}
                         onMouseEnter={() => setHoveredId(widget.id)}
                         onMouseLeave={() => setHoveredId(null)}
                         style={styleToCss(widget.style)}
-                        className={`rounded-xl border-2 bg-surface transition-all relative flex flex-col ${
+                        className={`h-full w-full rounded-xl border-2 bg-surface transition-all relative flex flex-col ${
                           isSelected ? 'border-primary shadow-lg' : 'border-border hover:border-primary/40'
                         }`}
                       >
-                        {/* Hover toolbar: duplicate + delete — positioned outside overflow area */}
+                        {/* Hover toolbar: duplicate + delete (+ a height stepper on
+                            mobile, where corner resize handles are disabled). */}
                         <WidgetHoverToolbar
                           widget={widget}
                           onDuplicate={duplicateWidget}
                           onDelete={removeWidget}
                           visible={isHovered || isSelected}
+                          reorder={reorder}
+                          onHeightStep={handleHeightStep}
                         />
 
                         {/* Drag handle — top strip */}
                         <div
                           className="drag-handle h-6 shrink-0 bg-surface-2 hover:bg-primary/10 cursor-grab active:cursor-grabbing flex items-center gap-1.5 px-3 border-b border-border transition-colors select-none rounded-t-xl"
-                          title="Drag to move"
+                          title={reorder ? 'Drag to reorder' : 'Drag to move'}
                         >
                           <svg width="12" height="12" viewBox="0 0 12 12" fill="none" className="text-muted/60 shrink-0">
                             <circle cx="3" cy="3" r="1.2" fill="currentColor"/>
@@ -2307,8 +2704,8 @@ export default function DashboardEditor({ boardId = null, onSaved }) {
                         </div>
                       </div>
                     )
-                  })}
-                </ResponsiveGridLayout>
+                  }}
+                />
                 </div>
                 </div>
               </div>
@@ -2346,6 +2743,43 @@ export default function DashboardEditor({ boardId = null, onSaved }) {
               </div>
             </aside>
           )}
+        </div>
+      )}
+
+      {/* ── Mobile slide-out menu (<md) ──
+          Holds the toolbar cluster that the top bar hides below md: device
+          switcher, zoom controls (+ Reset), and the panel toggles. Slides in from
+          the right; tap the backdrop or × to dismiss. */}
+      {mobileMenu && (
+        <div className="md:hidden fixed inset-0 z-50 flex justify-end" data-testid="editor-mobile-menu">
+          <div className="absolute inset-0 bg-black/40" onClick={() => setMobileMenu(false)} />
+          <div className="relative w-72 max-w-[85vw] h-full bg-surface border-l border-border shadow-2xl flex flex-col">
+            <div className="flex items-center justify-between px-4 h-12 border-b border-border shrink-0">
+              <span className="text-sm font-semibold text-fg">Editor</span>
+              <button onClick={() => setMobileMenu(false)} aria-label="Close menu"
+                className="w-8 h-8 flex items-center justify-center rounded-lg text-muted hover:text-fg hover:bg-surface-2 transition-colors">
+                <X size={16} />
+              </button>
+            </div>
+            <div className="flex-1 min-h-0 overflow-y-auto p-4 space-y-4">
+              <div className="space-y-1.5">
+                <SectionLabel>Device</SectionLabel>
+                {deviceSwitcher}
+              </div>
+              {!preview && (
+                <div className="space-y-1.5">
+                  <SectionLabel>Zoom</SectionLabel>
+                  {zoomControls(true)}
+                </div>
+              )}
+              {!preview && (
+                <div className="space-y-1.5">
+                  <SectionLabel>Panels</SectionLabel>
+                  {panelToggles(true)}
+                </div>
+              )}
+            </div>
+          </div>
         </div>
       )}
 

@@ -589,3 +589,532 @@ class TestFlowSpecJsonSchema:
         schema = flow_spec_json_schema()
         props = schema.get("properties", {})
         assert "params" in props, f"Expected 'params' in schema properties: {props}"
+
+
+# ---------------------------------------------------------------------------
+# 4. map node validation
+# ---------------------------------------------------------------------------
+
+
+def _map_spec(
+    *,
+    item_expr: str = "{{ inputs.get_regions.rows }}",
+    body: list | None = None,
+    collect_key: str | None = None,
+    extra_tasks: list | None = None,
+) -> dict:
+    """Build a minimal spec containing a map node."""
+    if body is None:
+        body = [
+            {
+                "key": "fetch_data",
+                "kind": "query",
+                "needs": [],
+                "config": {"sql": "SELECT 1"},
+            },
+            {
+                "key": "transform",
+                "kind": "python",
+                "needs": ["fetch_data"],
+                "config": {"code": "result = {}"},
+            },
+        ]
+    map_cfg: dict = {"item_expr": item_expr, "body": body}
+    if collect_key is not None:
+        map_cfg["collect_key"] = collect_key
+    tasks: list = [
+        {"key": "get_regions", "kind": "query", "needs": [], "config": {"sql": "SELECT 1"}},
+        {"key": "map_node", "kind": "map", "needs": ["get_regions"], "config": map_cfg},
+    ]
+    if extra_tasks:
+        tasks.extend(extra_tasks)
+    return {"version": 1, "name": "map_flow", "tasks": tasks}
+
+
+class TestMapNodeValidation:
+    """validate_flow_spec enforces map node config contracts."""
+
+    def test_valid_map_node_accepted(self):
+        spec, issues = validate_flow_spec(_map_spec())
+        hard = [i for i in issues if not i.startswith("[warn]")]
+        assert spec is not None, f"Expected valid spec; hard: {hard}"
+        assert hard == [], f"Unexpected hard issues: {hard}"
+
+    def test_map_node_in_spec_tasks(self):
+        spec, _ = validate_flow_spec(_map_spec())
+        assert spec is not None
+        keys = [t.key for t in spec.tasks]
+        assert "map_node" in keys
+
+    def test_missing_item_expr_is_hard_error(self):
+        body = [{"key": "t1", "kind": "noop", "needs": [], "config": {}}]
+        data = {
+            "version": 1,
+            "name": "bad_map",
+            "tasks": [
+                {
+                    "key": "m",
+                    "kind": "map",
+                    "needs": [],
+                    "config": {"body": body},
+                    # no item_expr
+                },
+            ],
+        }
+        _, issues = validate_flow_spec(data)
+        hard = [i for i in issues if not i.startswith("[warn]")]
+        assert any("item_expr" in i for i in hard), f"Expected item_expr error: {hard}"
+
+    def test_missing_body_is_hard_error(self):
+        data = {
+            "version": 1,
+            "name": "bad_map",
+            "tasks": [
+                {
+                    "key": "m",
+                    "kind": "map",
+                    "needs": [],
+                    "config": {"item_expr": "{{ inputs.x }}"},
+                    # no body
+                },
+            ],
+        }
+        _, issues = validate_flow_spec(data)
+        hard = [i for i in issues if not i.startswith("[warn]")]
+        assert any("body" in i for i in hard), f"Expected body error: {hard}"
+
+    def test_empty_body_list_is_hard_error(self):
+        data = {
+            "version": 1,
+            "name": "bad_map",
+            "tasks": [
+                {
+                    "key": "m",
+                    "kind": "map",
+                    "needs": [],
+                    "config": {"item_expr": "{{ inputs.x }}", "body": []},
+                },
+            ],
+        }
+        _, issues = validate_flow_spec(data)
+        hard = [i for i in issues if not i.startswith("[warn]")]
+        assert any("body" in i for i in hard), f"Expected body error: {hard}"
+
+    def test_invalid_body_task_propagates_error(self):
+        """A body task missing required config fields → hard error propagated."""
+        data = {
+            "version": 1,
+            "name": "bad_map",
+            "tasks": [
+                {
+                    "key": "m",
+                    "kind": "map",
+                    "needs": [],
+                    "config": {
+                        "item_expr": "{{ inputs.x }}",
+                        "body": [
+                            # python task missing 'code'
+                            {"key": "t1", "kind": "python", "needs": [], "config": {}},
+                        ],
+                    },
+                },
+            ],
+        }
+        _, issues = validate_flow_spec(data)
+        hard = [i for i in issues if not i.startswith("[warn]")]
+        assert any("body" in i.lower() for i in hard), (
+            f"Expected body sub-issue propagated: {hard}"
+        )
+
+    def test_nested_map_in_body_is_hard_error(self):
+        """A map node inside a map body (nested fan-out) must be rejected."""
+        nested_body = [
+            {"key": "inner", "kind": "noop", "needs": [], "config": {}},
+        ]
+        outer_body = [
+            {
+                "key": "nested_map",
+                "kind": "map",
+                "needs": [],
+                "config": {"item_expr": "{{ inputs.x }}", "body": nested_body},
+            },
+        ]
+        data = {
+            "version": 1,
+            "name": "nested_map_flow",
+            "tasks": [
+                {
+                    "key": "outer",
+                    "kind": "map",
+                    "needs": [],
+                    "config": {"item_expr": "{{ inputs.y }}", "body": outer_body},
+                },
+            ],
+        }
+        _, issues = validate_flow_spec(data)
+        hard = [i for i in issues if not i.startswith("[warn]")]
+        assert any("nested" in i.lower() or "nested_map" in i for i in hard), (
+            f"Expected nested map error: {hard}"
+        )
+
+    def test_invalid_collect_key_is_hard_error(self):
+        """collect_key referencing a non-existent body task key → hard error."""
+        spec_data = _map_spec(collect_key="nonexistent_key")
+        _, issues = validate_flow_spec(spec_data)
+        hard = [i for i in issues if not i.startswith("[warn]")]
+        assert any("collect_key" in i for i in hard), (
+            f"Expected collect_key error: {hard}"
+        )
+
+    def test_valid_collect_key_accepted(self):
+        """collect_key pointing to a valid body task key is accepted."""
+        spec_data = _map_spec(collect_key="transform")
+        spec, issues = validate_flow_spec(spec_data)
+        hard = [i for i in issues if not i.startswith("[warn]")]
+        assert spec is not None
+        assert not any("collect_key" in i for i in hard), (
+            f"Unexpected collect_key error: {hard}"
+        )
+
+    def test_body_cycle_is_propagated_as_hard_error(self):
+        """A cycle inside the body sub-DAG must surface as a hard error."""
+        cyclic_body = [
+            {"key": "a", "kind": "noop", "needs": ["b"], "config": {}},
+            {"key": "b", "kind": "noop", "needs": ["a"], "config": {}},
+        ]
+        data = {
+            "version": 1,
+            "name": "cyclic_body_map",
+            "tasks": [
+                {
+                    "key": "m",
+                    "kind": "map",
+                    "needs": [],
+                    "config": {"item_expr": "{{ inputs.x }}", "body": cyclic_body},
+                },
+            ],
+        }
+        _, issues = validate_flow_spec(data)
+        hard = [i for i in issues if not i.startswith("[warn]")]
+        assert any("body" in i.lower() for i in hard), (
+            f"Expected body cycle error: {hard}"
+        )
+
+    def test_map_node_error_identifies_map_task_key(self):
+        """Validation errors for a map node must include the map task key."""
+        data = {
+            "version": 1,
+            "name": "bad_map",
+            "tasks": [
+                {
+                    "key": "my_map_node",
+                    "kind": "map",
+                    "needs": [],
+                    "config": {},  # missing both item_expr and body
+                },
+            ],
+        }
+        _, issues = validate_flow_spec(data)
+        hard = [i for i in issues if not i.startswith("[warn]")]
+        assert any("my_map_node" in i for i in hard), (
+            f"Error should mention the map task key: {hard}"
+        )
+
+    def test_existing_kinds_still_valid_alongside_map(self):
+        """Existing non-map tasks remain valid when a map node is also present."""
+        spec, issues = validate_flow_spec(_map_spec())
+        hard = [i for i in issues if not i.startswith("[warn]")]
+        assert spec is not None
+        assert hard == []
+        # Both get_regions and map_node should be in the task list.
+        keys = {t.key for t in spec.tasks}
+        assert "get_regions" in keys
+        assert "map_node" in keys
+
+
+# ---------------------------------------------------------------------------
+# 5. branch node validation
+# ---------------------------------------------------------------------------
+
+
+def _branch_spec(
+    *,
+    conditions: list | None = None,
+    default: list | None = None,
+    include_next_tasks: bool = True,
+) -> dict:
+    """Build a minimal spec containing a branch node."""
+    if conditions is None:
+        conditions = [
+            {"when": "{{ inputs.classify.label == 'high' }}", "next": ["enrich"]},
+            {"when": "{{ inputs.classify.label == 'low' }}", "next": ["archive"]},
+        ]
+    branch_cfg: dict = {"conditions": conditions}
+    if default is not None:
+        branch_cfg["default"] = default
+    tasks: list = [
+        {
+            "key": "classify",
+            "kind": "python",
+            "needs": [],
+            "config": {"code": "result = {'label': 'high'}"},
+        },
+        {
+            "key": "route",
+            "kind": "branch",
+            "needs": ["classify"],
+            "config": branch_cfg,
+        },
+    ]
+    if include_next_tasks:
+        tasks += [
+            {"key": "enrich", "kind": "noop", "needs": ["route"], "config": {}},
+            {"key": "archive", "kind": "noop", "needs": ["route"], "config": {}},
+        ]
+    return {"version": 1, "name": "branch_flow", "tasks": tasks}
+
+
+class TestBranchNodeValidation:
+    """validate_flow_spec enforces branch node config contracts."""
+
+    def test_valid_branch_node_accepted(self):
+        spec, issues = validate_flow_spec(_branch_spec())
+        hard = [i for i in issues if not i.startswith("[warn]")]
+        assert spec is not None, f"Expected valid spec; hard: {hard}"
+        assert hard == [], f"Unexpected hard issues: {hard}"
+
+    def test_branch_node_in_spec_tasks(self):
+        spec, _ = validate_flow_spec(_branch_spec())
+        assert spec is not None
+        keys = [t.key for t in spec.tasks]
+        assert "route" in keys
+
+    def test_missing_conditions_is_hard_error(self):
+        data = {
+            "version": 1,
+            "name": "bad_branch",
+            "tasks": [
+                {
+                    "key": "b",
+                    "kind": "branch",
+                    "needs": [],
+                    "config": {},  # no conditions
+                },
+            ],
+        }
+        _, issues = validate_flow_spec(data)
+        hard = [i for i in issues if not i.startswith("[warn]")]
+        assert any("conditions" in i for i in hard), (
+            f"Expected conditions error: {hard}"
+        )
+
+    def test_empty_conditions_list_is_hard_error(self):
+        data = {
+            "version": 1,
+            "name": "bad_branch",
+            "tasks": [
+                {
+                    "key": "b",
+                    "kind": "branch",
+                    "needs": [],
+                    "config": {"conditions": []},
+                },
+            ],
+        }
+        _, issues = validate_flow_spec(data)
+        hard = [i for i in issues if not i.startswith("[warn]")]
+        assert any("conditions" in i for i in hard), (
+            f"Expected conditions error: {hard}"
+        )
+
+    def test_condition_missing_when_is_hard_error(self):
+        conditions = [{"next": ["enrich"]}]  # no 'when'
+        data = {
+            "version": 1,
+            "name": "bad_branch",
+            "tasks": [
+                {"key": "enrich", "kind": "noop", "needs": ["b"], "config": {}},
+                {
+                    "key": "b",
+                    "kind": "branch",
+                    "needs": [],
+                    "config": {"conditions": conditions},
+                },
+            ],
+        }
+        _, issues = validate_flow_spec(data)
+        hard = [i for i in issues if not i.startswith("[warn]")]
+        assert any("when" in i for i in hard), f"Expected 'when' error: {hard}"
+
+    def test_condition_missing_next_is_hard_error(self):
+        conditions = [{"when": "{{ inputs.x.label == 'a' }}"}]  # no 'next'
+        data = {
+            "version": 1,
+            "name": "bad_branch",
+            "tasks": [
+                {
+                    "key": "b",
+                    "kind": "branch",
+                    "needs": [],
+                    "config": {"conditions": conditions},
+                },
+            ],
+        }
+        _, issues = validate_flow_spec(data)
+        hard = [i for i in issues if not i.startswith("[warn]")]
+        assert any("next" in i for i in hard), f"Expected 'next' error: {hard}"
+
+    def test_next_references_undeclared_key_is_hard_error(self):
+        """conditions[i].next referencing an undeclared task key → hard error."""
+        spec_data = _branch_spec(
+            conditions=[
+                {"when": "{{ True }}", "next": ["undeclared_task"]},
+            ],
+            include_next_tasks=False,
+        )
+        _, issues = validate_flow_spec(spec_data)
+        hard = [i for i in issues if not i.startswith("[warn]")]
+        assert any("undeclared_task" in i for i in hard), (
+            f"Expected undeclared key error: {hard}"
+        )
+
+    def test_default_references_undeclared_key_is_hard_error(self):
+        """default list referencing an undeclared task key → hard error."""
+        data = {
+            "version": 1,
+            "name": "bad_default",
+            "tasks": [
+                {
+                    "key": "b",
+                    "kind": "branch",
+                    "needs": [],
+                    "config": {
+                        "conditions": [
+                            {"when": "{{ True }}", "next": []},
+                        ],
+                        "default": ["nonexistent"],
+                    },
+                },
+            ],
+        }
+        _, issues = validate_flow_spec(data)
+        hard = [i for i in issues if not i.startswith("[warn]")]
+        assert any("nonexistent" in i for i in hard), (
+            f"Expected undeclared default key error: {hard}"
+        )
+
+    def test_unreachable_task_in_branch_needs_is_hard_error(self):
+        """A task with a branch in its needs but not in any next/default → hard error."""
+        data = {
+            "version": 1,
+            "name": "unreachable",
+            "tasks": [
+                {
+                    "key": "b",
+                    "kind": "branch",
+                    "needs": [],
+                    "config": {
+                        "conditions": [
+                            {"when": "{{ True }}", "next": ["reachable"]},
+                        ],
+                    },
+                },
+                {"key": "reachable", "kind": "noop", "needs": ["b"], "config": {}},
+                # unreachable lists 'b' in needs but is NOT in any next/default
+                {"key": "unreachable_task", "kind": "noop", "needs": ["b"], "config": {}},
+            ],
+        }
+        _, issues = validate_flow_spec(data)
+        hard = [i for i in issues if not i.startswith("[warn]")]
+        assert any("unreachable_task" in i for i in hard), (
+            f"Expected unreachable task error: {hard}"
+        )
+
+    def test_default_is_optional_q1(self):
+        """Q1 resolved: else_ / default is optional.  No default → valid spec."""
+        spec_data = _branch_spec(
+            conditions=[
+                {"when": "{{ inputs.classify.label == 'high' }}", "next": ["enrich"]},
+                {"when": "{{ inputs.classify.label == 'low' }}", "next": ["archive"]},
+            ],
+            default=None,  # no default
+        )
+        spec, issues = validate_flow_spec(spec_data)
+        hard = [i for i in issues if not i.startswith("[warn]")]
+        assert spec is not None, f"Expected valid spec: {hard}"
+        assert hard == [], f"Unexpected hard issues: {hard}"
+
+    def test_rejoin_allowed_same_next_key_in_multiple_conditions(self):
+        """Multiple conditions may name the same next task key (rejoin)."""
+        data = {
+            "version": 1,
+            "name": "rejoin",
+            "tasks": [
+                {
+                    "key": "b",
+                    "kind": "branch",
+                    "needs": [],
+                    "config": {
+                        "conditions": [
+                            {"when": "{{ True }}", "next": ["join"]},
+                            {"when": "{{ False }}", "next": ["join"]},
+                        ],
+                    },
+                },
+                {"key": "join", "kind": "noop", "needs": ["b"], "config": {}},
+            ],
+        }
+        spec, issues = validate_flow_spec(data)
+        hard = [i for i in issues if not i.startswith("[warn]")]
+        assert spec is not None
+        assert hard == [], f"Unexpected hard issues: {hard}"
+
+    def test_branch_node_error_identifies_task_key(self):
+        """Validation errors for a branch node must include the branch task key."""
+        data = {
+            "version": 1,
+            "name": "bad_branch",
+            "tasks": [
+                {
+                    "key": "my_branch",
+                    "kind": "branch",
+                    "needs": [],
+                    "config": {},  # no conditions
+                },
+            ],
+        }
+        _, issues = validate_flow_spec(data)
+        hard = [i for i in issues if not i.startswith("[warn]")]
+        assert any("my_branch" in i for i in hard), (
+            f"Error should mention the branch task key: {hard}"
+        )
+
+    def test_map_collect_kind_accepted(self):
+        """map_collect is a valid kind (no required config fields)."""
+        data = {
+            "version": 1,
+            "name": "with_map_collect",
+            "tasks": [
+                {"key": "mc", "kind": "map_collect", "needs": [], "config": {}},
+            ],
+        }
+        spec, issues = validate_flow_spec(data)
+        hard = [i for i in issues if not i.startswith("[warn]")]
+        assert spec is not None
+        assert hard == [], f"Unexpected hard issues: {hard}"
+
+    def test_backward_compat_existing_spec_still_valid(self):
+        """Existing specs with legacy kinds validate without errors after adding map/branch."""
+        data = {
+            "version": 1,
+            "name": "legacy",
+            "tasks": [
+                {"key": "q", "kind": "query", "needs": [], "config": {"sql": "SELECT 1"}},
+                {"key": "p", "kind": "python", "needs": ["q"], "config": {"code": "result=1"}},
+                {"key": "n", "kind": "noop", "needs": ["p"], "config": {}},
+            ],
+        }
+        spec, issues = validate_flow_spec(data)
+        hard = [i for i in issues if not i.startswith("[warn]")]
+        assert spec is not None
+        assert hard == []

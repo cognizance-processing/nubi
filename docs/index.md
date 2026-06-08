@@ -21,12 +21,14 @@ Nubi is a batteries-included BI and embedded-analytics platform. The kernel runs
 | | |
 |---|---|
 | [**Getting Started**](/docs/getting-started) | Docker Compose or dev path, environment variables, monorepo layout |
-| [**Connectors**](/docs/connectors) | Postgres, DuckDB (in-mem + file), HttpJson, MySQL/MariaDB, JDBC, BYO warehouse, 7-flag capability contract |
+| [**Connectors**](/docs/connectors) | Postgres, DuckDB (in-mem + file), HttpJson, MySQL/MariaDB, JDBC, BYO warehouse, 7-flag capability contract, Data Browser |
 | [**Connector Security**](/docs/connector-security) | AES-256-GCM secret encryption, key rotation, network modes |
 | [**Queries & Parameters**](/docs/queries-and-params) | Registered queries, `{{named}}` typed params, query library, text-to-SQL |
 | [**Dashboards**](/docs/dashboards) | DashboardSpec, widget types (kpi/metric/chart/table/pivot/filter/text/section), 9 chart types, variables, `/d/:id?var=` route params |
 | [**Exports & Scheduled Reports**](/docs/exports-and-jobs) | CSV/PDF exports, cron jobs, per-recipient locked params |
-| [**Flows**](/docs/flows) | Multi-step DAG orchestrator: query → python → agent, retries, caching, React Flow canvas, LLM authoring |
+| [**Flows**](/docs/flows) | Multi-step DAG orchestrator: query/python/agent/materialize/extract/bucket_load/preagg_refresh, retries, caching, materialized blends, React Flow canvas, LLM authoring |
+| [**Pre-Aggregations**](/docs/pre-aggregations) | Auto rollups mined from the query log, ranked by frequency × scanned-bytes, RLS-preserving, transparent routing with HIT counts |
+| [**Secrets**](/docs/secrets) | Org-scoped encrypted secrets, `{{ secrets.NAME }}` in flows, `nubi secrets set/list` |
 | [**AI, Chat & MCP**](/docs/ai-and-mcp) | Grounded ask, agentic chat, 7 agent tools, MCP server (6 tools), Slack/WhatsApp gateway |
 | [**Embedding**](/docs/embedding) | JWT minting (RS256/ES256), per-viewer RLS, token-locked params, `<nubi-dashboard>` |
 | [**Git Sync**](/docs/git-sync) | GitHub App + GitLab push; commit queries and dashboards as code |

@@ -22,7 +22,7 @@ import Logo from './Logo.jsx'
 const NAV_LINKS = [
   { label: 'Docs',       to: '/docs' },
   { label: 'Compare',    to: '/compare' },
-  { label: 'Pricing',    to: '/',        scrollTo: 'pricing' },
+  { label: 'Pricing',    to: '/pricing' },
   { label: 'Playground', to: '/playground', authOnly: true },
   { label: 'Editor',     to: '/editor',     authOnly: true },
   { label: 'Dashboard',  to: '/dashboard',  authOnly: true },
@@ -215,7 +215,7 @@ export default function Navbar() {
   return (
     <header className="
       sticky top-0 z-50
-      bg-surface/80 backdrop-blur-md
+      bg-surface
       border-b border-border
       shadow-sm
     ">

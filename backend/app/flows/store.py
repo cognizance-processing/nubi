@@ -69,7 +69,15 @@ class InMemoryFlowStore:
     -------------
     ``{id, flow_run_id, org_id, task_key, state, attempt,
     depends_on(list[str]), cache_key, result(dict|None), error,
-    logs(list[str]), scheduled_at, started_at, finished_at, created_at}``
+    logs(list[str]), scheduled_at, started_at, finished_at, created_at,
+    parent_task_run_id(str|None), branch_taken(str|None)}``
+
+    ``parent_task_run_id`` — for map child task_runs, points to the parent
+    map task_run.  NULL for all other task_runs (migration 0020).
+
+    ``branch_taken`` — for branch task_runs, stores the branch label that was
+    taken (e.g. ``"condition_0"``, ``"default"``).  NULL for all other
+    task_runs (migration 0020).
     """
 
     def __init__(self) -> None:
@@ -290,6 +298,17 @@ class InMemoryFlowStore:
                 "started_at": tr.get("started_at", None),
                 "finished_at": tr.get("finished_at", None),
                 "created_at": tr.get("created_at", now),
+                # Work-pool lease fields (migration 0016).
+                "lease_expires_at": tr.get("lease_expires_at", None),
+                "worker_id": tr.get("worker_id", None),
+                # Map / branch fields (migration 0020).
+                # parent_task_run_id: set on map child task_runs to the parent
+                #   map task_run id; NULL for all other task_runs.
+                "parent_task_run_id": tr.get("parent_task_run_id", None),
+                # branch_taken: set on branch task_runs to the label of the
+                #   condition that matched (e.g. "condition_0", "default");
+                #   NULL for all other task_runs.
+                "branch_taken": tr.get("branch_taken", None),
             }
             self._task_runs[tr_id] = record
             self._task_run_index.setdefault(flow_run_id, []).append(tr_id)
@@ -332,7 +351,12 @@ class InMemoryFlowStore:
                 tr[key] = val
         return deepcopy(tr)
 
-    async def claim_ready_task_run(self, now: datetime) -> TaskRun | None:
+    async def claim_ready_task_run(
+        self,
+        now: datetime,
+        worker_id: str | None = None,
+        lease_seconds: int = 300,
+    ) -> TaskRun | None:
         """Claim and mark 'running' the oldest eligible task_run.
 
         Eligibility: ``state in ('ready', 'retrying')`` AND (``scheduled_at``
@@ -340,9 +364,37 @@ class InMemoryFlowStore:
         *oldest* one (by ``scheduled_at`` — None sorts first, then by
         ``created_at``) is claimed atomically (in-memory: no contention).
 
-        Returns the updated task_run dict (state='running'), or ``None``
-        if no eligible task_run exists.
+        States that are explicitly NOT claimable:
+        - ``pending``          — not yet unblocked by ``advance_readiness``.
+        - ``running``          — already claimed by another worker.
+        - ``waiting_children`` — map fan-out in progress; the map task_run
+                                 transitions to ``success``/``failed`` once all
+                                 child task_runs are terminal.  It must NEVER
+                                 be re-claimed.
+        - ``success``, ``failed``, ``timed_out``, ``upstream_failed``,
+          ``skipped``, ``cancelled`` — already terminal.
+
+        Parameters
+        ----------
+        now:
+            Injected clock datetime.
+        worker_id:
+            Opaque identifier for the claiming worker (e.g. hostname + pid).
+            Stored on the row so reaping can be audited.
+        lease_seconds:
+            Duration of the worker lease.  ``lease_expires_at`` is set to
+            ``now + lease_seconds``.  Pass 0 to skip setting the lease.
+
+        Returns
+        -------
+        TaskRun | None
+            The updated task_run dict (state='running'), or ``None`` if no
+            eligible task_run exists.
         """
+        from datetime import timedelta  # noqa: PLC0415
+
+        # Only 'ready' and 'retrying' are claimable.  'waiting_children' (map
+        # fan-out in progress) must never be claimed — it is not in this set.
         candidates: list[TaskRun] = [
             tr
             for tr in self._task_runs.values()
@@ -361,10 +413,56 @@ class InMemoryFlowStore:
         candidates.sort(key=_sort_key)
         oldest = candidates[0]
 
-        # Mark as running.
+        # Mark as running, set lease fields.
         oldest["state"] = "running"
         oldest["started_at"] = now
+        oldest["worker_id"] = worker_id
+        oldest["lease_expires_at"] = (now + timedelta(seconds=lease_seconds)) if lease_seconds else None
         return deepcopy(oldest)
+
+    async def reap_expired_leases(self, now: datetime) -> int:
+        """Re-queue task_runs whose worker lease has expired.
+
+        A task_run is eligible for reaping when:
+        - ``state = 'running'``
+        - ``lease_expires_at`` is set AND ``lease_expires_at < now``
+
+        Re-queued runs are transitioned back to ``'ready'`` (or ``'retrying'``
+        when ``attempt > 0``) so another worker can claim them.  The
+        ``lease_expires_at`` and ``worker_id`` are cleared.
+
+        Parameters
+        ----------
+        now:
+            Injected clock datetime.
+
+        Returns
+        -------
+        int
+            Number of task_runs reaped.
+        """
+        count = 0
+        for tr in self._task_runs.values():
+            if tr["state"] != "running":
+                continue
+            lease_exp = tr.get("lease_expires_at")
+            if lease_exp is None:
+                continue
+            # Ensure timezone-aware comparison.
+            if getattr(lease_exp, "tzinfo", None) is None:
+                lease_exp = lease_exp.replace(tzinfo=timezone.utc)
+            if lease_exp >= now:
+                continue
+
+            # Lease has expired — re-queue this task_run.
+            attempt = int(tr.get("attempt", 0))
+            new_state = "retrying" if attempt > 0 else "ready"
+            tr["state"] = new_state
+            tr["lease_expires_at"] = None
+            tr["worker_id"] = None
+            # Do NOT reset started_at or attempt — preserve run history.
+            count += 1
+        return count
 
 
 # ---------------------------------------------------------------------------
@@ -420,7 +518,7 @@ def _row_to_task_run(row: Any) -> TaskRun:
     for key in ("id", "flow_run_id", "org_id"):
         if key in d and d[key] is not None and not isinstance(d[key], str):
             d[key] = str(d[key])
-    for key in ("scheduled_at", "started_at", "finished_at", "created_at"):
+    for key in ("scheduled_at", "started_at", "finished_at", "created_at", "lease_expires_at"):
         val = d.get(key)
         if isinstance(val, datetime) and val.tzinfo is None:
             d[key] = val.replace(tzinfo=timezone.utc)
@@ -443,6 +541,15 @@ def _row_to_task_run(row: Any) -> TaskRun:
                 d["logs"] = []
     else:
         d["logs"] = []
+    # Ensure lease fields are present (older rows pre-migration may lack them).
+    d.setdefault("lease_expires_at", None)
+    d.setdefault("worker_id", None)
+    # Map / branch fields added in migration 0020; default to None for older rows.
+    if "parent_task_run_id" in d and d["parent_task_run_id"] is not None:
+        d["parent_task_run_id"] = str(d["parent_task_run_id"])
+    else:
+        d.setdefault("parent_task_run_id", None)
+    d.setdefault("branch_taken", None)
     return d
 
 
@@ -713,11 +820,14 @@ class PgFlowStore:
 
         stored: list[TaskRun] = []
         for tr in task_runs:
+            parent_id = tr.get("parent_task_run_id")
             row = await db_fetchrow(
                 """
                 INSERT INTO task_runs (flow_run_id, org_id, task_key, state, attempt,
-                                       depends_on, cache_key, result, scheduled_at)
-                VALUES ($1::uuid, $2::uuid, $3, $4, $5, $6, $7, $8::jsonb, $9)
+                                       depends_on, cache_key, result, scheduled_at,
+                                       parent_task_run_id, branch_taken)
+                VALUES ($1::uuid, $2::uuid, $3, $4, $5, $6, $7, $8::jsonb, $9,
+                        $10::uuid, $11)
                 RETURNING *
                 """,
                 flow_run_id,
@@ -729,6 +839,8 @@ class PgFlowStore:
                 tr.get("cache_key"),
                 json.dumps(tr["result"]) if tr.get("result") is not None else None,
                 tr.get("scheduled_at"),
+                parent_id,
+                tr.get("branch_taken"),
             )
             if row is None:  # pragma: no cover
                 raise RuntimeError("INSERT INTO task_runs returned no row.")
@@ -773,6 +885,8 @@ class PgFlowStore:
         allowed = {
             "state", "attempt", "result", "error", "logs",
             "scheduled_at", "started_at", "finished_at", "cache_key",
+            # Map / branch fields (migration 0020).
+            "branch_taken",
         }
         updates: list[str] = []
         values: list[Any] = []
@@ -781,6 +895,7 @@ class PgFlowStore:
         for field in (
             "state", "attempt", "error",
             "scheduled_at", "started_at", "finished_at", "cache_key",
+            "branch_taken",
         ):
             if field not in fields or field not in allowed:
                 continue
@@ -816,32 +931,99 @@ class PgFlowStore:
         )
         return _row_to_task_run(row) if row is not None else None
 
-    async def claim_ready_task_run(self, now: datetime) -> TaskRun | None:
+    async def claim_ready_task_run(
+        self,
+        now: datetime,
+        worker_id: str | None = None,
+        lease_seconds: int = 300,
+    ) -> TaskRun | None:
         """Claim the oldest eligible task_run with FOR UPDATE SKIP LOCKED.
 
         Eligibility: ``state IN ('ready', 'retrying')`` AND (``scheduled_at``
         IS NULL OR ``scheduled_at <= now``).  Uses ``FOR UPDATE SKIP LOCKED``
         so that multiple workers can safely claim without contention.
+
+        Parameters
+        ----------
+        now:
+            Injected clock datetime.
+        worker_id:
+            Opaque worker identifier stored on the row for lease tracking.
+        lease_seconds:
+            Lease duration.  ``lease_expires_at`` is set to
+            ``now + interval``.  Pass 0 to leave it NULL.
         """
         from app.db import fetchrow as db_fetchrow  # noqa: PLC0415
 
-        row = await db_fetchrow(
+        if lease_seconds:
+            row = await db_fetchrow(
+                """
+                UPDATE task_runs
+                SET state = 'running',
+                    started_at = $1,
+                    worker_id = $2,
+                    lease_expires_at = $1 + ($3 * interval '1 second')
+                WHERE id = (
+                    SELECT id FROM task_runs
+                    WHERE state IN ('ready', 'retrying')
+                      AND (scheduled_at IS NULL OR scheduled_at <= $1)
+                    ORDER BY scheduled_at ASC NULLS FIRST, created_at ASC
+                    LIMIT 1
+                    FOR UPDATE SKIP LOCKED
+                )
+                RETURNING *
+                """,
+                now,
+                worker_id,
+                lease_seconds,
+            )
+        else:
+            row = await db_fetchrow(
+                """
+                UPDATE task_runs
+                SET state = 'running', started_at = $1, worker_id = $2
+                WHERE id = (
+                    SELECT id FROM task_runs
+                    WHERE state IN ('ready', 'retrying')
+                      AND (scheduled_at IS NULL OR scheduled_at <= $1)
+                    ORDER BY scheduled_at ASC NULLS FIRST, created_at ASC
+                    LIMIT 1
+                    FOR UPDATE SKIP LOCKED
+                )
+                RETURNING *
+                """,
+                now,
+                worker_id,
+            )
+        return _row_to_task_run(row) if row is not None else None
+
+    async def reap_expired_leases(self, now: datetime) -> int:
+        """Re-queue task_runs whose worker lease has expired.
+
+        Transitions eligible rows (state='running', lease_expires_at < now)
+        back to 'ready' (or 'retrying' when attempt > 0) and clears the
+        lease fields.
+
+        Returns the number of rows reaped.
+        """
+        from app.db import execute as db_execute  # noqa: PLC0415
+
+        status = await db_execute(
             """
             UPDATE task_runs
-            SET state = 'running', started_at = $1
-            WHERE id = (
-                SELECT id FROM task_runs
-                WHERE state IN ('ready', 'retrying')
-                  AND (scheduled_at IS NULL OR scheduled_at <= $1)
-                ORDER BY scheduled_at ASC NULLS FIRST, created_at ASC
-                LIMIT 1
-                FOR UPDATE SKIP LOCKED
-            )
-            RETURNING *
+            SET state = CASE WHEN attempt > 0 THEN 'retrying' ELSE 'ready' END,
+                lease_expires_at = NULL,
+                worker_id = NULL
+            WHERE state = 'running'
+              AND lease_expires_at IS NOT NULL
+              AND lease_expires_at < $1
             """,
             now,
         )
-        return _row_to_task_run(row) if row is not None else None
+        try:
+            return int(status.split()[-1])
+        except (ValueError, IndexError):
+            return 0
 
 
 # ---------------------------------------------------------------------------

@@ -11,8 +11,8 @@ import {
   DEVICE_TO_BREAKPOINT,
   overridesFor,
   hasOverrides,
-  posToRglItem,
-  rglItemToPos,
+  posToGridItem,
+  gridItemToPos,
   effectivePos,
   buildResponsiveLayouts,
   applyLayoutCommit,
@@ -36,24 +36,24 @@ describe('device → breakpoint mapping', () => {
   })
 })
 
-describe('pos ↔ rgl conversion', () => {
-  test('posToRglItem converts 1-based to 0-based and clamps to cols', () => {
-    const item = posToRglItem('a', { x: 3, y: 2, w: 20, h: 5 }, { cols: 12 })
+describe('pos ↔ grid conversion', () => {
+  test('posToGridItem converts 1-based to 0-based and clamps to cols', () => {
+    const item = posToGridItem('a', { x: 3, y: 2, w: 20, h: 5 }, { cols: 12 })
     assert.deepEqual(item, { i: 'a', x: 2, y: 1, w: 12, h: 5 })
   })
-  test('posToRglItem carries static/min/max', () => {
-    const item = posToRglItem('a', { x: 1, y: 1, w: 4, h: 4, static: true, minW: 2, maxH: 9 })
+  test('posToGridItem carries static/min/max', () => {
+    const item = posToGridItem('a', { x: 1, y: 1, w: 4, h: 4, static: true, minW: 2, maxH: 9 })
     assert.equal(item.static, true)
     assert.equal(item.minW, 2)
     assert.equal(item.maxH, 9)
   })
-  test('posToRglItem applies minDefaults when no per-widget min', () => {
-    const item = posToRglItem('a', { x: 1, y: 1, w: 4, h: 4 }, { minDefaults: { minW: 3, minH: 3 } })
+  test('posToGridItem applies minDefaults when no per-widget min', () => {
+    const item = posToGridItem('a', { x: 1, y: 1, w: 4, h: 4 }, { minDefaults: { minW: 3, minH: 3 } })
     assert.equal(item.minW, 3)
     assert.equal(item.minH, 3)
   })
-  test('rglItemToPos round-trips and preserves prev constraints', () => {
-    const pos = rglItemToPos({ i: 'a', x: 2, y: 1, w: 4, h: 5 }, { static: true, minW: 2 })
+  test('gridItemToPos round-trips and preserves prev constraints', () => {
+    const pos = gridItemToPos({ i: 'a', x: 2, y: 1, w: 4, h: 5 }, { static: true, minW: 2 })
     assert.deepEqual(pos, { static: true, minW: 2, x: 3, y: 2, w: 4, h: 5 })
   })
 })
@@ -110,6 +110,35 @@ describe('buildResponsiveLayouts — back-compat fallback', () => {
     const { sm } = buildResponsiveLayouts(spec, 12)
     // a uses derived stack (y0), b uses override (y0 h2)
     assert.deepEqual(sm.find(i => i.i === 'b'), { i: 'b', x: 0, y: 0, w: 1, h: 2 })
+  })
+})
+
+describe('buildResponsiveLayouts — configurable per-breakpoint columns', () => {
+  test('omitting colsByBp keeps historical defaults (lg/md=cols, sm=1)', () => {
+    const spec = makeSpec()
+    const { lg, md, sm } = buildResponsiveLayouts(spec, 12)
+    // identical to the back-compat case above
+    assert.deepEqual(lg.map(i => [i.i, i.x, i.y, i.w, i.h]), [['a',0,0,4,4],['b',4,0,3,3]])
+    assert.deepEqual(md, lg)
+    assert.deepEqual(sm.map(i => [i.i, i.x, i.y, i.w, i.h]), [['a',0,0,1,4],['b',0,4,1,3]])
+  })
+
+  test('colsByBp.sm widens the sm clamp so overrides are not clamped to 1', () => {
+    // A 4-column mobile grid: a wide (w=3) sm override must survive clamping.
+    const spec = makeSpec({ sm: { a: { x: 1, y: 1, w: 3, h: 4 } } })
+    const { sm } = buildResponsiveLayouts(spec, 12, undefined, { sm: 4 })
+    assert.deepEqual(sm.find(i => i.i === 'a'), { i: 'a', x: 0, y: 0, w: 3, h: 4 })
+    // With the historical sm=1 clamp the same override would collapse to w=1.
+    const { sm: smNarrow } = buildResponsiveLayouts(spec, 12)
+    assert.equal(smNarrow.find(i => i.i === 'a').w, 1)
+  })
+
+  test('colsByBp.md narrows the md clamp', () => {
+    // md derives from lg (w=4 for "a"); clamp md to 2 columns.
+    const spec = makeSpec()
+    const { md } = buildResponsiveLayouts(spec, 12, undefined, { md: 2 })
+    assert.equal(md.find(i => i.i === 'a').w, 2) // clamped 4 -> 2
+    assert.equal(md.find(i => i.i === 'b').w, 2) // clamped 3 -> 2
   })
 })
 

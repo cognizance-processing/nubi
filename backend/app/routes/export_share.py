@@ -65,7 +65,7 @@ from app.config import get_settings
 from app.errors import AppError
 from app.queries.registry import ensure_persisted_query, get_query_registry
 from app.repos.provider import Repo, get_repo
-from app.routes.resources import resolve_org_id
+from app.routes._org import resolve_org_id
 
 router = APIRouter(prefix="/boards", tags=["export-share"])
 

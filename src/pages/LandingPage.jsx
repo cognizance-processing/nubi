@@ -85,6 +85,33 @@ const ScopedStyles = () => (
       transform: translateY(-3px);
     }
 
+    /* ── Illustration canvas — dotted gradient panel so illustrations sit on an
+          intentional surface (Stripe/Vercel-style) instead of empty whitespace ── */
+    .lp-illo-card {
+      position: relative;
+      background:
+        radial-gradient(circle at 1px 1px, rgba(36,86,166,0.07) 1px, transparent 1.6px) 0 0 / 22px 22px,
+        linear-gradient(155deg, var(--surface-2) 0%, var(--surface) 60%);
+      box-shadow:
+        inset 0 1px 0 rgba(255,255,255,0.5),
+        0 1px 2px rgba(27,35,99,0.04),
+        0 18px 40px -18px rgba(27,35,99,0.22);
+      transition: transform 0.3s cubic-bezier(0.34,1.4,0.64,1), box-shadow 0.3s ease;
+    }
+    .lp-illo-card:hover {
+      transform: translateY(-4px);
+      box-shadow:
+        inset 0 1px 0 rgba(255,255,255,0.5),
+        0 24px 50px -16px rgba(27,35,99,0.28);
+    }
+    /* brand hairline at the top edge of the canvas */
+    .lp-illo-card::before {
+      content: '';
+      position: absolute; left: 16px; right: 16px; top: 0; height: 2px;
+      background: linear-gradient(90deg, transparent, rgba(23,179,163,0.5), rgba(36,86,166,0.5), transparent);
+      border-radius: 2px;
+    }
+
     /* ── Step connector line ── */
     .lp-connector {
       background: linear-gradient(90deg, #1b2363 0%, #2456a6 50%, #17b3a3 100%);
@@ -181,7 +208,15 @@ function StatBadge({ value, label }) {
 
 function CompareCell({ value, isNubi = false }) {
   if (value === true) {
-    return (
+    // Nubi's wins get a strong filled gradient check; competitors a quiet tint.
+    return isNubi ? (
+      <span
+        className="inline-flex items-center justify-center w-7 h-7 rounded-full mx-auto shadow-sm"
+        style={{ background: 'linear-gradient(135deg, #17b3a3, #2dd4bf)' }}
+      >
+        <Check size={15} strokeWidth={3.25} className="text-white" />
+      </span>
+    ) : (
       <span className="inline-flex items-center justify-center w-6 h-6 rounded-full bg-accent/15 mx-auto">
         <Check size={13} strokeWidth={3} className="text-accent" />
       </span>
@@ -189,20 +224,20 @@ function CompareCell({ value, isNubi = false }) {
   }
   if (value === false) {
     return (
-      <span className="inline-flex items-center justify-center w-6 h-6 rounded-full bg-border/60 mx-auto">
-        <X size={12} strokeWidth={2.5} className="text-muted opacity-40" />
+      <span className="inline-flex items-center justify-center w-6 h-6 rounded-full bg-border/50 mx-auto">
+        <X size={12} strokeWidth={2.5} className="text-muted opacity-60" />
       </span>
     )
   }
   if (value === 'partial') {
     return (
-      <span className="inline-flex items-center justify-center w-6 h-6 rounded-full bg-surface-2 mx-auto">
-        <Minus size={12} strokeWidth={2.5} className="text-muted" />
+      <span className="inline-flex items-center justify-center gap-1 px-2 h-6 rounded-full bg-amber-400/15 mx-auto">
+        <Minus size={12} strokeWidth={3} className="text-amber-500" />
       </span>
     )
   }
   return (
-    <span className={`text-xs leading-snug ${isNubi ? 'font-medium text-brand-teal' : 'text-muted opacity-70'}`}>
+    <span className={`text-[13px] leading-snug ${isNubi ? 'font-semibold text-fg' : 'text-muted'}`}>
       {value}
     </span>
   )
@@ -223,7 +258,79 @@ function Chip({ icon: Icon, children, accent = false }) {
   )
 }
 
-function HowItWorksStep({ num, icon: Icon, title, color, tagline, bullets, code, chips }) {
+/* ── Tiny dependency-free code highlighter (SQL / shell / html) ──────────────
+   Returns colored <span>s. Colors are mid-tones chosen to read on the code
+   surface in BOTH light and dark themes. */
+const HL = {
+  kw:    '#4079c8', // keyword (blue)
+  fn:    '#0d9488', // function / tag (teal)
+  str:   '#c77b34', // string (amber)
+  num:   '#0d9488',
+  param: '#7c5cd6', // {{param}} / {expr} (violet)
+  punc:  '#8190a6',
+  plain: 'currentColor',
+}
+const HL_RULES = {
+  sql: [
+    [/\s+/y, 'plain'],
+    [/'(?:[^'\\]|\\.)*'/y, 'str'],
+    [/"(?:[^"\\]|\\.)*"/y, 'str'],
+    [/\{\{[^}]*\}\}/y, 'param'],
+    [/\b\d+(?:\.\d+)?\b/y, 'num'],
+    [/\b(?:SELECT|FROM|WHERE|GROUP\s+BY|ORDER\s+BY|HAVING|LIMIT|JOIN|LEFT|RIGHT|INNER|OUTER|FULL|CROSS|ON|AS|AND|OR|NOT|IN|IS|NULL|LIKE|BETWEEN|DISTINCT|UNION|ALL|WITH|CASE|WHEN|THEN|ELSE|END|ASC|DESC|OVER|PARTITION)\b/iy, 'kw'],
+    [/\b(?:SUM|COUNT|AVG|MIN|MAX|COALESCE|CAST|ROUND|DATE_TRUNC|NOW|EXTRACT|LOWER|UPPER|ABS|RANK|ROW_NUMBER)\b/iy, 'fn'],
+    [/[a-zA-Z_][a-zA-Z0-9_]*/y, 'plain'],
+    [/[(),.*=<>+\-/|]/y, 'punc'],
+  ],
+  shell: [
+    [/\s+/y, 'plain'],
+    [/'(?:[^'\\]|\\.)*'/y, 'str'],
+    [/"(?:[^"\\]|\\.)*"/y, 'str'],
+    [/--?[a-zA-Z][\w-]*/y, 'kw'],
+    [/[a-zA-Z_][\w.-]*/y, 'plain'],
+    [/[=:/]/y, 'punc'],
+  ],
+  html: [
+    [/\s+/y, 'plain'],
+    [/"(?:[^"\\]|\\.)*"/y, 'str'],
+    [/\{[^}]*\}/y, 'param'],
+    [/<\/?[a-zA-Z][\w-]*/y, 'kw'],
+    [/\/?>/y, 'kw'],
+    [/[a-zA-Z_][\w-]*(?==)/y, 'fn'],
+    [/[a-zA-Z_][\w-]*/y, 'plain'],
+    [/=/y, 'punc'],
+  ],
+}
+function highlightCode(code, lang) {
+  const rules = HL_RULES[lang]
+  if (!rules) return code
+  const out = []
+  let i = 0, firstWord = true
+  while (i < code.length) {
+    let matched = false
+    for (const [re, key] of rules) {
+      re.lastIndex = i
+      const m = re.exec(code)
+      if (m && m.index === i) {
+        let c = key
+        // shell: color the leading command token
+        if (lang === 'shell' && key === 'plain' && /\S/.test(m[0])) {
+          if (firstWord) { c = 'fn'; firstWord = false }
+        }
+        out.push([m[0], c])
+        i += m[0].length || 1
+        matched = true
+        break
+      }
+    }
+    if (!matched) { out.push([code[i], 'plain']); i++ }
+  }
+  return out.map(([t, c], idx) => (
+    <span key={idx} style={{ color: HL[c] || 'currentColor', fontWeight: c === 'kw' ? 600 : undefined }}>{t}</span>
+  ))
+}
+
+function HowItWorksStep({ num, icon: Icon, title, color, tagline, bullets, code, lang, chips }) {
   return (
     <div className="lp-step-card flex flex-col bg-surface rounded-2xl border border-border overflow-hidden flex-1 min-w-0">
       {/* Card header strip */}
@@ -272,8 +379,8 @@ function HowItWorksStep({ num, icon: Icon, title, color, tagline, bullets, code,
       {/* Code snippet */}
       {code && (
         <div className="px-6 pb-6">
-          <code className="block text-xs font-mono px-3 py-2.5 rounded-lg bg-surface-2 border border-border text-brand-teal break-all leading-relaxed">
-            {code}
+          <code className="block text-xs font-mono px-3 py-2.5 rounded-lg bg-surface-2 border border-border text-fg break-all leading-relaxed">
+            {lang ? highlightCode(code, lang) : code}
           </code>
         </div>
       )}
@@ -288,8 +395,8 @@ function HowItWorksStep({ num, icon: Icon, title, color, tagline, bullets, code,
  */
 function DiffRow({ icon: Icon, title, desc, Illustration, reverse = false, badge, id }) {
   const IllustrationBlock = (
-    <div className="w-full min-h-[240px] sm:min-h-[300px] lg:min-h-[380px] flex items-center">
-      <Illustration className="w-full h-auto" />
+    <div className="w-full min-h-[220px] sm:min-h-[280px] lg:min-h-[320px] flex items-center justify-center px-4 py-6 sm:px-8 sm:py-8">
+      <Illustration className="w-full h-auto max-w-[480px]" />
     </div>
   )
   const CopyBlock = (
@@ -319,7 +426,7 @@ function DiffRow({ icon: Icon, title, desc, Illustration, reverse = false, badge
       className={`grid grid-cols-1 lg:grid-cols-2 gap-8 sm:gap-10 lg:gap-16 items-center ${id ? 'scroll-mt-20' : ''}`}
     >
       {/* Mobile: illustration always first. Desktop: side depends on `reverse`. */}
-      <div className={`order-1 bg-surface rounded-2xl border border-border overflow-hidden p-2 ${reverse ? 'lg:order-2' : 'lg:order-1'}`}>
+      <div className={`lp-illo-card order-1 rounded-2xl border border-border overflow-hidden ${reverse ? 'lg:order-2' : 'lg:order-1'}`}>
         {IllustrationBlock}
       </div>
       <div className={`order-2 ${reverse ? 'lg:order-1' : 'lg:order-2'}`}>
@@ -472,7 +579,7 @@ export default function LandingPage() {
             §3  DIFFERENTIATORS — alternating left/right, LARGE illustrations
             id="features" — scroll target for footer "Dashboards" link
         ════════════════════════════════════════════════════════════════════ */}
-        <section id="features" className="py-16 sm:py-24 lg:py-32 bg-bg scroll-mt-14">
+        <section id="features" className="py-14 sm:py-20 lg:py-24 bg-bg scroll-mt-14">
           <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
 
             {/* Section header */}
@@ -492,7 +599,7 @@ export default function LandingPage() {
             </div>
 
             {/* Alternating rows */}
-            <div className="flex flex-col gap-16 sm:gap-20 lg:gap-32">
+            <div className="flex flex-col gap-12 sm:gap-16 lg:gap-20">
               <DiffRow
                 id="kernel"
                 icon={Zap}
@@ -556,7 +663,7 @@ export default function LandingPage() {
                 icon={Workflow}
                 title="Flows · LLM-native orchestration"
                 badge="Workflows"
-                desc="A lightweight Prefect alternative built in. Compose queries, Python, and AI agents into a visual DAG that runs on Postgres alone — no Redis, no Celery. Retries, timeouts, and result caching per task; RLS-aware execution. Agents can author and run flows in natural language, or drag them together in the builder."
+                desc="A lightweight Prefect alternative built in. Compose queries, Python, AI agents, multi-source materialized blends, archive extraction, and object-storage loads into a visual DAG that runs on Postgres alone — no Redis, no Celery. Retries, timeouts, and result caching per task; RLS-aware execution. Agents can author and run flows in natural language, or drag them together in the builder."
                 Illustration={FlowOrchestration}
                 reverse={false}
               />
@@ -568,7 +675,7 @@ export default function LandingPage() {
             §4  HOW IT WORKS — 3-step
             id="how-it-works" — scroll target for footer link
         ════════════════════════════════════════════════════════════════════ */}
-        <section id="how-it-works" className="py-16 sm:py-24 lg:py-32 bg-surface-2 scroll-mt-14">
+        <section id="how-it-works" className="py-14 sm:py-20 lg:py-24 bg-surface-2 scroll-mt-14">
           <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
             <div className="text-center mb-12 sm:mb-16">
               <p className="text-xs font-semibold tracking-widest uppercase mb-4 text-brand-teal">
@@ -606,6 +713,7 @@ export default function LandingPage() {
                   { label: 'Private VPC bridge', accent: true },
                 ]}
                 code="nubi connector add bigquery --project my-project"
+                lang="shell"
               />
 
               {/* Arrow connector */}
@@ -642,6 +750,7 @@ export default function LandingPage() {
                   { label: 'Edge cache', accent: false },
                 ]}
                 code="SELECT month, SUM(revenue) FROM events WHERE {{tenant_id}} GROUP BY 1"
+                lang="sql"
               />
 
               {/* Arrow connector */}
@@ -678,6 +787,7 @@ export default function LandingPage() {
                   { label: 'Web component', accent: false },
                 ]}
                 code={'<nubi-dashboard basePath="/api" getToken={getToken} />'}
+                lang="html"
               />
             </div>
 
@@ -695,7 +805,7 @@ export default function LandingPage() {
             §5  POSITIONING vs Hex / Cube
             id="compare" — scroll target, also has a full /compare page
         ════════════════════════════════════════════════════════════════════ */}
-        <section id="compare" className="py-16 sm:py-24 lg:py-32 bg-bg scroll-mt-14">
+        <section id="compare" className="py-14 sm:py-20 lg:py-24 bg-bg scroll-mt-14">
           <div className="max-w-5xl mx-auto px-4 sm:px-6 lg:px-8">
             <div className="text-center mb-10 sm:mb-14">
               <p className="text-xs font-semibold tracking-widest uppercase mb-4 text-brand-teal">
@@ -834,8 +944,9 @@ export default function LandingPage() {
                       {/* Category separator row */}
                       {category && (
                         <div className="grid grid-cols-[1.6fr_1fr_1fr_1.15fr] bg-surface-2 border-t border-border">
-                          <div className="py-1.5 px-5 col-span-1">
-                            <span className="text-[10px] font-bold uppercase tracking-widest text-muted opacity-60">{category}</span>
+                          <div className="py-2 px-5 col-span-1 flex items-center gap-2">
+                            <span className="w-1.5 h-1.5 rounded-full bg-brand-teal" />
+                            <span className="text-[11px] font-bold uppercase tracking-widest text-brand-blue">{category}</span>
                           </div>
                           <div className="border-l border-border" />
                           <div className="border-l border-border" />
@@ -844,8 +955,8 @@ export default function LandingPage() {
                       )}
                       {/* Data row */}
                       <div className={`lp-compare-row grid grid-cols-[1.6fr_1fr_1fr_1.15fr] ${!isLastInBlock ? 'border-b border-border' : ''}`}>
-                        <div className="py-3.5 px-5 flex items-center">
-                          <span className="text-xs font-medium text-fg">{dim}</span>
+                        <div className="py-4 px-5 flex items-center">
+                          <span className="text-[13px] font-semibold text-fg">{dim}</span>
                         </div>
                         <div className="py-3.5 px-4 border-l border-border flex items-center justify-center">
                           <CompareCell value={isBool ? hex : hex} />
@@ -911,21 +1022,24 @@ export default function LandingPage() {
               {[
                 {
                   tier: 'Free',
+                  price: '$0',
                   note: 'Real free tier, no gotchas',
-                  bullets: ['Unlimited dashboard views', 'DuckDB-WASM kernel', '1 connector'],
+                  bullets: ['Unlimited dashboard views', 'DuckDB-WASM kernel', '2 editors · 1 connector'],
                 },
                 {
                   tier: 'Pro',
+                  price: '$49',
                   note: 'For growing teams',
-                  bullets: ['Multiple connectors', 'Edge cache + pre-aggs', 'AI / MCP tools'],
+                  bullets: ['Unlimited connectors', 'Edge cache + pre-aggs', 'AI / MCP · all Flow tasks'],
                   highlight: true,
                 },
                 {
-                  tier: 'Enterprise',
-                  note: 'Self-host or managed',
-                  bullets: ['Unlimited connectors', 'SSO + audit log', 'SLA + support'],
+                  tier: 'Scale',
+                  price: '$1,000',
+                  note: 'Dedicated support + SLA',
+                  bullets: ['High-volume embedding', 'SSO · RBAC · audit', 'Named contact + Slack'],
                 },
-              ].map(({ tier, note, bullets, highlight }) => (
+              ].map(({ tier, price, note, bullets, highlight }) => (
                 <div
                   key={tier}
                   className={`rounded-xl p-5 border flex flex-col gap-3 ${
@@ -935,7 +1049,11 @@ export default function LandingPage() {
                   }`}
                 >
                   <div>
-                    <p className={`font-display font-bold text-lg ${highlight ? 'text-white' : 'text-fg'}`}>{tier}</p>
+                    <div className="flex items-baseline gap-1.5">
+                      <p className={`font-display font-bold text-lg ${highlight ? 'text-white' : 'text-fg'}`}>{tier}</p>
+                      <span className={`font-display font-bold text-lg ${highlight ? 'text-white' : 'text-fg'}`}>· {price}</span>
+                      {tier !== 'Free' && <span className={`text-[11px] ${highlight ? 'text-white/60' : 'text-muted'}`}>/mo</span>}
+                    </div>
                     <p className={`text-xs mt-0.5 ${highlight ? 'text-white/70' : 'text-muted'}`}>{note}</p>
                   </div>
                   <ul className="flex flex-col gap-1.5">
@@ -959,10 +1077,10 @@ export default function LandingPage() {
                 <ArrowRight size={16} strokeWidth={2.5} />
               </Link>
               <Link
-                to="/compare"
+                to="/pricing"
                 className="inline-flex items-center justify-center gap-2 px-6 sm:px-8 py-4 rounded-xl text-base font-semibold transition-all bg-surface border border-border text-fg hover:border-brand-blue hover:text-brand-blue min-h-[52px]"
               >
-                Full comparison →
+                See full pricing →
               </Link>
             </div>
 

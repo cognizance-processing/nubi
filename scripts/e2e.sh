@@ -6,7 +6,7 @@
 #   2.  Start postgres:16-alpine via Docker on that port.
 #   3.  Export DATABASE_URL and all other required env vars.
 #   4.  Run database/migrate.py  (schema migration).
-#   5.  Run backend/seed_demo.py if present, else backend/seed.py (demo data).
+#   5.  Run backend/seed.py --demo (superuser + demo workspace).
 #   6.  Start the backend uvicorn server.
 #   7.  Start the Vite dev server  (npm run dev).
 #   8.  Wait for both to pass their health checks.
@@ -144,19 +144,14 @@ info "Running database migrations..."
 info "Migrations complete."
 
 # ── 4. Seed demo data ─────────────────────────────────────────────────────────
-SEED_SCRIPT=""
-if [ -f "${REPO_ROOT}/backend/seed_demo.py" ]; then
-  SEED_SCRIPT="${REPO_ROOT}/backend/seed_demo.py"
-elif [ -f "${REPO_ROOT}/backend/seed.py" ]; then
-  SEED_SCRIPT="${REPO_ROOT}/backend/seed.py"
+# seed.py provisions the superuser; --demo also seeds the full demo workspace
+# (DuckDB datasource + queries + 10 dashboards from seed_data/demo/*.json).
+if [ -f "${REPO_ROOT}/backend/seed.py" ]; then
+  info "Seeding superuser + demo data via seed.py --demo..."
+  (cd "${REPO_ROOT}/backend" && "${PY}" seed.py --demo)
+  info "Seed complete."
 else
   warn "No seed script found — skipping seeding."
-fi
-
-if [ -n "${SEED_SCRIPT}" ]; then
-  info "Seeding demo data via ${SEED_SCRIPT}..."
-  (cd "${REPO_ROOT}/backend" && "${PY}" "$(basename "${SEED_SCRIPT}")")
-  info "Seed complete."
 fi
 
 # ── 5. Start backend ──────────────────────────────────────────────────────────

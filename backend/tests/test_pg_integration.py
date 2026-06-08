@@ -581,14 +581,14 @@ async def test_job_create_and_retrieve(pg_db):
 
 @pytest.mark.asyncio(loop_scope="session")
 async def test_seed_demo_idempotent(pg_db):
-    """seed_demo() creates the expected objects; running twice is a no-op."""
+    """seed.py --demo creates the expected demo objects; running twice is a no-op."""
     pool = pg_db
 
     import app.db as app_db  # noqa: PLC0415
     import sys  # noqa: PLC0415
     from pathlib import Path  # noqa: PLC0415
 
-    # Ensure backend/ is on sys.path so seed_demo can be imported.
+    # Ensure backend/ is on sys.path so seed.py can be imported.
     backend_dir = str(Path(__file__).parent.parent)
     if backend_dir not in sys.path:
         sys.path.insert(0, backend_dir)
@@ -596,31 +596,12 @@ async def test_seed_demo_idempotent(pg_db):
     original_pool = app_db._pool
     app_db._pool = pool
     try:
-        import importlib  # noqa: PLC0415
-        import seed_demo as _sd  # noqa: PLC0415
+        import seed as _sd  # noqa: PLC0415
 
-        # seed_demo() manages its own pool lifecycle (init_db/close_db). Inside this
-        # test we inject the fixture pool, so neutralize those so seed_demo reuses
-        # the shared pool and does NOT close it out from under the assertions.
-        async def _noop_db() -> None:
-            return None
+        # Superuser + personal org, then the comprehensive demo workspace.
+        uid = await _sd._ensure_superuser()
+        await _sd._seed_demo(uid)
 
-        _sd.init_db = _noop_db
-        _sd.close_db = _noop_db
-
-        # First run — should create everything.
-        await _sd.seed_demo()
-
-        # Check user exists.
-        user_row = await _fetchrow(
-            pool,
-            "SELECT id FROM users WHERE email = $1",
-            _sd.TEST_EMAIL,
-        )
-        assert user_row is not None
-        uid = str(user_row["id"])
-
-        # Check org exists.
         org_row = await _fetchrow(
             pool,
             "SELECT org_id FROM org_members WHERE user_id = $1::uuid LIMIT 1",
@@ -629,67 +610,24 @@ async def test_seed_demo_idempotent(pg_db):
         assert org_row is not None
         oid = str(org_row["org_id"])
 
-        # Check 2 datastores exist.
-        ds_rows = await _fetch(
-            pool,
-            "SELECT * FROM datastores WHERE org_id = $1::uuid",
-            oid,
-        )
-        assert len(ds_rows) >= 2
+        # Demo datastore + queries + 10 boards (counts may be higher if the
+        # per-project sample bundle was also seeded on org creation).
+        ds_rows = await _fetch(pool, "SELECT * FROM datastores WHERE org_id = $1::uuid", oid)
+        assert len(ds_rows) >= 1
+        q_rows = await _fetch(pool, "SELECT * FROM queries WHERE org_id = $1::uuid", oid)
+        assert len(q_rows) >= 20
+        b_rows = await _fetch(pool, "SELECT * FROM boards WHERE org_id = $1::uuid", oid)
+        assert len(b_rows) >= 10
 
-        # Check 4 queries exist.
-        q_rows = await _fetch(
-            pool,
-            "SELECT * FROM queries WHERE org_id = $1::uuid",
-            oid,
-        )
-        assert len(q_rows) >= 4
+        # Second run — idempotent; counts must not increase.
+        await _sd._seed_demo(uid)
 
-        # Check 2 boards exist.
-        b_rows = await _fetch(
-            pool,
-            "SELECT * FROM boards WHERE org_id = $1::uuid",
-            oid,
-        )
-        assert len(b_rows) >= 2
-
-        # Check 1 job exists.
-        j_rows = await _fetch(
-            pool,
-            "SELECT * FROM jobs WHERE org_id = $1::uuid",
-            oid,
-        )
-        assert len(j_rows) >= 1
-
-        # Second run — idempotent; counts should not increase.
-        await _sd.seed_demo()
-
-        ds_rows2 = await _fetch(
-            pool,
-            "SELECT * FROM datastores WHERE org_id = $1::uuid",
-            oid,
-        )
-        assert len(ds_rows2) == len(ds_rows), (
-            "seed_demo is not idempotent: datastore count increased on second run"
-        )
-
-        q_rows2 = await _fetch(
-            pool,
-            "SELECT * FROM queries WHERE org_id = $1::uuid",
-            oid,
-        )
-        assert len(q_rows2) == len(q_rows), (
-            "seed_demo is not idempotent: query count increased on second run"
-        )
-
-        b_rows2 = await _fetch(
-            pool,
-            "SELECT * FROM boards WHERE org_id = $1::uuid",
-            oid,
-        )
-        assert len(b_rows2) == len(b_rows), (
-            "seed_demo is not idempotent: board count increased on second run"
-        )
+        ds_rows2 = await _fetch(pool, "SELECT * FROM datastores WHERE org_id = $1::uuid", oid)
+        assert len(ds_rows2) == len(ds_rows), "seed --demo not idempotent: datastore count grew"
+        q_rows2 = await _fetch(pool, "SELECT * FROM queries WHERE org_id = $1::uuid", oid)
+        assert len(q_rows2) == len(q_rows), "seed --demo not idempotent: query count grew"
+        b_rows2 = await _fetch(pool, "SELECT * FROM boards WHERE org_id = $1::uuid", oid)
+        assert len(b_rows2) == len(b_rows), "seed --demo not idempotent: board count grew"
 
     finally:
         app_db._pool = original_pool

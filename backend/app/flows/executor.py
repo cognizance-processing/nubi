@@ -5,7 +5,8 @@ Public API
 TaskContext
     Dataclass carrying flow-level context needed by each task handler.
     Fields: ``flow_params`` (flow param values), ``inputs`` (upstream task
-    results keyed by task_key), ``now`` (the injected clock datetime).
+    results keyed by task_key), ``now`` (the injected clock datetime),
+    ``secrets`` (resolved org secrets keyed by name, plaintext values).
 
 execute_task(task, ctx, claims) -> dict
     Resolve ``{{ ... }}`` template expressions in the task's config,
@@ -24,10 +25,14 @@ contains every line printed by the subprocess (excluding the
 
 Templating
 ----------
-Strings inside ``config`` values may contain ``{{ params.x }}`` or
-``{{ inputs.task_key.field }}`` expressions.  Resolution is shallow and
-non-recursive.  Unknown references resolve to the empty string so that
-optional template params don't cause hard failures.
+Strings inside ``config`` values may contain ``{{ params.x }}``,
+``{{ inputs.task_key.field }}``, or ``{{ secrets.NAME }}`` expressions.
+Resolution is shallow and non-recursive.  Unknown references resolve to the
+empty string so that optional template params don't cause hard failures.
+
+``secrets.NAME`` resolves the plaintext value of the named org secret from
+``ctx.secrets`` (a ``dict[str, str]`` populated by the runtime before
+``execute_task`` is called via ``secret_store.resolve_all(org_id)``).
 
 Timeout
 -------
@@ -73,6 +78,16 @@ class TaskContext:
         The injected clock datetime (UTC, tz-aware).  Never call
         ``datetime.now()`` inside handlers — use this instead so the
         engine stays deterministic in tests.
+    secrets:
+        Resolved org secret values keyed by secret name (plaintext strings).
+        Populated by the runtime via ``secret_store.resolve_all(org_id)``
+        before ``execute_task`` is called.  Handlers may read credentials
+        via ``ctx.secrets[name]`` or resolve ``{{ secrets.NAME }}`` in
+        their config strings.  Never log or expose these values.
+    item:
+        For map body task_runs: the current item dict being processed.
+        Template expressions ``{{ item.field }}`` resolve against this dict.
+        ``None`` for non-map tasks (regular task execution).
     """
 
     flow_params: dict[str, Any] = field(default_factory=dict)
@@ -80,6 +95,8 @@ class TaskContext:
     now: datetime = field(default_factory=lambda: __import__("datetime").datetime.now(
         __import__("datetime").timezone.utc
     ))
+    secrets: dict[str, str] = field(default_factory=dict)
+    item: dict[str, Any] | None = field(default=None)
 
 
 # ---------------------------------------------------------------------------
@@ -123,6 +140,30 @@ def _resolve_value(expr: str, ctx: TaskContext) -> str:
                 return str(val)
         return str(val) if val is not None else ""
 
+    if namespace == "secrets":
+        if not rest:
+            return ""
+        secret_name = rest[0]
+        # Only the first segment is used; deeper navigation is not supported
+        # for secrets (values are always plain strings, not nested dicts).
+        val = ctx.secrets.get(secret_name, "")
+        return str(val) if val is not None else ""
+
+    if namespace == "item":
+        # Map body task: resolve against the current item dict in ctx.item.
+        item_val = ctx.item
+        if item_val is None:
+            return ""
+        if not rest:
+            return str(item_val) if item_val is not None else ""
+        val = item_val
+        for key in rest:
+            if isinstance(val, dict):
+                val = val.get(key, "")
+            else:
+                return str(val) if val is not None else ""
+        return str(val) if val is not None else ""
+
     # Unknown namespace → empty string (soft failure).
     return ""
 
@@ -156,6 +197,15 @@ def _resolve_any(v: Any, ctx: TaskContext) -> Any:
     if isinstance(v, list):
         return [_resolve_any(item, ctx) for item in v]
     return v
+
+
+def _resolve_str(expr: str, ctx: TaskContext) -> str:
+    """Alias for ``_resolve_string`` used by the branch/map handlers.
+
+    Exported under this name so handlers can import it without knowing the
+    internal function name.  Kept as a thin wrapper to avoid duplication.
+    """
+    return _resolve_string(expr, ctx)
 
 
 # ---------------------------------------------------------------------------
@@ -193,8 +243,44 @@ def execute_task(
     raw_config: dict[str, Any] = task.get("config") or {}
     timeout_s: int = int(task.get("timeout_s", 0) or 0)
 
+    # ── Map child item injection ──────────────────────────────────────────────
+    # If the task config contains ``__item__`` (set by _expand_map_children),
+    # augment the TaskContext with the item value so ``{{ item.field }}``
+    # template expressions resolve correctly.  We build a new ctx with item set
+    # rather than mutating the caller's ctx.
+    if raw_config.get("__item__") is not None and ctx.item is None:
+        from dataclasses import replace as _dc_replace  # noqa: PLC0415
+        ctx = _dc_replace(ctx, item=raw_config["__item__"])
+
+    # For python tasks with a map item: prepend ``item = <value>`` to the code
+    # so user snippets can access ``item.field`` as a dict key.  The item var
+    # name is read from ``__item_var__`` (default: ``"item"``).
+    if kind == "python" and raw_config.get("__item__") is not None:
+        import json as _json  # noqa: PLC0415
+        item_var_name: str = str(raw_config.get("__item_var__") or "item")
+        try:
+            item_json_str = _json.dumps(raw_config["__item__"])
+        except (TypeError, ValueError):
+            item_json_str = "{}"
+        item_preamble = (
+            f"import json as __item_json_mod__\n"
+            f"{item_var_name} = __item_json_mod__.loads({item_json_str!r})\n"
+        )
+        existing_code = raw_config.get("code", "")
+        raw_config = dict(raw_config)
+        raw_config["code"] = item_preamble + existing_code
+
     # Resolve templates in config.
-    resolved_config = _resolve_config(raw_config, ctx)
+    # Exception: map tasks require native (non-string) resolution for item_expr
+    # so that the list value is preserved.  Skip resolving item_expr here;
+    # the map handler uses _resolve_native to obtain the Python list directly.
+    if kind == "map":
+        resolved_config = {
+            k: (_resolve_any(v, ctx) if k not in ("item_expr", "body") else v)
+            for k, v in raw_config.items()
+        }
+    else:
+        resolved_config = _resolve_config(raw_config, ctx)
 
     # Add timeout hint to config so python handler can pick it up.
     if timeout_s > 0:

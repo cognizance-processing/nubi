@@ -13,6 +13,8 @@ GET    /flows/{id}/runs                                      -> [flow_run]
 GET    /flows/runs/{run_id}                                  -> flow_run + {task_runs:[...]}
 POST   /flows/blend             {name,sources,combine_sql,…} -> {flow, materialized:{datastore_id,query_id}}
 POST   /flows/tick              (X-Nubi-Tick-Secret header)  -> {materialised, tasks_run}
+POST   /flows/codegen           {spec}                       -> {source: str}
+POST   /flows/{id}/codegen                                   -> {source: str}
 
 All endpoints EXCEPT ``/flows/tick`` require a valid first-party Bearer token
 (``current_user``).  ``/flows/tick`` is an internal endpoint authed via a
@@ -131,6 +133,15 @@ class ValidateFlowIn(BaseModel):
 
 class RunFlowIn(BaseModel):
     params: dict[str, Any] = {}
+
+
+class CodegenSpecIn(BaseModel):
+    """Request body for ``POST /flows/codegen`` (inline spec variant).
+
+    Accepts a raw FlowSpec dict and returns generated Python SDK source.
+    """
+
+    spec: dict[str, Any]
 
 
 class ScheduledQueryIn(BaseModel):
@@ -612,6 +623,74 @@ async def get_task_run_logs(
     }
 
 
+@router.post("/codegen", status_code=200)
+async def codegen_from_spec(
+    body: CodegenSpecIn,
+    _user: dict[str, Any] = Depends(current_user),
+) -> dict[str, Any]:
+    """Generate Python SDK scaffold source from an inline FlowSpec dict.
+
+    Validates the spec first (returns 400 on hard errors), then runs
+    :func:`~app.flows.codegen.flow_spec_to_sdk` and returns the generated
+    source string.
+
+    This endpoint does NOT persist anything — it is a pure transformation
+    from FlowSpec JSON to Python source code.
+
+    Request body
+    ------------
+    ``{"spec": { ...FlowSpec dict... }}``
+
+    Returns
+    -------
+    ``{"source": "<python source code>"}``
+
+    Example
+    -------
+    .. code-block:: http
+
+        POST /flows/codegen
+        Content-Type: application/json
+
+        {
+          "spec": {
+            "version": 1,
+            "name": "my_flow",
+            "params": [],
+            "tasks": [
+              {
+                "key": "pull",
+                "kind": "query",
+                "needs": [],
+                "config": {"sql": "SELECT 1"},
+                "retries": 0, "retry_backoff_s": 30,
+                "timeout_s": 60, "cache_ttl_s": 0,
+                "ui": {"x": 0, "y": 0}
+              }
+            ]
+          }
+        }
+
+    Returns::
+
+        {
+          "source": "# Auto-generated scaffold ...\\n\\nfrom nubi.sdk import ..."
+        }
+    """
+    from app.flows.codegen import flow_spec_to_sdk  # noqa: PLC0415
+
+    spec, issues = validate_flow_spec(body.spec)
+    if not flow_spec_is_valid(issues):
+        hard = [i for i in issues if not i.startswith("[warn]")]
+        raise AppError("bad_flow_spec", "; ".join(hard), 400)
+
+    if spec is None:
+        raise AppError("bad_flow_spec", "Spec could not be parsed.", 400)
+
+    source = flow_spec_to_sdk(spec)
+    return {"source": source, "issues": issues}
+
+
 @router.post("", status_code=201)
 async def create_flow(
     body: CreateFlowIn,
@@ -795,6 +874,49 @@ async def list_flow_runs(
     await _require_flow_in_org(flow_id, org_id, store)
     runs = await store.list_flow_runs(flow_id)
     return [_serialize_flow_run(r) for r in runs]
+
+
+@router.post("/{flow_id}/codegen", status_code=200)
+async def codegen_flow(
+    flow_id: str,
+    user: dict[str, Any] = Depends(current_user),
+    repo: Repo = Depends(get_repo),
+) -> dict[str, Any]:
+    """Generate Python SDK scaffold source from a persisted flow's current spec.
+
+    Fetches the flow by ``flow_id`` (org-scoped), runs
+    :func:`~app.flows.codegen.flow_spec_to_sdk` on its spec, and returns the
+    generated Python source string.  This is the inverse of ``compile()``:
+    it turns the canonical FlowSpec IR back into editable SDK Python.
+
+    Returns 404 if the flow does not exist or belongs to a different org.
+
+    Returns
+    -------
+    ``{"source": "<python source code>", "flow_id": "<id>", "flow_name": "<name>"}``
+    """
+    from app.flows.codegen import flow_spec_to_sdk  # noqa: PLC0415
+
+    org_id = await _get_user_org(str(user["id"]), repo)
+    store = get_flow_store()
+    flow = await _require_flow_in_org(flow_id, org_id, store)
+
+    spec_data = flow.get("spec") or {}
+    spec, issues = validate_flow_spec(spec_data)
+    if not flow_spec_is_valid(issues):
+        hard = [i for i in issues if not i.startswith("[warn]")]
+        raise AppError("bad_flow_spec", "; ".join(hard), 400)
+
+    if spec is None:
+        raise AppError("bad_flow_spec", "Persisted spec could not be parsed.", 400)
+
+    source = flow_spec_to_sdk(spec)
+    return {
+        "source": source,
+        "flow_id": flow_id,
+        "flow_name": flow.get("name", ""),
+        "issues": issues,
+    }
 
 
 # ---------------------------------------------------------------------------

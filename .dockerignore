@@ -1,0 +1,59 @@
+# .dockerignore — files excluded from the Docker build context.
+#
+# OPEN-CORE: The ee/ trees are deliberately excluded from the OSS community
+# image.  If you are building the EE image, remove or override these entries.
+
+# ── EE trees (excluded from OSS / community image) ───────────────────────────
+backend/app/ee/
+src/ee/
+
+# ── Node / frontend build artefacts (backend image) ──────────────────────────
+node_modules/
+dist/
+dist-embed/
+
+# ── Python caches ─────────────────────────────────────────────────────────────
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+*.egg-info/
+.eggs/
+.venv/
+venv/
+env/
+
+# ── Test / dev tooling ─────────────────────────────────────────────────────────
+backend/tests/
+e2e/
+playwright-report/
+test-results/
+*.test.mjs
+*.spec.js
+*.spec.ts
+
+# ── Secrets / local config ─────────────────────────────────────────────────────
+.env
+.env.*
+!.env.compose
+*.local
+
+# ── Git / CI ──────────────────────────────────────────────────────────────────
+.git/
+.github/
+.gitignore
+
+# ── Docs / media (not needed in the image) ────────────────────────────────────
+docs/
+*.md
+!requirements.txt
+
+# ── Misc development files ────────────────────────────────────────────────────
+*.mjs
+billing-model/
+cli/
+legacy/
+mcp/
+sdk/
+embed/

@@ -10,6 +10,7 @@ setup(
         "typer>=0.12.0",
         "httpx>=0.27.0",
         "rich>=13.0.0",
+        "pyyaml>=6.0",
     ],
     extras_require={
         "arrow": ["pyarrow>=14.0.0"],

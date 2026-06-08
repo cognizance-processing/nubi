@@ -40,10 +40,23 @@ export function hasOverrides(spec, breakpoint) {
 }
 
 /**
- * Convert a 1-based pos ({x,y,w,h}+constraints) to a 0-based RGL layout item.
- * `extra` is merged last (e.g. isDraggable/isResizable for the viewer).
+ * True if `widget` is hidden at `breakpoint`. Visibility is stored on the widget
+ * as `widget.hidden = ['lg' | 'md' | 'sm', …]` (breakpoint tokens). A hidden
+ * widget is omitted entirely from that breakpoint's layout + render.
  */
-export function posToRglItem(id, pos, { cols, minDefaults, extra } = {}) {
+export function isHiddenAt(widget, breakpoint) {
+  return Array.isArray(widget?.hidden) && widget.hidden.includes(breakpoint)
+}
+
+/**
+ * Convert a 1-based pos ({x,y,w,h}+constraints) to a 0-based grid layout item.
+ * `extra` is merged last (e.g. isDraggable/isResizable for the viewer).
+ *
+ * NOTE: historically named `posToRglItem` (RGL = react-grid-layout). Renamed to
+ * `posToGridItem` during the dnd-kit / CSS-Grid migration — the item shape is
+ * library-agnostic so the geometry layer outlives the grid library it feeds.
+ */
+export function posToGridItem(id, pos, { cols, minDefaults, extra } = {}) {
   const p = pos ?? { x: 1, y: 1, w: 4, h: 4 }
   const item = {
     i: id,
@@ -65,8 +78,11 @@ export function posToRglItem(id, pos, { cols, minDefaults, extra } = {}) {
   return item
 }
 
-/** Convert a 0-based RGL item back to a 1-based pos, preserving prev constraints. */
-export function rglItemToPos(item, prevPos) {
+/**
+ * Convert a 0-based grid item back to a 1-based pos, preserving prev constraints.
+ * Historically `rglItemToPos`; renamed for the dnd-kit / CSS-Grid migration.
+ */
+export function gridItemToPos(item, prevPos) {
   return {
     ...(prevPos ?? {}),
     x: item.x + 1,
@@ -92,9 +108,9 @@ export function effectivePos(widget, spec, breakpoint) {
  * `perWidget(widget)` may return per-item extras (constraints/min defaults).
  */
 export function buildLgLayout(widgets, cols, perWidget) {
-  return widgets.map(w => {
+  return widgets.filter(w => !isHiddenAt(w, 'lg')).map(w => {
     const opts = perWidget ? perWidget(w) : {}
-    return posToRglItem(w.id, w.pos, { cols, ...opts })
+    return posToGridItem(w.id, w.pos, { cols, ...opts })
   })
 }
 
@@ -104,26 +120,33 @@ export function buildLgLayout(widgets, cols, perWidget) {
  */
 export function buildMdLayout(widgets, cols, spec, perWidget) {
   const ov = overridesFor(spec, 'md')
-  return widgets.map(w => {
+  return widgets.filter(w => !isHiddenAt(w, 'md')).map(w => {
     const opts = perWidget ? perWidget(w) : {}
     const pos = ov[w.id] ? { ...(w.pos ?? {}), ...ov[w.id] } : w.pos
-    return posToRglItem(w.id, pos, { cols, ...opts })
+    return posToGridItem(w.id, pos, { cols, ...opts })
   })
 }
 
 /**
- * Build the `sm` (single-column) RGL layout. If spec.responsive.sm has an
- * override for a widget, honour its y/h/w/x; otherwise derive the stacked
- * single-column layout from the widget order (current behaviour).
+ * Build the `sm` grid layout. If spec.responsive.sm has an override for a
+ * widget, honour its y/h/w/x; otherwise derive a stacked layout from the widget
+ * order (current behaviour).
+ *
+ * `smCols` is the number of columns the sm breakpoint renders at. It defaults to
+ * SM_COLS (1) to preserve the historical hard-locked single-column mobile stack.
+ * When sm has more than one column the derived stack still places each widget at
+ * x=0 spanning ONE column (the safe, predictable default for an auto-generated
+ * mobile layout); authors who want wider mobile widgets add explicit overrides.
+ * Overrides are clamped to `smCols` so a stale wide override can't overflow.
  */
-export function buildSmLayout(widgets, spec, perWidget) {
+export function buildSmLayout(widgets, spec, perWidget, smCols = SM_COLS) {
   const ov = overridesFor(spec, 'sm')
   let cursorY = 0
-  return widgets.map(w => {
+  return widgets.filter(w => !isHiddenAt(w, 'sm')).map(w => {
     const opts = perWidget ? perWidget(w) : {}
     const o = ov[w.id]
     if (o) {
-      return posToRglItem(w.id, { ...(w.pos ?? {}), ...o }, { cols: SM_COLS, ...opts })
+      return posToGridItem(w.id, { ...(w.pos ?? {}), ...o }, { cols: smCols, ...opts })
     }
     const h = w.pos?.h ?? 4
     const item = {
@@ -140,17 +163,26 @@ export function buildSmLayout(widgets, spec, perWidget) {
 }
 
 /**
- * Full per-breakpoint layouts map for RGL ({ lg, md, sm }) with overrides +
- * fallback applied. `perWidget(widget)` returns posToRglItem options
+ * Full per-breakpoint layouts map ({ lg, md, sm }) with overrides + fallback
+ * applied. `perWidget(widget)` returns posToGridItem options
  * (e.g. { minDefaults, extra }) so editor/viewer can inject their own
  * constraints / draggable flags.
+ *
+ * `colsByBp` optionally overrides the per-breakpoint column counts:
+ *   { lg, md, sm }
+ * Anything omitted falls back to the historical defaults — lg/md use `cols`
+ * (the desktop column count) and sm uses SM_COLS (1) — so existing callers that
+ * pass only `(spec, cols, perWidget)` get identical behaviour.
  */
-export function buildResponsiveLayouts(spec, cols, perWidget) {
+export function buildResponsiveLayouts(spec, cols, perWidget, colsByBp = {}) {
   const widgets = spec?.widgets ?? []
+  const lgCols = colsByBp.lg ?? cols
+  const mdCols = colsByBp.md ?? cols
+  const smCols = colsByBp.sm ?? SM_COLS
   return {
-    lg: buildLgLayout(widgets, cols, perWidget),
-    md: buildMdLayout(widgets, cols, spec, perWidget),
-    sm: buildSmLayout(widgets, spec, perWidget),
+    lg: buildLgLayout(widgets, lgCols, perWidget),
+    md: buildMdLayout(widgets, mdCols, spec, perWidget),
+    sm: buildSmLayout(widgets, spec, perWidget, smCols),
   }
 }
 
@@ -172,7 +204,7 @@ export function applyLayoutCommit(spec, breakpoint, layout) {
       widgets: spec.widgets.map(w => {
         const item = byId.get(w.id)
         if (!item) return w
-        return { ...w, pos: rglItemToPos(item, w.pos) }
+        return { ...w, pos: gridItemToPos(item, w.pos) }
       }),
     }
   }

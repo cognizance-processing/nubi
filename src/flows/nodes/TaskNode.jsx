@@ -30,11 +30,13 @@ import { Handle, Position } from 'reactflow'
 // ---------------------------------------------------------------------------
 
 const KIND_COLORS = {
-  query:       { bg: 'bg-blue-500/10',    text: 'text-blue-600 dark:text-blue-400',     border: 'border-blue-200 dark:border-blue-800'    },
-  python:      { bg: 'bg-violet-500/10',  text: 'text-violet-600 dark:text-violet-400', border: 'border-violet-200 dark:border-violet-800' },
+  query:       { bg: 'bg-blue-500/10',    text: 'text-blue-600 dark:text-blue-400',       border: 'border-blue-200 dark:border-blue-800'       },
+  python:      { bg: 'bg-violet-500/10',  text: 'text-violet-600 dark:text-violet-400',   border: 'border-violet-200 dark:border-violet-800'   },
   agent:       { bg: 'bg-emerald-500/10', text: 'text-emerald-600 dark:text-emerald-400', border: 'border-emerald-200 dark:border-emerald-800' },
-  materialize: { bg: 'bg-amber-500/10',   text: 'text-amber-600 dark:text-amber-400',   border: 'border-amber-200 dark:border-amber-800'   },
-  noop:        { bg: 'bg-slate-500/10',   text: 'text-slate-600 dark:text-slate-400',   border: 'border-slate-200 dark:border-slate-800'   },
+  materialize: { bg: 'bg-amber-500/10',   text: 'text-amber-600 dark:text-amber-400',     border: 'border-amber-200 dark:border-amber-800'     },
+  extract:     { bg: 'bg-sky-500/10',     text: 'text-sky-600 dark:text-sky-400',         border: 'border-sky-200 dark:border-sky-800'         },
+  bucket_load: { bg: 'bg-orange-500/10',  text: 'text-orange-600 dark:text-orange-400',   border: 'border-orange-200 dark:border-orange-800'   },
+  noop:        { bg: 'bg-slate-500/10',   text: 'text-slate-600 dark:text-slate-400',     border: 'border-slate-200 dark:border-slate-800'     },
 }
 
 const KIND_ACCENT = {
@@ -42,6 +44,8 @@ const KIND_ACCENT = {
   python:      'border-t-violet-400',
   agent:       'border-t-emerald-400',
   materialize: 'border-t-amber-400',
+  extract:     'border-t-sky-400',
+  bucket_load: 'border-t-orange-400',
   noop:        'border-t-slate-400',
 }
 

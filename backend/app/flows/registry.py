@@ -42,6 +42,39 @@ Pre-registered kinds
 
 ``'noop'``
     Pass-through join/fork node.  Returns ``{inputs: ctx.inputs}``.
+
+``'extract'``
+    Unpack archive files (zip, tar, tar.gz/tgz, gz) from a storage URI
+    and upload extracted members to a destination storage prefix.
+    Delegates to ``app.flows.handlers.extract.handle``.
+
+``'bucket_load'``
+    Serialise upstream row data and write it to object storage (S3,
+    GCS, Azure, local).  Supports csv/json/ndjson/parquet formats and
+    overwrite/append modes.
+    Delegates to ``app.flows.handlers.bucket.handle``.
+
+``'map'``
+    Fan-out node.  Resolves ``config['item_expr']`` to a list, then signals
+    the runtime to create one set of child task_runs per item (the body
+    sub-DAG).  The handler returns a sentinel dict containing
+    ``'__map_items__'``; the runtime transitions the map task_run to
+    ``'waiting_children'`` and fans out.
+    Delegates to ``app.flows.handlers.map.handle_map``.
+
+``'branch'``
+    Conditional routing node.  Evaluates ``config['conditions']`` (ordered
+    list of ``{when, next}`` dicts) and returns the first matching condition's
+    ``next`` task keys in ``'__branch_next__'``.  The runtime activates those
+    tasks and marks all other dependents ``'upstream_failed'``.
+    ``config['default']`` is optional (Q1: else_ is optional).
+    Delegates to ``app.flows.handlers.branch.handle_branch``.
+
+``'map_collect'``
+    Fan-in collector node.  Reads the aggregated result from an upstream
+    ``'map'`` node (``config['source']``) and returns
+    ``{"items": [...], "item_count": N}`` (Q3: dedicated collector).
+    Delegates to ``app.flows.handlers.map_collect.handle_map_collect``.
 """
 
 from __future__ import annotations
@@ -425,6 +458,75 @@ def _handle_noop(
     return {"inputs": ctx.inputs}
 
 
+def _handle_extract(
+    config: dict[str, Any],
+    ctx: "TaskContext",
+    claims: dict[str, Any],
+) -> dict[str, Any]:
+    """Unpack an archive from storage and upload extracted members.
+
+    Delegates to ``app.flows.handlers.extract.handle``.
+
+    Returns ``{"files": [{"name": str, "size": int, "uri": str}], "file_count": int}``.
+
+    Config keys
+    -----------
+    ``source_uri`` or ``source`` (one required), ``dest_uri`` (required),
+    ``secret`` (optional), ``format`` (optional, default ``'auto'``).
+    See ``app.flows.handlers.extract`` for the full schema.
+    """
+    from app.flows.handlers.extract import handle  # noqa: PLC0415
+
+    return handle(config, ctx, claims)
+
+
+def _handle_bucket_load(
+    config: dict[str, Any],
+    ctx: "TaskContext",
+    claims: dict[str, Any],
+) -> dict[str, Any]:
+    """Write upstream data to object storage.
+
+    Delegates to ``app.flows.handlers.bucket.handle``.
+
+    Returns ``{"uri": str, "format": str, "row_count": int, "bytes_written": int}``.
+
+    Config keys
+    -----------
+    ``uri`` (required), ``source`` (required), ``format`` (optional, default
+    ``'csv'``), ``mode`` (optional, default ``'overwrite'``), ``secret``
+    (optional).  See ``app.flows.handlers.bucket`` for the full schema.
+    """
+    from app.flows.handlers.bucket import handle  # noqa: PLC0415
+
+    return handle(config, ctx, claims)
+
+
+def _handle_preagg_refresh(
+    config: dict[str, Any],
+    ctx: "TaskContext",
+    claims: dict[str, Any],
+) -> dict[str, Any]:
+    """Run the auto pre-aggregation suggest → materialize pass.
+
+    Delegates to ``app.flows.handlers.preagg_refresh.handle`` which in turn
+    calls ``app.preagg.scheduler.run_preagg_refresh``.
+
+    Returns ``{org_id, candidates_found, rollups_built, rollup_ids, errors}``.
+
+    Config keys
+    -----------
+    ``org_id``        (required) — org whose query log is mined.
+    ``min_hits``      (optional, default 3) — minimum log frequency threshold.
+    ``source_database`` (optional) — DuckDB file path; ``None`` for in-memory.
+
+    See ``app.flows.handlers.preagg_refresh`` for the full schema.
+    """
+    from app.flows.handlers.preagg_refresh import handle  # noqa: PLC0415
+
+    return handle(config, ctx, claims)
+
+
 # ---------------------------------------------------------------------------
 # Module-level singleton / provider
 # ---------------------------------------------------------------------------
@@ -435,8 +537,9 @@ _registry: TaskKindRegistry | None = None
 def get_task_kind_registry() -> TaskKindRegistry:
     """Return (or lazily create) the module-level ``TaskKindRegistry`` singleton.
 
-    Pre-populates with the four built-in handlers: ``query``, ``python``,
-    ``agent``, ``noop``.
+    Pre-populates with built-in handlers: ``query``, ``python``, ``agent``,
+    ``materialize``, ``noop``, ``extract``, ``bucket_load``, ``preagg_refresh``,
+    ``map``, ``branch``, ``map_collect``.
     """
     global _registry
     if _registry is None:
@@ -457,9 +560,20 @@ def reset_for_tests() -> None:
 
 
 def _bootstrap(registry: TaskKindRegistry) -> None:
-    """Pre-register the four built-in kind handlers."""
+    """Pre-register all built-in kind handlers."""
     registry.register("query", _handle_query)
     registry.register("python", _handle_python)
     registry.register("agent", _handle_agent)
     registry.register("materialize", _handle_materialize)
     registry.register("noop", _handle_noop)
+    registry.register("extract", _handle_extract)
+    registry.register("bucket_load", _handle_bucket_load)
+    registry.register("preagg_refresh", _handle_preagg_refresh)
+
+    from app.flows.handlers.map import handle_map  # noqa: PLC0415
+    from app.flows.handlers.branch import handle_branch  # noqa: PLC0415
+    from app.flows.handlers.map_collect import handle_map_collect  # noqa: PLC0415
+
+    registry.register("map", handle_map)
+    registry.register("branch", handle_branch)
+    registry.register("map_collect", handle_map_collect)

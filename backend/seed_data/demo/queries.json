@@ -1,0 +1,177 @@
+{
+  "kpis": {
+    "name": "Demo \u2014 totals",
+    "sql": "SELECT ROUND(SUM(nsv), 2) AS total_nsv, SUM(units) AS total_units, ROUND(SUM(volume), 1) AS total_volume, ROUND(AVG(nsv), 2) AS avg_nsv FROM sales",
+    "params": []
+  },
+  "trend": {
+    "name": "Demo \u2014 monthly trend",
+    "sql": "SELECT month, ROUND(SUM(nsv), 2) AS nsv, SUM(units) AS units, ROUND(SUM(volume), 1) AS volume FROM sales GROUP BY month ORDER BY month",
+    "params": []
+  },
+  "region": {
+    "name": "Demo \u2014 NSV by region",
+    "sql": "SELECT region, ROUND(SUM(nsv), 2) AS nsv FROM sales GROUP BY region ORDER BY nsv DESC",
+    "params": []
+  },
+  "category": {
+    "name": "Demo \u2014 NSV by category",
+    "sql": "SELECT category, ROUND(SUM(nsv), 2) AS nsv FROM sales GROUP BY category ORDER BY nsv DESC",
+    "params": []
+  },
+  "channel": {
+    "name": "Demo \u2014 NSV by channel",
+    "sql": "SELECT channel, ROUND(SUM(nsv), 2) AS nsv FROM sales GROUP BY channel ORDER BY nsv DESC",
+    "params": []
+  },
+  "brand": {
+    "name": "Demo \u2014 top brands",
+    "sql": "SELECT brand, ROUND(SUM(nsv), 2) AS nsv FROM sales GROUP BY brand ORDER BY nsv DESC LIMIT 10",
+    "params": []
+  },
+  "supplier": {
+    "name": "Demo \u2014 by supplier",
+    "sql": "SELECT supplier, ROUND(SUM(nsv), 2) AS nsv, SUM(units) AS units, ROUND(SUM(volume), 1) AS volume FROM sales GROUP BY supplier ORDER BY nsv DESC",
+    "params": []
+  },
+  "opco": {
+    "name": "Demo \u2014 NSV by OpCo",
+    "sql": "SELECT opco, ROUND(SUM(nsv), 2) AS nsv FROM sales GROUP BY opco ORDER BY nsv DESC",
+    "params": []
+  },
+  "pgroup": {
+    "name": "Demo \u2014 by product group",
+    "sql": "SELECT product_group, ROUND(SUM(nsv), 2) AS nsv, SUM(units) AS units FROM sales GROUP BY product_group ORDER BY nsv DESC",
+    "params": []
+  },
+  "customers": {
+    "name": "Demo \u2014 top customers",
+    "sql": "SELECT customer, ROUND(SUM(nsv), 2) AS nsv FROM sales GROUP BY customer ORDER BY nsv DESC LIMIT 10",
+    "params": []
+  },
+  "heatmap": {
+    "name": "Demo \u2014 region \u00d7 month",
+    "sql": "SELECT region, month, ROUND(SUM(nsv), 2) AS nsv FROM sales GROUP BY region, month ORDER BY region, month",
+    "params": []
+  },
+  "avb": {
+    "name": "Demo \u2014 actual vs budget (monthly)",
+    "sql": "SELECT a.month AS month, a.actual AS actual, b.budget AS budget FROM (SELECT month, ROUND(SUM(nsv), 2) AS actual FROM sales GROUP BY month) a JOIN (SELECT month, ROUND(SUM(budget_nsv), 2) AS budget FROM budget GROUP BY month) b ON a.month = b.month ORDER BY a.month",
+    "params": []
+  },
+  "variance": {
+    "name": "Demo \u2014 budget variance by region",
+    "sql": "SELECT a.region AS region, a.actual AS actual, b.budget AS budget, ROUND(a.actual - b.budget, 2) AS variance, ROUND(100.0 * (a.actual - b.budget) / NULLIF(b.budget, 0), 1) AS variance_pct FROM (SELECT region, ROUND(SUM(nsv), 2) AS actual FROM sales GROUP BY region) a JOIN (SELECT region, ROUND(SUM(budget_nsv), 2) AS budget FROM budget GROUP BY region) b ON a.region = b.region ORDER BY variance DESC",
+    "params": []
+  },
+  "cyly": {
+    "name": "Demo \u2014 CY vs LY by product group",
+    "sql": "SELECT product_group, ROUND(SUM(CASE WHEN year = 2026 THEN nsv ELSE 0 END), 2) AS cy, ROUND(SUM(CASE WHEN year = 2025 THEN nsv ELSE 0 END), 2) AS ly, ROUND(SUM(CASE WHEN year = 2026 THEN nsv ELSE 0 END) - SUM(CASE WHEN year = 2025 THEN nsv ELSE 0 END), 2) AS delta FROM sales GROUP BY product_group ORDER BY cy DESC",
+    "params": []
+  },
+  "drill": {
+    "name": "Demo \u2014 region drilldown ({{region}})",
+    "sql": "SELECT month, product_group, ROUND(SUM(nsv), 2) AS nsv FROM sales WHERE ({{region}} IS NULL OR region = {{region}}) GROUP BY month, product_group ORDER BY month, nsv DESC",
+    "params": [
+      {
+        "name": "region",
+        "type": "select",
+        "default": "Gauteng",
+        "required": false,
+        "options_query_id": null
+      }
+    ]
+  },
+  "prod_for_region": {
+    "name": "Demo \u2014 products in region ({{region}})",
+    "sql": "SELECT product_group, ROUND(SUM(nsv), 2) AS nsv, SUM(units) AS units FROM sales WHERE ({{region}} IS NULL OR region = {{region}}) GROUP BY product_group ORDER BY nsv DESC",
+    "params": [
+      {
+        "name": "region",
+        "type": "select",
+        "default": "Gauteng",
+        "required": false,
+        "options_query_id": null
+      }
+    ]
+  },
+  "filt_month": {
+    "name": "Demo \u2014 monthly NSV (filtered)",
+    "sql": "SELECT month, ROUND(SUM(nsv), 2) AS nsv FROM sales WHERE ({{region}} IS NULL OR region = {{region}}) AND ({{channel}} IS NULL OR channel = {{channel}}) AND ({{category}} IS NULL OR category = {{category}}) GROUP BY month ORDER BY month",
+    "params": [
+      {
+        "name": "region",
+        "type": "select",
+        "default": null,
+        "required": false,
+        "options_query_id": null
+      },
+      {
+        "name": "channel",
+        "type": "select",
+        "default": null,
+        "required": false,
+        "options_query_id": null
+      },
+      {
+        "name": "category",
+        "type": "select",
+        "default": null,
+        "required": false,
+        "options_query_id": null
+      }
+    ]
+  },
+  "filt_table": {
+    "name": "Demo \u2014 region \u00d7 channel \u00d7 category (filtered)",
+    "sql": "SELECT region, channel, category, ROUND(SUM(nsv), 2) AS nsv, SUM(units) AS units FROM sales WHERE ({{region}} IS NULL OR region = {{region}}) AND ({{channel}} IS NULL OR channel = {{channel}}) AND ({{category}} IS NULL OR category = {{category}}) GROUP BY region, channel, category ORDER BY nsv DESC",
+    "params": [
+      {
+        "name": "region",
+        "type": "select",
+        "default": null,
+        "required": false,
+        "options_query_id": null
+      },
+      {
+        "name": "channel",
+        "type": "select",
+        "default": null,
+        "required": false,
+        "options_query_id": null
+      },
+      {
+        "name": "category",
+        "type": "select",
+        "default": null,
+        "required": false,
+        "options_query_id": null
+      }
+    ]
+  },
+  "region_opt": {
+    "name": "Demo \u2014 region options",
+    "sql": "SELECT DISTINCT region AS value, region AS label FROM sales ORDER BY 1",
+    "params": []
+  },
+  "channel_opt": {
+    "name": "Demo \u2014 channel options",
+    "sql": "SELECT DISTINCT channel AS value, channel AS label FROM sales ORDER BY 1",
+    "params": []
+  },
+  "category_opt": {
+    "name": "Demo \u2014 category options",
+    "sql": "SELECT DISTINCT category AS value, category AS label FROM sales ORDER BY 1",
+    "params": []
+  },
+  "opco_opt": {
+    "name": "Demo \u2014 OpCo options",
+    "sql": "SELECT DISTINCT opco AS value, opco AS label FROM sales ORDER BY 1",
+    "params": []
+  },
+  "supplier_opt": {
+    "name": "Demo \u2014 supplier options",
+    "sql": "SELECT DISTINCT supplier AS value, supplier AS label FROM sales ORDER BY 1",
+    "params": []
+  }
+}

@@ -232,13 +232,23 @@ export const MATRIX = MATRIX_META.data.matrix ?? {}
  * Keys must match frontmatter `name` values.
  */
 const COMPETITOR_ORDER = [
+  // General BI tools
+  'Metabase',
   'Hex',
   'Cube',
-  'Metabase',
   'Looker',
   'Sigma Computing',
   'Tableau',
   'Power BI',
+  'Preset',
+  'Count',
+  // Embedded analytics specialists
+  'Embeddable',
+  'Holistics',
+  'Luzmo',
+  'Omni Analytics',
+  'GoodData',
+  // Legacy catch-all (old name)
   'Preset / Apache Superset',
 ]
 
@@ -324,12 +334,21 @@ export const ORCHESTRATORS = buildOrchestrators()
  */
 export const MATRIX_COLUMNS = [
   { key: 'Nubi', label: 'Nubi', subtitle: 'browser-first kernel', isNubi: true },
+  // General BI
+  { key: 'Metabase', label: 'Metabase', subtitle: 'self-serve BI', isNubi: false },
   { key: 'Hex', label: 'Hex', subtitle: 'notebook + apps', isNubi: false },
   { key: 'Cube', label: 'Cube', subtitle: 'headless semantic layer', isNubi: false },
-  { key: 'Metabase', label: 'Metabase', subtitle: 'self-serve BI', isNubi: false },
   { key: 'Looker', label: 'Looker', subtitle: 'enterprise LookML', isNubi: false },
   { key: 'Sigma', label: 'Sigma', subtitle: 'spreadsheet BI', isNubi: false },
   { key: 'Tableau', label: 'Tableau', subtitle: 'viz industry standard', isNubi: false },
   { key: 'PowerBI', label: 'Power BI', subtitle: 'Microsoft ecosystem', isNubi: false },
   { key: 'Superset', label: 'Superset', subtitle: 'open-source BI', isNubi: false },
+  { key: 'Count', label: 'Count', subtitle: 'data canvas', isNubi: false },
+  // Embedded analytics specialists
+  { key: 'Embeddable', label: 'Embeddable', subtitle: 'embed SDK, per-session', isNubi: false },
+  { key: 'Holistics', label: 'Holistics', subtitle: 'unlimited viewers, flat fee', isNubi: false },
+  { key: 'Luzmo', label: 'Luzmo', subtitle: 'embedded analytics, MAU', isNubi: false },
+  { key: 'Preset', label: 'Preset', subtitle: 'managed Superset', isNubi: false },
+  { key: 'GoodData', label: 'GoodData', subtitle: 'enterprise, workspace-based', isNubi: false },
+  { key: 'Omni', label: 'Omni', subtitle: 'full-stack BI + embed', isNubi: false },
 ]

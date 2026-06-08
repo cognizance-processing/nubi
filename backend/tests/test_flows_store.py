@@ -678,3 +678,147 @@ class TestStoreIsolation:
         # Original in store must still be 'running'
         fetched = await store.get_task_run(claimed["id"])
         assert fetched["state"] == "running"
+
+
+# ---------------------------------------------------------------------------
+# 6. Map / branch task_run columns (migration 0020)
+# ---------------------------------------------------------------------------
+
+
+class TestMapBranchTaskRunColumns:
+    """InMemoryFlowStore task_run records include parent_task_run_id and
+    branch_taken fields introduced in migration 0020."""
+
+    async def _setup(self):
+        store = InMemoryFlowStore()
+        flow = await _make_flow(store)
+        run = await _make_flow_run(store, flow["id"])
+        return store, run
+
+    async def test_new_task_run_has_parent_task_run_id_field(self):
+        """Every newly created task_run exposes parent_task_run_id (default None)."""
+        store, frun = await self._setup()
+        trs = await store.add_task_runs(frun["id"], [_make_task_run("t1")])
+        assert "parent_task_run_id" in trs[0], "Missing parent_task_run_id field"
+        assert trs[0]["parent_task_run_id"] is None
+
+    async def test_new_task_run_has_branch_taken_field(self):
+        """Every newly created task_run exposes branch_taken (default None)."""
+        store, frun = await self._setup()
+        trs = await store.add_task_runs(frun["id"], [_make_task_run("t1")])
+        assert "branch_taken" in trs[0], "Missing branch_taken field"
+        assert trs[0]["branch_taken"] is None
+
+    async def test_parent_task_run_id_can_be_set(self):
+        """Map child task_runs can record their parent map task_run id."""
+        store, frun = await self._setup()
+        # Create parent map task_run
+        parent_trs = await store.add_task_runs(frun["id"], [_make_task_run("map_node")])
+        parent_id = parent_trs[0]["id"]
+        # Create child task_run referencing parent
+        child_tr_dict = {
+            "task_key": "map_node[0].fetch_data",
+            "org_id": "org-1",
+            "state": "pending",
+            "depends_on": [],
+            "parent_task_run_id": parent_id,
+        }
+        child_trs = await store.add_task_runs(frun["id"], [child_tr_dict])
+        assert child_trs[0]["parent_task_run_id"] == parent_id
+
+    async def test_child_task_run_persisted_in_list_task_runs(self):
+        """Child map task_runs share the flow_run_id and appear in list_task_runs."""
+        store, frun = await self._setup()
+        parent_trs = await store.add_task_runs(frun["id"], [_make_task_run("map_node")])
+        parent_id = parent_trs[0]["id"]
+        child_dicts = [
+            {
+                "task_key": f"map_node[{i}].fetch_data",
+                "org_id": "org-1",
+                "state": "pending",
+                "depends_on": [],
+                "parent_task_run_id": parent_id,
+            }
+            for i in range(3)
+        ]
+        await store.add_task_runs(frun["id"], child_dicts)
+        all_trs = await store.list_task_runs(frun["id"])
+        # 1 parent + 3 children = 4 total
+        assert len(all_trs) == 4
+        child_trs = [tr for tr in all_trs if tr["parent_task_run_id"] == parent_id]
+        assert len(child_trs) == 3
+
+    async def test_branch_taken_can_be_set_via_update(self):
+        """branch_taken can be updated on a branch task_run."""
+        store, frun = await self._setup()
+        trs = await store.add_task_runs(frun["id"], [_make_task_run("route")])
+        tr_id = trs[0]["id"]
+        updated = await store.update_task_run(
+            tr_id, {"state": "success", "branch_taken": "condition_0"}
+        )
+        assert updated is not None
+        assert updated["branch_taken"] == "condition_0"
+        # Persisted
+        fetched = await store.get_task_run(tr_id)
+        assert fetched["branch_taken"] == "condition_0"
+
+    async def test_waiting_children_state_is_not_claimable(self):
+        """A task_run in state 'waiting_children' must never be claimed."""
+        store, frun = await self._setup()
+        # Insert a map node in waiting_children state + an unrelated ready task.
+        now_dt = _utc()
+        await store.add_task_runs(frun["id"], [
+            {
+                "task_key": "map_node",
+                "org_id": "org-1",
+                "state": "waiting_children",
+                "depends_on": [],
+            },
+            _make_task_run("other_task", state="ready"),
+        ])
+        claimed = await store.claim_ready_task_run(now_dt)
+        # Only the ready task should be claimable.
+        assert claimed is not None
+        assert claimed["task_key"] == "other_task"
+        # Second claim should return None (no more ready tasks).
+        second = await store.claim_ready_task_run(now_dt)
+        assert second is None
+
+    async def test_waiting_children_alone_not_claimable(self):
+        """When only waiting_children tasks exist, claim returns None."""
+        store, frun = await self._setup()
+        now_dt = _utc()
+        await store.add_task_runs(frun["id"], [
+            {
+                "task_key": "map_node",
+                "org_id": "org-1",
+                "state": "waiting_children",
+                "depends_on": [],
+            },
+        ])
+        result = await store.claim_ready_task_run(now_dt)
+        assert result is None
+
+    async def test_parent_task_run_id_defaults_to_none_for_regular_tasks(self):
+        """Regular (non-map-child) task_runs always have parent_task_run_id = None."""
+        store, frun = await self._setup()
+        trs = await store.add_task_runs(frun["id"], [
+            _make_task_run("t1"),
+            _make_task_run("t2"),
+        ])
+        for tr in trs:
+            assert tr["parent_task_run_id"] is None, (
+                f"Expected None parent_task_run_id for {tr['task_key']}"
+            )
+
+    async def test_branch_taken_defaults_to_none_for_non_branch_tasks(self):
+        """Non-branch task_runs have branch_taken = None by default."""
+        store, frun = await self._setup()
+        trs = await store.add_task_runs(frun["id"], [
+            _make_task_run("q1"),
+            _make_task_run("p1"),
+        ])
+        for tr in trs:
+            assert tr["branch_taken"] is None, (
+                f"Expected None branch_taken for {tr['task_key']}"
+            )

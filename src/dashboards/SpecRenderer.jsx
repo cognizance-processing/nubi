@@ -8,8 +8,9 @@
  * Behaviour
  * ---------
  * - Wraps the entire widget tree in <VariableProvider> seeded from spec.variables defaults.
- * - Uses react-grid-layout ResponsiveGridLayout with useContainerWidth for responsive layout.
- * - isDraggable and isResizable are both false — this is a read-only viewer.
+ * - Uses the headless GridCanvas (CSS Grid + dnd-kit) in read-only mode, with a
+ *   ResizeObserver on the container driving responsive breakpoint selection.
+ * - draggable and resizable are both false — this is a read-only viewer.
  * - Dispatches each widget to the appropriate component:
  *     chart  → <ChartWidget>
  *     kpi    → <KpiWidget>
@@ -17,7 +18,7 @@
  *     filter → <FilterWidget>  (options fetched one-shot from options_query_id if present)
  *     text   → <TextWidget>
  * - On small screens (sm breakpoint) all widgets stack in a single column.
- * - Converts the backend 1-based pos (x,y,w,h) to RGL's 0-based x,y.
+ * - Converts the backend 1-based pos (x,y,w,h) to the grid's 0-based x,y.
  *
  * Spec → Props normalization (M14-C)
  * ------------------------------------
@@ -27,16 +28,11 @@
  * SpecRenderer bridges this by building a normalized `props` object from the
  * top-level spec fields before passing the widget to each component. Canonical
  * location remains the top-level spec fields; the props shim is renderer-internal.
- *
- * NOTE: react-grid-layout v2 no longer exports WidthProvider.
- * Instead we use the useContainerWidth hook and pass width as a prop.
  */
 
-import 'react-grid-layout/css/styles.css'
-import 'react-resizable/css/styles.css'
-
-import { useState, useEffect, useMemo } from 'react'
-import { ResponsiveGridLayout, useContainerWidth, noCompactor } from 'react-grid-layout'
+import { useState, useEffect, useMemo, useRef } from 'react'
+import GridCanvas from './grid/GridCanvas.jsx'
+import { getBreakpointFromWidth } from './grid/breakpoints.js'
 import ChartWidget from './widgets/ChartWidget.jsx'
 import KpiWidget from './widgets/KpiWidget.jsx'
 import TableWidget from './widgets/TableWidget.jsx'
@@ -49,26 +45,7 @@ import SectionWidget from './widgets/SectionWidget.jsx'
 import { VariableProvider } from './VariableStore.jsx'
 import { runArrowQueryById } from '../lib/wasmRuntime.js'
 import { backgroundToCss, styleToCss } from './widgetHtml.js'
-import { buildResponsiveLayouts } from './responsiveLayout.js'
-
-// ---------------------------------------------------------------------------
-// react-grid-layout option resolution (spec.layout.*)
-// ---------------------------------------------------------------------------
-
-/**
- * Resolve RGL compaction props from a spec.layout.compaction string.
- *   'vertical' (default) | 'horizontal' | 'none' | 'free' (free-place)
- * 'free' uses the noCompactor so widgets stay exactly where placed.
- */
-function resolveCompaction(mode) {
-  switch (mode) {
-    case 'horizontal': return { compactType: 'horizontal' }
-    case 'none':       return { compactType: null }
-    case 'free':       return { compactor: noCompactor }
-    case 'vertical':
-    default:           return { compactType: 'vertical' }
-  }
-}
+import { buildResponsiveLayouts, isHiddenAt } from './responsiveLayout.js'
 
 // ---------------------------------------------------------------------------
 // Spec → props normalization
@@ -245,17 +222,18 @@ function SlideOver({ open, title, widgets, onClose, wide }) {
 // ---------------------------------------------------------------------------
 
 /**
- * Convert a spec widget list into RGL layout arrays per breakpoint, applying
- * spec.responsive overrides for md/sm with a fallback to the layout derived
- * from widget.pos (lg is always the canonical desktop layout).
+ * Convert a spec widget list into 0-based grid layout arrays per breakpoint,
+ * applying spec.responsive overrides for md/sm with a fallback to the layout
+ * derived from widget.pos (lg is always the canonical desktop layout).
  *
- * Backend pos uses 1-based x and y (column / row start). RGL uses 0-based.
- * The viewer is read-only so every item is non-draggable / non-resizable.
+ * Backend pos uses 1-based x and y (column / row start); GridCanvas uses 0-based.
+ * `colsByBp` carries the per-breakpoint column counts read from spec.layout so md
+ * overrides clamp to the tablet column count and sm stacks into a single column
+ * (or whatever spec.layout declares). The viewer is read-only, so no per-widget
+ * draggable/resizable extras are needed — GridCanvas controls interaction.
  */
-function buildLayouts(spec, cols) {
-  return buildResponsiveLayouts(spec, cols, () => ({
-    extra: { isDraggable: false, isResizable: false },
-  }))
+function buildLayouts(spec, cols, colsByBp) {
+  return buildResponsiveLayouts(spec, cols, undefined, colsByBp)
 }
 
 // ---------------------------------------------------------------------------
@@ -300,7 +278,7 @@ function buildVariableDefaults(specVariables) {
  * variable.  Used by DashboardViewPage to write the new value back to URL search
  * params so the state survives a refresh and is shareable.
  */
-export default function SpecRenderer({ spec, initialVariables = {}, onVariableChange }) {
+export default function SpecRenderer({ spec, initialVariables = {}, onVariableChange, forceBreakpoint }) {
   if (!spec) {
     return (
       <div className="flex items-center justify-center py-16 text-sm text-muted">
@@ -312,6 +290,16 @@ export default function SpecRenderer({ spec, initialVariables = {}, onVariableCh
   const cols = spec.layout?.cols ?? 12
   const rowHeight = spec.layout?.row_height ?? 60
   const allWidgets = spec.widgets ?? []
+
+  // Breakpoint thresholds + per-breakpoint column counts. lg/md default to the
+  // spec column count; sm stacks into a single column. New per-breakpoint cols
+  // fields (cols_md / cols_sm) override the defaults when a spec sets them.
+  const breakpoints = { lg: 1200, md: 768, sm: 480 }
+  const colsByBp = {
+    lg: cols,
+    md: spec.layout?.cols_md ?? cols,
+    sm: spec.layout?.cols_sm ?? 1,
+  }
 
   // Partition out drawer widgets (drawer:true) — they render in slide-overs,
   // not on the main grid. Group them by drawer_group ('filters' or 'dg_*').
@@ -358,27 +346,62 @@ export default function SpecRenderer({ spec, initialVariables = {}, onVariableCh
 
   // eslint-disable-next-line react-hooks/rules-of-hooks
   const layouts = useMemo(
-    () => buildLayouts({ ...spec, widgets }, cols),
+    () => buildLayouts({ ...spec, widgets }, cols, colsByBp),
     // Rebuild when grid widgets or the per-breakpoint overrides change.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [widgets, cols, JSON.stringify(spec.responsive)],
+    [widgets, cols, colsByBp.md, colsByBp.sm, JSON.stringify(spec.responsive)],
   )
 
+  // Measure the container width via a ResizeObserver so breakpoint selection
+  // tracks the live layout (replaces RGL's useContainerWidth hook).
   // eslint-disable-next-line react-hooks/rules-of-hooks
-  const { width, containerRef } = useContainerWidth({ initialWidth: 1200 })
+  const containerRef = useRef(null)
+  // eslint-disable-next-line react-hooks/rules-of-hooks
+  const [width, setWidth] = useState(1200)
 
-  const breakpoints = { lg: 1200, md: 768, sm: 480 }
-  const colsCfg = { lg: cols, md: cols, sm: 1 }
+  // eslint-disable-next-line react-hooks/rules-of-hooks
+  useEffect(() => {
+    const el = containerRef.current
+    if (!el) return
+    // Seed from the current measurement before the observer fires.
+    setWidth(el.clientWidth || 1200)
+    const ro = new ResizeObserver((entries) => {
+      for (const entry of entries) {
+        const w = entry.contentRect?.width
+        if (w) setWidth(w)
+      }
+    })
+    ro.observe(el)
+    return () => ro.disconnect()
+  }, [])
 
-  // RGL flexibility options (spec.layout.*) — compaction mode, margin & padding.
+  // The breakpoint actually being rendered: forced (editor preview frame) or
+  // derived from the container width (public viewer). Used to (a) pick the grid's
+  // active layout + column count so it matches the editor, and (b) filter out
+  // widgets hidden at this breakpoint so the rendered children match the
+  // (already-filtered) layout array.
+  const renderBreakpoint = forceBreakpoint ?? getBreakpointFromWidth(breakpoints, width || 1200)
+  const visibleWidgets = widgets.filter(w => !isHiddenAt(w, renderBreakpoint))
+  // eslint-disable-next-line react-hooks/rules-of-hooks
+  const visibleWidgetsById = useMemo(
+    () => new Map(visibleWidgets.map(w => [w.id, w])),
+    [visibleWidgets],
+  )
+
+  // The active breakpoint's layout + column count.
+  const activeLayout = layouts[renderBreakpoint] ?? layouts.lg
+  const activeCols = colsByBp[renderBreakpoint] ?? cols
+
+  // Grid flexibility options (spec.layout.*) — compaction mode, gap & padding.
+  // GridCanvas takes a single scalar `gap` for both axes (margin_x/margin_y are
+  // symmetric in practice) and a {x,y} padding object.
   const compactionMode = spec.layout?.compaction ?? 'free'   // default: free-place (preserves authored positions)
-  const compactionProps = resolveCompaction(compactionMode)
-  const margin = Array.isArray(spec.layout?.margin)
-    ? spec.layout.margin
-    : [spec.layout?.margin_x ?? 12, spec.layout?.margin_y ?? 12]
-  const containerPadding = Array.isArray(spec.layout?.container_padding)
-    ? spec.layout.container_padding
-    : [spec.layout?.padding_x ?? 0, spec.layout?.padding_y ?? 0]
+  const gap = Array.isArray(spec.layout?.margin)
+    ? (spec.layout.margin[0] ?? 12)
+    : (spec.layout?.margin_x ?? 12)
+  const padding = Array.isArray(spec.layout?.container_padding)
+    ? { x: spec.layout.container_padding[0] ?? 0, y: spec.layout.container_padding[1] ?? 0 }
+    : { x: spec.layout?.padding_x ?? 0, y: spec.layout?.padding_y ?? 0 }
 
   // eslint-disable-next-line react-hooks/rules-of-hooks
   const bgStyle = useMemo(() => backgroundToCss(spec.background), [JSON.stringify(spec.background)])
@@ -412,20 +435,19 @@ export default function SpecRenderer({ spec, initialVariables = {}, onVariableCh
             No widgets in this dashboard.
           </div>
         ) : (
-          <ResponsiveGridLayout
-            width={width}
-            className="layout"
-            layouts={layouts}
-            breakpoints={breakpoints}
-            cols={colsCfg}
+          <GridCanvas
+            layout={activeLayout.filter(item => visibleWidgetsById.has(item.i))}
+            cols={activeCols}
             rowHeight={rowHeight}
-            isDraggable={false}
-            isResizable={false}
-            margin={margin}
-            containerPadding={containerPadding}
-            {...compactionProps}
-          >
-            {widgets.map(widget => {
+            gap={gap}
+            padding={padding}
+            width={width}
+            draggable={false}
+            resizable={false}
+            compaction={compactionMode}
+            renderItem={(item) => {
+              const widget = visibleWidgetsById.get(item.i)
+              if (!widget) return null
               // When a widget declares its own style (incl. transparent bg) don't
               // force the opaque default surface — let the style win.
               const customStyle = styleToCss(widget.style)
@@ -433,16 +455,15 @@ export default function SpecRenderer({ spec, initialVariables = {}, onVariableCh
                 'background' in customStyle || 'backgroundColor' in customStyle || 'backgroundImage' in customStyle
               )
               return (
-              <div
-                key={widget.id}
-                className={`overflow-hidden rounded-xl ${hasCustomBg ? '' : 'bg-surface border border-border shadow-sm'}`}
-                style={customStyle}
-              >
-                <WidgetComponent widget={widget} onOpenDrawer={setOpenDrawer} />
-              </div>
+                <div
+                  className={`w-full h-full overflow-hidden rounded-xl ${hasCustomBg ? '' : 'bg-surface border border-border shadow-sm'}`}
+                  style={customStyle}
+                >
+                  <WidgetComponent widget={widget} onOpenDrawer={setOpenDrawer} />
+                </div>
               )
-            })}
-          </ResponsiveGridLayout>
+            }}
+          />
         )}
       </div>
       <SlideOver

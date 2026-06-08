@@ -6,7 +6,7 @@
  * Checks per breakpoint:
  *   - No horizontal overflow (scrollWidth <= innerWidth)
  *   - Palette/config are reachable (open their drawer/sheet)
- *   - A drag still moves a widget (transform changes)
+ *   - A drag still moves a widget (committed grid placement changes)
  *   - Add KPI + chart works
  */
 
@@ -81,7 +81,7 @@ test.describe('Mobile (390px)', () => {
     expect(overflow, 'horizontal overflow on mobile after adding widgets').toBe(true)
   })
 
-  test('drag moves a widget (transform changes) on mobile', async ({ page }) => {
+  test('drag moves a widget (committed grid placement changes) on mobile', async ({ page }) => {
     await page.goto('/editor')
     await expect(page.getByTestId('editor-title')).toBeVisible({ timeout: 20_000 })
 
@@ -93,30 +93,35 @@ test.describe('Mobile (390px)', () => {
     const widget = page.locator('[data-testid^="widget-kpi_"]').first()
     await expect(widget).toBeVisible({ timeout: 10_000 })
 
+    // The new dnd-kit + CSS Grid engine wraps each widget in a `.grid-item`
+    // (the element carrying `data-grid-id`) and positions it via inline
+    // `gridColumn` / `gridRow` styles. A committed drag re-writes those, so we
+    // assert the grid placement changed rather than a raw CSS transform.
+    const getPlacement = () => widget.evaluate(el => {
+      const cell = el.closest('.grid-item') ?? el.closest('[data-grid-id]')
+      if (!cell) return null
+      return `${cell.style.gridColumn}|${cell.style.gridRow}`
+    })
+
+    const before = await getPlacement()
+
     // Get the drag handle inside the widget
     const dragHandle = widget.locator('.drag-handle')
     await expect(dragHandle).toBeVisible()
 
-    // Record initial transform
-    const getTransform = () => widget.evaluate(el => {
-      const inner = el.closest('[style*="transform"]') ?? el
-      return inner.style.transform || window.getComputedStyle(inner).transform
-    })
-
-    const before = await getTransform()
-
-    // Perform a mouse drag on the drag handle (touch events not required for RGL)
+    // Drag the widget by its handle to a different spot on the canvas.
     await dragHandle.dragTo(page.getByTestId('editor-canvas'), {
       targetPosition: { x: 100, y: 200 },
       force: true,
     })
 
-    const after = await getTransform()
-    // The transform should have changed (widget moved), OR the layout changed.
-    // Accept either transform changed or widget still exists (drag didn't crash).
+    // Widget survives the drag and its committed grid placement changed.
     await expect(widget).toBeVisible()
-    // Log the transform comparison for reporting
-    console.log('Mobile drag: before transform =', before, '| after =', after)
+    await expect.poll(getPlacement, {
+      message: 'widget grid placement should change after a drag',
+      timeout: 5_000,
+    }).not.toBe(before)
+    console.log('Mobile drag: before placement =', before, '| after =', await getPlacement())
   })
 })
 
@@ -193,29 +198,28 @@ test.describe('Tablet (820px)', () => {
     const dragHandle = widget.locator('.drag-handle')
     await expect(dragHandle).toBeVisible()
 
-    // Get transform before drag
-    const getParentTransform = () => widget.evaluate(el => {
-      let node = el
-      while (node && node !== document.body) {
-        const s = window.getComputedStyle(node).transform
-        if (s && s !== 'none' && s !== 'matrix(1, 0, 0, 1, 0, 0)') return s
-        node = node.parentElement
-      }
-      return window.getComputedStyle(el).transform
+    // Read the committed grid placement from the engine's `.grid-item` cell
+    // (inline gridColumn/gridRow), set by GridCanvas after each commit.
+    const getPlacement = () => widget.evaluate(el => {
+      const cell = el.closest('.grid-item') ?? el.closest('[data-grid-id]')
+      if (!cell) return null
+      return `${cell.style.gridColumn}|${cell.style.gridRow}`
     })
 
-    const before = await getParentTransform()
+    const before = await getPlacement()
 
-    // Drag the widget
+    // Drag the widget by its handle
     await dragHandle.dragTo(page.getByTestId('editor-canvas'), {
       targetPosition: { x: 200, y: 300 },
       force: true,
     })
 
-    const after = await getParentTransform()
-    console.log('Tablet drag: before transform =', before, '| after =', after)
-
-    // Widget should still be visible after drag
+    // Widget should still be visible and its grid placement should have changed.
     await expect(widget).toBeVisible()
+    await expect.poll(getPlacement, {
+      message: 'widget grid placement should change after a drag',
+      timeout: 5_000,
+    }).not.toBe(before)
+    console.log('Tablet drag: before placement =', before, '| after =', await getPlacement())
   })
 })

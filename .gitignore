@@ -38,8 +38,6 @@ key.json
 keyfile.json
 keyfile*.json
 *.scoped.json
-backend/migration_cognizance/keyfile*.json
-backend/migration_cognizance/*.scoped.json
 
 # Firebase
 .firebase/
@@ -48,6 +46,7 @@ backend/migration_cognizance/*.scoped.json
 billing-model/
 
 legacy/
-# Generated DuckDB seed data files (built by backend/seed_data_duckdb.py)
-backend/seed_data/
+# Generated DuckDB seed data files (built by backend/seed_data_duckdb.py).
+# NOTE: only the generated *.duckdb files are ignored — the declarative demo
+# fixtures in backend/seed_data/demo/*.json ARE tracked (source of truth).
 *.duckdb

@@ -1,6 +1,6 @@
 # Flows — Workflow Orchestrator
 
-Flows is Nubi's built-in workflow orchestrator: a lightweight, LLM-native alternative to Prefect or n8n. Define a directed acyclic graph (DAG) of tasks — query a warehouse, run Python, or call the AI agent — and Nubi will execute them in dependency order, retry failures, cache results, and keep durable Postgres state throughout.
+Flows is Nubi's built-in workflow orchestrator: a lightweight, LLM-native alternative to Prefect or n8n. Define a directed acyclic graph (DAG) of tasks — query a warehouse, run Python, call the AI agent, materialize a blend, move files in and out of object storage, or refresh pre-aggregations — and Nubi will execute them in dependency order, retry failures, cache results, and keep durable Postgres state throughout.
 
 ---
 
@@ -18,6 +18,23 @@ Flows is Nubi's built-in workflow orchestrator: a lightweight, LLM-native altern
 | UI | None | React Flow DAG builder canvas |
 
 Use **Jobs** for simple one-shot recurring actions (snapshot a query, email a PDF report). Use **Flows** when you need to chain multiple steps, fan out across tasks, or have the AI agent participate as a step in your pipeline.
+
+---
+
+## Blends — Cheap Reads vs Live Federation
+
+A **blend** combines data from two to four source queries into a single dataset a dashboard can read. Nubi deliberately does **not** federate those sources live on every dashboard view. Instead it *materializes*: the multi-source merge runs once on a schedule (the `materialize` task) and writes the combined result to a persistent single-source DuckDB dataset. Dashboards then read that cheap, single-source dataset — content-hashed cache, predicate push-down, and near-zero marginal cost per view all apply, exactly as they do for any other connector.
+
+| | **Live federation** | **Materialized blend (Nubi)** |
+|---|---|---|
+| When the join runs | Every dashboard view | Once per schedule tick |
+| Read cost | N source round-trips per view | One single-source read (cached) |
+| RLS at read time | Must be re-derived per source | Injected on the materialized output via preserved `rls_keys` |
+| Freshness | Always live | As fresh as the last materialization |
+
+**RLS contract.** The blend declares `rls_keys` (e.g. `["tenant_id"]`). The materialized table **must keep those columns** so the planner can still inject `WHERE tenant_id = <claim>` at read time on the blend output. The `materialize` handler verifies this and fails (`400 rls_key_dropped`) if the merge flattened a declared key away — dropping an RLS column would defeat multi-tenant safety on the served dataset.
+
+This is the cost wedge: *materialize-then-serve, not federate-per-view.* See the [`materialize`](#materialize--build-a-materialized-blend) task kind and the [Materialized Blends](#materialized-blends) API/UI section below.
 
 ---
 
@@ -102,7 +119,7 @@ A FlowSpec is a JSON document (version 1) that describes the entire DAG. It is t
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
 | `key` | `string` | — | Unique slug within this flow. Used as the task identifier in `needs` lists and `inputs` maps. |
-| `kind` | `string` | — | Execution kind: `query`, `python`, `agent`, or `noop`. |
+| `kind` | `string` | — | Execution kind: `query`, `python`, `agent`, `materialize`, `noop`, `extract`, `bucket_load`, or `preagg_refresh`. |
 | `needs` | `array` | `[]` | Upstream task keys this task depends on (DAG edges). Empty = root task. |
 | `config` | `object` | `{}` | Kind-specific configuration. See below. |
 | `retries` | `integer` | `0` | Number of retry attempts after the first failure. |
@@ -187,6 +204,45 @@ Calls the Nubi AI agent (`run_agent`) with the caller's claims, so the agent can
 
 The task result is `{"reply": "...", "actions": [...]}`.
 
+### `materialize` — Build a Materialized Blend
+
+Merges the results of several upstream `query` tasks into one persistent, single-source dataset (a **blend**) and registers it so a dashboard widget can read it through a single `query_id`. The expensive multi-source merge runs on a schedule — not on every dashboard view. See [Blends — Cheap Reads vs Live Federation](#blends--cheap-reads-vs-live-federation) for the concept.
+
+The handler registers each upstream source result as a DuckDB table named by its source task `key`, runs the author-supplied `combine_sql` against those tables, writes the combined result to an on-disk DuckDB file (`database`, table `table`), verifies the declared `rls_keys` survived the merge, and registers a runtime `SELECT * FROM <table>` query bound to the blend datastore.
+
+```json
+{
+  "key": "blend",
+  "kind": "materialize",
+  "needs": ["orders", "signups"],
+  "config": {
+    "combine_sql": "SELECT o.tenant_id, o.day, o.revenue, s.new_users FROM orders o JOIN signups s USING (tenant_id, day)",
+    "sources": ["orders", "signups"],
+    "rls_keys": ["tenant_id"],
+    "table": "blend",
+    "database": "/abs/path/to/blend.duckdb",
+    "datastore_id": "ds-uuid",
+    "query_id": "q-uuid"
+  }
+}
+```
+
+**Config fields:**
+
+| Field | Required | Description |
+|-------|----------|-------------|
+| `combine_sql` | Yes | DuckDB SQL that merges the source tables (each registered under its source task `key`) into the combined result. Author-provided, first-party, org-scoped SQL — not end-user input. |
+| `database` | Yes | Absolute path to the DuckDB file the combined result is written to. The parent directory is created if missing. |
+| `sources` | No | List of upstream source task keys to register as tables. Defaults to all `inputs` keys. |
+| `rls_keys` | No | Columns that **must** appear in the combined output so the planner can inject `WHERE <key> = <claim>` at read time. If a declared key was flattened away, the task fails with `400 rls_key_dropped`. |
+| `table` | No | Target table name inside the DuckDB file. Default: `blend`. |
+| `datastore_id` | No | The pre-created `datastores` row id the blend is served through. |
+| `query_id` | No | The pre-created `queries` row id a widget binds to. When both `datastore_id` and `query_id` are given, the handler registers the runtime query. |
+
+The task result (the materialization manifest) is `{datastore_id, query_id, database, table, row_count, columns, rls_keys}`.
+
+> Most callers do not hand-author this task — they use `POST /api/v1/flows/blend`, which pre-creates the datastore + query rows, builds the source `query` tasks plus the `materialize` task, runs the flow once, and returns `{flow, materialized: {datastore_id, query_id}}` for dashboard binding. See [Materialized Blends](#materialized-blends).
+
 ### `noop` — Pass-Through Fan-In/Fan-Out
 
 A no-op task whose result is `{"inputs": {...}}` (all upstream results). Useful as an explicit join node when multiple branches converge before a downstream step.
@@ -202,6 +258,94 @@ A no-op task whose result is `{"inputs": {...}}` (all upstream results). Useful 
 
 No required config fields.
 
+### `extract` — Unpack an Archive from Storage
+
+Downloads an archive from object storage (or from an upstream task result), unpacks it, and uploads each extracted member to a destination storage prefix. Supports `zip`, `tar`, `tar.gz`/`tgz`, and bare `gz`. Every archive member is checked against a path-traversal guard before any I/O — members that resolve outside the extraction directory (e.g. `..` components, absolute paths) are rejected and the archive is refused.
+
+```json
+{
+  "key": "unzip",
+  "kind": "extract",
+  "needs": [],
+  "config": {
+    "source_uri": "s3://my-bucket/uploads/data.zip",
+    "dest_uri": "s3://my-bucket/extracted/",
+    "secret": "S3_CREDS",
+    "format": "auto"
+  }
+}
+```
+
+**Config fields:**
+
+| Field | Required | Description |
+|-------|----------|-------------|
+| `source_uri` | One of `source_uri` / `source` | Full storage URI of the archive (e.g. `s3://bucket/data.zip`, `file:///tmp/archive.tar.gz`). |
+| `source` | One of `source_uri` / `source` | Key of an upstream task whose result carries a `uri` (storage URI) or `bytes` (raw or base64-encoded) field. Mutually exclusive with `source_uri`. |
+| `dest_uri` | Yes | Storage URI prefix members are uploaded under, as `<dest_uri>/<member-relative-name>`. |
+| `secret` | No | Name of a secret whose JSON-decoded value is passed as the storage credentials dict. See [Secrets](/docs/secrets). If absent, environment / credential-chain auth is used. |
+| `format` | No | One of `auto`, `zip`, `tar`, `tar.gz`, `tgz`, `gz`. Default `auto` (detect from magic bytes / extension). |
+
+The task result is `{"files": [{"name", "size", "uri"}], "file_count": N}`.
+
+### `bucket_load` — Write Data to Object Storage
+
+Serialises an upstream task's rows into the requested format and uploads them to object storage (S3, GCS, Azure, or local) via the `app.storage` abstraction.
+
+```json
+{
+  "key": "dump",
+  "kind": "bucket_load",
+  "needs": ["pull"],
+  "config": {
+    "uri": "s3://my-bucket/exports/revenue.parquet",
+    "source": "pull",
+    "format": "parquet",
+    "mode": "overwrite",
+    "secret": "S3_CREDS"
+  }
+}
+```
+
+**Config fields:**
+
+| Field | Required | Description |
+|-------|----------|-------------|
+| `uri` | Yes | Destination storage URI. |
+| `source` | Yes | Key of the upstream task whose result provides the data. Row-shaped (`{rows, columns}`), a raw `{bytes}` payload, a `{uri}` to copy verbatim, or a plain list of dicts are all accepted. |
+| `format` | No | `csv`, `json`, `ndjson`, or `parquet`. Default `csv`. (`parquet` requires `pandas` + `pyarrow`.) |
+| `mode` | No | `overwrite` (default) or `append`. `append` downloads the existing object, merges rows, and re-uploads. |
+| `secret` | No | Name of a secret whose JSON-decoded value is the storage credentials dict. See [Secrets](/docs/secrets). |
+
+The task result is `{"uri", "format", "row_count", "bytes_written"}`.
+
+### `preagg_refresh` — Refresh Auto Pre-Aggregations
+
+Runs the auto pre-aggregation suggest → materialize pass for an org: mines the query log for hot rollup candidates and builds those that clear the `min_hits` threshold. See [Pre-Aggregations](/docs/pre-aggregations) for the underlying engine.
+
+```json
+{
+  "key": "rollups",
+  "kind": "preagg_refresh",
+  "needs": [],
+  "config": {
+    "org_id": "org-uuid",
+    "min_hits": 3,
+    "source_database": null
+  }
+}
+```
+
+**Config fields:**
+
+| Field | Required | Description |
+|-------|----------|-------------|
+| `org_id` | Yes | The org whose query log is mined. |
+| `min_hits` | No | Minimum query-log frequency for a candidate to be materialized. Default `3`. |
+| `source_database` | No | Absolute path to the DuckDB file holding the base fact tables. `null` (the default) uses an in-memory context. |
+
+The task result is `{org_id, candidates_found, rollups_built, rollup_ids, errors}`.
+
 ---
 
 ## Templating
@@ -213,6 +357,7 @@ Strings inside `config` values and `named_params` support `{{ }}` expressions re
 | `{{ params.region }}` | The value of the `region` flow parameter. |
 | `{{ inputs.pull.row_count }}` | The `row_count` field from the `pull` task's result. |
 | `{{ inputs.enrich.total }}` | The `total` field from the `enrich` task's result. |
+| `{{ secrets.NAME }}` | The plaintext value of the org secret named `NAME`. Resolved server-side from `ctx.secrets`; the value is never exposed to the client. See [Secrets](/docs/secrets). |
 
 Templates are resolved by the executor at runtime, after upstream tasks have completed.
 
@@ -535,6 +680,55 @@ Use this endpoint to poll from the UI while a long run is in progress. The run v
 
 ---
 
+## Materialized Blends
+
+`POST /api/v1/flows/blend` is the high-level entry point for building a [materialized blend](#blends--cheap-reads-vs-live-federation). It does the wiring a hand-authored `materialize` flow would require, then runs the flow once so the dataset exists immediately.
+
+```
+POST /api/v1/flows/blend
+Authorization: Bearer <jwt>
+Content-Type: application/json
+```
+
+Request:
+
+```json
+{
+  "name": "revenue_and_signups",
+  "sources": [
+    { "key": "orders",  "query_id": "orders_by_day" },
+    { "key": "signups", "sql": "SELECT tenant_id, day, count(*) AS new_users FROM signups GROUP BY 1, 2" }
+  ],
+  "combine_sql": "SELECT o.tenant_id, o.day, o.revenue, s.new_users FROM orders o JOIN signups s USING (tenant_id, day)",
+  "schedule": "0 6 * * *",
+  "rls_keys": ["tenant_id"]
+}
+```
+
+| Field | Required | Description |
+|-------|----------|-------------|
+| `name` | Yes | Blend (and flow) name. |
+| `sources` | Yes | One to four sources. Each is `{key, query_id?, sql?, datastore_id?, named_params?}` and must supply `query_id` **or** `sql`. Each becomes a single-source `query` task (so per-source predicate push-down + RLS stay intact). |
+| `combine_sql` | Yes | DuckDB SQL merging the source tables (registered under their `key`s) into the materialized result. |
+| `schedule` | No | Cron or `interval:Ns` schedule for re-materialization. The blend always runs once immediately on create regardless. |
+| `rls_keys` | No | Columns that must survive the merge so RLS injection works at read time. |
+
+On create the endpoint pre-creates the `datastores` + `queries` rows, builds and validates the blend FlowSpec (source `query` tasks + one `materialize` task), persists + schedules the flow, runs it once, and returns:
+
+```json
+{
+  "flow":         { "id": "flow-uuid", "name": "revenue_and_signups", "schedule": "0 6 * * *", "...": "..." },
+  "materialized": { "datastore_id": "ds-uuid", "query_id": "q-uuid" },
+  "run":          { "state": "success", "task_runs": [ ... ] }
+}
+```
+
+Bind a dashboard widget to `materialized.query_id`. Returns `400 blend_materialize_failed` (e.g. `rls_key_dropped`) if the first materialization fails, and `400 bad_blend` if a source omits both `query_id` and `sql`.
+
+In the UI, the **Blend Builder** (`/blends`) provides a form-driven way to pick sources, write `combine_sql`, declare `rls_keys`, set a schedule, and create the blend — then copy the resulting `query_id` for a widget.
+
+---
+
 ## Validation Rules
 
 `POST /api/v1/flows` and `PUT /api/v1/flows/{id}` both run `validate_flow_spec` on the spec before persisting. The same logic is exposed as a standalone dry-run endpoint at `POST /api/v1/flows/validate`.
@@ -545,7 +739,7 @@ Use this endpoint to poll from the UI while a long run is in progress. The run v
 2. Duplicate task `key` within the same flow.
 3. A `needs` entry references a task key that does not exist in the spec.
 4. The DAG contains a cycle (reported as `"Cycle detected: a → b → a."`).
-5. Missing kind-required config fields: `query`→`query_id` or `sql`; `python`→`code`; `agent`→`prompt`.
+5. Missing kind-required config fields: `query`→`query_id` or `sql`; `python`→`code`; `agent`→`prompt`; `materialize`→`combine_sql`; `extract`→`dest_uri` plus exactly one of `source_uri`/`source`; `bucket_load`→`uri` and `source`; `preagg_refresh`→`org_id`. (`noop` has no required config fields.)
 
 **Soft warnings** (prefixed `[warn]`, do not block create/update):
 

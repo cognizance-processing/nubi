@@ -4,14 +4,14 @@
  * Run with:  node --test src/flows/specGraph.test.mjs
  *
  * Uses only Node built-ins (node:test + node:assert).
- * We import from specGraph.js via a thin inline re-export (ESM-compatible).
+ * We inline the implementation (avoids JSX / import.meta issues in bare Node).
  */
 
 import { describe, it } from 'node:test'
 import assert from 'node:assert/strict'
 
 // ---------------------------------------------------------------------------
-// Inline copies of the functions (avoids JSX / import.meta issues in bare Node)
+// Inline copies of the implementation (kept in sync with specGraph.js)
 // ---------------------------------------------------------------------------
 
 function topoDepths(tasks) {
@@ -55,29 +55,115 @@ function autoLayout(tasks) {
   return positions
 }
 
+function _branchLabel(whenExpr, index) {
+  if (!whenExpr) return `condition_${index}`
+  const inner = whenExpr.replace(/^\s*\{\{\s*/, '').replace(/\s*\}\}\s*$/, '').trim()
+  return inner.length > 20 ? inner.slice(0, 18) + '…' : inner
+}
+
 function specToGraph(spec) {
   const tasks = spec?.tasks ?? []
   const auto = autoLayout(tasks)
+
   const nodes = tasks.map(task => {
     const hasUi = task.ui && (task.ui.x != null || task.ui.y != null)
     const pos = hasUi
       ? { x: task.ui.x ?? 0, y: task.ui.y ?? 0 }
       : auto.get(task.key) ?? { x: 0, y: 0 }
+
+    if (task.kind === 'map') {
+      return {
+        id: task.key,
+        type: 'mapNode',
+        position: pos,
+        data: {
+          task,
+          taskRun: null,
+          expanded: false,
+          bodySpec: task.config?.body ?? [],
+        },
+      }
+    }
+
+    if (task.kind === 'branch') {
+      return {
+        id: task.key,
+        type: 'branchNode',
+        position: pos,
+        data: { task, taskRun: null },
+      }
+    }
+
     return { id: task.key, type: 'taskNode', position: pos, data: { task, taskRun: null } }
   })
+
   const edges = []
   for (const task of tasks) {
     for (const need of (task.needs ?? [])) {
-      edges.push({ id: `${need}->${task.key}`, source: need, target: task.key })
+      edges.push({
+        id: `${need}->${task.key}`,
+        source: need,
+        target: task.key,
+        type: 'smoothstep',
+        animated: false,
+        style: { strokeWidth: 1.5 },
+      })
+    }
+
+    if (task.kind === 'branch') {
+      const conditions = task.config?.conditions ?? []
+      for (let i = 0; i < conditions.length; i++) {
+        const cond = conditions[i]
+        const label = _branchLabel(cond.when, i)
+        for (const nextKey of (cond.next ?? [])) {
+          const edgeId = `${task.key}->branch_cond${i}->${nextKey}`
+          if (!edges.some(e => e.id === edgeId || (e.source === task.key && e.target === nextKey && e.label === label))) {
+            edges.push({
+              id: edgeId,
+              source: task.key,
+              target: nextKey,
+              type: 'smoothstep',
+              animated: false,
+              label,
+              data: { branchCondIndex: i },
+              style: { strokeWidth: 1.5, strokeDasharray: '5 3' },
+            })
+          }
+        }
+      }
+      const defaultNext = task.config?.default ?? []
+      for (const nextKey of defaultNext) {
+        const edgeId = `${task.key}->branch_default->${nextKey}`
+        if (!edges.some(e => e.id === edgeId || (e.source === task.key && e.target === nextKey && e.label === 'default'))) {
+          edges.push({
+            id: edgeId,
+            source: task.key,
+            target: nextKey,
+            type: 'smoothstep',
+            animated: false,
+            label: 'default',
+            data: { branchCondIndex: -1 },
+            style: { strokeWidth: 1.5, strokeDasharray: '5 3' },
+          })
+        }
+      }
     }
   }
+
   return { nodes, edges }
 }
 
 function graphToSpec(nodes, edges, meta = {}) {
+  const branchEdgeIds = new Set(
+    edges
+      .filter(e => e.data != null && 'branchCondIndex' in e.data)
+      .map(e => e.id)
+  )
+
   const needsMap = new Map()
   for (const node of nodes) needsMap.set(node.id, [])
   for (const edge of edges) {
+    if (branchEdgeIds.has(edge.id)) continue
     if (needsMap.has(edge.target)) needsMap.get(edge.target).push(edge.source)
   }
   const tasks = nodes.map(node => {
@@ -119,8 +205,139 @@ const LINEAR_SPEC = {
 
 const EMPTY_SPEC = { version: 1, name: 'empty', params: [], tasks: [] }
 
+// A spec with a map node (fan-out over regions).
+const MAP_SPEC = {
+  version: 1,
+  name: 'regional_pipeline',
+  params: [],
+  tasks: [
+    {
+      key: 'get_regions',
+      kind: 'query',
+      needs: [],
+      config: { sql: 'SELECT DISTINCT region FROM sales' },
+      retries: 0, retry_backoff_s: 30, timeout_s: 60, cache_ttl_s: 0,
+      ui: { x: 0, y: 200 },
+    },
+    {
+      key: 'process_each_region',
+      kind: 'map',
+      needs: ['get_regions'],
+      config: {
+        item_expr: '{{ inputs.get_regions.rows }}',
+        item_var: 'region',
+        max_concurrency: 4,
+        max_map_size: 1000,
+        collect_key: 'transform',
+        body: [
+          {
+            key: 'fetch_data',
+            kind: 'query',
+            needs: [],
+            config: { sql: "SELECT * FROM sales WHERE region = '{{ item.region_code }}'" },
+            retries: 0, retry_backoff_s: 30, timeout_s: 60, cache_ttl_s: 0,
+            ui: { x: 0, y: 0 },
+          },
+          {
+            key: 'transform',
+            kind: 'python',
+            needs: ['fetch_data'],
+            config: { code: 'result = {k: v*2 for k, v in inputs["fetch_data"]["rows"][0].items()}' },
+            retries: 0, retry_backoff_s: 30, timeout_s: 60, cache_ttl_s: 0,
+            ui: { x: 260, y: 0 },
+          },
+        ],
+      },
+      retries: 0, retry_backoff_s: 30, timeout_s: 0, cache_ttl_s: 0,
+      ui: { x: 320, y: 200 },
+    },
+    {
+      key: 'aggregate',
+      kind: 'materialize',
+      needs: ['process_each_region'],
+      config: { combine_sql: 'SELECT * FROM results' },
+      retries: 0, retry_backoff_s: 30, timeout_s: 60, cache_ttl_s: 0,
+      ui: { x: 640, y: 200 },
+    },
+  ],
+}
+
+// A spec with a branch node (conditional routing).
+const BRANCH_SPEC = {
+  version: 1,
+  name: 'score_router',
+  params: [],
+  tasks: [
+    {
+      key: 'classify',
+      kind: 'python',
+      needs: [],
+      config: { code: 'result = {"label": "high"}' },
+      retries: 0, retry_backoff_s: 30, timeout_s: 60, cache_ttl_s: 0,
+      ui: { x: 0, y: 200 },
+    },
+    {
+      key: 'route',
+      kind: 'branch',
+      needs: ['classify'],
+      config: {
+        conditions: [
+          { when: "{{ inputs.classify.label == 'high_value' }}", next: ['enrich'] },
+          { when: "{{ inputs.classify.label == 'low_value' }}",  next: ['archive'] },
+        ],
+        default: ['log_task'],
+      },
+      retries: 0, retry_backoff_s: 30, timeout_s: 30, cache_ttl_s: 0,
+      ui: { x: 320, y: 200 },
+    },
+    {
+      key: 'enrich',
+      kind: 'python',
+      needs: ['route'],
+      config: { code: 'result = {"enriched": True}' },
+      retries: 0, retry_backoff_s: 30, timeout_s: 60, cache_ttl_s: 0,
+      ui: { x: 640, y: 100 },
+    },
+    {
+      key: 'archive',
+      kind: 'python',
+      needs: ['route'],
+      config: { code: 'result = {"archived": True}' },
+      retries: 0, retry_backoff_s: 30, timeout_s: 60, cache_ttl_s: 0,
+      ui: { x: 640, y: 300 },
+    },
+    {
+      key: 'log_task',
+      kind: 'noop',
+      needs: ['route'],
+      config: {},
+      retries: 0, retry_backoff_s: 30, timeout_s: 60, cache_ttl_s: 0,
+      ui: { x: 640, y: 500 },
+    },
+  ],
+}
+
 // ---------------------------------------------------------------------------
-// Tests
+// Helpers
+// ---------------------------------------------------------------------------
+
+/**
+ * Strip ui coords and compare specs for semantic equality
+ * (ui is canvas-only; round-trip preserves position but we want to check
+ * the routing structure rather than pixel values).
+ */
+function stripUi(spec) {
+  return {
+    ...spec,
+    tasks: spec.tasks.map(t => {
+      const { ui: _ui, ...rest } = t
+      return rest
+    }),
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Tests — existing (linear + empty)
 // ---------------------------------------------------------------------------
 
 describe('specToGraph', () => {
@@ -136,7 +353,7 @@ describe('specToGraph', () => {
     assert.deepEqual(nodes.map(n => n.id), ['pull', 'enrich', 'summary'])
   })
 
-  it('node type is taskNode', () => {
+  it('node type is taskNode for regular tasks', () => {
     const { nodes } = specToGraph(LINEAR_SPEC)
     for (const node of nodes) assert.equal(node.type, 'taskNode')
   })
@@ -173,7 +390,6 @@ describe('specToGraph', () => {
     const { nodes } = specToGraph(spec)
     const a = nodes.find(n => n.id === 'a')
     const b = nodes.find(n => n.id === 'b')
-    // depth 0 < depth 1 → b.x > a.x
     assert.ok(b.position.x > a.position.x, 'downstream node should be to the right')
   })
 })
@@ -240,5 +456,330 @@ describe('topoDepths', () => {
     assert.equal(depths.get('left'), 1)
     assert.equal(depths.get('right'), 1)
     assert.equal(depths.get('join'), 2)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Tests — map node
+// ---------------------------------------------------------------------------
+
+describe('specToGraph — map node', () => {
+  it('emits a mapNode type for map tasks', () => {
+    const { nodes } = specToGraph(MAP_SPEC)
+    const mapNode = nodes.find(n => n.id === 'process_each_region')
+    assert.ok(mapNode, 'map node should exist')
+    assert.equal(mapNode.type, 'mapNode')
+  })
+
+  it('map node starts collapsed (expanded: false)', () => {
+    const { nodes } = specToGraph(MAP_SPEC)
+    const mapNode = nodes.find(n => n.id === 'process_each_region')
+    assert.equal(mapNode.data.expanded, false)
+  })
+
+  it('map node data.bodySpec matches config.body', () => {
+    const { nodes } = specToGraph(MAP_SPEC)
+    const mapNode = nodes.find(n => n.id === 'process_each_region')
+    assert.ok(Array.isArray(mapNode.data.bodySpec), 'bodySpec should be an array')
+    assert.equal(mapNode.data.bodySpec.length, 2)
+    assert.equal(mapNode.data.bodySpec[0].key, 'fetch_data')
+    assert.equal(mapNode.data.bodySpec[1].key, 'transform')
+  })
+
+  it('map node data.bodySpec body tasks have correct ui coords', () => {
+    const { nodes } = specToGraph(MAP_SPEC)
+    const mapNode = nodes.find(n => n.id === 'process_each_region')
+    // Body task ui coords are stored relative to the map node origin.
+    assert.deepEqual(mapNode.data.bodySpec[0].ui, { x: 0, y: 0 })
+    assert.deepEqual(mapNode.data.bodySpec[1].ui, { x: 260, y: 0 })
+  })
+
+  it('map node has correct needs edges (standard upstream edges)', () => {
+    const { edges } = specToGraph(MAP_SPEC)
+    // get_regions → process_each_region (standard needs edge)
+    assert.ok(edges.some(e => e.source === 'get_regions' && e.target === 'process_each_region'),
+      'needs edge from get_regions to map node expected')
+  })
+
+  it('emits downstream edge from map node to aggregate', () => {
+    const { edges } = specToGraph(MAP_SPEC)
+    assert.ok(edges.some(e => e.source === 'process_each_region' && e.target === 'aggregate'),
+      'edge from map node to downstream aggregate task expected')
+  })
+
+  it('non-map tasks keep taskNode type in mixed spec', () => {
+    const { nodes } = specToGraph(MAP_SPEC)
+    const get = nodes.find(n => n.id === 'get_regions')
+    const agg = nodes.find(n => n.id === 'aggregate')
+    assert.equal(get.type, 'taskNode')
+    assert.equal(agg.type, 'taskNode')
+  })
+
+  it('correct total node count for map spec', () => {
+    // MAP_SPEC has 3 top-level tasks (get_regions, process_each_region, aggregate).
+    // Body tasks do NOT become top-level nodes.
+    const { nodes } = specToGraph(MAP_SPEC)
+    assert.equal(nodes.length, 3)
+  })
+})
+
+describe('graphToSpec — map round-trip', () => {
+  it('map round-trip preserves task count', () => {
+    const { nodes, edges } = specToGraph(MAP_SPEC)
+    const spec = graphToSpec(nodes, edges, {
+      version: MAP_SPEC.version,
+      name: MAP_SPEC.name,
+      params: MAP_SPEC.params,
+    })
+    assert.equal(spec.tasks.length, 3)
+  })
+
+  it('map round-trip preserves kind', () => {
+    const { nodes, edges } = specToGraph(MAP_SPEC)
+    const spec = graphToSpec(nodes, edges, {})
+    const mapTask = spec.tasks.find(t => t.key === 'process_each_region')
+    assert.equal(mapTask.kind, 'map')
+  })
+
+  it('map round-trip preserves config.body verbatim', () => {
+    const { nodes, edges } = specToGraph(MAP_SPEC)
+    const spec = graphToSpec(nodes, edges, {})
+    const mapTask = spec.tasks.find(t => t.key === 'process_each_region')
+    assert.ok(Array.isArray(mapTask.config.body), 'config.body must be an array')
+    assert.equal(mapTask.config.body.length, 2)
+    // Body task structure preserved
+    assert.equal(mapTask.config.body[0].key, 'fetch_data')
+    assert.equal(mapTask.config.body[0].kind, 'query')
+    assert.equal(mapTask.config.body[1].key, 'transform')
+    assert.equal(mapTask.config.body[1].kind, 'python')
+  })
+
+  it('map round-trip preserves config.item_expr', () => {
+    const { nodes, edges } = specToGraph(MAP_SPEC)
+    const spec = graphToSpec(nodes, edges, {})
+    const mapTask = spec.tasks.find(t => t.key === 'process_each_region')
+    assert.equal(mapTask.config.item_expr, '{{ inputs.get_regions.rows }}')
+  })
+
+  it('map round-trip preserves config.collect_key', () => {
+    const { nodes, edges } = specToGraph(MAP_SPEC)
+    const spec = graphToSpec(nodes, edges, {})
+    const mapTask = spec.tasks.find(t => t.key === 'process_each_region')
+    assert.equal(mapTask.config.collect_key, 'transform')
+  })
+
+  it('map round-trip preserves needs', () => {
+    const { nodes, edges } = specToGraph(MAP_SPEC)
+    const spec = graphToSpec(nodes, edges, {})
+    const mapTask = spec.tasks.find(t => t.key === 'process_each_region')
+    assert.deepEqual(mapTask.needs, ['get_regions'])
+  })
+
+  it('map round-trip is idempotent (specToGraph → graphToSpec → specToGraph)', () => {
+    // First pass
+    const { nodes: n1, edges: e1 } = specToGraph(MAP_SPEC)
+    const spec2 = graphToSpec(n1, e1, {
+      version: MAP_SPEC.version, name: MAP_SPEC.name, params: MAP_SPEC.params,
+    })
+    // Second pass
+    const { nodes: n2, edges: e2 } = specToGraph(spec2)
+    const spec3 = graphToSpec(n2, e2, {
+      version: spec2.version, name: spec2.name, params: spec2.params,
+    })
+    // The round-trip must be stable: spec2 and spec3 should be structurally equal.
+    assert.deepEqual(stripUi(spec2), stripUi(spec3))
+  })
+
+  it('map body task ui coords survive round-trip', () => {
+    const { nodes, edges } = specToGraph(MAP_SPEC)
+    const spec = graphToSpec(nodes, edges, {})
+    const mapTask = spec.tasks.find(t => t.key === 'process_each_region')
+    assert.deepEqual(mapTask.config.body[0].ui, { x: 0, y: 0 })
+    assert.deepEqual(mapTask.config.body[1].ui, { x: 260, y: 0 })
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Tests — branch node
+// ---------------------------------------------------------------------------
+
+describe('specToGraph — branch node', () => {
+  it('emits a branchNode type for branch tasks', () => {
+    const { nodes } = specToGraph(BRANCH_SPEC)
+    const branchNode = nodes.find(n => n.id === 'route')
+    assert.ok(branchNode, 'branch node should exist')
+    assert.equal(branchNode.type, 'branchNode')
+  })
+
+  it('branch node preserves full task in data.task', () => {
+    const { nodes } = specToGraph(BRANCH_SPEC)
+    const branchNode = nodes.find(n => n.id === 'route')
+    assert.equal(branchNode.data.task.kind, 'branch')
+    assert.ok(Array.isArray(branchNode.data.task.config.conditions))
+    assert.equal(branchNode.data.task.config.conditions.length, 2)
+  })
+
+  it('branch node emits incoming needs edges from classify', () => {
+    const { edges } = specToGraph(BRANCH_SPEC)
+    assert.ok(edges.some(e => e.source === 'classify' && e.target === 'route'),
+      'needs edge from classify to route expected')
+  })
+
+  it('branch node emits labeled outgoing edges for each condition', () => {
+    const { edges } = specToGraph(BRANCH_SPEC)
+    // condition_0 → enrich
+    const cond0Edge = edges.find(e =>
+      e.source === 'route' && e.target === 'enrich' && e.data?.branchCondIndex === 0
+    )
+    assert.ok(cond0Edge, 'condition 0 edge to enrich expected')
+    // condition_1 → archive
+    const cond1Edge = edges.find(e =>
+      e.source === 'route' && e.target === 'archive' && e.data?.branchCondIndex === 1
+    )
+    assert.ok(cond1Edge, 'condition 1 edge to archive expected')
+  })
+
+  it('branch node emits default edge with branchCondIndex: -1', () => {
+    const { edges } = specToGraph(BRANCH_SPEC)
+    const defaultEdge = edges.find(e =>
+      e.source === 'route' && e.target === 'log_task' && e.data?.branchCondIndex === -1
+    )
+    assert.ok(defaultEdge, 'default branch edge to log_task expected')
+    assert.equal(defaultEdge.label, 'default')
+  })
+
+  it('branch condition edges have a label derived from when expression', () => {
+    const { edges } = specToGraph(BRANCH_SPEC)
+    const cond0Edge = edges.find(e =>
+      e.source === 'route' && e.target === 'enrich' && e.data?.branchCondIndex === 0
+    )
+    // The when expression is "{{ inputs.classify.label == 'high_value' }}"
+    // After stripping {{ }}: "inputs.classify.label == 'high_value'" (37 chars)
+    // Expected to be truncated to 18 chars + ellipsis
+    assert.ok(typeof cond0Edge.label === 'string', 'edge label must be a string')
+    assert.ok(cond0Edge.label.length > 0, 'edge label must not be empty')
+  })
+
+  it('correct total node count for branch spec (body tasks not expanded)', () => {
+    const { nodes } = specToGraph(BRANCH_SPEC)
+    // BRANCH_SPEC has 5 top-level tasks.
+    assert.equal(nodes.length, 5)
+  })
+
+  it('non-branch tasks remain taskNode type in mixed spec', () => {
+    const { nodes } = specToGraph(BRANCH_SPEC)
+    const classify = nodes.find(n => n.id === 'classify')
+    const enrich = nodes.find(n => n.id === 'enrich')
+    assert.equal(classify.type, 'taskNode')
+    assert.equal(enrich.type, 'taskNode')
+  })
+})
+
+describe('graphToSpec — branch round-trip', () => {
+  it('branch round-trip preserves task count', () => {
+    const { nodes, edges } = specToGraph(BRANCH_SPEC)
+    const spec = graphToSpec(nodes, edges, {
+      version: BRANCH_SPEC.version,
+      name: BRANCH_SPEC.name,
+      params: BRANCH_SPEC.params,
+    })
+    assert.equal(spec.tasks.length, 5)
+  })
+
+  it('branch round-trip preserves kind', () => {
+    const { nodes, edges } = specToGraph(BRANCH_SPEC)
+    const spec = graphToSpec(nodes, edges, {})
+    const branchTask = spec.tasks.find(t => t.key === 'route')
+    assert.equal(branchTask.kind, 'branch')
+  })
+
+  it('branch round-trip preserves config.conditions verbatim', () => {
+    const { nodes, edges } = specToGraph(BRANCH_SPEC)
+    const spec = graphToSpec(nodes, edges, {})
+    const branchTask = spec.tasks.find(t => t.key === 'route')
+    assert.ok(Array.isArray(branchTask.config.conditions))
+    assert.equal(branchTask.config.conditions.length, 2)
+    assert.equal(branchTask.config.conditions[0].next[0], 'enrich')
+    assert.equal(branchTask.config.conditions[1].next[0], 'archive')
+  })
+
+  it('branch round-trip preserves config.default verbatim', () => {
+    const { nodes, edges } = specToGraph(BRANCH_SPEC)
+    const spec = graphToSpec(nodes, edges, {})
+    const branchTask = spec.tasks.find(t => t.key === 'route')
+    assert.deepEqual(branchTask.config.default, ['log_task'])
+  })
+
+  it('branch round-trip preserves branch node needs', () => {
+    const { nodes, edges } = specToGraph(BRANCH_SPEC)
+    const spec = graphToSpec(nodes, edges, {})
+    const branchTask = spec.tasks.find(t => t.key === 'route')
+    assert.deepEqual(branchTask.needs, ['classify'])
+  })
+
+  it('branch round-trip: downstream tasks preserve their needs (branch key)', () => {
+    // Branch-labeled edges (visual-only) must NOT contribute duplicate needs.
+    // The 'enrich' task has needs: ['route'] from the spec.
+    // After round-trip it must still be exactly ['route'], not duplicated.
+    const { nodes, edges } = specToGraph(BRANCH_SPEC)
+    const spec = graphToSpec(nodes, edges, {})
+    const enrich = spec.tasks.find(t => t.key === 'enrich')
+    assert.deepEqual(enrich.needs, ['route'])
+  })
+
+  it('branch round-trip: archive needs are preserved without duplication', () => {
+    const { nodes, edges } = specToGraph(BRANCH_SPEC)
+    const spec = graphToSpec(nodes, edges, {})
+    const archive = spec.tasks.find(t => t.key === 'archive')
+    assert.deepEqual(archive.needs, ['route'])
+  })
+
+  it('branch round-trip: log_task needs are preserved without duplication', () => {
+    const { nodes, edges } = specToGraph(BRANCH_SPEC)
+    const spec = graphToSpec(nodes, edges, {})
+    const log = spec.tasks.find(t => t.key === 'log_task')
+    assert.deepEqual(log.needs, ['route'])
+  })
+
+  it('branch round-trip is idempotent (specToGraph → graphToSpec → specToGraph)', () => {
+    // First pass
+    const { nodes: n1, edges: e1 } = specToGraph(BRANCH_SPEC)
+    const spec2 = graphToSpec(n1, e1, {
+      version: BRANCH_SPEC.version, name: BRANCH_SPEC.name, params: BRANCH_SPEC.params,
+    })
+    // Second pass
+    const { nodes: n2, edges: e2 } = specToGraph(spec2)
+    const spec3 = graphToSpec(n2, e2, {
+      version: spec2.version, name: spec2.name, params: spec2.params,
+    })
+    assert.deepEqual(stripUi(spec2), stripUi(spec3))
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Tests — _branchLabel helper
+// ---------------------------------------------------------------------------
+
+describe('_branchLabel', () => {
+  it('returns condition_N when no whenExpr', () => {
+    assert.equal(_branchLabel('', 0), 'condition_0')
+    assert.equal(_branchLabel(null, 2), 'condition_2')
+  })
+
+  it('strips {{ }} template delimiters', () => {
+    const label = _branchLabel('{{ inputs.x == 1 }}', 0)
+    assert.equal(label, 'inputs.x == 1')
+  })
+
+  it('truncates long expressions to 18 chars + ellipsis', () => {
+    const long = '{{ inputs.classify.label == "high_value" }}'
+    const label = _branchLabel(long, 0)
+    assert.ok(label.endsWith('…'), 'truncated label should end with ellipsis')
+    assert.ok(label.length <= 19, 'truncated label should be at most 19 chars')
+  })
+
+  it('short expressions are not truncated', () => {
+    const label = _branchLabel('{{ x > 5 }}', 0)
+    assert.equal(label, 'x > 5')
   })
 })

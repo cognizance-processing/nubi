@@ -449,6 +449,25 @@ async def query(
         params=effective_params,
     )
 
+    # ── 1b. Auto pre-aggregation routing (opt-in, conservative) ──────────────
+    # If a built rollup is a provably SOUND superset-rewrite for this plan, swap
+    # the plan to read the rollup before the cache lookup.  RLS predicates were
+    # already injected into physical_plan by planner_plan() and are preserved
+    # verbatim through the rewrite (filter columns are kept in the rollup), so
+    # per-tenant cache isolation still holds — the rewritten SQL gets its own
+    # content-addressed cache_key.  Best-effort: any failure leaves the plan as-is.
+    try:
+        from app.connectors.planner import route_to_rollup_shape as _route_rollup
+        from app.connectors.preagg import get_registry as _get_rollup_registry
+
+        _route = _route_rollup(physical_plan, _get_rollup_registry())
+        if _route.routed:
+            physical_plan = _route.plan
+            if _route.rollup_id:
+                _get_rollup_registry().record_hit(_route.rollup_id)
+    except Exception:  # noqa: BLE001 — routing must never break the query path.
+        pass
+
     # ── 2. Cache lookup ──────────────────────────────────────────────────────
     # CACHE ISOLATION: because claims (and therefore cache_key) derive from the
     # verified token, two different tenants will always produce different cache

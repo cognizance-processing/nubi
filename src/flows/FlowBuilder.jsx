@@ -48,28 +48,42 @@ import {
   Layers,
   SlidersHorizontal,
   ChevronDown,
+  FolderInput,
+  Upload,
+  GitBranch,
+  GitMerge,
 } from 'lucide-react'
 
 import { validateFlow, createFlow, updateFlow, runFlow } from '../lib/flows.js'
 import { specToGraph, graphToSpec } from './specGraph.js'
 import TaskNode from './nodes/TaskNode.jsx'
+import MapGroupNode from './nodes/MapGroupNode.jsx'
+import BranchNode from './nodes/BranchNode.jsx'
 import NodeInspector from './NodeInspector.jsx'
 
 // ---------------------------------------------------------------------------
 // Node types registration (must be stable — defined outside component)
 // ---------------------------------------------------------------------------
 
-const NODE_TYPES = { taskNode: TaskNode }
+const NODE_TYPES = {
+  taskNode:   TaskNode,
+  mapNode:    MapGroupNode,
+  branchNode: BranchNode,
+}
 
 // ---------------------------------------------------------------------------
 // Palette item definitions
 // ---------------------------------------------------------------------------
 
 const PALETTE_ITEMS = [
-  { kind: 'query',  label: 'Query',  Icon: Database, color: 'text-blue-500',    defaultConfig: { query_id: '' } },
-  { kind: 'python', label: 'Python', Icon: Code2,    color: 'text-violet-500',  defaultConfig: { code: '# Write your task code here\nresult = {}' } },
-  { kind: 'agent',  label: 'Agent',  Icon: Bot,      color: 'text-emerald-500', defaultConfig: { prompt: '', max_steps: 4 } },
-  { kind: 'noop',   label: 'Noop',   Icon: Zap,      color: 'text-slate-400',   defaultConfig: {} },
+  { kind: 'query',       label: 'Query',       Icon: Database,    color: 'text-blue-500',    defaultConfig: { query_id: '' } },
+  { kind: 'python',      label: 'Python',      Icon: Code2,       color: 'text-violet-500',  defaultConfig: { code: '# Write your task code here\nresult = {}' } },
+  { kind: 'agent',       label: 'Agent',       Icon: Bot,         color: 'text-emerald-500', defaultConfig: { prompt: '', max_steps: 4 } },
+  { kind: 'extract',     label: 'Extract',     Icon: FolderInput, color: 'text-sky-500',     defaultConfig: { source_uri: '', dest_uri: '', secret: '', format: 'auto' } },
+  { kind: 'bucket_load', label: 'Bucket load', Icon: Upload,      color: 'text-orange-500',  defaultConfig: { uri: '', secret: '', format: 'parquet', source: '' } },
+  { kind: 'noop',        label: 'Noop',        Icon: Zap,         color: 'text-slate-400',   defaultConfig: {} },
+  { kind: 'map',         label: 'Map (fan-out)', Icon: GitBranch,  color: 'text-indigo-500',  defaultConfig: { item_expr: '', item_var: 'item', max_concurrency: 0, max_map_size: 1000, collect_key: '', body: [] } },
+  { kind: 'branch',      label: 'Branch',      Icon: GitMerge,    color: 'text-amber-500',   defaultConfig: { conditions: [], default: [] } },
 ]
 
 // ---------------------------------------------------------------------------
@@ -82,26 +96,39 @@ function genKey(kind) {
   return `${kind}_${_nodeCounter}`
 }
 
+// Map kind → React Flow node type string.
+const KIND_TO_NODE_TYPE = {
+  map:    'mapNode',
+  branch: 'branchNode',
+}
+
 function makeTaskNode(kind, position, defaultConfig) {
   const key = genKey(kind)
+  const nodeType = KIND_TO_NODE_TYPE[kind] ?? 'taskNode'
+  const baseData = {
+    task: {
+      key,
+      kind,
+      needs: [],
+      config: defaultConfig,
+      retries: 0,
+      retry_backoff_s: 30,
+      timeout_s: 60,
+      cache_ttl_s: 0,
+      ui: { x: Math.round(position.x), y: Math.round(position.y) },
+    },
+    taskRun: null,
+  }
+  // map nodes need expanded/bodySpec fields for MapGroupNode
+  if (kind === 'map') {
+    baseData.expanded = false
+    baseData.bodySpec = defaultConfig.body ?? []
+  }
   return {
     id: key,
-    type: 'taskNode',
+    type: nodeType,
     position,
-    data: {
-      task: {
-        key,
-        kind,
-        needs: [],
-        config: defaultConfig,
-        retries: 0,
-        retry_backoff_s: 30,
-        timeout_s: 60,
-        cache_ttl_s: 0,
-        ui: { x: Math.round(position.x), y: Math.round(position.y) },
-      },
-      taskRun: null,
-    },
+    data: baseData,
   }
 }
 
@@ -331,12 +358,20 @@ export default function FlowBuilder({ flow, spec, onSpecChange, onSaved, onRun }
   const handleTaskChange = useCallback((updatedTask) => {
     setNodes(nds => {
       const next = nds.map(n => {
-        if (n.id !== (selectedNodeId)) return n
+        if (n.id !== selectedNodeId) return n
         const newId = updatedTask.key
+        // Determine the correct node type in case kind was changed in inspector.
+        const newType = KIND_TO_NODE_TYPE[updatedTask.kind] ?? 'taskNode'
+        const updatedData = { ...n.data, task: updatedTask }
+        // Keep bodySpec in sync for map nodes (used by MapGroupNode).
+        if (updatedTask.kind === 'map') {
+          updatedData.bodySpec = updatedTask.config?.body ?? []
+        }
         return {
           ...n,
           id: newId,
-          data: { ...n.data, task: updatedTask },
+          type: newType,
+          data: updatedData,
         }
       })
       notifySpecChange(next, edges)
@@ -377,6 +412,10 @@ export default function FlowBuilder({ flow, spec, onSpecChange, onSaved, onRun }
         setNodes(currentNodes => {
           const needsMap = new Map(currentNodes.map(n => [n.id, []]))
           for (const e of currentEdges) {
+            // Skip branch-labeled routing edges — they are visual only.
+            // Authoritative routing lives in config.conditions[i].next.
+            // These edges are identified by data.branchCondIndex (set by specToGraph).
+            if (e.data != null && 'branchCondIndex' in e.data) continue
             if (needsMap.has(e.target)) needsMap.get(e.target).push(e.source)
           }
           const updated = currentNodes.map(n => ({
@@ -630,10 +669,14 @@ export default function FlowBuilder({ flow, spec, onSpecChange, onSaved, onRun }
                 nodeColor={(node) => {
                   const kind = node.data?.task?.kind ?? 'noop'
                   return {
-                    query: '#3b82f6',
-                    python: '#8b5cf6',
-                    agent: '#10b981',
-                    noop: '#94a3b8',
+                    query:       '#3b82f6',
+                    python:      '#8b5cf6',
+                    agent:       '#10b981',
+                    extract:     '#0ea5e9',
+                    bucket_load: '#f97316',
+                    noop:        '#94a3b8',
+                    map:         '#6366f1',
+                    branch:      '#f59e0b',
                   }[kind] ?? '#94a3b8'
                 }}
                 maskColor="rgba(0,0,0,0.05)"

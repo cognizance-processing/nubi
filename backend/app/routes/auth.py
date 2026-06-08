@@ -167,13 +167,47 @@ async def _create_personal_org(
     )
 
     # Default project — keeps the org → project → resources model frictionless.
-    await projects_repo.create_project(
+    project = await projects_repo.create_project(
         org_id=org_id,
         name=(project_name or "").strip() or "Default",
         created_by=user_id,
     )
 
+    # Seed the removable onboarding *sample bundle* into the new default project
+    # so the user lands on a populated, explorable workspace (not an empty one).
+    await seed_sample_bundle_for_org(
+        org_id=org_id,
+        project_id=(project or {}).get("id"),
+        created_by=user_id,
+    )
+
     return org_id
+
+
+async def seed_sample_bundle_for_org(
+    org_id: str,
+    project_id: str | None,
+    created_by: str,
+) -> None:
+    """Seed the onboarding sample bundle into *org_id* / *project_id*.
+
+    Thin wrapper around ``app.sample.seed_sample_bundle`` shared by the register
+    flow, the Google-OAuth signup flow, and the explicit org-create endpoint.
+    Never raises — a sample-bundle failure must not break signup or org creation.
+    """
+    try:
+        if project_id is None:
+            project_id = await projects_repo.get_default_project_id(org_id)
+
+        from app.sample import seed_sample_bundle  # noqa: PLC0415
+
+        await seed_sample_bundle(
+            org_id=org_id,
+            project_id=project_id,
+            created_by=created_by,
+        )
+    except Exception:  # noqa: BLE001 — onboarding sample is best-effort
+        pass
 
 
 async def get_default_project(org_id: str) -> dict[str, Any] | None:
@@ -512,6 +546,23 @@ async def google_callback(
             email_verified,
         )
         await _create_personal_org(user_id, name, email)
+
+        # Best-effort: ingest the Google avatar into our own storage so the
+        # avatar is served from our domain.  Never fails the login flow.
+        if picture:
+            try:
+                from app.assets import ingest_avatar_from_url  # noqa: PLC0415
+
+                served_url = await ingest_avatar_from_url(picture, "user", user_id)
+                if served_url and served_url != picture:
+                    await execute(
+                        "UPDATE users SET avatar_url = $1, updated_at = now() WHERE id = $2::uuid",
+                        served_url,
+                        user_id,
+                    )
+            except Exception:  # noqa: BLE001 — best-effort, never break login
+                pass
+
         user_row = await fetchrow(
             "SELECT id, email, name, avatar_url, email_verified, created_at FROM users WHERE id = $1::uuid",
             user_id,
@@ -522,9 +573,17 @@ async def google_callback(
         user_id = str(user_row["id"])
         # Update avatar/name if Google provides newer info and user has none.
         if picture and not user_row["avatar_url"]:
+            # Best-effort: ingest the Google avatar into our own storage.
+            served_url: str | None = None
+            try:
+                from app.assets import ingest_avatar_from_url  # noqa: PLC0415
+
+                served_url = await ingest_avatar_from_url(picture, "user", user_id)
+            except Exception:  # noqa: BLE001 — best-effort, never break login
+                pass
             await execute(
                 "UPDATE users SET avatar_url = $1, updated_at = now() WHERE id = $2::uuid",
-                picture,
+                served_url or picture,
                 user_id,
             )
 

@@ -34,6 +34,8 @@ import {
   AlertTriangle,
   Check,
   GitFork,
+  Users,
+  DollarSign,
 } from 'lucide-react'
 import {
   INTRO,
@@ -45,6 +47,7 @@ import {
   MATRIX,
   MATRIX_COLUMNS,
 } from '../compare/registry.js'
+import FairnessNote from '../components/marketing/FairnessNote.jsx'
 
 /* ─────────────────────────────────────────────────────────────────────────── */
 /*  Scoped styles                                                               */
@@ -52,22 +55,27 @@ import {
 
 const ScopedStyles = () => (
   <style>{`
-    /* Nubi column gradient */
+    /* Nubi column gradient + brand side rails so it reads as the hero column */
     .cp-nubi-col {
       background: linear-gradient(
         160deg,
-        rgba(27,35,99,0.07) 0%,
-        rgba(36,86,166,0.07) 50%,
-        rgba(23,179,163,0.07) 100%
+        rgba(27,35,99,0.08) 0%,
+        rgba(36,86,166,0.08) 50%,
+        rgba(23,179,163,0.09) 100%
       );
+      box-shadow: inset 1.5px 0 0 rgba(23,179,163,0.30), inset -1.5px 0 0 rgba(23,179,163,0.30);
     }
     .cp-nubi-header {
       background: linear-gradient(
         160deg,
-        rgba(27,35,99,0.13) 0%,
-        rgba(36,86,166,0.12) 50%,
-        rgba(23,179,163,0.12) 100%
+        rgba(27,35,99,0.15) 0%,
+        rgba(36,86,166,0.14) 50%,
+        rgba(23,179,163,0.16) 100%
       );
+      box-shadow:
+        inset 0 3px 0 #17b3a3,
+        inset 1.5px 0 0 rgba(23,179,163,0.35),
+        inset -1.5px 0 0 rgba(23,179,163,0.35);
     }
 
     /* Row hover */
@@ -196,8 +204,14 @@ function Tooltip({ text, children }) {
 /* ─────────────────────────────────────────────────────────────────────────── */
 
 function CompareHeroIllustration() {
-  // baseline + bars: competitors neutral, Nubi towers (teal, glowing)
-  const baseY = 232
+  // Cost-per-view comparison: higher bar = MORE expensive. Competitors tower,
+  // Nubi is a tiny sliver at ≈ $0 / view. Lower is better → Nubi wins.
+  const baseY = 228
+  const bars = [
+    { x: 96, label: 'Hex', top: 70 },
+    { x: 182, label: 'Cube', top: 92 },
+    { x: 268, label: 'PowerBI', top: 78 },
+  ]
   return (
     <svg
       viewBox="0 0 440 280"
@@ -209,98 +223,412 @@ function CompareHeroIllustration() {
       aria-hidden="true"
     >
       <defs>
-        <linearGradient id="chi-nubi-bar" x1="0" y1="0" x2="0" y2="1">
-          <stop offset="0%" stopColor="#2dd4bf" />
-          <stop offset="55%" stopColor="#17b3a3" />
-          <stop offset="100%" stopColor="#2456a6" />
+        <linearGradient id="chi-nubi-bar" x1="0" y1="1" x2="0" y2="0">
+          <stop offset="0%" stopColor="#2456a6" />
+          <stop offset="100%" stopColor="#2dd4bf" />
         </linearGradient>
-        <linearGradient id="chi-glass" x1="0" y1="0" x2="1" y2="1">
-          <stop offset="0%" stopColor="#2456a6" stopOpacity="0.10" />
-          <stop offset="100%" stopColor="#1b2363" stopOpacity="0.03" />
-        </linearGradient>
-        <linearGradient id="chi-border" x1="0" y1="0" x2="1" y2="1">
-          <stop offset="0%" stopColor="#2dd4bf" stopOpacity="0.45" />
-          <stop offset="60%" stopColor="#2456a6" stopOpacity="0.25" />
-          <stop offset="100%" stopColor="#17b3a3" stopOpacity="0.18" />
-        </linearGradient>
-        <linearGradient id="chi-bolt" x1="0" y1="0" x2="1" y2="1">
-          <stop offset="0%" stopColor="#2dd4bf" />
+        <linearGradient id="chi-border" x1="0" y1="1" x2="1" y2="0">
+          <stop offset="0%" stopColor="#1b2363" />
+          <stop offset="45%" stopColor="#2456a6" />
           <stop offset="100%" stopColor="#17b3a3" />
         </linearGradient>
-        <radialGradient id="chi-bloom" cx="50%" cy="50%" r="50%">
-          <stop offset="0%" stopColor="#17b3a3" stopOpacity="0.32" />
-          <stop offset="100%" stopColor="#17b3a3" stopOpacity="0" />
-        </radialGradient>
-        <filter id="chi-glow" x="-80%" y="-80%" width="260%" height="260%">
-          <feGaussianBlur stdDeviation="5" result="b" />
-          <feMerge><feMergeNode in="b" /><feMergeNode in="SourceGraphic" /></feMerge>
-        </filter>
         <clipPath id="chi-clip">
           <rect x="12" y="14" width="416" height="252" rx="18" />
         </clipPath>
       </defs>
 
-      {/* premium glass backdrop */}
-      <rect x="12" y="14" width="416" height="252" rx="18" fill="url(#chi-glass)" />
-      <rect x="12" y="14" width="416" height="252" rx="18" stroke="url(#chi-border)" strokeWidth="1.5" />
+      {/* frame */}
+      <rect x="12" y="14" width="416" height="252" rx="18" fill="#2456a6" fillOpacity="0.03" />
+      <rect x="12" y="14" width="416" height="252" rx="18" stroke="url(#chi-border)" strokeWidth="2" />
 
       <g clipPath="url(#chi-clip)">
-        {/* bloom behind Nubi bar */}
-        <ellipse cx="330" cy="150" rx="120" ry="120" fill="url(#chi-bloom)" />
+        {/* cost axis: vertical arrow, "$ / view" rising */}
+        <line x1="44" y1={baseY} x2="44" y2="48" stroke="#2456a6" strokeWidth="1.5" strokeOpacity="0.4" strokeLinecap="round" />
+        <path d="M 39 56 L 44 47 L 49 56" stroke="#2456a6" strokeWidth="1.5" strokeOpacity="0.5" strokeLinecap="round" strokeLinejoin="round" fill="none" />
+        <text x="52" y="44" fontSize="11" fontFamily="Space Grotesk, system-ui, sans-serif"
+          fontWeight="700" fill="#2456a6" fillOpacity="0.6">$ / view</text>
+        <line x1="44" y1={baseY} x2="404" y2={baseY} stroke="#2456a6" strokeWidth="1.5" strokeOpacity="0.28" />
 
-        {/* gridlines + baseline */}
-        {[188, 144, 100, 64].map((y, i) => (
-          <line key={i} x1="40" y1={y} x2="404" y2={y}
-            stroke="#2456a6" strokeWidth="1" strokeOpacity="0.07" strokeDasharray="4 6" />
+        {/* competitor bars (expensive, neutral) */}
+        {bars.map((b) => (
+          <g key={b.label}>
+            <rect x={b.x} y={b.top} width="52" height={baseY - b.top} rx="8"
+              fill="#2456a6" fillOpacity="0.09" stroke="#2456a6" strokeWidth="1.75" strokeOpacity="0.45" />
+            <text x={b.x + 26} y={baseY + 22} textAnchor="middle" fontSize="11.5"
+              fontFamily="Space Grotesk, system-ui, sans-serif" fontWeight="600"
+              fill="#2456a6" fillOpacity="0.7">{b.label}</text>
+          </g>
         ))}
-        <line x1="40" y1={baseY} x2="404" y2={baseY} stroke="#2456a6" strokeWidth="1.5" strokeOpacity="0.22" />
 
-        {/* Hex bar (neutral) */}
-        <rect x="92" y="142" width="58" height={baseY - 142} rx="7" fill="#2456a6" fillOpacity="0.14" />
-        <rect x="92" y="142" width="58" height={baseY - 142} rx="7" stroke="#2456a6" strokeWidth="1.5" strokeOpacity="0.3" />
-        <line x1="104" y1="142" x2="138" y2="142" stroke="#2456a6" strokeOpacity="0.35" strokeWidth="2" strokeLinecap="round" />
-        <text x="121" y="252" textAnchor="middle" fontSize="12"
-          fontFamily="Space Grotesk, system-ui, sans-serif" fontWeight="600"
-          fill="#2456a6" fillOpacity="0.7">Hex</text>
+        {/* Nubi — tiny sliver (≈ $0), brand gradient + check */}
+        <rect x="354" y={baseY - 16} width="52" height="16" rx="6" fill="url(#chi-nubi-bar)" />
+        <text x="380" y={baseY + 22} textAnchor="middle" fontSize="12.5"
+          fontFamily="Space Grotesk, system-ui, sans-serif" fontWeight="700" fill="#17b3a3">Nubi</text>
 
-        {/* Cube bar (neutral) */}
-        <rect x="194" y="116" width="58" height={baseY - 116} rx="7" fill="#1b2363" fillOpacity="0.12" />
-        <rect x="194" y="116" width="58" height={baseY - 116} rx="7" stroke="#1b2363" strokeWidth="1.5" strokeOpacity="0.26" />
-        <line x1="206" y1="116" x2="240" y2="116" stroke="#1b2363" strokeOpacity="0.3" strokeWidth="2" strokeLinecap="round" />
-        <text x="223" y="252" textAnchor="middle" fontSize="12"
-          fontFamily="Space Grotesk, system-ui, sans-serif" fontWeight="600"
-          fill="#1b2363" fillOpacity="0.62">Cube</text>
-
-        {/* Nubi bar (towering, glowing) */}
-        <g filter="url(#chi-glow)">
-          <rect x="300" y="66" width="64" height={baseY - 66} rx="8" fill="url(#chi-nubi-bar)" />
-        </g>
-        <rect x="300" y="66" width="64" height={baseY - 66} rx="8" stroke="#ffffff" strokeOpacity="0.2" strokeWidth="1.5" />
-        <rect x="306" y="72" width="16" height={baseY - 80} rx="4" fill="#ffffff" fillOpacity="0.10" />
-        <text x="332" y="252" textAnchor="middle" fontSize="12.5"
-          fontFamily="Space Grotesk, system-ui, sans-serif" fontWeight="700"
-          fill="#17b3a3">Nubi</text>
-
-        {/* "≈ $0 / view" callout pill — centered over the Nubi bar */}
-        <rect x="287" y="30" width="90" height="22" rx="11" fill="#17b3a3" fillOpacity="0.12"
-          stroke="#17b3a3" strokeOpacity="0.4" strokeWidth="1" />
-        <text x="332" y="45" textAnchor="middle" fontSize="11.5"
+        {/* "≈ $0 / view" callout pill above the Nubi sliver */}
+        <rect x="333" y={baseY - 54} width="94" height="24" rx="12" fill="#17b3a3" fillOpacity="0.1"
+          stroke="#17b3a3" strokeOpacity="0.5" strokeWidth="1.25" />
+        <path d={`M 345 ${baseY - 42} l 3.5 3.5 l 6 -7`}
+          stroke="#17b3a3" strokeWidth="2.25" strokeLinecap="round" strokeLinejoin="round" fill="none" />
+        <text x="388" y={baseY - 38} textAnchor="middle" fontSize="11.5"
           fontFamily="Space Grotesk, system-ui, sans-serif" fontWeight="700" fill="#17b3a3">≈ $0 / view</text>
 
-        {/* lightning badge pinned on the Nubi bar top (cohesive with landing family) */}
-        <g filter="url(#chi-glow)">
-          <rect x="315" y="56" width="34" height="34" rx="11" fill="url(#chi-bolt)" />
-        </g>
-        <rect x="315" y="56" width="34" height="34" rx="11" stroke="#ffffff" strokeOpacity="0.35" strokeWidth="1.1" />
-        <path d="M 334 63 L 326 75 L 332 75 L 329 83 L 338 70 L 332 70 Z" fill="#ffffff" fillOpacity="0.95" />
-
-        {/* ascending trajectory dots (growth toward Nubi) */}
-        {[[58, 196], [88, 176], [120, 152], [154, 130]].map(([cx, cy], i) => (
-          <circle key={i} cx={cx} cy={cy} r={2 + i * 0.4}
-            fill="#2dd4bf" fillOpacity={0.3 + i * 0.1} />
-        ))}
+        {/* connector from pill down to the sliver */}
+        <line x1="380" y1={baseY - 30} x2="380" y2={baseY - 18} stroke="#17b3a3" strokeWidth="1.5" strokeOpacity="0.5" strokeDasharray="2 3" />
       </g>
     </svg>
+  )
+}
+
+/* ─────────────────────────────────────────────────────────────────────────── */
+/*  All-Competitors pricing table — 14 platforms, scrupulously fair           */
+/* ─────────────────────────────────────────────────────────────────────────── */
+
+/**
+ * Each row: name, category, pricingModel, entryPrice, seatModel, embedding,
+ * selfHost, strongerThanNubi (acknowledged honest strengths), sourceUrl.
+ *
+ * All prices from June 2026 public pricing pages or third-party analysts.
+ * Estimated values are annotated.
+ */
+const ALL_COMPETITORS = [
+  /* ── NUBI ── */
+  {
+    name: 'Nubi',
+    isNubi: true,
+    category: 'Embedded BI + Flows',
+    pricingModel: 'Usage-based flat tiers',
+    entryPrice: '$0 free / $79/mo Starter',
+    entryEst: false,
+    seatModel: 'Unlimited users & viewers at every tier — no per-seat charge',
+    embedding: 'Core surface: JWKS-native JWT RLS; unlimited viewers all paid tiers',
+    selfHost: 'Connector self-host (cloud control plane); full self-host planned',
+    strengths: 'Unlimited seats; ZAR billing; browser compute; transparent pricing',
+    weaknesses: 'Newer product; smaller ecosystem; full self-host not yet shipped',
+    sourceUrl: 'https://nubi.io/pricing',
+  },
+  /* ── GENERAL BI ── */
+  {
+    name: 'Metabase',
+    isNubi: false,
+    category: 'General BI',
+    pricingModel: 'Per-seat tiered',
+    entryPrice: 'OSS free; Pro $575/mo + $12/viewer',
+    entryEst: false,
+    seatModel: 'Every embedded viewer = full paid seat (~$150k/yr for 1k viewers on Pro)',
+    embedding: 'White-label on Pro ($575+/mo); per-viewer seat cost at scale is prohibitive',
+    selfHost: 'Yes — AGPL OSS free; Pro self-hosted same fee as cloud',
+    strengths: 'Largest open-source community; lowest barrier for non-technical users; free AGPL self-host; Data Studio semantic layer (v59, 2026)',
+    weaknesses: 'Per-viewer seat penalty; AGPL compliance burden for SaaS; no WebGL/Arrow; no ZAR billing',
+    sourceUrl: 'https://www.metabase.com/pricing/',
+  },
+  {
+    name: 'Hex',
+    isNubi: false,
+    category: 'Notebooks + Apps',
+    pricingModel: 'Per-editor seat + compute add-on',
+    entryPrice: 'Community free; Team $75/editor/mo',
+    entryEst: false,
+    seatModel: 'Per-editor; compute billed separately by kernel-minute',
+    embedding: 'Enterprise add-on only; not a core surface; expensive',
+    selfHost: 'No — cloud-only SaaS',
+    strengths: 'Best-in-class collaborative Python notebook UX; strong AI (Magic AI, agents); broad connectivity',
+    weaknesses: 'Per-session cloud kernel scales linearly with concurrent users; embedding expensive and bolt-on; no self-host; SVG viz ceiling ~50k rows',
+    sourceUrl: 'https://hex.tech/pricing/',
+  },
+  {
+    name: 'Cube Cloud',
+    isNubi: false,
+    category: 'Headless Semantic Layer',
+    pricingModel: 'Per-developer + hourly CCU infra',
+    entryPrice: 'Free hobbyist; Starter ~$40/dev/mo',
+    entryEst: false,
+    seatModel: 'Developer seats + Cube Consumption Units (CCU) for infra; viewer $20/user/mo (Premium+)',
+    embedding: 'Core strength (headless only); JWT→SQL RLS; no built-in viz — bring your own frontend',
+    selfHost: 'Yes — Cube Core open source (MIT); production needs Redis + Cube Store cluster',
+    strengths: 'Gold-standard headless semantic layer; strong JWT-driven RLS; MIT open core; warehouse-native pre-aggregations',
+    weaknesses: 'No built-in viz — must build full frontend; high schema upfront cost (JS/YAML required before any query); CCU billing unpredictable at scale',
+    sourceUrl: 'https://cube.dev/pricing',
+  },
+  {
+    name: 'Looker',
+    isNubi: false,
+    category: 'Enterprise BI (LookML)',
+    pricingModel: 'Sales-only (no public price)',
+    entryPrice: 'Est. from $60k/year',
+    entryEst: true,
+    seatModel: 'Per-user; BigQuery compute billed separately on Google Cloud',
+    embedding: 'Separate Embed SKU; iFrame + signed URLs; strong JWT RLS; est. $60k+ entry',
+    selfHost: 'No — Google Cloud hosted only (since 2019)',
+    strengths: 'Strongest governance and audit trail; best LookML ecosystem; Gemini AI (Conversational Analytics, LookML Assistant, Viz Assistant); Google Cloud integrations',
+    weaknesses: 'No public pricing; very high LookML modeling tax (est. 40-60% of total investment); cloud-only since 2019; expensive for SMB',
+    sourceUrl: 'https://cloud.google.com/looker/pricing',
+  },
+  {
+    name: 'Tableau',
+    isNubi: false,
+    category: 'Viz Industry Standard',
+    pricingModel: 'Per-seat tiered',
+    entryPrice: 'Standard Viewer $15/user/mo; Creator $75/user/mo',
+    entryEst: false,
+    seatModel: 'Every viewer = paid seat; OEM SaaS embedding from $60k–$150k/year',
+    embedding: 'Embedding API v3; per-viewer seat cost; OEM from $60k–$150k/year',
+    selfHost: 'Yes — Tableau Server; Creator $70/user/mo for on-prem',
+    strengths: 'Largest ecosystem; 40+ viz types; Hyper extract for fast in-memory queries; Tableau Pulse automated insights; industry recognition (Gartner MQ leader)',
+    weaknesses: 'Per-viewer seat cost makes SaaS embedding expensive; high total contract value; slower innovation pace vs newer tools; no browser compute',
+    sourceUrl: 'https://www.tableau.com/pricing/teams-orgs',
+  },
+  {
+    name: 'Power BI',
+    isNubi: false,
+    category: 'Microsoft Ecosystem BI',
+    pricingModel: 'Per-seat or Fabric F-SKU capacity',
+    entryPrice: 'Pro $14/user/mo; Fabric F4 ~$400/mo',
+    entryEst: false,
+    seatModel: 'Pro per-seat ($14/user/mo) or Fabric F-SKU capacity (no per-viewer for F-SKU)',
+    embedding: 'App-owns-data via Fabric F-SKU; F4 ~$400/mo covers ~100 concurrent embedded users — good value for Microsoft shops',
+    selfHost: 'Yes — Power BI Report Server (requires Premium/SQL Server EE with SA); feature lag vs cloud',
+    strengths: 'Deepest Microsoft 365/Teams/Excel integration; Copilot AI (DAX gen, narratives) on F2+ capacity; strong DAX + Power Query M ecosystem; 100+ custom visuals on AppSource; F-SKU removes per-viewer penalty',
+    weaknesses: 'Significant value degradation outside Microsoft ecosystem; DAX/M learning curve; feature lag in Report Server vs cloud; complex licensing with multiple tiers',
+    sourceUrl: 'https://powerbi.microsoft.com/en-us/pricing/',
+  },
+  {
+    name: 'Apache Superset / Preset',
+    isNubi: false,
+    category: 'Open-Source BI',
+    pricingModel: 'Free OSS; Preset managed cloud per-seat',
+    entryPrice: 'Superset OSS free; Preset Pro $20/user/mo',
+    entryEst: false,
+    seatModel: 'Superset: unlimited (self-manage infra cost); Preset: per-seat cloud; embed add-on $500/mo for 50 viewers',
+    embedding: 'iframe + Guest Token (OSS); Preset embed viewer add-on $500/mo for 50 viewers — penalises scale',
+    selfHost: 'Yes — Apache Superset is free open-source (Apache 2.0); Preset Enterprise offers managed private cloud',
+    strengths: 'Apache 2.0 licence (no AGPL compliance burden); large active community; broad connector support; Preset removes operational burden; no seat limit on self-hosted Superset',
+    weaknesses: 'Superset DevOps overhead significant (Redis, Celery, Postgres); Preset embed per-viewer pricing penalises SaaS scale; no in-browser compute; limited AI maturity',
+    sourceUrl: 'https://preset.io/pricing/',
+  },
+  {
+    name: 'Count',
+    isNubi: false,
+    category: 'Data Canvas / Narrative BI',
+    pricingModel: 'Per-editor; viewers always free',
+    entryPrice: 'Free (3 editors); Pro $49/editor/mo',
+    entryEst: false,
+    seatModel: 'Editors pay; viewers are always free at every tier — closest to Nubi seat philosophy',
+    embedding: 'Limited; Enterprise-only; not a core product surface',
+    selfHost: 'No — cloud-only SaaS',
+    strengths: 'Viewers genuinely free at every tier (aligns with no-viewer-seat philosophy); distinctive canvas layout for narrative analytics; strong SQL + Python + dbt integration',
+    weaknesses: 'Scale tier requires minimum 15 editors ($1,035/mo minimum); embedding is limited and Enterprise-only; cloud-only; no WebGL; no ZAR billing',
+    sourceUrl: 'https://count.co/pricing',
+  },
+  /* ── EMBEDDED ANALYTICS SPECIALISTS ── */
+  {
+    name: 'Embeddable',
+    isNubi: false,
+    category: 'Embedded Analytics SDK',
+    pricingModel: 'Session-based flat tiers',
+    entryPrice: 'Free (200 sessions/mo); Lite $499/mo (1k sessions)',
+    entryEst: false,
+    seatModel: 'Unlimited end-users; pricing by dashboard sessions — not per viewer',
+    embedding: 'Core product; React/Vue SDK; $499/mo for 1,000 sessions; $200 per additional 500 sessions overage',
+    selfHost: 'No — cloud-only SaaS',
+    strengths: 'Developer-first SDK; purpose-built for embedding; session-based model is predictable; strong React/Vue component library; good CI/CD workflow support on Premium',
+    weaknesses: '$499/mo for only 1,000 sessions is expensive vs Nubi Starter ($79/mo for 5,000 sessions); steep overage at $200/500 additional sessions; no open-source core; no in-browser compute',
+    sourceUrl: 'https://embeddable.com/pricing',
+  },
+  {
+    name: 'Holistics',
+    isNubi: false,
+    category: 'Embedded Analytics Platform',
+    pricingModel: 'Flat platform fee, unlimited viewers',
+    entryPrice: '$800/mo annual (Entry); $1,000/mo annual (Standard)',
+    entryEst: false,
+    seatModel: 'Flat fee includes 10 seats; unlimited embedded viewers at all tiers; extra seats $15–$18/seat/mo',
+    embedding: 'Unlimited embedded viewers on flat fee; RLS on SCS tier ($2,000/mo annual); SAML/SCIM',
+    selfHost: 'No — cloud-only SaaS',
+    strengths: 'Genuinely unlimited embedded viewers at flat fee — the most viewer-generous model in this range; strong RLS passthrough auth; mature ISV track record; unlimited reports on Standard+',
+    weaknesses: '$800/mo annual entry is 10× Nubi Starter; cloud-only; no in-browser compute; limited AI maturity; no ZAR billing; no self-host',
+    sourceUrl: 'https://www.holistics.io/pricing/',
+  },
+  {
+    name: 'Luzmo',
+    isNubi: false,
+    category: 'Embedded Analytics (MAU)',
+    pricingModel: 'Monthly active users (MAU), EUR',
+    entryPrice: '€495/mo (~$540) annual Starter',
+    entryEst: false,
+    seatModel: 'Unlimited registered users; billing based on monthly active users (MAU)',
+    embedding: 'Core product; React SDK; white-label on Premium (€1,995/mo annual); AI NL queries (30/user/day on Premium)',
+    selfHost: 'No — cloud-only SaaS',
+    strengths: 'MAU-based model economical for apps with many registered but low-activity users; strong React SDK and component library; AI NL queries on Premium; good documentation',
+    weaknesses: 'EUR-only pricing — no ZAR or Africa support; MAU model can be unpredictable with engagement spikes; Premium at ~$2,175/mo is expensive; no open-source core; no self-host',
+    sourceUrl: 'https://www.luzmo.com/pricing',
+  },
+  {
+    name: 'Omni Analytics',
+    isNubi: false,
+    category: 'Full-Stack BI + Embed (via Explo)',
+    pricingModel: 'Sales-only (no public price)',
+    entryPrice: 'Est. ~$70/creator/mo; est. ~$420/viewer/yr',
+    entryEst: true,
+    seatModel: 'Per-creator for internal BI; per-viewer for embedded (estimates, not public)',
+    embedding: 'Via Explo acquisition; embedded viewer pricing est. ~$420/user/year; Explo customers migrating',
+    selfHost: 'No — cloud-only SaaS',
+    strengths: 'Full-stack BI + embedded in one platform; strong SQL + no-code modeling; acquired Explo\'s embedded capabilities and customer base',
+    weaknesses: 'No public pricing — requires sales call; per-viewer cost model (est.); Explo customers face migration uncertainty; relatively new combined product; no self-host',
+    sourceUrl: 'https://aws.amazon.com/marketplace/pp/prodview-6ohhb7zzk5brq',
+  },
+  {
+    name: 'GoodData',
+    isNubi: false,
+    category: 'Enterprise Analytics Platform',
+    pricingModel: 'Sales-only, workspace-based (no public price)',
+    entryPrice: 'Est. ~$1,500+/mo platform fee',
+    entryEst: true,
+    seatModel: 'Unlimited users; pricing by workspace count; contract-negotiated',
+    embedding: 'Core strength; headless InsightView React components; strong multi-tenant; workspace-based; no public price',
+    selfHost: 'Yes — GoodData Cloud Native (Kubernetes); commercial license required',
+    strengths: 'Longest track record in embedded analytics (founded 2008); HIPAA and FedRAMP compliant; Kubernetes-native for on-prem enterprise; Analytics Lake for federated data; mature multi-tenant architecture',
+    weaknesses: 'No public pricing; high implementation complexity; not accessible for SMB/early-stage SaaS; primarily enterprise-focused; pricing requires sales cycle',
+    sourceUrl: 'https://www.gooddata.ai/pricing/',
+  },
+]
+
+/**
+ * AllCompetitorsTable — the scrupulously fair comparison.
+ * Categories: General BI, Embedded Specialists.
+ * Columns: Platform, Pricing Model, Entry Price, Seat / Viewer Model,
+ *          Embedding, Self-Host, Where competitors are genuinely stronger.
+ */
+function AllCompetitorsTable() {
+  const generalBI = ALL_COMPETITORS.filter(c =>
+    ['General BI','Notebooks + Apps','Headless Semantic Layer','Enterprise BI (LookML)',
+     'Viz Industry Standard','Microsoft Ecosystem BI','Open-Source BI','Data Canvas / Narrative BI'].includes(c.category)
+  )
+  const embedded = ALL_COMPETITORS.filter(c =>
+    ['Embedded Analytics SDK','Embedded Analytics Platform','Embedded Analytics (MAU)',
+     'Full-Stack BI + Embed (via Explo)','Enterprise Analytics Platform',
+     'Embedded BI + Flows'].includes(c.category)
+  )
+
+  function renderRow(c) {
+    return (
+      <tr key={c.name} className={`cp-row cp-matrix-row border-b border-border last:border-0 transition-colors`}>
+        {/* Platform — Nubi row uses gradient, others use solid dim-cell */}
+        <td className={[
+          'sticky left-0 z-10 px-4 py-3.5 align-top border-b border-r border-border transition-colors',
+          c.isNubi ? 'cp-nubi-col' : 'cp-dim-cell',
+        ].join(' ')} style={{ minWidth: 150 }}>
+          <span className={`text-xs font-semibold ${c.isNubi ? 'text-brand-teal' : 'text-fg'}`}>
+            {c.isNubi && '★ '}{c.name}
+          </span>
+          <p className="text-[10px] text-muted mt-0.5 leading-snug">{c.category}</p>
+        </td>
+        {/* Pricing model */}
+        <td className={['cp-row-cell px-4 py-3.5 text-xs align-top border-b border-r border-border leading-relaxed transition-colors',
+          c.isNubi ? 'cp-nubi-col font-medium text-fg' : 'bg-surface text-muted'].join(' ')}
+          style={{ minWidth: 160 }}>
+          {c.pricingModel}
+        </td>
+        {/* Entry price */}
+        <td className={['cp-row-cell px-4 py-3.5 text-xs align-top border-b border-r border-border leading-relaxed transition-colors',
+          c.isNubi ? 'cp-nubi-col font-medium text-fg' : 'bg-surface text-muted'].join(' ')}
+          style={{ minWidth: 170 }}>
+          {c.entryPrice}
+          {c.entryEst && <EstBadge />}
+        </td>
+        {/* Seat / viewer model */}
+        <td className={['cp-row-cell px-4 py-3.5 text-xs align-top border-b border-r border-border leading-relaxed transition-colors',
+          c.isNubi ? 'cp-nubi-col font-medium text-fg' : 'bg-surface text-muted'].join(' ')}
+          style={{ minWidth: 200 }}>
+          {c.seatModel}
+        </td>
+        {/* Embedding */}
+        <td className={['cp-row-cell px-4 py-3.5 text-xs align-top border-b border-r border-border leading-relaxed transition-colors',
+          c.isNubi ? 'cp-nubi-col font-medium text-fg' : 'bg-surface text-muted'].join(' ')}
+          style={{ minWidth: 200 }}>
+          {c.embedding}
+        </td>
+        {/* Self-Host */}
+        <td className={['cp-row-cell px-4 py-3.5 text-xs align-top border-b border-r border-border leading-relaxed transition-colors',
+          c.isNubi ? 'cp-nubi-col font-medium text-fg' : 'bg-surface text-muted'].join(' ')}
+          style={{ minWidth: 140 }}>
+          {c.selfHost}
+        </td>
+        {/* Where they're stronger (honest acknowledgement) */}
+        <td className={['cp-row-cell px-4 py-3.5 text-xs align-top border-b border-r border-border last:border-r-0 leading-relaxed transition-colors',
+          c.isNubi ? 'cp-nubi-col font-medium text-fg' : 'bg-surface text-muted'].join(' ')}
+          style={{ minWidth: 200 }}>
+          {c.isNubi
+            ? <span className="text-muted italic">{c.weaknesses}</span>
+            : c.strengths}
+        </td>
+      </tr>
+    )
+  }
+
+  const colHeaders = [
+    { label: 'Platform', width: 150 },
+    { label: 'Pricing Model', width: 160 },
+    { label: 'Entry Price', width: 170 },
+    { label: 'Seat / Viewer Model', width: 200 },
+    { label: 'Embedding', width: 200 },
+    { label: 'Self-Host', width: 140 },
+    { label: 'Where this tool is genuinely stronger', width: 200 },
+  ]
+
+  function SectionHeader({ label }) {
+    return (
+      <tr>
+        <td colSpan={colHeaders.length}
+          className="bg-surface-2 px-4 py-2.5 border-b border-border">
+          <span className="text-[10px] font-semibold uppercase tracking-widest text-brand-teal">
+            {label}
+          </span>
+        </td>
+      </tr>
+    )
+  }
+
+  return (
+    <div className="overflow-x-auto rounded-2xl border border-border shadow-sm">
+      <table className="border-collapse" style={{ minWidth: 1220, width: '100%' }}>
+        <thead className="sticky top-0 z-20">
+          <tr>
+            {colHeaders.map((col, i) => (
+              i === 0 ? (
+                <th key={col.label}
+                  className="sticky left-0 z-30 px-4 py-4 text-left bg-surface-2 border-b border-r border-border"
+                  style={{ minWidth: col.width, width: col.width }}>
+                  <span className="text-[10px] font-semibold uppercase tracking-widest text-muted">
+                    {col.label}
+                  </span>
+                </th>
+              ) : (
+                <th key={col.label}
+                  className="px-4 py-4 text-left bg-surface-2 border-b border-r border-border last:border-r-0"
+                  style={{ minWidth: col.width }}>
+                  <span className="text-[10px] font-semibold uppercase tracking-widest text-muted">
+                    {col.label}
+                  </span>
+                </th>
+              )
+            ))}
+          </tr>
+        </thead>
+        <tbody>
+          {/* Nubi row first */}
+          {ALL_COMPETITORS.filter(c => c.isNubi).map(renderRow)}
+
+          {/* General BI section */}
+          <SectionHeader label="General BI tools" />
+          {generalBI.map(renderRow)}
+
+          {/* Embedded analytics section */}
+          <SectionHeader label="Embedded analytics specialists" />
+          {embedded.map(renderRow)}
+        </tbody>
+      </table>
+    </div>
   )
 }
 
@@ -355,13 +683,13 @@ const PRIMARY_ROWS = [
     label: 'Pricing',
     hex:  'Per-seat + compute add-on (kernels cost real money)',
     cube: 'Per-developer + hourly infra (on top of seats)',
-    nubi: 'Usage-based: connector bytes + embed views + AI tokens + kernel-seconds; genuine free tier',
+    nubi: 'No per-seat pricing at any tier: Starter $79/mo | Pro $199/mo | Business $499/mo | Enterprise from $1,799/mo. Pay for compute, storage, AI calls, and embed sessions — never for users. Billed in ZAR via Paystack.',
   },
 ]
 
 function PrimaryTable() {
   return (
-    <div className="overflow-x-auto rounded-2xl border border-border shadow-sm">
+    <div className="overflow-x-auto overscroll-x-contain rounded-2xl border border-border shadow-sm">
       <table className="border-collapse w-full" style={{ minWidth: 640 }}>
         <thead>
           <tr>
@@ -426,7 +754,7 @@ function FullMatrix() {
   const cols = MATRIX_COLUMNS
 
   return (
-    <div className="overflow-x-auto rounded-2xl border border-border shadow-sm">
+    <div className="overflow-x-auto overscroll-x-contain rounded-2xl border border-border shadow-sm">
       <table className="border-collapse" style={{ minWidth: 1400, width: '100%' }}>
         <thead className="sticky top-0 z-20">
           <tr>
@@ -721,16 +1049,16 @@ export default function ComparePage() {
                 </h1>
 
                 <p className="text-lg sm:text-xl leading-relaxed text-muted mb-6 max-w-lg">
-                  {introData?.subtitle ?? 'An honest comparison against Hex, Cube, Metabase, Looker, Sigma, Tableau, Power BI, and Apache Superset.'}
+                  {introData?.subtitle ?? 'An honest comparison against 14 platforms — Metabase, Hex, Cube, Holistics, Embeddable, Luzmo, Omni, GoodData, Looker, Sigma, Tableau, Power BI, Preset, and Count.'}
                 </p>
 
                 <blockquote className="border-l-2 border-brand-teal pl-4 mb-8">
                   <p className="text-sm text-muted leading-relaxed">
-                    <strong className="text-fg font-semibold">Nubi's structural edge:</strong>{' '}
-                    The analytics kernel runs in the user's browser by default — so the marginal
-                    cost of an embedded view is ≈&nbsp;$0 at high cache-hit rates.
+                    <strong className="text-fg font-semibold">Nubi's structural edges:</strong>{' '}
+                    Analytics compute runs in the user's browser by default — marginal cost per embed view ≈&nbsp;$0 at high cache-hit rates.
+                    Unlimited users and viewers at every tier — no per-seat penalty.
+                    ZAR-native billing via Paystack — no competitor prices in ZAR.
                     Arrow IPC + WebGL handles 1M+ point datasets.
-                    No hand-written semantic model required to start.
                   </p>
                 </blockquote>
 
@@ -739,6 +1067,8 @@ export default function ComparePage() {
                     { icon: <Zap size={12} strokeWidth={2.5} />, text: '≈ $0 marginal cost / embed view' },
                     { icon: <Layers size={12} strokeWidth={2.5} />, text: '1M+ pts at 60 fps (WebGL)' },
                     { icon: <Shield size={12} strokeWidth={2.5} />, text: 'JWKS-native auth — no SDK bolt-on' },
+                    { icon: <Users size={12} strokeWidth={2.5} />, text: 'Unlimited users at every tier' },
+                    { icon: <DollarSign size={12} strokeWidth={2.5} />, text: 'ZAR billing via Paystack — no competitor does this' },
                   ].map(({ icon, text }) => (
                     <span key={text}
                       className="inline-flex items-center gap-1.5 text-xs font-medium px-3 py-1.5
@@ -788,8 +1118,8 @@ export default function ComparePage() {
               {[
                 { value: '≈ $0', label: 'marginal cost per dashboard view' },
                 { value: '1M+', label: 'data points at 60 fps via WebGL' },
-                { value: '10–50×', label: 'cost reduction vs naive warehouse usage¹' },
-                { value: '0 s', label: 'cold-start — kernel runs in the tab' },
+                { value: '∞', label: 'users & viewers — no per-seat pricing' },
+                { value: '$0', label: 'competitor prices in ZAR (only Nubi does)' },
               ].map(({ value, label }) => (
                 <div key={value} className="flex flex-col items-center px-6 py-5">
                   <span className="font-display text-4xl sm:text-5xl font-bold leading-none mb-1.5 text-white">
@@ -802,16 +1132,21 @@ export default function ComparePage() {
               ))}
             </div>
             <p className="text-center text-xs mt-8 text-white/30">
-              ¹ Real at high cache-hit / pre-aggregation rates — e.g. 500 viewers of the same dashboard collapsing to 1 warehouse hit.
+              Browser compute advantage is real at high cache-hit / pre-aggregation rates. ZAR conversion uses a daily live rate via Paystack. No competitor publishes ZAR pricing as of June 2026.
             </p>
           </div>
         </section>
 
         {/* ══════════════════════════════════════════════════════════
-            §3  TRANSPARENCY NOTICE — content from caveat.md
+            §3  TRANSPARENCY NOTICE + FAIRNESS COMMITMENT
         ══════════════════════════════════════════════════════════ */}
         <section className="bg-surface border-b border-border">
-          <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-4">
+          <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-6">
+            {/* Fairness commitment note */}
+            <div className="mb-4">
+              <FairnessNote asOf="June 2026" />
+            </div>
+
             <div className="flex flex-col sm:flex-row gap-4 sm:gap-8">
               <div className="flex items-start gap-2.5 text-xs text-muted flex-1">
                 <Info size={14} className="shrink-0 mt-0.5 text-brand-teal" />
@@ -854,6 +1189,49 @@ export default function ComparePage() {
             </div>
 
             <PrimaryTable />
+          </div>
+        </section>
+
+        {/* ══════════════════════════════════════════════════════════
+            §4b  ALL-COMPETITORS TABLE — 14 platforms, scrupulously fair
+            Covers all platforms from the June 2026 research:
+            Metabase, Hex, Cube, Looker, Sigma, Tableau, Power BI,
+            Superset/Preset, Count, Embeddable, Holistics, Luzmo,
+            Omni, GoodData (+ Nubi)
+        ══════════════════════════════════════════════════════════ */}
+        <section className="py-20 sm:py-24 bg-surface-2/50 border-t border-border">
+          <div className="max-w-[96rem] mx-auto px-4 sm:px-6 lg:px-8">
+
+            <div className="text-center mb-10 max-w-3xl mx-auto">
+              <p className="text-xs font-semibold tracking-widest uppercase mb-4 text-brand-teal">
+                All 14 platforms compared
+              </p>
+              <h2 className="font-display font-bold text-4xl sm:text-5xl text-fg mb-4">
+                The full picture — no cherry-picking
+              </h2>
+              <p className="text-base text-muted leading-relaxed mb-6">
+                Every platform covered in the June 2026 research. Pricing from public pages or
+                third-party analysts (estimated figures marked <EstBadge />). The last column
+                honestly acknowledges where each competitor is genuinely stronger than Nubi.
+              </p>
+
+              {/* No per-seat callout */}
+              <div className="inline-flex items-center gap-2.5 px-4 py-3 rounded-xl
+                bg-surface border border-brand-teal/30 text-sm text-fg">
+                <Users size={15} className="text-brand-teal shrink-0" />
+                <span>
+                  <strong className="font-semibold">Nubi's headline differentiator:</strong>{' '}
+                  unlimited users and viewers at every tier — no per-seat charge.
+                  You pay for compute, storage, AI calls, and embed sessions, never for headcount.
+                </span>
+              </div>
+            </div>
+
+            <AllCompetitorsTable />
+
+            <p className="mt-4 text-xs text-muted text-right">
+              Data as of June 2026 · Prices change frequently — verify at each platform's pricing page before making a decision.
+            </p>
           </div>
         </section>
 
@@ -1037,7 +1415,7 @@ export default function ComparePage() {
             </div>
 
             {/* Orchestrator comparison table */}
-            <div className="overflow-x-auto rounded-2xl border border-border shadow-sm mb-10">
+            <div className="overflow-x-auto overscroll-x-contain rounded-2xl border border-border shadow-sm mb-10">
               <table className="border-collapse w-full" style={{ minWidth: 700 }}>
                 <thead>
                   <tr>
@@ -1191,7 +1569,8 @@ export default function ComparePage() {
             <div className="flex flex-wrap justify-center gap-x-8 gap-y-2 text-xs font-medium text-muted">
               {[
                 'No credit card required',
-                'Genuine free tier — no gotchas',
+                'Unlimited users at every tier',
+                'ZAR billing via Paystack',
                 'Self-host connector option',
                 'Check primary sources before switching',
               ].map(f => (

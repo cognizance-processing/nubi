@@ -215,6 +215,18 @@ route stores the type under `config.connector_type`; the `/query` executor reads
 widget can send only `{query_id}` and still execute against the correct source — the request
 body's `datastore_id` takes precedence when both are present.)
 
+### Data Browser
+
+The Data Browser lets you introspect a connector's tables and preview rows without writing SQL. The UI lives at `/connectors/:id/data` (`DataBrowser.jsx`); it lists tables, shows each table's columns and types, and streams a row sample as Arrow IPC. The backing endpoints (auth via Bearer token, org-scoped) are:
+
+| Endpoint | Returns |
+|----------|---------|
+| `GET /api/v1/data/{datastore_id}/tables` | Tables (and schemas) discovered by introspection. |
+| `GET /api/v1/data/{datastore_id}/tables/{table}/columns` | Column names + types for one table. |
+| `GET /api/v1/data/{datastore_id}/tables/{table}/rows?limit=N` | A row sample (`limit` 1–5000, default 500) as Arrow IPC. |
+
+The same paths without a `datastore_id` segment (`/data/tables`, `/data/tables/{table}/columns`, `/data/tables/{table}/rows`) target the built-in DuckDB demo dataset. A datastore belonging to a different org is treated as not-found, and table names are validated against the introspected list before interpolation (SQL-injection prevention).
+
 ---
 
 ## Connector REST Endpoints

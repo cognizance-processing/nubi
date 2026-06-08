@@ -1,150 +1,116 @@
 /**
- * ConnectorSdk — SQL-first connector SDK.
- * Source connectors (DB, function, API) plug into a SQL console showing a bold,
- * legible query (prompt + syntax tokens + cursor) over a clean result — the
- * SQL-first interface — which exposes one unified, queryable dataset.
- * Premium, high-contrast. Textless. Light + dark safe.
+ * ConnectorSdk — SQL-first connector SDK. Metaphor: distinct data sources (DB,
+ * ƒ, cloud) fan-in to a central SDK {} module that turns them into a live
+ * dashboard (chart + donut + table). Flat line-art. Reads on white + dark-navy.
  */
 export default function ConnectorSdk({ className = '' }) {
-  // source connectors (left) → console ports
-  const ports = [120, 150, 180]
+  const sources = [100, 180, 256]
+  const hub = { x: 200, y: 182 }
+  const curve = 'M 280 168 C 294 164, 302 156, 318 152 C 334 148, 342 156, 356 142 C 366 132, 370 136, 376 130'
+  const area = `${curve} L 376 180 L 280 180 Z`
+  const C = 106.8 // donut r=17
+  const segs = [
+    { len: C * 0.46, off: 0, color: '#2456a6' },
+    { len: C * 0.30, off: C * 0.46, color: '#17b3a3' },
+    { len: C * 0.24, off: C * 0.76, color: '#2dd4bf' },
+  ]
   return (
-    <svg viewBox="0 0 480 300" fill="none" xmlns="http://www.w3.org/2000/svg"
-      className={className} aria-hidden="true" width="100%" height="auto"
-      preserveAspectRatio="xMidYMid meet">
+    <svg
+      viewBox="0 0 480 360"
+      fill="none"
+      xmlns="http://www.w3.org/2000/svg"
+      className={className}
+      aria-hidden="true"
+      width="100%"
+      height="auto"
+      preserveAspectRatio="xMidYMid meet"
+    >
       <defs>
-        <linearGradient id="csk-brand" x1="0" y1="1" x2="1" y2="0">
+        <linearGradient id="con-stroke" x1="0" y1="1" x2="1" y2="0">
           <stop offset="0%" stopColor="#1b2363" />
           <stop offset="45%" stopColor="#2456a6" />
-          <stop offset="80%" stopColor="#17b3a3" />
+          <stop offset="100%" stopColor="#17b3a3" />
+        </linearGradient>
+        <linearGradient id="con-mod" x1="0" y1="0" x2="1" y2="1">
+          <stop offset="0%" stopColor="#2456a6" />
+          <stop offset="55%" stopColor="#17b3a3" />
           <stop offset="100%" stopColor="#2dd4bf" />
         </linearGradient>
-        <linearGradient id="csk-src" x1="0" y1="0" x2="1" y2="1">
-          <stop offset="0%" stopColor="#3b6fd4" /><stop offset="100%" stopColor="#2456a6" />
+        <linearGradient id="con-area" x1="0" y1="0" x2="0" y2="1">
+          <stop offset="0%" stopColor="#2dd4bf" stopOpacity="0.26" />
+          <stop offset="100%" stopColor="#2456a6" stopOpacity="0.0" />
         </linearGradient>
-        <linearGradient id="csk-cyl-top" x1="0" y1="0" x2="1" y2="1">
-          <stop offset="0%" stopColor="#2dd4bf" /><stop offset="100%" stopColor="#17b3a3" />
-        </linearGradient>
-        <linearGradient id="csk-glass" x1="0" y1="0" x2="1" y2="1">
-          <stop offset="0%" stopColor="#2456a6" stopOpacity="0.2" />
-          <stop offset="100%" stopColor="#1b2363" stopOpacity="0.08" />
-        </linearGradient>
-        <linearGradient id="csk-chrome" x1="0" y1="0" x2="1" y2="0">
-          <stop offset="0%" stopColor="#2456a6" stopOpacity="0.26" />
-          <stop offset="100%" stopColor="#17b3a3" stopOpacity="0.16" />
-        </linearGradient>
-        <linearGradient id="csk-border" x1="0" y1="0" x2="1" y2="1">
-          <stop offset="0%" stopColor="#2dd4bf" stopOpacity="0.7" />
-          <stop offset="60%" stopColor="#2456a6" stopOpacity="0.4" />
-          <stop offset="100%" stopColor="#17b3a3" stopOpacity="0.3" />
-        </linearGradient>
-        <linearGradient id="csk-layer" x1="0" y1="0" x2="1" y2="0">
-          <stop offset="0%" stopColor="#2dd4bf" /><stop offset="100%" stopColor="#17b3a3" />
-        </linearGradient>
-        <radialGradient id="csk-bloom" cx="50%" cy="50%" r="50%">
-          <stop offset="0%" stopColor="#17b3a3" stopOpacity="0.4" />
-          <stop offset="55%" stopColor="#2456a6" stopOpacity="0.12" />
-          <stop offset="100%" stopColor="#17b3a3" stopOpacity="0" />
-        </radialGradient>
-        <filter id="csk-shadow" x="-30%" y="-30%" width="160%" height="160%">
-          <feDropShadow dx="0" dy="7" stdDeviation="12" floodColor="#1b2363" floodOpacity="0.26" />
-        </filter>
-        <filter id="csk-glow" x="-80%" y="-80%" width="260%" height="260%">
-          <feGaussianBlur stdDeviation="4.5" result="b" />
-          <feMerge><feMergeNode in="b" /><feMergeNode in="SourceGraphic" /></feMerge>
-        </filter>
-        <clipPath id="csk-clip">
-          <rect x="8" y="8" width="464" height="284" rx="22" />
+        <clipPath id="con-clip">
+          <rect x="16" y="40" width="448" height="280" rx="16" />
         </clipPath>
       </defs>
 
-      <g clipPath="url(#csk-clip)">
-        {/* Ambient bloom behind console */}
-        <ellipse cx="262" cy="150" rx="180" ry="135" fill="url(#csk-bloom)" />
-
-        {/* ── Plug cables: sources → console ports ── */}
-        <path d="M 76 100 C 120 102, 134 120, 168 120"
-          stroke="url(#csk-brand)" strokeWidth="2.25" strokeLinecap="round" strokeDasharray="5 7" />
-        <path d="M 78 150 C 120 150, 134 150, 168 150"
-          stroke="url(#csk-brand)" strokeWidth="2.25" strokeLinecap="round" strokeDasharray="5 7" />
-        <path d="M 76 200 C 120 198, 134 180, 168 180"
-          stroke="url(#csk-brand)" strokeWidth="2.25" strokeLinecap="round" strokeDasharray="5 7" />
-        {ports.map((y, i) => (
-          <circle key={`port${i}`} cx="169" cy={y} r="4" fill="#2dd4bf" />
+      <g clipPath="url(#con-clip)">
+        {/* fan-in connectors */}
+        {sources.map((y, i) => (
+          <path key={i} d={`M 92 ${y} C 134 ${y}, 142 ${hub.y}, 160 ${hub.y}`}
+            stroke="#2456a6" strokeWidth="1.75" strokeOpacity="0.4" fill="none" />
         ))}
 
-        {/* ── Source 1: DB cylinder ── */}
-        <g filter="url(#csk-shadow)">
-          <path d="M 38 90 L 38 110 A 18 5.5 0 0 0 74 110 L 74 90 Z" fill="url(#csk-src)" />
-          <ellipse cx="56" cy="90" rx="18" ry="5.5" fill="url(#csk-cyl-top)" />
+        {/* source: database cylinder */}
+        <ellipse cx="64" cy="92" rx="22" ry="7" fill="#2456a6" fillOpacity="0.08" stroke="url(#con-stroke)" strokeWidth="1.75" />
+        <path d="M 42 92 L 42 120 A 22 7 0 0 0 86 120 L 86 92" fill="#2456a6" fillOpacity="0.05" stroke="url(#con-stroke)" strokeWidth="1.75" />
+        {/* source: function ƒ */}
+        <rect x="40" y="162" width="48" height="36" rx="9" fill="#2456a6" fillOpacity="0.05" stroke="url(#con-stroke)" strokeWidth="1.75" />
+        <path d="M 70 172 C 64 172, 62 174, 61 180 L 56 180 M 67 180 L 54 180 C 52 188, 56 190, 58 188"
+          stroke="#17b3a3" strokeWidth="2.25" strokeLinecap="round" strokeLinejoin="round" fill="none" />
+        {/* source: cloud */}
+        <path d="M 50 268 C 44 268, 40 262, 46 258 C 46 250, 58 248, 62 254 C 70 248, 82 254, 80 262 C 88 262, 90 270, 82 272 Z"
+          fill="#2456a6" fillOpacity="0.05" stroke="url(#con-stroke)" strokeWidth="1.75" strokeLinejoin="round" />
+
+        {/* SDK hub {} */}
+        <rect x="160" y="152" width="80" height="60" rx="14" fill="#2456a6" fillOpacity="0.06" stroke="url(#con-stroke)" strokeWidth="2" />
+        <path d="M 192 166 C 184 166, 186 178, 178 182 C 186 186, 184 198, 192 198"
+          stroke="url(#con-mod)" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" fill="none" />
+        <path d="M 208 166 C 216 166, 214 178, 222 182 C 214 186, 216 198, 208 198"
+          stroke="url(#con-mod)" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" fill="none" />
+
+        {/* hub → dashboard */}
+        <line x1="240" y1="182" x2="262" y2="182" stroke="url(#con-stroke)" strokeWidth="2.25" strokeLinecap="round" />
+        <circle cx="251" cy="182" r="3.5" fill="#17b3a3" />
+
+        {/* output dashboard window */}
+        <rect x="262" y="66" width="198" height="228" rx="14" fill="#2456a6" fillOpacity="0.04" stroke="url(#con-stroke)" strokeWidth="2" />
+        <line x1="262" y1="92" x2="460" y2="92" stroke="#2456a6" strokeWidth="1.5" strokeOpacity="0.4" />
+        <circle cx="276" cy="79" r="3" fill="#2456a6" fillOpacity="0.45" />
+        <circle cx="288" cy="79" r="3" fill="#17b3a3" fillOpacity="0.55" />
+
+        {/* chart panel */}
+        <rect x="274" y="102" width="104" height="86" rx="9" fill="#2456a6" fillOpacity="0.04" stroke="#2456a6" strokeWidth="1.25" strokeOpacity="0.28" />
+        <path d={area} fill="url(#con-area)" />
+        <path d={curve} stroke="url(#con-stroke)" strokeWidth="2.25" strokeLinecap="round" strokeLinejoin="round" />
+
+        {/* donut panel */}
+        <rect x="384" y="102" width="64" height="86" rx="9" fill="#2456a6" fillOpacity="0.04" stroke="#2456a6" strokeWidth="1.25" strokeOpacity="0.28" />
+        <g transform="rotate(-90 416 145)">
+          {segs.map((s, i) => (
+            <circle key={i} cx="416" cy="145" r="17" fill="none" stroke={s.color} strokeWidth="8.5"
+              strokeDasharray={`${s.len} ${C}`} strokeDashoffset={-s.off} />
+          ))}
         </g>
-        <line x1="40" y1="99" x2="72" y2="99" stroke="#2dd4bf" strokeOpacity="0.3" strokeWidth="1.5" />
-        <ellipse cx="56" cy="90" rx="18" ry="5.5" stroke="#ffffff" strokeOpacity="0.25" strokeWidth="1.25" />
 
-        {/* ── Source 2: function ── */}
-        <g filter="url(#csk-shadow)"><circle cx="56" cy="150" r="21" fill="url(#csk-src)" /></g>
-        <path d="M 50 162 C 50 153, 53 153, 53 146 C 53 141, 56 141, 60 141"
-          stroke="#ffffff" strokeOpacity="0.92" strokeWidth="2.2" strokeLinecap="round" fill="none" />
-        <line x1="48" y1="151" x2="62" y2="151" stroke="#ffffff" strokeOpacity="0.7" strokeWidth="2.2" strokeLinecap="round" />
-
-        {/* ── Source 3: API hexagon ── */}
-        <g filter="url(#csk-shadow)">
-          <path d="M 56 184 L 74 194 L 74 214 L 56 224 L 38 214 L 38 194 Z" fill="url(#csk-src)" />
-        </g>
-        <path d="M 50 200 L 45 204 L 50 208 M 62 200 L 67 204 L 62 208 M 59 198 L 53 210"
-          stroke="#ffffff" strokeOpacity="0.9" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" fill="none" />
-
-        {/* ── SQL console (hero) ── */}
-        <g filter="url(#csk-shadow)">
-          <rect x="168" y="80" width="184" height="140" rx="16" fill="url(#csk-glass)" />
-        </g>
-        <rect x="168" y="80" width="184" height="140" rx="16" stroke="url(#csk-border)" strokeWidth="2" />
-        {/* editor title bar */}
-        <path d="M 168 102 L 168 96 Q 168 80 184 80 L 336 80 Q 352 80 352 96 L 352 102 Z" fill="url(#csk-chrome)" />
-        <line x1="168" y1="102" x2="352" y2="102" stroke="#2dd4bf" strokeOpacity="0.22" strokeWidth="1" />
-        <circle cx="184" cy="91" r="3" fill="#2dd4bf" fillOpacity="0.75" />
-        <circle cx="194" cy="91" r="3" fill="#17b3a3" fillOpacity="0.6" />
-        <circle cx="204" cy="91" r="3" fill="#2456a6" fillOpacity="0.55" />
-
-        {/* SQL query — prompt + syntax tokens + cursor */}
-        <path d="M 184 122 L 190 128 L 184 134" stroke="#2dd4bf" strokeWidth="2.2"
-          strokeLinecap="round" strokeLinejoin="round" />
-        <rect x="200" y="124.5" width="40" height="7" rx="3.5" fill="#2dd4bf" />
-        <rect x="246" y="124.5" width="26" height="7" rx="3.5" fill="#2456a6" fillOpacity="0.32" />
-        <rect x="278" y="124.5" width="14" height="7" rx="3.5" fill="#7af0e4" />
-        {/* line 2 (indented) */}
-        <rect x="200" y="143" width="32" height="7" rx="3.5" fill="#3b6fd4" />
-        <rect x="238" y="143" width="50" height="7" rx="3.5" fill="#2456a6" fillOpacity="0.28" />
-        <rect x="294" y="141.5" width="7" height="10" rx="1.5" fill="#2dd4bf" />
-
-        {/* divider → result */}
-        <line x1="184" y1="164" x2="336" y2="164" stroke="#2456a6" strokeOpacity="0.2" strokeWidth="1" />
-        {[176, 192].map((y, r) => (
-          <g key={`row${r}`}>
-            <rect x="184" y={y} width="38" height="9" rx="3"
-              fill={r === 0 ? '#2dd4bf' : '#2456a6'} fillOpacity={r === 0 ? 0.5 : 0.24} />
-            <rect x="228" y={y} width="46" height="9" rx="3" fill="#2456a6" fillOpacity="0.16" />
-            <rect x="280" y={y} width="52" height="9" rx="3" fill="#2456a6" fillOpacity="0.16" />
-          </g>
+        {/* table panel */}
+        <rect x="274" y="196" width="174" height="86" rx="9" fill="#2456a6" fillOpacity="0.04" stroke="#2456a6" strokeWidth="1.25" strokeOpacity="0.28" />
+        {[286, 350, 408].map((x, i) => (
+          <rect key={i} x={x} y="208" width={i === 0 ? 44 : 32} height="6" rx="3" fill="#2456a6" fillOpacity="0.4" />
         ))}
-
-        {/* ── Unified queryable dataset (right) ── */}
-        <line x1="352" y1="150" x2="378" y2="150" stroke="url(#csk-layer)" strokeWidth="3" strokeLinecap="round" />
-        <path d="M 382 143 L 389 150 L 382 157 M 392 143 L 399 150 L 392 157"
-          stroke="#2dd4bf" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" />
-        <circle cx="424" cy="150" r="30" fill="url(#csk-bloom)" />
-        <g filter="url(#csk-glow)">
-          <rect x="406" y="132" width="38" height="12" rx="4" fill="url(#csk-layer)" fillOpacity="0.55" />
-          <rect x="406" y="146" width="38" height="12" rx="4" fill="url(#csk-layer)" fillOpacity="0.8" />
-          <rect x="406" y="160" width="38" height="12" rx="4" fill="url(#csk-layer)" />
-        </g>
-        <rect x="406" y="160" width="38" height="12" rx="4" stroke="#ffffff" strokeOpacity="0.35" strokeWidth="1" />
-
-        {/* Ambient particles */}
-        <circle cx="26" cy="58" r="2.5" fill="#2dd4bf" fillOpacity="0.3" />
-        <circle cx="26" cy="244" r="2" fill="#17b3a3" fillOpacity="0.28" />
-        <circle cx="262" cy="40" r="2.5" fill="#2dd4bf" fillOpacity="0.26" />
-        <circle cx="262" cy="262" r="2" fill="#2456a6" fillOpacity="0.3" />
+        <line x1="274" y1="222" x2="448" y2="222" stroke="#2456a6" strokeWidth="1" strokeOpacity="0.18" />
+        {[0, 1, 2].map((r) => {
+          const y = 236 + r * 15
+          return (
+            <g key={r}>
+              <circle cx="294" cy={y} r="3.5" fill={['#2456a6', '#17b3a3', '#2dd4bf'][r]} />
+              <rect x="306" y={y - 3} width="38" height="6" rx="3" fill="#2456a6" fillOpacity="0.3" />
+              <rect x="350" y={y - 3} width="36" height="6" rx="3" fill="#2456a6" fillOpacity="0.2" />
+              <rect x="408" y={y - 5} width="36" height="11" rx="5.5" fill="#17b3a3" fillOpacity="0.14" stroke="#17b3a3" strokeWidth="1" strokeOpacity="0.45" />
+            </g>
+          )
+        })}
       </g>
     </svg>
   )

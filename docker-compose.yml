@@ -6,51 +6,63 @@ volumes:
   pg_data:
 
 services:
-  # ── Database ───────────────────────────────────────────────────────────────
+  # ── Database ─────────────────────────────────────────────────────────────
   db:
     image: postgres:16-alpine
     restart: unless-stopped
     environment:
-      POSTGRES_USER: nubi
+      POSTGRES_USER:     nubi
       POSTGRES_PASSWORD: nubi
-      POSTGRES_DB: nubi
+      POSTGRES_DB:       nubi
     volumes:
       - pg_data:/var/lib/postgresql/data
     networks:
       - nubi
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U nubi -d nubi"]
-      interval: 5s
-      timeout: 5s
-      retries: 12
+      test:         ["CMD-SHELL", "pg_isready -U nubi -d nubi"]
+      interval:     5s
+      timeout:      5s
+      retries:      12
       start_period: 10s
 
-  # ── App (combined: builds the Vite SPA + runs FastAPI, served on one origin) ─
-  app:
+  # ── Backend (FastAPI / uvicorn) ──────────────────────────────────────────
+  # OSS community image — backend/app/ee/ is excluded (see backend/Dockerfile
+  # and .dockerignore).  Commercial features require a separate EE image.
+  backend:
     build:
-      context: .
-      dockerfile: Dockerfile
-      args:
-        # Empty = same-origin: the SPA calls /api/v1 on the host it was served from.
-        VITE_BACKEND_URL: ""
+      context:    .
+      dockerfile: backend/Dockerfile
     restart: unless-stopped
     depends_on:
       db:
         condition: service_healthy
+    env_file:
+      - .env.compose
     environment:
+      # Override DATABASE_URL so the backend always connects to the compose db.
       DATABASE_URL: postgresql://nubi:nubi@db:5432/nubi
-      JWT_SECRET: dev-secret-key-min-32-bytes-long-000000
-      ENV: development
-      COOKIE_SECURE: "false"
-      CORS_ORIGINS: http://localhost:8000
-      FRONTEND_URL: http://localhost:8000
-      GOOGLE_CLIENT_ID: dummy-google-client-id
-      GOOGLE_CLIENT_SECRET: dummy-google-client-secret
-      GOOGLE_REDIRECT_URI: http://localhost:8000/api/v1/auth/google/callback
-      KERNEL_LOCAL_ENABLED: "true"
-      STATIC_DIR: /app/dist
-    ports:
-      # SPA + API both served here.
-      - "8000:8000"
     networks:
       - nubi
+    # The backend is NOT published directly; nginx proxies /api → backend:8000.
+    expose:
+      - "8000"
+
+  # ── Frontend (nginx + Vite SPA) ──────────────────────────────────────────
+  # OSS community image — src/ee/ is excluded (see frontend/Dockerfile and
+  # .dockerignore).  nginx proxies /api and /health to the backend service.
+  frontend:
+    build:
+      context:    .
+      dockerfile: frontend/Dockerfile
+      args:
+        # Empty = same-origin: the SPA calls /api on the same host/port it is
+        # served from (nginx proxies it to the backend).  Override for split-
+        # host deployments (e.g. VITE_BACKEND_URL=https://api.example.com).
+        VITE_BACKEND_URL: ""
+    restart: unless-stopped
+    depends_on:
+      - backend
+    networks:
+      - nubi
+    ports:
+      - "8080:80"

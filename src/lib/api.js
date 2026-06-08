@@ -434,6 +434,42 @@ export async function listDatastores() {
   }
 }
 
+/**
+ * List a datastore's tables (with cheap row counts) for the data browser.
+ *
+ * GET /api/v1/datastores/{id}/tables
+ *
+ * @param {string} datastoreId
+ * @returns {Promise<Array<{ name: string, schema: string|null, rows: number|null }>>}
+ */
+export async function listDatastoreTables(datastoreId) {
+  const data = await get(`/datastores/${datastoreId}/tables`)
+  return Array.isArray(data?.tables) ? data.tables : []
+}
+
+/**
+ * Preview the first N rows of a table (columns + rows) as plain JSON.
+ *
+ * GET /api/v1/datastores/{id}/tables/{table}/preview?limit=50
+ *
+ * @param {string} datastoreId
+ * @param {string} table
+ * @param {number} [limit=50] capped server-side at 200
+ * @returns {Promise<{
+ *   table: string,
+ *   columns: Array<{ name: string, type: string }>,
+ *   rows: Array<Array<any>>,
+ *   row_count: number,
+ *   limit: number,
+ *   truncated: boolean
+ * }>}
+ */
+export function previewDatastoreTable(datastoreId, table, limit = 50) {
+  return get(
+    `/datastores/${datastoreId}/tables/${encodeURIComponent(table)}/preview?limit=${limit}`,
+  )
+}
+
 // ---------------------------------------------------------------------------
 // Projects (scoped within the active org via X-Org-Id)
 // ---------------------------------------------------------------------------

@@ -21,6 +21,10 @@ from typing import Any
 
 import app.db as _db
 
+# Upper bound on slug-clash retries before falling back to a random suffix —
+# guards against an existence probe that never returns None (see _unique_slug).
+_MAX_SLUG_TRIES = 1000
+
 
 # Call the DB helpers through the module object (``_db.fetchrow`` rather than a
 # bound ``fetchrow``) so the test fixtures, which patch ``app.db.fetchrow`` /
@@ -145,10 +149,15 @@ async def count_projects(org_id: str) -> int:
 # ── Write helpers ──────────────────────────────────────────────────────────────
 
 async def _unique_slug(org_id: str, base: str) -> str:
-    """Return a slug unique within *org_id*, suffixing ``-2``, ``-3``, … on clash."""
+    """Return a slug unique within *org_id*, suffixing ``-2``, ``-3``, … on clash.
+
+    Bounded so a misbehaving / always-truthy existence probe can never spin
+    forever; after ``_MAX_SLUG_TRIES`` clashes we fall back to a short random
+    suffix (collision odds vanishingly small) rather than loop indefinitely.
+    """
     slug = base
     n = 1
-    while True:
+    for _ in range(_MAX_SLUG_TRIES):
         existing = await fetchrow(
             "SELECT 1 FROM projects WHERE org_id = $1::uuid AND slug = $2",
             org_id,
@@ -158,6 +167,7 @@ async def _unique_slug(org_id: str, base: str) -> str:
             return slug
         n += 1
         slug = f"{base}-{n}"
+    return f"{base}-{uuid.uuid4().hex[:8]}"
 
 
 async def create_project(

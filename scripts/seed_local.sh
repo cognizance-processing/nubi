@@ -13,8 +13,8 @@
 #
 # Behaviour
 # ---------
-# 1. Runs database/migrate.py  — applies all pending SQL migrations (idempotent).
-# 2. Runs backend/seed_demo.py — seeds the demo workspace (idempotent).
+# 1. Runs database/migrate.py    — applies all pending SQL migrations (idempotent).
+# 2. Runs backend/seed.py --demo — seeds superuser + demo workspace (idempotent).
 #
 # The script does NOT start or stop any server processes.
 # Safe to run multiple times — both migration and seed are idempotent.
@@ -25,9 +25,8 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 MIGRATE_SCRIPT="${REPO_ROOT}/database/migrate.py"
-# Cognizance migration seed (replaces the old demo seed). To restore the demo
-# workspace, point this back at backend/seed_demo.py.
-SEED_SCRIPT="${REPO_ROOT}/backend/seed_cognizance.py"
+# Superuser + comprehensive demo workspace (DuckDB datasource + queries + 10 dashboards).
+SEED_SCRIPT="${REPO_ROOT}/backend/seed.py"
 
 # ── Require DATABASE_URL ───────────────────────────────────────────────────────
 if [[ -z "${DATABASE_URL:-}" ]]; then
@@ -56,7 +55,7 @@ echo ""
 # ── Step 2: Seed demo workspace ───────────────────────────────────────────────
 echo ">>> Step 2/2 — Seeding demo workspace ..."
 cd "${REPO_ROOT}/backend"
-python "${SEED_SCRIPT}"
+python "${SEED_SCRIPT}" --demo
 echo ""
 
 echo "Done. The demo workspace is ready."

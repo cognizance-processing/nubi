@@ -352,9 +352,11 @@ and Google OAuth. Migrations from scratch.
    out of scope (see §4.1). **Registry since extended:** `duckdb` is now a real read-only
    file-backed source (not just the in-memory demo), plus `mysql`, `mariadb`, and a generic
    `jdbc`, `snowflake`, `bigquery` connectors (the last four via optional drivers).
-10. **M10 — Runnable Docker self-host stack** — `docker-compose.yml` (db + backend +
+10. ✅ **M10 — Runnable Docker self-host stack** — `docker-compose.yml` (db + backend +
     frontend), migration-on-boot entrypoint, `.env.compose`, Makefile, live smoke test
-    (`scripts/smoke.sh`). **Not yet built — this is the remaining capstone.**
+    (`scripts/smoke.sh`). Three-service CE community image; backend/Dockerfile excludes
+    `app/ee/` at build time; `docker-entrypoint.sh` runs migrations before uvicorn.
+    EE image variant built by omitting the `.dockerignore` exclusion.
 11. ✅ **M11 — Scheduled jobs / persistent Python** — `jobs` + `job_runs` schema, cron +
     interval scheduler (deterministic `now` param), `execute_job` (query and Python paths),
     CRUD + run-now + runs-history routes.
@@ -362,6 +364,24 @@ and Google OAuth. Migrations from scratch.
     from the registry via `datastore.config.type`; 501 gate before execution when
     `predicate_rls=False` and policies are present. API sources done (`http_json`); NoSQL
     out of scope (§4.1).
+13. ✅ **M13-ext — Auto pre-aggregations (flows-wired)** — `app.preagg` scheduler
+    dogfoods the flows DAG engine: `ensure_preagg_flow()` registers a per-org scheduled
+    flow (cron `0 * * * *`) whose single `preagg_refresh` task mines the query log and
+    builds DuckDB rollups.  Handler in `app/flows/handlers/preagg_refresh.py`; task kind
+    registered in `app.flows.registry`.  Pure OSS core — no EE dependency.
+14. ✅ **M14-ext — Embed demo** — `examples/embed-demo/` self-contained HTML page plus
+    `scripts/sign_embed_jwt.py` demonstrating the full embed auth contract: short-lived JWT
+    signed with `EMBED_SECRET`, `<nubi-dashboard>` web component, silent `getToken()`
+    refresh.  Requires no server dependency beyond a running Nubi backend.
+15. ✅ **M15-ext — Open-core seam + EE scaffold** — `backend/app/features.py`
+    (`feature_enabled` / `register_feature` / `declare_commercial`); `backend/app/ee/`
+    lazy-load entry point (`load_ee`); `src/lib/features.js` + `src/ee/` frontend registry
+    and `registerEe()`.  Architecture documented in `docs/architecture-open-core.md`.
+16. ✅ **M16-ext — Billing (EE scaffolded)** — `backend/app/ee/billing/` (tiers, Paystack
+    client, billing store, EE routes mounted via `load_ee`); `src/ee/billing/`
+    (BillingPage, UpgradePrompt, BillingNavBadge, registerBilling); DB migration
+    `0017_billing.sql`.  Commercial feature gated behind `feature_enabled("billing")`
+    — disabled in CE build; Paystack SDK imported lazily, never at module top-level.
 
 ---
 

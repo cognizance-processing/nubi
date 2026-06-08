@@ -35,6 +35,7 @@ import {
   Loader2,
   Play,
   List,
+  KeyRound,
   X,
   ChevronDown,
 } from 'lucide-react'
@@ -545,6 +546,14 @@ export default function FlowsPage() {
                 >
                   <List size={15} />
                   All flows
+                </button>
+                {/* Secrets are flow-scoped — managed here, not in the global nav */}
+                <button
+                  onClick={() => navigate('/flows/secrets')}
+                  className="flex items-center gap-2 px-4 py-2.5 text-sm font-medium border border-border rounded-lg text-fg hover:bg-surface-2 transition-colors min-h-[44px]"
+                >
+                  <KeyRound size={15} />
+                  Secrets
                 </button>
               </div>
             </div>

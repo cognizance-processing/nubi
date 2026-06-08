@@ -37,7 +37,6 @@ from app.auth.deps import current_user
 from app.config import get_settings
 from app.db import fetchrow
 from app.errors import AppError
-from app.git.remote import make_remote_auth
 from app.git.remotes import make_provider
 from app.git.sync import (
     GitSync,
@@ -153,25 +152,6 @@ class RestoreOut(BaseModel):
     path: str
     sha: str
     content: str
-
-
-class PushIn(BaseModel):
-    """Request body for POST /git/push."""
-
-    message: str = "chore: sync resources"
-    author: str = "Nubi Git Sync <nubi-git-sync@nubi.local>"
-    branch: str = "main"
-    remote_url: str | None = None
-
-
-class PushOut(BaseModel):
-    """Response for POST /git/push."""
-
-    sha: str
-    files_committed: int
-    message: str
-    branch: str
-    pushed: bool  # False when NullRemote (no-op)
 
 
 # ---------------------------------------------------------------------------

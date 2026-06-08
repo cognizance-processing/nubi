@@ -1,0 +1,916 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Nubi Embed Demo — Per-Tenant RLS Isolation</title>
+
+  <!--
+    Nubi Embed Demo — Per-Tenant RLS Isolation
+    ===========================================
+
+    This page demonstrates the Nubi embed story end-to-end:
+
+      1. Two tenants (Acme Corp / Globex Inc) are represented by a switcher.
+      2. Each tenant selection calls POST /api/v1/embed-token on the Nubi
+         backend (dev endpoint, requires EMBED_DEV_TOKEN_ENABLED=true), which
+         mints a host-signed RS256 JWT with:
+           - policies.tenant_id = "acme-corp" | "globex-inc"
+           - embed_origin = this page's origin (pinned server-side)
+           - scope = ["read:*"]
+         The private key is held server-side and never reaches the browser.
+         The backend rejects any token whose embed_origin does not match the
+         request Origin header, providing an extra layer of CSRF protection.
+      3. The <nubi-dashboard> web component calls getToken() before every fetch.
+         The component receives the token and posts it to POST /api/v1/query.
+      4. The Nubi backend enforces policies.tenant_id as a server-side RLS
+         predicate — neither the component nor the browser can override it.
+      5. Each tenant sees ONLY their own rows.  The switch is instant because the
+         token is re-minted transparently by the getToken() closure.
+
+    NO FRAMEWORK required — plain HTML + vanilla JS.
+
+    Prerequisites:
+      - Backend running with EMBED_DEV_TOKEN_ENABLED=true
+      - Backend URL defaults to http://localhost:8000 (override: ?backend=URL)
+    See README.md for full setup steps.
+  -->
+
+  <style>
+    /* ── Reset + base ────────────────────────────────────────── */
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    :root {
+      --bg:        #090c14;
+      --surface:   #111827;
+      --border:    #1e2d3d;
+      --fg:        #e2e8f0;
+      --muted:     #64748b;
+      --accent:    #3b82f6;
+      --accent-bg: #1d3455;
+      --success:   #22c55e;
+      --warn:      #f59e0b;
+      --danger:    #ef4444;
+      --code-bg:   #0f172a;
+      --code-fg:   #93c5fd;
+      --pill-a:    #0ea5e9;
+      --pill-b:    #8b5cf6;
+    }
+
+    body {
+      font-family: system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+      background: var(--bg);
+      color: var(--fg);
+      min-height: 100vh;
+      padding: 0 0 80px;
+      line-height: 1.5;
+    }
+
+    /* ── Top bar ─────────────────────────────────────────────── */
+    .topbar {
+      background: var(--surface);
+      border-bottom: 1px solid var(--border);
+      padding: 14px 32px;
+      display: flex;
+      align-items: center;
+      gap: 16px;
+    }
+
+    .topbar-logo {
+      font-size: 16px;
+      font-weight: 700;
+      letter-spacing: -0.02em;
+      color: var(--fg);
+    }
+
+    .topbar-logo span {
+      color: var(--accent);
+    }
+
+    .topbar-sep {
+      color: var(--muted);
+      font-size: 18px;
+    }
+
+    .topbar-title {
+      font-size: 13px;
+      color: var(--muted);
+    }
+
+    /* ── Main layout ─────────────────────────────────────────── */
+    .main {
+      max-width: 960px;
+      margin: 0 auto;
+      padding: 40px 24px 0;
+    }
+
+    /* ── Hero ────────────────────────────────────────────────── */
+    .hero {
+      margin-bottom: 40px;
+    }
+
+    .hero h1 {
+      font-size: 24px;
+      font-weight: 700;
+      letter-spacing: -0.02em;
+      margin-bottom: 10px;
+    }
+
+    .hero p {
+      font-size: 14px;
+      color: #94a3b8;
+      max-width: 700px;
+      line-height: 1.65;
+    }
+
+    .pill {
+      display: inline-flex;
+      align-items: center;
+      gap: 5px;
+      font-size: 11px;
+      font-weight: 600;
+      letter-spacing: 0.04em;
+      text-transform: uppercase;
+      padding: 2px 8px;
+      border-radius: 99px;
+      margin-right: 6px;
+    }
+
+    .pill-oss  { background: #14532d30; color: #4ade80; border: 1px solid #166534; }
+    .pill-rls  { background: #1d3455;   color: var(--pill-a); border: 1px solid #1e40af; }
+    .pill-jwt  { background: #2e1065;   color: var(--pill-b); border: 1px solid #5b21b6; }
+
+    /* ── Section ─────────────────────────────────────────────── */
+    .section {
+      margin-bottom: 40px;
+    }
+
+    .section-header {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      margin-bottom: 16px;
+    }
+
+    .section-header h2 {
+      font-size: 12px;
+      font-weight: 600;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      color: var(--muted);
+    }
+
+    .section-header .dot {
+      width: 6px;
+      height: 6px;
+      border-radius: 50%;
+      background: var(--accent);
+      flex-shrink: 0;
+    }
+
+    /* ── Tenant switcher ─────────────────────────────────────── */
+    .tenant-switcher {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 16px 20px;
+      margin-bottom: 20px;
+    }
+
+    .tenant-switcher label {
+      font-size: 13px;
+      color: var(--muted);
+      font-weight: 500;
+      white-space: nowrap;
+    }
+
+    .tenant-btn {
+      cursor: pointer;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 8px 18px;
+      font-size: 13px;
+      font-weight: 600;
+      background: transparent;
+      color: var(--muted);
+      transition: all 0.15s ease;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .tenant-btn .tenant-dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      flex-shrink: 0;
+    }
+
+    .tenant-btn.acme  .tenant-dot { background: var(--pill-a); }
+    .tenant-btn.globex .tenant-dot { background: var(--pill-b); }
+
+    .tenant-btn.active {
+      background: var(--accent-bg);
+      border-color: var(--accent);
+      color: var(--fg);
+    }
+
+    .tenant-btn.acme.active  { background: #0c2a4a; border-color: var(--pill-a); }
+    .tenant-btn.globex.active { background: #1e1040; border-color: var(--pill-b); }
+
+    .tenant-btn:hover:not(.active) {
+      border-color: var(--muted);
+      color: var(--fg);
+    }
+
+    .tenant-info {
+      margin-left: auto;
+      font-size: 11px;
+      color: var(--muted);
+      font-family: monospace;
+    }
+
+    .tenant-info .tenant-claims {
+      display: flex;
+      gap: 12px;
+    }
+
+    .tenant-info .claim {
+      display: inline-block;
+      background: var(--code-bg);
+      border: 1px solid var(--border);
+      border-radius: 4px;
+      padding: 2px 7px;
+      color: var(--code-fg);
+    }
+
+    /* ── Dashboard container ─────────────────────────────────── */
+    .dashboard-container {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      overflow: hidden;
+    }
+
+    .dashboard-toolbar {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding: 10px 16px;
+      border-bottom: 1px solid var(--border);
+      background: #0d1117;
+    }
+
+    .toolbar-title {
+      font-size: 12px;
+      font-weight: 600;
+      color: var(--muted);
+      letter-spacing: 0.04em;
+      text-transform: uppercase;
+    }
+
+    .toolbar-spacer { flex: 1; }
+
+    .status-badge {
+      display: flex;
+      align-items: center;
+      gap: 5px;
+      font-size: 11px;
+      padding: 3px 8px;
+      border-radius: 4px;
+      font-weight: 500;
+    }
+
+    .status-badge .led {
+      width: 6px;
+      height: 6px;
+      border-radius: 50%;
+    }
+
+    .status-badge.live { background: #14532d30; color: #4ade80; }
+    .status-badge.live .led { background: #22c55e; animation: pulse 2s infinite; }
+    .status-badge.sample { background: #7c2d1230; color: #fb923c; }
+    .status-badge.sample .led { background: #f97316; }
+    .status-badge.loading { background: #1d3455; color: #93c5fd; }
+    .status-badge.loading .led { background: var(--accent); animation: pulse 1s infinite; }
+
+    @keyframes pulse {
+      0%, 100% { opacity: 1; }
+      50%       { opacity: 0.3; }
+    }
+
+    nubi-dashboard {
+      display: block;
+      height: 300px;
+    }
+
+    /* ── Token inspector ─────────────────────────────────────── */
+    .token-inspector {
+      background: var(--code-bg);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      overflow: hidden;
+    }
+
+    .inspector-header {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 10px 16px;
+      border-bottom: 1px solid var(--border);
+      background: #090c14;
+    }
+
+    .inspector-header span {
+      font-size: 11px;
+      font-weight: 600;
+      letter-spacing: 0.06em;
+      text-transform: uppercase;
+      color: var(--muted);
+    }
+
+    .inspector-body {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 0;
+    }
+
+    @media (max-width: 680px) {
+      .inspector-body { grid-template-columns: 1fr; }
+    }
+
+    .inspector-panel {
+      padding: 16px;
+      border-right: 1px solid var(--border);
+    }
+
+    .inspector-panel:last-child { border-right: none; }
+
+    .inspector-panel h3 {
+      font-size: 10px;
+      font-weight: 700;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      color: var(--muted);
+      margin-bottom: 10px;
+    }
+
+    .inspector-panel pre {
+      font-family: 'Fira Code', 'Cascadia Code', 'Menlo', monospace;
+      font-size: 11px;
+      line-height: 1.6;
+      color: var(--code-fg);
+      white-space: pre-wrap;
+      word-break: break-all;
+      overflow: auto;
+      max-height: 180px;
+    }
+
+    .inspector-panel pre .key   { color: #7dd3fc; }
+    .inspector-panel pre .str   { color: #86efac; }
+    .inspector-panel pre .num   { color: #fca5a5; }
+    .inspector-panel pre .bool  { color: #fbbf24; }
+    .inspector-panel pre .arr   { color: #e2e8f0; }
+    .inspector-panel pre .rls   { color: #f0abfc; font-weight: 700; }
+
+    /* ── Isolation proof ─────────────────────────────────────── */
+    .isolation-proof {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 20px;
+      margin-top: 16px;
+    }
+
+    .isolation-proof h3 {
+      font-size: 12px;
+      font-weight: 700;
+      letter-spacing: 0.06em;
+      text-transform: uppercase;
+      color: var(--muted);
+      margin-bottom: 12px;
+    }
+
+    .proof-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 12px;
+    }
+
+    @media (max-width: 680px) {
+      .proof-grid { grid-template-columns: 1fr; }
+    }
+
+    .proof-card {
+      background: var(--code-bg);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 14px;
+    }
+
+    .proof-card-title {
+      font-size: 11px;
+      font-weight: 700;
+      margin-bottom: 8px;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+
+    .proof-card-title .dot { width: 7px; height: 7px; border-radius: 50%; }
+    .proof-card.acme-card .dot  { background: var(--pill-a); }
+    .proof-card.globex-card .dot { background: var(--pill-b); }
+
+    .proof-card ul {
+      list-style: none;
+      font-size: 11px;
+      font-family: monospace;
+      color: #94a3b8;
+      line-height: 1.8;
+    }
+
+    .proof-card ul .highlight { color: var(--code-fg); font-weight: 600; }
+
+    /* ── Event log ───────────────────────────────────────────── */
+    .event-log {
+      background: var(--code-bg);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 12px 16px;
+      font-family: monospace;
+      font-size: 11px;
+      color: #94a3b8;
+      min-height: 80px;
+      max-height: 200px;
+      overflow-y: auto;
+    }
+
+    .ev-ready  { color: #4ade80; }
+    .ev-error  { color: #f87171; }
+    .ev-run    { color: #93c5fd; }
+    .ev-switch { color: #fbbf24; }
+    .ev-token  { color: #c084fc; }
+
+    /* ── Architecture diagram ────────────────────────────────── */
+    .arch-diagram {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 24px;
+      font-size: 12px;
+      font-family: monospace;
+      color: #94a3b8;
+      line-height: 2;
+    }
+
+    .arch-diagram .arrow { color: var(--muted); }
+    .arch-diagram .box {
+      display: inline-block;
+      background: var(--code-bg);
+      border: 1px solid var(--border);
+      border-radius: 4px;
+      padding: 1px 8px;
+      color: var(--fg);
+    }
+
+    .arch-diagram .box.tenant-a { border-color: var(--pill-a); color: var(--pill-a); }
+    .arch-diagram .box.tenant-b { border-color: var(--pill-b); color: var(--pill-b); }
+    .arch-diagram .box.backend  { border-color: var(--success); color: var(--success); }
+    .arch-diagram .box.jwt      { border-color: var(--warn);    color: var(--warn); }
+  </style>
+</head>
+<body>
+
+<!-- ── Top bar ────────────────────────────────────────────────────────────── -->
+<div class="topbar">
+  <div class="topbar-logo"><span>nubi</span></div>
+  <span class="topbar-sep">/</span>
+  <span class="topbar-title">embed-demo / per-tenant RLS isolation</span>
+</div>
+
+<div class="main">
+
+  <!-- ── Hero ────────────────────────────────────────────────────────────── -->
+  <div class="hero">
+    <h1>
+      <span class="pill pill-oss">OSS</span>
+      <span class="pill pill-rls">RLS</span>
+      <span class="pill pill-jwt">RS256</span>
+      Nubi Embed — Per-Tenant Isolation Demo
+    </h1>
+    <p>
+      This page proves the Nubi embed story end-to-end.  Two tenants share the same
+      dashboard and the same Nubi backend — but each sees only their own rows.
+      Isolation is enforced server-side via JWT <code>policies.tenant_id</code>
+      claims; neither the embed component nor the browser can alter or bypass it.
+    </p>
+  </div>
+
+  <!-- ── Tenant switcher + live dashboard ─────────────────────────────────── -->
+  <div class="section">
+    <div class="section-header">
+      <div class="dot"></div>
+      <h2>Live Dashboard</h2>
+    </div>
+
+    <!-- Tenant switcher -->
+    <div class="tenant-switcher">
+      <label>Viewing as:</label>
+
+      <button class="tenant-btn acme active" id="btnAcme" onclick="switchTenant('acme-corp')">
+        <span class="tenant-dot"></span>
+        Acme Corp
+      </button>
+
+      <button class="tenant-btn globex" id="btnGlobex" onclick="switchTenant('globex-inc')">
+        <span class="tenant-dot"></span>
+        Globex Inc
+      </button>
+
+      <div class="tenant-info">
+        <div class="tenant-claims" id="tenantClaims">
+          <span class="claim">org: demo-org</span>
+          <span class="claim" id="claimTenant">tenant_id: acme-corp</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- Dashboard frame -->
+    <div class="dashboard-container">
+      <div class="dashboard-toolbar">
+        <span class="toolbar-title">Sales by Region</span>
+        <div class="toolbar-spacer"></div>
+        <div class="status-badge loading" id="statusBadge">
+          <div class="led"></div>
+          <span id="statusText">connecting…</span>
+        </div>
+      </div>
+
+      <nubi-dashboard
+        id="dash"
+        query="SELECT * FROM demo"
+        get-token="getNubiEmbedToken"
+        backend="http://localhost:8000"
+      ></nubi-dashboard>
+    </div>
+
+    <!-- Isolation proof cards -->
+    <div class="isolation-proof">
+      <h3>Per-Tenant RLS Isolation — What the backend enforces</h3>
+      <div class="proof-grid">
+        <div class="proof-card acme-card">
+          <div class="proof-card-title">
+            <span class="dot"></span>
+            Acme Corp token
+          </div>
+          <ul>
+            <li>policies: <span class="highlight">{"tenant_id": "acme-corp"}</span></li>
+            <li>scope: <span class="highlight">["read:*"]</span></li>
+            <li>embed_origin: <span class="highlight">http://localhost:8080</span></li>
+            <li>Backend SQL: <span class="highlight">… WHERE tenant_id='acme-corp'</span></li>
+          </ul>
+        </div>
+        <div class="proof-card globex-card">
+          <div class="proof-card-title">
+            <span class="dot"></span>
+            Globex Inc token
+          </div>
+          <ul>
+            <li>policies: <span class="highlight">{"tenant_id": "globex-inc"}</span></li>
+            <li>scope: <span class="highlight">["read:*"]</span></li>
+            <li>embed_origin: <span class="highlight">http://localhost:8080</span></li>
+            <li>Backend SQL: <span class="highlight">… WHERE tenant_id='globex-inc'</span></li>
+          </ul>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ── Token inspector ──────────────────────────────────────────────────── -->
+  <div class="section">
+    <div class="section-header">
+      <div class="dot"></div>
+      <h2>Live JWT Inspector</h2>
+    </div>
+
+    <div class="token-inspector">
+      <div class="inspector-header">
+        <span>Current embed token — decoded (not verified here; backend verifies the RS256 signature)</span>
+      </div>
+      <div class="inspector-body">
+        <div class="inspector-panel">
+          <h3>JOSE Header</h3>
+          <pre id="jwtHeader">–</pre>
+        </div>
+        <div class="inspector-panel">
+          <h3>Payload claims</h3>
+          <pre id="jwtPayload">–</pre>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ── Architecture ─────────────────────────────────────────────────────── -->
+  <div class="section">
+    <div class="section-header">
+      <div class="dot"></div>
+      <h2>How It Works</h2>
+    </div>
+
+    <div class="arch-diagram">
+      <div>
+        Browser tenant switcher <span class="arrow">──▶</span>
+        <span class="box jwt">host /api/embed-token</span>
+        <span class="arrow"> mints RS256 JWT (policies.tenant_id = X) ──▶</span>
+      </div>
+      <div style="padding-left: 2ch">
+        <span class="box tenant-a">Acme Corp JWT</span> or
+        <span class="box tenant-b">Globex Inc JWT</span>
+        <span class="arrow"> ──▶ </span>
+        <span class="box">nubi-dashboard component</span>
+        <span class="arrow"> ──▶</span>
+      </div>
+      <div style="padding-left: 4ch">
+        <span class="arrow">POST /api/v1/query</span>
+        <span class="box backend">Nubi backend</span>
+        verifies RS256 sig + embed_origin + exp
+      </div>
+      <div style="padding-left: 6ch">
+        injects <span class="box jwt">WHERE tenant_id='acme-corp'</span> as server-side RLS
+        <span class="arrow"> ──▶ DuckDB/PG</span>
+      </div>
+      <div style="padding-left: 8ch">
+        <span class="arrow">◀──</span> only tenant-scoped rows returned to the component
+      </div>
+    </div>
+  </div>
+
+  <!-- ── Event log ─────────────────────────────────────────────────────────── -->
+  <div class="section">
+    <div class="section-header">
+      <div class="dot"></div>
+      <h2>Component Events</h2>
+    </div>
+
+    <div class="event-log" id="eventLog">
+      <span style="color:#475569">Waiting for component events…</span>
+    </div>
+  </div>
+
+</div><!-- /.main -->
+
+<!-- ── Load the Nubi embed bundle ──────────────────────────────────────────── -->
+<!--
+  In production, use the CDN URL:
+    <script src="https://cdn.nubi.dev/embed/nubi-dashboard.js"></script>
+
+  For local dev (from repo root, after `npm run build:embed`):
+    <script src="../../dist-embed/nubi-dashboard.js"></script>
+-->
+<script src="../../dist-embed/nubi-dashboard.js"></script>
+
+<script>
+// =============================================================================
+// Nubi Embed Demo — Host Page Script
+//
+// WHAT THIS SCRIPT DOES:
+//
+// 1. Calls POST /api/v1/embed-token on the Nubi backend (dev endpoint, gated by
+//    EMBED_DEV_TOKEN_ENABLED=true) to obtain a host-signed RS256 JWT per tenant.
+//    The private key is held server-side; only the signed token reaches the
+//    browser.  This is the correct production pattern.
+//
+// 2. Registers a getToken() function on window that the <nubi-dashboard>
+//    component calls before every query.
+//
+// 3. Implements a tenant switcher that re-mints the token with a different
+//    policies.tenant_id claim and forces the component to re-fetch.
+//
+// 4. Populates the JWT inspector and event log panels.
+//
+// CONFIGURATION:
+// -------------
+// Backend URL for the token mint endpoint.  Override via the query string:
+//   ?backend=http://localhost:8000
+// Default assumes the backend is running on the same host, port 8000.
+//
+// The backend endpoint:
+//   POST /api/v1/embed-token
+//   Body:   { "tenant_id": "<string>", "org": "<string>", "scope": ["read:*"] }
+//   Returns: { "token": "<signed-jwt>" }
+//
+// The endpoint is only active when EMBED_DEV_TOKEN_ENABLED=true is set in the
+// backend environment.  It is NOT available in production builds.
+// =============================================================================
+
+(async function NubiEmbedDemo() {
+  'use strict';
+
+  // ── Configuration ──────────────────────────────────────────────────────────
+  // Read ?backend= from the query string, or fall back to localhost:8000.
+  const _params   = new URLSearchParams(window.location.search)
+  const BACKEND   = (_params.get('backend') || 'http://localhost:8000').replace(/\/$/, '')
+  const MINT_URL  = `${BACKEND}/api/v1/embed-token`
+  const ORG       = _params.get('org') || 'demo-org'
+
+  // ── State ──────────────────────────────────────────────────────────────────
+  let _currentTenant = 'acme-corp'
+  let _cachedToken   = null
+  let _cachedExp     = null
+  let _logEmpty      = true
+
+  // ── Log helper ─────────────────────────────────────────────────────────────
+  function logEvent(msg, cls) {
+    const log = document.getElementById('eventLog')
+    if (_logEmpty) { log.innerHTML = ''; _logEmpty = false }
+    const ts = new Date().toISOString().slice(11, 23)
+    const p  = document.createElement('p')
+    p.className = cls || ''
+    p.textContent = `[${ts}] ${msg}`
+    log.appendChild(p)
+    log.scrollTop = log.scrollHeight
+  }
+
+  // ── mintToken — calls the backend dev endpoint ─────────────────────────────
+  // POST /api/v1/embed-token
+  //   { tenant_id, org, scope }  →  { token }
+  //
+  // The backend signs with its private RSA key (EMBED_DEV_SIGNING_KEY or a
+  // generated ephemeral key) and returns a compact RS256 JWT.  The private key
+  // never reaches the browser.
+  //
+  // Assumption: endpoint contract is
+  //   POST /api/v1/embed-token
+  //   Body:   { tenant_id: string, org: string, scope: string[] }
+  //   Returns: { token: string }  (compact JWT)
+  //
+  // If the endpoint is not yet registered (404) or the env gate is off (503),
+  // we surface a clear error rather than falling back to in-browser signing.
+  async function mintToken(tenantId) {
+    logEvent(`Requesting backend token for tenant: ${tenantId}`, 'ev-token')
+
+    const resp = await fetch(MINT_URL, {
+      method: 'POST',
+      credentials: 'include',          // send session cookie for host-app auth
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        tenant_id: tenantId,
+        org:       ORG,
+        scope:     ['read:*'],
+      }),
+    })
+
+    if (!resp.ok) {
+      let detail = ''
+      try { detail = (await resp.json())?.detail ?? '' } catch { /* ignore */ }
+      const hint = resp.status === 404
+        ? ' — is the backend running? Is EMBED_DEV_TOKEN_ENABLED=true set?'
+        : resp.status === 503
+          ? ' — backend returned 503: ensure EMBED_DEV_TOKEN_ENABLED=true'
+          : ''
+      throw new Error(`POST ${MINT_URL} → ${resp.status}${hint}${detail ? ': ' + detail : ''}`)
+    }
+
+    const data = await resp.json()
+    if (!data?.token) {
+      throw new Error(`POST ${MINT_URL} succeeded but returned no token field`)
+    }
+    return data.token
+  }
+
+  // ── decodeJwtPayload — decode without verifying (browser only, for display) ─
+  function decodeJwtPayload(token) {
+    try {
+      const parts = token.split('.')
+      if (parts.length !== 3) return { header: {}, payload: {} }
+      const decode = b64 => JSON.parse(atob(b64.replace(/-/g, '+').replace(/_/g, '/')))
+      return { header: decode(parts[0]), payload: decode(parts[1]) }
+    } catch {
+      return { header: {}, payload: {} }
+    }
+  }
+
+  function b64urlPad(s) {
+    // pad to multiple of 4 for atob
+    return s + '='.repeat((4 - s.length % 4) % 4)
+  }
+
+  // ── getToken — called by <nubi-dashboard> before every query ───────────────
+  // This is the window function the component calls via get-token="getNubiEmbedToken".
+  async function getNubiEmbedToken() {
+    const now = Math.floor(Date.now() / 1000)
+
+    // Serve cached token if still fresh (> 60 s before expiry)
+    if (_cachedToken && _cachedExp && _cachedExp - now > 60) {
+      return _cachedToken
+    }
+
+    try {
+      const token = await mintToken(_currentTenant)
+      const { header, payload } = decodeJwtPayload(token)
+
+      _cachedToken = token
+      _cachedExp   = payload.exp ?? (now + 900)
+
+      // Update JWT inspector
+      updateInspector(header, payload)
+      logEvent(`Token received (exp in ${_cachedExp - now}s)`, 'ev-token')
+
+      return token
+    } catch (err) {
+      logEvent(`Token error: ${err.message}`, 'ev-error')
+      setStatus('sample', 'token error (see log)')
+      throw err
+    }
+  }
+  window.getNubiEmbedToken = getNubiEmbedToken
+
+  // ── JWT inspector ──────────────────────────────────────────────────────────
+  function syntaxHighlight(obj) {
+    return JSON.stringify(obj, null, 2)
+      .replace(/("policies"\s*:\s*\{[^}]+\})/g, '<span class="rls">$1</span>')
+      .replace(/("embed_origin"\s*:\s*"[^"]*")/g, '<span class="rls">$1</span>')
+      .replace(/"([^"]+)":/g, '<span class="key">"$1"</span>:')
+      .replace(/:\s*"([^"]+)"/g, ': <span class="str">"$1"</span>')
+      .replace(/:\s*(\d+)/g, ': <span class="num">$1</span>')
+      .replace(/:\s*(true|false)/g, ': <span class="bool">$1</span>')
+      .replace(/(\[|\])/g, '<span class="arr">$1</span>')
+  }
+
+  function updateInspector(header, payload) {
+    document.getElementById('jwtHeader').innerHTML  = syntaxHighlight(header)
+    document.getElementById('jwtPayload').innerHTML = syntaxHighlight(payload)
+  }
+
+  // ── Status badge ───────────────────────────────────────────────────────────
+  function setStatus(state, text) {
+    const badge = document.getElementById('statusBadge')
+    const span  = document.getElementById('statusText')
+    badge.className = `status-badge ${state}`
+    span.textContent = text
+  }
+
+  // ── Tenant switcher ────────────────────────────────────────────────────────
+  window.switchTenant = async function switchTenant(tenantId) {
+    if (tenantId === _currentTenant) return
+
+    _currentTenant = tenantId
+    _cachedToken   = null    // force re-mint with new tenant claim
+    _cachedExp     = null
+
+    // Update button states
+    document.getElementById('btnAcme').classList.toggle('active',  tenantId === 'acme-corp')
+    document.getElementById('btnGlobex').classList.toggle('active', tenantId === 'globex-inc')
+
+    // Update claims display
+    document.getElementById('claimTenant').textContent = `tenant_id: ${tenantId}`
+
+    logEvent(`Switched tenant → ${tenantId}  (new token will be minted on next query)`, 'ev-switch')
+
+    setStatus('loading', 'loading…')
+
+    // Force the component to re-fetch by toggling an attribute.
+    // The <nubi-dashboard> observes attribute changes and re-runs the query.
+    const dash = document.getElementById('dash')
+    const q    = dash.getAttribute('query') || 'SELECT * FROM demo'
+    dash.removeAttribute('query')
+    // Small tick to allow the DOM to see the removal
+    await new Promise(r => setTimeout(r, 20))
+    dash.setAttribute('query', q)
+  }
+
+  // ── Component event listeners ──────────────────────────────────────────────
+  document.addEventListener('nubi:ready', e => {
+    const rows = e.detail?.rowCount ?? '?'
+    setStatus('live', `live — ${rows} rows`)
+    logEvent(`nubi:ready — rowCount=${rows}`, 'ev-ready')
+  })
+
+  document.addEventListener('nubi:error', e => {
+    const msg = e.detail?.message ?? 'unknown error'
+    setStatus('sample', 'sample data (backend unreachable)')
+    logEvent(`nubi:error — ${msg}`, 'ev-error')
+  })
+
+  document.addEventListener('nubi:query-run', e => {
+    const { rowCount, cacheStatus, elapsedMs, sample } = e.detail || {}
+    logEvent(
+      `nubi:query-run — rows=${rowCount} cache=${cacheStatus} elapsed=${elapsedMs}ms sample=${sample}`,
+      'ev-run',
+    )
+    if (!sample && cacheStatus) setStatus('live', `live — ${cacheStatus}`)
+  })
+
+  // ── Init ───────────────────────────────────────────────────────────────────
+  // Log the backend URL being used so the developer can confirm it.
+  logEvent(`Using backend: ${BACKEND}  (override with ?backend=http://…)`, 'ev-token')
+  logEvent(`Mint endpoint: POST ${MINT_URL}`, 'ev-token')
+
+})();
+</script>
+
+</body>
+</html>

@@ -25,6 +25,22 @@ flow_spec_is_valid(issues) -> bool
 flow_spec_json_schema() -> dict
     Return the JSON Schema for FlowSpec (for grounding the LLM author tool).
 
+Supported task kinds
+--------------------
+- ``query``         — run a SQL query against a registered data source.
+- ``python``        — run an arbitrary Python code snippet.
+- ``agent``         — run an LLM-agent step.
+- ``materialize``   — merge upstream results into a DuckDB materialization.
+- ``noop``          — no-operation (useful as a join/synchronisation point).
+- ``extract``       — unpack an archive from storage and re-upload members.
+- ``bucket_load``   — upload upstream task result to a storage bucket.
+- ``preagg_refresh``— refresh a pre-aggregated rollup for an org.
+- ``map``           — fan-out over an iterable; body is a nested sub-DAG.
+- ``branch``        — conditional routing; evaluates conditions and activates
+                      matching downstream tasks.
+- ``map_collect``   — collector handler for map fan-in; returns
+                      ``{items: [...], item_count: N}``.
+
 Security notes
 --------------
 - No HTML rendering in this module — purely a data-validation layer.
@@ -98,7 +114,8 @@ class TaskSpec(BaseModel):
         canonical task identifier in ``needs`` lists and ``inputs`` maps.
     kind:
         Execution kind — ``'query'``, ``'python'``, ``'agent'``,
-        ``'materialize'``, or ``'noop'``.
+        ``'materialize'``, ``'noop'``, ``'extract'``, ``'bucket_load'``,
+        ``'preagg_refresh'``, ``'map'``, ``'branch'``, or ``'map_collect'``.
     needs:
         List of upstream task keys this task depends on.  An empty list
         means the task is a root (no dependencies).
@@ -118,6 +135,29 @@ class TaskSpec(BaseModel):
           table name, default ``blend``), ``datastore_id`` / ``query_id`` (the
           pre-created rows the result is exposed through).
         - ``noop``        → no required fields.
+        - ``extract``     → ``dest_uri`` (required) AND either ``source_uri``
+          or ``source`` (exactly one required).  Optional: ``secret``,
+          ``format`` (``'auto'``|``'zip'``|``'tar'``|``'tar.gz'``|``'tgz'``|
+          ``'gz'``).  Unpacks an archive from storage and uploads the extracted
+          members to *dest_uri*.
+        - ``bucket_load`` → ``uri`` (required destination URI) AND ``source``
+          (required — key of an upstream task whose result provides the data).
+          Optional: ``format`` (``'csv'``|``'json'``|``'ndjson'``|``'parquet'``,
+          default ``'csv'``), ``mode`` (``'overwrite'``|``'append'``, default
+          ``'overwrite'``), ``secret``.
+        - ``map``         → ``item_expr`` (required — template expression
+          resolving to an iterable at runtime) AND ``body`` (required — non-empty
+          list of TaskSpec dicts forming the per-item sub-DAG).  Optional:
+          ``item_var`` (default ``"item"``), ``max_concurrency`` (default 0 =
+          unlimited), ``max_map_size`` (default 1000), ``collect_key`` (which
+          body task key's result is collected; defaults to the last body task).
+        - ``branch``      → ``conditions`` (required — non-empty ordered list of
+          ``{when: <template_bool_expr>, next: [task_key, ...]}`` dicts; first
+          match wins).  Optional: ``default`` (list of task keys to activate when
+          no condition matches; empty list = no-op on unmatched path per Q1).
+        - ``map_collect`` → no required fields (internal collector handler).
+        - ``preagg_refresh`` → ``org_id`` (required).
+        - ``noop``        → no required fields.
     retries:
         Number of retry attempts after the first failure (``0`` = no retry).
     retry_backoff_s:
@@ -132,9 +172,19 @@ class TaskSpec(BaseModel):
     """
 
     key: str = Field(min_length=1, description="Unique task slug within this flow.")
-    kind: Literal["query", "python", "agent", "materialize", "noop"] = Field(
-        description="Execution kind."
-    )
+    kind: Literal[
+        "query",
+        "python",
+        "agent",
+        "materialize",
+        "noop",
+        "extract",
+        "bucket_load",
+        "preagg_refresh",
+        "map",          # fan-out; config.body is a sub-DAG of TaskSpec dicts
+        "branch",       # conditional routing; config.conditions list
+        "map_collect",  # collector for map fan-in (internal / handler use)
+    ] = Field(description="Execution kind.")
     needs: list[str] = Field(
         default_factory=list,
         description="Upstream task keys (DAG edges).",
@@ -212,6 +262,20 @@ def validate_flow_spec(data: Any) -> tuple[FlowSpec | None, list[str]]:
        - ``agent``       → ``prompt`` must be present.
        - ``materialize`` → ``combine_sql`` must be present.
        - ``noop``        → no requirements.
+       - ``extract``     → ``dest_uri`` must be present, AND exactly one of
+         ``source_uri`` or ``source`` must be present.
+       - ``bucket_load`` → ``uri`` and ``source`` must both be present.
+       - ``map``         → ``item_expr`` and ``body`` must be present;
+         ``body`` is validated recursively as a sub-DAG; nested map nodes
+         inside body are rejected; ``collect_key`` must reference a body key.
+       - ``branch``      → ``conditions`` must be a non-empty list of
+         ``{when, next}`` dicts.
+       - ``map_collect`` → no requirements.
+    5.5 Branch cross-reference post-pass (after the per-task loop):
+       - Every key in ``conditions[i].next`` must be a declared task key.
+       - Every key in ``default`` must be a declared task key.
+       - Any task that lists a branch key in its ``needs`` must appear in at
+         least one ``next`` or ``default`` list (unreachable-task guard).
     6. ``query_id`` checked against the live query registry (soft warning,
        prefixed with ``"[warn]"``).
 
@@ -327,7 +391,146 @@ def validate_flow_spec(data: Any) -> tuple[FlowSpec | None, list[str]]:
                     f"Task {task.key!r} (materialize): config must include "
                     "'combine_sql'."
                 )
+        elif task.kind == "extract":
+            if not cfg.get("dest_uri"):
+                issues.append(
+                    f"Task {task.key!r} (extract): config must include 'dest_uri'."
+                )
+            has_source_uri = bool(cfg.get("source_uri"))
+            has_source = bool(cfg.get("source"))
+            if has_source_uri and has_source:
+                issues.append(
+                    f"Task {task.key!r} (extract): config must specify either "
+                    "'source_uri' or 'source', not both."
+                )
+            elif not has_source_uri and not has_source:
+                issues.append(
+                    f"Task {task.key!r} (extract): config must include either "
+                    "'source_uri' or 'source'."
+                )
+        elif task.kind == "bucket_load":
+            if not cfg.get("uri"):
+                issues.append(
+                    f"Task {task.key!r} (bucket_load): config must include 'uri'."
+                )
+            if not cfg.get("source"):
+                issues.append(
+                    f"Task {task.key!r} (bucket_load): config must include 'source'."
+                )
+        elif task.kind == "preagg_refresh":
+            if not cfg.get("org_id"):
+                issues.append(
+                    f"Task {task.key!r} (preagg_refresh): config must include 'org_id'."
+                )
+        elif task.kind == "map":
+            if not cfg.get("item_expr"):
+                issues.append(
+                    f"Task {task.key!r} (map): config must include 'item_expr'."
+                )
+            body = cfg.get("body")
+            if not body or not isinstance(body, list):
+                issues.append(
+                    f"Task {task.key!r} (map): config must include 'body' "
+                    "(non-empty list of TaskSpec dicts)."
+                )
+            else:
+                # Recursive validation of the sub-DAG body.
+                sub_spec_data: dict[str, Any] = {
+                    "version": 1,
+                    "name": f"{task.key}__body",
+                    "params": [],
+                    "tasks": body,
+                }
+                sub_spec, sub_issues = validate_flow_spec(sub_spec_data)
+                for si in sub_issues:
+                    prefix = _WARN_PREFIX if si.startswith(_WARN_PREFIX) else ""
+                    bare = si[len(_WARN_PREFIX):].strip() if prefix else si
+                    issues.append(f"{prefix}Task {task.key!r} body: {bare}")
+                # Prohibit nested map nodes inside body sub-DAGs.
+                if sub_spec:
+                    for bt in sub_spec.tasks:
+                        if bt.kind == "map":
+                            issues.append(
+                                f"Task {task.key!r} (map): body may not contain another "
+                                f"map node (nested fan-out is not supported). "
+                                f"Offending key: {bt.key!r}."
+                            )
+                    # Validate collect_key against body task keys.
+                    collect_key = cfg.get("collect_key")
+                    if collect_key:
+                        body_keys = {bt.key for bt in sub_spec.tasks}
+                        if collect_key not in body_keys:
+                            issues.append(
+                                f"Task {task.key!r} (map): 'collect_key' {collect_key!r} "
+                                f"is not a key in body. Body keys: {sorted(body_keys) or '[]'}."
+                            )
+        elif task.kind == "branch":
+            conditions = cfg.get("conditions")
+            if not conditions or not isinstance(conditions, list):
+                issues.append(
+                    f"Task {task.key!r} (branch): config must include 'conditions' "
+                    "(non-empty list of {{when, next}} dicts)."
+                )
+            else:
+                for i, cond in enumerate(conditions):
+                    if not isinstance(cond, dict):
+                        issues.append(
+                            f"Task {task.key!r} (branch): condition[{i}] must be a dict "
+                            "with 'when' and 'next' keys."
+                        )
+                        continue
+                    if not cond.get("when"):
+                        issues.append(
+                            f"Task {task.key!r} (branch): condition[{i}] missing 'when' "
+                            "expression."
+                        )
+                    next_list = cond.get("next")
+                    if not next_list or not isinstance(next_list, list):
+                        issues.append(
+                            f"Task {task.key!r} (branch): condition[{i}] missing 'next' "
+                            "list (must be a non-empty list of task keys)."
+                        )
+        # map_collect: no required config fields
         # noop: no required config fields
+
+    # ── Step 5.5: Branch cross-reference post-pass ────────────────────────
+    # Build a set of all task keys referenced by branch conditions so we can
+    # cross-check against declared_keys and also guard unreachable tasks.
+    # We must do this after the full task loop so forward-references work.
+    for task in spec.tasks:
+        if task.kind != "branch":
+            continue
+        cfg = task.config
+        conditions = cfg.get("conditions") or []
+        default_list: list[str] = cfg.get("default") or []
+
+        # Collect all keys that this branch can activate.
+        all_next_keys: set[str] = set(default_list)
+        for cond in conditions:
+            if isinstance(cond, dict) and isinstance(cond.get("next"), list):
+                all_next_keys.update(cond["next"])
+
+        # Every next key must be a declared task key.
+        for key in all_next_keys:
+            if key not in declared_keys:
+                issues.append(
+                    f"Task {task.key!r} (branch): 'next'/'default' references task "
+                    f"{key!r}, which is not a declared task key. "
+                    f"Declared keys: {sorted(declared_keys) or '[]'}."
+                )
+
+        # Any task that lists this branch in its needs must be reachable via
+        # at least one 'next' or 'default' list.  Tasks NOT listed will be set
+        # to upstream_failed by the runtime — this is a spec authoring error.
+        branch_key = task.key
+        for other_task in spec.tasks:
+            if branch_key in other_task.needs and other_task.key not in all_next_keys:
+                issues.append(
+                    f"Task {other_task.key!r} lists branch {branch_key!r} in its "
+                    f"'needs' but is not referenced in any 'next' or 'default' list "
+                    f"of that branch. This task will never become ready (unreachable "
+                    f"task guard)."
+                )
 
     # ── Step 6: query_id registry check (soft warning) ───────────────────
     try:

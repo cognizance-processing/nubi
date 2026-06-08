@@ -1,242 +1,130 @@
 /**
- * HeroIllustration — premium analytics dashboard scene.
- * Multi-panel layout: bold area chart (flagship), KPI ring-stat cards,
- * mini bar chart, subtle grid lines, glowing data nodes, soft depth.
- * Textless. Reads beautifully on white (light) and dark-navy (dark).
+ * HeroIllustration — "BI that runs in your browser."
+ * A realistic dashboard rendered inside a browser window: a KPI strip, an area
+ * chart, a donut/pie, and a data table — a true react-grid-layout dashboard.
+ * Flat, crisp, brand palette. No blur/glow. Reads on white + dark-navy.
  */
-export default function HeroIllustration({ className = '' }) {
-  // Area chart path (bold, sweeping curve)
-  const areaCurve =
-    'M 52 196 C 90 188, 112 172, 148 162 C 188 150, 210 164, 248 140 C 288 114, 312 122, 348 88'
-  const areaFill = `${areaCurve} L 348 220 L 52 220 Z`
-
-  // Mini bar heights
-  const bars = [42, 62, 50, 76, 58, 80]
-
+export default function HeroIllustration({ className = '', style }) {
+  const curve = 'M 62 232 C 96 226, 116 210, 150 202 C 188 193, 210 206, 244 184 C 282 159, 302 167, 332 146'
+  const area = `${curve} L 332 250 L 62 250 Z`
+  const bars = [18, 27, 22, 34, 28, 38, 31]
+  // donut: r=26, C≈163.4; segments 42/28/18/12 %
+  const C = 163.4
+  const segs = [
+    { len: C * 0.42, off: 0, color: '#2456a6' },
+    { len: C * 0.28, off: C * 0.42, color: '#17b3a3' },
+    { len: C * 0.18, off: C * 0.70, color: '#2dd4bf' },
+    { len: C * 0.12, off: C * 0.88, color: '#1b2363' },
+  ]
   return (
     <svg
-      viewBox="0 0 420 320"
+      viewBox="0 0 560 400"
       fill="none"
       xmlns="http://www.w3.org/2000/svg"
       className={className}
+      style={style}
       aria-hidden="true"
       width="100%"
       height="auto"
       preserveAspectRatio="xMidYMid meet"
     >
       <defs>
-        {/* Brand signature gradient */}
-        <linearGradient id="hero-brand" x1="0" y1="1" x2="1" y2="0">
+        <linearGradient id="hro-stroke" x1="0" y1="1" x2="1" y2="0">
           <stop offset="0%" stopColor="#1b2363" />
           <stop offset="45%" stopColor="#2456a6" />
-          <stop offset="80%" stopColor="#17b3a3" />
-          <stop offset="100%" stopColor="#2dd4bf" />
+          <stop offset="100%" stopColor="#17b3a3" />
         </linearGradient>
-
-        {/* Chart line gradient */}
-        <linearGradient id="hero-line-grad" x1="0" y1="0" x2="1" y2="0">
-          <stop offset="0%" stopColor="#2456a6" />
-          <stop offset="55%" stopColor="#17b3a3" />
-          <stop offset="100%" stopColor="#2dd4bf" />
-        </linearGradient>
-
-        {/* Area fill — vertical fade */}
-        <linearGradient id="hero-area-fill" x1="0" y1="0" x2="0" y2="1">
-          <stop offset="0%" stopColor="#2dd4bf" stopOpacity="0.38" />
-          <stop offset="50%" stopColor="#17b3a3" stopOpacity="0.14" />
+        <linearGradient id="hro-area" x1="0" y1="0" x2="0" y2="1">
+          <stop offset="0%" stopColor="#2dd4bf" stopOpacity="0.28" />
           <stop offset="100%" stopColor="#2456a6" stopOpacity="0.0" />
         </linearGradient>
-
-        {/* Glass panel fill */}
-        <linearGradient id="hero-glass" x1="0" y1="0" x2="1" y2="1">
-          <stop offset="0%" stopColor="#2456a6" stopOpacity="0.13" />
-          <stop offset="100%" stopColor="#1b2363" stopOpacity="0.05" />
-        </linearGradient>
-
-        {/* Glass border */}
-        <linearGradient id="hero-border" x1="0" y1="0" x2="1" y2="1">
-          <stop offset="0%" stopColor="#2dd4bf" stopOpacity="0.55" />
-          <stop offset="60%" stopColor="#2456a6" stopOpacity="0.35" />
-          <stop offset="100%" stopColor="#17b3a3" stopOpacity="0.2" />
-        </linearGradient>
-
-        {/* KPI panel */}
-        <linearGradient id="hero-kpi" x1="0" y1="0" x2="1" y2="1">
-          <stop offset="0%" stopColor="#2456a6" stopOpacity="0.18" />
-          <stop offset="100%" stopColor="#17b3a3" stopOpacity="0.08" />
-        </linearGradient>
-
-        {/* Teal chip accent */}
-        <linearGradient id="hero-chip" x1="0" y1="0" x2="1" y2="1">
+        <linearGradient id="hro-accent" x1="0" y1="0" x2="1" y2="1">
           <stop offset="0%" stopColor="#2dd4bf" />
           <stop offset="100%" stopColor="#17b3a3" />
         </linearGradient>
-
-        {/* Ambient bloom top-right */}
-        <radialGradient id="hero-bloom-tr" cx="80%" cy="28%" r="52%">
-          <stop offset="0%" stopColor="#17b3a3" stopOpacity="0.28" />
-          <stop offset="100%" stopColor="#17b3a3" stopOpacity="0.0" />
-        </radialGradient>
-
-        {/* Ambient bloom bottom-left */}
-        <radialGradient id="hero-bloom-bl" cx="18%" cy="82%" r="44%">
-          <stop offset="0%" stopColor="#2456a6" stopOpacity="0.22" />
-          <stop offset="100%" stopColor="#2456a6" stopOpacity="0.0" />
-        </radialGradient>
-
-        {/* Node glow */}
-        <radialGradient id="hero-node-glow" cx="50%" cy="50%" r="50%">
-          <stop offset="0%" stopColor="#2dd4bf" stopOpacity="0.9" />
-          <stop offset="100%" stopColor="#2dd4bf" stopOpacity="0.0" />
-        </radialGradient>
-
-        {/* Bar gradient */}
-        <linearGradient id="hero-bar" x1="0" y1="0" x2="0" y2="1">
-          <stop offset="0%" stopColor="#2dd4bf" stopOpacity="0.75" />
-          <stop offset="100%" stopColor="#17b3a3" stopOpacity="0.3" />
+        <linearGradient id="hro-bar" x1="0" y1="0" x2="0" y2="1">
+          <stop offset="0%" stopColor="#17b3a3" />
+          <stop offset="100%" stopColor="#2456a6" />
         </linearGradient>
-
-        {/* Soft shadow */}
-        <filter id="hero-shadow" x="-30%" y="-30%" width="160%" height="160%">
-          <feDropShadow dx="0" dy="6" stdDeviation="10" floodColor="#1b2363" floodOpacity="0.2" />
-        </filter>
-
-        {/* Strong glow for peak node */}
-        <filter id="hero-glow" x="-80%" y="-80%" width="260%" height="260%">
-          <feGaussianBlur stdDeviation="5" result="blur" />
-          <feComposite in="SourceGraphic" in2="blur" operator="over" />
-        </filter>
-
-        {/* Safe clip inset */}
-        <clipPath id="hero-safe-clip">
-          <rect x="8" y="8" width="404" height="304" rx="24" />
+        <clipPath id="hro-clip">
+          <rect x="30" y="28" width="500" height="344" rx="18" />
         </clipPath>
       </defs>
 
-      {/* Ambient background blooms */}
-      <rect x="8" y="8" width="404" height="304" rx="24" fill="url(#hero-bloom-tr)" />
-      <rect x="8" y="8" width="404" height="304" rx="24" fill="url(#hero-bloom-bl)" />
+      {/* Browser window */}
+      <rect x="30" y="28" width="500" height="344" rx="18"
+        fill="#2456a6" fillOpacity="0.035" stroke="url(#hro-stroke)" strokeWidth="2" />
+      <line x1="30" y1="64" x2="530" y2="64" stroke="#2456a6" strokeWidth="1.5" strokeOpacity="0.45" />
+      <circle cx="50" cy="46" r="4" fill="#2456a6" fillOpacity="0.45" />
+      <circle cx="66" cy="46" r="4" fill="#17b3a3" fillOpacity="0.55" />
+      <circle cx="82" cy="46" r="4" fill="#2dd4bf" fillOpacity="0.7" />
+      <rect x="150" y="39" width="240" height="14" rx="7" fill="#2456a6" fillOpacity="0.07"
+        stroke="#2456a6" strokeWidth="1" strokeOpacity="0.25" />
 
-      <g clipPath="url(#hero-safe-clip)">
-
-        {/* ── Main dashboard card ── */}
-        <g filter="url(#hero-shadow)">
-          <rect x="18" y="20" width="384" height="282" rx="20" fill="url(#hero-glass)" />
-        </g>
-        <rect x="18" y="20" width="384" height="282" rx="20" stroke="url(#hero-border)" strokeWidth="1.5" />
-        {/* top highlight line */}
-        <path d="M 42 21 L 380 21" stroke="#ffffff" strokeOpacity="0.18" strokeWidth="1.5" strokeLinecap="round" />
-
-        {/* ── Horizontal grid lines (subtle) ── */}
-        {[96, 124, 152, 180, 208].map((y) => (
-          <line key={y} x1="44" y1={y} x2="376" y2={y}
-            stroke="#2456a6" strokeOpacity="0.12" strokeWidth="1" strokeDasharray="4 6" />
+      <g clipPath="url(#hro-clip)">
+        {/* KPI strip — 3 tiles */}
+        {[48, 206, 364].map((x, i) => (
+          <g key={i}>
+            <rect x={x} y="80" width="146" height="40" rx="9"
+              fill="#2456a6" fillOpacity="0.05" stroke="#2456a6" strokeWidth="1.25" strokeOpacity="0.28" />
+            <circle cx={x + 16} cy="100" r="5" fill={['#2456a6', '#17b3a3', '#2dd4bf'][i]} />
+            <rect x={x + 28} y="90" width="40" height="6" rx="3" fill="#2456a6" fillOpacity="0.3" />
+            <rect x={x + 28} y="103" width="58" height="8" rx="4" fill="#2456a6" fillOpacity="0.45" />
+            <path d={`M ${x + 118} 106 l 8 -10 l 6 5`} stroke="url(#hro-accent)" strokeWidth="2.25"
+              strokeLinecap="round" strokeLinejoin="round" fill="none" />
+          </g>
         ))}
 
-        {/* ── Area chart ── */}
-        <path d={areaFill} fill="url(#hero-area-fill)" />
-        <path d={areaCurve}
-          stroke="url(#hero-line-grad)" strokeWidth="3.5"
-          strokeLinecap="round" strokeLinejoin="round" />
+        {/* Chart panel (left) */}
+        <rect x="48" y="130" width="290" height="128" rx="11"
+          fill="#2456a6" fillOpacity="0.04" stroke="#2456a6" strokeWidth="1.5" strokeOpacity="0.3" />
+        <rect x="62" y="142" width="56" height="7" rx="3.5" fill="#2456a6" fillOpacity="0.35" />
+        <path d={area} fill="url(#hro-area)" />
+        <path d={curve} stroke="url(#hro-stroke)" strokeWidth="2.75" strokeLinecap="round" strokeLinejoin="round" />
+        <circle cx="244" cy="184" r="3.5" fill="#17b3a3" />
+        <circle cx="332" cy="146" r="5" fill="url(#hro-accent)" />
 
-        {/* Chart baseline */}
-        <line x1="44" y1="220" x2="376" y2="220"
-          stroke="#2456a6" strokeOpacity="0.22" strokeWidth="1.5" />
-
-        {/* Tick marks on baseline */}
-        {[100, 148, 200, 248, 298, 348].map((x) => (
-          <line key={x} x1={x} y1="220" x2={x} y2="227"
-            stroke="#2456a6" strokeOpacity="0.3" strokeWidth="1.5" strokeLinecap="round" />
-        ))}
-
-        {/* ── Chart data nodes ── */}
-        {/* Node at 148,162 */}
-        <circle cx="148" cy="162" r="18" fill="url(#hero-node-glow)" opacity="0.4" />
-        <circle cx="148" cy="162" r="5.5" fill="#17b3a3" stroke="#ffffff" strokeWidth="2" strokeOpacity="0.8" />
-
-        {/* Node at 248,140 */}
-        <circle cx="248" cy="140" r="16" fill="url(#hero-node-glow)" opacity="0.35" />
-        <circle cx="248" cy="140" r="5" fill="#17b3a3" stroke="#ffffff" strokeWidth="2" strokeOpacity="0.8" />
-
-        {/* Peak node at 348,88 — glowing accent */}
-        <circle cx="348" cy="88" r="30" fill="url(#hero-node-glow)" opacity="0.45" />
-        <circle cx="348" cy="88" r="10" fill="url(#hero-chip)" />
-        <circle cx="348" cy="88" r="10" stroke="#ffffff" strokeWidth="2.5" strokeOpacity="0.85" />
-        {/* inner dot */}
-        <circle cx="348" cy="88" r="4" fill="#ffffff" fillOpacity="0.7" />
-
-        {/* Vertical drop line from peak */}
-        <line x1="348" y1="98" x2="348" y2="220"
-          stroke="#2dd4bf" strokeOpacity="0.2" strokeWidth="1.5" strokeDasharray="3 5" />
-
-        {/* ── KPI stat chips (top-left area) ── */}
-        {/* KPI card 1 */}
-        <g filter="url(#hero-shadow)">
-          <rect x="30" y="32" width="110" height="64" rx="14" fill="url(#hero-kpi)" />
+        {/* Donut panel (right) */}
+        <rect x="350" y="130" width="160" height="128" rx="11"
+          fill="#2456a6" fillOpacity="0.04" stroke="#2456a6" strokeWidth="1.5" strokeOpacity="0.3" />
+        <g transform="rotate(-90 404 188)">
+          {segs.map((s, i) => (
+            <circle key={i} cx="404" cy="188" r="26" fill="none" stroke={s.color} strokeWidth="13"
+              strokeDasharray={`${s.len} ${C}`} strokeDashoffset={-s.off} />
+          ))}
         </g>
-        <rect x="30" y="32" width="110" height="64" rx="14" stroke="url(#hero-border)" strokeWidth="1.2" />
-        {/* Arc / ring indicator */}
-        <circle cx="62" cy="64" r="18" stroke="#2456a6" strokeOpacity="0.25" strokeWidth="3" />
-        <path d="M 62 46 A 18 18 0 1 1 44.5 72"
-          stroke="url(#hero-chip)" strokeWidth="3" strokeLinecap="round" fill="none" />
-        <circle cx="62" cy="64" r="6" fill="url(#hero-chip)" />
-        {/* Bar strip */}
+        <circle cx="404" cy="188" r="13" fill="#2456a6" fillOpacity="0.04" />
+        {/* legend */}
         {[0, 1, 2].map((i) => (
-          <rect key={i} x={92 + i * 12} y={60 - i * 6} width="8" height={12 + i * 6} rx="2.5"
-            fill="url(#hero-chip)" fillOpacity={0.55 + i * 0.15} />
+          <g key={i}>
+            <circle cx="452" cy={170 + i * 16} r="4" fill={['#2456a6', '#17b3a3', '#2dd4bf'][i]} />
+            <rect x="462" y={167 + i * 16} width="38" height="6" rx="3" fill="#2456a6" fillOpacity="0.3" />
+          </g>
         ))}
 
-        {/* KPI card 2 */}
-        <g filter="url(#hero-shadow)">
-          <rect x="152" y="32" width="96" height="56" rx="14" fill="url(#hero-kpi)" />
-        </g>
-        <rect x="152" y="32" width="96" height="56" rx="14" stroke="url(#hero-border)" strokeWidth="1.2" />
-        {/* Sparkline */}
-        <polyline
-          points="164,74 176,66 190,70 204,58 218,62 232,50 238,54"
-          stroke="url(#hero-line-grad)" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"
-          fill="none" />
-        <circle cx="238" cy="54" r="3.5" fill="#2dd4bf" />
-
-        {/* ── Mini bar chart (bottom-left) ── */}
-        <g filter="url(#hero-shadow)">
-          <rect x="30" y="238" width="140" height="56" rx="14" fill="url(#hero-kpi)" />
-        </g>
-        <rect x="30" y="238" width="140" height="56" rx="14" stroke="url(#hero-border)" strokeWidth="1.2" />
-        {bars.map((h, i) => (
-          <rect key={i} x={44 + i * 19} y={282 - h * 0.45} width="12" height={h * 0.45} rx="3"
-            fill="url(#hero-bar)" />
+        {/* Table panel (full width) */}
+        <rect x="48" y="270" width="462" height="86" rx="11"
+          fill="#2456a6" fillOpacity="0.04" stroke="#2456a6" strokeWidth="1.5" strokeOpacity="0.3" />
+        {/* header */}
+        {[64, 220, 320, 420].map((x, i) => (
+          <rect key={i} x={x} y="282" width={i === 0 ? 70 : 56} height="7" rx="3.5" fill="#2456a6" fillOpacity="0.4" />
         ))}
-
-        {/* ── Connector lines between KPI chips ── */}
-        <line x1="140" y1="64" x2="152" y2="60"
-          stroke="#2dd4bf" strokeOpacity="0.35" strokeWidth="1.5" strokeDasharray="3 4" />
-
-        {/* ── Decorative dot grid (far right) ── */}
-        {[0, 1, 2, 3].map((row) =>
-          [0, 1, 2].map((col) => (
-            <circle key={`${row}-${col}`}
-              cx={370 - col * 14} cy={250 + row * 14}
-              r="2" fill="#2456a6" fillOpacity="0.25" />
-          ))
-        )}
-
-        {/* ── Secondary accent line (right panel divider) ── */}
-        <line x1="260" y1="238" x2="260" y2="290"
-          stroke="#17b3a3" strokeOpacity="0.18" strokeWidth="1" />
-
-        {/* Donut ring accent (bottom-right) */}
-        <circle cx="320" cy="264" r="28" stroke="#2456a6" strokeOpacity="0.2" strokeWidth="6" fill="none" />
-        <path d="M 320 236 A 28 28 0 0 1 344 276"
-          stroke="url(#hero-chip)" strokeWidth="6" strokeLinecap="round" fill="none" />
-        <circle cx="320" cy="264" r="10" fill="url(#hero-glass)" stroke="url(#hero-border)" strokeWidth="1.5" />
-        <circle cx="320" cy="264" r="4" fill="url(#hero-chip)" />
-
-        {/* ── Three tiny status dots (top decorative) ── */}
-        <circle cx="358" cy="38" r="4" fill="#2dd4bf" fillOpacity="0.65" />
-        <circle cx="372" cy="38" r="4" fill="#17b3a3" fillOpacity="0.45" />
-        <circle cx="386" cy="38" r="4" fill="#2456a6" fillOpacity="0.35" />
-
+        <line x1="48" y1="298" x2="510" y2="298" stroke="#2456a6" strokeWidth="1" strokeOpacity="0.18" />
+        {/* rows */}
+        {[0, 1, 2].map((r) => {
+          const y = 310 + r * 16
+          return (
+            <g key={r}>
+              <circle cx="68" cy={y} r="4" fill={['#2456a6', '#17b3a3', '#2dd4bf'][r]} />
+              <rect x="80" y={y - 3.5} width="48" height="7" rx="3.5" fill="#2456a6" fillOpacity="0.32" />
+              <rect x="220" y={y - 3.5} width="56" height="7" rx="3.5" fill="#2456a6" fillOpacity="0.22" />
+              <rect x="320" y={y - 3.5} width="44" height="7" rx="3.5" fill="#2456a6" fillOpacity="0.22" />
+              {/* status pill */}
+              <rect x="420" y={y - 6} width="46" height="13" rx="6.5" fill="#17b3a3" fillOpacity="0.14"
+                stroke="#17b3a3" strokeWidth="1" strokeOpacity="0.45" />
+            </g>
+          )
+        })}
       </g>
     </svg>
   )

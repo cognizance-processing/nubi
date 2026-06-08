@@ -139,7 +139,12 @@ class FakeDB:
             if "WHERE PARENT_ID" in q:
                 return self._session_by_parent_id(str(args[0]))
 
-        if "SELECT 1" in q:
+        # Health-check ping only: bare ``SELECT 1`` / ``SELECT 1 AS ping`` with no
+        # table. A ``SELECT 1 FROM <table> WHERE ...`` is an *existence* probe
+        # (e.g. projects slug uniqueness, org membership) and MUST return None
+        # when the fake has no such row — otherwise callers that loop until the
+        # probe returns None (e.g. _unique_slug) spin forever.
+        if table == "" and "SELECT 1" in q:
             return {"ping": 1}
 
         return None
@@ -420,6 +425,20 @@ def _reset_state():
         try:
             from app.repos.provider import set_repo
             set_repo(None)
+        except Exception:
+            pass
+
+        # ── Feature gate ──────────────────────────────────────────────────────
+        try:
+            from app.features import reset_for_tests as _reset_features
+            _reset_features()
+        except Exception:
+            pass
+
+        # ── EE license cache ──────────────────────────────────────────────────
+        try:
+            from app.ee.licensing.license import reset_license_cache
+            reset_license_cache()
         except Exception:
             pass
 

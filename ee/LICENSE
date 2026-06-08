@@ -1,0 +1,18 @@
+COMMERCIAL LICENSE — PLACEHOLDER
+
+This file is a placeholder for the Nubi Enterprise Edition commercial license.
+
+The contents of the `backend/app/ee/` and `src/ee/` directories are
+proprietary and subject to a commercial license agreement between the
+licensee and the Nubi copyright holders.
+
+TERMS ARE NOT YET FINALISED.
+Do NOT use the code in these directories in production without a signed
+commercial agreement.
+
+For licensing enquiries contact: licensing@nubi.dev
+
+-------------------------------------------------------------------------------
+The open-source CORE of Nubi (everything outside `backend/app/ee/` and
+`src/ee/`) is released under the MIT License — see the root `LICENSE` file.
+-------------------------------------------------------------------------------

@@ -81,10 +81,11 @@ bash scripts/e2e.sh
 
 ## Seeded demo credentials
 
-The backend `seed.py` (or `seed_demo.py`) creates:
+The backend `seed.py --demo` creates the superuser (from `SUPERUSER_*` in the env)
+plus the demo workspace. Default credentials:
 
-- **Email**: `test@nubi.dev`
-- **Password**: `nubitest123`
+- **Email**: `admin@nubi.dev`
+- **Password**: `nubi-admin-2026`
 
 These are the credentials used by all specs via `e2e/helpers/auth.js`.
 

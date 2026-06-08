@@ -133,8 +133,16 @@ test.describe('Non-editor page (/home) — global chat is available', () => {
 test.describe('Mobile 390px — editor panel icon toggles', () => {
   test.use({ viewport: { width: 390, height: 844 } })
 
-  test('all four panel toggles are visible in the topbar (no overflow)', async ({ page }) => {
+  // Below md the toolbar cluster (device switcher, zoom, panel toggles) collapses
+  // behind a hamburger that opens a slide-out menu. The four panel toggles live
+  // INSIDE that slide-out on mobile.
+  test('panel toggles are reachable via the hamburger slide-out', async ({ page }) => {
     await openEditor(page)
+    // Toggles are NOT in the topbar directly on mobile…
+    await expect(page.getByTestId('editor-hamburger')).toBeVisible()
+    // …open the slide-out menu, then they're all visible.
+    await page.getByTestId('editor-hamburger').click()
+    await expect(page.getByTestId('editor-mobile-menu')).toBeVisible()
     await expect(page.getByTestId('panel-toggle-add')).toBeVisible()
     await expect(page.getByTestId('panel-toggle-config')).toBeVisible()
     await expect(page.getByTestId('panel-toggle-board')).toBeVisible()
@@ -148,16 +156,18 @@ test.describe('Mobile 390px — editor panel icon toggles', () => {
     expect(bodyScrollWidth).toBeLessThanOrEqual(innerWidth + 5) // 5px tolerance
   })
 
-  test('clicking Add opens bottom sheet on mobile', async ({ page }) => {
+  test('clicking Add (via hamburger) opens bottom sheet on mobile', async ({ page }) => {
     await openEditor(page)
+    await page.getByTestId('editor-hamburger').click()
     await page.getByTestId('panel-toggle-add').click()
     // Mobile bottom sheet (flex variant) becomes visible
     const sheet = page.locator('.md\\:hidden.fixed.inset-0.z-40.flex')
     await expect(sheet).toBeVisible({ timeout: 5_000 })
   })
 
-  test('clicking Chat opens chat bottom sheet on mobile', async ({ page }) => {
+  test('clicking Chat (via hamburger) opens chat bottom sheet on mobile', async ({ page }) => {
     await openEditor(page)
+    await page.getByTestId('editor-hamburger').click()
     await page.getByTestId('panel-toggle-chat').click()
     const sheet = page.locator('.md\\:hidden.fixed.inset-0.z-40.flex')
     await expect(sheet).toBeVisible({ timeout: 5_000 })

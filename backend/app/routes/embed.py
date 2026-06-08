@@ -16,12 +16,37 @@ GET /embed/config/{dashboard_id}
     but has no widgets (or no spec/html), a minimal descriptor is returned
     (graceful fallback).
 
+POST /embed-token  (DEV ONLY — gated by EMBED_DEV_TOKEN_ENABLED=true)
+    Mint a first-party HS256 JWT carrying per-tenant RLS claims, an org claim,
+    and a ``read:*`` scope.  Intended for local embed demos where a host page
+    needs a backend-verified token without going through the full auth flow.
+
+    The minted token is a standard Nubi first-party access token (HS256,
+    JWT_SECRET) and is therefore verified by ``verified_identity`` exactly like
+    any other access token.  It carries the caller-supplied ``org``,
+    ``policies`` (RLS claims), ``scope``, and ``sub`` from the request body.
+
+    SECURITY: This endpoint is a development convenience ONLY.  It MUST NOT be
+    enabled in production (EMBED_DEV_TOKEN_ENABLED defaults to false/off).
+
+Algorithm note
+--------------
+The standard embed path (RS256/ES256) uses asymmetric host-signed JWTs via the
+issuer registry (see ``app.auth.issuers``).  The dev helper uses HS256 instead
+because it is minted by the backend itself using the same JWT_SECRET as all
+first-party access tokens.  The ``verified_identity`` dependency accepts it
+transparently on the ``kind="access"`` path.  A real production embed would use
+RS256/ES256 so the host can sign tokens without sharing the backend secret.
+
 Org resolution
 --------------
 - Embed tokens (``identity.kind == "embed"``) carry an ``org`` claim that is
   used directly as the ``org_id``.
-- First-party tokens use ``get_user_org(user_id, repo)`` (same helper as the
-  resources CRUD route).
+- First-party tokens (including dev embed tokens) use ``get_user_org(user_id, repo)``
+  (same helper as the resources CRUD route).  For dev embed tokens that carry an
+  ``org`` claim in the JWT payload, callers should ensure the user_id exists in
+  the DB OR pass an org that is resolvable.  A self-contained dev demo can mount
+  a FakeRepo that returns the org from the token's ``org`` claim directly.
 
 Security
 --------
@@ -33,9 +58,11 @@ Security
 
 from __future__ import annotations
 
+import os
 from typing import Any
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException
+from pydantic import BaseModel
 
 from app.auth.deps import verified_identity
 from app.auth.scopes import has_scope
@@ -45,6 +72,104 @@ from app.repos.provider import get_repo, Repo
 from app.routes import api_router
 
 router = APIRouter(prefix="/embed", tags=["embed"])
+
+
+# ---------------------------------------------------------------------------
+# Dev embed-token helper (GATED — EMBED_DEV_TOKEN_ENABLED=true required)
+# ---------------------------------------------------------------------------
+
+
+class _EmbedTokenIn(BaseModel):
+    """Request body for ``POST /embed-token``."""
+
+    sub: str = "dev-embed-user"
+    """The ``sub`` (subject) claim for the minted token.
+
+    In a real embed flow this would be a user or session identifier from the
+    host application.  Any non-empty string is accepted here.
+    """
+
+    org: str | None = None
+    """Org ID to embed in the token.  Used for org-scoped RLS in the backend."""
+
+    policies: dict[str, Any] | None = None
+    """Per-tenant RLS claims, e.g. ``{"tenant_id": "acme"}``.
+
+    These are forwarded verbatim into the JWT payload and surfaced on
+    ``VerifiedIdentity.policies`` after verification.
+    """
+
+    scope: list[str] | None = None
+    """OAuth-style scope strings.  Defaults to ``["read:*"]`` when omitted."""
+
+    ttl_minutes: int = 60
+    """Token lifetime in minutes.  Capped at 1440 (24 hours) for safety."""
+
+
+@router.post("/embed-token", status_code=200)
+async def mint_embed_dev_token(body: _EmbedTokenIn) -> dict[str, Any]:
+    """Mint a backend-verified HS256 embed token for local development.
+
+    This endpoint is **disabled by default** and must be explicitly enabled via
+    the ``EMBED_DEV_TOKEN_ENABLED=true`` environment variable.  It MUST NOT be
+    turned on in production deployments.
+
+    The minted JWT is a first-party Nubi access token (HS256, ``JWT_SECRET``)
+    carrying the caller-supplied ``org``, ``policies``, and ``scope`` claims in
+    addition to the standard ``sub``/``iat``/``exp``/``typ``/``jti`` fields.
+    It is accepted by any endpoint that uses the ``verified_identity`` dependency.
+
+    Parameters
+    ----------
+    body:
+        Request body (see :class:`_EmbedTokenIn`).
+
+    Returns
+    -------
+    dict
+        ``{"token": "<jwt>", "expires_in": <seconds>}``
+
+    Raises
+    ------
+    HTTPException(503)
+        When ``EMBED_DEV_TOKEN_ENABLED`` is not set to ``true``.
+    """
+    _enabled = os.getenv("EMBED_DEV_TOKEN_ENABLED", "").lower() in ("1", "true", "yes")
+    if not _enabled:
+        raise HTTPException(
+            status_code=503,
+            detail="embed-token endpoint is disabled (set EMBED_DEV_TOKEN_ENABLED=true for local dev only)",
+        )
+
+    import uuid  # noqa: PLC0415
+    from datetime import datetime, timedelta, timezone  # noqa: PLC0415
+
+    import jwt as _jwt  # noqa: PLC0415
+
+    from app.config import get_settings  # noqa: PLC0415
+
+    settings = get_settings()
+    ttl = min(max(body.ttl_minutes, 1), 1440)  # clamp to [1, 1440] minutes
+    now = datetime.now(tz=timezone.utc)
+    exp = now + timedelta(minutes=ttl)
+
+    scopes = body.scope if body.scope else ["read:*"]
+
+    payload: dict[str, Any] = {
+        "sub": body.sub,
+        "iat": now,
+        "exp": exp,
+        "typ": "access",
+        "jti": str(uuid.uuid4()),
+        "scope": " ".join(scopes),
+    }
+    if body.org is not None:
+        payload["org"] = body.org
+    if body.policies:
+        payload["policies"] = body.policies
+
+    token = _jwt.encode(payload, settings.JWT_SECRET, algorithm="HS256")
+    return {"token": token, "expires_in": ttl * 60}
 
 
 # ---------------------------------------------------------------------------

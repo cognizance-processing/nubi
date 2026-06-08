@@ -1,38 +1,48 @@
-"""Build a real, file-backed DuckDB datasource with deterministic fake sales data.
+"""Build the bundled, read-only DuckDB *sample* dataset (a small star schema).
 
-This is the *file builder* half of the Nubi sales-demo seeder.  It writes a
-physical ``.duckdb`` file (default ``backend/seed_data/nubi_sales.duckdb``) with
-~24 months of plausible FMCG sales modelled on the legacy BI tool's real
-dashboards.  The dimensions and measures mirror what those dashboards actually
-slice on (operating company, supplier, brand, category, customer, channel,
-region) and the measures they report (NSV, volume, units, period-over-period,
-current-year-vs-last-year, budget/target).
+This is the **file builder** half of Nubi's onboarding sample bundle.  It writes
+one physical ``.duckdb`` file — by default ``backend/seed_data/sample.duckdb`` —
+that every org's "Sample" connector points at (one shared, read-only file; the
+per-org bundle in ``app/sample.py`` only creates the *metadata* rows pointing
+here).
+
+The data models ~24 months of plausible FMCG sales as a small, well-shaped
+**star schema** so the bundled sample dashboard can demonstrate KPIs, a grouped
+breakdown, and a real fact↔dim join:
+
+    dim_customers ─┐
+    dim_products ──┤──< sales (fact) >── dim_regions
+                   │
+              budget / targets (aggregate planning tables)
 
 Everything is DETERMINISTIC — every number derives from a fixed dimension list
 plus a SHA-256-based pseudo-random generator, so rebuilding yields byte-stable
 data (no ``faker`` / ``random``).
 
-Grounding
----------
-Dimension vocabularies are drawn from the legacy dump (``legacy/database``):
-operating companies (Wutow, Logico, CASales Botswana, Rainbow, Eswatini PnP),
-suppliers that appear in real dashboard names (Unilever, Kimberly-Clark, Lipton,
-Nestlé, Tiger Brands, Rainbow), the "Mass Discounters" channel, and the
-NSV / volume / period_1-vs-period_2 / CY-vs-LY measure shapes.
-
 Schema
 ------
+``dim_regions`` (region dimension):
+    region_id INT PK, region VARCHAR, country VARCHAR
+``dim_products`` (product dimension):
+    product_id INT PK, product_group VARCHAR, category VARCHAR,
+    supplier VARCHAR, brand VARCHAR, unit_price DOUBLE
+``dim_customers`` (customer dimension):
+    customer_id INT PK, customer VARCHAR, channel VARCHAR
 ``sales`` (fact, one row per month×opco×region×channel×supplier×product_group):
-    invoice_date DATE, month VARCHAR 'YYYY-MM', year INT,
-    opco, region, channel, supplier, brand, category, product_group, customer VARCHAR,
+    invoice_date DATE, month VARCHAR 'YYYY-MM', year INT, opco VARCHAR,
+    region_id INT  → dim_regions.region_id,
+    product_id INT → dim_products.product_id,
+    customer_id INT → dim_customers.customer_id,
+    region, channel, supplier, brand, category, product_group, customer VARCHAR
+        (denormalised copies kept for back-compat with the legacy demo seeders),
     nsv DOUBLE, volume DOUBLE, units BIGINT
-``budget`` (month×region target):      month, region VARCHAR, budget_nsv DOUBLE
-``targets`` (month×opco target):       month, opco   VARCHAR, target_nsv DOUBLE
+``budget`` (month×region target):  month, region VARCHAR, budget_nsv DOUBLE
+``targets`` (month×opco target):   month, opco   VARCHAR, target_nsv DOUBLE
 
 Usage
 -----
-    from seed_data_duckdb import build_duckdb_file, DEFAULT_DB_PATH
-    path = build_duckdb_file()
+    from seed_data_duckdb import build_duckdb_file, SAMPLE_DB_PATH
+    path = build_duckdb_file()  # → SAMPLE_DB_PATH
 
 or standalone::
 
@@ -51,11 +61,23 @@ import duckdb
 
 # ── Paths ─────────────────────────────────────────────────────────────────────
 _HERE = Path(__file__).resolve().parent
+# The ONE bundled, read-only sample file every org's Sample connector points at.
+SAMPLE_DB_PATH = str(_HERE / "seed_data" / "sample.duckdb")
+# Alternate build target (same schema as the bundled file). Kept as an optional
+# standalone output; the demo seed (seed.py --demo) and the per-project sample
+# bundle (app/sample.py) both point at SAMPLE_DB_PATH above.
 DEFAULT_DB_PATH = str(_HERE / "seed_data" / "nubi_sales.duckdb")
 
 # ── Fixed dimension lists (grounded in the legacy dump) ───────────────────────
 OPCOS = ["Wutow", "Logico", "CASales Botswana", "Rainbow", "Eswatini PnP"]
 REGIONS = ["Gauteng", "Western Cape", "KwaZulu-Natal", "Eastern Cape", "Free State"]
+REGION_COUNTRY = {
+    "Gauteng": "South Africa",
+    "Western Cape": "South Africa",
+    "KwaZulu-Natal": "South Africa",
+    "Eastern Cape": "South Africa",
+    "Free State": "South Africa",
+}
 CHANNELS = ["Modern Trade", "Traditional Trade", "Wholesale", "Mass Discounters"]
 SUPPLIERS = ["Unilever", "Kimberly-Clark", "Lipton", "Nestlé", "Tiger Brands", "Rainbow"]
 CUSTOMERS = ["Pick n Pay", "Shoprite", "Spar", "Game", "Makro", "Woolworths"]
@@ -83,7 +105,7 @@ SUPPLIER_BRANDS = {
     "Rainbow":        ["Rainbow"],
 }
 
-# 24 months ending 2026-05 (demo "current date" is 2026-06-05).
+# 24 months ending 2026-05 (demo "current date" is 2026-06).
 N_MONTHS = 24
 _END_YEAR = 2026
 _END_MONTH = 5
@@ -128,8 +150,57 @@ def _seasonality(month_num: int) -> float:
     return 1.0 + 0.09 * summer + 0.06 * festive
 
 
-def _build_sales_rows() -> list[tuple]:
-    """Generate the ``sales`` fact table as a list of tuples."""
+# ── Dimension builders (deterministic surrogate keys, 1-based) ─────────────────
+
+def _build_region_dim() -> tuple[list[tuple], dict[str, int]]:
+    """``dim_regions`` rows + a ``region → region_id`` lookup."""
+    rows: list[tuple] = []
+    lookup: dict[str, int] = {}
+    for i, region in enumerate(REGIONS, start=1):
+        lookup[region] = i
+        rows.append((i, region, REGION_COUNTRY[region]))
+    return rows, lookup
+
+
+def _build_product_dim() -> tuple[list[tuple], dict[tuple[str, str, str], int]]:
+    """``dim_products`` rows + a ``(product_group, supplier, brand) → id`` lookup.
+
+    One product row per (product_group, supplier, brand) combination that can
+    actually occur in the fact table — so every fact row resolves to exactly one
+    product dimension row (clean star-schema join).
+    """
+    rows: list[tuple] = []
+    lookup: dict[tuple[str, str, str], int] = {}
+    pid = 0
+    for pg, (category, price, _base, _vol) in PRODUCT_GROUPS.items():
+        for supplier in SUPPLIERS:
+            for brand in SUPPLIER_BRANDS[supplier]:
+                pid += 1
+                key = (pg, supplier, brand)
+                lookup[key] = pid
+                rows.append((pid, pg, category, supplier, brand, price))
+    return rows, lookup
+
+
+def _build_customer_dim() -> tuple[list[tuple], dict[tuple[str, str], int]]:
+    """``dim_customers`` rows + a ``(customer, channel) → id`` lookup."""
+    rows: list[tuple] = []
+    lookup: dict[tuple[str, str], int] = {}
+    cid = 0
+    for customer in CUSTOMERS:
+        for channel in CHANNELS:
+            cid += 1
+            lookup[(customer, channel)] = cid
+            rows.append((cid, customer, channel))
+    return rows, lookup
+
+
+def _build_sales_rows(
+    region_ids: dict[str, int],
+    product_ids: dict[tuple[str, str, str], int],
+    customer_ids: dict[tuple[str, str], int],
+) -> list[tuple]:
+    """Generate the ``sales`` fact table (with FK surrogate keys)."""
     rows: list[tuple] = []
     for idx, d, month_str in _iter_months():
         season = _seasonality(d.month)
@@ -137,6 +208,7 @@ def _build_sales_rows() -> list[tuple]:
             ow = _OPCO_WEIGHT[opco]
             for region in REGIONS:
                 rw = _REGION_WEIGHT[region]
+                region_id = region_ids[region]
                 for channel in CHANNELS:
                     cw = _CHANNEL_WEIGHT[channel]
                     for supplier in SUPPLIERS:
@@ -159,9 +231,15 @@ def _build_sales_rows() -> list[tuple]:
                             brand = _pick(SUPPLIER_BRANDS[supplier], supplier, pg, region)
                             customer = _pick(CUSTOMERS, month_str, opco, region, channel, pg)
 
+                            product_id = product_ids[(pg, supplier, brand)]
+                            customer_id = customer_ids[(customer, channel)]
+
                             rows.append((
-                                d, month_str, d.year,
-                                opco, region, channel, supplier, brand, category, pg, customer,
+                                d, month_str, d.year, opco,
+                                region_id, product_id, customer_id,
+                                # Denormalised columns (back-compat with the
+                                # legacy demo seeders that query sales directly).
+                                region, channel, supplier, brand, category, pg, customer,
                                 nsv, volume, units,
                             ))
     return rows
@@ -171,7 +249,7 @@ def _build_budget_rows(sales_rows: list[tuple]) -> list[tuple]:
     """Per (month, region) budget ≈ 95–108% of realised NSV (over/under mix)."""
     actual: dict[tuple[str, str], float] = {}
     for r in sales_rows:
-        month_str, region, nsv = r[1], r[4], r[11]
+        month_str, region, nsv = r[1], r[7], r[14]
         actual[(month_str, region)] = actual.get((month_str, region), 0.0) + nsv
     return [
         (month_str, region, round(total * (0.95 + 0.13 * _noise("budget", month_str, region)), 2))
@@ -183,7 +261,7 @@ def _build_target_rows(sales_rows: list[tuple]) -> list[tuple]:
     """Per (month, opco) target ≈ 92–110% of realised NSV."""
     actual: dict[tuple[str, str], float] = {}
     for r in sales_rows:
-        month_str, opco, nsv = r[1], r[3], r[11]
+        month_str, opco, nsv = r[1], r[3], r[14]
         actual[(month_str, opco)] = actual.get((month_str, opco), 0.0) + nsv
     return [
         (month_str, opco, round(total * (0.92 + 0.18 * _noise("target", month_str, opco)), 2))
@@ -191,20 +269,86 @@ def _build_target_rows(sales_rows: list[tuple]) -> list[tuple]:
     ]
 
 
+# Column order for the ``sales`` fact table (matches ``_build_sales_rows``).
+_SALES_COLS = [
+    "invoice_date", "month", "year", "opco",
+    "region_id", "product_id", "customer_id",
+    "region", "channel", "supplier", "brand", "category", "product_group", "customer",
+    "nsv", "volume", "units",
+]
+
+
+def _bulk_insert(con: "duckdb.DuckDBPyConnection", table: str, cols: list[str], rows: list[tuple]) -> None:
+    """Bulk-load *rows* into *table* via a registered Arrow table (fast path).
+
+    Transposes the row tuples into columns, builds a ``pyarrow.Table``, registers
+    it, and runs a single ``INSERT INTO … SELECT`` — far faster than a row-by-row
+    ``executemany`` for the large fact table.
+    """
+    import pyarrow as pa
+
+    columns = {name: [row[i] for row in rows] for i, name in enumerate(cols)}
+    arrow_tbl = pa.table(columns)
+    con.register("_bulk_arrow", arrow_tbl)
+    try:
+        col_list = ", ".join(cols)
+        con.execute(f"INSERT INTO {table} ({col_list}) SELECT {col_list} FROM _bulk_arrow")
+    finally:
+        con.unregister("_bulk_arrow")
+
+
 def build_duckdb_file(db_path: str | None = None) -> str:
-    """Build (or rebuild) the DuckDB file at *db_path*. Idempotent."""
-    path = os.path.abspath(db_path or DEFAULT_DB_PATH)
+    """Build (or rebuild) the bundled sample DuckDB file at *db_path*.
+
+    Idempotent: drops and recreates every table on each call so the output is
+    byte-stable for a given code version.  Returns the absolute path written.
+    """
+    path = os.path.abspath(db_path or SAMPLE_DB_PATH)
     os.makedirs(os.path.dirname(path), exist_ok=True)
 
-    sales_rows = _build_sales_rows()
+    region_rows, region_ids = _build_region_dim()
+    product_rows, product_ids = _build_product_dim()
+    customer_rows, customer_ids = _build_customer_dim()
+
+    sales_rows = _build_sales_rows(region_ids, product_ids, customer_ids)
     budget_rows = _build_budget_rows(sales_rows)
     target_rows = _build_target_rows(sales_rows)
 
     con = duckdb.connect(database=path)
     try:
-        con.execute("DROP TABLE IF EXISTS sales")
-        con.execute("DROP TABLE IF EXISTS budget")
-        con.execute("DROP TABLE IF EXISTS targets")
+        for tbl in ("sales", "dim_regions", "dim_products", "dim_customers", "budget", "targets"):
+            con.execute(f"DROP TABLE IF EXISTS {tbl}")
+
+        con.execute(
+            """
+            CREATE TABLE dim_regions (
+                region_id INTEGER PRIMARY KEY,
+                region    VARCHAR,
+                country   VARCHAR
+            )
+            """
+        )
+        con.execute(
+            """
+            CREATE TABLE dim_products (
+                product_id    INTEGER PRIMARY KEY,
+                product_group VARCHAR,
+                category      VARCHAR,
+                supplier      VARCHAR,
+                brand         VARCHAR,
+                unit_price    DOUBLE
+            )
+            """
+        )
+        con.execute(
+            """
+            CREATE TABLE dim_customers (
+                customer_id INTEGER PRIMARY KEY,
+                customer    VARCHAR,
+                channel     VARCHAR
+            )
+            """
+        )
         con.execute(
             """
             CREATE TABLE sales (
@@ -212,6 +356,9 @@ def build_duckdb_file(db_path: str | None = None) -> str:
                 month         VARCHAR,
                 year          INTEGER,
                 opco          VARCHAR,
+                region_id     INTEGER REFERENCES dim_regions(region_id),
+                product_id    INTEGER REFERENCES dim_products(product_id),
+                customer_id   INTEGER REFERENCES dim_customers(customer_id),
                 region        VARCHAR,
                 channel       VARCHAR,
                 supplier      VARCHAR,
@@ -227,9 +374,17 @@ def build_duckdb_file(db_path: str | None = None) -> str:
         )
         con.execute("CREATE TABLE budget (month VARCHAR, region VARCHAR, budget_nsv DOUBLE)")
         con.execute("CREATE TABLE targets (month VARCHAR, opco VARCHAR, target_nsv DOUBLE)")
-        con.executemany(
-            "INSERT INTO sales VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", sales_rows
-        )
+
+        # Dimensions are tiny — row-by-row inserts are fine and let DuckDB
+        # validate the PRIMARY KEYs before the fact rows reference them.
+        con.executemany("INSERT INTO dim_regions VALUES (?, ?, ?)", region_rows)
+        con.executemany("INSERT INTO dim_products VALUES (?, ?, ?, ?, ?, ?)", product_rows)
+        con.executemany("INSERT INTO dim_customers VALUES (?, ?, ?)", customer_rows)
+
+        # Fact table is large (~86k rows) — a row-by-row executemany with FK
+        # validation is painfully slow.  Bulk-load via a registered Arrow table
+        # and a single INSERT … SELECT instead (orders of magnitude faster).
+        _bulk_insert(con, "sales", _SALES_COLS, sales_rows)
         con.executemany("INSERT INTO budget VALUES (?, ?, ?)", budget_rows)
         con.executemany("INSERT INTO targets VALUES (?, ?, ?)", target_rows)
         con.commit()
@@ -243,19 +398,31 @@ if __name__ == "__main__":
     p = build_duckdb_file()
     con = duckdb.connect(database=p, read_only=True)
     try:
-        n_sales = con.execute("SELECT COUNT(*) FROM sales").fetchone()[0]
-        n_budget = con.execute("SELECT COUNT(*) FROM budget").fetchone()[0]
-        n_targets = con.execute("SELECT COUNT(*) FROM targets").fetchone()[0]
+        tables = [r[0] for r in con.execute("SHOW TABLES").fetchall()]
+        counts = {t: con.execute(f"SELECT COUNT(*) FROM {t}").fetchone()[0] for t in tables}
         months = con.execute("SELECT MIN(month), MAX(month) FROM sales").fetchone()
-        dims = con.execute(
-            "SELECT COUNT(DISTINCT opco), COUNT(DISTINCT supplier), COUNT(DISTINCT brand), "
-            "COUNT(DISTINCT category), COUNT(DISTINCT customer) FROM sales"
+        # Verify the star-schema join actually resolves on every fact row.
+        join_check = con.execute(
+            """
+            SELECT COUNT(*) AS joined_rows, ROUND(SUM(s.nsv), 2) AS total_nsv
+            FROM sales s
+            JOIN dim_regions   r ON s.region_id   = r.region_id
+            JOIN dim_products  p ON s.product_id  = p.product_id
+            JOIN dim_customers c ON s.customer_id = c.customer_id
+            """
+        ).fetchone()
+        top_supplier = con.execute(
+            """
+            SELECT p.supplier, ROUND(SUM(s.nsv), 2) AS nsv
+            FROM sales s JOIN dim_products p ON s.product_id = p.product_id
+            GROUP BY p.supplier ORDER BY nsv DESC LIMIT 1
+            """
         ).fetchone()
     finally:
         con.close()
     print(f"Built {p}")
-    print(f"  sales rows : {n_sales}")
-    print(f"  budget rows: {n_budget}")
-    print(f"  target rows: {n_targets}")
-    print(f"  month range: {months[0]} .. {months[1]}")
-    print(f"  distinct opco/supplier/brand/category/customer: {dims}")
+    for t in tables:
+        print(f"  {t:<14} {counts[t]:>8} rows")
+    print(f"  month range  : {months[0]} .. {months[1]}")
+    print(f"  star join    : {join_check[0]} fact rows joined, total NSV {join_check[1]}")
+    print(f"  top supplier : {top_supplier[0]} (NSV {top_supplier[1]})")

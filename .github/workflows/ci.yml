@@ -71,13 +71,9 @@ jobs:
         run: python database/migrate.py
 
       - name: Seed demo data
-        # Guard: seed_demo.py is optional — missing file is not a hard failure.
-        run: |
-          if [ -f backend/seed_demo.py ]; then
-            cd backend && python seed_demo.py
-          else
-            echo "seed_demo.py not found — skipping seed step"
-          fi
+        # seed.py provisions the superuser; --demo also seeds the demo workspace
+        # (DuckDB datasource + queries + 10 dashboards from seed_data/demo/*.json).
+        run: cd backend && python seed.py --demo
 
       - name: Test (PG integration + security)
         run: |

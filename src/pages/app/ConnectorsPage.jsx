@@ -22,6 +22,7 @@
  */
 
 import { useEffect, useState, useCallback, useRef } from 'react'
+import { Link } from 'react-router-dom'
 import {
   Plus,
   Plug,
@@ -36,6 +37,7 @@ import {
   ShieldCheck,
   AlertTriangle,
   RefreshCw,
+  Table2,
 } from 'lucide-react'
 import * as api from '../../lib/api.js'
 import { useProject } from '../../contexts/ProjectContext.jsx'
@@ -183,6 +185,20 @@ function ConnectorCard({ connector, testResult, testingId, onEdit, onDelete, onT
 
       {/* Actions */}
       <div className="flex items-center gap-2 shrink-0 flex-wrap sm:flex-nowrap">
+        <Link
+          to={`/connectors/${connector.id}/data`}
+          title="View data"
+          className="
+            inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg
+            text-xs font-medium border border-border
+            text-muted hover:text-fg hover:bg-surface-2
+            transition-colors focus:outline-none focus:ring-2 focus:ring-ring
+          "
+        >
+          <Table2 size={12} strokeWidth={2.2} />
+          View data
+        </Link>
+
         <button
           onClick={() => onTest(connector.id)}
           disabled={isTesting}

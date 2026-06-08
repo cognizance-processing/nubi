@@ -1,0 +1,1469 @@
+[
+  {
+    "seed_id": "demo:board:sales_overview",
+    "name": "Sales Overview",
+    "starter": true,
+    "spec": {
+      "version": 1,
+      "title": "Sales Overview",
+      "layout": {
+        "cols": 12,
+        "row_height": 60
+      },
+      "variables": [],
+      "widgets": [
+        {
+          "id": "s1",
+          "type": "section",
+          "query_id": "",
+          "encoding": {},
+          "props": {
+            "title": "Key metrics"
+          },
+          "pos": {
+            "x": 1,
+            "y": 1,
+            "w": 12,
+            "h": 1
+          }
+        },
+        {
+          "id": "k_nsv",
+          "type": "kpi",
+          "query_id": "@kpis",
+          "encoding": {
+            "value": "total_nsv"
+          },
+          "props": {
+            "label": "Total NSV",
+            "format": "currency"
+          },
+          "pos": {
+            "x": 1,
+            "y": 2,
+            "w": 3,
+            "h": 2
+          }
+        },
+        {
+          "id": "k_units",
+          "type": "kpi",
+          "query_id": "@kpis",
+          "encoding": {
+            "value": "total_units"
+          },
+          "props": {
+            "label": "Total Units",
+            "format": "number"
+          },
+          "pos": {
+            "x": 4,
+            "y": 2,
+            "w": 3,
+            "h": 2
+          }
+        },
+        {
+          "id": "k_vol",
+          "type": "kpi",
+          "query_id": "@kpis",
+          "encoding": {
+            "value": "total_volume"
+          },
+          "props": {
+            "label": "Total Volume",
+            "format": "number"
+          },
+          "pos": {
+            "x": 7,
+            "y": 2,
+            "w": 3,
+            "h": 2
+          }
+        },
+        {
+          "id": "k_avg",
+          "type": "kpi",
+          "query_id": "@kpis",
+          "encoding": {
+            "value": "avg_nsv"
+          },
+          "props": {
+            "label": "Avg NSV / line",
+            "format": "currency"
+          },
+          "pos": {
+            "x": 10,
+            "y": 2,
+            "w": 3,
+            "h": 2
+          }
+        },
+        {
+          "id": "s2",
+          "type": "section",
+          "query_id": "",
+          "encoding": {},
+          "props": {
+            "title": "Trend & breakdown"
+          },
+          "pos": {
+            "x": 1,
+            "y": 4,
+            "w": 12,
+            "h": 1
+          }
+        },
+        {
+          "id": "c_trend",
+          "type": "chart",
+          "query_id": "@trend",
+          "chart_type": "line",
+          "encoding": {
+            "x": "month",
+            "y": "nsv"
+          },
+          "props": {
+            "title": "Monthly NSV"
+          },
+          "pos": {
+            "x": 1,
+            "y": 5,
+            "w": 8,
+            "h": 5
+          }
+        },
+        {
+          "id": "c_region",
+          "type": "chart",
+          "query_id": "@region",
+          "chart_type": "bar",
+          "encoding": {
+            "x": "region",
+            "y": "nsv"
+          },
+          "props": {
+            "title": "NSV by region"
+          },
+          "pos": {
+            "x": 9,
+            "y": 5,
+            "w": 4,
+            "h": 5
+          }
+        },
+        {
+          "id": "t_pg",
+          "type": "table",
+          "query_id": "@pgroup",
+          "encoding": {},
+          "props": {
+            "title": "Product groups",
+            "limit": 50,
+            "columns": [
+              "product_group",
+              "nsv",
+              "units"
+            ]
+          },
+          "pos": {
+            "x": 1,
+            "y": 10,
+            "w": 12,
+            "h": 5
+          },
+          "columnFormats": {
+            "nsv": {
+              "type": "currency",
+              "currency": "USD",
+              "decimals": 0
+            },
+            "units": {
+              "type": "number",
+              "decimals": 0
+            }
+          }
+        }
+      ]
+    }
+  },
+  {
+    "seed_id": "demo:board:geography",
+    "name": "Regional Performance",
+    "starter": false,
+    "spec": {
+      "version": 1,
+      "title": "Regional Performance",
+      "layout": {
+        "cols": 12,
+        "row_height": 60
+      },
+      "variables": [
+        {
+          "name": "region",
+          "type": "select",
+          "default": "Gauteng"
+        }
+      ],
+      "widgets": [
+        {
+          "id": "f_region",
+          "type": "filter",
+          "query_id": "",
+          "subtype": "select",
+          "target_var": "region",
+          "options_query_id": "@region_opt",
+          "encoding": {},
+          "props": {
+            "label": "Region"
+          },
+          "pos": {
+            "x": 1,
+            "y": 1,
+            "w": 3,
+            "h": 2
+          },
+          "drawer": true,
+          "drawer_group": "filters"
+        },
+        {
+          "id": "s1",
+          "type": "section",
+          "query_id": "",
+          "encoding": {},
+          "props": {
+            "title": "Where sales happen"
+          },
+          "pos": {
+            "x": 1,
+            "y": 1,
+            "w": 12,
+            "h": 1
+          }
+        },
+        {
+          "id": "c_region",
+          "type": "chart",
+          "query_id": "@region",
+          "chart_type": "bar",
+          "encoding": {
+            "x": "region",
+            "y": "nsv"
+          },
+          "props": {
+            "title": "NSV by region"
+          },
+          "pos": {
+            "x": 1,
+            "y": 2,
+            "w": 6,
+            "h": 5
+          }
+        },
+        {
+          "id": "c_heat",
+          "type": "chart",
+          "query_id": "@heatmap",
+          "chart_type": "heatmap",
+          "encoding": {
+            "x": "month",
+            "y": "region",
+            "value": "nsv"
+          },
+          "props": {
+            "title": "NSV \u2014 region \u00d7 month"
+          },
+          "pos": {
+            "x": 7,
+            "y": 2,
+            "w": 6,
+            "h": 5
+          }
+        },
+        {
+          "id": "s2",
+          "type": "section",
+          "query_id": "",
+          "encoding": {},
+          "props": {
+            "title": "Selected region drilldown"
+          },
+          "pos": {
+            "x": 1,
+            "y": 7,
+            "w": 12,
+            "h": 1
+          }
+        },
+        {
+          "id": "c_drill",
+          "type": "chart",
+          "query_id": "@drill",
+          "chart_type": "bar",
+          "encoding": {
+            "x": "month",
+            "y": "nsv",
+            "color": "product_group"
+          },
+          "props": {
+            "title": "Monthly NSV by product group"
+          },
+          "pos": {
+            "x": 1,
+            "y": 8,
+            "w": 7,
+            "h": 5
+          },
+          "params": {
+            "region": {
+              "ref": "region"
+            }
+          }
+        },
+        {
+          "id": "t_prod",
+          "type": "table",
+          "query_id": "@prod_for_region",
+          "encoding": {},
+          "props": {
+            "title": "Products in region",
+            "limit": 50,
+            "columns": [
+              "product_group",
+              "nsv",
+              "units"
+            ]
+          },
+          "pos": {
+            "x": 8,
+            "y": 8,
+            "w": 5,
+            "h": 5
+          },
+          "params": {
+            "region": {
+              "ref": "region"
+            }
+          },
+          "columnFormats": {
+            "nsv": {
+              "type": "currency",
+              "currency": "USD",
+              "decimals": 0
+            },
+            "units": {
+              "type": "number",
+              "decimals": 0
+            }
+          }
+        }
+      ]
+    }
+  },
+  {
+    "seed_id": "demo:board:product_mix",
+    "name": "Product & Brand Mix",
+    "starter": false,
+    "spec": {
+      "version": 1,
+      "title": "Product & Brand Mix",
+      "layout": {
+        "cols": 12,
+        "row_height": 60
+      },
+      "variables": [],
+      "widgets": [
+        {
+          "id": "s1",
+          "type": "section",
+          "query_id": "",
+          "encoding": {},
+          "props": {
+            "title": "Category & brand performance"
+          },
+          "pos": {
+            "x": 1,
+            "y": 1,
+            "w": 12,
+            "h": 1
+          }
+        },
+        {
+          "id": "c_cat",
+          "type": "chart",
+          "query_id": "@category",
+          "chart_type": "bar",
+          "encoding": {
+            "x": "category",
+            "y": "nsv"
+          },
+          "props": {
+            "title": "NSV by category"
+          },
+          "pos": {
+            "x": 1,
+            "y": 2,
+            "w": 6,
+            "h": 5
+          }
+        },
+        {
+          "id": "c_brand",
+          "type": "chart",
+          "query_id": "@brand",
+          "chart_type": "hbar",
+          "encoding": {
+            "x": "nsv",
+            "y": "brand"
+          },
+          "props": {
+            "title": "Top brands by NSV"
+          },
+          "pos": {
+            "x": 7,
+            "y": 2,
+            "w": 6,
+            "h": 5
+          }
+        },
+        {
+          "id": "c_sup",
+          "type": "chart",
+          "query_id": "@supplier",
+          "chart_type": "donut",
+          "encoding": {
+            "x": "supplier",
+            "y": "nsv"
+          },
+          "props": {
+            "title": "Supplier share"
+          },
+          "pos": {
+            "x": 1,
+            "y": 7,
+            "w": 5,
+            "h": 5
+          }
+        },
+        {
+          "id": "t_pg",
+          "type": "table",
+          "query_id": "@pgroup",
+          "encoding": {},
+          "props": {
+            "title": "Product groups",
+            "limit": 50,
+            "columns": [
+              "product_group",
+              "nsv",
+              "units"
+            ]
+          },
+          "pos": {
+            "x": 6,
+            "y": 7,
+            "w": 7,
+            "h": 5
+          },
+          "columnFormats": {
+            "nsv": {
+              "type": "currency",
+              "currency": "USD",
+              "decimals": 0
+            },
+            "units": {
+              "type": "number",
+              "decimals": 0
+            }
+          }
+        }
+      ]
+    }
+  },
+  {
+    "seed_id": "demo:board:channel",
+    "name": "Channel Analysis",
+    "starter": false,
+    "spec": {
+      "version": 1,
+      "title": "Channel Analysis",
+      "layout": {
+        "cols": 12,
+        "row_height": 60
+      },
+      "variables": [
+        {
+          "name": "channel",
+          "type": "select",
+          "default": null
+        }
+      ],
+      "widgets": [
+        {
+          "id": "f_channel",
+          "type": "filter",
+          "query_id": "",
+          "subtype": "select",
+          "target_var": "channel",
+          "options_query_id": "@channel_opt",
+          "encoding": {},
+          "props": {
+            "label": "Channel"
+          },
+          "pos": {
+            "x": 1,
+            "y": 1,
+            "w": 3,
+            "h": 2
+          },
+          "drawer": true,
+          "drawer_group": "filters"
+        },
+        {
+          "id": "s1",
+          "type": "section",
+          "query_id": "",
+          "encoding": {},
+          "props": {
+            "title": "Sales by channel"
+          },
+          "pos": {
+            "x": 1,
+            "y": 1,
+            "w": 12,
+            "h": 1
+          }
+        },
+        {
+          "id": "c_donut",
+          "type": "chart",
+          "query_id": "@channel",
+          "chart_type": "donut",
+          "encoding": {
+            "x": "channel",
+            "y": "nsv"
+          },
+          "props": {
+            "title": "Channel share"
+          },
+          "pos": {
+            "x": 1,
+            "y": 2,
+            "w": 5,
+            "h": 5
+          }
+        },
+        {
+          "id": "c_trend",
+          "type": "chart",
+          "query_id": "@filt_month",
+          "chart_type": "line",
+          "encoding": {
+            "x": "month",
+            "y": "nsv"
+          },
+          "props": {
+            "title": "Monthly NSV (filtered)"
+          },
+          "pos": {
+            "x": 6,
+            "y": 2,
+            "w": 7,
+            "h": 5
+          },
+          "params": {
+            "channel": {
+              "ref": "channel"
+            }
+          }
+        },
+        {
+          "id": "t_mix",
+          "type": "table",
+          "query_id": "@filt_table",
+          "encoding": {},
+          "props": {
+            "title": "Channel \u00d7 region \u00d7 category",
+            "limit": 50,
+            "columns": [
+              "region",
+              "channel",
+              "category",
+              "nsv",
+              "units"
+            ]
+          },
+          "pos": {
+            "x": 1,
+            "y": 7,
+            "w": 12,
+            "h": 5
+          },
+          "params": {
+            "channel": {
+              "ref": "channel"
+            }
+          },
+          "columnFormats": {
+            "nsv": {
+              "type": "currency",
+              "currency": "USD",
+              "decimals": 0
+            },
+            "units": {
+              "type": "number",
+              "decimals": 0
+            }
+          }
+        }
+      ]
+    }
+  },
+  {
+    "seed_id": "demo:board:supplier",
+    "name": "Supplier Scorecard",
+    "starter": false,
+    "spec": {
+      "version": 1,
+      "title": "Supplier Scorecard",
+      "layout": {
+        "cols": 12,
+        "row_height": 60
+      },
+      "variables": [],
+      "widgets": [
+        {
+          "id": "s1",
+          "type": "section",
+          "query_id": "",
+          "encoding": {},
+          "props": {
+            "title": "Supplier performance"
+          },
+          "pos": {
+            "x": 1,
+            "y": 1,
+            "w": 12,
+            "h": 1
+          }
+        },
+        {
+          "id": "c_sup",
+          "type": "chart",
+          "query_id": "@supplier",
+          "chart_type": "hbar",
+          "encoding": {
+            "x": "nsv",
+            "y": "supplier"
+          },
+          "props": {
+            "title": "NSV by supplier"
+          },
+          "pos": {
+            "x": 1,
+            "y": 2,
+            "w": 6,
+            "h": 5
+          }
+        },
+        {
+          "id": "c_brand",
+          "type": "chart",
+          "query_id": "@brand",
+          "chart_type": "bar",
+          "encoding": {
+            "x": "brand",
+            "y": "nsv"
+          },
+          "props": {
+            "title": "Top brands"
+          },
+          "pos": {
+            "x": 7,
+            "y": 2,
+            "w": 6,
+            "h": 5
+          }
+        },
+        {
+          "id": "t_sup",
+          "type": "table",
+          "query_id": "@supplier",
+          "encoding": {},
+          "props": {
+            "title": "Supplier detail",
+            "limit": 50,
+            "columns": [
+              "supplier",
+              "nsv",
+              "units",
+              "volume"
+            ]
+          },
+          "pos": {
+            "x": 1,
+            "y": 7,
+            "w": 12,
+            "h": 5
+          },
+          "columnFormats": {
+            "nsv": {
+              "type": "currency",
+              "currency": "USD",
+              "decimals": 0
+            },
+            "units": {
+              "type": "number",
+              "decimals": 0
+            },
+            "volume": {
+              "type": "number",
+              "decimals": 0
+            }
+          }
+        }
+      ]
+    }
+  },
+  {
+    "seed_id": "demo:board:budget",
+    "name": "Budget vs Actual",
+    "starter": false,
+    "spec": {
+      "version": 1,
+      "title": "Budget vs Actual",
+      "layout": {
+        "cols": 12,
+        "row_height": 60
+      },
+      "variables": [],
+      "widgets": [
+        {
+          "id": "s1",
+          "type": "section",
+          "query_id": "",
+          "encoding": {},
+          "props": {
+            "title": "Plan attainment"
+          },
+          "pos": {
+            "x": 1,
+            "y": 1,
+            "w": 12,
+            "h": 1
+          }
+        },
+        {
+          "id": "c_avb",
+          "type": "chart",
+          "query_id": "@avb",
+          "chart_type": "bar",
+          "encoding": {
+            "x": "month",
+            "y": "actual"
+          },
+          "props": {
+            "title": "Actual NSV by month"
+          },
+          "pos": {
+            "x": 1,
+            "y": 2,
+            "w": 7,
+            "h": 5
+          }
+        },
+        {
+          "id": "t_avb",
+          "type": "table",
+          "query_id": "@avb",
+          "encoding": {},
+          "props": {
+            "title": "Actual vs budget (monthly)",
+            "limit": 50,
+            "columns": [
+              "month",
+              "actual",
+              "budget"
+            ]
+          },
+          "pos": {
+            "x": 8,
+            "y": 2,
+            "w": 5,
+            "h": 5
+          },
+          "columnFormats": {
+            "actual": {
+              "type": "currency",
+              "currency": "USD",
+              "decimals": 0
+            },
+            "budget": {
+              "type": "currency",
+              "currency": "USD",
+              "decimals": 0
+            }
+          }
+        },
+        {
+          "id": "s2",
+          "type": "section",
+          "query_id": "",
+          "encoding": {},
+          "props": {
+            "title": "Variance by region"
+          },
+          "pos": {
+            "x": 1,
+            "y": 7,
+            "w": 12,
+            "h": 1
+          }
+        },
+        {
+          "id": "t_var",
+          "type": "table",
+          "query_id": "@variance",
+          "encoding": {},
+          "props": {
+            "title": "Budget variance by region",
+            "limit": 50,
+            "columns": [
+              "region",
+              "actual",
+              "budget",
+              "variance",
+              "variance_pct"
+            ]
+          },
+          "pos": {
+            "x": 1,
+            "y": 8,
+            "w": 12,
+            "h": 5
+          },
+          "columnFormats": {
+            "actual": {
+              "type": "currency",
+              "currency": "USD",
+              "decimals": 0
+            },
+            "budget": {
+              "type": "currency",
+              "currency": "USD",
+              "decimals": 0
+            },
+            "variance": {
+              "type": "currency",
+              "currency": "USD",
+              "decimals": 0
+            },
+            "variance_pct": {
+              "type": "percent",
+              "decimals": 1
+            }
+          }
+        }
+      ]
+    }
+  },
+  {
+    "seed_id": "demo:board:opco",
+    "name": "OpCo Performance",
+    "starter": false,
+    "spec": {
+      "version": 1,
+      "title": "OpCo Performance",
+      "layout": {
+        "cols": 12,
+        "row_height": 60
+      },
+      "variables": [],
+      "widgets": [
+        {
+          "id": "s1",
+          "type": "section",
+          "query_id": "",
+          "encoding": {},
+          "props": {
+            "title": "Operating companies"
+          },
+          "pos": {
+            "x": 1,
+            "y": 1,
+            "w": 12,
+            "h": 1
+          }
+        },
+        {
+          "id": "c_opco",
+          "type": "chart",
+          "query_id": "@opco",
+          "chart_type": "bar",
+          "encoding": {
+            "x": "opco",
+            "y": "nsv"
+          },
+          "props": {
+            "title": "NSV by OpCo"
+          },
+          "pos": {
+            "x": 1,
+            "y": 2,
+            "w": 6,
+            "h": 5
+          }
+        },
+        {
+          "id": "c_trend",
+          "type": "chart",
+          "query_id": "@trend",
+          "chart_type": "line",
+          "encoding": {
+            "x": "month",
+            "y": "nsv"
+          },
+          "props": {
+            "title": "Monthly NSV"
+          },
+          "pos": {
+            "x": 7,
+            "y": 2,
+            "w": 6,
+            "h": 5
+          }
+        },
+        {
+          "id": "t_opco",
+          "type": "table",
+          "query_id": "@opco",
+          "encoding": {},
+          "props": {
+            "title": "OpCo detail",
+            "limit": 50,
+            "columns": [
+              "opco",
+              "nsv"
+            ]
+          },
+          "pos": {
+            "x": 1,
+            "y": 7,
+            "w": 12,
+            "h": 4
+          },
+          "columnFormats": {
+            "nsv": {
+              "type": "currency",
+              "currency": "USD",
+              "decimals": 0
+            }
+          }
+        }
+      ]
+    }
+  },
+  {
+    "seed_id": "demo:board:trends",
+    "name": "Trend Analysis",
+    "starter": false,
+    "spec": {
+      "version": 1,
+      "title": "Trend Analysis",
+      "layout": {
+        "cols": 12,
+        "row_height": 60
+      },
+      "variables": [],
+      "widgets": [
+        {
+          "id": "s1",
+          "type": "section",
+          "query_id": "",
+          "encoding": {},
+          "props": {
+            "title": "Metrics over time"
+          },
+          "pos": {
+            "x": 1,
+            "y": 1,
+            "w": 12,
+            "h": 1
+          }
+        },
+        {
+          "id": "c_nsv",
+          "type": "chart",
+          "query_id": "@trend",
+          "chart_type": "line",
+          "encoding": {
+            "x": "month",
+            "y": "nsv"
+          },
+          "props": {
+            "title": "NSV"
+          },
+          "pos": {
+            "x": 1,
+            "y": 2,
+            "w": 6,
+            "h": 5
+          }
+        },
+        {
+          "id": "c_units",
+          "type": "chart",
+          "query_id": "@trend",
+          "chart_type": "line",
+          "encoding": {
+            "x": "month",
+            "y": "units"
+          },
+          "props": {
+            "title": "Units"
+          },
+          "pos": {
+            "x": 7,
+            "y": 2,
+            "w": 6,
+            "h": 5
+          }
+        },
+        {
+          "id": "c_vol",
+          "type": "chart",
+          "query_id": "@trend",
+          "chart_type": "area",
+          "encoding": {
+            "x": "month",
+            "y": "volume"
+          },
+          "props": {
+            "title": "Volume"
+          },
+          "pos": {
+            "x": 1,
+            "y": 7,
+            "w": 6,
+            "h": 5
+          }
+        },
+        {
+          "id": "s2",
+          "type": "section",
+          "query_id": "",
+          "encoding": {},
+          "props": {
+            "title": "Year on year"
+          },
+          "pos": {
+            "x": 7,
+            "y": 7,
+            "w": 6,
+            "h": 1
+          }
+        },
+        {
+          "id": "t_cyly",
+          "type": "table",
+          "query_id": "@cyly",
+          "encoding": {},
+          "props": {
+            "title": "CY vs LY by product group",
+            "limit": 50,
+            "columns": [
+              "product_group",
+              "cy",
+              "ly",
+              "delta"
+            ]
+          },
+          "pos": {
+            "x": 7,
+            "y": 8,
+            "w": 6,
+            "h": 4
+          },
+          "columnFormats": {
+            "cy": {
+              "type": "currency",
+              "currency": "USD",
+              "decimals": 0
+            },
+            "ly": {
+              "type": "currency",
+              "currency": "USD",
+              "decimals": 0
+            },
+            "delta": {
+              "type": "currency",
+              "currency": "USD",
+              "decimals": 0
+            }
+          }
+        }
+      ]
+    }
+  },
+  {
+    "seed_id": "demo:board:customers",
+    "name": "Customer Insights",
+    "starter": true,
+    "spec": {
+      "version": 1,
+      "title": "Customer Insights",
+      "layout": {
+        "cols": 12,
+        "row_height": 60
+      },
+      "variables": [],
+      "widgets": [
+        {
+          "id": "s1",
+          "type": "section",
+          "query_id": "",
+          "encoding": {},
+          "props": {
+            "title": "Top customers"
+          },
+          "pos": {
+            "x": 1,
+            "y": 1,
+            "w": 12,
+            "h": 1
+          }
+        },
+        {
+          "id": "c_cust",
+          "type": "chart",
+          "query_id": "@customers",
+          "chart_type": "hbar",
+          "encoding": {
+            "x": "nsv",
+            "y": "customer"
+          },
+          "props": {
+            "title": "Top customers by NSV"
+          },
+          "pos": {
+            "x": 1,
+            "y": 2,
+            "w": 6,
+            "h": 5
+          }
+        },
+        {
+          "id": "c_channel",
+          "type": "chart",
+          "query_id": "@channel",
+          "chart_type": "donut",
+          "encoding": {
+            "x": "channel",
+            "y": "nsv"
+          },
+          "props": {
+            "title": "Channel share"
+          },
+          "pos": {
+            "x": 7,
+            "y": 2,
+            "w": 6,
+            "h": 5
+          }
+        },
+        {
+          "id": "t_cust",
+          "type": "table",
+          "query_id": "@customers",
+          "encoding": {},
+          "props": {
+            "title": "Customer detail",
+            "limit": 50,
+            "columns": [
+              "customer",
+              "nsv"
+            ]
+          },
+          "pos": {
+            "x": 1,
+            "y": 7,
+            "w": 12,
+            "h": 4
+          },
+          "columnFormats": {
+            "nsv": {
+              "type": "currency",
+              "currency": "USD",
+              "decimals": 0
+            }
+          }
+        }
+      ]
+    }
+  },
+  {
+    "seed_id": "demo:board:executive",
+    "name": "Executive Summary",
+    "starter": false,
+    "spec": {
+      "version": 1,
+      "title": "Executive Summary",
+      "layout": {
+        "cols": 12,
+        "row_height": 60,
+        "background": {
+          "type": "gradient",
+          "from": "#0f172a",
+          "to": "#1e3a5f",
+          "angle": 135
+        }
+      },
+      "variables": [],
+      "widgets": [
+        {
+          "id": "s1",
+          "type": "section",
+          "query_id": "",
+          "encoding": {},
+          "props": {
+            "title": "Company performance"
+          },
+          "pos": {
+            "x": 1,
+            "y": 1,
+            "w": 12,
+            "h": 1
+          }
+        },
+        {
+          "id": "k_nsv",
+          "type": "kpi",
+          "query_id": "@kpis",
+          "encoding": {
+            "value": "total_nsv"
+          },
+          "props": {
+            "label": "Total NSV",
+            "format": "currency"
+          },
+          "pos": {
+            "x": 1,
+            "y": 2,
+            "w": 3,
+            "h": 2
+          }
+        },
+        {
+          "id": "k_units",
+          "type": "kpi",
+          "query_id": "@kpis",
+          "encoding": {
+            "value": "total_units"
+          },
+          "props": {
+            "label": "Total Units",
+            "format": "number"
+          },
+          "pos": {
+            "x": 4,
+            "y": 2,
+            "w": 3,
+            "h": 2
+          }
+        },
+        {
+          "id": "k_vol",
+          "type": "kpi",
+          "query_id": "@kpis",
+          "encoding": {
+            "value": "total_volume"
+          },
+          "props": {
+            "label": "Total Volume",
+            "format": "number"
+          },
+          "pos": {
+            "x": 7,
+            "y": 2,
+            "w": 3,
+            "h": 2
+          }
+        },
+        {
+          "id": "k_avg",
+          "type": "kpi",
+          "query_id": "@kpis",
+          "encoding": {
+            "value": "avg_nsv"
+          },
+          "props": {
+            "label": "Avg NSV / line",
+            "format": "currency"
+          },
+          "pos": {
+            "x": 10,
+            "y": 2,
+            "w": 3,
+            "h": 2
+          }
+        },
+        {
+          "id": "c_trend",
+          "type": "chart",
+          "query_id": "@trend",
+          "chart_type": "line",
+          "encoding": {
+            "x": "month",
+            "y": "nsv"
+          },
+          "props": {
+            "title": "Monthly NSV"
+          },
+          "pos": {
+            "x": 1,
+            "y": 4,
+            "w": 8,
+            "h": 5
+          }
+        },
+        {
+          "id": "c_region",
+          "type": "chart",
+          "query_id": "@region",
+          "chart_type": "bar",
+          "encoding": {
+            "x": "region",
+            "y": "nsv"
+          },
+          "props": {
+            "title": "By region"
+          },
+          "pos": {
+            "x": 9,
+            "y": 4,
+            "w": 4,
+            "h": 5
+          }
+        },
+        {
+          "id": "s2",
+          "type": "section",
+          "query_id": "",
+          "encoding": {},
+          "props": {
+            "title": "Mix & geography"
+          },
+          "pos": {
+            "x": 1,
+            "y": 9,
+            "w": 12,
+            "h": 1
+          }
+        },
+        {
+          "id": "c_cat",
+          "type": "chart",
+          "query_id": "@category",
+          "chart_type": "bar",
+          "encoding": {
+            "x": "category",
+            "y": "nsv"
+          },
+          "props": {
+            "title": "By category"
+          },
+          "pos": {
+            "x": 1,
+            "y": 10,
+            "w": 4,
+            "h": 5
+          }
+        },
+        {
+          "id": "c_chan",
+          "type": "chart",
+          "query_id": "@channel",
+          "chart_type": "donut",
+          "encoding": {
+            "x": "channel",
+            "y": "nsv"
+          },
+          "props": {
+            "title": "By channel"
+          },
+          "pos": {
+            "x": 5,
+            "y": 10,
+            "w": 4,
+            "h": 5
+          }
+        },
+        {
+          "id": "c_sup",
+          "type": "chart",
+          "query_id": "@supplier",
+          "chart_type": "hbar",
+          "encoding": {
+            "x": "nsv",
+            "y": "supplier"
+          },
+          "props": {
+            "title": "By supplier"
+          },
+          "pos": {
+            "x": 9,
+            "y": 10,
+            "w": 4,
+            "h": 5
+          }
+        },
+        {
+          "id": "c_heat",
+          "type": "chart",
+          "query_id": "@heatmap",
+          "chart_type": "heatmap",
+          "encoding": {
+            "x": "month",
+            "y": "region",
+            "value": "nsv"
+          },
+          "props": {
+            "title": "NSV \u2014 region \u00d7 month"
+          },
+          "pos": {
+            "x": 1,
+            "y": 15,
+            "w": 8,
+            "h": 5
+          }
+        },
+        {
+          "id": "t_var",
+          "type": "table",
+          "query_id": "@variance",
+          "encoding": {},
+          "props": {
+            "title": "Budget variance by region",
+            "limit": 50,
+            "columns": [
+              "region",
+              "variance_pct"
+            ]
+          },
+          "pos": {
+            "x": 9,
+            "y": 15,
+            "w": 4,
+            "h": 5
+          },
+          "columnFormats": {
+            "variance_pct": {
+              "type": "percent",
+              "decimals": 1
+            }
+          }
+        }
+      ]
+    }
+  }
+]

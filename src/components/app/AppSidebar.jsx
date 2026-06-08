@@ -202,6 +202,8 @@ const NAV_ITEMS = [
   { label: 'Dashboards',  to: '/dashboards',  Icon: LayoutDashboard },
   { label: 'Flows',       to: '/flows',       Icon: Workflow },
   { label: 'Automations', to: '/automations', Icon: CalendarClock },
+  // Secrets are flow-scoped (referenced by flow tasks via {{ secrets.NAME }}),
+  // so they live inside the Flows workspace (/flows/secrets), not the global nav.
 ]
 
 // ---------------------------------------------------------------------------

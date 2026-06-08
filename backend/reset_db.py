@@ -53,12 +53,12 @@ def main() -> None:
     print("[reset] applying migrations...")
     subprocess.run([sys.executable, str(_REPO / "database" / "migrate.py")], check=True, env=env)
 
-    print("[reset] seeding superuser...")
-    subprocess.run([sys.executable, "seed.py"], check=True, cwd=str(_BACKEND), env=env)
-
     if "--demo" in sys.argv:
-        print("[reset] seeding demo workspace...")
-        subprocess.run([sys.executable, "seed_demo.py"], check=True, cwd=str(_BACKEND), env=env)
+        print("[reset] seeding superuser + demo workspace...")
+        subprocess.run([sys.executable, "seed.py", "--demo"], check=True, cwd=str(_BACKEND), env=env)
+    else:
+        print("[reset] seeding superuser...")
+        subprocess.run([sys.executable, "seed.py"], check=True, cwd=str(_BACKEND), env=env)
 
     print("\n[reset] done.")
     print(f"        superuser: {s.SUPERUSER_EMAIL} / {s.SUPERUSER_PASSWORD}")

@@ -89,3 +89,67 @@
     transition-duration: 100ms;
   }
 }
+
+/* ── Headless grid engine (dnd-kit + CSS Grid) ─────────────────────────────────
+   Owned by src/dashboards/grid/GridCanvas.jsx. These DO NOT depend on any RGL or
+   react-resizable CSS; the migration moves consumers onto these classes. Kept
+   OUTSIDE @layer base so they win over Tailwind utilities. */
+
+/* Touch: a finger on the drag handle / resize handle drags instead of scrolling.
+   (Same intent as the RGL rules above; scoped to the grid's own classes.) */
+.grid-canvas .drag-handle,
+.grid-resize-handle {
+  touch-action: none;
+}
+
+/* While a drag/resize is active GridCanvas adds .grid-dragging and sets
+   `--grid-col-w` (one column pitch, px) inline → faint column guides. */
+.grid-canvas.grid-dragging {
+  background-image: repeating-linear-gradient(
+    to right,
+    color-mix(in srgb, var(--primary) 10%, transparent) 0,
+    color-mix(in srgb, var(--primary) 10%, transparent) 1px,
+    transparent 1px,
+    transparent var(--grid-col-w, 80px)
+  );
+}
+
+/* The ghost target cell shown under the item being dragged/resized. */
+.grid-ghost {
+  background-color: color-mix(in srgb, var(--primary) 12%, transparent);
+  border: 2px dashed var(--primary);
+  border-radius: 0.75rem;
+  z-index: 1;
+}
+
+/* The live item being dragged floats above its neighbours. */
+.grid-item-active {
+  z-index: 3;
+}
+
+/* 8 resize handles — absolutely positioned in each cell's corners/edges. */
+.grid-resize-handle {
+  position: absolute;
+  z-index: 4;
+  width: 12px;
+  height: 12px;
+  background: transparent;
+}
+@media (pointer: coarse) {
+  .grid-resize-handle { width: 24px; height: 24px; }
+  .grid-canvas .drag-handle { min-height: 44px; }
+}
+
+/* Edge / corner placement + cursors. */
+.grid-resize-n  { top: -6px;  left: 50%; transform: translateX(-50%); cursor: ns-resize; width: 100%; }
+.grid-resize-s  { bottom: -6px; left: 50%; transform: translateX(-50%); cursor: ns-resize; width: 100%; }
+.grid-resize-e  { right: -6px; top: 50%; transform: translateY(-50%); cursor: ew-resize; height: 100%; }
+.grid-resize-w  { left: -6px;  top: 50%; transform: translateY(-50%); cursor: ew-resize; height: 100%; }
+.grid-resize-ne { top: -6px;  right: -6px; cursor: nesw-resize; }
+.grid-resize-nw { top: -6px;  left: -6px;  cursor: nwse-resize; }
+.grid-resize-se { bottom: -6px; right: -6px; cursor: nwse-resize; }
+.grid-resize-sw { bottom: -6px; left: -6px;  cursor: nesw-resize; }
+
+/* Reorder mode (mobile single-axis stack): widgets indicate they're grabbable. */
+.grid-reorder .grid-item { cursor: grab; }
+.grid-reorder .grid-item-active { cursor: grabbing; }

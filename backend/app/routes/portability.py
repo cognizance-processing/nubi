@@ -51,7 +51,7 @@ from app.portability import (
 )
 from app.repos.provider import Repo, get_repo
 from app.routes import api_router
-from app.routes.resources import resolve_org_id
+from app.routes._org import resolve_org_id
 
 router = APIRouter(tags=["portability"])
 
