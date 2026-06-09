@@ -1,6 +1,6 @@
 """EE billing tier definitions for Nubi.
 
-Defines ZAR pricing tiers (FREE / STARTER / PRO / ENTERPRISE),
+Defines ZAR pricing tiers (FREE / STARTER / TEAM / PRO / ENTERPRISE),
 the security-dial → tier mapping, and per-tier resource limits.  This module
 is EE-only and must NEVER be imported by open-source core code.
 
@@ -111,7 +111,8 @@ allowed dial range — higher tiers unlock a wider range.
 |------------|-----------------------|
 | 0–40       | Free                  |
 | 41–60      | Starter               |
-| 61–80      | Pro                   |
+| 61–70      | Team                  |
+| 71–80      | Pro                   |
 | 81–100     | Enterprise            |
 
 Usage
@@ -612,7 +613,7 @@ def tier_for_security_dial(dial_value: int) -> BillingTier:
     The security dial is an integer 0–100 representing how restrictive the
     platform's security posture is.  Higher dial values require paid tiers
     because they unlock features (e.g. row-level security, audit logs, SCIM)
-    that are only available in STARTER / PRO / ENTERPRISE.
+    that are only available in STARTER / TEAM / PRO / ENTERPRISE.
 
     | Dial range | Minimum tier |
     |------------|--------------|

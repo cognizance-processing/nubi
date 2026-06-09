@@ -297,8 +297,15 @@ def render_invoice_pdf(invoice: Invoice) -> bytes:
             pdf.new_page()
             y = _PAGE_H - _MARGIN
 
+    # Wallet credit is a payment applied after VAT (see Invoice.recompute),
+    # so it is shown in the totals box rather than as a taxable line item.
+    table_items = [li for li in invoice.line_items if li.kind != "wallet"]
+    wallet_credit = -sum(
+        (li.amount_zar for li in invoice.line_items if li.kind == "wallet"), Decimal("0")
+    )
+
     row_h = 22.0
-    for i, li in enumerate(invoice.line_items):
+    for i, li in enumerate(table_items):
         ensure_space(row_h)
         if i % 2 == 1:
             pdf.rect_fill(_MARGIN, y - 6, _CONTENT_W, row_h, _ZEBRA)
@@ -340,6 +347,8 @@ def render_invoice_pdf(invoice: Invoice) -> bytes:
         total_row(f"VAT @ {vat_pct.normalize()}%", _fmt_zar(invoice.vat_amount_zar, cur))
     else:
         total_row("VAT", "Not VAT-registered", color=_MUTED, size=9.0)
+    if wallet_credit > 0:
+        total_row("Prepaid wallet credit", _fmt_zar(-wallet_credit, cur))
     pdf.line(box_x, y + 4, _PAGE_W - _MARGIN, y + 4, color=_NAVY, width=1.0)
     y -= 6
     pdf.rect_fill(box_x, y - 6, box_w, 24, _TEAL)
@@ -352,8 +361,9 @@ def render_invoice_pdf(invoice: Invoice) -> bytes:
     notes: list[str] = []
     if invoice.wallet_applied_zar and invoice.wallet_applied_zar > 0:
         notes.append(
-            f"{_fmt_zar(invoice.wallet_applied_zar, cur)} of metered overages this cycle were "
-            f"covered by prepaid wallet credit and are not billed again here."
+            f"{_fmt_zar(invoice.wallet_applied_zar, cur)} of prepaid wallet credit was applied "
+            f"to this invoice. Wallet top-ups are charged without VAT, so VAT (where applicable) "
+            f"is charged on the full usage above and the credit reduces the amount due."
         )
     if invoice.fx_rate:
         notes.append(

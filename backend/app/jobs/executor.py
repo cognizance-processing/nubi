@@ -69,7 +69,7 @@ def execute_job(job: dict[str, Any], now: datetime | None = None) -> dict[str, A
         if kind == "query":
             row_count, message = _run_query_job(target)
         elif kind == "python":
-            row_count, message = _run_python_job(target, job_id)
+            row_count, message = _run_python_job(target, job)
         elif kind == "report":
             target_dict: dict[str, Any] = job.get("target", {})
             if isinstance(target_dict, str):
@@ -260,7 +260,7 @@ def _run_report_job(target: dict[str, Any]) -> tuple[int, str]:
     return total_sent, message
 
 
-def _run_python_job(target: str, job_id: str) -> tuple[int, str]:
+def _run_python_job(target: str, job: dict[str, Any]) -> tuple[int, str]:
     """Execute a Python job via LocalSubprocessRunner.
 
     Parameters
@@ -268,8 +268,12 @@ def _run_python_job(target: str, job_id: str) -> tuple[int, str]:
     target:
         Python source code to execute.  The code must assign a
         ``pyarrow.Table`` (or compatible) to the name ``result``.
-    job_id:
-        Used for metering attribution.
+    job:
+        The full job dict — used for billing attribution: usage is recorded
+        against the job's owning org (``org_id``) and creating user
+        (``created_by``).  Billing aggregation filters on ``org_id``, so a
+        NULL-org event would never reach quota checks or invoices, and the
+        ``user_id`` column must hold a real user, not the job id.
 
     Returns
     -------
@@ -306,12 +310,15 @@ def _run_python_job(target: str, job_id: str) -> tuple[int, str]:
         except Exception:
             output_bytes = 0
 
-    # Record metering (best-effort; sync-safe wrapper since this fn is sync)
+    # Record metering (best-effort; sync-safe wrapper since this fn is sync).
+    # Attribute to the job's owning org + creating user so scheduled-job
+    # compute counts toward the org's compute-unit quota and overage billing.
     record_kernel_usage_safe(
-        user_id=job_id,  # attribute to the job_id for billing purposes
+        user_id=str(job.get("created_by") or ""),
         tier="local_kernel",
         elapsed_ms=elapsed_ms,
         output_bytes=output_bytes,
+        org_id=str(job["org_id"]) if job.get("org_id") else None,
     )
 
     return row_count, f"Python job completed. stdout: {result.stdout[:200]}"

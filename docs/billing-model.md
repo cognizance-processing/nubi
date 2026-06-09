@@ -30,12 +30,13 @@ is a human-readable summary of what is in that file.
 
 ## Tiers
 
-Four tiers (June 2026 reference amounts at R16.26 + 2% FX buffer):
+Five tiers (June 2026 reference amounts at R16.26 + 2% FX buffer):
 
 | Tier | USD/mo | ZAR/mo (ref) | Annual (USD) | Gross margin |
 |------|--------|--------------|--------------|--------------|
 | **Free** | $0 | R0 | $0 | — (acquisition) |
 | **Starter** | $9 | R150 | $90 | 86.6% |
+| **Team** | $49 | R820 | $490 | 85.6% |
 | **Pro** | $149 | R2,480 | $1,490 | 79.7% |
 | **Enterprise** | $1,000 floor | R16,590 floor | $10,000 floor | 75.5% hosted / ~86% BYOC |
 
@@ -86,18 +87,18 @@ The following have near-zero marginal COGS and are never charged:
 
 ## Resource Limits by Tier
 
-| Limit | Free | Starter | Pro | Enterprise |
-|-------|------|---------|-----|------------|
-| Seats / viewers | Unlimited | Unlimited | Unlimited | Unlimited |
-| Connectors | 3 | 5 | Unlimited | Unlimited |
-| Max query rows | 10K | 100K | 5M | Unlimited |
-| Dashboards | 5 | 10 | 100 | Unlimited |
-| Flows | 2 | 3 | 20 | Unlimited |
-| Storage | 1 GB | 5 GB | 50 GB | 500 GB hosted |
-| Compute units/mo | 500 | 2,000 | 15,000 | 200,000 hosted |
-| Embedded sessions/mo | 0 | 1,000 | 25,000 | Unlimited |
-| Agent runs/mo | 0 | 0 | 50 | 1,000 |
-| AI calls/mo | 0 | 5 | 50 | 500 |
+| Limit | Free | Starter | Team | Pro | Enterprise |
+|-------|------|---------|------|-----|------------|
+| Seats / viewers | Unlimited | Unlimited | Unlimited | Unlimited | Unlimited |
+| Connectors | 3 | 5 | 15 | Unlimited | Unlimited |
+| Max query rows | 10K | 100K | 1M | 5M | Unlimited |
+| Dashboards | 5 | 10 | 30 | 100 | Unlimited |
+| Flows | 2 | 3 | 8 | 20 | Unlimited |
+| Storage | 1 GB | 5 GB | 15 GB | 50 GB | 500 GB hosted |
+| Compute units/mo | 500 | 2,000 | 6,000 | 15,000 | 200,000 hosted |
+| Embedded sessions/mo | 0 | 1,000 | 5,000 | 25,000 | Unlimited |
+| Agent runs/mo | 0 | 0 | 10 | 50 | 1,000 |
+| AI calls/mo | 0 | 5 | 15 | 50 | 500 |
 
 ---
 
@@ -154,28 +155,29 @@ audit stringency.  Paid tiers unlock wider ranges:
 |------------|-------------|
 | 0–40 | Free |
 | 41–60 | Starter |
-| 61–80 | Pro |
+| 61–70 | Team |
+| 71–80 | Pro |
 | 81–100 | Enterprise |
 
 ---
 
 ## Feature Flags by Tier
 
-| Feature | Free | Starter | Pro | Enterprise |
-|---------|------|---------|-----|------------|
-| White label | — | — | Full | Full + custom SDK |
-| Row-level security | — | Basic | Full JWT | HIPAA-ready |
-| Google SSO | — | Yes | Yes | Yes |
-| SAML SSO | — | — | 1 IdP | Unlimited IdPs |
-| SCIM provisioning | — | — | — | Yes |
-| Multi-tenant workspaces | — | — | — | Yes |
-| BYOC / on-prem | — | — | — | Yes |
-| Custom domain | — | — | Yes | Yes |
-| Audit log retention | None | 7 days | 90 days | Unlimited |
-| Priority support | — | — | Email + Slack | Dedicated CSM |
-| SLA uptime | None | None | 99.5% | 99.95% |
-| SLA P1 response | — | — | — | 30 min (24/7) |
-| SLA P2 response | — | — | — | 2 hr |
+| Feature | Free | Starter | Team | Pro | Enterprise |
+|---------|------|---------|------|-----|------------|
+| White label | — | — | Badge removable | Full | Full + custom SDK |
+| Row-level security | — | Basic | Full JWT | Full JWT | HIPAA-ready |
+| Google SSO | — | Yes | Yes | Yes | Yes |
+| SAML SSO | — | — | — | 1 IdP | Unlimited IdPs |
+| SCIM provisioning | — | — | — | — | Yes |
+| Multi-tenant workspaces | — | — | — | — | Yes |
+| BYOC / on-prem | — | — | — | — | Yes |
+| Custom domain | — | — | — | Yes | Yes |
+| Audit log retention | None | 7 days | 30 days | 90 days | Unlimited |
+| Priority support | — | — | — | Email + Slack | Dedicated CSM |
+| SLA uptime | None | None | None | 99.5% | 99.95% |
+| SLA P1 response | — | — | — | — | 30 min (24/7) |
+| SLA P2 response | — | — | — | — | 2 hr |
 
 Enterprise includes a named CSM, monthly business review calls, and a private
 Slack/Teams channel for support escalation.
@@ -202,5 +204,5 @@ Slack/Teams channel for support escalation.
 - Paystack client: `backend/app/ee/billing/paystack.py`
 - Billing event store: `backend/app/ee/billing/store.py`
 - EE billing routes: `backend/app/ee/billing/routes.py`
-- DB migration: `database/migrations/0022_wallet.sql`
+- DB migration: `database/migrations/ee/0022_wallet.sql`
 - Internal scenario modelling: `billing-model/generate_scenarios.py` (gitignored)

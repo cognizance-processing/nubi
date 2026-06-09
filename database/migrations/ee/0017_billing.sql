@@ -1,9 +1,10 @@
 -- Migration 0017: EE billing tables — subscriptions and billing_events.
 --
--- These tables are created by the EE billing sub-package.  They live in the
--- shared schema (not a separate EE schema) so that the migration runner used
--- in self-hosted deployments handles them automatically.  The OSS build never
--- writes to these tables; the EE billing module is the sole writer.
+-- These tables back the EE billing sub-package and Nubi Cloud only.  They live
+-- under database/migrations/ee/ and are applied ONLY when the cloud/EE layer is
+-- active (migrate.py --ee, or NUBI_CLOUD=1 / NUBI_EE=1) — keeping the
+-- open-source self-host schema thin (no billing tables it never uses).  The OSS
+-- build never writes to these tables; the EE billing module is the sole writer.
 --
 -- subscriptions
 --     One row per organisation.  Tracks the active billing tier, Paystack
@@ -20,7 +21,7 @@ CREATE TABLE IF NOT EXISTS subscriptions (
     id                          uuid        PRIMARY KEY DEFAULT gen_random_uuid(),
     org_id                      uuid        NOT NULL UNIQUE REFERENCES orgs(id) ON DELETE CASCADE,
     tier                        text        NOT NULL DEFAULT 'free'
-                                            CHECK (tier IN ('free', 'pro', 'enterprise')),
+                                            CHECK (tier IN ('free', 'starter', 'team', 'pro', 'enterprise')),
     status                      text        NOT NULL DEFAULT 'active'
                                             CHECK (status IN ('active', 'cancelled', 'past_due', 'trialing')),
     paystack_customer_code      text        NULL,

@@ -31,6 +31,7 @@ CREATE TABLE IF NOT EXISTS wallet_topup_config (
     monthly_topup_cap_usd_cents  INT,                                   -- NULL = unlimited auto-topups/month
     spend_cap_usd_cents          INT,                                   -- NULL = unlimited hard monthly spend cap
     topup_in_flight              BOOLEAN      NOT NULL DEFAULT FALSE,   -- idempotency lock
+    topup_in_flight_at           TIMESTAMPTZ,                           -- when the lock was claimed; stale claims self-heal after a TTL
     -- Saved Paystack card details (populated after first successful payment)
     paystack_authorization_code  VARCHAR(100),
     paystack_customer_email      VARCHAR(255),
@@ -43,6 +44,10 @@ CREATE TABLE IF NOT EXISTS wallet_topup_config (
     created_at                   TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
     updated_at                   TIMESTAMPTZ  NOT NULL DEFAULT NOW()
 );
+
+-- Backfill for databases that created the table before topup_in_flight_at existed
+-- (keeps the migration safe to re-run, mirroring the IF NOT EXISTS pattern above).
+ALTER TABLE wallet_topup_config ADD COLUMN IF NOT EXISTS topup_in_flight_at TIMESTAMPTZ;
 
 -- ---------------------------------------------------------------------------
 -- wallet_ledger: append-only ledger of every credit and debit.
@@ -86,5 +91,11 @@ CREATE TABLE IF NOT EXISTS wallet_ledger (
 CREATE INDEX IF NOT EXISTS idx_wallet_ledger_org_created
     ON wallet_ledger (org_id, created_at DESC);
 
-CREATE INDEX IF NOT EXISTS idx_wallet_ledger_ref ON wallet_ledger (ref_id)
-    WHERE ref_id IS NOT NULL;
+-- DB-level idempotency backstop: a given external reference (Paystack charge,
+-- billing-cycle overage draw, …) may produce at most ONE effective ledger row.
+-- TOPUP_FAILED rows are excluded — a failed attempt records the reference for
+-- audit but must never block the later successful credit for the same charge.
+DROP INDEX IF EXISTS idx_wallet_ledger_ref;
+CREATE UNIQUE INDEX IF NOT EXISTS uq_wallet_ledger_ref
+    ON wallet_ledger (ref_id)
+    WHERE ref_id IS NOT NULL AND entry_type <> 'TOPUP_FAILED';

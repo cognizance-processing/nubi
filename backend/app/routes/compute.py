@@ -43,6 +43,10 @@ Pipeline
 4. Parse and validate request body (``ComputeRunIn``).
 5. Reject oversized code (> 100,000 chars) → 413.
 6. Choose runner (see above).
+6b. Resolve the billing org (token ``org`` claim, else ``org_members``) and
+    enforce the tier usage quota via ``app.features.enforce_quota`` —
+    compute_units always, agent_runs for remote runners.  Tiers without an
+    overage rate for the dimension (e.g. FREE) hard-stop with 402.
 7. Resolve named inputs into a ``{name: query_id}`` binding spec:
    a. ``input_query_id`` (back-compat) seeds ``{'input': input_query_id}``.
    b. The ``inputs`` map overrides/extends it (named map is canonical).
@@ -60,20 +64,25 @@ from __future__ import annotations
 
 from typing import Annotated
 
+import logging
+
 import pyarrow as pa
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Request
 from fastapi.responses import Response
 from pydantic import BaseModel, Field
 
 from app.auth.deps import verified_identity
 from app.auth.scopes import has_scope
 from app.auth.verify import VerifiedIdentity
-from app.compute.metering import record_kernel_usage
+from app.compute.metering import record_kernel_usage, record_usage
 from app.compute.runner import LocalSubprocessRunner, KernelResult
 from app.connectors.arrow_io import table_to_ipc_bytes
 from app.errors import AppError
+from app.features import enforce_quota
 from app.queries.registry import get_query_registry
 from app.routes import api_router
+
+logger = logging.getLogger("nubi.compute")
 
 # Remote runner classes imported lazily inside _choose_runner to keep them
 # optional (e2b/modal packages may not be installed).
@@ -185,6 +194,40 @@ def _has_exec_scope(scope: list[str]) -> bool:
 
 
 # ---------------------------------------------------------------------------
+# Org resolution (billing attribution)
+# ---------------------------------------------------------------------------
+
+
+async def _resolve_org_id(identity: VerifiedIdentity, request: Request) -> str | None:
+    """Resolve the org this compute run is billed against (best-effort).
+
+    Embed/host tokens carry an ``org`` claim; first-party access tokens do
+    NOT (``mint_access_token`` mints only the ``sub`` claim), so for those we
+    fall back to the same ``org_members`` lookup the resource routes use
+    (honouring ``X-Org-Id`` with membership verification).
+
+    Returns ``None`` only when no org can be resolved at all — the metering
+    layer logs a warning for that case so unattributable compute is caught
+    early instead of silently never being billed.
+    """
+    if identity.org:
+        return identity.org
+    try:
+        from app.repos.provider import get_repo  # noqa: PLC0415
+        from app.routes._org import resolve_org_id  # noqa: PLC0415
+
+        return await resolve_org_id(identity.user_id, get_repo(), request)
+    except Exception as exc:  # noqa: BLE001 — attribution is best-effort, never a 500
+        logger.warning(
+            "compute: could not resolve org for user=%s (%s) — "
+            "usage will be metered without org attribution",
+            identity.user_id,
+            exc,
+        )
+        return None
+
+
+# ---------------------------------------------------------------------------
 # Runner selection
 # ---------------------------------------------------------------------------
 
@@ -257,6 +300,7 @@ def _choose_runner():
 @router.post("/compute/run")
 async def compute_run(
     body: ComputeRunIn,
+    request: Request,
     identity: VerifiedIdentity = Depends(verified_identity),
 ) -> Response:
     """Execute Python code in a subprocess/remote runner and return Arrow IPC.
@@ -331,6 +375,17 @@ async def compute_run(
 
     # ── Choose runner (production guard) ──────────────────────────────────────
     runner = _choose_runner()
+    is_remote_runner = not isinstance(runner, LocalSubprocessRunner)
+
+    # ── BILLING: resolve org + enforce quota BEFORE running the kernel ────────
+    # Quotas are enforced by the EE-registered checker (no-op in OSS builds):
+    # tiers without an overage rate for a dimension (e.g. FREE's 500 CU) are a
+    # hard stop (402); tiers with one allow-and-meter (wallet, then invoice).
+    org_id = await _resolve_org_id(identity, request)
+    await enforce_quota(org_id, "compute_units", amount=1.0)
+    if is_remote_runner:
+        # Remote sandbox executions also count as agent/kernel runs.
+        await enforce_quota(org_id, "agent_runs", amount=1.0)
 
     # ── Resolve inputs ─────────────────────────────────────────────────────────
     # ONE rule: ``inputs[name]`` holds named data.  The named ``inputs`` map is
@@ -379,12 +434,27 @@ async def compute_run(
     ipc_bytes = table_to_ipc_bytes(result.table)
 
     # ── Meter usage ───────────────────────────────────────────────────────────
+    # org_id attribution is REQUIRED for billing: aggregate_usage_for_org
+    # filters on org_id, so a NULL-org event never reaches quota checks or
+    # invoices (see app.ee.billing.reconcile).
     await record_kernel_usage(
         user_id=identity.user_id,
         tier=result.tier,
         elapsed_ms=result.elapsed_ms,
         output_bytes=len(ipc_bytes),
+        org_id=org_id,
     )
+    if result.tier == "remote_kernel":
+        # Remote sandbox executions are additionally metered as agent runs
+        # (the agent_runs billing dimension — see tiers.OverageRates).
+        await record_usage(
+            kind="agent_run",
+            user_id=identity.user_id,
+            org_id=org_id,
+            units=1.0,
+            tier=result.tier,
+            elapsed_ms=result.elapsed_ms,
+        )
 
     # ── Return Arrow IPC response ──────────────────────────────────────────────
     return Response(

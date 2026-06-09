@@ -14,8 +14,10 @@ credit(org_id, amount_usd_cents, entry_type, *, description, ref_id, metadata)
 debit(org_id, amount_usd_cents, entry_type, *, description, ref_id, metadata)
     Deduct usage from the wallet.  Enforces:
       - Hard stop if balance == 0 and usage exceeds tier's included quota.
-      - Monthly spend cap.
+      - Idempotency on ref_id (a retried billing cycle never double-draws).
       - Triggers auto-topup when balance < threshold (async, non-blocking).
+    The monthly spend cap applies to incoming topups, not debits — it is
+    enforced in the auto-topup path.
 
 manual_topup(org_id, amount_usd_cents, *, ref_id, description)
     Record a user-initiated topup already confirmed by Paystack webhook.
@@ -41,8 +43,12 @@ Design notes
 - ZAR conversion (for Paystack charge) uses :func:`app.ee.billing.fx.get_current_rate`
   at charge time, never at storage time.
 - Auto-topup is *enqueued* (fire-and-forget coroutine) — the calling debit
-  path is never blocked waiting for a Paystack API call.
-- The ``topup_in_flight`` flag prevents concurrent auto-topup charges.
+  path is never blocked waiting for a Paystack API call.  A strong reference
+  to the task is held until it completes.
+- The ``topup_in_flight`` flag prevents concurrent auto-topup charges; it is
+  claimed atomically (compare-and-set) and a stale claim self-heals after a TTL.
+- Balance mutations and their ledger rows are written atomically (one
+  transaction in the Pg store), so balance == sum(ledger) always holds.
 - Balance is never negative (enforced by DB CHECK constraint and store).
 """
 
@@ -51,7 +57,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import uuid
-from decimal import Decimal
+from decimal import ROUND_CEILING, Decimal
 from typing import Any
 
 logger = logging.getLogger(__name__)
@@ -121,12 +127,24 @@ async def _check_spend_cap(org_id: str, amount_usd_cents: int) -> None:
 
 
 def _usd_cents_to_zar_cents(amount_usd_cents: int) -> int:
-    """Convert USD cents to ZAR cents using the current FX rate + buffer."""
-    from app.ee.billing.fx import get_current_rate  # noqa: PLC0415
+    """Convert USD cents to ZAR cents using the current FX rate + buffer.
+
+    Applies the canonical pricing-policy formula ``zar = ceil(usd * rate * FX_BUFFER)``
+    (see :mod:`app.ee.billing.fx`) so wallet topups are charged at the same
+    buffered rate as every other ZAR charge path.
+    """
+    from app.ee.billing.fx import FX_BUFFER, get_current_rate  # noqa: PLC0415
 
     fx_info = get_current_rate()
     rate: Decimal = fx_info["rate"]
-    zar_cents = int((Decimal(amount_usd_cents) * rate).to_integral_value()) + 1
+    if fx_info.get("stale"):
+        logger.warning(
+            "wallet: FX rate is stale (fetched_at=%s) — charging at last-known rate",
+            fx_info.get("fetched_at"),
+        )
+    zar_cents = int(
+        (Decimal(amount_usd_cents) * rate * FX_BUFFER).to_integral_value(rounding=ROUND_CEILING)
+    )
     return max(zar_cents, 1)
 
 
@@ -141,8 +159,10 @@ async def _execute_auto_topup(org_id: str) -> None:
     This coroutine is fire-and-forget — it does NOT raise; all errors are
     logged and written to the ledger as TOPUP_FAILED entries.
 
-    Guard: checks ``topup_in_flight`` flag before proceeding; sets it at start
-    and clears it on exit (success or failure).
+    Guard: atomically claims the ``topup_in_flight`` lock (compare-and-set in
+    the store, so concurrent debits can never double-charge) and clears it on
+    exit (success or failure).  A claim abandoned by a crashed process
+    self-heals after ``TOPUP_IN_FLIGHT_TTL_SECONDS``.
     """
     from app.ee.billing.paystack import charge_saved_card  # noqa: PLC0415
     from app.ee.billing.wallet_store import get_wallet_store  # noqa: PLC0415
@@ -150,11 +170,6 @@ async def _execute_auto_topup(org_id: str) -> None:
     store = get_wallet_store()
 
     cfg = await store.get_topup_config(org_id)
-
-    # --- Idempotency guard ---
-    if cfg.get("topup_in_flight"):
-        logger.debug("wallet: auto-topup already in flight for org=%s, skipping", org_id)
-        return
 
     if not cfg.get("auto_topup_enabled"):
         return
@@ -168,27 +183,43 @@ async def _execute_auto_topup(org_id: str) -> None:
     auth_code = cfg["paystack_authorization_code"]
     customer_email = cfg["paystack_customer_email"]
 
-    # --- Monthly auto-topup cap guard ---
-    monthly_auto = await store.sum_auto_topups_this_month(org_id)
-    monthly_cap = cfg.get("monthly_topup_cap_usd_cents")
-    if monthly_cap is not None and monthly_auto + topup_amount > monthly_cap:
-        logger.info(
-            "wallet: auto-topup blocked by monthly cap for org=%s "
-            "(cap=%d, spent=%d, want=%d)",
-            org_id,
-            monthly_cap,
-            monthly_auto,
-            topup_amount,
-        )
+    # --- Idempotency guard: atomically claim the in-flight lock ---
+    # Must happen BEFORE the cap checks so two concurrent triggers cannot both
+    # pass the caps and charge the card twice; the loser simply skips.
+    if not await store.try_claim_topup_in_flight(org_id):
+        logger.debug("wallet: auto-topup already in flight for org=%s, skipping", org_id)
         return
 
-    # --- Set in-flight flag ---
-    await store.set_topup_in_flight(org_id, True)
-
     ref_id = f"nubi_auto_{uuid.uuid4().hex}"
-    amount_zar_cents = _usd_cents_to_zar_cents(topup_amount)
 
     try:
+        # --- Monthly auto-topup cap guard ---
+        monthly_auto = await store.sum_auto_topups_this_month(org_id)
+        monthly_cap = cfg.get("monthly_topup_cap_usd_cents")
+        if monthly_cap is not None and monthly_auto + topup_amount > monthly_cap:
+            logger.info(
+                "wallet: auto-topup blocked by monthly cap for org=%s "
+                "(cap=%d, spent=%d, want=%d)",
+                org_id,
+                monthly_cap,
+                monthly_auto,
+                topup_amount,
+            )
+            return
+
+        # --- Hard monthly spend cap guard ---
+        try:
+            await _check_spend_cap(org_id, topup_amount)
+        except WalletInsufficientError as cap_exc:
+            logger.info(
+                "wallet: auto-topup blocked by spend cap for org=%s: %s",
+                org_id,
+                cap_exc,
+            )
+            return
+
+        amount_zar_cents = _usd_cents_to_zar_cents(topup_amount)
+
         result = await charge_saved_card(
             authorization_code=auth_code,
             email=customer_email or "",
@@ -202,13 +233,11 @@ async def _execute_auto_topup(org_id: str) -> None:
         )
 
         if result.get("data", {}).get("status") == "success":
-            # Credit the wallet
-            new_balance = await store.credit_balance(org_id, topup_amount)
-            await store.append_ledger(
+            # Credit the wallet (balance + ledger in one atomic store operation)
+            await store.credit_with_ledger(
                 org_id,
+                topup_amount,
                 entry_type="TOPUP_AUTO",
-                amount_usd_cents=topup_amount,
-                balance_after_usd_cents=new_balance,
                 description="Auto-topup via saved card",
                 ref_id=ref_id,
                 metadata={
@@ -283,16 +312,25 @@ async def _execute_auto_topup(org_id: str) -> None:
         await store.set_topup_in_flight(org_id, False)
 
 
+# Strong references to in-flight fire-and-forget topup tasks — the event loop
+# only keeps weak references, so an unreferenced task can be garbage-collected
+# mid-flight (charge made, wallet never credited).
+_pending_topup_tasks: set[asyncio.Task] = set()
+
+
 def _maybe_schedule_auto_topup(org_id: str, balance: int, threshold: int) -> None:
     """Schedule the auto-topup coroutine if balance is below threshold.
 
     Uses :func:`asyncio.ensure_future` — fire-and-forget; caller is not blocked.
+    A strong reference to the task is held until it completes.
     """
     if balance < threshold:
         try:
             loop = asyncio.get_event_loop()
             if loop.is_running():
-                asyncio.ensure_future(_execute_auto_topup(org_id))
+                task = asyncio.ensure_future(_execute_auto_topup(org_id))
+                _pending_topup_tasks.add(task)
+                task.add_done_callback(_pending_topup_tasks.discard)
             else:
                 loop.run_until_complete(_execute_auto_topup(org_id))
         except RuntimeError:
@@ -349,12 +387,10 @@ async def credit(
         raise ValueError(f"credit amount must be positive, got {amount_usd_cents}")
 
     store = get_wallet_store()
-    new_balance = await store.credit_balance(org_id, amount_usd_cents)
-    return await store.append_ledger(
+    return await store.credit_with_ledger(
         org_id,
+        amount_usd_cents,
         entry_type=entry_type,
-        amount_usd_cents=amount_usd_cents,
-        balance_after_usd_cents=new_balance,
         description=description,
         ref_id=ref_id,
         metadata=metadata,
@@ -374,8 +410,13 @@ async def debit(
 
     Enforces:
     - Zero-balance hard stop: raises :class:`WalletInsufficientError` if balance == 0.
-    - Monthly spend cap: raises :class:`WalletInsufficientError` if cap would be exceeded.
+    - Idempotency on *ref_id*: if the ledger already has an effective entry with
+      *ref_id*, the debit is skipped (e.g. a retried billing cycle never
+      double-draws the same period's overage).
     - Triggers (schedules) auto-topup if balance after debit < configured threshold.
+
+    The monthly spend cap does NOT block debits — it only blocks incoming
+    topups (enforced in :func:`_execute_auto_topup` via :func:`_check_spend_cap`).
 
     Parameters
     ----------
@@ -391,12 +432,13 @@ async def debit(
     Returns
     -------
     dict
-        The written ledger entry.
+        The written ledger entry, or ``{"skipped": True, "ref_id": ref_id}``
+        if an entry with *ref_id* already exists.
 
     Raises
     ------
     WalletInsufficientError
-        When the balance is insufficient or the spend cap is reached.
+        When the balance is insufficient.
     """
     from app.ee.billing.wallet_store import get_wallet_store  # noqa: PLC0415
 
@@ -405,10 +447,10 @@ async def debit(
 
     store = get_wallet_store()
 
-    # --- Spend cap check (before debit) ---
-    # We don't count debits against the spend cap — only incoming credits.
-    # But if a hard spend cap has been set, we check total monthly credits
-    # exhausted to prevent further auto-topups (enforced in _execute_auto_topup).
+    # --- Idempotency check (mirrors manual_topup) ---
+    if ref_id and await store.ledger_ref_exists(ref_id):
+        logger.info("wallet: debit duplicate ref_id=%s org=%s — skipping", ref_id, org_id)
+        return {"skipped": True, "ref_id": ref_id}
 
     # --- Zero-balance hard stop ---
     balance = await _current_balance_cents(org_id)
@@ -425,23 +467,31 @@ async def debit(
             balance_usd_cents=balance,
         )
 
-    # --- Execute debit ---
-    new_balance = await store.debit_balance(org_id, amount_usd_cents)
-    entry = await store.append_ledger(
-        org_id,
-        entry_type=entry_type,
-        amount_usd_cents=-amount_usd_cents,
-        balance_after_usd_cents=new_balance,
-        description=description,
-        ref_id=ref_id,
-        metadata=metadata,
-    )
+    # --- Execute debit (balance + ledger in one atomic store operation) ---
+    try:
+        entry = await store.debit_with_ledger(
+            org_id,
+            amount_usd_cents,
+            entry_type=entry_type,
+            description=description,
+            ref_id=ref_id,
+            metadata=metadata,
+        )
+    except ValueError as exc:
+        # A concurrent debit won between our pre-check and the guarded UPDATE;
+        # surface the structured error shape callers expect, not a bare ValueError.
+        balance = await _current_balance_cents(org_id)
+        raise WalletInsufficientError(
+            f"Insufficient wallet balance: have ${balance / 100:.4f}, "
+            f"need ${amount_usd_cents / 100:.4f}.",
+            balance_usd_cents=balance,
+        ) from exc
 
     # --- Schedule auto-topup if threshold breached ---
     cfg = await store.get_topup_config(org_id)
     if cfg.get("auto_topup_enabled") and cfg.get("paystack_auth_reusable"):
         _maybe_schedule_auto_topup(
-            org_id, new_balance, cfg.get("threshold_usd_cents", 1000)
+            org_id, entry["balance_after_usd_cents"], cfg.get("threshold_usd_cents", 1000)
         )
 
     return entry
@@ -566,12 +616,10 @@ async def handle_webhook_charge_success(
     topup_type = (metadata or {}).get("topup_type", "manual")
     entry_type = "TOPUP_AUTO" if topup_type == "auto" else "TOPUP_MANUAL"
 
-    new_balance = await store.credit_balance(org_id, amount_usd_cents)
-    return await store.append_ledger(
+    return await store.credit_with_ledger(
         org_id,
+        amount_usd_cents,
         entry_type=entry_type,
-        amount_usd_cents=amount_usd_cents,
-        balance_after_usd_cents=new_balance,
         description=f"Paystack charge.success — {topup_type} topup",
         ref_id=ref_id,
         metadata=metadata,

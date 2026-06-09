@@ -160,8 +160,9 @@ _BI_COMPETITORS: list[dict[str, Any]] = [
             "No native flows",
         ],
         "nubi_advantage": (
-            "Nubi's embedded SDK + unlimited seats at $149/mo (Pro) undercuts "
-            "$50/user/mo the moment a team exceeds 3 users."
+            "Nubi's embedded SDK + unlimited seats at $49/mo (Team) undercuts "
+            "$50/user/mo from the very first user — and Pro ($149/mo) is "
+            "cheaper from 3 users."
         ),
     },
     {
@@ -313,7 +314,7 @@ _ORCHESTRATION_COMPETITORS: list[dict[str, Any]] = [
         ],
         "nubi_advantage": (
             "Nubi flows have no per-run credit meter. A pipeline that runs 10,000 "
-            "ops/day on Dagster Starter racks up $350/mo in credit charges alone — "
+            "ops/month on Dagster Starter racks up $350/mo in credit charges alone — "
             "on top of the $100/mo base fee. Nubi: zero per-run charge."
         ),
     },
@@ -344,7 +345,7 @@ _ORCHESTRATION_COMPETITORS: list[dict[str, Any]] = [
         "nubi_advantage": (
             "Temporal is a general-purpose durable-workflow engine — not a BI platform. "
             "Nubi flows are included in the platform subscription with no per-Action metering. "
-            "At 5M actions/mo, Temporal Essentials costs $300/mo in overage alone."
+            "At 5M actions/mo, Temporal Essentials costs $200/mo in overage alone."
         ),
     },
     {

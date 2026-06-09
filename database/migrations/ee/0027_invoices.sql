@@ -20,6 +20,13 @@
 ALTER TABLE subscriptions
     DROP CONSTRAINT IF EXISTS subscriptions_tier_check;
 
+-- Remap legacy 5-tier 'business' rows (permitted by the 0018 CHECK) to
+-- 'enterprise' — the canonical mapping in tiers.py
+-- (billing_tier_from_license_tier).  Postgres validates existing rows when
+-- the constraint below is added, so this must run first or the migration
+-- aborts on any DB holding a 'business' subscription.
+UPDATE subscriptions SET tier = 'enterprise' WHERE tier = 'business';
+
 ALTER TABLE subscriptions
     ADD CONSTRAINT subscriptions_tier_check
     CHECK (tier IN ('free', 'starter', 'team', 'pro', 'enterprise'));

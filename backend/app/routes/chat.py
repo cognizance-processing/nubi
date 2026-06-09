@@ -196,6 +196,18 @@ async def chat_stream(
     if not message:
         raise AppError("validation_error", "message must not be empty.", 400)
 
+    # ── BILLING: AI calls are metered (tiers.max_ai_calls_per_month) ─────────
+    # Quota enforcement is a no-op in OSS builds (no EE checker registered).
+    # The call is recorded up-front: a streamed turn consumes the call when
+    # dispatched even if the client abandons the stream mid-flight.
+    from app.compute.metering import record_usage  # noqa: PLC0415
+    from app.features import enforce_quota  # noqa: PLC0415
+
+    await enforce_quota(org_id, "ai_calls", amount=1.0)
+    await record_usage(
+        kind="ai_call", user_id=user_id, org_id=org_id, units=1.0, tier="chat_stream"
+    )
+
     # Resolve / create the chat row (org-scoped).
     chat_id = body.chat_id
     board_id = body.board_id

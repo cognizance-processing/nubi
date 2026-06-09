@@ -174,6 +174,43 @@ def _parquet_local_path(org_id: str, dataset_id: str) -> str:
 
 
 # ---------------------------------------------------------------------------
+# Storage metering (billing dimension: storage_gb, kind="storage")
+# ---------------------------------------------------------------------------
+
+
+async def _record_storage_snapshot(org_id: str, user_id: str) -> None:
+    """Record a best-effort storage snapshot for *org_id* (kind='storage').
+
+    Billing aggregation takes the MAX ``units`` over the period (a
+    peak/representative GB figure — see app.ee.billing.reconcile), so each
+    event carries the org's TOTAL dataset storage in GB at this moment.
+    Walks the local file:// dataset tree; never raises (metering is
+    best-effort and must not fail an upload).
+    """
+    try:
+        from app.compute.metering import record_usage  # noqa: PLC0415
+
+        org_dir = os.path.join(_storage_root(), "datasets", org_id)
+        total_bytes = 0
+        for dirpath, _dirnames, filenames in os.walk(org_dir):
+            for fname in filenames:
+                try:
+                    total_bytes += os.path.getsize(os.path.join(dirpath, fname))
+                except OSError:
+                    continue
+        await record_usage(
+            kind="storage",
+            user_id=user_id,
+            org_id=org_id,
+            units=total_bytes / 1e9,
+            output_bytes=total_bytes,
+            tier="datasets",
+        )
+    except Exception:  # noqa: BLE001 — metering must never break an upload
+        pass
+
+
+# ---------------------------------------------------------------------------
 # Org resolution helper (mirrors data_browser.py)
 # ---------------------------------------------------------------------------
 
@@ -515,6 +552,9 @@ async def upload_csv(
     )
     ds_row["datastore_id"] = datastore_id
 
+    # Storage is a metered billing dimension — snapshot the org's total GB.
+    await _record_storage_snapshot(org_id, user_id)
+
     return ds_row
 
 
@@ -617,6 +657,9 @@ async def materialize_query(
         datastore_id=datastore_id,
     )
     ds_row["datastore_id"] = datastore_id
+
+    # Storage is a metered billing dimension — snapshot the org's total GB.
+    await _record_storage_snapshot(org_id, user_id)
 
     return ds_row
 

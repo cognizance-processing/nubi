@@ -84,11 +84,13 @@ def stores():
 
 
 async def _run(tier, usage, *, charge=None, sender=None, use_wallet=True,
-               business=None, collect=True, send_email=True):
+               business=None, collect=True, send_email=True,
+               org_id="11111111-1111-1111-1111-111111111111",
+               period_start=PERIOD_START, period_end=PERIOD_END, issued_at=ISSUED):
     return await run_billing_cycle(
-        org_id="11111111-1111-1111-1111-111111111111",
+        org_id=org_id,
         tier=tier, usage=usage,
-        period_start=PERIOD_START, period_end=PERIOD_END, issued_at=ISSUED,
+        period_start=period_start, period_end=period_end, issued_at=issued_at,
         customer_email="ops@acme.io", customer_name="Acme Inc",
         fx_rate=FX, business=business or _vat_business(),
         use_wallet=use_wallet, collect=collect, send_email=send_email,
@@ -120,6 +122,23 @@ class TestOverageComputation:
         cu = next(li for li in items if li.description.startswith("Compute"))
         assert cu.amount_zar == Decimal("200.00")  # 2 × R100
         assert total == Decimal("600.00")
+
+    def test_metered_lines_qty_times_unit_price_equals_amount(self):
+        # A TAX INVOICE prints QTY | UNIT PRICE | AMOUNT side by side — the
+        # printed columns must multiply out (quantities are stored in the
+        # PRICED unit: 1k CU, 10k sessions), or the invoice contradicts itself.
+        usage = UsageSnapshot(storage_gb=120, compute_units=17_000,
+                              ai_calls=130, embedded_sessions=30_000)
+        items, _ = compute_overage_line_items(usage, BillingTier.PRO)
+        assert len(items) == 4
+        for li in items:
+            assert (li.quantity * li.unit_price_zar).quantize(Decimal("0.01")) == li.amount_zar
+        cu = next(li for li in items if li.description.startswith("Compute"))
+        assert cu.quantity == Decimal("2")        # 2 000 CU over = 2 × 1k CU
+        assert cu.unit == "1k CU"
+        embed = next(li for li in items if li.description.startswith("Embedded"))
+        assert embed.quantity == Decimal("0.5")   # 5 000 over = 0.5 × 10k sess
+        assert embed.unit == "10k sess"
 
     def test_starter_has_no_agent_overage_rate(self):
         # Starter has no agent-run allowance and no agent overage rate.
@@ -242,8 +261,14 @@ class TestBillingCycle:
         assert rows[0]["invoice_number"] == res.invoice.invoice_number
 
     async def test_invoice_numbering_increments(self, stores):
+        # Two DIFFERENT cycles (the same period is idempotent and would
+        # return the first invoice unchanged).
         r1 = await _run(BillingTier.TEAM, UsageSnapshot())
-        r2 = await _run(BillingTier.TEAM, UsageSnapshot())
+        r2 = await _run(
+            BillingTier.TEAM, UsageSnapshot(),
+            period_start=PERIOD_END, period_end=datetime(2026, 6, 30, tzinfo=timezone.utc),
+            issued_at=datetime(2026, 7, 1, tzinfo=timezone.utc),
+        )
         assert r1.invoice.invoice_number == "NUBI-2026-000001"
         assert r2.invoice.invoice_number == "NUBI-2026-000002"
 
@@ -253,6 +278,153 @@ class TestBillingCycle:
         assert res.invoice.total_zar == Decimal("0.00")
         assert res.invoice.status == "paid"
         assert charge.calls == []  # nothing to collect
+
+    async def test_collection_advances_period_to_month_end(self, stores):
+        # PERIOD_END = May 31 (month-end anchor) → next period_end must be
+        # Jun 30 (clamped to the ACTUAL month length, not a hard 28).
+        res = await _run(BillingTier.TEAM, UsageSnapshot())
+        sub = await stores["billing"].get_subscription(res.invoice.org_id)
+        assert sub["current_period_end"] == datetime(2026, 6, 30, tzinfo=timezone.utc)
+
+    # ── idempotency: re-running a cycle must never double-charge ────────────
+
+    async def test_rerun_same_period_charges_card_once(self, stores):
+        charge = _RecordingCharge("success")
+        r1 = await _run(BillingTier.TEAM, UsageSnapshot(), charge=charge)
+        r2 = await _run(BillingTier.TEAM, UsageSnapshot(), charge=charge)
+        # One charge, one invoice — the rerun returns the settled invoice.
+        assert len(charge.calls) == 1
+        assert r2.invoice.invoice_number == r1.invoice.invoice_number
+        assert r2.invoice.status == "paid"
+        assert r2.charge["status"] == "already_billed"
+        rows = await stores["invoices"].list_invoices(r1.invoice.org_id)
+        assert len(rows) == 1
+
+    async def test_rerun_same_period_does_not_double_debit_wallet(self, stores):
+        org = "11111111-1111-1111-1111-111111111111"
+        await stores["wallet"].set_balance(org, 10_000)
+        r1 = await _run(BillingTier.PRO, UsageSnapshot(ai_calls=130))
+        bal_after_first = (await stores["wallet"].get_balance(org))["balance_usd_cents"]
+        r2 = await _run(BillingTier.PRO, UsageSnapshot(ai_calls=130))
+        assert (await stores["wallet"].get_balance(org))["balance_usd_cents"] == bal_after_first
+        assert r2.wallet_applied_zar == r1.wallet_applied_zar
+        ledger = await stores["wallet"].list_ledger(org, entry_type="USAGE_OVERAGE")
+        assert len(ledger) == 1  # exactly one draw for the period
+
+    async def test_charge_reference_is_deterministic_per_cycle(self, stores):
+        # The reference derives from (org, period) — not the invoice number —
+        # so any retry presents the SAME reference and Paystack's
+        # reference-level dedup can reject a duplicate charge.
+        charge = _RecordingCharge("success")
+        res = await _run(BillingTier.TEAM, UsageSnapshot(), charge=charge)
+        org = res.invoice.org_id
+        assert charge.calls[0]["reference"] == f"nubi-inv-{org}-20260531"
+
+    async def test_failed_charge_rerun_retries_same_invoice(self, stores):
+        org = "11111111-1111-1111-1111-111111111111"
+        r1 = await _run(BillingTier.PRO, UsageSnapshot(), charge=_RecordingCharge("failed"))
+        assert r1.invoice.status == "past_due"
+        retry = _RecordingCharge("success")
+        r2 = await _run(BillingTier.PRO, UsageSnapshot(), charge=retry)
+        # The retry resumes the SAME invoice with the SAME reference.
+        assert r2.invoice.invoice_number == r1.invoice.invoice_number
+        assert r2.invoice.status == "paid"
+        assert retry.calls[0]["reference"] == f"nubi-inv-{org}-20260531"
+        rows = await stores["invoices"].list_invoices(org)
+        assert len(rows) == 1
+        assert rows[0]["status"] == "paid"
+
+    async def test_invoice_persisted_before_charge(self, stores):
+        # A crash DURING the charge must leave a pending invoice row — money
+        # may never move without a record to reconcile against.
+        org = "11111111-1111-1111-1111-111111111111"
+
+        async def _exploding_charge(**_kw):
+            raise RuntimeError("paystack transport exploded")
+
+        with pytest.raises(RuntimeError):
+            await _run(BillingTier.TEAM, UsageSnapshot(), charge=_exploding_charge)
+        rows = await stores["invoices"].list_invoices(org)
+        assert len(rows) == 1
+        assert rows[0]["status"] == "pending"
+        # The recovery run resumes that invoice (no new number) and collects.
+        charge = _RecordingCharge("success")
+        res = await _run(BillingTier.TEAM, UsageSnapshot(), charge=charge)
+        assert res.invoice.invoice_number == rows[0]["invoice_number"]
+        assert res.invoice.status == "paid"
+        assert len(charge.calls) == 1
+        assert len(await stores["invoices"].list_invoices(org)) == 1
+
+    async def test_pdf_render_failure_does_not_lose_invoice(self, stores):
+        # The PDF is re-renderable on demand — a render failure must not
+        # blow up the cycle after money has been collected.
+        from unittest.mock import patch
+
+        charge = _RecordingCharge("success")
+        with patch(
+            "app.ee.billing.invoice_pdf.render_invoice_pdf",
+            side_effect=RuntimeError("font cache corrupted"),
+        ):
+            res = await _run(BillingTier.TEAM, UsageSnapshot(), charge=charge)
+        assert res.invoice.status == "paid"
+        assert res.pdf_bytes == b""
+        assert res.email["sent"] is False  # nothing to attach
+        rows = await stores["invoices"].list_invoices(res.invoice.org_id)
+        assert len(rows) == 1 and rows[0]["status"] == "paid"
+
+    async def test_wallet_draw_is_ref_idempotent_after_partial_crash(self, stores):
+        # Simulates a crash AFTER the wallet debit but BEFORE the invoice was
+        # persisted: the rerun's draw must reuse the recorded ledger entry
+        # instead of debiting the prepaid balance a second time.
+        from app.ee.billing import wallet as walletmod
+        from app.ee.billing.reconcile import _apply_wallet_credit
+
+        org = "11111111-1111-1111-1111-111111111111"
+        await stores["wallet"].set_balance(org, 10_000)
+        first = await _apply_wallet_credit(walletmod, org, Decimal("400.00"), FX, PERIOD_END)
+        bal_after_first = (await stores["wallet"].get_balance(org))["balance_usd_cents"]
+        second = await _apply_wallet_credit(walletmod, org, Decimal("400.00"), FX, PERIOD_END)
+        assert second == first
+        assert (await stores["wallet"].get_balance(org))["balance_usd_cents"] == bal_after_first
+        ledger = await stores["wallet"].list_ledger(org, entry_type="USAGE_OVERAGE")
+        assert len(ledger) == 1
+
+
+# ── subscription period advancement ──────────────────────────────────────────
+
+
+class TestAddOneMonth:
+    def _dt(self, y, m, d):
+        return datetime(y, m, d, tzinfo=timezone.utc)
+
+    def test_clamps_to_actual_month_length_not_28(self):
+        from app.ee.billing.reconcile import _add_one_month
+
+        # May 31 → Jun 30 (Jun 30 exists; a hard 28 would short the cycle).
+        assert _add_one_month(self._dt(2026, 5, 31)) == self._dt(2026, 6, 30)
+
+    def test_month_end_anchor_stays_month_end(self):
+        from app.ee.billing.reconcile import _add_one_month
+
+        # Jan 31 → Feb 28 → Mar 31: no permanent drift away from month-end.
+        feb = _add_one_month(self._dt(2026, 1, 31))
+        assert feb == self._dt(2026, 2, 28)
+        assert _add_one_month(feb) == self._dt(2026, 3, 31)
+
+    def test_mid_month_anchor_is_preserved(self):
+        from app.ee.billing.reconcile import _add_one_month
+
+        assert _add_one_month(self._dt(2026, 1, 15)) == self._dt(2026, 2, 15)
+
+    def test_december_rolls_over_the_year(self):
+        from app.ee.billing.reconcile import _add_one_month
+
+        assert _add_one_month(self._dt(2026, 12, 31)) == self._dt(2027, 1, 31)
+
+    def test_leap_february(self):
+        from app.ee.billing.reconcile import _add_one_month
+
+        assert _add_one_month(self._dt(2028, 1, 31)) == self._dt(2028, 2, 29)
 
 
 # ── invoice HTTP routes ──────────────────────────────────────────────────────

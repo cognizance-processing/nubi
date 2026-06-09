@@ -150,6 +150,9 @@ def _invoice_email_body(invoice: Invoice) -> tuple[str, str]:
     if biz.is_vat_registered:
         vat_pct = (invoice.vat_rate * 100).normalize()
         lines.append(f"VAT @ {vat_pct}%    : {cur}{invoice.vat_amount_zar:,.2f}".replace(",", " "))
+    if invoice.wallet_applied_zar and invoice.wallet_applied_zar > 0:
+        wa = f"{cur}{invoice.wallet_applied_zar:,.2f}".replace(",", " ")
+        lines.append(f"Wallet credit  : -{wa}")
     lines += [
         f"Total          : {total}",
         "",
@@ -158,8 +161,9 @@ def _invoice_email_body(invoice: Invoice) -> tuple[str, str]:
     if invoice.wallet_applied_zar and invoice.wallet_applied_zar > 0:
         wa = f"{cur}{invoice.wallet_applied_zar:,.2f}".replace(",", " ")
         lines.append(
-            f"({wa} of overages this cycle were covered by your prepaid wallet "
-            f"credit and are not billed again here.)"
+            f"({wa} of prepaid wallet credit was applied to this invoice. "
+            f"Wallet top-ups are charged without VAT, so VAT — where applicable — "
+            f"is charged on your full usage and the credit reduces the amount due.)"
         )
     lines += [
         "",

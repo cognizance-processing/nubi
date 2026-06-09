@@ -309,6 +309,25 @@ async def get_embed_config(
 
         org_id = await get_user_org(identity.user_id, repo)
 
+    # ── BILLING: embedded sessions are a metered dimension ───────────────────
+    # Each embed-token config fetch starts one embedded view session
+    # (tiers.max_embedded_sessions_per_month).  First-party tokens are NOT
+    # metered here — internal dashboard views are never billed.  Quota
+    # enforcement is a no-op in OSS builds (no EE checker registered); FREE
+    # tier (0 sessions, no overage rate) hard-stops with 402.
+    if identity.kind == "embed":
+        from app.compute.metering import record_usage  # noqa: PLC0415
+        from app.features import enforce_quota  # noqa: PLC0415
+
+        await enforce_quota(org_id, "embedded_sessions", amount=1.0)
+        await record_usage(
+            kind="embedded_session",
+            user_id=identity.user_id,
+            org_id=org_id,
+            units=1.0,
+            tier="embed_config",
+        )
+
     # ── Load board from repo ──────────────────────────────────────────────────
     board = await repo.get("boards", org_id, dashboard_id)
     if board is None:

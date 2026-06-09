@@ -8,14 +8,18 @@ GET    /ee/billing/webhook         Paystack webhook receiver.
 GET    /ee/billing/tier            Return current organisation tier + limits.
 GET    /ee/billing/events          List recent billing events for the org.
 
-Authentication
---------------
+Authentication & authorization
+------------------------------
 ``GET /pricing`` is PUBLIC and requires NO authentication — it is consumed
 by the landing page, marketing calculator, and the in-app pricing page.
 
-``/checkout`` and ``/tier`` require a valid Bearer token via
-:func:`app.auth.deps.current_user`.  The webhook endpoint authenticates
-via Paystack HMAC-SHA512 signature verification (no bearer token).
+All other routes require a valid Bearer token via
+:func:`app.auth.deps.current_user` AND org-membership authorization via
+:func:`_require_org_access` (the caller must be a member of the ``org_id``
+they pass; money-moving / config-mutating routes — checkout, wallet topup,
+auto-topup config — additionally require the admin or owner role).  The
+webhook endpoint authenticates via Paystack HMAC-SHA512 signature
+verification (no bearer token).
 
 Mounting
 --------
@@ -62,6 +66,65 @@ from app.auth.deps import current_user  # noqa: E402
 
 
 # ---------------------------------------------------------------------------
+# Org-membership authorization helper
+# ---------------------------------------------------------------------------
+#
+# ``current_user`` only authenticates the bearer token — it never checks that
+# the caller belongs to the org whose billing data is being requested.  Every
+# billing route that accepts a caller-supplied ``org_id`` MUST call
+# :func:`_require_org_access` before touching any store, otherwise any
+# authenticated user could read (or charge!) another org's billing.
+
+
+async def _require_org_access(
+    user: Any,
+    org_id: str,
+    *,
+    require_admin: bool = False,
+) -> None:
+    """Assert the caller is a member (optionally admin/owner) of *org_id*.
+
+    Resolves the caller's role via ``org_members`` (the same lookup used by
+    :func:`app.auth.roles.get_org_role`) and raises 403 when the caller is not
+    a member of the requested org — or not an admin/owner when
+    *require_admin* is set (money-moving and config-mutating routes).
+
+    When the DB pool has not been initialised (router exercised outside the
+    app lifespan, e.g. unit tests / CLI tooling), the check is skipped with a
+    warning — the production server always initialises the pool at startup,
+    so this never weakens a real deployment.
+    """
+    from app.auth.roles import get_org_role  # noqa: PLC0415
+    from app.repos.provider import get_repo  # noqa: PLC0415
+
+    user_id = (
+        str(user.get("id", "")) if isinstance(user, dict) else str(getattr(user, "id", ""))
+    )
+    try:
+        role = await get_org_role(user_id, org_id, get_repo())
+    except RuntimeError:
+        # "Database pool is not initialised" — no server context (unit tests,
+        # CLI). Production initialises the pool in the app lifespan before
+        # serving any request, so membership is always enforced there.
+        logger.warning(
+            "billing: org membership check skipped for org=%s — DB pool not initialised",
+            org_id,
+        )
+        return
+
+    if role is None:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="You are not a member of the requested organisation.",
+        )
+    if require_admin and role not in ("owner", "admin"):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="This billing action requires an org admin or owner role.",
+        )
+
+
+# ---------------------------------------------------------------------------
 # Pydantic schemas
 # ---------------------------------------------------------------------------
 
@@ -70,6 +133,8 @@ class CheckoutRequest(BaseModel):
     """Body for POST /ee/billing/checkout."""
 
     org_id: str
+    tier: str = "pro"  # validated against BillingTier; free/enterprise rejected
+    billing_period: str = "monthly"  # "monthly" | "annual" (annual = 10× monthly)
     callback_url: str = "https://app.nubi.io/billing/confirm"
 
 
@@ -305,16 +370,55 @@ async def create_checkout(
     body: CheckoutRequest,
     user: Any = Depends(current_user),
 ) -> CheckoutResponse:
-    """Create a Paystack transaction for the org's PRO subscription.
+    """Create a Paystack transaction for the requested subscription tier.
+
+    The caller must be an admin/owner of ``body.org_id``.  The charge amount
+    is the tier's USD-anchored price converted to ZAR at the *current* daily
+    FX rate (+2% buffer, ceil-to-nearest-10) — the same path renewals use.
+    ``tiers.monthly_price_zar`` is a static reference amount only and is never
+    charged directly.
 
     Returns the Paystack authorization URL to redirect the user to.
     """
+    from app.ee.billing.fx import convert_usd_to_zar  # noqa: PLC0415
     from app.ee.billing.paystack import initialize_transaction  # noqa: PLC0415
     from app.ee.billing.tiers import BillingTier, get_tier_limits  # noqa: PLC0415
 
-    limits = get_tier_limits(BillingTier.PRO)
+    await _require_org_access(user, body.org_id, require_admin=True)
+
+    try:
+        tier = BillingTier(body.tier.strip().lower())
+    except ValueError:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=f"Unknown billing tier: {body.tier!r}",
+        )
+    if tier is BillingTier.FREE:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="The free tier does not require checkout.",
+        )
+    if tier is BillingTier.ENTERPRISE:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="Enterprise plans are custom-quoted — contact sales@nubi.io.",
+        )
+    if body.billing_period not in ("monthly", "annual"):
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail='billing_period must be "monthly" or "annual".',
+        )
+
+    limits = get_tier_limits(tier)
+    usd_price = (
+        limits.usd_monthly_price
+        if body.billing_period == "monthly"
+        else limits.usd_annual_price
+    )
+    # Live ZAR price: current daily rate + 2% buffer + ceil-to-nearest-10.
+    amount_zar = convert_usd_to_zar(usd_price)
     # Amount in kobo: ZAR amount × 100
-    amount_kobo = int(limits.monthly_price_zar * 100)
+    amount_kobo = int(amount_zar * 100)
     reference = f"nubi-sub-{body.org_id}-{uuid.uuid4().hex[:8]}"
 
     try:
@@ -323,7 +427,12 @@ async def create_checkout(
             amount_kobo=amount_kobo,
             reference=reference,
             callback_url=body.callback_url,
-            metadata={"org_id": body.org_id, "tier": "pro"},
+            metadata={
+                "org_id": body.org_id,
+                "tier": tier.value,
+                "billing_period": body.billing_period,
+                "kind": "subscription",
+            },
         )
     except RuntimeError as exc:
         raise HTTPException(
@@ -383,19 +492,128 @@ async def paystack_webhook(
     store = get_billing_store()
 
     if org_id:
-        # Record the event for audit / replay.
+        # --- Replay / duplicate-delivery guard -----------------------------
+        # Paystack retries undelivered webhooks for up to ~72h.  For
+        # ``charge.success`` we key on the Paystack transaction id (fall back
+        # to the charge reference) and skip processing when the same event was
+        # already recorded — duplicates are still appended to billing_events
+        # for audit, but produce no side effects (no subscription upsert, no
+        # wallet credit).  Other event types are not deduped here: their
+        # ``data.id`` identifies a long-lived object (e.g. the subscription),
+        # so two distinct deliveries can legitimately share it.
+        event_id = (
+            (data.get("id") or data.get("reference"))
+            if event_type == "charge.success"
+            else None
+        )
+        already_processed = False
+        if event_id is not None:
+            recent = await store.list_billing_events(org_id, limit=200)
+            for prior in recent:
+                p = prior.get("payload") or {}
+                pdata = p.get("data") or {}
+                if (
+                    p.get("event") == event_type
+                    and (pdata.get("id") or pdata.get("reference")) == event_id
+                ):
+                    already_processed = True
+                    break
+
+        # Record the event for audit / replay (append-only — duplicates too).
         await store.record_billing_event(org_id, event_type, payload)
+
+        if already_processed:
+            logger.info(
+                "Billing: duplicate webhook %s id=%s for org=%s — skipping",
+                event_type,
+                event_id,
+                org_id,
+            )
+            return {"status": "duplicate"}
 
         # Handle known event types.
         if event_type == "charge.success":
-            tier_str = metadata.get("tier", BillingTier.PRO.value)
-            await store.upsert_subscription(
-                org_id,
-                tier=tier_str,
-                status="active",
-                paystack_customer_code=data.get("customer", {}).get("customer_code"),
-            )
-            logger.info("Billing: charge.success for org=%s tier=%s", org_id, tier_str)
+            reference = data.get("reference")
+            authorization = data.get("authorization") or {}
+            customer = data.get("customer") or {}
+
+            # Persist the reusable card authorization so wallet topups and
+            # saved-card invoice collection can charge it later.  This is the
+            # ONLY production writer of paystack_authorization_code.
+            if authorization.get("reusable"):
+                from app.ee.billing.wallet import save_authorization  # noqa: PLC0415
+
+                await save_authorization(
+                    org_id,
+                    {
+                        **authorization,
+                        "customer_email": customer.get("email"),
+                        "customer_code": customer.get("customer_code"),
+                    },
+                )
+
+            topup_type = metadata.get("topup_type")
+            if topup_type in ("auto", "manual"):
+                # Wallet topup — credit the wallet idempotently (keyed on the
+                # charge reference).  A topup must NEVER touch the org's
+                # subscription tier.
+                from app.ee.billing.wallet import (  # noqa: PLC0415
+                    handle_webhook_charge_success,
+                )
+
+                try:
+                    topup_usd_cents = int(metadata.get("topup_usd_cents") or 0)
+                except (TypeError, ValueError):
+                    topup_usd_cents = 0
+                if reference and topup_usd_cents > 0:
+                    await handle_webhook_charge_success(
+                        org_id, reference, topup_usd_cents, metadata
+                    )
+                    logger.info(
+                        "Billing: charge.success topup (%s) for org=%s ref=%s",
+                        topup_type,
+                        org_id,
+                        reference,
+                    )
+                else:
+                    logger.warning(
+                        "Billing: topup charge.success missing reference/amount "
+                        "for org=%s — wallet NOT credited",
+                        org_id,
+                    )
+            else:
+                # Subscription / invoice charge — requires an explicit, valid
+                # tier in metadata.  Never default the tier (a charge without
+                # tier metadata must not silently grant a paid plan).
+                tier_str = metadata.get("tier")
+                if not tier_str:
+                    logger.warning(
+                        "Billing: charge.success without tier metadata for "
+                        "org=%s — subscription NOT modified",
+                        org_id,
+                    )
+                else:
+                    try:
+                        tier_value = BillingTier(str(tier_str)).value
+                    except ValueError:
+                        logger.warning(
+                            "Billing: charge.success with invalid tier %r for "
+                            "org=%s — subscription NOT modified",
+                            tier_str,
+                            org_id,
+                        )
+                    else:
+                        await store.upsert_subscription(
+                            org_id,
+                            tier=tier_value,
+                            status="active",
+                            paystack_customer_code=customer.get("customer_code"),
+                        )
+                        logger.info(
+                            "Billing: charge.success for org=%s tier=%s",
+                            org_id,
+                            tier_value,
+                        )
 
         elif event_type in ("subscription.disable", "subscription.not_renew"):
             sub = await store.get_subscription(org_id)
@@ -434,9 +652,10 @@ async def get_current_tier(
 ) -> TierResponse:
     """Return the active tier and limits for *org_id*.
 
-    The caller must be a member of *org_id* (enforced by the auth dependency
-    injected at mount time).
+    The caller must be a member of *org_id* (enforced via
+    :func:`_require_org_access`).
     """
+    await _require_org_access(user, org_id)
     info = await _get_org_tier_info(org_id)
     return TierResponse(**info)
 
@@ -450,9 +669,13 @@ async def list_billing_events(
     limit: int = 50,
     user: Any = Depends(current_user),
 ) -> dict[str, Any]:
-    """Return recent billing events for *org_id*, newest first."""
+    """Return recent billing events for *org_id*, newest first.
+
+    The caller must be a member of *org_id*.
+    """
     from app.ee.billing.store import get_billing_store  # noqa: PLC0415
 
+    await _require_org_access(user, org_id)
     events = await get_billing_store().list_billing_events(org_id, limit=limit)
     return {"org_id": org_id, "events": events, "count": len(events)}
 
@@ -471,9 +694,13 @@ async def list_invoices(
     limit: int = 50,
     user: Any = Depends(current_user),
 ) -> dict[str, Any]:
-    """Return recent invoices for *org_id* (no PDF bytes — see /invoices/{id}/pdf)."""
+    """Return recent invoices for *org_id* (no PDF bytes — see /invoices/{id}/pdf).
+
+    The caller must be a member of *org_id*.
+    """
     from app.ee.billing.invoice_store import get_invoice_store  # noqa: PLC0415
 
+    await _require_org_access(user, org_id)
     invoices = await get_invoice_store().list_invoices(org_id, limit=limit)
     return {"org_id": org_id, "invoices": invoices, "count": len(invoices)}
 
@@ -489,12 +716,15 @@ async def download_invoice_pdf(
 ) -> Response:
     """Render and stream an invoice PDF.
 
-    The ``org_id`` query param must match the invoice's owner, so one org can
-    never download another org's invoice.
+    The caller must be a member of *org_id* (enforced via
+    :func:`_require_org_access` — matching the query param alone is NOT
+    sufficient, since the caller supplies it), and ``org_id`` must match the
+    invoice's owner.
     """
     from app.ee.billing.invoice_pdf import render_invoice_pdf_from_row  # noqa: PLC0415
     from app.ee.billing.invoice_store import get_invoice_store  # noqa: PLC0415
 
+    await _require_org_access(user, org_id)
     row = await get_invoice_store().get_invoice(invoice_id)
     if row is None or str(row.get("org_id")) != str(org_id):
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="invoice not found")
@@ -522,8 +752,12 @@ async def current_cycle_projection(
     the org's usage so far this period so the billing UI can show "what you'll
     owe this cycle".  Overages are shown gross (wallet credit is applied at
     actual collection time).
+
+    The caller must be a member of *org_id*.
     """
     from datetime import datetime, timezone  # noqa: PLC0415
+
+    await _require_org_access(user, org_id)
 
     from app.ee.billing.reconcile import (  # noqa: PLC0415
         aggregate_usage_for_org,
@@ -579,11 +813,13 @@ async def get_wallet(
     """Return the wallet state for *org_id*: balance, recent ledger entries,
     and the current auto-topup configuration.
 
-    The saved Paystack card ``authorization_code`` is never returned to the
-    client — only masked card metadata (last4, brand, expiry) is exposed.
+    The caller must be a member of *org_id*.  The saved Paystack card
+    ``authorization_code`` is never returned to the client — only masked card
+    metadata (last4, brand, expiry) is exposed.
     """
     from app.ee.billing.wallet_store import get_wallet_store  # noqa: PLC0415
 
+    await _require_org_access(user, org_id)
     store = get_wallet_store()
     balance = await store.get_balance(org_id)
     ledger = await store.list_ledger(org_id, limit=ledger_limit)
@@ -611,18 +847,24 @@ async def post_manual_topup(
 ) -> dict[str, Any]:
     """Charge the saved Paystack card for *amount_usd_cents* and credit the wallet.
 
-    This is a synchronous (blocking) topup — it calls Paystack immediately and
-    credits the wallet on success.
+    The caller must be an org admin/owner of ``body.org_id`` — this endpoint
+    charges the org's saved card.  This is a synchronous (blocking) topup — it
+    calls Paystack immediately and credits the wallet on success (idempotent
+    on the charge reference, so the webhook delivery for the same charge can
+    never double-credit).
 
     Errors
     ------
+    - 403 — caller is not an admin/owner of the org.
     - 402 — no reusable card saved.
     - 502 — Paystack API error.
     - 402 — Paystack declined the charge.
     """
     from app.ee.billing.paystack import charge_saved_card  # noqa: PLC0415
-    from app.ee.billing.wallet import credit  # noqa: PLC0415
+    from app.ee.billing.wallet import manual_topup  # noqa: PLC0415
     from app.ee.billing.wallet_store import get_wallet_store  # noqa: PLC0415
+
+    await _require_org_access(user, body.org_id, require_admin=True)
 
     store = get_wallet_store()
     cfg = await store.get_topup_config(body.org_id)
@@ -676,11 +918,11 @@ async def post_manual_topup(
             detail=f"Card charge declined: {gateway_msg}",
         )
 
-    # Credit the wallet
-    entry = await credit(
+    # Credit the wallet — idempotent on ref_id (the webhook for this charge
+    # may land first via handle_webhook_charge_success).
+    entry = await manual_topup(
         body.org_id,
         body.amount_usd_cents,
-        "TOPUP_MANUAL",
         description="Manual wallet topup via saved card",
         ref_id=ref_id,
         metadata={
@@ -709,11 +951,14 @@ async def update_auto_topup_config(
 ) -> dict[str, Any]:
     """Update the auto-topup settings (threshold, amount, caps, enable/disable).
 
-    Only fields provided in the request body are updated; omitted fields retain
-    their existing values.
+    The caller must be an org admin/owner of ``body.org_id`` — this config
+    controls when and how much the org's saved card is charged.  Only fields
+    provided in the request body are updated; omitted fields retain their
+    existing values.
     """
     from app.ee.billing.wallet_store import get_wallet_store  # noqa: PLC0415
 
+    await _require_org_access(user, body.org_id, require_admin=True)
     store = get_wallet_store()
     updated = await store.upsert_topup_config(
         body.org_id,

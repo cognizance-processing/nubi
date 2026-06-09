@@ -7,8 +7,10 @@ fields — ``status`` / ``paid_at`` / ``paystack_reference`` / ``pdf_filename``)
 describing one billing cycle for one organisation:
 
     base subscription
-      + metered overages NOT covered by the prepaid wallet
-      + VAT  (only when the business is VAT-registered)
+      + metered overages
+      + VAT on the above  (only when the business is VAT-registered)
+      − prepaid wallet credit applied  (a payment, after VAT — topups are
+        charged VAT-free, so VAT on wallet-funded usage is due at redemption)
       = total collected via Paystack (in ZAR)
 
 All monetary amounts are South African Rand (ZAR) ``Decimal`` values quantised
@@ -164,8 +166,9 @@ class Invoice:
     customer_name: str = ""
     currency: str = "ZAR"
     fx_rate: Decimal | None = None
-    # Wallet credit applied to overages this cycle (informational; not billed
-    # again on the invoice — it was prepaid).
+    # Wallet credit applied this cycle (informational mirror of the
+    # ``kind="wallet"`` line items; applied to the VAT-inclusive total in
+    # ``recompute()`` — it was prepaid, VAT-free, so VAT lands here).
     wallet_applied_zar: Decimal = Decimal("0.00")
     status: InvoiceStatus = "draft"
     id: str = field(default_factory=lambda: str(uuid.uuid4()))
@@ -192,15 +195,28 @@ class Invoice:
         VAT is applied only when the issuing business is VAT-registered
         (``business.is_vat_registered``).  Otherwise the VAT line is zero and
         the total equals the subtotal.
+
+        Prepaid wallet credit (``kind="wallet"`` lines, stored negative) is a
+        *payment*, not a discount: topups are charged VAT-free, so VAT on
+        wallet-funded consumption is due at redemption.  Wallet lines are
+        therefore excluded from the VAT base and applied to the VAT-inclusive
+        total instead (clamped at zero).
         """
-        self.subtotal_zar = _money(sum((li.amount_zar for li in self.line_items), Decimal("0")))
+        self.subtotal_zar = _money(
+            sum((li.amount_zar for li in self.line_items if li.kind != "wallet"), Decimal("0"))
+        )
+        wallet_credit = _money(
+            sum((-li.amount_zar for li in self.line_items if li.kind == "wallet"), Decimal("0"))
+        )
         if self.business.is_vat_registered:
             self.vat_rate = self.business.vat_rate
             self.vat_amount_zar = _money(self.subtotal_zar * self.vat_rate)
         else:
             self.vat_rate = Decimal("0.00")
             self.vat_amount_zar = Decimal("0.00")
-        self.total_zar = _money(self.subtotal_zar + self.vat_amount_zar)
+        self.total_zar = _money(
+            max(self.subtotal_zar + self.vat_amount_zar - wallet_credit, Decimal("0"))
+        )
 
     @property
     def total_zar_cents(self) -> int:

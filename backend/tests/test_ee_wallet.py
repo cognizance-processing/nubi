@@ -619,3 +619,341 @@ class TestWalletService:
 
         with pytest.raises(ValueError, match="debit amount must be positive"):
             await debit(ORG, 0, "USAGE_LLM")
+
+
+# ===========================================================================
+# Regression tests — confirmed billing bugs
+# ===========================================================================
+
+
+class TestPgWalletStoreSingleStatementSql:
+    """PgWalletStore must never pass multi-command SQL to a prepared statement.
+
+    asyncpg executes parameterised queries via the extended-query protocol and
+    raises ``cannot insert multiple commands into a prepared statement`` for
+    any multi-statement string.  These fakes enforce the same restriction.
+    """
+
+    @staticmethod
+    def _assert_single_command(query: str) -> None:
+        stripped = query.strip().rstrip(";")
+        assert ";" not in stripped, (
+            f"multi-command SQL passed to a prepared statement:\n{query}"
+        )
+
+    @pytest.fixture
+    def _fake_db(self, monkeypatch):
+        import app.db as db
+
+        async def fake_fetchrow(query, *args):
+            self._assert_single_command(query)
+            return {"org_id": str(args[0]) if args else None, "balance_usd_cents": 0}
+
+        async def fake_execute(query, *args):
+            self._assert_single_command(query)
+            return "INSERT 0 1"
+
+        monkeypatch.setattr(db, "fetchrow", fake_fetchrow)
+        monkeypatch.setattr(db, "execute", fake_execute)
+
+    @pytest.mark.asyncio
+    async def test_get_balance_is_single_statement(self, _fake_db):
+        from app.ee.billing.wallet_store import PgWalletStore
+
+        bal = await PgWalletStore().get_balance(ORG)
+        assert bal["balance_usd_cents"] == 0
+
+    @pytest.mark.asyncio
+    async def test_get_topup_config_is_single_statement(self, _fake_db):
+        from app.ee.billing.wallet_store import PgWalletStore
+
+        cfg = await PgWalletStore().get_topup_config(ORG)
+        assert cfg["org_id"] == ORG
+
+    @pytest.mark.asyncio
+    async def test_try_claim_topup_in_flight_is_single_statement(self, _fake_db):
+        from app.ee.billing.wallet_store import PgWalletStore
+
+        assert await PgWalletStore().try_claim_topup_in_flight(ORG) is True
+
+
+class TestFxBufferOnTopups:
+    """Wallet topup ZAR conversion must apply the canonical 2% FX buffer + ceil."""
+
+    def test_usd_cents_to_zar_cents_applies_buffer(self, monkeypatch):
+        from decimal import Decimal
+
+        import app.ee.billing.fx as fxmod
+        from app.ee.billing.wallet import _usd_cents_to_zar_cents
+
+        monkeypatch.setattr(
+            fxmod,
+            "get_current_rate",
+            lambda: {"rate": Decimal("16.26"), "fetched_at": None, "stale": False},
+        )
+        # 5000 * 16.26 * 1.02 = 82926 exactly
+        assert _usd_cents_to_zar_cents(5000) == 82926
+        # 333 * 16.26 * 1.02 = 5522.8716 → ceil → 5523
+        assert _usd_cents_to_zar_cents(333) == 5523
+        # 1 * 16.26 * 1.02 = 16.5852 → ceil → 17
+        assert _usd_cents_to_zar_cents(1) == 17
+
+    def test_conversion_matches_canonical_fx_formula(self, monkeypatch):
+        from decimal import ROUND_CEILING, Decimal
+
+        import app.ee.billing.fx as fxmod
+        from app.ee.billing.fx import FX_BUFFER
+        from app.ee.billing.wallet import _usd_cents_to_zar_cents
+
+        rate = Decimal("18.4937")
+        monkeypatch.setattr(
+            fxmod,
+            "get_current_rate",
+            lambda: {"rate": rate, "fetched_at": None, "stale": False},
+        )
+        for usd_cents in (1, 999, 5000, 12345):
+            expected = int(
+                (Decimal(usd_cents) * rate * FX_BUFFER).to_integral_value(
+                    rounding=ROUND_CEILING
+                )
+            )
+            assert _usd_cents_to_zar_cents(usd_cents) == expected
+
+
+class TestAutoTopupConcurrency:
+    """The in-flight guard must be an atomic claim, not check-then-set."""
+
+    @pytest.mark.asyncio
+    async def test_concurrent_triggers_charge_card_only_once(self, _clean_wallet_store):
+        """Two near-simultaneous topup triggers must produce exactly ONE charge."""
+        from app.ee.billing.paystack import set_client_for_tests
+        from app.ee.billing.wallet import trigger_auto_topup
+        from app.ee.billing.wallet_store import (
+            InMemoryWalletStore,
+            set_wallet_store_for_tests,
+        )
+
+        class YieldingStore(InMemoryWalletStore):
+            """InMemory store that yields to the event loop on every read —
+            reproduces the suspension points a real DB roundtrip creates."""
+
+            async def get_topup_config(self, org_id):
+                await asyncio.sleep(0)
+                return await super().get_topup_config(org_id)
+
+            async def sum_auto_topups_this_month(self, org_id):
+                await asyncio.sleep(0)
+                return await super().sum_auto_topups_this_month(org_id)
+
+            async def sum_credits_this_month(self, org_id):
+                await asyncio.sleep(0)
+                return await super().sum_credits_this_month(org_id)
+
+        store = YieldingStore()
+        set_wallet_store_for_tests(store)
+
+        mock_client = _make_mock_paystack(status="success")
+        set_client_for_tests(mock_client)
+        await _seed_topup_config(store, ORG, topup_amount_usd_cents=5000)
+
+        await asyncio.gather(trigger_auto_topup(ORG), trigger_auto_topup(ORG))
+
+        assert mock_client.post.call_count == 1
+        auto_entries = await store.list_ledger(ORG, entry_type="TOPUP_AUTO")
+        assert len(auto_entries) == 1
+        bal = await store.get_balance(ORG)
+        assert bal["balance_usd_cents"] == 5000  # credited exactly once
+
+    @pytest.mark.asyncio
+    async def test_try_claim_is_exclusive_until_released(self, _clean_wallet_store):
+        store = _clean_wallet_store
+        assert await store.try_claim_topup_in_flight(ORG) is True
+        assert await store.try_claim_topup_in_flight(ORG) is False  # held
+        await store.set_topup_in_flight(ORG, False)
+        assert await store.try_claim_topup_in_flight(ORG) is True  # released
+
+    @pytest.mark.asyncio
+    async def test_stale_claim_self_heals_after_ttl(self, _clean_wallet_store):
+        """A claim abandoned by a crashed process is re-claimable after the TTL."""
+        from datetime import timedelta
+
+        from app.ee.billing.wallet_store import TOPUP_IN_FLIGHT_TTL_SECONDS
+
+        store = _clean_wallet_store
+        assert await store.try_claim_topup_in_flight(ORG) is True
+        # Simulate a crash: flag stuck TRUE, claimed long ago.
+        store._configs[ORG]["topup_in_flight_at"] = datetime.now(timezone.utc) - timedelta(
+            seconds=TOPUP_IN_FLIGHT_TTL_SECONDS + 1
+        )
+        assert await store.try_claim_topup_in_flight(ORG) is True
+
+
+class TestSpendCapEnforcement:
+    """spend_cap_usd_cents must block auto-topups (it is the customer's hard stop)."""
+
+    @pytest.mark.asyncio
+    async def test_auto_topup_blocked_when_spend_cap_would_be_exceeded(
+        self, _clean_wallet_store
+    ):
+        from app.ee.billing.paystack import set_client_for_tests
+        from app.ee.billing.wallet import credit, debit
+
+        mock_client = _make_mock_paystack(status="success")
+        set_client_for_tests(mock_client)
+
+        # Cap $60; $20 already credited this month; $50 topup would total $70 > cap.
+        await _seed_topup_config(
+            _clean_wallet_store, ORG,
+            threshold_usd_cents=2000,
+            topup_amount_usd_cents=5000,
+            spend_cap_usd_cents=6000,
+        )
+        await credit(ORG, 2000, "TOPUP_MANUAL")
+        await debit(ORG, 500, "USAGE_LLM")  # drops below threshold
+        await asyncio.sleep(0.05)
+
+        mock_client.post.assert_not_called()
+        auto_entries = await _clean_wallet_store.list_ledger(ORG, entry_type="TOPUP_AUTO")
+        assert len(auto_entries) == 0
+
+    @pytest.mark.asyncio
+    async def test_auto_topup_proceeds_under_spend_cap(self, _clean_wallet_store):
+        from app.ee.billing.paystack import set_client_for_tests
+        from app.ee.billing.wallet import credit, debit
+
+        mock_client = _make_mock_paystack(status="success")
+        set_client_for_tests(mock_client)
+
+        # Cap $100; $20 credited + $50 topup = $70 ≤ cap — allowed.
+        await _seed_topup_config(
+            _clean_wallet_store, ORG,
+            threshold_usd_cents=2000,
+            topup_amount_usd_cents=5000,
+            spend_cap_usd_cents=10000,
+        )
+        await credit(ORG, 2000, "TOPUP_MANUAL")
+        await debit(ORG, 500, "USAGE_LLM")
+        await asyncio.sleep(0.05)
+
+        auto_entries = await _clean_wallet_store.list_ledger(ORG, entry_type="TOPUP_AUTO")
+        assert len(auto_entries) == 1
+
+
+class TestTopupFailedRefIdNotPoisoning:
+    """TOPUP_FAILED rows must not block a later successful credit for the same ref."""
+
+    @pytest.mark.asyncio
+    async def test_ledger_ref_exists_ignores_topup_failed(self, _clean_wallet_store):
+        store = _clean_wallet_store
+        await store.append_ledger(
+            ORG,
+            entry_type="TOPUP_FAILED",
+            amount_usd_cents=0,
+            balance_after_usd_cents=0,
+            description="Auto-topup exception: timeout",
+            ref_id="nubi_auto_timeout_ref",
+        )
+        assert await store.ledger_ref_exists("nubi_auto_timeout_ref") is False
+
+    @pytest.mark.asyncio
+    async def test_webhook_credits_charge_that_failed_locally(self, _clean_wallet_store):
+        """Timeout after Paystack success: TOPUP_FAILED written locally, then the
+        charge.success webhook arrives for the same reference — must credit."""
+        from app.ee.billing.wallet import get_balance, handle_webhook_charge_success
+
+        ref = f"nubi_auto_{uuid.uuid4().hex}"
+        await _clean_wallet_store.append_ledger(
+            ORG,
+            entry_type="TOPUP_FAILED",
+            amount_usd_cents=0,
+            balance_after_usd_cents=0,
+            description="Auto-topup exception: network timeout",
+            ref_id=ref,
+        )
+
+        entry = await handle_webhook_charge_success(ORG, ref, 5000, {"topup_type": "auto"})
+        assert entry.get("skipped") is None
+        assert entry["amount_usd_cents"] == 5000
+
+        bal = await get_balance(ORG)
+        assert bal["balance_usd_cents"] == 5000
+
+        # A retried webhook delivery is still deduped on the successful row.
+        second = await handle_webhook_charge_success(ORG, ref, 5000, {"topup_type": "auto"})
+        assert second.get("skipped") is True
+        bal = await get_balance(ORG)
+        assert bal["balance_usd_cents"] == 5000
+
+
+class TestDebitIdempotency:
+    """debit() must be idempotent on ref_id — a retried billing cycle never
+    double-draws the same period's overage."""
+
+    @pytest.mark.asyncio
+    async def test_debit_skips_duplicate_ref_id(self, _clean_wallet_store):
+        from app.ee.billing.wallet import credit, debit, get_balance
+
+        await credit(ORG, 10_000, "TOPUP_MANUAL")
+        ref = f"overage-{ORG}-202606"
+
+        first = await debit(ORG, 2_000, "USAGE_OVERAGE", ref_id=ref)
+        second = await debit(ORG, 2_000, "USAGE_OVERAGE", ref_id=ref)
+
+        assert first.get("skipped") is None
+        assert second == {"skipped": True, "ref_id": ref}
+
+        bal = await get_balance(ORG)
+        assert bal["balance_usd_cents"] == 8_000  # drawn exactly once
+
+    @pytest.mark.asyncio
+    async def test_debit_without_ref_id_is_not_deduped(self, _clean_wallet_store):
+        from app.ee.billing.wallet import credit, debit, get_balance
+
+        await credit(ORG, 10_000, "TOPUP_MANUAL")
+        await debit(ORG, 1_000, "USAGE_LLM")
+        await debit(ORG, 1_000, "USAGE_LLM")
+        bal = await get_balance(ORG)
+        assert bal["balance_usd_cents"] == 8_000
+
+
+class TestAtomicBalanceLedger:
+    """Balance mutation + ledger append happen via single atomic store ops."""
+
+    @pytest.mark.asyncio
+    async def test_credit_with_ledger_keeps_invariant(self, _clean_wallet_store):
+        store = _clean_wallet_store
+        entry = await store.credit_with_ledger(
+            ORG, 5000, entry_type="TOPUP_MANUAL", description="topup"
+        )
+        assert entry["balance_after_usd_cents"] == 5000
+        bal = await store.get_balance(ORG)
+        ledger = await store.list_ledger(ORG)
+        assert bal["balance_usd_cents"] == sum(e["amount_usd_cents"] for e in ledger)
+
+    @pytest.mark.asyncio
+    async def test_debit_with_ledger_raises_on_insufficient(self, _clean_wallet_store):
+        store = _clean_wallet_store
+        await store.credit_with_ledger(ORG, 100, entry_type="TOPUP_MANUAL")
+        with pytest.raises(ValueError, match="Insufficient wallet balance"):
+            await store.debit_with_ledger(ORG, 500, entry_type="USAGE_LLM")
+        # Failed debit must leave no ledger row and an unchanged balance.
+        bal = await store.get_balance(ORG)
+        assert bal["balance_usd_cents"] == 100
+        ledger = await store.list_ledger(ORG)
+        assert len(ledger) == 1
+
+    @pytest.mark.asyncio
+    async def test_debit_race_surfaces_structured_error(self, _clean_wallet_store, monkeypatch):
+        """If a concurrent debit wins between the pre-check and the guarded
+        UPDATE, callers get WalletInsufficientError — never a bare ValueError."""
+        from app.ee.billing.wallet import WalletInsufficientError, credit, debit
+
+        await credit(ORG, 1_000, "TOPUP_MANUAL")
+
+        async def race_losing_debit(*args, **kwargs):
+            raise ValueError("Insufficient wallet balance for org: need 1000 cents")
+
+        monkeypatch.setattr(_clean_wallet_store, "debit_with_ledger", race_losing_debit)
+        with pytest.raises(WalletInsufficientError) as exc_info:
+            await debit(ORG, 1_000, "USAGE_COMPUTE")
+        assert exc_info.value.detail["error"] == "wallet_balance_insufficient"

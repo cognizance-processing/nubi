@@ -86,6 +86,30 @@ def _register_billing_features() -> None:
 
 
 # ---------------------------------------------------------------------------
+# Usage-quota checker registration
+# ---------------------------------------------------------------------------
+
+
+def _register_quota_checker() -> None:
+    """Register the EE usage-quota checker into the core enforcement hook.
+
+    Core call sites (compute, flows, AI, embed) call
+    ``app.features.enforce_quota`` before metered operations; without this
+    registration the hook is a no-op (OSS build: no quotas).  The checker
+    resolves the org's subscription tier and applies the canonical billing
+    model: dimensions with an overage rate are allow-and-meter; dimensions
+    without one (e.g. everything on FREE) hard-stop at the tier quota.
+    """
+    try:
+        from app.ee.billing.quota import register_quota_checker  # noqa: PLC0415
+
+        register_quota_checker()
+        logger.debug("EE billing: quota checker registered")
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("EE billing: could not register quota checker — %s", exc)
+
+
+# ---------------------------------------------------------------------------
 # FX refresh task registration
 # ---------------------------------------------------------------------------
 
@@ -189,6 +213,7 @@ def setup(app: Any | None = None) -> None:
         FastAPI application instance, or ``None`` for non-HTTP worker use.
     """
     _register_billing_features()
+    _register_quota_checker()
     _register_fx_refresh_task()
     # The daily FX-refresh flow is DB-backed, so it is created at app STARTUP
     # (after init_db()) via ensure_fx_refresh_flow_async() — awaited by

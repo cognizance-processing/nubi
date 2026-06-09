@@ -39,6 +39,7 @@ WalletTopupConfig shape
     monthly_topup_cap_usd_cents: int | None,
     spend_cap_usd_cents: int | None,
     topup_in_flight: bool,
+    topup_in_flight_at: datetime | None,
     paystack_authorization_code: str | None,
     paystack_customer_email: str | None,
     paystack_customer_code: str | None,
@@ -62,6 +63,11 @@ from typing import Any
 # ---------------------------------------------------------------------------
 # Entry type constants
 # ---------------------------------------------------------------------------
+
+# How long (seconds) before a stuck ``topup_in_flight`` lock self-heals.
+# Protects against a process dying between claiming the lock and the
+# ``finally`` that clears it (deploy, OOM, event-loop shutdown).
+TOPUP_IN_FLIGHT_TTL_SECONDS = 600
 
 ENTRY_TYPES = {
     "TOPUP_MANUAL",
@@ -127,6 +133,42 @@ class WalletStore:
         """
         raise NotImplementedError
 
+    async def credit_with_ledger(
+        self,
+        org_id: str,
+        amount_usd_cents: int,
+        *,
+        entry_type: str,
+        description: str | None = None,
+        ref_id: str | None = None,
+        metadata: dict[str, Any] | None = None,
+    ) -> LedgerEntry:
+        """Atomically credit the balance AND append the ledger row.
+
+        Both writes happen as a single atomic unit (one transaction in the Pg
+        store) so the balance and the ledger can never diverge.  Returns the
+        written ledger entry.
+        """
+        raise NotImplementedError
+
+    async def debit_with_ledger(
+        self,
+        org_id: str,
+        amount_usd_cents: int,
+        *,
+        entry_type: str,
+        description: str | None = None,
+        ref_id: str | None = None,
+        metadata: dict[str, Any] | None = None,
+    ) -> LedgerEntry:
+        """Atomically debit the balance AND append the ledger row.
+
+        Both writes happen as a single atomic unit (one transaction in the Pg
+        store).  Raises :class:`ValueError` if the balance is insufficient.
+        Returns the written ledger entry.
+        """
+        raise NotImplementedError
+
     # ------------------------------------------------------------------
     # Ledger
     # ------------------------------------------------------------------
@@ -164,7 +206,13 @@ class WalletStore:
         raise NotImplementedError
 
     async def ledger_ref_exists(self, ref_id: str) -> bool:
-        """Return True if *ref_id* already exists in the ledger (idempotency guard)."""
+        """Return True if *ref_id* already exists in the ledger (idempotency guard).
+
+        ``TOPUP_FAILED`` rows are NOT counted — a failed attempt must never
+        block a later successful credit for the same Paystack reference
+        (e.g. a charge that succeeded at Paystack after a local timeout and
+        is later delivered via the ``charge.success`` webhook).
+        """
         raise NotImplementedError
 
     # ------------------------------------------------------------------
@@ -197,7 +245,21 @@ class WalletStore:
         raise NotImplementedError
 
     async def set_topup_in_flight(self, org_id: str, in_flight: bool) -> None:
-        """Set/clear the idempotency lock flag on the topup config."""
+        """Set/clear the idempotency lock flag on the topup config.
+
+        Prefer :meth:`try_claim_topup_in_flight` to ACQUIRE the lock —
+        this method is an unconditional write, suitable only for clearing.
+        """
+        raise NotImplementedError
+
+    async def try_claim_topup_in_flight(self, org_id: str) -> bool:
+        """Atomically claim the ``topup_in_flight`` lock (compare-and-set).
+
+        Returns True if this caller won the claim, False if another topup is
+        already in flight.  A stale claim older than
+        ``TOPUP_IN_FLIGHT_TTL_SECONDS`` is treated as abandoned (crashed
+        process) and may be re-claimed.
+        """
         raise NotImplementedError
 
 
@@ -259,6 +321,50 @@ class InMemoryWalletStore(WalletStore):
             )
         self._balances[key] = current - amount_usd_cents
         return self._balances[key]
+
+    async def credit_with_ledger(
+        self,
+        org_id: str,
+        amount_usd_cents: int,
+        *,
+        entry_type: str,
+        description: str | None = None,
+        ref_id: str | None = None,
+        metadata: dict[str, Any] | None = None,
+    ) -> LedgerEntry:
+        # Dict mutations below run without awaits in between — atomic enough
+        # for the single event loop the in-memory store is used in.
+        new_balance = await self.credit_balance(org_id, amount_usd_cents)
+        return await self.append_ledger(
+            org_id,
+            entry_type=entry_type,
+            amount_usd_cents=amount_usd_cents,
+            balance_after_usd_cents=new_balance,
+            description=description,
+            ref_id=ref_id,
+            metadata=metadata,
+        )
+
+    async def debit_with_ledger(
+        self,
+        org_id: str,
+        amount_usd_cents: int,
+        *,
+        entry_type: str,
+        description: str | None = None,
+        ref_id: str | None = None,
+        metadata: dict[str, Any] | None = None,
+    ) -> LedgerEntry:
+        new_balance = await self.debit_balance(org_id, amount_usd_cents)
+        return await self.append_ledger(
+            org_id,
+            entry_type=entry_type,
+            amount_usd_cents=-amount_usd_cents,
+            balance_after_usd_cents=new_balance,
+            description=description,
+            ref_id=ref_id,
+            metadata=metadata,
+        )
 
     # ------------------------------------------------------------------
     # Ledger
@@ -336,7 +442,7 @@ class InMemoryWalletStore(WalletStore):
     async def ledger_ref_exists(self, ref_id: str) -> bool:
         for entries in self._ledger.values():
             for e in entries:
-                if e["ref_id"] == ref_id:
+                if e["ref_id"] == ref_id and e["entry_type"] != "TOPUP_FAILED":
                     return True
         return False
 
@@ -354,6 +460,7 @@ class InMemoryWalletStore(WalletStore):
             "monthly_topup_cap_usd_cents": None,
             "spend_cap_usd_cents": None,
             "topup_in_flight": False,
+            "topup_in_flight_at": None,
             "paystack_authorization_code": None,
             "paystack_customer_email": None,
             "paystack_customer_code": None,
@@ -420,8 +527,27 @@ class InMemoryWalletStore(WalletStore):
         key = str(org_id)
         if key not in self._configs:
             self._configs[key] = self._default_config(key)
+        now = datetime.now(timezone.utc)
         self._configs[key]["topup_in_flight"] = in_flight
-        self._configs[key]["updated_at"] = datetime.now(timezone.utc)
+        self._configs[key]["topup_in_flight_at"] = now if in_flight else None
+        self._configs[key]["updated_at"] = now
+
+    async def try_claim_topup_in_flight(self, org_id: str) -> bool:
+        key = str(org_id)
+        if key not in self._configs:
+            self._configs[key] = self._default_config(key)
+        cfg = self._configs[key]
+        now = datetime.now(timezone.utc)
+        claimed_at = cfg.get("topup_in_flight_at")
+        if cfg.get("topup_in_flight") and claimed_at is not None:
+            age = (now - claimed_at).total_seconds()
+            if age < TOPUP_IN_FLIGHT_TTL_SECONDS:
+                return False  # someone else holds a live claim
+        # Won the claim (free, or stale claim self-heals after TTL).
+        cfg["topup_in_flight"] = True
+        cfg["topup_in_flight_at"] = now
+        cfg["updated_at"] = now
+        return True
 
 
 # ---------------------------------------------------------------------------
@@ -437,14 +563,21 @@ class PgWalletStore(WalletStore):
     # ------------------------------------------------------------------
 
     async def get_balance(self, org_id: str) -> WalletBalance:
-        from app.db import fetchrow  # noqa: PLC0415
+        # NOTE: asyncpg parameterised queries use prepared statements, which
+        # reject multi-command strings — the ensure-row INSERT and the SELECT
+        # must be two separate round-trips.
+        from app.db import execute, fetchrow  # noqa: PLC0415
 
-        row = await fetchrow(
+        await execute(
             """
             INSERT INTO wallet_balance (org_id)
             VALUES ($1::uuid)
-            ON CONFLICT (org_id) DO NOTHING;
-
+            ON CONFLICT (org_id) DO NOTHING
+            """,
+            org_id,
+        )
+        row = await fetchrow(
+            """
             SELECT org_id::text, balance_usd_cents, balance_zar_cents,
                    last_fx_rate, last_fx_at, created_at, updated_at
             FROM wallet_balance
@@ -509,6 +642,101 @@ class PgWalletStore(WalletStore):
                 f"Insufficient wallet balance for org {org_id}: need {amount_usd_cents} cents"
             )
         return row["balance_usd_cents"]  # type: ignore[index]
+
+    _LEDGER_INSERT_SQL = """
+        INSERT INTO wallet_ledger
+            (org_id, entry_type, amount_usd_cents, balance_after_usd_cents,
+             description, ref_id, metadata)
+        VALUES
+            ($1::uuid, $2::wallet_entry_type, $3, $4, $5, $6, $7::jsonb)
+        RETURNING id::text, org_id::text, entry_type::text,
+                  amount_usd_cents, balance_after_usd_cents,
+                  description, ref_id, metadata, created_at
+    """
+
+    async def credit_with_ledger(
+        self,
+        org_id: str,
+        amount_usd_cents: int,
+        *,
+        entry_type: str,
+        description: str | None = None,
+        ref_id: str | None = None,
+        metadata: dict[str, Any] | None = None,
+    ) -> LedgerEntry:
+        import json  # noqa: PLC0415
+
+        from app.db import get_connection  # noqa: PLC0415
+
+        async with get_connection() as conn:
+            async with conn.transaction():
+                bal_row = await conn.fetchrow(
+                    """
+                    INSERT INTO wallet_balance (org_id, balance_usd_cents)
+                    VALUES ($1::uuid, $2)
+                    ON CONFLICT (org_id) DO UPDATE
+                        SET balance_usd_cents = wallet_balance.balance_usd_cents + EXCLUDED.balance_usd_cents,
+                            updated_at = NOW()
+                    RETURNING balance_usd_cents
+                    """,
+                    org_id,
+                    amount_usd_cents,
+                )
+                row = await conn.fetchrow(
+                    self._LEDGER_INSERT_SQL,
+                    org_id,
+                    entry_type,
+                    amount_usd_cents,
+                    bal_row["balance_usd_cents"],
+                    description,
+                    ref_id,
+                    json.dumps(metadata) if metadata else None,
+                )
+                return dict(row)  # type: ignore[arg-type]
+
+    async def debit_with_ledger(
+        self,
+        org_id: str,
+        amount_usd_cents: int,
+        *,
+        entry_type: str,
+        description: str | None = None,
+        ref_id: str | None = None,
+        metadata: dict[str, Any] | None = None,
+    ) -> LedgerEntry:
+        import json  # noqa: PLC0415
+
+        from app.db import get_connection  # noqa: PLC0415
+
+        async with get_connection() as conn:
+            async with conn.transaction():
+                bal_row = await conn.fetchrow(
+                    """
+                    UPDATE wallet_balance
+                    SET balance_usd_cents = balance_usd_cents - $2,
+                        updated_at = NOW()
+                    WHERE org_id = $1::uuid
+                      AND balance_usd_cents >= $2
+                    RETURNING balance_usd_cents
+                    """,
+                    org_id,
+                    amount_usd_cents,
+                )
+                if bal_row is None:
+                    raise ValueError(
+                        f"Insufficient wallet balance for org {org_id}: need {amount_usd_cents} cents"
+                    )
+                row = await conn.fetchrow(
+                    self._LEDGER_INSERT_SQL,
+                    org_id,
+                    entry_type,
+                    -amount_usd_cents,
+                    bal_row["balance_usd_cents"],
+                    description,
+                    ref_id,
+                    json.dumps(metadata) if metadata else None,
+                )
+                return dict(row)  # type: ignore[arg-type]
 
     # ------------------------------------------------------------------
     # Ledger
@@ -625,8 +853,14 @@ class PgWalletStore(WalletStore):
     async def ledger_ref_exists(self, ref_id: str) -> bool:
         from app.db import fetchrow  # noqa: PLC0415
 
+        # TOPUP_FAILED rows must not poison idempotency — a failed attempt
+        # never blocks a later successful credit for the same reference.
         row = await fetchrow(
-            "SELECT 1 FROM wallet_ledger WHERE ref_id = $1 LIMIT 1",
+            """
+            SELECT 1 FROM wallet_ledger
+            WHERE ref_id = $1 AND entry_type <> 'TOPUP_FAILED'
+            LIMIT 1
+            """,
             ref_id,
         )
         return row is not None
@@ -636,18 +870,25 @@ class PgWalletStore(WalletStore):
     # ------------------------------------------------------------------
 
     async def get_topup_config(self, org_id: str) -> WalletTopupConfig:
-        from app.db import fetchrow  # noqa: PLC0415
+        # NOTE: asyncpg parameterised queries use prepared statements, which
+        # reject multi-command strings — the ensure-row INSERT and the SELECT
+        # must be two separate round-trips.
+        from app.db import execute, fetchrow  # noqa: PLC0415
 
-        row = await fetchrow(
+        await execute(
             """
             INSERT INTO wallet_topup_config (org_id)
             VALUES ($1::uuid)
-            ON CONFLICT (org_id) DO NOTHING;
-
+            ON CONFLICT (org_id) DO NOTHING
+            """,
+            org_id,
+        )
+        row = await fetchrow(
+            """
             SELECT org_id::text, auto_topup_enabled,
                    threshold_usd_cents, topup_amount_usd_cents,
                    monthly_topup_cap_usd_cents, spend_cap_usd_cents,
-                   topup_in_flight,
+                   topup_in_flight, topup_in_flight_at,
                    paystack_authorization_code, paystack_customer_email,
                    paystack_customer_code, paystack_card_last4,
                    paystack_card_brand, paystack_card_exp_month,
@@ -754,7 +995,7 @@ class PgWalletStore(WalletStore):
             RETURNING org_id::text, auto_topup_enabled,
                       threshold_usd_cents, topup_amount_usd_cents,
                       monthly_topup_cap_usd_cents, spend_cap_usd_cents,
-                      topup_in_flight,
+                      topup_in_flight, topup_in_flight_at,
                       paystack_authorization_code, paystack_customer_email,
                       paystack_customer_code, paystack_card_last4,
                       paystack_card_brand, paystack_card_exp_month,
@@ -784,12 +1025,37 @@ class PgWalletStore(WalletStore):
         await execute(
             """
             UPDATE wallet_topup_config
-            SET topup_in_flight = $2, updated_at = NOW()
+            SET topup_in_flight = $2,
+                topup_in_flight_at = CASE WHEN $2 THEN NOW() ELSE NULL END,
+                updated_at = NOW()
             WHERE org_id = $1::uuid
             """,
             org_id,
             in_flight,
         )
+
+    async def try_claim_topup_in_flight(self, org_id: str) -> bool:
+        from app.db import fetchrow  # noqa: PLC0415
+
+        # Atomic compare-and-set: only one concurrent caller gets a row back.
+        # A claim older than the TTL is treated as abandoned (crashed process)
+        # and may be re-claimed, so a stuck flag self-heals.
+        row = await fetchrow(
+            """
+            UPDATE wallet_topup_config
+            SET topup_in_flight = TRUE,
+                topup_in_flight_at = NOW(),
+                updated_at = NOW()
+            WHERE org_id = $1::uuid
+              AND (topup_in_flight = FALSE
+                   OR topup_in_flight_at IS NULL
+                   OR topup_in_flight_at < NOW() - make_interval(secs => $2))
+            RETURNING org_id
+            """,
+            org_id,
+            float(TOPUP_IN_FLIGHT_TTL_SECONDS),
+        )
+        return row is not None
 
 
 # ---------------------------------------------------------------------------

@@ -499,6 +499,46 @@ class TestInMemoryBillingStore:
         assert len(events) <= 3
 
     @pytest.mark.asyncio
+    async def test_status_only_upsert_preserves_period_codes_and_cancel_flag(self) -> None:
+        """Patch semantics: a tier/status-only upsert (e.g. marking past_due on
+        a failed charge) must not wipe the billing period, Paystack codes, or a
+        scheduled cancellation — mirrors PgBillingStore's COALESCE behaviour."""
+        org_id = str(uuid.uuid4())
+        start = datetime(2026, 5, 1, tzinfo=timezone.utc)
+        end = datetime(2026, 6, 1, tzinfo=timezone.utc)
+        await self.store.upsert_subscription(
+            org_id, tier="pro", status="active",
+            paystack_customer_code="CUS_abc",
+            paystack_subscription_code="SUB_xyz",
+            current_period_start=start, current_period_end=end,
+            cancel_at_period_end=True,
+        )
+        sub = await self.store.upsert_subscription(org_id, tier="pro", status="past_due")
+        assert sub["status"] == "past_due"
+        assert sub["cancel_at_period_end"] is True
+        assert sub["current_period_start"] == start
+        assert sub["current_period_end"] == end
+        assert sub["paystack_customer_code"] == "CUS_abc"
+        assert sub["paystack_subscription_code"] == "SUB_xyz"
+
+    @pytest.mark.asyncio
+    async def test_explicit_cancel_false_overwrites_stored_flag(self) -> None:
+        org_id = str(uuid.uuid4())
+        await self.store.upsert_subscription(
+            org_id, tier="pro", status="cancelled", cancel_at_period_end=True
+        )
+        sub = await self.store.upsert_subscription(
+            org_id, tier="pro", status="active", cancel_at_period_end=False
+        )
+        assert sub["cancel_at_period_end"] is False
+
+    @pytest.mark.asyncio
+    async def test_new_subscription_defaults_cancel_flag_false(self) -> None:
+        org_id = str(uuid.uuid4())
+        sub = await self.store.upsert_subscription(org_id, tier="free", status="active")
+        assert sub["cancel_at_period_end"] is False
+
+    @pytest.mark.asyncio
     async def test_returned_subscription_is_deep_copy(self) -> None:
         """Mutations on returned dict must not affect internal state."""
         org_id = str(uuid.uuid4())
@@ -763,3 +803,213 @@ class TestBillingRoutesRequireAuth:
             assert resp.json()["tier"] == "free"
         finally:
             set_billing_store_for_tests(None)
+
+
+# ============================================================================
+# 7. Runtime usage-quota enforcement (app.ee.billing.quota)
+# ============================================================================
+
+
+class TestQuotaChecker:
+    """The EE quota checker implements the canonical billing model:
+
+    - Unlimited (None) quotas always allow.
+    - Dimensions with an overage rate allow-and-meter (wallet, then invoice).
+    - Dimensions without one (FREE everywhere; agent runs on STARTER) hard-stop
+      once current-period usage reaches the tier quota.
+    - Without a paid deployment license, quotas never bind (no billing → no
+      usage limits — OSS/self-hosted stays unrestricted).
+    """
+
+    def setup_method(self) -> None:
+        os.environ["NUBI_LICENSE_KEY"] = _PRO_LICENSE_KEY
+        from app.compute.metering import InMemorySink, set_sink
+        from app.ee.billing.store import InMemoryBillingStore, set_billing_store_for_tests
+        from app.ee.licensing.license import reset_license_cache
+        from app.features import reset_for_tests
+
+        reset_for_tests()
+        reset_license_cache()
+        set_billing_store_for_tests(InMemoryBillingStore())
+        set_sink(InMemorySink())
+
+    def teardown_method(self) -> None:
+        from app.compute.metering import set_sink
+        from app.ee.billing.store import set_billing_store_for_tests
+        from app.ee.licensing.license import reset_license_cache
+        from app.features import reset_for_tests
+
+        reset_for_tests()
+        set_billing_store_for_tests(None)
+        set_sink(None)
+        os.environ.pop("NUBI_LICENSE_KEY", None)
+        reset_license_cache()
+
+    async def _seed_subscription(self, org_id: str, tier: str) -> None:
+        from app.ee.billing.store import get_billing_store
+
+        await get_billing_store().upsert_subscription(org_id, tier=tier, status="active")
+
+    async def _seed_usage(self, org_id: str, kind: str, units: float) -> None:
+        from app.compute.metering import record_usage
+
+        await record_usage(kind=kind, user_id="u1", org_id=org_id, units=units)
+
+    # ── FREE tier: hard stop (no overage billing) ─────────────────────────────
+
+    @pytest.mark.asyncio
+    async def test_free_org_ai_calls_denied(self) -> None:
+        """FREE includes 0 AI calls and has no overage rate → hard stop."""
+        from app.ee.billing.quota import billing_quota_checker
+
+        allowed, reason = await billing_quota_checker(
+            org_id=str(uuid.uuid4()), dimension="ai_calls", amount=1.0
+        )
+        assert allowed is False
+        assert "free" in reason
+        assert "Upgrade" in reason
+
+    @pytest.mark.asyncio
+    async def test_free_org_embedded_sessions_denied(self) -> None:
+        from app.ee.billing.quota import billing_quota_checker
+
+        allowed, _ = await billing_quota_checker(
+            org_id=str(uuid.uuid4()), dimension="embedded_sessions", amount=1.0
+        )
+        assert allowed is False
+
+    @pytest.mark.asyncio
+    async def test_free_org_compute_allowed_under_quota(self) -> None:
+        """FREE includes 500 CU/month — usage below that is allowed."""
+        from app.ee.billing.quota import billing_quota_checker
+
+        org_id = str(uuid.uuid4())
+        await self._seed_usage(org_id, "kernel", 499)
+        allowed, _ = await billing_quota_checker(
+            org_id=org_id, dimension="compute_units", amount=1.0
+        )
+        assert allowed is True
+
+    @pytest.mark.asyncio
+    async def test_free_org_compute_hard_stops_at_500_cu(self) -> None:
+        """The documented FREE '500 CU hard stop' — usage at quota is denied."""
+        from app.ee.billing.quota import billing_quota_checker
+
+        org_id = str(uuid.uuid4())
+        await self._seed_usage(org_id, "kernel", 500)
+        allowed, reason = await billing_quota_checker(
+            org_id=org_id, dimension="compute_units", amount=1.0
+        )
+        assert allowed is False
+        assert "500" in reason
+
+    @pytest.mark.asyncio
+    async def test_other_orgs_usage_does_not_count(self) -> None:
+        """Usage events are org-scoped — another org's burn never blocks us."""
+        from app.ee.billing.quota import billing_quota_checker
+
+        other_org, my_org = str(uuid.uuid4()), str(uuid.uuid4())
+        await self._seed_usage(other_org, "kernel", 10_000)
+        allowed, _ = await billing_quota_checker(
+            org_id=my_org, dimension="compute_units", amount=1.0
+        )
+        assert allowed is True
+
+    # ── Paid tiers: overages allow-and-meter ─────────────────────────────────
+
+    @pytest.mark.asyncio
+    async def test_starter_ai_calls_beyond_quota_allowed(self) -> None:
+        """STARTER has an ai_call overage rate → beyond-quota usage is billable,
+        drawn from the wallet then invoiced — never blocked."""
+        from app.ee.billing.quota import billing_quota_checker
+
+        org_id = str(uuid.uuid4())
+        await self._seed_subscription(org_id, "starter")
+        await self._seed_usage(org_id, "ai_call", 50)  # quota is 5
+        allowed, _ = await billing_quota_checker(
+            org_id=org_id, dimension="ai_calls", amount=1.0
+        )
+        assert allowed is True
+
+    @pytest.mark.asyncio
+    async def test_starter_agent_runs_denied(self) -> None:
+        """STARTER: agent runs quota 0 AND no overage rate → hard stop
+        ('no remote kernel on entry tier')."""
+        from app.ee.billing.quota import billing_quota_checker
+
+        org_id = str(uuid.uuid4())
+        await self._seed_subscription(org_id, "starter")
+        allowed, _ = await billing_quota_checker(
+            org_id=org_id, dimension="agent_runs", amount=1.0
+        )
+        assert allowed is False
+
+    @pytest.mark.asyncio
+    async def test_enterprise_embedded_sessions_unlimited(self) -> None:
+        """ENTERPRISE embed sessions are unlimited (quota None) → always allow."""
+        from app.ee.billing.quota import billing_quota_checker
+
+        org_id = str(uuid.uuid4())
+        await self._seed_subscription(org_id, "enterprise")
+        await self._seed_usage(org_id, "embedded_session", 1_000_000)
+        allowed, _ = await billing_quota_checker(
+            org_id=org_id, dimension="embedded_sessions", amount=1.0
+        )
+        assert allowed is True
+
+    # ── Deployment-license gate ───────────────────────────────────────────────
+
+    @pytest.mark.asyncio
+    async def test_unpaid_license_never_binds_quotas(self) -> None:
+        """No paid license → no billing → no usage limits (OSS/self-hosted)."""
+        os.environ["NUBI_LICENSE_KEY"] = _FREE_LICENSE_KEY
+        from app.ee.licensing.license import reset_license_cache
+
+        reset_license_cache()
+
+        from app.ee.billing.quota import billing_quota_checker
+
+        allowed, _ = await billing_quota_checker(
+            org_id=str(uuid.uuid4()), dimension="ai_calls", amount=1.0
+        )
+        assert allowed is True
+
+    @pytest.mark.asyncio
+    async def test_unknown_dimension_allowed(self) -> None:
+        from app.ee.billing.quota import billing_quota_checker
+
+        allowed, _ = await billing_quota_checker(
+            org_id=str(uuid.uuid4()), dimension="nonsense", amount=1.0
+        )
+        assert allowed is True
+
+    # ── setup() registration into the core hook ──────────────────────────────
+
+    @pytest.mark.asyncio
+    async def test_setup_registers_checker_in_core_hook(self) -> None:
+        """billing.setup() wires the checker into app.features.check_quota."""
+        from app.ee.billing import setup
+
+        setup(app=None)
+
+        from app.features import check_quota
+
+        allowed, reason = await check_quota(str(uuid.uuid4()), "ai_calls", 1.0)
+        assert allowed is False
+        assert "Upgrade" in reason
+
+    @pytest.mark.asyncio
+    async def test_checker_failure_fails_open(self) -> None:
+        """A broken billing store must never block a request (fail-open)."""
+        from unittest.mock import patch as _patch
+
+        from app.ee.billing.quota import billing_quota_checker
+
+        with _patch(
+            "app.ee.billing.store.get_billing_store",
+            side_effect=RuntimeError("store down"),
+        ):
+            allowed, _ = await billing_quota_checker(
+                org_id=str(uuid.uuid4()), dimension="ai_calls", amount=1.0
+            )
+        assert allowed is True
