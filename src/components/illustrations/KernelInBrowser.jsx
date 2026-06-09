@@ -1,5 +1,5 @@
 /**
- * KernelInBrowser — the compute kernel (Pyodide + DuckDB-WASM) runs INSIDE the
+ * KernelInBrowser — the compute kernel (DuckDB-WASM) runs INSIDE the
  * user's browser tab. Metaphor: a processor chip living within a browser window,
  * emitting a result chart. Flat line-art, no blur/glow. Light + dark safe.
  */

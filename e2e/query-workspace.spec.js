@@ -141,9 +141,11 @@ test.describe('Query Workspace — Desktop', () => {
     const cell2Status = cell2.locator('.monaco-editor').first()
     await expect(cell2Status).toBeVisible({ timeout: 5_000 })
 
-    // The cell header should show EITHER "N row" OR "error" (never empty/idle)
-    const hasRowCount = cell2.locator('span').filter({ hasText: /\d+ row/ })
-    const hasError = cell2.locator('span').filter({ hasText: 'error' })
+    // The cell header should show EITHER "N row" OR "error" (never empty/idle).
+    // .first() — a successful run renders the count twice (status badge +
+    // results footer), which would otherwise trip strict mode.
+    const hasRowCount = cell2.locator('span').filter({ hasText: /\d+ row/ }).first()
+    const hasError = cell2.locator('span').filter({ hasText: 'error' }).first()
 
     // Wait for one of the two outcomes
     await Promise.race([

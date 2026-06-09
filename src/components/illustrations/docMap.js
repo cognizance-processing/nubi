@@ -21,6 +21,10 @@ import EmbedAuth from './EmbedAuth.jsx'
 import LlmDashboards from './LlmDashboards.jsx'
 import ConnectorSdk from './ConnectorSdk.jsx'
 import FlowOrchestration from './FlowOrchestration.jsx'
+import OpenCoreSplit from './OpenCoreSplit.jsx'
+import SelfHostTopology from './SelfHostTopology.jsx'
+import LakehouseFlow from './LakehouseFlow.jsx'
+import TrustBoundary from './TrustBoundary.jsx'
 
 export const DOC_ILLUSTRATIONS = {
   HeroIllustration,
@@ -33,6 +37,10 @@ export const DOC_ILLUSTRATIONS = {
   LlmDashboards,
   ConnectorSdk,
   FlowOrchestration,
+  OpenCoreSplit,
+  SelfHostTopology,
+  LakehouseFlow,
+  TrustBoundary,
 }
 
 /** Parse an `illustration:Name` src; returns the component or null. */

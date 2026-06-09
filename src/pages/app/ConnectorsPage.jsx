@@ -22,6 +22,7 @@
  */
 
 import { useEffect, useState, useCallback, useRef, useMemo } from 'react'
+import { createPortal } from 'react-dom'
 import { Link } from 'react-router-dom'
 import {
   Plus,
@@ -42,6 +43,7 @@ import {
   Lock,
 } from 'lucide-react'
 import * as api from '../../lib/api.js'
+import { useUi } from '../../contexts/UiContext.jsx'
 import { useProject } from '../../contexts/ProjectContext.jsx'
 import { useCanWrite } from '../../contexts/OrgContext.jsx'
 import {
@@ -143,10 +145,10 @@ function ConnectorCard({ connector, testResult, testingId, onEdit, onDelete, onT
     <div
       className="
         group relative overflow-hidden
-        bg-surface rounded-2xl border border-border p-4 sm:p-5
+        bg-surface rounded-xl border border-border p-4
         hover:shadow-lg hover:shadow-black/[0.03] hover:border-border/70
-        hover:-translate-y-px transition-all duration-200
-        flex flex-col sm:flex-row sm:items-center gap-4
+        transition-all duration-200
+        flex flex-col gap-3
       "
     >
       {/* Brand accent rail — surfaces the connector's identity on hover */}
@@ -156,55 +158,55 @@ function ConnectorCard({ connector, testResult, testingId, onEdit, onDelete, onT
         style={{ background: info.color }}
       />
 
-      {/* Logo */}
-      <ConnectorLogo info={info} size={24} />
-
-      {/* Content */}
-      <div className="flex-1 min-w-0">
-        <div className="flex flex-wrap items-center gap-2 mb-1">
-          <h3 className="font-semibold text-fg text-sm truncate">{connector.name}</h3>
-          <TypeBadge type={cfg.connector_type} />
-          {isSystem && (
-            <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[10px] font-medium bg-accent/10 text-accent border border-accent/20">
-              <Lock size={9} strokeWidth={2.4} />
-              Built-in
-            </span>
-          )}
-          {networkMode && (
-            <span className="inline-flex items-center px-2 py-0.5 rounded-md text-[10px] font-medium bg-surface-2 text-muted border border-border/60">
-              {networkMode}
-            </span>
-          )}
-        </div>
-
-        {/* Config summary */}
-        {summary && (
-          <p className="text-xs text-muted truncate">
-            {summary}
-          </p>
-        )}
-
-        {/* Test result */}
-        {myResult && (
-          <div className="mt-2 flex flex-wrap items-center gap-2">
-            <TestResultPill result={myResult} />
-            {myResult.layers && (
-              <span className="text-[10px] text-muted">
-                config:{myResult.layers.config ? '✓' : '✗'}
-                {' '}secret:{myResult.layers.secret ? '✓' : '✗'}
+      {/* Header: logo + name + badges */}
+      <div className="flex items-start gap-3 min-w-0">
+        <ConnectorLogo info={info} size={22} />
+        <div className="flex-1 min-w-0">
+          <div className="flex flex-wrap items-center gap-1.5">
+            <h3 className="font-semibold text-fg text-sm truncate max-w-full">{connector.name}</h3>
+            <TypeBadge type={cfg.connector_type} />
+            {isSystem && (
+              <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[10px] font-medium bg-accent/10 text-accent border border-accent/20">
+                <Lock size={9} strokeWidth={2.4} />
+                Built-in
+              </span>
+            )}
+            {networkMode && (
+              <span className="inline-flex items-center px-2 py-0.5 rounded-md text-[10px] font-medium bg-surface-2 text-muted border border-border/60">
+                {networkMode}
               </span>
             )}
           </div>
-        )}
+
+          {/* Config summary */}
+          {summary && (
+            <p className="text-xs text-muted truncate mt-0.5">
+              {summary}
+            </p>
+          )}
+        </div>
       </div>
 
+      {/* Test result */}
+      {myResult && (
+        <div className="flex flex-wrap items-center gap-2">
+          <TestResultPill result={myResult} />
+          {myResult.layers && (
+            <span className="text-[10px] text-muted">
+              config:{myResult.layers.config ? '✓' : '✗'}
+              {' '}secret:{myResult.layers.secret ? '✓' : '✗'}
+            </span>
+          )}
+        </div>
+      )}
+
       {/* Actions */}
-      <div className="flex items-center gap-2 shrink-0 flex-wrap sm:flex-nowrap">
+      <div className="mt-auto pt-3 border-t border-border/60 flex items-center gap-1.5 flex-wrap">
         <Link
           to={`/connectors/${connector.id}/data`}
           title="View data"
           className="
-            inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg
+            inline-flex items-center gap-1.5 h-8 px-2.5 rounded-lg
             text-xs font-medium border border-border
             text-muted hover:text-fg hover:bg-surface-2
             transition-colors focus:outline-none focus:ring-2 focus:ring-ring
@@ -219,7 +221,7 @@ function ConnectorCard({ connector, testResult, testingId, onEdit, onDelete, onT
           disabled={isTesting}
           title="Test connection"
           className="
-            inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg
+            inline-flex items-center gap-1.5 h-8 px-2.5 rounded-lg
             text-xs font-medium border border-border
             text-muted hover:text-fg hover:bg-surface-2
             disabled:opacity-50 disabled:cursor-not-allowed
@@ -234,7 +236,7 @@ function ConnectorCard({ connector, testResult, testingId, onEdit, onDelete, onT
         </button>
 
         {canWrite && (
-          <>
+          <span className="ml-auto flex items-center gap-1.5">
             {!isSystem && (
               <button
                 onClick={() => onEdit(connector)}
@@ -262,7 +264,7 @@ function ConnectorCard({ connector, testResult, testingId, onEdit, onDelete, onT
             >
               <Trash2 size={13} strokeWidth={2} />
             </button>
-          </>
+          </span>
         )}
       </div>
     </div>
@@ -725,6 +727,8 @@ export default function ConnectorsPage() {
   const { activeProject } = useProject()
   const projectId = activeProject?.id
   const canWrite = useCanWrite()
+  // Single top bar — the page toolbar portals into the AppShell topbar slot.
+  const { topbarSlot } = useUi()
 
   // List state
   const [connectors, setConnectors]   = useState([])
@@ -914,72 +918,55 @@ export default function ConnectorsPage() {
 
   return (
     <div className="flex flex-col min-h-full">
-      {/* Page header */}
-      <div className="
-        relative flex flex-col sm:flex-row sm:items-center sm:justify-between
-        gap-4 px-5 sm:px-6 pt-6 pb-5 border-b border-border
-        bg-surface overflow-hidden
-      ">
-        {/* faint brand wash */}
-        <div
-          aria-hidden="true"
-          className="absolute inset-0 bg-brand-gradient opacity-[0.04] pointer-events-none"
-        />
-        <div className="relative flex items-start gap-3">
-          <div className="hidden sm:flex items-center justify-center w-11 h-11 rounded-2xl bg-brand-gradient shadow-md shrink-0">
-            <Plug size={20} className="text-white" strokeWidth={2.2} />
-          </div>
-          <div>
-            <h1 className="font-display font-semibold text-2xl text-fg leading-tight">Connectors</h1>
-            <p className="text-sm text-muted mt-0.5">
-              Manage your data sources. Credentials are encrypted at rest.
-            </p>
-          </div>
-        </div>
-
-        <div className="relative flex items-center gap-2 sm:gap-3">
+      {/* Page toolbar — portaled into the single AppShell topbar */}
+      {topbarSlot && createPortal(
+        <div className="flex items-center gap-2 w-full min-w-0">
+          <Plug size={15} className="text-muted shrink-0 hidden sm:block" strokeWidth={2.2} />
+          <span className="text-sm font-semibold font-display text-fg truncate">Connectors</span>
+          <div className="flex-1" />
           <button
             onClick={fetchConnectors}
             disabled={listLoading}
             title="Refresh"
+            aria-label="Refresh connectors"
             className="
-              flex items-center justify-center w-9 h-9 rounded-xl
+              flex items-center justify-center w-8 h-8 rounded-lg shrink-0
               border border-border text-muted
               hover:text-fg hover:bg-surface-2
               disabled:opacity-40
               transition-colors focus:outline-none focus:ring-2 focus:ring-ring
             "
           >
-            <RefreshCw size={15} className={listLoading ? 'animate-spin' : ''} strokeWidth={2} />
+            <RefreshCw size={14} className={listLoading ? 'animate-spin' : ''} strokeWidth={2} />
           </button>
-
           {canWrite && (
             <button
               onClick={openAdd}
+              title="Add connector"
               className="
-                inline-flex items-center gap-2 px-4 py-2 rounded-xl
-                bg-primary text-primary-fg text-sm font-semibold
+                inline-flex items-center gap-1.5 h-8 px-2.5 rounded-lg shrink-0
+                bg-primary text-primary-fg text-xs font-medium
                 hover:opacity-90 transition-opacity
-                focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2
-                shadow-sm
+                focus:outline-none focus:ring-2 focus:ring-ring
               "
             >
-              <Plus size={15} strokeWidth={2.5} />
-              Add connector
+              <Plus size={13} strokeWidth={2.5} />
+              <span className="hidden sm:inline">Add connector</span>
             </button>
           )}
-        </div>
-      </div>
+        </div>,
+        topbarSlot
+      )}
 
       {/* Content */}
-      <div className="flex-1 px-5 sm:px-6 py-6">
+      <div className="flex-1 px-4 sm:px-6 py-4">
         {/* Loading skeleton */}
         {listLoading && (
-          <div className="space-y-3">
-            {[1, 2].map(i => (
+          <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 gap-3">
+            {[1, 2, 3].map(i => (
               <div
                 key={i}
-                className="bg-surface rounded-2xl border border-border h-24 animate-pulse"
+                className="bg-surface rounded-xl border border-border h-28 animate-pulse"
               />
             ))}
           </div>
@@ -1017,13 +1004,17 @@ export default function ConnectorsPage() {
 
         {/* Connector list */}
         {!listLoading && !listError && connectors.length > 0 && (
-          <div className="max-w-3xl">
-            <div className="flex items-center justify-between mb-3">
+          <div>
+            <div className="flex items-center justify-between gap-2 mb-2.5">
               <span className="text-[11px] font-semibold uppercase tracking-wider text-muted">
                 {connectors.length} {connectors.length === 1 ? 'connector' : 'connectors'}
               </span>
+              <span className="inline-flex items-center gap-1 text-[11px] text-muted">
+                <Lock size={10} strokeWidth={2.2} />
+                Credentials encrypted at rest
+              </span>
             </div>
-            <div className="space-y-3">
+            <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 gap-3">
             {connectors.map(connector => (
               <ConnectorCard
                 key={connector.id}

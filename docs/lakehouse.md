@@ -1,161 +1,220 @@
-# Lakehouse — Object Storage + DuckDB httpfs
+# Lakehouse — Datasets, Object Storage, and DuckDB
 
-Nubi's lakehouse layer lets every DuckDB connector read **and write** Parquet
-files stored in S3-compatible object storage.  In local development MinIO
-simulates S3; in production point the same env vars at a real bucket (AWS S3,
-GCS HMAC, Cloudflare R2, etc.).
+![Data flows from object storage through DuckDB httpfs into queries, dashboards, and flows](illustration:LakehouseFlow)
+
+Nubi's lakehouse layer stores data as **Parquet files** in object storage (S3/MinIO, GCS, Azure Blob, or local filesystem) and queries them using **DuckDB's httpfs extension** — no separate data warehouse, no ETL pipeline, no extra drivers. Every dataset is immediately queryable through the same planner that powers dashboards and flows.
 
 ---
 
-## Architecture overview
+## How it fits together
+
+1. **Ingest** — a CSV upload, SQL materialise, or flow output arrives via `POST /api/v1/datasets/upload` (multipart CSV) or `POST /api/v1/datasets/materialize` (SQL → Parquet).
+2. **Convert** — DuckDB turns it into Parquet: `read_csv_auto` / `COPY … TO (FORMAT PARQUET)`.
+3. **Store** — the Parquet lands in object storage: `file:///tmp/nubi-datasets/…` (local dev default) or `s3://bucket/datasets/<org>/<id>/data.parquet` (when `NUBI_BUCKET_URI` is set).
+4. **Catalog** — a **datasets** row plus a **datastores** row (`connector_type=duckdb`, `view_sql`) are created.
+5. **Query** — dashboards, queries, and flows read it with `SELECT * FROM read_parquet('s3://…')` or via the `CREATE VIEW dataset AS …` view.
+
+Every dataset gets two catalog entries:
+
+- A **datasets row** — stores metadata (name, `storage_uri`, `schema_json`, `source`, timestamps).
+- A **datastores row** — a DuckDB connector whose `view_sql` is `CREATE VIEW dataset AS SELECT * FROM read_parquet('<parquet-path>')`. This makes the dataset immediately queryable through the normal connector path, including RLS enforcement.
+
+---
+
+## Storage backends
+
+The backend resolves which storage client to use at runtime, checking `NUBI_BUCKET_URI` first, then S3/MinIO env vars, then falling back to local filesystem.
+
+| Scheme | Backend | Notes |
+|---|---|---|
+| `s3://` | `S3StorageClient` (boto3) | AWS S3, MinIO, Cloudflare R2, any S3-compatible |
+| `gs://` | `GCSStorageClient` (google-cloud-storage) | Google Cloud Storage |
+| `az://` | `AzureStorageClient` (azure-storage-blob) | Azure Blob Storage |
+| `file://` | `LocalStorageClient` (stdlib only) | Local filesystem; dev/CI default |
+
+**Storage layout** (local filesystem fallback, controlled by `NUBI_BUCKET_ROOT`):
 
 ```
-┌────────────────────────────────────────┐
-│  Query / Dashboard / Flow              │
-│  (SQL via planner.py + sqlglot/jinja2) │
-└───────────────────┬────────────────────┘
-                    │
-          ┌─────────▼──────────┐
-          │  DuckDBConnector   │
-          │  (connectors/)     │
-          │                    │
-          │  INSTALL httpfs;   │
-          │  LOAD httpfs;      │
-          │  CREATE SECRET ... │
-          └─────────┬──────────┘
-                    │
-         ┌──────────▼──────────┐
-         │  Object Storage     │
-         │  MinIO  /  S3       │
-         │  bucket: nubi       │
-         └─────────────────────┘
+/tmp/nubi-datasets/
+└── datasets/
+    └── <org_id>/
+        └── <dataset_id>/
+            └── data.parquet
 ```
 
-DuckDB's built-in **httpfs** extension lets any SQL statement reference
-`s3://nubi/path/to/file.parquet` directly — no extra drivers or ETL processes.
+For S3 the key mirrors this structure: `datasets/<org_id>/<dataset_id>/data.parquet`.
+
+---
+
+## Dataset operations
+
+### Upload a CSV
+
+`POST /api/v1/datasets/upload` — multipart form with `file` (CSV) and `name` fields.
+
+The server:
+
+1. Writes the CSV to a temp file.
+2. Runs `COPY (SELECT * FROM read_csv_auto('<tmp>')) TO '<parquet-path>' (FORMAT PARQUET)` — DuckDB infers the schema automatically.
+3. Uploads the Parquet to object storage if `NUBI_BUCKET_URI` is set.
+4. Registers a datasets catalog row (`source = "upload"`).
+5. Registers a datastores row with `view_sql = "CREATE VIEW dataset AS SELECT * FROM read_parquet('<path>')"`.
+6. Links both rows via `datastore_id` so the dataset is queryable immediately.
+
+```bash
+curl -X POST https://your-nubi/api/v1/datasets/upload \
+  -H "Authorization: Bearer <token>" \
+  -F "file=@sales.csv" \
+  -F "name=sales-2024"
+```
+
+Response includes `id`, `storage_uri`, `schema_json` (inferred column names and types), `source`, and `datastore_id`.
+
+### Materialise a query
+
+`POST /api/v1/datasets/materialize` — JSON body `{"sql": "SELECT …", "name": "…"}`.
+
+The server runs the SQL through the **planner** (which validates SELECT-only and injects any active RLS predicates), then executes `COPY (<planned-sql>) TO '<parquet-path>' (FORMAT PARQUET)`. The output is registered identically to an upload (`source = "materialized"`).
+
+When the SQL references `s3://` paths, httpfs is loaded and credentials are registered on the DuckDB connection before execution. A missing httpfs extension raises a clear error rather than a cryptic DuckDB crash.
+
+```bash
+curl -X POST https://your-nubi/api/v1/datasets/materialize \
+  -H "Authorization: Bearer <token>" \
+  -H "Content-Type: application/json" \
+  -d '{"sql": "SELECT region, SUM(revenue) AS total FROM orders GROUP BY 1", "name": "revenue-by-region"}'
+```
+
+### List and fetch datasets
+
+```
+GET  /api/v1/datasets              → {"datasets": [...]}
+GET  /api/v1/datasets/<dataset_id> → {dataset row}
+```
+
+Both endpoints are scoped to the caller's org. A request for an unknown or cross-org dataset returns 404.
+
+---
+
+## Dataset row schema
+
+| Field | Type | Description |
+|---|---|---|
+| `id` | UUID | Dataset identifier |
+| `org_id` | UUID | Owning org |
+| `name` | string | Human-readable name |
+| `storage_uri` | string | `file:///…` or `s3://bucket/…` |
+| `format` | string | Always `"parquet"` |
+| `schema_json` | `[{name, type}]` | Columns inferred at creation time |
+| `source` | `"upload"` \| `"materialized"` | How the dataset was created |
+| `datastore_id` | UUID \| null | Linked datastores row; null until linked |
+| `created_at` | ISO-8601 | |
+| `updated_at` | ISO-8601 | |
+
+---
+
+## How DuckDB reads S3
+
+DuckDB's **httpfs** extension gives it native `s3://` URI support. Nubi loads it on demand via `setup_s3_httpfs(conn, cfg)`, which executes:
+
+```sql
+INSTALL httpfs;
+LOAD httpfs;
+
+CREATE OR REPLACE SECRET nubi_s3 (
+    TYPE S3,
+    KEY_ID     '<key-id>',
+    SECRET     '<secret>',
+    REGION     '<region>',
+    URL_STYLE  'path',            -- 'path' for MinIO; 'vhost' for AWS
+    ENDPOINT   'host:port',       -- scheme-stripped; only set when endpoint is configured
+    USE_SSL    false              -- false when endpoint scheme is http://
+);
+```
+
+All three statements are idempotent (`CREATE OR REPLACE SECRET`). The secret is only registered when a key ID is resolvable — if no credentials are found, DuckDB's default credential chain is used (IAM role, env vars, etc.), allowing anonymous/public-bucket access.
+
+**Credential resolution order** (first non-empty value wins):
+
+1. Connector config keys: `s3_key_id` / `aws_access_key_id`, `s3_secret` / `aws_secret_access_key`, `s3_endpoint` / `endpoint_url`, `s3_region` / `aws_region`
+2. Environment variables: `AWS_ACCESS_KEY_ID` → `S3_ACCESS_KEY`, `AWS_SECRET_ACCESS_KEY` → `S3_SECRET_KEY`, `S3_ENDPOINT_URL` → `AWS_ENDPOINT_URL`, `AWS_REGION` → `AWS_DEFAULT_REGION` → `S3_REGION`
 
 ---
 
 ## Environment variables
 
-The backend reads these variables from the process environment.  Set them in
-`.env.compose.local`, your shell, or a secrets manager.  Both the `S3_*` family
-(used by the Docker Compose defaults) and the `AWS_*` family (boto3/standard)
-are accepted; `AWS_*` takes precedence when both are set.
-
-| Variable | Required | Default | Description |
-|---|---|---|---|
-| `S3_ENDPOINT_URL` | yes (non-AWS) | *(none)* | Full URL of the S3-compatible endpoint, e.g. `http://localhost:9000` for local MinIO. Also read as `AWS_ENDPOINT_URL`. |
-| `S3_ACCESS_KEY` | yes | *(none)* | Access key ID (MinIO root user, etc.). Also read as `AWS_ACCESS_KEY_ID`. |
-| `S3_SECRET_KEY` | yes | *(none)* | Secret access key. Also read as `AWS_SECRET_ACCESS_KEY`. |
-| `S3_REGION` | no | `us-east-1` | AWS/MinIO region. Also read as `AWS_REGION` / `AWS_DEFAULT_REGION`. |
-| `S3_BUCKET` | no | `nubi` | Default bucket name used by the seed bundle and CSV-upload pipeline. Also read as `NUBI_BUCKET_NAME`. |
-| `S3_FORCE_PATH_STYLE` | no | `true` | Must be `true` for MinIO and most self-hosted S3 clones. Set to `false` only for real AWS S3 virtual-hosted style. |
-| `NUBI_BUCKET_URI` | no | *(none)* | Full bucket URI, e.g. `s3://nubi`. When set, uploaded datasets are written to this bucket instead of the local filesystem. |
-| `NUBI_BUCKET_ROOT` | no | `/tmp/nubi-datasets` | Local filesystem root for the file:// storage fallback (used when `NUBI_BUCKET_URI` is not set). |
-
-### How Nubi configures DuckDB for S3
-
-Nubi uses DuckDB's modern **secrets API** (not the legacy `SET s3_*` variables).
-When a query or dataset operation needs S3 access, the backend calls
-`setup_s3_httpfs(conn, cfg)`, which executes:
-
-```sql
--- 1. Install and load the httpfs extension (idempotent):
-INSTALL httpfs;
-LOAD httpfs;
-
--- 2. Register a named S3 secret (idempotent, replaces any previous secret):
-CREATE OR REPLACE SECRET nubi_s3 (
-    TYPE S3,
-    KEY_ID     '<resolved key id>',
-    SECRET     '<resolved secret>',
-    REGION     '<S3_REGION>',
-    URL_STYLE  'path',          -- for MinIO / S3-compatible endpoints
-    ENDPOINT   '<host:port>',   -- stripped of scheme (DuckDB expects host:port only)
-    USE_SSL    false            -- false when endpoint scheme is http://
-);
-```
-
-Credentials are resolved in order: connector config keys (`s3_key_id`,
-`aws_access_key_id`) → `AWS_ACCESS_KEY_ID` env var → `S3_ACCESS_KEY` env var.
-The secret is only registered when at least a key ID is resolvable; anonymous
-(public bucket) access falls back to DuckDB's default credential chain.
+| Variable | Default | Description |
+|---|---|---|
+| `NUBI_BUCKET_URI` | *(none)* | Full bucket URI, e.g. `s3://nubi`. When set, uploads go to this bucket instead of local filesystem. |
+| `NUBI_BUCKET_ROOT` | `/tmp/nubi-datasets` | Local filesystem root for the `file://` fallback. |
+| `NUBI_BUCKET_NAME` | `nubi` | Bucket name used when S3/MinIO env vars are present but `NUBI_BUCKET_URI` is not set. |
+| `AWS_ACCESS_KEY_ID` | *(none)* | S3 / MinIO access key ID. Also read as `S3_ACCESS_KEY`. |
+| `AWS_SECRET_ACCESS_KEY` | *(none)* | S3 / MinIO secret access key. Also read as `S3_SECRET_KEY`. |
+| `S3_ENDPOINT_URL` | *(none)* | Custom endpoint for MinIO or S3-compatible stores, e.g. `http://localhost:9000`. Also read as `AWS_ENDPOINT_URL`. |
+| `AWS_REGION` | `us-east-1` | AWS/MinIO region. Also read as `AWS_DEFAULT_REGION` or `S3_REGION`. |
+| `S3_URL_STYLE` | `path` when endpoint set, else `vhost` | `"path"` for MinIO/self-hosted; `"vhost"` for AWS S3. |
 
 ---
 
 ## Local development with MinIO
 
-### Option A — Docker Compose (full stack)
+### Docker Compose (recommended)
 
 ```bash
 cp .env.compose .env.compose.local   # already has safe MinIO defaults
 make up                               # or: docker compose up -d
 ```
 
-Services started:
+The compose stack starts MinIO on port 9000 (S3 API) and 9001 (web console), and a one-shot `minio-init` service that creates the `nubi` bucket on first boot.
 
-| Service | Port | Purpose |
-|---|---|---|
-| `minio` | 9000 | S3 API |
-| `minio` | 9001 | MinIO web console |
-| `minio-init` | *(one-shot)* | Creates the `nubi` bucket on first boot |
-
-The backend service automatically receives `S3_ENDPOINT_URL`,
-`S3_ACCESS_KEY`, `S3_SECRET_KEY`, `S3_REGION`, `S3_BUCKET`, and
-`S3_FORCE_PATH_STYLE` via `docker-compose.yml` environment overrides.
-
-### Option B — Standalone script (no full stack)
+### Standalone script
 
 ```bash
 ./scripts/minio-dev.sh          # start MinIO + create 'nubi' bucket
-./scripts/minio-dev.sh stop     # tear it down
-./scripts/minio-dev.sh logs     # tail logs
+./scripts/minio-dev.sh stop
 ```
 
-The script prints the exact `export` lines to paste into your shell:
+The script prints the env vars to export:
 
-```
+```bash
+export AWS_ACCESS_KEY_ID="minioadmin"
+export AWS_SECRET_ACCESS_KEY="minioadmin"
 export S3_ENDPOINT_URL="http://localhost:9000"
-export S3_ACCESS_KEY="minioadmin"
-export S3_SECRET_KEY="minioadmin"
-export S3_REGION="us-east-1"
-export S3_BUCKET="nubi"
-export S3_FORCE_PATH_STYLE="true"
+export AWS_REGION="us-east-1"
+export NUBI_BUCKET_URI="s3://nubi"
 ```
 
-Then start the backend normally:
+Then start the backend:
 
 ```bash
 cd backend && uvicorn main:app --reload
 ```
 
----
-
-## Path-style vs virtual-hosted-style URLs
-
-MinIO (and most self-hosted S3 clones) require **path-style** URLs:
-
-```
-http://localhost:9000/nubi/prefix/file.parquet   # path-style  ✓ MinIO
-http://nubi.localhost:9000/prefix/file.parquet   # vhost-style ✗ MinIO
-```
-
-AWS S3 defaults to virtual-hosted style; set `S3_FORCE_PATH_STYLE=false`
-(and remove `S3_ENDPOINT_URL`) when targeting real AWS.
+MinIO's web console is available at **http://localhost:9001**.
 
 ---
 
-## Typical lakehouse SQL patterns
+## Querying datasets
 
-### Read a Parquet file from the bucket
+Because each uploaded or materialised dataset is registered as a `duckdb` datastore with a `view_sql`, it appears in the data browser and can be used in any query, dashboard, or flow — no special handling needed.
+
+You can also reference Parquet files directly with `read_parquet()`:
 
 ```sql
-SELECT * FROM read_parquet('s3://nubi/datasets/sales/2024/*.parquet')
+-- Read a dataset from object storage
+SELECT *
+FROM read_parquet('s3://nubi/datasets/<org_id>/<dataset_id>/data.parquet')
 LIMIT 100;
+
+-- Glob over a prefix (multiple files)
+SELECT region, SUM(revenue) AS total
+FROM read_parquet('s3://nubi/raw/orders/*.parquet')
+GROUP BY region;
 ```
 
-### Write a query result as Parquet
+### Writing query results as Parquet
+
+Use DuckDB's `COPY … TO` syntax (works in both browser kernel and server kernel):
 
 ```sql
 COPY (
@@ -166,48 +225,41 @@ COPY (
 (FORMAT 'parquet', CODEC 'zstd');
 ```
 
-### CSV upload → bucket → registered dataset (pipeline)
+Or use the materialise API to register the result as a named dataset (see above).
 
-1. Frontend uploads CSV to `POST /api/v1/datasets/upload` (multipart `file` +
-   `name` form fields).
-2. Backend saves the CSV to a temp file, then converts it to Parquet via
-   `COPY (SELECT * FROM read_csv_auto(...)) TO '<path>' (FORMAT PARQUET)`.
-   The Parquet lands at `<bucket-root>/datasets/<org_id>/<dataset_id>/data.parquet`
-   (local) or `s3://nubi/datasets/<org_id>/<dataset_id>/data.parquet` (when
-   `NUBI_BUCKET_URI` is set).
-3. A datastore row is created with `connector_type='duckdb'` and a `view_sql`
-   of `CREATE VIEW dataset AS SELECT * FROM read_parquet('<parquet-path>')`;
-   the `parquet_path` config key holds the effective URI (local or `s3://`).
-4. The dataset is immediately queryable via the normal query pipeline.
+---
 
-### Using outputs as inputs in dashboards
+## RLS and security
 
-Because DuckDB can read directly from S3 paths, a dashboard tile can
-reference the output of another query/flow:
+Datasets are org-scoped. The `datasets` catalog enforces `org_id` on every read, list, and write. The `datastores` row created for each dataset is also org-scoped.
 
-```sql
--- Dashboard tile: "Revenue this quarter"
-SELECT *
-FROM read_parquet('s3://nubi/agg/revenue_by_region.parquet')
-ORDER BY total_revenue DESC;
-```
+When querying through the normal connector path, RLS predicates are injected into the SQL by the planner **before** the connector executes it. The connector receives `plan.sql` verbatim and never touches RLS logic — this is verified by the conformance suite (test A6 in `test_duckdb_storage.py`).
+
+All dataset endpoints require a valid first-party Bearer token.
+
+---
+
+## Storage metering (Cloud/EE)
+
+After each upload or materialise operation the server takes a best-effort snapshot of the org's total dataset storage in GB and records it as a `kind="storage"` usage event. Billing aggregation uses the **peak GB** over the billing period. This metering is best-effort — a metering failure never blocks an upload.
+
+Storage metering is a Cloud/EE feature. See [Billing and Usage](/docs/billing-and-usage) for details.
 
 ---
 
 ## Production checklist
 
-- [ ] Replace `minioadmin` / `minioadmin` with strong random credentials.
-- [ ] Enable TLS on the MinIO endpoint (set `S3_USE_SSL=true` / use `https://`).
-- [ ] Set `S3_FORCE_PATH_STYLE=false` if switching to real AWS S3 virtual-hosted style.
-- [ ] Store credentials in the Nubi named-secrets store (`NUBI_SECRETS_KEY` must be set).
-- [ ] Configure a lifecycle policy on the bucket to expire temporary upload objects.
-- [ ] For multi-node MinIO (distributed mode) set `MINIO_VOLUMES` appropriately and add extra drive mappings to the compose service.
+- Replace `minioadmin` / `minioadmin` with strong random credentials before exposing any endpoint.
+- Enable TLS on the MinIO endpoint (use `https://` in `S3_ENDPOINT_URL`; DuckDB's `USE_SSL` is inferred automatically).
+- Set `S3_URL_STYLE` appropriately: `path` for MinIO/self-hosted, `vhost` for AWS S3.
+- Store credentials in a secrets manager or Nubi's named-secrets store (`nubi secrets set`). See [Secrets](/docs/secrets).
+- Configure a lifecycle policy on the bucket to expire temporary upload objects.
+- Back up the `datasets` Postgres table alongside your object storage — losing either one orphans the other.
 
----
+## Related docs
 
-## MinIO console
-
-When running locally, the MinIO web console is available at
-**http://localhost:9001** (user: `minioadmin`, password: `minioadmin`).
-Use it to browse buckets, inspect objects, set lifecycle policies, and
-monitor throughput.
+- [Connectors](/docs/connectors) — how datastores and connector configs work
+- [Queries and Params](/docs/queries-and-params) — SQL planner, RLS, params
+- [Flows](/docs/flows) — automating materialise operations
+- [Secrets](/docs/secrets) — storing S3 credentials securely
+- [Self-host](/docs/self-host) — deploying Nubi with Postgres and object storage

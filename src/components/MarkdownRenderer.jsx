@@ -1,4 +1,4 @@
-import ReactMarkdown from 'react-markdown'
+import ReactMarkdown, { defaultUrlTransform } from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter'
 import { oneDark } from 'react-syntax-highlighter/dist/esm/styles/prism'
@@ -236,10 +236,21 @@ const components = {
   },
 }
 
+/**
+ * Preserve our `illustration:` scheme (react-markdown's default urlTransform
+ * sanitises unknown protocols to an empty string, which would drop the
+ * illustration src before the `img` handler can map it). Everything else falls
+ * back to the library's default sanitiser.
+ */
+function urlTransform(url) {
+  if (typeof url === 'string' && url.startsWith('illustration:')) return url
+  return defaultUrlTransform(url)
+}
+
 export default function MarkdownRenderer({ content }) {
   return (
     <article className="max-w-none">
-      <ReactMarkdown remarkPlugins={[remarkGfm]} components={components}>
+      <ReactMarkdown remarkPlugins={[remarkGfm]} urlTransform={urlTransform} components={components}>
         {content}
       </ReactMarkdown>
     </article>

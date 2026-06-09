@@ -62,10 +62,10 @@ These are the monthly allowances *included* in each plan. Usage beyond them is a
 | Feature | Free | Starter | Team | Pro | Enterprise |
 |---------|------|---------|------|-----|------------|
 | Remove Nubi branding | — | — | Yes | Full white-label | Full + custom SDK |
-| Row-level security | — | Basic | Full (JWT) | Full (JWT) | HIPAA-ready |
+| Row-level security | — | Basic | Full (JWT) | Full (JWT) | Full (JWT) |
 | Google SSO | — | Yes | Yes | Yes | Yes |
-| SAML SSO | — | — | — | 1 IdP | Unlimited IdPs |
-| SCIM provisioning | — | — | — | — | Yes |
+| SAML SSO | — | — | — | 1 IdP *(coming soon)* | Unlimited IdPs *(coming soon)* |
+| SCIM provisioning | — | — | — | — | Coming soon |
 | Custom domain | — | — | — | Yes | Yes |
 | Audit log retention | None | 7 days | 30 days | 90 days | Unlimited |
 | Uptime SLA | — | — | — | 99.5% | 99.95% |
@@ -105,15 +105,15 @@ We meter only the five dimensions that map to a real cost we pay on your behalf:
 
 When you exceed a plan's included quota, the extra usage is an **overage**. Overages let you buy more of *one* thing — say more AI calls — without jumping a whole plan.
 
-Overage rates are **anchored in USD** and **billed in ZAR** at the daily rate, and are the **same at every paid plan**:
+Overage rates are **fixed in ZAR**: Storage R1.50/GB/mo, Compute R100/1,000 CU, AI R5/call, Embedded R50/10,000 sessions, Agent/kernel runs R2/run. Agent/kernel run overages are **not available on the Starter plan**.
 
 | Dimension | Rate | Unit |
 |-----------|------|------|
-| Storage | $0.10 | / GB / mo |
-| Compute | $6 | / 1,000 CU |
-| AI calls | $0.30 | / call |
-| Embedded sessions | $3 | / 10,000 |
-| Agent / kernel runs | $0.12 | / run |
+| Storage | R1.50 | / GB / mo (~$0.09 USD) |
+| Compute | R100 | / 1,000 CU |
+| AI calls | R5 | / call |
+| Embedded sessions | R50 | / 10,000 |
+| Agent / kernel runs | R2.00 | / run (≈ $0.12 USD at reference rate) |
 
 How overages are paid:
 

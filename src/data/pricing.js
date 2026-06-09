@@ -90,7 +90,6 @@ export const TIERS = [
       '5 AI calls / mo',
       'Basic row-level security',
       'Google OAuth SSO',
-      '7-day audit log',
     ],
   },
   {
@@ -110,7 +109,7 @@ export const TIERS = [
       '10 agent runs · 15 AI calls / mo',
       '15 connectors · 30 dashboards · 8 flows',
       'Full RLS with JWT claims · Google SSO',
-      'Remove Nubi branding · 30-day audit log',
+      'Remove Nubi branding',
     ],
   },
   {
@@ -130,9 +129,9 @@ export const TIERS = [
       '25,000 embedded sessions / mo',
       '50 agent runs · 50 AI calls / mo',
       'All connectors · 100 dashboards · 20 flows',
-      'Full RLS with JWT claims · Google + SAML SSO (1 IdP)',
-      'Full white-label · custom domain · 90-day audit log',
-      '99.5% uptime SLA',
+      'Full RLS with JWT claims · Google SSO',
+      'SAML SSO — coming soon',
+      'White-label embeds (coming soon) · custom domain (coming soon)',
     ],
   },
   {
@@ -157,16 +156,16 @@ export const TIERS = [
       '500 GB+ storage · 200,000 compute units / mo',
       'Unlimited embedded sessions',
       '1,000 agent runs · 500 AI calls / mo',
-      'Full RLS + HIPAA-ready · custom JS SDK',
-      'SAML (unlimited IdPs) + SCIM · multi-tenant workspaces',
-      'Dedicated CSM · 99.95% uptime SLA · P1 < 30 min',
-      'BYOC / air-gap / on-prem · BAA on request',
+      'Full RLS + HIPAA-alignable deployment',
+      'SAML SSO + SCIM provisioning (coming soon) · multi-tenant workspaces',
+      'Dedicated CSM · 99.95% uptime SLA · P1 < 30 min (contractual, at signing)',
+      'BYOC / on-prem available on request · BAA on request',
     ],
   },
 ]
 
 export const ENTERPRISE_NOTE =
-  'Enterprise includes a contractual 99.95% SLA, dedicated CSM, and 24/7 P1 on-call. Need BYOC, on-prem, or custom pricing? Enterprise is custom-quoted.'
+  'Enterprise contracts include a 99.95% uptime SLA, dedicated CSM, and 24/7 P1 on-call — terms are agreed at signing. Need BYOC, on-prem, or custom pricing? Enterprise is custom-quoted.'
 
 // ── BI competitor comparison: the "viewer tax" ──────────────────────────────
 // cost500 = illustrative annual cost to serve ~500 dashboard viewers, BEFORE
@@ -437,7 +436,7 @@ export const ORCH_CALC_OPTIONS = [
 export const PRICING_FAQ = [
   {
     q: 'Why don’t you charge per viewer?',
-    a: 'Because we don’t pay per viewer. Dashboards compute in the user’s browser (Pyodide + DuckDB-WASM), so an extra viewer costs us essentially nothing — and we pass that on. You’re billed for editors, AI, and warehouse throughput, never for someone looking at a chart.',
+    a: 'Because we don’t pay per viewer. Dashboards compute in the user’s browser (DuckDB-WASM), so an extra viewer costs us essentially nothing — and we pass that on. You’re billed for editors, AI, and warehouse throughput, never for someone looking at a chart.',
   },
   {
     q: 'What counts as an “embed view”?',

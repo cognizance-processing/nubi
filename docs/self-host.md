@@ -1,72 +1,55 @@
-# Self-Hosting Nubi (Community / OSS Edition)
+# Self-Hosting Nubi
 
-This guide explains how to run the full Nubi stack on your own infrastructure
-using Docker Compose.
+![Services, volumes, and traffic flow for a self-hosted Nubi deployment](illustration:SelfHostTopology)
 
----
-
-## Architecture
-
-```
-Browser
-  │
-  ▼  :8080
-┌─────────────────────────────────┐
-│  frontend  (nginx)              │
-│  - serves the Vite SPA          │
-│  - proxies /api/* → backend     │
-│  - proxies /health → backend    │
-└──────────────┬──────────────────┘
-               │  :8000 (internal)
-               ▼
-┌─────────────────────────────────┐
-│  backend  (FastAPI / uvicorn)   │
-│  - REST API at /api/v1          │
-│  - Flows engine + scheduler     │
-│  - Runs DB migrations on boot   │
-└──────────┬────────────┬─────────┘
-           │            │
-           ▼            ▼
-┌──────────────┐  ┌─────────────────────────────────┐
-│  db          │  │  minio  (S3-compatible storage)  │
-│ (postgres    │  │  - object storage for exports,   │
-│  16-alpine)  │  │    datasets, cache files         │
-│  pg_data vol │  │  - minio_data volume             │
-└──────────────┘  └─────────────────────────────────┘
-```
-
-All services share the internal `nubi` Docker network.  Only the
-frontend port (8080) and the MinIO ports (9000 S3 API, 9001 web console)
-are published to the host.
+This guide covers everything you need to run Nubi on your own infrastructure using Docker Compose: services, configuration, kernels, migrations, upgrades, and backups.
 
 ---
 
-## Open-Core
+## Stack overview
 
-Nubi is **open-core** (GitLab CE/EE style).
+The compose file (`docker-compose.yml`) defines five services on an internal `nubi` Docker network:
 
-| Tree            | Included in community image? | Description                       |
-|-----------------|------------------------------|-----------------------------------|
-| `backend/app/`  | Yes (minus `ee/`)            | Core API, flows, connectors, query |
-| `backend/app/ee/` | **No**                     | EE billing, paid-tier enforcement  |
-| `src/`          | Yes (minus `ee/`)            | Core React SPA                     |
-| `src/ee/`       | **No**                       | EE commercial UI extensions        |
+| Service | Image / runtime | Role | Ports & volumes |
+|---|---|---|---|
+| `frontend` | nginx 1.27 | Serves the Vite SPA; proxies `/api/*` → `backend:8000` and `/health` → backend | `:8080` published |
+| `backend` | FastAPI / uvicorn | REST API at `/api/v1`; flows engine + scheduler; runs DB migrations on boot | `:8000` internal only |
+| `db` | postgres:16 | Application database | `:5432` internal; `pg_data` volume |
+| `minio` | MinIO (S3-compatible) | Exports, datasets, cache | `:9000` S3 API, `:9001` console; `minio_data` volume |
+| `minio-init` | one-shot | Creates the `nubi` bucket, then exits | — |
 
-The `ee/` trees are excluded at build time via `.dockerignore`.  If the EE
-tree is absent, `load_ee()` returns `False` and all commercial features are
-silently disabled — the OSS build runs fully without them.
+The browser talks only to the frontend on `:8080`; the frontend proxies API traffic to the backend, which fans out to Postgres and MinIO.
+
+`minio-init` is a one-shot init container that creates the `nubi` bucket after MinIO is healthy; it exits cleanly after that single step. Only ports `8080` (frontend), `9000` (MinIO S3 API), and `9001` (MinIO console) are published to the host. The backend (`8000`) and Postgres (`5432`) are internal only.
+
+---
+
+## Open-core boundaries
+
+Nubi is open-core (GitLab CE/EE style). The community image excludes EE trees at build time via `.dockerignore`.
+
+| Path | In community image | Contents |
+|---|---|---|
+| `backend/app/` (minus `ee/`) | Yes | Core API, flows, connectors, queries |
+| `backend/app/ee/` | **No** | Billing, paid-tier enforcement |
+| `src/` (minus `ee/`) | Yes | Core React SPA |
+| `src/ee/` | **No** | Commercial UI extensions |
+| `database/migrations/*.sql` | Yes | Core schema (always applied) |
+| `database/migrations/ee/*.sql` | **No** | Billing, FX, wallet, invoices (requires `--ee`) |
+
+When the EE tree is absent, `load_ee()` in `backend/app/ee/__init__.py` returns `False` silently. The feature-flag module (`backend/app/features.py`) defaults the commercial features `billing` and `paid_tiers` to disabled. The OSS build runs fully without them and is never usage-limited — quota enforcement is an EE concern.
 
 ---
 
 ## Prerequisites
 
 - Docker >= 24 with the Compose plugin (`docker compose version`)
-- `make` (optional but recommended)
+- `make` (optional but convenient)
 - `curl` and `jq` (for the smoke test)
 
 ---
 
-## Quick Start
+## Quick start
 
 ### 1. Clone and configure
 
@@ -76,77 +59,154 @@ cd nubi
 cp .env.compose .env.compose.local
 ```
 
-Edit `.env.compose.local` and fill in the required secrets (see the
-[Configuration](#configuration) section below).
+Edit `.env.compose.local` and fill in at minimum the required secrets listed in the [Configuration](#configuration) section. The committed `.env.compose` contains only safe placeholder values and is never deployed as-is.
 
 ### 2. Start the stack
 
 ```bash
 make up
-# or: docker compose up -d --build
+# equivalent: docker compose up -d --build
 ```
 
-The first run can take several minutes while:
-- `npm ci` + `vite build` compile the frontend
-- `pip install` installs Python dependencies
-- Postgres and MinIO initialise their data directories
-- The entrypoint runs database migrations
+The first run takes several minutes: `npm ci` + `vite build`, `pip install`, Postgres and MinIO data-directory initialisation, and migration execution all happen before the backend is healthy.
 
 ### 3. Open Nubi
 
-Navigate to **http://localhost:8080** in your browser.
+Navigate to **http://localhost:8080**.
 
-### 4. Run the smoke test
+### 4. Smoke test
 
 ```bash
 make smoke
-# or: bash scripts/smoke.sh
+# equivalent: bash scripts/smoke.sh
 ```
 
-The smoke test brings up the stack, waits for health, runs five API checks,
-then tears down.
+The smoke script starts the stack, waits for the health endpoint, runs five API checks, then tears down.
 
 ---
 
 ## Configuration
 
-All configuration is passed via environment variables.  The compose stack
-reads `.env.compose` (committed, safe placeholder values) and you can
-override any variable by creating `.env.compose.local` or by setting
-environment variables in your shell before running `docker compose`.
+All configuration is passed as environment variables. The compose stack loads `.env.compose` via `env_file`; override by creating `.env.compose.local` or by exporting variables in your shell before running `docker compose`. Process-environment variables always take precedence over the file.
 
 ### Required for production
 
 | Variable | Description | How to generate |
 |---|---|---|
-| `JWT_SECRET` | HS256 signing key (≥ 32 bytes) | `python -c "import secrets; print(secrets.token_hex(32))"` |
-| `GOOGLE_CLIENT_ID` | Google OAuth client ID | [Google Cloud Console](https://console.cloud.google.com) → Credentials |
-| `GOOGLE_CLIENT_SECRET` | Google OAuth client secret | Same as above |
+| `JWT_SECRET` | HS256 signing key (minimum 32 bytes; enforced at startup) | `python -c "import secrets; print(secrets.token_hex(32))"` |
+| `GOOGLE_CLIENT_ID` | Google OAuth client ID | [Google Cloud Console](https://console.cloud.google.com) → APIs & Services → Credentials |
+| `GOOGLE_CLIENT_SECRET` | Google OAuth client secret | Same |
 | `GOOGLE_REDIRECT_URI` | OAuth callback URL | `https://<your-domain>/api/v1/auth/google/callback` |
+
+The backend validates `JWT_SECRET` at startup and refuses to start if it is shorter than 32 bytes (RFC 7518 §3.2).
 
 ### Recommended for production
 
 | Variable | Description | How to generate |
 |---|---|---|
-| `NUBI_SECRETS_KEY` | Fernet key for named-secrets encryption | `python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"` |
-| `CONNECTOR_SECRET_KEY` | AES-256 key for connector credential encryption | `python -c "import os,base64; print(base64.urlsafe_b64encode(os.urandom(32)).decode())"` |
-| `COOKIE_SECURE` | Set `true` when serving over HTTPS | — |
+| `CONNECTOR_SECRET_KEY` | AES-256-GCM key for connector credentials at rest | `python -c "import os,base64; print(base64.urlsafe_b64encode(os.urandom(32)).decode())"` |
 | `MINIO_ROOT_USER` | MinIO / S3 access key | Choose a strong username |
 | `MINIO_ROOT_PASSWORD` | MinIO / S3 secret key | `python -c "import secrets; print(secrets.token_hex(24))"` |
+| `COOKIE_SECURE` | Set `true` when serving over HTTPS | — |
+
+`CONNECTOR_SECRET_KEY` is required to use any database connectors (PostgreSQL, MySQL, BigQuery, etc.). Only ciphertext + nonce + key version are stored in the database; the key itself never touches Postgres.
 
 ### Runtime tunables
 
 | Variable | Default | Description |
 |---|---|---|
-| `ENV` | `production` | Runtime environment tag |
-| `CORS_ORIGINS` | `http://localhost:8080` | Comma-separated allowed CORS origins |
-| `FRONTEND_URL` | `http://localhost:8080` | Public URL of the frontend (used in emails / redirects) |
-| `KERNEL_LOCAL_ENABLED` | `true` | Allow local subprocess kernel (set `false` in production for isolation) |
-| `FLOWS_INPROCESS_WORKER` | `true` | Run flows scheduler inside the API process |
-| `FLOWS_WORKER_ENABLED` | `true` | Enable the flows task worker entirely |
-| `UVICORN_WORKERS` | `2` | Number of uvicorn worker processes |
-| `S3_ENDPOINT_URL` | `http://minio:9000` | S3-compatible endpoint for object storage |
+| `ENV` | `production` | Runtime label. `development` enables OpenAPI docs (`/docs`, `/redoc`) and the local subprocess kernel. |
+| `CORS_ORIGINS` | `http://localhost:8080` | Comma-separated allowed origins |
+| `FRONTEND_URL` | `http://localhost:8080` | Public URL used in OAuth redirects |
+| `UVICORN_WORKERS` | `2` | Uvicorn worker processes |
+| `FLOWS_WORKER_ENABLED` | `true` | Enable the in-process flows task worker |
+| `S3_ENDPOINT_URL` | `http://minio:9000` | S3-compatible endpoint |
 | `S3_BUCKET` | `nubi` | S3 bucket for exports, datasets, and cache |
+| `S3_FORCE_PATH_STYLE` | `true` | Required for MinIO and most self-hosted S3 clones |
+
+### Connector key rotation
+
+For key rotation, supply a JSON map of version → base64-key and set the new key as the highest version:
+
+```bash
+CONNECTOR_SECRET_KEYS='{"1":"<old-b64-key>","2":"<new-b64-key>"}'
+```
+
+The highest numeric version is used for new encryptions; existing secrets encrypted under older versions are decrypted using their stored key-version until re-encrypted.
+
+---
+
+## Kernels
+
+Nubi has two kernel tiers that complement each other.
+
+### Browser kernel (DuckDB-WASM)
+
+SQL cells execute entirely in the browser via DuckDB-WASM. No server-side compute is involved and no configuration is needed — it works out of the box.
+
+### Server kernel (Python execution)
+
+The browser does not run Python — every Python cell is routed to a server kernel via `POST /api/v1/compute/run`. The runner is selected in priority order (`backend/app/routes/compute.py`):
+
+1. `KERNEL_REMOTE_PROVIDER=e2b` + `E2B_API_KEY` set → E2B Firecracker microVM (recommended for production)
+2. `KERNEL_REMOTE_PROVIDER=modal` + `MODAL_TOKEN_ID` + `MODAL_TOKEN_SECRET` set → Modal container (**not yet implemented** — `run()` raises 503; use E2B for production)
+3. `ENV != production` **and** `KERNEL_LOCAL_ENABLED=true` → local subprocess runner (development only)
+4. None of the above → `/compute/run` returns `503 kernel_disabled`
+
+**The local subprocess runner is explicitly blocked when `ENV=production`**, regardless of `KERNEL_LOCAL_ENABLED`. It offers only dev-grade isolation: same OS user, shared network namespace, no cgroup separation. Native wheels and large compute jobs require a remote runner in production.
+
+**E2B setup:**
+
+```bash
+KERNEL_REMOTE_PROVIDER=e2b
+E2B_API_KEY=e2b-your-key-here
+```
+
+**Modal setup:**
+
+> **Note:** Modal execution is not yet implemented. The runner is selected by the router but always returns 503. Use E2B for production remote execution.
+
+```bash
+KERNEL_REMOTE_PROVIDER=modal
+MODAL_TOKEN_ID=ak-...
+MODAL_TOKEN_SECRET=as-...
+```
+
+If you do not need Python compute (SQL-only deployments), leave `KERNEL_REMOTE_PROVIDER` unset. Users will receive a clear `503 kernel_disabled` error if they attempt to run a Python cell.
+
+---
+
+## Database migrations
+
+`database/migrate.py` is a forward-only runner (asyncpg). The entrypoint (`docker-entrypoint.sh`) runs it automatically before uvicorn starts.
+
+**Core migrations** (`database/migrations/*.sql`) are applied in lexical order and tracked in the `schema_migrations` ledger table. Each migration runs inside its own transaction; failure rolls back that migration and stops the runner cleanly.
+
+**EE migrations** (`database/migrations/ee/*.sql`) cover billing, FX rates, wallet, and invoices. They are skipped unless you pass `--ee` or set `NUBI_CLOUD=1` / `NUBI_EE=1`. OSS self-hosted deployments never need them.
+
+Concurrent runners (multi-replica deploys, CI overlapping a manual run) serialize on Postgres advisory lock `727274`, so only one runner applies pending migrations at a time.
+
+### Migration commands
+
+Apply pending migrations without restarting the container:
+
+```bash
+make migrate
+# equivalent: docker compose exec backend python /app/database/migrate.py
+```
+
+Inspect migration state (read-only):
+
+```bash
+make migrate-status
+# equivalent: docker compose exec backend python /app/database/migrate.py --status
+```
+
+Include EE migration state:
+
+```bash
+docker compose exec backend python /app/database/migrate.py --status --ee
+```
 
 ---
 
@@ -154,81 +214,37 @@ environment variables in your shell before running `docker compose`.
 
 | Target | Description |
 |---|---|
-| `make up` | Build images and start the stack in the background |
-| `make down` | Stop all services and remove all volumes (Postgres + MinIO data) |
-| `make logs` | Stream logs from all services (Ctrl-C to stop) |
+| `make up` | Build images (if needed) and start the stack in the background |
+| `make down` | Stop all services **and remove volumes** (wipes Postgres + MinIO data) |
+| `make logs` | Stream logs from all services (`Ctrl-C` to stop) |
 | `make migrate` | Apply pending migrations in the running backend container |
 | `make migrate-status` | Show applied vs pending migrations |
 | `make smoke` | Run the end-to-end smoke test |
-| `make config-check` | Validate docker-compose.yml syntax |
+| `make config-check` | Validate `docker-compose.yml` syntax |
 
----
-
-## Database migrations
-
-Migrations run automatically when the backend container starts (via
-`docker-entrypoint.sh`).  They are forward-only SQL files under
-`database/migrations/`, applied in lexical order and tracked in the
-`schema_migrations` ledger table.
-
-**Open-source migrations** (`database/migrations/*.sql`) are applied by
-default.  EE/cloud migrations (`database/migrations/ee/*.sql`) — covering
-billing, FX rates, wallet, and invoices — are skipped unless you pass
-`--ee` or set `NUBI_CLOUD=1` / `NUBI_EE=1` in the environment.  Self-hosted
-OSS deployments never need the EE migrations.
-
-To run migrations manually (e.g. after upgrading):
-
-```bash
-make migrate
-# or: docker compose exec backend python /app/database/migrate.py
-```
-
-To inspect migration state:
-
-```bash
-make migrate-status
-```
-
----
-
-## Upgrading
-
-```bash
-git pull
-make up        # rebuilds images and restarts services
-```
-
-Migrations are applied automatically on each restart.
+`make down` passes `-v` to `docker compose down`, which removes the `pg_data` and `minio_data` volumes. To stop services while keeping data: `docker compose stop` or `docker compose down` (without `-v`).
 
 ---
 
 ## Ports
 
-| Port | Service | Notes |
+| Port | Service | Visibility |
 |---|---|---|
-| `8080` | frontend (nginx) | Public-facing; proxies /api to the backend |
-| `8000` | backend (uvicorn) | Internal only; proxied via nginx |
-| `5432` | db (postgres) | Internal only; not published |
-| `9000` | minio (S3 API) | Published; used for object storage access |
-| `9001` | minio (web console) | Published; MinIO admin UI |
+| `8080` | frontend (nginx) | Published — reverse-proxy this in production |
+| `8000` | backend (uvicorn) | Internal only |
+| `5432` | db (Postgres 16) | Internal only |
+| `9000` | minio (S3 API) | Published |
+| `9001` | minio (console) | Published — restrict access in production |
 
-To run on a different port, set the `ports` mapping in `docker-compose.yml`
-or override with a `docker-compose.override.yml`.
+To run on a different public port, change the `ports` mapping in `docker-compose.yml` or add a `docker-compose.override.yml`.
 
 ---
 
-## Reverse proxy / TLS
+## Reverse proxy and TLS
 
-To put Nubi behind a reverse proxy (e.g. nginx, Caddy, Traefik):
+Point your reverse proxy at port `8080`. The nginx frontend already proxies `/api/*` and `/health` to the backend, so your proxy only needs to forward traffic to port `8080`.
 
-1. Point the reverse proxy at port `8080` (the nginx frontend).
-2. Terminate TLS at the reverse proxy.
-3. Set `COOKIE_SECURE=true` in your env.
-4. Update `CORS_ORIGINS` and `FRONTEND_URL` to your public domain.
-5. Update `GOOGLE_REDIRECT_URI` to `https://<your-domain>/api/v1/auth/google/callback`.
-
-Example Caddy snippet:
+Example Caddy configuration:
 
 ```
 your-domain.com {
@@ -236,57 +252,111 @@ your-domain.com {
 }
 ```
 
+After switching to a custom domain, update these env vars:
+
+```bash
+COOKIE_SECURE=true
+FRONTEND_URL=https://your-domain.com
+CORS_ORIGINS=https://your-domain.com
+GOOGLE_REDIRECT_URI=https://your-domain.com/api/v1/auth/google/callback
+```
+
+For split-host deployments (frontend and backend on separate domains), rebuild the frontend image with:
+
+```bash
+docker compose build \
+  --build-arg VITE_BACKEND_URL=https://api.your-domain.com \
+  frontend
+```
+
+The default `VITE_BACKEND_URL=""` (empty) means the SPA calls `/api` on the same origin it is served from — correct for single-host deployments where nginx handles the proxy.
+
+---
+
+## Upgrading
+
+```bash
+git pull
+make up   # rebuilds images and restarts services
+```
+
+Migrations run automatically on each restart. To apply migrations without a full restart: `make migrate`.
+
+---
+
+## Backups
+
+There is no built-in backup tooling. Two data sources need protection:
+
+**Postgres** (users, orgs, connectors, dashboards, flows, all application state):
+
+```bash
+docker compose exec db pg_dump -U nubi nubi > backup-$(date +%Y%m%d).sql
+```
+
+**MinIO** (exports, datasets, parquet cache — the `minio_data` volume):
+
+Use the MinIO Client (`mc`) or the MinIO console at `http://localhost:9001` to replicate or export the `nubi` bucket. For production, configure MinIO replication to a second site, or replace the bundled MinIO service with an external S3-compatible bucket (set `S3_ENDPOINT_URL`, `S3_ACCESS_KEY`, `S3_SECRET_KEY`, and `S3_BUCKET` accordingly).
+
 ---
 
 ## Troubleshooting
 
-**Backend does not start / keeps restarting**
+**Backend keeps restarting**
 
-Check logs: `docker compose logs backend`
+```bash
+docker compose logs backend
+```
 
 Common causes:
-- `DATABASE_URL` unreachable (the entrypoint retries 60 times, 1s apart).
-- `JWT_SECRET` shorter than 32 bytes.
-- Missing required env vars (`GOOGLE_CLIENT_ID`, etc.).
+- `DATABASE_URL` unreachable — the entrypoint retries up to 60 times (1 s apart) before aborting.
+- `JWT_SECRET` shorter than 32 bytes — the backend raises a `ValueError` on startup.
+- Missing required env vars (`GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, `GOOGLE_REDIRECT_URI`).
 
 **Migrations fail**
 
 ```bash
-docker compose logs backend | grep -i migration
+docker compose logs backend | grep -i migrat
 ```
 
-Each migration runs in its own transaction and rolls back on failure.  Fix
-the error, then re-run `make migrate`.
+Each migration is transactional and rolls back cleanly on failure. Fix the root cause, then re-run `make migrate`.
 
 **Frontend shows "Cannot connect to API"**
-
-Verify that nginx is proxying correctly:
 
 ```bash
 curl http://localhost:8080/health
 ```
 
-If that fails, check `docker compose logs frontend`.
+If that returns a non-200, check `docker compose logs frontend` for nginx errors and `docker compose logs backend` for startup failures.
 
-**"no access_token" in smoke test**
+**Python cells return `kernel_disabled` (503)**
 
-The smoke test registers a new user on each run.  If registration is
-disabled or the backend is unhealthy this will fail.  Check backend logs.
+No server kernel is configured. Set `KERNEL_REMOTE_PROVIDER=e2b` and `E2B_API_KEY` for production, or set `ENV=development` and `KERNEL_LOCAL_ENABLED=true` for local development. SQL cells run in the browser (DuckDB-WASM) and never require a server kernel; only Python cells do.
+
+**MinIO bucket not created**
+
+```bash
+docker compose logs minio-init
+```
+
+If it exited before MinIO was healthy, `make up` will re-run the init container (it has `restart: "no"`, so it only runs once per compose up cycle).
 
 ---
 
 ## Community vs EE
 
-The community image is built with `backend/app/ee/` and `src/ee/` excluded
-(via `.dockerignore`).  The feature-flag system (`backend/app/features.py`,
-`src/lib/features.js`) defaults all commercial features to **disabled**.
+The community image is built with `backend/app/ee/` and `src/ee/` excluded via `.dockerignore`. The feature-flag module (`backend/app/features.py`) defaults all commercial features (`billing`, `paid_tiers`) to disabled, and no quota checker is registered — so OSS self-host is never usage-limited.
 
-If you have an EE licence and the EE tree, build with:
+If you hold an EE licence and have the EE source tree, remove the `ee/` exclusions from `.dockerignore` and rebuild:
 
 ```bash
-# Remove the ee/ exclusions from .dockerignore, then:
 docker compose build
 ```
 
-The EE init code (`backend/app/ee/__init__.py → load_ee()`) registers
-commercial features at startup; the OSS core never imports `ee/` directly.
+`backend/app/ee/__init__.py → load_ee()` registers commercial features at startup. Core code never imports from `app.ee` directly. Apply EE migrations with:
+
+```bash
+NUBI_EE=1 docker compose exec backend python /app/database/migrate.py
+```
+
+See [Architecture — Open Core](/docs/architecture-open-core) for a detailed treatment of the CE/EE split.

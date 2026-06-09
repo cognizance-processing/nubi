@@ -74,6 +74,8 @@ import DashboardCanvas from '../components/illustrations/DashboardCanvas.jsx'
 import KernelInBrowser from '../components/illustrations/KernelInBrowser.jsx'
 import EdgeCache from '../components/illustrations/EdgeCache.jsx'
 import WebGLPerf from '../components/illustrations/WebGLPerf.jsx'
+import ConnectorSdk from '../components/illustrations/ConnectorSdk.jsx'
+import EmbedAuth from '../components/illustrations/EmbedAuth.jsx'
 // Dev-centric features read better as real code than abstract art.
 import { ConnectorSdkCode, FlowCode, EmbedAuthCode, LlmDashboardCode } from '../components/illustrations/CodeTile.jsx'
 
@@ -423,9 +425,15 @@ function highlightCode(code, lang) {
   ))
 }
 
-function HowItWorksStep({ num, icon: Icon, title, color, tagline, bullets, code, lang, chips }) {
+function HowItWorksStep({ num, icon: Icon, title, color, tagline, bullets, code, lang, chips, Illo }) {
   return (
     <div className="lp-step-card flex flex-col bg-surface rounded-2xl border border-border overflow-hidden flex-1 min-w-0">
+      {/* Illustration header — guides the eye through each stage */}
+      {Illo && (
+        <div className="px-6 pt-6 pb-2 bg-surface-2 border-b border-border">
+          <Illo className="w-full h-auto max-h-28 mx-auto" />
+        </div>
+      )}
       {/* Card header strip */}
       <div
         className="px-6 pt-6 pb-5"
@@ -1150,7 +1158,7 @@ export default function LandingPage() {
                     'Unlimited seats & viewers',
                     'No credit card to start',
                     'Apache-2.0 open core',
-                    'Arrow IPC + WebGL rendering',
+                    'Arrow IPC + ECharts rendering',
                   ].map(f => (
                     <span key={f} className="flex items-center gap-1.5">
                       <Check size={11} strokeWidth={2.5} className="text-accent" />
@@ -1199,7 +1207,7 @@ export default function LandingPage() {
 
             <div className="grid grid-cols-2 sm:grid-cols-4 divide-x divide-y sm:divide-y-0 divide-white/10">
               <StatBadge value="≈ $0" label="marginal cost per dashboard view" />
-              <StatBadge value="1M" label="scatter points rendered in-browser via WebGL" />
+              <StatBadge value="∞" label="users & viewers — no per-seat pricing" />
               <StatBadge value="10–50×" label="cost reduction vs naive warehouse usage¹" />
               <StatBadge value="0 s" label="cold-start — kernel runs in the tab" />
             </div>
@@ -1308,9 +1316,9 @@ export default function LandingPage() {
 
               <DiffRow
                 icon={Globe}
-                title="WebGL · up to 1M points"
+                title="Fast charts on Arrow buffers"
                 badge="Rendering"
-                desc="Arrow IPC flows from DuckDB directly into regl GPU buffers — scatter plots scale to ~1M points. The <nubi-chart> element auto-upgrades to WebGL above a configurable row threshold (20k by default) — authors never touch WebGL code."
+                desc="Query results arrive as columnar Arrow buffers and feed straight into Apache ECharts — no JSON serialisation round-trip. The <nubi-chart> element renders every chart type on canvas, staying fast and responsive even on large result sets."
                 Illustration={WebGLPerf}
                 reverse={true}
               />
@@ -1448,6 +1456,7 @@ export default function LandingPage() {
               <HowItWorksStep
                 num={1}
                 icon={PlugZap}
+                Illo={ConnectorSdk}
                 color="linear-gradient(135deg, #1b2363, #2456a6)"
                 title="Connect"
                 tagline="Bring your warehouse. Secrets stay in your network."
@@ -1487,6 +1496,7 @@ export default function LandingPage() {
               <HowItWorksStep
                 num={2}
                 icon={SearchCode}
+                Illo={QueryWorkspace}
                 color="linear-gradient(135deg, #2456a6, #17b3a3)"
                 title="Query"
                 tagline="SQL, named params, and AI text-to-SQL — all in the browser."
@@ -1526,20 +1536,21 @@ export default function LandingPage() {
               <HowItWorksStep
                 num={3}
                 icon={Layers}
+                Illo={EmbedAuth}
                 color="linear-gradient(135deg, #17b3a3, #2dd4bf)"
                 title="Embed"
                 tagline="One JWT primitive. Per-viewer RLS. Cross-filtering dashboards."
                 bullets={[
                   { icon: KeyRound, text: 'Signed JWT carries per-viewer claims. Predicate injection is AST-based — never string concat. Policies live as code in your repo, PR-reviewable.' },
                   { icon: Filter, text: 'Token-locked params prevent viewers from escaping their data scope. Column masking and row-level security enforced server-side before any data leaves the connector.' },
-                  { icon: Globe, text: 'Cross-filtering dashboards with WebGL scatter plots that scale to ~1M points. The <nubi-chart> element auto-upgrades to GPU rendering — authors never touch WebGL code.' },
+                  { icon: Globe, text: 'Cross-filtering dashboards rendered with ECharts on Arrow buffers — canvas rendering that stays smooth on large result sets.' },
                   { icon: Code2, text: 'Drop the <nubi-dashboard> web component into your host app — UMD or ES module. Theme attribute, short-lived JWTs that refresh before expiry.' },
                 ]}
                 chips={[
                   { label: 'JWT RLS', accent: true },
                   { label: 'AST predicate inject', accent: true },
                   { label: 'Token-locked params', accent: false },
-                  { label: 'WebGL cross-filter', accent: false },
+                  { label: 'Cross-filter dashboards', accent: false },
                   { label: 'Web component', accent: false },
                 ]}
                 code={'<nubi-dashboard query="SELECT * FROM sales" get-token="getEmbedToken">'}
@@ -1654,7 +1665,7 @@ export default function LandingPage() {
                     dim: 'Rendering engine',
                     hex: 'Plotly / SVG, chokes past ~50k rows',
                     cube: 'Bring your own',
-                    nubi: 'WebGL on Arrow buffers — scales to ~1M pts',
+                    nubi: 'ECharts on Arrow buffers · canvas, fast on large result sets',
                   },
                   {
                     dim: 'Cross-filter at scale',
@@ -1668,7 +1679,7 @@ export default function LandingPage() {
                     dim: 'Embedding',
                     hex: 'Separate product, bolt-on auth',
                     cube: 'Core strength — headless only',
-                    nubi: 'Core surface; editor + output embeddable',
+                    nubi: 'Core surface; dashboards + cell widgets embeddable',
                   },
                   {
                     dim: 'Auth-as-code RLS',

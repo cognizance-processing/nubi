@@ -164,11 +164,31 @@ def deploy(
     plan: list[tuple[Path, dict, str]] = []
 
     for path, data in resources:
-        resource_type = data.get("resource", "")
+        resource_type = data.get("resource")
+        if not resource_type:
+            err_console.print(
+                f"Skipping {path.name}: missing required 'resource' field."
+            )
+            continue
+        if resource_type not in _RESOURCE_TYPES:
+            err_console.print(
+                f"Skipping {path.name}: unknown resource type {resource_type!r}. "
+                f"Choose from: {', '.join(_RESOURCE_TYPES)}"
+            )
+            continue
+        if not data.get("name"):
+            err_console.print(
+                f"Skipping {path.name}: missing required 'name' field."
+            )
+            continue
         resource_id = data.get("id")
         action = "UPDATE" if resource_id else "CREATE"
         plan.append((path, data, action))
-        tbl.add_row(path.name, resource_type or "(unknown)", action)
+        tbl.add_row(path.name, resource_type, action)
+
+    if not plan:
+        err_console.print("No valid resource files to deploy.")
+        raise typer.Exit(code=1)
 
     console.print(tbl)
 
@@ -514,55 +534,71 @@ async def _list_task_runs_local(store: Any, flow_run_id: str) -> list:
 
 
 def _patch_secrets_store(local_secrets: dict[str, str]) -> None:
-    """Inject a lightweight in-memory stub for app.secrets.store.
+    """Wire *local_secrets* into the flows runtime's secrets seam.
 
-    This lets the runtime's ``resolve_all`` call succeed locally without
-    requiring the full secrets store to be initialised.  If the real
-    secrets store is already present this is a no-op.
+    The runtime resolves ``TaskContext.secrets`` (and ``{{ secrets.NAME }}``
+    templates) via ``app.secrets.store.get_secret_store().resolve_all(org_id)``.
+    For a local run there is no Postgres, so the default ``PgSecretStore``
+    would fail and the runtime would silently fall back to ``{}`` — local
+    secrets and ``NUBI_SECRET_*`` env vars would never reach the flow.
+
+    When the real ``app.secrets.store`` module is importable we therefore
+    inject an in-memory store via its ``set_secret_store(...)`` seam, seeded
+    from *local_secrets* and serving them for ANY org_id (local runs use
+    org_id='local').  When the module is NOT importable we fall back to
+    stubbing it so the runtime's ``resolve_all`` call still succeeds.
+
+    Must be called BEFORE materialize/drain.
     """
-    try:
-        import importlib  # noqa: PLC0415
+    _captured = dict(local_secrets)
 
+    class _LocalSecretStore:
+        """In-memory store matching the app.secrets.store interface.
+
+        Serves the captured local secrets regardless of *org_id* — a local
+        run has exactly one (implicit) org.
+        """
+
+        async def resolve_all(self, org_id: str) -> dict[str, str]:
+            return dict(_captured)
+
+        async def get_secret(self, org_id: str, name: str) -> str | None:
+            return _captured.get(name)
+
+        async def list_secrets(self, org_id: str) -> list[dict]:
+            return [{"name": k} for k in _captured]
+
+        async def set_secret(self, org_id, name, value, created_by=None):  # type: ignore[override]
+            _captured[name] = value
+            return {"org_id": org_id, "name": name}
+
+        async def delete_secret(self, org_id, name) -> bool:
+            return _captured.pop(name, None) is not None
+
+    store = _LocalSecretStore()
+
+    try:
         try:
             import app.secrets.store as _ss  # noqa: PLC0415
-
-            if hasattr(_ss, "get_secret_store"):
-                # Real secrets store is present — respect it.
-                return
         except ImportError:
-            pass
+            _ss = None
 
-        # Build a stub module that satisfies the seam contract.
+        if _ss is not None and hasattr(_ss, "set_secret_store"):
+            # Real seam is present — inject the local store through it so
+            # get_secret_store() returns our in-memory store for this run.
+            _ss.set_secret_store(store)
+            return
+
+        # Fallback: module not importable — stub it so resolve_all works.
         import types  # noqa: PLC0415
 
-        _captured = dict(local_secrets)
-
-        class _StubSecretStore:
-            async def resolve_all(self, org_id: str) -> dict[str, str]:
-                return dict(_captured)
-
-            async def get_secret(self, org_id: str, name: str) -> str | None:
-                return _captured.get(name)
-
-            async def list_secrets(self, org_id: str) -> list[dict]:
-                return [{"name": k} for k in _captured]
-
-            async def set_secret(self, org_id, name, value, created_by=None):  # type: ignore[override]
-                _captured[name] = value
-                return {"org_id": org_id, "name": name}
-
-            async def delete_secret(self, org_id, name) -> bool:
-                return bool(_captured.pop(name, None))
-
-        _stub_store = _StubSecretStore()
-
         mod = types.ModuleType("app.secrets.store")
-        mod.get_secret_store = lambda: _stub_store  # type: ignore[attr-defined]
+        mod.get_secret_store = lambda: store  # type: ignore[attr-defined]
         mod.set_secret_store = lambda s: None  # type: ignore[attr-defined]
         sys.modules.setdefault("app.secrets", types.ModuleType("app.secrets"))
         sys.modules["app.secrets.store"] = mod
     except Exception:  # noqa: BLE001
-        pass  # Stub injection is best-effort; run proceeds without it.
+        pass  # Wiring is best-effort; run proceeds without local secrets.
 
 
 # ---------------------------------------------------------------------------

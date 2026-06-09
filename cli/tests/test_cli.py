@@ -135,6 +135,120 @@ class TestDeployDryRun:
 
 
 # ---------------------------------------------------------------------------
+# deploy validation
+# ---------------------------------------------------------------------------
+
+
+class TestDeployValidation:
+    """Files missing 'resource'/'name' (or with an unknown resource type) are
+    reported and excluded from the plan — no HTTP call is ever attempted."""
+
+    @staticmethod
+    def _patch_no_http(monkeypatch) -> tuple[MagicMock, MagicMock]:
+        mock_post = MagicMock(side_effect=AssertionError("POST must not be called for invalid files"))
+        mock_put = MagicMock(side_effect=AssertionError("PUT must not be called for invalid files"))
+        monkeypatch.setattr("nubi_cli.client.post", mock_post)
+        monkeypatch.setattr("nubi_cli.client.put", mock_put)
+        return mock_post, mock_put
+
+    @staticmethod
+    def _all_output(result) -> str:
+        try:
+            return result.output + (result.stderr or "")
+        except ValueError:
+            return result.output
+
+    def test_missing_resource_field_skipped(self, tmp_path: Path, monkeypatch):
+        """A file without a 'resource' field is skipped with an error."""
+        (tmp_path / "no_resource.json").write_text(
+            json.dumps({"name": "Orphan", "config": {}})
+        )
+        mock_post, mock_put = self._patch_no_http(monkeypatch)
+
+        result = runner.invoke(app, ["deploy", str(tmp_path)])
+
+        output = self._all_output(result)
+        assert result.exit_code == 1, output
+        assert "no_resource.json" in output
+        assert "resource" in output
+        mock_post.assert_not_called()
+        mock_put.assert_not_called()
+
+    def test_unknown_resource_type_skipped(self, tmp_path: Path, monkeypatch):
+        """A file with an unknown resource type is skipped with an error."""
+        (tmp_path / "bad_type.json").write_text(
+            json.dumps({"resource": "gizmos", "name": "Gizmo", "config": {}})
+        )
+        mock_post, mock_put = self._patch_no_http(monkeypatch)
+
+        result = runner.invoke(app, ["deploy", str(tmp_path)])
+
+        output = self._all_output(result)
+        assert result.exit_code == 1, output
+        assert "bad_type.json" in output
+        assert "gizmos" in output
+        mock_post.assert_not_called()
+        mock_put.assert_not_called()
+
+    def test_missing_name_field_skipped(self, tmp_path: Path, monkeypatch):
+        """A file without a 'name' field is skipped with an error."""
+        (tmp_path / "no_name.json").write_text(
+            json.dumps({"resource": "boards", "config": {}})
+        )
+        mock_post, mock_put = self._patch_no_http(monkeypatch)
+
+        result = runner.invoke(app, ["deploy", str(tmp_path)])
+
+        output = self._all_output(result)
+        assert result.exit_code == 1, output
+        assert "no_name.json" in output
+        assert "name" in output
+        mock_post.assert_not_called()
+        mock_put.assert_not_called()
+
+    def test_invalid_excluded_from_dry_run_plan(self, tmp_path: Path, monkeypatch):
+        """--dry-run: invalid files are reported and left out of the plan."""
+        (tmp_path / "good.json").write_text(
+            json.dumps({"resource": "boards", "name": "Good", "config": {}})
+        )
+        (tmp_path / "no_resource.json").write_text(
+            json.dumps({"name": "Bad", "config": {}})
+        )
+        mock_post, mock_put = self._patch_no_http(monkeypatch)
+
+        result = runner.invoke(app, ["deploy", str(tmp_path), "--dry-run"])
+
+        output = self._all_output(result)
+        assert result.exit_code == 0, output
+        assert "good.json" in result.output
+        assert "Skipping" in output and "no_resource.json" in output
+        mock_post.assert_not_called()
+        mock_put.assert_not_called()
+
+    def test_invalid_excluded_from_live_deploy(self, tmp_path: Path, monkeypatch):
+        """Live deploy: only the valid file produces an HTTP call."""
+        (tmp_path / "good.json").write_text(
+            json.dumps({"resource": "boards", "name": "Good", "config": {}})
+        )
+        (tmp_path / "no_name.json").write_text(
+            json.dumps({"resource": "boards", "config": {}})
+        )
+        mock_post = MagicMock(return_value=_make_response(json_data={"id": "new-id"}))
+        mock_put = MagicMock(side_effect=AssertionError("PUT must not be called"))
+        monkeypatch.setattr("nubi_cli.client.post", mock_post)
+        monkeypatch.setattr("nubi_cli.client.put", mock_put)
+
+        result = runner.invoke(app, ["deploy", str(tmp_path)])
+
+        output = self._all_output(result)
+        assert result.exit_code == 0, output
+        assert "no_name.json" in output
+        mock_post.assert_called_once()
+        assert mock_post.call_args[0][0] == "boards"
+        mock_put.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
 # login
 # ---------------------------------------------------------------------------
 

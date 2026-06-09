@@ -187,8 +187,8 @@ export default function AppTopbar({ onMobileMenuOpen }) {
           <Menu size={18} />
         </button>
 
-        {/* Logo — mobile only (sidebar hidden) */}
-        <Link to="/home" className="md:hidden shrink-0">
+        {/* Logo — mobile only (sidebar hidden); links to the landing page */}
+        <Link to="/" aria-label="Nubi — back to landing page" className="md:hidden shrink-0">
           <Logo size={24} showName={false} />
         </Link>
       </div>

@@ -23,6 +23,7 @@
  */
 
 import { useEffect, useState, useCallback, useRef } from 'react'
+import { createPortal } from 'react-dom'
 import { useNavigate } from 'react-router-dom'
 import {
   CalendarClock,
@@ -47,6 +48,7 @@ import {
   Zap,
 } from 'lucide-react'
 import { get, post, put, del } from '../../lib/api.js'
+import { useUi } from '../../contexts/UiContext.jsx'
 import { useProject } from '../../contexts/ProjectContext.jsx'
 import { useCanWrite } from '../../contexts/OrgContext.jsx'
 
@@ -230,9 +232,9 @@ function Toggle({ on, busy, onToggle }) {
   )
 }
 
-function SectionLabel({ children, icon: Icon }) {
+function SectionLabel({ children, icon: Icon, className = 'mb-2' }) {
   return (
-    <div className="flex items-center gap-2 mb-3">
+    <div className={`flex items-center gap-2 ${className}`}>
       {Icon && <Icon size={13} className="text-muted" />}
       <h2 className="text-xs font-semibold text-muted uppercase tracking-wider">{children}</h2>
     </div>
@@ -777,7 +779,7 @@ function FlowRow({ flow, onChanged, onToast, canWrite }) {
         </div>
 
         {/* Actions */}
-        <div className="flex items-center gap-2 shrink-0">
+        <div className="flex flex-wrap items-center gap-1.5 shrink-0">
           <Toggle
             on={enabled}
             busy={toggling || !canWrite}
@@ -789,7 +791,7 @@ function FlowRow({ flow, onChanged, onToast, canWrite }) {
             disabled={running || !canWrite}
             title={canWrite ? 'Run now' : 'Read-only — you don’t have permission to run flows'}
             className="
-              inline-flex items-center gap-1.5 h-9 px-3 rounded-lg
+              inline-flex items-center gap-1.5 h-8 px-2.5 rounded-lg
               text-xs font-medium border border-border
               text-muted hover:text-fg hover:bg-surface-2
               disabled:opacity-50 disabled:cursor-not-allowed
@@ -804,7 +806,7 @@ function FlowRow({ flow, onChanged, onToast, canWrite }) {
             onClick={() => navigate(`/flows/${flow.id}`)}
             title={canWrite ? 'Edit flow' : 'View flow'}
             className="
-              inline-flex items-center justify-center h-9 w-9 rounded-lg
+              inline-flex items-center justify-center h-8 w-8 rounded-lg
               border border-border text-muted
               hover:text-fg hover:bg-surface-2
               transition-colors focus:outline-none focus:ring-2 focus:ring-ring
@@ -817,7 +819,7 @@ function FlowRow({ flow, onChanged, onToast, canWrite }) {
             onClick={() => setExpanded(v => !v)}
             title={expanded ? 'Collapse' : 'View run history'}
             className="
-              inline-flex items-center justify-center h-9 w-9 rounded-lg
+              inline-flex items-center justify-center h-8 w-8 rounded-lg
               border border-border text-muted
               hover:text-fg hover:bg-surface-2
               transition-colors focus:outline-none focus:ring-2 focus:ring-ring
@@ -899,13 +901,13 @@ function JobCard({ job, onToast, onDeleted, onViewRuns, canWrite }) {
           </div>
         </div>
 
-        <div className="flex items-center gap-2 shrink-0">
+        <div className="flex flex-wrap items-center gap-1.5 shrink-0">
           <button
             onClick={handleRun}
             disabled={running || !canWrite}
             title={canWrite ? 'Run now' : 'Read-only — you don’t have permission to run jobs'}
             className="
-              inline-flex items-center gap-1.5 h-9 px-3 rounded-lg
+              inline-flex items-center gap-1.5 h-8 px-2.5 rounded-lg
               text-xs font-medium border border-border
               text-muted hover:text-fg hover:bg-surface-2
               disabled:opacity-50 disabled:cursor-not-allowed
@@ -920,7 +922,7 @@ function JobCard({ job, onToast, onDeleted, onViewRuns, canWrite }) {
             onClick={() => onViewRuns?.(job)}
             title="View run history"
             className="
-              inline-flex items-center justify-center h-9 w-9 rounded-lg
+              inline-flex items-center justify-center h-8 w-8 rounded-lg
               border border-border text-muted
               hover:text-fg hover:bg-surface-2
               transition-colors focus:outline-none focus:ring-2 focus:ring-ring
@@ -934,14 +936,14 @@ function JobCard({ job, onToast, onDeleted, onViewRuns, canWrite }) {
               <button
                 onClick={handleDelete}
                 disabled={deleting}
-                className="inline-flex items-center gap-1 h-9 px-3 rounded-lg bg-red-600 text-white text-xs font-semibold hover:bg-red-700 disabled:opacity-50 transition-colors"
+                className="inline-flex items-center gap-1 h-8 px-2.5 rounded-lg bg-red-600 text-white text-xs font-semibold hover:bg-red-700 disabled:opacity-50 transition-colors"
               >
                 {deleting ? <Loader2 size={12} className="animate-spin" /> : <Check size={12} />}
                 Confirm
               </button>
               <button
                 onClick={() => setConfirmDelete(false)}
-                className="h-9 w-9 flex items-center justify-center rounded-lg border border-border text-muted hover:text-fg hover:bg-surface-2 transition-colors"
+                className="h-8 w-8 flex items-center justify-center rounded-lg border border-border text-muted hover:text-fg hover:bg-surface-2 transition-colors"
               >
                 <X size={14} />
               </button>
@@ -951,7 +953,7 @@ function JobCard({ job, onToast, onDeleted, onViewRuns, canWrite }) {
               onClick={() => setConfirmDelete(true)}
               title="Delete"
               className="
-                inline-flex items-center justify-center h-9 w-9 rounded-lg
+                inline-flex items-center justify-center h-8 w-8 rounded-lg
                 border border-border text-muted
                 hover:text-red-600 hover:border-red-200 hover:bg-red-50
                 dark:hover:text-red-400 dark:hover:border-red-900/40 dark:hover:bg-red-900/10
@@ -1001,6 +1003,8 @@ export default function AutomationsPage() {
   const { activeProject } = useProject()
   const projectId = activeProject?.id
   const canWrite = useCanWrite()
+  // Single top bar — the page toolbar portals into the AppShell topbar slot.
+  const { topbarSlot } = useUi()
 
   // Flows
   const [flows, setFlows] = useState([])
@@ -1068,57 +1072,49 @@ export default function AutomationsPage() {
 
   return (
     <div className="flex flex-col min-h-full bg-bg">
-      {/* ── Header ─────────────────────────────────────────────────────────── */}
-      <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 px-6 pt-6 pb-4 border-b border-border bg-surface sticky top-0 z-10">
-        <div>
-          <h1 className="font-display font-semibold text-2xl text-fg flex items-center gap-2.5">
-            <div className="w-8 h-8 rounded-xl bg-brand-gradient flex items-center justify-center shadow-sm">
-              <CalendarClock size={17} className="text-white" />
-            </div>
-            Automations
-          </h1>
-          <p className="text-sm text-muted mt-0.5">
-            Scheduled queries, workflows, and reports — everything that runs on its own.
-          </p>
-        </div>
-
-        <div className="flex items-center gap-2.5">
+      {/* Page toolbar — portaled into the single AppShell topbar */}
+      {topbarSlot && createPortal(
+        <div className="flex items-center gap-2 w-full min-w-0">
+          <CalendarClock size={15} className="text-muted shrink-0 hidden sm:block" strokeWidth={2.2} />
+          <span className="text-sm font-semibold font-display text-fg truncate">Automations</span>
+          <div className="flex-1" />
           <button
             onClick={refreshAll}
             disabled={isLoading}
             title="Refresh"
+            aria-label="Refresh automations"
             className="
-              flex items-center justify-center w-9 h-9 rounded-xl
+              flex items-center justify-center w-8 h-8 rounded-lg shrink-0
               border border-border text-muted hover:text-fg hover:bg-surface-2
               disabled:opacity-40 transition-colors focus:outline-none focus:ring-2 focus:ring-ring
             "
           >
-            <RefreshCw size={15} className={isLoading ? 'animate-spin' : ''} strokeWidth={2} />
+            <RefreshCw size={14} className={isLoading ? 'animate-spin' : ''} strokeWidth={2} />
           </button>
-
           {canWrite && (
             <button
               onClick={() => setShowJobModal(true)}
+              title="New automation"
               className="
-                inline-flex items-center gap-2 px-4 py-2 rounded-xl
-                bg-primary text-primary-fg text-sm font-semibold
-                hover:opacity-90 transition-opacity shadow-sm
-                focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2
-                min-h-[44px]
+                inline-flex items-center gap-1.5 h-8 px-2.5 rounded-lg shrink-0
+                bg-primary text-primary-fg text-xs font-medium
+                hover:opacity-90 transition-opacity
+                focus:outline-none focus:ring-2 focus:ring-ring
               "
             >
-              <Plus size={15} strokeWidth={2.5} />
-              New automation
+              <Plus size={13} strokeWidth={2.5} />
+              <span className="hidden sm:inline">New automation</span>
             </button>
           )}
-        </div>
-      </div>
+        </div>,
+        topbarSlot
+      )}
 
       {/* ── Content ─────────────────────────────────────────────────────────── */}
-      <div className="flex-1 px-6 py-6 max-w-4xl w-full mx-auto">
+      <div className="flex-1 px-4 sm:px-6 py-4 max-w-4xl w-full mx-auto">
 
         {/* ── Flows section ───────────────────────────────────────────────── */}
-        <section className="mb-10">
+        <section className="mb-6">
           <SectionLabel icon={Workflow}>Workflows &amp; Scheduled queries</SectionLabel>
 
           {flowsLoading && (
@@ -1144,7 +1140,7 @@ export default function AutomationsPage() {
           )}
 
           {!flowsLoading && !flowsError && flows.length === 0 && (
-            <div className="flex flex-col items-center justify-center py-12 px-6 text-center rounded-xl border border-dashed border-border">
+            <div className="flex flex-col items-center justify-center py-10 px-6 text-center rounded-xl border border-dashed border-border">
               <div className="flex items-center justify-center w-12 h-12 rounded-2xl bg-indigo-100 dark:bg-indigo-900/30 mb-3">
                 <Workflow size={22} className="text-indigo-600 dark:text-indigo-400" />
               </div>
@@ -1172,8 +1168,8 @@ export default function AutomationsPage() {
 
         {/* ── Jobs section ────────────────────────────────────────────────── */}
         <section>
-          <div className="flex items-center justify-between mb-3">
-            <SectionLabel icon={CalendarClock}>Scheduled jobs</SectionLabel>
+          <div className="flex items-center justify-between mb-2">
+            <SectionLabel icon={CalendarClock} className="">Scheduled jobs</SectionLabel>
             {jobs.length > 0 && (
               <span className="text-xs text-muted bg-surface-2 px-2 py-0.5 rounded-full">
                 {jobs.length}
@@ -1197,7 +1193,7 @@ export default function AutomationsPage() {
 
           {!jobsLoading && !jobsError && jobs.length === 0 && totalCount === 0 && (
             // Big empty state when nothing at all exists
-            <div className="flex flex-col items-center justify-center py-20 px-6 text-center rounded-xl border border-dashed border-border">
+            <div className="flex flex-col items-center justify-center py-14 px-6 text-center rounded-xl border border-dashed border-border">
               <div className="flex items-center justify-center w-16 h-16 rounded-2xl bg-brand-gradient shadow-lg mb-5">
                 <CalendarClock size={28} className="text-white" />
               </div>
@@ -1226,7 +1222,7 @@ export default function AutomationsPage() {
 
           {!jobsLoading && !jobsError && jobs.length === 0 && totalCount > 0 && (
             // Small empty state when flows exist but no jobs
-            <div className="flex flex-col items-center justify-center py-10 px-6 text-center rounded-xl border border-dashed border-border">
+            <div className="flex flex-col items-center justify-center py-8 px-6 text-center rounded-xl border border-dashed border-border">
               <div className="flex items-center justify-center w-10 h-10 rounded-xl bg-surface-2 mb-2.5">
                 <CalendarClock size={18} className="text-muted" />
               </div>

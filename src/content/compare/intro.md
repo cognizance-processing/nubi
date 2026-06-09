@@ -15,7 +15,7 @@ subtitle: "An honest comparison against Hex, Cube, Metabase, Looker, Sigma, Tabl
 | | Hex | Cube | Nubi |
 |---|---|---|---|
 | Shape | Notebook + apps | Headless semantic layer + API | Batteries-included BI + embed |
-| Kernel | Python per session, their cloud (10–30 s cold, $$) | n/a (warehouse + Cube Store) | Pyodide in browser; on-demand server kernel only when needed |
+| Kernel | Python per session, their cloud (10–30 s cold, $$) | n/a (warehouse + Cube Store) | DuckDB-WASM (SQL) in browser; on-demand server kernel for Python and heavy workloads |
 | Result transport | JSON via pandas | JSON / SQL API | Arrow IPC over WebSocket |
 | Viz | Plotly/SVG, chokes past ~50 k rows | bring-your-own | WebGL/WebGPU on Arrow buffers, 1M+ points |
 | Caching | Per-session, weak cross-user | Pre-aggregations in Cube Store | Content-hashed edge cache + auto pre-aggregations |
