@@ -195,15 +195,9 @@ test.describe('Query Workspace — Mobile (390px)', () => {
     await page.goto('/queries')
     await expect(page.locator('[data-cell-ref="cell_1"]')).toBeVisible({ timeout: 30_000 })
 
-    // At 390px, the desktop rail is hidden (hidden lg:flex).
-    // The MobileQueryDropdown is shown in a top bar (lg:hidden).
-    // The MobileQueryDropdown trigger button has a List icon and current query name.
-    // It's the only button in the mobile bar that opens a dropdown.
-    // From the debug run we saw "New query" + "draft" labels — this is in the LEFT RAIL (desktop),
-    // not the mobile dropdown. At 390px the left rail is hidden, so those buttons are not visible.
-
-    // Find the mobile top bar
-    const mobileTopBar = page.locator('div.lg\\:hidden').first()
+    // At 390px (<md), the right-hand Queries sidebar is hidden and the
+    // MobileQueryDropdown is shown in the mobile top bar (md:hidden).
+    const mobileTopBar = page.getByTestId('queries-mobile-bar')
     await expect(mobileTopBar).toBeVisible({ timeout: 10_000 })
 
     // Click the query selector in the mobile bar
@@ -243,24 +237,26 @@ test.describe('Query Workspace — Tablet (820px)', () => {
     expect(noOverflow, 'horizontal overflow detected on tablet /queries').toBe(true)
   })
 
-  test('(c-tablet) saved-query rail is reachable via dropdown at 820px', async ({ page }) => {
+  test('(c-tablet) saved-query panel is reachable via the right drawer at 820px', async ({ page }) => {
     await page.goto('/queries')
     await expect(page.locator('[data-cell-ref="cell_1"]')).toBeVisible({ timeout: 30_000 })
 
-    // At 820px (< lg=1024px), the desktop rail is hidden, mobile dropdown is shown
-    const mobileTopBar = page.locator('div.lg\\:hidden').first()
-    await expect(mobileTopBar).toBeVisible({ timeout: 10_000 })
+    // At 820px (md–lg), the Queries panel renders as a right-hand slide-over
+    // drawer (dashboard-editor pattern), open by default, with the topbar
+    // panel-toggle button controlling it.
+    const queriesPanel = page.getByTestId('queries-side-panel')
+    await expect(queriesPanel).toBeVisible({ timeout: 10_000 })
 
-    // Click the query selector trigger (MobileQueryDropdown)
-    const dropdownTrigger = mobileTopBar.locator('button').first()
-    await expect(dropdownTrigger).toBeVisible({ timeout: 5_000 })
-    await dropdownTrigger.click()
+    // The drawer hosts the "New query" button.
+    const newQueryInPanel = queriesPanel.locator('button').filter({ hasText: 'New query' }).first()
+    await expect(newQueryInPanel).toBeVisible({ timeout: 5_000 })
 
-    // Wait for dropdown to open
-    await page.waitForTimeout(300)
-
-    // After clicking, a "New query" button should be visible in the dropdown popover
-    const newQueryInDropdown = page.locator('button').filter({ hasText: 'New query' }).filter({ visible: true }).first()
-    await expect(newQueryInDropdown).toBeVisible({ timeout: 5_000 })
+    // The topbar toggle collapses and re-opens the drawer.
+    const toggle = page.getByTestId('panel-toggle-queries')
+    await expect(toggle).toBeVisible({ timeout: 5_000 })
+    await toggle.click()
+    await expect(queriesPanel).not.toBeVisible({ timeout: 5_000 })
+    await toggle.click()
+    await expect(queriesPanel).toBeVisible({ timeout: 5_000 })
   })
 })

@@ -521,6 +521,13 @@ def _handle_python(
     This handler runs the code in a fresh subprocess using the same Python
     interpreter as the parent (``sys.executable``), without using
     ``LocalSubprocessRunner`` (which requires a pyarrow.Table result).
+    It shares the M4-SEC subprocess hardening via
+    ``app.compute.sandbox.run_sandboxed``: scrubbed env, new process
+    group/session with group-SIGKILL on timeout (so grandchildren cannot
+    survive), POSIX rlimits (memory / file-size / nproc always; CPU only when
+    a timeout is set — ``timeout_s == 0`` means "no timeout" and must not have
+    long CPU work silently killed by RLIMIT_CPU), and 1 MiB stdout/stderr
+    caps with a truncation marker (env-overridable — see sandbox.py).
 
     Config keys
     -----------
@@ -532,6 +539,13 @@ def _handle_python(
     import tempfile  # noqa: PLC0415
     import textwrap  # noqa: PLC0415
     import os  # noqa: PLC0415
+
+    from app.compute.sandbox import (  # noqa: PLC0415
+        RLIMIT_CPU_GRACE_S,
+        STDERR_CAP_BYTES,
+        STDOUT_CAP_BYTES,
+        run_sandboxed,
+    )
 
     code: str = config.get("code", "")
     if not code:
@@ -628,13 +642,22 @@ def _handle_python(
         tmp.write(wrapper)
         tmp_path = tmp.name
 
+    # Run via the shared M4-SEC hardened sandbox (same helper as
+    # LocalSubprocessRunner): new process group + group-SIGKILL on timeout
+    # (plain subprocess.run(timeout=...) leaves grandchildren alive), POSIX
+    # rlimits, and 1 MiB stdout/stderr caps with a truncation marker.
+    # timeout_s == 0 means "no subprocess timeout" — in that case RLIMIT_CPU
+    # is also skipped (cpu_limit_s=None) so legit long CPU work is not killed;
+    # the memory / file-size / nproc caps still apply.
+    argv = [sys.executable, tmp_path]
     try:
-        proc = subprocess.run(
-            [sys.executable, tmp_path],
-            capture_output=True,
-            text=True,
-            timeout=timeout_s if timeout_s > 0 else None,
+        run = run_sandboxed(
+            argv,
             env=env,
+            timeout_s=timeout_s if timeout_s > 0 else None,
+            cpu_limit_s=(timeout_s + RLIMIT_CPU_GRACE_S) if timeout_s > 0 else None,
+            stdout_cap=STDOUT_CAP_BYTES,
+            stderr_cap=STDERR_CAP_BYTES,
         )
     finally:
         try:
@@ -642,26 +665,36 @@ def _handle_python(
         except OSError:
             pass
 
+    if run.timed_out:
+        # Preserve the pre-hardening timeout semantics: subprocess.run raised
+        # TimeoutExpired, which propagated to the executor's broad except and
+        # marked the task failed.  The process GROUP has already been killed.
+        raise subprocess.TimeoutExpired(argv, timeout_s)
+
+    stdout_text = run.stdout.decode("utf-8", errors="replace")
+    stderr_text = run.stderr.decode("utf-8", errors="replace")
+
     # Collect stdout lines (excluding the tagged result sentinel).
     stdout_lines: list[str] = []
     task_result: dict[str, Any] = {}
-    for line in (proc.stdout or "").splitlines():
+    for line in stdout_text.splitlines():
         if line.startswith("__FLOW_RESULT__:"):
             try:
                 task_result = json.loads(line[len("__FLOW_RESULT__:"):])
             except Exception:  # noqa: BLE001
                 task_result = {"raw": line}
         else:
-            # Every other stdout line is a user log line.
+            # Every other stdout line is a user log line (the truncation
+            # marker, when present, surfaces here as a log line too).
             stdout_lines.append(line)
 
-    if proc.returncode != 0:
-        stderr = (proc.stderr or "").strip()
+    if run.returncode != 0:
+        stderr = stderr_text.strip()
         # Attach stderr lines to stdout_lines for capture.
         if stderr:
             for ln in stderr.splitlines():
                 stdout_lines.append(ln)
-        raise RuntimeError(f"Python task failed (exit {proc.returncode}): {stderr[:500]}")
+        raise RuntimeError(f"Python task failed (exit {run.returncode}): {stderr[:500]}")
 
     # Attach captured stdout lines as metadata so the executor can extract them.
     task_result["_stdout_lines"] = stdout_lines

@@ -5,22 +5,12 @@
  *   POST /flows/preview          — run a single cell interactively (sampled rows)
  *   POST /flows/{id}/run         — durable run-all (delegates to flows.js)
  *
- * The preview endpoint is defined by EndpointsAgent.  It accepts a
- * { cell, upstream_results? } payload and returns { rows, columns, row_count,
- * elapsed_ms } JSON.  Falls back gracefully on any error.
- *
- * Cell shape expected by the preview endpoint (mirrors CellSpec / TaskSpec):
- *   {
- *     key:        string,          // stable cell slug
- *     kind:       'query' | 'python',
- *     cell_type:  'sql' | 'python',
- *     config:     {
- *       sql?:           string,    // for sql cells
- *       code?:          string,    // for python cells
- *       datastore_id?:  string,    // BYO connector; absent = demo DuckDB
- *       preview_limit?: number,    // default 500
- *     },
- *   }
+ * The preview endpoint (PreviewCellIn, backend/app/routes/flows.py) accepts
+ * { spec | flow_id, cell_key?, params?, preview_limit? } and returns
+ * { cell_key, columns, rows, row_count, total_row_count }.  The backend
+ * executes all upstream cells in the dependency chain itself, so the client
+ * only sends the full spec plus the target cell key.  Falls back gracefully
+ * on any error.
  */
 
 import { post, get } from './api.js'
@@ -34,43 +24,41 @@ const BASE = '/flows'
 /**
  * Run a single cell in preview (interactive) mode.
  *
- * Calls POST /flows/preview.  The backend executes the cell against sampled
- * data (preview_limit rows) and returns rows + column metadata as JSON.
+ * Calls POST /flows/preview with the full inline spec; the backend walks the
+ * dependency chain, executes all upstream cells first, then the target cell
+ * against sampled data (preview_limit rows, default 500).
  *
- * upstream_results is an optional dict of { [cellKey]: { rows, columns } }
- * that represents previously-run cells in the same notebook session, giving
- * the backend the ability to wire cross-cell references without DuckDB-WASM.
- *
- * @param {{
- *   key: string,
- *   kind: string,
- *   cell_type: string,
- *   config: object,
- * }} cell — CellSpec-compatible task
- * @param {Record<string, { rows: object[], columns: string[] }>} [upstreamResults]
+ * @param {object} spec — full FlowSpec/NotebookSpec dict (unsaved edits included)
+ * @param {string} cellKey — key of the target cell to run
+ * @param {{ params?: object, previewLimit?: number }} [opts]
  * @returns {Promise<{
  *   rows: object[],
  *   columns: string[],
  *   row_count: number,
+ *   total_row_count?: number,
  *   elapsed_ms: number,
  *   error?: string,
  * }>}
  */
-export async function previewCell(cell, upstreamResults) {
+export async function previewCell(spec, cellKey, opts = {}) {
+  const started = Date.now()
   try {
-    const body = { cell }
-    if (upstreamResults && Object.keys(upstreamResults).length > 0) {
-      body.upstream_results = upstreamResults
+    const body = { spec, cell_key: cellKey }
+    if (opts.params && Object.keys(opts.params).length > 0) {
+      body.params = opts.params
+    }
+    if (opts.previewLimit) {
+      body.preview_limit = opts.previewLimit
     }
     const data = await post(`${BASE}/preview`, body)
-    return data
+    return { elapsed_ms: Date.now() - started, ...data }
   } catch (err) {
     console.warn('[notebooks] previewCell failed:', err.message)
     return {
       rows: [],
       columns: [],
       row_count: 0,
-      elapsed_ms: 0,
+      elapsed_ms: Date.now() - started,
       error: err.message ?? 'Preview failed',
     }
   }

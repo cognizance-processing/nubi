@@ -2,21 +2,22 @@
 
 Coverage
 --------
-1.  ``seed_sample_bundle`` creates the full bundle (datastore + 6 queries +
-    2 boards), all tagged ``config.sample=true`` and scoped to the project.
+1.  ``seed_sample_bundle`` creates the FULL bundle (1 datastore + every demo
+    query + all 10 boards), all tagged ``config.sample=true`` and scoped to the
+    project.
 2.  Seeding is idempotent — a second call creates nothing new.
-3.  The Sample datastore points at the bundled, absolute ``sample.duckdb`` path
-    with ``connector_type=duckdb`` so the query route opens it read-only.
-4.  The bundled DuckDB file is a real star schema that joins on every fact row.
-5.  ``remove_sample_bundle`` deletes every sample resource and is idempotent.
-6.  Removing then restoring round-trips the bundle.
-7.  A query routed through the HTTP POST /api/v1/query endpoint against the
-    sample datastore completes in <10 s and returns real rows (regression guard
-    for the connector_type key mismatch that caused silent query hangs).
-8.  GET /data/{datastore_id}/tables lists the star-schema tables of the sample
-    datastore via the normal data-browser pipeline.
-9.  GET /data/{datastore_id}/tables/sales/rows returns real rows from the
-    sample datastore via the normal data-browser pipeline.
+3.  In local (no-S3) mode the datastore is a ``:memory:`` DuckDB whose
+    ``view_sql`` reads LOCAL parquet files via ``read_parquet`` — the same
+    connector shape as the S3 mode, no special-cased local .duckdb file.
+4.  The local parquet files exist for all 17 tables across the 4 datasets.
+5.  ``remove_sample_bundle`` deletes every sample resource and is idempotent;
+    remove → restore round-trips the bundle.
+6.  One representative query per dataset routed through the HTTP POST
+    /api/v1/query endpoint returns real rows (regression guard for silent
+    query hangs / view registration failures).
+7.  GET /data/{datastore_id}/tables lists every table of all four datasets via
+    the normal data-browser pipeline (no demo special-casing).
+8.  GET /data/{datastore_id}/tables/sales/rows returns real rows.
 """
 
 from __future__ import annotations
@@ -31,17 +32,41 @@ import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
 
 from app.auth.jwt import mint_access_token
+from app.demo_bundle import (
+    ALL_DEMO_TABLES,
+    load_boards,
+    load_queries,
+    referenced_query_keys,
+)
 from app.repos.memory import InMemoryRepo
 from app.repos.provider import set_repo
 from app.sample import remove_sample_bundle, seed_sample_bundle
+
+# Env vars that would flip seed_sample_bundle into S3 mode — cleared in these
+# tests so the local-parquet path is exercised deterministically.
+_S3_ENV_VARS = ("S3_ACCESS_KEY", "AWS_ACCESS_KEY_ID")
 
 
 def _ids() -> tuple[str, str, str]:
     return str(uuid.uuid4()), str(uuid.uuid4()), str(uuid.uuid4())
 
 
+def _clear_s3_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    for var in _S3_ENV_VARS:
+        monkeypatch.delenv(var, raising=False)
+
+
+def _expected_counts() -> tuple[int, int]:
+    """(expected query count, expected board count) from the demo fixtures."""
+    boards = load_boards()
+    queries = load_queries()
+    needed = [k for k in referenced_query_keys(boards) if k in queries]
+    return len(needed), len(boards)
+
+
 @pytest.mark.asyncio
-async def test_seed_creates_full_bundle_tagged_sample() -> None:
+async def test_seed_creates_full_bundle_tagged_sample(monkeypatch) -> None:
+    _clear_s3_env(monkeypatch)
     repo = InMemoryRepo()
     org, project, user = _ids()
 
@@ -52,9 +77,11 @@ async def test_seed_creates_full_bundle_tagged_sample() -> None:
     queries = await repo.list("queries", org)
     boards = await repo.list("boards", org)
 
+    n_queries, n_boards = _expected_counts()
     assert len(datastores) == 1
-    assert len(queries) == 6
-    assert len(boards) == 2
+    assert len(queries) == n_queries
+    assert len(boards) == n_boards
+    assert n_boards == 10  # the demo ships exactly 10 dashboards
 
     # Every created resource is tagged sample=true and scoped to the project.
     for row in (*datastores, *queries, *boards):
@@ -64,21 +91,25 @@ async def test_seed_creates_full_bundle_tagged_sample() -> None:
 
 
 @pytest.mark.asyncio
-async def test_seed_is_idempotent() -> None:
+async def test_seed_is_idempotent(monkeypatch) -> None:
+    _clear_s3_env(monkeypatch)
     repo = InMemoryRepo()
     org, project, user = _ids()
 
     await seed_sample_bundle(org, project, user, repo)
     second = await seed_sample_bundle(org, project, user, repo)
 
+    n_queries, n_boards = _expected_counts()
     assert second["created"] == []  # nothing new created on re-run
     assert len(await repo.list("datastores", org)) == 1
-    assert len(await repo.list("queries", org)) == 6
-    assert len(await repo.list("boards", org)) == 2
+    assert len(await repo.list("queries", org)) == n_queries
+    assert len(await repo.list("boards", org)) == n_boards
 
 
 @pytest.mark.asyncio
-async def test_datastore_points_at_bundled_file() -> None:
+async def test_local_datastore_is_parquet_backed_memory_duckdb(monkeypatch) -> None:
+    """Local mode uses :memory: + read_parquet views — same shape as S3 mode."""
+    _clear_s3_env(monkeypatch)
     repo = InMemoryRepo()
     org, project, user = _ids()
     await seed_sample_bundle(org, project, user, repo)
@@ -86,48 +117,41 @@ async def test_datastore_points_at_bundled_file() -> None:
     ds = (await repo.list("datastores", org))[0]
     cfg = ds["config"]
     assert cfg["connector_type"] == "duckdb"
-    assert os.path.isabs(cfg["database"])
-    assert cfg["database"].endswith("sample.duckdb")
-    assert os.path.exists(cfg["database"])  # built lazily by the seeder
+    assert cfg["database"] == ":memory:"
+    view_sql = cfg["view_sql"]
+    assert "read_parquet(" in view_sql
+    assert "s3://" not in view_sql  # local mode reads local files
+    for table in ALL_DEMO_TABLES:
+        assert f"CREATE OR REPLACE VIEW {table} " in view_sql, f"missing view for {table}"
 
 
 @pytest.mark.asyncio
-async def test_bundled_file_is_a_real_joinable_star_schema() -> None:
-    repo = InMemoryRepo()
-    org, project, user = _ids()
-    await seed_sample_bundle(org, project, user, repo)
-    db_path = (await repo.list("datastores", org))[0]["config"]["database"]
-
-    import duckdb
-
-    con = duckdb.connect(database=db_path, read_only=True)
-    try:
-        tables = {r[0] for r in con.execute("SHOW TABLES").fetchall()}
-        assert {"sales", "dim_regions", "dim_products", "dim_customers", "budget", "targets"} <= tables
-
-        total = con.execute("SELECT COUNT(*) FROM sales").fetchone()[0]
-        joined = con.execute(
-            """
-            SELECT COUNT(*) FROM sales s
-            JOIN dim_regions   r ON s.region_id   = r.region_id
-            JOIN dim_products  p ON s.product_id  = p.product_id
-            JOIN dim_customers c ON s.customer_id = c.customer_id
-            """
-        ).fetchone()[0]
-        assert total > 0
-        assert joined == total  # every fact row resolves all three dims
-    finally:
-        con.close()
-
-
-@pytest.mark.asyncio
-async def test_remove_then_restore_round_trips() -> None:
+async def test_local_parquet_files_exist_for_all_tables(monkeypatch) -> None:
+    _clear_s3_env(monkeypatch)
     repo = InMemoryRepo()
     org, project, user = _ids()
     await seed_sample_bundle(org, project, user, repo)
 
+    from app.demo_bundle import export_demo_parquet_local
+
+    paths = export_demo_parquet_local()  # idempotent — returns existing paths
+    assert set(paths) == set(ALL_DEMO_TABLES)
+    for table, path in paths.items():
+        assert os.path.isabs(path)
+        assert os.path.exists(path), f"missing parquet for {table}: {path}"
+        assert os.path.getsize(path) > 0
+
+
+@pytest.mark.asyncio
+async def test_remove_then_restore_round_trips(monkeypatch) -> None:
+    _clear_s3_env(monkeypatch)
+    repo = InMemoryRepo()
+    org, project, user = _ids()
+    await seed_sample_bundle(org, project, user, repo)
+
+    n_queries, n_boards = _expected_counts()
     removed = await remove_sample_bundle(org, project, repo)
-    assert removed == {"boards": 2, "queries": 6, "datastores": 1}
+    assert removed == {"boards": n_boards, "queries": n_queries, "datastores": 1}
     assert await repo.list("datastores", org) == []
     assert await repo.list("queries", org) == []
     assert await repo.list("boards", org) == []
@@ -142,26 +166,19 @@ async def test_remove_then_restore_round_trips() -> None:
     # Restore re-creates the whole bundle.
     await seed_sample_bundle(org, project, user, repo)
     assert len(await repo.list("datastores", org)) == 1
-    assert len(await repo.list("queries", org)) == 6
-    assert len(await repo.list("boards", org)) == 2
+    assert len(await repo.list("queries", org)) == n_queries
+    assert len(await repo.list("boards", org)) == n_boards
 
 
 # ---------------------------------------------------------------------------
-# (7) End-to-end regression: sample datastore query completes via HTTP route
-#
-# This test guards against the connector_type key mismatch bug where
-# datastore_config() stored "type" (not "connector_type"), causing
-# query.py to resolve ctype=None → registry miss → silent hang/error.
-#
-# The test seeds the sample bundle into an InMemoryRepo, then calls
-# POST /api/v1/query with the sample datastore_id and a real SQL query.
-# It asserts the response is 200 Arrow IPC with >0 rows, and it runs
-# under a pytest timeout so a hang fails loudly instead of blocking CI.
+# End-to-end: representative query per dataset via the HTTP /query route
+# against the parquet-backed DuckDB datastore (local mode).
 # ---------------------------------------------------------------------------
 
 @pytest_asyncio.fixture
-async def _sample_query_client(app, fake_db):
-    """InMemoryRepo with a seeded sample bundle + HTTPX client."""
+async def _sample_query_client(app, fake_db, monkeypatch):
+    """InMemoryRepo with a seeded sample bundle + HTTPX client (local mode)."""
+    _clear_s3_env(monkeypatch)
     repo = InMemoryRepo()
     set_repo(repo)
 
@@ -199,65 +216,66 @@ async def _sample_query_client(app, fake_db):
     set_repo(None)
 
 
+# One representative aggregate query per dataset: (label, sql, expected columns)
+_DATASET_QUERIES = [
+    (
+        "retail_sales",
+        "SELECT region, ROUND(SUM(nsv), 2) AS nsv FROM sales GROUP BY region ORDER BY nsv DESC",
+        {"region", "nsv"},
+    ),
+    (
+        "saas_metrics",
+        "SELECT month, ROUND(SUM(amount), 2) AS mrr FROM saas_invoices GROUP BY month ORDER BY month",
+        {"month", "mrr"},
+    ),
+    (
+        "web_analytics",
+        "SELECT utm_source, COUNT(*) AS sessions, SUM(converted) AS conversions "
+        "FROM web_sessions GROUP BY utm_source ORDER BY sessions DESC",
+        {"utm_source", "sessions", "conversions"},
+    ),
+    (
+        "finance_ops",
+        "SELECT month, ROUND(SUM(amount), 2) AS collected FROM fin_payments GROUP BY month ORDER BY month",
+        {"month", "collected"},
+    ),
+]
+
+
 @pytest.mark.asyncio
-async def test_sample_datastore_query_completes_with_rows(_sample_query_client) -> None:
-    """End-to-end regression: sample connector_type datastore query finishes with rows.
-
-    Specifically guards against the connector_type/type key mismatch that caused
-    query.py to resolve ctype=None for sample datastores, triggering a registry
-    miss and a silent hang or 404 error.
-
-    The query runs real DuckDB SQL against the bundled sample.duckdb file and
-    must return >0 rows (a hang would time out the test runner, not silently return).
-    """
+@pytest.mark.parametrize(("dataset", "sql", "cols"), _DATASET_QUERIES, ids=[d[0] for d in _DATASET_QUERIES])
+async def test_representative_query_per_dataset_returns_rows(
+    _sample_query_client, dataset, sql, cols
+) -> None:
+    """A real aggregate per dataset completes through POST /api/v1/query with rows."""
     client, user_id, datastore_id = _sample_query_client
     auth = {"Authorization": f"Bearer {mint_access_token(user_id)}"}
 
     resp = await client.post(
         "/api/v1/query",
-        json={
-            "sql": "SELECT region, ROUND(SUM(nsv), 2) AS nsv FROM sales GROUP BY region ORDER BY nsv DESC",
-            "datastore_id": datastore_id,
-        },
+        json={"sql": sql, "datastore_id": datastore_id},
         headers=auth,
     )
     assert resp.status_code == 200, (
-        f"Expected 200 but got {resp.status_code}. Body: {resp.text[:500]}"
+        f"[{dataset}] expected 200 but got {resp.status_code}. Body: {resp.text[:500]}"
     )
     ct = resp.headers.get("content-type", "")
     assert "application/vnd.apache.arrow.stream" in ct, (
-        f"Expected Arrow IPC content-type, got: {ct!r}"
+        f"[{dataset}] expected Arrow IPC content-type, got: {ct!r}"
     )
 
     table = pa_ipc.open_stream(BytesIO(resp.content)).read_all()
-    assert table.num_rows > 0, (
-        "Query returned 0 rows — expected region summary rows from sample sales data"
+    assert table.num_rows > 0, f"[{dataset}] query returned 0 rows"
+    assert cols <= set(table.column_names), (
+        f"[{dataset}] missing columns; got {table.column_names}"
     )
-    assert "region" in table.column_names
-    assert "nsv" in table.column_names
-
-
-# ---------------------------------------------------------------------------
-# (8) Data-browser: GET /data/{datastore_id}/tables lists the sample tables
-# (9) Data-browser: GET /data/{datastore_id}/tables/sales/rows returns rows
-#
-# These tests verify that the sample datastore flows through the NORMAL
-# /data/{id}/tables and /data/{id}/tables/{table}/rows pipeline — not any
-# special-cased demo path — so the Data page works with the sample bundle.
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
 async def test_sample_datastore_tables_listable_via_data_browser(
     _sample_query_client,
 ) -> None:
-    """GET /data/{datastore_id}/tables lists the star-schema tables of the sample DB.
-
-    Verifies that the sample datastore flows through the normal data-browser
-    pipeline (not the /data/tables demo fallback) and that the expected tables
-    (sales, dim_regions, dim_products, dim_customers, budget, targets) are all
-    visible.
-    """
+    """GET /data/{datastore_id}/tables lists every table of all four datasets."""
     client, user_id, datastore_id = _sample_query_client
     auth = {"Authorization": f"Bearer {mint_access_token(user_id)}"}
 
@@ -273,9 +291,8 @@ async def test_sample_datastore_tables_listable_via_data_browser(
     assert body["datastore_id"] == datastore_id
 
     names = {t["name"] for t in body["tables"]}
-    _EXPECTED = {"sales", "dim_regions", "dim_products", "dim_customers", "budget", "targets"}
-    assert _EXPECTED <= names, (
-        f"Sample datastore missing expected tables. Got: {sorted(names)}"
+    assert set(ALL_DEMO_TABLES) <= names, (
+        f"Sample datastore missing expected tables: {set(ALL_DEMO_TABLES) - names}"
     )
 
 
@@ -283,12 +300,7 @@ async def test_sample_datastore_tables_listable_via_data_browser(
 async def test_sample_datastore_rows_queryable_via_data_browser(
     _sample_query_client,
 ) -> None:
-    """GET /data/{datastore_id}/tables/sales/rows returns real rows from the sample DB.
-
-    Verifies that the sample datastore rows endpoint flows through the normal
-    data-browser pipeline, opens the bundled DuckDB file, and returns an Arrow
-    IPC stream with real sales data (>0 rows, correct column names).
-    """
+    """GET /data/{datastore_id}/tables/sales/rows returns real parquet-backed rows."""
     client, user_id, datastore_id = _sample_query_client
     auth = {"Authorization": f"Bearer {mint_access_token(user_id)}"}
 
@@ -305,12 +317,8 @@ async def test_sample_datastore_rows_queryable_via_data_browser(
     )
 
     table = pa_ipc.open_stream(BytesIO(resp.content)).read_all()
-    assert table.num_rows > 0, (
-        "GET /data/{id}/tables/sales/rows returned 0 rows — expected sample sales data"
-    )
-    # Verify the star-schema fact columns are present.
+    assert table.num_rows > 0, "GET /data/{id}/tables/sales/rows returned 0 rows"
     expected_cols = {"region", "channel", "supplier", "nsv", "units"}
-    actual_cols = set(table.column_names)
-    assert expected_cols <= actual_cols, (
-        f"Missing expected columns. Got: {sorted(actual_cols)}"
+    assert expected_cols <= set(table.column_names), (
+        f"Missing expected columns. Got: {sorted(table.column_names)}"
     )

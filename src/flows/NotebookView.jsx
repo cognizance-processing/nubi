@@ -8,17 +8,27 @@
  *   - Add SQL / Python cell buttons at the top and after any cell
  *   - Move up / Move down reorders tasks in the spec
  *   - Delete cell
- *   - "Run cell" calls previewCell (POST /flows/preview) and shows rows inline
- *   - "Run All" (durable) calls runFlow (POST /flows/{id}/run)
- *   - Upstream results are passed to each subsequent previewCell call so
- *     cross-cell references resolve via the backend
+ *   - "Run cell" calls previewCell (POST /flows/preview) and shows rows inline;
+ *     the backend re-executes upstream cells in the dependency chain so
+ *     cross-cell references resolve server-side
+ *   - "Run All" (durable) opens PlanGateDialog, then calls runFlow
+ *     (POST /flows/{id}/run); the dialog stays open until the run actually
+ *     starts and shows the error inline if triggering fails
+ *
+ * Saving is owned by FlowsPage (shared with the canvas view + autosave): the
+ * toolbar Save button just calls the `onSave` prop, and the dirty/autosave
+ * status passed down is rendered via SaveStatusBadge (also exported for the
+ * FlowsPage top bar so both views show one consistent indicator).
  *
  * Props:
- *   flow          {object|null}   — saved flow row (null for unsaved draft)
- *   spec          {object}        — current FlowSpec (controlled)
- *   onSpecChange  {Function}      — called with updated spec on every edit
- *   onSaved       {Function}      — called with saved flow row after create/update
- *   onRun         {Function}      — called with { flowRun, runId } after triggering
+ *   flow           {object|null}  — saved flow row (null for unsaved draft)
+ *   spec           {object}       — current FlowSpec (controlled)
+ *   onSpecChange   {Function}     — called with updated spec on every edit
+ *   onSave         {Function}     — triggers the shared (page-level) save
+ *   saving         {boolean}      — a manual save is in flight
+ *   dirty          {boolean}      — spec differs from the last-saved snapshot
+ *   autosaveStatus {string|null}  — null | 'saving' | 'saved' | 'error'
+ *   onRun          {Function}     — called with { flowRun, runId } after triggering
  */
 
 import { useState, useCallback, useRef, useMemo } from 'react'
@@ -28,6 +38,7 @@ import {
   Play,
   Loader2,
   AlertCircle,
+  Check,
   Code2,
   Database,
   FileText,
@@ -35,7 +46,7 @@ import {
   GitBranch,
 } from 'lucide-react'
 
-import { createFlow, updateFlow, runFlow } from '../lib/flows.js'
+import { runFlow } from '../lib/flows.js'
 import { previewCell, makeBlankCell } from '../lib/notebooks.js'
 import SqlCell from './cells/SqlCell.jsx'
 import PythonCell from './cells/PythonCell.jsx'
@@ -81,13 +92,54 @@ function AddCellBar({ onAddSql, onAddPython, onAddNote }) {
 }
 
 // ---------------------------------------------------------------------------
+// SaveStatusBadge — compact unsaved/saving/saved/autosave-failed indicator.
+// Rendered next to the Save buttons in both the notebook toolbar (here) and
+// the FlowsPage top bar, so the two views share one consistent treatment.
+// ---------------------------------------------------------------------------
+
+export function SaveStatusBadge({ dirty, saving, autosaveStatus, className = '' }) {
+  const base = ['flex items-center gap-1 text-[11px] whitespace-nowrap shrink-0', className].join(' ')
+  if (saving || autosaveStatus === 'saving') {
+    return (
+      <span role="status" className={[base, 'text-muted'].join(' ')}>
+        <Loader2 size={11} className="animate-spin" />
+        Saving…
+      </span>
+    )
+  }
+  if (autosaveStatus === 'error') {
+    return (
+      <span role="status" className={[base, 'text-rose-600 dark:text-rose-400'].join(' ')}>
+        <AlertCircle size={11} />
+        Autosave failed — Save manually
+      </span>
+    )
+  }
+  if (dirty) {
+    return (
+      <span role="status" className={[base, 'text-amber-600 dark:text-amber-400'].join(' ')}>
+        <span className="w-1.5 h-1.5 rounded-full bg-amber-500" />
+        Unsaved
+      </span>
+    )
+  }
+  if (autosaveStatus === 'saved') {
+    return (
+      <span role="status" className={[base, 'text-muted'].join(' ')}>
+        <Check size={11} className="text-green-500" />
+        Saved
+      </span>
+    )
+  }
+  return null
+}
+
+// ---------------------------------------------------------------------------
 // NotebookView
 // ---------------------------------------------------------------------------
 
-export default function NotebookView({ flow, spec, onSpecChange, onSaved, onRun }) {
-  const [saving, setSaving] = useState(false)
+export default function NotebookView({ flow, spec, onSpecChange, onSave, saving = false, dirty = false, autosaveStatus = null, onRun }) {
   const [runningAll, setRunningAll] = useState(false)
-  const [saveError, setSaveError] = useState(null)
   const [runError, setRunError] = useState(null)
 
   // Lineage toggle — show the full-flow lineage panel below the toolbar
@@ -100,10 +152,6 @@ export default function NotebookView({ flow, spec, onSpecChange, onSaved, onRun 
   // state when the plan gate opens so render never reads the ref directly.
   const lastChangedCellRef = useRef(null)
   const [planChangedCellKey, setPlanChangedCellKey] = useState('')
-
-  // Keep a ref of accumulated cell results for cross-cell preview wiring.
-  // Shape: { [cellKey]: { rows, columns, row_count, elapsed_ms } }
-  const cellResultsRef = useRef({})
 
   const specTasks = spec?.tasks
   const tasks = useMemo(() => specTasks ?? [], [specTasks])
@@ -149,40 +197,10 @@ export default function NotebookView({ flow, spec, onSpecChange, onSaved, onRun 
   // ── Cell run (preview) ────────────────────────────────────────────────────
 
   const handleRunCell = useCallback(async (cell) => {
-    const res = await previewCell(cell, cellResultsRef.current)
-    if (!res.error) {
-      // Accumulate for downstream cells in the same session
-      cellResultsRef.current = {
-        ...cellResultsRef.current,
-        [cell.key]: {
-          rows: res.rows,
-          columns: res.columns,
-          row_count: res.row_count,
-          elapsed_ms: res.elapsed_ms,
-        },
-      }
-    }
-    return res
-  }, [])
-
-  // ── Save ──────────────────────────────────────────────────────────────────
-
-  const handleSave = useCallback(async () => {
-    setSaving(true)
-    setSaveError(null)
-    let saved
-    if (flow?.id) {
-      saved = await updateFlow(flow.id, { name: spec.name, spec })
-    } else {
-      saved = await createFlow(spec.name ?? 'untitled', spec)
-    }
-    setSaving(false)
-    if (!saved) {
-      setSaveError('Save failed — check the console for details.')
-    } else {
-      onSaved?.(saved)
-    }
-  }, [flow, spec, onSaved])
+    // The backend executes all upstream cells in the dependency chain itself,
+    // so we send the full (possibly unsaved) spec plus the target cell key.
+    return previewCell(spec, cell.key)
+  }, [spec])
 
   // ── Run all (durable) — open plan gate first ──────────────────────────────
 
@@ -198,18 +216,22 @@ export default function NotebookView({ flow, spec, onSpecChange, onSaved, onRun 
     setPlanGateOpen(true)
   }, [flow])
 
+  // Triggers the durable run. Returns true on success / false on failure so
+  // PlanGateDialog can keep itself open (with an inline error + retry) when
+  // the run fails; we only close the dialog once the run actually started.
   const handlePlanConfirm = useCallback(async () => {
-    setPlanGateOpen(false)
-    if (!flow?.id) return
+    if (!flow?.id) return false
     setRunningAll(true)
     setRunError(null)
     const result = await runFlow(flow.id, {})
     setRunningAll(false)
     if (!result) {
       setRunError('Run failed — check the console for details.')
-    } else {
-      onRun?.({ flowRun: result, runId: result.id })
+      return false
     }
+    setPlanGateOpen(false)
+    onRun?.({ flowRun: result, runId: result.id })
+    return true
   }, [flow, onRun])
 
   return (
@@ -260,9 +282,12 @@ export default function NotebookView({ flow, spec, onSpecChange, onSaved, onRun 
           <span className="hidden sm:inline">+ Note</span>
         </button>
 
-        {/* Save */}
+        {/* Unsaved / autosave status (shared treatment with the top bar) */}
+        <SaveStatusBadge dirty={dirty} saving={saving} autosaveStatus={autosaveStatus} className="hidden sm:flex px-1" />
+
+        {/* Save — delegates to the page-level shared save (also autosaved) */}
         <button
-          onClick={handleSave}
+          onClick={() => onSave?.()}
           disabled={saving}
           className="flex items-center gap-1.5 px-2 sm:px-3 h-9 text-xs font-medium rounded-lg border border-border bg-surface text-fg hover:bg-surface-2 disabled:opacity-50 transition-colors shrink-0"
           title="Save notebook"
@@ -304,14 +329,7 @@ export default function NotebookView({ flow, spec, onSpecChange, onSaved, onRun 
         </button>
       </div>
 
-      {/* Error banners */}
-      {saveError && (
-        <div className="shrink-0 flex items-center gap-2 px-4 py-2 bg-rose-500/5 border-b border-rose-500/20 text-xs text-rose-600 dark:text-rose-400">
-          <AlertCircle size={13} />
-          <span className="flex-1 min-w-0">{saveError}</span>
-          <button onClick={() => setSaveError(null)} className="ml-auto opacity-60 hover:opacity-100 shrink-0"><X size={12} /></button>
-        </div>
-      )}
+      {/* Error banner (save errors surface via the page-level banner) */}
       {runError && (
         <div className="shrink-0 flex items-center gap-2 px-4 py-2 bg-rose-500/5 border-b border-rose-500/20 text-xs text-rose-600 dark:text-rose-400">
           <AlertCircle size={13} />

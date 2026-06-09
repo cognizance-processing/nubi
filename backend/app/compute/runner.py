@@ -46,8 +46,6 @@ from __future__ import annotations
 
 import os
 import shutil
-import signal
-import subprocess
 import sys
 import tempfile
 import textwrap
@@ -59,19 +57,19 @@ from typing import Optional
 import pyarrow as pa
 import pyarrow.ipc as pa_ipc
 
+from app.compute import sandbox as _sandbox
+from app.compute.sandbox import run_sandboxed
 from app.errors import AppError
 
 # ---------------------------------------------------------------------------
-# Try to import resource (POSIX only — not available on Windows).
+# Shared M4-SEC hardening (process-group kill, rlimits, output caps) lives in
+# app/compute/sandbox.py so flows Python cells share the EXACT same code path.
+# The aliases below preserve this module's historical names; limits are
+# env-overridable via KERNEL_RLIMIT_* / KERNEL_STD{OUT,ERR}_CAP_BYTES — see
+# the sandbox module docstring.
 # ---------------------------------------------------------------------------
-try:
-    import resource as _resource
-    _HAVE_RESOURCE = True
-except ImportError:
-    _resource = None  # type: ignore[assignment]
-    _HAVE_RESOURCE = False
+_HAVE_RESOURCE = _sandbox.HAVE_RESOURCE
 
-# ---------------------------------------------------------------------------
 # Output size cap for captured stdout/stderr: 1 MiB each.
 # Buffers beyond this limit are truncated with a marker so a huge print() call
 # cannot OOM the parent process.
@@ -80,9 +78,8 @@ except ImportError:
 # truncate; for very large outputs the child must produce the data before the
 # parent cap fires.  This is acceptable for MVP — a future hardening pass
 # should replace communicate() with incremental reads.
-# ---------------------------------------------------------------------------
-_STDOUT_CAP_BYTES: int = 1 * 1024 * 1024   # 1 MiB
-_STDERR_CAP_BYTES: int = 1 * 1024 * 1024   # 1 MiB
+_STDOUT_CAP_BYTES: int = _sandbox.STDOUT_CAP_BYTES   # 1 MiB
+_STDERR_CAP_BYTES: int = _sandbox.STDERR_CAP_BYTES   # 1 MiB
 
 # ---------------------------------------------------------------------------
 # Output size cap: 64 MiB for the Arrow IPC result file.
@@ -95,16 +92,16 @@ _OUTPUT_SIZE_CAP_BYTES: int = 64 * 1024 * 1024  # 64 MiB
 _STDERR_TAIL_CHARS: int = 2000
 
 # ---------------------------------------------------------------------------
-# rlimit defaults (POSIX only).
+# rlimit defaults (POSIX only) — shared with sandbox.py.
 # ---------------------------------------------------------------------------
 # CPU time: timeout_s + 2 s grace; kernel raises SIGXCPU when exceeded.
-_RLIMIT_CPU_GRACE_S: int = 2
+_RLIMIT_CPU_GRACE_S: int = _sandbox.RLIMIT_CPU_GRACE_S
 # Address space: 2 GiB — prevents runaway memory allocation.
-_RLIMIT_AS_BYTES: int = 2 * 1024 * 1024 * 1024
+_RLIMIT_AS_BYTES: int = _sandbox.RLIMIT_AS_BYTES
 # Maximum file size writable: 128 MiB — prevents filling the disk.
-_RLIMIT_FSIZE_BYTES: int = 128 * 1024 * 1024
+_RLIMIT_FSIZE_BYTES: int = _sandbox.RLIMIT_FSIZE_BYTES
 # Maximum number of child processes/threads: 64 — contains fork bombs.
-_RLIMIT_NPROC: int = 64
+_RLIMIT_NPROC: int = _sandbox.RLIMIT_NPROC
 
 
 # ---------------------------------------------------------------------------
@@ -241,82 +238,6 @@ def _build_safe_env() -> dict[str, str]:
         env["PYTHONPATH"] = combined
 
     return env
-
-
-# ---------------------------------------------------------------------------
-# rlimit preexec_fn (POSIX only)
-# ---------------------------------------------------------------------------
-
-def _make_rlimit_preexec(timeout_s: int):
-    """Return a preexec_fn that applies conservative rlimits to the child.
-
-    Only called when ``_HAVE_RESOURCE`` is True (POSIX platforms).  On
-    non-POSIX (Windows) this function is never invoked and ``preexec_fn`` is
-    left as ``None``.
-
-    Limits applied
-    --------------
-    RLIMIT_CPU
-        CPU seconds: ``timeout_s + _RLIMIT_CPU_GRACE_S``.  Gives the kernel
-        a chance to raise SIGXCPU if the wall-clock timeout kill is delayed.
-    RLIMIT_AS
-        Address-space (virtual memory): ``_RLIMIT_AS_BYTES`` (2 GiB).
-        Prevents runaway memory allocation from bloating the host.
-        **macOS caveat**: on macOS ``RLIMIT_AS`` is typically set to
-        ``RLIM_INFINITY`` and the kernel rejects any hard cap lower than the
-        current soft limit, raising ``ValueError``.  We catch this and
-        silently skip the AS limit on platforms where it cannot be applied.
-    RLIMIT_FSIZE
-        Maximum writable file size: ``_RLIMIT_FSIZE_BYTES`` (128 MiB).
-        Prevents the child from filling the disk via large file writes.
-    RLIMIT_NPROC
-        Maximum number of simultaneous child processes/threads: ``_RLIMIT_NPROC``
-        (64).  Limits the blast radius of fork bombs; note that this counts
-        across all processes owned by the OS user, not just the subtree.
-        Only applied if the requested value is within the OS hard cap.
-    """
-    cpu_limit = timeout_s + _RLIMIT_CPU_GRACE_S
-
-    def _preexec():
-        # ── RLIMIT_CPU ────────────────────────────────────────────────────────
-        try:
-            _resource.setrlimit(_resource.RLIMIT_CPU, (cpu_limit, cpu_limit))
-        except (ValueError, OSError):
-            pass  # platform does not allow lowering CPU limit
-
-        # ── RLIMIT_AS (address space) ────────────────────────────────────────
-        # macOS ships with RLIMIT_AS == RLIM_INFINITY; setting a finite cap
-        # fails with ValueError ("current limit exceeds maximum limit") unless
-        # the hard limit is also unlimited.  We skip gracefully.
-        try:
-            cur_soft, cur_hard = _resource.getrlimit(_resource.RLIMIT_AS)
-            if cur_hard == _resource.RLIM_INFINITY or cur_hard >= _RLIMIT_AS_BYTES:
-                _resource.setrlimit(
-                    _resource.RLIMIT_AS,
-                    (_RLIMIT_AS_BYTES, _RLIMIT_AS_BYTES),
-                )
-            # If cur_hard < _RLIMIT_AS_BYTES the existing cap is already tighter.
-        except (ValueError, OSError):
-            pass  # platform cannot apply AS limit (e.g. macOS)
-
-        # ── RLIMIT_FSIZE ──────────────────────────────────────────────────────
-        try:
-            _resource.setrlimit(
-                _resource.RLIMIT_FSIZE,
-                (_RLIMIT_FSIZE_BYTES, _RLIMIT_FSIZE_BYTES),
-            )
-        except (ValueError, OSError):
-            pass
-
-        # ── RLIMIT_NPROC ──────────────────────────────────────────────────────
-        try:
-            _cur_soft, cur_hard = _resource.getrlimit(_resource.RLIMIT_NPROC)
-            nproc_target = min(_RLIMIT_NPROC, cur_hard) if cur_hard != _resource.RLIM_INFINITY else _RLIMIT_NPROC
-            _resource.setrlimit(_resource.RLIMIT_NPROC, (nproc_target, nproc_target))
-        except (ValueError, OSError):
-            pass
-
-    return _preexec
 
 
 # ---------------------------------------------------------------------------
@@ -491,63 +412,39 @@ class LocalSubprocessRunner(KernelRunner):
         # ── 3. Build scrubbed environment ─────────────────────────────
         safe_env = _build_safe_env()
 
-        # ── 4. Build preexec_fn (POSIX / resource only) ───────────────
-        preexec_fn = _make_rlimit_preexec(timeout_s) if _HAVE_RESOURCE else None
-
-        # ── 5. Launch subprocess in a new process group/session ───────
-        # start_new_session=True creates a new process group so that
-        # os.killpg() can kill the entire subtree (including grandchildren)
-        # on timeout.  This prevents orphaned background threads/processes.
-        proc = subprocess.Popen(
+        # ── 4–7. Launch via the shared hardened sandbox ───────────────
+        # run_sandboxed applies: start_new_session=True (new process group so
+        # os.killpg can kill the entire subtree on timeout), rlimits via
+        # preexec_fn (POSIX only), process-GROUP SIGKILL on timeout, and
+        # byte-level stdout/stderr truncation (1 MiB caps + marker).
+        run = run_sandboxed(
             [sys.executable, harness_path],
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            cwd=tmp_dir,
             env=safe_env,
-            start_new_session=True,
-            preexec_fn=preexec_fn,
+            cwd=tmp_dir,
+            timeout_s=timeout_s,
+            cpu_limit_s=timeout_s + _RLIMIT_CPU_GRACE_S,
+            stdout_cap=_STDOUT_CAP_BYTES,
+            stderr_cap=_STDERR_CAP_BYTES,
         )
 
-        # ── 6. Wait with timeout; kill the process GROUP on expiry ────
-        try:
-            raw_stdout, raw_stderr = proc.communicate(timeout=timeout_s)
-        except subprocess.TimeoutExpired:
-            # Kill the ENTIRE process group to reap orphan grandchildren.
-            # os.killpg is POSIX-only; fall back to proc.kill() on Windows.
-            if hasattr(os, "killpg"):
-                try:
-                    os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
-                except ProcessLookupError:
-                    pass  # process already exited between timeout and kill
-            else:
-                proc.kill()
-            proc.communicate()  # drain pipes to avoid zombie
-            elapsed_ms = int((time.monotonic() - start) * 1000)
+        elapsed_ms = int((time.monotonic() - start) * 1000)
+
+        if run.timed_out:
             raise AppError(
                 "kernel_timeout",
                 f"Kernel execution timed out after {timeout_s}s.",
                 504,
             )
 
-        elapsed_ms = int((time.monotonic() - start) * 1000)
-
-        # ── 7. Cap stdout/stderr to 1 MiB each ────────────────────────
-        # Truncate bytes buffers before decoding to avoid OOM on huge outputs.
-        _TRUNCATION_MARKER = b"\n[... output truncated by nubi kernel cap ...]\n"
-        if len(raw_stdout) > _STDOUT_CAP_BYTES:
-            raw_stdout = raw_stdout[:_STDOUT_CAP_BYTES] + _TRUNCATION_MARKER
-        if len(raw_stderr) > _STDERR_CAP_BYTES:
-            raw_stderr = raw_stderr[:_STDERR_CAP_BYTES] + _TRUNCATION_MARKER
-
-        stdout_text: str = raw_stdout.decode("utf-8", errors="replace")
-        stderr_text: str = raw_stderr.decode("utf-8", errors="replace")
+        stdout_text: str = run.stdout.decode("utf-8", errors="replace")
+        stderr_text: str = run.stderr.decode("utf-8", errors="replace")
 
         # ── 8. Check exit code ─────────────────────────────────────────
-        if proc.returncode != 0:
+        if run.returncode != 0:
             stderr_tail = stderr_text[-_STDERR_TAIL_CHARS:]
             raise AppError(
                 "kernel_error",
-                f"Kernel exited with code {proc.returncode}. "
+                f"Kernel exited with code {run.returncode}. "
                 f"stderr: {stderr_tail}",
                 400,
             )

@@ -32,6 +32,13 @@ run_one_ready_task(store, now, claims, worker_id, lease_seconds) -> task_run | N
     the task, update the task_run to 'success' or handle retry/failed logic,
     then call ``advance_readiness``.  Return the updated task_run.
 
+    Lease safety: after claiming, the lease is extended to cover the task's
+    configured ``timeout_s`` (+ grace) so a long-but-bounded task is never
+    reaped mid-execution.  Execution runs in a thread with an asyncio
+    heartbeat alongside that periodically re-extends the lease (via
+    ``store.extend_task_lease``), protecting unbounded (``timeout_s == 0``)
+    tasks as well.  The heartbeat stops if the lease is lost to another worker.
+
 drain_flow_run(store, flow_run_id, now, claims, max_steps=200) -> flow_run
     Loop ``run_one_ready_task`` until no ready tasks remain within this
     flow_run or ``max_steps`` is reached.  Returns the final flow_run dict.
@@ -96,6 +103,12 @@ _BLOCKING_STATES = frozenset({"failed", "timed_out", "upstream_failed", "skipped
 # ``upstream_failed``, ``skipped``, and ``cancelled`` are expected terminal states
 # (e.g. the non-taken arm of a branch), so they do NOT cause the flow_run to fail.
 _FLOW_FAIL_STATES = frozenset({"failed", "timed_out"})
+
+# Default worker lease duration in seconds (matches claim_ready_task_run).
+_DEFAULT_LEASE_SECONDS = 300
+# Grace added on top of a task's ``timeout_s`` when deriving the claim lease,
+# covering spec-resolution/result-write overhead around the bounded execution.
+_LEASE_TIMEOUT_GRACE_S = 60
 
 
 # ---------------------------------------------------------------------------
@@ -790,6 +803,156 @@ def _flow_run_link(flow_id: Any, flow_run_id: str) -> str:
 
 
 # ---------------------------------------------------------------------------
+# Lease safety helpers — timeout-derived leases + worker heartbeat
+# ---------------------------------------------------------------------------
+
+
+async def _extend_lease_for_timeout(
+    store: Any,
+    task_run: dict[str, Any],
+    task_spec: dict[str, Any],
+    now: datetime,
+    lease_seconds: int,
+    grace_s: int = _LEASE_TIMEOUT_GRACE_S,
+) -> None:
+    """Extend a freshly-claimed task_run's lease to cover its ``timeout_s``.
+
+    The claim sets ``lease_expires_at = now + lease_seconds``, which is too
+    short for a task whose configured ``timeout_s`` exceeds the lease — the
+    reaper would re-queue (and double-execute) it mid-run.  When the task
+    spec carries ``timeout_s > 0`` we extend the lease to
+    ``now + max(lease_seconds, timeout_s + grace_s)`` via
+    ``store.extend_task_lease`` (conditional on the worker still owning the
+    lease).  Tasks with ``timeout_s == 0`` (unbounded) keep the default lease
+    and rely on the worker heartbeat instead.
+
+    No-op when leasing is disabled (``lease_seconds == 0``) or the store does
+    not implement ``extend_task_lease``.  Best-effort: extension failures are
+    logged, never raised.
+    """
+    if not lease_seconds:
+        return
+    extender = getattr(store, "extend_task_lease", None)
+    if extender is None:
+        return
+    timeout_s = int(task_spec.get("timeout_s", 0) or 0)
+    if timeout_s <= 0:
+        return
+    effective = max(lease_seconds, timeout_s + grace_s)
+    if effective <= lease_seconds:
+        return
+    try:
+        extended = await extender(
+            task_run["id"],
+            task_run.get("worker_id"),
+            now + timedelta(seconds=effective),
+        )
+        if not extended:
+            logger.warning(
+                "Could not extend timeout-derived lease for task_run %s (lease lost?).",
+                task_run["id"],
+            )
+    except Exception:  # noqa: BLE001
+        logger.exception(
+            "Failed to extend timeout-derived lease for task_run %s.", task_run["id"]
+        )
+
+
+async def _heartbeat_task_lease(
+    store: Any,
+    task_run_id: str,
+    worker_id: str | None,
+    lease_seconds: int,
+    interval_s: float | None = None,
+) -> None:
+    """Periodically extend a running task_run's lease (worker heartbeat).
+
+    Loops forever — the caller cancels this coroutine when execution
+    finishes.  Every *interval_s* (default ``lease_seconds / 3``, floored at
+    1 s) the lease is pushed out to ``wall-clock now + lease_seconds`` via
+    ``store.extend_task_lease``.  This protects tasks that run longer than
+    the lease (notably ``timeout_s == 0`` tasks, whose claim lease is not
+    timeout-derived) from being reaped and double-executed.
+
+    Uses the real clock (``datetime.now``) rather than an injected ``now``:
+    the heartbeat advances in real time alongside the executing task.
+
+    Stops (returns) when ``extend_task_lease`` reports the lease is no longer
+    owned — the task was reaped and re-claimed by another worker; there is no
+    point heartbeating a stolen lease.  Store errors are logged and retried
+    on the next beat.
+    """
+    if interval_s is None:
+        interval_s = max(lease_seconds / 3.0, 1.0)
+    while True:
+        await asyncio.sleep(interval_s)
+        beat_now = datetime.now(timezone.utc)
+        try:
+            extended = await store.extend_task_lease(
+                task_run_id,
+                worker_id,
+                beat_now + timedelta(seconds=lease_seconds),
+            )
+        except asyncio.CancelledError:
+            raise
+        except Exception:  # noqa: BLE001
+            logger.exception(
+                "Heartbeat failed to extend lease for task_run %s; retrying.",
+                task_run_id,
+            )
+            continue
+        if not extended:
+            logger.warning(
+                "Heartbeat lost lease for task_run %s (worker %s) — stopping.",
+                task_run_id,
+                worker_id,
+            )
+            return
+
+
+async def _execute_with_heartbeat(
+    store: Any,
+    full_task: dict[str, Any],
+    ctx: Any,
+    claims: dict[str, Any],
+    *,
+    task_run_id: str,
+    worker_id: str | None,
+    lease_seconds: int,
+) -> dict[str, Any]:
+    """Execute a claimed task in a thread while heartbeating its lease.
+
+    ``execute_task`` is synchronous (it enforces ``timeout_s`` internally via
+    a ThreadPoolExecutor), so we run it with ``asyncio.to_thread`` to keep
+    the event loop free.  Alongside it, an asyncio heartbeat task
+    (``_heartbeat_task_lease``) periodically extends the lease so the
+    scheduler's reaper never re-queues a task that is still executing.  The
+    heartbeat is cancelled as soon as execution finishes (success or error).
+
+    When leasing is disabled (``lease_seconds == 0``) or the store lacks
+    ``extend_task_lease``, execution still runs in a thread but without a
+    heartbeat.
+    """
+    from app.flows.executor import execute_task  # noqa: PLC0415
+
+    heartbeat: asyncio.Task[None] | None = None
+    if lease_seconds and getattr(store, "extend_task_lease", None) is not None:
+        heartbeat = asyncio.create_task(
+            _heartbeat_task_lease(store, task_run_id, worker_id, lease_seconds),
+            name=f"nubi-flow-lease-heartbeat-{task_run_id}",
+        )
+    try:
+        return await asyncio.to_thread(execute_task, full_task, ctx, claims)
+    finally:
+        if heartbeat is not None:
+            heartbeat.cancel()
+            try:
+                await heartbeat
+            except asyncio.CancelledError:
+                pass
+
+
+# ---------------------------------------------------------------------------
 # run_one_ready_task
 # ---------------------------------------------------------------------------
 
@@ -824,7 +987,7 @@ async def run_one_ready_task(
         The updated task_run dict (terminal or retrying state), or None if
         no eligible task_run was available.
     """
-    from app.flows.executor import TaskContext, execute_task  # noqa: PLC0415
+    from app.flows.executor import TaskContext  # noqa: PLC0415
 
     if claims is None:
         claims = {}
@@ -867,6 +1030,13 @@ async def run_one_ready_task(
     # ── Resolve task spec from flow spec (TaskRun only stores run-time fields) ─
     task_spec = await _get_task_spec(store, task_run)
 
+    # ── Lease safety: cover the task's configured timeout (+ grace) ───────────
+    # A bounded task (timeout_s > 0) gets a lease of at least timeout_s + grace
+    # so the reaper cannot re-queue it while it is legitimately still running.
+    # Unbounded tasks (timeout_s == 0) keep the default lease and are protected
+    # by the heartbeat in _execute_with_heartbeat below.
+    await _extend_lease_for_timeout(store, task_run, task_spec, now, lease_seconds)
+
     # ── Build TaskContext ──────────────────────────────────────────────────────
     # Collect upstream results: task_key → result dict.
     all_task_runs = await store.list_task_runs(flow_run_id)
@@ -905,7 +1075,17 @@ async def run_one_ready_task(
     # for_each cells are rewritten into a legacy 'map' task so the existing
     # fan-out machinery runs unchanged.
     _apply_for_each_rewrite(full_task, task_spec)
-    outcome = execute_task(full_task, ctx, claims)
+    # Execute in a thread with an asyncio heartbeat extending the lease, so a
+    # task running longer than lease_seconds is never reaped mid-execution.
+    outcome = await _execute_with_heartbeat(
+        store,
+        full_task,
+        ctx,
+        claims,
+        task_run_id=task_run_id,
+        worker_id=task_run.get("worker_id"),
+        lease_seconds=lease_seconds,
+    )
 
     attempt: int = int(task_run.get("attempt", 0))
     retries: int = int(task_spec.get("retries", 0))
@@ -1639,6 +1819,14 @@ async def _execute_claimed_task_run(
 
     # Resolve the task spec from the flow spec (TaskRun doesn't store kind/config).
     task_spec = await _get_task_spec(store, task_run)
+
+    # Lease safety: the embedded synchronous drain path executes inline (no
+    # heartbeat), so at minimum extend the claim lease to cover the task's
+    # configured timeout (+ grace) — the reaper must not re-queue a bounded
+    # task that is still legitimately running.
+    await _extend_lease_for_timeout(
+        store, task_run, task_spec, now, _DEFAULT_LEASE_SECONDS
+    )
 
     # Build TaskContext.
     all_task_runs = await store.list_task_runs(flow_run_id)

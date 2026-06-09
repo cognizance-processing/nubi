@@ -1,18 +1,23 @@
 /**
  * QueriesPage — full SQL IDE for Nubi.
  *
- * Layout (desktop):
+ * Layout (desktop) — mirrors the DashboardEditor right-sidebar pattern:
  *   ┌─────────────────────────────────────────────────────────┐
- *   │  Left rail (240px)  │  QueryWorkspace (flex-1)          │
- *   │  - search           │  - toolbar (run / save / AI)      │
- *   │  - new query btn    │  - param inputs (if registered)   │
- *   │  - query list       │  - Monaco SQL editor (resizable)  │
- *   │    (registered +    │  - results DataTable              │
- *   │     local drafts)   │                                   │
+ *   │  QueryWorkspace (flex-1)          │  Right sidebar      │
+ *   │  - toolbar (run / save / view     │  - "Queries" panel: │
+ *   │    toggle / panel buttons)        │    search, new      │
+ *   │  - Monaco SQL editor (resizable)  │    query, drafts +  │
+ *   │  - results DataTable              │    registry list    │
  *   └─────────────────────────────────────────────────────────┘
  *
+ * Topbar buttons (far right, dashboard-style icon toggles) switch the RHS:
+ *   - Queries — this page's query-list sidebar (lg+: static 288px panel;
+ *     md–lg: slide-over drawer; <md: hidden, mobile dropdown instead)
+ *   - Chat    — the global AppShell chat panel (UiContext toggleChat)
+ * plus an Editor ↔ Rollups segmented view toggle.
+ *
  * Layout (mobile):
- *   - Left rail collapses into a dropdown selector at the top.
+ *   - Query list collapses into a dropdown selector at the top.
  *   - Editor + results stack vertically.
  *
  * Registered queries come from listRegisteredQueries() (GET /query/registry).
@@ -20,6 +25,7 @@
  */
 
 import { useState, useEffect, useCallback, useRef } from 'react'
+import { createPortal } from 'react-dom'
 import { Link } from 'react-router-dom'
 import {
   FileCode2,
@@ -35,11 +41,13 @@ import {
   List,
   Combine,
   Boxes,
+  PanelRightClose,
 } from 'lucide-react'
 
 import { listRegisteredQueries } from '../../lib/api.js'
 import { useProject } from '../../contexts/ProjectContext.jsx'
 import { useCanWrite } from '../../contexts/OrgContext.jsx'
+import { useUi } from '../../contexts/UiContext.jsx'
 import QueryWorkspace from './QueryWorkspace.jsx'
 import PreaggregationsPanel from './PreaggregationsPanel.jsx'
 
@@ -120,10 +128,11 @@ function QueryListItem({ query, isActive, onClick }) {
 }
 
 // ---------------------------------------------------------------------------
-// LeftRail
+// QueriesPanel — query-list body of the right sidebar (search, new query,
+// blend, drafts + registry list). Header/collapse chrome lives in the page.
 // ---------------------------------------------------------------------------
 
-function LeftRail({ queries, localQueries, activeId, loading, onSelect, onNewQuery, onRefresh, searchQuery, onSearchChange, canWrite, view, onViewChange }) {
+function QueriesPanel({ queries, localQueries, activeId, loading, onSelect, onNewQuery, onRefresh, searchQuery, onSearchChange, canWrite }) {
   const allItems = [
     ...localQueries,
     ...queries,
@@ -139,53 +148,7 @@ function LeftRail({ queries, localQueries, activeId, loading, onSelect, onNewQue
   const draftFiltered = filtered.filter(q => q.isNew || q._localId?.startsWith('adhoc'))
 
   return (
-    <aside className="flex flex-col h-full border-r border-border bg-surface-2/40">
-      {/* Rail header */}
-      <div className="shrink-0 flex items-center justify-between px-3 py-2.5 border-b border-border">
-        <span className="text-xs font-semibold text-muted uppercase tracking-wider">Queries</span>
-        <div className="flex items-center gap-1">
-          <button
-            onClick={onRefresh}
-            disabled={loading}
-            className="h-6 w-6 flex items-center justify-center rounded text-muted hover:text-fg hover:bg-surface-2 disabled:opacity-40 transition-colors"
-            title="Refresh query registry"
-          >
-            <RefreshCw size={12} className={loading ? 'animate-spin' : ''} />
-          </button>
-        </div>
-      </div>
-
-      {/* View toggle: SQL editor ↔ Pre-aggregations */}
-      <div className="shrink-0 px-2 pt-2">
-        <div className="flex items-center rounded-lg border border-border overflow-hidden">
-          <button
-            onClick={() => onViewChange('editor')}
-            className={[
-              'flex-1 h-7 flex items-center justify-center gap-1.5 text-[11px] font-medium transition-colors',
-              view === 'editor'
-                ? 'bg-primary/10 text-primary'
-                : 'bg-surface text-muted hover:text-fg hover:bg-surface-2',
-            ].join(' ')}
-          >
-            <FileCode2 size={12} />
-            Editor
-          </button>
-          <button
-            onClick={() => onViewChange('preagg')}
-            className={[
-              'flex-1 h-7 flex items-center justify-center gap-1.5 text-[11px] font-medium border-l border-border transition-colors',
-              view === 'preagg'
-                ? 'bg-primary/10 text-primary'
-                : 'bg-surface text-muted hover:text-fg hover:bg-surface-2',
-            ].join(' ')}
-            title="Auto rollups mined from the query log"
-          >
-            <Boxes size={12} />
-            Rollups
-          </button>
-        </div>
-      </div>
-
+    <div className="flex flex-col h-full bg-surface-2/40">
       {/* New query / Blend buttons */}
       {canWrite ? (
         <div className="shrink-0 px-2 py-2 space-y-1.5">
@@ -212,9 +175,9 @@ function LeftRail({ queries, localQueries, activeId, loading, onSelect, onNewQue
         </div>
       )}
 
-      {/* Search */}
-      <div className="shrink-0 px-2 pb-2">
-        <div className="relative">
+      {/* Search + registry refresh */}
+      <div className="shrink-0 px-2 pb-2 flex items-center gap-1.5">
+        <div className="relative flex-1">
           <Search size={11} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-muted pointer-events-none" />
           <input
             type="text"
@@ -224,6 +187,14 @@ function LeftRail({ queries, localQueries, activeId, loading, onSelect, onNewQue
             className="w-full h-7 pl-7 pr-2.5 text-[11px] bg-surface border border-border rounded-lg text-fg placeholder:text-muted/50 focus:outline-none focus:ring-1 focus:ring-ring"
           />
         </div>
+        <button
+          onClick={onRefresh}
+          disabled={loading}
+          className="h-7 w-7 shrink-0 flex items-center justify-center rounded-lg border border-border bg-surface text-muted hover:text-fg hover:bg-surface-2 disabled:opacity-40 transition-colors"
+          title="Refresh query registry"
+        >
+          <RefreshCw size={12} className={loading ? 'animate-spin' : ''} />
+        </button>
       </div>
 
       {/* Query list */}
@@ -281,7 +252,7 @@ function LeftRail({ queries, localQueries, activeId, loading, onSelect, onNewQue
           </p>
         )}
       </div>
-    </aside>
+    </div>
   )
 }
 
@@ -375,6 +346,13 @@ export default function QueriesPage() {
   const projectId = activeProject?.id
   const canWrite = useCanWrite()
 
+  // AppShell topbar slot — page toolbars portal into the single top bar
+  // (dashboard-editor pattern). The shell's own Chat button handles chat.
+  const { topbarSlot } = useUi()
+
+  // Right sidebar (Queries panel) — open by default, dashboard-editor style.
+  const [queriesPanelOpen, setQueriesPanelOpen] = useState(true)
+
   // ── Registry ───────────────────────────────────────────────────────────
   const [registeredQueries, setRegisteredQueries] = useState([])
   const [loadingRegistry, setLoadingRegistry] = useState(true)
@@ -431,12 +409,14 @@ export default function QueriesPage() {
 
   const handleSelectQuery = useCallback((q) => {
     setActiveQuery(q)
+    setView('editor') // picking a query from the sidebar always lands in the editor
   }, [])
 
   const handleNewQuery = useCallback(() => {
     const draft = newAdHocQuery()
     setLocalQueries(prev => [draft, ...prev])
     setActiveQuery(draft)
+    setView('editor')
   }, [])
 
   const handleQueryChange = useCallback((updatedQuery) => {
@@ -482,32 +462,67 @@ export default function QueriesPage() {
   // ── Derived ────────────────────────────────────────────────────────────
   const activeId = activeQuery?._localId ?? activeQuery?.id
 
+  // ── Topbar cluster (md+) — Editor/Rollups view toggle + RHS panel buttons,
+  //    dashboard-editor style. Rendered inside the QueryWorkspace toolbar, or
+  //    in the slim page bar when the workspace isn't mounted (rollups/empty).
+  const toolbarCluster = (
+    <div className="hidden md:flex items-center gap-1.5 shrink-0">
+      {/* View toggle: SQL editor ↔ Pre-aggregations */}
+      <div className="flex items-center rounded-lg border border-border overflow-hidden">
+        <button
+          onClick={() => setView('editor')}
+          aria-pressed={view === 'editor'}
+          className={[
+            'h-8 px-2.5 flex items-center gap-1.5 text-[11px] font-medium transition-colors',
+            view === 'editor' ? 'bg-primary/10 text-primary' : 'bg-surface text-muted hover:text-fg hover:bg-surface-2',
+          ].join(' ')}
+        >
+          <FileCode2 size={12} /> Editor
+        </button>
+        <button
+          onClick={() => setView('preagg')}
+          aria-pressed={view === 'preagg'}
+          title="Auto rollups mined from the query log"
+          className={[
+            'h-8 px-2.5 flex items-center gap-1.5 text-[11px] font-medium border-l border-border transition-colors',
+            view === 'preagg' ? 'bg-primary/10 text-primary' : 'bg-surface text-muted hover:text-fg hover:bg-surface-2',
+          ].join(' ')}
+        >
+          <Boxes size={12} /> Rollups
+        </button>
+      </div>
+
+      {/* Panel toggle — Queries (page sidebar). The global Chat toggle sits
+          immediately to the right of the slot in the AppShell topbar. */}
+      <div className="flex items-center gap-0.5" data-testid="queries-panel-toggles">
+        <button
+          data-testid="panel-toggle-queries"
+          title="Queries"
+          aria-label="Queries panel"
+          aria-pressed={queriesPanelOpen}
+          onClick={() => setQueriesPanelOpen(o => !o)}
+          className={[
+            'w-9 h-8 flex items-center justify-center rounded-lg border transition-colors duration-150 focus:outline-none focus:ring-2 focus:ring-ring/60',
+            queriesPanelOpen
+              ? 'bg-primary text-primary-fg border-primary shadow-sm'
+              : 'bg-surface text-muted border-border hover:text-fg hover:bg-surface-2',
+          ].join(' ')}
+        >
+          <List size={15} strokeWidth={2} />
+        </button>
+      </div>
+    </div>
+  )
+
   return (
     <div className="flex h-[calc(100vh-var(--shell-header-h,56px))] overflow-hidden bg-bg">
-
-      {/* ── Desktop left rail (lg+ only) ──────────────────────────────── */}
-      <div className="hidden lg:flex shrink-0 w-56 xl:w-64 flex-col">
-        <LeftRail
-          queries={registeredQueries}
-          localQueries={localQueries}
-          activeId={activeId}
-          loading={loadingRegistry}
-          onSelect={handleSelectQuery}
-          onNewQuery={handleNewQuery}
-          onRefresh={loadRegistry}
-          searchQuery={railSearch}
-          onSearchChange={setRailSearch}
-          canWrite={canWrite}
-          view={view}
-          onViewChange={setView}
-        />
-      </div>
 
       {/* ── Main content ───────────────────────────────────────────────── */}
       <div className="flex-1 flex flex-col min-w-0 overflow-hidden">
 
-        {/* Mobile/tablet top bar (shown below lg) */}
-        <div className="lg:hidden shrink-0 flex items-center gap-2 px-3 py-2 border-b border-border bg-surface-2/40">
+        {/* Mobile top bar (<md): query dropdown + view toggle. md+ uses the
+            toolbar cluster + right sidebar instead. */}
+        <div data-testid="queries-mobile-bar" className="md:hidden shrink-0 flex items-center gap-2 px-3 py-2 border-b border-border bg-surface-2/40">
           {view === 'editor' && (
             <MobileQueryDropdown
               queries={registeredQueries}
@@ -543,6 +558,21 @@ export default function QueriesPage() {
           </div>
         </div>
 
+        {/* Shell-topbar toolbar when the workspace toolbar isn't mounted
+            (rollups view / empty state) — portaled into the single top bar.
+            When the workspace IS mounted it portals its own toolbar (with
+            this cluster appended) instead; the two are mutually exclusive. */}
+        {(view === 'preagg' || !activeQuery) && topbarSlot && createPortal(
+          <div className="flex items-center gap-1.5 w-full min-w-0">
+            <span className="text-sm font-semibold font-display text-fg truncate">
+              {view === 'preagg' ? 'Rollups' : 'Queries'}
+            </span>
+            <div className="flex-1" />
+            {toolbarCluster}
+          </div>,
+          topbarSlot
+        )}
+
         {/* Registry error banner (editor view only) */}
         {view === 'editor' && registryError && (
           <div className="shrink-0 flex items-center gap-2 px-4 py-2 bg-rose-500/5 border-b border-rose-500/20 text-xs text-rose-600 dark:text-rose-400">
@@ -567,6 +597,7 @@ export default function QueriesPage() {
               onQueryChange={handleQueryChange}
               onSaved={handleSaved}
               isNew={Boolean(activeQuery.isNew)}
+              toolbarExtra={toolbarCluster}
             />
           </div>
         ) : (
@@ -581,7 +612,7 @@ export default function QueriesPage() {
             <div>
               <h2 className="text-lg font-semibold font-display text-fg mb-1">SQL editor</h2>
               <p className="text-sm text-muted max-w-xs">
-                Select a query from the sidebar (desktop) or the dropdown above (mobile/tablet), or create a new one to get started.
+                Select a query from the Queries panel on the right (desktop) or the dropdown above (mobile), or create a new one to get started.
               </p>
             </div>
             {canWrite && (
@@ -596,6 +627,52 @@ export default function QueriesPage() {
           </div>
         ))}
       </div>
+
+      {/* ── Right sidebar — Queries panel ──
+          Desktop (lg+): static 288px panel.
+          Tablet (md–lg): slide-over drawer (fixed, z-30), toggled from the topbar.
+          Mobile (<md): hidden — the mobile dropdown handles selection. */}
+      {queriesPanelOpen && (
+        <aside
+          data-testid="queries-side-panel"
+          className={`
+            border-l border-border bg-surface flex-col overflow-hidden
+            hidden md:flex
+            lg:static lg:w-72 lg:shrink-0
+            md:fixed md:top-[var(--shell-header-h,56px)] md:bottom-0 md:right-0 md:z-30 md:w-80 md:shadow-2xl
+            lg:shadow-none
+          `}
+        >
+          <div className="flex items-center justify-between px-3 h-9 border-b border-border shrink-0">
+            <span className="text-[11px] font-semibold uppercase tracking-wider text-muted">
+              Queries
+            </span>
+            <button
+              onClick={() => setQueriesPanelOpen(false)}
+              title="Collapse panel"
+              aria-label="Collapse side panel"
+              className="flex items-center justify-center w-7 h-7 rounded-lg text-muted hover:text-fg hover:bg-surface-2 transition-colors focus:outline-none focus:ring-2 focus:ring-ring"
+            >
+              <PanelRightClose size={16} />
+            </button>
+          </div>
+          {/* Body scrolls WITHIN the fixed-width sidebar; the sidebar itself is static. */}
+          <div className="flex-1 min-h-0 overflow-hidden flex flex-col">
+            <QueriesPanel
+              queries={registeredQueries}
+              localQueries={localQueries}
+              activeId={activeId}
+              loading={loadingRegistry}
+              onSelect={handleSelectQuery}
+              onNewQuery={handleNewQuery}
+              onRefresh={loadRegistry}
+              searchQuery={railSearch}
+              onSearchChange={setRailSearch}
+              canWrite={canWrite}
+            />
+          </div>
+        </aside>
+      )}
     </div>
   )
 }

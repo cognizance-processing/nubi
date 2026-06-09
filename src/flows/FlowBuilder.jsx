@@ -14,14 +14,21 @@
  * editor). This component only owns the canvas, the view toggle, and the code
  * panel (whose visibility is controlled by the `codeOpen` prop).
  *
+ * Saving (manual + autosave) is owned by FlowsPage; this component only
+ * forwards the shared `onSave` callback and the saving/dirty/autosaveStatus
+ * flags to NotebookView so its toolbar mirrors the top-bar save state.
+ *
  * Props:
- *   flow        {object|null}   — existing flow row (null for new)
- *   spec        {object}        — current FlowSpec (controlled)
- *   onSpecChange {Function}     — called with updated spec on every edit
- *   onSaved     {Function}      — passed through to NotebookView
- *   onRun       {Function}      — passed through to NotebookView
- *   codeOpen    {boolean}       — whether the Python code panel is shown
- *   onCodeClose {Function}      — called to dismiss the code panel
+ *   flow           {object|null}  — existing flow row (null for new)
+ *   spec           {object}       — current FlowSpec (controlled)
+ *   onSpecChange   {Function}     — called with updated spec on every edit
+ *   onSave         {Function}     — shared page-level save; passed to NotebookView
+ *   saving         {boolean}      — manual save in flight; passed to NotebookView
+ *   dirty          {boolean}      — unsaved changes; passed to NotebookView
+ *   autosaveStatus {string|null}  — null|'saving'|'saved'|'error'; passed to NotebookView
+ *   onRun          {Function}     — passed through to NotebookView
+ *   codeOpen       {boolean}      — whether the Python code panel is shown
+ *   onCodeClose    {Function}     — called to dismiss the code panel
  */
 
 import 'reactflow/dist/style.css'
@@ -210,7 +217,7 @@ function MobileInspectorSheet({ open, onClose, task, onChange }) {
 // FlowBuilder
 // ---------------------------------------------------------------------------
 
-const FlowBuilder = forwardRef(function FlowBuilder({ flow, spec, onSpecChange, onSaved, onRun, onSelectedTaskChange, codeOpen = false, onCodeClose, onViewModeChange }, ref) {
+const FlowBuilder = forwardRef(function FlowBuilder({ flow, spec, onSpecChange, onSave, saving = false, dirty = false, autosaveStatus = null, onRun, onSelectedTaskChange, codeOpen = false, onCodeClose, onViewModeChange }, ref) {
   // ── View mode: 'canvas' | 'notebook' ─────────────────────────────────────
   // Initialise from spec.view if present; fall back to 'canvas'.
   const [viewMode, setViewMode] = useState(() => spec?.view === 'notebook' ? 'notebook' : 'canvas')
@@ -477,7 +484,10 @@ const FlowBuilder = forwardRef(function FlowBuilder({ flow, spec, onSpecChange, 
             flow={flow}
             spec={spec}
             onSpecChange={onSpecChange}
-            onSaved={onSaved}
+            onSave={onSave}
+            saving={saving}
+            dirty={dirty}
+            autosaveStatus={autosaveStatus}
             onRun={onRun}
           />
         </div>

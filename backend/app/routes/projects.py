@@ -133,37 +133,19 @@ async def create_project(
 ) -> dict[str, Any]:
     """Create a new project in the caller's org (slug unique per org).
 
-    After creating the project row, seeds the removable onboarding sample bundle
-    into the new project so every project has an explorable demo dataset from the
-    moment it is created.  The seed is best-effort — a failure never blocks the
-    project creation response.
+    New projects start EMPTY — demo content lives only in the org's optional
+    "Demo" project (POST /orgs/{org_id}/demo-project).
     """
     name = body.name.strip()
     if not name:
         raise AppError("invalid_request", "Project name is required.", 400)
     org_id = await _resolve_org_id(str(user["id"]), repo, request)
-    project = await projects_repo.create_project(
+    return await projects_repo.create_project(
         org_id=org_id,
         name=name,
         created_by=str(user["id"]),
         git=body.git,
     )
-
-    # Seed the removable onboarding sample bundle into the new project.
-    # Best-effort: a bundle failure must never block the project creation response.
-    try:
-        from app.sample import seed_sample_bundle  # noqa: PLC0415
-
-        await seed_sample_bundle(
-            org_id=org_id,
-            project_id=str(project["id"]),
-            created_by=str(user["id"]),
-            repo=repo,
-        )
-    except Exception:  # noqa: BLE001
-        pass
-
-    return project
 
 
 @router.get("/{project_id}/deletion-impact", response_model=ProjectDeletionImpactResponse)

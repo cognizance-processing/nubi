@@ -497,6 +497,54 @@ export function previewDatastoreTable(datastoreId, table, limit = 50) {
 }
 
 // ---------------------------------------------------------------------------
+// Orgs + onboarding
+// ---------------------------------------------------------------------------
+
+/**
+ * Create an organization for the current user (they become its owner).
+ *
+ * POST /api/v1/orgs { name }
+ *
+ * @param {string} name
+ * @returns {Promise<{ id: string, name: string, role: string }>}
+ */
+export function createOrg(name) {
+  return post('/orgs', { name })
+}
+
+/**
+ * List pending (non-expired) org invites addressed to the current user's email.
+ *
+ * GET /api/v1/auth/me/invites
+ *
+ * Returns [] on any failure so onboarding degrades gracefully.
+ *
+ * @returns {Promise<Array<{ id: string, org_id: string, org_name: string, role: string, token: string, created_at: string, expires_at: string }>>}
+ */
+export async function getMyInvites() {
+  try {
+    const data = await get('/auth/me/invites')
+    return Array.isArray(data?.invites) ? data.invites : []
+  } catch (cause) {
+    console.warn('[api] getMyInvites failed; returning []:', cause.message)
+    return []
+  }
+}
+
+/**
+ * Idempotently create + seed the "Demo" project (sample dashboards, queries
+ * and a datastore) in the given org.
+ *
+ * POST /api/v1/orgs/{orgId}/demo-project
+ *
+ * @param {string} orgId
+ * @returns {Promise<{ project: Object, created: boolean, seed: Object }>}
+ */
+export function createDemoProject(orgId) {
+  return post(`/orgs/${orgId}/demo-project`)
+}
+
+// ---------------------------------------------------------------------------
 // Projects (scoped within the active org via X-Org-Id)
 // ---------------------------------------------------------------------------
 

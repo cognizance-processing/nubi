@@ -311,10 +311,10 @@ function OverageShowcase() {
 
 function OrchCalculator() {
   const [envs, setEnvs] = useState(2)
-  const [seats, setSeats] = useState(4)
+  const [gb, setGb] = useState(1000)
 
   const results = ORCH_CALC_OPTIONS
-    .map(o => ({ ...o, cost: Math.round(o.annual(envs, seats)) }))
+    .map(o => ({ ...o, cost: Math.round(o.annual(envs, gb)) }))
     .sort((a, b) => a.cost - b.cost)
   const max = Math.max(...results.map(r => r.cost), 1)
   const nubi = results.find(r => r.isNubi)
@@ -339,25 +339,27 @@ function OrchCalculator() {
         </div>
         <div>
           <div className="flex items-baseline justify-between mb-3">
-            <label htmlFor="orch-seats" className="text-sm font-semibold text-fg">Data engineers (seats)</label>
-            <span className="font-display text-xl font-bold text-brand-blue">{seats}</span>
+            <label htmlFor="orch-gb" className="text-sm font-semibold text-fg">Data processed (GB / mo)</label>
+            <span className="font-display text-xl font-bold text-brand-blue">{gb.toLocaleString()}</span>
           </div>
           <input
-            id="orch-seats" type="range" min="1" max="12" value={seats}
-            onChange={e => setSeats(Number(e.target.value))}
-            className="nubi-range w-full" aria-label="Seats"
+            id="orch-gb" type="range" min="0" max="10000" step="100" value={gb}
+            onChange={e => setGb(Number(e.target.value))}
+            className="nubi-range w-full" aria-label="Data processed in GB per month"
           />
-          <div className="flex justify-between text-[11px] text-muted mt-1.5"><span>1</span><span>12</span></div>
+          <div className="flex justify-between text-[11px] text-muted mt-1.5"><span>0</span><span>10 TB</span></div>
         </div>
       </div>
 
-      {/* Headline */}
+      {/* Headline — honest: Flows is metered on compute, not free. */}
       <div className="flex flex-wrap items-center justify-center gap-2 px-6 py-4 text-center bg-brand-teal/[0.06] border-b border-border">
         <GitFork size={18} className="text-brand-teal" />
         <span className="text-sm sm:text-base text-fg">
-          Flows is <strong className="text-brand-teal font-bold">included</strong> — that&rsquo;s{' '}
-          <strong className="text-brand-teal font-bold">{fmtUSD(savings)}/yr</strong> you don&rsquo;t pay a
-          standalone orchestrator.
+          Flows costs <strong className="text-brand-teal font-bold">{nubi?.cost ? `${fmtUSD(nubi.cost)}/yr` : '$0'}</strong>{' '}
+          metered on data processed — no per-environment bill.
+          {savings > 0 && (
+            <> That&rsquo;s <strong className="text-brand-teal font-bold">{fmtUSD(savings)}/yr</strong> less than the cheapest standalone orchestrator.</>
+          )}
         </span>
       </div>
 
@@ -388,8 +390,10 @@ function OrchCalculator() {
         ))}
       </div>
       <p className="px-6 sm:px-8 pb-6 text-xs text-muted opacity-70 leading-relaxed">
-        Estimated annual cost of a standalone orchestrator, on top of your data platform. Most managed
-        orchestrators bill per environment. † Self-host Airflow is OSS-free but carries real infra + on-call cost.
+        Apples-to-apples: data volume is converted to compute at ~50 GB / compute-hour, then each vendor is
+        priced as its published always-on floor (per environment / capacity / seats) plus compute for the work.
+        Directional estimates, not quotes. Managed orchestrators are floor-dominated; Nubi Flows has no floor.
+        † Self-host Airflow is OSS-free but carries real infra + on-call cost.
       </p>
     </div>
   )

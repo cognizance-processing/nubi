@@ -33,6 +33,8 @@
  *                         and the EE module is loaded. Absent in OSS builds.
  *
  *   STANDALONE (no layout)
+ *   /onboarding     → OnboardingPage (ProtectedRoute, full viewport) — forced
+ *                     onboarding for authed users with zero org memberships
  *   /d/:id          → DashboardViewPage (ProtectedRoute, full viewport)
  *   /dashboard      → redirect → /home
  *   /dev/illustrations → IllustrationGallery
@@ -47,10 +49,10 @@
  */
 
 import { Suspense, createElement } from 'react'
-import { Navigate, Routes, Route } from 'react-router-dom'
+import { Navigate, Routes, Route, useLocation } from 'react-router-dom'
 import { AuthProvider } from './contexts/AuthContext.jsx'
 import { UiProvider } from './contexts/UiContext.jsx'
-import { OrgProvider } from './contexts/OrgContext.jsx'
+import { OrgProvider, useOrg } from './contexts/OrgContext.jsx'
 import { ProjectProvider } from './contexts/ProjectContext.jsx'
 
 // Layouts
@@ -64,6 +66,7 @@ import ProtectedRoute from './components/ProtectedRoute.jsx'
 import LandingPage from './pages/LandingPage.jsx'
 import Login from './pages/Login.jsx'
 import Register from './pages/Register.jsx'
+import OnboardingPage from './pages/OnboardingPage.jsx'
 import DocsPage from './pages/DocsPage.jsx'
 import ComparePage from './pages/ComparePage.jsx'
 import PricingPage from './pages/PricingPage.jsx'
@@ -147,13 +150,49 @@ function EeBillingSlot() {
 // Provider wrapper for the authenticated shell
 // ---------------------------------------------------------------------------
 
+/**
+ * RequireOrg — forced-onboarding guard inside the app shell.
+ *
+ * Reads OrgContext: while /orgs is loading it shows a full-viewport spinner
+ * (no shell flash); when the fetch SUCCEEDED with zero memberships (hasNoOrgs)
+ * it redirects to /onboarding. Transport errors keep the DEFAULT_ORG fallback
+ * inside OrgContext, so offline/dev is unaffected.
+ *
+ * Exception: /invite/:token stays reachable for org-less users — accepting an
+ * invite is one of the two ways OUT of onboarding.
+ */
+function RequireOrg({ children }) {
+  const { loading, hasNoOrgs } = useOrg()
+  const location = useLocation()
+
+  if (loading) {
+    return (
+      <div className="min-h-screen flex items-center justify-center bg-bg">
+        <div
+          className="h-8 w-8 rounded-full border-4 border-primary border-t-transparent animate-spin"
+          role="status"
+          aria-label="Loading"
+        />
+      </div>
+    )
+  }
+
+  if (hasNoOrgs && !location.pathname.startsWith('/invite/')) {
+    return <Navigate to="/onboarding" replace />
+  }
+
+  return children
+}
+
 function AppShellWithProviders() {
   return (
     <UiProvider>
       <OrgProvider>
-        <ProjectProvider>
-          <AppShell />
-        </ProjectProvider>
+        <RequireOrg>
+          <ProjectProvider>
+            <AppShell />
+          </ProjectProvider>
+        </RequireOrg>
       </OrgProvider>
     </UiProvider>
   )
@@ -236,6 +275,17 @@ export default function App() {
         </Route>
 
         {/* ── Full-viewport authenticated routes (no AppShell) ─────────── */}
+        {/* Forced onboarding for users with zero org memberships (e.g. new
+            Google OAuth users). Outside the shell + OrgProvider on purpose:
+            it fetches /orgs itself and bounces to /home when orgs exist. */}
+        <Route
+          path="onboarding"
+          element={
+            <ProtectedRoute>
+              <OnboardingPage />
+            </ProtectedRoute>
+          }
+        />
         <Route
           path="d/:id"
           element={

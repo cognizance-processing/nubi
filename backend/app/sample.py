@@ -1,21 +1,25 @@
 """Onboarding *sample bundle* seeder — a removable starter workspace.
 
-Every new org/project gets a small, real, explorable bundle so the user lands on
-a populated workspace instead of an empty one.  The bundle is created from the
+Every new org/project gets a real, explorable bundle so the user lands on a
+populated workspace instead of an empty one.  The bundle is created from the
 SAME declarative demo fixtures the superuser demo uses (``seed_data/demo/*.json``
-via ``app/demo_bundle.py``) — but only the ``starter`` subset of dashboards — and
-points at a REAL ``duckdb`` datastore:
+via ``app/demo_bundle.py``) — the FULL set: four demo datasets (retail sales,
+SaaS metrics, web analytics, finance ops — 17 tables), all registered queries,
+and all 10 dashboards — pointing at a single REAL ``duckdb`` datastore that
+behaves exactly like a user-created connector (parquet + ``read_parquet`` views,
+no demo special-casing in the query pipeline):
 
 - **S3 configured** (``S3_ACCESS_KEY`` / ``AWS_ACCESS_KEY_ID`` env vars present):
-  the demo star schema is exported per-project to
-  ``s3://<bucket>/projects/<project_id>/demo/<table>.parquet`` and the datastore
-  config exposes all 6 tables as DuckDB views over those S3 parquet files.  Each
-  new project gets its own isolated file set (idempotent re-seeds are safe — files
-  are written only once per project).
+  every dataset is exported per-project to
+  ``s3://<bucket>/projects/<project_id>/demo/<dataset>/<table>.parquet`` and the
+  datastore config exposes all 17 tables as DuckDB views over those S3 parquet
+  files.  Each new project gets its own isolated file set (idempotent re-seeds
+  are safe — files are written only once per project).
 
-- **No S3** (offline dev / CI without MinIO): falls back to the single shared,
-  read-only DuckDB file (``seed_data/sample.duckdb``).  Behaviour is identical to
-  the pre-S3 implementation.
+- **No S3** (offline dev / CI without MinIO): the same parquet files are written
+  once to the deterministic local directory
+  ``backend/seed_data/parquet/<dataset>/<table>.parquet`` and the datastore views
+  read those local files — local mode ALSO goes through parquet.
 
 Every row created here is tagged ``config.sample = true`` (plus a stable
 ``config.sample_id`` for idempotency) so the whole bundle can be bulk-removed —
@@ -38,14 +42,14 @@ from typing import Any
 
 from app.demo_bundle import (
     _s3_is_configured,
-    datastore_config,
+    export_demo_parquet_local,
     export_demo_to_s3,
     load_boards,
     load_queries,
+    local_parquet_datastore_config,
     referenced_query_keys,
     resolve_placeholders,
     s3_datastore_config,
-    sample_db_path,
 )
 from app.repos.provider import Repo, get_repo
 
@@ -107,14 +111,16 @@ async def seed_sample_bundle(
     """Idempotently seed the removable starter bundle into *org_id* / *project_id*.
 
     When S3 is configured (``S3_ACCESS_KEY`` / ``AWS_ACCESS_KEY_ID`` env vars),
-    exports the demo star schema to per-project S3 parquet files BEFORE creating
+    exports all four demo datasets to per-project S3 parquet files BEFORE creating
     the datastore row, so the connector is live-backed by real object storage from
-    day one.  Falls back to the bundled read-only local file when S3 is absent.
+    day one.  When S3 is absent, the same parquet files are written to the local
+    ``seed_data/parquet/`` directory and the views read those — both modes flow
+    through the identical parquet + ``read_parquet`` connector shape.
 
-    Creates a "Sample" DuckDB datastore, the queries the starter boards need, and
-    the ``starter`` dashboard(s) from the shared demo fixtures — all tagged
-    ``sample=true``.  Designed to never break signup: returns
-    ``{"skipped": reason}`` if the bundled dataset can't be built.
+    Creates a "Sample" DuckDB datastore, every query the demo boards reference,
+    and ALL demo dashboards from the shared fixtures — all tagged ``sample=true``.
+    Designed to never break signup: returns ``{"skipped": reason}`` if the demo
+    dataset can't be built.
     """
     repo = repo or get_repo()
 
@@ -127,19 +133,19 @@ async def seed_sample_bundle(
             export_demo_to_s3(project_id)
             ds_config = s3_datastore_config(project_id)
         except Exception as exc:  # noqa: BLE001 — fall back gracefully
-            # S3 export failed; fall back to the bundled local file.
+            # S3 export failed; fall back to local parquet files.
             try:
-                db_path = sample_db_path()
-                ds_config = datastore_config(db_path)
+                export_demo_parquet_local()
+                ds_config = local_parquet_datastore_config()
             except Exception as exc2:  # noqa: BLE001
-                return {"skipped": f"sample db unavailable: {exc}; fallback also failed: {exc2}"}
+                return {"skipped": f"demo export failed: {exc}; local fallback also failed: {exc2}"}
     else:
-        # Local-file fallback (no S3 configured or no project_id).
+        # Local parquet path (no S3 configured or no project_id).
         try:
-            db_path = sample_db_path()
-            ds_config = datastore_config(db_path)
+            export_demo_parquet_local()
+            ds_config = local_parquet_datastore_config()
         except Exception as exc:  # noqa: BLE001 — never fail signup over the sample bundle
-            return {"skipped": f"sample db unavailable: {exc}"}
+            return {"skipped": f"demo parquet unavailable: {exc}"}
 
     created: list[str] = []
 
@@ -152,8 +158,8 @@ async def seed_sample_bundle(
         created.append("datastores")
     datastore_id = str(ds["id"])
 
-    # ── 3. Starter boards + the queries they reference ─────────────────────────
-    boards = load_boards(starter_only=True)
+    # ── 3. All demo boards + the queries they reference ────────────────────────
+    boards = load_boards()
     queries = load_queries()
     needed = referenced_query_keys(boards)
 
@@ -171,7 +177,7 @@ async def seed_sample_bundle(
         if q_created:
             created.append("queries")
 
-    # ── 4. Starter dashboard(s) — resolve @placeholders to real query UUIDs ───
+    # ── 4. Dashboards — resolve @placeholders to real query UUIDs ─────────────
     board_ids: list[str] = []
     for b in boards:
         spec = resolve_placeholders(b["spec"], idmap)

@@ -387,49 +387,50 @@ export const CALC_OPTIONS = [
 ]
 
 // ── Orchestration cost calculator (the SECOND calculator) ───────────────────
-// FAIR, GROUNDED comparison. ANNUAL USD as a function of (environments, monthly
-// flow compute-hours). Each formula maps to the vendor's PUBLISHED model (see
-// ORCH_COMPARISON sourceUrl) — figures are directional estimates, not quotes.
+// FAIR, GROUNDED, apples-to-apples comparison metered on DATA VOLUME — the real
+// cost driver for a data orchestrator. ANNUAL USD as a function of
+// (environments, GB processed per month).
 //
-// The honest distinction this shows:
-//  • Standalone orchestrators bill for ALWAYS-ON infra/seats PER ENVIRONMENT,
-//    regardless of how little you run.
-//  • Nubi Flows has NO per-environment / per-seat floor — it is metered on the
-//    compute it actually consumes (compute units, $6 / 1,000 CU; 1 CU ≈ 1
-//    compute-minute ⇒ ≈ $0.36 / compute-hour). It is NOT free: light workloads
-//    are covered by your plan's included compute quota, heavy ones pay overage.
+// Same-basis model: processing data takes compute. We convert GB → compute-hours
+// at a single disclosed throughput (~50 GB per compute-hour for a typical
+// scan/transform), then price each vendor as FIXED FLOOR (always-on infra /
+// capacity / seats, per their published model) + COMPUTE for the work. This is
+// directional (not a quote) but every term maps to a real published rate (see
+// ORCH_COMPARISON sourceUrl).
 //
-// `annual(envs, hours)` — envs = isolated environments, hours = flow
-// compute-hours / month.
-const NUBI_COMPUTE_USD_PER_HOUR = 0.36 // $6 / 1,000 CU @ 60 CU per compute-hour
+// The honest result: managed orchestrators carry a large per-ENVIRONMENT floor
+// you pay regardless of volume; Nubi Flows has NO floor — it meters only the
+// compute to process your data (≈ $0.36/compute-hour, from $6/1,000 CU), so it
+// scales smoothly from near-zero. Your plan's compute quota covers light use.
+const ORCH_GB_PER_COMPUTE_HOUR = 50          // ~50 GB processed per compute-hour
+const ORCH_NUBI_USD_PER_CH = 0.36            // $6 / 1,000 CU @ 60 CU per compute-hour
+const _ch = (gb) => Math.max(0, gb || 0) / ORCH_GB_PER_COMPUTE_HOUR   // compute-hours / mo
 
 export const ORCH_CALC_OPTIONS = [
   {
     name: 'Nubi Flows', isNubi: true,
-    note: 'No per-env bill — metered compute only (~$0.36/compute-hr; plan quota included)',
-    // Honest, conservative: bills compute from hour 0 (your included quota
-    // makes light use effectively free, so this slightly OVER-states Nubi).
-    annual: (envs, hours) => Math.round((hours || 0) * NUBI_COMPUTE_USD_PER_HOUR * 12),
+    note: 'No per-env floor — metered compute on data processed (~$0.36/compute-hr)',
+    annual: (envs, gb) => Math.round(_ch(gb) * ORCH_NUBI_USD_PER_CH * 12),
   },
   {
-    name: 'Prefect Cloud', note: '$100/mo Starter → $400/mo Team (per-seat)',
+    name: 'Prefect Cloud', note: '$100/mo Starter → $400/mo Team (per-seat; serverless-minute allowance)',
     annual: (envs) => (Math.max(1, envs) <= 1 ? 100 : 400) * 12,
   },
   {
-    name: 'Microsoft Fabric', note: 'F2 capacity 24/7 (~$263/mo per env); throttles at cap',
+    name: 'Microsoft Fabric', note: 'F2 capacity 24/7 (~$263/mo per env); compute within capacity, throttles at cap',
     annual: (envs) => 263 * 12 * Math.max(1, envs),
   },
   {
-    name: 'AWS MWAA', note: 'Small env ~$365/mo (24/7) per env + worker hours',
-    annual: (envs, hours) => Math.round((365 * Math.max(1, envs) + (hours || 0) * 0.05) * 12),
+    name: 'AWS MWAA', note: 'Small env ~$365/mo (24/7) per env + worker hours (~$0.55/hr)',
+    annual: (envs, gb) => Math.round((365 * Math.max(1, envs) + _ch(gb) * 0.55) * 12),
   },
   {
-    name: 'GCP Composer', note: 'Env fee + GKE/Cloud SQL (~$400/mo per env)',
-    annual: (envs) => 400 * 12 * Math.max(1, envs),
+    name: 'GCP Composer', note: 'Env fee + GKE/Cloud SQL (~$400/mo per env) + ~$0.20/vCPU-hr',
+    annual: (envs, gb) => Math.round((400 * Math.max(1, envs) + _ch(gb) * 0.20) * 12),
   },
   {
-    name: 'Apache Airflow (self-host)', note: 'Infra ~$400/mo per env + on-call ops', estimate: true,
-    annual: (envs) => 400 * 12 * Math.max(1, envs) + 6000,
+    name: 'Apache Airflow (self-host)', note: 'Infra ~$400/mo per env + on-call ops + your own compute', estimate: true,
+    annual: (envs, gb) => Math.round((400 * Math.max(1, envs) + _ch(gb) * 0.10) * 12) + 6000,
   },
 ]
 

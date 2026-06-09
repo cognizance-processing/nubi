@@ -23,9 +23,22 @@
  *
  * After a run is triggered the page automatically switches to the Runs tab
  * and shows the live FlowRunView.
+ *
+ * Saving & dirty tracking (single owner — this page):
+ *   - The last-saved spec is snapshotted as JSON (on flow select / new draft /
+ *     successful save); `dirty` is a cheap JSON.stringify comparison.
+ *   - All saves (top-bar Save, the notebook toolbar Save passed down via
+ *     FlowBuilder's `onSave`, and autosave) go through one `performSave`,
+ *     serialised so writes can't land out of order; stale responses are
+ *     dropped via a request-sequence counter.
+ *   - Autosave: existing flows (with an id) are saved ~2s after the last edit.
+ *     Unsaved drafts are NEVER auto-created — they keep manual Save only.
+ *   - While dirty: a `beforeunload` handler warns on tab close/navigation, and
+ *     in-app swaps away from the editor (selecting another flow / New flow)
+ *     ask for confirmation first.
  */
 
-import { useState, useEffect, useCallback, useRef } from 'react'
+import { useState, useEffect, useCallback, useRef, useMemo } from 'react'
 import { createPortal } from 'react-dom'
 import { useParams, useNavigate } from 'react-router-dom'
 import {
@@ -64,6 +77,7 @@ import {
   runFlow,
 } from '../../lib/flows.js'
 import FlowBuilder from '../../flows/FlowBuilder.jsx'
+import { SaveStatusBadge } from '../../flows/NotebookView.jsx'
 import FlowRunView from '../../flows/FlowRunView.jsx'
 import { AddTaskPanel } from '../../flows/AddTaskPanel.jsx'
 import NodeInspector from '../../flows/NodeInspector.jsx'
@@ -73,6 +87,11 @@ import NodeInspector from '../../flows/NodeInspector.jsx'
 // ---------------------------------------------------------------------------
 
 const EMPTY_SPEC = { version: 1, name: 'new', params: [], tasks: [] }
+
+// Debounce window for autosaving existing flows after the last edit.
+const AUTOSAVE_DELAY_MS = 2000
+
+const UNSAVED_CONFIRM_MSG = 'You have unsaved changes that will be lost. Discard them?'
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -601,6 +620,27 @@ export default function FlowsPage() {
   // backend resolution order is: explicit override → spec.env → 'prod'.
   const [runEnv, setRunEnv] = useState('prod')
 
+  // ── Dirty tracking + autosave ─────────────────────────────────────────────
+  // JSON snapshot of the last-saved spec; refreshed on flow select, new draft
+  // and successful save. dirty = current spec no longer matches the snapshot.
+  const [savedSnapshotJson, setSavedSnapshotJson] = useState(() => JSON.stringify(EMPTY_SPEC))
+  // Autosave status: null | 'saving' | 'saved' | 'error' (surfaced subtly).
+  const [autosaveStatus, setAutosaveStatus] = useState(null)
+  // Monotonic save-request counter: any newer request (manual or auto, or a
+  // flow switch) marks older in-flight saves stale so their snapshot/status
+  // updates are dropped.
+  const saveSeqRef = useRef(0)
+  // Serialises all saves so concurrent PUT/POSTs can't land out of order.
+  const saveChainRef = useRef(Promise.resolve())
+  // Latest performSave closure — lets the debounced autosave timer call the
+  // freshest version without putting a render-scoped function in effect deps.
+  const performSaveRef = useRef(null)
+
+  const dirty = useMemo(
+    () => JSON.stringify(activeSpec ?? null) !== savedSnapshotJson,
+    [activeSpec, savedSnapshotJson]
+  )
+
   const setCollapsed = useCallback((v) => {
     setRightCollapsed(v)
     try { localStorage.setItem('nubi:flows:railCollapsed', v ? '1' : '0') } catch { /* ignore */ }
@@ -626,14 +666,25 @@ export default function FlowsPage() {
 
   // ── Select a flow (declared early; used by the route-param effect below) ──
   const selectFlow = useCallback((flow) => {
+    saveSeqRef.current += 1 // invalidate in-flight saves from the previous flow
     setActiveFlow(flow)
     setActiveSpec(flow.spec ?? EMPTY_SPEC)
+    setSavedSnapshotJson(JSON.stringify(flow.spec ?? EMPTY_SPEC))
+    setAutosaveStatus(null)
+    setSaveError(null)
     setActiveTab('builder')
     setActiveRunId(null)
     if (flow.id && !flow._isNew) {
       navigate(`/flows/${flow.id}`, { replace: true })
     }
-  }, [navigate])
+  }, [navigate, setSaveError])
+
+  // List-click selection — guards in-app swaps away from a dirty editor.
+  // (The route-param effect below still calls selectFlow directly.)
+  const handleSelectFlow = (flow) => {
+    if (dirty && !window.confirm(UNSAVED_CONFIRM_MSG)) return
+    selectFlow(flow)
+  }
 
   // Keep the active run env in sync with the active flow's spec.env (default
   // 'prod'). Done in an effect so the selection callbacks stay setter-free for
@@ -676,14 +727,19 @@ export default function FlowsPage() {
 
   // ── New draft ─────────────────────────────────────────────────────────────
   const handleNew = useCallback(() => {
+    if (dirty && !window.confirm(UNSAVED_CONFIRM_MSG)) return
+    saveSeqRef.current += 1 // invalidate in-flight saves from the previous flow
     const draft = { ...newFlowDraft(), _localId: `draft-${Date.now()}` }
     setLocalDrafts(prev => [draft, ...prev])
     setActiveFlow(draft)
     setActiveSpec({ ...EMPTY_SPEC })
+    setSavedSnapshotJson(JSON.stringify(EMPTY_SPEC))
+    setAutosaveStatus(null)
+    setSaveError(null)
     setActiveTab('builder')
     setActiveRunId(null)
     navigate('/flows', { replace: true })
-  }, [navigate])
+  }, [navigate, dirty, setSaveError])
 
   // ── After save callback ───────────────────────────────────────────────────
   const handleSaved = useCallback((savedFlow) => {
@@ -720,19 +776,80 @@ export default function FlowsPage() {
     setValidating(false)
   }
 
-  const triggerSave = async () => {
-    setSaving(true)
-    setSaveError(null)
-    let saved
-    if (activeFlow && !activeFlow._isNew && activeFlow.id) {
-      saved = await updateFlow(activeFlow.id, { name: activeSpec.name, spec: activeSpec })
+  // ── Unified save — the single implementation behind the top-bar Save, the
+  //    notebook toolbar Save (passed down via FlowBuilder `onSave`), and the
+  //    debounced autosave. Saves are chained through saveChainRef so writes
+  //    can't race/land out of order; saveSeqRef drops stale status updates
+  //    (e.g. a queued autosave superseded by a manual save is skipped). ──────
+  const performSave = async ({ auto = false } = {}) => {
+    const spec = activeSpec
+    const specJson = JSON.stringify(spec ?? null)
+    const target = activeFlow
+    const isUpdate = !!(target && !target._isNew && target.id)
+    // Never auto-create: unsaved drafts keep manual Save only.
+    if (auto && !isUpdate) return null
+    if (auto && specJson === savedSnapshotJson) return null // nothing to save
+    const seq = ++saveSeqRef.current
+
+    if (auto) {
+      setAutosaveStatus('saving')
     } else {
-      saved = await createFlow(activeSpec.name, activeSpec)
+      setSaving(true)
+      setSaveError(null)
     }
-    setSaving(false)
-    if (!saved) setSaveError('Save failed — check the console for details.')
-    else handleSaved({ ...saved, _localId: activeFlow?._localId })
+
+    const run = async () => {
+      // A newer save request superseded this queued autosave — skip the write.
+      if (auto && seq !== saveSeqRef.current) return null
+      const saved = isUpdate
+        ? await updateFlow(target.id, { name: spec.name, spec })
+        : await createFlow(spec.name ?? 'untitled', spec)
+      const stale = seq !== saveSeqRef.current
+      if (!auto) setSaving(false)
+      if (!saved) {
+        if (!stale) {
+          if (auto) setAutosaveStatus('error')
+          else setSaveError('Save failed — check the console for details.')
+        }
+        return null
+      }
+      if (!stale) {
+        setSavedSnapshotJson(specJson)
+        setAutosaveStatus(auto ? 'saved' : null)
+        handleSaved({ ...saved, _localId: target?._localId })
+      }
+      return saved
+    }
+    const chained = saveChainRef.current.then(run, run)
+    saveChainRef.current = chained
+    return chained
   }
+
+  const triggerSave = () => performSave()
+
+  // Keep the autosave timer pointing at the freshest performSave closure.
+  useEffect(() => { performSaveRef.current = performSave })
+
+  // ── Autosave: existing flows only, AUTOSAVE_DELAY_MS after the last edit.
+  //    Each spec edit re-arms the timer (classic debounce via effect cleanup).
+  useEffect(() => {
+    if (!dirty || !canWrite) return undefined
+    if (!activeFlow?.id || activeFlow._isNew) return undefined
+    const t = setTimeout(() => performSaveRef.current?.({ auto: true }), AUTOSAVE_DELAY_MS)
+    return () => clearTimeout(t)
+  }, [activeSpec, dirty, canWrite, activeFlow])
+
+  // ── beforeunload guard — registered only while dirty, so closing/refreshing
+  //    the tab warns about unsaved changes. ──────────────────────────────────
+  useEffect(() => {
+    if (!dirty) return undefined
+    const handler = (e) => {
+      e.preventDefault()
+      e.returnValue = '' // required by some browsers to show the prompt
+    }
+    window.addEventListener('beforeunload', handler)
+    return () => window.removeEventListener('beforeunload', handler)
+  }, [dirty])
 
   const triggerRun = async () => {
     if (!activeFlow?.id || activeFlow._isNew) {
@@ -752,7 +869,10 @@ export default function FlowsPage() {
     setSavedFlows(prev => prev.filter(f => f.id !== flowId))
     setActiveFlow(prev => {
       if (prev?.id === flowId) {
+        saveSeqRef.current += 1 // invalidate in-flight saves for the deleted flow
         setActiveSpec(EMPTY_SPEC)
+        setSavedSnapshotJson(JSON.stringify(EMPTY_SPEC))
+        setAutosaveStatus(null)
         navigate('/flows', { replace: true })
         return null
       }
@@ -833,6 +953,8 @@ export default function FlowsPage() {
         {activeTab === 'builder' && (
           <>
             <EnvSelector value={runEnv} onChange={setRunEnv} disabled={!canWrite} />
+            {/* Unsaved / autosave status — sits next to the Save button */}
+            <SaveStatusBadge dirty={dirty} saving={saving} autosaveStatus={autosaveStatus} className="hidden sm:flex px-1" />
             <button onClick={triggerValidate} disabled={validating} title="Validate flow"
               className="flex items-center gap-1.5 px-2 sm:px-2.5 h-8 text-xs font-medium rounded-lg border border-border bg-surface text-fg hover:bg-surface-2 disabled:opacity-50 transition-colors">
               {validating ? <Loader2 size={13} className="animate-spin" /> : <ShieldCheck size={13} />}
@@ -989,7 +1111,10 @@ export default function FlowsPage() {
                     flow={activeFlow?._isNew ? null : activeFlow}
                     spec={activeSpec}
                     onSpecChange={setActiveSpec}
-                    onSaved={handleSaved}
+                    onSave={triggerSave}
+                    saving={saving}
+                    dirty={dirty}
+                    autosaveStatus={autosaveStatus}
                     onRun={handleRun}
                     onSelectedTaskChange={handleSelectedTaskChange}
                     onViewModeChange={setFlowView}
@@ -1065,7 +1190,7 @@ export default function FlowsPage() {
                   flows={allFlows}
                   activeId={activeId}
                   loading={loadingFlows}
-                  onSelect={selectFlow}
+                  onSelect={handleSelectFlow}
                   onNew={handleNew}
                   onRefresh={loadFlows}
                   onDelete={handleDelete}
@@ -1106,7 +1231,7 @@ export default function FlowsPage() {
         flows={allFlows}
         activeId={activeId}
         loading={loadingFlows}
-        onSelect={selectFlow}
+        onSelect={handleSelectFlow}
         onNew={handleNew}
         onRefresh={loadFlows}
         onDelete={handleDelete}

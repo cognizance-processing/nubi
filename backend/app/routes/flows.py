@@ -1503,6 +1503,14 @@ async def run_flow(
     store = get_flow_store()
     flow = await _require_flow_in_org(flow_id, org_id, store)
 
+    # ── BILLING: flow task execution consumes compute units ──────────────────
+    # Enforce the org's compute-unit quota before draining (the executor
+    # meters each task against the same counters).  No-op in OSS builds; on
+    # FREE (no overage billing) an exhausted quota hard-stops with 402.
+    from app.features import enforce_quota  # noqa: PLC0415
+
+    await enforce_quota(org_id, "compute_units", amount=1.0)
+
     # Build first-party claims (mirror routes/ai.py pattern).
     claims: dict[str, Any] = {
         "kind": "access",

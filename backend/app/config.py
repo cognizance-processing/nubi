@@ -20,6 +20,18 @@ _REPO_ROOT = Path(__file__).resolve().parents[2]
 _ENV_FILE = os.getenv("ENV_FILE", ".env")
 _ENV_FILE_PATH = _ENV_FILE if os.path.isabs(_ENV_FILE) else str(_REPO_ROOT / _ENV_FILE)
 
+# Also export the env file into os.environ (real env always wins). Several
+# subsystems read os.getenv directly rather than Settings — notably the
+# S3/MinIO parquet machinery (S3_ENDPOINT_URL / S3_ACCESS_KEY / S3_SECRET_KEY
+# in demo_bundle.py, connectors/duckdb_conn.py, duckdb_storage.py) — so keys
+# defined only in .env must land in the process environment too.
+try:
+    from dotenv import load_dotenv
+
+    load_dotenv(_ENV_FILE_PATH, override=False)
+except ImportError:  # pragma: no cover — python-dotenv ships with pydantic-settings
+    pass
+
 
 class Settings(BaseSettings):
     """All runtime configuration read from environment variables.

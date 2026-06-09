@@ -11,7 +11,13 @@
  *   spec          {object}         — current FlowSpec
  *   changedCellKey {string}        — optional; which cell key changed last; if
  *                                    empty, uses the first task key
- *   onConfirm     {Function}       — called when user clicks "Run"
+ *   onConfirm     {Function}       — called when user clicks "Run". Should
+ *                                    return (a promise of) true on success and
+ *                                    false on failure: the dialog stays open
+ *                                    while the run is being triggered and, on
+ *                                    failure, shows the error inline so the
+ *                                    user can retry or cancel. The parent
+ *                                    closes the dialog only on success.
  *   onCancel      {Function}       — called when user dismisses
  */
 
@@ -111,6 +117,9 @@ export default function PlanGateDialog({ open, spec, changedCellKey, onConfirm, 
   const [error, setError] = useState(null)
   const [expanded, setExpanded] = useState({})
   const [confirming, setConfirming] = useState(false)
+  // Error from a failed confirm (run trigger) — shown inline; the dialog stays
+  // open so the user can retry or cancel.
+  const [confirmError, setConfirmError] = useState(null)
 
   // Derive the changed cell key: use the provided one, else first task key
   const resolvedCellKey = changedCellKey
@@ -132,14 +141,29 @@ export default function PlanGateDialog({ open, spec, changedCellKey, onConfirm, 
   }, [spec, resolvedCellKey, open])
 
   useEffect(() => {
-    if (open) loadPlan()
+    if (open) {
+      setConfirmError(null) // clear any stale run error from a previous open
+      loadPlan()
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open])
 
+  // Trigger the run via onConfirm and stay open until it reports back:
+  // truthy/undefined ⇒ success (parent closes the dialog); false or a throw ⇒
+  // failure — surface the error inline and keep the dialog open for retry.
   const handleConfirm = useCallback(async () => {
     setConfirming(true)
-    await onConfirm?.()
-    setConfirming(false)
+    setConfirmError(null)
+    try {
+      const ok = await onConfirm?.()
+      if (ok === false) {
+        setConfirmError('Run failed to start — check the console, then retry or cancel.')
+      }
+    } catch (err) {
+      setConfirmError(err?.message ?? 'Run failed to start — retry or cancel.')
+    } finally {
+      setConfirming(false)
+    }
   }, [onConfirm])
 
   const toggleExpand = useCallback((key) => {
@@ -272,6 +296,14 @@ export default function PlanGateDialog({ open, spec, changedCellKey, onConfirm, 
           )}
         </div>
 
+        {/* Run-trigger error — dialog stays open so the user can retry/cancel */}
+        {confirmError && (
+          <div className="shrink-0 flex items-start gap-2 px-5 py-2.5 border-t border-rose-500/20 bg-rose-500/5 text-xs text-rose-600 dark:text-rose-400">
+            <AlertCircle size={13} className="shrink-0 mt-0.5" />
+            <span className="flex-1 min-w-0">{confirmError}</span>
+          </div>
+        )}
+
         {/* Footer actions */}
         <div className="shrink-0 flex items-center justify-end gap-2 px-5 py-3.5 border-t border-border bg-surface-2/20">
           <button
@@ -290,7 +322,7 @@ export default function PlanGateDialog({ open, spec, changedCellKey, onConfirm, 
               ? <Loader2 size={12} className="animate-spin" />
               : <Play size={12} />
             }
-            {confirming ? 'Starting…' : 'Run all'}
+            {confirming ? 'Starting…' : confirmError ? 'Retry' : 'Run all'}
           </button>
         </div>
       </div>

@@ -429,6 +429,49 @@ class InMemoryFlowStore:
         oldest["lease_expires_at"] = (now + timedelta(seconds=lease_seconds)) if lease_seconds else None
         return deepcopy(oldest)
 
+    async def extend_task_lease(
+        self,
+        task_run_id: str,
+        worker_id: str | None,
+        new_expiry: datetime,
+    ) -> bool:
+        """Extend the worker lease on a claimed (running) task_run.
+
+        Used by the worker heartbeat to keep a long-running task's lease
+        fresh so ``reap_expired_leases`` does not re-queue it mid-execution.
+
+        The extension is conditional: it only applies when the task_run is
+        still ``'running'`` AND its stored ``worker_id`` matches *worker_id*
+        (``None`` matches ``None``).  If the lease was stolen (reaped and
+        re-claimed by another worker), the worker_id no longer matches and
+        this is a no-op returning ``False`` — the original worker learns it
+        has lost the lease.
+
+        Parameters
+        ----------
+        task_run_id:
+            The claimed task_run's id.
+        worker_id:
+            The claiming worker's id, as passed to ``claim_ready_task_run``.
+        new_expiry:
+            The new ``lease_expires_at`` value (injected clock + lease).
+
+        Returns
+        -------
+        bool
+            ``True`` if the lease was extended; ``False`` if the task_run is
+            missing, not running, or owned by a different worker.
+        """
+        tr = self._task_runs.get(str(task_run_id))
+        if tr is None:
+            return False
+        if tr["state"] != "running":
+            return False
+        if tr.get("worker_id") != worker_id:
+            return False
+        tr["lease_expires_at"] = new_expiry
+        return True
+
     async def reap_expired_leases(self, now: datetime) -> int:
         """Re-queue task_runs whose worker lease has expired.
 
@@ -1052,6 +1095,37 @@ class PgFlowStore:
                 worker_id,
             )
         return _row_to_task_run(row) if row is not None else None
+
+    async def extend_task_lease(
+        self,
+        task_run_id: str,
+        worker_id: str | None,
+        new_expiry: datetime,
+    ) -> bool:
+        """Extend the worker lease on a claimed (running) task_run.
+
+        Conditional UPDATE: only applies when the row is still ``'running'``
+        AND its ``worker_id`` matches (``IS NOT DISTINCT FROM`` so ``None``
+        matches ``NULL``).  Returns ``True`` when a row was updated — i.e.
+        the calling worker still owns the lease.  Semantics are identical to
+        ``InMemoryFlowStore.extend_task_lease``.
+        """
+        from app.db import fetchrow as db_fetchrow  # noqa: PLC0415
+
+        row = await db_fetchrow(
+            """
+            UPDATE task_runs
+            SET lease_expires_at = $3
+            WHERE id = $1::uuid
+              AND state = 'running'
+              AND worker_id IS NOT DISTINCT FROM $2
+            RETURNING id
+            """,
+            task_run_id,
+            worker_id,
+            new_expiry,
+        )
+        return row is not None
 
     async def reap_expired_leases(self, now: datetime) -> int:
         """Re-queue task_runs whose worker lease has expired.

@@ -77,10 +77,13 @@ export function AuthProvider({ children }) {
 
   /**
    * Register a new account.
-   * @param {{ email: string, password: string, name: string }} fields
+   * Optional workspace fields (org_name, project_name, demo_project) are
+   * passed straight through to POST /auth/register so the backend creates
+   * the user's first org/project (and the seeded Demo project) atomically.
+   * @param {{ email: string, password: string, name: string, org_name?: string, project_name?: string, demo_project?: boolean }} fields
    */
-  async function register({ email, password, name }) {
-    const data = await api.register({ email, password, name })
+  async function register({ email, password, name, org_name, project_name, demo_project }) {
+    const data = await api.register({ email, password, name, org_name, project_name, demo_project })
     api.setAccessToken(data.access_token)
     setUser(data.user)
   }

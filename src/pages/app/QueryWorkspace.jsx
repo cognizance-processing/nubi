@@ -25,9 +25,13 @@
  *   onQueryChange {fn}           — called with updated query object (primary cell)
  *   onSaved       {fn}           — called after a successful save
  *   isNew         {boolean}      — true when editing an unsaved ad-hoc query
+ *   toolbarExtra  {ReactNode}    — optional cluster appended to the toolbar
+ *                                  (QueriesPage passes the Editor/Rollups view
+ *                                  toggle + Queries/Chat panel buttons)
  */
 
 import { useState, useCallback, useRef, useEffect } from 'react'
+import { createPortal } from 'react-dom'
 import { Link } from 'react-router-dom'
 import {
   Play,
@@ -1060,8 +1064,30 @@ function ScratchPythonCell({ cell, cellNumber, index, total, onRemove, onMoveUp,
 // QueryWorkspace
 // ---------------------------------------------------------------------------
 
-export default function QueryWorkspace({ query, onQueryChange, onSaved, isNew }) {
+// ---------------------------------------------------------------------------
+// WorkspaceToolbar — renders the toolbar into the AppShell topbar slot when
+// available (single-top-bar pattern, like the dashboard editor's portaled
+// toolbar); falls back to an inline bar when no slot exists.
+// ---------------------------------------------------------------------------
+
+function WorkspaceToolbar({ slot, children }) {
+  if (slot) {
+    return createPortal(
+      <div className="flex items-center gap-1.5 w-full min-w-0">{children}</div>,
+      slot
+    )
+  }
+  return (
+    <div className="shrink-0 flex items-center gap-1.5 px-3 py-2 border-b border-border bg-surface-2/60 flex-wrap gap-y-2 min-h-[48px]">
+      {children}
+    </div>
+  )
+}
+
+export default function QueryWorkspace({ query, onQueryChange, onSaved, isNew, toolbarExtra = null }) {
   const canWrite = useCanWrite()
+  // AppShell topbar slot — the toolbar portals into the single top bar.
+  const { topbarSlot } = useUi()
   // ── PRIMARY cell: SQL / params state (the query of record) ──────────────
   const [sql, setSql] = useState(query?.sql ?? '')
   const [params, setParams] = useState(() => query?.params ?? [])
@@ -1445,8 +1471,8 @@ export default function QueryWorkspace({ query, onQueryChange, onSaved, isNew })
   return (
     <div className="flex flex-col h-full overflow-hidden relative">
 
-      {/* ── Top toolbar ──────────────────────────────────────────────────── */}
-      <div className="shrink-0 flex items-center gap-1.5 px-3 py-2 border-b border-border bg-surface-2/60 flex-wrap gap-y-2 min-h-[48px]">
+      {/* ── Top toolbar — portaled into the AppShell top bar when available ── */}
+      <WorkspaceToolbar slot={topbarSlot}>
         <div className="flex items-center gap-2 min-w-0 flex-1">
           <span className="text-sm font-semibold font-display text-fg truncate">
             {query?.name ?? (isNew ? 'New query' : 'Ad-hoc query')}
@@ -1553,7 +1579,10 @@ export default function QueryWorkspace({ query, onQueryChange, onSaved, isNew })
           <span>{running ? 'Running…' : 'Run'}</span>
           <kbd className="hidden sm:inline text-[9px] opacity-50 font-mono ml-0.5">⌘↵</kbd>
         </button>
-      </div>
+
+        {/* Page-level extras (view toggle + side-panel buttons from QueriesPage) */}
+        {toolbarExtra}
+      </WorkspaceToolbar>
 
       {/* ── Scrollable notebook body ─────────────────────────────────────── */}
       <div ref={notebookBodyRef} className="flex-1 min-h-0 overflow-y-auto overflow-x-hidden">

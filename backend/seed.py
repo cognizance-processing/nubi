@@ -1,39 +1,29 @@
-"""Seed the superuser, and optionally the comprehensive demo workspace.
+"""Seed the superuser, and optionally the "Demo" project with the demo bundle.
 
 Mirrors the /auth/register flow: argon2id password hash + a personal org with
-owner membership, so the seeded user can use the editor/boards immediately.
+owner membership + an EMPTY "Default" project, so the seeded user can use the
+editor/boards immediately.
 
-With ``--demo`` it ALSO materialises the full demo workspace for that user — one
-read-only DuckDB connector + the demo queries + all 10 dashboards — from the
-declarative fixtures in ``seed_data/demo/`` (see ``app/demo_bundle.py``).  New
-projects get only the small ``starter`` subset of those same fixtures, seeded by
-``app/sample.py`` on signup.
+With ``--demo`` it ALSO creates the org's deletable "Demo" project (identified
+by ``slug == 'demo'`` — see ``app/onboarding.py``) and seeds the demo bundle
+into it via the same shared helper used by POST /orgs/{org_id}/demo-project
+and the ``demo_project`` register flag. Nothing is ever seeded into the
+default project; demo content lives only in the Demo project.
 
 Usage:
     cd backend && DATABASE_URL=postgresql://... python seed.py           # superuser only
-    cd backend && DATABASE_URL=postgresql://... python seed.py --demo    # + full demo
+    cd backend && DATABASE_URL=postgresql://... python seed.py --demo    # + Demo project
 """
 
 from __future__ import annotations
 
 import asyncio
-import json
 import sys
 import uuid
-from typing import Any
 
 from app.auth.passwords import hash_password
 from app.config import get_settings
 from app.db import close_db, execute, fetchrow, init_db
-from app.demo_bundle import (
-    datastore_config,
-    export_demo_to_s3,
-    load_boards,
-    load_queries,
-    resolve_placeholders,
-    s3_datastore_config,
-    sample_db_path,
-)
 from app.routes.auth import _create_personal_org
 
 # Superuser credentials come from the environment (SUPERUSER_* in the root .env),
@@ -42,8 +32,6 @@ _s = get_settings()
 TEST_EMAIL = _s.SUPERUSER_EMAIL
 TEST_PASSWORD = _s.SUPERUSER_PASSWORD
 TEST_NAME = _s.SUPERUSER_NAME
-
-DEMO_DS = "demo:datastore:duckdb"
 
 
 async def _ensure_superuser() -> str:
@@ -61,41 +49,8 @@ async def _ensure_superuser() -> str:
     return user_id
 
 
-# ── Idempotent upsert keyed by config.seed_id ─────────────────────────────────
-
-async def _upsert(table: str, seed_id: str, org_id: str, created_by: str,
-                  name: str, config: dict[str, Any]) -> tuple[dict[str, Any], bool]:
-    existing = await fetchrow(
-        f"SELECT * FROM {table} WHERE org_id = $1::uuid AND config->>'seed_id' = $2 LIMIT 1",
-        org_id, seed_id,
-    )
-    if existing is not None:
-        # Refresh the config so re-running the seed MIGRATES a pre-existing row
-        # to the current shape — e.g. a demo datastore seeded before the
-        # connector_type/S3 fixes (stale 'type' key or local-file path, which
-        # fails the Connectors-page filter) → the current S3-backed config.
-        # These are seed-owned demo resources, so refreshing is the intent.
-        cfg = json.dumps({**config, "seed_id": seed_id})
-        updated = await fetchrow(
-            f"UPDATE {table} SET config = $1::jsonb, name = $2 "
-            f"WHERE id = $3::uuid RETURNING *",
-            cfg, name, existing["id"],
-        )
-        return dict(updated or existing), False
-    from app.repos import projects as projects_repo
-    project_id = await projects_repo.get_default_project_id(org_id)
-    cfg = json.dumps({**config, "seed_id": seed_id})
-    row = await fetchrow(
-        f"INSERT INTO {table} (org_id, created_by, name, config, project_id) "
-        f"VALUES ($1::uuid, $2::uuid, $3, $4::jsonb, $5::uuid) RETURNING *",
-        org_id, created_by, name, cfg, project_id,
-    )
-    assert row is not None
-    return dict(row), True
-
-
-async def _seed_demo(user_id: str) -> None:
-    """Materialise the full demo workspace (all fixtures) for the superuser org."""
+async def _seed_demo_project(user_id: str) -> None:
+    """Create the superuser org's "Demo" project + demo bundle (idempotent)."""
     org_row = await fetchrow(
         "SELECT org_id FROM org_members WHERE user_id = $1::uuid ORDER BY org_id LIMIT 1",
         user_id,
@@ -103,54 +58,17 @@ async def _seed_demo(user_id: str) -> None:
     assert org_row is not None, "Superuser has no org membership."
     org_id = str(org_row["org_id"])
 
-    # 1. Datasource — one DuckDB connector. When S3 (MinIO/AWS) is configured,
-    #    use the SAME object-store-backed demo as new projects: export the star
-    #    schema to s3://<bucket>/projects/<org_id>/demo/*.parquet and register an
-    #    S3-backed connector. Falls back to the bundled local file otherwise so
-    #    offline `seed.py --demo` still works.
-    import os  # noqa: PLC0415
+    from app.onboarding import ensure_demo_project  # noqa: PLC0415
 
-    _s3 = bool(os.getenv("S3_ACCESS_KEY") or os.getenv("AWS_ACCESS_KEY_ID"))
-    if _s3:
-        try:
-            export_demo_to_s3(org_id)
-            ds_config = s3_datastore_config(org_id)
-            _src = f"s3://.../projects/{org_id}/demo/"
-        except Exception as exc:  # noqa: BLE001 — never fail seeding over S3
-            print(f"  [warn] S3 demo export failed ({exc}); using local file")
-            ds_config = datastore_config(sample_db_path())
-            _src = sample_db_path()
+    result = await ensure_demo_project(org_id, user_id)
+    project = result["project"]
+    status = "CREATED" if result["created"] else "exists "
+    seed = result["seed"] or {}
+    if "skipped" in seed:
+        seed_note = f"bundle skipped: {seed['skipped']}"
     else:
-        ds_config = datastore_config(sample_db_path())
-        _src = sample_db_path()
-    ds, ds_created = await _upsert("datastores", DEMO_DS, org_id, user_id, "Demo Data",
-                                  ds_config)
-    datastore_id = str(ds["id"])
-
-    # 2. Queries (all of them) — build the @placeholder → uuid map.
-    queries = load_queries()
-    idmap: dict[str, str] = {}
-    q_created = 0
-    for key, q in queries.items():
-        row, created = await _upsert(
-            "queries", f"demo:query:{key}", org_id, user_id, q["name"],
-            {"sql": q["sql"], "datastore_id": datastore_id, "params": q["params"]},
-        )
-        idmap[f"@{key}"] = str(row["id"])
-        q_created += int(created)
-
-    # 3. Boards — resolve @placeholders to real query UUIDs.
-    boards = load_boards()
-    b_created = 0
-    for b in boards:
-        spec = resolve_placeholders(b["spec"], idmap)
-        _row, created = await _upsert("boards", b["seed_id"], org_id, user_id, b["name"],
-                                     {"spec": spec})
-        b_created += int(created)
-
-    print(f"  demo datastore [{'CREATED' if ds_created else 'exists '}]  Demo Data ({_src})")
-    print(f"  demo queries   {q_created} created / {len(queries)} total")
-    print(f"  demo boards    {b_created} created / {len(boards)} total")
+        seed_note = f"bundle created: {seed.get('created', [])!r}" if seed else "bundle: best-effort failure"
+    print(f"  demo project   [{status}]  {project.get('name')} ({project.get('id')}) — {seed_note}")
 
 
 async def main() -> None:
@@ -160,7 +78,7 @@ async def main() -> None:
         user_id = await _ensure_superuser()
         print(f"Superuser: {TEST_EMAIL} / {TEST_PASSWORD}")
         if demo:
-            await _seed_demo(user_id)
+            await _seed_demo_project(user_id)
     finally:
         await close_db()
 
