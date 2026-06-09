@@ -1,4 +1,4 @@
-"""Tests for materialized multi-source BLENDS + Cloud Run scheduler readiness.
+"""Tests for materialized multi-source BLENDS + stateless-deploy scheduler readiness.
 
 Coverage
 --------

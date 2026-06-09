@@ -2057,7 +2057,8 @@ async def flow_tick(
     This function acts as the *scheduler* — it does NOT execute tasks.  Task
     execution is handled by the worker pool (``run_worker_pool``).  Keeping the
     two concerns separate allows the scheduler and worker(s) to run
-    independently (e.g. scheduler on Cloud Run, workers on separate instances).
+    independently (e.g. an external scheduler ticking the app, workers on
+    separate machines).
 
     For backward compatibility the returned dict still contains ``tasks_run``
     (always 0) so existing callers that only check ``materialised`` keep working.
@@ -2086,7 +2087,7 @@ async def flow_tick(
     materialised = 0
 
     # ── (a) Materialise scheduled flows that are due ──────────────────────────
-    # Multi-instance safety (Cloud Run): for each due flow we ATOMICALLY claim
+    # Multi-instance safety (N app instances): for each due flow we ATOMICALLY claim
     # its schedule slot via ``store.claim_due_scheduled_flow`` (an
     # ``UPDATE … WHERE next_run_at <= now RETURNING *`` that advances next_run_at
     # in the same statement).  Only the instance that wins the row materialises

@@ -12,8 +12,9 @@ declares how the combined result is persisted to object storage:
         "base_uri": "<override>",                    # optional base-uri override
     }
 
-Cloud Run is stateless, so materialized/incremental TARGETS live in OBJECT
-STORAGE (``s3://`` Parquet via the httpfs path) or a local fallback directory.
+Production containers are stateless/ephemeral, so materialized/incremental
+TARGETS live in OBJECT STORAGE (``s3://`` Parquet via the httpfs path — any
+S3-compatible store, e.g. Cloudflare R2) or a local fallback directory.
 The per-(flow, model, env) WATERMARK lives in Postgres (``flow_watermarks``).
 
 Public API

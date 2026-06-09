@@ -115,11 +115,12 @@ class Settings(BaseSettings):
     # so a single environment variable can turn on all scheduled automation.
     FLOWS_SCHEDULER_ENABLED: bool | None = None
 
-    # ── Flows tick (Cloud Run / Cloud Scheduler) ─────────────────────────────
-    # Shared secret for the internal POST /flows/tick endpoint.  Google Cloud
-    # Scheduler calls /flows/tick on cron with the header
-    # ``X-Nubi-Tick-Secret: <FLOWS_TICK_SECRET>`` so the engine advances without
-    # an always-on worker (Cloud Run throttles CPU off-request + scales to zero).
+    # ── Flows tick (external scheduler / cron) ───────────────────────────────
+    # Shared secret for the internal POST /flows/tick endpoint.  An external
+    # scheduler (e.g. a cron machine or scheduled job) calls /flows/tick with
+    # the header ``X-Nubi-Tick-Secret: <FLOWS_TICK_SECRET>`` so the engine
+    # advances without an always-on worker — needed on platforms that throttle
+    # CPU outside requests or scale to zero.
     # When empty the /flows/tick endpoint is disabled (returns 503).  This is
     # NOT a user JWT — it gates the internal scheduler webhook only.
     FLOWS_TICK_SECRET: str = ""
@@ -127,8 +128,8 @@ class Settings(BaseSettings):
     # ── Flows materialization target (incremental / full models) ─────────────
     # Base URI under which materialized flow models are written, env-namespaced
     # as ``<base>/<env>/<target>.parquet``.  Use an object-storage URI in prod
-    # (e.g. ``s3://my-bucket/flows``) so targets survive Cloud Run's stateless
-    # filesystem.  When empty, incremental.py falls back to a local path
+    # (e.g. ``s3://my-bucket/flows`` on any S3-compatible store such as
+    # Cloudflare R2) so targets survive stateless/ephemeral containers.  When empty, incremental.py falls back to a local path
     # (``<backend>/seed_data/materialized``) — fine for local dev only.
     FLOWS_MATERIALIZE_BASE_URI: str = ""
 

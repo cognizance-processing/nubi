@@ -399,6 +399,17 @@ def create_app() -> FastAPI:
 
         return {"status": "ok", "db": db_status}
 
+    # ── Embed bundles (combined image) ────────────────────────────────────────
+    # dist-embed/ holds the <nubi-dashboard>/<nubi-widgets> drop-in scripts
+    # (vite.embed.config.js / vite.widgets.config.js). Mounted at /embed/* so
+    # the documented `https://<host>/embed/nubi-dashboard.js` URLs are served
+    # same-origin. Inert when the directory is absent (tests/dev).
+    embed_dir = os.getenv("EMBED_STATIC_DIR") or str(
+        Path(__file__).resolve().parents[1] / "dist-embed"
+    )
+    if os.path.isdir(embed_dir):
+        application.mount("/embed", StaticFiles(directory=embed_dir), name="embed")
+
     # ── Static SPA (combined image) ───────────────────────────────────────────
     # When a built frontend is present (STATIC_DIR or <repo>/dist), serve it on
     # the same origin as the API. Inert when absent — so tests/dev are unaffected.
@@ -417,7 +428,9 @@ def create_app() -> FastAPI:
             API and health routes are registered earlier and take precedence; this
             only catches everything else.
             """
-            if full_path.startswith(("api/", "health", "docs", "redoc", "openapi")):
+            if full_path.startswith(
+                ("api/", "health", "docs", "redoc", "openapi", "embed/")
+            ):
                 raise HTTPException(status_code=404, detail="Not found")
             candidate = os.path.join(static_dir, full_path)
             if full_path and os.path.isfile(candidate):

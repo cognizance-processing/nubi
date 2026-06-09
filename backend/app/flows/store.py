@@ -791,7 +791,7 @@ class PgFlowStore:
         """Atomically claim a due scheduled flow's slot (multi-instance safe).
 
         Uses a single ``UPDATE … WHERE id = $1 AND (next_run_at IS NULL OR
-        next_run_at <= $2) RETURNING *``.  Only ONE concurrent Cloud Run
+        next_run_at <= $2) RETURNING *``.  Only ONE concurrent app
         instance wins the row (the others see ``next_run_at`` already advanced
         and get no row back), so a due flow is materialized exactly once per
         schedule slot even when N instances tick simultaneously.  Task draining

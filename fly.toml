@@ -1,0 +1,83 @@
+# fly.toml — Nubi production app on Fly.io.
+#
+# ONE combined image (root Dockerfile: FastAPI + built SPA), TWO processes:
+#   app    — uvicorn serving /api/v1 + the embedded SPA (same origin)
+#   worker — flows worker (scheduler loop + worker pool, backend/worker.py)
+#
+# State lives elsewhere: Postgres on Neon (DATABASE_URL secret), object
+# storage on Cloudflare R2 (S3-compatible; FLOWS_MATERIALIZE_BASE_URI +
+# S3_* secrets). Machines are stateless and disposable.
+#
+# Deploy: scripts/deploy-fly.sh (first run + secrets) or CI
+# (.github/workflows/deploy-main.yml). Docs: docs/cloud.md.
+
+app = "nubi"
+primary_region = "jnb" # Johannesburg
+
+[build]
+  # Nubi Cloud runs the EE image (includes backend/app/ee/: billing, licensing,
+  # SSO — activated at runtime by the NUBI_LICENSE_KEY secret). OSS self-hosters
+  # should switch both lines to "Dockerfile" / ".dockerignore".
+  dockerfile = "Dockerfile.ee"
+  ignorefile = "Dockerfile.ee.dockerignore"
+
+[deploy]
+  # Forward-only migration runner; runs in a one-off release machine before
+  # the new image is rolled out. Needs the DATABASE_URL secret. --ee also
+  # applies database/migrations/ee/ (billing/wallet/fx tables) AFTER core;
+  # drop the flag for OSS deploys.
+  release_command = "python /app/database/migrate.py --ee"
+
+[processes]
+  # Working directory is /app/backend (see Dockerfile), so these are exactly
+  # the local dev commands.
+  app = "uvicorn main:app --host 0.0.0.0 --port 8000 --workers 2"
+  worker = "python worker.py"
+
+[env]
+  ENV = "production"
+  STATIC_DIR = "/app/dist"
+  # Worker tuning (read by backend/worker.py in the worker process).
+  FLOWS_WORKER_CONCURRENCY = "4"
+  FLOWS_WORKER_INTERVAL_S = "5"
+  FLOWS_WORKER_LEASE_S = "300"
+
+[http_service]
+  processes = ["app"]
+  internal_port = 8000
+  force_https = true
+  # Fly's proxy stops idle app machines and wakes them on demand, but we keep
+  # at least one warm: embeds + SSE streams need fast first byte.
+  auto_stop_machines = "stop"
+  auto_start_machines = true
+  min_machines_running = 1
+
+  [http_service.concurrency]
+    type = "requests"
+    soft_limit = 200
+    hard_limit = 250
+
+[checks]
+  [checks.health]
+    processes = ["app"]
+    type = "http"
+    port = 8000
+    path = "/health"
+    method = "GET"
+    interval = "15s"
+    timeout = "5s"
+    grace_period = "30s"
+
+# The worker process has no [http_service]: it is never auto-stopped by the
+# proxy and runs always-on. Scale with `fly scale count worker=N`; for
+# queue-based autoscaling, run fly-autoscaler against pending task_runs depth.
+
+[[vm]]
+  processes = ["app"]
+  size = "shared-cpu-1x"
+  memory = "1gb"
+
+[[vm]]
+  processes = ["worker"]
+  size = "shared-cpu-1x"
+  memory = "1gb"

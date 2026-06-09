@@ -1,24 +1,18 @@
-# .dockerignore — files excluded from the Docker build context.
+# Dockerfile.ee.dockerignore — build-context ignore for the EE image.
 #
-# OPEN-CORE: The ee/ trees are deliberately excluded from the OSS community
-# image.  If you are building the EE image, remove or override these entries.
+# BuildKit pairs this file with Dockerfile.ee automatically
+# (docker build -f Dockerfile.ee .); fly.toml also sets it via build.ignorefile.
+#
+# IDENTICAL to .dockerignore EXCEPT backend/app/ee/ is NOT excluded — the EE
+# image ships the commercial backend (billing, licensing, SSO). Keep the two
+# files in sync apart from that one entry.
 
-# ── EE trees (excluded from OSS / community image) ───────────────────────────
-# NOTE: src/ee/ is deliberately NOT excluded — the SPA entry (src/App.jsx)
-# statically imports the src/ee/registry.js seam, so the combined-image
-# frontend build (root Dockerfile) fails without it. EE frontend features are
-# feature-gated at runtime and inert without the backend EE layer, which
-# remains excluded below.
-backend/app/ee/
-
-# ── Node / frontend build artefacts (backend image) ──────────────────────────
+# ── Node / frontend build artefacts ──────────────────────────────────────────
 node_modules/
 dist/
 dist-embed/
 
 # ── Generated seed data (rebuilt at runtime by demo_bundle/seed_data_duckdb) ──
-# Only the declarative sources ship in the image: seed_data/demo/*.json and
-# seed_data/generators/. The artefacts below are derived and large (300M+).
 backend/seed_data/parquet/
 backend/seed_data/rollups/
 backend/seed_data/blends/
@@ -58,8 +52,7 @@ test-results/
 
 # ── Docs / media ──────────────────────────────────────────────────────────────
 # docs/ must stay IN the context: src/docs/registry.js bundles /docs/*.md into
-# the SPA at build time (root Dockerfile, combined image). Root-level *.md
-# (README, ROADMAP, …) stay excluded — the *.md glob does not cross "/".
+# the SPA at build time. Root-level *.md stay excluded (glob does not cross "/").
 *.md
 !requirements.txt
 
@@ -70,6 +63,4 @@ cli/
 legacy/
 mcp/
 sdk/
-# NOTE: embed/ (the <nubi-dashboard>/<nubi-widgets> custom-element sources) is
-# deliberately IN the context — the combined image builds dist-embed from it
-# (vite.embed.config.js / vite.widgets.config.js) and serves it at /embed/*.
+# embed/ stays IN the context — dist-embed is built in-image and served at /embed/*.

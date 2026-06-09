@@ -14,7 +14,8 @@ implement against them exactly. Everything else is guidance.
 ## 0. Context recap (what already exists — DO NOT remove)
 
 - `FlowSpec` (`backend/app/flows/spec.py`) with `env: str = "prod"` field, `tasks`, `params`,
-  `runtime_config`, `schedule` driven by Google Cloud Scheduler (no always-on worker).
+  `runtime_config`, `schedule` driven by an external scheduler ticking `POST /flows/tick`
+  (no always-on worker).
 - A `materialize` task kind (`backend/app/flows/materialize.py` + `registry._handle_materialize`)
   that blends N upstream `query` results in DuckDB via `combine_sql`, writes to a DuckDB file,
   preserves `rls_keys`, and registers a runtime query. Required config key: `combine_sql`.
@@ -23,12 +24,13 @@ implement against them exactly. Everything else is guidance.
 - Object-storage-aware DuckDB connector: `backend/app/connectors/duckdb_storage.py`
   (`DuckDBStorageConnector.from_config` / `.write_result(sql, dest_uri)` → Parquet,
   `.read_parquet(uri)`), with s3://-style httpfs + secret bootstrap. This is the write/read
-  path for materialized targets in Cloud Run (stateless containers).
+  path for materialized targets on stateless/ephemeral containers.
 - Flow-code SDK at `nubi.flows` (`_builder.py`, `_combinators.py`, `_nodes.py`, `_compile.py`,
   `_run.py`) + `POST /flows/codegen` + `POST /flows/compile` + `src/flows/CodePanel.jsx`.
 
-Cloud Run constraint: containers are stateless. Materialized/incremental TARGETS live in
-OBJECT STORAGE (s3:// DuckDB/Parquet via `duckdb_storage`). State/watermarks live in Postgres.
+Deployment constraint: production containers are stateless/ephemeral. Materialized/incremental
+TARGETS live in OBJECT STORAGE (s3:// DuckDB/Parquet via `duckdb_storage` — any S3-compatible
+store, e.g. Cloudflare R2). State/watermarks live in Postgres.
 
 ---
 
@@ -375,9 +377,9 @@ to validate the `materialized` block). No route code change required beyond what
   consolidation deferred. Both must emit `from nubi.flows import …`. Risk: future drift.
 - `time_column` is assumed comparable/sortable (temporal). Non-temporal incremental keys are not
   supported in v1 (document in user-facing flows docs).
-- Object-store writes require `httpfs` + creds at runtime (Cloud Run). The s3 secret/creds resolution
-  reuses `DuckDBStorageConnector.from_config` precedence (config keys → env vars). Ensure the worker
-  service account / env carries `AWS_*` or the datastore config provides them.
+- Object-store writes require `httpfs` + creds at runtime (production containers). The s3 secret/creds
+  resolution reuses `DuckDBStorageConnector.from_config` precedence (config keys → env vars). Ensure
+  the worker process env carries `AWS_*` (R2/S3-compatible creds) or the datastore config provides them.
 - `unique_key` upsert in v1 is delete-then-insert within a single DuckDB connection — not
   transactional across the object store. Acceptable for scheduled (non-concurrent) materialize runs.
 - No SQLMesh plan/apply/view-diff. "Promote" is run-with-env=prod (+ optional watermark copy).

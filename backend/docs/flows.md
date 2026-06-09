@@ -5,8 +5,8 @@ tasks (`query`, `python`, `agent`, `materialize`, `noop`) on a manual trigger
 (`POST /flows/{id}/run`) or on a cron schedule. This doc covers two additions:
 
 1. **Materialized multi-source blends** — the cost-wedge feature.
-2. **Cloud Run scheduler readiness** — running the engine without an always-on
-   worker, plus multi-instance safety.
+2. **Stateless-deploy scheduler readiness** — running the engine without an
+   always-on worker, plus multi-instance safety.
 
 ---
 
@@ -147,20 +147,21 @@ from the materialize task — e.g. `rls_key_dropped`).
 
 ---
 
-## Part B — Cloud Run readiness
+## Part B — Stateless-deploy scheduler readiness
 
 ### Two deployment modes (both call the same `flow_tick`)
 
-**Mode 1 — in-process worker** (local / VM / Cloud Run `min-instances ≥ 1`):
+**Mode 1 — in-process worker** (local / VM / always-on Fly machine):
 `start_flow_worker` runs a background asyncio loop that calls `flow_tick` every
 `FLOWS_WORKER_INTERVAL_S` seconds. Gated by `FLOWS_SCHEDULER_ENABLED` (which
 inherits from the legacy `FLOWS_WORKER_ENABLED` / `JOBS_SCHEDULER_ENABLED`
 flags). This is the simplest mode but requires an always-running process.
 
-**Mode 2 — `POST /flows/tick` (Cloud Run + Cloud Scheduler):** Cloud Run
-throttles CPU off-request and scales to zero, so an always-on background loop is
-unreliable. Instead, **Google Cloud Scheduler** POSTs `/flows/tick` on cron and
-each call runs exactly one `await flow_tick(store, now)`.
+**Mode 2 — `POST /flows/tick` (external tick):** on platforms that throttle
+CPU outside requests or scale to zero, an always-on background loop is
+unreliable. Instead, an **external scheduler** (e.g. a cron machine or Fly.io
+scheduled machine) POSTs `/flows/tick` on cron and each call runs exactly one
+`await flow_tick(store, now)`.
 
 `/flows/tick` is **internal** — authed via a shared-secret header, NOT a user
 JWT:
@@ -174,14 +175,15 @@ X-Nubi-Tick-Secret: <FLOWS_TICK_SECRET>
 - Wrong / missing header → `401 unauthorized`.
 - Correct header → `200 {"materialised": N, "tasks_run": M}`.
 
-Set `FLOWS_TICK_SECRET` in the Cloud Run env and configure a Cloud Scheduler job
-that targets `https://<service>/api/v1/flows/tick` with that header on a `* * * *`
-(or coarser) cron. Leave `FLOWS_SCHEDULER_ENABLED=false` so no background loop
+Set `FLOWS_TICK_SECRET` in the app environment and configure an external cron
+(e.g. a Fly.io scheduled machine or any cron job) that POSTs
+`https://<service>/api/v1/flows/tick` with that header on a `* * * *` (or
+coarser) schedule. Leave `FLOWS_SCHEDULER_ENABLED=false` so no background loop
 also runs.
 
 ### Multi-instance-safe materialization (atomic claim)
 
-When N concurrent Cloud Run instances tick simultaneously, a due scheduled flow
+When N concurrent app instances tick simultaneously, a due scheduled flow
 must materialize **exactly once** per schedule slot. `flow_tick` claims each due
 flow atomically before materializing:
 
