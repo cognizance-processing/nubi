@@ -343,9 +343,12 @@ export default function DataExplorerPage() {
         const data = await get('/connectors')
         if (cancelled) return
         const list = Array.isArray(data) ? data : (data?.connectors ?? [])
-        setConnectors([DEMO_ENTRY, ...list])
+        // The backend already injects the virtual "Demo data" connector into
+        // this list, so don't prepend our own — that produced a duplicate demo
+        // entry. Fall back to the local demo entry only if the list is empty.
+        setConnectors(list.length ? list : [DEMO_ENTRY])
       } catch {
-        // Keep demo entry
+        // Keep the local demo entry as a fallback.
       }
     })()
     return () => { cancelled = true }
