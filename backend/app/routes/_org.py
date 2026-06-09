@@ -175,15 +175,21 @@ async def resolve_project_id_for_create(org_id: str, request: Request) -> str | 
 
 
 async def resolve_project_filter(org_id: str, request: Request) -> str | None:
-    """Resolve an optional project filter for list endpoints.
+    """Resolve the project filter for list endpoints.
 
-    Returns the requested project id when ``X-Project-Id`` / ``?project_id=`` is
-    present *and* valid for *org_id*; otherwise ``None`` (meaning: don't filter,
-    return all the org's resources — existing behaviour preserved).
+    Mirrors :func:`resolve_project_id_for_create`: honour ``X-Project-Id`` /
+    ``?project_id=`` when present and valid for *org_id*, else fall back to the
+    org's default project. Lists are therefore scoped to one project (the active
+    one, or the default) instead of returning *every* project's resources —
+    otherwise the onboarding demo bundle, which lives in the default project,
+    leaks into every other project's queries/dashboards/connectors lists.
+
+    Returns ``None`` only when no default project can be resolved (e.g. test
+    doubles without a projects table), in which case the list is unfiltered.
     """
     from app.repos import projects as projects_repo  # noqa: PLC0415
 
     requested = _requested_project_id(request)
     if requested and await projects_repo.project_belongs_to_org(requested, org_id):
         return requested
-    return None
+    return await projects_repo.get_default_project_id(org_id)

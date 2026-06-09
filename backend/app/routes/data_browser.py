@@ -55,23 +55,17 @@ _demo_connector: DuckDBConnector | None = None
 
 
 def _get_demo_connector() -> DuckDBConnector:
-    """Return (or create) the module-level demo DuckDB connector."""
+    """Return (or create) the module-level demo DuckDB connector.
+
+    Same connector as the query route: the full 17-table demo dataset plus the
+    legacy ``demo`` table, so the Data browser lists every demo table (not just
+    the old single placeholder).
+    """
     global _demo_connector
     if _demo_connector is None:
-        conn = DuckDBConnector()
-        demo_table = pa.table(
-            {
-                "id": pa.array([1, 2, 3, 4, 5], type=pa.int32()),
-                "name": pa.array(
-                    ["alpha", "beta", "gamma", "delta", "epsilon"],
-                    type=pa.string(),
-                ),
-                "value": pa.array([1.1, 2.2, 3.3, 4.4, 5.5], type=pa.float64()),
-                "active": pa.array([True, False, True, False, True], type=pa.bool_()),
-            }
-        )
-        conn.register({"demo": demo_table})
-        _demo_connector = conn
+        from app.routes.query import _build_demo_connector  # noqa: PLC0415
+
+        _demo_connector = _build_demo_connector()
     return _demo_connector
 
 

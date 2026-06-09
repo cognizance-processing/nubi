@@ -146,28 +146,37 @@ _demo_connector: DuckDBConnector | None = None
 def _get_demo_connector() -> DuckDBConnector:
     """Return (or create) the module-level demo DuckDB connector.
 
-    Seeds a small ``demo`` table on first call.  Subsequent calls return the
-    same connector instance (the table is already registered).
+    Registers the full demo dataset (the 17 tables behind the demo dashboards/
+    queries — retail sales, SaaS metrics, web analytics, finance ops) plus the
+    tiny legacy ``demo`` table, so demo queries run and the Data browser lists
+    every table even on the built-in demo connector. Cached after first call.
     """
     global _demo_connector
     if _demo_connector is None:
-        conn = DuckDBConnector()  # fresh in-memory DB
-
-        demo_table = pa.table(
-            {
-                "id": pa.array([1, 2, 3, 4, 5], type=pa.int32()),
-                "name": pa.array(
-                    ["alpha", "beta", "gamma", "delta", "epsilon"],
-                    type=pa.string(),
-                ),
-                "value": pa.array([1.1, 2.2, 3.3, 4.4, 5.5], type=pa.float64()),
-                "active": pa.array([True, False, True, False, True], type=pa.bool_()),
-            }
-        )
-        conn.register({"demo": demo_table})
-        _demo_connector = conn
-
+        _demo_connector = _build_demo_connector()
     return _demo_connector
+
+
+def _build_demo_connector() -> DuckDBConnector:
+    """Build a DuckDBConnector with all demo tables registered."""
+    from seed_data.generators import build_all_flat  # noqa: PLC0415
+
+    conn = DuckDBConnector()  # fresh in-memory DB
+    tables = build_all_flat()  # the 17 demo-dataset tables
+    # Legacy 5-row ``demo`` table — kept for older fixtures/queries.
+    tables["demo"] = pa.table(
+        {
+            "id": pa.array([1, 2, 3, 4, 5], type=pa.int32()),
+            "name": pa.array(
+                ["alpha", "beta", "gamma", "delta", "epsilon"],
+                type=pa.string(),
+            ),
+            "value": pa.array([1.1, 2.2, 3.3, 4.4, 5.5], type=pa.float64()),
+            "active": pa.array([True, False, True, False, True], type=pa.bool_()),
+        }
+    )
+    conn.register(tables)
+    return conn
 
 
 # ---------------------------------------------------------------------------

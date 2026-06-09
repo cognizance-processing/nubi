@@ -82,3 +82,13 @@ def build_dataset(name: str) -> "dict[str, pa.Table]":
 def build_all() -> "dict[str, dict[str, pa.Table]]":
     """Build all four datasets; returns ``{dataset: {table: pyarrow.Table}}``."""
     return {ds: build_dataset(ds) for ds in DATASET_TABLES}
+
+
+def build_all_flat() -> "dict[str, pa.Table]":
+    """Build all datasets flattened to ``{table: pyarrow.Table}``.
+
+    Table names are globally unique across the four datasets (see module
+    docstring), so flattening never collides. Convenient for registering the
+    full demo dataset into a single DuckDB connector.
+    """
+    return {table: tbl for ds in build_all().values() for table, tbl in ds.items()}
