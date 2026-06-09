@@ -19,9 +19,12 @@ TaskSpec
       use_remote_kernel — route Python cell to E2B/Modal in durable mode.
 FlowSpec
     The complete flow specification document (version, name, params, tasks,
-    env, runtime_config).
-    env             — execution environment tag: 'dev' | 'staging' | 'prod'.
+    runtime_config).
     runtime_config  — top-level runtime hints dict (not inside cells).
+    NOTE: the spec deliberately carries NO ``env`` field — the execution
+    environment is resolved at trigger time (explicit override → the flow's
+    project default environment).  A legacy ``env`` key in incoming spec
+    dicts is ignored (stripped by validation), never an error.
 
 validate_flow_spec(data) -> (FlowSpec | None, list[str])
     Parse a raw dict into a FlowSpec, collecting all validation issues.
@@ -325,14 +328,6 @@ class FlowSpec(BaseModel):
     tasks: list[TaskSpec] = Field(
         default_factory=list,
         description="Ordered list of tasks forming the DAG.",
-    )
-    env: str = Field(
-        default="prod",
-        description=(
-            "Execution environment tag (e.g. 'dev', 'staging', 'prod').  "
-            "Used by materialize tasks to stamp the DuckDB blend file path.  "
-            "A flow-run can override this at trigger time."
-        ),
     )
     runtime_config: dict[str, Any] = Field(
         default_factory=dict,

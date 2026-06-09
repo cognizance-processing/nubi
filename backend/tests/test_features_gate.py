@@ -367,7 +367,7 @@ class TestLicenseTier:
 
 
 # ---------------------------------------------------------------------------
-# Migration runner — open-core (ee/) ledger re-keying
+# Migration runner — open-core (ee/) discovery
 # ---------------------------------------------------------------------------
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -382,58 +382,11 @@ def _load_migrate_module():
     return module
 
 
-class TestMigrateLegacyEeRekeys:
-    """Billing migrations moved into ee/ must not re-apply on legacy ledgers.
+class TestMigrateEeDiscovery:
+    """EE billing migrations live in ee/, keyed ee/<file>, applied after core.
 
-    Already-deployed cloud databases recorded 0017/0018/0022/0027 under bare
-    file names; ``legacy_ee_rekeys`` maps those rows to the new ``ee/<file>``
-    keys so the runner re-keys instead of re-executing (re-running ee/0018
-    would transiently swap the subscriptions tier CHECK).
+    OSS self-host (no --ee) must never see them in the discovered set.
     """
-
-    def test_legacy_bare_key_satisfies_ee_key(self) -> None:
-        migrate = _load_migrate_module()
-
-        versions = ["0016_task_lease.sql", "ee/0017_billing.sql"]
-        applied = {"0016_task_lease.sql", "0017_billing.sql"}
-        assert migrate.legacy_ee_rekeys(versions, applied) == [
-            ("0017_billing.sql", "ee/0017_billing.sql")
-        ]
-
-    def test_all_four_moved_billing_migrations_rekey(self) -> None:
-        migrate = _load_migrate_module()
-
-        moved = [
-            "0017_billing.sql",
-            "0018_fx_rates.sql",
-            "0022_wallet.sql",
-            "0027_invoices.sql",
-        ]
-        versions = [f"ee/{name}" for name in moved]
-        applied = set(moved)
-        assert migrate.legacy_ee_rekeys(versions, applied) == [
-            (name, f"ee/{name}") for name in moved
-        ]
-
-    def test_already_rekeyed_ledger_is_left_alone(self) -> None:
-        migrate = _load_migrate_module()
-
-        versions = ["ee/0017_billing.sql"]
-        applied = {"ee/0017_billing.sql"}
-        assert migrate.legacy_ee_rekeys(versions, applied) == []
-
-    def test_fresh_database_has_no_rekeys(self) -> None:
-        migrate = _load_migrate_module()
-
-        versions = ["0001_extensions.sql", "ee/0017_billing.sql"]
-        assert migrate.legacy_ee_rekeys(versions, set()) == []
-
-    def test_core_versions_never_rekey(self) -> None:
-        migrate = _load_migrate_module()
-
-        versions = ["0016_task_lease.sql"]
-        applied = {"0016_task_lease.sql"}
-        assert migrate.legacy_ee_rekeys(versions, applied) == []
 
     def test_discovered_ee_migrations_are_prefixed_and_after_core(self) -> None:
         """The on-disk layout keys EE billing files as ee/<file>, after core."""

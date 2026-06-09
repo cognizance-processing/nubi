@@ -363,7 +363,6 @@ class TestEndToEndIncremental:
             spec = {
                 "version": 1,
                 "name": "incr_flow",
-                "env": "dev",
                 "tasks": [
                     {
                         "key": "pull",
@@ -399,7 +398,8 @@ class TestEndToEndIncremental:
             flow = await store.create_flow("o1", "u1", "incr_flow", spec)
             now = datetime.now(timezone.utc)
 
-            run1 = await materialize_flow_run(store, flow, {}, "manual", now)
+            # The env comes from the trigger-time override (specs carry no env).
+            run1 = await materialize_flow_run(store, flow, {}, "manual", now, env="dev")
             assert run1["env"] == "dev"
             final1 = await drain_flow_run(store, run1["id"], now)
             assert final1["state"] == "success", final1
@@ -408,7 +408,7 @@ class TestEndToEndIncremental:
             assert wm == "2024-01-02T00:00:00"
 
             # Second run reads the stored watermark; same rows → nothing new.
-            run2 = await materialize_flow_run(store, flow, {}, "manual", now)
+            run2 = await materialize_flow_run(store, flow, {}, "manual", now, env="dev")
             final2 = await drain_flow_run(store, run2["id"], now)
             assert final2["state"] == "success", final2
 
@@ -424,7 +424,7 @@ class TestEndToEndIncremental:
         from app.flows.runtime import materialize_flow_run
 
         store = InMemoryFlowStore()
-        spec = {"version": 1, "name": "f", "env": "dev", "tasks": [
+        spec = {"version": 1, "name": "f", "tasks": [
             {"key": "n", "kind": "noop", "needs": [], "config": {}}
         ]}
         flow = await store.create_flow("o1", "u1", "f", spec)

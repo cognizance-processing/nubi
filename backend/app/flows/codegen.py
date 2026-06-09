@@ -548,13 +548,6 @@ def flow_spec_to_sdk(spec: FlowSpec) -> str:
 
     compile_parts: list[str] = []
 
-    # Emit the flow-level env via the reserved __env__ kwarg ONLY when it
-    # differs from the "prod" default.  Omitting it for prod keeps existing
-    # generated code (and tests) byte-stable for the common case.
-    env_val = getattr(spec, "env", "prod") or "prod"
-    if env_val != "prod":
-        compile_parts.append(f"__env__={_repr_value(env_val)}")
-
     for p in params_as_dicts:
         name = p["name"]
         default = p.get("default")

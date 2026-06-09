@@ -428,6 +428,14 @@ async def _register_datastore(
         "view_sql": f"CREATE VIEW dataset AS SELECT * FROM read_parquet('{effective_path}')",
         "parquet_path": effective_path,
     }
+    # Tenant isolation at the engine layer: bind the DuckDB S3 secret to this
+    # org's prefix (SCOPE clause) so a query through this datastore can never
+    # read another org's objects, even if it names their path verbatim.
+    org_prefix = f"/datasets/{org_id}/"
+    if effective_path.startswith("s3://") and org_prefix in effective_path:
+        config["s3_scope"] = (
+            effective_path[: effective_path.index(org_prefix) + len(org_prefix)]
+        )
     row = await repo.create(
         resource="datastores",
         org_id=org_id,

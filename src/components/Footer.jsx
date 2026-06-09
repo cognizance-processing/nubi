@@ -209,17 +209,12 @@ export default function Footer() {
             <Link to="/compare" className="text-xs text-muted hover:text-fg transition-colors duration-150">
               Compare
             </Link>
-            <Link to="/docs/self-host" className="text-xs text-muted hover:text-fg transition-colors duration-150">
-              Self-host
+            <Link to="/privacy" className="text-xs text-muted hover:text-fg transition-colors duration-150">
+              Privacy
             </Link>
-            <a
-              href={GITHUB_URL}
-              target="_blank"
-              rel="noopener noreferrer"
-              className="text-xs text-muted hover:text-fg transition-colors duration-150"
-            >
-              GitHub
-            </a>
+            <Link to="/terms" className="text-xs text-muted hover:text-fg transition-colors duration-150">
+              Terms
+            </Link>
           </nav>
         </div>
 

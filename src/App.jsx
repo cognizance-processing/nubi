@@ -71,6 +71,7 @@ import OnboardingPage from './pages/OnboardingPage.jsx'
 import DocsPage from './pages/DocsPage.jsx'
 import ComparePage from './pages/ComparePage.jsx'
 import PricingPage from './pages/PricingPage.jsx'
+import LegalPage from './pages/LegalPage.jsx'
 import NotFound from './pages/NotFound.jsx'
 
 // Existing authed pages (do not edit these files)
@@ -225,6 +226,8 @@ export default function App() {
           <Route path="docs/:slug" element={<DocsPage />} />
           <Route path="compare" element={<ComparePage />} />
           <Route path="pricing" element={<PricingPage />} />
+          <Route path="privacy" element={<LegalPage doc="privacy" />} />
+          <Route path="terms" element={<LegalPage doc="terms" />} />
         </Route>
 
         {/* ── Auth routes — standalone full-viewport (no Navbar/Footer) ─── */}

@@ -219,8 +219,6 @@ class NotebookSpec(BaseModel):
         Top-level compute hints.
     source:
         Origin of this spec: 'notebook' | 'flow' | 'query'.
-    env:
-        Execution environment tag forwarded to the compiled FlowSpec.
     """
 
     version: int = Field(default=1, ge=1, description="Schema version (currently 1).")
@@ -255,10 +253,6 @@ class NotebookSpec(BaseModel):
     source: Literal["notebook", "flow", "query"] = Field(
         default="notebook",
         description="Origin of this spec.",
-    )
-    env: str = Field(
-        default="prod",
-        description="Execution environment tag (e.g. 'dev', 'staging', 'prod').",
     )
 
     # Convenience alias -------------------------------------------------
@@ -428,9 +422,9 @@ def notebook_to_flowspec(
     2. For ``view='dag'``, preserve explicit ``needs`` as-is.
     3. Convert each CellSpec to a TaskSpec (full-fidelity — additive fields
        cell_type / execution_mode / freshness_sla_s are forwarded).
-    4. Forward ``env`` and a ``runtime_config`` dict to the FlowSpec.  The
-       dict encodes the NotebookRuntimeConfig plus notebook-envelope keys
-       (notebook_id, execution_mode, source) for downstream consumers.
+    4. Forward a ``runtime_config`` dict to the FlowSpec.  The dict encodes
+       the NotebookRuntimeConfig plus notebook-envelope keys (notebook_id,
+       execution_mode, source) for downstream consumers.
 
     Parameters
     ----------
@@ -463,7 +457,6 @@ def notebook_to_flowspec(
         name=nb.name,
         params=nb.params,
         tasks=tasks,
-        env=nb.env,
         runtime_config=rc_dict,
     )
 
@@ -574,7 +567,6 @@ def flowspec_to_notebook(
         execution_mode=execution_mode,
         runtime_config=runtime_config,
         source=source,
-        env=spec.env,
     )
 
 

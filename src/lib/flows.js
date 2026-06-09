@@ -126,7 +126,7 @@ export async function validateFlow(spec) {
  * @param {string} id
  * @param {object} [params]  — runtime param overrides
  * @param {string} [env]     — trigger-time environment override (dev/prod/custom).
- *                             Omitted ⇒ backend resolves from spec.env → 'prod'.
+ *                             Omitted ⇒ backend resolves the project's default env.
  * @returns {Promise<object|null>}  flow_run + { task_runs: [...] }
  */
 export async function runFlow(id, params = {}, env) {

@@ -8,7 +8,7 @@ by creating the Demo project (POST /orgs/{org_id}/demo-project, the
 
 Tagging mechanism
 -----------------
-The ``projects`` table (migration 0013) has no metadata/config jsonb column —
+The ``projects`` table (0002_orgs_projects.sql) has no metadata/config jsonb column —
 its only jsonb column is ``git``, which is reserved for git configuration and
 must not be overloaded with app flags. The demo project is therefore identified
 by its **slug**: ``slug == 'demo'`` (created with name "Demo"). Slugs are
@@ -129,5 +129,21 @@ async def ensure_demo_project(
         )
     except Exception:  # noqa: BLE001 — demo content is best-effort
         seed = None
+
+    # Checkpoint + promote the bundle (v1 pinned in dev AND prod) so the demo
+    # works end-to-end under strict protected-env visibility.  Best-effort —
+    # the helper reports failures in its return value instead of raising.
+    if seed is not None and "skipped" not in seed:
+        try:
+            from app.sample import checkpoint_and_promote_bundle  # noqa: PLC0415
+
+            seed["envs"] = await checkpoint_and_promote_bundle(
+                org_id=org_id,
+                project_id=str(project["id"]),
+                created_by=created_by,
+                repo=repo,
+            )
+        except Exception:  # noqa: BLE001 — never fail demo creation on envs
+            pass
 
     return {"project": project, "created": created, "seed": seed}

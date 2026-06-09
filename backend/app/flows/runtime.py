@@ -116,14 +116,27 @@ _LEASE_TIMEOUT_GRACE_S = 60
 # ---------------------------------------------------------------------------
 
 
-def _resolve_env(override: str | None, spec_data: dict[str, Any] | None) -> str:
-    """Resolve the active environment (PINNED order: override → spec.env → prod)."""
+async def _resolve_env(override: str | None, flow: dict[str, Any] | None) -> str:
+    """Resolve the active environment for a flow execution.
+
+    PINNED order: explicit *override* → the flow's project DEFAULT environment
+    key (``is_default``, via the env store) → the literal ``"prod"`` fallback
+    (no project on the flow / no env store reachable).  The flow SPEC is never
+    consulted — specs carry no ``env`` field.
+    """
     if override and str(override).strip():
         return str(override).strip()
-    if isinstance(spec_data, dict):
-        spec_env = spec_data.get("env")
-        if spec_env and str(spec_env).strip():
-            return str(spec_env).strip()
+    project_id = (flow or {}).get("project_id")
+    if project_id:
+        try:
+            from app.environments.store import get_env_store  # noqa: PLC0415
+
+            envs = await get_env_store().list_environments(str(project_id))
+            for env in envs:
+                if env.get("is_default"):
+                    return str(env["key"])
+        except Exception:  # noqa: BLE001 — env store unavailable → fallback
+            pass
     return "prod"
 
 
@@ -152,8 +165,9 @@ async def materialize_flow_run(
         Injected clock datetime (UTC, tz-aware).
     env:
         Optional trigger-time environment override.  Resolution order (PINNED):
-        explicit ``env`` → ``flow.spec.env`` → ``"prod"``.  The resolved env is
-        stored on the flow_run so materialize tasks namespace their targets.
+        explicit ``env`` → the flow's project default environment → ``"prod"``.
+        The resolved env is stored on the flow_run so materialize tasks
+        namespace their targets.
 
     Returns
     -------
@@ -175,7 +189,7 @@ async def materialize_flow_run(
         hard = [i for i in issues if not i.startswith("[warn]")]
         raise ValueError(f"Flow spec is invalid: {'; '.join(hard)}")
 
-    resolved_env = _resolve_env(env, spec_data)
+    resolved_env = await _resolve_env(env, flow)
 
     # Create the flow_run (state starts as 'pending' from the store constructor,
     # then we immediately transition it to 'running').
@@ -352,7 +366,7 @@ async def advance_readiness(
         # Child task keys follow the pattern "{map_key}[{i}].{child_task_key}".
         # The key prefix is unique per map node within a flow (different map nodes
         # have different map_key values).  Use parent_task_run_id when available
-        # (set by PgFlowStore after migration 0020); fall back to prefix-only
+        # (set by PgFlowStore); fall back to prefix-only
         # matching for InMemoryFlowStore which does not persist the column.
         _parent_id_available = any(
             "parent_task_run_id" in c for c in task_runs
@@ -1629,7 +1643,8 @@ async def _resolve_run_env_context(
 ) -> tuple[str, dict[str, Any] | None, str | None]:
     """Resolve (env, flow_dict, watermark) for a task execution.
 
-    - ``env``: from ``flow_run['env']`` → ``flow.spec.env`` → ``"prod"``.
+    - ``env``: from ``flow_run['env']`` → the flow's project default env →
+      ``"prod"``.
     - ``flow_dict``: the flow dict (for materialize base-uri resolution).
     - ``watermark``: the stored incremental watermark for this (flow, model,
       env), read BEFORE the handler runs — only for persisted materialize tasks.
@@ -1644,10 +1659,9 @@ async def _resolve_run_env_context(
         except Exception:  # noqa: BLE001
             flow_dict = None
 
-    spec_data = (flow_dict or {}).get("spec") if flow_dict else None
     env = (flow_run or {}).get("env")
     if not env:
-        env = _resolve_env(None, spec_data if isinstance(spec_data, dict) else None)
+        env = await _resolve_env(None, flow_dict)
     env = str(env or "prod")
 
     watermark: str | None = None

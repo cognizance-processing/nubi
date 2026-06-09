@@ -1,12 +1,16 @@
 """Environment / version store — InMemoryEnvStore (tests) + PgEnvStore (prod).
 
 Backs the project-scoped environments + resource versioning feature
-(migration 0029):
+(0005_environments_versions.sql):
 
-- ``environments``           — named deployment targets (dev, prod, …) per project.
+- ``environments``           — named deployment targets (dev, prod, …) per project,
+                               each bound to a git branch (``git_branch``,
+                               ``last_synced_sha``).
 - ``resource_versions``      — immutable snapshots of a resource's definition
                                (flow spec / board config / query config),
-                               polymorphic over ``kind`` ('flow'|'board'|'query').
+                               polymorphic over ``kind`` ('flow'|'board'|'query'),
+                               with optional lineage (``parent_version_id``) and
+                               git stamping (``git_commit_sha``).
 - ``resource_environments``  — pointer table: which version each environment of
                                a resource is pinned to.
 
@@ -45,8 +49,18 @@ Environment = dict[str, Any]
 ResourceVersion = dict[str, Any]
 Pointer = dict[str, Any]
 
-#: Valid polymorphic resource kinds (matches the CHECK constraint in 0029).
+#: Valid polymorphic resource kinds (matches the CHECK constraint in the
+#: environments/versions migration).
 VALID_KINDS: frozenset[str] = frozenset({"flow", "board", "query"})
+
+
+def default_git_branch(key: str) -> str:
+    """Return the creation-default git branch for an environment *key*.
+
+    The protected production env maps to ``'main'``; every other environment
+    maps to its own key (``dev`` → ``dev``, ``staging`` → ``staging``, …).
+    """
+    return "main" if str(key) == "prod" else str(key)
 
 
 # ---------------------------------------------------------------------------
@@ -88,12 +102,14 @@ class InMemoryEnvStore:
 
     Environment shape
     -----------------
-    ``{id, project_id, key, name, is_default, protected, position, created_at}``
+    ``{id, project_id, key, name, is_default, protected, position,
+    git_branch, last_synced_sha, created_at}``
 
     ResourceVersion shape
     ---------------------
     ``{id, org_id, project_id, kind, resource_id, version, config,
-    config_hash, message, created_by, created_at}``
+    config_hash, message, parent_version_id, git_commit_sha, created_by,
+    created_at}``
 
     Pointer shape
     -------------
@@ -113,9 +129,9 @@ class InMemoryEnvStore:
     async def ensure_project_envs(self, project_id: str) -> list[Environment]:
         """Idempotently create the dev + prod pair for *project_id*.
 
-        Mirrors the 0029 backfill: ``dev`` (checkpoint target, position 0) and
-        ``prod`` (default-resolved, protected, position 1).  Returns the
-        project's full environment list.
+        ``dev`` (checkpoint target, position 0, git branch ``dev``) and
+        ``prod`` (default-resolved, protected, position 1, git branch
+        ``main``).  Returns the project's full environment list.
         """
         existing = {e["key"] for e in await self.list_environments(project_id)}
         if "dev" not in existing:
@@ -149,8 +165,13 @@ class InMemoryEnvStore:
         is_default: bool = False,
         protected: bool = False,
         position: int = 0,
+        git_branch: str | None = None,
     ) -> Environment:
-        """Create and store a new environment; return the stored dict."""
+        """Create and store a new environment; return the stored dict.
+
+        ``git_branch`` defaults to ``'main'`` for ``key='prod'`` and to the
+        env key otherwise (see :func:`default_git_branch`).
+        """
         env: Environment = {
             "id": str(uuid.uuid4()),
             "project_id": str(project_id),
@@ -159,6 +180,8 @@ class InMemoryEnvStore:
             "is_default": bool(is_default),
             "protected": bool(protected),
             "position": int(position),
+            "git_branch": str(git_branch) if git_branch else default_git_branch(key),
+            "last_synced_sha": None,
             "created_at": _now_iso(),
         }
         self._envs[env["id"]] = env
@@ -171,7 +194,10 @@ class InMemoryEnvStore:
         env = self._envs.get(str(env_id))
         if env is None:
             return None
-        for field in ("name", "is_default", "protected", "position"):
+        for field in (
+            "name", "is_default", "protected", "position",
+            "git_branch", "last_synced_sha",
+        ):
             if field in fields and fields[field] is not None:
                 env[field] = fields[field]
         return deepcopy(env)
@@ -226,11 +252,16 @@ class InMemoryEnvStore:
         config: dict[str, Any],
         created_by: str | None,
         message: str | None = None,
+        parent_version_id: str | None = None,
+        git_commit_sha: str | None = None,
     ) -> ResourceVersion:
         """Snapshot *config* as the next version; dedupe against the latest.
 
         Returns the version dict with a ``deduped`` flag: True when the
         canonical-JSON hash matched the latest version (no insert happened).
+        ``parent_version_id`` defaults to the previous latest version's id
+        when not supplied (lineage chain); ``git_commit_sha`` stays ``None``
+        until a git commit is stamped on the version.
         """
         digest = config_hash(config)
         existing = self._versions_for(kind, resource_id)
@@ -250,6 +281,9 @@ class InMemoryEnvStore:
             "config": deepcopy(config),
             "config_hash": digest,
             "message": message,
+            "parent_version_id": _str_or_none(parent_version_id)
+                or (latest["id"] if latest else None),
+            "git_commit_sha": _str_or_none(git_commit_sha),
             "created_by": _str_or_none(created_by),
             "created_at": _now_iso(),
         }
@@ -269,6 +303,8 @@ class InMemoryEnvStore:
                 "version": v["version"],
                 "config_hash": v["config_hash"],
                 "message": v["message"],
+                "parent_version_id": v.get("parent_version_id"),
+                "git_commit_sha": v.get("git_commit_sha"),
                 "created_by": v["created_by"],
                 "created_at": v["created_at"],
             }
@@ -380,9 +416,14 @@ def _row_to_env(row: Any) -> Environment:
 def _row_to_version(row: Any) -> ResourceVersion:
     """Convert an asyncpg Record (or dict) to a ResourceVersion dict."""
     d = dict(row)
-    for key in ("id", "org_id", "project_id", "resource_id", "created_by"):
+    for key in (
+        "id", "org_id", "project_id", "resource_id",
+        "parent_version_id", "created_by",
+    ):
         if d.get(key) is not None:
             d[key] = str(d[key])
+    d.setdefault("parent_version_id", None)
+    d.setdefault("git_commit_sha", None)
     d["created_at"] = _iso(d.get("created_at"))
     if "config" in d and not isinstance(d["config"], dict):
         d["config"] = json.loads(d["config"])
@@ -404,7 +445,7 @@ class PgEnvStore:
 
     Uses the ``fetch`` / ``fetchrow`` / ``execute`` helpers from ``app.db``
     (lazy imports, like ``PgFlowStore``).  All SQL is parameterised; column
-    names match the tables from migration 0029.
+    names match the tables from 0005_environments_versions.sql.
     """
 
     # ------------------------------------------------------------------
@@ -412,21 +453,25 @@ class PgEnvStore:
     # ------------------------------------------------------------------
 
     async def ensure_project_envs(self, project_id: str) -> list[Environment]:
-        """Idempotently create dev + prod for *project_id* (mirrors backfill)."""
+        """Idempotently create dev + prod for *project_id*.
+
+        ``dev`` is bound to git branch ``dev``; ``prod`` (default, protected)
+        is bound to ``main``.
+        """
         from app.db import execute as db_execute  # noqa: PLC0415
 
         await db_execute(
             """
-            INSERT INTO environments (project_id, key, name, is_default, protected, position)
-            VALUES ($1::uuid, 'dev', 'Development', false, false, 0)
+            INSERT INTO environments (project_id, key, name, is_default, protected, position, git_branch)
+            VALUES ($1::uuid, 'dev', 'Development', false, false, 0, 'dev')
             ON CONFLICT (project_id, key) DO NOTHING
             """,
             project_id,
         )
         await db_execute(
             """
-            INSERT INTO environments (project_id, key, name, is_default, protected, position)
-            VALUES ($1::uuid, 'prod', 'Production', true, true, 1)
+            INSERT INTO environments (project_id, key, name, is_default, protected, position, git_branch)
+            VALUES ($1::uuid, 'prod', 'Production', true, true, 1, 'main')
             ON CONFLICT (project_id, key) DO NOTHING
             """,
             project_id,
@@ -456,14 +501,19 @@ class PgEnvStore:
         is_default: bool = False,
         protected: bool = False,
         position: int = 0,
+        git_branch: str | None = None,
     ) -> Environment:
-        """Insert a new environment row and return the stored dict."""
+        """Insert a new environment row and return the stored dict.
+
+        ``git_branch`` defaults to ``'main'`` for ``key='prod'`` and to the
+        env key otherwise (see :func:`default_git_branch`).
+        """
         from app.db import fetchrow as db_fetchrow  # noqa: PLC0415
 
         row = await db_fetchrow(
             """
-            INSERT INTO environments (project_id, key, name, is_default, protected, position)
-            VALUES ($1::uuid, $2, $3, $4, $5, $6)
+            INSERT INTO environments (project_id, key, name, is_default, protected, position, git_branch)
+            VALUES ($1::uuid, $2, $3, $4, $5, $6, $7)
             RETURNING *
             """,
             project_id,
@@ -472,6 +522,7 @@ class PgEnvStore:
             bool(is_default),
             bool(protected),
             int(position),
+            str(git_branch) if git_branch else default_git_branch(key),
         )
         if row is None:  # pragma: no cover
             raise RuntimeError("INSERT INTO environments returned no row.")
@@ -486,7 +537,10 @@ class PgEnvStore:
         updates: list[str] = []
         values: list[Any] = []
         idx = 1
-        for field in ("name", "is_default", "protected", "position"):
+        for field in (
+            "name", "is_default", "protected", "position",
+            "git_branch", "last_synced_sha",
+        ):
             if field in fields and fields[field] is not None:
                 updates.append(f"{field} = ${idx}")
                 values.append(fields[field])
@@ -552,8 +606,15 @@ class PgEnvStore:
         config: dict[str, Any],
         created_by: str | None,
         message: str | None = None,
+        parent_version_id: str | None = None,
+        git_commit_sha: str | None = None,
     ) -> ResourceVersion:
-        """Snapshot *config* as the next version; dedupe against the latest."""
+        """Snapshot *config* as the next version; dedupe against the latest.
+
+        ``parent_version_id`` defaults to the previous latest version's id
+        when not supplied (lineage chain); ``git_commit_sha`` stays ``NULL``
+        until a git commit is stamped on the version.
+        """
         from app.db import fetchrow as db_fetchrow  # noqa: PLC0415
 
         digest = config_hash(config)
@@ -572,15 +633,20 @@ class PgEnvStore:
             out["deduped"] = True
             return out
 
+        parent_id = parent_version_id or (
+            str(dict(latest)["id"]) if latest is not None else None
+        )
+
         row = await db_fetchrow(
             """
             INSERT INTO resource_versions
                 (org_id, project_id, kind, resource_id, version,
-                 config, config_hash, message, created_by)
+                 config, config_hash, message, parent_version_id,
+                 git_commit_sha, created_by)
             VALUES ($1::uuid, $2::uuid, $3, $4::uuid,
                     COALESCE((SELECT max(version) FROM resource_versions
                               WHERE kind = $3 AND resource_id = $4::uuid), 0) + 1,
-                    $5::jsonb, $6, $7, $8::uuid)
+                    $5::jsonb, $6, $7, $8::uuid, $9, $10::uuid)
             RETURNING *
             """,
             org_id,
@@ -590,6 +656,8 @@ class PgEnvStore:
             json.dumps(config),
             digest,
             message,
+            parent_id,
+            git_commit_sha,
             created_by,
         )
         if row is None:  # pragma: no cover
@@ -606,7 +674,8 @@ class PgEnvStore:
 
         rows = await db_fetch(
             """
-            SELECT id, version, config_hash, message, created_by, created_at
+            SELECT id, version, config_hash, message, parent_version_id,
+                   git_commit_sha, created_by, created_at
             FROM resource_versions
             WHERE kind = $1 AND resource_id = $2::uuid
             ORDER BY version DESC
@@ -617,7 +686,7 @@ class PgEnvStore:
         out: list[ResourceVersion] = []
         for r in rows:
             d = dict(r)
-            for key in ("id", "created_by"):
+            for key in ("id", "parent_version_id", "created_by"):
                 if d.get(key) is not None:
                     d[key] = str(d[key])
             d["created_at"] = _iso(d.get("created_at"))

@@ -305,7 +305,7 @@ async def ensure_default_project(
     """
     existing = await get_default_project_id(org_id)
     if existing:
-        # Pre-0029 projects may predate the environments table; ensure the
+        # Older projects may predate their environment rows; ensure the
         # dev+prod pair exists for them too (idempotent, best-effort).
         await _ensure_project_envs_best_effort(existing)
         return existing

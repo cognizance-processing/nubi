@@ -13,7 +13,7 @@ Security
 Every route depends on :func:`app.auth.superadmin.require_superadmin`, which
 re-reads the caller's user row from the DB on each request and 403s unless
 ``users.is_superadmin`` is true.  The flag itself is NEVER writable through
-any API endpoint — see the dependency module and migration 0028 headers.
+any API endpoint — see the dependency module and the 0001_auth.sql header.
 
 This module attaches itself to the shared ``api_router`` at import time, the
 same way the other route modules do (main.py imports it for its side effect).

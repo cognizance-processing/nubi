@@ -22,9 +22,6 @@ Behaviour
   with --ee (or NUBI_CLOUD=1 / NUBI_EE=1), AFTER core — so OSS self-host stays
   thin (no billing/wallet/fx/invoice tables). EE versions are keyed "ee/<file>".
 - Applies only those not already recorded in schema_migrations.
-- Migrations that moved from core into ee/ (0017/0018/0022/0027) may be
-  recorded under their legacy bare file name on already-deployed databases;
-  the runner re-keys those ledger rows to "ee/<file>" instead of re-applying.
 - Each migration runs inside its own transaction; failure rolls back that
   migration and stops the runner (no partial state).
 - Idempotent: safe to run multiple times. Concurrent runners (multi-replica
@@ -114,51 +111,6 @@ async def applied_versions(conn: asyncpg.Connection) -> set[str]:
     return {row["version"] for row in rows}
 
 
-def legacy_ee_rekeys(
-    versions: list[str], applied: set[str]
-) -> list[tuple[str, str]]:
-    """Return ``(legacy_version, ee_version)`` ledger re-keys that are needed.
-
-    Migrations that moved from ``database/migrations/`` into
-    ``database/migrations/ee/`` (0017_billing, 0018_fx_rates, 0022_wallet,
-    0027_invoices) were recorded by already-deployed databases under their
-    bare file name (e.g. ``0017_billing.sql``). Such a legacy ledger row
-    satisfies the new ``ee/<file>`` key — the migration must NOT be
-    re-applied (re-running ee/0018 would transiently swap the subscriptions
-    tier CHECK). The caller re-keys the matched rows so the ledger converges
-    on the new keys.
-    """
-    out: list[tuple[str, str]] = []
-    for version in versions:
-        if not version.startswith("ee/"):
-            continue
-        legacy = version[len("ee/"):]
-        if legacy in applied and version not in applied:
-            out.append((legacy, version))
-    return out
-
-
-async def rekey_legacy_ee_versions(
-    conn: asyncpg.Connection, versions: list[str]
-) -> set[str]:
-    """Re-key legacy bare ledger rows to their ``ee/<file>`` version.
-
-    Returns the (possibly updated) set of applied versions.
-    """
-    applied = await applied_versions(conn)
-    rekeys = legacy_ee_rekeys(versions, applied)
-    for legacy, version in rekeys:
-        await conn.execute(
-            "UPDATE schema_migrations SET version = $1 WHERE version = $2",
-            version,
-            legacy,
-        )
-        print(f"  Ledger: re-keyed {legacy} -> {version} (migration moved into ee/).")
-    if rekeys:
-        applied = await applied_versions(conn)
-    return applied
-
-
 async def apply_migrations(url: str, include_ee: bool = False) -> None:
     """Apply all pending migrations to the database."""
     conn: asyncpg.Connection = await asyncpg.connect(url)
@@ -169,7 +121,7 @@ async def apply_migrations(url: str, include_ee: bool = False) -> None:
         await conn.execute("SELECT pg_advisory_lock($1)", MIGRATION_LOCK_ID)
         await ensure_ledger(conn)
         migrations = discover_migrations(include_ee)
-        done = await rekey_legacy_ee_versions(conn, [v for v, _ in migrations])
+        done = await applied_versions(conn)
         pending = [(v, p) for (v, p) in migrations if v not in done]
 
         if include_ee:
@@ -217,37 +169,22 @@ async def show_status(url: str, include_ee: bool = False) -> None:
 
         versions = {v for v, _ in all_files}
 
-        # Legacy bare-key ledger rows for migrations that moved into ee/
-        # count as applied (the apply run re-keys them; --status stays
-        # read-only). Maps "ee/<file>" -> "<file>".
-        alias_for = {
-            ee: legacy
-            for legacy, ee in legacy_ee_rekeys(
-                [v for v, _ in all_files], set(applied_map)
-            )
-        }
-
         # Show all known files first (apply order: core then ee)
         for version, _ in all_files:
             if version in applied_map:
                 ts = applied_map[version].strftime("%Y-%m-%d %H:%M:%S UTC")
                 print(f"{version:<40}  {'applied':<10}  {ts}")
-            elif version in alias_for:
-                ts = applied_map[alias_for[version]].strftime("%Y-%m-%d %H:%M:%S UTC")
-                print(f"{version:<40}  {'applied':<10}  {ts}  [legacy key: {alias_for[version]}]")
             else:
                 print(f"{version:<40}  {'pending':<10}  —")
 
         # Any applied versions not found on disk (e.g. after a rollback of file)
         for version, ts in sorted(applied_map.items()):
-            if version not in versions and version not in alias_for.values():
+            if version not in versions:
                 ts_str = ts.strftime("%Y-%m-%d %H:%M:%S UTC")
                 print(f"{version:<40}  {'applied*':<10}  {ts_str}  [file missing]")
 
         print()
-        pending_count = len(
-            [v for v, _ in all_files if v not in done and v not in alias_for]
-        )
+        pending_count = len([v for v, _ in all_files if v not in done])
         print(
             f"{len(done)} applied, {pending_count} pending"
             + (" — run without --status to apply" if pending_count else "")

@@ -164,12 +164,14 @@ def _get_creds(config: dict) -> dict[str, str]:
         [],
         default="path" if endpoint else "vhost",
     )
+    scope = _get(["s3_scope", "scope"], [])
     return {
         "key_id": key_id,
         "secret": secret,
         "region": region,
         "endpoint": endpoint,
         "url_style": url_style,
+        "scope": scope,
     }
 
 
@@ -226,6 +228,10 @@ def _register_s3_secret(
     secret definition; the ``USE_SSL`` flag controls whether TLS is used.
     The ``URL_STYLE 'path'`` is required for MinIO and other S3-compatible
     stores that do not support virtual-hosted-style bucket addressing.
+    When ``creds["scope"]`` is non-empty, the secret is bound to that path
+    prefix via DuckDB's ``SCOPE`` clause — queries against paths outside the
+    scope have no credentials, giving per-tenant isolation at the engine
+    layer independent of RLS.
     """
     endpoint_raw = creds["endpoint"]
     use_ssl = "true"
@@ -250,6 +256,8 @@ def _register_s3_secret(
     ]
     if endpoint_bare:
         parts.append(f"    ENDPOINT '{endpoint_bare}'")
+    if creds.get("scope"):
+        parts.append(f"    SCOPE '{creds['scope']}'")
 
     sql = (
         f"CREATE OR REPLACE SECRET {secret_name} (\n"
@@ -323,10 +331,12 @@ class DuckDBStorageConnector(Connector):
                 status=500,
             ) from exc
         conn = duckdb.connect(database=path, read_only=read_only)
-        try:
-            conn.execute("SET enable_external_access=false")
-        except Exception:
-            pass
+        if read_only:
+            # A read-only file source has no need to touch the local FS /
+            # network at query time; freeze the settings for the connection.
+            from app.connectors.duckdb_conn import harden_connection  # noqa: PLC0415
+
+            harden_connection(conn, disable_external_access=True)
         return cls(DuckDBConnector(conn), is_cloud=False)
 
     @classmethod
@@ -365,6 +375,12 @@ class DuckDBStorageConnector(Connector):
         conn = duckdb.connect(database=":memory:")
         _install_httpfs(conn)
         _register_s3_secret(conn, creds)
+        # Cloud connections read object storage only — tenant SQL must never
+        # reach the host filesystem.  Hardened AFTER httpfs + secret setup
+        # because lock_configuration freezes settings for the connection.
+        from app.connectors.duckdb_conn import harden_connection  # noqa: PLC0415
+
+        harden_connection(conn, block_local_fs=True)
 
         inner = DuckDBConnector(conn)
         inst = cls(inner, is_cloud=True)

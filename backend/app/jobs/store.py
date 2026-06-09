@@ -5,7 +5,7 @@
 
 ``PgJobStore`` is the asyncpg-backed production store that maps each method to
 a parameterised SQL query against the ``jobs`` and ``job_runs`` tables (from
-migration 0007).  Rows are converted to plain dicts; jsonb and datetime values
+0006_platform.sql).  Rows are converted to plain dicts; jsonb and datetime values
 match the shape produced by ``InMemoryJobStore``.
 
 Provider
@@ -51,8 +51,8 @@ class InMemoryJobStore:
 
     Job shape
     ---------
-    ``{id, org_id, created_by, name, kind, target, schedule, enabled,
-    next_run_at, last_run_at, created_at, updated_at}``
+    ``{id, org_id, project_id, created_by, name, kind, target, schedule,
+    enabled, next_run_at, last_run_at, created_at, updated_at}``
 
     JobRun shape
     ------------
@@ -78,6 +78,7 @@ class InMemoryJobStore:
         schedule: str,
         enabled: bool = True,
         next_run_at: datetime | None = None,
+        project_id: str | None = None,
     ) -> Job:
         """Create and store a new job; return the stored dict."""
         job_id = str(uuid.uuid4())
@@ -85,6 +86,7 @@ class InMemoryJobStore:
         job: Job = {
             "id": job_id,
             "org_id": str(org_id),
+            "project_id": str(project_id) if project_id is not None else None,
             "created_by": str(created_by),
             "name": name,
             "kind": kind,
@@ -175,7 +177,7 @@ def _row_to_job(row: Any) -> Job:
     """
     d = dict(row)
     # Coerce UUID objects to strings
-    for key in ("id", "org_id", "created_by"):
+    for key in ("id", "org_id", "project_id", "created_by"):
         if key in d and d[key] is not None and not isinstance(d[key], str):
             d[key] = str(d[key])
     # Ensure datetime columns carry UTC tzinfo (asyncpg usually does this)
@@ -206,7 +208,7 @@ class PgJobStore:
     (which acquire a connection from the pool automatically).
 
     All SQL is parameterised with ``$N`` placeholders.  Column names match
-    the ``jobs`` and ``job_runs`` tables from migration 0007.
+    the ``jobs`` and ``job_runs`` tables from 0006_platform.sql.
 
     Rows returned by asyncpg are converted to plain dicts that match the
     shape produced by ``InMemoryJobStore``.
@@ -226,18 +228,28 @@ class PgJobStore:
         schedule: str,
         enabled: bool = True,
         next_run_at: datetime | None = None,
+        project_id: str | None = None,
     ) -> Job:
-        """Insert a new job row and return the stored dict."""
+        """Insert a new job row and return the stored dict.
+
+        ``jobs.project_id`` is NOT NULL: when the caller passes ``None`` the
+        org's default project is resolved as a fallback so the insert always
+        carries a project.
+        """
         from app.db import fetchrow as db_fetchrow
+        from app.repos.pg import resolve_required_project_id  # noqa: PLC0415
+
+        project_id = await resolve_required_project_id(org_id, project_id)
 
         row = await db_fetchrow(
             """
-            INSERT INTO jobs (org_id, created_by, name, kind, target, schedule,
-                              enabled, next_run_at)
-            VALUES ($1::uuid, $2::uuid, $3, $4, $5, $6, $7, $8)
+            INSERT INTO jobs (org_id, project_id, created_by, name, kind, target,
+                              schedule, enabled, next_run_at)
+            VALUES ($1::uuid, $2::uuid, $3::uuid, $4, $5, $6, $7, $8, $9)
             RETURNING *
             """,
             org_id,
+            project_id,
             created_by,
             name,
             kind,

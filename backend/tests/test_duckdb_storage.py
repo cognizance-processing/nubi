@@ -453,3 +453,152 @@ class TestFromConfigInMemory:
         }
         assert required == set(caps.keys())
         assert all(isinstance(v, bool) for v in caps.values())
+
+
+# ---------------------------------------------------------------------------
+# Group D — tenant isolation: secret SCOPE + connection hardening
+# ---------------------------------------------------------------------------
+
+
+class TestSecretScopeAndHardening:
+    """D1–D6: per-tenant secret SCOPE and defence-in-depth settings."""
+
+    def _make_mock_conn(self) -> MagicMock:
+        mock = MagicMock()
+        mock.execute = MagicMock()
+        return mock
+
+    def _sqls(self, mock_conn: MagicMock) -> list[str]:
+        return [c.args[0] for c in mock_conn.execute.call_args_list if c.args]
+
+    def test_d1_secret_scope_clause_emitted(self):
+        """D1: a non-empty creds['scope'] adds a SCOPE clause to the secret."""
+        conn = self._make_mock_conn()
+        creds = {
+            "key_id": "k", "secret": "s", "region": "us-east-1",
+            "endpoint": "http://localhost:9000", "url_style": "path",
+            "scope": "s3://nubi-data/datasets/org-123/",
+        }
+        _register_s3_secret(conn, creds)
+        sql = self._sqls(conn)[0]
+        assert "SCOPE 's3://nubi-data/datasets/org-123/'" in sql
+
+    def test_d1b_no_scope_no_clause(self):
+        """D1b: absent/empty scope → no SCOPE clause (backwards compatible)."""
+        conn = self._make_mock_conn()
+        creds = {
+            "key_id": "k", "secret": "s", "region": "us-east-1",
+            "endpoint": "", "url_style": "vhost",
+        }
+        _register_s3_secret(conn, creds)
+        assert "SCOPE" not in self._sqls(conn)[0]
+
+    def test_d2_get_creds_extracts_scope(self):
+        """D2: _get_creds picks up s3_scope from the config dict."""
+        creds = _get_creds({
+            "aws_access_key_id": "k",
+            "aws_secret_access_key": "s",
+            "s3_scope": "s3://bucket/datasets/org-9/",
+        })
+        assert creds["scope"] == "s3://bucket/datasets/org-9/"
+
+    def test_d2b_get_creds_scope_defaults_empty(self):
+        creds = _get_creds({"aws_access_key_id": "k", "aws_secret_access_key": "s"})
+        assert creds["scope"] == ""
+
+    def test_d3_for_s3_hardens_connection(self):
+        """D3: for_s3 blocks the local filesystem and freezes the config,
+        with lock_configuration as the FINAL hardening statement."""
+        executed: list[str] = []
+
+        class _MockConn:
+            def execute(self, sql: str, *args: Any):
+                executed.append(sql)
+                return MagicMock()
+
+        with patch("duckdb.connect", return_value=_MockConn()):
+            DuckDBStorageConnector.from_config({
+                "connector_type": "duckdb",
+                "database": "s3://bucket/datasets/org-1/d1/data.parquet",
+                "aws_access_key_id": "k",
+                "aws_secret_access_key": "s",
+            })
+
+        assert any("disabled_filesystems='LocalFileSystem'" in s for s in executed)
+        assert any("autoinstall_known_extensions=false" in s for s in executed)
+        assert any("autoload_known_extensions=false" in s for s in executed)
+        lock_idx = next(i for i, s in enumerate(executed) if "lock_configuration=true" in s)
+        assert lock_idx == len(executed) - 1, (
+            f"lock_configuration must be the last statement: {executed}"
+        )
+        # The secret must be registered BEFORE the configuration is locked.
+        secret_idx = next(i for i, s in enumerate(executed) if "CREATE OR REPLACE SECRET" in s)
+        assert secret_idx < lock_idx
+
+    def test_d4_harden_connection_env_limits(self, monkeypatch):
+        """D4: NUBI_DUCKDB_MEMORY_LIMIT / THREADS / TEMP_DIR are applied when set."""
+        from app.connectors.duckdb_conn import harden_connection
+
+        monkeypatch.setenv("NUBI_DUCKDB_MEMORY_LIMIT", "2GB")
+        monkeypatch.setenv("NUBI_DUCKDB_THREADS", "4")
+        monkeypatch.setenv("NUBI_DUCKDB_TEMP_DIR", "/data/duckdb-tmp")
+
+        conn = self._make_mock_conn()
+        harden_connection(conn, block_local_fs=True)
+        sqls = self._sqls(conn)
+        assert "SET memory_limit='2GB'" in sqls
+        assert "SET threads=4" in sqls
+        assert "SET temp_directory='/data/duckdb-tmp'" in sqls
+        assert sqls[-1] == "SET lock_configuration=true"
+
+    def test_d4b_harden_failures_are_swallowed(self):
+        """D4b: a statement that raises must not break hardening (best-effort)."""
+        from app.connectors.duckdb_conn import harden_connection
+
+        calls: list[str] = []
+
+        class _FlakyConn:
+            def execute(self, sql: str):
+                calls.append(sql)
+                raise RuntimeError("unsupported setting")
+
+        harden_connection(_FlakyConn(), disable_external_access=True)
+        # All statements attempted despite every one raising.
+        assert any("enable_external_access=false" in s for s in calls)
+        assert any("lock_configuration=true" in s for s in calls)
+
+    def test_d5_setup_s3_httpfs_scope(self):
+        """D5: setup_s3_httpfs binds the secret to cfg['s3_scope']."""
+        from app.connectors.duckdb_conn import setup_s3_httpfs
+
+        conn = self._make_mock_conn()
+        setup_s3_httpfs(conn, {
+            "s3_key_id": "k",
+            "s3_secret": "s",
+            "s3_scope": "s3://bucket/datasets/org-7/",
+        })
+        secret_sql = next(s for s in self._sqls(conn) if "CREATE OR REPLACE SECRET" in s)
+        assert "SCOPE 's3://bucket/datasets/org-7/'" in secret_sql
+
+    def test_d6_local_path_hardened_read_only(self, tmp_path):
+        """D6: for_local_path(read_only=True) disables external access and
+        locks the configuration — queries still work on the opened file."""
+        import duckdb
+
+        db_path = str(tmp_path / "local.duckdb")
+        seed = duckdb.connect(db_path)
+        seed.execute("CREATE TABLE t AS SELECT 1 AS id")
+        seed.close()
+
+        connector = DuckDBStorageConnector.for_local_path(db_path)
+        inner_conn = connector._inner._conn
+        row = inner_conn.execute(
+            "SELECT value FROM duckdb_settings() WHERE name='enable_external_access'"
+        ).fetchone()
+        assert row is not None and str(row[0]).lower() == "false"
+        # Config is frozen: further SET statements must fail.
+        with pytest.raises(Exception):
+            inner_conn.execute("SET enable_external_access=true")
+        # …but querying the attached data still works.
+        table = connector.execute(_make_plan("SELECT id FROM t"))
+        assert table.num_rows == 1

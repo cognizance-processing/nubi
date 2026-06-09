@@ -59,7 +59,7 @@ async def _ensure_superuser() -> str:
             "VALUES ($1, $2, $3, $4, true)",
             user_id, TEST_EMAIL, hash_password(TEST_PASSWORD), TEST_NAME,
         )
-    # Idempotent superadmin grant (see migration 0028 header).
+    # Idempotent superadmin grant (see 0001_auth.sql header).
     await execute(
         "UPDATE users SET is_superadmin = true WHERE id = $1::uuid", user_id
     )
@@ -99,6 +99,11 @@ async def _seed_demo_project(user_id: str) -> None:
         seed_note = f"bundle skipped: {seed['skipped']}"
     else:
         seed_note = f"bundle created: {seed.get('created', [])!r}" if seed else "bundle: best-effort failure"
+    envs = seed.get("envs") or {}
+    if envs.get("checkpointed"):
+        seed_note += f"; checkpointed+promoted (dev+prod): {envs['checkpointed']!r}"
+    elif envs.get("skipped"):
+        seed_note += f"; env pinning skipped: {envs['skipped']}"
     print(f"  demo project   [{status}]  {project.get('name')} ({project.get('id')}) — {seed_note}")
 
 

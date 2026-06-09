@@ -3,7 +3,7 @@
 Covers:
 - TaskSpec backward-compat: existing FlowSpec dicts parse cleanly with new
   optional fields (cell_type, execution_mode, freshness_sla_s).
-- FlowSpec backward-compat: new fields (env, runtime_config) default cleanly
+- FlowSpec backward-compat: runtime_config defaults cleanly (specs carry no env)
   so existing specs serialise/deserialise unchanged.
 - CellSpec construction and to_task_spec() round-trip.
 - NotebookSpec validation: unique cell keys, invalid cell_type/execution_mode
@@ -91,10 +91,13 @@ def test_task_spec_backward_compat():
 
 
 def test_flow_spec_env_runtime_config_defaults():
-    """FlowSpec.env defaults to 'prod' and runtime_config to {} for old specs."""
+    """FlowSpec carries no env field; runtime_config defaults to {}."""
     spec = FlowSpec(name="test", tasks=[])
-    assert spec.env == "prod"
+    assert "env" not in spec.model_dump()
     assert spec.runtime_config == {}
+    # Legacy specs with an 'env' key parse fine — the key is stripped/ignored.
+    legacy = FlowSpec.model_validate({"name": "test", "tasks": [], "env": "dev"})
+    assert "env" not in legacy.model_dump()
 
 
 # ---------------------------------------------------------------------------
@@ -233,7 +236,7 @@ def test_notebook_spec_defaults():
     assert nb.view == "notebook"
     assert nb.execution_mode == "preview"
     assert nb.source == "notebook"
-    assert nb.env == "prod"
+    assert "env" not in nb.model_dump()
     assert isinstance(nb.runtime_config, NotebookRuntimeConfig)
     assert nb.runtime_config.interactive_row_limit == 500
 
@@ -363,15 +366,14 @@ def test_three_cell_notebook_compiles_to_valid_flowspec():
         ],
         view="notebook",
         execution_mode="preview",
-        env="dev",
     )
 
     flow = notebook_to_flowspec(nb)
 
-    # FlowSpec structural checks.
+    # FlowSpec structural checks (no env — resolved at trigger time).
     assert isinstance(flow, FlowSpec)
     assert flow.name == "revenue_notebook"
-    assert flow.env == "dev"
+    assert "env" not in flow.model_dump()
     assert len(flow.tasks) == 3
 
     # runtime_config carries notebook envelope keys.
@@ -441,7 +443,6 @@ def test_flowspec_to_notebook_round_trip():
         ],
         view="notebook",
         execution_mode="preview",
-        env="staging",
     )
 
     # Compile to FlowSpec.
@@ -452,7 +453,6 @@ def test_flowspec_to_notebook_round_trip():
 
     assert nb_restored.name == nb_original.name
     assert nb_restored.notebook_id == "nb-rt-001"
-    assert nb_restored.env == "staging"
     assert nb_restored.execution_mode == "preview"
     assert len(nb_restored.tasks) == 2
 
@@ -527,7 +527,6 @@ def test_notebook_spec_from_flow_reconstructs_notebook():
             _make_sql_cell("cell_a"),
             _make_python_cell("cell_b"),
         ],
-        env="dev",
     )
     flow_spec = notebook_to_flowspec(nb)
 
@@ -540,7 +539,6 @@ def test_notebook_spec_from_flow_reconstructs_notebook():
     restored_nb = notebook_spec_from_flow(fake_flow)
     assert restored_nb.name == "stored_notebook"
     assert restored_nb.notebook_id == "nb-store-001"
-    assert restored_nb.env == "dev"
     assert len(restored_nb.tasks) == 2
     assert restored_nb.tasks[0].key == "cell_a"
     assert restored_nb.tasks[1].key == "cell_b"

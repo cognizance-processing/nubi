@@ -52,6 +52,33 @@ def _validate_resource(resource: str) -> str:
     return RESOURCE_TABLE_MAP[resource]
 
 
+async def resolve_required_project_id(org_id: str, project_id: str | None) -> str:
+    """Return a non-NULL project id for a resource INSERT.
+
+    Every resource row carries ``project_id NOT NULL``.  When the caller did
+    not resolve a project (``None``), fall back to the org's default project,
+    creating the "Default" project if the org somehow has none.  Raises
+    ``AppError`` 400 only when no project can be resolved at all.
+    """
+    if project_id is not None:
+        return str(project_id)
+    from app.repos import projects as projects_repo  # noqa: PLC0415
+
+    pid = await projects_repo.get_default_project_id(org_id)
+    if pid is None:
+        try:
+            pid = await projects_repo.ensure_default_project(org_id, None)
+        except Exception:  # noqa: BLE001 — surfaced as a clean 400 below
+            pid = None
+    if pid is None:
+        raise AppError(
+            "project_required",
+            "Resource creation requires a project and the org has none.",
+            400,
+        )
+    return str(pid)
+
+
 class PgRepo:
     """asyncpg-backed production Repo implementation.
 
@@ -115,8 +142,13 @@ class PgRepo:
         caller already minted a stable identifier — e.g. the query registry
         keeps registry ids and row ids identical); otherwise the DB default
         generates one.
+
+        ``project_id`` is required by the schema (NOT NULL): when the caller
+        passes ``None`` the org's default project is resolved as a fallback,
+        so a create can never write a NULL project_id.
         """
         table = _validate_resource(resource)
+        project_id = await resolve_required_project_id(org_id, project_id)
         config_json = json.dumps(config)
         if id is not None:
             row = await fetchrow(

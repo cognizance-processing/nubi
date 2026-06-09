@@ -153,6 +153,9 @@ All three statements are idempotent (`CREATE OR REPLACE SECRET`). The secret is 
 | `S3_ENDPOINT_URL` | *(none)* | Custom endpoint for MinIO or S3-compatible stores, e.g. `http://localhost:9000`. Also read as `AWS_ENDPOINT_URL`. |
 | `AWS_REGION` | `us-east-1` | AWS/MinIO region. Also read as `AWS_DEFAULT_REGION` or `S3_REGION`. |
 | `S3_URL_STYLE` | `path` when endpoint set, else `vhost` | `"path"` for MinIO/self-hosted; `"vhost"` for AWS S3. |
+| `NUBI_DUCKDB_MEMORY_LIMIT` | *(DuckDB default)* | Per-connection memory cap for query execution, e.g. `2GB`. One tenant's heavy scan cannot OOM the process. |
+| `NUBI_DUCKDB_THREADS` | *(DuckDB default)* | Per-connection thread cap. |
+| `NUBI_DUCKDB_TEMP_DIR` | *(DuckDB default)* | Spill directory for larger-than-memory queries (give Fly machines a volume and point this at it). |
 
 ---
 
@@ -236,6 +239,30 @@ Datasets are org-scoped. The `datasets` catalog enforces `org_id` on every read,
 When querying through the normal connector path, RLS predicates are injected into the SQL by the planner **before** the connector executes it. The connector receives `plan.sql` verbatim and never touches RLS logic — this is verified by the conformance suite (test A6 in `test_duckdb_storage.py`).
 
 All dataset endpoints require a valid first-party Bearer token.
+
+### Engine-layer tenant isolation (secret SCOPE)
+
+RLS is not the only wall. When a dataset's Parquet lives in object storage, the registered datastore config carries `s3_scope` = the org's prefix (`s3://<bucket>/datasets/<org_id>/`), and the DuckDB S3 secret is bound to that prefix with a `SCOPE` clause:
+
+```sql
+CREATE OR REPLACE SECRET nubi_s3 (
+    TYPE S3,
+    KEY_ID '…', SECRET '…',
+    SCOPE 's3://nubi-data/datasets/<org_id>/'
+);
+```
+
+A query through that datastore has **no credentials** for paths outside the scope — even SQL that names another org's object verbatim gets a permission error from DuckDB, independent of RLS and path validation.
+
+### Connection hardening
+
+Tenant SQL runs verbatim on the DuckDB connection, so every per-query connection is hardened before execution (`harden_connection` in `duckdb_conn.py`):
+
+- **Cloud (s3-only) connections** — `disabled_filesystems='LocalFileSystem'`: queries can never touch the host filesystem.
+- **Read-only local file sources** — `enable_external_access=false`: no file, URL, or extension access at query time.
+- **All connections** — extension autoinstall/autoload disabled, optional memory/thread/spill limits (see environment variables), then `lock_configuration=true` freezes all of the above for the connection's lifetime.
+
+Note: blocking the local filesystem also disables disk spill on that connection, so a larger-than-memory query fails rather than spilling. Size `NUBI_DUCKDB_MEMORY_LIMIT` accordingly.
 
 ---
 

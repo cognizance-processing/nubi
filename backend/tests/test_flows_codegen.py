@@ -588,7 +588,6 @@ class TestCompileEndpoint:
             "version": 1,
             "name": "incr_pipeline",
             "params": [],
-            "env": "dev",
             "tasks": [
                 _make_task("pull", "query", [], sql="SELECT * FROM raw"),
                 _make_task(
@@ -616,7 +615,6 @@ class TestCompileEndpoint:
         assert cg.status_code == 200, cg.text
         source = cg.json()["source"]
         assert "from nubi.flows import" in source
-        assert '__env__="dev"' in source
         assert "materialized=" in source
 
         # 2. source -> spec (real subprocess exec)
@@ -629,7 +627,7 @@ class TestCompileEndpoint:
         spec = cp.json()["spec"]
 
         assert spec["name"] == "incr_pipeline"
-        assert spec["env"] == "dev"
+        assert "env" not in spec  # specs carry no env (resolved at trigger time)
         blend = next(t for t in spec["tasks"] if t["key"] == "blend")
         assert "pull" in blend["needs"]
         assert blend["config"]["combine_sql"] == "SELECT * FROM pull"
@@ -843,27 +841,26 @@ class TestCodegenExecRoundTrip:
         blend = [t for t in out["tasks"] if t["key"] == "blend"][0]
         assert blend["config"]["materialized"] == materialized
 
-    def test_env_dev_round_trips_via_env_kwarg(self):
-        """env != 'prod' is emitted as __env__ and round-trips."""
+    def test_legacy_env_key_is_stripped_and_never_emitted(self):
+        """A legacy spec 'env' key is ignored: no __env__ in codegen output."""
         data = {
             "version": 1,
             "name": "env_rt",
             "params": [],
-            "env": "dev",
+            "env": "dev",  # legacy key — stripped by validation, never an error
             "tasks": [_make_task("step", "noop", [])],
         }
         spec, issues = validate_flow_spec(data)
         assert spec is not None and not [i for i in issues if not i.startswith("[warn]")]
         src = flow_spec_to_sdk(spec)
-        assert '__env__="dev"' in src
+        assert "__env__" not in src
         out = _exec_compiled_spec(src)
-        assert out["env"] == "dev"
+        assert "env" not in out
 
-    def test_env_prod_omits_env_kwarg(self):
-        """The 'prod' default must NOT emit __env__ (keeps output stable)."""
+    def test_codegen_never_emits_env_kwarg(self):
+        """Specs carry no env, so codegen output never contains __env__."""
         spec = _simple_spec("env_prod", [_make_task("step", "noop", [])])
         src = flow_spec_to_sdk(spec)
         assert "__env__" not in src
         out = _exec_compiled_spec(src)
-        # FlowSpec default env is 'prod'.
-        assert out.get("env", "prod") == "prod"
+        assert "env" not in out

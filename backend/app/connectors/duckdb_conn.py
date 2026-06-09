@@ -37,6 +37,70 @@ from app.errors import AppError
 # ---------------------------------------------------------------------------
 
 
+def harden_connection(
+    conn: "_duckdb_t.DuckDBPyConnection",
+    *,
+    block_local_fs: bool = False,
+    disable_external_access: bool = False,
+) -> None:
+    """Apply defence-in-depth settings to *conn*, then freeze the configuration.
+
+    Tenant SQL runs verbatim on this connection (RLS is injected upstream by
+    the planner), so the connection itself must not be a path to the host:
+    DuckDB SQL can otherwise read local files (``read_csv('/etc/...')``),
+    fetch URLs via httpfs, and install extensions.
+
+    Parameters
+    ----------
+    conn:
+        An open DuckDB connection.  Call AFTER required extensions (httpfs)
+        are loaded and any views are created — ``lock_configuration`` makes
+        these settings immutable for the rest of the connection's life.
+    block_local_fs:
+        Disable the LocalFileSystem while keeping httpfs alive.  Use for
+        connections that only read object storage (``s3://``) — a query can
+        then never touch the host filesystem even if it names a local path.
+        Leave False when registered views read local Parquet.
+    disable_external_access:
+        Disable ALL external access (local files AND remote URLs).  Use for
+        connections whose data is fully registered/attached up front (demo
+        tables, read-only local DB files).  Mutually exclusive with httpfs
+        reads — do not combine with ``block_local_fs``.
+
+    Resource limits are applied from the environment when set:
+    ``NUBI_DUCKDB_MEMORY_LIMIT`` (e.g. ``"2GB"``), ``NUBI_DUCKDB_THREADS``,
+    ``NUBI_DUCKDB_TEMP_DIR`` (spill directory for larger-than-memory queries).
+
+    Every statement is best-effort: settings differ across DuckDB versions and
+    a hardening miss must never break the query path.
+    """
+    statements: list[str] = [
+        "SET autoinstall_known_extensions=false",
+        "SET autoload_known_extensions=false",
+    ]
+    mem_limit = os.getenv("NUBI_DUCKDB_MEMORY_LIMIT", "")
+    if mem_limit:
+        statements.append(f"SET memory_limit='{mem_limit}'")
+    threads = os.getenv("NUBI_DUCKDB_THREADS", "")
+    if threads.isdigit():
+        statements.append(f"SET threads={threads}")
+    temp_dir = os.getenv("NUBI_DUCKDB_TEMP_DIR", "")
+    if temp_dir:
+        statements.append(f"SET temp_directory='{temp_dir}'")
+    if disable_external_access:
+        statements.append("SET enable_external_access=false")
+    elif block_local_fs:
+        statements.append("SET disabled_filesystems='LocalFileSystem'")
+    # MUST be last — freezes all of the above for the connection's lifetime.
+    statements.append("SET lock_configuration=true")
+
+    for stmt in statements:
+        try:
+            conn.execute(stmt)
+        except Exception:  # noqa: BLE001 — best-effort across DuckDB versions
+            continue
+
+
 def setup_s3_httpfs(
     conn: "_duckdb_t.DuckDBPyConnection",
     cfg: "dict | None" = None,
@@ -69,6 +133,11 @@ def setup_s3_httpfs(
             AWS region (defaults to ``"us-east-1"``).
         ``s3_url_style``
             ``"path"`` (default for MinIO) or ``"vhost"``.
+        ``s3_scope``
+            Optional path prefix (e.g. ``"s3://bucket/datasets/<org>/"``) the
+            secret is bound to via DuckDB's ``SCOPE`` clause.  Queries against
+            paths outside the scope have no credentials — per-tenant isolation
+            at the engine layer, independent of RLS.
 
         When a key is absent from *cfg* the corresponding ``AWS_*`` /
         ``S3_ENDPOINT_URL`` / ``S3_URL_STYLE`` environment variable is
@@ -163,6 +232,10 @@ def setup_s3_httpfs(
         else:
             use_ssl = True
         parts.append(f"USE_SSL {'true' if use_ssl else 'false'}")
+
+    scope = cfg.get("s3_scope") or ""
+    if scope:
+        parts.append(f"SCOPE '{scope}'")
 
     secret_sql = "CREATE OR REPLACE SECRET nubi_s3 (\n    " + ",\n    ".join(parts) + "\n)"
     conn.execute(secret_sql)

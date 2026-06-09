@@ -1164,14 +1164,14 @@ class TestCodegenRoundTrip:
 
 
 # ---------------------------------------------------------------------------
-# 6. SDK compile — env (__env__ reserved kwarg) + materialized config block
+# 6. SDK compile — legacy __env__ kwarg + materialized config block
 # ---------------------------------------------------------------------------
 
 
 class TestSDKEnvAndMaterialized:
-    """The nubi.flows SDK compile() threads __env__ and the materialized block."""
+    """compile() strips the legacy __env__ kwarg; specs carry no env field."""
 
-    def test_env_kwarg_sets_spec_env_and_is_not_a_param(self) -> None:
+    def test_env_kwarg_is_stripped_and_never_a_param(self) -> None:
         @task(kind="noop")
         def step() -> None:  # pragma: no cover - traced, not executed
             pass
@@ -1180,8 +1180,10 @@ class TestSDKEnvAndMaterialized:
         def env_flow() -> None:
             step()
 
+        # Legacy __env__ kwarg is accepted but IGNORED (back-compat): the
+        # environment is resolved at trigger time, never stored in the spec.
         spec = env_flow.compile(__env__="dev")
-        assert spec["env"] == "dev"
+        assert "env" not in spec
         # __env__ must NOT leak into params.
         assert all(p["name"] != "__env__" for p in spec["params"])
 
@@ -1195,11 +1197,10 @@ class TestSDKEnvAndMaterialized:
             step2()
 
         spec = env_flow2.compile()
-        # Absent __env__ ⇒ no env override; validate_flow_spec defaults to prod.
         assert "env" not in spec
         parsed, issues = validate_flow_spec(spec)
         assert parsed is not None
-        assert parsed.env == "prod"
+        assert "env" not in parsed.model_dump()
 
     def test_materialized_block_round_trips_via_sdk(self) -> None:
         materialized = {
@@ -1228,7 +1229,7 @@ class TestSDKEnvAndMaterialized:
             blend(p)
 
         spec = mat_flow.compile(__env__="dev")
-        assert spec["env"] == "dev"
+        assert "env" not in spec  # legacy kwarg ignored — specs carry no env
         blend_task = [t for t in spec["tasks"] if t["key"] == "blend"][0]
         assert blend_task["config"]["materialized"] == materialized
         # Validates cleanly (incremental requires time_column + target).

@@ -529,16 +529,38 @@ async def query(
     # unconditionally in the finally block around execute().
     _net_cleanup = lambda: None  # noqa: E731
 
-    if effective_datastore_id is not None:
-        # Resolve org_id: embed tokens carry it in the token claim; first-party
-        # tokens require a DB lookup via get_user_org.
-        from app.routes.resources import get_user_org as _get_user_org
+    # ── 2b. Org attribution + usage quota (billing) ──────────────────────────
+    # Resolve the caller's org BEFORE building a connector so (a) the EE quota
+    # checker can gate compute up front and (b) the post-execute metering
+    # event is org-attributable.  Embed tokens carry the org in the token
+    # claim; first-party tokens require a DB lookup.  Demo-path callers
+    # without an org membership keep working (org_id=None → quota allows,
+    # metering logs a warning); the datastore path re-raises the original
+    # lookup error below to preserve its error contract.
+    from app.routes.resources import get_user_org as _get_user_org
 
-        repo = get_repo()
-        if identity.kind == "embed" and identity.org:
-            org_id = identity.org
-        else:
+    repo = get_repo()
+    org_id: str | None
+    _org_lookup_error: Exception | None = None
+    if identity.kind == "embed" and identity.org:
+        org_id = identity.org
+    else:
+        try:
             org_id = await _get_user_org(identity.user_id, repo)
+        except Exception as exc:  # noqa: BLE001 — demo path tolerates no-org callers
+            org_id = None
+            _org_lookup_error = exc
+
+    from app.features import enforce_quota as _enforce_quota
+
+    await _enforce_quota(org_id, "compute_units", amount=1.0)
+
+    # Connector kind for the metering event's ``tier`` dimension.
+    _conn_kind = "demo"
+
+    if effective_datastore_id is not None:
+        if org_id is None and _org_lookup_error is not None:
+            raise _org_lookup_error
 
         ds = await repo.get("datastores", org_id, effective_datastore_id)
         if ds is None:
@@ -549,6 +571,7 @@ async def query(
             )
         cfg: dict = dict(ds.get("config") or {})
         ctype: str | None = cfg.get("connector_type") or cfg.get("type")
+        _conn_kind = ctype or "unknown"
 
         # ── (a) Secret injection (M22-A) ──────────────────────────────────────
         # Fetch the decrypted secret for this datastore (if any) and merge the
@@ -658,12 +681,11 @@ async def query(
                 import duckdb
 
                 _conn = duckdb.connect(database=_db_path, read_only=True)
-                try:
-                    # Defence-in-depth: a read-only file source has no need to
-                    # touch the local FS / network at query time.
-                    _conn.execute("SET enable_external_access=false")
-                except Exception:
-                    pass
+                # Defence-in-depth: a read-only file source has no need to
+                # touch the local FS / network at query time.
+                from app.connectors.duckdb_conn import harden_connection as _harden
+
+                _harden(_conn, disable_external_access=True)
                 connector = factory(_conn)
             else:
                 import duckdb as _duckdb_mem
@@ -703,6 +725,16 @@ async def query(
                             _mem_conn.execute(_stmt)
                         except Exception:  # noqa: BLE001
                             pass
+                # Harden AFTER httpfs/secret setup and view creation
+                # (lock_configuration freezes settings).  Views scan lazily at
+                # query time, so the local filesystem is blocked only when the
+                # datastore reads object storage exclusively — a local-Parquet
+                # view still needs FS reads at scan time.
+                from app.connectors.duckdb_conn import harden_connection as _harden
+
+                _parquet_ref = str(cfg.get("parquet_path") or "")
+                _s3_only = bool(cfg.get("s3_views")) or _parquet_ref.startswith("s3://")
+                _harden(_mem_conn, block_local_fs=_s3_only)
                 connector = factory(_mem_conn)
         elif ctype == "postgres":
             # PostgresConnector takes a DSN string, not a raw config dict.
@@ -754,6 +786,9 @@ async def query(
     # For 'direct' mode / the demo path, _net_cleanup is a no-op.  Serialisation
     # runs inside the guard too because a connector may materialise the table
     # lazily and could still touch the tunnel during table_to_ipc_bytes.
+    import time as _time
+
+    _t0 = _time.perf_counter()
     try:
         arrow_table = connector.execute(physical_plan)
 
@@ -764,6 +799,26 @@ async def query(
             _net_cleanup()
         except Exception:  # noqa: BLE001 — cleanup must never mask the query result/error.
             pass
+
+    # ── 5b. Meter the execution (billing: compute_units) ─────────────────────
+    # One event per cache MISS — hits cost no compute and are not metered.
+    # units = compute-seconds (reconcile sums these into compute_units).
+    # Best-effort: metering must never break the query path.
+    _elapsed_ms = int((_time.perf_counter() - _t0) * 1000)
+    try:
+        from app.compute.metering import record_usage as _record_usage
+
+        await _record_usage(
+            kind="compute",
+            user_id=str(identity.user_id or "embed"),
+            org_id=org_id,
+            units=_elapsed_ms / 1000.0,
+            tier=_conn_kind,
+            elapsed_ms=_elapsed_ms,
+            output_bytes=len(full_bytes),
+        )
+    except Exception:  # noqa: BLE001 — telemetry must never break the caller
+        pass
 
     # ── 6. Cache the result ───────────────────────────────────────────────────
     cache.put(physical_plan.cache_key, full_bytes)

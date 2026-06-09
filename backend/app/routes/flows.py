@@ -1181,6 +1181,7 @@ async def run_cell(
 
     # ── 1. Resolve spec ────────────────────────────────────────────────────
     spec_data: dict[str, Any] | None = None
+    source_project_id: str | None = None
 
     if body.spec is not None:
         spec_data = body.spec
@@ -1188,6 +1189,7 @@ async def run_cell(
         store_ref = get_flow_store()
         flow = await _require_flow_in_org(body.flow_id, org_id, store_ref)
         spec_data = flow.get("spec") or {}
+        source_project_id = flow.get("project_id")
     else:
         raise AppError("bad_request", "Supply 'spec' or 'flow_id'.", 400)
 
@@ -1246,6 +1248,9 @@ async def run_cell(
     store = get_flow_store()
     now = datetime.now(timezone.utc)
 
+    # Transient flows inherit the source flow's project; inline specs fall
+    # back to the org's default project (resolved by the store — project_id
+    # is NOT NULL on flows).
     transient_flow = await store.create_flow(
         org_id=org_id,
         created_by=str(user["id"]),
@@ -1254,7 +1259,7 @@ async def run_cell(
         enabled=False,
         schedule=None,
         next_run_at=None,
-        project_id=None,
+        project_id=source_project_id or await _resolve_project_id(org_id, None),
     )
 
     try:
@@ -1563,9 +1568,9 @@ async def run_flow(
     the flow_run dict with a ``task_runs`` array.
 
     ``body.env`` optionally overrides the execution environment (resolution:
-    override → spec.env → "prod").  When the resolved environment has a spec
-    version pinned for this flow, the PINNED spec is materialized instead of
-    the draft.
+    override → the flow's project default env → "prod").  When the resolved
+    environment has a spec version pinned for this flow, the PINNED spec is
+    materialized instead of the draft.
 
     Returns 404 if the flow does not exist or belongs to a different org.
     """
@@ -1576,7 +1581,7 @@ async def run_flow(
     # ── ENVIRONMENTS: run the pinned spec when the resolved env has one ──────
     from app.flows.runtime import _resolve_env  # noqa: PLC0415
 
-    resolved_env = _resolve_env(body.env, flow.get("spec"))
+    resolved_env = await _resolve_env(body.env, flow)
     try:
         pinned_spec, _resolved = await _pinned_version_for_env(
             flow, org_id, resolved_env

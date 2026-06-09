@@ -6,7 +6,7 @@ used in tests.
 
 ``PgFlowStore`` is the asyncpg-backed production store that maps each method
 to a parameterised SQL query against the ``flows``, ``flow_runs``, and
-``task_runs`` tables (from migration 0012).  Rows are converted to plain
+``task_runs`` tables (from 0004_flows.sql).  Rows are converted to plain
 dicts; jsonb and datetime values match the shape produced by
 ``InMemoryFlowStore``.
 
@@ -73,11 +73,11 @@ class InMemoryFlowStore:
     parent_task_run_id(str|None), branch_taken(str|None)}``
 
     ``parent_task_run_id`` — for map child task_runs, points to the parent
-    map task_run.  NULL for all other task_runs (migration 0020).
+    map task_run.  NULL for all other task_runs.
 
     ``branch_taken`` — for branch task_runs, stores the branch label that was
     taken (e.g. ``"condition_0"``, ``"default"``).  NULL for all other
-    task_runs (migration 0020).
+    task_runs.
     """
 
     def __init__(self) -> None:
@@ -226,7 +226,8 @@ class InMemoryFlowStore:
         """Create and store a new flow_run; return the stored dict.
 
         ``env`` is the resolved execution environment for this run (override →
-        spec.env → "prod").  It namespaces materialized/incremental targets.
+        the flow's project default env → "prod").  It namespaces
+        materialized/incremental targets.
         """
         run_id = str(uuid.uuid4())
         now = datetime.now(timezone.utc)
@@ -307,10 +308,10 @@ class InMemoryFlowStore:
                 "started_at": tr.get("started_at", None),
                 "finished_at": tr.get("finished_at", None),
                 "created_at": tr.get("created_at", now),
-                # Work-pool lease fields (migration 0016).
+                # Work-pool lease fields.
                 "lease_expires_at": tr.get("lease_expires_at", None),
                 "worker_id": tr.get("worker_id", None),
-                # Map / branch fields (migration 0020).
+                # Map / branch fields.
                 # parent_task_run_id: set on map child task_runs to the parent
                 #   map task_run id; NULL for all other task_runs.
                 "parent_task_run_id": tr.get("parent_task_run_id", None),
@@ -571,7 +572,7 @@ def _row_to_flow(row: Any) -> Flow:
     - ``spec`` jsonb is returned as a Python dict.
     """
     d = dict(row)
-    for key in ("id", "org_id", "created_by"):
+    for key in ("id", "org_id", "project_id", "created_by"):
         if key in d and d[key] is not None and not isinstance(d[key], str):
             d[key] = str(d[key])
     for key in ("next_run_at", "last_run_at", "created_at", "updated_at"):
@@ -599,7 +600,7 @@ def _row_to_flow_run(row: Any) -> FlowRun:
     if "params" in d and not isinstance(d["params"], dict):
         import json  # noqa: PLC0415
         d["params"] = json.loads(d["params"])
-    # env column (migration 0026); old rows / pre-migration read as "prod".
+    # env column; old rows / pre-migration read as "prod".
     if not d.get("env"):
         d["env"] = "prod"
     return d
@@ -637,7 +638,7 @@ def _row_to_task_run(row: Any) -> TaskRun:
     # Ensure lease fields are present (older rows pre-migration may lack them).
     d.setdefault("lease_expires_at", None)
     d.setdefault("worker_id", None)
-    # Map / branch fields added in migration 0020; default to None for older rows.
+    # Map / branch fields; default to None for older rows.
     if "parent_task_run_id" in d and d["parent_task_run_id"] is not None:
         d["parent_task_run_id"] = str(d["parent_task_run_id"])
     else:
@@ -653,8 +654,8 @@ class PgFlowStore:
     (which acquire a connection from the pool automatically).
 
     All SQL is parameterised with ``$N`` placeholders.  Column names match
-    the ``flows``, ``flow_runs``, and ``task_runs`` tables from migration
-    0012.
+    the ``flows``, ``flow_runs``, and ``task_runs`` tables from
+    0004_flows.sql.
 
     Rows returned by asyncpg are converted to plain dicts that match the
     shape produced by ``InMemoryFlowStore``.
@@ -675,9 +676,17 @@ class PgFlowStore:
         next_run_at: datetime | None = None,
         project_id: str | None = None,
     ) -> Flow:
-        """Insert a new flow row and return the stored dict."""
+        """Insert a new flow row and return the stored dict.
+
+        ``flows.project_id`` is NOT NULL: when the caller passes ``None`` the
+        org's default project is resolved as a fallback so the insert always
+        carries a project.
+        """
         import json  # noqa: PLC0415
         from app.db import fetchrow as db_fetchrow  # noqa: PLC0415
+        from app.repos.pg import resolve_required_project_id  # noqa: PLC0415
+
+        project_id = await resolve_required_project_id(org_id, project_id)
 
         row = await db_fetchrow(
             """
@@ -834,7 +843,7 @@ class PgFlowStore:
     ) -> FlowRun:
         """Insert a new flow_run row and return the stored dict.
 
-        ``env`` (migration 0026) is the resolved execution environment for this
+        ``env`` is the resolved execution environment for this
         run.  It namespaces materialized/incremental targets.
         """
         import json  # noqa: PLC0415
@@ -984,7 +993,7 @@ class PgFlowStore:
         allowed = {
             "state", "attempt", "result", "error", "logs",
             "scheduled_at", "started_at", "finished_at", "cache_key",
-            # Map / branch fields (migration 0020).
+            # Map / branch fields.
             "branch_taken",
         }
         updates: list[str] = []
@@ -1156,7 +1165,7 @@ class PgFlowStore:
             return 0
 
     # ------------------------------------------------------------------
-    # Incremental watermark operations (migration 0026)
+    # Incremental watermark operations (flow_watermarks table)
     # ------------------------------------------------------------------
 
     async def get_watermark(

@@ -31,6 +31,11 @@ Public API
     Idempotently create the starter bundle.  Safe to call on every signup / to
     re-run for "restore".  Never raises on the happy path — returns
     ``{"skipped": reason}`` if the demo dataset can't be built.
+``checkpoint_and_promote_bundle(org_id, project_id, created_by)``
+    Checkpoint every demo query/board/flow (v1) and pin it in the project's
+    dev AND prod environments so the demo works end-to-end under strict
+    protected-env visibility.  Best-effort — returns ``{"skipped": reason}``
+    instead of raising.
 ``remove_sample_bundle(org_id, project_id=None)``
     Delete every ``sample = true`` resource in the org (optionally scoped to a
     project).  Returns the per-resource delete counts.
@@ -194,6 +199,80 @@ async def seed_sample_bundle(
         "board_ids": board_ids,
         "created": created,
     }
+
+
+async def checkpoint_and_promote_bundle(
+    org_id: str,
+    project_id: str,
+    created_by: str,
+    repo: Repo | None = None,
+) -> dict[str, Any]:
+    """Checkpoint the demo bundle (v1) and pin it in BOTH dev and prod.
+
+    A fresh demo project must work end-to-end under strict protected-env
+    visibility: every demo query/board/flow gets a v1 ``resource_versions``
+    snapshot and ``resource_environments`` pointers in the project's ``dev``
+    AND ``prod`` environments, exactly as if the user had checkpointed and
+    promoted each resource by hand.
+
+    Best-effort by design — returns ``{"skipped": reason}`` instead of
+    raising, so demo seeding can never break signup or ``seed --demo``.
+
+    Returns ``{"checkpointed": {"query": n, "board": n, "flow": n}}`` on
+    success.
+    """
+    repo = repo or get_repo()
+    try:
+        from app.environments.store import get_env_store  # noqa: PLC0415
+
+        env_store = get_env_store()
+        envs = await env_store.ensure_project_envs(str(project_id))
+        targets = [e for e in envs if e.get("key") in ("dev", "prod")]
+        if not targets:
+            return {"skipped": "project has no dev/prod environments"}
+    except Exception as exc:  # noqa: BLE001 — env store unavailable
+        return {"skipped": f"env store unavailable: {exc}"}
+
+    counts = {"query": 0, "board": 0, "flow": 0}
+
+    async def _pin(kind: str, resource_id: str, config: dict[str, Any]) -> None:
+        version = await env_store.create_version(
+            org_id=str(org_id),
+            project_id=str(project_id),
+            kind=kind,
+            resource_id=str(resource_id),
+            config=config,
+            created_by=str(created_by),
+            message="Demo seed",
+        )
+        for env in targets:
+            await env_store.set_pointer(
+                kind, str(resource_id), env["id"], version["id"],
+                promoted_by=str(created_by),
+            )
+        counts[kind] += 1
+
+    try:
+        # Queries + boards: the bundle rows are tagged config.sample = true.
+        for kind, table in (("query", "queries"), ("board", "boards")):
+            for row in await repo.list(table, org_id, project_id):
+                cfg = row.get("config") or {}
+                if cfg.get("sample") is not True:
+                    continue
+                await _pin(kind, str(row["id"]), cfg)
+
+        # Flows: snapshot the spec of every flow in the demo project.
+        from app.flows.store import get_flow_store  # noqa: PLC0415
+
+        flow_store = get_flow_store()
+        for flow in await flow_store.list_flows(str(org_id)):
+            if str(flow.get("project_id") or "") != str(project_id):
+                continue
+            await _pin("flow", str(flow["id"]), flow.get("spec") or {})
+    except Exception as exc:  # noqa: BLE001 — never fail seeding on promote
+        return {"skipped": f"checkpoint/promote failed: {exc}", "checkpointed": counts}
+
+    return {"checkpointed": counts}
 
 
 async def remove_sample_bundle(

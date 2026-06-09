@@ -1,6 +1,6 @@
 """Tests for project-scoped environments + resource versioning (contract tests).
 
-Feature under test (migration 0029 + app/environments/store.py +
+Feature under test (0005_environments_versions.sql + app/environments/store.py +
 app/routes/environments.py):
 
 - Environments are project-scoped rows (dev/prod auto-created lazily; prod is
