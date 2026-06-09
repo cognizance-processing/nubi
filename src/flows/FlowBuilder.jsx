@@ -9,24 +9,21 @@
  *   - Canvas / Notebook view toggle (the only in-component toolbar)
  *   - Fully responsive: mobile bottom-sheet for palette + inspector
  *
- * The flow name + Validate/Save/Run/Code actions and the Builder/Runs switcher
- * live in the app top bar — FlowsPage portals them there (mirrors the dashboard
- * editor). This component only owns the canvas, the view toggle, and the code
- * panel (whose visibility is controlled by the `codeOpen` prop).
- *
- * Saving (manual + autosave) is owned by FlowsPage; this component only
- * forwards the shared `onSave` callback and the saving/dirty/autosaveStatus
- * flags to NotebookView so its toolbar mirrors the top-bar save state.
+ * The flow name + Validate/Save/Run/Code actions, the Builder/Runs switcher
+ * and the notebook controls (add-cell / Lineage / plan-gated Run all) live in
+ * the app top bar — FlowsPage portals them there (mirrors the dashboard
+ * editor). This component only owns the canvas, the notebook body, and the
+ * code panel (whose visibility is controlled by the `codeOpen` prop). Saving
+ * (manual + autosave) is owned by FlowsPage.
  *
  * Props:
  *   flow           {object|null}  — existing flow row (null for new)
  *   spec           {object}       — current FlowSpec (controlled)
  *   onSpecChange   {Function}     — called with updated spec on every edit
- *   onSave         {Function}     — shared page-level save; passed to NotebookView
- *   saving         {boolean}      — manual save in flight; passed to NotebookView
- *   dirty          {boolean}      — unsaved changes; passed to NotebookView
- *   autosaveStatus {string|null}  — null|'saving'|'saved'|'error'; passed to NotebookView
  *   onRun          {Function}     — passed through to NotebookView
+ *   env            {string}       — run environment; passed to NotebookView
+ *   lineageOpen    {boolean}      — notebook lineage panel visibility (top-bar toggle)
+ *   onLineageClose {Function}     — passed to NotebookView's lineage panel
  *   codeOpen       {boolean}      — whether the Python code panel is shown
  *   onCodeClose    {Function}     — called to dismiss the code panel
  */
@@ -217,7 +214,7 @@ function MobileInspectorSheet({ open, onClose, task, onChange }) {
 // FlowBuilder
 // ---------------------------------------------------------------------------
 
-const FlowBuilder = forwardRef(function FlowBuilder({ flow, spec, onSpecChange, onSave, saving = false, dirty = false, autosaveStatus = null, onRun, onSelectedTaskChange, codeOpen = false, onCodeClose, onViewModeChange }, ref) {
+const FlowBuilder = forwardRef(function FlowBuilder({ flow, spec, onSpecChange, onRun, env = 'prod', lineageOpen = false, onLineageClose, onSelectedTaskChange, codeOpen = false, onCodeClose, onViewModeChange }, ref) {
   // ── View mode: 'canvas' | 'notebook' ─────────────────────────────────────
   // Initialise from spec.view if present; fall back to 'canvas'.
   const [viewMode, setViewMode] = useState(() => spec?.view === 'notebook' ? 'notebook' : 'canvas')
@@ -238,6 +235,10 @@ const FlowBuilder = forwardRef(function FlowBuilder({ flow, spec, onSpecChange, 
   )
   const reactFlowWrapper = useRef(null)
   const [rfInstance, setRfInstance] = useState(null)
+
+  // Ref onto NotebookView so top-bar actions (Run all / add cell) can be
+  // forwarded through this component's own imperative handle.
+  const notebookRef = useRef(null)
 
   // ── Inspector ─────────────────────────────────────────────────────────────
   const [selectedNodeId, setSelectedNodeId] = useState(null)
@@ -427,6 +428,9 @@ const FlowBuilder = forwardRef(function FlowBuilder({ flow, spec, onSpecChange, 
     updateSelectedTask: handleTaskChange,
     clearSelection: () => setSelectedNodeId(null),
     setView: handleViewChange,
+    // Notebook-view passthroughs (no-ops while the canvas view is active):
+    runAll: () => notebookRef.current?.runAll(),
+    addCell: (cellType) => notebookRef.current?.addCell(cellType),
   }), [handleAddNode, handleTaskChange, handleViewChange])
 
   // selectedTask's reference is stable across renders unless the selected node
@@ -478,17 +482,17 @@ const FlowBuilder = forwardRef(function FlowBuilder({ flow, spec, onSpecChange, 
   if (viewMode === 'notebook') {
     return (
       <div className="flex flex-col h-full overflow-hidden">
-        {/* View switcher lives in the app top bar (FlowsPage). */}
+        {/* The toolbar lives in the app top bar (FlowsPage portals it). */}
         <div className="flex-1 min-h-0 overflow-hidden">
           <NotebookView
+            ref={notebookRef}
             flow={flow}
             spec={spec}
             onSpecChange={onSpecChange}
-            onSave={onSave}
-            saving={saving}
-            dirty={dirty}
-            autosaveStatus={autosaveStatus}
             onRun={onRun}
+            env={env}
+            lineageOpen={lineageOpen}
+            onLineageClose={onLineageClose}
           />
         </div>
       </div>

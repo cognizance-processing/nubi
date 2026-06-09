@@ -168,6 +168,16 @@ import app.routes.jwt_issuers  # noqa: F401, E402
 # /{resource} catch-all in resources.py.
 import app.routes.datasets  # noqa: F401, E402
 
+# Import super-admin routes (/admin/*, gated by require_superadmin) BEFORE
+# resources so the /admin prefix routes are registered ahead of the generic
+# /{resource} catch-all in resources.py.
+import app.routes.admin  # noqa: F401, E402
+
+# Import environments + versions routes (/projects/{id}/environments,
+# /environments/*, /versions/*) BEFORE resources so they register ahead of the
+# generic /{resource} catch-all in resources.py.
+import app.routes.environments  # noqa: F401, E402
+
 # Import resources route so it registers itself on api_router at import time.
 import app.routes.resources  # noqa: F401, E402
 

@@ -62,7 +62,8 @@ export default function OnboardingPage() {
 
   // Create-workspace form state
   const [orgName, setOrgName] = useState('')
-  const [projectName, setProjectName] = useState('')
+  // First project defaults to "Default" (Supabase-style) but stays editable.
+  const [projectName, setProjectName] = useState('Default')
   const [demoProject, setDemoProject] = useState(true)
   const [creating, setCreating] = useState(false)
   const [createError, setCreateError] = useState(null)

@@ -24,7 +24,8 @@ export default function Register() {
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
   const [orgName, setOrgName] = useState('')
-  const [projectName, setProjectName] = useState('')
+  // First project defaults to "Default" (Supabase-style) but stays editable.
+  const [projectName, setProjectName] = useState('Default')
   const [demoProject, setDemoProject] = useState(true)
   const [error, setError] = useState(null)
   const [pending, setPending] = useState(false)

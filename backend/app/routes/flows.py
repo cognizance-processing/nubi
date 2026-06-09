@@ -141,6 +141,7 @@ class ValidateFlowIn(BaseModel):
 
 class RunFlowIn(BaseModel):
     params: dict[str, Any] = {}
+    env: str | None = None
 
 
 class CodegenSpecIn(BaseModel):
@@ -366,6 +367,38 @@ async def _require_flow_in_org(
     if flow is None or str(flow["org_id"]) != str(org_id):
         raise AppError("not_found", "Flow not found.", 404)
     return flow
+
+
+async def _pinned_version_for_env(
+    flow: dict[str, Any], org_id: str, env_key: str
+) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
+    """Return ``(pinned_spec, {id, version})`` for *env_key*, or ``(None, None)``.
+
+    Resolves the flow's project (falling back to the org default), looks up the
+    environment by key, and follows its pointer to the snapshotted spec.
+    Returns ``(None, None)`` when the project, environment, pointer, or version
+    is missing — callers then serve/run the draft spec.
+    """
+    from app.environments.store import get_env_store  # noqa: PLC0415
+    from app.repos import projects as projects_repo  # noqa: PLC0415
+
+    project_id = flow.get("project_id")
+    if not project_id:
+        project_id = await projects_repo.get_default_project_id(org_id)
+    if not project_id:
+        return None, None
+
+    env_store = get_env_store()
+    env = await env_store.get_environment_by_key(str(project_id), env_key)
+    if env is None:
+        return None, None
+    pointer = await env_store.get_pointer("flow", str(flow["id"]), env["id"])
+    if pointer is None:
+        return None, None
+    version = await env_store.get_version_by_id(pointer["version_id"])
+    if version is None:
+        return None, None
+    return version["config"] or {}, {"id": version["id"], "version": version["version"]}
 
 
 # ---------------------------------------------------------------------------
@@ -1411,17 +1444,31 @@ async def list_flows(
 @router.get("/{flow_id}", status_code=200)
 async def get_flow(
     flow_id: str,
+    env: str | None = None,
     user: dict[str, Any] = Depends(current_user),
     repo: Repo = Depends(get_repo),
 ) -> dict[str, Any]:
     """Get a single flow by ID.
+
+    ``?env=<key>``: when that environment has a version pinned for this flow,
+    the response ``spec`` is the pinned snapshot and ``resolved_version``
+    carries ``{id, version}``; otherwise the draft spec is returned with
+    ``resolved_version: null``.
 
     Returns 404 if the flow does not exist or belongs to a different org.
     """
     org_id = await _get_user_org(str(user["id"]), repo)
     store = get_flow_store()
     flow = await _require_flow_in_org(flow_id, org_id, store)
-    return _serialize_flow(flow)
+    result = _serialize_flow(flow)
+
+    env_key = (env or "").strip()
+    if env_key:
+        pinned_spec, resolved = await _pinned_version_for_env(flow, org_id, env_key)
+        if pinned_spec is not None:
+            result["spec"] = pinned_spec
+        result["resolved_version"] = resolved
+    return result
 
 
 @router.put("/{flow_id}", status_code=200, dependencies=[Depends(require_writer_default)])
@@ -1482,6 +1529,15 @@ async def delete_flow(
     store = get_flow_store()
     await _require_flow_in_org(flow_id, org_id, store)
     await store.delete_flow(flow_id)
+
+    # Best-effort cleanup of versions + environment pointers (polymorphic
+    # tables — no FK cascade from the flows row).
+    try:
+        from app.environments.store import get_env_store  # noqa: PLC0415
+
+        await get_env_store().delete_resource_data("flow", flow_id)
+    except Exception:  # noqa: BLE001 — never fail the delete on cleanup
+        pass
     return Response(status_code=204)
 
 
@@ -1497,11 +1553,29 @@ async def run_flow(
     Materialises a flow_run, drains all ready tasks to completion, and returns
     the flow_run dict with a ``task_runs`` array.
 
+    ``body.env`` optionally overrides the execution environment (resolution:
+    override → spec.env → "prod").  When the resolved environment has a spec
+    version pinned for this flow, the PINNED spec is materialized instead of
+    the draft.
+
     Returns 404 if the flow does not exist or belongs to a different org.
     """
     org_id = await _get_user_org(str(user["id"]), repo)
     store = get_flow_store()
     flow = await _require_flow_in_org(flow_id, org_id, store)
+
+    # ── ENVIRONMENTS: run the pinned spec when the resolved env has one ──────
+    from app.flows.runtime import _resolve_env  # noqa: PLC0415
+
+    resolved_env = _resolve_env(body.env, flow.get("spec"))
+    try:
+        pinned_spec, _resolved = await _pinned_version_for_env(
+            flow, org_id, resolved_env
+        )
+        if pinned_spec is not None:
+            flow["spec"] = pinned_spec
+    except Exception:  # noqa: BLE001 — never fail the run on env resolution
+        pass
 
     # ── BILLING: flow task execution consumes compute units ──────────────────
     # Enforce the org's compute-unit quota before draining (the executor
@@ -1522,7 +1596,9 @@ async def run_flow(
 
     now = datetime.now(timezone.utc)
 
-    flow_run = await materialize_flow_run(store, flow, body.params, "manual", now)
+    flow_run = await materialize_flow_run(
+        store, flow, body.params, "manual", now, env=body.env
+    )
     flow_run = await drain_flow_run(store, flow_run["id"], now, claims=claims)
 
     task_runs = await store.list_task_runs(flow_run["id"])

@@ -8,6 +8,7 @@ import {
   Cloud, Lock, Settings, Rocket,
 } from 'lucide-react'
 import { DOC_GROUPS, getDocs, getDoc } from '../docs/registry.js'
+import DocsHome from './docs/DocsHome.jsx'
 import MarkdownRenderer from '../components/MarkdownRenderer.jsx'
 
 // ── Scoped styles ─────────────────────────────────────────────────────────────
@@ -1063,6 +1064,8 @@ export default function DocsPage() {
               >
                 {isUnknown ? (
                   <DocNotFound slug={slug} />
+                ) : activeSlug === 'home' ? (
+                  <DocsHome onOpenSearch={() => setSearchOpen(true)} />
                 ) : doc ? (
                   <div className="max-w-[760px] docs-prose">
                     <DocBreadcrumb doc={doc} />

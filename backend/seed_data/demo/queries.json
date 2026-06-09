@@ -200,7 +200,7 @@
   },
   "fin_ar_aging": {
     "name": "Finance — AR aging (open invoices)",
-    "sql": "SELECT CASE WHEN days_past <= 0 THEN 'Current' WHEN days_past <= 30 THEN '1-30 days' WHEN days_past <= 60 THEN '31-60 days' WHEN days_past <= 90 THEN '61-90 days' ELSE '90+ days' END AS bucket, ROUND(SUM(amount), 2) AS amount, COUNT(*) AS invoices FROM (SELECT amount, date_diff('day', due_date, DATE '2026-05-31') AS days_past FROM fin_invoices WHERE status <> 'paid') t GROUP BY 1 ORDER BY MIN(days_past)",
+    "sql": "SELECT CASE WHEN days_past <= 0 THEN 'Current' WHEN days_past <= 30 THEN '1-30 days' WHEN days_past <= 60 THEN '31-60 days' WHEN days_past <= 90 THEN '61-90 days' ELSE '90+ days' END AS bucket, ROUND(SUM(amount), 2) AS amount, COUNT(*) AS invoices FROM (SELECT amount, (DATE '2026-05-31' - due_date) AS days_past FROM fin_invoices WHERE status <> 'paid') t GROUP BY 1 ORDER BY MIN(days_past)",
     "params": []
   },
   "fin_expense_dept": {

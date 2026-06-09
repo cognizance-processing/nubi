@@ -127,10 +127,15 @@ for (const bp of BREAKPOINTS) {
         // Close the sheet
         await page.keyboard.press('Escape')
       } else {
-        // Tablet / desktop: the floating palette panel should be inside the canvas
-        // (it's a Panel component inside ReactFlow — look for "Add task" text)
-        const palettePanel = page.getByText('Add task').first()
-        await expect(palettePanel).toBeVisible({ timeout: 5_000 })
+        // Tablet / desktop: the Add-task palette lives in the shared RHS
+        // sidebar, opened via the "Add task" panel toggle in the app top bar.
+        const addToggle = page.locator('button[aria-label="Add task"]:visible').first()
+        await expect(addToggle).toBeVisible({ timeout: 5_000 })
+        await addToggle.click()
+
+        // The palette panel shows the task type buttons (e.g. "SQL query")
+        const queryBtn = page.getByRole('button', { name: /sql query/i })
+        await expect(queryBtn.first()).toBeVisible({ timeout: 5_000 })
 
         // No overflow on desktop
         await assertNoHorizontalOverflow(page, `${bp.name} palette visible`)

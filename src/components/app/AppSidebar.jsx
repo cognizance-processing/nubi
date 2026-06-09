@@ -37,7 +37,9 @@ import {
   Plus,
   Check,
   Settings,
+  Shield,
 } from 'lucide-react'
+import { useAuth } from '../../contexts/AuthContext.jsx'
 import { useUi } from '../../contexts/UiContext.jsx'
 import { useOrg } from '../../contexts/OrgContext.jsx'
 import { useProject } from '../../contexts/ProjectContext.jsx'
@@ -255,6 +257,9 @@ function SidebarNavItem({ to, label, Icon: IconComponent, collapsed }) {
 
 function SidebarContent({ collapsed, showToggle = true }) {
   const { toggleSidebar } = useUi()
+  // Superadmin flag may not exist on older user payloads — code defensively.
+  const { user } = useAuth()
+  const isSuperadmin = Boolean(user?.is_superadmin)
 
   return (
     <div className="flex flex-col h-full py-3">
@@ -316,22 +321,26 @@ function SidebarContent({ collapsed, showToggle = true }) {
         ))}
       </nav>
 
-      {/* Secondary nav — pinned below the primary nav */}
-      <nav
-        className={`flex flex-col gap-0.5 mt-1 pt-2 border-t border-border ${collapsed ? 'items-center px-1' : 'px-2'}`}
-        aria-label="Settings navigation"
-      >
-        <SidebarNavItem to="/settings" label="Settings" Icon={Settings} collapsed={collapsed} />
-      </nav>
-
-      {/* Footer / version */}
+      {/* Footer / version — sits above the Settings divider */}
       {!collapsed && (
-        <div className="px-4 pb-1">
+        <div className="px-4 pb-2">
           <p className="text-[10px] text-muted/50 font-mono tracking-wide">
             nubi · beta
           </p>
         </div>
       )}
+
+      {/* Secondary nav — pinned below the primary nav */}
+      <nav
+        className={`flex flex-col gap-0.5 mt-1 pt-2 border-t border-border ${collapsed ? 'items-center px-1' : 'px-2'}`}
+        aria-label="Settings navigation"
+      >
+        {/* Superadmin-only link to the admin console (/admin) */}
+        {isSuperadmin && (
+          <SidebarNavItem to="/admin" label="Admin" Icon={Shield} collapsed={collapsed} />
+        )}
+        <SidebarNavItem to="/settings" label="Settings" Icon={Settings} collapsed={collapsed} />
+      </nav>
     </div>
   )
 }

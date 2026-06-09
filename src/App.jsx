@@ -95,6 +95,14 @@ import SecuritySettings from './pages/app/settings/SecuritySettings.jsx'
 import SecretsPage from './pages/app/SecretsPage.jsx'
 import DataExplorerPage from './pages/app/DataExplorerPage.jsx'
 
+// Admin portal (superadmin-only; AdminLayout wraps RequireSuperadmin which
+// renders a 404-style view for non-superadmins so the portal stays hidden)
+import AdminLayout from './pages/admin/AdminLayout.jsx'
+import AdminOverviewPage from './pages/admin/AdminOverviewPage.jsx'
+import AdminUsersPage from './pages/admin/AdminUsersPage.jsx'
+import AdminOrgsPage from './pages/admin/AdminOrgsPage.jsx'
+import AdminOrgDetailPage from './pages/admin/AdminOrgDetailPage.jsx'
+
 // Dev
 import IllustrationGallery from './pages/dev/IllustrationGallery.jsx'
 
@@ -259,6 +267,14 @@ export default function App() {
           </Route>
           {/* Secrets are flow-scoped — homed under the Flows section, not top-level nav. */}
           <Route path="flows/secrets" element={<SecretsPage />} />
+
+          {/* Admin portal — superadmin only (non-admins see a 404-style view) */}
+          <Route path="admin" element={<AdminLayout />}>
+            <Route index element={<AdminOverviewPage />} />
+            <Route path="users" element={<AdminUsersPage />} />
+            <Route path="orgs" element={<AdminOrgsPage />} />
+            <Route path="orgs/:id" element={<AdminOrgDetailPage />} />
+          </Route>
 
           {/* EE-only: /billing — rendered only when EE module is loaded and
               billing feature is enabled.  Core never statically imports src/ee;

@@ -3,6 +3,7 @@ import remarkGfm from 'remark-gfm'
 import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter'
 import { oneDark } from 'react-syntax-highlighter/dist/esm/styles/prism'
 import { Link } from 'react-router-dom'
+import { resolveDocIllustration } from './illustrations/docMap.js'
 
 /**
  * Anchored heading helper — creates an id from text content
@@ -173,6 +174,27 @@ const components = {
   // ── Pre (wraps fenced code) ───────────────────────────────────────────────
   pre({ children }) {
     return <>{children}</>
+  },
+
+  // ── Images — `illustration:Name` renders a brand SVG; else a plain image ──
+  img({ src, alt }) {
+    const Illo = resolveDocIllustration(src)
+    if (Illo) {
+      return (
+        <figure className="my-8">
+          <div className="rounded-2xl border border-border bg-surface-2 px-5 py-6 sm:px-8 sm:py-8">
+            <Illo className="w-full h-auto max-w-xl mx-auto" />
+          </div>
+          {alt ? (
+            <figcaption className="mt-3 text-center text-xs text-muted">{alt}</figcaption>
+          ) : null}
+        </figure>
+      )
+    }
+    return (
+      <img src={src} alt={alt || ''} loading="lazy"
+        className="my-6 rounded-xl border border-border max-w-full h-auto" />
+    )
   },
 
   // ── Tables (GFM) ─────────────────────────────────────────────────────────

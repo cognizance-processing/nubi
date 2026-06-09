@@ -204,6 +204,10 @@ async def create_project(
         created_by,
         git_json,
     )
+    # Every project gets its dev+prod environment pair (lazy import to avoid a
+    # cycle; best-effort so test doubles without an env store still pass).
+    await _ensure_project_envs_best_effort(pid)
+
     # In production INSERT ... RETURNING always returns a row. Under the test
     # fake DB it may return None; synthesize a best-effort dict so callers that
     # only need the id keep working.
@@ -217,6 +221,20 @@ async def create_project(
             "git": git,
         }
     return _row_to_dict(row)
+
+
+async def _ensure_project_envs_best_effort(project_id: str) -> None:
+    """Idempotently create the project's dev+prod environments (best-effort).
+
+    Lazy-imports the environments store to avoid an import cycle and swallows
+    every error so test doubles without environment tables keep working.
+    """
+    try:
+        from app.environments.store import get_env_store  # noqa: PLC0415
+
+        await get_env_store().ensure_project_envs(str(project_id))
+    except Exception:  # noqa: BLE001 — never fail project creation on envs
+        pass
 
 
 async def update_project(
@@ -287,6 +305,9 @@ async def ensure_default_project(
     """
     existing = await get_default_project_id(org_id)
     if existing:
+        # Pre-0029 projects may predate the environments table; ensure the
+        # dev+prod pair exists for them too (idempotent, best-effort).
+        await _ensure_project_envs_best_effort(existing)
         return existing
     proj = await create_project(org_id, name, created_by)
     return str(proj["id"])

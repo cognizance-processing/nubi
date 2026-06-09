@@ -15,27 +15,28 @@
  *     (POST /flows/{id}/run); the dialog stays open until the run actually
  *     starts and shows the error inline if triggering fails
  *
- * Saving is owned by FlowsPage (shared with the canvas view + autosave): the
- * toolbar Save button just calls the `onSave` prop, and the dirty/autosave
- * status passed down is rendered via SaveStatusBadge (also exported for the
- * FlowsPage top bar so both views show one consistent indicator).
+ * This view has NO toolbar of its own — the single app top bar (portaled by
+ * FlowsPage) owns the flow name input, add-cell buttons, save status, Save,
+ * Lineage toggle and Run. Those top-bar controls drive this component via:
+ *   - the imperative ref handle ({ runAll, addCell }) forwarded through
+ *     FlowBuilder, and
+ *   - the controlled `lineageOpen` / `onLineageClose` props.
+ *
+ * Saving is owned by FlowsPage (shared with the canvas view + autosave);
+ * SaveStatusBadge is exported for the FlowsPage top bar.
  *
  * Props:
  *   flow           {object|null}  — saved flow row (null for unsaved draft)
  *   spec           {object}       — current FlowSpec (controlled)
  *   onSpecChange   {Function}     — called with updated spec on every edit
- *   onSave         {Function}     — triggers the shared (page-level) save
- *   saving         {boolean}      — a manual save is in flight
- *   dirty          {boolean}      — spec differs from the last-saved snapshot
- *   autosaveStatus {string|null}  — null | 'saving' | 'saved' | 'error'
  *   onRun          {Function}     — called with { flowRun, runId } after triggering
+ *   env            {string}       — run environment passed to runFlow (top-bar EnvSelector)
+ *   lineageOpen    {boolean}      — show the full-flow lineage panel (top-bar toggle)
+ *   onLineageClose {Function}     — called when the lineage panel asks to close
  */
 
-import { useState, useCallback, useRef, useMemo } from 'react'
+import { useState, useCallback, useRef, useMemo, forwardRef, useImperativeHandle } from 'react'
 import {
-  Plus,
-  Save,
-  Play,
   Loader2,
   AlertCircle,
   Check,
@@ -43,7 +44,6 @@ import {
   Database,
   FileText,
   X,
-  GitBranch,
 } from 'lucide-react'
 
 import { runFlow } from '../lib/flows.js'
@@ -138,12 +138,8 @@ export function SaveStatusBadge({ dirty, saving, autosaveStatus, className = '' 
 // NotebookView
 // ---------------------------------------------------------------------------
 
-export default function NotebookView({ flow, spec, onSpecChange, onSave, saving = false, dirty = false, autosaveStatus = null, onRun }) {
-  const [runningAll, setRunningAll] = useState(false)
+const NotebookView = forwardRef(function NotebookView({ flow, spec, onSpecChange, onRun, env = 'prod', lineageOpen = false, onLineageClose }, ref) {
   const [runError, setRunError] = useState(null)
-
-  // Lineage toggle — show the full-flow lineage panel below the toolbar
-  const [showLineage, setShowLineage] = useState(false)
 
   // Plan gate dialog state — open before durable Run All
   const [planGateOpen, setPlanGateOpen] = useState(false)
@@ -221,10 +217,8 @@ export default function NotebookView({ flow, spec, onSpecChange, onSave, saving 
   // the run fails; we only close the dialog once the run actually started.
   const handlePlanConfirm = useCallback(async () => {
     if (!flow?.id) return false
-    setRunningAll(true)
     setRunError(null)
-    const result = await runFlow(flow.id, {})
-    setRunningAll(false)
+    const result = await runFlow(flow.id, {}, env || undefined)
     if (!result) {
       setRunError('Run failed — check the console for details.')
       return false
@@ -232,102 +226,21 @@ export default function NotebookView({ flow, spec, onSpecChange, onSave, saving 
     setPlanGateOpen(false)
     onRun?.({ flowRun: result, runId: result.id })
     return true
-  }, [flow, onRun])
+  }, [flow, onRun, env])
+
+  // ── Imperative handle — drives this view from the app top bar (FlowsPage
+  //    portals the toolbar there; calls arrive via FlowBuilder's ref). ───────
+  useImperativeHandle(ref, () => ({
+    /** Plan-gated durable "Run all" (opens PlanGateDialog). */
+    runAll: handleRunAll,
+    /** Append a blank cell of the given type ('sql' | 'python' | 'markdown'). */
+    addCell: (cellType) => handleAddCell(cellType, null),
+  }), [handleRunAll, handleAddCell])
 
   return (
     <div className="flex flex-col h-full overflow-hidden">
 
-      {/* ── Notebook toolbar ──────────────────────────────────────────────── */}
-      <div className="shrink-0 flex items-center gap-1.5 sm:gap-2 px-2 sm:px-4 py-2 border-b border-border bg-surface-2/40 overflow-x-auto">
-
-        {/* Notebook name */}
-        <input
-          type="text"
-          value={spec?.name ?? ''}
-          onChange={e => onSpecChange?.({ ...spec, name: e.target.value })}
-          placeholder="Notebook name…"
-          className="h-9 px-2.5 text-sm font-medium border border-border rounded-lg bg-surface text-fg placeholder:text-muted/50 focus:outline-none focus:ring-2 focus:ring-ring/60 w-28 sm:w-44 shrink-0"
-        />
-
-        <div className="flex-1 min-w-0" />
-
-        {/* Add SQL cell */}
-        <button
-          onClick={() => handleAddCell('sql', null)}
-          className="flex items-center gap-1.5 px-2 sm:px-3 h-9 text-xs font-medium rounded-lg border border-border bg-surface text-fg hover:bg-surface-2 transition-colors shrink-0"
-          title="Add SQL cell"
-        >
-          <Database size={12} className="text-blue-500" />
-          <span className="hidden sm:inline">+ SQL</span>
-          <span className="sm:hidden"><Plus size={12} /></span>
-        </button>
-
-        {/* Add Python cell */}
-        <button
-          onClick={() => handleAddCell('python', null)}
-          className="flex items-center gap-1.5 px-2 sm:px-3 h-9 text-xs font-medium rounded-lg border border-border bg-surface text-fg hover:bg-surface-2 transition-colors shrink-0"
-          title="Add Python cell"
-        >
-          <Code2 size={12} className="text-violet-500" />
-          <span className="hidden sm:inline">+ Python</span>
-        </button>
-
-        {/* Add Note cell */}
-        <button
-          onClick={() => handleAddCell('markdown', null)}
-          className="flex items-center gap-1.5 px-2 sm:px-3 h-9 text-xs font-medium rounded-lg border border-border bg-surface text-fg hover:bg-surface-2 transition-colors shrink-0"
-          title="Add Note (markdown) cell"
-        >
-          <FileText size={12} className="text-slate-400" />
-          <span className="hidden sm:inline">+ Note</span>
-        </button>
-
-        {/* Unsaved / autosave status (shared treatment with the top bar) */}
-        <SaveStatusBadge dirty={dirty} saving={saving} autosaveStatus={autosaveStatus} className="hidden sm:flex px-1" />
-
-        {/* Save — delegates to the page-level shared save (also autosaved) */}
-        <button
-          onClick={() => onSave?.()}
-          disabled={saving}
-          className="flex items-center gap-1.5 px-2 sm:px-3 h-9 text-xs font-medium rounded-lg border border-border bg-surface text-fg hover:bg-surface-2 disabled:opacity-50 transition-colors shrink-0"
-          title="Save notebook"
-        >
-          {saving
-            ? <Loader2 size={13} className="animate-spin" />
-            : <Save size={13} />
-          }
-          <span className="hidden sm:inline">Save</span>
-        </button>
-
-        {/* Lineage toggle */}
-        <button
-          onClick={() => setShowLineage(v => !v)}
-          title={showLineage ? 'Hide lineage panel' : 'Show flow lineage'}
-          className={[
-            'flex items-center gap-1.5 px-2 sm:px-3 h-9 text-xs font-medium rounded-lg border transition-colors shrink-0',
-            showLineage
-              ? 'border-blue-500/40 bg-blue-500/10 text-blue-600 dark:text-blue-400'
-              : 'border-border bg-surface text-fg hover:bg-surface-2',
-          ].join(' ')}
-        >
-          <GitBranch size={12} className={showLineage ? 'text-blue-500' : ''} />
-          <span className="hidden sm:inline">Lineage</span>
-        </button>
-
-        {/* Run All (durable) */}
-        <button
-          onClick={handleRunAll}
-          disabled={runningAll || !flow?.id}
-          title={!flow?.id ? 'Save the notebook first' : 'Run all cells (durable)'}
-          className="flex items-center gap-1.5 px-2 sm:px-3 h-9 text-xs font-medium rounded-lg bg-primary text-primary-fg hover:opacity-90 disabled:opacity-50 disabled:cursor-not-allowed transition-all shrink-0"
-        >
-          {runningAll
-            ? <Loader2 size={13} className="animate-spin" />
-            : <Play size={13} />
-          }
-          <span className="hidden sm:inline">Run all</span>
-        </button>
-      </div>
+      {/* The notebook toolbar lives in the single app top bar (FlowsPage). */}
 
       {/* Error banner (save errors surface via the page-level banner) */}
       {runError && (
@@ -338,14 +251,14 @@ export default function NotebookView({ flow, spec, onSpecChange, onSave, saving 
         </div>
       )}
 
-      {/* ── Flow lineage panel ────────────────────────────────────────────── */}
-      {showLineage && (
+      {/* ── Flow lineage panel (toggled from the app top bar) ─────────────── */}
+      {lineageOpen && (
         <div className="shrink-0 px-3 sm:px-6 pt-3 pb-0">
           <LineagePanel
             mode="flow"
             flowId={flow?.id ?? null}
             spec={spec}
-            onClose={() => setShowLineage(false)}
+            onClose={() => onLineageClose?.()}
           />
         </div>
       )}
@@ -444,4 +357,6 @@ export default function NotebookView({ flow, spec, onSpecChange, onSave, saving 
       </div>
     </div>
   )
-}
+})
+
+export default NotebookView

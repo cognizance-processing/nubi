@@ -125,8 +125,9 @@ async def _create_personal_org(
 ) -> str:
     """Create a personal org, owner membership, and a default project.
 
-    The org slug is derived from the email local-part, made unique by
-    appending the first 8 characters of the user's UUID.
+    The org slug is clean-first and immutable: derived from the chosen org
+    name (or the email local-part), suffixed ONLY on collision — see
+    ``app.onboarding.insert_org_with_unique_slug``.
 
     A "Default" project (or *project_name* when supplied) is created for the
     new org so resource creation is frictionless — every org owns at least one
@@ -146,21 +147,14 @@ async def _create_personal_org(
         The new org's id.
     """
     org_id = str(uuid.uuid4())
-    base_slug = email.split("@")[0].lower()
-    # Sanitize slug: keep only alphanumerics and hyphens.
-    safe_slug = "".join(c if c.isalnum() or c == "-" else "-" for c in base_slug)
-    slug = f"{safe_slug}-{user_id[:8]}"
     final_org_name = (org_name or "").strip() or f"{name or email.split('@')[0]}'s workspace"
 
-    await execute(
-        """
-        INSERT INTO orgs (id, name, slug)
-        VALUES ($1, $2, $3)
-        """,
-        org_id,
-        final_org_name,
-        slug,
-    )
+    # Clean-first immutable slug: prefer the org name the user chose, else the
+    # email local-part; a suffix is appended only on collision.
+    from app.onboarding import insert_org_with_unique_slug  # noqa: PLC0415
+
+    slug_base = (org_name or "").strip() or email.split("@")[0]
+    await insert_org_with_unique_slug(org_id, final_org_name, slug_base)
     await execute(
         """
         INSERT INTO org_members (org_id, user_id, role)
@@ -275,6 +269,11 @@ async def register(
     )
     set_refresh_cookie(response, raw_refresh, expires_at)
 
+    # Login analytics — best-effort, never blocks registration.
+    from app.login_events import record_login_event  # noqa: PLC0415
+
+    await record_login_event(user_id, request)
+
     return {"user": _serialize_user(user_row), "access_token": access_token}
 
 
@@ -324,6 +323,11 @@ async def login(
         ip=_client_ip(request),
     )
     set_refresh_cookie(response, raw_refresh, expires_at)
+
+    # Login analytics — best-effort, never blocks login.
+    from app.login_events import record_login_event  # noqa: PLC0415
+
+    await record_login_event(user_id, request)
 
     return {"user": _serialize_user(user_row), "access_token": access_token}
 
@@ -410,11 +414,29 @@ async def me(
 ) -> dict[str, Any]:
     """Return the currently authenticated user.
 
+    ``is_superadmin`` is read fresh from the user's DB row (never from JWT
+    claims) — it is informational for the frontend only; the /admin/* routes
+    re-check it server-side on every request.
+
     Returns
     -------
     200 {user}
     """
-    return {"user": _serialize_user(user)}
+    payload = _serialize_user(user)
+
+    is_superadmin = False
+    try:
+        row = await fetchrow(
+            "SELECT is_superadmin FROM users WHERE id = $1::uuid",
+            str(user["id"]),
+        )
+        if row is not None:
+            is_superadmin = bool(dict(row).get("is_superadmin"))
+    except Exception:  # noqa: BLE001 — pre-migration DBs simply report False
+        pass
+    payload["is_superadmin"] = is_superadmin
+
+    return {"user": payload}
 
 
 @router.get("/me/invites")

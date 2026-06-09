@@ -261,6 +261,13 @@ class Settings(BaseSettings):
     INVOICE_NUMBER_PREFIX: str = "NUBI"              # invoice number prefix, e.g. NUBI-2026-000123
     INVOICE_CURRENCY: str = "ZAR"                    # billing currency (we collect in ZAR via Paystack)
 
+    # ── IP geolocation (login analytics) ─────────────────────────────────────
+    # Optional ipinfo.io token (free tier works) used to lazily geolocate the
+    # IPs recorded in login_events.  When empty, no external lookups happen —
+    # login analytics still work, locations just stay null.  Results are cached
+    # in the ip_geo table; private/loopback IPs are never looked up.
+    IPINFO_TOKEN: str = ""
+
     # ── Remote git push (M20-B) ──────────────────────────────────────────────
     # All optional — existing deployments continue to work with no changes.
     #

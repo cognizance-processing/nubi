@@ -1,18 +1,22 @@
-"""Seed the superuser, and optionally the "Demo" project with the demo bundle.
+"""Seed the superuser, and optionally automate onboarding + the Demo project.
 
-Mirrors the /auth/register flow: argon2id password hash + a personal org with
-owner membership + an EMPTY "Default" project, so the seeded user can use the
-editor/boards immediately.
+By default this creates the BARE superuser account only (argon2id hash,
+``is_superadmin = true``) — no org, no project. On first login the superuser
+goes through the exact same /onboarding wizard as every other user (create
+org → "Default" project → optional Demo project).
 
-With ``--demo`` it ALSO creates the org's deletable "Demo" project (identified
-by ``slug == 'demo'`` — see ``app/onboarding.py``) and seeds the demo bundle
-into it via the same shared helper used by POST /orgs/{org_id}/demo-project
+``--demo`` automates that same onboarding flow for local dev and e2e (so a
+reset leaves a ready workspace without clicking through the wizard): it
+creates the personal org + EMPTY "Default" project via the same helper the
+/auth/register flow uses, then the org's deletable "Demo" project (identified
+by ``slug == 'demo'`` — see ``app/onboarding.py``) seeded with the demo
+bundle via the same shared helper used by POST /orgs/{org_id}/demo-project
 and the ``demo_project`` register flag. Nothing is ever seeded into the
 default project; demo content lives only in the Demo project.
 
 Usage:
-    cd backend && DATABASE_URL=postgresql://... python seed.py           # superuser only
-    cd backend && DATABASE_URL=postgresql://... python seed.py --demo    # + Demo project
+    cd backend && DATABASE_URL=postgresql://... python seed.py           # bare superuser → onboarding wizard
+    cd backend && DATABASE_URL=postgresql://... python seed.py --demo    # + org/Default/Demo (dev & e2e)
 """
 
 from __future__ import annotations
@@ -35,18 +39,45 @@ TEST_NAME = _s.SUPERUSER_NAME
 
 
 async def _ensure_superuser() -> str:
-    """Create the superuser + personal org if absent; return the user id."""
+    """Create the BARE superuser if absent; return the user id.
+
+    No org/project is created here — the superuser goes through the SAME
+    /onboarding wizard as every other user on first login (``--demo``
+    automates that flow via :func:`_ensure_workspace`).
+
+    Always (idempotently) marks the account ``is_superadmin = true`` — the
+    seed script and manual SQL are the ONLY ways to grant superadmin; no API
+    endpoint can set the flag.
+    """
     existing = await fetchrow("SELECT id FROM users WHERE email = $1", TEST_EMAIL)
     if existing is not None:
-        return str(existing["id"])
-    user_id = str(uuid.uuid4())
+        user_id = str(existing["id"])
+    else:
+        user_id = str(uuid.uuid4())
+        await execute(
+            "INSERT INTO users (id, email, password_hash, name, email_verified) "
+            "VALUES ($1, $2, $3, $4, true)",
+            user_id, TEST_EMAIL, hash_password(TEST_PASSWORD), TEST_NAME,
+        )
+    # Idempotent superadmin grant (see migration 0028 header).
     await execute(
-        "INSERT INTO users (id, email, password_hash, name, email_verified) "
-        "VALUES ($1, $2, $3, $4, true)",
-        user_id, TEST_EMAIL, hash_password(TEST_PASSWORD), TEST_NAME,
+        "UPDATE users SET is_superadmin = true WHERE id = $1::uuid", user_id
     )
-    await _create_personal_org(user_id, TEST_NAME, TEST_EMAIL)
     return user_id
+
+
+async def _ensure_workspace(user_id: str) -> None:
+    """Automate the onboarding flow: personal org + EMPTY "Default" project.
+
+    Idempotent — skipped when the user already belongs to an org. Uses the
+    same ``_create_personal_org`` helper as /auth/register so the seeded
+    workspace is byte-for-byte what the wizard would have produced.
+    """
+    member = await fetchrow(
+        "SELECT org_id FROM org_members WHERE user_id = $1::uuid LIMIT 1", user_id
+    )
+    if member is None:
+        await _create_personal_org(user_id, TEST_NAME, TEST_EMAIL, project_name="Default")
 
 
 async def _seed_demo_project(user_id: str) -> None:
@@ -78,7 +109,10 @@ async def main() -> None:
         user_id = await _ensure_superuser()
         print(f"Superuser: {TEST_EMAIL} / {TEST_PASSWORD}")
         if demo:
+            await _ensure_workspace(user_id)
             await _seed_demo_project(user_id)
+        else:
+            print("  no workspace seeded — superuser will go through /onboarding on first login")
     finally:
         await close_db()
 

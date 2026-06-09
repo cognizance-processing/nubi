@@ -454,19 +454,11 @@ async def create_org(
     user_id = str(user["id"])
     org_id = str(uuid.uuid4())
 
-    # Derive a URL-safe slug from the org name + first 8 chars of the new org_id.
-    safe_slug = "".join(c if c.isalnum() or c == "-" else "-" for c in body.name.lower())
-    slug = f"{safe_slug}-{org_id[:8]}"
+    # Clean-first immutable slug from the org name; suffixed only on collision
+    # (see app.onboarding.insert_org_with_unique_slug).
+    from app.onboarding import insert_org_with_unique_slug  # noqa: PLC0415
 
-    await execute(
-        """
-        INSERT INTO orgs (id, name, slug)
-        VALUES ($1, $2, $3)
-        """,
-        org_id,
-        body.name,
-        slug,
-    )
+    await insert_org_with_unique_slug(org_id, body.name, body.name)
     await execute(
         """
         INSERT INTO org_members (org_id, user_id, role)
