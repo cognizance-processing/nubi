@@ -29,6 +29,7 @@ All job state is held in an ``InMemoryJobStore`` (singleton via
 
 from __future__ import annotations
 
+import inspect
 import json
 from datetime import datetime, timezone
 from typing import Any
@@ -253,13 +254,26 @@ def _dt_iso(dt: datetime | None) -> str | None:
     return dt.isoformat()
 
 
-def _require_job_in_org(
+async def _resolve(value: Any) -> Any:
+    """Await *value* when it is awaitable, else return it as-is.
+
+    The job store comes in two shapes: ``InMemoryJobStore`` (sync, used in
+    tests) and ``PgJobStore`` (async, used in production). The route handlers
+    are written once and use this helper so they work with either — without it,
+    every jobs endpoint 500s in production by trying to use a coroutine as data.
+    """
+    if inspect.isawaitable(value):
+        return await value
+    return value
+
+
+async def _require_job_in_org(
     job_id: str,
     org_id: str,
     store: InMemoryJobStore,
 ) -> dict[str, Any]:
     """Return the job if it exists and belongs to *org_id*, else raise 404."""
-    job = store.get_job(job_id)
+    job = await _resolve(store.get_job(job_id))
     if job is None or str(job["org_id"]) != str(org_id):
         raise AppError("not_found", "Job not found.", 404)
     return job
@@ -299,7 +313,7 @@ async def create_job(
     else:
         target_payload = body.target_as_str()
 
-    job = store.create_job(
+    job = await _resolve(store.create_job(
         org_id=org_id,
         created_by=str(user["id"]),
         name=body.name,
@@ -308,7 +322,7 @@ async def create_job(
         schedule=body.schedule,
         enabled=body.enabled,
         next_run_at=first_next,
-    )
+    ))
     return _serialize_job(job)
 
 
@@ -320,7 +334,7 @@ async def list_jobs(
 ) -> list[dict[str, Any]]:
     """List all jobs for the caller's org."""
     org_id = await _get_user_org(str(user["id"]), repo)
-    jobs = store.list_jobs(org_id)
+    jobs = await _resolve(store.list_jobs(org_id))
     return [_serialize_job(j) for j in jobs]
 
 
@@ -336,7 +350,7 @@ async def get_job(
     Returns 404 if the job does not exist or belongs to a different org.
     """
     org_id = await _get_user_org(str(user["id"]), repo)
-    job = _require_job_in_org(job_id, org_id, store)
+    job = await _require_job_in_org(job_id, org_id, store)
     return _serialize_job(job)
 
 
@@ -352,8 +366,8 @@ async def delete_job(
     Returns 204 on success; 404 if the job does not exist or is cross-org.
     """
     org_id = await _get_user_org(str(user["id"]), repo)
-    _require_job_in_org(job_id, org_id, store)
-    store.delete_job(job_id)
+    await _require_job_in_org(job_id, org_id, store)
+    await _resolve(store.delete_job(job_id))
     return Response(status_code=204)
 
 
@@ -372,11 +386,11 @@ async def run_job_now(
     Returns the job_run dict.  The run status is ``'success'`` or ``'error'``.
     """
     org_id = await _get_user_org(str(user["id"]), repo)
-    job = _require_job_in_org(job_id, org_id, store)
+    job = await _require_job_in_org(job_id, org_id, store)
 
     now = datetime.now(timezone.utc)
     run = execute_job(job, now=now)
-    store.add_run(job_id, run)
+    await _resolve(store.add_run(job_id, run))
 
     # Advance timestamps
     try:
@@ -387,7 +401,7 @@ async def run_job_now(
     update_fields: dict[str, Any] = {"last_run_at": now}
     if new_next is not None:
         update_fields["next_run_at"] = new_next
-    store.update_job(job_id, update_fields)
+    await _resolve(store.update_job(job_id, update_fields))
 
     return _serialize_run(run)
 
@@ -404,8 +418,8 @@ async def list_runs(
     Returns 404 if the job does not exist or belongs to a different org.
     """
     org_id = await _get_user_org(str(user["id"]), repo)
-    _require_job_in_org(job_id, org_id, store)
-    runs = store.list_runs(job_id)
+    await _require_job_in_org(job_id, org_id, store)
+    runs = await _resolve(store.list_runs(job_id))
     return [_serialize_run(r) for r in runs]
 
 

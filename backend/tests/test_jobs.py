@@ -426,6 +426,90 @@ async def jobs_client(jobs_app, fake_db):
 # ---------------------------------------------------------------------------
 
 
+class _AsyncJobStoreDouble:
+    """Async-interface store double (mirrors PgJobStore's async methods).
+
+    Backed by an InMemoryJobStore but every method is a coroutine, so the route
+    handlers must ``await`` the results. Guards against regressing the bug where
+    the routes called the (async, in production) PgJobStore synchronously and
+    500'd by trying to use a coroutine as data.
+    """
+
+    def __init__(self) -> None:
+        self._inner = InMemoryJobStore()
+
+    async def create_job(self, **kwargs):
+        return self._inner.create_job(**kwargs)
+
+    async def get_job(self, job_id):
+        return self._inner.get_job(job_id)
+
+    async def list_jobs(self, org_id):
+        return self._inner.list_jobs(org_id)
+
+    async def update_job(self, job_id, fields):
+        return self._inner.update_job(job_id, fields)
+
+    async def delete_job(self, job_id):
+        return self._inner.delete_job(job_id)
+
+    async def add_run(self, job_id, run):
+        return self._inner.add_run(job_id, run)
+
+    async def list_runs(self, job_id):
+        return self._inner.list_runs(job_id)
+
+
+class TestJobsAgainstAsyncStore:
+    """The full endpoint flow must work with an async store (production uses
+    the async PgJobStore — these endpoints were 500ing against it)."""
+
+    @pytest_asyncio.fixture
+    async def async_store_client(self, app, fake_db):
+        set_job_store(_AsyncJobStoreDouble())
+        repo = InMemoryRepo()
+        set_repo(repo)
+        alice_id = str(uuid.uuid4())
+        org_id = str(uuid.uuid4())
+        fake_db.users[alice_id] = _make_user(user_id=alice_id)
+        repo.seed_org_member(org_id=org_id, user_id=alice_id)
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://testserver", follow_redirects=False) as client:
+            yield client, alice_id, org_id
+        set_job_store(None)
+        set_repo(None)
+
+    @pytest.mark.asyncio
+    async def test_full_flow_no_500(self, async_store_client):
+        client, alice_id, org_id = async_store_client
+        h = _auth_headers(alice_id)
+
+        created = await client.post(
+            "/api/v1/jobs",
+            json={"name": "Async Job", "kind": "query", "target": "demo_points_10k", "schedule": "interval:1h"},
+            headers=h,
+        )
+        assert created.status_code == 201, created.text
+        job_id = created.json()["id"]
+
+        listed = await client.get("/api/v1/jobs", headers=h)
+        assert listed.status_code == 200, listed.text
+        assert any(j["id"] == job_id for j in listed.json())
+
+        got = await client.get(f"/api/v1/jobs/{job_id}", headers=h)
+        assert got.status_code == 200, got.text
+
+        ran = await client.post(f"/api/v1/jobs/{job_id}/run", headers=h)
+        assert ran.status_code == 200, ran.text
+
+        runs = await client.get(f"/api/v1/jobs/{job_id}/runs", headers=h)
+        assert runs.status_code == 200, runs.text
+        assert len(runs.json()) >= 1
+
+        deleted = await client.delete(f"/api/v1/jobs/{job_id}", headers=h)
+        assert deleted.status_code == 204, deleted.text
+
+
 class TestJobsCrud:
     @pytest.mark.asyncio
     async def test_create_job_returns_201(self, jobs_client):
