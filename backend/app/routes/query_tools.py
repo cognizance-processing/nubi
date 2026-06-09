@@ -527,6 +527,17 @@ async def _resolve_datastore_connector(
     build a read-only connector; other types raise a 400 so the UI can show a
     clear "introspection not supported" message rather than a 500.
     """
+    # The built-in "Demo data" connector is virtual: a sentinel id with no
+    # datastores row (and not a UUID).  Route it to the same in-process demo
+    # DuckDB the /data browser uses, BEFORE any datastores lookup — otherwise
+    # the org-scoped ``WHERE id = $1::uuid`` query raises a DataError → 500.
+    from app.routes.connectors import DEMO_CONNECTOR_ID  # noqa: PLC0415
+
+    if datastore_id == DEMO_CONNECTOR_ID:
+        from app.routes.data_browser import _get_demo_connector  # noqa: PLC0415
+
+        return _get_demo_connector()
+
     from app.repos.provider import get_repo
     from app.routes.resources import get_user_org
 
