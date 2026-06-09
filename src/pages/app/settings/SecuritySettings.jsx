@@ -39,6 +39,7 @@ import {
   updateJwtIssuer,
   deleteJwtIssuer,
 } from '../../../lib/security.js'
+import { SettingsPageHeader } from './SettingsUI.jsx'
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -54,15 +55,6 @@ const EMPTY_FORM = {
   algorithms: ['RS256'],
   audience: '',
   enabled: true,
-}
-
-function parseAlgorithms(value) {
-  // Accept array (from state) or comma-separated string (from text input)
-  if (Array.isArray(value)) return value
-  return value
-    .split(',')
-    .map((s) => s.trim().toUpperCase())
-    .filter(Boolean)
 }
 
 // ---------------------------------------------------------------------------
@@ -439,25 +431,14 @@ export default function SecuritySettings() {
   }
 
   return (
-    <div className="space-y-8">
-      {/* Section header */}
-      <div className="flex items-start gap-4 pb-5 border-b border-border">
-        <div
-          className="flex items-center justify-center w-10 h-10 rounded-xl shrink-0"
-          style={{ background: 'linear-gradient(135deg, #1b2363, #2456a6, #17b3a3)' }}
-        >
-          <ShieldCheck size={18} className="text-white" />
-        </div>
-        <div>
-          <h2 className="font-display font-semibold text-base text-fg">Security</h2>
-          <p className="text-sm text-muted mt-0.5">
-            Manage JWT issuers for verifying host-signed embed tokens.
-          </p>
-        </div>
-      </div>
+    <div className="space-y-6">
+      <SettingsPageHeader
+        title="Security"
+        description="Org-wide embed trust — JWT issuers used to verify host-signed embed tokens."
+      />
 
       {/* Explainer */}
-      <div className="flex items-start gap-3 px-4 py-3.5 rounded-xl bg-surface border border-border">
+      <div className="flex items-start gap-3 px-4 py-3.5 rounded-2xl bg-surface border border-border">
         <KeyRound size={16} className="shrink-0 mt-0.5 text-primary" />
         <div className="text-sm text-muted space-y-1">
           <p>
@@ -511,7 +492,7 @@ export default function SecuritySettings() {
 
         {/* Empty state */}
         {!loading && !loadError && issuers.length === 0 && formMode === null && (
-          <div className="py-8 text-center rounded-2xl border border-dashed border-border">
+          <div className="py-8 text-center rounded-2xl border border-dashed border-border bg-surface">
             <ShieldCheck size={28} className="mx-auto text-muted/40 mb-3" />
             <p className="text-sm font-medium text-fg mb-1">No JWT issuers configured</p>
             <p className="text-xs text-muted mb-4">
@@ -531,7 +512,7 @@ export default function SecuritySettings() {
 
         {/* Issuer rows */}
         {!loading && issuers.length > 0 && (
-          <div className="rounded-2xl border border-border divide-y divide-border overflow-hidden">
+          <div className="rounded-2xl border border-border bg-surface divide-y divide-border overflow-hidden">
             {issuers.map((issuer) => (
               <div key={issuer.id} className="px-5">
                 {/* Saved flash */}
@@ -566,7 +547,7 @@ export default function SecuritySettings() {
 
         {/* Create form */}
         {formMode === 'create' && (
-          <div className="rounded-2xl border border-border px-5 pb-5">
+          <div className="rounded-2xl border border-border bg-surface px-5 pb-5">
             <div className="flex items-center gap-2 pt-4 pb-2 border-b border-border mb-1">
               <Plus size={14} className="text-primary" />
               <span className="text-sm font-medium text-fg">New JWT issuer</span>

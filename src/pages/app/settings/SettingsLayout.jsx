@@ -1,123 +1,143 @@
 /**
- * SettingsLayout — settings sub-layout with a persistent left nav.
+ * SettingsLayout — single settings area with a grouped left sidebar
+ * (the Linear/Vercel pattern: one place for everything, sections grouped by
+ * scope with the scope name as the group header).
  *
- * Routes:
- *   /settings/profile       → ProfileSettings
- *   /settings/organization  → OrgSettings
- *   /settings/project       → ProjectSettings
- *   /settings/security      → SecuritySettings
+ * Groups & routes:
  *
- * The left sub-nav stays visible on every settings page so the user always
- * knows where they are and can switch sections without going back.
+ *   Account
+ *     /settings/profile        → ProfileSettings
+ *
+ *   Organization  (shows the active org name)
+ *     /settings/organization   → OrgSettings        (general)
+ *     /settings/members        → MembersSettings
+ *     /settings/security       → SecuritySettings   (org-level: embed JWT trust)
+ *     /billing                 → EE billing page (link-out; only when the
+ *                                 billing feature is enabled)
+ *
+ *   Project  (shows the active project name)
+ *     /settings/project        → ProjectSettings
+ *
+ * The sidebar stays visible on every settings page; each section is its own
+ * URL-addressable route.
  */
 
 import { NavLink, Outlet } from 'react-router-dom'
-import { Settings, User, Building2, FolderGit2, ShieldCheck } from 'lucide-react'
+import {
+  User,
+  Building2,
+  Users,
+  ShieldCheck,
+  CreditCard,
+  FolderGit2,
+  ArrowUpRight,
+} from 'lucide-react'
+import { useOrg } from '../../../contexts/OrgContext.jsx'
+import { useProject } from '../../../contexts/ProjectContext.jsx'
+import { useFeature } from '../../../lib/features.js'
 
-const SETTINGS_NAV = [
-  {
-    to: '/settings/profile',
-    label: 'Profile',
-    icon: User,
-    scope: 'Account',
-    description: 'Your name and avatar',
-  },
-  {
-    to: '/settings/organization',
-    label: 'Organization',
-    icon: Building2,
-    scope: 'Organization',
-    description: 'Name, branding, members, and deletion',
-  },
-  {
-    to: '/settings/project',
-    label: 'Project',
-    icon: FolderGit2,
-    scope: 'Project',
-    description: 'Name, git sync, and deletion',
-  },
-  {
-    to: '/settings/security',
-    label: 'Security',
-    icon: ShieldCheck,
-    scope: 'Organization',
-    description: 'Embed JWT issuers (org-wide)',
-  },
-]
+// ---------------------------------------------------------------------------
+// Nav item — matches the AppSidebar active style so the app feels coherent
+// ---------------------------------------------------------------------------
 
-// Per-scope chip colour so each section's scope (Account / Organization /
-// Project) reads at a glance — this is what was previously unclear.
-const SCOPE_STYLE = {
-  Account:      'bg-slate-500/10 text-slate-600 dark:text-slate-300',
-  Organization: 'bg-brand-blue/10 text-brand-blue dark:text-blue-300',
-  Project:      'bg-brand-teal/10 text-brand-teal dark:text-teal-300',
+function SettingsNavItem({ to, label, Icon, end = true, external = false }) {
+  return (
+    <NavLink
+      to={to}
+      end={end}
+      className={({ isActive }) =>
+        [
+          'group flex items-center gap-2.5 px-2.5 py-[7px] rounded-lg text-sm transition-colors',
+          isActive
+            ? 'bg-primary/10 text-primary dark:bg-primary/15 font-medium'
+            : 'text-muted hover:text-fg hover:bg-surface-2',
+        ].join(' ')
+      }
+    >
+      {({ isActive }) => (
+        <>
+          <Icon
+            size={15}
+            className={`shrink-0 ${isActive ? 'text-primary' : 'text-muted group-hover:text-fg'}`}
+          />
+          <span className="truncate">{label}</span>
+          {external && (
+            <ArrowUpRight
+              size={12}
+              className="ml-auto shrink-0 text-muted/60 group-hover:text-muted"
+            />
+          )}
+        </>
+      )}
+    </NavLink>
+  )
 }
 
-export default function SettingsLayout() {
+function NavGroup({ label, context, children }) {
   return (
-    <div className="max-w-5xl mx-auto px-6 py-8">
+    <div>
+      <div className="flex items-baseline gap-1.5 px-2.5 mb-1.5 min-w-0">
+        <span className="text-[11px] font-semibold uppercase tracking-wider text-muted/70 shrink-0">
+          {label}
+        </span>
+        {context && (
+          <span className="text-[11px] text-muted/60 truncate" title={context}>
+            · {context}
+          </span>
+        )}
+      </div>
+      <div className="flex flex-wrap gap-1 lg:flex-col lg:flex-nowrap lg:gap-0.5">
+        {children}
+      </div>
+    </div>
+  )
+}
+
+// ---------------------------------------------------------------------------
+// Layout
+// ---------------------------------------------------------------------------
+
+export default function SettingsLayout() {
+  const { activeOrg } = useOrg()
+  const { activeProject } = useProject()
+  const billingEnabled = useFeature('billing')
+
+  return (
+    <div className="max-w-5xl mx-auto px-4 sm:px-6 py-8 lg:py-10">
       {/* Page header */}
-      <header className="flex items-center gap-3 mb-8">
-        <div
-          className="flex items-center justify-center w-11 h-11 rounded-2xl shrink-0"
-          style={{ background: 'linear-gradient(135deg, #1b2363, #2456a6, #17b3a3)' }}
-        >
-          <Settings size={22} className="text-white" />
-        </div>
-        <div>
-          <h1 className="font-display font-semibold text-2xl text-fg">Settings</h1>
-          <p className="text-muted text-sm">
-            Manage your profile, organisation, project, and security configuration.
-          </p>
-        </div>
+      <header className="mb-8">
+        <h1 className="font-display font-semibold text-2xl text-fg">Settings</h1>
+        <p className="text-muted text-sm mt-1">
+          Manage your account, organisation, and project configuration.
+        </p>
       </header>
 
-      {/* Two-column layout: left sub-nav + right content */}
-      <div className="flex gap-8 items-start">
-        {/* Left sub-nav */}
+      {/* Sidebar + content */}
+      <div className="flex flex-col lg:flex-row gap-8 lg:gap-12 items-start">
         <nav
-          className="w-[200px] shrink-0 flex flex-col gap-0.5"
+          className="w-full lg:w-52 shrink-0 lg:sticky lg:top-6 flex flex-col gap-6"
           aria-label="Settings navigation"
         >
-          {SETTINGS_NAV.map(({ to, label, icon: Icon, description, scope }) => (
-            <NavLink
-              key={to}
-              to={to}
-              title={description}
-              className={({ isActive }) =>
-                [
-                  'group flex flex-col gap-1 px-3 py-2.5 rounded-xl text-sm font-medium transition-colors',
-                  isActive
-                    ? 'bg-primary/10 text-primary dark:bg-primary/15'
-                    : 'text-muted hover:text-fg hover:bg-surface-2',
-                ].join(' ')
-              }
-            >
-              {({ isActive }) => (
-                <>
-                  <div className="flex items-center gap-2.5">
-                    <Icon
-                      size={15}
-                      className={`shrink-0 ${isActive ? 'text-primary' : 'text-muted group-hover:text-fg'}`}
-                    />
-                    <span className="truncate">{label}</span>
-                    {isActive && (
-                      <span className="ml-auto block w-1.5 h-1.5 rounded-full bg-primary shrink-0" />
-                    )}
-                  </div>
-                  <span
-                    className={`self-start text-[9px] font-semibold uppercase tracking-wider px-1.5 py-0.5 rounded ${SCOPE_STYLE[scope] ?? SCOPE_STYLE.Account}`}
-                  >
-                    {scope}
-                  </span>
-                </>
-              )}
-            </NavLink>
-          ))}
+          <NavGroup label="Account">
+            <SettingsNavItem to="/settings/profile" label="Profile" Icon={User} />
+          </NavGroup>
+
+          <NavGroup label="Organization" context={activeOrg?.name}>
+            <SettingsNavItem to="/settings/organization" label="General" Icon={Building2} />
+            <SettingsNavItem to="/settings/members" label="Members" Icon={Users} />
+            <SettingsNavItem to="/settings/security" label="Security" Icon={ShieldCheck} />
+            {billingEnabled && (
+              <SettingsNavItem to="/billing" label="Billing" Icon={CreditCard} external />
+            )}
+          </NavGroup>
+
+          <NavGroup label="Project" context={activeProject?.name}>
+            <SettingsNavItem to="/settings/project" label="General" Icon={FolderGit2} />
+          </NavGroup>
         </nav>
 
-        {/* Right content — rendered by child routes */}
-        <div className="flex-1 min-w-0">
+        {/* Section content */}
+        <div className="flex-1 min-w-0 w-full">
           <Outlet />
         </div>
       </div>

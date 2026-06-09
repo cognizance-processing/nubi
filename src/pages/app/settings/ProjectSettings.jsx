@@ -1,23 +1,35 @@
 /**
- * ProjectSettings — rename the active project, configure git sync, and
- * optionally delete the project.
+ * ProjectSettings — project "General" section.
  *
- * Git settings (GitPanel) are embedded here so all project configuration
- * lives in one place.
+ * Pick which project to configure, rename it, configure git sync, and
+ * optionally delete it.  Git settings (GitPanel) are embedded here so all
+ * project configuration lives in one place.
  *
- * Delete rules:
+ * Delete rules (unchanged):
  *   - Fetch GET /projects/{id}/deletion-impact first.
  *   - Show impact list (dashboards, queries, flows, connectors, secrets, …).
  *   - Require the user to type the exact project name to confirm.
  */
 
 import { useEffect, useState, useCallback } from 'react'
-import { FolderGit2, Loader2, CheckCircle, Trash2 } from 'lucide-react'
+import { Trash2, Folder } from 'lucide-react'
 import { useProject } from '../../../contexts/ProjectContext.jsx'
 import { useCanWrite } from '../../../contexts/OrgContext.jsx'
 import GitPanel from '../../../components/app/GitPanel.jsx'
 import DangerDeleteDialog from '../../../components/app/DangerDeleteDialog.jsx'
 import { updateProjectSettings, deleteProjectSettings, getProjectDeletionImpact } from '../../../lib/settings.js'
+import {
+  SettingsPageHeader,
+  SettingsCard,
+  Field,
+  PrimaryButton,
+  SavedBadge,
+  ErrorText,
+  DangerZone,
+  DangerRow,
+  DangerButton,
+  inputCls,
+} from './SettingsUI.jsx'
 
 export default function ProjectSettings() {
   const { activeProject, refreshProjects, setActiveProject, projects } = useProject()
@@ -97,126 +109,119 @@ export default function ProjectSettings() {
 
   if (!projectId) {
     return (
-      <div className="rounded-2xl border border-border bg-surface p-6">
-        <p className="text-sm text-muted">Select a project to view its settings.</p>
+      <div>
+        <SettingsPageHeader
+          title="General"
+          description="Rename the project, connect it to a Git repository, or delete it."
+        />
+        <SettingsCard>
+          <p className="text-sm text-muted">Select a project to view its settings.</p>
+        </SettingsCard>
       </div>
     )
   }
 
   return (
-    <div className="space-y-8">
-      {/* Section header */}
-      <div className="flex items-start gap-4 pb-5 border-b border-border">
-        <div
-          className="flex items-center justify-center w-10 h-10 rounded-xl shrink-0"
-          style={{ background: 'linear-gradient(135deg, #1b2363, #2456a6, #17b3a3)' }}
-        >
-          <FolderGit2 size={18} className="text-white" />
-        </div>
-        <div>
-          <h2 className="font-display font-semibold text-base text-fg">Project settings</h2>
-          <p className="text-sm text-muted mt-0.5">
-            Rename the project, connect it to a Git repository, or delete it.
-          </p>
-        </div>
-      </div>
+    <div className="space-y-6">
+      <SettingsPageHeader
+        title="General"
+        description="Rename the project, connect it to a Git repository, or delete it."
+      >
+        {/* Project picker — switch which project you are configuring */}
+        {projects.length > 1 && (
+          <label className="flex items-center gap-2 text-xs text-muted">
+            <Folder size={13} className="shrink-0" />
+            <select
+              value={projectId}
+              onChange={(e) => setActiveProject(e.target.value)}
+              className="px-2.5 py-1.5 rounded-xl bg-bg border border-border text-sm text-fg focus:outline-none focus:border-primary max-w-[220px]"
+              aria-label="Switch project"
+            >
+              {projects.map((p) => (
+                <option key={p.id} value={p.id}>{p.name}</option>
+              ))}
+            </select>
+          </label>
+        )}
+      </SettingsPageHeader>
 
       {!canWrite && (
-        <p className="text-sm text-muted">You have read-only access — project settings can only be changed by members with write access.</p>
+        <SettingsCard>
+          <p className="text-sm text-muted">
+            You have read-only access — project settings can only be changed by members with
+            write access.
+          </p>
+        </SettingsCard>
       )}
 
-      {/* Rename form */}
-      <form onSubmit={handleSave} className="space-y-5 max-w-md">
-        <div className="space-y-1.5">
-          <label className="block text-xs font-medium text-muted" htmlFor="project-name">
-            Project name
-          </label>
-          <input
-            id="project-name"
-            type="text"
-            value={projectName}
-            onChange={(e) => setProjectName(e.target.value)}
-            placeholder="My Project"
-            className="w-full px-3 py-2 rounded-xl bg-bg border border-border text-sm text-fg placeholder:text-muted focus:outline-none focus:border-primary"
-          />
-        </div>
-
-        <div className="flex items-center gap-3">
-          <button
-            type="submit"
-            disabled={saving || !canWrite}
-            className="inline-flex items-center gap-2 px-4 py-2 rounded-xl text-sm font-medium text-white transition-opacity disabled:opacity-50 disabled:cursor-not-allowed"
-            style={{ background: 'linear-gradient(135deg, #2456a6, #17b3a3)' }}
-          >
-            {saving ? <Loader2 size={15} className="animate-spin" /> : null}
-            Save changes
-          </button>
-          {saved && (
-            <span className="inline-flex items-center gap-1.5 text-sm text-emerald-600 dark:text-emerald-400">
-              <CheckCircle size={15} />
-              Saved
-            </span>
-          )}
-        </div>
-
-        {saveError && (
-          <p className="text-sm text-red-600 dark:text-red-400">{saveError}</p>
-        )}
+      {/* Rename card */}
+      <form onSubmit={handleSave}>
+        <SettingsCard
+          title="Project name"
+          description="Shown in the sidebar project picker and across the app."
+          footer={
+            <>
+              <PrimaryButton type="submit" busy={saving} disabled={saving || !canWrite}>
+                Save changes
+              </PrimaryButton>
+              <SavedBadge show={saved} />
+              <ErrorText>{saveError}</ErrorText>
+            </>
+          }
+        >
+          <div className="max-w-md">
+            <Field htmlFor="project-name">
+              <input
+                id="project-name"
+                type="text"
+                value={projectName}
+                onChange={(e) => setProjectName(e.target.value)}
+                placeholder="My Project"
+                className={inputCls}
+                disabled={!canWrite}
+              />
+            </Field>
+          </div>
+        </SettingsCard>
       </form>
 
-      {/* Git sync — embedded (write actions; hidden for read-only viewers) */}
-      {canWrite && (
-        <div className="space-y-2">
-          <h3 className="text-xs font-semibold uppercase tracking-wider text-muted/70">Git sync</h3>
-          <GitPanel />
-        </div>
-      )}
+      {/* Git sync — embedded (write actions; hidden for read-only viewers).
+          GitPanel is a self-contained card, so it is rendered bare. */}
+      {canWrite && <GitPanel />}
 
       {/* Danger zone — hidden for read-only viewers */}
       {canWrite && (
-      <div className="rounded-2xl border border-red-200 dark:border-red-900 overflow-hidden">
-        <div className="px-5 py-4 bg-red-50 dark:bg-red-950/30 border-b border-red-200 dark:border-red-900">
-          <h3 className="font-semibold text-sm text-red-700 dark:text-red-400">Danger zone</h3>
-        </div>
-
-        <div className="px-5 py-4">
-          <div className="flex items-start justify-between gap-4">
-            <div className="min-w-0">
-              <p className="text-sm font-medium text-fg">Delete this project</p>
-              <p className="text-xs text-muted mt-0.5">
-                Permanently deletes the project and all dashboards, queries, flows, and
-                automations inside it. This cannot be undone.
-              </p>
-              {impact && impact.deletes?.length > 0 && (
-                <ul className="mt-2 space-y-0.5">
-                  {impact.deletes.map((d) => (
-                    <li key={d.type} className="text-xs text-muted">
-                      — {d.count} {d.type}
-                    </li>
-                  ))}
-                </ul>
-              )}
-              {impactError && (
-                <p className="mt-2 text-xs text-red-600 dark:text-red-400">{impactError}</p>
-              )}
-            </div>
-
-            <button
-              type="button"
+        <DangerZone>
+          <DangerRow
+            title="Delete this project"
+            description="Permanently deletes the project and all dashboards, queries, flows, and automations inside it. This cannot be undone."
+            extra={
+              <>
+                {impact && impact.deletes?.length > 0 && (
+                  <ul className="mt-2 space-y-0.5">
+                    {impact.deletes.map((d) => (
+                      <li key={d.type} className="text-xs text-muted">
+                        — {d.count} {d.type}
+                      </li>
+                    ))}
+                  </ul>
+                )}
+                {impactError && (
+                  <p className="mt-2 text-xs text-red-600 dark:text-red-400">{impactError}</p>
+                )}
+              </>
+            }
+          >
+            <DangerButton
               onClick={() => setDialogOpen(true)}
               disabled={impactLoading}
-              className="inline-flex items-center gap-2 px-3 py-2 rounded-xl text-sm font-medium text-red-600 dark:text-red-400 border border-red-200 dark:border-red-800 hover:bg-red-50 dark:hover:bg-red-950/30 transition-colors disabled:opacity-40 disabled:cursor-not-allowed shrink-0"
+              busy={impactLoading}
             >
-              {impactLoading ? (
-                <Loader2 size={15} className="animate-spin" />
-              ) : (
-                <Trash2 size={15} />
-              )}
+              {!impactLoading && <Trash2 size={15} />}
               Delete project
-            </button>
-          </div>
-        </div>
-      </div>
+            </DangerButton>
+          </DangerRow>
+        </DangerZone>
       )}
 
       {/* Confirm dialog */}

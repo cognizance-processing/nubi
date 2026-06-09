@@ -170,7 +170,7 @@ const NEXT_FEATURES = [
     icon: GitBranch,
     title: 'Version control',
     description: 'Sync this project to Git to track and review changes.',
-    href: '/settings',
+    href: '/settings/project',
   },
 ]
 
@@ -182,7 +182,7 @@ const QUICK_ACCESS = [
   { icon: LayoutDashboard, label: 'Dashboards',  description: 'Live boards',         to: '/dashboards' },
   { icon: Workflow,        label: 'Flows',       description: 'Pipelines',           to: '/flows' },
   { icon: CalendarClock,   label: 'Automations', description: 'Scheduled runs',      to: '/automations' },
-  { icon: GitBranch,       label: 'Version control', description: 'Git sync',        to: '/settings' },
+  { icon: GitBranch,       label: 'Version control', description: 'Git sync',        to: '/settings/project' },
   { icon: Bot,             label: 'AI assistant', description: 'Ask about your data', chat: true },
 ]
 

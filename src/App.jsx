@@ -22,11 +22,12 @@
  *   /editor             → EditorPage  (existing)
  *   /editor/:id         → EditorPage  (existing)
  *   /playground         → redirect → /queries  (Playground merged into Queries)
- *   /settings           → redirect → /settings/profile  (SettingsLayout sub-nav)
- *   /settings/profile   → ProfileSettings
- *   /settings/organization → OrgSettings
- *   /settings/project   → ProjectSettings
- *   /settings/security  → SecuritySettings  (JWT issuers / JWKS manager)
+ *   /settings           → redirect → /settings/profile  (SettingsLayout grouped sidebar)
+ *   /settings/profile   → ProfileSettings   (Account)
+ *   /settings/organization → OrgSettings    (Organization › General)
+ *   /settings/members   → MembersSettings   (Organization › Members)
+ *   /settings/security  → SecuritySettings  (Organization › Security — JWT issuers / JWKS)
+ *   /settings/project   → ProjectSettings   (Project › General)
  *   /secrets            → SecretsPage
  *   /billing            → EE-only; rendered only when billing feature is enabled
  *                         and the EE module is loaded. Absent in OSS builds.
@@ -85,6 +86,7 @@ import AutomationsPage from './pages/app/AutomationsPage.jsx'
 import SettingsLayout from './pages/app/settings/SettingsLayout.jsx'
 import ProfileSettings from './pages/app/settings/ProfileSettings.jsx'
 import OrgSettings from './pages/app/settings/OrgSettings.jsx'
+import MembersSettings from './pages/app/settings/MembersSettings.jsx'
 import ProjectSettings from './pages/app/settings/ProjectSettings.jsx'
 import SecuritySettings from './pages/app/settings/SecuritySettings.jsx'
 import SecretsPage from './pages/app/SecretsPage.jsx'
@@ -212,6 +214,7 @@ export default function App() {
             <Route index element={<Navigate to="profile" replace />} />
             <Route path="profile" element={<ProfileSettings />} />
             <Route path="organization" element={<OrgSettings />} />
+            <Route path="members" element={<MembersSettings />} />
             <Route path="project" element={<ProjectSettings />} />
             <Route path="security" element={<SecuritySettings />} />
           </Route>
