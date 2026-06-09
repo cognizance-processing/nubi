@@ -9,7 +9,7 @@ This document explains how Nubi stores and protects connector credentials — co
 A connector is a `datastores` row coupled with an encrypted secret blob in a separate `connector_secrets` table. The two are related by the datastore `id`. This split is intentional:
 
 - **`datastores.config`** holds *non-secret* connection parameters only: `host`, `port`, `database`, `user`, `sslmode`, `network_mode`, `bridge_id`, `connector_type`, and similar structural fields. These are stored as plain JSONB and are readable by anyone who can query the table.
-- **`connector_secrets`** holds the encrypted blob for sensitive fields: `password`, `service_account_json`, `token`, `api_key`. The ciphertext is stored; the plaintext is never written to any database table.
+- **`connector_secrets`** holds the encrypted blob for sensitive fields: `password`, `service_account_json`, `token`, `api_key`, `access_token`, `aws_secret_access_key`, `private_key`. The ciphertext is stored; the plaintext is never written to any database table.
 
 ```
 ┌─────────────────────────────────────────┐
@@ -133,7 +133,7 @@ POST /api/v1/connectors
 }
 ```
 
-The server rejects any request that places a known secret key (`password`, `service_account_json`, `token`, `api_key`) inside `config`. This is enforced by a Pydantic `model_validator` that returns `422 Unprocessable Entity`.
+The server rejects any request that places a known secret key (`password`, `service_account_json`, `token`, `api_key`, `access_token`, `aws_secret_access_key`, `private_key`) inside `config`. This is enforced by a Pydantic `model_validator` that returns `422 Unprocessable Entity`.
 
 The response contains the `datastores` row with `config` only — **the `secret` field is never echoed back**. A `_sanitise()` function strips all known secret keys from the response before returning. An internal `_assert_no_secret_leakage()` guard raises `AssertionError` in tests if any secret key appears in the serialised response.
 
@@ -166,7 +166,13 @@ When `secret` is supplied, `SecretStore.put()` overwrites the existing encrypted
 
 Response:
 ```json
-{ "ok": true, "layers": { "config": true, "secret": true } }
+{
+  "ok": true,
+  "checked": "config+secret resolved",
+  "connector_id": "<uuid>",
+  "type": "postgres",
+  "layers": { "config": true, "secret": true }
+}
 ```
 
 ---

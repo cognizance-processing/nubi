@@ -1,205 +1,177 @@
-# Connectors
+# Connectors — connecting your data
 
-Nubi connectors are the bridge between the query planner and your data warehouse. Every connector implements a 7-flag capability contract that tells the planner what operations can be pushed down — and whether the connector can enforce row-level security. Credentials are always encrypted at the application layer before reaching the database.
+A **connector** is a saved link to one of your data sources — a Postgres database, a BigQuery project, a Snowflake warehouse, a Parquet file in S3, or any of 20+ supported types. Once you add a connector, you can browse its tables, run queries against it, build dashboards on it, and reference it in flows. Nubi does not copy your data: it queries your source on demand and caches results.
 
----
-
-## Connector Tiers
-
-| Tier | Examples | Push-down | RLS enforcement |
-|------|----------|-----------|-----------------|
-| **SQL-first** | Postgres, DuckDB | Full (predicates, projection, limit) | Predicate injection into SQL AST |
-| **API / function** | REST/JSON, Python functions | None | Post-fetch Python filtering |
-| **NoSQL** | — | — | Out of scope — no audited RLS translator ships with Nubi |
+Connectors live on the **Connectors** page (`/connectors` in the app sidebar). Credentials you enter are encrypted at rest with AES-256-GCM and are never shown again after you save them.
 
 ---
 
-## Built-in Connectors
+## The Connectors page
 
-The registry (`_bootstrap` in `app/connectors/registry.py`) pre-registers:
+Open **Connectors** from the sidebar. You'll see:
 
-| Type | Class | Driver | Notes |
-|------|-------|--------|-------|
-| `postgres` | `PostgresConnector` | ADBC (bundled) | Native Arrow, full push-down + RLS |
-| `duckdb` | `DuckDBConnector` | `duckdb` (bundled) | Local DuckDB. Two modes: an in-memory DB for the built-in demo dataset / fixtures / conformance, **and** a real config-driven **read-only file-backed** source when the datastore config sets `database`/`path` to a `.duckdb` file (opened `read_only=True` with `enable_external_access=false`). |
-| `http_json` | `HttpJsonConnector` | `httpx` (lazy) | REST/JSON API; post-fetch RLS (fail-closed). No push-down. |
-| `mysql` | `MySQLConnector` | MySQL driver (optional) | Takes a `mysql://` DSN; the registry factory assembles one from the config parts (host/port/database/user/password, URL-encoded). |
-| `mariadb` | `MariaDBConnector` | MySQL driver (optional) | Wire-compatible with MySQL; reuses the same DSN scheme. |
-| `jdbc` | `JDBCConnector` | JVM + JDBC driver jar (optional) | Generic JDBC bridge (`jdbc_url` / `driver_class` / `jar_path`); driver import is lazy. |
+- A header with a **Refresh** button and an **Add connector** button (the Add button only appears if you have writer/admin permissions in the org).
+- A list of connector cards — one per data source you've added.
+- A built-in **Demo data** connector at the top of the list (see [Demo data](#demo-data-connector)).
 
-**Optional drivers:** `postgres` (ADBC) and `duckdb` ship with the backend. `mysql`/`mariadb`
-need their MySQL driver; `jdbc` needs a JVM + the relevant JDBC jar; `snowflake` needs
-`snowflake-connector-python`; `bigquery` needs `google-cloud-bigquery`. All imports are lazy, so
-the registry imports fine in a pure-Postgres/DuckDB environment and a connector only raises
-`driver_unavailable` (500, with install guidance) if used without its driver.
+Each connector card shows:
 
-> **`bigquery` / `snowflake`:** now registered in `_bootstrap` (`BigQueryConnector`,
-> `SnowflakeConnector`), both returning native Arrow with `$N`→dialect param translation.
-> `bigquery` reads a `service_account_json` secret (else ADC); `snowflake` takes
-> account/user/password (+ warehouse/database/schema/role). Registered connector set is now
-> **8**: postgres, duckdb, http_json, mysql, mariadb, jdbc, snowflake, bigquery.
+| Element | What it tells you |
+|---------|-------------------|
+| Logo + name | The connector's brand logo and the name you gave it. |
+| Type badge | The connector type (e.g. *PostgreSQL*, *Snowflake*). |
+| **Built-in** badge | Present only on system connectors like Demo data. |
+| Network badge | Shows `bridge` when the connector reaches your database through a private-network agent. |
+| Summary line | A quick read of the config — usually `host:port · database · user`. |
+| Test result pill | Appears after you click **Test** (green ✓ or red ✗). |
 
-### Demo Dataset (DuckDB fallback)
+The card's action buttons are **View data**, **Test**, **Edit** (pencil), and **Delete** (trash). Edit and Delete only appear if you can write to the org; system connectors hide the Edit button.
 
-When no `datastore_id` is provided, queries run against a built-in in-memory DuckDB dataset:
-
-```
-demo(id INTEGER, name TEXT, value DOUBLE, active BOOLEAN)
-```
-
-| id | name | value | active |
-|----|------|-------|--------|
-| 1 | alpha | 1.1 | true |
-| 2 | beta | 2.2 | false |
-| 3 | gamma | 3.3 | true |
-| 4 | delta | 4.4 | false |
-| 5 | epsilon | 5.5 | true |
-
-`SELECT * FROM demo` works out of the box with no configuration.
+If you have no connectors yet, an empty state invites you to *Add your first connector*. If you're a read-only member, it tells you to ask an admin instead.
 
 ---
 
-## The 7-Flag Capability Contract
+## Supported connector types
 
-Every connector implements `capabilities() -> dict[str, bool]` with exactly these keys:
+The **Add connector** picker groups types into six categories. The full catalogue:
 
-| Flag | Meaning |
-|------|---------|
-| `native_arrow` | Returns Arrow IPC natively (e.g. ADBC), no row-by-row conversion |
-| `predicate_pushdown` | Can push WHERE predicates to the source |
-| `projection_pushdown` | Can push column selection to the source |
-| `partition_pushdown` | Can route queries to specific shards/partitions |
-| `predicate_rls` | Supports Row-Level Security (see below) |
-| `column_masking` | Can mask/redact column values before they leave the connector |
-| `streaming_cdc` | Can stream Change-Data-Capture events |
+### Relational databases
+| Type | Notes |
+|------|-------|
+| **PostgreSQL** | Host/port/database/user/password + SSL mode. |
+| **MySQL** | Standard host/port/database/user/password. |
+| **MariaDB** | MySQL-compatible; same fields. |
+| **Microsoft SQL Server** | T-SQL; adds an *Encrypt connection* toggle. |
+| **Oracle Database** | Host/port + **Service name / SID** instead of a database name. |
+| **CockroachDB** | Postgres wire-compatible; SSL mode included. |
 
-`Connector.validate_capabilities()` is called at construction time — misconfigured connectors fail fast.
+### Cloud-managed SQL
+| Type | Notes |
+|------|-------|
+| **Google Cloud SQL** | Managed Postgres on GCP (Postgres wire). |
+| **Azure SQL Database** | Managed SQL Server; *Server* is the `*.database.windows.net` host. |
 
-### Capability-Gated RLS
+### Cloud warehouses
+| Type | Notes |
+|------|-------|
+| **Google BigQuery** | GCP Project ID + a service-account JSON key (or Application Default Credentials). |
+| **Snowflake** | Account, user, password, plus optional warehouse/database/schema/role. |
+| **Amazon Redshift** | Postgres wire; SSL mode included. |
+| **Databricks** | Server hostname, HTTP path, access token, optional catalog/schema. |
+| **ClickHouse** | Host/port/database/user/password + a TLS (secure) toggle. |
+| **Azure Synapse** | T-SQL analytics pool. |
 
-A connector with `predicate_rls=False` is refused with **501 Not Implemented** when active `rls_claims.policies` are present. The route layer enforces this before any data is fetched — the connector's `execute()` is never called for unsecurable sources.
+### Query engines
+| Type | Notes |
+|------|-------|
+| **Amazon Athena** | Serverless SQL over S3; needs a region and an S3 staging dir. |
+| **Trino** | Distributed SQL engine; coordinator host + catalog + schema. |
+| **Presto** | Open-source distributed SQL engine; same shape as Trino. |
 
----
+### Lakehouse & files
+| Type | Notes |
+|------|-------|
+| **Object storage (Parquet / DuckDB)** | Query a Parquet or DuckDB file by `s3://`, `gs://`, or `https://` URL. |
+| **Demo data** | The built-in sample dataset (no setup). See below. |
 
-## Writing a Connector
+### APIs & custom
+| Type | Notes |
+|------|-------|
+| **HTTP / JSON API** | Any REST API that returns JSON. Base URL + optional bearer token + extra headers. |
+| **JDBC (custom driver)** | Connect any JDBC source with a driver JAR (JDBC URL + driver class + JAR path). |
 
-### Option A — Subclass `Connector`
-
-```python
-from app.connectors.base import Connector
-from app.connectors.plan import PhysicalPlan
-import pyarrow as pa
-
-class MySourceConnector(Connector):
-    def __init__(self, config: dict) -> None:
-        self._url = config["url"]
-        self.validate_capabilities()
-
-    def capabilities(self) -> dict[str, bool]:
-        return {
-            "native_arrow":        False,
-            "predicate_pushdown":  False,
-            "projection_pushdown": False,
-            "partition_pushdown":  False,
-            "predicate_rls":       True,
-            "column_masking":      False,
-            "streaming_cdc":       False,
-        }
-
-    def execute(self, plan: PhysicalPlan) -> pa.Table:
-        raw = self._fetch_all_rows()
-        from app.connectors.sdk import (
-            apply_rls_postfetch,
-            apply_projection_postfetch,
-        )
-        table = apply_rls_postfetch(raw, plan.rls_claims.get("policies", {}))
-        table = apply_projection_postfetch(table, plan.projection)
-        return table
-```
-
-### Option B — `FunctionConnector` (simplest)
-
-```python
-from app.connectors.sdk import FunctionConnector
-import pyarrow as pa
-
-def my_fn(plan):
-    return pa.table({"tenant_id": ["acme", "globex"], "value": [1, 2]})
-
-conn = FunctionConnector(
-    fn=my_fn,
-    capabilities={
-        "native_arrow": True, "predicate_pushdown": False,
-        "projection_pushdown": False, "partition_pushdown": False,
-        "predicate_rls": True, "column_masking": False, "streaming_cdc": False,
-    },
-)
-```
-
-`FunctionConnector.execute()` automatically applies `apply_rls_postfetch`, `apply_projection_postfetch`, and `apply_limit_postfetch`.
-
-### Option C — `HttpJsonConnector`
-
-```python
-from app.connectors.http_json import HttpJsonConnector
-
-conn = HttpJsonConnector({
-    "url":         "https://api.example.com/records",
-    "record_path": "data.items",   # dot-path to the records list
-    "headers":     {"Authorization": "Bearer <token>"},
-})
-```
-
-Fetches via HTTP GET, navigates `record_path`, normalises to Arrow, and applies the full post-fetch guard sequence automatically.
+> Some warehouse drivers (BigQuery, Snowflake, JDBC, etc.) are optional and load on first use. If a driver isn't installed in your deployment, the connector saves fine but raises a `driver_unavailable` error with install guidance when first queried — ask your administrator to add the driver.
 
 ---
 
-## Post-Fetch RLS — the Security Rule
+## Adding a connector
 
-> A connector with `predicate_pushdown=False` and `predicate_rls=True` **must** call `apply_rls_postfetch` before returning any data. The browser is never trusted to filter rows.
+You need writer or admin permission in the org. Then:
 
-Apply helpers in this order:
+1. On the **Connectors** page, click **Add connector**. A slide-over panel opens from the right.
+2. **Pick a type.** The picker shows all types grouped by category. Use the **search box** at the top to filter by name or description (e.g. type `post` to find PostgreSQL). Click a type tile to continue.
+3. **Name the connector.** Give it a clear name like `prod-postgres` or `analytics-bigquery`. This is what appears on the card and in the connector picker when you write queries.
+4. **Fill in the connection details.** The form is generated from the type you chose — only the relevant fields appear. Required fields are marked; optional ones say *(optional)*. Sensible defaults (ports, SSL mode, etc.) are pre-filled.
+5. **Enter credentials.** Secret fields (passwords, tokens, service-account keys) are clearly marked with a note: *Encrypted at rest with AES-256-GCM — never shown after save*. See [Entering credentials](#entering-credentials-secrets).
+6. Click **Add connector**. On success a toast confirms *Connector added* and the panel closes. The new card appears in the list.
 
-```python
-from app.connectors.sdk import (
-    apply_rls_postfetch,
-    apply_projection_postfetch,
-    apply_limit_postfetch,
-)
+To change the type before filling in details, click **Change type** in the form header to go back to the picker.
 
-# 1. RLS first — never return more rows than authorised
-table = apply_rls_postfetch(table, plan.rls_claims.get("policies", {}))
+If something is wrong (e.g. a missing required field, or a server-side validation error), an inline red error appears at the bottom of the form. Fix it and resubmit.
 
-# 2. Projection — narrow columns after RLS
-table = apply_projection_postfetch(table, plan.projection)
+### Field reference by example
 
-# 3. Limit — best-effort row cap
-```
+A **PostgreSQL** connector, for instance, asks for:
 
-**Fail-closed:** if a policy references a column absent from the table, `apply_rls_postfetch` raises `AppError("rls_column_missing", 403)`. Silently ignoring a missing column would allow cross-tenant data leakage.
+- **Host** (required) and **Port** (defaults to `5432`)
+- **Database** (required) and **User** (defaults to `postgres`)
+- **Password** (secret)
+- **SSL mode** — one of `disable`, `allow`, `prefer` (default), `require`, `verify-ca`, `verify-full`
+- **Network mode** — leave blank for direct, or choose `bridge` (see [Private networks & bridges](#private-networks--bridges))
 
----
+A **BigQuery** connector instead asks for a **GCP Project ID** and a **Service account JSON** key (upload a `.json` file or paste it). Leave the key blank to use Application Default Credentials.
 
-## Registering a Connector
-
-Add the factory to `_bootstrap()` in `app/connectors/registry.py`:
-
-```python
-from app.connectors.my_source import MySourceConnector
-registry.register("my_source", lambda config: MySourceConnector(config))
-```
+An **Object storage** connector asks for a single **File URL** (`s3://…`, `gs://…`, or `https://…` pointing at a Parquet or DuckDB file), plus optional endpoint/region and access keys for private buckets.
 
 ---
 
-## BYO Warehouse
+## Entering credentials (secrets)
 
-Point at any Postgres-compatible warehouse (Neon, RDS, AlloyDB, etc.) by setting `DATABASE_URL` in your environment. The `PostgresConnector` uses ADBC for native Arrow output with no intermediate conversion.
+Nubi separates **non-secret config** (host, port, database name, region…) from **secret credentials** (passwords, tokens, service-account keys). They are stored differently:
 
-For cloud warehouses not yet supported natively, use `HttpJsonConnector` or `FunctionConnector` to wrap any HTTP API or Python callable. Post-fetch RLS is enforced at the same security level as predicate pushdown for equality policies.
+- Non-secret config is saved on the connector record in plain form so the card can show a summary.
+- Secret fields are sent to the encrypted secret store, which encrypts them with **AES-256-GCM** before writing them to the database.
 
-### Selecting a Datastore per Query
+**Secrets are never returned by the API after you save.** That's why secret fields in the **Edit** form come up blank — the app cannot show you the existing value. Leaving a secret field blank on edit keeps the current credential; typing a new value rotates it (see [Editing](#editing-a-connector)).
 
-Pass `datastore_id` in the query request body to route a query to a specific registered datastore:
+The secret-bearing fields, depending on type, are: `password`, `service_account_json` (BigQuery), `token` (HTTP/JSON), `access_token` (Databricks), and `aws_secret_access_key` (Athena / object storage). For the HTTP/JSON connector, put auth tokens in the **Bearer token** field — not in the *Extra headers* box, which is for non-secret headers only.
+
+> **Tip — service-account keys.** For BigQuery, the *Service account JSON* control lets you either upload a `.json` key file or paste the JSON directly. Either way it's stored as an encrypted secret.
+
+---
+
+## Testing a connection
+
+After saving (or any time), click **Test** on a connector card. A spinner shows *Testing…*, then a result pill appears:
+
+- **Green ✓** — the connector's config and encrypted secret were both resolved. A small `config:✓ secret:✓` indicator shows which layers passed.
+- **Red ✗** — one of the layers is missing (for example, the secret couldn't be decrypted).
+
+A toast also confirms the result (*Connection verified successfully* or a failure message).
+
+> **What Test checks.** Test is a fast **structural** check: it confirms the connector record exists and that its encrypted secret can be retrieved and decrypted. It does **not** open a network socket to your database. To verify the source is actually reachable and the credentials work end-to-end, use **View data** (below) — listing tables exercises a real connection.
+
+The Demo data connector always tests green (it has no secret and runs in-process).
+
+---
+
+## Browsing a connector's data
+
+Click **View data** on any connector card to open the **Data Browser** (`/connectors/:id/data`). This lets you explore the source without writing any SQL:
+
+- The **left rail** lists the connector's tables (searchable, with row counts where available). The first table is auto-selected.
+- The **right panel** previews the selected table — columns with their types, and up to 500 rows in a grid.
+- A **Refresh** button re-reads the table list and current preview; **Back** returns to the Connectors page.
+
+Because the Data Browser introspects the live source and reads a sample of rows, it's also the best way to confirm a freshly added connector actually works.
+
+Row-level security still applies: you only see rows your access policies permit.
+
+---
+
+## Using a connector in queries
+
+When you write a query in the **Query Workspace** (or a SQL cell in a flow notebook), a **Connector** picker sits in the toolbar:
+
+1. Choose your connector from the dropdown. The default is **Demo data (built-in)**; every connector you've added is listed by name.
+2. Write your SQL against that source and run it. The SQL dialect is auto-detected from the connector type (and is overridable).
+3. When you save the query, the chosen connector is **bound** to it (stored as the query's `datastore_id`). Dashboards and scheduled reports that use the query then run against that source automatically.
+
+If you have no connectors, the picker shows *No connectors yet — using demo data*, and queries run against the built-in demo dataset.
+
+### Selecting a connector via the API
+
+If you're calling the query API directly, pass the connector's id as `datastore_id`:
 
 ```json
 POST /api/v1/query
@@ -209,86 +181,85 @@ POST /api/v1/query
 }
 ```
 
-The datastore is resolved from the `datastores` resource (org-scoped). The connectors REST
-route stores the type under `config.connector_type`; the `/query` executor reads the type from
-`config.type`. (A registered query may also carry its own bound `datastore_id`, in which case a
-widget can send only `{query_id}` and still execute against the correct source — the request
-body's `datastore_id` takes precedence when both are present.)
-
-### Data Browser
-
-The Data Browser lets you introspect a connector's tables and preview rows without writing SQL. The UI lives at `/connectors/:id/data` (`DataBrowser.jsx`); it lists tables, shows each table's columns and types, and streams a row sample as Arrow IPC. The backing endpoints (auth via Bearer token, org-scoped) are:
-
-| Endpoint | Returns |
-|----------|---------|
-| `GET /api/v1/data/{datastore_id}/tables` | Tables (and schemas) discovered by introspection. |
-| `GET /api/v1/data/{datastore_id}/tables/{table}/columns` | Column names + types for one table. |
-| `GET /api/v1/data/{datastore_id}/tables/{table}/rows?limit=N` | A row sample (`limit` 1–5000, default 500) as Arrow IPC. |
-
-The same paths without a `datastore_id` segment (`/data/tables`, `/data/tables/{table}/columns`, `/data/tables/{table}/rows`) target the built-in DuckDB demo dataset. A datastore belonging to a different org is treated as not-found, and table names are validated against the introspected list before interpolation (SQL-injection prevention).
+A registered query can carry its own bound connector, so a dashboard widget can send just `{ "query_id": "…" }` and still hit the right source. When both are present, the request body's `datastore_id` wins.
 
 ---
 
-## Connector REST Endpoints
+## Using a connector in flows
 
-| Method | Path | Description |
-|--------|------|-------------|
-| `POST` | `/api/v1/connectors` | Create a connector (config + encrypted secret). Returns 201. |
-| `GET` | `/api/v1/connectors` | List connectors for the caller's org (no secrets returned). |
-| `GET` | `/api/v1/connectors/{id}` | Fetch a single connector. |
-| `PUT` | `/api/v1/connectors/{id}` | Update config and/or rotate the secret. |
-| `DELETE` | `/api/v1/connectors/{id}` | Delete connector and secret blob. Returns 204. |
-| `POST` | `/api/v1/connectors/{id}/test` | Structural check — verifies config + secret resolvable, no network socket opened. |
+In a [flow](/docs/flows), each SQL cell has a **Run against** picker in the task inspector — the same connector dropdown you see in the Query Workspace. Pick your connector there to run the cell against a real warehouse instead of in-memory DuckDB.
 
-### Creating a Connector
+For spec-based flow authoring, set `datastore_id` in the cell's `config`. Omit it to fall back to the demo DuckDB dataset:
 
 ```json
-POST /api/v1/connectors
 {
-  "name": "prod-postgres",
-  "type": "postgres",
+  "key": "pull",
+  "kind": "query",
+  "needs": [],
   "config": {
-    "host": "db.example.com",
-    "port": 5432,
-    "database": "analytics",
-    "user": "readonly",
-    "sslmode": "require"
-  },
-  "secret": {
-    "password": "hunter2"
+    "sql": "SELECT * FROM revenue_by_region",
+    "datastore_id": "ds-uuid"
   }
 }
 ```
 
-The execution registry registers all eight types: `postgres`, `duckdb`, `http_json`, `mysql`,
-`mariadb`, `jdbc`, `snowflake`, and `bigquery` (the last four via optional drivers — see the
-built-in connectors note above).
-
-Valid secret keys: `password`, `service_account_json`, `token`, `api_key`. Any of these in `config` is rejected with `422 Unprocessable Entity`.
-
-### Test Probe Response
-
-```json
-{
-  "ok": true,
-  "checked": "config+secret resolved",
-  "connector_id": "uuid",
-  "type": "postgres",
-  "layers": { "config": true, "secret": true }
-}
-```
+The same row-level security and SQL planning that apply to interactive queries apply here too. See [Flows](/docs/flows) for the full cell reference.
 
 ---
 
-## Network Mode and Bridges
+## Editing a connector
 
-Connectors that live inside a private network use two optional config fields:
+Click the **pencil** icon on a connector card to open the Edit panel.
 
-| Field | Type | Meaning |
-|-------|------|---------|
-| `network_mode` | `string` | `"direct"` (default) — egress goes directly from the Nubi backend to the database. `"bridge"` — routes through the Nubi bridge agent identified by `bridge_id`. |
-| `bridge_id` | `string (uuid)` | Reference to the bridge agent that proxies traffic. Stored in `datastores.config` (non-secret). |
+1. The form pre-fills with your saved **non-secret** config (host, port, database, etc.). You can change the connector's name and any non-secret field.
+2. **Secret fields come up blank** — Nubi can't display the stored value. Leave a secret blank to keep the current credential. Type a new value to **rotate** it (the old encrypted secret is replaced).
+3. Click **Save changes**. A toast confirms *Connector updated*.
 
-When `network_mode="bridge"`, the query executor calls `resolve_network_async()` which opens a local TCP proxy through the bridge agent's WebSocket tunnel. See [Bridges](/docs/bridges) for the full bridge setup guide.
+You cannot change a connector's type — delete it and add a new one if you need a different source type. System connectors (Demo data) have no Edit button because they have no configurable fields.
 
-Other modes (`ssh_tunnel`, `psc`, `cloudsql_proxy`) are reserved for future use and currently return **501** when requested.
+---
+
+## Deleting a connector
+
+Click the **trash** icon and confirm in the dialog.
+
+- For a normal connector, this **permanently deletes** the record and its encrypted credentials. This can't be undone. Queries bound to it will fall back to demo data or fail until rebound.
+- For the **Demo data** connector, *Delete* just **removes it from this workspace's list**. You can add it back any time from **Add connector** — the dialog says *Remove* rather than *Delete* to make this clear.
+
+---
+
+## Demo data connector
+
+Every workspace starts with a built-in **Demo data** connector — a small sample dataset you can query immediately with no setup. It's marked **Built-in** and is read-only (no Edit). Use it to explore Nubi's query, dashboard, and flow features before you connect a real source.
+
+If you remove it, you can re-add it from the picker; it always reappears at the top of the list when present.
+
+---
+
+## Private networks & bridges
+
+If your database lives inside a private network (a VPC with no public ingress), most connectors expose a **Network mode** field:
+
+- **direct** (default) — Nubi connects straight to the host you entered.
+- **bridge** — traffic is routed through a Nubi **bridge agent** running inside your network. The connector card then shows a `bridge` badge.
+
+To use bridge mode you first deploy a bridge agent and link it to the connector. See [Bridges](/docs/bridges) for the full setup guide.
+
+---
+
+## Permissions
+
+- **Listing, testing, and browsing** connectors is available to any member of the org.
+- **Adding, editing, and deleting** connectors requires writer or admin permission. Read-only members see the cards but not the Add/Edit/Delete controls.
+- All connectors are **org-scoped** — you only ever see your own org's connectors. A connector belonging to another org is treated as not found.
+
+---
+
+## Security summary
+
+- Credentials are encrypted at rest with **AES-256-GCM** and are never returned by the API after save.
+- Non-secret config and secret credentials are stored separately; secret keys are rejected if they're submitted as plain config.
+- **Test** verifies your config and secret are resolvable without opening a network socket.
+- Row-level security policies are enforced on every read, including the Data Browser preview.
+
+For the deeper security model — encryption, key rotation, and network modes — see [Connector Security](/docs/connector-security).

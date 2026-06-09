@@ -1,7 +1,7 @@
 # Nubi Cache-Key Specification — v1
 
 > **Stability:** Frozen. Breaking changes require a version bump in
-> `cache_key.py:CACHE_KEY_VERSION` and new conformance vectors.
+> `app/connectors/cache_key.py:CACHE_KEY_VERSION` and new conformance vectors.
 > A future Rust/WASM executor MUST produce byte-identical keys for the
 > test vectors below. This document is the binding contract between the
 > Python planner and any executor implementation.

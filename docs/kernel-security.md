@@ -9,7 +9,7 @@
 
 | Layer | Fix | Status |
 |---|---|---|
-| **Production guard** | `ENV == 'production'` + `KERNEL_LOCAL_ENABLED=false` → 503 | Applied |
+| **Production guard** | `ENV == 'production'` → local runner blocked; 503 unless remote runner configured | Applied |
 | **exec:kernel scope** | Route requires `exec:kernel` (implied by `edit:*` / `*`) | Applied |
 | **Code length cap** | Code > 100,000 chars → 413 before subprocess launch | Applied |
 | **Timeout cap** | `timeout_s` clamped to 120 s | Confirmed (pre-existing) |
@@ -17,7 +17,13 @@
 | **rlimits (POSIX)** | `RLIMIT_CPU`, `RLIMIT_AS` (2 GiB), `RLIMIT_FSIZE` (128 MiB), `RLIMIT_NPROC` (64) | Applied |
 | **Output caps** | stdout/stderr truncated to 1 MiB each before decode | Applied |
 | **Temp cleanup** | `try/finally shutil.rmtree` on all code paths | Applied (pre-existing, verified) |
-| **Env scrubbing** | Empty env; only PATH, PYTHONPATH, HOME, TMPDIR, LANG forwarded | Applied (pre-existing) |
+| **Env scrubbing** | Empty env; only PATH, PYTHONPATH, HOME, TMPDIR/TEMP/TMP, LANG/LC_ALL/LC_CTYPE, VIRTUAL_ENV forwarded | Applied (pre-existing) |
+
+> Flows Python cells (`kind='python'`) share the same hardened subprocess
+> helper (`app/compute/sandbox.py`): process-group kill on timeout, rlimits
+> (RLIMIT_CPU is skipped when a cell sets `timeout_s=0`, i.e. no timeout),
+> and 1 MiB stdout/stderr caps. Limits are overridable via `KERNEL_RLIMIT_*`
+> / `KERNEL_STDOUT_CAP_BYTES` / `KERNEL_STDERR_CAP_BYTES` env vars.
 
 ---
 
@@ -72,26 +78,45 @@ host process table (`/proc`), network interfaces, and mounted filesystems.
 
 ## Production requirements
 
-**The ONLY production-safe path is `RemoteRunner`** combined with egress
-firewall rules.
+**The ONLY production-safe path is a remote sandboxed runner (E2B or Modal)**
+combined with egress firewall rules.
 
-1. **Deploy a sandboxed remote runner**: Modal, E2B, gVisor (`runsc`), or a
-   container with seccomp + AppArmor/SELinux profiles and a dedicated network
-   namespace.
+1. **Configure a remote runner** by setting the appropriate env vars:
+
+   - **E2B** (Firecracker microVMs — recommended):
+     ```
+     KERNEL_REMOTE_PROVIDER=e2b
+     E2B_API_KEY=<your-e2b-api-key>
+     ```
+   - **Modal** (container-based):
+     ```
+     KERNEL_REMOTE_PROVIDER=modal
+     MODAL_TOKEN_ID=<your-modal-token-id>
+     MODAL_TOKEN_SECRET=<your-modal-token-secret>
+     ```
+
+   Remote runners take precedence over the local runner in all environments,
+   including production.  E2B sandboxes run in isolated Firecracker microVMs
+   with no access to the host filesystem, network, IMDS, or secrets.
 
 2. **Apply egress firewall rules** blocking link-local and RFC-1918 ranges
    (see above).
 
-3. **Set environment variables**:
+3. **Set `ENV=production`**:
    ```
    ENV=production
-   KERNEL_LOCAL_ENABLED=false
    ```
-   This causes `_choose_runner()` to raise 503 if no remote runner is wired in,
-   preventing silent fallback to the local subprocess.
+   When `ENV=production` and no remote runner is configured, `_choose_runner()`
+   raises `AppError("kernel_disabled", 503)` — the local subprocess runner is
+   never used, preventing any silent fallback.  Setting `KERNEL_LOCAL_ENABLED`
+   is not required (it is already ignored in production), but you may set it to
+   `false` for defence-in-depth.
 
-4. **Wire `RemoteRunner(configured=True)`** in `app/routes/compute.py` once
-   Modal/E2B credentials are available (M4-B / M4-C milestone).
+   The runner-selection priority in `app/routes/compute.py` is:
+   1. `KERNEL_REMOTE_PROVIDER=e2b` + `E2B_API_KEY` → E2BRunner (any env).
+   2. `KERNEL_REMOTE_PROVIDER=modal` + Modal credentials → ModalRunner (any env).
+   3. `ENV != production` + `KERNEL_LOCAL_ENABLED=true` → LocalSubprocessRunner.
+   4. Otherwise → 503 `kernel_disabled`.
 
 ---
 

@@ -16,7 +16,7 @@ Nubi backend  ←──── WebSocket tunnel ←────  Bridge agent (in
 1. The bridge agent process starts inside your VPC and calls `WS /api/v1/bridges/{id}/connect` on the Nubi backend.
 2. The Nubi backend authenticates the agent using a `token` stored in the bridge's config.
 3. Once the WebSocket is accepted, the backend's `BridgeBroker` registers the connection.
-4. When a query targets a connector with `network_mode="bridge"`, the backend calls `resolve_network_async()`, which opens a local TCP proxy through the bridge agent's tunnel.
+4. When a query targets a connector with `network_mode="bridge"`, the backend calls `resolve_network_async()`, which starts an ephemeral local TCP listener and tunnels every TCP connection through the bridge agent to the target host.
 5. The connector receives a `NetworkTarget` pointing at `127.0.0.1:<local-port>` — it connects there as if the database were local.
 
 ---
@@ -103,19 +103,13 @@ POST /api/v1/connectors
 Run the bridge agent process inside your VPC, pointing it at the Nubi backend:
 
 ```bash
-# Using the nubi CLI (when bridge agent CLI ships)
-NUBI_API_URL=https://api.example.com \
 BRIDGE_ID=<bridge-uuid> \
 BRIDGE_TOKEN=my-secret-agent-token \
-  nubi bridge-agent start
-
-# Or directly with the Python agent module:
-python -m nubi_bridge.agent \
-  --backend wss://api.example.com/api/v1/bridges/<bridge-uuid>/connect \
-  --token my-secret-agent-token
+CONTROL_PLANE_URL=wss://api.example.com/api/v1 \
+  python -m app.bridges.agent
 ```
 
-The agent connects via WebSocket, authenticates with the token, and is registered with the `BridgeBroker`.
+The agent connects via WebSocket, authenticates with the token, and is registered with the `BridgeBroker`. It will automatically reconnect if the connection drops.
 
 ---
 
@@ -126,7 +120,7 @@ The bridge agent must supply its secret token in **one** of:
 - `X-Bridge-Token: <token>` request header
 - `?token=<token>` query parameter
 
-The token is validated against `bridge.config["token"]`. If the bridge row does not exist or the token does not match, the WebSocket is closed with code `4401` (unauthorized). A missing bridge row returns `4404`.
+The token is validated against `bridge.config["token"]`. If the bridge row does not exist, the WebSocket is closed with code `4404`. If the token does not match or is missing, it is closed with code `4401` (unauthorized).
 
 ---
 
@@ -146,18 +140,7 @@ Requesting an unimplemented mode returns `501 Not Implemented` with a message ex
 
 ## Reachability Check
 
-Before opening the TCP proxy, `resolve_network_async()` checks that the bridge agent is currently connected:
-
-```python
-if not broker.is_connected(bridge_id):
-    raise AppError(
-        "bridge_not_connected",
-        "Bridge has no connected agent. Start the bridge agent inside the VPC.",
-        501,
-    )
-```
-
-If the agent has disconnected or has not yet started, queries will fail with a clear 501 rather than timing out.
+Before opening the TCP proxy, `resolve_network_async()` checks that the bridge agent is currently connected. If the agent has disconnected or has not yet started, queries will fail with a clear error rather than timing out silently.
 
 ---
 
@@ -165,18 +148,36 @@ If the agent has disconnected or has not yet started, queries will fail with a c
 
 The `BridgeBroker` (`app.bridges.broker`) manages the collection of connected bridge WebSockets. When a query needs to open a TCP connection through the bridge:
 
-1. `broker.open_tcp_proxy(bridge_id, target_host, target_port)` sends an **OPEN frame** to the bridge agent.
-2. The bridge agent establishes the TCP connection to `target_host:target_port` and responds with a **READY frame** containing a local port.
-3. Data flows as binary frames in both directions (**DATA frames**).
-4. When the query is done, `broker.close_tcp_proxy(local_host, local_port)` sends a **CLOSE frame**.
+1. `broker.open_tcp_proxy(bridge_id, target_host, target_port)` starts an ephemeral TCP listener on `127.0.0.1` with an OS-assigned port, then sends an **OPEN frame** to the bridge agent for each inbound client connection.
+2. The bridge agent dials the TCP target inside the VPC and responds with a **READY frame** (empty payload) to signal the connection is up.
+3. Data flows as **DATA frames** in both directions.
+4. When the query is done, `broker.close_tcp_proxy(local_host, local_port)` stops the local listener and sends a **CLOSE frame** to tear down any in-flight streams.
 
 The connector receives a plain `(host, port)` `NetworkTarget` and is agnostic of the tunnel — it connects to `127.0.0.1:<local-port>` as if the database were local.
+
+### Frame protocol
+
+Every frame is length-prefixed:
+
+```
+[4 bytes big-endian total length] [1 byte frame_type] [4 bytes stream_id] [payload]
+```
+
+Frame types:
+
+| Type | Direction | Payload |
+|------|-----------|---------|
+| `OPEN` (0x01) | server → agent | 2-byte port (big-endian) + NUL-terminated hostname |
+| `READY` (0x02) | agent → server | empty |
+| `ERROR` (0x03) | agent → server | UTF-8 error message |
+| `DATA` (0x04) | bidirectional | raw bytes |
+| `CLOSE` (0x05) | bidirectional | empty |
 
 ---
 
 ## Security Notes
 
-- The bridge agent token is stored in `bridge.config["token"]` (plain JSON in the `bridges` table). This is intentional: the token is NOT a database credential — it identifies the bridge agent, not a data store. Rotate it by updating the bridge record.
+- The bridge agent token is stored in `bridge.config["token"]` (plain JSON in the bridge record). This is intentional: the token is NOT a database credential — it identifies the bridge agent, not a data store. Rotate it by updating the bridge record.
 - The bridge token is checked before the WebSocket handshake is accepted — unauthenticated agents are rejected before any data flows.
 - Bridge IDs are non-secret and stored in `datastores.config` alongside `network_mode`. The actual database credentials remain in `connector_secrets` (AES-256-GCM encrypted).
 - In production, run the bridge agent with limited outbound egress: it only needs to reach the Nubi backend WebSocket URL and the target database host.

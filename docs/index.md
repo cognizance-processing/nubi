@@ -10,7 +10,7 @@ Nubi is a batteries-included BI and embedded-analytics platform. The kernel runs
 
 **BYO warehouse** — point at any Postgres-compatible warehouse (Neon, RDS, AlloyDB) or bring your own connector. Nubi does not own your data.
 
-**AI-native** — grounded text-to-SQL (`POST /api/v1/ai/sql`), natural-language dashboard generation (`POST /api/v1/ai/dashboard`), an agentic chat loop with a 7-tool registry (`POST /api/v1/ai/chat`), and a full MCP server so Claude and other agents can author dashboards directly.
+**AI-native** — grounded text-to-SQL (`POST /api/v1/ai/sql`), natural-language dashboard generation (`POST /api/v1/ai/dashboard`), an agentic chat loop with a 12-tool registry (`POST /api/v1/ai/chat`), and a full MCP server so Claude and other agents can author dashboards directly.
 
 **Arrow-native data plane** — data moves as Arrow IPC at every boundary (warehouse → edge cache → browser) with no JSON round-trip tax.
 
@@ -26,15 +26,15 @@ Nubi is a batteries-included BI and embedded-analytics platform. The kernel runs
 | [**Queries & Parameters**](/docs/queries-and-params) | Registered queries, `{{named}}` typed params, query library, text-to-SQL |
 | [**Dashboards**](/docs/dashboards) | DashboardSpec, widget types (kpi/metric/chart/table/pivot/filter/text/section), 9 chart types, variables, `/d/:id?var=` route params |
 | [**Exports & Scheduled Reports**](/docs/exports-and-jobs) | CSV/PDF exports, cron jobs, per-recipient locked params |
-| [**Flows**](/docs/flows) | Multi-step DAG orchestrator: query/python/agent/materialize/bucket_load/map/branch/preagg_refresh, retries, caching, materialized blends, React Flow canvas + code-first Python SDK, LLM authoring |
+| [**Flows**](/docs/flows) | Cell-based orchestrator with 3 cell types (SQL, Python, Note); notebook and canvas (DAG) views; retries, durable run history, scheduling, cross-cell data references |
 | [**Pre-Aggregations**](/docs/pre-aggregations) | Auto rollups mined from the query log, ranked by frequency × scanned-bytes, RLS-preserving, transparent routing with HIT counts |
 | [**Secrets**](/docs/secrets) | Org-scoped encrypted secrets, `{{ secrets.NAME }}` in flows, `nubi secrets set/list` |
-| [**AI, Chat & MCP**](/docs/ai-and-mcp) | Grounded ask, agentic chat, 7 agent tools, MCP server (6 tools), Slack/WhatsApp gateway |
+| [**AI, Chat & MCP**](/docs/ai-and-mcp) | Grounded ask, agentic chat, 12 agent tools, MCP server (6 tools), Slack/WhatsApp gateway |
 | [**Embedding**](/docs/embedding) | JWT minting (RS256/ES256), per-viewer RLS, token-locked params, `<nubi-dashboard>` |
 | [**Git Sync**](/docs/git-sync) | GitHub App + GitLab push; commit queries and dashboards as code |
 | [**Bridges**](/docs/bridges) | Agent-per-VPC reverse tunnel, WebSocket protocol, reachability modes |
-| [**SDK & CLI**](/docs/sdk-and-cli) | `@nubi/sdk` JavaScript client and the `nubi` Python CLI |
-| [**Billing Model**](/docs/billing-model) | Pricing tiers (Free/$79/$199/$499/$1,799), ZAR/USD FX, metered dimensions, no per-seat pricing |
+| [**SDK & CLI**](/docs/sdk-and-cli) | `@nubi/sdk` JavaScript client and the `nubi` Python CLI (`login` / `deploy` / `run` / `diff` / `pull` / `flows` / `secrets`) |
+| [**Cloud & Billing**](/docs/billing-and-usage) | 5 tiers (Free / $9 / $49 / $149 / $1,000-floor), ZAR billing with USD anchoring, metered usage wallet, unlimited seats at every tier |
 | [**Open Core**](/docs/architecture-open-core) | CE/EE split, feature-gate API, Docker CE/EE images, how EE billing slots in |
 
 ---
@@ -76,6 +76,6 @@ The planner translates SQL through sqlglot into a `PhysicalPlan`, injects RLS pr
 | Viz | regl (WebGL scatter, ~1M pts), apache-arrow, @duckdb/duckdb-wasm |
 | Embed | Custom elements (`<nubi-dashboard>`, `<nubi-kpi>`, `<nubi-table>`, `<nubi-chart>`, `<nubi-filter>`, `<nubi-text>`), DOMPurify |
 | SDK | `@nubi/sdk` — framework-agnostic ESM, wraps auth + query + resources + embed |
-| CLI | Python typer (`nubi login / deploy / run / diff / pull`) |
+| CLI | Python typer (`nubi login / deploy / run / diff / pull / flows / secrets`) |
 | MCP | Python `mcp` SDK, stdio transport, 6 tools |
 | Chat gateway | Slack Events API + WhatsApp Cloud API webhook adapters |

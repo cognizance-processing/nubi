@@ -1,117 +1,148 @@
-# Pre-Aggregations (Auto Rollups)
+# Pre-aggregations (rollups)
 
-Pre-aggregations are materialized rollup tables that Nubi builds from your **own query log**. Instead of asking you to hand-define cubes, Nubi mines the queries that actually ran, finds the hot `GROUP BY` shapes, ranks them by cost, and materializes the winners. Matching queries are then transparently routed to the rollup — fewer scanned bytes, faster reads — while RLS still holds because the rollup keeps its tenant key columns.
+Pre-aggregations are materialized **rollup tables** that Nubi builds from your **own query log**. Instead of asking you to hand-define cubes, Nubi watches the queries that actually run, finds the hot `GROUP BY` shapes, ranks them by cost, and lets you materialize the winners with one click. Matching queries are then transparently routed to the rollup — fewer bytes scanned, faster dashboards and embeds — while row-level security still holds because the rollup keeps its tenant key columns.
 
-This is the same wedge as [materialized blends](/docs/flows#blends--cheap-reads-vs-live-federation): pay the aggregation cost once on a schedule, serve cheap reads forever.
-
----
-
-## How It Works
-
-1. **Mine** — every executed query is logged with its parsed shape (base table, dimensions, measures, filters) and an estimate of bytes scanned. The miner clusters compatible shapes (same base table + dimension set) and ranks each cluster by `score = frequency × scanned-bytes`. The hottest, most expensive patterns float to the top.
-2. **Build** — for a chosen shape, Nubi materializes a rollup: `SELECT <dimensions>, <measures> FROM <table> GROUP BY <dimensions>`, with the declared `rls_keys` preserved (and grouped on) so read-time `WHERE <key> = <claim>` injection stays sound per tenant. The rollup is written through the DuckDB write path and registered.
-3. **Route** — the registered rollup is consulted by the planner-level router. A query whose dimensions are a subset of a built rollup's dimensions (superset routing) can be answered from the rollup. Each routed query increments the rollup's **HIT** count.
-
-A candidate must clear a `min_hits` threshold (default `3`) before it is surfaced or built, so one-off ad-hoc queries never trigger a rollup.
+You manage rollups from the **Rollups** panel inside the query section. There are no cubes to write and no schema to maintain: the suggestions are mined automatically, and you decide which ones are worth materializing.
 
 ---
 
-## REST API
+## When to use rollups
 
-All endpoints require a valid first-party Bearer token and are org-scoped (the caller's `org_id` is resolved, honouring the `X-Org-Id` header). The mined query log and rollup registry are currently process-wide singletons.
+Reach for a rollup when the same aggregation runs over and over and the base table is large enough that scanning it every time is wasteful — for example:
 
-Base path: `/api/v1/preagg`
+- A dashboard KPI like `SUM(amount)` by `region` and `day` that every viewer loads.
+- An embedded chart that fans out to many tenants but always groups the same way.
+- A report that re-runs on a schedule against a growing fact table.
 
-### Suggestions — ranked candidates
-
-```
-GET /api/v1/preagg/suggestions?min_hits=3
-Authorization: Bearer <jwt>
-```
-
-Returns ranked rollup candidates mined from the query log, highest score first:
-
-```json
-[
-  {
-    "table":        "orders",
-    "dimensions":   ["region", "day"],
-    "measures":     ["sum(amount)", "count(*)"],
-    "filters":      [],
-    "score":        4820000,
-    "sample_count": 41,
-    "est_bytes":    117560,
-    "cluster_key":  "orders|day,region"
-  }
-]
-```
-
-| Field | Meaning |
-|-------|---------|
-| `score` | Rank key: `sample_count × est_bytes` (frequency × scanned-bytes). |
-| `sample_count` | How many logged queries matched this cluster. |
-| `est_bytes` | Estimated bytes scanned by the cluster. |
-| `cluster_key` | Stable id for the candidate — pass it to `POST /preagg/build`. |
-
-`min_hits` (default `3`) sets the minimum `sample_count` for a candidate to appear.
-
-### Build — materialize a rollup
-
-```
-POST /api/v1/preagg/build
-Authorization: Bearer <jwt>
-Content-Type: application/json
-```
-
-Supply a mined candidate by `cluster_key`, or specify the shape explicitly:
-
-```json
-{
-  "cluster_key":     "orders|day,region",
-  "rls_keys":        ["tenant_id"],
-  "source_database": "/abs/path/to/warehouse.duckdb",
-  "datastore_id":    "ds-uuid"
-}
-```
-
-| Field | Required | Description |
-|-------|----------|-------------|
-| `cluster_key` | One of `cluster_key` / `table` | Select a mined candidate by its `cluster_key`. Its `table`/`dimensions`/`measures` are used (and may be omitted below). |
-| `table` | One of `cluster_key` / `table` | Base fact table to roll up. |
-| `dimensions` | No | GROUP BY columns. |
-| `measures` | Required (if no `cluster_key`) | `func(col)` measure strings, e.g. `["sum(amount)", "count(*)"]`. At least one. |
-| `rls_keys` | No | RLS-key columns that must be preserved and grouped on so per-tenant predicate injection stays sound. |
-| `source_database` | No | Absolute path to the DuckDB file holding the base table. Omit for the test/demo path. |
-| `datastore_id` | No | Datastore the materialized rollup is served through. |
-
-Response `201`: the built-rollup manifest — `{rollup_id, table, source_table, dimensions, measures, rls_keys, database, datastore_id, query_id, hits, ...}`. Returns `404 rollup_candidate_not_found` for an unknown `cluster_key`, or `400 invalid_rollup_request` if neither a `cluster_key` nor a `table` (with at least one measure) is provided.
-
-The same endpoint is schedulable: a cron caller that POSTs to it on a schedule materializes rollups on a cadence.
-
-### List — built rollups + HIT counts
-
-```
-GET /api/v1/preagg
-Authorization: Bearer <jwt>
-```
-
-Returns the rollups that have been built, each including its `hits` count — how many incoming queries have been routed to it. Use this to see which rollups are earning their keep.
+You do **not** need a rollup for one-off, ad-hoc exploration. A query shape must appear **at least 3 times** in the log before Nubi suggests it, so genuinely repeated patterns are the only ones surfaced.
 
 ---
 
-## Refreshing on a Schedule
+## Opening the Rollups panel
 
-The suggest → build pass can run automatically inside a flow via the [`preagg_refresh` task kind](/docs/flows#preagg_refresh--refresh-auto-pre-aggregations). The task mines the org's query log and builds every candidate above `min_hits` in one pass, returning `{org_id, candidates_found, rollups_built, rollup_ids, errors}`. Attach a schedule to the flow to keep rollups fresh as query patterns shift.
+1. Go to the **Queries** section.
+2. In the top bar you'll see a segmented toggle with two options: **Editor** and **Rollups**. Click **Rollups**.
+3. The panel loads two lists: **Suggested rollups** (candidates mined from the log) and **Active rollups** (rollups you've already built).
+
+The toggle does not lose your editor state — switch back to **Editor** at any time to keep working on SQL.
+
+At the top of the panel is a short explainer and a **Refresh** button (the circular-arrows icon). Click **Refresh** any time to re-mine the query log and re-load the built rollups — useful after running more queries or after a scheduled build.
 
 ---
 
-## RLS Safety
+## Reading a suggestion
 
-A rollup is only sound for multi-tenant data if it keeps the tenant key columns. The builder preserves declared `rls_keys` (grouping the rollup on them) so the planner can inject `WHERE <key> = <claim>` against the rollup exactly as it would against the base table. Routing a query to a rollup never widens the data a viewer can see.
+Each card under **Suggested rollups** represents one mined candidate, ranked by score (highest first). A card shows:
+
+| On the card | What it means |
+|---|---|
+| **Table name** (database icon) | The base fact table the rollup would aggregate. |
+| **score** badge | The rank key. Higher = more worth building. It is `frequency × scanned-bytes`, so it favours patterns that are both *frequent* and *expensive*. |
+| **N hits in the log** | How many logged queries matched this pattern. |
+| **~X scanned** | Estimated bytes the pattern scans against the base table. |
+| **group by** chips | The `GROUP BY` columns (dimensions) the rollup would be grouped on. |
+| **measures** chips | The aggregates that would be materialized, e.g. `sum(amount)`, `count(*)`. |
+| **filters** chips | Columns Nubi saw in `WHERE` clauses of the clustered queries (shown only when present). |
+
+Suggestions whose shape you've already built drop off the list automatically, so what remains is always still actionable.
+
+If you see **"No suggestions yet"**, run a few aggregating queries from the **Editor** and come back — the miner needs a pattern to repeat (3+ times) before it appears.
+
+---
+
+## Building a rollup (one click)
+
+Building materializes the rollup table once and registers it so future matching queries route to it.
+
+1. Open the **Rollups** panel and find the suggestion you want.
+2. Click the **Build** button on its card.
+3. The button shows **Building…** with a spinner while Nubi materializes the rollup, then flips to **Built** with a checkmark.
+4. The new rollup appears immediately under **Active rollups**, and the suggestion disappears from the suggestions list.
+
+That's it — no shape to re-enter. Nubi resolves the table, dimensions, and measures from the mined candidate for you.
+
+### Who can build
+
+Building requires **writer** access. If you have read-only access, the card shows a **Read-only** label instead of a Build button, and the suggestions and active rollups are still fully visible. Ask a writer (or admin) on your org to build the rollups you need.
+
+### If a build fails
+
+If a build can't complete, the card shows an inline error in red beneath it. The most common cause is insufficient permissions ("You need writer access to build a rollup."). Other failures surface the backend message directly. Fix the cause (e.g. get writer access) and click **Build** again.
+
+---
+
+## Active rollups
+
+Each card under **Active rollups** is a rollup that has been built and is live. A card shows:
+
+| On the card | What it means |
+|---|---|
+| **Rollup table name** + **active** badge | The materialized rollup table; the green badge confirms it's serving. |
+| **N hits** badge (lightning icon) | How many incoming queries have been **routed to this rollup**. This is the headline metric — it tells you the rollup is earning its keep. |
+| **from `<source_table>`** | The base table the rollup was built from (and the datastore it's served through, when set). |
+| **group by** chips | The dimensions the rollup is grouped on. |
+| **measures** chips | The materialized aggregates. |
+| **rls keys** chips | Tenant key columns preserved so per-viewer row-level security still holds (shown when present). |
+| Monospace id at the bottom | The rollup's stable id, for reference/support. |
+
+### Reading the HIT count
+
+The **hits** number is your signal for whether a rollup is worth keeping:
+
+- **Rising hits** — the rollup is actively accelerating real traffic. Keep it.
+- **Zero / flat hits** — nothing is routing to it. Either the matching queries stopped running, or their shape drifted. It's a candidate to ignore or rebuild against the current pattern.
+
+Click **Refresh** to pull the latest hit counts.
+
+---
+
+## How rollups accelerate your queries
+
+Once a rollup is built, you don't change anything in your SQL, your dashboards, or your embeds. Routing is **transparent**:
+
+1. A query comes in.
+2. The planner checks the registered rollups. If the query's dimensions are a **subset** of a built rollup's dimensions (superset routing) and its measures are covered, the query can be answered from the rollup instead of the base table.
+3. The query reads the small pre-aggregated table — far fewer bytes scanned — and that rollup's **hit** count increments.
+
+Concretely, this means:
+
+- **Dashboards and embeds load faster** — every viewer that hits a matching widget reads the rollup, not the raw fact table.
+- **Repeated queries get cheaper** — you pay the aggregation cost once at build time, then serve cheap reads.
+- **No query rewrites** — the same registered query or ad-hoc SQL automatically benefits; you never reference the rollup by name.
+
+This pairs naturally with Nubi's content-hashed cache and with [materialized SQL cells in Flows](/docs/flows): pay the aggregation cost once, serve cheap reads forever.
+
+---
+
+## Row-level security stays sound
+
+A rollup is only safe for multi-tenant data if it keeps the tenant key columns. When a rollup is built with **RLS keys**, those columns are preserved and grouped on, so the planner injects `WHERE <key> = <claim>` against the rollup exactly as it would against the base table.
+
+Routing a query to a rollup **never widens** what a viewer can see — the rollup's **rls keys** chips on its Active card tell you which tenant keys are preserved.
+
+---
+
+## Keeping rollups fresh
+
+A rollup is a snapshot of the base table at build time. As new data lands, rebuild to keep it current. Two ways:
+
+- **Manually** — open the **Rollups** panel, click **Refresh**, and **Build** the suggestion again when its shape resurfaces.
+- **On a schedule** — create a Flow whose Python cell refreshes the rollups, then attach a schedule to that flow (see [Flows → Scheduling](/docs/flows#scheduling)). The refresh mines the query log and builds every candidate above the threshold in one pass, returning `{org_id, candidates_found, rollups_built, rollup_ids, errors}`, so rollups keep up as query patterns shift.
+
+---
+
+## Tips
+
+- **Build the top of the list first.** Score already weighs frequency against scanned-bytes, so the highest-scoring suggestion is usually the best return on a build.
+- **Watch the hits, not just the score.** A high-score suggestion proves the *past* pattern was hot; a high **hits** count on an Active rollup proves it's *still* paying off.
+- **Let the log fill up.** Right after a fresh deploy or a new dashboard, run the queries a few times (or wait for real traffic) so the miner has signal. Nothing is suggested below 3 hits.
+- **Read-only? You can still plan.** Suggestions and active rollups are visible to everyone — use the panel to decide what to ask a writer to build.
 
 ---
 
 ## Related
 
-- The MCP tool `propose_materialized_view` surfaces the same rollup suggestions to LLM agents. See [AI, Chat & MCP](/docs/ai-and-mcp).
-- For multi-source materialization (joins across sources), see [Materialized Blends](/docs/flows#materialized-blends).
+- [Flows](/docs/flows#scheduling) — schedule a Flow whose Python cell refreshes rollups on a cadence.
+- [Queries & Parameters](/docs/queries-and-params) — registered queries that rollups transparently accelerate.
+- [Dashboards](/docs/dashboards) — the embedded widgets that benefit most from rollups.
+- [Materialized cells](/docs/flows#materialized-sql-cells) — multi-source materialization for joins across sources using SQL cells in Flows.

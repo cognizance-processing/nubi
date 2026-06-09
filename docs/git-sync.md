@@ -1,23 +1,28 @@
 # Git Sync
 
-Nubi's git sync feature lets you commit all registered queries and dashboards (boards) to a local git repository, then push to GitHub or GitLab. This enables dashboards-as-code workflows, audit trails, and rollback via `POST /api/v1/git/restore`.
+Nubi's git sync feature serializes queries, dashboards (boards), and flows to a local git repository and pushes them to GitHub or GitLab. This enables dashboards-as-code workflows, audit trails, and rollback via `POST /api/v1/git/restore`.
 
 ---
 
 ## How It Works
 
-On `POST /api/v1/git/sync`:
+Git sync operates at two scopes:
 
-1. All registered queries from the `QueryRegistry` are serialized to SQL files.
+**Org-level sync** (`POST /api/v1/git/sync`):
+
+1. All registered queries from the `QueryRegistry` are serialized to `.sql` + `.meta.json` file pairs.
 2. All boards for the caller's org are serialized to JSON files.
-3. Changes are committed to a local bare git repo in the workspace directory (org-scoped subdirectory).
+3. Changes are committed to a local git repo in the workspace directory (org-scoped subdirectory).
 4. Returns the commit SHA, number of files committed, and the commit message.
 
-On `POST /api/v1/git/push`:
+**Project-level sync** (`POST /api/v1/git/push`):
 
-1. Same serialization + commit as `/git/sync`.
-2. Then pushes to the configured remote (GitHub App or GitLab token).
-3. `pushed: false` when `GIT_REMOTE_PROVIDER` is `none` (the default).
+1. The project's local working clone is synced to the remote tip (`clone_or_pull`).
+2. Dashboards, queries, and flows are serialized as portability-envelope YAML files, plus a `nubi.yaml` manifest.
+3. All changes are staged, committed, and pushed to the connected remote branch.
+4. Optionally opens a pull/merge request when `open_pr` is set.
+
+Connectors are never serialized (by product design).
 
 ---
 
@@ -25,7 +30,8 @@ On `POST /api/v1/git/push`:
 
 The workspace root is set by the `NUBI_GIT_WORKSPACE` environment variable. Default: `<system-temp>/nubi_git_workspace`.
 
-Each org gets its own subdirectory: `<workspace>/<org_id>/`.
+- Org-level snapshots: `<workspace>/<org_id>/`
+- Project working clones: `<workspace>/<org_id>/projects/<project_id>/`
 
 ---
 
@@ -33,7 +39,7 @@ Each org gets its own subdirectory: `<workspace>/<org_id>/`.
 
 ### `POST /api/v1/git/sync`
 
-Serialize and commit all registered queries + boards.
+Serialize and commit all registered queries + boards for the caller's org.
 
 **Request body** (optional):
 
@@ -112,18 +118,48 @@ Returns 404 if the path or SHA does not exist.
 
 ---
 
-### `POST /api/v1/git/push`
+## Project-Scoped Remote Sync
 
-Commit all resources and push to the configured remote.
+Projects can be connected to a GitHub or GitLab repository via a personal access token (PAT) or deploy token stored securely in the secret store. Configure the connection in the app at **Settings → Project → Git**, or via the API.
 
-**Request body** (optional):
+### `POST /api/v1/git/connect`
+
+Bind a project to a remote repository. The token is stored in the secret store; only a reference is recorded on the project.
+
+**Request body:**
 
 ```json
 {
-  "message":    "chore: sync resources",
-  "author":     "Nubi Git Sync <nubi-git-sync@nubi.local>",
+  "project_id": "<uuid>",
+  "provider":   "github",
+  "repo_url":   "https://github.com/org/repo.git",
   "branch":     "main",
-  "remote_url": "https://github.com/org/repo.git"
+  "base_path":  "",
+  "token":      "<PAT or deploy token>"
+}
+```
+
+`provider` must be `"github"` or `"gitlab"`.
+
+---
+
+### `GET /api/v1/git/status?project_id=<uuid>`
+
+Return the current git binding and last-sync info for a project.
+
+---
+
+### `POST /api/v1/git/push`
+
+Serialize the project's resources, commit, and push to the connected branch.
+
+**Request body:**
+
+```json
+{
+  "project_id": "<uuid>",
+  "message":    "chore: sync nubi resources",
+  "open_pr":    false
 }
 ```
 
@@ -131,52 +167,50 @@ Commit all resources and push to the configured remote.
 
 ```json
 {
-  "sha":             "a1b2c3d4...",
-  "files_committed": 7,
-  "message":         "chore: sync resources",
-  "branch":          "main",
-  "pushed":          true
+  "sha":            "a1b2c3d4...",
+  "committed":      true,
+  "pushed":         true,
+  "files":          12,
+  "change_request": null
 }
 ```
 
-`pushed: false` when `NullRemote` is active (no remote configured).
+When `open_pr` is `true` and `branch` differs from the repository default, a pull request (GitHub) or merge request (GitLab) is opened automatically. `change_request` contains `{url, number}` on success.
 
 ---
 
-## Remote Providers
+### `POST /api/v1/git/pull`
 
-Configure via environment variables:
+Fetch the project's remote branch and import/upsert all resource envelopes into Nubi. The database stays canonical; this hydrates it from the git mirror.
 
-### GitHub App
+**Request body:**
 
-```
-GIT_REMOTE_PROVIDER=github_app
-GITHUB_APP_ID=<numeric app id>
-GITHUB_APP_PRIVATE_KEY=<PEM-encoded RSA private key>
-GITHUB_APP_INSTALLATION_ID=<installation id>
+```json
+{ "project_id": "<uuid>" }
 ```
 
-Flow: Nubi mints a short-lived RS256 JWT (10 min), exchanges it for a GitHub App installation access token (valid ~1 hour, cached in-process), and pushes via `https://x-access-token:<token>@github.com/<org>/<repo>.git`.
+**Response:**
 
-### GitLab Token
-
-```
-GIT_REMOTE_PROVIDER=gitlab
-GITLAB_TOKEN=<personal or project access token>
-GITLAB_HOST=gitlab.com        # override for self-hosted
-```
-
-Uses HTTPS basic authentication: `https://oauth2:<token>@<host>/<path>.git`.
-
-The token needs `write_repository` permission.
-
-### No Remote (default)
-
-```
-GIT_REMOTE_PROVIDER=none   # or unset
+```json
+{
+  "imported": 8,
+  "kinds":    { "dashboard": 5, "query": 3, "flow": 0 }
+}
 ```
 
-`POST /api/v1/git/push` commits locally but does not push. `pushed` is `false` in the response.
+---
+
+## Auth Model
+
+### GitHub (PAT or fine-grained token)
+
+The token is embedded as `https://x-access-token:<token>@github.com/<owner>/<repo>.git` for all fetch/push operations. The token requires `Contents: Read and write` permission on the target repository.
+
+### GitLab (personal, project, or deploy token)
+
+Uses HTTPS basic auth: `https://oauth2:<token>@<host>/<path>.git`. The token requires `write_repository` permission.
+
+The token is **never** written into the working tree or committed to history.
 
 ---
 
@@ -202,17 +236,34 @@ See [SDK & CLI](/docs/sdk-and-cli) for the full CLI reference.
 
 ## Serialized File Structure
 
-Queries are serialized as `.sql` files under `queries/`:
+### Org-level snapshot (POST /git/sync)
+
+Each query produces two files under `queries/`:
 
 ```
-<workspace>/<org_id>/queries/demo_all.sql
-<workspace>/<org_id>/queries/revenue_by_month.sql
+<workspace>/<org_id>/queries/<id>.sql
+<workspace>/<org_id>/queries/<id>.meta.json
 ```
 
-Boards are serialized as `.json` files under `dashboards/`:
+The `.meta.json` file stores `{ name, params, required_scope }` for the query.
+
+Each board produces one file under `dashboards/`:
 
 ```
-<workspace>/<org_id>/dashboards/board-abc123.json
+<workspace>/<org_id>/dashboards/<id>.json
 ```
 
-Each JSON file matches the `boards` resource shape: `{ id, org_id, name, config, ... }`.
+The JSON file stores `{ id, name, config }` with sorted keys for byte-stable round-trips.
+
+### Project-level sync (POST /git/push)
+
+Resources are written as portability-envelope YAML files:
+
+```
+<base_path>/dashboards/<slug>.yaml
+<base_path>/queries/<slug>.yaml
+<base_path>/flows/<slug>.yaml
+<base_path>/nubi.yaml          # manifest with resource counts
+```
+
+`base_path` defaults to the repo root when not set in the project's git binding.

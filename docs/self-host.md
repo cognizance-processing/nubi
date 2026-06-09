@@ -24,17 +24,20 @@ Browser
 │  - REST API at /api/v1          │
 │  - Flows engine + scheduler     │
 │  - Runs DB migrations on boot   │
-└──────────────┬──────────────────┘
-               │
-               ▼
-┌─────────────────────────────────┐
-│  db  (postgres:16-alpine)       │
-│  - persistent volume: pg_data   │
-└─────────────────────────────────┘
+└──────────┬────────────┬─────────┘
+           │            │
+           ▼            ▼
+┌──────────────┐  ┌─────────────────────────────────┐
+│  db          │  │  minio  (S3-compatible storage)  │
+│ (postgres    │  │  - object storage for exports,   │
+│  16-alpine)  │  │    datasets, cache files         │
+│  pg_data vol │  │  - minio_data volume             │
+└──────────────┘  └─────────────────────────────────┘
 ```
 
-All three services share the internal `nubi` Docker network.  Only the
-frontend port (8080) is published to the host.
+All services share the internal `nubi` Docker network.  Only the
+frontend port (8080) and the MinIO ports (9000 S3 API, 9001 web console)
+are published to the host.
 
 ---
 
@@ -86,7 +89,7 @@ make up
 The first run can take several minutes while:
 - `npm ci` + `vite build` compile the frontend
 - `pip install` installs Python dependencies
-- Postgres initialises its data directory
+- Postgres and MinIO initialise their data directories
 - The entrypoint runs database migrations
 
 ### 3. Open Nubi
@@ -119,7 +122,7 @@ environment variables in your shell before running `docker compose`.
 | `JWT_SECRET` | HS256 signing key (≥ 32 bytes) | `python -c "import secrets; print(secrets.token_hex(32))"` |
 | `GOOGLE_CLIENT_ID` | Google OAuth client ID | [Google Cloud Console](https://console.cloud.google.com) → Credentials |
 | `GOOGLE_CLIENT_SECRET` | Google OAuth client secret | Same as above |
-| `GOOGLE_REDIRECT_URI` | OAuth callback URL | `http://<your-host>/api/v1/auth/google/callback` |
+| `GOOGLE_REDIRECT_URI` | OAuth callback URL | `https://<your-domain>/api/v1/auth/google/callback` |
 
 ### Recommended for production
 
@@ -128,6 +131,8 @@ environment variables in your shell before running `docker compose`.
 | `NUBI_SECRETS_KEY` | Fernet key for named-secrets encryption | `python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"` |
 | `CONNECTOR_SECRET_KEY` | AES-256 key for connector credential encryption | `python -c "import os,base64; print(base64.urlsafe_b64encode(os.urandom(32)).decode())"` |
 | `COOKIE_SECURE` | Set `true` when serving over HTTPS | — |
+| `MINIO_ROOT_USER` | MinIO / S3 access key | Choose a strong username |
+| `MINIO_ROOT_PASSWORD` | MinIO / S3 secret key | `python -c "import secrets; print(secrets.token_hex(24))"` |
 
 ### Runtime tunables
 
@@ -138,7 +143,10 @@ environment variables in your shell before running `docker compose`.
 | `FRONTEND_URL` | `http://localhost:8080` | Public URL of the frontend (used in emails / redirects) |
 | `KERNEL_LOCAL_ENABLED` | `true` | Allow local subprocess kernel (set `false` in production for isolation) |
 | `FLOWS_INPROCESS_WORKER` | `true` | Run flows scheduler inside the API process |
+| `FLOWS_WORKER_ENABLED` | `true` | Enable the flows task worker entirely |
 | `UVICORN_WORKERS` | `2` | Number of uvicorn worker processes |
+| `S3_ENDPOINT_URL` | `http://minio:9000` | S3-compatible endpoint for object storage |
+| `S3_BUCKET` | `nubi` | S3 bucket for exports, datasets, and cache |
 
 ---
 
@@ -147,7 +155,7 @@ environment variables in your shell before running `docker compose`.
 | Target | Description |
 |---|---|
 | `make up` | Build images and start the stack in the background |
-| `make down` | Stop all services and remove the Postgres volume |
+| `make down` | Stop all services and remove all volumes (Postgres + MinIO data) |
 | `make logs` | Stream logs from all services (Ctrl-C to stop) |
 | `make migrate` | Apply pending migrations in the running backend container |
 | `make migrate-status` | Show applied vs pending migrations |
@@ -162,6 +170,12 @@ Migrations run automatically when the backend container starts (via
 `docker-entrypoint.sh`).  They are forward-only SQL files under
 `database/migrations/`, applied in lexical order and tracked in the
 `schema_migrations` ledger table.
+
+**Open-source migrations** (`database/migrations/*.sql`) are applied by
+default.  EE/cloud migrations (`database/migrations/ee/*.sql`) — covering
+billing, FX rates, wallet, and invoices — are skipped unless you pass
+`--ee` or set `NUBI_CLOUD=1` / `NUBI_EE=1` in the environment.  Self-hosted
+OSS deployments never need the EE migrations.
 
 To run migrations manually (e.g. after upgrading):
 
@@ -193,9 +207,11 @@ Migrations are applied automatically on each restart.
 
 | Port | Service | Notes |
 |---|---|---|
-| `8080` | frontend (nginx) | Public-facing; only port exposed to host |
+| `8080` | frontend (nginx) | Public-facing; proxies /api to the backend |
 | `8000` | backend (uvicorn) | Internal only; proxied via nginx |
 | `5432` | db (postgres) | Internal only; not published |
+| `9000` | minio (S3 API) | Published; used for object storage access |
+| `9001` | minio (web console) | Published; MinIO admin UI |
 
 To run on a different port, set the `ports` mapping in `docker-compose.yml`
 or override with a `docker-compose.override.yml`.

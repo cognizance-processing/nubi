@@ -52,7 +52,7 @@ Inside a flow's task `config`, reference a secret by name with the `{{ secrets.N
 }
 ```
 
-The `bucket_load` task kind takes a `secret` config field naming a secret whose **JSON-decoded** value is used as the storage credentials dict. More generally, any string in a task `config` can interpolate a secret with `{{ secrets.NAME }}`; the executor resolves it from `ctx.secrets` at runtime. See the [Flows templating reference](/docs/flows#templating).
+The `bucket_load` task kind takes a `secret` config field naming a secret whose **JSON-decoded** value is used as the storage credentials dict. More generally, any string in a task `config` can interpolate a secret with `{{ secrets.NAME }}`; the executor resolves it from `ctx.secrets` at runtime. See [Referencing data between cells](/docs/flows#referencing-data-between-cells) in the Flows doc.
 
 Before each task runs, the Flows runtime resolves all of the org's secrets into the task context (`resolve_all`), so handlers read them via `ctx.secrets[name]` or via the `{{ secrets.NAME }}` template. Because resolution happens server-side at execution time, the value is never exposed to a dashboard, an embed token, or the client.
 

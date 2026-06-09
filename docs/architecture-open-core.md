@@ -34,7 +34,7 @@ tree.
 |------|--------------|------------------------|
 | Flows DAG engine | `app.flows` — work-pool executor, secrets, storage backends, bucket_load / map / branch / map_collect nodes; code-first Python SDK (`backend/nubi/flows`) | — |
 | Auto pre-aggregations | `app.preagg` — query-log mining, rollup builder, scheduler | — |
-| Connectors (8 sources) | `app.connectors` — postgres, duckdb, http_json, mysql, mariadb, jdbc, snowflake, bigquery | — |
+| Connectors (20+ sources) | `app.connectors` — postgres, duckdb, duckdb_storage, http_json, mysql, mariadb, jdbc, snowflake, bigquery, redshift, cockroachdb, cloudsql, sqlserver, azuresql, azuresynapse, oracle, clickhouse, databricks, athena, trino | — |
 | Query / RLS / cache | `app.routes.query` + planner + content-hash cache | — |
 | Dashboards / widgets | `app.routes.*` + widget CRUD | — |
 | Embedding | JWT verifier, scope gate, origin pinning | — |
@@ -82,10 +82,12 @@ nubi/
 │       ├── index.js             ← registerEe()
 │       ├── registry.js          ← slot registry
 │       └── billing/             ← billing UI components
-├── database/migrations/         ← zero-padded sequential SQL migrations
+├── database/migrations/         ← zero-padded sequential SQL migrations (core)
+├── database/migrations/ee/      ← EE-only SQL migrations (billing, FX, wallet)
 ├── docker-compose.yml           ← CE community self-host stack
-├── backend/Dockerfile           ← CE backend image (ee/ excluded)
-├── frontend/Dockerfile          ← CE frontend image (src/ee/ excluded)
+├── backend/Dockerfile           ← CE backend image (ee/ excluded via .dockerignore)
+├── frontend/Dockerfile          ← CE frontend image (src/ee/ excluded via .dockerignore)
+├── .dockerignore                ← excludes backend/app/ee/ and src/ee/ from OSS image
 ├── scripts/smoke.sh             ← live smoke test against a running stack
 ├── examples/embed-demo/         ← self-contained embed demo (index.html)
 ├── ee/LICENSE                   ← commercial licence placeholder
@@ -167,8 +169,9 @@ continues with all commercial flags at `false`.
 ```
 1. Mount all core routes (flows, query, connectors, ai, …)
 2. call load_ee(app)
-   ├─ try: import app.ee.licensing → register_feature("billing", checker)
-   ├─ try: import app.ee.billing   → billing_setup(app) mounts EE routes
+   ├─ try: import app.ee.licensing → resolve tier from NUBI_LICENSE_KEY
+   ├─ try: import app.ee.billing   → setup(app) mounts EE routes,
+   │                                  registers "billing" / "paid_tiers" checkers
    └─ returns True (EE active) or False (OSS only)
 3. Log EE status; server ready.
 ```
@@ -195,15 +198,17 @@ logs nothing alarming, server starts cleanly in OSS mode.
 
 The CE image excludes all EE code at **build time** using `.dockerignore`:
 
-- `backend/Dockerfile` builds from `backend/` — the `backend/app/ee/`
-  sub-tree is excluded by `.dockerignore` so it never lands in the image.
-- `frontend/Dockerfile` builds Vite with `src/ee/` excluded similarly.
+- `.dockerignore` excludes `backend/app/ee/` and `src/ee/` from the Docker
+  build context, so EE code never lands in the CE image.
+- `backend/Dockerfile` and `frontend/Dockerfile` both target the same build
+  context; `.dockerignore` does the exclusion before any `COPY` instruction
+  runs.
 
 ```bash
 # Build and start CE stack (docker-compose.yml):
 make up            # docker compose up --build -d
 make smoke         # scripts/smoke.sh — health + auth + query round-trip
-make down          # docker compose down
+make down          # docker compose down -v
 ```
 
 The CE stack (`docker-compose.yml`) stands up three services:
@@ -219,13 +224,14 @@ before starting uvicorn, so `make up` is a zero-config cold-start.
 
 ### Enterprise Edition (EE) image
 
-The EE image is built from the same `Dockerfile` **without** excluding
-`app/ee/` and `src/ee/`. Concretely:
+The EE image is built from the same Dockerfiles but with the EE trees present
+in the build context — concretely, the `.dockerignore` entries for
+`backend/app/ee/` and `src/ee/` must be removed or overridden:
 
 ```bash
-# Build EE backend (include ee/ tree):
-docker build \
-  --build-arg INCLUDE_EE=1 \
+# Build EE backend — supply EE source in context, bypass .dockerignore entries:
+DOCKER_BUILDKIT=1 docker build \
+  --secret id=ee_src,src=./backend/app/ee \
   -f backend/Dockerfile \
   -t nubi-backend-ee .
 
@@ -267,8 +273,8 @@ The full CE self-host stack ships as:
 | File | Purpose |
 |---|---|
 | `docker-compose.yml` | Three-service stack (db + backend + frontend) |
-| `backend/Dockerfile` | CE backend image, ee/ excluded |
-| `frontend/Dockerfile` | CE frontend image, src/ee/ excluded |
+| `backend/Dockerfile` | CE backend image, ee/ excluded via .dockerignore |
+| `frontend/Dockerfile` | CE frontend image, src/ee/ excluded via .dockerignore |
 | `frontend/nginx.conf` | SPA fallback + `/api` proxy to backend |
 | `.env.compose` | CE environment template |
 | `docker-entrypoint.sh` | Migration-on-boot + uvicorn start |
@@ -283,10 +289,10 @@ Everything a self-hoster needs is in those eight files.
 the full embed auth flow:
 
 - JWT signed by `scripts/sign_embed_jwt.py` using `EMBED_SECRET`.
-- `<nubi-dashboard>` web component mounted with `getToken()`.
+- `<nubi-dashboard>` web component mounted with `get-token`.
 - No server dependency: works against any running Nubi backend.
 
-The demo is CE: it uses only the OSS embed contract (HS256 JWT + `getToken()`
+The demo is CE: it uses only the OSS embed contract (HS256 JWT + `get-token`
 + `<nubi-dashboard>`). EE features (paid-tier gating, advanced RBAC) are not
 required to run it.
 
@@ -296,12 +302,12 @@ The billing subsystem is fully behind the EE gate:
 
 **Backend (`backend/app/ee/billing/`):**
 
-- `tiers.py` — authoritative tier catalogue: 5 tiers (FREE / STARTER / PRO / BUSINESS / ENTERPRISE), USD-anchored prices ($0 / $79 / $199 / $499 / $1,799/mo), resource limits (storage GB, compute units, embedded sessions, AI calls), overage rates, feature flags. **No per-seat pricing at any tier** — `max_seats = None` (unlimited) for all tiers. See [`docs/billing-model.md`](./billing-model.md).
+- `tiers.py` — authoritative tier catalogue: 5 tiers (FREE / STARTER / TEAM / PRO / ENTERPRISE), USD-anchored prices ($0 / $9 / $49 / $149 / $1,000/mo floor), resource limits (storage GB, compute units, embedded sessions, AI calls), overage rates, feature flags. **No per-seat pricing at any tier** — `max_seats = None` (unlimited) for all tiers.
 - `fx.py` — USD→ZAR conversion; daily FX refresh from frankfurter.app / open.er-api.com; 2% buffer + ceil-to-nearest-10 rule; emergency fallback at R16.26.
 - `paystack.py` — lazy-imported Paystack client (ZAR charges, 3.41% effective local-card rate);
   never imported at module top-level.
 - `store.py` — billing event store (InMemory + Pg dual pattern).
-- `routes.py` — EE billing routes mounted by `load_ee()` via `billing_setup(app)`.
+- `routes.py` — EE billing routes mounted by `load_ee()` via `setup(app)`.
 
 **Frontend (`src/ee/billing/`):**
 
@@ -310,7 +316,9 @@ The billing subsystem is fully behind the EE gate:
 - `BillingNavBadge.jsx` — nav badge showing current tier.
 - `registerBilling.js` — calls `registerSlot()` for each billing component.
 
-**DB migration:** `database/migrations/0017_billing.sql`.
+**DB migrations:** `database/migrations/ee/` — billing, FX rates, wallet, and
+invoices migrations live in the EE sub-directory and are applied only when EE
+is present.
 
 Core behaviour without EE: `feature_enabled("billing")` returns `False`;
 billing routes are never mounted; no Paystack SDK is ever imported.
@@ -334,7 +342,7 @@ Frontend
 1. Create src/ee/sso/SsoSettings.jsx.
 2. In src/ee/sso/registerSso.js call registerSlot("sso-settings", SsoSettings).
 3. Import + call registerSso() from src/ee/index.js inside registerEe().
-4. In core: const SsoPanel = useSlot("sso-settings") ?? null.
+4. In core: const SsoPanel = getSlot("sso-settings") ?? null.
 ```
 
 ---
@@ -344,7 +352,6 @@ Frontend
 | Document | Content |
 |---|---|
 | [`docs/open-core.md`](./open-core.md) | EeSeamAgent's original gate API spec (authoritative on the feature-gate contract) |
-| [`docs/billing-model.md`](./billing-model.md) | Billing model: tiers, pricing, metered dimensions, FX, seat policy |
 | [`docs/self-host.md`](./self-host.md) | Self-hosting guide for operators |
 | [`docs/embedding.md`](./embedding.md) | Embedding guide for host-app developers |
 | [`docs/flows.md`](./flows.md) | Flows DAG engine reference |

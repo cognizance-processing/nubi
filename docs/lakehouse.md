@@ -21,7 +21,7 @@ GCS HMAC, Cloudflare R2, etc.).
           │                    │
           │  INSTALL httpfs;   │
           │  LOAD httpfs;      │
-          │  SET s3_*          │
+          │  CREATE SECRET ... │
           └─────────┬──────────┘
                     │
          ┌──────────▼──────────┐
@@ -38,29 +38,49 @@ DuckDB's built-in **httpfs** extension lets any SQL statement reference
 
 ## Environment variables
 
-The DuckDB connector reads these variables from the process environment.  Set
-them in `.env.compose.local`, your shell, or a secrets manager.
+The backend reads these variables from the process environment.  Set them in
+`.env.compose.local`, your shell, or a secrets manager.  Both the `S3_*` family
+(used by the Docker Compose defaults) and the `AWS_*` family (boto3/standard)
+are accepted; `AWS_*` takes precedence when both are set.
 
 | Variable | Required | Default | Description |
 |---|---|---|---|
-| `S3_ENDPOINT_URL` | yes (non-AWS) | *(none)* | Full URL of the S3-compatible endpoint, e.g. `http://localhost:9000` for local MinIO or `https://s3.amazonaws.com` for AWS. |
-| `S3_ACCESS_KEY` | yes | *(none)* | Access key ID (MinIO root user, AWS Access Key ID, etc.). |
-| `S3_SECRET_KEY` | yes | *(none)* | Secret access key. |
-| `S3_REGION` | no | `us-east-1` | AWS/MinIO region.  For MinIO the value is arbitrary but must be set. |
-| `S3_BUCKET` | no | `nubi` | Default bucket used by the seed bundle and CSV-upload pipeline. |
-| `S3_FORCE_PATH_STYLE` | no | `true` | Must be `true` for MinIO and most self-hosted S3 clones.  Set to `false` only for real AWS S3 virtual-hosted style. |
+| `S3_ENDPOINT_URL` | yes (non-AWS) | *(none)* | Full URL of the S3-compatible endpoint, e.g. `http://localhost:9000` for local MinIO. Also read as `AWS_ENDPOINT_URL`. |
+| `S3_ACCESS_KEY` | yes | *(none)* | Access key ID (MinIO root user, etc.). Also read as `AWS_ACCESS_KEY_ID`. |
+| `S3_SECRET_KEY` | yes | *(none)* | Secret access key. Also read as `AWS_SECRET_ACCESS_KEY`. |
+| `S3_REGION` | no | `us-east-1` | AWS/MinIO region. Also read as `AWS_REGION` / `AWS_DEFAULT_REGION`. |
+| `S3_BUCKET` | no | `nubi` | Default bucket name used by the seed bundle and CSV-upload pipeline. Also read as `NUBI_BUCKET_NAME`. |
+| `S3_FORCE_PATH_STYLE` | no | `true` | Must be `true` for MinIO and most self-hosted S3 clones. Set to `false` only for real AWS S3 virtual-hosted style. |
+| `NUBI_BUCKET_URI` | no | *(none)* | Full bucket URI, e.g. `s3://nubi`. When set, uploaded datasets are written to this bucket instead of the local filesystem. |
+| `NUBI_BUCKET_ROOT` | no | `/tmp/nubi-datasets` | Local filesystem root for the file:// storage fallback (used when `NUBI_BUCKET_URI` is not set). |
 
-### Mapping to DuckDB httpfs `SET` statements
+### How Nubi configures DuckDB for S3
+
+Nubi uses DuckDB's modern **secrets API** (not the legacy `SET s3_*` variables).
+When a query or dataset operation needs S3 access, the backend calls
+`setup_s3_httpfs(conn, cfg)`, which executes:
 
 ```sql
--- DuckDBConnector sets these before running any user query:
-SET s3_endpoint      = '<host:port from S3_ENDPOINT_URL>';
-SET s3_access_key_id = '<S3_ACCESS_KEY>';
-SET s3_secret_access_key = '<S3_SECRET_KEY>';
-SET s3_region        = '<S3_REGION>';
-SET s3_url_style     = 'path';   -- when S3_FORCE_PATH_STYLE=true
-SET s3_use_ssl       = 'false';  -- when endpoint is http://
+-- 1. Install and load the httpfs extension (idempotent):
+INSTALL httpfs;
+LOAD httpfs;
+
+-- 2. Register a named S3 secret (idempotent, replaces any previous secret):
+CREATE OR REPLACE SECRET nubi_s3 (
+    TYPE S3,
+    KEY_ID     '<resolved key id>',
+    SECRET     '<resolved secret>',
+    REGION     '<S3_REGION>',
+    URL_STYLE  'path',          -- for MinIO / S3-compatible endpoints
+    ENDPOINT   '<host:port>',   -- stripped of scheme (DuckDB expects host:port only)
+    USE_SSL    false            -- false when endpoint scheme is http://
+);
 ```
+
+Credentials are resolved in order: connector config keys (`s3_key_id`,
+`aws_access_key_id`) → `AWS_ACCESS_KEY_ID` env var → `S3_ACCESS_KEY` env var.
+The secret is only registered when at least a key ID is resolvable; anonymous
+(public bucket) access falls back to DuckDB's default credential chain.
 
 ---
 
@@ -148,11 +168,16 @@ COPY (
 
 ### CSV upload → bucket → registered dataset (pipeline)
 
-1. Frontend uploads CSV to `POST /data/{datastore_id}/upload` (multipart).
-2. Backend writes the file to `s3://nubi/uploads/<uuid>/<filename>.csv`.
-3. A dataset row is inserted in the `datastores` table with
-   `connector_type='duckdb'` and the `database` field pointing at the
-   Parquet copy produced by `COPY ... TO 's3://nubi/datasets/<uuid>/'`.
+1. Frontend uploads CSV to `POST /api/v1/datasets/upload` (multipart `file` +
+   `name` form fields).
+2. Backend saves the CSV to a temp file, then converts it to Parquet via
+   `COPY (SELECT * FROM read_csv_auto(...)) TO '<path>' (FORMAT PARQUET)`.
+   The Parquet lands at `<bucket-root>/datasets/<org_id>/<dataset_id>/data.parquet`
+   (local) or `s3://nubi/datasets/<org_id>/<dataset_id>/data.parquet` (when
+   `NUBI_BUCKET_URI` is set).
+3. A datastore row is created with `connector_type='duckdb'` and a `view_sql`
+   of `CREATE VIEW dataset AS SELECT * FROM read_parquet('<parquet-path>')`;
+   the `parquet_path` config key holds the effective URI (local or `s3://`).
 4. The dataset is immediately queryable via the normal query pipeline.
 
 ### Using outputs as inputs in dashboards

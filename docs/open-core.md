@@ -90,13 +90,13 @@ The feature gate lives in `backend/app/features.py`.  The key design choices:
 When the `backend/app/ee/` directory is absent (e.g. a `pip install nubi`
 from the OSS repo without the EE extras):
 
-1. `main.py` calls `load_ee(app)` at startup.
-2. `load_ee` catches the `ImportError` (the `app.ee` package does not exist)
-   and returns `False`.
+1. `main.py` attempts to import and call `load_ee(app)` inside a `try/except`.
+2. The `ImportError` (the `app.ee` package does not exist) is caught; the
+   server logs at DEBUG level and continues.
 3. All commercial features remain disabled (`feature_enabled("billing")` →
    `False`).
 4. All OSS features work as normal.
-5. No error is logged; the server starts cleanly.
+5. The server starts cleanly with no fatal errors.
 
 ## EE startup sequence
 
@@ -129,9 +129,9 @@ EE tiers are resolved from the `NUBI_LICENSE_KEY` environment variable:
 | `nubi_pro_...` | PRO |
 | `nubi_enterprise_...` | ENTERPRISE |
 
-> Note: STARTER and BUSINESS tiers are defined in `backend/app/ee/billing/tiers.py`
+> Note: STARTER and TEAM tiers are defined in `backend/app/ee/billing/tiers.py`
 > and enforced at billing time. The license-key prefix scheme (`license.py`) currently
-> maps only PRO and ENTERPRISE keys; STARTER and BUSINESS are activated through the
+> maps only PRO and ENTERPRISE keys; STARTER and TEAM are activated through the
 > billing flow rather than a separate key prefix. This will be unified in a future release.
 
 The resolution logic lives in `backend/app/ee/licensing/license.py`.  It is
@@ -147,5 +147,5 @@ table, Docker image build instructions, and how the auto pre-aggregations,
 Docker self-host, embed demo, and billing features map onto each tier — see
 [`docs/architecture-open-core.md`](./architecture-open-core.md).
 
-For the billing model (tiers, pricing, metered dimensions, FX, seat policy) see
-[`docs/billing-model.md`](./billing-model.md).
+For billing, tiers, and pricing (Nubi Cloud / EE only), see the
+[Billing & Usage](billing-and-usage) doc.
