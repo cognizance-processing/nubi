@@ -28,7 +28,7 @@ from __future__ import annotations
 import json
 from typing import Any, Literal
 
-from fastapi import APIRouter, Depends, Response
+from fastapi import APIRouter, Depends, Request, Response
 from pydantic import BaseModel, model_validator
 
 from app.auth.deps import current_user
@@ -381,10 +381,16 @@ async def create_connector(
 
 @router.get("")
 async def list_connectors(
+    request: Request,
     user: dict[str, Any] = Depends(current_user),
     repo: Repo = Depends(get_repo),
 ) -> list[dict[str, Any]]:
-    """List all connectors for the caller's org (no secret material returned)."""
+    """List all connectors for the caller's org (no secret material returned).
+
+    The built-in virtual "Demo data" connector is surfaced ONLY in the org's
+    demo/default project — other projects start empty and require a real
+    connector. Real datastores remain org-wide.
+    """
     org_id = await _get_user_org(str(user["id"]), repo)
 
     all_datastores = await repo.list("datastores", org_id)
@@ -403,12 +409,31 @@ async def list_connectors(
     ]
     result = [_sanitise(row) for row in connectors]
 
-    # Inject the virtual demo connector unless this org has removed it.  It is
-    # surfaced first so every org sees "Demo data" at the top by default.
-    if not await _demo_is_hidden(org_id, repo):
+    # Inject the virtual demo connector ONLY in the org's demo/default project
+    # (and unless the org removed it). Other projects start empty so the user
+    # connects their own data — there is no demo connector to fall back on.
+    if await _in_demo_project(org_id, request) and not await _demo_is_hidden(org_id, repo):
         result.insert(0, _sanitise(_demo_connector_row(org_id)))
 
     return result
+
+
+async def _in_demo_project(org_id: str, request: Request) -> bool:
+    """Whether the request targets the org's demo/default project.
+
+    The demo bundle is seeded into the default project at onboarding, so the
+    virtual demo connector belongs there. Returns True when the active project
+    (``X-Project-Id`` else the default) is the default project, or when no
+    project can be resolved (e.g. test doubles without a projects table).
+    """
+    from app.repos import projects as projects_repo  # noqa: PLC0415
+    from app.routes._org import resolve_project_filter  # noqa: PLC0415
+
+    default_project = await projects_repo.get_default_project_id(org_id)
+    if default_project is None:
+        return True  # no projects table / single-project test double → show demo
+    active_project = await resolve_project_filter(org_id, request)
+    return active_project is None or str(active_project) == str(default_project)
 
 
 @router.get("/{connector_id}")
