@@ -13,8 +13,12 @@ import EmbedAuth from '../../components/illustrations/EmbedAuth.jsx'
 import LlmDashboards from '../../components/illustrations/LlmDashboards.jsx'
 import ConnectorSdk from '../../components/illustrations/ConnectorSdk.jsx'
 import FlowOrchestration from '../../components/illustrations/FlowOrchestration.jsx'
+import QueryWorkspace from '../../components/illustrations/QueryWorkspace.jsx'
+import DashboardCanvas from '../../components/illustrations/DashboardCanvas.jsx'
 
 const ITEMS = [
+  ['QueryWorkspace', QueryWorkspace],
+  ['DashboardCanvas', DashboardCanvas],
   ['HeroIllustration', HeroIllustration],
   ['KernelInBrowser', KernelInBrowser],
   ['WebGLPerf', WebGLPerf],

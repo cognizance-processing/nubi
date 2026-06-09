@@ -69,6 +69,8 @@ import {
 import { CONNECTOR_TYPES } from '../data/connectors.js'
 import { fetchPricingData } from '../lib/pricing.js'
 import HeroIllustration from '../components/illustrations/HeroIllustration.jsx'
+import QueryWorkspace from '../components/illustrations/QueryWorkspace.jsx'
+import DashboardCanvas from '../components/illustrations/DashboardCanvas.jsx'
 import KernelInBrowser from '../components/illustrations/KernelInBrowser.jsx'
 import EdgeCache from '../components/illustrations/EdgeCache.jsx'
 import WebGLPerf from '../components/illustrations/WebGLPerf.jsx'
@@ -1205,6 +1207,67 @@ export default function LandingPage() {
             <p className="text-center text-xs mt-8 text-white/30">
               ¹ Real at high cache-hit / pre-aggregation rates — e.g. 500 viewers of the same dashboard collapsing to 1 warehouse hit.
             </p>
+          </div>
+        </section>
+
+        {/* ════════════════════════════════════════════════════════════════════
+            §2.5  PRODUCT SHOWCASE — what you actually work in
+            id="product" — query workspace + dashboard builder, side by side
+        ════════════════════════════════════════════════════════════════════ */}
+        <section id="product" className="py-14 sm:py-20 lg:py-24 bg-bg scroll-mt-14">
+          <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+            <div className="text-center mb-12 sm:mb-16">
+              <p className="text-xs font-semibold tracking-widest uppercase mb-4 text-brand-teal">
+                See it in action
+              </p>
+              <h2 className="font-display text-3xl sm:text-4xl lg:text-5xl font-bold text-fg">
+                One workspace, from{' '}
+                <span className="text-brand-blue">SQL</span> to{' '}
+                <span className="text-brand-teal">embedded dashboard</span>.
+              </h2>
+              <p className="text-sm sm:text-base leading-relaxed mt-4 text-muted max-w-2xl mx-auto">
+                Write a query, see results the instant you hit Run, then drag the
+                charts into a dashboard your customers can open — no separate tools,
+                no cold-start kernel, no per-viewer bill.
+              </p>
+            </div>
+
+            <div className="grid md:grid-cols-2 gap-5 lg:gap-7">
+              {[
+                {
+                  Illustration: QueryWorkspace,
+                  tag: 'Query workspace',
+                  title: 'Write SQL. See results instantly.',
+                  body: 'The DuckDB-WASM kernel runs in the tab, so queries return with no cold start and no per-session cloud cost. Named {{params}}, AI text-to-SQL grounded on your real schema, and results that stream as Arrow IPC.',
+                  chips: ['DuckDB-WASM', 'Named params', 'AI text-to-SQL'],
+                },
+                {
+                  Illustration: DashboardCanvas,
+                  tag: 'Dashboard builder',
+                  title: 'Compose it. Embed it anywhere.',
+                  body: 'Drag KPIs, charts, and tables onto a grid, then drop the <nubi-dashboard> web component into your app. Per-viewer row-level security travels in a signed JWT — and viewers are free at every plan.',
+                  chips: ['Drag & drop', 'Embed anywhere', 'Viewers free'],
+                },
+              ].map((c) => (
+                <div key={c.tag} className="flex flex-col bg-surface rounded-2xl border border-border overflow-hidden shadow-sm">
+                  <div className="p-5 sm:p-7 bg-surface-2 border-b border-border">
+                    <c.Illustration className="w-full h-auto" />
+                  </div>
+                  <div className="p-5 sm:p-7 flex flex-col gap-3">
+                    <p className="text-xs font-semibold tracking-widest uppercase text-brand-teal">{c.tag}</p>
+                    <h3 className="font-display text-xl sm:text-2xl font-bold text-fg">{c.title}</h3>
+                    <p className="text-sm leading-relaxed text-muted">{c.body}</p>
+                    <div className="flex flex-wrap gap-2 mt-1">
+                      {c.chips.map((chip) => (
+                        <span key={chip} className="text-xs font-medium px-2.5 py-1 rounded-full bg-brand-teal/10 text-brand-teal border border-brand-teal/20">
+                          {chip}
+                        </span>
+                      ))}
+                    </div>
+                  </div>
+                </div>
+              ))}
+            </div>
           </div>
         </section>
 
