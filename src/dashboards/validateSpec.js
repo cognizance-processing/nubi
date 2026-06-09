@@ -32,7 +32,9 @@ const WIDGET_TYPES = new Set([
   'metric', 'pivot', 'section', 'html',
 ])
 
-const CHART_TYPES = new Set(['line', 'bar', 'scatter', 'area', 'pie'])
+// Full set rendered by src/viz/chartOption.js (must match the editor palette
+// and backend spec.py — otherwise UI-authored charts fail Code-panel validation).
+const CHART_TYPES = new Set(['line', 'bar', 'hbar', 'scatter', 'area', 'pie', 'donut', 'heatmap', 'gauge'])
 const FILTER_SUBTYPES = new Set(['select', 'multiselect', 'daterange', 'text'])
 const VARIABLE_TYPES = new Set(['text', 'number', 'date', 'daterange', 'select', 'multiselect'])
 

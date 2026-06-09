@@ -102,7 +102,9 @@ class Widget(BaseModel):
         ``filter`` (when it uses ``options_query_id`` instead) and ``text``.
     chart_type:
         Chart variant — required when ``type == 'chart'``.  One of
-        ``'line'``, ``'bar'``, ``'scatter'``, ``'area'``, ``'pie'``.
+        ``'line'``, ``'bar'``, ``'hbar'``, ``'scatter'``, ``'area'``,
+        ``'pie'``, ``'donut'``, ``'heatmap'``, ``'gauge'`` — the full set the
+        frontend chart renderer (``src/viz/chartOption.js``) supports.
     encoding:
         Column encoding map.  For charts: ``x``, ``y`` (required), optionally
         ``color``.  For KPI: ``value`` (alias for the value column).
@@ -135,7 +137,10 @@ class Widget(BaseModel):
         "metric", "pivot", "section", "html",
     ]
     query_id: str = Field(default="", description="Backing query id (empty for text widgets).")
-    chart_type: Literal["line", "bar", "scatter", "area", "pie"] | None = None
+    chart_type: (
+        Literal["line", "bar", "hbar", "scatter", "area", "pie", "donut", "heatmap", "gauge"]
+        | None
+    ) = None
     encoding: dict[str, str] = Field(default_factory=dict)
     props: dict[str, Any] = Field(default_factory=dict)
     pos: WidgetPos
@@ -422,10 +427,18 @@ def _table_tag(widget: Widget) -> str:
 def _chart_tag(widget: Widget) -> str:
     """Render a ``<nubi-chart>`` element from a chart widget."""
     query_id = _esc(widget.query_id)
-    # chart_type: line|bar|scatter|area|pie → map area→line (no area in embed), pie→bar
     chart_type = widget.chart_type or "scatter"
-    # Normalize to the subset supported by nubi-chart.js: scatter|line|bar
-    _type_map = {"area": "line", "pie": "bar"}
+    # Normalize to the subset supported by nubi-chart.js (scatter|line|bar).
+    # Richer types degrade gracefully: area→line; pie/donut/heatmap/gauge→bar;
+    # hbar→bar (orientation is lost in the embed renderer).
+    _type_map = {
+        "area": "line",
+        "pie": "bar",
+        "donut": "bar",
+        "hbar": "bar",
+        "heatmap": "bar",
+        "gauge": "bar",
+    }
     embed_type = _type_map.get(chart_type, chart_type)
 
     x_col = _esc(widget.encoding.get("x", "x"))
