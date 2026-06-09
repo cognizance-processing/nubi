@@ -1,39 +1,48 @@
 /**
  * DashboardCodePanel.jsx — Monaco-based "Code" panel for the Dashboard Editor.
  *
- * Replaces the SpecIO textarea/pre with a proper Monaco editor that provides:
+ * The trigger button lives in the editor toolbar (which is portaled into the
+ * app topbar). The panel itself is rendered through `createPortal` into
+ * `document.body` as a fixed right-hand slide-over.
+ *
+ * WHY a portal: the topbar slot and the editor toolbar are `overflow-x-auto`
+ * containers (so the toolbar can scroll on narrow screens). Per the CSS spec,
+ * `overflow-x: auto` forces `overflow-y` to compute to `auto` as well, so any
+ * `position: absolute` dropdown anchored inside them is clipped to the ~56px
+ * bar — the panel used to open but was 100% invisible ("Code does nothing").
+ * Portaling to <body> with `position: fixed` makes the panel immune to every
+ * ancestor overflow/transform.
+ *
+ * Features
+ * --------
  *   - JSON / YAML syntax highlighting (language follows the format toggle).
- *   - Spec validation: JSON.parse for JSON, js-yaml.load for YAML — errors are
- *     surfaced as Monaco markers (red squiggles) AND a "N problems" status bar
- *     at the bottom of the editor (VS Code style).
- *   - View mode (read-only) and Edit / Import mode (editable).
- *   - Apply-to-editor and Create-from-file actions preserved from SpecIO.
+ *   - Two-stage validation surfaced inline (never silently dropped):
+ *       1. Parse errors  → Monaco markers (red squiggles) + problems bar.
+ *       2. Spec errors   → structural DashboardSpec validation via
+ *          `src/dashboards/validateSpec.js` (mirrors the backend validator in
+ *          backend/app/dashboards/spec.py). Invalid specs cannot be applied.
+ *   - View mode (read-only, follows live editor state) and Edit mode.
+ *   - Live flow: Edit → "Apply to editor" re-renders the canvas next to the
+ *     panel (the slide-over leaves the canvas visible) → main Save button
+ *     persists. "Save to server" upserts directly via POST /import, which
+ *     re-validates server-side.
  *
  * Props
  * -----
  *   kind     {'dashboard'}           Resource kind.
  *   spec     {object}                In-memory spec (view mode source).
  *   onApply  {(spec:object) => void} Push a parsed spec into the editor state.
- *   board    {string|null}           Saved board id for server export.
- *
- * Design notes
- * ------------
- * - Uses CodeEditor from src/components/CodeEditor.jsx (the shared Monaco wrapper
- *   created by QueryEditorAgent), which accepts {value, onChange, language, markers}.
- *   If that file hasn't landed yet the lazy-import guard falls back to a local
- *   Monaco <Editor> so the dashboard panel is never broken.
- * - The "view" textarea / <pre> from SpecIO is fully replaced by Monaco in
- *   read-only mode. Switching to "Edit" makes it writable and enables the actions.
- * - Validation runs synchronously after every content change (debounced 300 ms)
- *   because spec files are small (< 100 KB) and JSON.parse is cheap.
+ *   board    {string|null}           Saved board id for server export/upsert.
  */
 
 import { useEffect, useMemo, useRef, useState, useCallback } from 'react'
+import { createPortal } from 'react-dom'
 import Editor from '@monaco-editor/react'
-import { Code2, Download, Upload, Copy, Check, X, FileUp, AlertCircle } from 'lucide-react'
+import { Code2, Download, Upload, Copy, Check, X, FileUp, AlertCircle, CloudUpload } from 'lucide-react'
 import yaml from 'js-yaml'
 import { get, post } from '../lib/api.js'
 import { useTheme } from '../contexts/ThemeContext.jsx'
+import { validateDashboardSpec } from '../dashboards/validateSpec.js'
 
 // ---------------------------------------------------------------------------
 // Helpers (mirror SpecIO helpers — kept local so SpecIO is untouched)
@@ -86,20 +95,15 @@ function download(filename, content, mime) {
 }
 
 // ---------------------------------------------------------------------------
-// Spec validation: produce Monaco markers from the raw text
+// Validation: parse markers (Monaco) + structural spec issues
 // ---------------------------------------------------------------------------
 
 /**
  * Validate `text` as JSON or YAML and return a Monaco-compatible markers array.
- * On success returns []. On error returns a single error marker with line/col info
- * extracted from the parse exception message when available.
- *
- * @param {string} text
- * @param {'json'|'yaml'} format
- * @returns {{ severity: number, message: string, startLineNumber: number,
- *             startColumn: number, endLineNumber: number, endColumn: number }[]}
+ * On success returns []. On error returns a single error marker with line/col
+ * info extracted from the parse exception when available.
  */
-function validateSpec(text, format, monacoSeverity) {
+function parseMarkers(text, format, monacoSeverity) {
   if (!text || !text.trim()) return []
   try {
     if (format === 'json') {
@@ -109,18 +113,14 @@ function validateSpec(text, format, monacoSeverity) {
     }
     return []
   } catch (err) {
-    // Try to extract line/col from the error message.
-    // js-yaml: "unexpected token at line X, column Y"
-    // JSON.parse: "Unexpected token ... position N" (no line info in most engines)
     let line = 1
     let col = 1
-
     if (err.mark) {
-      // js-yaml parse error carries `.mark.line` (0-based) and `.mark.column` (0-based)
+      // js-yaml parse error carries `.mark.line/.column` (0-based)
       line = (err.mark.line ?? 0) + 1
       col = (err.mark.column ?? 0) + 1
     } else if (format === 'json') {
-      // Try to extract position from V8's JSON.parse error message and map to line/col.
+      // Map V8's "... at position N" to line/col.
       const posMatch = err.message?.match(/position\s+(\d+)/i)
       if (posMatch) {
         const pos = parseInt(posMatch[1], 10)
@@ -129,7 +129,6 @@ function validateSpec(text, format, monacoSeverity) {
         col = pos - before.lastIndexOf('\n')
       }
     }
-
     return [{
       severity: monacoSeverity ?? 8, // 8 = MarkerSeverity.Error
       message: err.message || 'Parse error',
@@ -141,14 +140,29 @@ function validateSpec(text, format, monacoSeverity) {
   }
 }
 
+/**
+ * Structural spec issues for the current draft. Only meaningful when the
+ * document parses; parse failures are reported by `parseMarkers` instead.
+ * @returns {string[]}
+ */
+function specIssuesFor(text, format) {
+  if (!text || !text.trim()) return []
+  let doc
+  try {
+    doc = format === 'json' ? JSON.parse(text) : yaml.load(text)
+  } catch {
+    return [] // parse error already surfaced as a marker
+  }
+  return validateDashboardSpec(extractSpec(doc))
+}
+
 // ---------------------------------------------------------------------------
 // DashboardCodePanel
 // ---------------------------------------------------------------------------
 
 export default function DashboardCodePanel({ kind = 'dashboard', spec, onApply, board = null }) {
-  // Theme
-  let theme = 'light'
-  try { theme = useTheme().theme } catch { /* outside provider */ }
+  // Theme — ThemeProvider wraps the entire app (src/main.jsx), so this is safe.
+  const { theme } = useTheme()
   const monacoTheme = theme === 'dark' ? 'vs-dark' : 'light'
 
   const [open, setOpen] = useState(false)
@@ -159,9 +173,9 @@ export default function DashboardCodePanel({ kind = 'dashboard', spec, onApply, 
   const [error, setError] = useState(null)
   const [notice, setNotice] = useState(null)
   const [busy, setBusy] = useState(null)     // 'export' | 'import'
-  const [markers, setMarkers] = useState([])
+  const [markers, setMarkers] = useState([])       // parse errors (Monaco markers)
+  const [specIssues, setSpecIssues] = useState([]) // structural spec issues
 
-  const ref = useRef(null)
   const fileRef = useRef(null)
   const editorRef = useRef(null)
   const monacoRef = useRef(null)
@@ -179,23 +193,19 @@ export default function DashboardCodePanel({ kind = 'dashboard', spec, onApply, 
   // Monaco language maps to format
   const language = format === 'json' ? 'json' : 'yaml'
 
-  // ── Close on outside-click / Escape ───────────────────────────────────────
+  // ── Close on Escape (the slide-over intentionally does NOT close on
+  //     outside click — clicking the canvas is part of the preview flow) ─────
   useEffect(() => {
     if (!open) return
-    const onDown = (e) => { if (ref.current && !ref.current.contains(e.target)) setOpen(false) }
     const onKey = (e) => { if (e.key === 'Escape') setOpen(false) }
-    window.addEventListener('mousedown', onDown)
     window.addEventListener('keydown', onKey)
-    return () => {
-      window.removeEventListener('mousedown', onDown)
-      window.removeEventListener('keydown', onKey)
-    }
+    return () => window.removeEventListener('keydown', onKey)
   }, [open])
 
   // Reset transient state when the panel closes.
   useEffect(() => {
     if (open) return
-    setError(null); setNotice(null); setCopied(false); setMarkers([])
+    setError(null); setNotice(null); setCopied(false); setMarkers([]); setSpecIssues([])
   }, [open])
 
   // When switching to edit mode, seed the draft from the current view text.
@@ -218,8 +228,9 @@ export default function DashboardCodePanel({ kind = 'dashboard', spec, onApply, 
     const monaco = monacoRef.current
     const editor = editorRef.current
     const severity = monaco?.MarkerSeverity?.Error ?? 8
-    const newMarkers = validateSpec(text, format, severity)
+    const newMarkers = parseMarkers(text, format, severity)
     setMarkers(newMarkers)
+    setSpecIssues(newMarkers.length ? [] : specIssuesFor(text, format))
 
     if (monaco && editor) {
       const model = editor.getModel()
@@ -240,7 +251,6 @@ export default function DashboardCodePanel({ kind = 'dashboard', spec, onApply, 
   const handleMount = useCallback((editor, monaco) => {
     editorRef.current = editor
     monacoRef.current = monaco
-    // Run initial validation in edit mode.
     if (mode === 'edit') {
       runValidation(editor.getModel()?.getValue() ?? '')
     }
@@ -281,38 +291,55 @@ export default function DashboardCodePanel({ kind = 'dashboard', spec, onApply, 
     download(`${baseName}.${ext}`, mode === 'view' ? viewText : draft, mime)
   }
 
-  // ── Apply ─────────────────────────────────────────────────────────────────
-  function applyDraft() {
-    setError(null); setNotice(null)
-    if (!draft.trim()) { setError('Paste or edit a YAML / JSON document first.'); return }
+  /**
+   * Parse + structurally validate the current draft.
+   * Surfaces errors inline and returns null when invalid.
+   * @returns {object|null} the extracted spec, or null
+   */
+  function validatedDraftSpec() {
+    if (!draft.trim()) { setError('Paste or edit a YAML / JSON document first.'); return null }
     let doc
-    try { doc = parseDoc(draft) } catch (e) { setError(`Parse error: ${e.message}`); return }
+    try { doc = parseDoc(draft) } catch (e) { setError(`Parse error: ${e.message}`); return null }
     const nextSpec = extractSpec(doc)
     if (!nextSpec || typeof nextSpec !== 'object') {
       setError('Could not find a spec to apply in that document.')
-      return
+      return null
     }
+    const issues = validateDashboardSpec(nextSpec)
+    setSpecIssues(issues)
+    if (issues.length) {
+      setError(`Spec validation failed (${issues.length} issue${issues.length !== 1 ? 's' : ''}) — fix the problems listed below.`)
+      return null
+    }
+    return nextSpec
+  }
+
+  // ── Apply (validated) ─────────────────────────────────────────────────────
+  function applyDraft() {
+    setError(null); setNotice(null)
+    const nextSpec = validatedDraftSpec()
+    if (!nextSpec) return
     try {
       onApply?.(nextSpec)
-      setNotice('Applied to editor.')
-      setTimeout(() => setOpen(false), 700)
+      setNotice('Applied — the canvas now previews this spec. Use Save to persist.')
     } catch (e) {
       setError(`Apply failed: ${e.message}`)
     }
   }
 
-  // ── Import (server-side) ──────────────────────────────────────────────────
+  // ── Save to server (validated client-side; server re-validates) ──────────
   async function importDraft() {
     setError(null); setNotice(null)
-    if (!draft.trim()) { setError('Paste or upload a document first.'); return }
-    let doc
-    try { doc = parseDoc(draft) } catch (e) { setError(`Parse error: ${e.message}`); return }
+    const nextSpec = validatedDraftSpec()
+    if (!nextSpec) return
     setBusy('import')
     try {
-      const saved = await post('/import', doc)
-      setNotice(`Imported "${saved?.metadata?.name ?? saved?.name ?? 'resource'}".`)
+      // Always send a well-formed envelope so /import can route + upsert.
+      const env = buildEnvelope(kind, nextSpec, savedId ?? null)
+      const saved = await post('/import', env)
+      setNotice(`Saved "${saved?.name ?? env.metadata.name}" to the server.`)
     } catch (e) {
-      setError(e.message || 'Import failed.')
+      setError(e.message || 'Save failed.')
     } finally {
       setBusy(null)
     }
@@ -334,22 +361,281 @@ export default function DashboardCodePanel({ kind = 'dashboard', spec, onApply, 
     e.target.value = ''
   }
 
-  // ── Shared styles ─────────────────────────────────────────────name----------
+  // ── Shared styles ─────────────────────────────────────────────────────────
   const itemCls = 'w-full flex items-center gap-2.5 px-3 py-2 text-sm text-fg rounded-lg hover:bg-surface-2 disabled:opacity-50 transition-colors text-left'
 
   // Content shown in the Monaco editor (view = read-only spec; edit = draft)
   const editorValue = mode === 'view' ? viewText : draft
   const editorReadOnly = mode === 'view'
 
-  // Problem count for the indicator (only meaningful in edit mode)
-  const problemCount = mode === 'edit' ? markers.length : 0
+  // Problems = parse errors + structural spec issues (only meaningful in edit)
+  const problemCount = mode === 'edit' ? markers.length + specIssues.length : 0
+
+  const panel = (
+    <aside
+      data-testid="dashboard-code-panel"
+      aria-label="Dashboard code editor"
+      className="fixed right-0 top-14 bottom-0 z-40 w-[min(42rem,100vw)] bg-surface border-l border-border shadow-2xl flex flex-col"
+    >
+      {/* Header: title + mode + format toggles */}
+      <div className="flex items-center gap-2 px-3 h-11 border-b border-border shrink-0">
+        <Code2 size={14} className="text-muted shrink-0" />
+        <span className="text-xs font-semibold text-fg whitespace-nowrap hidden sm:inline">Dashboard code</span>
+
+        {/* Mode toggle */}
+        <div className="flex items-center rounded-lg border border-border overflow-hidden ml-1">
+          {[
+            { v: 'view', l: 'View' },
+            { v: 'edit', l: 'Edit' },
+          ].map(opt => (
+            <button
+              key={opt.v}
+              type="button"
+              data-testid={`code-mode-${opt.v}`}
+              onClick={() => {
+                if (opt.v === 'edit' && !draft) setDraft(viewText)
+                setMode(opt.v)
+                setError(null); setNotice(null)
+              }}
+              className={`h-7 px-2.5 text-[11px] font-medium transition-colors ${
+                mode === opt.v
+                  ? 'bg-primary/10 text-primary'
+                  : 'bg-surface text-muted hover:text-fg hover:bg-surface-2'
+              } ${opt.v === 'edit' ? 'border-l border-border' : ''}`}
+            >
+              {opt.l}
+            </button>
+          ))}
+        </div>
+
+        <div className="flex-1" />
+
+        {/* Format toggle */}
+        <div className="flex items-center rounded-lg border border-border overflow-hidden">
+          {['yaml', 'json'].map(f => (
+            <button
+              key={f}
+              type="button"
+              onClick={() => {
+                setFormat(f)
+                // If the edit draft is still the untouched view text, convert it.
+                if (mode === 'edit' && draft === dumpEnvelope(envelope, format === 'yaml' ? 'yaml' : 'json')) {
+                  setDraft(dumpEnvelope(envelope, f))
+                }
+              }}
+              className={`h-7 px-2.5 text-[11px] font-medium uppercase transition-colors ${
+                format === f
+                  ? 'bg-primary/10 text-primary'
+                  : 'bg-surface text-muted hover:text-fg hover:bg-surface-2'
+              } ${f === 'json' ? 'border-l border-border' : ''}`}
+            >
+              {f}
+            </button>
+          ))}
+        </div>
+
+        {/* Copy */}
+        <button
+          type="button"
+          onClick={copyCode}
+          className="h-7 w-7 flex items-center justify-center rounded-lg text-muted hover:text-fg hover:bg-surface-2 transition-colors"
+          title="Copy to clipboard"
+        >
+          {copied ? <Check size={13} className="text-emerald-500" /> : <Copy size={13} />}
+        </button>
+
+        {/* Close */}
+        <button
+          type="button"
+          data-testid="code-panel-close"
+          onClick={() => setOpen(false)}
+          className="h-7 w-7 flex items-center justify-center rounded-lg text-muted hover:text-fg hover:bg-surface-2 transition-colors"
+          title="Close (Esc)"
+        >
+          <X size={14} />
+        </button>
+      </div>
+
+      {/* Monaco editor — fills the panel height */}
+      <div className="relative flex-1 min-h-0">
+        <Editor
+          height="100%"
+          language={language}
+          theme={monacoTheme}
+          value={editorValue}
+          onChange={editorReadOnly ? undefined : handleChange}
+          onMount={handleMount}
+          options={{
+            readOnly: editorReadOnly,
+            minimap: { enabled: false },
+            scrollBeyondLastLine: false,
+            fontSize: 12,
+            lineNumbers: 'on',
+            wordWrap: 'on',
+            tabSize: 2,
+            automaticLayout: true,
+            padding: { top: 8, bottom: 8 },
+            overviewRulerLanes: editorReadOnly ? 0 : 3,
+            quickSuggestions: !editorReadOnly,
+            scrollbar: { vertical: 'auto', horizontal: 'auto' },
+            glyphMargin: !editorReadOnly,
+            lineDecorationsWidth: editorReadOnly ? 0 : 8,
+          }}
+          loading={
+            <div className="flex items-center justify-center h-full text-xs text-muted bg-surface-2">
+              Loading editor…
+            </div>
+          }
+        />
+      </div>
+
+      {/* Problems bar (VS Code style) — parse + spec issues, edit mode only */}
+      <div
+        data-testid="code-problems"
+        className={`px-3 py-1.5 border-t text-[11px] shrink-0 transition-colors ${
+          problemCount > 0
+            ? 'border-red-500/30 bg-red-500/5'
+            : 'border-border bg-surface-2/50'
+        }`}
+      >
+        {problemCount > 0 ? (
+          <div className="space-y-0.5 max-h-20 overflow-y-auto">
+            <div className="flex items-center gap-1.5">
+              <AlertCircle size={12} className="text-red-500 shrink-0" />
+              <span className="text-red-500 font-medium">
+                {problemCount} problem{problemCount !== 1 ? 's' : ''}
+              </span>
+            </div>
+            {markers.map((m, i) => (
+              <p key={`m${i}`} className="text-red-500/90 pl-[18px] truncate" title={m.message}>
+                Ln {m.startLineNumber}: {m.message}
+              </p>
+            ))}
+            {specIssues.map((msg, i) => (
+              <p key={`s${i}`} className="text-red-500/90 pl-[18px] truncate" title={msg}>
+                {msg}
+              </p>
+            ))}
+          </div>
+        ) : (
+          <div className="h-4 flex items-center">
+            {mode === 'edit' ? (
+              <span className="text-muted/60">No problems detected</span>
+            ) : (
+              <span className="text-muted/60">
+                {format === 'json' ? 'JSON' : 'YAML'} · {savedId ? 'saved board' : 'unsaved board'} · read-only — switch to Edit to change
+              </span>
+            )}
+          </div>
+        )}
+      </div>
+
+      {/* Actions footer */}
+      <div className="p-3 space-y-2.5 border-t border-border shrink-0">
+        {mode === 'view' ? (
+          /* View mode: export + copy */
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              onClick={exportFile}
+              disabled={busy === 'export'}
+              className={itemCls + ' border border-border !w-auto flex-1 justify-center py-1.5'}
+            >
+              <Download size={14} className="text-muted" />
+              {busy === 'export' ? 'Exporting…' : `Download .${format === 'json' ? 'json' : 'yaml'}`}
+            </button>
+            <button
+              type="button"
+              onClick={copyCode}
+              className={itemCls + ' border border-border !w-auto flex-1 justify-center py-1.5'}
+            >
+              {copied ? <Check size={14} className="text-emerald-500" /> : <Copy size={14} className="text-muted" />}
+              Copy
+            </button>
+          </div>
+        ) : (
+          /* Edit mode: file picker + apply + save */
+          <>
+            <div className="flex items-center gap-2">
+              <button
+                type="button"
+                onClick={() => fileRef.current?.click()}
+                className={itemCls + ' border border-border !w-auto justify-center py-1.5'}
+                title="Load a .yaml / .json file"
+              >
+                <FileUp size={14} className="text-muted" /> File…
+              </button>
+              <input
+                ref={fileRef}
+                type="file"
+                accept=".yaml,.yml,.json,application/json,text/yaml"
+                className="hidden"
+                onChange={onPickFile}
+              />
+              <button
+                type="button"
+                onClick={() => {
+                  const text = viewText
+                  setDraft(text)
+                  scheduleValidation(text)
+                }}
+                className={itemCls + ' border border-border !w-auto justify-center py-1.5'}
+                title="Reset the draft to the current editor state"
+              >
+                <Code2 size={14} className="text-muted" /> Use current
+              </button>
+            </div>
+
+            <div className="flex items-center gap-2">
+              <button
+                type="button"
+                data-testid="code-apply-btn"
+                onClick={applyDraft}
+                disabled={problemCount > 0}
+                className="flex-1 h-8 px-3 text-xs font-semibold rounded-lg bg-primary text-primary-fg hover:opacity-90 disabled:opacity-50 disabled:cursor-not-allowed transition-opacity flex items-center justify-center gap-1.5"
+                title="Validate and apply this spec to the canvas (does not save)"
+              >
+                <Upload size={13} /> Apply to editor
+              </button>
+              <button
+                type="button"
+                data-testid="code-save-btn"
+                onClick={importDraft}
+                disabled={busy === 'import' || problemCount > 0}
+                className="flex-1 h-8 px-3 text-xs font-medium rounded-lg border border-border bg-surface text-fg hover:bg-surface-2 disabled:opacity-50 disabled:cursor-not-allowed transition-colors flex items-center justify-center gap-1.5"
+                title={savedId ? 'Validate and save this spec to the server (updates this board)' : 'Validate and create a new board from this spec'}
+              >
+                <CloudUpload size={13} />
+                {busy === 'import' ? 'Saving…' : savedId ? 'Save to server' : 'Create on server'}
+              </button>
+            </div>
+
+            <p className="text-[10px] text-muted/70 leading-relaxed">
+              <span className="font-medium text-fg/80">Apply to editor</span> previews the spec on the canvas (then use the main Save button).{' '}
+              <span className="font-medium text-fg/80">{savedId ? 'Save to server' : 'Create on server'}</span> validates and persists it directly.
+            </p>
+          </>
+        )}
+
+        {(error || notice) && (
+          <div data-testid="code-panel-status">
+            {error && <p className="text-[11px] text-rose-500">{error}</p>}
+            {notice && <p className="text-[11px] text-emerald-600 dark:text-emerald-400">{notice}</p>}
+          </div>
+        )}
+      </div>
+    </aside>
+  )
 
   return (
-    <div className="relative" ref={ref}>
-      {/* Trigger button — mirrors SpecIO's Code button */}
+    <>
+      {/* Trigger button — lives in the (overflow-clipped) toolbar; the panel
+          itself is portaled to <body> so it can never be clipped. */}
       <button
         type="button"
+        data-testid="dashboard-code-btn"
         onClick={() => setOpen(o => !o)}
+        aria-pressed={open}
         className={`px-2.5 h-8 text-xs font-medium rounded-lg border transition-all focus:outline-none focus:ring-2 focus:ring-ring/60 flex items-center gap-1.5 whitespace-nowrap ${
           open
             ? 'bg-surface-2 border-primary text-primary'
@@ -361,244 +647,7 @@ export default function DashboardCodePanel({ kind = 'dashboard', spec, onApply, 
         <span className="hidden sm:inline">Code</span>
       </button>
 
-      {open && (
-        <div
-          className="absolute right-0 top-full mt-2 z-50 w-[42rem] max-w-[calc(100vw-2rem)] bg-surface border border-border rounded-xl shadow-xl overflow-hidden flex flex-col"
-          style={{ maxHeight: '80vh' }}
-        >
-          {/* Header: mode + format toggles */}
-          <div className="flex items-center gap-2 px-3 h-11 border-b border-border shrink-0">
-            {/* Mode toggle */}
-            <div className="flex items-center rounded-lg border border-border overflow-hidden">
-              {[
-                { v: 'view', l: 'View' },
-                { v: 'edit', l: 'Edit / Import' },
-              ].map(opt => (
-                <button
-                  key={opt.v}
-                  type="button"
-                  onClick={() => {
-                    if (opt.v === 'edit' && !draft) setDraft(viewText)
-                    setMode(opt.v)
-                    setError(null); setNotice(null)
-                  }}
-                  className={`h-7 px-2.5 text-[11px] font-medium transition-colors ${
-                    mode === opt.v
-                      ? 'bg-primary/10 text-primary'
-                      : 'bg-surface text-muted hover:text-fg hover:bg-surface-2'
-                  } ${opt.v === 'edit' ? 'border-l border-border' : ''}`}
-                >
-                  {opt.l}
-                </button>
-              ))}
-            </div>
-
-            <div className="flex-1" />
-
-            {/* Format toggle */}
-            <div className="flex items-center rounded-lg border border-border overflow-hidden">
-              {['yaml', 'json'].map(f => (
-                <button
-                  key={f}
-                  type="button"
-                  onClick={() => {
-                    setFormat(f)
-                    // If in edit mode, re-seed draft in new format only when switching
-                    // from view mode content (not user-edited content).
-                    if (mode === 'edit' && draft === dumpEnvelope(envelope, format === 'yaml' ? 'yaml' : 'json')) {
-                      // user hasn't changed it yet → convert automatically
-                      const next = dumpEnvelope(envelope, f)
-                      setDraft(next)
-                    }
-                  }}
-                  className={`h-7 px-2.5 text-[11px] font-medium uppercase transition-colors ${
-                    format === f
-                      ? 'bg-primary/10 text-primary'
-                      : 'bg-surface text-muted hover:text-fg hover:bg-surface-2'
-                  } ${f === 'json' ? 'border-l border-border' : ''}`}
-                >
-                  {f}
-                </button>
-              ))}
-            </div>
-
-            {/* Copy button (header shortcut) */}
-            <button
-              type="button"
-              onClick={copyCode}
-              className="h-7 w-7 flex items-center justify-center rounded-lg text-muted hover:text-fg hover:bg-surface-2 transition-colors"
-              title="Copy to clipboard"
-            >
-              {copied ? <Check size={13} className="text-emerald-500" /> : <Copy size={13} />}
-            </button>
-
-            {/* Close */}
-            <button
-              type="button"
-              onClick={() => setOpen(false)}
-              className="h-7 w-7 flex items-center justify-center rounded-lg text-muted hover:text-fg hover:bg-surface-2 transition-colors"
-              title="Close"
-            >
-              <X size={14} />
-            </button>
-          </div>
-
-          {/* Monaco editor */}
-          <div className="relative flex-1" style={{ minHeight: '260px', maxHeight: '420px' }}>
-            <Editor
-              height="100%"
-              language={language}
-              theme={monacoTheme}
-              value={editorValue}
-              onChange={editorReadOnly ? undefined : handleChange}
-              onMount={handleMount}
-              options={{
-                readOnly: editorReadOnly,
-                minimap: { enabled: false },
-                scrollBeyondLastLine: false,
-                fontSize: 12,
-                lineNumbers: 'on',
-                wordWrap: 'on',
-                tabSize: 2,
-                automaticLayout: true,
-                padding: { top: 8, bottom: 8 },
-                overviewRulerLanes: editorReadOnly ? 0 : 3,
-                quickSuggestions: !editorReadOnly,
-                scrollbar: { vertical: 'auto', horizontal: 'auto' },
-                // Render issues in the gutter (squiggles appear via setModelMarkers)
-                glyphMargin: !editorReadOnly,
-                lineDecorationsWidth: editorReadOnly ? 0 : 8,
-              }}
-              loading={
-                <div className="flex items-center justify-center h-full text-xs text-muted bg-surface-2">
-                  Loading editor…
-                </div>
-              }
-            />
-          </div>
-
-          {/* Problems indicator bar (VS Code style) — only in edit mode */}
-          <div
-            className={`flex items-center gap-2 px-3 h-7 border-t text-[11px] shrink-0 transition-colors ${
-              problemCount > 0
-                ? 'border-red-500/30 bg-red-500/5'
-                : 'border-border bg-surface-2/50'
-            }`}
-          >
-            {problemCount > 0 ? (
-              <>
-                <AlertCircle size={12} className="text-red-500 shrink-0" />
-                <span className="text-red-500 font-medium">
-                  {problemCount} problem{problemCount !== 1 ? 's' : ''}
-                </span>
-                <span className="text-muted/70 truncate">
-                  — {markers[0]?.message}
-                </span>
-              </>
-            ) : (
-              mode === 'edit' ? (
-                <span className="text-muted/60">No problems detected</span>
-              ) : (
-                <span className="text-muted/60">
-                  {format === 'json' ? 'JSON' : 'YAML'} · {savedId ? 'saved' : 'unsaved'}
-                </span>
-              )
-            )}
-          </div>
-
-          {/* Actions footer */}
-          <div className="p-3 space-y-2.5 border-t border-border shrink-0">
-            {mode === 'view' ? (
-              /* View mode: export + copy */
-              <div className="flex items-center gap-2">
-                <button
-                  type="button"
-                  onClick={exportFile}
-                  disabled={busy === 'export'}
-                  className={itemCls + ' border border-border !w-auto flex-1 justify-center py-1.5'}
-                >
-                  <Download size={14} className="text-muted" />
-                  {busy === 'export' ? 'Exporting…' : `Download .${format === 'json' ? 'json' : 'yaml'}`}
-                </button>
-                <button
-                  type="button"
-                  onClick={copyCode}
-                  className={itemCls + ' border border-border !w-auto flex-1 justify-center py-1.5'}
-                >
-                  {copied ? <Check size={14} className="text-emerald-500" /> : <Copy size={14} className="text-muted" />}
-                  Copy
-                </button>
-              </div>
-            ) : (
-              /* Edit mode: file picker + apply + import */
-              <>
-                <div className="flex items-center gap-2">
-                  <button
-                    type="button"
-                    onClick={() => fileRef.current?.click()}
-                    className={itemCls + ' border border-border !w-auto justify-center py-1.5'}
-                    title="Load a .yaml / .json file"
-                  >
-                    <FileUp size={14} className="text-muted" /> File…
-                  </button>
-                  <input
-                    ref={fileRef}
-                    type="file"
-                    accept=".yaml,.yml,.json,application/json,text/yaml"
-                    className="hidden"
-                    onChange={onPickFile}
-                  />
-                  <button
-                    type="button"
-                    onClick={() => {
-                      const text = viewText
-                      setDraft(text)
-                      scheduleValidation(text)
-                    }}
-                    className={itemCls + ' border border-border !w-auto justify-center py-1.5'}
-                    title="Prefill from the current resource"
-                  >
-                    <Code2 size={14} className="text-muted" /> Use current
-                  </button>
-                </div>
-
-                <div className="flex items-center gap-2">
-                  <button
-                    type="button"
-                    onClick={applyDraft}
-                    className="flex-1 h-8 px-3 text-xs font-semibold rounded-lg bg-primary text-primary-fg hover:opacity-90 disabled:opacity-60 transition-opacity flex items-center justify-center gap-1.5"
-                    title="Apply this spec to the in-editor state (does not save)"
-                  >
-                    <Upload size={13} /> Apply to editor
-                  </button>
-                  <button
-                    type="button"
-                    onClick={importDraft}
-                    disabled={busy === 'import'}
-                    className="flex-1 h-8 px-3 text-xs font-medium rounded-lg border border-border bg-surface text-fg hover:bg-surface-2 disabled:opacity-50 transition-colors flex items-center justify-center gap-1.5"
-                    title="Create or update this resource on the server"
-                  >
-                    <Download size={13} className="rotate-180" />
-                    {busy === 'import' ? 'Importing…' : 'Create from file'}
-                  </button>
-                </div>
-
-                <p className="text-[10px] text-muted/70 leading-relaxed">
-                  <span className="font-medium text-fg/80">Apply to editor</span> loads the spec into this editor (review, then Save).{' '}
-                  <span className="font-medium text-fg/80">Create from file</span> upserts it server-side.
-                </p>
-              </>
-            )}
-
-            {(error || notice) && (
-              <div>
-                {error && <p className="text-[11px] text-rose-500">{error}</p>}
-                {notice && <p className="text-[11px] text-emerald-600 dark:text-emerald-400">{notice}</p>}
-              </div>
-            )}
-          </div>
-        </div>
-      )}
-    </div>
+      {open && createPortal(panel, document.body)}
+    </>
   )
 }
