@@ -27,8 +27,7 @@
  * Saving & dirty tracking (single owner — this page):
  *   - The last-saved spec is snapshotted as JSON (on flow select / new draft /
  *     successful save); `dirty` is a cheap JSON.stringify comparison.
- *   - All saves (top-bar Save, the notebook toolbar Save passed down via
- *     FlowBuilder's `onSave`, and autosave) go through one `performSave`,
+ *   - All saves (top-bar Save and autosave) go through one `performSave`,
  *     serialised so writes can't land out of order; stale responses are
  *     dropped via a request-sequence counter.
  *   - Autosave: existing flows (with an id) are saved ~2s after the last edit.
@@ -62,6 +61,9 @@ import {
   CheckCircle2,
   Share2,
   LayoutList,
+  Database,
+  FileText,
+  CalendarClock,
 } from 'lucide-react'
 
 import { useUi } from '../../contexts/UiContext.jsx'
@@ -567,6 +569,150 @@ function EnvSelector({ value, onChange, disabled = false }) {
 }
 
 // ---------------------------------------------------------------------------
+// Schedule control — set a flow to run on a cron/interval (toolbar popover)
+// ---------------------------------------------------------------------------
+
+const SCHEDULE_PRESETS = [
+  { label: 'Every hour', value: 'interval:1h' },
+  { label: 'Every 6 hours', value: 'interval:6h' },
+  { label: 'Daily · 9am', value: '0 9 * * *' },
+  { label: 'Weekly · Mon 9am', value: '0 9 * * 1' },
+]
+
+/** Human-readable summary of a schedule string for the toolbar button. */
+function describeSchedule(schedule) {
+  if (!schedule) return null
+  const m = /^interval:(\d+)([smhd])$/.exec(schedule)
+  if (m) return `Every ${m[1]}${m[2]}`
+  const preset = SCHEDULE_PRESETS.find(p => p.value === schedule)
+  if (preset) return preset.label
+  return 'Custom'
+}
+
+function ScheduleControl({ flow, onSaved }) {
+  const [open, setOpen] = useState(false)
+  const [enabled, setEnabled] = useState(Boolean(flow?.enabled))
+  const [schedule, setSchedule] = useState(flow?.schedule || 'interval:1h')
+  const [saving, setSaving] = useState(false)
+  const [error, setError] = useState(null)
+
+  // Re-sync when the active flow changes.
+  useEffect(() => {
+    setEnabled(Boolean(flow?.enabled))
+    setSchedule(flow?.schedule || 'interval:1h')
+    setError(null)
+  }, [flow?.id, flow?.schedule, flow?.enabled])
+
+  const isActive = Boolean(flow?.enabled && flow?.schedule)
+  const summary = describeSchedule(flow?.schedule)
+
+  async function save() {
+    setSaving(true)
+    setError(null)
+    try {
+      const trimmed = (schedule || '').trim()
+      if (enabled && !trimmed) {
+        setError('Enter an interval or cron expression.')
+        setSaving(false)
+        return
+      }
+      const updated = await updateFlow(flow.id, {
+        enabled,
+        schedule: enabled ? trimmed : null,
+      })
+      if (!updated) {
+        setError('Save failed — check the console.')
+        setSaving(false)
+        return
+      }
+      onSaved?.(updated)
+      setOpen(false)
+    } catch (e) {
+      setError(e?.message || 'Save failed.')
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  return (
+    <div className="relative shrink-0">
+      <button
+        onClick={() => setOpen(v => !v)}
+        title={isActive ? `Scheduled: ${summary}` : 'Schedule this flow to run automatically'}
+        className={[
+          'flex items-center gap-1.5 px-2 sm:px-2.5 h-8 text-xs font-medium rounded-lg border transition-colors',
+          isActive
+            ? 'border-emerald-500/40 bg-emerald-500/10 text-emerald-600 dark:text-emerald-400'
+            : 'border-border bg-surface text-fg hover:bg-surface-2',
+        ].join(' ')}
+      >
+        <CalendarClock size={13} className={isActive ? 'text-emerald-500' : ''} />
+        <span className="hidden lg:inline">{isActive ? summary : 'Schedule'}</span>
+      </button>
+
+      {open && (
+        <>
+          <div className="fixed inset-0 z-40" onClick={() => setOpen(false)} />
+          <div className="absolute right-0 top-9 z-50 w-72 rounded-xl border border-border bg-surface shadow-lg p-3 text-fg">
+            <div className="flex items-center justify-between mb-2">
+              <p className="text-xs font-semibold">Schedule flow</p>
+              <label className="flex items-center gap-1.5 text-xs cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={enabled}
+                  onChange={e => setEnabled(e.target.checked)}
+                  className="accent-emerald-500"
+                />
+                Enabled
+              </label>
+            </div>
+            <div className={enabled ? '' : 'opacity-50 pointer-events-none'}>
+              <div className="grid grid-cols-2 gap-1.5 mb-2">
+                {SCHEDULE_PRESETS.map(p => (
+                  <button
+                    key={p.value}
+                    onClick={() => setSchedule(p.value)}
+                    className={[
+                      'px-2 py-1 text-[11px] rounded-lg border transition-colors text-left',
+                      schedule === p.value
+                        ? 'border-emerald-500/40 bg-emerald-500/10 text-emerald-600 dark:text-emerald-400'
+                        : 'border-border bg-surface-2 hover:bg-surface',
+                    ].join(' ')}
+                  >
+                    {p.label}
+                  </button>
+                ))}
+              </div>
+              <input
+                type="text"
+                value={schedule}
+                onChange={e => setSchedule(e.target.value)}
+                placeholder="interval:30m or cron: 0 9 * * *"
+                className="w-full px-2 py-1.5 text-xs font-mono rounded-lg border border-border bg-surface-2 focus:outline-none focus:ring-1 focus:ring-emerald-500/40"
+              />
+              <p className="text-[10px] text-muted mt-1">
+                Interval (e.g. <code>interval:30m</code>, <code>interval:6h</code>) or a 5-field cron expression.
+              </p>
+            </div>
+            {error && <p className="text-[11px] text-red-500 mt-2">{error}</p>}
+            <div className="flex items-center justify-end gap-2 mt-3">
+              <button onClick={() => setOpen(false)} className="px-2.5 h-7 text-xs rounded-lg border border-border bg-surface hover:bg-surface-2">
+                Cancel
+              </button>
+              <button onClick={save} disabled={saving}
+                className="flex items-center gap-1.5 px-2.5 h-7 text-xs font-medium rounded-lg bg-primary text-primary-fg hover:opacity-90 disabled:opacity-50">
+                {saving ? <Loader2 size={12} className="animate-spin" /> : null}
+                Save
+              </button>
+            </div>
+          </div>
+        </>
+      )}
+    </div>
+  )
+}
+
+// ---------------------------------------------------------------------------
 // FlowsPage
 // ---------------------------------------------------------------------------
 
@@ -613,6 +759,9 @@ export default function FlowsPage() {
   const [saveError, setSaveError] = useState(null)
   const [runError, setRunError] = useState(null)
   const [codeOpen, setCodeOpen] = useState(false)
+  // Notebook lineage panel visibility — toggled from the top bar, rendered by
+  // NotebookView (notebook view only).
+  const [lineageOpen, setLineageOpen] = useState(false)
   // Current builder view ('canvas' | 'notebook'), reported up from FlowBuilder
   // so the top-bar switcher reflects + drives it.
   const [flowView, setFlowView] = useState('canvas')
@@ -672,12 +821,13 @@ export default function FlowsPage() {
     setSavedSnapshotJson(JSON.stringify(flow.spec ?? EMPTY_SPEC))
     setAutosaveStatus(null)
     setSaveError(null)
+    setLineageOpen(false)
     setActiveTab('builder')
     setActiveRunId(null)
     if (flow.id && !flow._isNew) {
       navigate(`/flows/${flow.id}`, { replace: true })
     }
-  }, [navigate, setSaveError])
+  }, [navigate, setSaveError, setLineageOpen])
 
   // List-click selection — guards in-app swaps away from a dirty editor.
   // (The route-param effect below still calls selectFlow directly.)
@@ -736,10 +886,11 @@ export default function FlowsPage() {
     setSavedSnapshotJson(JSON.stringify(EMPTY_SPEC))
     setAutosaveStatus(null)
     setSaveError(null)
+    setLineageOpen(false)
     setActiveTab('builder')
     setActiveRunId(null)
     navigate('/flows', { replace: true })
-  }, [navigate, dirty, setSaveError])
+  }, [navigate, dirty, setSaveError, setLineageOpen])
 
   // ── After save callback ───────────────────────────────────────────────────
   const handleSaved = useCallback((savedFlow) => {
@@ -856,6 +1007,12 @@ export default function FlowsPage() {
       setRunError('Save the flow first before running.')
       return
     }
+    // Notebook view: route through the plan-gated "Run all" (PlanGateDialog
+    // inside NotebookView) so the run plan is reviewed before triggering.
+    if (activeTab === 'builder' && flowView === 'notebook') {
+      flowBuilderRef.current?.runAll()
+      return
+    }
     setRunning(true)
     setRunError(null)
     const result = await runFlow(activeFlow.id, {}, runEnv || undefined)
@@ -890,8 +1047,10 @@ export default function FlowsPage() {
   const canRun = !!activeFlow?.id && !activeFlow?._isNew
 
   // ── Toolbar portaled into the single app top bar (mirrors the dashboard
-  //    editor): flow name · Builder/Runs switcher · Validate/Save/Run/Code ·
-  //    RHS panel toggles. One bar, not a stacked second one. ─────────────────
+  //    editor): Builder/Runs switcher · view switcher · flow name · notebook
+  //    add-cell buttons · Validate/Save/Run/Lineage/Code · RHS panel toggles.
+  //    One bar, not a stacked second one — the notebook's old in-page toolbar
+  //    was merged in here (its controls drive NotebookView via the ref). ─────
   const flowsToolbar = (
     <div className="flex items-center gap-1.5 w-full min-w-0 overflow-x-auto">
       {/* Mobile: flows list */}
@@ -948,6 +1107,53 @@ export default function FlowsPage() {
         </div>
       )}
 
+      {/* Flow / notebook name (was the notebook toolbar's name input) */}
+      {activeTab === 'builder' && (
+        <input
+          type="text"
+          value={activeSpec?.name ?? ''}
+          onChange={e => setActiveSpec({ ...activeSpec, name: e.target.value })}
+          placeholder={flowView === 'notebook' ? 'Notebook name…' : 'Flow name…'}
+          disabled={!canWrite}
+          aria-label="Flow name"
+          className={[
+            'h-8 px-2.5 text-xs font-medium border border-border rounded-lg bg-surface text-fg placeholder:text-muted/50 focus:outline-none focus:ring-2 focus:ring-ring/60 shrink-0 disabled:opacity-50',
+            // Notebook view packs more controls into the bar — keep the input compact.
+            flowView === 'notebook' ? 'w-24 sm:w-28 2xl:w-40' : 'w-24 sm:w-40',
+          ].join(' ')}
+        />
+      )}
+
+      {/* Notebook-only: add-cell buttons (was the notebook toolbar) */}
+      {activeTab === 'builder' && flowView === 'notebook' && (
+        <div className="flex items-center gap-1 shrink-0">
+          <button
+            onClick={() => flowBuilderRef.current?.addCell('sql')}
+            title="Add SQL cell"
+            className="flex items-center gap-1.5 px-2 sm:px-2.5 h-8 text-xs font-medium rounded-lg border border-border bg-surface text-fg hover:bg-surface-2 transition-colors shrink-0"
+          >
+            <Database size={12} className="text-blue-500" />
+            <span className="hidden sm:inline">+ SQL</span>
+          </button>
+          <button
+            onClick={() => flowBuilderRef.current?.addCell('python')}
+            title="Add Python cell"
+            className="flex items-center gap-1.5 px-2 sm:px-2.5 h-8 text-xs font-medium rounded-lg border border-border bg-surface text-fg hover:bg-surface-2 transition-colors shrink-0"
+          >
+            <Code2 size={12} className="text-violet-500" />
+            <span className="hidden sm:inline">+ Python</span>
+          </button>
+          <button
+            onClick={() => flowBuilderRef.current?.addCell('markdown')}
+            title="Add Note (markdown) cell"
+            className="flex items-center gap-1.5 px-2 sm:px-2.5 h-8 text-xs font-medium rounded-lg border border-border bg-surface text-fg hover:bg-surface-2 transition-colors shrink-0"
+          >
+            <FileText size={12} className="text-slate-400" />
+            <span className="hidden sm:inline">+ Note</span>
+          </button>
+        </div>
+      )}
+
       <div className="flex items-center gap-1 ml-auto shrink-0">
         {/* Builder-only actions */}
         {activeTab === 'builder' && (
@@ -967,6 +1173,9 @@ export default function FlowsPage() {
                 <span className="hidden lg:inline">Save</span>
               </button>
             )}
+            {canWrite && activeFlow?.id && !activeFlow?._isNew && (
+              <ScheduleControl flow={activeFlow} onSaved={handleSaved} />
+            )}
             {canWrite && (
               <button onClick={triggerRun} disabled={running || !canRun} title={!canRun ? 'Save the flow first' : 'Run flow'}
                 className="flex items-center gap-1.5 px-2.5 h-8 text-xs font-medium rounded-lg bg-primary text-primary-fg hover:opacity-90 disabled:opacity-50 disabled:cursor-not-allowed transition-all">
@@ -974,24 +1183,40 @@ export default function FlowsPage() {
                 <span className="hidden lg:inline">Run</span>
               </button>
             )}
-            <button onClick={() => setCodeOpen(v => !v)} title={codeOpen ? 'Hide code editor' : 'Edit flow as Python code'}
-              className={[
-                'flex items-center gap-1.5 px-2 sm:px-2.5 h-8 text-xs font-medium rounded-lg border transition-colors',
-                codeOpen ? 'border-violet-400/60 bg-violet-500/10 text-violet-600 dark:text-violet-400' : 'border-border bg-surface text-fg hover:bg-surface-2',
-              ].join(' ')}>
-              <Code2 size={13} />
-              <span className="hidden lg:inline">Code</span>
-            </button>
+            {flowView === 'notebook' && (
+              <button onClick={() => setLineageOpen(v => !v)} title={lineageOpen ? 'Hide lineage panel' : 'Show flow lineage'}
+                className={[
+                  'flex items-center gap-1.5 px-2 sm:px-2.5 h-8 text-xs font-medium rounded-lg border transition-colors',
+                  lineageOpen ? 'border-blue-500/40 bg-blue-500/10 text-blue-600 dark:text-blue-400' : 'border-border bg-surface text-fg hover:bg-surface-2',
+                ].join(' ')}>
+                <GitBranch size={13} className={lineageOpen ? 'text-blue-500' : ''} />
+                <span className="hidden lg:inline">Lineage</span>
+              </button>
+            )}
+            {/* Code panel only exists in the canvas view (FlowBuilder renders it there) */}
+            {flowView === 'canvas' && (
+              <button onClick={() => setCodeOpen(v => !v)} title={codeOpen ? 'Hide code editor' : 'Edit flow as Python code'}
+                className={[
+                  'flex items-center gap-1.5 px-2 sm:px-2.5 h-8 text-xs font-medium rounded-lg border transition-colors',
+                  codeOpen ? 'border-violet-400/60 bg-violet-500/10 text-violet-600 dark:text-violet-400' : 'border-border bg-surface text-fg hover:bg-surface-2',
+                ].join(' ')}>
+                <Code2 size={13} />
+                <span className="hidden lg:inline">Code</span>
+              </button>
+            )}
           </>
         )}
 
-        {/* RHS panel toggles (desktop). Click the active panel to fully collapse. */}
+        {/* RHS panel toggles (desktop). Click the active panel to fully collapse.
+            Add task / Inspector are canvas tools — in the notebook view only the
+            Flows panel toggle is shown (cells are added via the +SQL/+Python/+Note
+            buttons and configured inline). */}
         <div className="hidden md:flex items-center gap-0.5 pl-1.5 ml-0.5 border-l border-border">
           {[
             { id: 'flows',     Icon: List,              title: 'Flows' },
             { id: 'add',       Icon: Plus,              title: 'Add task' },
             { id: 'inspector', Icon: SlidersHorizontal, title: 'Inspector' },
-          ].map(p => {
+          ].filter(p => !(activeTab === 'builder' && flowView === 'notebook' && p.id !== 'flows')).map(p => {
             const active = rightPanel === p.id && !rightCollapsed
             return (
               <button key={p.id} onClick={() => togglePanel(p.id)} title={p.title} aria-label={p.title} aria-pressed={active}
@@ -1111,11 +1336,10 @@ export default function FlowsPage() {
                     flow={activeFlow?._isNew ? null : activeFlow}
                     spec={activeSpec}
                     onSpecChange={setActiveSpec}
-                    onSave={triggerSave}
-                    saving={saving}
-                    dirty={dirty}
-                    autosaveStatus={autosaveStatus}
                     onRun={handleRun}
+                    env={runEnv}
+                    lineageOpen={lineageOpen}
+                    onLineageClose={() => setLineageOpen(false)}
                     onSelectedTaskChange={handleSelectedTaskChange}
                     onViewModeChange={setFlowView}
                     codeOpen={codeOpen}
