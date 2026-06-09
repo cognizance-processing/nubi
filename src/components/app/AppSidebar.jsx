@@ -19,7 +19,7 @@
  */
 
 import { useState, useEffect, useRef } from 'react'
-import { NavLink, useMatch } from 'react-router-dom'
+import { Link, NavLink, useMatch } from 'react-router-dom'
 import {
   Home,
   Plug,
@@ -38,11 +38,15 @@ import {
   Check,
   Settings,
   Shield,
+  BookOpen,
+  Lock,
+  X,
 } from 'lucide-react'
 import { useAuth } from '../../contexts/AuthContext.jsx'
 import { useUi } from '../../contexts/UiContext.jsx'
 import { useOrg } from '../../contexts/OrgContext.jsx'
 import { useProject } from '../../contexts/ProjectContext.jsx'
+import { useEnv, envDotClass } from '../../contexts/EnvContext.jsx'
 import Logo from '../Logo.jsx'
 
 // ---------------------------------------------------------------------------
@@ -138,7 +142,9 @@ function SidebarProjectSelector({ collapsed }) {
     }
   }
 
-  if (!activeProject) return null
+  // Render a sensible placeholder while projects load or when none exist yet,
+  // rather than vanishing — so the control is always present and discoverable.
+  const label = activeProject?.name ?? (projects.length ? 'Select project' : 'No project')
 
   return (
     <div className={`relative ${collapsed ? 'px-1' : 'px-2'}`} ref={ref}>
@@ -146,23 +152,31 @@ function SidebarProjectSelector({ collapsed }) {
         onClick={() => setOpen(v => !v)}
         aria-label="Switch project"
         aria-expanded={open}
-        title={collapsed ? activeProject.name : undefined}
+        title={collapsed ? `Project: ${label}` : undefined}
         className={`
-          flex items-center gap-2 rounded-xl border border-border
-          bg-surface-2 hover:bg-surface text-sm font-medium text-fg
-          transition-colors duration-150 min-h-[36px]
+          flex items-center gap-2 rounded-xl border
+          text-sm font-medium text-fg
+          transition-colors duration-150 min-h-[40px]
           focus:outline-none focus:ring-2 focus:ring-ring
+          ${open
+            ? 'border-primary/40 bg-primary/5'
+            : 'border-border bg-surface-2 hover:bg-surface hover:border-primary/30'}
           ${collapsed ? 'justify-center w-11 mx-auto px-0' : 'w-full px-2.5'}
         `}
       >
-        <FolderGit2 size={14} className="text-muted shrink-0" />
-        {!collapsed && <span className="truncate flex-1 text-left">{activeProject.name}</span>}
-        {!collapsed && <ChevronDown size={13} className={`text-muted shrink-0 transition-transform ${open ? 'rotate-180' : ''}`} />}
+        <FolderGit2 size={15} className="text-primary shrink-0" />
+        {!collapsed && (
+          <span className="flex flex-col items-start min-w-0 flex-1 leading-tight">
+            <span className="text-[9.5px] font-semibold uppercase tracking-wider text-muted">Project</span>
+            <span className="truncate w-full text-left text-[13px]">{label}</span>
+          </span>
+        )}
+        {!collapsed && <ChevronDown size={14} className={`text-muted shrink-0 transition-transform ${open ? 'rotate-180' : ''}`} />}
       </button>
 
       {open && (
         <div className={`
-          absolute z-50 mt-1 min-w-[180px] max-w-[240px] py-1.5 rounded-xl
+          absolute z-50 mt-1 min-w-[200px] max-w-[240px] py-1.5 rounded-xl
           bg-surface border border-border shadow-lg shadow-black/10
           ${collapsed ? 'left-full top-0 ml-2' : 'left-2 right-2'}
         `}>
@@ -175,7 +189,7 @@ function SidebarProjectSelector({ collapsed }) {
             >
               <Folder size={13} className="text-muted shrink-0" />
               <span className="flex-1 truncate">{project.name}</span>
-              {project.id === activeProject.id && <Check size={13} className="text-primary shrink-0" />}
+              {project.id === activeProject?.id && <Check size={13} className="text-primary shrink-0" />}
             </button>
           ))}
           <div className="my-1 border-t border-border" />
@@ -187,6 +201,193 @@ function SidebarProjectSelector({ collapsed }) {
             <Plus size={13} className="shrink-0" />
             <span className="flex-1 truncate">New project</span>
           </button>
+        </div>
+      )}
+    </div>
+  )
+}
+
+// ---------------------------------------------------------------------------
+// Environment selector — sits beneath the project selector. The selected env
+// is global app state (EnvContext) shared with the Flows toolbar EnvSelector.
+// ---------------------------------------------------------------------------
+
+function SidebarEnvSelector({ collapsed }) {
+  const { environments, activeEnv, setActiveEnv, addEnv, removeEnv } = useEnv()
+  const [open, setOpen] = useState(false)
+  const [adding, setAdding] = useState(false)
+  const [draft, setDraft] = useState('')
+  const ref = useRef(null)
+  const inputRef = useRef(null)
+
+  useEffect(() => {
+    if (!open) return
+    function onDown(e) { if (ref.current && !ref.current.contains(e.target)) { setOpen(false); setAdding(false) } }
+    function onKey(e) { if (e.key === 'Escape') { setOpen(false); setAdding(false) } }
+    document.addEventListener('mousedown', onDown)
+    document.addEventListener('keydown', onKey)
+    return () => {
+      document.removeEventListener('mousedown', onDown)
+      document.removeEventListener('keydown', onKey)
+    }
+  }, [open])
+
+  useEffect(() => { if (adding) inputRef.current?.focus() }, [adding])
+
+  // API mode once the project's environments loaded; before that (or when the
+  // API is unavailable) list the standard pair so the control stays usable.
+  const apiMode = Array.isArray(environments)
+  const envs = apiMode
+    ? environments
+    : ['prod', 'dev'].map(key => ({ id: key, key, is_default: key === 'prod', protected: true }))
+  // Include a one-off active key (e.g. legacy localStorage custom env) so the
+  // current selection is always visible in the list.
+  const rows = envs.some(e => e.key === activeEnv)
+    ? envs
+    : [...envs, { id: activeEnv, key: activeEnv, is_default: false, protected: false, _ghost: true }]
+
+  function select(key) {
+    setActiveEnv(key)
+    setOpen(false)
+    setAdding(false)
+  }
+
+  async function commitNew() {
+    const key = draft.trim().toLowerCase().replace(/[^a-z0-9_-]/g, '')
+    if (!key) return
+    if (!rows.some(e => e.key === key)) {
+      try {
+        await addEnv(key)
+      } catch (err) {
+        window.alert(err?.message ?? 'Could not create environment.')
+        return
+      }
+    }
+    setDraft('')
+    select(key)
+  }
+
+  async function handleRemove(env, e) {
+    e.stopPropagation()
+    if (!window.confirm(`Delete environment "${env.key}" from this project?`)) return
+    try {
+      // EnvContext resets the selection to the default env when the active
+      // one is removed. Throws on 409 (default/protected) — alert below.
+      await removeEnv(env)
+    } catch (err) {
+      window.alert(err?.message ?? 'Could not delete environment.')
+    }
+  }
+
+  return (
+    <div className={`relative ${collapsed ? 'px-1' : 'px-2'}`} ref={ref}>
+      <button
+        onClick={() => setOpen(v => !v)}
+        aria-label="Switch environment"
+        aria-haspopup="listbox"
+        aria-expanded={open}
+        title={collapsed ? `Environment: ${activeEnv}` : undefined}
+        className={`
+          flex items-center gap-2 rounded-xl border
+          text-sm font-medium text-fg
+          transition-colors duration-150 min-h-[40px]
+          focus:outline-none focus:ring-2 focus:ring-ring
+          ${open
+            ? 'border-primary/40 bg-primary/5'
+            : 'border-border bg-surface-2 hover:bg-surface hover:border-primary/30'}
+          ${collapsed ? 'justify-center w-11 mx-auto px-0' : 'w-full px-2.5'}
+        `}
+      >
+        <span className={`w-2 h-2 rounded-full shrink-0 ${envDotClass(activeEnv)}`} />
+        {!collapsed && (
+          <span className="flex flex-col items-start min-w-0 flex-1 leading-tight">
+            <span className="text-[9.5px] font-semibold uppercase tracking-wider text-muted">Environment</span>
+            <span className="truncate w-full text-left font-mono text-xs">{activeEnv}</span>
+          </span>
+        )}
+        {!collapsed && <ChevronDown size={14} className={`text-muted shrink-0 transition-transform ${open ? 'rotate-180' : ''}`} />}
+      </button>
+
+      {open && (
+        <div className={`
+          absolute z-50 mt-1 min-w-[200px] max-w-[240px] py-1.5 rounded-xl
+          bg-surface border border-border shadow-lg shadow-black/10
+          ${collapsed ? 'left-full top-0 ml-2' : 'left-2 right-2'}
+        `}>
+          <p className="px-3 py-1 text-[10px] font-semibold text-muted uppercase tracking-wider">Environments</p>
+          <ul role="listbox" className="max-h-60 overflow-y-auto">
+            {rows.map(env => {
+              const isCustom = apiMode && !env.is_default && !env.protected && !env._ghost
+              return (
+                <li key={env.key}>
+                  <button
+                    role="option"
+                    aria-selected={env.key === activeEnv}
+                    onClick={() => select(env.key)}
+                    className="group flex items-center gap-2 w-full px-3 py-2 text-sm text-fg hover:bg-surface-2 transition-colors text-left min-h-[36px]"
+                  >
+                    <span className={`w-2 h-2 rounded-full shrink-0 ${envDotClass(env.key)}`} />
+                    <span className="flex-1 truncate font-mono text-xs">{env.key}</span>
+                    {env.protected && (
+                      <span title="Protected environment" className="shrink-0 flex items-center">
+                        <Lock size={11} className="text-muted/60" />
+                      </span>
+                    )}
+                    {isCustom && (
+                      <span
+                        role="button"
+                        tabIndex={0}
+                        onClick={(e) => handleRemove(env, e)}
+                        onKeyDown={(e) => { if (e.key === 'Enter') handleRemove(env, e) }}
+                        title="Remove environment"
+                        aria-label={`Remove environment ${env.key}`}
+                        className="opacity-0 group-hover:opacity-100 w-5 h-5 flex items-center justify-center rounded text-muted/60 hover:text-red-500 transition-colors shrink-0"
+                      >
+                        <X size={12} />
+                      </span>
+                    )}
+                    {env.key === activeEnv && <Check size={13} className="text-primary shrink-0" />}
+                  </button>
+                </li>
+              )
+            })}
+          </ul>
+          {apiMode && (
+            <>
+              <div className="my-1 border-t border-border" />
+              {adding ? (
+                <div className="flex items-center gap-1 px-2 py-1">
+                  <input
+                    ref={inputRef}
+                    type="text"
+                    value={draft}
+                    placeholder="staging"
+                    aria-label="New environment key"
+                    className="h-7 flex-1 min-w-0 text-xs font-mono border border-border rounded-md px-2 bg-surface text-fg placeholder:text-muted/50 focus:outline-none focus:ring-2 focus:ring-ring/60"
+                    onChange={e => setDraft(e.target.value)}
+                    onKeyDown={e => {
+                      if (e.key === 'Enter') commitNew()
+                      if (e.key === 'Escape') { setAdding(false); setDraft('') }
+                    }}
+                  />
+                  <button
+                    onClick={commitNew}
+                    className="h-7 px-2 rounded-md text-xs font-medium bg-primary text-primary-fg hover:opacity-90 transition-opacity shrink-0"
+                  >
+                    Add
+                  </button>
+                </div>
+              ) : (
+                <button
+                  onClick={() => setAdding(true)}
+                  className="flex items-center gap-2 w-full px-3 py-2 text-sm text-muted hover:text-fg hover:bg-surface-2 transition-colors text-left min-h-[36px]"
+                >
+                  <Plus size={13} className="shrink-0" />
+                  <span className="flex-1 truncate">Add environment</span>
+                </button>
+              )}
+            </>
+          )}
         </div>
       )}
     </div>
@@ -269,12 +470,14 @@ function SidebarContent({ collapsed, showToggle = true }) {
           collapsed ? 'justify-center' : 'justify-between'
         }`}
       >
-        {!collapsed && (
-          <Logo size={26} showName={true} />
-        )}
-        {collapsed && (
-          <Logo size={26} showName={false} />
-        )}
+        {/* Logo links back to the public landing page */}
+        <Link
+          to="/"
+          aria-label="Nubi — back to landing page"
+          className="rounded-lg focus:outline-none focus:ring-2 focus:ring-ring"
+        >
+          {collapsed ? <Logo size={26} showName={false} /> : <Logo size={26} showName={true} />}
+        </Link>
 
         {showToggle && (
           <button
@@ -301,8 +504,13 @@ function SidebarContent({ collapsed, showToggle = true }) {
       </div>
 
       {/* Project selector (org → project → resources) */}
-      <div className="mb-3">
+      <div className="mb-2">
         <SidebarProjectSelector collapsed={collapsed} />
+      </div>
+
+      {/* Environment selector (project → environment; global, see EnvContext) */}
+      <div className="mb-3">
+        <SidebarEnvSelector collapsed={collapsed} />
       </div>
 
       {/* Nav items */}
@@ -335,6 +543,8 @@ function SidebarContent({ collapsed, showToggle = true }) {
         className={`flex flex-col gap-0.5 mt-1 pt-2 border-t border-border ${collapsed ? 'items-center px-1' : 'px-2'}`}
         aria-label="Settings navigation"
       >
+        {/* Docs — public documentation, available to every user */}
+        <SidebarNavItem to="/docs" label="Docs" Icon={BookOpen} collapsed={collapsed} />
         {/* Superadmin-only link to the admin console (/admin) */}
         {isSuperadmin && (
           <SidebarNavItem to="/admin" label="Admin" Icon={Shield} collapsed={collapsed} />

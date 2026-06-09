@@ -108,12 +108,10 @@ async def _apply_env_resolution(
     if kind is None:
         return
     from app.environments.store import get_env_store  # noqa: PLC0415
-    from app.repos import projects as projects_repo  # noqa: PLC0415
+    from app.routes._org import resolve_org_default_project_id  # noqa: PLC0415
 
     row["resolved_version"] = None
-    project_id = row.get("project_id") or await projects_repo.get_default_project_id(
-        org_id
-    )
+    project_id = row.get("project_id") or await resolve_org_default_project_id(org_id)
     if not project_id:
         return
     env_store = get_env_store()

@@ -27,7 +27,7 @@
  *   isNew         {boolean}      — true when editing an unsaved ad-hoc query
  *   toolbarExtra  {ReactNode}    — optional cluster appended to the toolbar
  *                                  (QueriesPage passes the Editor/Rollups view
- *                                  toggle + Queries/Chat panel buttons)
+ *                                  toggle + Queries panel button)
  */
 
 import { useState, useCallback, useRef, useEffect } from 'react'
@@ -55,6 +55,8 @@ import {
   Star,
   FileCode2,
   CalendarClock,
+  GitCommitHorizontal,
+  History,
   ExternalLink,
   Copy,
   Check,
@@ -68,37 +70,47 @@ import SpecIO from '../../components/SpecIO.jsx'
 import DataTable from '../../components/DataTable.jsx'
 import PythonCell from '../../components/PythonCell.jsx'
 import { runArrowQueryById, runArrowQuery, registerArrowTable, runLocalSqlForCell } from '../../lib/wasmRuntime.js'
-import { post, registerQuery, listDatastores } from '../../lib/api.js'
+import { get, post, registerQuery, listConnectors } from '../../lib/api.js'
+import { checkpoint } from '../../lib/versions.js'
+import VersionHistoryDialog from '../../components/app/VersionHistoryDialog.jsx'
 import { useUi } from '../../contexts/UiContext.jsx'
 import { useCanWrite } from '../../contexts/OrgContext.jsx'
+import { dialectForConnectorType } from '../../lib/sqlDialect.js'
 
 // ---------------------------------------------------------------------------
 // Connector type → SQL dialect
 // ---------------------------------------------------------------------------
 
-const CONNECTOR_DIALECT = {
-  postgres: 'postgres',
-  redshift: 'postgres',
-  duckdb: 'duckdb',
-  mysql: 'mysql',
-  mariadb: 'mysql',
-  bigquery: 'bigquery',
-  http_json: 'duckdb',
-  none: 'duckdb',
-}
-
 const DEFAULT_DIALECT = 'duckdb'
 
+// The connector_type → dialect mapping lives in src/lib/sqlDialect.js (shared
+// with SqlEditor). We read the backend's canonical `config.connector_type`
+// field, falling back to legacy `config.type` / `type` for older shapes.
 function datastoreType(ds) {
-  return (ds?.config?.type ?? ds?.type ?? '').toString().toLowerCase()
+  return (
+    ds?.config?.connector_type ??
+    ds?.config?.type ??
+    ds?.type ??
+    ''
+  )
+    .toString()
+    .toLowerCase()
 }
 
+/**
+ * Derive the SQL dialect from the selected connector's type. The built-in
+ * "Demo data" connector (id __demo__, type "demo") runs on DuckDB-WASM, as
+ * does the empty/no-connector case. Unknown types fall back to DuckDB.
+ */
 function dialectForDatastore(datastores, datastoreId) {
-  if (!datastoreId) return DEFAULT_DIALECT
+  if (!datastoreId || datastoreId === DEMO_DATASTORE_ID) return DEFAULT_DIALECT
   const ds = datastores.find(d => d.id === datastoreId)
   if (!ds) return DEFAULT_DIALECT
-  return CONNECTOR_DIALECT[datastoreType(ds)] ?? DEFAULT_DIALECT
+  return dialectForConnectorType(datastoreType(ds))
 }
+
+// Sentinel id of the built-in virtual demo connector (matches the backend).
+const DEMO_DATASTORE_ID = '__demo__'
 
 // ---------------------------------------------------------------------------
 // Extract {{name}} placeholders from SQL text
@@ -624,22 +636,30 @@ function ConnectorPicker({ datastores, value, onChange }) {
         <Database size={12} className="text-primary shrink-0" />
         Connector
       </label>
-      <select
-        id="primary-connector"
-        value={value}
-        onChange={e => onChange(e.target.value)}
-        className="h-7 max-w-[180px] rounded-md border border-border bg-surface text-fg text-xs px-2 focus:outline-none focus:ring-1 focus:ring-ring cursor-pointer transition-colors hover:bg-surface-2"
-        title="Run / bind this query against a connector."
-      >
-        <option value="">Demo data (built-in)</option>
-        {datastores.map(ds => (
-          <option key={ds.id} value={ds.id}>{ds.name ?? ds.id}</option>
-        ))}
-      </select>
-      {!hasDatastores && (
-        <span className="hidden lg:inline text-[10px] text-muted/70">
-          No connectors yet — using demo data
-        </span>
+      {hasDatastores ? (
+        <select
+          id="primary-connector"
+          value={value}
+          onChange={e => onChange(e.target.value)}
+          className="h-7 max-w-[180px] rounded-md border border-border bg-surface text-fg text-xs px-2 focus:outline-none focus:ring-1 focus:ring-ring cursor-pointer transition-colors hover:bg-surface-2"
+          title="Run / bind this query against a connector."
+        >
+          {/* Connectors come from GET /connectors. The built-in "Demo data"
+              connector (id __demo__) is included by the backend ONLY in the
+              org's demo/default project — it is not hardcoded here. */}
+          {datastores.map(ds => (
+            <option key={ds.id} value={ds.id}>{ds.name ?? ds.id}</option>
+          ))}
+        </select>
+      ) : (
+        <Link
+          to="/connectors"
+          className="inline-flex items-center gap-1 h-7 px-2 rounded-md border border-dashed border-border bg-surface text-[11px] text-muted hover:text-fg hover:bg-surface-2 transition-colors"
+          title="This project has no connectors yet — add one"
+        >
+          <Plus size={11} />
+          No connectors yet — add one
+        </Link>
       )}
     </div>
   )
@@ -1137,13 +1157,25 @@ export default function QueryWorkspace({ query, onQueryChange, onSaved, isNew, t
 
   useEffect(() => {
     let alive = true
-    listDatastores().then(ds => { if (alive) setDatastores(Array.isArray(ds) ? ds : []) })
+    listConnectors().then(ds => { if (alive) setDatastores(Array.isArray(ds) ? ds : []) })
     return () => { alive = false }
   }, [])
 
   useEffect(() => {
     setDatastoreId(query?.datastore_id ?? '')
   }, [query?.id]) // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Once connectors load, ensure the selected id maps to a real option so the
+  // picker value and the auto-derived dialect stay in sync. If the query has no
+  // saved connector (or the saved one no longer exists), default to the demo
+  // connector when present, else the first available connector.
+  useEffect(() => {
+    if (datastores.length === 0) return
+    const exists = datastoreId && datastores.some(d => d.id === datastoreId)
+    if (exists) return
+    const demo = datastores.find(d => d.id === DEMO_DATASTORE_ID)
+    setDatastoreId((demo ?? datastores[0]).id)
+  }, [datastores]) // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
     const detected = dialectForDatastore(datastores, datastoreId)
@@ -1168,6 +1200,9 @@ export default function QueryWorkspace({ query, onQueryChange, onSaved, isNew, t
   const [scheduling, setScheduling] = useState(false)
   const [scheduleStatus, setScheduleStatus] = useState(null)
   const [scheduledFlow, setScheduledFlow] = useState(null)
+
+  // ── Version history (kind='query', saved queries only) ──────────────────
+  const [historyOpen, setHistoryOpen] = useState(false)
 
   // ── AI assist ───────────────────────────────────────────────────────────
   const [showAi, setShowAi] = useState(false)
@@ -1374,14 +1409,80 @@ export default function QueryWorkspace({ query, onQueryChange, onSaved, isNew, t
       })
       setShowSaveDialog(false)
       setTimeout(() => setSaveStatus(null), 2500)
+      return saved
     } catch (err) {
       console.error('[QueryWorkspace] save failed:', err)
       setSaveStatus('err')
       setTimeout(() => setSaveStatus(null), 3000)
+      return null
     } finally {
       setSaving(false)
     }
   }, [sql, params, query, isNew, onSaved, datastoreId])
+
+  // ── Checkpoint — snapshot the saved draft as a new version ───────────────
+  const handleCheckpoint = useCallback(async () => {
+    if (!query?.id || isNew) return
+    const message = window.prompt('Checkpoint message (optional):', '')
+    if (message === null) return // cancelled
+    // The backend snapshots the *persisted* draft — flush the editor state
+    // through the normal save path first so the checkpoint matches the screen.
+    const saved = await doSave(query.name)
+    if (!saved) {
+      window.alert('Save failed — checkpoint aborted.')
+      return
+    }
+    try {
+      const v = await checkpoint('query', query.id, { message: message.trim() || undefined })
+      window.alert(v?.deduped
+        ? `No changes since v${v.version} — the existing version was reused.`
+        : `Created version v${v?.version}.`)
+    } catch (cause) {
+      window.alert(cause?.message || 'Checkpoint failed.')
+    }
+  }, [query, isNew, doSave])
+
+  // ── After a version restore — the backend wrote the pinned config back into
+  //    the persisted queries row; re-read it, load it into the editor, and
+  //    re-register it so runs (by id) execute the restored SQL. ─────────────
+  const handleRestored = useCallback(async () => {
+    if (!query?.id) return
+    try {
+      const row = await get(`/queries/${query.id}`)
+      const cfg = row?.config ?? {}
+      const nextSql = typeof cfg.sql === 'string' ? cfg.sql : ''
+      const nextParams = Array.isArray(cfg.params) ? cfg.params : []
+      const nextDs = cfg.datastore_id ?? ''
+      setSql(nextSql)
+      setParams(nextParams)
+      setDatastoreId(nextDs)
+      const init = {}
+      nextParams.forEach(p => { if (p.default != null) init[p.name] = String(p.default) })
+      setParamValues(init)
+      // Sync the runtime registry so POST /query by id runs the restored SQL.
+      if (nextSql.trim()) {
+        const saved = await registerQuery({
+          id: query.id,
+          name: cfg.name ?? row?.name ?? query.name,
+          sql: nextSql,
+          params: nextParams,
+          ...(nextDs ? { datastore_id: nextDs } : {}),
+        })
+        onSaved?.({
+          ...query,
+          id: saved.id,
+          name: saved.name,
+          sql: saved.sql ?? nextSql,
+          params: saved.params ?? nextParams,
+          datastore_id: saved.datastore_id ?? (nextDs || null),
+          isNew: false,
+        })
+      }
+    } catch (err) {
+      console.warn('[QueryWorkspace] reload after restore failed:', err)
+      window.alert(err?.message || 'Restored, but reloading the query failed — refresh the page.')
+    }
+  }, [query, onSaved])
 
   // ── Schedule ─────────────────────────────────────────────────────────────
   const handleScheduleClick = useCallback(() => {
@@ -1532,6 +1633,30 @@ export default function QueryWorkspace({ query, onQueryChange, onSaved, isNew, t
             <span className="hidden sm:inline">Schedule</span>
           </button>
         )}
+
+        {/* Checkpoint — snapshot the saved draft as a new version; writers only */}
+        {canWrite && (
+          <button
+            onClick={handleCheckpoint}
+            disabled={!isRegistered || saving}
+            className="h-8 px-2.5 flex items-center gap-1.5 text-[11px] font-medium rounded-lg border border-border bg-surface text-muted hover:text-fg hover:bg-surface-2 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+            title={isRegistered ? 'Checkpoint — snapshot the current draft as a new version' : 'Save the query first'}
+          >
+            <GitCommitHorizontal size={12} />
+            <span className="hidden sm:inline">Checkpoint</span>
+          </button>
+        )}
+
+        {/* Version history — restore / promote checkpointed versions */}
+        <button
+          onClick={() => setHistoryOpen(true)}
+          disabled={!isRegistered}
+          className="h-8 px-2.5 flex items-center gap-1.5 text-[11px] font-medium rounded-lg border border-border bg-surface text-muted hover:text-fg hover:bg-surface-2 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+          title={isRegistered ? 'Version history' : 'Save the query first'}
+        >
+          <History size={12} />
+          <span className="hidden sm:inline">History</span>
+        </button>
 
         {/* View as code / Import */}
         <SpecIO
@@ -1862,6 +1987,18 @@ export default function QueryWorkspace({ query, onQueryChange, onSaved, isNew, t
           scheduling={scheduling}
           status={scheduleStatus}
           createdFlow={scheduledFlow}
+        />
+      )}
+
+      {/* ── Version history (kind='query', the saved query of record) ───── */}
+      {isRegistered && (
+        <VersionHistoryDialog
+          kind="query"
+          resourceId={query.id}
+          resourceName={query?.name ?? query.id}
+          open={historyOpen}
+          onClose={() => setHistoryOpen(false)}
+          onRestored={handleRestored}
         />
       )}
     </div>

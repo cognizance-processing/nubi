@@ -90,6 +90,10 @@ export function ProjectProvider({ children }) {
       const next = list.find(p => p.id === savedId) ?? list[0] ?? null
       setActiveProjectState(next)
       _applyActiveProject(next)
+      // Persist the resolved selection so the choice survives reloads even when
+      // it was auto-defaulted (previously only explicit switches were saved,
+      // which left localStorage empty on first visit).
+      if (next?.id && orgId) saveProjectId(orgId, next.id)
       setLoading(false)
     }
 

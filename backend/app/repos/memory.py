@@ -123,10 +123,16 @@ class InMemoryRepo:
         name: str,
         config: dict[str, Any],
         project_id: str | None = None,
+        id: str | None = None,
     ) -> dict[str, Any]:
-        """Insert a new row and return the created dict."""
+        """Insert a new row and return the created dict.
+
+        When *id* is provided the row is stored under that exact id (the
+        caller already minted a stable identifier); otherwise a uuid4 is
+        generated.
+        """
         table = _validate_resource(resource)
-        row_id = str(uuid.uuid4())
+        row_id = str(id) if id else str(uuid.uuid4())
         now = _now_iso()
         row: dict[str, Any] = {
             "id": row_id,

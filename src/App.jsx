@@ -54,6 +54,7 @@ import { AuthProvider } from './contexts/AuthContext.jsx'
 import { UiProvider } from './contexts/UiContext.jsx'
 import { OrgProvider, useOrg } from './contexts/OrgContext.jsx'
 import { ProjectProvider } from './contexts/ProjectContext.jsx'
+import { EnvProvider } from './contexts/EnvContext.jsx'
 
 // Layouts
 import MainLayout from './layouts/MainLayout.jsx'
@@ -198,7 +199,9 @@ function AppShellWithProviders() {
       <OrgProvider>
         <RequireOrg>
           <ProjectProvider>
-            <AppShell />
+            <EnvProvider>
+              <AppShell />
+            </EnvProvider>
           </ProjectProvider>
         </RequireOrg>
       </OrgProvider>
@@ -306,7 +309,18 @@ export default function App() {
           path="d/:id"
           element={
             <ProtectedRoute>
-              <DashboardViewPage />
+              {/* Full-viewport, but still needs org/project context: the page
+                  calls useCanWrite() and board fetches need the X-Org-Id /
+                  X-Project-Id headers the providers install. */}
+              <UiProvider>
+                <OrgProvider>
+                  <ProjectProvider>
+                    <EnvProvider>
+                      <DashboardViewPage />
+                    </EnvProvider>
+                  </ProjectProvider>
+                </OrgProvider>
+              </UiProvider>
             </ProtectedRoute>
           }
         />

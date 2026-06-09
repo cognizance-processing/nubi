@@ -43,7 +43,7 @@ from app.flows.store import get_flow_store
 from app.repos import projects as projects_repo
 from app.repos.provider import Repo, get_repo
 from app.routes import api_router
-from app.routes._org import resolve_org_id
+from app.routes._org import resolve_org_default_project_id, resolve_org_id
 
 # ── Sub-router ────────────────────────────────────────────────────────────────
 router = APIRouter(tags=["environments"])
@@ -129,7 +129,7 @@ async def _resource_project_id(row: dict[str, Any], org_id: str) -> str | None:
     pid = row.get("project_id")
     if pid:
         return str(pid)
-    return await projects_repo.get_default_project_id(org_id)
+    return await resolve_org_default_project_id(org_id)
 
 
 async def _require_env(env_id: str, org_id: str, env_store: Any) -> dict[str, Any]:

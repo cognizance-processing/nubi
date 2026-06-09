@@ -93,6 +93,7 @@ class Repo(Protocol):
         name: str,
         config: dict[str, Any],
         project_id: str | None = None,
+        id: str | None = None,
     ) -> dict[str, Any]:
         """Insert a new row and return the created row dict.
 
@@ -111,6 +112,11 @@ class Repo(Protocol):
         project_id:
             Optional project the resource belongs to. When ``None`` the
             ``project_id`` column is left NULL.
+        id:
+            Optional explicit row id (UUID string).  When provided the row is
+            created with this exact id so callers that already minted a stable
+            identifier (e.g. the query registry) keep the registry id and the
+            row id identical.  When ``None`` the implementation generates one.
 
         Returns
         -------

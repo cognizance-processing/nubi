@@ -8,7 +8,8 @@
  *   - Header with "New dashboard" CTA → /editor
  *   - Search by name + sort (recent / name)
  *   - Responsive grid: 1 col → sm:2 → lg:3
- *   - Per-card actions: Open, Edit, Delete (confirm dialog)
+ *   - Per-card actions: Open, Edit, Delete (confirm dialog), plus versioning
+ *     via the overflow menu: Checkpoint / History / Promote
  *   - Loading skeleton, error state, empty state
  *   - Light + dark via semantic tokens
  */
@@ -20,17 +21,23 @@ import {
   ChevronDown,
   Code2,
   ExternalLink,
+  GitCommitHorizontal,
+  History,
   LayoutDashboard,
   Loader2,
   MoreVertical,
   Pencil,
   Plus,
+  Rocket,
   Search,
   Sparkles,
   Trash2,
   X,
 } from 'lucide-react'
 import * as api from '../../lib/api.js'
+import { checkpoint, listEnvironments } from '../../lib/versions.js'
+import VersionHistoryDialog from '../../components/app/VersionHistoryDialog.jsx'
+import PromoteDialog from '../../components/app/PromoteDialog.jsx'
 import { useUi } from '../../contexts/UiContext.jsx'
 import { useProject } from '../../contexts/ProjectContext.jsx'
 import { useCanWrite } from '../../contexts/OrgContext.jsx'
@@ -115,7 +122,7 @@ function CardThumbnail({ board }) {
 }
 
 /** Three-dot dropdown menu on a card. */
-function CardMenu({ board, onEdit, onDelete }) {
+function CardMenu({ onEdit, onCheckpoint, onHistory, onPromote, onDelete }) {
   const [open, setOpen] = useState(false)
   const ref = useRef(null)
 
@@ -147,6 +154,27 @@ function CardMenu({ board, onEdit, onDelete }) {
           >
             <Pencil size={14} className="text-muted" />
             Edit
+          </button>
+          <button
+            onClick={(e) => { e.stopPropagation(); setOpen(false); onCheckpoint() }}
+            className="flex items-center gap-2.5 w-full px-4 py-2.5 text-sm text-fg hover:bg-surface-2 transition-colors"
+          >
+            <GitCommitHorizontal size={14} className="text-muted" />
+            Checkpoint
+          </button>
+          <button
+            onClick={(e) => { e.stopPropagation(); setOpen(false); onHistory() }}
+            className="flex items-center gap-2.5 w-full px-4 py-2.5 text-sm text-fg hover:bg-surface-2 transition-colors"
+          >
+            <History size={14} className="text-muted" />
+            History
+          </button>
+          <button
+            onClick={(e) => { e.stopPropagation(); setOpen(false); onPromote() }}
+            className="flex items-center gap-2.5 w-full px-4 py-2.5 text-sm text-fg hover:bg-surface-2 transition-colors"
+          >
+            <Rocket size={14} className="text-muted" />
+            Promote
           </button>
           <button
             onClick={(e) => { e.stopPropagation(); setOpen(false); onDelete() }}
@@ -220,10 +248,26 @@ function DeleteDialog({ board, onConfirm, onCancel, busy }) {
 }
 
 /** Single board card. */
-function BoardCard({ board, onDeleted, canWrite }) {
+function BoardCard({ board, onDeleted, onRestored, canWrite, environments }) {
   const navigate = useNavigate()
   const [confirmDelete, setConfirmDelete] = useState(false)
   const [deleteBusy, setDeleteBusy] = useState(false)
+  const [historyOpen, setHistoryOpen] = useState(false)
+  const [promoteOpen, setPromoteOpen] = useState(false)
+
+  // Snapshot the board's saved config as a new version.
+  async function handleCheckpoint() {
+    const message = window.prompt('Checkpoint message (optional):', '')
+    if (message === null) return // cancelled
+    try {
+      const v = await checkpoint('board', board.id, { message: message.trim() || undefined })
+      window.alert(v?.deduped
+        ? `No changes since v${v.version} — the existing version was reused.`
+        : `Created version v${v?.version}.`)
+    } catch (err) {
+      window.alert(err?.message || 'Checkpoint failed.')
+    }
+  }
 
   async function handleDelete() {
     setDeleteBusy(true)
@@ -260,8 +304,10 @@ function BoardCard({ board, onDeleted, canWrite }) {
             </div>
             {canWrite && (
               <CardMenu
-                board={board}
                 onEdit={() => navigate(`/editor/${board.id}`)}
+                onCheckpoint={handleCheckpoint}
+                onHistory={() => setHistoryOpen(true)}
+                onPromote={() => setPromoteOpen(true)}
                 onDelete={() => setConfirmDelete(true)}
               />
             )}
@@ -297,6 +343,27 @@ function BoardCard({ board, onDeleted, canWrite }) {
           busy={deleteBusy}
         />
       )}
+
+      {/* Version history (kind='board') — restore refetches the board list */}
+      <VersionHistoryDialog
+        kind="board"
+        resourceId={board.id}
+        resourceName={board.name || 'Untitled dashboard'}
+        open={historyOpen}
+        onClose={() => setHistoryOpen(false)}
+        onRestored={onRestored}
+        environments={environments ?? undefined}
+      />
+
+      {/* Promote (kind='board') — also moves referenced queries; the dialog
+          surfaces the returned `promoted` list before closing */}
+      <PromoteDialog
+        kind="board"
+        resourceId={board.id}
+        open={promoteOpen}
+        onClose={() => setPromoteOpen(false)}
+        environments={environments ?? undefined}
+      />
     </>
   )
 }
@@ -453,6 +520,16 @@ export default function DashboardsPage() {
   // Re-scope the list whenever the active project changes (api.js sends X-Project-Id).
   const { activeProject } = useProject()
   const projectId = activeProject?.id
+
+  // Project environments for the version/promote dialogs (null → dialogs fall
+  // back to their built-in dev/prod defaults).
+  const [environments, setEnvironments] = useState(null)
+  useEffect(() => {
+    let cancelled = false
+    if (!projectId) { setEnvironments(null); return }
+    listEnvironments(projectId).then(envs => { if (!cancelled) setEnvironments(envs) })
+    return () => { cancelled = true }
+  }, [projectId])
 
   // Viewers are read-only — hide mutating actions (backend enforces too).
   const canWrite = useCanWrite()
@@ -621,7 +698,9 @@ export default function DashboardsPage() {
               key={board.id}
               board={board}
               onDeleted={handleDeleted}
+              onRestored={fetchBoards}
               canWrite={canWrite}
+              environments={environments}
             />
           ))}
         </div>

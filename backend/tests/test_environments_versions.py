@@ -842,3 +842,145 @@ class TestIsolation:
         assert resp.status_code == 401
         resp = await client.get(f"/api/v1/versions/query/{ctx['query']['id']}")
         assert resp.status_code == 401
+
+
+# ---------------------------------------------------------------------------
+# 5. Registry-saved queries (POST /query/registry) are versionable
+# ---------------------------------------------------------------------------
+#
+# Regression: a query saved from the UI (QueryWorkspace 'Save' → POST
+# /query/registry) used to get a name-slug as its registry id while the
+# best-effort persistence created the ``queries`` row under a separate
+# DB-generated uuid.  The versioning endpoints resolve /versions/query/{id}
+# against the ``queries`` row id, so Checkpoint/History/Restore 404'd for any
+# freshly registered query.  The registry id and the row id must be the SAME
+# uuid end-to-end.
+
+
+class TestRegistrySavedQueryVersioning:
+    async def _register(self, client, ctx, payload):
+        resp = await client.post(
+            "/api/v1/query/registry",
+            json=payload,
+            headers=_auth_headers(ctx["alice_id"]),
+        )
+        assert resp.status_code == 201, resp.text
+        return resp.json()
+
+    @pytest.mark.asyncio
+    async def test_fresh_register_returns_the_persisted_row_uuid(self, env_ctx):
+        """A no-id save returns a uuid that resolves via GET /queries/{id}."""
+        client, ctx = env_ctx
+        saved = await self._register(
+            client, ctx, {"name": "Revenue by region", "sql": "select 1 as v"}
+        )
+        qid = saved["id"]
+        uuid.UUID(qid)  # the canonical id is the row uuid, not a name-slug
+
+        resp = await client.get(
+            f"/api/v1/queries/{qid}", headers=_auth_headers(ctx["alice_id"])
+        )
+        assert resp.status_code == 200, resp.text
+        row = resp.json()
+        assert str(row["id"]) == qid
+        assert row["config"]["sql"] == "select 1 as v"
+
+    @pytest.mark.asyncio
+    async def test_fresh_register_then_checkpoint_history_restore(self, env_ctx):
+        """Checkpoint + history + restore all work with the registry-returned id."""
+        client, ctx = env_ctx
+        saved = await self._register(
+            client, ctx, {"name": "Daily sales", "sql": "select 1 as day1"}
+        )
+        qid = saved["id"]
+
+        # Checkpoint v1 with the id the registry returned.
+        body = await _checkpoint(client, ctx, "query", qid, message="v1")
+        assert _version_number(body) == 1
+
+        # Re-save through the same UI path (id now included) → same row, v2.
+        saved2 = await self._register(
+            client,
+            ctx,
+            {"id": qid, "name": "Daily sales", "sql": "select 2 as day2"},
+        )
+        assert saved2["id"] == qid
+        body = await _checkpoint(client, ctx, "query", qid, message="v2")
+        assert _version_number(body) == 2
+
+        # History lists both versions; dev points at the latest.
+        vbody = await _versions(client, ctx, "query", qid)
+        assert [v["version"] for v in vbody["versions"]] == [2, 1]
+        assert _pointer_for(vbody, "dev")["version"] == 2
+
+        # Full version fetch returns the v1 snapshot.
+        resp = await client.get(
+            f"/api/v1/versions/query/{qid}/1",
+            headers=_auth_headers(ctx["alice_id"]),
+        )
+        assert resp.status_code == 200, resp.text
+        assert resp.json()["config"]["sql"] == "select 1 as day1"
+
+        # Restore v1 → the draft row's config reverts to the v1 SQL.
+        resp = await client.post(
+            f"/api/v1/versions/query/{qid}/1/restore",
+            headers=_auth_headers(ctx["alice_id"]),
+        )
+        assert resp.status_code == 200, resp.text
+
+        draft = await client.get(
+            f"/api/v1/queries/{qid}", headers=_auth_headers(ctx["alice_id"])
+        )
+        assert draft.status_code == 200
+        assert draft.json()["config"]["sql"] == "select 1 as day1"
+
+    @pytest.mark.asyncio
+    async def test_reregister_without_id_upserts_the_same_row(self, env_ctx):
+        """Saving the same name twice without an id updates one row (no dupes)."""
+        client, ctx = env_ctx
+        first = await self._register(
+            client, ctx, {"name": "Weekly totals", "sql": "select 1"}
+        )
+        second = await self._register(
+            client, ctx, {"name": "Weekly totals", "sql": "select 2"}
+        )
+        assert second["id"] == first["id"], "same name must upsert the same row"
+
+        rows = await ctx["repo"].list("queries", ctx["org_id"])
+        matches = [r for r in rows if r["name"] == "Weekly totals"]
+        assert len(matches) == 1, "re-registering must not create duplicate rows"
+        assert matches[0]["config"]["sql"] == "select 2"
+        assert str(matches[0]["id"]) == first["id"]
+
+    @pytest.mark.asyncio
+    async def test_reregister_with_returned_uuid_updates_the_same_row(self, env_ctx):
+        """Saving again with the returned id (UI second save) updates in place."""
+        client, ctx = env_ctx
+        first = await self._register(
+            client, ctx, {"name": "Monthly totals", "sql": "select 1"}
+        )
+        qid = first["id"]
+        second = await self._register(
+            client, ctx, {"id": qid, "name": "Monthly totals", "sql": "select 3"}
+        )
+        assert second["id"] == qid
+
+        rows = await ctx["repo"].list("queries", ctx["org_id"])
+        matches = [r for r in rows if r["name"] == "Monthly totals"]
+        assert len(matches) == 1
+        assert matches[0]["config"]["sql"] == "select 3"
+
+    @pytest.mark.asyncio
+    async def test_slug_id_registration_stays_registry_only(self, env_ctx):
+        """Explicit non-uuid (slug) ids keep the legacy registry-only contract."""
+        client, ctx = env_ctx
+        saved = await self._register(
+            client,
+            ctx,
+            {"id": "embed_allowlist_q", "name": "Embed query", "sql": "select 1"},
+        )
+        assert saved["id"] == "embed_allowlist_q"
+
+        # No queries row is created for slug ids (row PKs are uuids).
+        rows = await ctx["repo"].list("queries", ctx["org_id"])
+        assert all(r["name"] != "Embed query" for r in rows)

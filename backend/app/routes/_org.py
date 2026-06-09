@@ -174,6 +174,27 @@ async def resolve_project_id_for_create(org_id: str, request: Request) -> str | 
     return await projects_repo.get_default_project_id(org_id)
 
 
+async def resolve_org_default_project_id(org_id: str) -> str | None:
+    """Return the org's default (oldest) project id, or ``None``.
+
+    Prefers :func:`projects_repo.get_default_project_id` and falls back to the
+    first row of :func:`projects_repo.list_projects` — both mean "the org's
+    oldest project" in production, but the fallback also resolves under
+    fetchrow-level test doubles that only serve list-shaped project queries.
+    Used by the environments/versions resolution paths.
+    """
+    from app.repos import projects as projects_repo  # noqa: PLC0415
+
+    pid = await projects_repo.get_default_project_id(org_id)
+    if pid:
+        return pid
+    try:
+        rows = await projects_repo.list_projects(org_id)
+    except Exception:  # noqa: BLE001 — degrade gracefully like the repo helpers
+        return None
+    return str(rows[0]["id"]) if rows else None
+
+
 async def resolve_project_filter(org_id: str, request: Request) -> str | None:
     """Resolve the project filter for list endpoints.
 

@@ -866,10 +866,16 @@ class RegisterQueryIn(BaseModel):
     Attributes
     ----------
     id:
-        Optional stable URL-safe identifier.  When omitted a slug is derived
-        from *name* (lower-cased, spaces→underscores, non-alnum stripped).
-        When provided and a query with that id already exists it is overwritten
-        (upsert behaviour).
+        Optional stable URL-safe identifier.  When omitted the query is
+        persisted into the org's ``queries`` table first (upserting by a slug
+        derived from *name*) and the row uuid becomes the canonical id — the
+        same identifier is used by ``/queries/{id}`` and the versioning
+        endpoints (``/versions/query/{id}``).  When persistence is unavailable
+        the name-slug (lower-cased, spaces→underscores, non-alnum stripped) is
+        used as a memory-only fallback id.  When provided and a query with
+        that id already exists it is overwritten (upsert behaviour); uuid ids
+        upsert the matching ``queries`` row, non-uuid (slug) ids are
+        registry-only.
     name:
         Human-readable label.
     sql:
@@ -955,17 +961,15 @@ async def register_query(
     if not body.sql.strip():
         raise _AppError("validation_error", "sql must not be empty.", 400)
 
-    # Derive a stable id from the name when not provided.
-    query_id: str
-    if body.id and body.id.strip():
-        query_id = body.id.strip()
-    else:
-        # slug: lowercase, replace spaces/hyphens with underscores, strip non-alnum_
-        slug = body.name.lower()
-        slug = _re.sub(r"[\s\-]+", "_", slug)
-        slug = _re.sub(r"[^a-z0-9_]", "", slug)
-        slug = slug.strip("_") or "query"
-        query_id = slug
+    # Legacy name-slug: persisted on the row (config.slug) so re-registering
+    # the same name without an id upserts the same row, and used as the
+    # memory-only fallback id when persistence is unavailable.
+    slug = body.name.lower()
+    slug = _re.sub(r"[\s\-]+", "_", slug)
+    slug = _re.sub(r"[^a-z0-9_]", "", slug)
+    slug = slug.strip("_") or "query"
+
+    explicit_id = body.id.strip() if body.id and body.id.strip() else None
 
     # Build the QueryParam list.
     param_objs = [
@@ -986,28 +990,35 @@ async def register_query(
         else None
     )
 
-    # Register in the in-memory singleton (immediately runnable).
-    registry = get_query_registry()
-    rq = registry.register(
-        id=query_id,
-        sql=body.sql,
-        name=body.name,
-        required_scope=body.required_scope,
-        params=param_objs,
-        datastore_id=datastore_id,
-    )
+    # ── Canonical id + best-effort persistence ───────────────────────────────
+    # The registry id and the persisted ``queries`` row id must be the SAME
+    # identifier end-to-end: the versioning endpoints (/versions/query/{id}),
+    # the resource routes (/queries/{id}), and the startup loader
+    # (``load_persisted_queries`` re-registers rows under their row uuid) all
+    # resolve a query by the row id.  Therefore:
+    #
+    #   - explicit uuid id → upsert the row with that exact id (idempotent);
+    #   - explicit non-uuid (slug) id → registry-only registration (row PKs
+    #     are uuids; this matches the historical Pg behaviour where the
+    #     ``::uuid`` cast made persistence a silent no-op for slug ids — the
+    #     embed-allowlist use case that depends on stable slug ids);
+    #   - no id → persist FIRST (upserting by the name-slug stored in
+    #     ``config.slug`` so re-saving the same name updates the same row) and
+    #     adopt the row uuid as the registry id.  When persistence is
+    #     unavailable, fall back to the legacy name-slug (memory-only).
+    #
+    # The persisted ``config`` carries {sql, name, params, datastore_id} —
+    # exactly the shape ``ensure_persisted_query`` / ``load_persisted_queries``
+    # expect — so the datastore binding is restored on the next boot.  The
+    # whole block is wrapped in a broad try/except so the FakeDB test path and
+    # any DB hiccup never fail the registration (the in-memory registry
+    # mutation below is sufficient for the request to succeed).
+    import uuid as _uuid
 
-    # ── Best-effort persistence into the queries table ──────────────────────
-    # Write the query into the org-scoped ``queries`` resource so it survives a
-    # restart.  The persisted ``config`` carries {sql, name, params, datastore_id}
-    # which is exactly the shape ``ensure_persisted_query`` / ``load_persisted_
-    # queries`` expect — so the datastore binding is restored on the next boot.
-    # This is wrapped in a broad try/except so the in-memory test repo path and
-    # any DB hiccup never fail the registration (the in-memory registry mutation
-    # above is sufficient for the request to succeed).
     config = {
         "sql": body.sql,
         "name": body.name,
+        "slug": slug,
         "datastore_id": datastore_id,
         "params": [
             {
@@ -1020,24 +1031,80 @@ async def register_query(
             for p in body.params
         ],
     }
+
+    def _is_uuid(value: str) -> bool:
+        try:
+            _uuid.UUID(value)
+        except (ValueError, TypeError):
+            return False
+        return True
+
+    query_id: str | None = explicit_id
     try:
-        from app.routes.resources import get_user_org as _get_user_org
+        from app.routes._org import get_user_org as _get_user_org
 
         repo = get_repo()
         org_id = await _get_user_org(identity.user_id, repo)
-        existing = await repo.get("queries", org_id, query_id)
-        if existing is not None:
-            await repo.update("queries", org_id, query_id, {"name": body.name, "config": config})
+
+        if explicit_id is not None:
+            # Explicit id: persist only when it can be a row primary key.
+            if _is_uuid(explicit_id):
+                existing = await repo.get("queries", org_id, explicit_id)
+                if existing is not None:
+                    await repo.update(
+                        "queries",
+                        org_id,
+                        explicit_id,
+                        {"name": body.name, "config": config},
+                    )
+                else:
+                    await repo.create(
+                        resource="queries",
+                        org_id=org_id,
+                        created_by=identity.user_id,
+                        name=body.name,
+                        config=config,
+                        id=explicit_id,
+                    )
         else:
-            await repo.create(
-                resource="queries",
-                org_id=org_id,
-                created_by=identity.user_id,
-                name=body.name,
-                config=config,
-            )
+            # No id given: upsert by name-slug, then adopt the row uuid.
+            existing = None
+            for row in await repo.list("queries", org_id):
+                if (row.get("config") or {}).get("slug") == slug:
+                    existing = row
+                    break
+            if existing is not None:
+                row_id = str(existing["id"])
+                await repo.update(
+                    "queries", org_id, row_id, {"name": body.name, "config": config}
+                )
+                query_id = row_id
+            else:
+                created = await repo.create(
+                    resource="queries",
+                    org_id=org_id,
+                    created_by=identity.user_id,
+                    name=body.name,
+                    config=config,
+                )
+                query_id = str(created["id"])
     except Exception:  # noqa: BLE001 — persistence is best-effort.
-        pass
+        query_id = explicit_id
+
+    if not query_id:
+        # Persistence unavailable and no explicit id — legacy slug fallback.
+        query_id = slug
+
+    # Register in the in-memory singleton (immediately runnable).
+    registry = get_query_registry()
+    rq = registry.register(
+        id=query_id,
+        sql=body.sql,
+        name=body.name,
+        required_scope=body.required_scope,
+        params=param_objs,
+        datastore_id=datastore_id,
+    )
 
     return {
         "id": rq.id,

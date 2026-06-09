@@ -64,10 +64,15 @@ import {
   Database,
   FileText,
   CalendarClock,
+  History,
+  GitCommitHorizontal,
 } from 'lucide-react'
 
 import { useUi } from '../../contexts/UiContext.jsx'
 import { useCanWrite } from '../../contexts/OrgContext.jsx'
+import { useEnv, envDotClass } from '../../contexts/EnvContext.jsx'
+import { checkpoint } from '../../lib/versions.js'
+import VersionHistoryDialog from '../../components/app/VersionHistoryDialog.jsx'
 import {
   listFlows,
   getFlow,
@@ -401,15 +406,10 @@ function RunsTab({ flow, currentRunId, onSelectRun }) {
 
 // prod leads (the default + production target); dev second. Custom envs the
 // user adds are appended and persisted in localStorage.
+// (Per-env accent dot styling is shared with the sidebar selector — see
+// envDotClass in contexts/EnvContext.jsx.)
 const DEFAULT_ENVS = ['prod', 'dev']
 const ENVS_STORAGE_KEY = 'nubi.flow.customEnvs'
-
-// Per-env accent dot. prod = emerald (live), dev = sky, anything else = violet.
-function envDotClass(env) {
-  if (env === 'prod') return 'bg-emerald-500'
-  if (env === 'dev') return 'bg-sky-500'
-  return 'bg-violet-500'
-}
 
 function loadCustomEnvs() {
   try {
@@ -424,12 +424,25 @@ function loadCustomEnvs() {
 /**
  * Top-bar environment selector. Sets the env a run is triggered against; the
  * backend namespaces materialized/incremental targets under <env>/ so dev and
- * prod never clobber each other. Defaults to prod. Users can add their own
- * named environments via the inline "Add environment" action (persisted).
+ * prod never clobber each other. Defaults to prod.
  *
- * @param {{ value: string, onChange: (env: string) => void, disabled?: boolean }} props
+ * Env list + selection source: the global EnvContext (FlowsPage passes
+ * `environments`/`value` from useEnv()), so this selector stays in sync with
+ * the sidebar environment selector. When the API is unavailable
+ * (`environments` is null) we fall back to the legacy localStorage
+ * custom-env list so the selector keeps working offline. "Add environment"
+ * calls `onAddEnv` (EnvContext addEnv) in API mode.
+ *
+ * @param {{
+ *   value: string,
+ *   onChange: (env: string) => void,
+ *   disabled?: boolean,
+ *   environments?: Array<{id:string,key:string,is_default?:boolean,protected?:boolean}>|null,
+ *   onAddEnv?: (key: string) => Promise<any>,
+ *   onRemoveEnv?: (env: {id:string,key:string}) => Promise<any>,
+ * }} props
  */
-function EnvSelector({ value, onChange, disabled = false }) {
+function EnvSelector({ value, onChange, disabled = false, environments = null, onAddEnv, onRemoveEnv }) {
   const [open, setOpen] = useState(false)
   const [adding, setAdding] = useState(false)
   const [draft, setDraft] = useState('')
@@ -437,9 +450,14 @@ function EnvSelector({ value, onChange, disabled = false }) {
   const ref = useRef(null)
   const inputRef = useRef(null)
 
-  // All selectable envs: defaults + persisted customs + (the active value if it
-  // is itself a one-off custom not yet saved), de-duplicated, prod-first.
-  const envs = Array.from(new Set([...DEFAULT_ENVS, ...customEnvs, ...(value ? [value] : [])]))
+  // API mode when the project's environments were loaded; otherwise fall back
+  // to defaults + persisted localStorage customs.
+  const apiMode = Array.isArray(environments)
+  // All selectable envs (+ the active value if it is itself a one-off custom),
+  // de-duplicated.
+  const envs = apiMode
+    ? Array.from(new Set([...environments.map(e => e.key), ...(value ? [value] : [])]))
+    : Array.from(new Set([...DEFAULT_ENVS, ...customEnvs, ...(value ? [value] : [])]))
   const active = value || 'prod'
 
   useEffect(() => {
@@ -455,10 +473,21 @@ function EnvSelector({ value, onChange, disabled = false }) {
 
   const select = (env) => { onChange(env); setOpen(false); setAdding(false) }
 
-  const commitNew = () => {
+  const commitNew = async () => {
     const name = draft.trim().toLowerCase().replace(/[^a-z0-9_-]/g, '')
     if (!name) return
-    if (!customEnvs.includes(name) && !DEFAULT_ENVS.includes(name)) {
+    if (apiMode && onAddEnv) {
+      // Persist in the project's environments via the API.
+      if (!envs.includes(name)) {
+        try {
+          await onAddEnv(name)
+        } catch (cause) {
+          window.alert(cause?.message || 'Could not create environment.')
+          return
+        }
+      }
+    } else if (!customEnvs.includes(name) && !DEFAULT_ENVS.includes(name)) {
+      // Offline fallback: persist in localStorage.
       const next = [...customEnvs, name]
       setCustomEnvs(next)
       try { localStorage.setItem(ENVS_STORAGE_KEY, JSON.stringify(next)) } catch { /* ignore */ }
@@ -468,11 +497,23 @@ function EnvSelector({ value, onChange, disabled = false }) {
     select(name)
   }
 
-  const removeEnv = (env, e) => {
+  const removeEnv = async (env, e) => {
     e.stopPropagation()
-    const next = customEnvs.filter(x => x !== env)
-    setCustomEnvs(next)
-    try { localStorage.setItem(ENVS_STORAGE_KEY, JSON.stringify(next)) } catch { /* ignore */ }
+    if (apiMode) {
+      const row = environments.find(x => x.key === env)
+      if (!row || !onRemoveEnv) return
+      if (!window.confirm(`Delete environment "${env}" from this project?`)) return
+      try {
+        await onRemoveEnv(row)
+      } catch (cause) {
+        window.alert(cause?.message || 'Could not delete environment.')
+        return
+      }
+    } else {
+      const next = customEnvs.filter(x => x !== env)
+      setCustomEnvs(next)
+      try { localStorage.setItem(ENVS_STORAGE_KEY, JSON.stringify(next)) } catch { /* ignore */ }
+    }
     if (active === env) onChange('prod')
   }
 
@@ -504,7 +545,12 @@ function EnvSelector({ value, onChange, disabled = false }) {
           </p>
           <ul role="listbox" className="px-1 pb-1 max-h-60 overflow-y-auto">
             {envs.map(env => {
-              const isCustom = !DEFAULT_ENVS.includes(env)
+              // Removable: custom localStorage envs, or API envs that are
+              // neither the default nor protected.
+              const row = apiMode ? environments.find(x => x.key === env) : null
+              const isCustom = apiMode
+                ? Boolean(row && !row.is_default && !row.protected)
+                : !DEFAULT_ENVS.includes(env)
               return (
                 <li key={env}>
                   <button
@@ -765,9 +811,21 @@ export default function FlowsPage() {
   // Current builder view ('canvas' | 'notebook'), reported up from FlowBuilder
   // so the top-bar switcher reflects + drives it.
   const [flowView, setFlowView] = useState('canvas')
-  // Active run environment (dev/prod/custom). Drives the env passed to runFlow;
-  // backend resolution order is: explicit override → spec.env → 'prod'.
-  const [runEnv, setRunEnv] = useState('prod')
+  // Active run environment (dev/prod/custom) — global app state shared with
+  // the sidebar environment selector (EnvContext, persisted per project).
+  // Drives the env passed to runFlow; backend resolution order is:
+  // explicit override → spec.env → 'prod'. projectEnvs is the project's env
+  // list from the API (null until loaded / when the API is unavailable —
+  // EnvSelector then falls back to localStorage).
+  const {
+    environments: projectEnvs,
+    activeEnv: runEnv,
+    setActiveEnv: setRunEnv,
+    addEnv: handleAddEnv,
+    removeEnv: handleRemoveEnv,
+  } = useEnv()
+  // Version-history dialog visibility (kind='flow', the active flow).
+  const [historyOpen, setHistoryOpen] = useState(false)
 
   // ── Dirty tracking + autosave ─────────────────────────────────────────────
   // JSON snapshot of the last-saved spec; refreshed on flow select, new draft
@@ -836,13 +894,10 @@ export default function FlowsPage() {
     selectFlow(flow)
   }
 
-  // Keep the active run env in sync with the active flow's spec.env (default
-  // 'prod'). Done in an effect so the selection callbacks stay setter-free for
-  // the React Compiler's manual-memoization check.
-  useEffect(() => {
-    const t = setTimeout(() => setRunEnv(activeSpec?.env || 'prod'), 0)
-    return () => clearTimeout(t)
-  }, [activeFlow, activeSpec?.env])
+  // NOTE: the run env is global (EnvContext) and deliberately NOT re-synced
+  // from the active flow's spec.env — the user's selected environment
+  // persists across flows/pages and is passed as an explicit override to
+  // runFlow (backend resolution: explicit override → spec.env → 'prod').
 
   // ── Load flows ────────────────────────────────────────────────────────────
   const loadFlows = useCallback(async () => {
@@ -1021,6 +1076,43 @@ export default function FlowsPage() {
     else handleRun({ runId: result.id })
   }
 
+  // ── Checkpoint — snapshot the saved draft spec as a new version ──────────
+  const triggerCheckpoint = async () => {
+    if (!activeFlow?.id || activeFlow._isNew) {
+      setSaveError('Save the flow first before creating a checkpoint.')
+      return
+    }
+    const message = window.prompt('Checkpoint message (optional):', '')
+    if (message === null) return // cancelled
+    // The backend snapshots the *saved* draft — flush unsaved edits first.
+    if (dirty) {
+      const saved = await performSave()
+      if (!saved) {
+        window.alert('Save failed — checkpoint aborted.')
+        return
+      }
+    }
+    try {
+      const v = await checkpoint('flow', activeFlow.id, { message: message.trim() || undefined })
+      window.alert(v?.deduped
+        ? `No changes since v${v.version} — the existing version was reused.`
+        : `Created version v${v?.version}.`)
+    } catch (cause) {
+      window.alert(cause?.message || 'Checkpoint failed.')
+    }
+  }
+
+  // ── After a version restore — reload the flow so the editor shows the
+  //    restored draft (selectFlow re-snapshots, clearing dirty state). ───────
+  const handleRestored = async () => {
+    if (!activeFlow?.id) return
+    const fresh = await getFlow(activeFlow.id)
+    if (fresh) {
+      selectFlow(fresh)
+      setSavedFlows(prev => prev.map(f => (f.id === fresh.id ? fresh : f)))
+    }
+  }
+
   // ── Delete callback ───────────────────────────────────────────────────────
   const handleDelete = useCallback((flowId) => {
     setSavedFlows(prev => prev.filter(f => f.id !== flowId))
@@ -1158,7 +1250,14 @@ export default function FlowsPage() {
         {/* Builder-only actions */}
         {activeTab === 'builder' && (
           <>
-            <EnvSelector value={runEnv} onChange={setRunEnv} disabled={!canWrite} />
+            <EnvSelector
+              value={runEnv}
+              onChange={setRunEnv}
+              disabled={!canWrite}
+              environments={projectEnvs}
+              onAddEnv={handleAddEnv}
+              onRemoveEnv={handleRemoveEnv}
+            />
             {/* Unsaved / autosave status — sits next to the Save button */}
             <SaveStatusBadge dirty={dirty} saving={saving} autosaveStatus={autosaveStatus} className="hidden sm:flex px-1" />
             <button onClick={triggerValidate} disabled={validating} title="Validate flow"
@@ -1171,6 +1270,20 @@ export default function FlowsPage() {
                 className="flex items-center gap-1.5 px-2 sm:px-2.5 h-8 text-xs font-medium rounded-lg border border-border bg-surface text-fg hover:bg-surface-2 disabled:opacity-50 transition-colors">
                 {saving ? <Loader2 size={13} className="animate-spin" /> : <Save size={13} />}
                 <span className="hidden lg:inline">Save</span>
+              </button>
+            )}
+            {canWrite && canRun && (
+              <button onClick={triggerCheckpoint} title="Checkpoint — snapshot the current draft as a new version"
+                className="flex items-center gap-1.5 px-2 sm:px-2.5 h-8 text-xs font-medium rounded-lg border border-border bg-surface text-fg hover:bg-surface-2 transition-colors">
+                <GitCommitHorizontal size={13} />
+                <span className="hidden lg:inline">Checkpoint</span>
+              </button>
+            )}
+            {canRun && (
+              <button onClick={() => setHistoryOpen(true)} title="Version history"
+                className="flex items-center gap-1.5 px-2 sm:px-2.5 h-8 text-xs font-medium rounded-lg border border-border bg-surface text-fg hover:bg-surface-2 transition-colors">
+                <History size={13} />
+                <span className="hidden lg:inline">History</span>
               </button>
             )}
             {canWrite && activeFlow?.id && !activeFlow?._isNew && (
@@ -1461,6 +1574,19 @@ export default function FlowsPage() {
         onDelete={handleDelete}
         canWrite={canWrite}
       />
+
+      {/* ── Version history (kind='flow', the active saved flow) ───────────── */}
+      {canRun && (
+        <VersionHistoryDialog
+          kind="flow"
+          resourceId={activeFlow.id}
+          resourceName={activeFlow.name ?? activeSpec?.name ?? ''}
+          open={historyOpen}
+          onClose={() => setHistoryOpen(false)}
+          onRestored={handleRestored}
+          environments={projectEnvs ?? undefined}
+        />
+      )}
     </div>
   )
 }

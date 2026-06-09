@@ -26,7 +26,8 @@ GET    /flows/notebooks/{id}                                                    
 All endpoints EXCEPT ``/flows/tick`` require a valid first-party Bearer token
 (``current_user``).  ``/flows/tick`` is an internal endpoint authed via a
 shared-secret header (``X-Nubi-Tick-Secret`` matching ``FLOWS_TICK_SECRET``) so
-Google Cloud Scheduler can drive the engine on Cloud Run (no always-on worker).
+an external scheduler (e.g. a cron machine or scheduled job) can drive the
+engine when no always-on worker runs.
 Flows are org-scoped: callers can only see and operate on flows belonging to
 their own org.  Cross-org access returns 404 (no information leak).
 
@@ -380,11 +381,11 @@ async def _pinned_version_for_env(
     is missing — callers then serve/run the draft spec.
     """
     from app.environments.store import get_env_store  # noqa: PLC0415
-    from app.repos import projects as projects_repo  # noqa: PLC0415
+    from app.routes._org import resolve_org_default_project_id  # noqa: PLC0415
 
     project_id = flow.get("project_id")
     if not project_id:
-        project_id = await projects_repo.get_default_project_id(org_id)
+        project_id = await resolve_org_default_project_id(org_id)
     if not project_id:
         return None, None
 
@@ -640,12 +641,13 @@ async def create_blend(
 async def flows_tick(
     x_nubi_tick_secret: str | None = Header(default=None),
 ) -> dict[str, Any]:
-    """Run ONE flow tick (internal — for Google Cloud Scheduler on Cloud Run).
+    """Run ONE flow tick (internal — driven by an external scheduler/cron).
 
     Authenticated via a shared-secret header (``X-Nubi-Tick-Secret``) that must
     match the ``FLOWS_TICK_SECRET`` setting — NOT a user JWT.  This replaces the
-    always-on worker on Cloud Run (which throttles CPU + scales to zero): Cloud
-    Scheduler POSTs here on cron, and each call runs one ``flow_tick`` which
+    always-on worker on platforms that throttle CPU outside requests or scale
+    to zero: an external scheduler (e.g. a cron machine or Fly.io scheduled
+    machine) POSTs here on cron, and each call runs one ``flow_tick`` which
     (a) materializes due scheduled flows (atomic claim → multi-instance safe)
     and (b) drains a bounded number of ready task_runs.
 
@@ -1019,6 +1021,7 @@ async def preview_cell(
         When the target cell raises an exception during preview execution.
     """
     from app.flows.executor import TaskContext, execute_task  # noqa: PLC0415
+    from app.flows.runtime import _resolve_secrets  # noqa: PLC0415
 
     org_id = await _get_user_org(str(user["id"]), repo)
 
@@ -1089,6 +1092,12 @@ async def preview_cell(
     inputs: dict[str, Any] = {}
     now = datetime.now(timezone.utc)
 
+    # Resolve org secrets exactly like the durable path (same helper, same org
+    # scoping) so `{{ secrets.NAME }}` templates and the python `secrets` dict
+    # work identically in notebook "Run cell" previews.  Plaintext values never
+    # reach the client: execute_task redacts them from errors + captured logs.
+    secrets: dict[str, str] = await _resolve_secrets(org_id)
+
     for task in tasks_to_run:
         # Inject preview_limit into query task config so the handler respects it.
         task_config = dict(task.config)
@@ -1099,7 +1108,7 @@ async def preview_cell(
             flow_params=body.params,
             inputs=inputs,
             now=now,
-            secrets={},
+            secrets=secrets,
         )
 
         task_dict: dict[str, Any] = {

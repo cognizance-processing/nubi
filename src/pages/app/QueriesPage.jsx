@@ -10,11 +10,13 @@
  *   │  - results DataTable              │    registry list    │
  *   └─────────────────────────────────────────────────────────┘
  *
- * Topbar buttons (far right, dashboard-style icon toggles) switch the RHS:
+ * Topbar buttons (dashboard-style icon toggles):
  *   - Queries — this page's query-list sidebar (lg+: static 288px panel;
  *     md–lg: slide-over drawer; <md: hidden, mobile dropdown instead)
- *   - Chat    — the global AppShell chat panel (UiContext toggleChat)
- * plus an Editor ↔ Rollups segmented view toggle.
+ * plus an Editor ↔ Rollups segmented view toggle. Chat is opened with the
+ * shell's single global chat button (far right of the topbar) — this page
+ * intentionally has NO chat button of its own to avoid duplicates; it only
+ * reacts to chatOpen so the Queries panel and chat share the right edge.
  *
  * Layout (mobile):
  *   - Query list collapses into a dropdown selector at the top.
@@ -42,9 +44,11 @@ import {
   Combine,
   Boxes,
   PanelRightClose,
+  History,
 } from 'lucide-react'
 
-import { listRegisteredQueries } from '../../lib/api.js'
+import { get, listRegisteredQueries, registerQuery } from '../../lib/api.js'
+import VersionHistoryDialog from '../../components/app/VersionHistoryDialog.jsx'
 import { useProject } from '../../contexts/ProjectContext.jsx'
 import { useCanWrite } from '../../contexts/OrgContext.jsx'
 import { useUi } from '../../contexts/UiContext.jsx'
@@ -70,60 +74,76 @@ function newAdHocQuery() {
 // QueryListItem — single entry in the left rail
 // ---------------------------------------------------------------------------
 
-function QueryListItem({ query, isActive, onClick }) {
+function QueryListItem({ query, isActive, onClick, onHistory }) {
   const hasParams = Array.isArray(query.params) && query.params.length > 0
+  const isSaved = Boolean(query.id) && !query.isNew
 
   return (
-    <button
-      onClick={() => onClick(query)}
-      className={[
-        'w-full text-left px-3 py-2.5 rounded-lg transition-all group',
-        isActive
-          ? 'bg-primary/10 border border-primary/20 text-fg'
-          : 'hover:bg-surface-2 border border-transparent text-fg/80 hover:text-fg',
-      ].join(' ')}
-    >
-      <div className="flex items-start gap-2 min-w-0">
-        <FileCode2
-          size={13}
-          className={[
-            'shrink-0 mt-0.5',
-            isActive ? 'text-primary' : 'text-muted group-hover:text-fg/60',
-          ].join(' ')}
-        />
-        <div className="min-w-0 flex-1">
-          <p className="text-xs font-medium truncate leading-tight">
-            {query.name ?? query.id}
-          </p>
-          {query.id && (
-            <p className="text-[10px] font-mono text-muted truncate mt-0.5">
-              {query.id}
+    <div className="relative group">
+      <button
+        onClick={() => onClick(query)}
+        className={[
+          'w-full text-left px-3 py-2.5 rounded-lg transition-all',
+          isSaved && onHistory ? 'pr-9' : '',
+          isActive
+            ? 'bg-primary/10 border border-primary/20 text-fg'
+            : 'hover:bg-surface-2 border border-transparent text-fg/80 hover:text-fg',
+        ].join(' ')}
+      >
+        <div className="flex items-start gap-2 min-w-0">
+          <FileCode2
+            size={13}
+            className={[
+              'shrink-0 mt-0.5',
+              isActive ? 'text-primary' : 'text-muted group-hover:text-fg/60',
+            ].join(' ')}
+          />
+          <div className="min-w-0 flex-1">
+            <p className="text-xs font-medium truncate leading-tight">
+              {query.name ?? query.id}
             </p>
-          )}
-          {hasParams && (
-            <div className="flex flex-wrap gap-1 mt-1">
-              {query.params.slice(0, 3).map(p => (
-                <span
-                  key={p.name}
-                  className="inline-flex items-center gap-0.5 px-1 py-0 rounded text-[9px] font-mono bg-surface-2 text-muted border border-border/60"
-                >
-                  <Tag size={7} />
-                  {p.name}
-                </span>
-              ))}
-              {query.params.length > 3 && (
-                <span className="text-[9px] text-muted">+{query.params.length - 3}</span>
-              )}
-            </div>
-          )}
-          {query.isNew && (
-            <span className="inline-flex items-center px-1 py-0.5 text-[9px] font-medium rounded bg-amber-500/10 text-amber-600 dark:text-amber-400 mt-1">
-              draft
-            </span>
-          )}
+            {query.id && (
+              <p className="text-[10px] font-mono text-muted truncate mt-0.5">
+                {query.id}
+              </p>
+            )}
+            {hasParams && (
+              <div className="flex flex-wrap gap-1 mt-1">
+                {query.params.slice(0, 3).map(p => (
+                  <span
+                    key={p.name}
+                    className="inline-flex items-center gap-0.5 px-1 py-0 rounded text-[9px] font-mono bg-surface-2 text-muted border border-border/60"
+                  >
+                    <Tag size={7} />
+                    {p.name}
+                  </span>
+                ))}
+                {query.params.length > 3 && (
+                  <span className="text-[9px] text-muted">+{query.params.length - 3}</span>
+                )}
+              </div>
+            )}
+            {query.isNew && (
+              <span className="inline-flex items-center px-1 py-0.5 text-[9px] font-medium rounded bg-amber-500/10 text-amber-600 dark:text-amber-400 mt-1">
+                draft
+              </span>
+            )}
+          </div>
         </div>
-      </div>
-    </button>
+      </button>
+
+      {/* Version history — saved (registered) queries only */}
+      {isSaved && onHistory && (
+        <button
+          onClick={(e) => { e.stopPropagation(); onHistory(query) }}
+          title="Version history"
+          aria-label={`Version history for ${query.name ?? query.id}`}
+          className="absolute right-1.5 top-2 w-6 h-6 flex items-center justify-center rounded-md text-muted/60 hover:text-fg hover:bg-surface-2 opacity-0 group-hover:opacity-100 focus:opacity-100 transition-opacity"
+        >
+          <History size={12} />
+        </button>
+      )}
+    </div>
   )
 }
 
@@ -132,7 +152,7 @@ function QueryListItem({ query, isActive, onClick }) {
 // blend, drafts + registry list). Header/collapse chrome lives in the page.
 // ---------------------------------------------------------------------------
 
-function QueriesPanel({ queries, localQueries, activeId, loading, onSelect, onNewQuery, onRefresh, searchQuery, onSearchChange, canWrite }) {
+function QueriesPanel({ queries, localQueries, activeId, loading, onSelect, onNewQuery, onRefresh, searchQuery, onSearchChange, canWrite, onHistory }) {
   const allItems = [
     ...localQueries,
     ...queries,
@@ -240,6 +260,7 @@ function QueriesPanel({ queries, localQueries, activeId, loading, onSelect, onNe
                 query={q}
                 isActive={activeId === q.id}
                 onClick={() => onSelect(q)}
+                onHistory={onHistory}
               />
             ))}
           </div>
@@ -348,10 +369,27 @@ export default function QueriesPage() {
 
   // AppShell topbar slot — page toolbars portal into the single top bar
   // (dashboard-editor pattern). The shell's own Chat button handles chat.
-  const { topbarSlot } = useUi()
+  const { topbarSlot, chatOpen, closeChat } = useUi()
 
-  // Right sidebar (Queries panel) — open by default, dashboard-editor style.
+  // Right-hand side: the Queries panel and the global Chat panel share the
+  // right edge. To avoid crushing the editor (especially md–lg where both are
+  // ~300–340px) they are MUTUALLY EXCLUSIVE — opening one closes the other, so
+  // the user can flip between them like tabs without either destroying the
+  // other's state (the query list lives in this page; toggling never resets it).
   const [queriesPanelOpen, setQueriesPanelOpen] = useState(true)
+
+  // Queries panel only actually occupies the RHS when chat isn't open.
+  const queriesPanelVisible = queriesPanelOpen && !chatOpen
+
+  const toggleQueriesPanel = useCallback(() => {
+    if (chatOpen) {
+      // Chat owns the RHS — bring the Queries panel forward instead of hiding.
+      closeChat()
+      setQueriesPanelOpen(true)
+      return
+    }
+    setQueriesPanelOpen(o => !o)
+  }, [chatOpen, closeChat])
 
   // ── Registry ───────────────────────────────────────────────────────────
   const [registeredQueries, setRegisteredQueries] = useState([])
@@ -459,6 +497,49 @@ export default function QueriesPage() {
     setActiveQuery(upgraded)
   }, [])
 
+  // ── Version history (kind='query') — opened from a list-row action ──────
+  const [historyQuery, setHistoryQuery] = useState(null)
+  // Bumped after a restore of the ACTIVE query so the workspace remounts and
+  // the editor reloads the restored draft (its sync effect keys on query.id).
+  const [restoreNonce, setRestoreNonce] = useState(0)
+
+  const handleHistoryRestored = useCallback(async () => {
+    const target = historyQuery
+    if (!target?.id) return
+    try {
+      // The restore endpoint wrote the pinned config back into the persisted
+      // queries row — re-read it (the in-memory registry is still stale).
+      const row = await get(`/queries/${target.id}`)
+      const cfg = row?.config ?? {}
+      const fresh = {
+        ...target,
+        name: cfg.name ?? row?.name ?? target.name,
+        sql: typeof cfg.sql === 'string' ? cfg.sql : target.sql,
+        params: Array.isArray(cfg.params) ? cfg.params : (target.params ?? []),
+        datastore_id: cfg.datastore_id ?? null,
+        isNew: false,
+      }
+      // Sync the runtime registry so POST /query by id runs the restored SQL.
+      if (fresh.sql) {
+        await registerQuery({
+          id: fresh.id,
+          name: fresh.name,
+          sql: fresh.sql,
+          params: fresh.params,
+          ...(fresh.datastore_id ? { datastore_id: fresh.datastore_id } : {}),
+        }).catch(() => {})
+      }
+      setRegisteredQueries(prev => prev.map(q => (q.id === fresh.id ? fresh : q)))
+      if (activeQuery?.id === fresh.id) {
+        setActiveQuery(fresh)
+        setRestoreNonce(n => n + 1)
+      }
+    } catch (err) {
+      console.warn('[QueriesPage] reload after restore failed:', err)
+      loadRegistry()
+    }
+  }, [historyQuery, activeQuery, loadRegistry])
+
   // ── Derived ────────────────────────────────────────────────────────────
   const activeId = activeQuery?._localId ?? activeQuery?.id
 
@@ -492,25 +573,25 @@ export default function QueriesPage() {
         </button>
       </div>
 
-      {/* Panel toggle — Queries (page sidebar). The global Chat toggle sits
-          immediately to the right of the slot in the AppShell topbar. */}
-      <div className="flex items-center gap-0.5" data-testid="queries-panel-toggles">
-        <button
-          data-testid="panel-toggle-queries"
-          title="Queries"
-          aria-label="Queries panel"
-          aria-pressed={queriesPanelOpen}
-          onClick={() => setQueriesPanelOpen(o => !o)}
-          className={[
-            'w-9 h-8 flex items-center justify-center rounded-lg border transition-colors duration-150 focus:outline-none focus:ring-2 focus:ring-ring/60',
-            queriesPanelOpen
-              ? 'bg-primary text-primary-fg border-primary shadow-sm'
-              : 'bg-surface text-muted border-border hover:text-fg hover:bg-surface-2',
-          ].join(' ')}
-        >
-          <List size={15} strokeWidth={2} />
-        </button>
-      </div>
+      {/* Queries-panel toggle. Chat is opened via the shell's single global
+          chat button (far right) — no second chat button here. The two panels
+          still share the right edge: opening chat hides the Queries panel,
+          and this toggle brings the Queries panel back (closing chat). */}
+      <button
+        data-testid="panel-toggle-queries"
+        title="Queries panel"
+        aria-label="Queries panel"
+        aria-pressed={queriesPanelVisible}
+        onClick={toggleQueriesPanel}
+        className={[
+          'w-9 h-8 flex items-center justify-center rounded-lg border border-border transition-colors duration-150 focus:outline-none focus:ring-2 focus:ring-ring/60',
+          queriesPanelVisible
+            ? 'bg-primary text-primary-fg border-primary'
+            : 'bg-surface text-muted hover:text-fg hover:bg-surface-2',
+        ].join(' ')}
+      >
+        <List size={15} strokeWidth={2} />
+      </button>
     </div>
   )
 
@@ -592,7 +673,7 @@ export default function QueriesPage() {
         {view === 'editor' && (activeQuery ? (
           <div className="flex-1 min-h-0 overflow-hidden">
             <QueryWorkspace
-              key={activeId}
+              key={`${activeId}:${restoreNonce}`}
               query={activeQuery}
               onQueryChange={handleQueryChange}
               onSaved={handleSaved}
@@ -632,7 +713,7 @@ export default function QueriesPage() {
           Desktop (lg+): static 288px panel.
           Tablet (md–lg): slide-over drawer (fixed, z-30), toggled from the topbar.
           Mobile (<md): hidden — the mobile dropdown handles selection. */}
-      {queriesPanelOpen && (
+      {queriesPanelVisible && (
         <aside
           data-testid="queries-side-panel"
           className={`
@@ -669,9 +750,22 @@ export default function QueriesPage() {
               searchQuery={railSearch}
               onSearchChange={setRailSearch}
               canWrite={canWrite}
+              onHistory={setHistoryQuery}
             />
           </div>
         </aside>
+      )}
+
+      {/* ── Version history (kind='query', opened from a list row) ───────── */}
+      {historyQuery && (
+        <VersionHistoryDialog
+          kind="query"
+          resourceId={historyQuery.id}
+          resourceName={historyQuery.name ?? historyQuery.id}
+          open
+          onClose={() => setHistoryQuery(null)}
+          onRestored={handleHistoryRestored}
+        />
       )}
     </div>
   )
