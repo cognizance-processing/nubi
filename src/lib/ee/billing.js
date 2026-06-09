@@ -86,7 +86,7 @@ export function formatZar(zar) {
  * unreachable.  Prices reflect the June 2026 reference amounts at R16.26 USD/ZAR
  * + 2% FX buffer per the approved pricing blueprint.
  *
- * NEW 4-tier model: Free / Launch ($9) / Growth ($149) / Scale ($1,000 + SLA).
+ * Tier model: Free / Starter ($9) / Team ($49) / Pro ($149) / Enterprise (from $1,000 + SLA).
  * No per-seat pricing — unlimited seats at every tier.
  *
  * Backend response is authoritative; this is a display fallback only.
@@ -107,7 +107,7 @@ export const FALLBACK_TIERS = [
     description: 'For indie devs, OSS evaluators, and small experiments.',
     features: [
       'Unlimited editors & viewers',
-      '2 GB storage',
+      '1 GB storage',
       '500 compute units / month',
       'Up to 5 dashboards',
       '2 scheduled flows',
@@ -122,8 +122,8 @@ export const FALLBACK_TIERS = [
     has_sla: false,
   },
   {
-    id: 'launch',
-    name: 'Launch',
+    id: 'starter',
+    name: 'Starter',
     usd_monthly: 9,
     // ceil10($9 × 16.26 × 1.02) = ceil10(R149.35) = R150
     price_zar: 150,
@@ -135,25 +135,55 @@ export const FALLBACK_TIERS = [
     description: 'For hobbyists and side-projects that need more headroom.',
     features: [
       'Unlimited editors & viewers — no per-seat charge',
-      '10 GB storage',
-      '3,000 compute units / month',
-      '2,000 embedded sessions / month',
-      '10 connectors (incl. 2 cloud)',
-      '15 dashboards · 5 scheduled flows',
-      '10 AI calls / month',
+      '5 GB storage',
+      '2,000 compute units / month',
+      '1,000 embedded sessions / month',
+      '5 connectors',
+      '10 dashboards · 3 scheduled flows',
+      '5 AI calls / month',
       'Basic row-level security',
       'Nubi badge removable',
       'Usage wallet — pay-as-you-go overages',
       'Email support',
     ],
-    cta_label: 'Upgrade to Launch',
+    cta_label: 'Upgrade to Starter',
     highlight: false,
     is_enterprise: false,
     has_sla: false,
   },
   {
-    id: 'growth',
-    name: 'Growth',
+    id: 'team',
+    name: 'Team',
+    usd_monthly: 49,
+    // ceil10($49 × 16.26 × 1.02) = ceil10(R812.77) = R820
+    price_zar: 820,
+    price_label: 'R 820 / month',
+    annual_usd: 490,
+    // ceil10($49 × 10/12 × 16.26 × 1.02) = ceil10(R677.31) = R680
+    annual_zar_monthly_equiv: 680,
+    seats: null,
+    description: 'For small teams collaborating on production analytics.',
+    features: [
+      'Unlimited editors & viewers — no per-seat charge',
+      '15 GB storage',
+      '6,000 compute units / month',
+      '5,000 embedded sessions / month',
+      '15 connectors (incl. cloud)',
+      '30 dashboards · 8 scheduled flows',
+      '15 AI calls / month · 10 agent / kernel runs',
+      'Basic row-level security',
+      'Nubi badge removable',
+      'Usage wallet — pay-as-you-go overages',
+      'Email support',
+    ],
+    cta_label: 'Upgrade to Team',
+    highlight: false,
+    is_enterprise: false,
+    has_sla: false,
+  },
+  {
+    id: 'pro',
+    name: 'Pro',
     usd_monthly: 149,
     // ceil10($149 × 16.26 × 1.02) = ceil10(R2471.86) = R2480
     price_zar: 2480,
@@ -168,7 +198,7 @@ export const FALLBACK_TIERS = [
       '50 GB storage',
       '15,000 compute units / month',
       '25,000 embedded sessions / month',
-      '100 AI calls / month · 50 agent / kernel runs',
+      '50 AI calls / month · 50 agent / kernel runs',
       'All connectors',
       '100 dashboards · 20 scheduled flows',
       'Full RLS with JWT claims',
@@ -178,14 +208,14 @@ export const FALLBACK_TIERS = [
       'Usage wallet — prepaid credits, auto-topup',
       '99.5% uptime SLA',
     ],
-    cta_label: 'Upgrade to Growth',
+    cta_label: 'Upgrade to Pro',
     highlight: true,
     is_enterprise: false,
     has_sla: false,
   },
   {
-    id: 'scale',
-    name: 'Scale',
+    id: 'enterprise',
+    name: 'Enterprise',
     usd_monthly: 1000,
     // ceil10($1000 × 16.26 × 1.02) = ceil10(R16585.20) = R16590
     price_zar: 16590,
@@ -200,7 +230,7 @@ export const FALLBACK_TIERS = [
       '500 GB+ storage (hosted) or unlimited (BYOC)',
       '200,000 compute units / month',
       'Unlimited embedded sessions',
-      '1,000 AI calls / month · 500 agent / kernel runs',
+      '500 AI calls / month · 1,000 agent / kernel runs',
       'All connectors + custom connector SDK',
       'Unlimited dashboards & scheduled flows',
       'Full RLS + host-signed JWT pass-through',

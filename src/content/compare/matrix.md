@@ -150,7 +150,7 @@ matrix:
     GoodData: "AI Stories (narrative generation); NL→metrics; AI-powered insights; growing roadmap"
     Omni: "NL→SQL; AI-assisted analysis; details unverified (est.)"
   pricing:
-    Nubi: "Usage-based, no-per-seat: Starter $79/mo | Pro $199/mo | Business $499/mo | Enterprise from $1,799/mo; unlimited users and viewers at every tier; billed ZAR via Paystack"
+    Nubi: "Usage-based, no-per-seat: Free $0 | Starter $9/mo | Team $49/mo | Pro $149/mo | Enterprise from $1,000/mo; unlimited editors and viewers at every tier; billed ZAR via Paystack"
     Hex: "Per-seat: Community free; Professional $36/editor/month; Team $75/editor/month; compute add-on"
     Cube: "Per-developer + hourly infra: Free hobbyist; Starter $40/dev/month; Premium $80/dev/month"
     Metabase: "Tiered: OSS free; Starter $100+$6/user/month; Pro $575+$12/user/month; Enterprise $20 k+/year (~$39k/yr median)"

@@ -11,12 +11,12 @@
  * -----
  * tiers        TierInfo[]       Array of tier objects (from pricing.js FALLBACK_TIERS or API)
  * fxRate       number|null      Live USD→ZAR rate; when null the tier.price_zar is used as-is
- * currentTier  string           ID of the org's current tier ('free', 'launch', …)
+ * currentTier  string           ID of the org's current tier ('free', 'starter', …)
  * billing      'monthly'|'annual'
  * onUpgrade    (tierId) => void  Optional — called when a non-current, non-enterprise CTA is clicked
  * loading      string|null      Tier id currently showing a spinner (upgrade in flight)
  *
- * Tier model (4 tiers): Free / Launch ($9) / Growth ($149) / Scale ($1,000 + SLA)
+ * Tier model (5 tiers): Free / Starter ($9) / Team ($49) / Pro ($149) / Enterprise (from $1,000 + SLA)
  * No per-seat pricing — unlimited seats at every tier.
  */
 
@@ -53,7 +53,7 @@ function priceDisplay(tier, fxRate, billing) {
 }
 
 // ---------------------------------------------------------------------------
-// SLA badge — shown on Scale tier
+// SLA badge — shown on Enterprise tier
 // ---------------------------------------------------------------------------
 
 function SlaBadge({ sla }) {
@@ -105,7 +105,7 @@ export function TierCard({
 
   function handleCta() {
     if (tier.is_enterprise) {
-      window.open('mailto:hello@nubi.dev?subject=Scale%20plan%20enquiry', '_blank', 'noopener,noreferrer')
+      window.open('mailto:hello@nubi.dev?subject=Enterprise%20plan%20enquiry', '_blank', 'noopener,noreferrer')
       return
     }
     if (!isCurrent) onUpgrade?.(tier.id)
@@ -164,7 +164,7 @@ export function TierCard({
         </span>
       </div>
 
-      {/* SLA badge — Scale tier only */}
+      {/* SLA badge — Enterprise tier only */}
       {tier.has_sla && tier.sla && (
         <SlaBadge sla={tier.sla} />
       )}

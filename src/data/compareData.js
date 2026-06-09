@@ -41,7 +41,7 @@ export const NUBI = {
   name: "Nubi",
   tagline: "Browser-first analytics kernel — near-zero marginal cost per embedded view at high cache-hit rates",
   kernel:
-    "Pyodide (Python) + DuckDB-WASM in the browser by default; on-demand server kernel (E2B/Modal, scale-to-zero) only for the ~10% of workloads that need it. Cost drivers: connector throughput + embed views + AI calls + kernel-seconds.",
+    "Pyodide (Python) + DuckDB-WASM in the browser by default; on-demand server kernel (E2B/Modal, scale-to-zero) only for the ~10% of workloads that need it. Cost drivers: connector throughput + embedded sessions + AI calls + kernel-seconds.",
   transport:
     "Arrow IPC over WebSocket — columnar buffers land directly in the browser; viz reads buffers without re-serialisation.",
   viz:
@@ -53,9 +53,9 @@ export const NUBI = {
   modeling:
     "Low — point at a warehouse and go. No hand-written semantic model required to start. Auth policies live as TypeScript/SQL in the repo (diffable, PR-reviewable). SQL-first connector SDK; Python connector SDK for arbitrary Arrow-returning sources. NoSQL is deliberately out of scope.",
   ai:
-    "Lineage-indexed retrieval + LLM generation grounded on real catalog. POST /ai/ask. MCP server (4 tools): agents author dashboards via HTML/CSS + <nubi-*> custom elements. AI calls metered per-token (cost passed through at margin). LLM-authorable dashboard output is HTML/CSS sanitised by DOMPurify.",
+    "Lineage-indexed retrieval + LLM generation grounded on real catalog. POST /ai/ask. MCP server (4 tools): agents author dashboards via HTML/CSS + <nubi-*> custom elements. AI calls metered per-call ($0.30/call overage; quota included in each paid tier). LLM-authorable dashboard output is HTML/CSS sanitised by DOMPurify.",
   pricing:
-    "Usage-based: connector throughput (bytes/queries) + embed views (per-thousand) + AI calls (per-token) + on-demand kernel time (per-second, scale-to-zero) + scheduled jobs (separate SKU). Genuine free tier structurally viable — browser compute is free to Nubi, so Hex can't match it without bleeding kernel cost. Billed in ZAR via Paystack.",
+    "Usage-based: connector throughput (bytes/queries) + embedded sessions (per 10,000) + AI calls (per-call) + on-demand kernel time (scale-to-zero) + flows/scheduled jobs included in plan (no separate SKU). Genuine free tier structurally viable — browser compute is free to Nubi, so Hex can't match it without bleeding kernel cost. Billed in ZAR via Paystack.",
   selfHost:
     "Planned (M10 — Docker Compose stack, not yet shipped). Intermediate today: hosted control plane + self-hosted connector so warehouse credentials never leave the customer's network.",
   strength:
@@ -476,7 +476,7 @@ export const MATRIX = {
     "Preset / Superset": "NL-to-SQL via optional LLM plugin; Preset AI roadmap unverified; limited GA AI",
   },
   pricing: {
-    Nubi:    "Usage-based: connector bytes + embed views/1k + AI tokens + kernel-seconds; genuine free tier (browser compute is free to Nubi); billed ZAR via Paystack",
+    Nubi:    "Usage-based: connector bytes + embedded sessions/10k + AI calls (per-call) + kernel-seconds; flows included (no separate SKU); genuine free tier (browser compute is free to Nubi); billed ZAR via Paystack",
     Hex:     "Per-seat: Community free; Professional $36/editor/month; Team $75/editor/month; compute add-on",
     Cube:    "Per-developer + hourly infra: Free hobbyist; Starter $40/dev/month; Premium $80/dev/month",
     Metabase:"Tiered: OSS free; Starter $100+$6/user/month; Pro $575+$12/user/month; Enterprise $20k+/year",
@@ -520,7 +520,7 @@ export const NUBI_FLOWS = {
   selfHost:
     "Ships inside Nubi — uses Nubi's existing Postgres. No additional broker infrastructure required. FLOWS_WORKER_ENABLED flag gates the background worker.",
   pricing:
-    "Included in Nubi's usage-based pricing (no separate SKU for the orchestration engine). Flow runs consume connector bytes + AI tokens + kernel-seconds depending on task kinds used.",
+    "Included in Nubi's usage-based pricing (no separate SKU for the orchestration engine). Flow runs consume connector bytes + AI calls (per-call) + kernel-seconds depending on task kinds used.",
   strength:
     "Zero additional infra overhead — runs on Nubi's existing Postgres with no Redis/Celery/K8s. RLS-aware multi-tenant execution (JWT claims flow through to every data task). LLM-native: an agent can author and run flows in natural language. Visual React Flow DAG builder like Prefect/n8n.",
   limitation:

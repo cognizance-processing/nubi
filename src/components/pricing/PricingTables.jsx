@@ -197,10 +197,10 @@ function WalletExplainerBody() {
 
 const DEFAULT_OVERAGES = [
   { metric: 'Storage',            rate: 'R 1.50 / GB-month',       note: 'Available on all paid tiers; drawn from wallet' },
-  { metric: 'Compute',            rate: 'R 100 / 1,000 CU',        note: 'Launch+; drawn from wallet' },
+  { metric: 'Compute',            rate: 'R 100 / 1,000 CU',        note: 'Starter+; drawn from wallet' },
   { metric: 'AI / LLM calls',     rate: 'R 5 / call',              note: 'Haiku grounding or Sonnet chat; drawn from wallet' },
-  { metric: 'Embedded sessions',  rate: 'R 50 / 10,000 sessions',  note: 'Free on Scale; drawn from wallet' },
-  { metric: 'Agent / kernel run', rate: 'R 2 / run',               note: 'Growth+ remote kernel (E2B); drawn from wallet' },
+  { metric: 'Embedded sessions',  rate: 'R 50 / 10,000 sessions',  note: 'Free on Enterprise; drawn from wallet' },
+  { metric: 'Agent / kernel run', rate: 'R 2 / run',               note: 'Team+ remote kernel (E2B); drawn from wallet' },
 ]
 
 /**

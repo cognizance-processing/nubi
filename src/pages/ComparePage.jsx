@@ -298,7 +298,7 @@ const ALL_COMPETITORS = [
     isNubi: true,
     category: 'Embedded BI + Flows',
     pricingModel: 'Usage-based flat tiers',
-    entryPrice: '$0 free / $79/mo Starter',
+    entryPrice: '$0 free / $9/mo Starter',
     entryEst: false,
     seatModel: 'Unlimited users & viewers at every tier — no per-seat charge',
     embedding: 'Core surface: JWKS-native JWT RLS; unlimited viewers all paid tiers',
@@ -432,7 +432,7 @@ const ALL_COMPETITORS = [
     embedding: 'Core product; React/Vue SDK; $499/mo for 1,000 sessions; $200 per additional 500 sessions overage',
     selfHost: 'No — cloud-only SaaS',
     strengths: 'Developer-first SDK; purpose-built for embedding; session-based model is predictable; strong React/Vue component library; good CI/CD workflow support on Premium',
-    weaknesses: '$499/mo for only 1,000 sessions is expensive vs Nubi Starter ($79/mo for 5,000 sessions); steep overage at $200/500 additional sessions; no open-source core; no in-browser compute',
+    weaknesses: '$499/mo for only 1,000 sessions is expensive vs Nubi Starter ($9/mo for 1,000 sessions) or Team ($49/mo for 5,000 sessions); steep overage at $200/500 additional sessions; no open-source core; no in-browser compute',
     sourceUrl: 'https://embeddable.com/pricing',
   },
   {
@@ -446,7 +446,7 @@ const ALL_COMPETITORS = [
     embedding: 'Unlimited embedded viewers on flat fee; RLS on SCS tier ($2,000/mo annual); SAML/SCIM',
     selfHost: 'No — cloud-only SaaS',
     strengths: 'Genuinely unlimited embedded viewers at flat fee — the most viewer-generous model in this range; strong RLS passthrough auth; mature ISV track record; unlimited reports on Standard+',
-    weaknesses: '$800/mo annual entry is 10× Nubi Starter; cloud-only; no in-browser compute; limited AI maturity; no ZAR billing; no self-host',
+    weaknesses: '$800/mo annual entry is 16× Nubi Team ($49/mo) or 89× Nubi Starter ($9/mo); cloud-only; no in-browser compute; limited AI maturity; no ZAR billing; no self-host',
     sourceUrl: 'https://www.holistics.io/pricing/',
   },
   {
@@ -683,7 +683,7 @@ const PRIMARY_ROWS = [
     label: 'Pricing',
     hex:  'Per-seat + compute add-on (kernels cost real money)',
     cube: 'Per-developer + hourly infra (on top of seats)',
-    nubi: 'No per-seat pricing at any tier: Starter $79/mo | Pro $199/mo | Business $499/mo | Enterprise from $1,799/mo. Pay for compute, storage, AI calls, and embed sessions — never for users. Billed in ZAR via Paystack.',
+    nubi: 'No per-seat pricing at any tier: Starter $9/mo | Team $49/mo | Pro $149/mo | Enterprise from $1,000/mo. Pay for compute, storage, AI calls, and embed sessions — never for users. Billed in ZAR via Paystack.',
   },
 ]
 

@@ -19,4 +19,4 @@ EUR-only pricing with no Africa/ZAR option — exchange rate risk for non-EUR cu
 
 ## Notes
 
-Luzmo is the most direct purpose-built embedded-analytics competitor. The MAU model works well at predictable traffic; it can be costly with engagement spikes. Nubi's flat-fee tiers with session allowances (Starter 5,000 sessions/month, Pro 25,000) provide more cost predictability. No competitor prices in ZAR — Luzmo's EUR-only pricing illustrates the Africa market gap that Nubi fills with ZAR-native billing via Paystack.
+Luzmo is the most direct purpose-built embedded-analytics competitor. The MAU model works well at predictable traffic; it can be costly with engagement spikes. Nubi's flat-fee tiers with session allowances (Starter 1,000 sessions/month, Team 5,000, Pro 25,000) provide more cost predictability. No competitor prices in ZAR — Luzmo's EUR-only pricing illustrates the Africa market gap that Nubi fills with ZAR-native billing via Paystack.

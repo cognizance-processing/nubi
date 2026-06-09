@@ -100,10 +100,11 @@ function Tab({ active, onClick, icon: Icon, children }) {
 // ---------------------------------------------------------------------------
 
 const TIER_COLORS = {
-  free:   'bg-surface-2 text-muted',
-  launch: 'bg-teal-100 text-teal-700 dark:bg-teal-900/40 dark:text-teal-300',
-  growth: 'bg-indigo-100 text-indigo-700 dark:bg-indigo-900/40 dark:text-indigo-300',
-  scale:  'bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-300',
+  free:       'bg-surface-2 text-muted',
+  starter:    'bg-teal-100 text-teal-700 dark:bg-teal-900/40 dark:text-teal-300',
+  team:       'bg-violet-100 text-violet-700 dark:bg-violet-900/40 dark:text-violet-300',
+  pro:        'bg-indigo-100 text-indigo-700 dark:bg-indigo-900/40 dark:text-indigo-300',
+  enterprise: 'bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-300',
 }
 
 function NubiRecommendation({ recommendation, fxRate, seats }) {

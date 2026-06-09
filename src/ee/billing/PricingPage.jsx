@@ -66,21 +66,21 @@ import { BillingToggle, OverageTable, FxDisclosure, WalletBillingExplainer } fro
 // ---------------------------------------------------------------------------
 
 const TIER_LABELS = {
-  free: 'Free', launch: 'Launch', growth: 'Growth', scale: 'Scale',
+  free: 'Free', starter: 'Starter', team: 'Team', pro: 'Pro', enterprise: 'Enterprise',
   // Legacy tier IDs kept for backward compat during migration
-  starter: 'Starter', pro: 'Pro', business: 'Business', enterprise: 'Enterprise',
+  launch: 'Starter', growth: 'Pro', scale: 'Enterprise',
 }
 
 const TIER_BADGE_STYLES = {
-  free:   'bg-surface-2 text-muted',
+  free:       'bg-surface-2 text-muted',
+  starter:    'bg-teal-100 text-teal-700 dark:bg-teal-900/40 dark:text-teal-300',
+  team:       'bg-violet-100 text-violet-700 dark:bg-violet-900/40 dark:text-violet-300',
+  pro:        'bg-indigo-100 text-indigo-700 dark:bg-indigo-900/40 dark:text-indigo-300',
+  enterprise: 'bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-300',
+  // Legacy
   launch: 'bg-teal-100 text-teal-700 dark:bg-teal-900/40 dark:text-teal-300',
   growth: 'bg-indigo-100 text-indigo-700 dark:bg-indigo-900/40 dark:text-indigo-300',
   scale:  'bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-300',
-  // Legacy
-  starter:    'bg-teal-100 text-teal-700 dark:bg-teal-900/40 dark:text-teal-300',
-  pro:        'bg-indigo-100 text-indigo-700 dark:bg-indigo-900/40 dark:text-indigo-300',
-  business:   'bg-violet-100 text-violet-700 dark:bg-violet-900/40 dark:text-violet-300',
-  enterprise: 'bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-300',
 }
 
 // ---------------------------------------------------------------------------
@@ -296,8 +296,8 @@ export default function PricingPage() {
 
       {/* Footer links */}
       <p className="text-xs text-muted border-t border-border pt-4">
-        All paid plans (Launch, Growth) billed monthly or annually — 2 months free on annual.
-        Scale pricing is custom-quoted and includes a dedicated SLA + named support engineer.
+        All paid plans (Starter, Team, Pro) billed monthly or annually — 2 months free on annual.
+        Enterprise pricing is custom-quoted and includes a dedicated SLA + named support engineer.
         Usage overages are debited from your prepaid wallet balance in real-time.
         All amounts in ZAR, charged via Paystack. VAT may apply.{' '}
         Contact{' '}
