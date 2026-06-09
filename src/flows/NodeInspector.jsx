@@ -140,6 +140,10 @@ function QueryConfig({ config, onChange }) {
             placeholder="SELECT * FROM ..."
             onChange={e => onChange({ ...config, sql: e.target.value })}
           />
+          <p className="text-[10px] text-muted/60 mt-1">
+            <code className="font-mono bg-surface-2 px-0.5 rounded">{'{{ secrets.NAME }}'}</code>{' '}
+            is resolved at run time.
+          </p>
         </div>
       )}
 
@@ -205,7 +209,8 @@ function PythonConfig({ config, onChange }) {
 
       {/* Help text */}
       <p className="text-[10px] text-muted">
-        Variables: <code className="font-mono bg-surface-2 px-1 rounded">inputs</code>, <code className="font-mono bg-surface-2 px-1 rounded">params</code>. Bind output to <code className="font-mono bg-surface-2 px-1 rounded">result</code>.
+        Variables: <code className="font-mono bg-surface-2 px-1 rounded">inputs</code>, <code className="font-mono bg-surface-2 px-1 rounded">params</code>, <code className="font-mono bg-surface-2 px-1 rounded">secrets</code>. Bind output to <code className="font-mono bg-surface-2 px-1 rounded">result</code>.
+        {' '}<code className="font-mono bg-surface-2 px-1 rounded">{'{{ secrets.NAME }}'}</code> is resolved at run time.
       </p>
 
       {/* Monaco editor */}

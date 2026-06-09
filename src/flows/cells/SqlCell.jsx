@@ -31,6 +31,7 @@ import Editor from '@monaco-editor/react'
 import { ChevronDown, ChevronRight, AlertCircle, CheckCircle2, Clock } from 'lucide-react'
 import CellToolbar from './CellToolbar.jsx'
 import CellConfigAnnotations from './CellConfigAnnotations.jsx'
+import SecretsMenu from './SecretsMenu.jsx'
 import DataTable from '../../components/DataTable.jsx'
 import { SQL_EXAMPLES } from '../sqlExamples.js'
 
@@ -86,6 +87,20 @@ export default function SqlCell({
     setSnippetOpen(false)
   }, [cell, onCellChange])
 
+  // Insert a `{{ secrets.NAME }}` reference at the cursor (Monaco executeEdits);
+  // falls back to appending a comment line when the editor isn't mounted yet.
+  const insertSecret = useCallback((name) => {
+    const text = `{{ secrets.${name} }}`
+    const editor = monacoRef.current
+    if (editor) {
+      const sel = editor.getSelection()
+      editor.executeEdits('insert-secret', [{ range: sel, text, forceMoveMarkers: true }])
+      editor.focus()
+    } else {
+      onCellChange?.({ ...cell, config: { ...cell.config, sql: `${sql}\n-- ${text}` } })
+    }
+  }, [cell, onCellChange, sql])
+
   const handleRun = useCallback(async () => {
     setRunning(true)
     setRunError(null)
@@ -133,7 +148,10 @@ export default function SqlCell({
           Reference an earlier cell by its{' '}
           <code className="font-mono bg-surface-2 px-1 rounded">cell_key</code>.
         </p>
-        <div className="relative ml-auto">
+        <div className="ml-auto">
+          <SecretsMenu onInsert={insertSecret} />
+        </div>
+        <div className="relative">
           <button
             type="button"
             onClick={() => setSnippetOpen(v => !v)}

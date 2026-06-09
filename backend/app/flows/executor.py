@@ -43,6 +43,11 @@ execution.  For non-python tasks it may be empty; for python tasks it
 contains every line printed by the subprocess (excluding the
 ``__FLOW_RESULT__:`` sentinel line).
 
+Secret redaction: before any outcome is returned, every occurrence of a
+resolved secret VALUE (length >= 4) in ``error`` and ``logs`` is replaced
+with ``'•••'`` (see ``redact_secret_values``), so plaintext secrets never
+surface in task_run errors, captured logs, or preview error responses.
+
 Templating
 ----------
 Strings inside ``config`` values may contain ``{{ params.x }}``,
@@ -253,6 +258,54 @@ def _resolve_str(expr: str, ctx: TaskContext) -> str:
 
 
 # ---------------------------------------------------------------------------
+# Secret-value redaction
+# ---------------------------------------------------------------------------
+
+#: Mask substituted for secret values in errors / captured logs.
+SECRET_MASK = "•••"
+
+#: Secret values shorter than this are not redacted (too noisy — e.g. "1",
+#: "ok" would mangle unrelated text far more often than they protect anything).
+_MIN_REDACT_LEN = 4
+
+
+def redact_secret_values(text: str | None, secrets: dict[str, str]) -> str | None:
+    """Replace every occurrence of a resolved secret value in *text* with '•••'.
+
+    Cheap plain-string replacement over the resolved secret VALUES (not the
+    names — ``{{ secrets.NAME }}`` references and secret names stay readable).
+    Values shorter than 4 characters are skipped.  ``None``/empty input is
+    returned unchanged.
+    """
+    if not text or not secrets:
+        return text
+    for val in secrets.values():
+        if isinstance(val, str) and len(val) >= _MIN_REDACT_LEN and val in text:
+            text = text.replace(val, SECRET_MASK)
+    return text
+
+
+def _redact_outcome(outcome: dict[str, Any], secrets: dict[str, str]) -> dict[str, Any]:
+    """Redact secret values from the ``error`` and ``logs`` of an outcome dict.
+
+    Applied to every ``execute_task`` return path so plaintext secret values
+    can never surface in task_run errors, captured stdout/log lines, or
+    cell-preview error responses — regardless of which runtime (durable,
+    preview, run-cell) invoked the executor.  Results are NOT redacted: a
+    flow author who can already reference ``{{ secrets.NAME }}`` can always
+    SELECT the value into the result by design.
+    """
+    if not secrets:
+        return outcome
+    if outcome.get("error"):
+        outcome["error"] = redact_secret_values(outcome["error"], secrets)
+    logs = outcome.get("logs")
+    if logs:
+        outcome["logs"] = [redact_secret_values(line, secrets) or "" for line in logs]
+    return outcome
+
+
+# ---------------------------------------------------------------------------
 # Python→SQL bridge helpers
 # ---------------------------------------------------------------------------
 
@@ -453,12 +506,12 @@ def execute_task(
         try:
             gate_passes = evaluate_run_when(run_when_expr, ctx)
         except Exception as exc:  # noqa: BLE001 — malformed gate fails loudly
-            return {
+            return _redact_outcome({
                 "state": "failed",
                 "result": None,
                 "error": f"run_when evaluation failed: {exc}",
                 "logs": [],
-            }
+            }, ctx.secrets)
         if not gate_passes:
             return {"state": "skipped", "result": None, "error": None, "logs": []}
 
@@ -575,12 +628,12 @@ def execute_task(
                     log_lines.extend(captured_logs)
                 except concurrent.futures.TimeoutError:
                     _meter()  # the task ran (and consumed compute) until the timeout
-                    return {
+                    return _redact_outcome({
                         "state": "timed_out",
                         "result": None,
                         "error": f"Task timed out after {timeout_s}s.",
                         "logs": log_lines,
-                    }
+                    }, ctx.secrets)
         else:
             result, captured_logs = _run_handler_with_logs(handler, resolved_config, ctx, claims, log_lines)
             log_lines.extend(captured_logs)
@@ -590,18 +643,21 @@ def execute_task(
             result = {"value": result}
 
         _meter(result)
-        return {"state": "success", "result": result, "error": None, "logs": log_lines}
+        return _redact_outcome(
+            {"state": "success", "result": result, "error": None, "logs": log_lines},
+            ctx.secrets,
+        )
 
     except Exception as exc:  # noqa: BLE001 — broad catch mirrors execute_job
         import traceback  # noqa: PLC0415
         tb = traceback.format_exc()
         _meter()  # a failed handler still consumed compute before raising
-        return {
+        return _redact_outcome({
             "state": "failed",
             "result": None,
             "error": str(exc),
             "logs": log_lines + [tb] if tb != "NoneType: None\n" else log_lines,
-        }
+        }, ctx.secrets)
 
 
 def _run_handler_with_logs(

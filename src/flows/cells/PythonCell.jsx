@@ -20,11 +20,12 @@
  *                                    returns { rows, columns, row_count, elapsed_ms, error? }
  */
 
-import { useState, useCallback } from 'react'
+import { useState, useCallback, useRef } from 'react'
 import Editor from '@monaco-editor/react'
 import { ChevronDown, ChevronRight, AlertCircle, CheckCircle2, Clock, ChevronDown as SnippetIcon } from 'lucide-react'
 import CellToolbar from './CellToolbar.jsx'
 import CellConfigAnnotations from './CellConfigAnnotations.jsx'
+import SecretsMenu from './SecretsMenu.jsx'
 import DataTable from '../../components/DataTable.jsx'
 import { PYTHON_EXAMPLES } from '../pythonExamples.js'
 
@@ -64,6 +65,7 @@ export default function PythonCell({
   const [runError, setRunError] = useState(null)
   const [resultsOpen, setResultsOpen] = useState(true)
   const [snippetOpen, setSnippetOpen] = useState(false)
+  const monacoRef = useRef(null)
 
   const code = cell?.config?.code ?? '# Write your Python code here\nresult = {}'
 
@@ -95,6 +97,20 @@ export default function PythonCell({
     setSnippetOpen(false)
   }, [cell, onCellChange])
 
+  // Insert a `secrets["NAME"]` reference at the cursor (Monaco executeEdits);
+  // falls back to appending a comment line when the editor isn't mounted yet.
+  const insertSecret = useCallback((name) => {
+    const text = `secrets["${name}"]`
+    const editor = monacoRef.current
+    if (editor) {
+      const sel = editor.getSelection()
+      editor.executeEdits('insert-secret', [{ range: sel, text, forceMoveMarkers: true }])
+      editor.focus()
+    } else {
+      onCellChange?.({ ...cell, config: { ...cell.config, code: `${code}\n# ${text}` } })
+    }
+  }, [cell, onCellChange, code])
+
   const tableColumns = result?.columns?.map(c => ({ key: c, label: c, type: 'string' })) ?? []
   const tableRows = result?.rows ?? []
   const editorH = editorHeight(code)
@@ -122,11 +138,17 @@ export default function PythonCell({
           <code className="font-mono bg-surface-2 px-1 rounded">result</code>.
           Available:{' '}
           <code className="font-mono bg-surface-2 px-1 rounded">inputs</code>,{' '}
-          <code className="font-mono bg-surface-2 px-1 rounded">params</code>.
+          <code className="font-mono bg-surface-2 px-1 rounded">params</code>,{' '}
+          <code className="font-mono bg-surface-2 px-1 rounded">secrets</code>.
         </p>
 
+        {/* Secrets dropdown */}
+        <div className="ml-auto">
+          <SecretsMenu onInsert={insertSecret} />
+        </div>
+
         {/* Snippet dropdown */}
-        <div className="relative ml-auto">
+        <div className="relative">
           <button
             type="button"
             onClick={() => setSnippetOpen(v => !v)}
@@ -162,6 +184,7 @@ export default function PythonCell({
           onChange={handleCodeChange}
           theme="vs-dark"
           options={MONACO_PY_OPTS}
+          onMount={(editor) => { monacoRef.current = editor }}
         />
       </div>
 

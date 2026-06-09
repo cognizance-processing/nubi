@@ -514,6 +514,11 @@ def _handle_python(
     Context variables injected as locals:
     - ``inputs``     — dict of upstream task results (task_key → result dict).
     - ``params``     — dict of flow-level parameter values.
+    - ``secrets``    — dict of the org's resolved secrets (``{name: value}``),
+      resolved server-side and passed via the wrapper script's JSON context
+      (NOT via env vars — the subprocess env stays scrubbed).  Read a
+      credential with ``secrets["MY_KEY"]``.  Any secret value printed to
+      stdout is masked as ``'•••'`` in captured task logs by the executor.
     - ``dataframes`` — dict mapping each upstream key whose result has
       ``rows``+``columns`` to a ``pandas.DataFrame`` (empty when pandas is
       unavailable; ``inputs`` is unaffected).
@@ -557,6 +562,9 @@ def _handle_python(
     try:
         inputs_json = json.dumps(ctx.inputs)
         params_json = json.dumps(ctx.flow_params)
+        # Org secrets, resolved server-side by the runtime.  Injected via the
+        # wrapper's JSON context (never via env vars — env stays scrubbed).
+        secrets_json = json.dumps({str(k): str(v) for k, v in (ctx.secrets or {}).items()})
     except (TypeError, ValueError) as exc:
         raise AppError("invalid_task_context", f"Context not JSON-serialisable: {exc}", 400)
 
@@ -569,6 +577,7 @@ def _handle_python(
         # Inject flow context as local variables.
         inputs = _json.loads({inputs_json!r})
         params = _json.loads({params_json!r})
+        secrets = _json.loads({secrets_json!r})
 
         # ── DataFrame-native inputs (additive; pandas-guarded) ───────────
         # For each upstream key whose result has {{rows, columns}}, expose a
