@@ -18,8 +18,9 @@ export default function WebGLPerf({ className = '' }) {
     if (x < 92 || x > 408 || y < 60 || y > 290) continue
     pts.push({ x, y, t: Math.max(0, Math.min(1, t + jy)) })
   }
-  // color stops along navy→teal by height
-  const col = (t) => (t > 0.66 ? '#2dd4bf' : t > 0.33 ? '#17b3a3' : '#2456a6')
+  // color stops along blue→teal by height; the low band uses a lightened
+  // brand blue — pure #2456a6 dots vanish on the dark-navy surface card.
+  const col = (t) => (t > 0.66 ? '#2dd4bf' : t > 0.33 ? '#17b3a3' : '#4d7fd6')
 
   return (
     <svg

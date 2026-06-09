@@ -41,7 +41,8 @@ export default function LlmDashboards({ className = '' }) {
         </clipPath>
       </defs>
 
-      <g clipPath="url(#llm-clip)">
+      {/* content spans y 78–244; translate +19 so it centers in the 360-high viewBox */}
+      <g clipPath="url(#llm-clip)" transform="translate(0 19)">
         {/* ── prompt card (input) ── */}
         <rect x="40" y="120" width="118" height="78" rx="12"
           fill="#2456a6" fillOpacity="0.05" stroke="url(#llm-stroke)" strokeWidth="2" />

@@ -214,6 +214,27 @@ const ScopedStyles = () => (
       background: #fff; border: 3px solid #17b3a3;
       box-shadow: 0 1px 4px rgba(27,35,99,0.25);
     }
+
+    /* ── Code-highlighter token colors — explicit light/dark pairs so every
+          token keeps readable contrast on the code surface in BOTH themes ── */
+    .nubi-lp {
+      --lp-hl-kw:    #2456a6; /* keyword (blue) */
+      --lp-hl-fn:    #0f766e; /* function / tag / command (teal) */
+      --lp-hl-str:   #9a5b16; /* string (amber) */
+      --lp-hl-num:   #0f766e;
+      --lp-hl-param: #6d3fd4; /* {{param}} (violet) */
+      --lp-hl-punc:  #64748b;
+      --lp-hl-cm:    #6b7a90; /* comment */
+    }
+    .dark .nubi-lp {
+      --lp-hl-kw:    #7eaaf0;
+      --lp-hl-fn:    #2dd4bf;
+      --lp-hl-str:   #e8a35c;
+      --lp-hl-num:   #2dd4bf;
+      --lp-hl-param: #b39df5;
+      --lp-hl-punc:  #93a3b8;
+      --lp-hl-cm:    #7a8aa0;
+    }
   `}</style>
 )
 
@@ -295,45 +316,78 @@ function Chip({ icon: Icon, children, accent = false }) {
   )
 }
 
+/** Mid-page CTA strip — repeats the primary "Start free" action after major sections. */
+function SectionCta({ sub }) {
+  return (
+    <div className="flex flex-col items-center gap-4 text-center mt-12 sm:mt-16">
+      {sub && <p className="text-sm sm:text-base text-muted max-w-md">{sub}</p>}
+      <div className="flex flex-col sm:flex-row gap-3">
+        <Link
+          to="/register"
+          className="inline-flex items-center justify-center gap-2 px-6 py-3 rounded-xl text-sm font-semibold transition-all bg-brand-gradient text-white hover:opacity-90 hover:-translate-y-0.5 min-h-[44px]"
+        >
+          Start free
+          <ArrowRight size={14} strokeWidth={2.5} />
+        </Link>
+        <Link
+          to="/pricing"
+          className="inline-flex items-center justify-center gap-2 px-6 py-3 rounded-xl text-sm font-semibold transition-all bg-surface border border-border text-fg hover:border-brand-blue hover:text-brand-blue min-h-[44px]"
+        >
+          See pricing
+        </Link>
+      </div>
+    </div>
+  )
+}
+
 /* ── Tiny dependency-free code highlighter (SQL / shell / html) ──────────────
-   Returns colored <span>s. Colors are mid-tones chosen to read on the code
-   surface in BOTH light and dark themes. */
+   Single left-to-right scan with sticky regexes; the FIRST matching rule wins,
+   so strings always beat keywords, comments beat punctuation, and tokens can
+   never overlap or nest. Emits flat <span>s. Colors come from CSS variables
+   with explicit light/dark values (see ScopedStyles) so tokens stay readable
+   on the code surface in both themes. */
 const HL = {
-  kw:    '#4079c8', // keyword (blue)
-  fn:    '#0d9488', // function / tag (teal)
-  str:   '#c77b34', // string (amber)
-  num:   '#0d9488',
-  param: '#7c5cd6', // {{param}} / {expr} (violet)
-  punc:  '#8190a6',
+  kw:    'var(--lp-hl-kw)',    // keyword (blue)
+  fn:    'var(--lp-hl-fn)',    // function / tag / leading command (teal)
+  str:   'var(--lp-hl-str)',   // string (amber)
+  num:   'var(--lp-hl-num)',
+  param: 'var(--lp-hl-param)', // {{param}} / {expr} (violet)
+  punc:  'var(--lp-hl-punc)',
+  cm:    'var(--lp-hl-cm)',    // comment
   plain: 'currentColor',
 }
 const HL_RULES = {
   sql: [
     [/\s+/y, 'plain'],
-    [/'(?:[^'\\]|\\.)*'/y, 'str'],
+    [/--[^\n]*/y, 'cm'],                 // -- line comment (before punc, so "--" never splits)
+    [/'(?:[^']|'')*'/y, 'str'],          // SQL strings escape quotes by doubling ('')
     [/"(?:[^"\\]|\\.)*"/y, 'str'],
     [/\{\{[^}]*\}\}/y, 'param'],
     [/\b\d+(?:\.\d+)?\b/y, 'num'],
     [/\b(?:SELECT|FROM|WHERE|GROUP\s+BY|ORDER\s+BY|HAVING|LIMIT|JOIN|LEFT|RIGHT|INNER|OUTER|FULL|CROSS|ON|AS|AND|OR|NOT|IN|IS|NULL|LIKE|BETWEEN|DISTINCT|UNION|ALL|WITH|CASE|WHEN|THEN|ELSE|END|ASC|DESC|OVER|PARTITION)\b/iy, 'kw'],
     [/\b(?:SUM|COUNT|AVG|MIN|MAX|COALESCE|CAST|ROUND|DATE_TRUNC|NOW|EXTRACT|LOWER|UPPER|ABS|RANK|ROW_NUMBER)\b/iy, 'fn'],
-    [/[a-zA-Z_][a-zA-Z0-9_]*/y, 'plain'],
+    [/[a-zA-Z_][a-zA-Z0-9_]*/y, 'plain'], // identifiers AFTER keywords; \b in the kw rule
+                                          // stops keyword prefixes inside identifiers
     [/[(),.*=<>+\-/|]/y, 'punc'],
   ],
   shell: [
     [/\s+/y, 'plain'],
+    [/#[^\n]*/y, 'cm'],
     [/'(?:[^'\\]|\\.)*'/y, 'str'],
     [/"(?:[^"\\]|\\.)*"/y, 'str'],
-    [/--?[a-zA-Z][\w-]*/y, 'kw'],
+    [/--?[a-zA-Z][\w-]*/y, 'kw'],        // flags before identifiers
+    [/\.{1,2}\/[\w./-]*/y, 'plain'],     // ./relative and ../relative paths as one token
     [/[a-zA-Z_][\w.-]*/y, 'plain'],
     [/[=:/]/y, 'punc'],
   ],
   html: [
     [/\s+/y, 'plain'],
-    [/"(?:[^"\\]|\\.)*"/y, 'str'],
+    [/<!--[\s\S]*?-->/y, 'cm'],
+    [/"(?:[^"\\]|\\.)*"/y, 'str'],       // strings before {expr} so quoted braces stay strings
     [/\{[^}]*\}/y, 'param'],
     [/<\/?[a-zA-Z][\w-]*/y, 'kw'],
     [/\/?>/y, 'kw'],
-    [/[a-zA-Z_][\w-]*(?==)/y, 'fn'],
+    [/[a-zA-Z_][\w-]*(?==)/y, 'fn'],     // attribute names (incl. kebab-case like get-token)
     [/[a-zA-Z_][\w-]*/y, 'plain'],
     [/=/y, 'punc'],
   ],
@@ -346,9 +400,9 @@ function highlightCode(code, lang) {
   while (i < code.length) {
     let matched = false
     for (const [re, key] of rules) {
-      re.lastIndex = i
+      re.lastIndex = i // sticky /y: anchors the match at i (shared regexes are reset every use)
       const m = re.exec(code)
-      if (m && m.index === i) {
+      if (m) {
         let c = key
         // shell: color the leading command token
         if (lang === 'shell' && key === 'plain' && /\S/.test(m[0])) {
@@ -416,7 +470,7 @@ function HowItWorksStep({ num, icon: Icon, title, color, tagline, bullets, code,
       {/* Code snippet */}
       {code && (
         <div className="px-6 pb-6">
-          <code className="block text-xs font-mono px-3 py-2.5 rounded-lg bg-surface-2 border border-border text-fg break-all leading-relaxed">
+          <code className="block text-xs font-mono px-3 py-2.5 rounded-lg bg-surface-2 border border-border text-fg break-words leading-relaxed">
             {lang ? highlightCode(code, lang) : code}
           </code>
         </div>
@@ -662,10 +716,10 @@ function LpCostCalculator() {
 /** Landing-page orchestration cost calculator — Flows vs standalone orchestrators */
 function LpOrchCalculator() {
   const [envs, setEnvs] = useState(2)
-  const [hours, setHours] = useState(100)
+  const [gb, setGb] = useState(1000)
 
   const results = ORCH_CALC_OPTIONS
-    .map(o => ({ ...o, cost: Math.round(o.annual(envs, hours)) }))
+    .map(o => ({ ...o, cost: Math.round(o.annual(envs, gb)) }))
     .sort((a, b) => a.cost - b.cost)
   const max = Math.max(...results.map(r => r.cost), 1)
   const nubi = results.find(r => r.isNubi)
@@ -690,26 +744,27 @@ function LpOrchCalculator() {
         </div>
         <div>
           <div className="flex items-baseline justify-between mb-3">
-            <label htmlFor="lp-orch-seats" className="text-sm font-semibold text-fg">Data engineers</label>
-            <span className="font-display text-xl font-bold text-brand-blue">{seats}</span>
+            <label htmlFor="lp-orch-gb" className="text-sm font-semibold text-fg">Data processed (GB/mo)</label>
+            <span className="font-display text-xl font-bold text-brand-blue">{fmtNum(gb)}</span>
           </div>
           <input
-            id="lp-orch-seats" type="range" min="1" max="25" value={seats}
-            onChange={e => setSeats(Number(e.target.value))}
-            className="lp-range w-full" aria-label="Data engineers"
+            id="lp-orch-gb" type="range" min="0" max="10000" step="100" value={gb}
+            onChange={e => setGb(Number(e.target.value))}
+            className="lp-range w-full" aria-label="Data processed in GB per month"
           />
-          <div className="flex justify-between text-[11px] text-muted mt-1.5"><span>1</span><span>25</span></div>
+          <div className="flex justify-between text-[11px] text-muted mt-1.5"><span>0</span><span>10 TB</span></div>
         </div>
       </div>
 
-      {/* Savings headline */}
+      {/* Savings headline — honest: Flows has a real metered-compute cost. */}
       <div className="flex flex-wrap items-center justify-center gap-2 px-6 py-4 text-center bg-brand-teal/[0.06] border-b border-border">
         <TrendingDown size={18} className="text-brand-teal" />
         <span className="text-sm sm:text-base text-fg">
-          Flows is{' '}
-          <strong className="text-brand-teal font-bold">included — $0 extra</strong>
+          Flows costs{' '}
+          <strong className="text-brand-teal font-bold">{nubi?.cost ? `${fmtUSD(nubi.cost)}/yr` : '$0'}</strong>
+          {' '}— metered on data processed, no per-environment bill.
           {savings > 0 && (
-            <> , saving <strong className="text-brand-teal font-bold">{fmtUSD(savings)}/yr</strong> vs the cheapest standalone orchestrator.</>
+            <> Saving <strong className="text-brand-teal font-bold">{fmtUSD(savings)}/yr</strong> vs the cheapest standalone orchestrator.</>
           )}
         </span>
       </div>
@@ -741,8 +796,10 @@ function LpOrchCalculator() {
         ))}
       </div>
       <p className="px-6 sm:px-8 pb-6 text-xs text-muted opacity-70 leading-relaxed">
-        Added annual cost of a standalone orchestrator alongside Nubi, from each vendor&rsquo;s public model.
-        Most bill per environment. † Self-host Airflow is infra + on-call estimate.
+        Apples-to-apples: data volume → compute at ~50 GB / compute-hour, then each vendor priced as its
+        published always-on floor (per environment / capacity / seats) + compute for the work. Directional
+        estimates, not quotes. Managed orchestrators are floor-dominated; Nubi Flows has no floor.
+        † Self-host Airflow is infra + on-call estimate.
       </p>
     </div>
   )
@@ -982,7 +1039,7 @@ function LpPricingSection() {
               to="/register"
               className="lp-cta-pulse inline-flex items-center justify-center gap-2 px-6 sm:px-8 py-4 rounded-xl text-base font-semibold transition-all bg-brand-gradient text-white hover:opacity-90 hover:-translate-y-0.5 min-h-[52px]"
             >
-              Create free account
+              Start free
               <ArrowRight size={16} strokeWidth={2.5} />
             </Link>
             <Link
@@ -1049,16 +1106,17 @@ export default function LandingPage() {
                     in your browser.
                   </span>
                   <br />
-                  <span className="text-brand-teal">Near-zero</span>{' '}
-                  cost per view.
+                  <span className="text-brand-teal">Viewers are free.</span>{' '}
+                  Every plan.
                 </h1>
 
                 <p className="text-base sm:text-lg lg:text-xl leading-relaxed mb-8 sm:mb-10 max-w-lg text-muted">
-                  Pyodide + DuckDB-WASM run inside the user&rsquo;s tab —
-                  no per-session cloud kernel, no cold starts.
-                  Embed a cross-filtering, million-point dashboard inside
-                  your SaaS for a{' '}
-                  <strong className="text-fg font-semibold">fraction of what Hex or Cube charge.</strong>
+                  A DuckDB-WASM kernel computes inside the user&rsquo;s tab —
+                  no per-session cloud kernel, no cold starts, so an extra
+                  viewer costs ≈ $0 and we never charge for one. Unlimited
+                  seats on every tier, Flows orchestration built in, open-core
+                  and self-hostable. Embed it in your SaaS for a{' '}
+                  <strong className="text-fg font-semibold">fraction of what per-seat BI charges.</strong>
                 </p>
 
                 {/* CTAs */}
@@ -1067,7 +1125,7 @@ export default function LandingPage() {
                     to="/register"
                     className="lp-cta-pulse inline-flex items-center justify-center gap-2 px-6 py-3.5 rounded-xl text-base font-semibold transition-all bg-brand-gradient text-white hover:opacity-90 hover:-translate-y-0.5 min-h-[48px]"
                   >
-                    Get started free
+                    Start free
                     <ArrowRight size={16} strokeWidth={2.5} />
                   </Link>
                   <Link
@@ -1087,10 +1145,10 @@ export default function LandingPage() {
                 {/* Trust strip */}
                 <div className="flex flex-wrap gap-x-5 gap-y-2 text-xs font-medium text-muted">
                   {[
-                    'Arrow IPC wire format',
-                    'WebGL · 1M+ points',
-                    'SQL-first connector SDK',
-                    'Auth-as-code embed',
+                    'Unlimited seats & viewers',
+                    'No credit card to start',
+                    'Apache-2.0 open core',
+                    'Arrow IPC + WebGL rendering',
                   ].map(f => (
                     <span key={f} className="flex items-center gap-1.5">
                       <Check size={11} strokeWidth={2.5} className="text-accent" />
@@ -1139,7 +1197,7 @@ export default function LandingPage() {
 
             <div className="grid grid-cols-2 sm:grid-cols-4 divide-x divide-y sm:divide-y-0 divide-white/10">
               <StatBadge value="≈ $0" label="marginal cost per dashboard view" />
-              <StatBadge value="1M+" label="data points at 60 fps via WebGL" />
+              <StatBadge value="1M" label="scatter points rendered in-browser via WebGL" />
               <StatBadge value="10–50×" label="cost reduction vs naive warehouse usage¹" />
               <StatBadge value="0 s" label="cold-start — kernel runs in the tab" />
             </div>
@@ -1180,16 +1238,16 @@ export default function LandingPage() {
                 icon={Zap}
                 title="Kernel in the browser"
                 badge="Core architecture"
-                desc="Pyodide + DuckDB-WASM run inside the user's tab. Zero cold starts, zero per-session cloud cost. A server kernel exists as a metered escape hatch for native wheels — not the default path. Marginal cost per dashboard view ≈ $0."
+                desc="A DuckDB-WASM analytics kernel runs inside the user's tab. Zero cold starts, zero per-session cloud cost. Python cells route to a metered, scale-to-zero server kernel — the escape hatch, not the default path. Marginal cost per dashboard view ≈ $0."
                 Illustration={KernelInBrowser}
                 reverse={false}
               />
 
               <DiffRow
                 icon={Globe}
-                title="WebGL · 1M+ points at 60 fps"
+                title="WebGL · up to 1M points"
                 badge="Rendering"
-                desc="Arrow IPC flows from DuckDB directly into regl GPU buffers. Cross-filter 1M+ row scatter plots at 60fps. The <nubi-chart> element auto-upgrades to WebGL above a row threshold — authors never touch WebGL code."
+                desc="Arrow IPC flows from DuckDB directly into regl GPU buffers — scatter plots scale to ~1M points. The <nubi-chart> element auto-upgrades to WebGL above a configurable row threshold (20k by default) — authors never touch WebGL code."
                 Illustration={WebGLPerf}
                 reverse={true}
               />
@@ -1199,7 +1257,7 @@ export default function LandingPage() {
                 icon={Database}
                 title="Edge cache + auto pre-agg"
                 badge="Cost architecture"
-                desc="Content-hashed edge cache keyed on (plan + JWT claims): 500 viewers of the same dashboard collapse to 1 warehouse hit. The query log feeds a rollup suggester that builds pre-aggregations automatically — the Cube weapon, made automatic."
+                desc="Content-hashed edge cache keyed on (plan + JWT claims): 500 viewers of the same dashboard collapse to 1 warehouse hit. A rollup suggester mines hot GROUP BY shapes from your query log — materialize the winners in one click, no hand-written cubes."
                 Illustration={EdgeCache}
                 reverse={false}
               />
@@ -1209,7 +1267,7 @@ export default function LandingPage() {
                 icon={Shield}
                 title="Auth-as-code embedding"
                 badge="Security"
-                desc="One JWT primitive powers users, groups, and embedding. Policies live as YAML/SQL in your repo — diffable, PR-reviewable. Predicate injection is AST-based (never string concat). Mount <nubi-dashboard basePath getToken /> and you're done."
+                desc="One JWT primitive powers users, groups, and embedding. RLS policies are claims in a token your backend signs — auth logic lives in your repo, not a vendor UI. Predicate injection is AST-based (never string concat). Mount <nubi-dashboard get-token> and you're done."
                 Illustration={EmbedAuthCode}
                 reverse={true}
               />
@@ -1218,7 +1276,7 @@ export default function LandingPage() {
                 icon={Bot}
                 title="LLM-authorable dashboards"
                 badge="AI-native"
-                desc="A dashboard is sanitized HTML/CSS with declarative <nubi-*> custom elements. LLMs author HTML natively. Four MCP tools (create_dashboard, author_dashboard, run_query, get_lineage) let agents build and iterate dashboards end-to-end."
+                desc="A dashboard is sanitized HTML/CSS with declarative <nubi-*> custom elements. LLMs author HTML natively. Six MCP tools — author_dashboard, create_dashboard, run_query, list_dashboards, list_lineage, propose_materialized_view — let agents build and iterate dashboards end-to-end."
                 Illustration={LlmDashboardCode}
                 reverse={false}
               />
@@ -1238,7 +1296,7 @@ export default function LandingPage() {
                 icon={Workflow}
                 title="Flows · LLM-native orchestration"
                 badge="Workflows"
-                desc="A lightweight Prefect alternative built in. Compose queries, Python, AI agents, multi-source materialized blends, archive extraction, and object-storage loads into a visual DAG that runs on Postgres alone — no Redis, no Celery. Retries, timeouts, and result caching per task; RLS-aware execution. Agents can author and run flows in natural language, or drag them together in the builder."
+                desc="A lightweight Prefect alternative built in. Three cell types — SQL, Python, and notes — wired into a DAG you edit as a notebook or a visual canvas. Materialization, fan-out, and conditional gates are cell settings, and it all runs on Postgres alone — no Redis, no Celery. Retries, timeouts, and result caching per task. AI tools let agents author and run flows in natural language."
                 Illustration={FlowCode}
                 reverse={false}
               />
@@ -1297,6 +1355,8 @@ export default function LandingPage() {
               <span className="text-fg font-medium">Python connector SDK</span> wraps any
               Arrow-returning function as a first-class source — and JDBC covers the long tail.
             </p>
+
+            <SectionCta sub="Connect a database and ship your first dashboard on the free tier — no credit card required." />
           </div>
         </section>
 
@@ -1341,7 +1401,7 @@ export default function LandingPage() {
                   { label: 'Python SDK', accent: true },
                   { label: 'Private VPC bridge', accent: true },
                 ]}
-                code="nubi connector add bigquery --project my-project"
+                code="nubi deploy ./resources --dry-run"
                 lang="shell"
               />
 
@@ -1367,7 +1427,7 @@ export default function LandingPage() {
                 tagline="SQL, named params, and AI text-to-SQL — all in the browser."
                 bullets={[
                   { icon: Database, text: 'DuckDB-WASM kernel runs in the user\'s tab — zero cold starts, zero per-session cloud cost. Results stream as Arrow IPC.' },
-                  { icon: Sparkles, text: 'AI text-to-SQL grounded on your actual catalog and lineage graph — not hallucinated schemas. Four MCP tools for agent authoring.' },
+                  { icon: Sparkles, text: 'AI text-to-SQL grounded on your actual catalog and lineage graph — not hallucinated schemas. Six MCP tools for agent authoring.' },
                   { icon: SearchCode, text: 'Named-parameter registered queries keep your SQL versioned and reusable. The query planner pushes predicates and projections to the warehouse.' },
                   { icon: Globe, text: 'Content-hashed edge cache: 500 viewers of the same dashboard collapse to 1 warehouse hit. Auto pre-aggregation mines query logs to build rollups automatically.' },
                 ]}
@@ -1378,7 +1438,7 @@ export default function LandingPage() {
                   { label: 'Named params', accent: false },
                   { label: 'Edge cache', accent: false },
                 ]}
-                code="SELECT month, SUM(revenue) FROM events WHERE {{tenant_id}} GROUP BY 1"
+                code="SELECT month, SUM(revenue) FROM events WHERE tenant_id = {{tenant_id}} GROUP BY 1"
                 lang="sql"
               />
 
@@ -1405,8 +1465,8 @@ export default function LandingPage() {
                 bullets={[
                   { icon: KeyRound, text: 'Signed JWT carries per-viewer claims. Predicate injection is AST-based — never string concat. Policies live as code in your repo, PR-reviewable.' },
                   { icon: Filter, text: 'Token-locked params prevent viewers from escaping their data scope. Column masking and row-level security enforced server-side before any data leaves the connector.' },
-                  { icon: Globe, text: 'Cross-filtering, 1M+ point WebGL scatter plots at 60fps. The <nubi-chart> element auto-upgrades to GPU rendering — authors never touch WebGL code.' },
-                  { icon: Code2, text: 'Mount <nubi-dashboard basePath getToken /> in your host app. CSS-var theming, iframe or web component, short-lived JWTs with silent refresh.' },
+                  { icon: Globe, text: 'Cross-filtering dashboards with WebGL scatter plots that scale to ~1M points. The <nubi-chart> element auto-upgrades to GPU rendering — authors never touch WebGL code.' },
+                  { icon: Code2, text: 'Drop the <nubi-dashboard> web component into your host app — UMD or ES module. Theme attribute, short-lived JWTs that refresh before expiry.' },
                 ]}
                 chips={[
                   { label: 'JWT RLS', accent: true },
@@ -1415,7 +1475,7 @@ export default function LandingPage() {
                   { label: 'WebGL cross-filter', accent: false },
                   { label: 'Web component', accent: false },
                 ]}
-                code={'<nubi-dashboard basePath="/api" getToken={getToken} />'}
+                code={'<nubi-dashboard query="SELECT * FROM sales" get-token="getEmbedToken">'}
                 lang="html"
               />
             </div>
@@ -1423,9 +1483,9 @@ export default function LandingPage() {
             {/* Architecture note */}
             <div className="mt-10 sm:mt-12 mx-auto max-w-3xl rounded-2xl p-5 sm:p-6 text-sm leading-relaxed text-center bg-surface border border-border">
               <strong className="text-brand-blue font-semibold">One language, one engine, one wire format.</strong>
-              {' '}Python everywhere (FastAPI + Pyodide + connector planner). DuckDB everywhere (WASM in browser, embedded in connector).
-              Arrow IPC at every boundary — so a result hops browser ↔ edge ↔ kernel with no serialization tax.
-              <span className="text-muted"> sqlglot rewrites SQL across all three tiers.</span>
+              {' '}Python everywhere (FastAPI + connector planner + flows executor). DuckDB everywhere (WASM in the browser, embedded in the connector).
+              Arrow IPC at every boundary — results stream from connector to browser with no serialization tax.
+              <span className="text-muted"> sqlglot rewrites SQL between dialects on the server.</span>
             </div>
           </div>
         </section>
@@ -1489,13 +1549,13 @@ export default function LandingPage() {
                     dim: 'Compute kernel',
                     hex: 'Python/session, their cloud (10–30s cold)',
                     cube: 'n/a — warehouse + Cube Store',
-                    nubi: 'Pyodide in browser; on-demand server kernel only when needed',
+                    nubi: 'DuckDB-WASM in the browser; on-demand server kernel only when needed',
                   },
                   {
                     dim: 'Wire format',
                     hex: 'JSON via pandas',
                     cube: 'JSON / SQL API',
-                    nubi: 'Arrow IPC over WebSocket',
+                    nubi: 'Arrow IPC streamed to the browser',
                   },
                   {
                     dim: 'Cold-start',
@@ -1517,18 +1577,17 @@ export default function LandingPage() {
                     nubi: 'Low — point at a warehouse and go',
                   },
                   {
-                    dim: 'Auto pre-aggregation',
+                    dim: 'Pre-aggregation rollups',
                     hex: false,
                     cube: 'partial',
-                    nubi: true,
-                    isBool: true,
+                    nubi: 'Auto-suggested from query log · one-click build',
                   },
                   {
                     category: 'Visualization',
                     dim: 'Rendering engine',
                     hex: 'Plotly / SVG, chokes past ~50k rows',
                     cube: 'Bring your own',
-                    nubi: 'WebGL on Arrow buffers — 1M+ pts at 60fps',
+                    nubi: 'WebGL on Arrow buffers — scales to ~1M pts',
                   },
                   {
                     dim: 'Cross-filter at scale',
@@ -1556,8 +1615,7 @@ export default function LandingPage() {
                     dim: 'LLM / MCP authoring',
                     hex: false,
                     cube: false,
-                    nubi: 'MCP server · 4 tools · LLM-authorable HTML dashboards',
-                    isBool: false,
+                    nubi: 'MCP server · 6 tools · LLM-authorable HTML dashboards',
                   },
                   {
                     dim: 'Real free tier',
@@ -1566,7 +1624,7 @@ export default function LandingPage() {
                     nubi: true,
                     isBool: true,
                   },
-                ].map(({ category, dim, hex, cube, nubi, isBool }, i, arr) => {
+                ].map(({ category, dim, hex, cube, nubi }, i, arr) => {
                   const isLastInBlock = i === arr.length - 1 || arr[i + 1]?.category
                   return (
                     <div key={dim}>
@@ -1588,13 +1646,13 @@ export default function LandingPage() {
                           <span className="text-[13px] font-semibold text-fg">{dim}</span>
                         </div>
                         <div className="py-3.5 px-4 border-l border-border flex items-center justify-center">
-                          <CompareCell value={isBool ? hex : hex} />
+                          <CompareCell value={hex} />
                         </div>
                         <div className="py-3.5 px-4 border-l border-border flex items-center justify-center">
-                          <CompareCell value={isBool ? cube : cube} />
+                          <CompareCell value={cube} />
                         </div>
                         <div className="lp-nubi-col py-3.5 px-4 flex items-center justify-center">
-                          <CompareCell value={isBool ? nubi : nubi} isNubi />
+                          <CompareCell value={nubi} isNubi />
                         </div>
                       </div>
                     </div>
@@ -1607,6 +1665,8 @@ export default function LandingPage() {
             <p className="text-center text-xs mt-5 text-muted opacity-50">
               Data sourced from public documentation and the Nubi roadmap. We&rsquo;re honest: check primary sources before switching.
             </p>
+
+            <SectionCta sub="Try the architecture instead of reading about it — the free tier is the real product." />
           </div>
         </section>
 
@@ -1632,11 +1692,18 @@ export default function LandingPage() {
               makes the marginal cost of a dashboard view ≈ $0 — not a marketing claim, a
               consequence of where compute runs. Hex runs a Python kernel per session in their
               cloud. Cube runs the data plane in their cloud. Nubi pushes compute to the browser
-              and only falls through to a server kernel for the ~10% of workloads that need it.
+              and only falls through to a metered server kernel for the workloads that need it.
             </p>
-            <p className="text-sm text-muted opacity-70">
-              Apache-2.0 open source &middot; Real free tier &middot; Self-hostable connectors
+            <p className="text-sm text-muted opacity-70 mb-8">
+              Apache-2.0 open core &middot; Real free tier &middot; Self-hostable connectors
             </p>
+            <Link
+              to="/register"
+              className="inline-flex items-center justify-center gap-2 px-6 py-3.5 rounded-xl text-base font-semibold transition-all bg-brand-gradient text-white hover:opacity-90 hover:-translate-y-0.5 min-h-[48px]"
+            >
+              Start free
+              <ArrowRight size={16} strokeWidth={2.5} />
+            </Link>
           </div>
         </section>
 
