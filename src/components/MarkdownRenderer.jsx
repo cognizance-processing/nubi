@@ -135,20 +135,25 @@ const components = {
   // react-markdown passes `inline` for single-backtick code
   code({ className, children, ...props }) {
     const match = /language-(\w+)/.exec(className || '')
-    const isBlock = Boolean(match)
+    const raw = String(children).replace(/\n$/, '')
+    // Treat any multi-line fence as a block, even an unlabeled ``` ``` fence
+    // (react-markdown v9 only tags a language on labeled fences, so ASCII
+    // diagrams in bare fences would otherwise collapse into inline code).
+    const isBlock = Boolean(match) || raw.includes('\n')
 
     if (isBlock) {
+      const lang = match ? match[1] : 'text'
       return (
         <div className="my-5 rounded-xl overflow-hidden border border-border shadow-lg">
           <SyntaxHighlighter
             style={oneDark}
-            language={match[1]}
+            language={lang}
             PreTag="div"
             className="!rounded-none !m-0 text-sm"
-            showLineNumbers={match[1] !== 'bash' && match[1] !== 'sh' && match[1] !== 'text'}
+            showLineNumbers={lang !== 'bash' && lang !== 'sh' && lang !== 'text'}
             {...props}
           >
-            {String(children).replace(/\n$/, '')}
+            {raw}
           </SyntaxHighlighter>
         </div>
       )

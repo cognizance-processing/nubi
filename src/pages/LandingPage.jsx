@@ -1407,15 +1407,17 @@ export default function LandingPage() {
 
               {/* Arrow connector */}
               <div className="flex lg:flex-col items-center justify-center shrink-0 py-1 lg:py-0 px-0 lg:px-1">
-                <div className="hidden lg:flex flex-col items-center gap-2">
-                  <div className="w-px h-8 bg-gradient-to-b from-transparent via-border to-transparent" />
-                  <ArrowRightCircle size={22} strokeWidth={1.5} className="lp-step-arrow -rotate-90" />
-                  <div className="w-px h-8 bg-gradient-to-b from-transparent via-border to-transparent" />
-                </div>
-                <div className="lg:hidden flex items-center gap-2">
+                {/* desktop: cards in a row → arrow points right */}
+                <div className="hidden lg:flex items-center gap-2">
                   <div className="h-px w-8 bg-gradient-to-r from-transparent via-border to-transparent" />
                   <ArrowRightCircle size={22} strokeWidth={1.5} className="lp-step-arrow" />
                   <div className="h-px w-8 bg-gradient-to-r from-transparent via-border to-transparent" />
+                </div>
+                {/* mobile: cards stacked → arrow points down */}
+                <div className="lg:hidden flex flex-col items-center gap-2">
+                  <div className="w-px h-8 bg-gradient-to-b from-transparent via-border to-transparent" />
+                  <ArrowRightCircle size={22} strokeWidth={1.5} className="lp-step-arrow rotate-90" />
+                  <div className="w-px h-8 bg-gradient-to-b from-transparent via-border to-transparent" />
                 </div>
               </div>
 
@@ -1444,15 +1446,17 @@ export default function LandingPage() {
 
               {/* Arrow connector */}
               <div className="flex lg:flex-col items-center justify-center shrink-0 py-1 lg:py-0 px-0 lg:px-1">
-                <div className="hidden lg:flex flex-col items-center gap-2">
-                  <div className="w-px h-8 bg-gradient-to-b from-transparent via-border to-transparent" />
-                  <ArrowRightCircle size={22} strokeWidth={1.5} className="lp-step-arrow -rotate-90" />
-                  <div className="w-px h-8 bg-gradient-to-b from-transparent via-border to-transparent" />
-                </div>
-                <div className="lg:hidden flex items-center gap-2">
+                {/* desktop: cards in a row → arrow points right */}
+                <div className="hidden lg:flex items-center gap-2">
                   <div className="h-px w-8 bg-gradient-to-r from-transparent via-border to-transparent" />
                   <ArrowRightCircle size={22} strokeWidth={1.5} className="lp-step-arrow" />
                   <div className="h-px w-8 bg-gradient-to-r from-transparent via-border to-transparent" />
+                </div>
+                {/* mobile: cards stacked → arrow points down */}
+                <div className="lg:hidden flex flex-col items-center gap-2">
+                  <div className="w-px h-8 bg-gradient-to-b from-transparent via-border to-transparent" />
+                  <ArrowRightCircle size={22} strokeWidth={1.5} className="lp-step-arrow rotate-90" />
+                  <div className="w-px h-8 bg-gradient-to-b from-transparent via-border to-transparent" />
                 </div>
               </div>
 
