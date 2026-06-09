@@ -201,7 +201,7 @@ def _run_report_job(target: dict[str, Any]) -> tuple[int, str]:
         Propagated to the caller which records an error run.
     """
     from app.jobs.report import (
-        NullSender,
+        get_default_sender,
         inject_locked_params,
         render_report,
         resolve_board_sync,
@@ -232,8 +232,9 @@ def _run_report_job(target: dict[str, Any]) -> tuple[int, str]:
             404,
         )
 
-    # Build a NullSender (no SMTP config in M17-A; production wires SMTP/SES here).
-    sender = NullSender()
+    # Use the configured email transport: real SMTP when SMTP_HOST is set,
+    # else a NullSender (no delivery) so dev/test/OSS builds still run.
+    sender = get_default_sender()
 
     total_sent = 0
 

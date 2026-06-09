@@ -171,11 +171,14 @@ async def resolve_network_async(
 
         broker = get_broker()
         if not broker.is_connected(bridge_id):
+            # 503, not 501: bridge mode IS implemented — the agent just isn't
+            # connected right now (transport temporarily unavailable). Matches
+            # broker.open_tcp_proxy's own "bridge_not_connected" status.
             raise AppError(
                 "bridge_not_connected",
                 f"Bridge {bridge_id!r} has no connected agent. "
                 "Start the bridge agent process inside the VPC and wait for it to register.",
-                501,
+                503,
             )
 
         local_host, local_port = await broker.open_tcp_proxy(bridge_id, host, port)
