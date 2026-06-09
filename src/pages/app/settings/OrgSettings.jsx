@@ -11,14 +11,233 @@
  */
 
 import { useEffect, useState, useCallback } from 'react'
-import { Building2, Loader2, CheckCircle, AlertTriangle, Trash2 } from 'lucide-react'
+import { Building2, Loader2, CheckCircle, AlertTriangle, Trash2, Users, UserPlus, Copy, Check, Mail } from 'lucide-react'
 import { useOrg } from '../../../contexts/OrgContext.jsx'
+import { useAuth } from '../../../contexts/AuthContext.jsx'
 import AvatarField from '../../../components/app/AvatarField.jsx'
 import DangerDeleteDialog from '../../../components/app/DangerDeleteDialog.jsx'
 import { updateOrg, deleteOrg, getOrgDeletionImpact } from '../../../lib/settings.js'
+import {
+  ORG_ROLES,
+  listMembers,
+  updateMemberRole,
+  removeMember,
+  listInvites,
+  createInvite,
+  revokeInvite,
+  inviteLink,
+} from '../../../lib/members.js'
+
+const MANAGE_ROLES = ['owner', 'admin']
+
+// ---------------------------------------------------------------------------
+// MembersSection — list/manage org members + pending invites (under Org settings)
+// ---------------------------------------------------------------------------
+
+function MembersSection({ orgId, currentRole, currentUserId }) {
+  const canManage = MANAGE_ROLES.includes(currentRole)
+
+  const [members, setMembers] = useState([])
+  const [invites, setInvites] = useState([])
+  const [loading, setLoading] = useState(true)
+  const [err, setErr] = useState(null)
+  const [busyRow, setBusyRow] = useState(null)
+
+  const [inviteEmail, setInviteEmail] = useState('')
+  const [inviteRole, setInviteRole] = useState('member')
+  const [inviting, setInviting] = useState(false)
+  const [copiedToken, setCopiedToken] = useState(null)
+
+  const refresh = useCallback(async () => {
+    setLoading(true)
+    const [m, inv] = await Promise.all([
+      listMembers(orgId),
+      canManage ? listInvites(orgId) : Promise.resolve([]),
+    ])
+    setMembers(m)
+    setInvites(inv)
+    setLoading(false)
+  }, [orgId, canManage])
+
+  useEffect(() => { refresh() }, [refresh])
+
+  const ownerCount = members.filter((m) => m.role === 'owner').length
+
+  async function changeRole(m, role) {
+    if (role === m.role) return
+    setErr(null); setBusyRow(m.user_id)
+    try { await updateMemberRole(orgId, m.user_id, role); await refresh() }
+    catch (e) { setErr(e?.message ?? 'Failed to update role.') }
+    finally { setBusyRow(null) }
+  }
+
+  async function handleRemove(m) {
+    setErr(null); setBusyRow(m.user_id)
+    try { await removeMember(orgId, m.user_id); await refresh() }
+    catch (e) { setErr(e?.message ?? 'Failed to remove member.') }
+    finally { setBusyRow(null) }
+  }
+
+  async function sendInvite(e) {
+    e.preventDefault()
+    setErr(null); setInviting(true)
+    try { await createInvite(orgId, inviteEmail.trim(), inviteRole); setInviteEmail(''); await refresh() }
+    catch (e2) { setErr(e2?.message ?? 'Failed to create invite.') }
+    finally { setInviting(false) }
+  }
+
+  async function handleRevoke(inv) {
+    setErr(null); setBusyRow(inv.id)
+    try { await revokeInvite(orgId, inv.id); await refresh() }
+    catch (e) { setErr(e?.message ?? 'Failed to revoke invite.') }
+    finally { setBusyRow(null) }
+  }
+
+  function copyLink(token) {
+    try {
+      navigator.clipboard.writeText(inviteLink(token))
+      setCopiedToken(token)
+      setTimeout(() => setCopiedToken(null), 2000)
+    } catch { /* clipboard blocked */ }
+  }
+
+  const selectCls = 'px-2 py-1 rounded-lg bg-bg border border-border text-xs text-fg focus:outline-none focus:border-primary disabled:opacity-50 disabled:cursor-not-allowed'
+
+  return (
+    <div className="rounded-2xl border border-border overflow-hidden">
+      <div className="px-5 py-4 bg-surface-2/40 border-b border-border flex items-center gap-2">
+        <Users size={16} className="text-muted" />
+        <h3 className="font-semibold text-sm text-fg">Members</h3>
+        <span className="text-xs text-muted">({members.length})</span>
+        {!canManage && (
+          <span className="ml-auto text-[11px] text-muted">View only — ask an owner/admin to manage members.</span>
+        )}
+      </div>
+
+      <div className="px-5 py-4 space-y-4">
+        {err && (
+          <p className="text-xs text-red-600 dark:text-red-400 rounded-lg bg-red-50 dark:bg-red-950/30 border border-red-200 dark:border-red-900 px-3 py-2">{err}</p>
+        )}
+
+        {loading ? (
+          <div className="flex items-center gap-2 text-xs text-muted py-3"><Loader2 size={13} className="animate-spin" /> Loading members…</div>
+        ) : (
+          <ul className="divide-y divide-border">
+            {members.map((m) => {
+              const isSelf = m.user_id === currentUserId
+              const isLastOwner = m.role === 'owner' && ownerCount <= 1
+              const rowBusy = busyRow === m.user_id
+              return (
+                <li key={m.user_id} className="flex items-center gap-3 py-2.5">
+                  <div className="min-w-0 flex-1">
+                    <p className="text-sm text-fg truncate">
+                      {m.name || m.email}{isSelf && <span className="text-muted"> (you)</span>}
+                    </p>
+                    {m.name && <p className="text-xs text-muted truncate">{m.email}</p>}
+                  </div>
+                  {canManage ? (
+                    <select
+                      className={selectCls}
+                      value={m.role}
+                      disabled={rowBusy || isLastOwner}
+                      title={isLastOwner ? 'The last owner cannot be demoted' : undefined}
+                      onChange={(e) => changeRole(m, e.target.value)}
+                    >
+                      {ORG_ROLES.map((r) => <option key={r} value={r}>{r}</option>)}
+                    </select>
+                  ) : (
+                    <span className="text-xs font-medium text-muted capitalize">{m.role}</span>
+                  )}
+                  {canManage && (
+                    <button
+                      type="button"
+                      onClick={() => handleRemove(m)}
+                      disabled={rowBusy || isLastOwner}
+                      title={isLastOwner ? 'The last owner cannot be removed' : 'Remove member'}
+                      className="w-7 h-7 flex items-center justify-center rounded-lg text-muted hover:text-red-500 hover:bg-red-50 dark:hover:bg-red-950/30 transition-colors disabled:opacity-30 disabled:cursor-not-allowed shrink-0"
+                    >
+                      {rowBusy ? <Loader2 size={13} className="animate-spin" /> : <Trash2 size={13} />}
+                    </button>
+                  )}
+                </li>
+              )
+            })}
+          </ul>
+        )}
+
+        {/* Invite form + pending invites — managers only */}
+        {canManage && (
+          <div className="pt-3 border-t border-border space-y-4">
+            <form onSubmit={sendInvite} className="flex flex-col sm:flex-row gap-2">
+              <input
+                type="email"
+                required
+                value={inviteEmail}
+                onChange={(e) => setInviteEmail(e.target.value)}
+                placeholder="teammate@example.com"
+                className="flex-1 px-3 py-2 rounded-xl bg-bg border border-border text-sm text-fg placeholder:text-muted focus:outline-none focus:border-primary"
+              />
+              <select className={selectCls + ' !text-sm !py-2'} value={inviteRole} onChange={(e) => setInviteRole(e.target.value)}>
+                {ORG_ROLES.filter((r) => r !== 'owner' || currentRole === 'owner').map((r) => (
+                  <option key={r} value={r}>{r}</option>
+                ))}
+              </select>
+              <button
+                type="submit"
+                disabled={inviting || !inviteEmail.trim()}
+                className="inline-flex items-center justify-center gap-1.5 px-3 py-2 rounded-xl text-sm font-medium text-white disabled:opacity-50 shrink-0"
+                style={{ background: 'linear-gradient(135deg, #2456a6, #17b3a3)' }}
+              >
+                {inviting ? <Loader2 size={14} className="animate-spin" /> : <UserPlus size={14} />}
+                Invite
+              </button>
+            </form>
+            <p className="text-[11px] text-muted -mt-2 flex items-center gap-1">
+              <Mail size={11} /> An invite link is generated to share. Email is sent only if delivery is configured.
+            </p>
+
+            {invites.length > 0 && (
+              <div className="space-y-1.5">
+                <p className="text-[11px] font-medium text-muted uppercase tracking-wider">Pending invites</p>
+                <ul className="divide-y divide-border rounded-xl border border-border">
+                  {invites.map((inv) => (
+                    <li key={inv.id} className="flex items-center gap-2 px-3 py-2.5">
+                      <div className="min-w-0 flex-1">
+                        <p className="text-sm text-fg truncate">{inv.email}</p>
+                        <p className="text-[11px] text-muted">role: {inv.role}</p>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => copyLink(inv.token)}
+                        className="inline-flex items-center gap-1 px-2 py-1 rounded-lg text-xs text-muted hover:text-primary border border-border hover:border-primary/40 transition-colors shrink-0"
+                      >
+                        {copiedToken === inv.token ? <Check size={12} /> : <Copy size={12} />}
+                        {copiedToken === inv.token ? 'Copied' : 'Copy link'}
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => handleRevoke(inv)}
+                        disabled={busyRow === inv.id}
+                        title="Revoke invite"
+                        className="w-7 h-7 flex items-center justify-center rounded-lg text-muted hover:text-red-500 hover:bg-red-50 dark:hover:bg-red-950/30 transition-colors disabled:opacity-30 shrink-0"
+                      >
+                        {busyRow === inv.id ? <Loader2 size={12} className="animate-spin" /> : <Trash2 size={12} />}
+                      </button>
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            )}
+          </div>
+        )}
+      </div>
+    </div>
+  )
+}
 
 export default function OrgSettings() {
   const { activeOrg, orgs, setActiveOrg } = useOrg()
+  const { user } = useAuth()
   const orgId = activeOrg?.id ?? null
 
   const [orgName, setOrgName] = useState(activeOrg?.name ?? '')
@@ -100,6 +319,8 @@ export default function OrgSettings() {
   // Determine blocker text
   const projectsBlocker = impact?.blockers?.find((b) => b.type === 'projects')
   const canDelete = impact?.can_delete === true
+  // Org rename/branding/delete are owner/admin only (backend enforces via _require_manage).
+  const canManage = ['owner', 'admin'].includes(activeOrg?.role)
 
   return (
     <div className="space-y-8">
@@ -125,7 +346,11 @@ export default function OrgSettings() {
         </p>
       ) : (
         <>
-          {/* Rename / avatar form */}
+          {/* Rename / avatar form — owner/admin only */}
+          {!canManage && (
+            <p className="text-sm text-muted">You have read-only access to this organisation&apos;s settings.</p>
+          )}
+          {canManage && (
           <form onSubmit={handleSave} className="space-y-6 max-w-md">
             {/* Avatar */}
             <div className="space-y-1.5">
@@ -175,8 +400,13 @@ export default function OrgSettings() {
               <p className="text-sm text-red-600 dark:text-red-400">{saveError}</p>
             )}
           </form>
+          )}
 
-          {/* Danger zone */}
+          {/* Members */}
+          <MembersSection orgId={orgId} currentRole={activeOrg?.role} currentUserId={user?.id} />
+
+          {/* Danger zone — owner/admin only */}
+          {canManage && (
           <div className="rounded-2xl border border-red-200 dark:border-red-900 overflow-hidden">
             <div className="px-5 py-4 bg-red-50 dark:bg-red-950/30 border-b border-red-200 dark:border-red-900">
               <h3 className="font-semibold text-sm text-red-700 dark:text-red-400">Danger zone</h3>
@@ -225,6 +455,7 @@ export default function OrgSettings() {
               </div>
             </div>
           </div>
+          )}
         </>
       )}
 

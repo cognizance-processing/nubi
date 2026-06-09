@@ -34,11 +34,14 @@ import {
   Database,
   List,
   Combine,
+  Boxes,
 } from 'lucide-react'
 
 import { listRegisteredQueries } from '../../lib/api.js'
 import { useProject } from '../../contexts/ProjectContext.jsx'
+import { useCanWrite } from '../../contexts/OrgContext.jsx'
 import QueryWorkspace from './QueryWorkspace.jsx'
+import PreaggregationsPanel from './PreaggregationsPanel.jsx'
 
 // ---------------------------------------------------------------------------
 // New ad-hoc query template
@@ -120,7 +123,7 @@ function QueryListItem({ query, isActive, onClick }) {
 // LeftRail
 // ---------------------------------------------------------------------------
 
-function LeftRail({ queries, localQueries, activeId, loading, onSelect, onNewQuery, onRefresh, searchQuery, onSearchChange }) {
+function LeftRail({ queries, localQueries, activeId, loading, onSelect, onNewQuery, onRefresh, searchQuery, onSearchChange, canWrite, view, onViewChange }) {
   const allItems = [
     ...localQueries,
     ...queries,
@@ -152,23 +155,62 @@ function LeftRail({ queries, localQueries, activeId, loading, onSelect, onNewQue
         </div>
       </div>
 
-      {/* New query / Blend buttons */}
-      <div className="shrink-0 px-2 py-2 space-y-1.5">
-        <button
-          onClick={onNewQuery}
-          className="w-full h-8 flex items-center justify-center gap-1.5 text-xs font-medium rounded-lg border border-dashed border-border text-muted hover:text-fg hover:border-border hover:bg-surface-2 transition-colors"
-        >
-          <Plus size={13} />
-          New query
-        </button>
-        <Link
-          to="/queries/blend"
-          className="w-full h-8 flex items-center justify-center gap-1.5 text-xs font-medium rounded-lg border border-dashed border-border text-muted hover:text-fg hover:border-border hover:bg-surface-2 transition-colors"
-        >
-          <Combine size={13} className="text-primary/70" />
-          Blend sources
-        </Link>
+      {/* View toggle: SQL editor ↔ Pre-aggregations */}
+      <div className="shrink-0 px-2 pt-2">
+        <div className="flex items-center rounded-lg border border-border overflow-hidden">
+          <button
+            onClick={() => onViewChange('editor')}
+            className={[
+              'flex-1 h-7 flex items-center justify-center gap-1.5 text-[11px] font-medium transition-colors',
+              view === 'editor'
+                ? 'bg-primary/10 text-primary'
+                : 'bg-surface text-muted hover:text-fg hover:bg-surface-2',
+            ].join(' ')}
+          >
+            <FileCode2 size={12} />
+            Editor
+          </button>
+          <button
+            onClick={() => onViewChange('preagg')}
+            className={[
+              'flex-1 h-7 flex items-center justify-center gap-1.5 text-[11px] font-medium border-l border-border transition-colors',
+              view === 'preagg'
+                ? 'bg-primary/10 text-primary'
+                : 'bg-surface text-muted hover:text-fg hover:bg-surface-2',
+            ].join(' ')}
+            title="Auto rollups mined from the query log"
+          >
+            <Boxes size={12} />
+            Rollups
+          </button>
+        </div>
       </div>
+
+      {/* New query / Blend buttons */}
+      {canWrite ? (
+        <div className="shrink-0 px-2 py-2 space-y-1.5">
+          <button
+            onClick={onNewQuery}
+            className="w-full h-8 flex items-center justify-center gap-1.5 text-xs font-medium rounded-lg border border-dashed border-border text-muted hover:text-fg hover:border-border hover:bg-surface-2 transition-colors"
+          >
+            <Plus size={13} />
+            New query
+          </button>
+          <Link
+            to="/queries/blend"
+            className="w-full h-8 flex items-center justify-center gap-1.5 text-xs font-medium rounded-lg border border-dashed border-border text-muted hover:text-fg hover:border-border hover:bg-surface-2 transition-colors"
+          >
+            <Combine size={13} className="text-primary/70" />
+            Blend sources
+          </Link>
+        </div>
+      ) : (
+        <div className="shrink-0 px-2 py-2">
+          <p className="text-[10px] text-muted/70 text-center py-1.5 rounded-lg border border-dashed border-border">
+            Read-only access
+          </p>
+        </div>
+      )}
 
       {/* Search */}
       <div className="shrink-0 px-2 pb-2">
@@ -247,7 +289,7 @@ function LeftRail({ queries, localQueries, activeId, loading, onSelect, onNewQue
 // MobileQueryDropdown — compact selector for small screens
 // ---------------------------------------------------------------------------
 
-function MobileQueryDropdown({ queries, localQueries, activeQuery, onSelect, onNewQuery, loading }) {
+function MobileQueryDropdown({ queries, localQueries, activeQuery, onSelect, onNewQuery, loading, canWrite }) {
   const allItems = [...localQueries, ...queries]
   const [open, setOpen] = useState(false)
   const ref = useRef(null)
@@ -276,23 +318,25 @@ function MobileQueryDropdown({ queries, localQueries, activeQuery, onSelect, onN
 
       {open && (
         <div className="absolute top-full mt-1 left-0 z-50 w-64 bg-surface border border-border rounded-xl shadow-xl overflow-hidden">
-          <div className="p-1.5 border-b border-border">
-            <button
-              onClick={() => { onNewQuery(); setOpen(false) }}
-              className="w-full flex items-center gap-2 px-3 py-2 text-xs font-medium text-fg hover:bg-surface-2 rounded-lg transition-colors"
-            >
-              <Plus size={12} />
-              New query
-            </button>
-            <Link
-              to="/queries/blend"
-              onClick={() => setOpen(false)}
-              className="w-full flex items-center gap-2 px-3 py-2 text-xs font-medium text-fg hover:bg-surface-2 rounded-lg transition-colors"
-            >
-              <Combine size={12} className="text-primary/70" />
-              Blend sources
-            </Link>
-          </div>
+          {canWrite && (
+            <div className="p-1.5 border-b border-border">
+              <button
+                onClick={() => { onNewQuery(); setOpen(false) }}
+                className="w-full flex items-center gap-2 px-3 py-2 text-xs font-medium text-fg hover:bg-surface-2 rounded-lg transition-colors"
+              >
+                <Plus size={12} />
+                New query
+              </button>
+              <Link
+                to="/queries/blend"
+                onClick={() => setOpen(false)}
+                className="w-full flex items-center gap-2 px-3 py-2 text-xs font-medium text-fg hover:bg-surface-2 rounded-lg transition-colors"
+              >
+                <Combine size={12} className="text-primary/70" />
+                Blend sources
+              </Link>
+            </div>
+          )}
           <div className="max-h-64 overflow-y-auto p-1.5 space-y-0.5">
             {loading && (
               <div className="text-[11px] text-muted text-center py-3">Loading…</div>
@@ -329,6 +373,7 @@ export default function QueriesPage() {
   // Re-scope the registry whenever the active project changes (api.js sends X-Project-Id).
   const { activeProject } = useProject()
   const projectId = activeProject?.id
+  const canWrite = useCanWrite()
 
   // ── Registry ───────────────────────────────────────────────────────────
   const [registeredQueries, setRegisteredQueries] = useState([])
@@ -343,6 +388,9 @@ export default function QueriesPage() {
 
   // ── Rail search ────────────────────────────────────────────────────────
   const [railSearch, setRailSearch] = useState('')
+
+  // ── Active view: SQL editor or Pre-aggregations panel ────────────────────
+  const [view, setView] = useState('editor')
 
   // ── Load registry ──────────────────────────────────────────────────────
   const loadRegistry = useCallback(async () => {
@@ -449,6 +497,9 @@ export default function QueriesPage() {
           onRefresh={loadRegistry}
           searchQuery={railSearch}
           onSearchChange={setRailSearch}
+          canWrite={canWrite}
+          view={view}
+          onViewChange={setView}
         />
       </div>
 
@@ -457,27 +508,58 @@ export default function QueriesPage() {
 
         {/* Mobile/tablet top bar (shown below lg) */}
         <div className="lg:hidden shrink-0 flex items-center gap-2 px-3 py-2 border-b border-border bg-surface-2/40">
-          <MobileQueryDropdown
-            queries={registeredQueries}
-            localQueries={localQueries}
-            activeQuery={activeQuery}
-            onSelect={handleSelectQuery}
-            onNewQuery={handleNewQuery}
-            loading={loadingRegistry}
-          />
+          {view === 'editor' && (
+            <MobileQueryDropdown
+              queries={registeredQueries}
+              localQueries={localQueries}
+              activeQuery={activeQuery}
+              onSelect={handleSelectQuery}
+              onNewQuery={handleNewQuery}
+              loading={loadingRegistry}
+              canWrite={canWrite}
+            />
+          )}
           <div className="flex-1" />
+          {/* Mobile view toggle */}
+          <div className="flex items-center rounded-lg border border-border overflow-hidden">
+            <button
+              onClick={() => setView('editor')}
+              className={[
+                'h-8 px-2.5 flex items-center gap-1 text-[11px] font-medium transition-colors',
+                view === 'editor' ? 'bg-primary/10 text-primary' : 'bg-surface text-muted hover:text-fg',
+              ].join(' ')}
+            >
+              <FileCode2 size={12} /> Editor
+            </button>
+            <button
+              onClick={() => setView('preagg')}
+              className={[
+                'h-8 px-2.5 flex items-center gap-1 text-[11px] font-medium border-l border-border transition-colors',
+                view === 'preagg' ? 'bg-primary/10 text-primary' : 'bg-surface text-muted hover:text-fg',
+              ].join(' ')}
+            >
+              <Boxes size={12} /> Rollups
+            </button>
+          </div>
         </div>
 
-        {/* Registry error banner */}
-        {registryError && (
+        {/* Registry error banner (editor view only) */}
+        {view === 'editor' && registryError && (
           <div className="shrink-0 flex items-center gap-2 px-4 py-2 bg-rose-500/5 border-b border-rose-500/20 text-xs text-rose-600 dark:text-rose-400">
             <AlertCircle size={12} />
             Registry unavailable: {registryError}. Ad-hoc queries still work.
           </div>
         )}
 
+        {/* Pre-aggregations panel */}
+        {view === 'preagg' && (
+          <div className="flex-1 min-h-0 overflow-hidden">
+            <PreaggregationsPanel />
+          </div>
+        )}
+
         {/* Workspace */}
-        {activeQuery ? (
+        {view === 'editor' && (activeQuery ? (
           <div className="flex-1 min-h-0 overflow-hidden">
             <QueryWorkspace
               key={activeId}
@@ -502,15 +584,17 @@ export default function QueriesPage() {
                 Select a query from the sidebar (desktop) or the dropdown above (mobile/tablet), or create a new one to get started.
               </p>
             </div>
-            <button
-              onClick={handleNewQuery}
-              className="flex items-center gap-2 px-4 py-2 text-sm font-medium bg-primary text-primary-fg rounded-lg hover:opacity-90 transition-opacity"
-            >
-              <Plus size={15} />
-              New query
-            </button>
+            {canWrite && (
+              <button
+                onClick={handleNewQuery}
+                className="flex items-center gap-2 px-4 py-2 text-sm font-medium bg-primary text-primary-fg rounded-lg hover:opacity-90 transition-opacity"
+              >
+                <Plus size={15} />
+                New query
+              </button>
+            )}
           </div>
-        )}
+        ))}
       </div>
     </div>
   )

@@ -196,3 +196,15 @@ class PgRepo:
         except (ValueError, IndexError):
             count = 0
         return count > 0
+
+    def get_sync(self, resource: str, org_id: str, id: str) -> dict | None:
+        """Synchronous wrapper around ``get`` for use in threadpool handlers.
+
+        Runs ``self.get(resource, org_id, id)`` in a new event loop created
+        for this call.  Use this method only from non-async contexts (e.g.
+        flow task handlers that run in a ``ThreadPoolExecutor`` thread).
+
+        Returns ``None`` when the row is not found or belongs to a different org.
+        """
+        import asyncio  # noqa: PLC0415
+        return asyncio.run(self.get(resource, org_id, id))

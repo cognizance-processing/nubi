@@ -266,3 +266,5 @@ The MCP tool `propose_materialized_view` analyses the query log and returns roll
 ```
 
 Pre-aggregations collapse the warehouse hit count for high-traffic queries, extending the zero-cost advantage to diverse workloads where the raw content-addressed cache hit rate would otherwise be low.
+
+The query workspace surfaces these suggestions directly: open **Queries → Rollups** to see ranked candidates mined from your log and build one in a click, or see the built rollups and their HIT counts. See [Pre-Aggregations](/docs/pre-aggregations) for the full mining → build → route lifecycle and REST API.

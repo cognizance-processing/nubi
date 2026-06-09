@@ -96,6 +96,12 @@ import app.routes.embed  # noqa: F401, E402
 # Import compute route so it registers itself on api_router at import time.
 import app.routes.compute  # noqa: F401, E402
 
+# Import data-browser route (the /data/* table + row endpoints the Data page
+# calls) so it self-registers on api_router. Without this import the routes are
+# never mounted and /data/* falls through to the /{resource} catch-all, 404-ing
+# as "Unknown resource: 'data'". Must be before resources.py's catch-all below.
+import app.routes.data_browser  # noqa: F401, E402
+
 # Import lineage route BEFORE resources so its concrete /lineage prefix routes
 # are registered ahead of the generic /{resource} catch-all in resources.py.
 import app.routes.lineage  # noqa: F401, E402
@@ -151,6 +157,16 @@ from app.routes.export_share import router as export_share_router  # noqa: E402
 
 api_router.include_router(query_tools_router)
 api_router.include_router(export_share_router)
+
+# Import JWT issuers route (org-scoped CRUD for embed JWKS configs) BEFORE
+# resources so the /security prefix routes are registered ahead of the generic
+# /{resource} catch-all in resources.py.
+import app.routes.jwt_issuers  # noqa: F401, E402
+
+# Import datasets route (lakehouse CSV upload + materialise + catalog) BEFORE
+# resources so the /datasets prefix routes are registered ahead of the generic
+# /{resource} catch-all in resources.py.
+import app.routes.datasets  # noqa: F401, E402
 
 # Import resources route so it registers itself on api_router at import time.
 import app.routes.resources  # noqa: F401, E402

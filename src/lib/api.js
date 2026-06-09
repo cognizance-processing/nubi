@@ -185,6 +185,32 @@ export function get(path) {
   return request(path, { method: 'GET' })
 }
 
+/**
+ * GET /path returning a Blob (e.g. a PDF download).
+ *
+ * Attaches the in-memory access token + active-org header just like `request`,
+ * but reads the body as a Blob instead of JSON. Does NOT auto-retry on 401
+ * (downloads are user-initiated; a stale session surfaces as an error the
+ * caller can show). Throws on non-2xx.
+ *
+ * @param {string} path
+ * @returns {Promise<Blob>}
+ */
+export async function getBlob(path) {
+  const headers = new Headers()
+  if (_accessToken) headers.set('Authorization', `Bearer ${_accessToken}`)
+  if (_activeOrgId) headers.set('X-Org-Id', _activeOrgId)
+  if (_activeProjectId) headers.set('X-Project-Id', _activeProjectId)
+
+  const response = await fetch(`${BASE}${path}`, { method: 'GET', headers, credentials: 'include' })
+  if (!response.ok) {
+    const err = new Error(`Download failed: ${response.status} ${response.statusText}`)
+    err.status = response.status
+    throw err
+  }
+  return response.blob()
+}
+
 /** POST /path with JSON body */
 export function post(path, body) {
   return request(path, { method: 'POST', body: body !== undefined ? JSON.stringify(body) : undefined })

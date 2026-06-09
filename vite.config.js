@@ -18,6 +18,16 @@ export default defineConfig(({ mode }) => {
     },
     // Also inject into esbuild dep pre-bundling (Vite's define doesn't cover that path).
     optimizeDeps: {
+      // Limit the dependency scan to real app HTML entries. Vite's default scans
+      // every *.html in the project, which picks up generated/standalone files —
+      // notably playwright-report/index.html (a 500KB+ self-contained report that
+      // breaks esbuild's scanner with EPIPE) and the examples/ demos. Exclude them.
+      entries: [
+        '**/*.html',
+        '!**/node_modules/**',
+        '!playwright-report/**',
+        '!examples/**',
+      ],
       esbuildOptions: {
         define: {
           'process.env.DRAGGABLE_DEBUG': 'false',

@@ -366,11 +366,20 @@ def flow(fn: Callable) -> Callable:
             - A dict with a ``"type"`` key → passed through verbatim as the
               param spec dict.
 
+            The reserved keyword ``__env__`` (if given) sets the flow's active
+            environment (``spec["env"]``) instead of declaring a param.  It is
+            filtered out of ``params``.  Codegen emits it only when the flow's
+            env differs from the ``"prod"`` default, keeping existing generated
+            code stable.
+
         Returns
         -------
         dict
             A valid FlowSpec dict (``version: 1``).
         """
+        # Reserved kwarg: __env__ sets the flow-level env, not a param.
+        env_override: str | None = flow_params.pop("__env__", None)
+
         ctx = _TraceContext()
         token = _TRACE_CTX.set(ctx)
         try:
@@ -408,12 +417,15 @@ def flow(fn: Callable) -> Callable:
                 "ui":              {"x": 0.0, "y": 0.0},
             })
 
-        return {
+        spec: dict[str, Any] = {
             "version": 1,
             "name":    fn.__name__,
             "params":  params,
             "tasks":   tasks,
         }
+        if env_override is not None:
+            spec["env"] = env_override
+        return spec
 
     fn.compile = compile  # type: ignore[attr-defined]
     fn.fn = fn            # type: ignore[attr-defined]

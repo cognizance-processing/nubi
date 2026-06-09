@@ -99,6 +99,9 @@ function autoLayout(tasks) {
 export function specToGraph(spec) {
   const tasks = spec?.tasks ?? []
 
+  // Sibling task keys — used to infer SQL FROM/JOIN dependencies (see below).
+  const siblingKeys = new Set(tasks.map(t => t.key))
+
   // Pre-compute auto-layout positions (used as fallback)
   const auto = autoLayout(tasks)
 
@@ -143,12 +146,23 @@ export function specToGraph(spec) {
       data: {
         task,        // full task object (key, kind, config, needs, retries, etc.)
         taskRun: null, // populated during run view
+        // v4 cell-config badges derived from config so TaskNode doesn't re-parse.
+        cellBadges: deriveCellBadges(task),
       },
     }
   })
 
   const edges = []
   for (const task of tasks) {
+    // A non-empty run_when gates this cell: render its INCOMING dependency edges
+    // as conditional (dashed + truncated-expr label). These are REAL needs —
+    // graphToSpec still writes them back into needs (unlike branch/inferred
+    // edges); data.conditional is styling-only and NOT added to the skip set.
+    const runWhen = typeof task.config?.run_when === 'string' && task.config.run_when.trim()
+      ? task.config.run_when.trim()
+      : null
+    const condLabel = runWhen ? _runWhenLabel(runWhen) : null
+
     // Standard upstream dependency edges (needs → task).
     for (const need of (task.needs ?? [])) {
       edges.push({
@@ -157,7 +171,9 @@ export function specToGraph(spec) {
         target: task.key,
         type: 'smoothstep',
         animated: false,
-        style: { strokeWidth: 1.5 },
+        ...(runWhen
+          ? { label: condLabel, data: { conditional: true }, style: { strokeWidth: 1.5, strokeDasharray: '5 3', stroke: '#f59e0b' } }
+          : { style: { strokeWidth: 1.5 } }),
       })
     }
 
@@ -205,6 +221,31 @@ export function specToGraph(spec) {
         }
       }
     }
+
+    // Inferred SQL dependency edges (SQLMesh-style). For a query task with raw
+    // SQL, derive dashed edges from any sibling task whose key appears as a
+    // FROM/JOIN identifier. These are render-time only: data.inferred marks them
+    // so they are NEVER written back into needs (graphToSpec + FlowBuilder skip
+    // them, mirroring the visual-only branch edges). They are re-derived from
+    // config.sql on every specToGraph, so the round-trip is lossless.
+    if (task.kind === 'query') {
+      const refs = inferredRefs(task.config?.sql, siblingKeys)
+      const explicitNeeds = new Set(task.needs ?? [])
+      for (const ref of refs) {
+        if (ref === task.key) continue          // no self-edge
+        if (explicitNeeds.has(ref)) continue     // already an explicit edge
+        if (edges.some(e => e.source === ref && e.target === task.key)) continue
+        edges.push({
+          id: `${ref}=>${task.key}`,
+          source: ref,
+          target: task.key,
+          type: 'smoothstep',
+          animated: false,
+          data: { inferred: true },
+          style: { strokeWidth: 1.5, strokeDasharray: '4 3', stroke: '#94a3b8' },
+        })
+      }
+    }
   }
 
   return { nodes, edges }
@@ -223,6 +264,76 @@ function _branchLabel(whenExpr, index) {
   // Strip outer {{ }} if present, then trim and truncate.
   const inner = whenExpr.replace(/^\s*\{\{\s*/, '').replace(/\s*\}\}\s*$/, '').trim()
   return inner.length > 20 ? inner.slice(0, 18) + '…' : inner
+}
+
+/**
+ * Truncated label for a run_when conditional edge (strips outer {{ }}).
+ * @param {string} expr
+ * @returns {string}
+ */
+function _runWhenLabel(expr) {
+  if (!expr) return 'if'
+  const inner = expr.replace(/^\s*\{\{\s*/, '').replace(/\s*\}\}\s*$/, '').trim()
+  return inner.length > 24 ? 'if ' + inner.slice(0, 22) + '…' : 'if ' + inner
+}
+
+// ---------------------------------------------------------------------------
+// Cell-config badge derivation (v4 "cells, not kinds")
+// ---------------------------------------------------------------------------
+
+/**
+ * Derive the canvas badge descriptor for a SQL/Python cell from its config
+ * blocks. Returns { materialized, forEach, runWhen } where each is null when
+ * the corresponding block is absent/inert. TaskNode renders from this so it
+ * never re-parses raw config.
+ *
+ * @param {{ config?: object }} task
+ * @returns {{ materialized: object|null, forEach: object|null, runWhen: string|null }}
+ */
+export function deriveCellBadges(task) {
+  const config = task?.config ?? {}
+
+  const mat = config.materialized
+  const materialized = mat && mat.kind && mat.kind !== 'view'
+    ? { kind: mat.kind, target: mat.target ?? null }
+    : null
+
+  const fe = config.for_each
+  const forEach = fe && (fe.items != null && fe.items !== '')
+    ? { items: fe.items, var: fe.var ?? 'item' }
+    : null
+
+  const runWhen = typeof config.run_when === 'string' && config.run_when.trim()
+    ? config.run_when.trim()
+    : null
+
+  return { materialized, forEach, runWhen }
+}
+
+// ---------------------------------------------------------------------------
+// Inferred SQL dependencies (SQLMesh-style)
+// ---------------------------------------------------------------------------
+
+/**
+ * Naive sibling-ref scan over raw SQL: matches FROM/JOIN <identifier> and keeps
+ * only identifiers that are sibling task keys. This is the render-time mirror of
+ * the authoritative backend parser (sqlglot in app/flows/deps.py); the backend
+ * is canonical for run ordering, this only drives canvas edge rendering.
+ *
+ * @param {string} sql
+ * @param {Set<string>} siblingKeys
+ * @returns {string[]} matched sibling keys (deduped)
+ */
+export function inferredRefs(sql, siblingKeys) {
+  if (!sql || !siblingKeys || siblingKeys.size === 0) return []
+  const refs = new Set()
+  const re = /\b(?:from|join)\s+["'`]?([A-Za-z_][\w]*)["'`]?/gi
+  let m
+  while ((m = re.exec(sql))) {
+    const id = m[1]
+    if (siblingKeys.has(id)) refs.add(id)
+  }
+  return [...refs]
 }
 
 // ---------------------------------------------------------------------------
@@ -251,17 +362,22 @@ function _branchLabel(whenExpr, index) {
 export function graphToSpec(nodes, edges, meta = {}) {
   // Identify branch-labeled outgoing edges (visual-only; excluded from needs).
   // These are edges emitted by specToGraph with data.branchCondIndex defined.
-  const branchEdgeIds = new Set(
+  // Visual-only edges that must NOT be written back into needs:
+  //  - branch routing edges (data.branchCondIndex) — authoritative routing lives
+  //    in config.conditions[i].next
+  //  - inferred SQL dependency edges (data.inferred) — re-derived from config.sql
+  //    on every specToGraph, never persisted to needs
+  const skipEdgeIds = new Set(
     edges
-      .filter(e => e.data != null && 'branchCondIndex' in e.data)
+      .filter(e => e.data != null && ('branchCondIndex' in e.data || e.data.inferred))
       .map(e => e.id)
   )
 
-  // Build needs map from non-branch edges only.
+  // Build needs map from non-visual edges only.
   const needsMap = new Map()
   for (const node of nodes) needsMap.set(node.id, [])
   for (const edge of edges) {
-    if (branchEdgeIds.has(edge.id)) continue  // skip visual branch edges
+    if (skipEdgeIds.has(edge.id)) continue  // skip visual branch/inferred edges
     if (needsMap.has(edge.target)) {
       needsMap.get(edge.target).push(edge.source)
     }

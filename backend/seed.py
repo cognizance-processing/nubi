@@ -27,9 +27,11 @@ from app.config import get_settings
 from app.db import close_db, execute, fetchrow, init_db
 from app.demo_bundle import (
     datastore_config,
+    export_demo_to_s3,
     load_boards,
     load_queries,
     resolve_placeholders,
+    s3_datastore_config,
     sample_db_path,
 )
 from app.routes.auth import _create_personal_org
@@ -68,7 +70,18 @@ async def _upsert(table: str, seed_id: str, org_id: str, created_by: str,
         org_id, seed_id,
     )
     if existing is not None:
-        return dict(existing), False
+        # Refresh the config so re-running the seed MIGRATES a pre-existing row
+        # to the current shape — e.g. a demo datastore seeded before the
+        # connector_type/S3 fixes (stale 'type' key or local-file path, which
+        # fails the Connectors-page filter) → the current S3-backed config.
+        # These are seed-owned demo resources, so refreshing is the intent.
+        cfg = json.dumps({**config, "seed_id": seed_id})
+        updated = await fetchrow(
+            f"UPDATE {table} SET config = $1::jsonb, name = $2 "
+            f"WHERE id = $3::uuid RETURNING *",
+            cfg, name, existing["id"],
+        )
+        return dict(updated or existing), False
     from app.repos import projects as projects_repo
     project_id = await projects_repo.get_default_project_id(org_id)
     cfg = json.dumps({**config, "seed_id": seed_id})
@@ -90,10 +103,28 @@ async def _seed_demo(user_id: str) -> None:
     assert org_row is not None, "Superuser has no org membership."
     org_id = str(org_row["org_id"])
 
-    # 1. Datasource — one read-only DuckDB connector over the bundled file.
-    db_path = sample_db_path()
+    # 1. Datasource — one DuckDB connector. When S3 (MinIO/AWS) is configured,
+    #    use the SAME object-store-backed demo as new projects: export the star
+    #    schema to s3://<bucket>/projects/<org_id>/demo/*.parquet and register an
+    #    S3-backed connector. Falls back to the bundled local file otherwise so
+    #    offline `seed.py --demo` still works.
+    import os  # noqa: PLC0415
+
+    _s3 = bool(os.getenv("S3_ACCESS_KEY") or os.getenv("AWS_ACCESS_KEY_ID"))
+    if _s3:
+        try:
+            export_demo_to_s3(org_id)
+            ds_config = s3_datastore_config(org_id)
+            _src = f"s3://.../projects/{org_id}/demo/"
+        except Exception as exc:  # noqa: BLE001 — never fail seeding over S3
+            print(f"  [warn] S3 demo export failed ({exc}); using local file")
+            ds_config = datastore_config(sample_db_path())
+            _src = sample_db_path()
+    else:
+        ds_config = datastore_config(sample_db_path())
+        _src = sample_db_path()
     ds, ds_created = await _upsert("datastores", DEMO_DS, org_id, user_id, "Demo Data",
-                                  datastore_config(db_path))
+                                  ds_config)
     datastore_id = str(ds["id"])
 
     # 2. Queries (all of them) — build the @placeholder → uuid map.
@@ -117,7 +148,7 @@ async def _seed_demo(user_id: str) -> None:
                                      {"spec": spec})
         b_created += int(created)
 
-    print(f"  demo datastore [{'CREATED' if ds_created else 'exists '}]  Demo Data ({db_path})")
+    print(f"  demo datastore [{'CREATED' if ds_created else 'exists '}]  Demo Data ({_src})")
     print(f"  demo queries   {q_created} created / {len(queries)} total")
     print(f"  demo boards    {b_created} created / {len(boards)} total")
 

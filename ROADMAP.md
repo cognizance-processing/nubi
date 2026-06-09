@@ -45,7 +45,7 @@ workloads.
 | Modeling tax | medium | high (define cubes first) | low (point at a warehouse and go) |
 | Security model | workspace/project perms | security-context JWT → SQL filters | same JWT + predicate-injection primitive for users, groups, embed |
 | Embedding | separate product, bolt-on auth | core strength, headless only | core surface; editor embeddable, not just output |
-| Pricing | per-seat (kernels cost real money) | infra/seat | connector throughput / embed views / AI calls / on-demand kernel time; real free tier |
+| Pricing | per-seat (kernels cost real money) | infra/seat | storage / compute units / embed sessions / AI calls; **no per-seat pricing**; real free tier |
 
 **How we're better:** cheaper than Hex (no per-session kernel), cheaper-at-scale than naive
 caching (auto pre-aggregations, the Cube weapon), lower friction than Cube (no hand-written
@@ -261,28 +261,50 @@ declare which tier produced a result.
 ## 8. Pricing & billing
 
 Marginal cost per dashboard view ≈ $0 (compute is the user's browser). Charge for:
-- Connector throughput (bytes / queries).
-- Embed views (per-thousand).
-- AI calls (lineage-grounded retrieval + generation) — **grounded on real model prices**.
-- On-demand kernel time (per-second, scale-to-zero).
-- Scheduled jobs / persistent Python — separate SKU.
-- Security/compute tier (see §5.4) — server-side sensitive compute is a metered upsell.
+- Storage (GB/month) — object storage COGS.
+- Compute units (flow runs + query compute) — container-compute COGS.
+- Embedded sessions (per 10K) — egress + per-request compute COGS.
+- AI / agent calls — Anthropic Claude API token cost.
+- Agent runs — remote kernel compute COGS.
+
+**Not charged:** seats, connector count, dashboard count, saved queries, flow definitions
+— all have near-zero marginal COGS (a DB row ≈ R0.001/month).
 
 A generous free tier is structurally available; Hex can't match it without bleeding kernel
 cost.
 
-### 8.1 Billing implementation notes
-- **Currency:** charge in **ZAR** via **Paystack**. ZA fees: **2.9% + R1** local, **3.1% +
-  R1** international, **+15% VAT**, no cap, no small-transaction waiver.
-- **FX:** USD→ZAR from a keyless rate API (`open.er-api.com/v6/latest/USD`, `rates.ZAR`),
-  cached with `time_last_update`, fallback to a pinned table.
-- **LLM cost grounding:** pull per-token prices from
-  `BerriAI/litellm/model_prices_and_context_window.json` (USD per token, incl.
-  cache-read/cache-write). Apply margin → convert to ZAR → add Paystack fee.
-- **Metering dimensions:** LLM tokens (in/out/cached), compute (kernel-seconds, edge),
-  storage (GB-month), connector bytes, embed views.
+### 8.1 Tiers (shipped — June 2026)
+
+Four tiers, USD-anchored with ZAR charged via Paystack. **No per-seat pricing at any tier.**
+
+| Tier | USD/mo | ZAR/mo (ref) | Annual (USD) | Gross margin |
+|------|--------|--------------|--------------|--------------|
+| Free | $0 | R0 | $0 | — |
+| Starter | $9 | R150 | $90 | 86.6% |
+| Pro | $149 | R2,480 | $1,490 | 79.7% |
+| Enterprise | $1,000 floor | R16,590 floor | $10,000 floor | 75.5% hosted / ~86% BYOC |
+
+All paid tiers meet the ≥75% gross-margin target. Annual pricing is 10 months
+charged (2 months free). See `backend/app/ee/billing/tiers.py` for authoritative
+values.
+
+### 8.2 Billing implementation notes
+- **Currency:** USD-anchored, charged in **ZAR** via **Paystack**. ZA local-card effective
+  rate: **3.41%** (including 15% VAT on Paystack fee).
+- **FX:** USD→ZAR from frankfurter.app (primary) / open.er-api.com (fallback), refreshed
+  daily at 07:00 SAST. Formula: `ceil_to_nearest_10(usd × rate × 1.02)`.  Emergency
+  fallback: R16.26 if no fresh rate within 72 hours.
+- **LLM cost grounding:** Anthropic Claude API token prices used for AI-call COGS
+  (Haiku ≈ $0.25/1M tokens; each call ≈ 200 tokens → ≈ $0.00005). Margin on AI overage
+  ≈ 93–99%.
+- **Metered dimensions:** storage (GB/month), compute units (flow runs + query compute),
+  embedded sessions (/10K), AI/agent calls, agent runs.  Overages are drawn from the
+  org's usage **wallet** (prepaid credit balance; supports auto-topup, spend cap,
+  monthly topup cap).
+- **Not metered:** seats, viewers, connectors, dashboards, queries, flow definitions.
 - Scenario modelling lives in the **gitignored** `billing-model/` folder
   (`generate_scenarios.py`) — internal, not part of the product.
+- Full billing model reference: [`docs/billing-model.md`](./docs/billing-model.md).
 
 ---
 
@@ -377,11 +399,51 @@ and Google OAuth. Migrations from scratch.
     (`feature_enabled` / `register_feature` / `declare_commercial`); `backend/app/ee/`
     lazy-load entry point (`load_ee`); `src/lib/features.js` + `src/ee/` frontend registry
     and `registerEe()`.  Architecture documented in `docs/architecture-open-core.md`.
-16. ✅ **M16-ext — Billing (EE scaffolded)** — `backend/app/ee/billing/` (tiers, Paystack
-    client, billing store, EE routes mounted via `load_ee`); `src/ee/billing/`
-    (BillingPage, UpgradePrompt, BillingNavBadge, registerBilling); DB migration
-    `0017_billing.sql`.  Commercial feature gated behind `feature_enabled("billing")`
-    — disabled in CE build; Paystack SDK imported lazily, never at module top-level.
+16. ✅ **M16-ext — Billing (EE — full)** — `backend/app/ee/billing/` (4-tier catalogue
+    FREE/STARTER/PRO/ENTERPRISE; USD-anchored, ZAR-charged; no per-seat pricing at any
+    tier; prepaid usage **wallet** with auto-topup, spend cap, and append-only ledger;
+    Paystack client; FX service with daily refresh from frankfurter.app /
+    open.er-api.com + 2% buffer + emergency fallback; billing event store; EE routes
+    mounted via `load_ee`); `src/ee/billing/` (BillingPage, UpgradePrompt, BillingNavBadge,
+    registerBilling); DB migrations `0017_billing.sql` + `0018_fx_rates.sql` +
+    `0022_wallet.sql`.  Gated behind `feature_enabled("billing")` — disabled in CE build.
+    Reference: [`docs/billing-model.md`](./docs/billing-model.md).
+17. ✅ **M17-ext — Flows work-pool executor + secrets + storage backends** — concurrent
+    work-pool (`run_worker_pool`, configurable concurrency) replacing single-threaded tick;
+    org secrets (Fernet-encrypted at rest via `NUBI_SECRETS_KEY`, managed at
+    `/api/v1/secrets`, resolved server-side into `TaskContext.secrets` before each task);
+    storage abstraction (`app.storage`) with S3/S3-compatible, GCS, Azure Blob, and local
+    filesystem backends — wired into `bucket_load` task via `secret` credential field.
+    `extract` node kind **removed** — archive extraction is now a canned `python` snippet
+    in the FlowBuilder snippet picker.
+18. ✅ **M18-ext — Flows SDK + map/branch nodes + code-first builder** — code-first Python
+    SDK (`backend/nubi/flows`, pip-importable): `@flow`/`@task`/`map_node`/`branch_node`
+    tracing DSL compiles to `FlowSpec`; `flow_spec_to_sdk` codegen (FlowSpec → Python
+    scaffold); `map` kind (fan-out over an iterable, nested sub-DAG body, `waiting_children`
+    intermediate state, `map_collect` fan-in collector); `branch` kind (ordered boolean
+    conditions, `default`, rejoin supported); `map_collect` internal collector kind;
+    editable in-builder code panel (`src/flows/CodePanel.jsx`) — edits drive the canvas
+    via "Apply code" round-trip through `POST /api/v1/flows/compile`.
+19. ✅ **M19-nb — Cell-based flows (notebook system)** — Fabric-style notebook UI for
+    FlowSpecs: `CellSpec` extends `TaskSpec` with `cell_type` (`sql`|`python`|`markdown`),
+    `execution_mode` (`preview`|`durable`), and `freshness_sla_s`; `NotebookSpec` envelope
+    wraps a `FlowSpec` with `notebook_id`, `view`, `runtime_config`, `env`, and `params`
+    (parameter cell); `notebook_to_flowspec()` / `flowspec_to_notebook()` round-trip
+    converters (`backend/app/flows/notebook.py`); `infer_notebook_edges()` auto-fills
+    `needs` from SQL `FROM cell_<key>` references and Python `inputs["key"]` patterns;
+    `FlowSpec.env` + `FlowSpec.runtime_config` top-level fields (`backend/app/flows/spec.py`);
+    `TaskContext.org_id` + preview-mode fields + Python→SQL bridge table registration
+    (`backend/app/flows/executor.py`); `CONNECTOR_DIALECT` map in `registry.py`;
+    `POST /flows/preview` (fast in-process, row-capped) + `POST /flows/run-cell` (durable
+    single-cell) + `POST /flows/notebooks` + `GET /flows/notebooks/{id}` routes
+    (`backend/app/routes/flows.py`); column-level lineage graph across SQL cells
+    (`backend/app/flows/lineage.py`: `build_cell_lineage_graph`, `lineage_plan`,
+    `extract_column_lineage`); `GET /lineage/flow/{id}`, `POST /lineage/plan`,
+    `POST /lineage/cell` routes (`backend/app/routes/lineage.py`); `NotebookView.jsx`
+    (ordered cell list, preview run, run-all durable) + `SqlCell.jsx` + `PythonCell.jsx`
+    + `CellToolbar.jsx`; Canvas ↔ Notebook view toggle in `FlowBuilder.jsx`; `notebooks.js`
+    API client + `genCellKey` / `makeBlankCell` / `previewCell` helpers. Docs:
+    [`docs/notebooks.md`](./docs/notebooks.md). Reference: [`docs/notebook-system-blueprint.md`](./docs/notebook-system-blueprint.md).
 
 ---
 

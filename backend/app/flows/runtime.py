@@ -103,12 +103,24 @@ _FLOW_FAIL_STATES = frozenset({"failed", "timed_out"})
 # ---------------------------------------------------------------------------
 
 
+def _resolve_env(override: str | None, spec_data: dict[str, Any] | None) -> str:
+    """Resolve the active environment (PINNED order: override → spec.env → prod)."""
+    if override and str(override).strip():
+        return str(override).strip()
+    if isinstance(spec_data, dict):
+        spec_env = spec_data.get("env")
+        if spec_env and str(spec_env).strip():
+            return str(spec_env).strip()
+    return "prod"
+
+
 async def materialize_flow_run(
     store: Any,
     flow: dict[str, Any],
     params: dict[str, Any],
     trigger: str,
     now: datetime,
+    env: str | None = None,
 ) -> dict[str, Any]:
     """Create a flow_run and its task_runs; return the flow_run dict.
 
@@ -125,6 +137,10 @@ async def materialize_flow_run(
         One of ``'manual'``, ``'schedule'``, ``'event'``, ``'agent'``.
     now:
         Injected clock datetime (UTC, tz-aware).
+    env:
+        Optional trigger-time environment override.  Resolution order (PINNED):
+        explicit ``env`` → ``flow.spec.env`` → ``"prod"``.  The resolved env is
+        stored on the flow_run so materialize tasks namespace their targets.
 
     Returns
     -------
@@ -146,6 +162,8 @@ async def materialize_flow_run(
         hard = [i for i in issues if not i.startswith("[warn]")]
         raise ValueError(f"Flow spec is invalid: {'; '.join(hard)}")
 
+    resolved_env = _resolve_env(env, spec_data)
+
     # Create the flow_run (state starts as 'pending' from the store constructor,
     # then we immediately transition it to 'running').
     flow_run = await store.create_flow_run(
@@ -154,6 +172,7 @@ async def materialize_flow_run(
         params=params,
         trigger=trigger,
         scheduled_at=None,
+        env=resolved_env,
     )
     flow_run = await store.update_flow_run(
         flow_run["id"],
@@ -172,13 +191,30 @@ async def materialize_flow_run(
     task_runs_to_insert: list[dict[str, Any]] = []
     tasks = flow_spec.tasks if flow_spec else []
 
+    # Effective deps = union(explicit needs, inferred SQL sibling refs).
+    # Computed once over the full key set so a SQL cell that references a sibling
+    # by name (e.g. SELECT * FROM other_cell) orders after it without an explicit
+    # edge.  Inferred refs are never persisted to the spec — only to depends_on.
+    from app.flows.deps import effective_needs  # noqa: PLC0415
+
+    all_keys: set[str] = {t.key for t in tasks}
+
     for task in tasks:
-        is_root = len(task.needs) == 0
+        depends_on = effective_needs(
+            {
+                "key": task.key,
+                "kind": task.kind,
+                "needs": list(task.needs),
+                "config": dict(task.config),
+            },
+            all_keys,
+        )
+        is_root = len(depends_on) == 0
         tr: dict[str, Any] = {
             "task_key": task.key,
             "org_id": flow["org_id"],
             "state": "ready" if is_root else "pending",
-            "depends_on": list(task.needs),
+            "depends_on": depends_on,
             "attempt": 0,
             # Embed spec fields so the executor can read them.
             "kind": task.kind,
@@ -847,11 +883,28 @@ async def run_one_ready_task(
     # ── Resolve secrets for this org ──────────────────────────────────────────
     secrets: dict[str, str] = await _resolve_secrets(org_id)
 
-    ctx = TaskContext(flow_params=flow_params, inputs=inputs, now=now, secrets=secrets)
+    # ── Resolve env / flow / incremental watermark ─────────────────────────────
+    env, flow_dict, watermark = await _resolve_run_env_context(
+        store, flow_run, task_run, task_spec
+    )
+
+    ctx = TaskContext(
+        flow_params=flow_params,
+        inputs=inputs,
+        now=now,
+        secrets=secrets,
+        org_id=org_id or None,
+        env=env,
+        flow=flow_dict,
+        watermark=watermark,
+    )
 
     # ── Execute ────────────────────────────────────────────────────────────────
     # Merge task_run with task_spec so execute_task sees kind/config/timeout.
     full_task = {**task_run, **task_spec}
+    # for_each cells are rewritten into a legacy 'map' task so the existing
+    # fan-out machinery runs unchanged.
+    _apply_for_each_rewrite(full_task, task_spec)
     outcome = execute_task(full_task, ctx, claims)
 
     attempt: int = int(task_run.get("attempt", 0))
@@ -862,6 +915,22 @@ async def run_one_ready_task(
     outcome_state = outcome["state"]
     outcome_logs = outcome.get("logs") or []
     task_key = task_run.get("task_key", "")
+
+    if outcome_state == "skipped":
+        # run_when gate evaluated False — terminal, no retry, no watermark.
+        skipped_tr = await store.update_task_run(
+            task_run_id,
+            {
+                "state": "skipped",
+                "result": None,
+                "finished_at": now,
+                "error": None,
+                "logs": outcome_logs,
+            },
+        )
+        _emit_task_event("task_skipped", flow_run_id, task_key, "skipped", None, attempt, now)
+        await advance_readiness(store, flow_run_id, now)
+        return skipped_tr
 
     if outcome_state == "success":
         # ── Map fan-out: expand child task_runs before transitioning state ────
@@ -907,6 +976,11 @@ async def run_one_ready_task(
             return result_tr
 
         # Standard success (non-map).
+        # Persist a SQL cell's SELECT result per config.materialized (full/
+        # incremental) and merge the manifest (incl. new_watermark) into result.
+        _maybe_persist_materialized_cell(
+            task_spec, outcome["result"], env=env, flow=flow_dict, watermark=watermark, now=now,
+        )
         finished_tr = await store.update_task_run(
             task_run_id,
             {
@@ -917,6 +991,8 @@ async def run_one_ready_task(
                 "logs": outcome_logs,
             },
         )
+        # Persist an advanced incremental watermark, if the handler returned one.
+        await _persist_watermark(store, flow_run, task_run, task_spec, outcome["result"])
         _emit_task_event("task_success", flow_run_id, task_key, "success", None, attempt, now)
         await advance_readiness(store, flow_run_id, now)
         return finished_tr
@@ -1044,6 +1120,155 @@ async def drain_flow_run(
     return flow_run or {}
 
 
+def preview_cell(
+    tasks: list[dict[str, Any]],
+    target_key: str,
+    claims: dict[str, Any] | None = None,
+    flow_params: dict[str, Any] | None = None,
+    preview_limit: int = 500,
+    org_id: str | None = None,
+    now: datetime | None = None,
+) -> dict[str, Any]:
+    """Execute one cell (and all its transitive upstream cells) in preview mode.
+
+    This is the **interactive/preview runtime**: no ``FlowStore``, no
+    ``flow_run`` row is persisted, and no work-pool leasing occurs.  The
+    function runs synchronously (inside a thread-safe context; not async) and
+    is intended for direct use by HTTP route handlers.
+
+    Only tasks listed in *tasks* whose keys appear in the transitive dependency
+    chain of *target_key* are executed.  Each task is executed in topological
+    order; the result of every completed task is collected into ``inputs`` so
+    downstream tasks can reference upstream outputs via ``{{ inputs.key.field }}``.
+
+    The executing ``TaskContext`` has ``preview_mode=True``, so:
+    - ``query`` tasks automatically receive ``LIMIT <preview_limit>`` from the
+      planner (no data beyond the cap is fetched from the warehouse).
+    - The Python→SQL bridge is active: any upstream Python cell result with
+      ``rows`` is registered as an in-memory DuckDB table before downstream
+      SQL cells run.
+
+    Parameters
+    ----------
+    tasks:
+        Ordered list of task spec dicts (each has ``key``, ``kind``,
+        ``needs``, ``config``).  Only tasks reachable from *target_key*
+        are executed; extra tasks are ignored.
+    target_key:
+        Key of the cell to execute (the "run up to here" target).
+    claims:
+        Caller auth claims for RLS injection.
+    flow_params:
+        Flow-level parameter values (merged into template resolution).
+    preview_limit:
+        Maximum rows returned by SQL cells (default 500).
+    org_id:
+        Org context for connector resolution (may be ``None`` in tests).
+    now:
+        Injected clock datetime.  Defaults to UTC now.
+
+    Returns
+    -------
+    dict
+        ``{"state": "success"|"failed", "result": dict|None, "error": str|None,
+           "logs": list[str], "cell_results": dict[str, dict]}``
+
+        ``cell_results`` maps each executed cell key to its result dict so
+        callers can display intermediate outputs.  The ``result`` key at the
+        top level is the result of *target_key* specifically.
+    """
+    from app.flows.executor import TaskContext, execute_task  # noqa: PLC0415
+
+    if claims is None:
+        claims = {}
+    if flow_params is None:
+        flow_params = {}
+    if now is None:
+        now = datetime.now(timezone.utc)
+
+    # ── Build dependency graph ────────────────────────────────────────────────
+    # task_by_key: key → task dict
+    task_by_key: dict[str, dict[str, Any]] = {t["key"]: t for t in tasks if "key" in t}
+
+    # Effective deps walk: union(explicit needs, inferred SQL sibling refs), so
+    # "run up to here" pulls SQL-referenced upstream cells even when the user
+    # never drew an edge.
+    from app.flows.deps import effective_needs  # noqa: PLC0415
+
+    all_keys: set[str] = set(task_by_key.keys())
+
+    def _upstream(key: str, visited: set[str] | None = None) -> list[str]:
+        """Return keys in execution order (topological) needed by *key*."""
+        if visited is None:
+            visited = set()
+        if key in visited:
+            return []
+        visited.add(key)
+        task = task_by_key.get(key)
+        if task is None:
+            return []
+        result: list[str] = []
+        for dep in effective_needs(task, all_keys):
+            result.extend(_upstream(dep, visited))
+        result.append(key)
+        return result
+
+    # Deduplicate while preserving order.
+    seen: set[str] = set()
+    ordered_keys: list[str] = []
+    for k in _upstream(target_key):
+        if k not in seen:
+            seen.add(k)
+            ordered_keys.append(k)
+
+    # ── Execute each cell in order ────────────────────────────────────────────
+    inputs: dict[str, Any] = {}
+    cell_results: dict[str, dict[str, Any]] = {}
+    all_logs: list[str] = []
+
+    for cell_key in ordered_keys:
+        task = task_by_key.get(cell_key)
+        if task is None:
+            continue
+
+        ctx = TaskContext(
+            flow_params=flow_params,
+            inputs=dict(inputs),
+            now=now,
+            secrets={},
+            org_id=org_id,
+            preview_mode=True,
+            preview_limit=preview_limit,
+        )
+
+        outcome = execute_task(task, ctx, claims)
+        all_logs.extend(outcome.get("logs") or [])
+
+        if outcome["state"] != "success":
+            # Fail fast — return immediately with error info.
+            return {
+                "state": outcome["state"],
+                "result": None,
+                "error": outcome.get("error"),
+                "logs": all_logs,
+                "cell_results": cell_results,
+                "failed_cell": cell_key,
+            }
+
+        cell_result = outcome["result"] or {}
+        inputs[cell_key] = cell_result
+        cell_results[cell_key] = cell_result
+
+    target_result = cell_results.get(target_key)
+    return {
+        "state": "success",
+        "result": target_result,
+        "error": None,
+        "logs": all_logs,
+        "cell_results": cell_results,
+    }
+
+
 async def _claim_for_flow_run(
     store: Any,
     flow_run_id: str,
@@ -1117,6 +1342,36 @@ async def _get_task_spec(store: Any, task_run: dict[str, Any]) -> dict[str, Any]
         map_key, idx_str, child_key = m.group(1), m.group(2), m.group(3)
         idx = int(idx_str)
 
+        # ── for_each synthetic-map child: "{cell}[{i}].__self__" ─────────────
+        # A for_each cell is rewritten into a legacy map at run time; its single
+        # body task is the cell itself keyed '__self__'.  The parent cell is a
+        # query/python task (NOT kind=='map'), so reconstruct the synthetic body
+        # deterministically via to_map_config (no store persistence).
+        from app.flows.for_each import SELF_BODY_KEY, get_for_each, to_map_config  # noqa: PLC0415
+
+        if child_key == SELF_BODY_KEY:
+            for task in tasks:
+                if task.get("key") == map_key and get_for_each(task):
+                    map_config = to_map_config(task)
+                    item_var = map_config.get("item_var", "item")
+                    body = map_config.get("body", [])
+                    if body:
+                        body_task = body[0]
+                        spec = dict(body_task)
+                        merged_config = dict(body_task.get("config") or {})
+                        tr_config = task_run.get("config") or {}
+                        if "__item__" in tr_config:
+                            merged_config["__item__"] = tr_config["__item__"]
+                            merged_config["__item_var__"] = tr_config.get("__item_var__", item_var)
+                            merged_config["__item_index__"] = tr_config.get("__item_index__", idx)
+                        else:
+                            item = await _lookup_map_item(store, flow_run_id, map_key, idx)
+                            merged_config["__item__"] = item
+                            merged_config["__item_var__"] = item_var
+                            merged_config["__item_index__"] = idx
+                        spec["config"] = merged_config
+                        return spec
+
         for task in tasks:
             if task.get("key") == map_key and task.get("kind") == "map":
                 body = task.get("config", {}).get("body", [])
@@ -1167,6 +1422,161 @@ async def _lookup_map_item(
             if items and 0 <= idx < len(items):
                 return items[idx]
     return {}
+
+
+def _is_incremental_materialize(task_spec: dict[str, Any]) -> bool:
+    """Return ``True`` when *task_spec* persists a full/incremental materialization.
+
+    Covers both the legacy ``materialize`` task and a ``query`` (SQL) CELL that
+    carries ``config.materialized`` with kind ``full`` / ``incremental`` — so
+    the existing pre-run watermark READ and post-run WRITE plumbing applies to
+    SQL cells with zero new wiring.
+    """
+    kind = task_spec.get("kind")
+    if kind not in ("materialize", "query"):
+        return False
+    mat = (task_spec.get("config") or {}).get("materialized")
+    if not isinstance(mat, dict):
+        return False
+    return str(mat.get("kind") or "view").lower() in ("full", "incremental")
+
+
+async def _resolve_run_env_context(
+    store: Any,
+    flow_run: dict[str, Any] | None,
+    task_run: dict[str, Any],
+    task_spec: dict[str, Any],
+) -> tuple[str, dict[str, Any] | None, str | None]:
+    """Resolve (env, flow_dict, watermark) for a task execution.
+
+    - ``env``: from ``flow_run['env']`` → ``flow.spec.env`` → ``"prod"``.
+    - ``flow_dict``: the flow dict (for materialize base-uri resolution).
+    - ``watermark``: the stored incremental watermark for this (flow, model,
+      env), read BEFORE the handler runs — only for persisted materialize tasks.
+    """
+    flow_dict: dict[str, Any] | None = None
+    flow_id: str | None = None
+    if flow_run:
+        flow_id = flow_run.get("flow_id")
+    if flow_id:
+        try:
+            flow_dict = await store.get_flow(flow_id)
+        except Exception:  # noqa: BLE001
+            flow_dict = None
+
+    spec_data = (flow_dict or {}).get("spec") if flow_dict else None
+    env = (flow_run or {}).get("env")
+    if not env:
+        env = _resolve_env(None, spec_data if isinstance(spec_data, dict) else None)
+    env = str(env or "prod")
+
+    watermark: str | None = None
+    if _is_incremental_materialize(task_spec) and flow_id:
+        getter = getattr(store, "get_watermark", None)
+        if getter is not None:
+            try:
+                watermark = await getter(flow_id, task_run.get("task_key", ""), env)
+            except Exception:  # noqa: BLE001
+                watermark = None
+
+    return env, flow_dict, watermark
+
+
+async def _persist_watermark(
+    store: Any,
+    flow_run: dict[str, Any] | None,
+    task_run: dict[str, Any],
+    task_spec: dict[str, Any],
+    result: dict[str, Any] | None,
+) -> None:
+    """Persist an advanced incremental watermark after a successful materialize.
+
+    No-op unless the task is a persisted materialize and the handler returned a
+    ``new_watermark`` in its result.
+    """
+    if not _is_incremental_materialize(task_spec):
+        return
+    if not isinstance(result, dict):
+        return
+    new_wm = result.get("new_watermark")
+    if new_wm is None:
+        return
+    setter = getattr(store, "set_watermark", None)
+    if setter is None:
+        return
+    flow_id = (flow_run or {}).get("flow_id")
+    if not flow_id:
+        return
+    env = str((flow_run or {}).get("env") or result.get("env") or "prod")
+    try:
+        await setter(flow_id, task_run.get("task_key", ""), env, str(new_wm))
+    except Exception:  # noqa: BLE001
+        logger.debug("Failed to persist watermark for flow %s task %s", flow_id, task_run.get("task_key"))
+
+
+def _apply_for_each_rewrite(
+    full_task: dict[str, Any],
+    task_spec: dict[str, Any],
+) -> None:
+    """Rewrite a for_each cell into a legacy ``map`` task IN PLACE.
+
+    Detects a usable ``config.for_each`` block on *task_spec* and, if present,
+    mutates *full_task* so its ``kind`` becomes ``'map'`` and its ``config``
+    becomes the synthetic-map config (``to_map_config``).  The EXISTING map
+    fan-out machinery then runs unchanged.  No-op when there is no for_each.
+
+    Skipped for tasks already keyed as a map child (``"...[i]....``) — those are
+    the body executions and must NOT recurse into another fan-out.
+    """
+    if "[" in full_task.get("task_key", ""):
+        return
+    from app.flows.for_each import get_for_each, to_map_config  # noqa: PLC0415
+
+    if get_for_each(task_spec):
+        full_task["kind"] = "map"
+        full_task["config"] = to_map_config(task_spec)
+
+
+def _maybe_persist_materialized_cell(
+    task_spec: dict[str, Any],
+    result: dict[str, Any] | None,
+    *,
+    env: str,
+    flow: dict[str, Any] | None,
+    watermark: str | None,
+    now: datetime,
+) -> None:
+    """Persist a SQL cell's SELECT result per ``config.materialized`` IN PLACE.
+
+    No-op unless *task_spec* is a ``query`` cell with a full/incremental
+    ``config.materialized`` block and *result* carries ``rows``.  Merges the
+    persistence manifest (incl. ``new_watermark``) into *result* so the existing
+    ``_persist_watermark`` stores the advanced watermark.  Materialized is
+    IGNORED in preview (this is only called on the durable success path).
+    """
+    if task_spec.get("kind") != "query":
+        return
+    mat = (task_spec.get("config") or {}).get("materialized")
+    from app.flows.cell_materialize import is_persisted, persist_query_result  # noqa: PLC0415
+
+    if not is_persisted(mat):
+        return
+    if not isinstance(result, dict):
+        return
+    rows = result.get("rows")
+    if rows is None:
+        return
+    columns = result.get("columns")
+    manifest = persist_query_result(
+        rows,
+        columns,
+        mat,
+        env=env,
+        flow=flow,
+        watermark=watermark,
+        now=now,
+    )
+    result.update(manifest)
 
 
 async def _resolve_secrets(org_id: str) -> dict[str, str]:
@@ -1244,10 +1654,27 @@ async def _execute_claimed_task_run(
     # Resolve secrets (use pre-resolved if provided, else lazy resolution).
     resolved_secrets: dict[str, str] = secrets if secrets is not None else await _resolve_secrets(org_id)
 
-    ctx = TaskContext(flow_params=flow_params, inputs=inputs, now=now, secrets=resolved_secrets)
+    # ── Resolve env / flow / incremental watermark ─────────────────────────────
+    env, flow_dict, watermark = await _resolve_run_env_context(
+        store, flow_run, task_run, task_spec
+    )
+
+    ctx = TaskContext(
+        flow_params=flow_params,
+        inputs=inputs,
+        now=now,
+        secrets=resolved_secrets,
+        org_id=org_id or None,
+        env=env,
+        flow=flow_dict,
+        watermark=watermark,
+    )
 
     # Merge task_run fields with task_spec so execute_task sees kind/config/timeout.
     full_task = {**task_run, **task_spec}
+    # for_each cells are rewritten into a legacy 'map' task so the existing
+    # fan-out machinery runs unchanged.
+    _apply_for_each_rewrite(full_task, task_spec)
 
     outcome = execute_task(full_task, ctx, claims)
 
@@ -1259,6 +1686,22 @@ async def _execute_claimed_task_run(
 
     outcome_state = outcome["state"]
     outcome_logs = outcome.get("logs") or []
+
+    if outcome_state == "skipped":
+        # run_when gate evaluated False — terminal, no retry, no watermark.
+        result_tr = await store.update_task_run(
+            task_run_id,
+            {
+                "state": "skipped",
+                "result": None,
+                "finished_at": now,
+                "error": None,
+                "logs": outcome_logs,
+            },
+        )
+        _emit_task_event("task_skipped", flow_run_id, task_key, "skipped", None, attempt, now)
+        await advance_readiness(store, flow_run_id, now)
+        return result_tr or task_run
 
     if outcome_state == "success":
         # ── Map fan-out: expand child task_runs before transitioning state ────
@@ -1308,6 +1751,11 @@ async def _execute_claimed_task_run(
             return result_tr or task_run
 
         # Standard success path (non-map).
+        # Persist a SQL cell's SELECT result per config.materialized (full/
+        # incremental) and merge the manifest (incl. new_watermark) into result.
+        _maybe_persist_materialized_cell(
+            task_spec, outcome["result"], env=env, flow=flow_dict, watermark=watermark, now=now,
+        )
         result_tr = await store.update_task_run(
             task_run_id,
             {
@@ -1318,6 +1766,8 @@ async def _execute_claimed_task_run(
                 "logs": outcome_logs,
             },
         )
+        # Persist an advanced incremental watermark, if the handler returned one.
+        await _persist_watermark(store, flow_run, task_run, task_spec, outcome["result"])
         _emit_task_event("task_success", flow_run_id, task_key, "success", None, attempt, now)
         await advance_readiness(store, flow_run_id, now)
         return result_tr or task_run

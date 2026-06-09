@@ -28,7 +28,7 @@
  * Error objects with .status and .payload).  Callers should handle errors.
  */
 
-import { get, post } from '../api.js'
+import { get, post, getBlob } from '../api.js'
 
 // ---------------------------------------------------------------------------
 // FX helpers
@@ -86,6 +86,9 @@ export function formatZar(zar) {
  * unreachable.  Prices reflect the June 2026 reference amounts at R16.26 USD/ZAR
  * + 2% FX buffer per the approved pricing blueprint.
  *
+ * NEW 4-tier model: Free / Launch ($9) / Growth ($149) / Scale ($1,000 + SLA).
+ * No per-seat pricing — unlimited seats at every tier.
+ *
  * Backend response is authoritative; this is a display fallback only.
  *
  * @type {TierInfo[]}
@@ -116,122 +119,107 @@ export const FALLBACK_TIERS = [
     cta_label: 'Get started free',
     highlight: false,
     is_enterprise: false,
+    has_sla: false,
   },
   {
-    id: 'starter',
-    name: 'Starter',
-    usd_monthly: 79,
-    // Correct ceil10 value: ceil10($79 × 16.26 × 1.02) = ceil10(R1310.23) = R1320
-    price_zar: 1320,
-    price_label: 'R 1,320 / month',
-    annual_usd: 790,
-    // Annual monthly equivalent: ceil10($79 × 10/12 × 16.26 × 1.02) ≈ R1100
-    annual_zar_monthly_equiv: 1100,
+    id: 'launch',
+    name: 'Launch',
+    usd_monthly: 9,
+    // ceil10($9 × 16.26 × 1.02) = ceil10(R149.35) = R150
+    price_zar: 150,
+    price_label: 'R 150 / month',
+    annual_usd: 90,
+    // ceil10($9 × 10/12 × 16.26 × 1.02) = ceil10(R124.46) = R130
+    annual_zar_monthly_equiv: 130,
     seats: null,
-    description: 'For small teams and single-product SaaS that need cloud hosting.',
+    description: 'For hobbyists and side-projects that need more headroom.',
     features: [
       'Unlimited editors & viewers — no per-seat charge',
       '10 GB storage',
-      '5,000 compute units / month',
-      '5,000 embedded sessions / month',
+      '3,000 compute units / month',
+      '2,000 embedded sessions / month',
       '10 connectors (incl. 2 cloud)',
-      '25 dashboards · 5 scheduled flows',
+      '15 dashboards · 5 scheduled flows',
       '10 AI calls / month',
       'Basic row-level security',
-      'Google OAuth SSO · Nubi badge removable',
-      '30-day audit log',
-      '99.5% uptime SLA',
+      'Nubi badge removable',
+      'Usage wallet — pay-as-you-go overages',
+      'Email support',
     ],
-    cta_label: 'Upgrade to Starter',
+    cta_label: 'Upgrade to Launch',
     highlight: false,
     is_enterprise: false,
+    has_sla: false,
   },
   {
-    id: 'pro',
-    name: 'Pro',
-    usd_monthly: 199,
-    // Correct ceil10 value: ceil10($199 × 16.26 × 1.02) = ceil10(R3302.15) = R3310
-    price_zar: 3310,
-    price_label: 'R 3,310 / month',
-    annual_usd: 1990,
-    // Annual monthly equivalent ≈ ceil10($199 × 10/12 × 16.26 × 1.02) ≈ R2760
-    annual_zar_monthly_equiv: 2760,
+    id: 'growth',
+    name: 'Growth',
+    usd_monthly: 149,
+    // ceil10($149 × 16.26 × 1.02) = ceil10(R2471.86) = R2480
+    price_zar: 2480,
+    price_label: 'R 2,480 / month',
+    annual_usd: 1490,
+    // ceil10($149 × 10/12 × 16.26 × 1.02) = ceil10(R2059.88) = R2060
+    annual_zar_monthly_equiv: 2060,
     seats: null,
-    description: 'For growing teams and embedded analytics ISVs.',
+    description: 'For growing teams shipping production embedded analytics.',
     features: [
       'Unlimited editors & viewers — no per-seat charge',
       '50 GB storage',
-      '10,000 compute units / month',
+      '15,000 compute units / month',
       '25,000 embedded sessions / month',
-      '50 agent / kernel runs · 50 AI calls / month',
+      '100 AI calls / month · 50 agent / kernel runs',
       'All connectors',
       '100 dashboards · 20 scheduled flows',
       'Full RLS with JWT claims',
       'Google OAuth + SAML (1 IdP)',
       'Full white-label (custom domain)',
       '90-day audit log',
+      'Usage wallet — prepaid credits, auto-topup',
       '99.5% uptime SLA',
     ],
-    cta_label: 'Upgrade to Pro',
+    cta_label: 'Upgrade to Growth',
     highlight: true,
     is_enterprise: false,
+    has_sla: false,
   },
   {
-    id: 'business',
-    name: 'Business',
-    usd_monthly: 499,
-    price_zar: 8280,
-    price_label: 'R 8,280 / month',
-    annual_usd: 4990,
-    annual_zar_monthly_equiv: 6900,
+    id: 'scale',
+    name: 'Scale',
+    usd_monthly: 1000,
+    // ceil10($1000 × 16.26 × 1.02) = ceil10(R16585.20) = R16590
+    price_zar: 16590,
+    price_label: 'From R 16,590 / month',
+    annual_usd: 10000,
+    // ceil10($1000 × 10/12 × 16.26 × 1.02) = ceil10(R13821) = R13830
+    annual_zar_monthly_equiv: 13830,
     seats: null,
-    description: 'For mid-market SaaS and multi-product analytics platforms.',
-    features: [
-      'Unlimited editors & viewers — no per-seat charge',
-      '200 GB storage',
-      '40,000 compute units / month',
-      '100,000 embedded sessions / month',
-      '200 agent / kernel runs · 200 AI calls / month',
-      'Unlimited dashboards & flows',
-      'Full RLS + host-signed JWT pass-through',
-      'SAML (unlimited IdPs) + SCIM',
-      'Full white-label + multi-tenant workspaces',
-      '1-year audit log + export',
-      'Email & Slack priority support',
-      '99.9% uptime SLA',
-    ],
-    cta_label: 'Upgrade to Business',
-    highlight: false,
-    is_enterprise: false,
-  },
-  {
-    id: 'enterprise',
-    name: 'Enterprise',
-    usd_monthly: 1799,
-    price_zar: 29840,
-    price_label: 'From R 29,840 / month',
-    annual_usd: 17990,
-    annual_zar_monthly_equiv: 24870,
-    seats: null,
-    description: 'Unlimited scale, dedicated infrastructure, BYOC, and white-glove support.',
+    description: 'For enterprise teams that need SLA guarantees and dedicated support.',
     features: [
       'Unlimited editors & viewers — no per-seat charge',
       '500 GB+ storage (hosted) or unlimited (BYOC)',
-      '200,000+ compute units / month',
+      '200,000 compute units / month',
       'Unlimited embedded sessions',
-      '1,000 agent / kernel runs · 500 AI calls / month',
-      'Custom connector SDK',
-      'Full RLS + HIPAA-ready controls',
-      'SAML/SCIM, multi-IdP, custom domains',
+      '1,000 AI calls / month · 500 agent / kernel runs',
+      'All connectors + custom connector SDK',
+      'Unlimited dashboards & scheduled flows',
+      'Full RLS + host-signed JWT pass-through',
+      'SAML (unlimited IdPs) + SCIM',
       'Full white-label + custom JS SDK',
       'Unlimited audit log + SIEM export',
-      'Dedicated CSM · 99.99% uptime SLA',
+      'Usage wallet — prepaid credits, auto-topup, spend cap',
       'BYOC / air-gap / on-prem deployment',
       'BAA / HIPAA on request',
     ],
     cta_label: 'Contact sales',
     highlight: false,
     is_enterprise: true,
+    has_sla: true,
+    sla: {
+      uptime: '99.99%',
+      response_time: '4-hour critical / 8-hour standard',
+      support: 'Named dedicated support engineer',
+    },
   },
 ]
 
@@ -328,4 +316,53 @@ export function createCheckout(tierId, { successUrl, cancelUrl } = {}) {
  */
 export function openBillingPortal() {
   return post('/ee/billing/portal', {})
+}
+
+// ---------------------------------------------------------------------------
+// Invoices + current-cycle projection (org_id-scoped, matches routes.py)
+// ---------------------------------------------------------------------------
+
+/**
+ * List invoices for an org (newest first).
+ *
+ * @param {string} orgId
+ * @returns {Promise<{ org_id: string, invoices: object[], count: number }>}
+ */
+export async function fetchInvoices(orgId) {
+  if (!orgId) return { org_id: null, invoices: [], count: 0 }
+  return get(`/ee/billing/invoices?org_id=${encodeURIComponent(orgId)}&limit=50`)
+}
+
+/**
+ * Project the current billing cycle (usage vs quota + gross overage). Dry-run —
+ * never collects money. Powers the "this cycle" panel in billing settings.
+ *
+ * @param {string} orgId
+ * @returns {Promise<object>}
+ */
+export async function fetchCurrentCycle(orgId) {
+  if (!orgId) return null
+  return get(`/ee/billing/invoices/current-cycle?org_id=${encodeURIComponent(orgId)}`)
+}
+
+/**
+ * Download an invoice PDF and trigger a browser save. Fetches as an authed Blob
+ * (the access token lives in memory, so a plain link won't authenticate).
+ *
+ * @param {string} orgId
+ * @param {string} invoiceId
+ * @param {string} [filename]
+ */
+export async function downloadInvoicePdf(orgId, invoiceId, filename) {
+  const blob = await getBlob(
+    `/ee/billing/invoices/${encodeURIComponent(invoiceId)}/pdf?org_id=${encodeURIComponent(orgId)}`,
+  )
+  const url = URL.createObjectURL(blob)
+  const a = document.createElement('a')
+  a.href = url
+  a.download = filename || `${invoiceId}.pdf`
+  document.body.appendChild(a)
+  a.click()
+  a.remove()
+  URL.revokeObjectURL(url)
 }

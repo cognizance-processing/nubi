@@ -33,6 +33,7 @@ import {
 import * as api from '../../lib/api.js'
 import { useUi } from '../../contexts/UiContext.jsx'
 import { useProject } from '../../contexts/ProjectContext.jsx'
+import { useCanWrite } from '../../contexts/OrgContext.jsx'
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -219,7 +220,7 @@ function DeleteDialog({ board, onConfirm, onCancel, busy }) {
 }
 
 /** Single board card. */
-function BoardCard({ board, onDeleted }) {
+function BoardCard({ board, onDeleted, canWrite }) {
   const navigate = useNavigate()
   const [confirmDelete, setConfirmDelete] = useState(false)
   const [deleteBusy, setDeleteBusy] = useState(false)
@@ -257,11 +258,13 @@ function BoardCard({ board, onDeleted }) {
               </Link>
               <p className="text-xs text-muted mt-0.5">{boardMeta(board.config)}</p>
             </div>
-            <CardMenu
-              board={board}
-              onEdit={() => navigate(`/editor/${board.id}`)}
-              onDelete={() => setConfirmDelete(true)}
-            />
+            {canWrite && (
+              <CardMenu
+                board={board}
+                onEdit={() => navigate(`/editor/${board.id}`)}
+                onDelete={() => setConfirmDelete(true)}
+              />
+            )}
           </div>
 
           {/* Actions */}
@@ -273,13 +276,15 @@ function BoardCard({ board, onDeleted }) {
               <ExternalLink size={13} />
               Open
             </Link>
-            <Link
-              to={`/editor/${board.id}`}
-              className="flex items-center gap-1.5 flex-1 justify-center h-9 rounded-lg border border-border bg-surface-2 text-fg text-xs font-medium hover:bg-surface-2/60 transition-colors"
-            >
-              <Pencil size={13} />
-              Edit
-            </Link>
+            {canWrite && (
+              <Link
+                to={`/editor/${board.id}`}
+                className="flex items-center gap-1.5 flex-1 justify-center h-9 rounded-lg border border-border bg-surface-2 text-fg text-xs font-medium hover:bg-surface-2/60 transition-colors"
+              >
+                <Pencil size={13} />
+                Edit
+              </Link>
+            )}
           </div>
         </div>
       </article>
@@ -319,7 +324,7 @@ function SkeletonCard() {
 }
 
 /** Empty state when no boards exist. */
-function EmptyState({ hasFilter, onClearFilter, onAskAI }) {
+function EmptyState({ hasFilter, onClearFilter, onAskAI, canWrite }) {
   if (hasFilter) {
     return (
       <div className="flex flex-col items-center justify-center py-24 px-6 text-center">
@@ -356,29 +361,32 @@ function EmptyState({ hasFilter, onClearFilter, onAskAI }) {
       </div>
 
       <h2 className="font-display font-semibold text-2xl text-fg mb-2">
-        Create your first dashboard
+        {canWrite ? 'Create your first dashboard' : 'No dashboards yet'}
       </h2>
       <p className="text-muted text-sm max-w-sm leading-relaxed mb-8">
-        Dashboards bring your data to life with charts, tables, and widgets.
-        Build one manually or let AI do the heavy lifting.
+        {canWrite
+          ? 'Dashboards bring your data to life with charts, tables, and widgets. Build one manually or let AI do the heavy lifting.'
+          : 'There are no dashboards to view yet. You have read-only access in this organisation.'}
       </p>
 
-      <div className="flex flex-col sm:flex-row gap-3">
-        <Link
-          to="/editor"
-          className="inline-flex items-center justify-center gap-2 h-11 px-6 rounded-xl bg-primary text-primary-fg text-sm font-semibold hover:opacity-90 transition-opacity"
-        >
-          <Plus size={16} />
-          New dashboard
-        </Link>
-        <button
-          onClick={onAskAI}
-          className="inline-flex items-center justify-center gap-2 h-11 px-6 rounded-xl border border-border bg-surface-2 text-fg text-sm font-semibold hover:bg-surface-2/60 transition-colors"
-        >
-          <Sparkles size={16} className="text-accent" />
-          Ask AI to build one
-        </button>
-      </div>
+      {canWrite && (
+        <div className="flex flex-col sm:flex-row gap-3">
+          <Link
+            to="/editor"
+            className="inline-flex items-center justify-center gap-2 h-11 px-6 rounded-xl bg-primary text-primary-fg text-sm font-semibold hover:opacity-90 transition-opacity"
+          >
+            <Plus size={16} />
+            New dashboard
+          </Link>
+          <button
+            onClick={onAskAI}
+            className="inline-flex items-center justify-center gap-2 h-11 px-6 rounded-xl border border-border bg-surface-2 text-fg text-sm font-semibold hover:bg-surface-2/60 transition-colors"
+          >
+            <Sparkles size={16} className="text-accent" />
+            Ask AI to build one
+          </button>
+        </div>
+      )}
     </div>
   )
 }
@@ -445,6 +453,9 @@ export default function DashboardsPage() {
   // Re-scope the list whenever the active project changes (api.js sends X-Project-Id).
   const { activeProject } = useProject()
   const projectId = activeProject?.id
+
+  // Viewers are read-only — hide mutating actions (backend enforces too).
+  const canWrite = useCanWrite()
 
   // Access the chat panel opener if UiContext is available
   let openChat = null
@@ -515,13 +526,19 @@ export default function DashboardsPage() {
           )}
         </div>
 
-        <Link
-          to="/editor"
-          className="inline-flex items-center justify-center gap-2 h-11 px-5 rounded-xl bg-primary text-primary-fg text-sm font-semibold hover:opacity-90 transition-opacity shrink-0 self-start sm:self-auto"
-        >
-          <Plus size={16} />
-          New dashboard
-        </Link>
+        {canWrite ? (
+          <Link
+            to="/editor"
+            className="inline-flex items-center justify-center gap-2 h-11 px-5 rounded-xl bg-primary text-primary-fg text-sm font-semibold hover:opacity-90 transition-opacity shrink-0 self-start sm:self-auto"
+          >
+            <Plus size={16} />
+            New dashboard
+          </Link>
+        ) : (
+          <span className="inline-flex items-center h-11 px-3 rounded-xl text-xs font-medium text-muted self-start sm:self-auto">
+            Read-only
+          </span>
+        )}
       </div>
 
       {/* ── Search + sort bar ────────────────────────────── */}
@@ -592,6 +609,7 @@ export default function DashboardsPage() {
           hasFilter={search.length > 0}
           onClearFilter={() => setSearch('')}
           onAskAI={handleAskAI}
+          canWrite={canWrite}
         />
       )}
 
@@ -603,6 +621,7 @@ export default function DashboardsPage() {
               key={board.id}
               board={board}
               onDeleted={handleDeleted}
+              canWrite={canWrite}
             />
           ))}
         </div>

@@ -37,6 +37,7 @@ from fastapi import APIRouter, Depends, Response
 from pydantic import BaseModel, EmailStr, field_validator, model_validator
 
 from app.auth.deps import current_user
+from app.auth.roles import require_writer_default
 from app.db import fetchrow
 from app.errors import AppError
 from app.jobs.executor import execute_job
@@ -269,7 +270,7 @@ def _require_job_in_org(
 # ---------------------------------------------------------------------------
 
 
-@router.post("", status_code=201)
+@router.post("", status_code=201, dependencies=[Depends(require_writer_default)])
 async def create_job(
     body: CreateJobIn,
     user: dict[str, Any] = Depends(current_user),
@@ -339,7 +340,7 @@ async def get_job(
     return _serialize_job(job)
 
 
-@router.delete("/{job_id}", status_code=204)
+@router.delete("/{job_id}", status_code=204, dependencies=[Depends(require_writer_default)])
 async def delete_job(
     job_id: str,
     user: dict[str, Any] = Depends(current_user),
@@ -356,7 +357,7 @@ async def delete_job(
     return Response(status_code=204)
 
 
-@router.post("/{job_id}/run", status_code=200)
+@router.post("/{job_id}/run", status_code=200, dependencies=[Depends(require_writer_default)])
 async def run_job_now(
     job_id: str,
     user: dict[str, Any] = Depends(current_user),

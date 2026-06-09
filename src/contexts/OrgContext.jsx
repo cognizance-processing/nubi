@@ -143,3 +143,16 @@ export function useOrg() {
   if (!ctx) throw new Error('useOrg must be used inside <OrgProvider>')
   return ctx
 }
+
+/**
+ * Whether the current user can write (create/edit/delete/run) in the active org.
+ * `viewer` is read-only; every other role (owner/admin/member) can write.
+ * Used to hide/disable mutating actions in the UI — the backend enforces the
+ * same rule authoritatively (see app/auth/roles.py).
+ *
+ * @returns {boolean}
+ */
+export function useCanWrite() {
+  const { activeOrg } = useOrg()
+  return activeOrg?.role !== 'viewer'
+}

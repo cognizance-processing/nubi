@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg width="256" height="256" viewBox="0 0 256 256" version="1.1" xmlns="http://www.w3.org/2000/svg">
+  <title>Demo data</title>
+  <defs>
+    <linearGradient id="demoGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop stop-color="#17b3a3" offset="0%"/>
+      <stop stop-color="#2456a6" offset="100%"/>
+    </linearGradient>
+  </defs>
+  <rect x="0" y="0" width="256" height="256" rx="48" fill="url(#demoGrad)"/>
+  <!-- Sample bar-chart dataset glyph -->
+  <g fill="#FFFFFF">
+    <rect x="56" y="150" width="26" height="50" rx="6"/>
+    <rect x="98" y="118" width="26" height="82" rx="6"/>
+    <rect x="140" y="86" width="26" height="114" rx="6" fill-opacity="0.92"/>
+  </g>
+  <!-- Spark / "instant" accent dot -->
+  <circle cx="187" cy="74" r="22" fill="#FFFFFF"/>
+  <path d="M187 60 l4.6 9.4 10.4 1.5 -7.5 7.3 1.8 10.3 -9.3 -4.9 -9.3 4.9 1.8 -10.3 -7.5 -7.3 10.4 -1.5 Z" fill="#17b3a3"/>
+</svg>

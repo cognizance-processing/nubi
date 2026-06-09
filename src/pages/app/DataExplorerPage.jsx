@@ -89,15 +89,8 @@ async function fetchRows(datastoreId, table, limit = DEFAULT_LIMIT) {
     throw new Error(`Row fetch failed (${resp.status}): ${txt}`)
   }
   const buf = await resp.arrayBuffer()
-  const reader = arrow.RecordBatchReader.fromByteStream(
-    new ReadableStream({
-      start(ctrl) {
-        ctrl.enqueue(new Uint8Array(buf))
-        ctrl.close()
-      },
-    })
-  )
-  // Synchronous open (buffer already complete)
+  // Buffer is already complete → synchronous IPC decode. (apache-arrow has no
+  // `fromByteStream`; `RecordBatchReader.from()` is the supported entry point.)
   const arrowReader = arrow.RecordBatchReader.from(new Uint8Array(buf))
   const tbl = new arrow.Table([...arrowReader])
   return { table: tbl, rowCount: tbl.numRows }

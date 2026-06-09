@@ -48,6 +48,7 @@ import {
 } from 'lucide-react'
 import { get, post, put, del } from '../../lib/api.js'
 import { useProject } from '../../contexts/ProjectContext.jsx'
+import { useCanWrite } from '../../contexts/OrgContext.jsx'
 
 // ---------------------------------------------------------------------------
 // API helpers
@@ -711,7 +712,7 @@ function JobModal({ initial, onSave, onClose, saving }) {
 // Flow row
 // ---------------------------------------------------------------------------
 
-function FlowRow({ flow, onChanged, onToast }) {
+function FlowRow({ flow, onChanged, onToast, canWrite }) {
   const [expanded, setExpanded] = useState(false)
   const [running, setRunning] = useState(false)
   const [toggling, setToggling] = useState(false)
@@ -777,12 +778,16 @@ function FlowRow({ flow, onChanged, onToast }) {
 
         {/* Actions */}
         <div className="flex items-center gap-2 shrink-0">
-          <Toggle on={enabled} busy={toggling} onToggle={handleToggle} />
+          <Toggle
+            on={enabled}
+            busy={toggling || !canWrite}
+            onToggle={canWrite ? handleToggle : undefined}
+          />
 
           <button
             onClick={handleRun}
-            disabled={running}
-            title="Run now"
+            disabled={running || !canWrite}
+            title={canWrite ? 'Run now' : 'Read-only — you don’t have permission to run flows'}
             className="
               inline-flex items-center gap-1.5 h-9 px-3 rounded-lg
               text-xs font-medium border border-border
@@ -797,7 +802,7 @@ function FlowRow({ flow, onChanged, onToast }) {
 
           <button
             onClick={() => navigate(`/flows/${flow.id}`)}
-            title="Edit flow"
+            title={canWrite ? 'Edit flow' : 'View flow'}
             className="
               inline-flex items-center justify-center h-9 w-9 rounded-lg
               border border-border text-muted
@@ -832,7 +837,7 @@ function FlowRow({ flow, onChanged, onToast }) {
 // Job card
 // ---------------------------------------------------------------------------
 
-function JobCard({ job, onToast, onDeleted, onViewRuns }) {
+function JobCard({ job, onToast, onDeleted, onViewRuns, canWrite }) {
   const [running, setRunning] = useState(false)
   const [deleting, setDeleting] = useState(false)
   const [confirmDelete, setConfirmDelete] = useState(false)
@@ -897,8 +902,8 @@ function JobCard({ job, onToast, onDeleted, onViewRuns }) {
         <div className="flex items-center gap-2 shrink-0">
           <button
             onClick={handleRun}
-            disabled={running}
-            title="Run now"
+            disabled={running || !canWrite}
+            title={canWrite ? 'Run now' : 'Read-only — you don’t have permission to run jobs'}
             className="
               inline-flex items-center gap-1.5 h-9 px-3 rounded-lg
               text-xs font-medium border border-border
@@ -924,7 +929,7 @@ function JobCard({ job, onToast, onDeleted, onViewRuns }) {
             <History size={14} />
           </button>
 
-          {confirmDelete ? (
+          {!canWrite ? null : confirmDelete ? (
             <div className="flex items-center gap-1.5">
               <button
                 onClick={handleDelete}
@@ -995,6 +1000,7 @@ export default function AutomationsPage() {
   const navigate = useNavigate()
   const { activeProject } = useProject()
   const projectId = activeProject?.id
+  const canWrite = useCanWrite()
 
   // Flows
   const [flows, setFlows] = useState([])
@@ -1090,19 +1096,21 @@ export default function AutomationsPage() {
             <RefreshCw size={15} className={isLoading ? 'animate-spin' : ''} strokeWidth={2} />
           </button>
 
-          <button
-            onClick={() => setShowJobModal(true)}
-            className="
-              inline-flex items-center gap-2 px-4 py-2 rounded-xl
-              bg-primary text-primary-fg text-sm font-semibold
-              hover:opacity-90 transition-opacity shadow-sm
-              focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2
-              min-h-[44px]
-            "
-          >
-            <Plus size={15} strokeWidth={2.5} />
-            New automation
-          </button>
+          {canWrite && (
+            <button
+              onClick={() => setShowJobModal(true)}
+              className="
+                inline-flex items-center gap-2 px-4 py-2 rounded-xl
+                bg-primary text-primary-fg text-sm font-semibold
+                hover:opacity-90 transition-opacity shadow-sm
+                focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2
+                min-h-[44px]
+              "
+            >
+              <Plus size={15} strokeWidth={2.5} />
+              New automation
+            </button>
+          )}
         </div>
       </div>
 
@@ -1156,7 +1164,7 @@ export default function AutomationsPage() {
           {!flowsLoading && !flowsError && flows.length > 0 && (
             <div className="space-y-3">
               {flows.map(flow => (
-                <FlowRow key={flow.id} flow={flow} onChanged={fetchFlows} onToast={showToast} />
+                <FlowRow key={flow.id} flow={flow} onChanged={fetchFlows} onToast={showToast} canWrite={canWrite} />
               ))}
             </div>
           )}
@@ -1198,12 +1206,14 @@ export default function AutomationsPage() {
                 Schedule your first report, sync, or query to run automatically on a cron schedule.
               </p>
               <div className="flex flex-wrap items-center justify-center gap-3">
-                <button
-                  onClick={() => setShowJobModal(true)}
-                  className="inline-flex items-center gap-2 px-5 py-2.5 rounded-xl bg-primary text-primary-fg text-sm font-semibold hover:opacity-90 transition-opacity shadow-sm"
-                >
-                  <Plus size={15} strokeWidth={2.5} /> New automation
-                </button>
+                {canWrite && (
+                  <button
+                    onClick={() => setShowJobModal(true)}
+                    className="inline-flex items-center gap-2 px-5 py-2.5 rounded-xl bg-primary text-primary-fg text-sm font-semibold hover:opacity-90 transition-opacity shadow-sm"
+                  >
+                    <Plus size={15} strokeWidth={2.5} /> New automation
+                  </button>
+                )}
                 <button
                   onClick={() => navigate('/flows')}
                   className="inline-flex items-center gap-2 px-5 py-2.5 rounded-xl border border-border text-sm font-medium text-muted hover:text-fg hover:bg-surface-2 transition-colors"
@@ -1222,12 +1232,14 @@ export default function AutomationsPage() {
               </div>
               <p className="text-sm font-medium text-fg mb-1">No scheduled jobs</p>
               <p className="text-xs text-muted mb-3">Create one to schedule a query, Python script, or report.</p>
-              <button
-                onClick={() => setShowJobModal(true)}
-                className="inline-flex items-center gap-2 px-4 py-2 rounded-xl border border-border text-sm font-medium text-muted hover:text-fg hover:bg-surface-2 transition-colors"
-              >
-                <Plus size={14} /> New automation
-              </button>
+              {canWrite && (
+                <button
+                  onClick={() => setShowJobModal(true)}
+                  className="inline-flex items-center gap-2 px-4 py-2 rounded-xl border border-border text-sm font-medium text-muted hover:text-fg hover:bg-surface-2 transition-colors"
+                >
+                  <Plus size={14} /> New automation
+                </button>
+              )}
             </div>
           )}
 
@@ -1240,6 +1252,7 @@ export default function AutomationsPage() {
                   onToast={showToast}
                   onDeleted={fetchJobs}
                   onViewRuns={(j) => setRunsJob(j)}
+                  canWrite={canWrite}
                 />
               ))}
             </div>

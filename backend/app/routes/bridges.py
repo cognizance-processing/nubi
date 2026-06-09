@@ -45,6 +45,7 @@ from fastapi import APIRouter, Depends, Response, WebSocket, WebSocketDisconnect
 from pydantic import BaseModel
 
 from app.auth.deps import current_user
+from app.auth.roles import require_writer_default
 from app.bridges.broker import get_broker
 from app.errors import AppError
 from app.repos.provider import Repo, get_repo
@@ -217,7 +218,7 @@ router = APIRouter(prefix="/bridges", tags=["bridges"])
 # ── POST /bridges — create ─────────────────────────────────────────────────
 
 
-@router.post("", status_code=201, response_model=BridgeOut)
+@router.post("", status_code=201, response_model=BridgeOut, dependencies=[Depends(require_writer_default)])
 async def create_bridge(
     body: BridgeIn,
     user: dict[str, Any] = Depends(current_user),
@@ -280,7 +281,7 @@ async def get_bridge(
 # ── DELETE /bridges/{id} — delete ─────────────────────────────────────────
 
 
-@router.delete("/{bridge_id}", status_code=204)
+@router.delete("/{bridge_id}", status_code=204, dependencies=[Depends(require_writer_default)])
 async def delete_bridge(
     bridge_id: str,
     user: dict[str, Any] = Depends(current_user),

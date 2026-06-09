@@ -25,10 +25,12 @@
  * and shows the live FlowRunView.
  */
 
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useCallback, useRef } from 'react'
+import { createPortal } from 'react-dom'
 import { useParams, useNavigate } from 'react-router-dom'
 import {
   Plus,
+  Check,
   RefreshCw,
   GitBranch,
   Trash2,
@@ -38,16 +40,33 @@ import {
   KeyRound,
   X,
   ChevronDown,
+  SlidersHorizontal,
+  PanelRightClose,
+  ShieldCheck,
+  Save,
+  Code2,
+  AlertCircle,
+  CheckCircle2,
+  Share2,
+  LayoutList,
 } from 'lucide-react'
 
+import { useUi } from '../../contexts/UiContext.jsx'
+import { useCanWrite } from '../../contexts/OrgContext.jsx'
 import {
   listFlows,
   getFlow,
   deleteFlow,
   listFlowRuns,
+  validateFlow,
+  createFlow,
+  updateFlow,
+  runFlow,
 } from '../../lib/flows.js'
 import FlowBuilder from '../../flows/FlowBuilder.jsx'
 import FlowRunView from '../../flows/FlowRunView.jsx'
+import { AddTaskPanel } from '../../flows/AddTaskPanel.jsx'
+import NodeInspector from '../../flows/NodeInspector.jsx'
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -87,7 +106,7 @@ function RunStateDot({ state }) {
 // FlowListItem — entry in the left rail
 // ---------------------------------------------------------------------------
 
-function FlowListItem({ flow, isActive, onClick, onDelete }) {
+function FlowListItem({ flow, isActive, onClick, onDelete, canWrite }) {
   const [deleting, setDeleting] = useState(false)
 
   const handleDelete = useCallback(async (e) => {
@@ -126,8 +145,8 @@ function FlowListItem({ flow, isActive, onClick, onDelete }) {
         </div>
       </div>
 
-      {/* Delete button (visible on hover, not for drafts) */}
-      {!flow._isNew && (
+      {/* Delete button (visible on hover, not for drafts; writers only) */}
+      {!flow._isNew && canWrite && (
         <button
           onClick={handleDelete}
           disabled={deleting}
@@ -145,7 +164,7 @@ function FlowListItem({ flow, isActive, onClick, onDelete }) {
 // FlowList — shared content between rail and bottom sheet
 // ---------------------------------------------------------------------------
 
-function FlowList({ flows, activeId, loading, onSelect, onNew, onRefresh, onDelete, onItemClick }) {
+function FlowList({ flows, activeId, loading, onSelect, onNew, onRefresh, onDelete, onItemClick, showHeader = true, canWrite = true }) {
   const handleSelect = useCallback((flow) => {
     onSelect(flow)
     onItemClick?.()
@@ -153,29 +172,33 @@ function FlowList({ flows, activeId, loading, onSelect, onNew, onRefresh, onDele
 
   return (
     <>
-      {/* Header */}
-      <div className="shrink-0 flex items-center justify-between px-3 py-2.5 border-b border-border">
-        <span className="text-xs font-semibold text-muted uppercase tracking-wider">Flows</span>
-        <button
-          onClick={onRefresh}
-          disabled={loading}
-          className="h-7 w-7 flex items-center justify-center rounded text-muted hover:text-fg hover:bg-surface-2 disabled:opacity-40 transition-colors"
-          title="Refresh flows"
-        >
-          <RefreshCw size={12} className={loading ? 'animate-spin' : ''} />
-        </button>
-      </div>
+      {/* Header — hidden when the host (desktop aside) already shows a title. */}
+      {showHeader && (
+        <div className="shrink-0 flex items-center justify-between px-3 py-2.5 border-b border-border">
+          <span className="text-xs font-semibold text-muted uppercase tracking-wider">Flows</span>
+          <button
+            onClick={onRefresh}
+            disabled={loading}
+            className="h-7 w-7 flex items-center justify-center rounded text-muted hover:text-fg hover:bg-surface-2 disabled:opacity-40 transition-colors"
+            title="Refresh flows"
+          >
+            <RefreshCw size={12} className={loading ? 'animate-spin' : ''} />
+          </button>
+        </div>
+      )}
 
-      {/* New button */}
-      <div className="shrink-0 px-2 py-2">
-        <button
-          onClick={() => { onNew(); onItemClick?.() }}
-          className="w-full h-11 flex items-center justify-center gap-1.5 text-sm font-medium rounded-lg border border-dashed border-border text-muted hover:text-fg hover:border-border hover:bg-surface-2 transition-colors"
-        >
-          <Plus size={14} />
-          New flow
-        </button>
-      </div>
+      {/* New button — writers only */}
+      {canWrite && (
+        <div className="shrink-0 px-2 py-2">
+          <button
+            onClick={() => { onNew(); onItemClick?.() }}
+            className="w-full h-11 flex items-center justify-center gap-1.5 text-sm font-medium rounded-lg border border-dashed border-border text-muted hover:text-fg hover:border-border hover:bg-surface-2 transition-colors"
+          >
+            <Plus size={14} />
+            New flow
+          </button>
+        </div>
+      )}
 
       {/* List */}
       <div className="flex-1 overflow-y-auto px-2 pb-2 space-y-0.5">
@@ -198,6 +221,7 @@ function FlowList({ flows, activeId, loading, onSelect, onNew, onRefresh, onDele
             isActive={activeId === (f.id ?? f._localId)}
             onClick={handleSelect}
             onDelete={onDelete}
+            canWrite={canWrite}
           />
         ))}
       </div>
@@ -206,30 +230,10 @@ function FlowList({ flows, activeId, loading, onSelect, onNew, onRefresh, onDele
 }
 
 // ---------------------------------------------------------------------------
-// LeftRail — desktop sidebar (hidden on mobile)
-// ---------------------------------------------------------------------------
-
-function LeftRail({ flows, activeId, loading, onSelect, onNew, onRefresh, onDelete }) {
-  return (
-    <aside className="flex flex-col h-full border-r border-border bg-surface-2/40">
-      <FlowList
-        flows={flows}
-        activeId={activeId}
-        loading={loading}
-        onSelect={onSelect}
-        onNew={onNew}
-        onRefresh={onRefresh}
-        onDelete={onDelete}
-      />
-    </aside>
-  )
-}
-
-// ---------------------------------------------------------------------------
 // MobileFlowsSheet — bottom sheet for flow list on mobile
 // ---------------------------------------------------------------------------
 
-function MobileFlowsSheet({ open, onClose, flows, activeId, loading, onSelect, onNew, onRefresh, onDelete }) {
+function MobileFlowsSheet({ open, onClose, flows, activeId, loading, onSelect, onNew, onRefresh, onDelete, canWrite }) {
   return (
     <>
       {/* Backdrop */}
@@ -279,6 +283,7 @@ function MobileFlowsSheet({ open, onClose, flows, activeId, loading, onSelect, o
           onRefresh={onRefresh}
           onDelete={onDelete}
           onItemClick={onClose}
+          canWrite={canWrite}
         />
       </div>
     </>
@@ -370,12 +375,187 @@ function RunsTab({ flow, currentRunId, onSelectRun }) {
 }
 
 // ---------------------------------------------------------------------------
+// EnvSelector — active run environment (dev / prod / custom)
+// ---------------------------------------------------------------------------
+
+// prod leads (the default + production target); dev second. Custom envs the
+// user adds are appended and persisted in localStorage.
+const DEFAULT_ENVS = ['prod', 'dev']
+const ENVS_STORAGE_KEY = 'nubi.flow.customEnvs'
+
+// Per-env accent dot. prod = emerald (live), dev = sky, anything else = violet.
+function envDotClass(env) {
+  if (env === 'prod') return 'bg-emerald-500'
+  if (env === 'dev') return 'bg-sky-500'
+  return 'bg-violet-500'
+}
+
+function loadCustomEnvs() {
+  try {
+    const raw = localStorage.getItem(ENVS_STORAGE_KEY)
+    const arr = raw ? JSON.parse(raw) : []
+    return Array.isArray(arr) ? arr.filter(e => typeof e === 'string' && e) : []
+  } catch {
+    return []
+  }
+}
+
+/**
+ * Top-bar environment selector. Sets the env a run is triggered against; the
+ * backend namespaces materialized/incremental targets under <env>/ so dev and
+ * prod never clobber each other. Defaults to prod. Users can add their own
+ * named environments via the inline "Add environment" action (persisted).
+ *
+ * @param {{ value: string, onChange: (env: string) => void, disabled?: boolean }} props
+ */
+function EnvSelector({ value, onChange, disabled = false }) {
+  const [open, setOpen] = useState(false)
+  const [adding, setAdding] = useState(false)
+  const [draft, setDraft] = useState('')
+  const [customEnvs, setCustomEnvs] = useState(loadCustomEnvs)
+  const ref = useRef(null)
+  const inputRef = useRef(null)
+
+  // All selectable envs: defaults + persisted customs + (the active value if it
+  // is itself a one-off custom not yet saved), de-duplicated, prod-first.
+  const envs = Array.from(new Set([...DEFAULT_ENVS, ...customEnvs, ...(value ? [value] : [])]))
+  const active = value || 'prod'
+
+  useEffect(() => {
+    if (!open) return
+    const onDown = (e) => { if (ref.current && !ref.current.contains(e.target)) { setOpen(false); setAdding(false) } }
+    const onKey = (e) => { if (e.key === 'Escape') { setOpen(false); setAdding(false) } }
+    window.addEventListener('mousedown', onDown)
+    window.addEventListener('keydown', onKey)
+    return () => { window.removeEventListener('mousedown', onDown); window.removeEventListener('keydown', onKey) }
+  }, [open])
+
+  useEffect(() => { if (adding) inputRef.current?.focus() }, [adding])
+
+  const select = (env) => { onChange(env); setOpen(false); setAdding(false) }
+
+  const commitNew = () => {
+    const name = draft.trim().toLowerCase().replace(/[^a-z0-9_-]/g, '')
+    if (!name) return
+    if (!customEnvs.includes(name) && !DEFAULT_ENVS.includes(name)) {
+      const next = [...customEnvs, name]
+      setCustomEnvs(next)
+      try { localStorage.setItem(ENVS_STORAGE_KEY, JSON.stringify(next)) } catch { /* ignore */ }
+    }
+    setDraft('')
+    setAdding(false)
+    select(name)
+  }
+
+  const removeEnv = (env, e) => {
+    e.stopPropagation()
+    const next = customEnvs.filter(x => x !== env)
+    setCustomEnvs(next)
+    try { localStorage.setItem(ENVS_STORAGE_KEY, JSON.stringify(next)) } catch { /* ignore */ }
+    if (active === env) onChange('prod')
+  }
+
+  return (
+    <div className="relative shrink-0" ref={ref}>
+      <button
+        type="button"
+        disabled={disabled}
+        onClick={() => setOpen(o => !o)}
+        title="Run environment — targets are namespaced under this env"
+        aria-label="Run environment"
+        aria-haspopup="listbox"
+        aria-expanded={open}
+        className={[
+          'h-8 flex items-center gap-1.5 pl-2 pr-2 rounded-lg border text-xs font-medium transition-colors',
+          'disabled:opacity-50 disabled:cursor-not-allowed',
+          open ? 'border-primary bg-surface-2 text-fg' : 'border-border bg-surface text-fg hover:border-border/80 hover:bg-surface-2',
+        ].join(' ')}
+      >
+        <span className={['w-2 h-2 rounded-full shrink-0', envDotClass(active)].join(' ')} />
+        <span className="font-mono">{active}</span>
+        <ChevronDown size={13} className={['text-muted shrink-0 transition-transform', open ? 'rotate-180' : ''].join(' ')} />
+      </button>
+
+      {open && (
+        <div className="absolute right-0 top-full mt-1.5 z-50 w-52 rounded-xl border border-border bg-surface shadow-xl shadow-black/10 overflow-hidden">
+          <p className="px-3 pt-2.5 pb-1.5 text-[10px] font-semibold uppercase tracking-widest text-muted/70">
+            Run environment
+          </p>
+          <ul role="listbox" className="px-1 pb-1 max-h-60 overflow-y-auto">
+            {envs.map(env => {
+              const isCustom = !DEFAULT_ENVS.includes(env)
+              return (
+                <li key={env}>
+                  <button
+                    role="option"
+                    aria-selected={env === active}
+                    onClick={() => select(env)}
+                    className="group w-full flex items-center gap-2 px-2 py-1.5 rounded-lg text-sm text-fg hover:bg-surface-2 transition-colors"
+                  >
+                    <span className={['w-2 h-2 rounded-full shrink-0', envDotClass(env)].join(' ')} />
+                    <span className="flex-1 text-left font-mono text-xs">{env}</span>
+                    {isCustom && (
+                      <span
+                        role="button"
+                        tabIndex={0}
+                        onClick={(e) => removeEnv(env, e)}
+                        title="Remove environment"
+                        className="opacity-0 group-hover:opacity-100 w-5 h-5 flex items-center justify-center rounded text-muted/60 hover:text-red-500 transition-colors"
+                      >
+                        <X size={12} />
+                      </span>
+                    )}
+                    {env === active && <Check size={14} className="text-primary shrink-0" />}
+                  </button>
+                </li>
+              )
+            })}
+          </ul>
+
+          <div className="border-t border-border p-1">
+            {adding ? (
+              <div className="flex items-center gap-1 px-1 py-0.5">
+                <input
+                  ref={inputRef}
+                  type="text"
+                  value={draft}
+                  placeholder="staging"
+                  className="h-7 flex-1 min-w-0 text-xs font-mono border border-border rounded-md px-2 bg-surface text-fg placeholder:text-muted/50 focus:outline-none focus:ring-2 focus:ring-ring/60"
+                  onChange={e => setDraft(e.target.value)}
+                  onKeyDown={e => { if (e.key === 'Enter') commitNew(); if (e.key === 'Escape') { setAdding(false); setDraft('') } }}
+                />
+                <button
+                  onClick={commitNew}
+                  className="h-7 px-2 rounded-md text-xs font-medium bg-primary text-primary-fg hover:opacity-90 transition-opacity"
+                >
+                  Add
+                </button>
+              </div>
+            ) : (
+              <button
+                onClick={() => setAdding(true)}
+                className="w-full flex items-center gap-2 px-2 py-1.5 rounded-lg text-xs font-medium text-muted hover:text-fg hover:bg-surface-2 transition-colors"
+              >
+                <Plus size={13} className="shrink-0" />
+                Add environment
+              </button>
+            )}
+          </div>
+        </div>
+      )}
+    </div>
+  )
+}
+
+// ---------------------------------------------------------------------------
 // FlowsPage
 // ---------------------------------------------------------------------------
 
 export default function FlowsPage() {
   const { id: routeId } = useParams()
   const navigate = useNavigate()
+  const { topbarSlot } = useUi()
+  const canWrite = useCanWrite()
 
   // ── Flow list ─────────────────────────────────────────────────────────────
   const [savedFlows, setSavedFlows] = useState([])
@@ -395,6 +575,55 @@ export default function FlowsPage() {
   // ── Mobile sheet open state ───────────────────────────────────────────────
   const [mobileSheetOpen, setMobileSheetOpen] = useState(false)
 
+  // ── Shared RHS sidebar (mirrors the dashboard editor) ─────────────────────
+  // One collapsible right-hand panel switched between Flows / Add task /
+  // Inspector via the top toggle buttons. The Add + Inspector panels drive the
+  // FlowBuilder via an imperative ref; selection is reported back up.
+  const flowBuilderRef = useRef(null)
+  const [rightPanel, setRightPanel] = useState('flows')      // 'flows' | 'add' | 'inspector'
+  const [rightCollapsed, setRightCollapsed] = useState(() => {
+    try { return localStorage.getItem('nubi:flows:railCollapsed') === '1' } catch { return false }
+  })
+  const [selectedTask, setSelectedTask] = useState(null)
+
+  // ── Builder actions (live in the app top bar; operate on activeSpec) ──────
+  const [validating, setValidating] = useState(false)
+  const [saving, setSaving] = useState(false)
+  const [running, setRunning] = useState(false)
+  const [validationIssues, setValidationIssues] = useState(null)
+  const [saveError, setSaveError] = useState(null)
+  const [runError, setRunError] = useState(null)
+  const [codeOpen, setCodeOpen] = useState(false)
+  // Current builder view ('canvas' | 'notebook'), reported up from FlowBuilder
+  // so the top-bar switcher reflects + drives it.
+  const [flowView, setFlowView] = useState('canvas')
+  // Active run environment (dev/prod/custom). Drives the env passed to runFlow;
+  // backend resolution order is: explicit override → spec.env → 'prod'.
+  const [runEnv, setRunEnv] = useState('prod')
+
+  const setCollapsed = useCallback((v) => {
+    setRightCollapsed(v)
+    try { localStorage.setItem('nubi:flows:railCollapsed', v ? '1' : '0') } catch { /* ignore */ }
+  }, [])
+
+  // Node selected in the canvas → surface the Inspector panel (like the
+  // dashboard editor's "select widget → Configure").
+  const handleSelectedTaskChange = useCallback((task) => {
+    setSelectedTask(task)
+    if (task) { setRightPanel('inspector'); setCollapsed(false) }
+  }, [setCollapsed])
+
+  // Click a top toggle: collapse if it's already the active+open panel,
+  // otherwise switch to it and expand.
+  const togglePanel = useCallback((panel) => {
+    setRightCollapsed(prevCollapsed => {
+      const next = rightPanel === panel && !prevCollapsed
+      try { localStorage.setItem('nubi:flows:railCollapsed', next ? '1' : '0') } catch { /* ignore */ }
+      return next
+    })
+    setRightPanel(panel)
+  }, [rightPanel])
+
   // ── Select a flow (declared early; used by the route-param effect below) ──
   const selectFlow = useCallback((flow) => {
     setActiveFlow(flow)
@@ -405,6 +634,14 @@ export default function FlowsPage() {
       navigate(`/flows/${flow.id}`, { replace: true })
     }
   }, [navigate])
+
+  // Keep the active run env in sync with the active flow's spec.env (default
+  // 'prod'). Done in an effect so the selection callbacks stay setter-free for
+  // the React Compiler's manual-memoization check.
+  useEffect(() => {
+    const t = setTimeout(() => setRunEnv(activeSpec?.env || 'prod'), 0)
+    return () => clearTimeout(t)
+  }, [activeFlow, activeSpec?.env])
 
   // ── Load flows ────────────────────────────────────────────────────────────
   const loadFlows = useCallback(async () => {
@@ -466,11 +703,49 @@ export default function FlowsPage() {
     navigate(`/flows/${savedFlow.id}`, { replace: true })
   }, [navigate])
 
-  // ── After run callback ────────────────────────────────────────────────────
+  // ── After run callback (NotebookView triggers its own run via FlowBuilder) ─
   const handleRun = useCallback(({ runId }) => {
     setActiveRunId(runId)
     setActiveTab('runs')
   }, [])
+
+  // ── Top-bar builder actions — operate on the live activeSpec.
+  //    Plain functions (rebuilt with the inline toolbar each render); the React
+  //    Compiler handles memoization. ──────────────────────────────────────────
+  const triggerValidate = async () => {
+    setValidating(true)
+    setValidationIssues(null)
+    const result = await validateFlow(activeSpec)
+    setValidationIssues(result?.issues ?? [])
+    setValidating(false)
+  }
+
+  const triggerSave = async () => {
+    setSaving(true)
+    setSaveError(null)
+    let saved
+    if (activeFlow && !activeFlow._isNew && activeFlow.id) {
+      saved = await updateFlow(activeFlow.id, { name: activeSpec.name, spec: activeSpec })
+    } else {
+      saved = await createFlow(activeSpec.name, activeSpec)
+    }
+    setSaving(false)
+    if (!saved) setSaveError('Save failed — check the console for details.')
+    else handleSaved({ ...saved, _localId: activeFlow?._localId })
+  }
+
+  const triggerRun = async () => {
+    if (!activeFlow?.id || activeFlow._isNew) {
+      setRunError('Save the flow first before running.')
+      return
+    }
+    setRunning(true)
+    setRunError(null)
+    const result = await runFlow(activeFlow.id, {}, runEnv || undefined)
+    setRunning(false)
+    if (!result) setRunError('Run failed — check the console for details.')
+    else handleRun({ runId: result.id })
+  }
 
   // ── Delete callback ───────────────────────────────────────────────────────
   const handleDelete = useCallback((flowId) => {
@@ -492,6 +767,125 @@ export default function FlowsPage() {
   // ── Empty state ───────────────────────────────────────────────────────────
   const showEmpty = !activeFlow
 
+  const canRun = !!activeFlow?.id && !activeFlow?._isNew
+
+  // ── Toolbar portaled into the single app top bar (mirrors the dashboard
+  //    editor): flow name · Builder/Runs switcher · Validate/Save/Run/Code ·
+  //    RHS panel toggles. One bar, not a stacked second one. ─────────────────
+  const flowsToolbar = (
+    <div className="flex items-center gap-1.5 w-full min-w-0 overflow-x-auto">
+      {/* Mobile: flows list */}
+      <button
+        onClick={() => setMobileSheetOpen(true)}
+        className="md:hidden flex items-center justify-center w-8 h-8 rounded-lg border border-border bg-surface text-muted hover:text-fg hover:bg-surface-2 transition-colors shrink-0"
+        aria-label="Open flows list" title="Flows list"
+      >
+        <List size={16} />
+      </button>
+
+      {/* Builder / Runs switcher */}
+      <div className="flex h-8 rounded-lg border border-border overflow-hidden shrink-0">
+        {[{ id: 'builder', label: 'Builder' }, { id: 'runs', label: 'Runs' }].map((tab, i) => (
+          <button
+            key={tab.id}
+            onClick={() => setActiveTab(tab.id)}
+            className={[
+              'flex items-center gap-1.5 px-3 text-xs font-medium transition-colors',
+              i > 0 ? 'border-l border-border' : '',
+              activeTab === tab.id ? 'bg-primary text-primary-fg' : 'bg-surface text-muted hover:text-fg hover:bg-surface-2',
+            ].join(' ')}
+          >
+            {tab.label}
+            {tab.id === 'runs' && activeRunId && (
+              <span className="inline-flex w-1.5 h-1.5 rounded-full bg-amber-400 animate-pulse" />
+            )}
+          </button>
+        ))}
+      </div>
+
+      {/* Canvas / Notebook view switcher (icons) — builder tab only */}
+      {activeTab === 'builder' && (
+        <div className="flex h-8 rounded-lg border border-border overflow-hidden shrink-0">
+          {[
+            { id: 'canvas', Icon: Share2, title: 'Canvas / DAG view' },
+            { id: 'notebook', Icon: LayoutList, title: 'Notebook / cell view' },
+          ].map((v, i) => (
+            <button
+              key={v.id}
+              onClick={() => flowBuilderRef.current?.setView(v.id)}
+              title={v.title}
+              aria-label={v.title}
+              aria-pressed={flowView === v.id}
+              className={[
+                'flex items-center justify-center w-8 transition-colors',
+                i > 0 ? 'border-l border-border' : '',
+                flowView === v.id ? 'bg-primary text-primary-fg' : 'bg-surface text-muted hover:text-fg hover:bg-surface-2',
+              ].join(' ')}
+            >
+              <v.Icon size={14} />
+            </button>
+          ))}
+        </div>
+      )}
+
+      <div className="flex items-center gap-1 ml-auto shrink-0">
+        {/* Builder-only actions */}
+        {activeTab === 'builder' && (
+          <>
+            <EnvSelector value={runEnv} onChange={setRunEnv} disabled={!canWrite} />
+            <button onClick={triggerValidate} disabled={validating} title="Validate flow"
+              className="flex items-center gap-1.5 px-2 sm:px-2.5 h-8 text-xs font-medium rounded-lg border border-border bg-surface text-fg hover:bg-surface-2 disabled:opacity-50 transition-colors">
+              {validating ? <Loader2 size={13} className="animate-spin" /> : <ShieldCheck size={13} />}
+              <span className="hidden lg:inline">Validate</span>
+            </button>
+            {canWrite && (
+              <button onClick={triggerSave} disabled={saving} title="Save flow"
+                className="flex items-center gap-1.5 px-2 sm:px-2.5 h-8 text-xs font-medium rounded-lg border border-border bg-surface text-fg hover:bg-surface-2 disabled:opacity-50 transition-colors">
+                {saving ? <Loader2 size={13} className="animate-spin" /> : <Save size={13} />}
+                <span className="hidden lg:inline">Save</span>
+              </button>
+            )}
+            {canWrite && (
+              <button onClick={triggerRun} disabled={running || !canRun} title={!canRun ? 'Save the flow first' : 'Run flow'}
+                className="flex items-center gap-1.5 px-2.5 h-8 text-xs font-medium rounded-lg bg-primary text-primary-fg hover:opacity-90 disabled:opacity-50 disabled:cursor-not-allowed transition-all">
+                {running ? <Loader2 size={13} className="animate-spin" /> : <Play size={13} />}
+                <span className="hidden lg:inline">Run</span>
+              </button>
+            )}
+            <button onClick={() => setCodeOpen(v => !v)} title={codeOpen ? 'Hide code editor' : 'Edit flow as Python code'}
+              className={[
+                'flex items-center gap-1.5 px-2 sm:px-2.5 h-8 text-xs font-medium rounded-lg border transition-colors',
+                codeOpen ? 'border-violet-400/60 bg-violet-500/10 text-violet-600 dark:text-violet-400' : 'border-border bg-surface text-fg hover:bg-surface-2',
+              ].join(' ')}>
+              <Code2 size={13} />
+              <span className="hidden lg:inline">Code</span>
+            </button>
+          </>
+        )}
+
+        {/* RHS panel toggles (desktop). Click the active panel to fully collapse. */}
+        <div className="hidden md:flex items-center gap-0.5 pl-1.5 ml-0.5 border-l border-border">
+          {[
+            { id: 'flows',     Icon: List,              title: 'Flows' },
+            { id: 'add',       Icon: Plus,              title: 'Add task' },
+            { id: 'inspector', Icon: SlidersHorizontal, title: 'Inspector' },
+          ].map(p => {
+            const active = rightPanel === p.id && !rightCollapsed
+            return (
+              <button key={p.id} onClick={() => togglePanel(p.id)} title={p.title} aria-label={p.title} aria-pressed={active}
+                className={[
+                  'w-8 h-8 flex items-center justify-center rounded-lg border transition-colors',
+                  active ? 'bg-primary text-primary-fg border-primary' : 'bg-surface text-muted border-border hover:text-fg hover:bg-surface-2',
+                ].join(' ')}>
+                <p.Icon size={15} />
+              </button>
+            )
+          })}
+        </div>
+      </div>
+    </div>
+  )
+
   return (
     // AppShell's <main> is flex-1 overflow-y-auto inside a min-h-0 flex container,
     // so it has a definite height. We use h-full + overflow-hidden to fill it
@@ -499,19 +893,6 @@ export default function FlowsPage() {
     <div className="flex flex-col h-full overflow-hidden">
       {/* Outer wrapper that fills available space */}
       <div className="flex flex-1 min-h-0 overflow-hidden bg-bg">
-
-        {/* ── Left rail (desktop only) ─────────────────────────────────── */}
-        <div className="hidden md:flex shrink-0 w-56 lg:w-64 flex-col">
-          <LeftRail
-            flows={allFlows}
-            activeId={activeId}
-            loading={loadingFlows}
-            onSelect={selectFlow}
-            onNew={handleNew}
-            onRefresh={loadFlows}
-            onDelete={handleDelete}
-          />
-        </div>
 
         {/* ── Main area ──────────────────────────────────────────────────── */}
         <div className="flex-1 flex flex-col min-w-0 overflow-hidden">
@@ -532,13 +913,15 @@ export default function FlowsPage() {
                 </p>
               </div>
               <div className="flex flex-col sm:flex-row items-center gap-3">
-                <button
-                  onClick={handleNew}
-                  className="flex items-center gap-2 px-4 py-2.5 text-sm font-medium bg-primary text-primary-fg rounded-lg hover:opacity-90 transition-opacity min-h-[44px]"
-                >
-                  <Plus size={15} />
-                  New flow
-                </button>
+                {canWrite && (
+                  <button
+                    onClick={handleNew}
+                    className="flex items-center gap-2 px-4 py-2.5 text-sm font-medium bg-primary text-primary-fg rounded-lg hover:opacity-90 transition-opacity min-h-[44px]"
+                  >
+                    <Plus size={15} />
+                    New flow
+                  </button>
+                )}
                 {/* Mobile: open the sheet to see existing flows */}
                 <button
                   onClick={() => setMobileSheetOpen(true)}
@@ -560,67 +943,58 @@ export default function FlowsPage() {
           ) : (
             /* ── Flow workspace ──────────────────────────────────────────── */
             <>
-              {/* Tab bar */}
-              <div className="shrink-0 flex items-center gap-0 px-2 sm:px-4 border-b border-border bg-surface-2/20">
+              {/* Toolbar lives in the single app top bar (portaled into AppTopbar). */}
+              {topbarSlot && createPortal(flowsToolbar, topbarSlot)}
 
-                {/* Mobile: flow list button */}
-                <button
-                  onClick={() => setMobileSheetOpen(true)}
-                  className="md:hidden flex items-center justify-center w-9 h-9 rounded-lg text-muted hover:text-fg hover:bg-surface-2 transition-colors shrink-0 mr-1"
-                  aria-label="Open flows list"
-                  title="Flows list"
-                >
-                  <List size={16} />
-                </button>
-
-                {/* Flow name display */}
-                <div className="flex-1 flex items-center gap-2 py-2 min-w-0">
-                  <GitBranch size={14} className="text-muted shrink-0" />
-                  <span className="text-sm font-semibold text-fg truncate max-w-[120px] sm:max-w-[200px]">
-                    {activeSpec?.name || 'Untitled flow'}
-                  </span>
-                  {activeFlow?._isNew && (
-                    <span className="hidden xs:inline px-1.5 py-0.5 rounded text-[10px] font-medium bg-amber-500/10 text-amber-600 dark:text-amber-400 shrink-0">
-                      draft
-                    </span>
-                  )}
+              {/* Action banners (validate / save / run) */}
+              {validationIssues && (
+                <div className={[
+                  'shrink-0 flex items-start gap-2 px-4 py-2.5 text-xs border-b',
+                  validationIssues.length === 0
+                    ? 'bg-green-500/5 border-green-500/20 text-green-700 dark:text-green-400'
+                    : 'bg-rose-500/5 border-rose-500/20 text-rose-700 dark:text-rose-400',
+                ].join(' ')}>
+                  {validationIssues.length === 0
+                    ? <CheckCircle2 size={14} className="shrink-0 mt-0.5" />
+                    : <AlertCircle size={14} className="shrink-0 mt-0.5" />}
+                  <div className="flex-1">
+                    {validationIssues.length === 0
+                      ? 'Flow spec is valid.'
+                      : <><strong>Validation issues:</strong><ul className="mt-1 space-y-0.5 list-disc list-inside">{validationIssues.map((i, idx) => <li key={idx}>{i}</li>)}</ul></>}
+                  </div>
+                  <button onClick={() => setValidationIssues(null)} className="shrink-0 opacity-60 hover:opacity-100 transition-opacity"><X size={13} /></button>
                 </div>
-
-                {/* Tabs */}
-                <div className="flex shrink-0">
-                  {[
-                    { id: 'builder', label: 'Builder' },
-                    { id: 'runs',    label: 'Runs' },
-                  ].map(tab => (
-                    <button
-                      key={tab.id}
-                      onClick={() => setActiveTab(tab.id)}
-                      className={[
-                        'px-3 sm:px-4 py-2.5 text-xs font-medium border-b-2 transition-colors min-h-[44px]',
-                        activeTab === tab.id
-                          ? 'border-primary text-primary'
-                          : 'border-transparent text-muted hover:text-fg',
-                      ].join(' ')}
-                    >
-                      {tab.label}
-                      {tab.id === 'runs' && activeRunId && (
-                        <span className="ml-1.5 inline-flex w-1.5 h-1.5 rounded-full bg-amber-400 animate-pulse" />
-                      )}
-                    </button>
-                  ))}
+              )}
+              {saveError && (
+                <div className="shrink-0 flex items-center gap-2 px-4 py-2 bg-rose-500/5 border-b border-rose-500/20 text-xs text-rose-600 dark:text-rose-400">
+                  <AlertCircle size={13} />
+                  <span className="flex-1 min-w-0">{saveError}</span>
+                  <button onClick={() => setSaveError(null)} className="ml-auto opacity-60 hover:opacity-100 shrink-0"><X size={12} /></button>
                 </div>
-              </div>
+              )}
+              {runError && (
+                <div className="shrink-0 flex items-center gap-2 px-4 py-2 bg-rose-500/5 border-b border-rose-500/20 text-xs text-rose-600 dark:text-rose-400">
+                  <AlertCircle size={13} />
+                  <span className="flex-1 min-w-0">{runError}</span>
+                  <button onClick={() => setRunError(null)} className="ml-auto opacity-60 hover:opacity-100 shrink-0"><X size={12} /></button>
+                </div>
+              )}
 
               {/* Tab content */}
               <div className="flex-1 min-h-0 overflow-hidden">
                 {activeTab === 'builder' && (
                   <FlowBuilder
                     key={activeFlow?.id ?? activeFlow?._localId}
+                    ref={flowBuilderRef}
                     flow={activeFlow?._isNew ? null : activeFlow}
                     spec={activeSpec}
                     onSpecChange={setActiveSpec}
                     onSaved={handleSaved}
                     onRun={handleRun}
+                    onSelectedTaskChange={handleSelectedTaskChange}
+                    onViewModeChange={setFlowView}
+                    codeOpen={codeOpen}
+                    onCodeClose={() => setCodeOpen(false)}
                   />
                 )}
 
@@ -644,6 +1018,85 @@ export default function FlowsPage() {
             </>
           )}
         </div>
+
+        {/* ── Shared RHS sidebar (desktop) — Flows · Add · Inspector ──────
+            One collapsible right-hand panel, switched by the top toggle buttons,
+            mirroring the dashboard editor's shared sidebar. Fully collapses —
+            no leftover rail; re-open via the top-bar panel toggles. */}
+        {!rightCollapsed && (
+          <aside className="hidden md:flex shrink-0 w-64 lg:w-72 flex-col border-l border-border bg-surface">
+            <div className="shrink-0 flex items-center justify-between px-3 h-9 border-b border-border">
+              <span className="text-[11px] font-semibold uppercase tracking-wider text-muted truncate">
+                {rightPanel === 'flows' ? 'Flows' : rightPanel === 'add' ? 'Add task' : (
+                  <>
+                    Inspector
+                    {selectedTask?.key && (
+                      <span className="ml-1.5 font-mono normal-case tracking-normal text-fg/80">
+                        · {selectedTask.key}
+                      </span>
+                    )}
+                  </>
+                )}
+              </span>
+              <div className="flex items-center gap-0.5">
+                {rightPanel === 'flows' && (
+                  <button
+                    onClick={loadFlows}
+                    disabled={loadingFlows}
+                    title="Refresh flows"
+                    className="flex items-center justify-center w-7 h-7 rounded-lg text-muted hover:text-fg hover:bg-surface-2 disabled:opacity-40 transition-colors"
+                  >
+                    <RefreshCw size={13} className={loadingFlows ? 'animate-spin' : ''} />
+                  </button>
+                )}
+                <button
+                  onClick={() => setCollapsed(true)}
+                  title="Collapse panel"
+                  aria-label="Collapse side panel"
+                  className="flex items-center justify-center w-7 h-7 rounded-lg text-muted hover:text-fg hover:bg-surface-2 transition-colors"
+                >
+                  <PanelRightClose size={16} />
+                </button>
+              </div>
+            </div>
+            <div className="flex-1 min-h-0 overflow-y-auto flex flex-col">
+              {rightPanel === 'flows' && (
+                <FlowList
+                  flows={allFlows}
+                  activeId={activeId}
+                  loading={loadingFlows}
+                  onSelect={selectFlow}
+                  onNew={handleNew}
+                  onRefresh={loadFlows}
+                  onDelete={handleDelete}
+                  showHeader={false}
+                  canWrite={canWrite}
+                />
+              )}
+              {rightPanel === 'add' && (
+                <AddTaskPanel
+                  disabled={!canWrite || !activeFlow || activeTab !== 'builder'}
+                  onAdd={(kind, config, cellType) => flowBuilderRef.current?.addNode(kind, config, cellType)}
+                />
+              )}
+              {rightPanel === 'inspector' && (
+                selectedTask ? (
+                  <NodeInspector
+                    task={selectedTask}
+                    onChange={(t) => flowBuilderRef.current?.updateSelectedTask(t)}
+                    onClose={() => flowBuilderRef.current?.clearSelection()}
+                    readOnly={!canWrite}
+                    showHeader={false}
+                  />
+                ) : (
+                  <p className="text-xs text-muted/70 m-3 rounded-lg border border-dashed border-border bg-surface-2/30 px-3 py-4 text-center">
+                    Select a task on the canvas to configure it.
+                  </p>
+                )
+              )}
+            </div>
+          </aside>
+        )}
       </div>
 
       {/* ── Mobile bottom sheet: flow list ─────────────────────────────────── */}
@@ -657,6 +1110,7 @@ export default function FlowsPage() {
         onNew={handleNew}
         onRefresh={loadFlows}
         onDelete={handleDelete}
+        canWrite={canWrite}
       />
     </div>
   )

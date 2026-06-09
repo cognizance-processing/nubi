@@ -21,7 +21,14 @@ VerifiedIdentity
     Normalised identity dataclass.
 
 verify_token(token, expected_origin) -> VerifiedIdentity
-    The single entry point for all token verification.
+    Synchronous entry point — uses only the in-process IssuerRegistry.
+    Suitable for tests and non-async contexts.  The FastAPI dep uses
+    ``verify_token_async`` instead.
+
+verify_token_async(token, expected_origin) -> VerifiedIdentity
+    Async entry point — falls back to the DB-backed issuers store when the
+    in-process registry does not recognise the ``iss`` claim.  Used by the
+    ``verified_identity`` FastAPI dependency.
 """
 
 from __future__ import annotations
@@ -192,28 +199,28 @@ def _resolve_jwks(issuer_cfg: Any) -> dict[str, Any]:
 
 
 # ---------------------------------------------------------------------------
-# Embed-path verification
+# Shared embed-token verification core
 # ---------------------------------------------------------------------------
 
-def _verify_embed_token(
+def _peek_embed_token(
     token: str,
-    header: dict[str, Any],
     alg: str,
-    expected_origin: str | None,
-) -> VerifiedIdentity:
-    """Verify an RS256/ES256 embed JWT and return a :class:`VerifiedIdentity`."""
-    from app.auth.issuers import get_issuer_registry
-    from app.auth.scopes import parse_scopes
+) -> tuple[str, dict[str, Any]]:
+    """Validate alg, decode unverified payload, extract iss.
 
-    # ------------------------------------------------------------------
-    # 1.  Reject HS* on the embed path (alg-confusion attack).
-    # ------------------------------------------------------------------
+    Returns
+    -------
+    (iss, unverified_payload)
+
+    Raises
+    ------
+    AppError("invalid_token", 401)
+        On HS* alg, malformed token, or missing iss.
+    """
+    # Reject HS* on the embed path (alg-confusion attack).
     if alg.startswith("HS"):
         raise AppError("invalid_token", "Token is invalid or has expired.", 401)
 
-    # ------------------------------------------------------------------
-    # 2.  Peek at iss without verifying (we need it to look up the registry).
-    # ------------------------------------------------------------------
     try:
         unverified_payload = jwt.decode(
             token,
@@ -231,30 +238,36 @@ def _verify_embed_token(
     if not iss:
         raise AppError("invalid_token", "Token is invalid or has expired.", 401)
 
-    # ------------------------------------------------------------------
-    # 3.  Look up issuer; unknown iss → 401.
-    # ------------------------------------------------------------------
-    registry = get_issuer_registry()
-    issuer_cfg = registry.get(iss)
-    if issuer_cfg is None:
-        raise AppError("invalid_token", "Token is invalid or has expired.", 401)
+    return iss, unverified_payload
 
-    # ------------------------------------------------------------------
-    # 4.  Resolve JWKS and select the signing key.
-    # ------------------------------------------------------------------
-    jwks = _resolve_jwks(issuer_cfg)
-    kid: str | None = header.get("kid") or None
-    public_key = _select_key_from_jwks(jwks, kid, alg)
 
-    # ------------------------------------------------------------------
-    # 5.  Fully verify the token (signature + exp + aud + iss).
-    # ------------------------------------------------------------------
+def _finish_embed_verification(
+    token: str,
+    alg: str,
+    iss: str,
+    public_key: Any,
+    aud: str,
+    expected_origin: str | None,
+) -> VerifiedIdentity:
+    """Run the final PyJWT decode + origin check + build VerifiedIdentity.
+
+    This is split out so both the sync and async paths share the same
+    signature-verification + claims-building logic.
+
+    Raises
+    ------
+    AppError("invalid_token", 401)
+    AppError("origin_mismatch", 403)
+    """
+    from app.auth.scopes import parse_scopes  # noqa: PLC0415
+
+    # Fully verify the token (signature + exp + aud + iss).
     try:
         claims: dict[str, Any] = jwt.decode(
             token,
             public_key,
             algorithms=[alg],  # pinned to the declared alg only
-            audience=issuer_cfg.aud,
+            audience=aud,
             issuer=iss,
             options={
                 "require": ["exp", "aud", "iss", "sub"],
@@ -266,9 +279,7 @@ def _verify_embed_token(
     except PyJWTError:
         raise AppError("invalid_token", "Token is invalid or has expired.", 401)
 
-    # ------------------------------------------------------------------
-    # 6.  Origin enforcement.
-    # ------------------------------------------------------------------
+    # Origin enforcement.
     embed_origin: str | None = claims.get("embed_origin")
     if embed_origin:
         # SECURITY: if the token carries an embed_origin claim it MUST be
@@ -285,9 +296,6 @@ def _verify_embed_token(
                 403,
             )
 
-    # ------------------------------------------------------------------
-    # 7.  Build VerifiedIdentity.
-    # ------------------------------------------------------------------
     return VerifiedIdentity(
         kind="embed",
         user_id=str(claims["sub"]),
@@ -298,6 +306,102 @@ def _verify_embed_token(
         scope=parse_scopes(claims),
         embed_origin=embed_origin,
         raw_claims=claims,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Embed-path verification — synchronous (in-process registry only)
+# ---------------------------------------------------------------------------
+
+def _verify_embed_token(
+    token: str,
+    header: dict[str, Any],
+    alg: str,
+    expected_origin: str | None,
+) -> VerifiedIdentity:
+    """Verify an RS256/ES256 embed JWT using the in-process IssuerRegistry only.
+
+    Used by the synchronous ``verify_token`` entry point.  Does NOT consult
+    the DB-backed issuers store.  For the full path (registry → DB fallback)
+    use ``_verify_embed_token_async``.
+    """
+    from app.auth.issuers import get_issuer_registry  # noqa: PLC0415
+
+    iss, _unverified = _peek_embed_token(token, alg)
+
+    registry = get_issuer_registry()
+    issuer_cfg = registry.get(iss)
+    if issuer_cfg is None:
+        raise AppError("invalid_token", "Token is invalid or has expired.", 401)
+
+    jwks = _resolve_jwks(issuer_cfg)
+    kid: str | None = header.get("kid") or None
+    public_key = _select_key_from_jwks(jwks, kid, alg)
+
+    return _finish_embed_verification(
+        token, alg, iss, public_key, issuer_cfg.aud, expected_origin
+    )
+
+
+# ---------------------------------------------------------------------------
+# Embed-path verification — async (registry + DB-backed fallback)
+# ---------------------------------------------------------------------------
+
+async def _verify_embed_token_async(
+    token: str,
+    header: dict[str, Any],
+    alg: str,
+    expected_origin: str | None,
+) -> VerifiedIdentity:
+    """Verify an RS256/ES256 embed JWT.
+
+    Lookup priority
+    ---------------
+    1. In-process ``IssuerRegistry`` (populated from env/code at startup and
+       kept in sync by the jwt_issuers CRUD routes after each mutation).
+    2. DB-backed ``issuers_store.get_enabled_by_iss`` — consulted when the
+       in-process registry misses.  The token's unverified ``org`` claim is
+       used to scope the DB query.
+
+    Unknown or disabled ``iss`` → 401.
+    """
+    from app.auth.issuers import get_issuer_registry  # noqa: PLC0415
+
+    iss, unverified_payload = _peek_embed_token(token, alg)
+    kid: str | None = header.get("kid") or None
+
+    # 1. In-process registry (fast path, always tried first).
+    registry = get_issuer_registry()
+    issuer_cfg = registry.get(iss)
+
+    if issuer_cfg is not None:
+        jwks = _resolve_jwks(issuer_cfg)
+        public_key = _select_key_from_jwks(jwks, kid, alg)
+        return _finish_embed_verification(
+            token, alg, iss, public_key, issuer_cfg.aud, expected_origin
+        )
+
+    # 2. DB fallback — requires the token to carry an ``org`` claim so we can
+    #    scope the lookup to the correct org's configured issuers.
+    org_from_token: str | None = unverified_payload.get("org")
+    if not org_from_token:
+        raise AppError("invalid_token", "Token is invalid or has expired.", 401)
+
+    try:
+        from app.security.issuers_store import get_issuers_store  # noqa: PLC0415
+
+        db_row = await get_issuers_store().get_enabled_by_iss(org_from_token, iss)
+    except Exception:  # noqa: BLE001
+        db_row = None
+
+    if db_row is None:
+        raise AppError("invalid_token", "Token is invalid or has expired.", 401)
+
+    from app.security.jwks import resolve_signing_key  # noqa: PLC0415
+
+    public_key = resolve_signing_key(db_row, kid, alg)
+    return _finish_embed_verification(
+        token, alg, iss, public_key, db_row.get("audience", ""), expected_origin
     )
 
 
@@ -332,7 +436,7 @@ def _verify_first_party_token(token: str) -> VerifiedIdentity:
 
 
 # ---------------------------------------------------------------------------
-# Public entry point
+# Public entry points
 # ---------------------------------------------------------------------------
 
 def verify_token(
@@ -340,6 +444,11 @@ def verify_token(
     expected_origin: str | None = None,
 ) -> VerifiedIdentity:
     """Verify *token* and return a normalised :class:`VerifiedIdentity`.
+
+    **Synchronous** — uses only the in-process ``IssuerRegistry`` for embed
+    tokens.  Does NOT consult the DB-backed issuers store.  Use
+    :func:`verify_token_async` (via the ``verified_identity`` FastAPI dep) for
+    full DB-backed lookup in production.
 
     Routing logic:
     - Decode the JOSE header (no signature check) to read ``alg``.
@@ -387,4 +496,50 @@ def verify_token(
         return _verify_embed_token(token, header, alg, expected_origin)
 
     # Unknown / unsupported algorithm.
+    raise AppError("invalid_token", "Token is invalid or has expired.", 401)
+
+
+async def verify_token_async(
+    token: str,
+    expected_origin: str | None = None,
+) -> VerifiedIdentity:
+    """Async variant of :func:`verify_token` with DB-backed issuer fallback.
+
+    Identical routing logic to :func:`verify_token` except that on the embed
+    path, when the in-process ``IssuerRegistry`` does not recognise the
+    ``iss`` claim, the ``jwt_issuers`` DB table is consulted via
+    :mod:`app.security.issuers_store`.
+
+    This is the entry point used by the ``verified_identity`` FastAPI
+    dependency so that issuers configured via the management API (without
+    requiring a server restart) are correctly recognised.
+
+    Parameters
+    ----------
+    token:
+        Raw JWT string.
+    expected_origin:
+        Forwarded to origin enforcement (see :func:`verify_token`).
+
+    Returns
+    -------
+    VerifiedIdentity
+
+    Raises
+    ------
+    AppError("invalid_token", 401)
+    AppError("origin_mismatch", 403)
+    """
+    header = _decode_header_unverified(token)
+    alg: str = header.get("alg", "")
+
+    if alg in _BLOCKED_ALGS or alg == "":
+        raise AppError("invalid_token", "Token is invalid or has expired.", 401)
+
+    if alg == "HS256":
+        return _verify_first_party_token(token)
+
+    if alg in _EMBED_ALGS:
+        return await _verify_embed_token_async(token, header, alg, expected_origin)
+
     raise AppError("invalid_token", "Token is invalid or has expired.", 401)

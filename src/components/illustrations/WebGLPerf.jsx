@@ -48,9 +48,19 @@ export default function WebGLPerf({ className = '' }) {
         fill="#2456a6" fillOpacity="0.03" stroke="url(#wgl-stroke)" strokeWidth="2" />
 
       <g clipPath="url(#wgl-clip)">
+        {/* faint grid lines for depth */}
+        {[122, 160, 198, 236].map((y) => (
+          <line key={`h${y}`} x1="84" y1={y} x2="416" y2={y}
+            stroke="#2456a6" strokeWidth="1" strokeOpacity="0.08" />
+        ))}
+        {[150, 216, 282, 348].map((x) => (
+          <line key={`v${x}`} x1={x} y1="62" x2={x} y2="294"
+            stroke="#2456a6" strokeWidth="1" strokeOpacity="0.08" />
+        ))}
+
         {/* axes */}
-        <line x1="84" y1="62" x2="84" y2="294" stroke="#2456a6" strokeWidth="1.5" strokeOpacity="0.3" />
-        <line x1="84" y1="294" x2="416" y2="294" stroke="#2456a6" strokeWidth="1.5" strokeOpacity="0.3" />
+        <line x1="84" y1="62" x2="84" y2="294" stroke="#2456a6" strokeWidth="1.5" strokeOpacity="0.35" />
+        <line x1="84" y1="294" x2="416" y2="294" stroke="#2456a6" strokeWidth="1.5" strokeOpacity="0.35" />
 
         {/* point cloud */}
         {pts.map((p, i) => (
@@ -60,7 +70,11 @@ export default function WebGLPerf({ className = '' }) {
 
         {/* cross-filter brush selection */}
         <rect x="250" y="96" width="130" height="104" rx="8"
-          fill="#2dd4bf" fillOpacity="0.08" stroke="#17b3a3" strokeWidth="1.75" strokeDasharray="5 5" />
+          fill="#2dd4bf" fillOpacity="0.08" stroke="#17b3a3" strokeWidth="1.75" strokeDasharray="5 4" />
+        {/* corner handles on the brush */}
+        {[[250, 96], [380, 96], [250, 200], [380, 200]].map(([hx, hy], i) => (
+          <circle key={i} cx={hx} cy={hy} r="3.25" fill="#17b3a3" />
+        ))}
       </g>
     </svg>
   )

@@ -51,6 +51,7 @@ Security notes
 from __future__ import annotations
 
 import os
+import re
 from typing import Any
 
 from app.errors import AppError
@@ -207,24 +208,51 @@ def _rows_to_arrow(result: Any) -> Any:
 def materialize_blend(
     config: dict[str, Any],
     inputs: dict[str, Any],
+    *,
+    env: str = "prod",
+    flow: dict[str, Any] | None = None,
+    watermark: str | None = None,
 ) -> dict[str, Any]:
     """Merge upstream source results in DuckDB and write the materialized table.
+
+    Two persistence shapes are supported:
+
+    - **View / blend (existing path)** — when ``config['materialized']`` is
+      absent or ``kind == 'view'``, the combined result is written to the local
+      DuckDB file (``config['database']``, table ``config['table']``) and a
+      runtime query is registered.  This is unchanged from the original blend.
+    - **Full / incremental (object-storage path)** — when
+      ``config['materialized'].kind`` is ``'full'`` or ``'incremental'``, the
+      combined result is persisted to an env-scoped Parquet target in object
+      storage (or a local fallback dir) via
+      :func:`app.flows.incremental.apply_incremental`.  Watermarks are passed in
+      / returned for the caller (runtime) to persist in Postgres.
 
     Parameters
     ----------
     config:
         The materialize task config: ``combine_sql``, ``sources`` (list of
         source keys), ``rls_keys``, ``table``, ``database``, ``datastore_id``,
-        ``query_id``.
+        ``query_id``, and the optional nested ``materialized`` block.
     inputs:
         Upstream task results keyed by task_key (the source ``key``).  Each is a
         ``{rows, row_count, columns}`` dict produced by the ``query`` handler.
+    env:
+        Active environment ("dev"/"prod"/custom).  Namespaces full/incremental
+        targets so dev and prod never clobber each other.
+    flow:
+        The flow dict (used to resolve ``runtime_config.materialize_base_uri``).
+        Postgres-free — this handler never touches the DB.
+    watermark:
+        Stored watermark (ISO string) for incremental kinds, or ``None``.
 
     Returns
     -------
     dict
+        The materialization manifest (also the task result).  For view/blend:
         ``{datastore_id, query_id, database, table, row_count, columns,
-        rls_keys}`` — the materialization manifest (also the task result).
+        rls_keys, materialized_kind}``.  For full/incremental additionally:
+        ``physical_target``, ``env``, ``rows_written``, ``new_watermark``.
 
     Raises
     ------
@@ -246,19 +274,12 @@ def materialize_blend(
     source_keys: list[str] = list(config.get("sources") or list(inputs.keys()))
     rls_keys: list[str] = list(config.get("rls_keys") or [])
     table: str = config.get("table") or DEFAULT_BLEND_TABLE
-    database: str = config.get("database") or ""
     datastore_id: str | None = config.get("datastore_id")
     query_id: str | None = config.get("query_id")
 
-    if not database:
-        raise AppError(
-            "invalid_task_config",
-            "materialize task requires 'database' (DuckDB file path) in config.",
-            400,
-        )
-
-    # Ensure the target directory exists.
-    os.makedirs(os.path.dirname(os.path.abspath(database)), exist_ok=True)
+    materialized: dict[str, Any] = dict(config.get("materialized") or {})
+    mat_kind: str = str(materialized.get("kind") or "view").lower()
+    is_persisted = mat_kind in ("full", "incremental")
 
     # ── 1. Merge the sources in a fresh in-memory DuckDB ──────────────────────
     conn = duckdb.connect(database=":memory:")
@@ -295,7 +316,57 @@ def materialize_blend(
 
         row_count = combined.num_rows
 
-        # ── 3. Write the materialized table to the on-disk DuckDB file ────────
+        # ── 3a. Persisted (full/incremental) → env-scoped object-storage target
+        if is_persisted:
+            from app.flows.incremental import (  # noqa: PLC0415
+                apply_incremental,
+                resolve_target_uri,
+            )
+
+            settings = _get_settings()
+            physical_target = resolve_target_uri(env, materialized, flow, settings)
+            mat_for_apply = dict(materialized)
+            mat_for_apply["__physical_target__"] = physical_target
+
+            storage = _open_storage_connector(physical_target)
+            try:
+                from datetime import datetime, timezone  # noqa: PLC0415
+
+                rows_written, new_watermark = apply_incremental(
+                    storage,
+                    combined,
+                    mat_for_apply,
+                    watermark,
+                    datetime.now(timezone.utc),
+                )
+            finally:
+                _close_storage_connector(storage)
+
+            return {
+                "datastore_id": datastore_id,
+                "query_id": query_id,
+                "table": table,
+                "row_count": row_count,
+                "columns": columns,
+                "rls_keys": rls_keys,
+                "materialized_kind": mat_kind,
+                "physical_target": physical_target,
+                "env": env,
+                "rows_written": rows_written,
+                "new_watermark": new_watermark,
+            }
+
+        # ── 3b. View / blend (existing local DuckDB path) ─────────────────────
+        database: str = config.get("database") or ""
+        if not database:
+            raise AppError(
+                "invalid_task_config",
+                "materialize task requires 'database' (DuckDB file path) in config.",
+                400,
+            )
+        # Ensure the target directory exists.
+        os.makedirs(os.path.dirname(os.path.abspath(database)), exist_ok=True)
+
         # Open the target file, replace the blend table from the Arrow result.
         # Writing into a fresh connection keeps the read path (read-only open)
         # consistent with how routes/query.py opens duckdb datastores.
@@ -327,7 +398,70 @@ def materialize_blend(
         "row_count": row_count,
         "columns": columns,
         "rls_keys": rls_keys,
+        "materialized_kind": "view",
     }
+
+
+# ---------------------------------------------------------------------------
+# Object-storage connector helpers (full / incremental targets)
+# ---------------------------------------------------------------------------
+
+
+def _get_settings() -> Any:
+    """Return the app settings object, or ``None`` if unavailable."""
+    try:
+        from app.config import get_settings  # noqa: PLC0415
+
+        return get_settings()
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _open_storage_connector(physical_target: str) -> Any:
+    """Open a DuckDBStorageConnector suitable for writing *physical_target*.
+
+    For ``s3://`` targets the connector installs httpfs + the S3 secret; for
+    local paths it uses an in-memory DuckDB connection that can COPY TO / read
+    Parquet on the local filesystem.
+    """
+    from app.connectors.duckdb_storage import DuckDBStorageConnector  # noqa: PLC0415
+
+    effective = (
+        physical_target[len("file://"):]
+        if physical_target.startswith("file://")
+        else physical_target
+    )
+    is_remote = bool(re.match(r"^(s3|s3a|gs|gcs|az|abfss?)://", effective, re.IGNORECASE))
+    if is_remote:
+        settings = _get_settings()
+        cfg: dict[str, Any] = {"database": effective}
+        # Pull S3 credentials from settings when present (best-effort).
+        for src, dst in (
+            ("S3_ENDPOINT", "endpoint"),
+            ("S3_ACCESS_KEY_ID", "access_key_id"),
+            ("S3_SECRET_ACCESS_KEY", "secret_access_key"),
+            ("S3_REGION", "region"),
+            ("AWS_ACCESS_KEY_ID", "access_key_id"),
+            ("AWS_SECRET_ACCESS_KEY", "secret_access_key"),
+            ("AWS_REGION", "region"),
+        ):
+            val = getattr(settings, src, None) if settings is not None else None
+            if val and dst not in cfg:
+                cfg[dst] = val
+        return DuckDBStorageConnector.from_config(cfg)
+    # Local target: an in-memory connection can COPY TO / read local Parquet.
+    return DuckDBStorageConnector.for_memory()
+
+
+def _close_storage_connector(storage: Any) -> None:
+    """Best-effort close of a storage connector's raw connection."""
+    try:
+        inner = getattr(storage, "_inner", None)
+        conn = getattr(inner, "_conn", None) if inner is not None else None
+        if conn is not None:
+            conn.close()
+    except Exception:  # noqa: BLE001
+        pass
 
 
 def register_blend_query(

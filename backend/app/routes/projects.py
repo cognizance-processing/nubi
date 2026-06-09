@@ -34,6 +34,7 @@ from fastapi import APIRouter, Depends, Request, Response
 from pydantic import BaseModel
 
 from app.auth.deps import current_user
+from app.auth.roles import require_writer
 from app.errors import AppError
 from app.repos import projects as projects_repo
 from app.repos.provider import Repo, get_repo
@@ -123,24 +124,46 @@ async def list_projects(
     return await projects_repo.list_projects(org_id)
 
 
-@router.post("", status_code=201)
+@router.post("", status_code=201, dependencies=[Depends(require_writer)])
 async def create_project(
     body: CreateProjectIn,
     request: Request,
     user: dict[str, Any] = Depends(current_user),
     repo: Repo = Depends(get_repo),
 ) -> dict[str, Any]:
-    """Create a new project in the caller's org (slug unique per org)."""
+    """Create a new project in the caller's org (slug unique per org).
+
+    After creating the project row, seeds the removable onboarding sample bundle
+    into the new project so every project has an explorable demo dataset from the
+    moment it is created.  The seed is best-effort — a failure never blocks the
+    project creation response.
+    """
     name = body.name.strip()
     if not name:
         raise AppError("invalid_request", "Project name is required.", 400)
     org_id = await _resolve_org_id(str(user["id"]), repo, request)
-    return await projects_repo.create_project(
+    project = await projects_repo.create_project(
         org_id=org_id,
         name=name,
         created_by=str(user["id"]),
         git=body.git,
     )
+
+    # Seed the removable onboarding sample bundle into the new project.
+    # Best-effort: a bundle failure must never block the project creation response.
+    try:
+        from app.sample import seed_sample_bundle  # noqa: PLC0415
+
+        await seed_sample_bundle(
+            org_id=org_id,
+            project_id=str(project["id"]),
+            created_by=str(user["id"]),
+            repo=repo,
+        )
+    except Exception:  # noqa: BLE001
+        pass
+
+    return project
 
 
 @router.get("/{project_id}/deletion-impact", response_model=ProjectDeletionImpactResponse)
@@ -230,7 +253,7 @@ async def get_project(
     return proj
 
 
-@router.patch("/{project_id}")
+@router.patch("/{project_id}", dependencies=[Depends(require_writer)])
 async def patch_project(
     project_id: str,
     body: PatchProjectIn,
@@ -280,7 +303,7 @@ async def patch_project(
     return proj
 
 
-@router.put("/{project_id}")
+@router.put("/{project_id}", dependencies=[Depends(require_writer)])
 async def update_project(
     project_id: str,
     body: UpdateProjectIn,
@@ -306,7 +329,7 @@ async def update_project(
     return proj
 
 
-@router.delete("/{project_id}", status_code=204)
+@router.delete("/{project_id}", status_code=204, dependencies=[Depends(require_writer)])
 async def delete_project(
     project_id: str,
     body: DeleteProjectIn,

@@ -2,7 +2,7 @@
 
 Secrets are org-scoped, named, encrypted credentials — API keys, cloud storage tokens, third-party passwords — that flow tasks reference at execution time without the value ever leaving the server. A secret is written once, encrypted at rest, and resolved server-side into a task's context when a flow runs. The plaintext value is **never** returned by the API after it is set.
 
-Secrets are distinct from connector credentials (see [Connector Security](/docs/connector-security)). Connector secrets live on a datastore row and are consumed by the query planner; these org secrets are general-purpose and consumed by the Flows engine (e.g. `extract` and `bucket_load` storage credentials).
+Secrets are distinct from connector credentials (see [Connector Security](/docs/connector-security)). Connector secrets live on a datastore row and are consumed by the query planner; these org secrets are general-purpose and consumed by the Flows engine (e.g. `bucket_load` storage credentials).
 
 ---
 
@@ -52,7 +52,7 @@ Inside a flow's task `config`, reference a secret by name with the `{{ secrets.N
 }
 ```
 
-The `extract` and `bucket_load` task kinds take a `secret` config field naming a secret whose **JSON-decoded** value is used as the storage credentials dict. More generally, any string in a task `config` can interpolate a secret with `{{ secrets.NAME }}`; the executor resolves it from `ctx.secrets` at runtime. See the [Flows templating reference](/docs/flows#templating).
+The `bucket_load` task kind takes a `secret` config field naming a secret whose **JSON-decoded** value is used as the storage credentials dict. More generally, any string in a task `config` can interpolate a secret with `{{ secrets.NAME }}`; the executor resolves it from `ctx.secrets` at runtime. See the [Flows templating reference](/docs/flows#templating).
 
 Before each task runs, the Flows runtime resolves all of the org's secrets into the task context (`resolve_all`), so handlers read them via `ctx.secrets[name]` or via the `{{ secrets.NAME }}` template. Because resolution happens server-side at execution time, the value is never exposed to a dashboard, an embed token, or the client.
 

@@ -112,6 +112,14 @@ class Settings(BaseSettings):
     # NOT a user JWT — it gates the internal scheduler webhook only.
     FLOWS_TICK_SECRET: str = ""
 
+    # ── Flows materialization target (incremental / full models) ─────────────
+    # Base URI under which materialized flow models are written, env-namespaced
+    # as ``<base>/<env>/<target>.parquet``.  Use an object-storage URI in prod
+    # (e.g. ``s3://my-bucket/flows``) so targets survive Cloud Run's stateless
+    # filesystem.  When empty, incremental.py falls back to a local path
+    # (``<backend>/seed_data/materialized``) — fine for local dev only.
+    FLOWS_MATERIALIZE_BASE_URI: str = ""
+
     @field_validator("FLOWS_SCHEDULER_ENABLED", mode="before")
     @classmethod
     def _coerce_flows_scheduler_enabled(cls, value: object) -> object:
@@ -213,6 +221,33 @@ class Settings(BaseSettings):
     # Optional.  Set ALERT_EMAIL_RECIPIENT to receive alert emails.
     # Uses the NullSender (no real delivery) unless an SMTP/SES sender is wired.
     ALERT_EMAIL_RECIPIENT: str = ""     # Address to send alert emails to
+
+    # ── Outbound SMTP (invoices + report emails) ─────────────────────────────
+    # Optional.  When SMTP_HOST is set the billing module sends invoice PDFs via
+    # SMTP; otherwise it falls back to the NullSender (no real delivery — useful
+    # in tests / local dev / OSS builds with no mail server).
+    SMTP_HOST: str = ""                 # e.g. "smtp.sendgrid.net" / "email-smtp.eu-west-1.amazonaws.com"
+    SMTP_PORT: int = 587                # 587 (STARTTLS) or 465 (implicit TLS)
+    SMTP_USERNAME: str = ""             # SMTP auth username (e.g. "apikey" for SendGrid)
+    SMTP_PASSWORD: str = ""             # SMTP auth password / API key
+    SMTP_USE_TLS: bool = True           # STARTTLS on port 587
+    SMTP_FROM: str = ""                 # From address; defaults to BILLING_EMAIL when empty
+
+    # ── Business / billing entity (invoices + VAT) ───────────────────────────
+    # These appear on generated invoice PDFs.  VAT is charged ONLY when
+    # COMPANY_VAT_NUMBER is set (non-empty): if you are not VAT-registered,
+    # leave it blank and no VAT line is added to invoices.
+    COMPANY_NAME: str = "Nubi"                       # legal trading name on invoices
+    COMPANY_LEGAL_NAME: str = ""                     # registered legal name (defaults to COMPANY_NAME)
+    COMPANY_REG_NUMBER: str = ""                     # company registration number
+    COMPANY_VAT_NUMBER: str = ""                     # VAT/tax number — empty ⇒ no VAT charged
+    COMPANY_VAT_RATE: float = 0.15                   # VAT rate (0.15 = 15%, SA standard rate)
+    COMPANY_ADDRESS: str = ""                        # multi-line address (use \n for line breaks)
+    COMPANY_EMAIL: str = "billing@nubi.io"           # billing contact email shown on invoices
+    COMPANY_WEBSITE: str = "https://nubi.io"         # website shown on invoices
+    BILLING_EMAIL: str = "billing@nubi.io"           # From / reply-to address for invoice emails
+    INVOICE_NUMBER_PREFIX: str = "NUBI"              # invoice number prefix, e.g. NUBI-2026-000123
+    INVOICE_CURRENCY: str = "ZAR"                    # billing currency (we collect in ZAR via Paystack)
 
     # ── Remote git push (M20-B) ──────────────────────────────────────────────
     # All optional — existing deployments continue to work with no changes.

@@ -121,27 +121,29 @@ class TestTiers:
         limits = get_tier_limits(BillingTier.FREE)
         assert limits.monthly_price_zar == Decimal("0.00")
 
-    def test_pro_tier_price_3310(self) -> None:
-        """PRO ZAR reference price corrected to R3,310 in v1.0 pricing blueprint.
+    def test_pro_tier_price_2480(self) -> None:
+        """PRO ZAR reference price is R2,480 in v3 pricing blueprint.
 
-        $199 × R16.26 × 1.02 = R3,300.45 → ceil10 = R3,310.
-        The previous R3,300 used standard rounding; blueprint requires ceil.
+        $149 × R16.26 × 1.02 = R2,472.87 → ceil10 = R2,480.
         """
         from decimal import Decimal
 
         from app.ee.billing.tiers import BillingTier, get_tier_limits
 
         limits = get_tier_limits(BillingTier.PRO)
-        assert limits.monthly_price_zar == Decimal("3310.00")
+        assert limits.monthly_price_zar == Decimal("2480.00")
 
-    def test_enterprise_tier_price_29840(self) -> None:
-        """ENTERPRISE ZAR floor updated to R29,840 in v1.0 pricing blueprint."""
+    def test_enterprise_tier_price_16590(self) -> None:
+        """ENTERPRISE ZAR floor is R16,590 in v3 pricing blueprint.
+
+        $1,000 × R16.26 × 1.02 = R16,585.20 → ceil10 = R16,590.
+        """
         from decimal import Decimal
 
         from app.ee.billing.tiers import BillingTier, get_tier_limits
 
         limits = get_tier_limits(BillingTier.ENTERPRISE)
-        assert limits.monthly_price_zar == Decimal("29840.00")
+        assert limits.monthly_price_zar == Decimal("16590.00")
 
     def test_enterprise_limits_are_unlimited(self) -> None:
         from app.ee.billing.tiers import BillingTier, get_tier_limits
@@ -181,24 +183,27 @@ class TestTiers:
         assert tier_for_security_dial(20) == BillingTier.FREE
         assert tier_for_security_dial(40) == BillingTier.FREE
 
-    def test_security_dial_mid_maps_to_starter_then_pro(self) -> None:
-        """Updated dial mapping: 41-50 → STARTER, 51-80 → PRO (v1.0 blueprint)."""
+    def test_security_dial_mid_maps_to_starter_team_pro(self) -> None:
+        """Dial mapping (v3 + Team): 41-60 → STARTER, 61-70 → TEAM, 71-80 → PRO."""
         from app.ee.billing.tiers import BillingTier, tier_for_security_dial
 
-        # 41–50 → STARTER (new tier)
+        # 41–60 → STARTER
         assert tier_for_security_dial(41) == BillingTier.STARTER
         assert tier_for_security_dial(50) == BillingTier.STARTER
-        # 51–80 → PRO
-        assert tier_for_security_dial(51) == BillingTier.PRO
-        assert tier_for_security_dial(60) == BillingTier.PRO
+        assert tier_for_security_dial(60) == BillingTier.STARTER
+        # 61–70 → TEAM
+        assert tier_for_security_dial(61) == BillingTier.TEAM
+        assert tier_for_security_dial(70) == BillingTier.TEAM
+        # 71–80 → PRO
+        assert tier_for_security_dial(71) == BillingTier.PRO
         assert tier_for_security_dial(80) == BillingTier.PRO
 
-    def test_security_dial_high_maps_to_business(self) -> None:
-        """Updated: 81-100 → BUSINESS (v1.0 blueprint; ENTERPRISE has same dial range)."""
+    def test_security_dial_high_maps_to_enterprise(self) -> None:
+        """81-100 → ENTERPRISE (v3 blueprint)."""
         from app.ee.billing.tiers import BillingTier, tier_for_security_dial
 
-        assert tier_for_security_dial(81) == BillingTier.BUSINESS
-        assert tier_for_security_dial(100) == BillingTier.BUSINESS
+        assert tier_for_security_dial(81) == BillingTier.ENTERPRISE
+        assert tier_for_security_dial(100) == BillingTier.ENTERPRISE
 
     def test_security_dial_out_of_range_raises(self) -> None:
         from app.ee.billing.tiers import tier_for_security_dial
@@ -644,10 +649,19 @@ class TestTierRoute:
 
     def _make_client(self):
         from fastapi import FastAPI
+        from app.auth.deps import current_user
         from app.ee.billing.routes import router
 
         app = FastAPI()
         app.include_router(router)
+        # The /tier and /events routes now require an authenticated user via
+        # Depends(current_user) (BUG 2 fix — the dependency is declared in the
+        # endpoint signature so it survives include_router).  Override it with a
+        # stub user so these store-focused tests don't need a real bearer token.
+        app.dependency_overrides[current_user] = lambda: {
+            "id": str(uuid.uuid4()),
+            "email": "tier-test@nubi.io",
+        }
         from httpx import ASGITransport, AsyncClient
         return AsyncClient(transport=ASGITransport(app=app), base_url="http://test")
 
@@ -676,3 +690,76 @@ class TestTierRoute:
         # Blueprint v1.0: unlimited seats at all tiers; PRO dial max = 80.
         assert body["limits"]["max_seats"] is None
         assert body["limits"]["security_dial_max"] == 80
+
+
+# ============================================================================
+# 7. Authenticated billing routes enforce the current_user dependency
+# ============================================================================
+
+
+class TestBillingRoutesRequireAuth:
+    """BUG 2 regression: /tier, /checkout, /events must apply Depends(current_user).
+
+    The dependency is declared in each endpoint signature so it survives
+    ``app.include_router`` (which copies fresh Dependant objects — the old code
+    mutated ``dep.call`` after the fact, which was a no-op).
+    """
+
+    def _app(self):
+        from fastapi import FastAPI
+        from app.errors import register_handlers
+        from app.ee.billing.routes import router
+
+        app = FastAPI()
+        register_handlers(app)  # so AppError(401) surfaces as a 401 response
+        app.include_router(router)
+        return app
+
+    def _client(self, app):
+        from httpx import ASGITransport, AsyncClient
+        return AsyncClient(transport=ASGITransport(app=app), base_url="http://test")
+
+    def test_tier_route_declares_current_user_dependency(self) -> None:
+        """The route's dependant must reference current_user (survives include_router)."""
+        from app.auth.deps import current_user
+        from app.ee.billing.routes import router
+
+        tier_route = next(
+            r for r in router.routes if getattr(r, "path", "") == "/ee/billing/tier"
+        )
+        dep_calls = {d.call for d in tier_route.dependant.dependencies}
+        assert current_user in dep_calls
+
+    @pytest.mark.asyncio
+    async def test_tier_without_token_is_unauthorized(self) -> None:
+        app = self._app()
+        async with self._client(app) as client:
+            resp = await client.get(f"/ee/billing/tier?org_id={uuid.uuid4()}")
+        assert resp.status_code == 401
+
+    @pytest.mark.asyncio
+    async def test_events_without_token_is_unauthorized(self) -> None:
+        app = self._app()
+        async with self._client(app) as client:
+            resp = await client.get(f"/ee/billing/events?org_id={uuid.uuid4()}")
+        assert resp.status_code == 401
+
+    @pytest.mark.asyncio
+    async def test_tier_with_overridden_user_succeeds(self) -> None:
+        """With current_user overridden, the route resolves and returns a tier."""
+        from app.auth.deps import current_user
+        from app.ee.billing.store import InMemoryBillingStore, set_billing_store_for_tests
+
+        set_billing_store_for_tests(InMemoryBillingStore())
+        try:
+            app = self._app()
+            app.dependency_overrides[current_user] = lambda: {
+                "id": str(uuid.uuid4()),
+                "email": "auth-test@nubi.io",
+            }
+            async with self._client(app) as client:
+                resp = await client.get(f"/ee/billing/tier?org_id={uuid.uuid4()}")
+            assert resp.status_code == 200
+            assert resp.json()["tier"] == "free"
+        finally:
+            set_billing_store_for_tests(None)

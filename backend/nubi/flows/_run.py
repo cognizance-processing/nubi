@@ -186,17 +186,19 @@ async def _run_async(
     # Compile the flow function to a FlowSpec dict.
     spec_dict: dict[str, Any] = flow_fn.compile(**params)
 
-    # Wrap the spec in a minimal flow object (as the runtime expects).
-    flow_obj: dict[str, Any] = {
-        "id":      "local-run",
-        "org_id":  claims.get("org_id", "local"),
-        "name":    spec_dict.get("name", "flow"),
-        "spec":    spec_dict,
-        "enabled": True,
-    }
-
     store = InMemoryFlowStore()
     now = datetime.now(timezone.utc)
+
+    # Persist the flow in the store so _get_task_spec can resolve it by
+    # flow_id when walking map/branch child task_runs.  Without this call
+    # store.get_flow(flow_id) returns None and map fan-out silently fails.
+    org_id: str = str(claims.get("org_id", "local"))
+    flow_obj = await store.create_flow(
+        org_id=org_id,
+        created_by="sdk",
+        name=spec_dict.get("name", "flow"),
+        spec=spec_dict,
+    )
 
     flow_run = await materialize_flow_run(
         store=store,

@@ -14,12 +14,14 @@
 import { useEffect, useState, useCallback } from 'react'
 import { FolderGit2, Loader2, CheckCircle, Trash2 } from 'lucide-react'
 import { useProject } from '../../../contexts/ProjectContext.jsx'
+import { useCanWrite } from '../../../contexts/OrgContext.jsx'
 import GitPanel from '../../../components/app/GitPanel.jsx'
 import DangerDeleteDialog from '../../../components/app/DangerDeleteDialog.jsx'
 import { updateProjectSettings, deleteProjectSettings, getProjectDeletionImpact } from '../../../lib/settings.js'
 
 export default function ProjectSettings() {
   const { activeProject, refreshProjects, setActiveProject, projects } = useProject()
+  const canWrite = useCanWrite()  // viewers are read-only (backend gates via require_writer)
   const projectId = activeProject?.id ?? null
 
   const [projectName, setProjectName] = useState(activeProject?.name ?? '')
@@ -119,6 +121,10 @@ export default function ProjectSettings() {
         </div>
       </div>
 
+      {!canWrite && (
+        <p className="text-sm text-muted">You have read-only access — project settings can only be changed by members with write access.</p>
+      )}
+
       {/* Rename form */}
       <form onSubmit={handleSave} className="space-y-5 max-w-md">
         <div className="space-y-1.5">
@@ -138,8 +144,8 @@ export default function ProjectSettings() {
         <div className="flex items-center gap-3">
           <button
             type="submit"
-            disabled={saving}
-            className="inline-flex items-center gap-2 px-4 py-2 rounded-xl text-sm font-medium text-white transition-opacity disabled:opacity-50"
+            disabled={saving || !canWrite}
+            className="inline-flex items-center gap-2 px-4 py-2 rounded-xl text-sm font-medium text-white transition-opacity disabled:opacity-50 disabled:cursor-not-allowed"
             style={{ background: 'linear-gradient(135deg, #2456a6, #17b3a3)' }}
           >
             {saving ? <Loader2 size={15} className="animate-spin" /> : null}
@@ -158,13 +164,16 @@ export default function ProjectSettings() {
         )}
       </form>
 
-      {/* Git sync — embedded */}
-      <div className="space-y-2">
-        <h3 className="text-xs font-semibold uppercase tracking-wider text-muted/70">Git sync</h3>
-        <GitPanel />
-      </div>
+      {/* Git sync — embedded (write actions; hidden for read-only viewers) */}
+      {canWrite && (
+        <div className="space-y-2">
+          <h3 className="text-xs font-semibold uppercase tracking-wider text-muted/70">Git sync</h3>
+          <GitPanel />
+        </div>
+      )}
 
-      {/* Danger zone */}
+      {/* Danger zone — hidden for read-only viewers */}
+      {canWrite && (
       <div className="rounded-2xl border border-red-200 dark:border-red-900 overflow-hidden">
         <div className="px-5 py-4 bg-red-50 dark:bg-red-950/30 border-b border-red-200 dark:border-red-900">
           <h3 className="font-semibold text-sm text-red-700 dark:text-red-400">Danger zone</h3>
@@ -208,6 +217,7 @@ export default function ProjectSettings() {
           </div>
         </div>
       </div>
+      )}
 
       {/* Confirm dialog */}
       {dialogOpen && impact && (

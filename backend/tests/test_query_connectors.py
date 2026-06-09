@@ -403,3 +403,22 @@ async def test_no_datastore_id_uses_demo_path(conn_client):
     assert "application/vnd.apache.arrow.stream" in resp.headers.get("content-type", "")
     table = _parse_arrow(resp.content)
     assert table.num_rows == 5  # The demo table has 5 rows.
+
+
+@pytest.mark.asyncio
+async def test_demo_connector_sentinel_id_uses_demo_path(conn_client):
+    """The virtual demo connector id ('__demo__') routes to the in-process demo path.
+
+    The demo dataset is shared across orgs (never copied per org); supplying the
+    sentinel datastore_id must behave identically to the no-datastore demo path.
+    """
+    client, user_id, org_id, repo = conn_client
+
+    resp = await client.post(
+        "/api/v1/query",
+        json={"sql": "SELECT * FROM demo", "datastore_id": "__demo__"},
+        headers=_auth_headers(user_id),
+    )
+    assert resp.status_code == 200, resp.text
+    table = _parse_arrow(resp.content)
+    assert table.num_rows == 5

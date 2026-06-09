@@ -19,7 +19,7 @@
  */
 
 import { useState, useEffect, useRef } from 'react'
-import { NavLink } from 'react-router-dom'
+import { NavLink, useMatch } from 'react-router-dom'
 import {
   Home,
   Plug,
@@ -36,6 +36,7 @@ import {
   Folder,
   Plus,
   Check,
+  Settings,
 } from 'lucide-react'
 import { useUi } from '../../contexts/UiContext.jsx'
 import { useOrg } from '../../contexts/OrgContext.jsx'
@@ -210,42 +211,39 @@ const NAV_ITEMS = [
 // Single nav item
 // ---------------------------------------------------------------------------
 
-function SidebarNavItem({ to, label, Icon, collapsed }) {
+function SidebarNavItem({ to, label, Icon: IconComponent, collapsed }) {
+  const isActive = !!useMatch({ path: to, end: false })
+  // Alias to a locally declared const so ESLint recognises the JSX usage.
+  const NavItemIcon = IconComponent
   return (
     <NavLink
       to={to}
-      className={({ isActive }) =>
-        `
-          group flex items-center gap-3 px-3 rounded-xl
-          min-h-[44px] text-sm font-medium
-          transition-all duration-150
-          focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-1
-          ${collapsed ? 'justify-center w-11 mx-auto' : 'w-full'}
-          ${
-            isActive
-              ? 'bg-primary/10 text-primary dark:bg-primary/15'
-              : 'text-muted hover:text-fg hover:bg-surface-2'
-          }
-        `
-      }
+      className={`
+        group flex items-center gap-3 px-3 rounded-xl
+        min-h-[44px] text-sm font-medium
+        transition-all duration-150
+        focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-1
+        ${collapsed ? 'justify-center w-11 mx-auto' : 'w-full'}
+        ${
+          isActive
+            ? 'bg-primary/10 text-primary dark:bg-primary/15'
+            : 'text-muted hover:text-fg hover:bg-surface-2'
+        }
+      `}
       title={collapsed ? label : undefined}
       aria-label={label}
     >
-      {({ isActive }) => (
-        <>
-          <Icon
-            size={18}
-            strokeWidth={isActive ? 2.2 : 1.8}
-            className={`shrink-0 transition-colors ${isActive ? 'text-primary' : 'text-muted group-hover:text-fg'}`}
-          />
-          {!collapsed && (
-            <span className="truncate leading-none">{label}</span>
-          )}
-          {/* Active indicator bar */}
-          {isActive && !collapsed && (
-            <span className="ml-auto block w-1.5 h-1.5 rounded-full bg-primary shrink-0" />
-          )}
-        </>
+      <NavItemIcon
+        size={18}
+        strokeWidth={isActive ? 2.2 : 1.8}
+        className={`shrink-0 transition-colors ${isActive ? 'text-primary' : 'text-muted group-hover:text-fg'}`}
+      />
+      {!collapsed && (
+        <span className="truncate leading-none">{label}</span>
+      )}
+      {/* Active indicator bar */}
+      {isActive && !collapsed && (
+        <span className="ml-auto block w-1.5 h-1.5 rounded-full bg-primary shrink-0" />
       )}
     </NavLink>
   )
@@ -316,6 +314,14 @@ function SidebarContent({ collapsed, showToggle = true }) {
             collapsed={collapsed}
           />
         ))}
+      </nav>
+
+      {/* Secondary nav — pinned below the primary nav */}
+      <nav
+        className={`flex flex-col gap-0.5 mt-1 pt-2 border-t border-border ${collapsed ? 'items-center px-1' : 'px-2'}`}
+        aria-label="Settings navigation"
+      >
+        <SidebarNavItem to="/settings" label="Settings" Icon={Settings} collapsed={collapsed} />
       </nav>
 
       {/* Footer / version */}

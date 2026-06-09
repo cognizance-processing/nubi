@@ -6,12 +6,32 @@ TaskContext
     Dataclass carrying flow-level context needed by each task handler.
     Fields: ``flow_params`` (flow param values), ``inputs`` (upstream task
     results keyed by task_key), ``now`` (the injected clock datetime),
-    ``secrets`` (resolved org secrets keyed by name, plaintext values).
+    ``secrets`` (resolved org secrets keyed by name, plaintext values),
+    ``org_id`` (org owning this flow run — used by connector resolution),
+    ``preview_mode`` (True when running a preview/interactive cell),
+    ``preview_limit`` (row cap for preview queries, default 500).
 
 execute_task(task, ctx, claims) -> dict
     Resolve ``{{ ... }}`` template expressions in the task's config,
     dispatch to the registered kind handler, enforce ``timeout_s``, and
     return a result dict.
+
+    Preview mode behaviour
+    ----------------------
+    When ``ctx.preview_mode=True``:
+    - ``query`` tasks automatically receive a ``preview_limit`` cap so the
+      planner injects ``LIMIT <n>`` before plan execution.
+    - No flow_run is persisted (the caller is responsible for this).
+    - Results are identical in shape to durable results; callers read
+      ``result["rows"]`` as usual.
+
+    Python→SQL bridge
+    -----------------
+    When a ``query`` task runs and upstream ``ctx.inputs`` contain entries
+    with a ``rows`` key (i.e. a Python cell produced row data), those rows
+    are automatically registered as in-memory DuckDB tables named by the
+    upstream cell key before the SQL is executed.  This mirrors the resolved
+    decision in the notebook system blueprint (OQ-3 option B).
 
 Result dict shape
 -----------------
@@ -88,6 +108,17 @@ class TaskContext:
         For map body task_runs: the current item dict being processed.
         Template expressions ``{{ item.field }}`` resolve against this dict.
         ``None`` for non-map tasks (regular task execution).
+    org_id:
+        The organisation that owns this flow run.  Populated by the runtime
+        from ``flow_run.org_id``.  Used by handlers that resolve BYO-warehouse
+        connectors via the datastore registry (P1-D blueprint seam).
+    preview_mode:
+        ``True`` when executing a single cell interactively (preview path).
+        ``query`` tasks automatically receive ``LIMIT <preview_limit>``; no
+        flow_run row is persisted.
+    preview_limit:
+        Row cap applied to ``query`` tasks in preview mode (default 500).
+        Ignored when ``preview_mode=False``.
     """
 
     flow_params: dict[str, Any] = field(default_factory=dict)
@@ -97,6 +128,19 @@ class TaskContext:
     ))
     secrets: dict[str, str] = field(default_factory=dict)
     item: dict[str, Any] | None = field(default=None)
+    org_id: str | None = field(default=None)
+    preview_mode: bool = field(default=False)
+    preview_limit: int = field(default=500)
+    # ── Environment / incremental materialization (additive, all defaulted) ──
+    # env:       active environment for this flow run ("dev"/"prod"/custom).
+    #            Namespaces materialized/incremental targets so dev/prod never
+    #            clobber.  Populated by the runtime from flow_run["env"].
+    # watermark: stored incremental watermark (ISO string) for a materialize
+    #            task, read by the runtime from flow_watermarks before execution.
+    # flow:      the flow dict (for runtime_config.materialize_base_uri lookup).
+    env: str = field(default="prod")
+    watermark: str | None = field(default=None)
+    flow: dict[str, Any] | None = field(default=None)
 
 
 # ---------------------------------------------------------------------------
@@ -209,6 +253,158 @@ def _resolve_str(expr: str, ctx: TaskContext) -> str:
 
 
 # ---------------------------------------------------------------------------
+# Python→SQL bridge helpers
+# ---------------------------------------------------------------------------
+
+
+def _collect_bridge_tables(ctx: TaskContext) -> dict[str, Any]:
+    """Collect upstream inputs that carry row data for DuckDB bridge registration.
+
+    Returns a dict mapping cell_key → pyarrow.Table for every upstream input
+    that has a non-empty ``rows`` list.  Returns ``{}`` when pyarrow is not
+    available or no inputs have rows.
+
+    This implements the resolved OQ-3 decision: a durable/preview SQL cell
+    that reads ``SELECT * FROM <cell_key>`` will find the upstream Python
+    cell's output registered as an in-memory DuckDB table.
+    """
+    tables: dict[str, Any] = {}
+    try:
+        import pyarrow as pa  # noqa: PLC0415
+    except ImportError:
+        return tables
+
+    for cell_key, result in ctx.inputs.items():
+        if not isinstance(result, dict):
+            continue
+        rows = result.get("rows")
+        if not rows:
+            continue
+        try:
+            tables[cell_key] = pa.Table.from_pylist(rows)
+        except Exception:  # noqa: BLE001
+            # Unparseable rows — skip this cell silently.
+            pass
+    return tables
+
+
+def _execute_query_with_bridge(
+    config: dict[str, Any],
+    ctx: TaskContext,
+    claims: dict[str, Any],
+    bridge_tables: dict[str, Any],
+) -> dict[str, Any]:
+    """Execute a ``query`` task with Python→SQL bridge table registration.
+
+    Creates a fresh ``DuckDBConnector``, registers all *bridge_tables*
+    (upstream Python cell outputs) as named in-memory tables, then runs the
+    planner + SQL.  Applies ``LIMIT <preview_limit>`` via the planner when
+    ``ctx.preview_mode`` is ``True``.
+
+    This function lives in executor.py (owned) rather than registry.py so
+    that the Python→SQL bridge is implemented without modifying the
+    pre-existing handler.
+
+    Parameters
+    ----------
+    config:
+        Resolved task config dict (after template substitution).
+    ctx:
+        Execution context carrying ``preview_mode`` / ``preview_limit``.
+    claims:
+        Caller auth claims (RLS injection by the planner).
+    bridge_tables:
+        Dict mapping cell_key → ``pyarrow.Table`` to pre-register.
+
+    Returns
+    -------
+    dict
+        ``{rows, row_count, columns}``
+    """
+    from app.connectors.duckdb_conn import DuckDBConnector  # noqa: PLC0415
+    from app.connectors.planner import plan, resolve_named_params  # noqa: PLC0415
+    from app.errors import AppError  # noqa: PLC0415
+    from app.queries.registry import get_query_registry  # noqa: PLC0415
+
+    query_id: str | None = config.get("query_id")
+    sql: str | None = config.get("sql")
+    named_params: dict[str, Any] = config.get("named_params") or {}
+
+    resolved_sql: str
+    positional_params: list[Any] = []
+
+    if query_id is not None:
+        registry = get_query_registry()
+        rq = registry.get(query_id)
+        if rq is None:
+            raise AppError(
+                "query_not_found",
+                f"No registered query with id {query_id!r}.",
+                404,
+            )
+        resolved_sql = rq.sql
+        if named_params and rq.params:
+            resolved: dict[str, Any] = {}
+            for p in rq.params:
+                if p.name in named_params:
+                    resolved[p.name] = named_params[p.name]
+                elif p.default is not None:
+                    resolved[p.name] = p.default
+                elif p.required:
+                    raise AppError(
+                        "missing_required_param",
+                        f"Required param {p.name!r} was not supplied.",
+                        400,
+                    )
+            resolved_sql, positional_params = resolve_named_params(resolved_sql, resolved)
+    elif sql is not None:
+        resolved_sql = sql
+    else:
+        raise AppError(
+            "invalid_task_config",
+            "query task requires 'query_id' or 'sql' in config.",
+            400,
+        )
+
+    # Apply preview row limit when running in preview mode.
+    limit: int | None = ctx.preview_limit if ctx.preview_mode else None
+
+    physical_plan = plan(
+        resolved_sql,
+        claims=claims,
+        params=positional_params,
+        limit=limit,
+    )
+
+    connector = DuckDBConnector()
+
+    # Seed the demo table (mirrors _handle_query / _tool_run_query).
+    try:
+        import pyarrow as pa  # noqa: PLC0415
+
+        demo = pa.table(
+            {
+                "id": pa.array([1, 2, 3, 4, 5], type=pa.int32()),
+                "name": pa.array(["alpha", "beta", "gamma", "delta", "epsilon"]),
+                "active": pa.array([True, True, False, True, False]),
+                "value": pa.array([10.0, 20.0, 30.0, 40.0, 50.0], type=pa.float64()),
+            }
+        )
+        connector.register({"demo": demo})
+    except Exception:  # noqa: BLE001
+        pass
+
+    # Register bridge tables (Python cell outputs) as in-memory DuckDB tables.
+    if bridge_tables:
+        connector.register(bridge_tables)
+
+    arrow_table = connector.execute(physical_plan)
+    columns = arrow_table.schema.names
+    rows = arrow_table.to_pylist()
+    return {"rows": rows, "row_count": len(rows), "columns": columns}
+
+
+# ---------------------------------------------------------------------------
 # execute_task
 # ---------------------------------------------------------------------------
 
@@ -242,6 +438,29 @@ def execute_task(
     kind: str = task.get("kind", "")
     raw_config: dict[str, Any] = task.get("config") or {}
     timeout_s: int = int(task.get("timeout_s", 0) or 0)
+
+    # ── run_when gate (cells-not-kinds) ───────────────────────────────────────
+    # A cell may carry a ``config.run_when`` boolean expression over
+    # inputs/params/secrets.  Read it from the RAW config (NOT _resolve_config —
+    # template str-coercion would break ``==`` comparisons) BEFORE handler
+    # dispatch.  When it evaluates False the cell is SKIPPED.  A malformed gate
+    # raises ValueError, which propagates to the broad-except below ⇒ 'failed'
+    # (the gate fails loudly, never silently skips).
+    run_when_expr = raw_config.get("run_when")
+    if run_when_expr is not None and str(run_when_expr).strip():
+        from app.flows.run_when import evaluate_run_when  # noqa: PLC0415
+
+        try:
+            gate_passes = evaluate_run_when(run_when_expr, ctx)
+        except Exception as exc:  # noqa: BLE001 — malformed gate fails loudly
+            return {
+                "state": "failed",
+                "result": None,
+                "error": f"run_when evaluation failed: {exc}",
+                "logs": [],
+            }
+        if not gate_passes:
+            return {"state": "skipped", "result": None, "error": None, "logs": []}
 
     # ── Map child item injection ──────────────────────────────────────────────
     # If the task config contains ``__item__`` (set by _expand_map_children),
@@ -290,9 +509,61 @@ def execute_task(
     # if they support it (the python handler does via stdout capture).
     log_lines: list[str] = []
 
+    # ── Compute metering ──────────────────────────────────────────────────────
+    # Flow task execution consumes compute on our nodes — the same COGS line as
+    # interactive query/kernel compute (see app.ee.billing.tiers compute_units).
+    # We meter wall-clock here so flow runs count toward the org's compute-unit
+    # quota (and overage). Skipped in preview mode (no real run, no bill).
+    import time as _time  # noqa: PLC0415
+    _t0 = _time.perf_counter()
+
+    def _meter(result_obj: Any = None) -> None:
+        if ctx.preview_mode:
+            return
+        try:
+            from app.compute.metering import record_kernel_usage_safe  # noqa: PLC0415
+
+            elapsed_ms = int((_time.perf_counter() - _t0) * 1000)
+            out_bytes = 0
+            if isinstance(result_obj, dict):
+                rows = result_obj.get("rows")
+                if isinstance(rows, list):
+                    out_bytes = len(rows) * 64  # rough egress estimate
+            record_kernel_usage_safe(
+                user_id=str(claims.get("sub") or claims.get("user_id") or "flow"),
+                tier="flow_kernel",
+                elapsed_ms=elapsed_ms,
+                output_bytes=out_bytes,
+                org_id=ctx.org_id,
+            )
+        except Exception:  # noqa: BLE001 — metering must never break a flow run
+            pass
+
     try:
-        registry = get_task_kind_registry()
-        handler = registry.get(kind)
+        # ── Python→SQL bridge + preview dispatch for query tasks ─────────────
+        # When upstream inputs carry ``rows`` data (Python cell outputs) or
+        # preview_mode is active, we bypass the standard registry handler for
+        # ``query`` tasks and use our bridge-aware executor instead.
+        # This keeps all bridge logic inside executor.py (our owned file) and
+        # avoids modifying registry.py.
+        if kind == "query":
+            bridge_tables = _collect_bridge_tables(ctx)
+            if bridge_tables or ctx.preview_mode:
+                # Use the inline bridge handler.
+                def _bridge_handler(
+                    cfg: dict[str, Any],
+                    _ctx: TaskContext,
+                    _claims: dict[str, Any],
+                ) -> dict[str, Any]:
+                    return _execute_query_with_bridge(cfg, _ctx, _claims, bridge_tables)
+
+                handler: Any = _bridge_handler
+            else:
+                registry = get_task_kind_registry()
+                handler = registry.get(kind)
+        else:
+            registry = get_task_kind_registry()
+            handler = registry.get(kind)
 
         if timeout_s > 0:
             import concurrent.futures  # noqa: PLC0415
@@ -303,6 +574,7 @@ def execute_task(
                     result, captured_logs = future.result(timeout=timeout_s)
                     log_lines.extend(captured_logs)
                 except concurrent.futures.TimeoutError:
+                    _meter()  # the task ran (and consumed compute) until the timeout
                     return {
                         "state": "timed_out",
                         "result": None,
@@ -317,11 +589,13 @@ def execute_task(
         if not isinstance(result, dict):
             result = {"value": result}
 
+        _meter(result)
         return {"state": "success", "result": result, "error": None, "logs": log_lines}
 
     except Exception as exc:  # noqa: BLE001 — broad catch mirrors execute_job
         import traceback  # noqa: PLC0415
         tb = traceback.format_exc()
+        _meter()  # a failed handler still consumed compute before raising
         return {
             "state": "failed",
             "result": None,

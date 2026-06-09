@@ -48,19 +48,19 @@ export default function KernelInBrowser({ className = '' }) {
         {/* chip pins */}
         {pins.map((i) => {
           const x = 178 + i * 21.6
-          return <rect key={`t${i}`} x={x} y="118" width="9" height="14" rx="2.5" fill="#2456a6" fillOpacity="0.45" />
+          return <rect key={`t${i}`} x={x} y="118" width="9" height="14" rx="2.5" fill="#2456a6" fillOpacity="0.6" />
         })}
         {pins.map((i) => {
           const x = 178 + i * 21.6
-          return <rect key={`b${i}`} x={x} y="228" width="9" height="14" rx="2.5" fill="#2456a6" fillOpacity="0.45" />
+          return <rect key={`b${i}`} x={x} y="228" width="9" height="14" rx="2.5" fill="#2456a6" fillOpacity="0.6" />
         })}
         {pins.map((i) => {
           const y = 150 + i * 11.5
-          return <rect key={`l${i}`} x="146" y={y} width="14" height="7" rx="2.5" fill="#2456a6" fillOpacity="0.45" />
+          return <rect key={`l${i}`} x="146" y={y} width="14" height="7" rx="2.5" fill="#2456a6" fillOpacity="0.6" />
         })}
         {pins.map((i) => {
           const y = 150 + i * 11.5
-          return <rect key={`r${i}`} x="320" y={y} width="14" height="7" rx="2.5" fill="#2456a6" fillOpacity="0.45" />
+          return <rect key={`r${i}`} x="320" y={y} width="14" height="7" rx="2.5" fill="#2456a6" fillOpacity="0.6" />
         })}
 
         {/* chip body */}

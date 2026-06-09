@@ -4,7 +4,18 @@ Every new org/project gets a small, real, explorable bundle so the user lands on
 a populated workspace instead of an empty one.  The bundle is created from the
 SAME declarative demo fixtures the superuser demo uses (``seed_data/demo/*.json``
 via ``app/demo_bundle.py``) — but only the ``starter`` subset of dashboards — and
-points at the ONE bundled, read-only DuckDB file (``seed_data/sample.duckdb``).
+points at a REAL ``duckdb`` datastore:
+
+- **S3 configured** (``S3_ACCESS_KEY`` / ``AWS_ACCESS_KEY_ID`` env vars present):
+  the demo star schema is exported per-project to
+  ``s3://<bucket>/projects/<project_id>/demo/<table>.parquet`` and the datastore
+  config exposes all 6 tables as DuckDB views over those S3 parquet files.  Each
+  new project gets its own isolated file set (idempotent re-seeds are safe — files
+  are written only once per project).
+
+- **No S3** (offline dev / CI without MinIO): falls back to the single shared,
+  read-only DuckDB file (``seed_data/sample.duckdb``).  Behaviour is identical to
+  the pre-S3 implementation.
 
 Every row created here is tagged ``config.sample = true`` (plus a stable
 ``config.sample_id`` for idempotency) so the whole bundle can be bulk-removed —
@@ -26,11 +37,14 @@ from __future__ import annotations
 from typing import Any
 
 from app.demo_bundle import (
+    _s3_is_configured,
     datastore_config,
+    export_demo_to_s3,
     load_boards,
     load_queries,
     referenced_query_keys,
     resolve_placeholders,
+    s3_datastore_config,
     sample_db_path,
 )
 from app.repos.provider import Repo, get_repo
@@ -92,30 +106,53 @@ async def seed_sample_bundle(
 ) -> dict[str, Any]:
     """Idempotently seed the removable starter bundle into *org_id* / *project_id*.
 
-    Creates a read-only "Sample" DuckDB datastore, the queries the starter boards
-    need, and the ``starter`` dashboard(s) from the shared demo fixtures — all
-    tagged ``sample=true``.  Designed to never break signup: returns
+    When S3 is configured (``S3_ACCESS_KEY`` / ``AWS_ACCESS_KEY_ID`` env vars),
+    exports the demo star schema to per-project S3 parquet files BEFORE creating
+    the datastore row, so the connector is live-backed by real object storage from
+    day one.  Falls back to the bundled read-only local file when S3 is absent.
+
+    Creates a "Sample" DuckDB datastore, the queries the starter boards need, and
+    the ``starter`` dashboard(s) from the shared demo fixtures — all tagged
+    ``sample=true``.  Designed to never break signup: returns
     ``{"skipped": reason}`` if the bundled dataset can't be built.
     """
     repo = repo or get_repo()
 
-    try:
-        db_path = sample_db_path()
-    except Exception as exc:  # noqa: BLE001 — never fail signup over the sample bundle
-        return {"skipped": f"sample db unavailable: {exc}"}
+    # ── 1. Build / resolve the datastore config ────────────────────────────────
+    ds_config: dict[str, Any]
+
+    if project_id is not None and _s3_is_configured():
+        # S3 path: export per-project parquet files, then point the datastore at them.
+        try:
+            export_demo_to_s3(project_id)
+            ds_config = s3_datastore_config(project_id)
+        except Exception as exc:  # noqa: BLE001 — fall back gracefully
+            # S3 export failed; fall back to the bundled local file.
+            try:
+                db_path = sample_db_path()
+                ds_config = datastore_config(db_path)
+            except Exception as exc2:  # noqa: BLE001
+                return {"skipped": f"sample db unavailable: {exc}; fallback also failed: {exc2}"}
+    else:
+        # Local-file fallback (no S3 configured or no project_id).
+        try:
+            db_path = sample_db_path()
+            ds_config = datastore_config(db_path)
+        except Exception as exc:  # noqa: BLE001 — never fail signup over the sample bundle
+            return {"skipped": f"sample db unavailable: {exc}"}
 
     created: list[str] = []
 
-    # 1. Sample datastore (points at the bundled read-only file).
+    # ── 2. Sample datastore ────────────────────────────────────────────────────
     ds, ds_created = await _upsert(
         repo, "datastores", org_id, created_by, "Sample",
-        datastore_config(db_path), SAMPLE_DS, project_id,
+        ds_config, SAMPLE_DS, project_id,
     )
     if ds_created:
         created.append("datastores")
     datastore_id = str(ds["id"])
 
-    # 2. Starter boards + the queries they reference (from shared fixtures).
+    # ── 3. Starter boards + the queries they reference ─────────────────────────
     boards = load_boards(starter_only=True)
     queries = load_queries()
     needed = referenced_query_keys(boards)
@@ -134,7 +171,7 @@ async def seed_sample_bundle(
         if q_created:
             created.append("queries")
 
-    # 3. Starter dashboard(s) — resolve @placeholders to real query UUIDs.
+    # ── 4. Starter dashboard(s) — resolve @placeholders to real query UUIDs ───
     board_ids: list[str] = []
     for b in boards:
         spec = resolve_placeholders(b["spec"], idmap)

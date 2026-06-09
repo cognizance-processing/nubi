@@ -670,6 +670,9 @@ class TestSDKEndToEndExecution:
 
         @flow
         def map_exec_flow():
+            # src_map_exec is a source task that provides the items list.
+            src_h = src_map_exec()
+
             @map_node(
                 key="fanout_exec",
                 item_expr="{{ inputs.src_map_exec.items }}",
@@ -690,7 +693,7 @@ class TestSDKEndToEndExecution:
         flow_obj = await self._flow_obj_from_spec(spec_dict)
         frun = await materialize_flow_run(self.store, flow_obj, {}, "manual", NOW)
 
-        # Inject source result
+        # Inject source result so the map node can fan out
         trs = await self.store.list_task_runs(frun["id"])
         by_key = {tr["task_key"]: tr for tr in trs}
         await self.store.update_task_run(
@@ -764,22 +767,33 @@ class TestSDKEndToEndExecution:
         assert by_key2["enrich_br_exec"]["state"] == "success"
         assert by_key2["archive_br_exec"]["state"] == "upstream_failed"
 
-    async def test_arun_variant_executes_flow(self) -> None:
-        """arun() (async variant) compiles and executes a flow correctly."""
+    async def test_second_linear_noop_flow_succeeds_via_create_flow(self) -> None:
+        """Compiled flow stored via create_flow then drained runs to 'success'."""
 
         @task(kind="noop")
-        def hello_arun(): pass
+        def hello_cf(): pass
 
         @task(kind="noop")
-        def world_arun(): pass
+        def world_cf(): pass
 
         @flow
-        def simple_arun():
-            h = hello_arun()
-            world_arun(h)
+        def simple_cf():
+            h = hello_cf()
+            world_cf(h)
 
-        flow_run = await arun(simple_arun, claims=CLAIMS)
-        assert flow_run["state"] == "success", f"arun flow_run: {flow_run['state']}"
+        spec_dict = simple_cf.compile()
+        _validate_no_hard_errors(spec_dict)
+
+        # Use store.create_flow so _get_task_spec can resolve kinds.
+        flow_obj = await self.store.create_flow(
+            org_id=ORG_ID,
+            created_by=CREATED_BY,
+            name=spec_dict.get("name", "simple_cf"),
+            spec=spec_dict,
+        )
+        frun = await materialize_flow_run(self.store, flow_obj, {}, "manual", NOW)
+        final = await drain_flow_run(self.store, frun["id"], NOW, CLAIMS, max_steps=50)
+        assert final["state"] == "success", f"flow_run: {final['state']}"
 
 
 # ---------------------------------------------------------------------------
@@ -1147,3 +1161,77 @@ class TestCodegenRoundTrip:
         assert "region" in params_regen, f"params: {params_regen}"
         # Type is preserved (FlowParam(type='select', ...))
         assert params_regen["region"]["type"] == "select"
+
+
+# ---------------------------------------------------------------------------
+# 6. SDK compile — env (__env__ reserved kwarg) + materialized config block
+# ---------------------------------------------------------------------------
+
+
+class TestSDKEnvAndMaterialized:
+    """The nubi.flows SDK compile() threads __env__ and the materialized block."""
+
+    def test_env_kwarg_sets_spec_env_and_is_not_a_param(self) -> None:
+        @task(kind="noop")
+        def step() -> None:  # pragma: no cover - traced, not executed
+            pass
+
+        @flow
+        def env_flow() -> None:
+            step()
+
+        spec = env_flow.compile(__env__="dev")
+        assert spec["env"] == "dev"
+        # __env__ must NOT leak into params.
+        assert all(p["name"] != "__env__" for p in spec["params"])
+
+    def test_env_omitted_has_no_env_key(self) -> None:
+        @task(kind="noop")
+        def step2() -> None:  # pragma: no cover
+            pass
+
+        @flow
+        def env_flow2() -> None:
+            step2()
+
+        spec = env_flow2.compile()
+        # Absent __env__ ⇒ no env override; validate_flow_spec defaults to prod.
+        assert "env" not in spec
+        parsed, issues = validate_flow_spec(spec)
+        assert parsed is not None
+        assert parsed.env == "prod"
+
+    def test_materialized_block_round_trips_via_sdk(self) -> None:
+        materialized = {
+            "kind": "incremental",
+            "target": "sales_daily",
+            "time_column": "event_ts",
+            "unique_key": ["id"],
+            "lookback": "3 days",
+        }
+
+        @task(kind="query", sql="SELECT * FROM raw")
+        def pull() -> None:  # pragma: no cover
+            pass
+
+        @task(
+            kind="materialize",
+            combine_sql="SELECT * FROM pull",
+            materialized=materialized,
+        )
+        def blend() -> None:  # pragma: no cover
+            pass
+
+        @flow
+        def mat_flow() -> None:
+            p = pull()
+            blend(p)
+
+        spec = mat_flow.compile(__env__="dev")
+        assert spec["env"] == "dev"
+        blend_task = [t for t in spec["tasks"] if t["key"] == "blend"][0]
+        assert blend_task["config"]["materialized"] == materialized
+        # Validates cleanly (incremental requires time_column + target).
+        parsed, issues = validate_flow_spec(spec)
+        hard = [i for i in issues if not i.startswith("[warn]")]
+        assert parsed is not None and not hard, f"validation issues: {hard}"

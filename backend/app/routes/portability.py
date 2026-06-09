@@ -39,6 +39,7 @@ from fastapi import APIRouter, Depends, Request
 from fastapi.responses import Response
 
 from app.auth.deps import current_user
+from app.auth.roles import require_writer
 from app.errors import AppError
 from app.portability import (
     dump_envelope,
@@ -160,7 +161,7 @@ async def _read_document(request: Request) -> str:
     return text
 
 
-@router.post("/import", status_code=200)
+@router.post("/import", status_code=200, dependencies=[Depends(require_writer)])
 async def import_resource(
     request: Request,
     user: dict[str, Any] = Depends(current_user),

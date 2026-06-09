@@ -37,6 +37,7 @@ from fastapi import APIRouter, Depends, Request, Response
 from pydantic import BaseModel
 
 from app.auth.deps import current_user
+from app.auth.roles import require_writer
 from app.db import fetchrow, fetch
 from app.errors import AppError
 from app.repos.base import VALID_RESOURCES
@@ -110,7 +111,7 @@ async def list_resources(
     return await repo.list(resource, org_id, project_id)
 
 
-@router.post("/{resource}", status_code=201)
+@router.post("/{resource}", status_code=201, dependencies=[Depends(require_writer)])
 async def create_resource(
     resource: str,
     body: CreateIn,
@@ -161,7 +162,7 @@ async def get_resource(
     return row
 
 
-@router.put("/{resource}/{id}")
+@router.put("/{resource}/{id}", dependencies=[Depends(require_writer)])
 async def update_resource(
     resource: str,
     id: str,
@@ -189,7 +190,7 @@ async def update_resource(
     return row
 
 
-@router.delete("/{resource}/{id}", status_code=204)
+@router.delete("/{resource}/{id}", status_code=204, dependencies=[Depends(require_writer)])
 async def delete_resource(
     resource: str,
     id: str,

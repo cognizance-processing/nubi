@@ -22,7 +22,11 @@
  *   /editor             → EditorPage  (existing)
  *   /editor/:id         → EditorPage  (existing)
  *   /playground         → redirect → /queries  (Playground merged into Queries)
- *   /settings           → SettingsPage
+ *   /settings           → redirect → /settings/profile  (SettingsLayout sub-nav)
+ *   /settings/profile   → ProfileSettings
+ *   /settings/organization → OrgSettings
+ *   /settings/project   → ProjectSettings
+ *   /settings/security  → SecuritySettings  (JWT issuers / JWKS manager)
  *   /secrets            → SecretsPage
  *   /billing            → EE-only; rendered only when billing feature is enabled
  *                         and the EE module is loaded. Absent in OSS builds.
@@ -41,7 +45,7 @@
  * without core ever statically importing src/ee.
  */
 
-import { Suspense } from 'react'
+import { Suspense, createElement } from 'react'
 import { Navigate, Routes, Route } from 'react-router-dom'
 import { AuthProvider } from './contexts/AuthContext.jsx'
 import { UiProvider } from './contexts/UiContext.jsx'
@@ -70,6 +74,7 @@ import EditorPage from './pages/EditorPage.jsx'
 
 // New stub app pages
 import HomePage from './pages/app/HomePage.jsx'
+import InviteAcceptPage from './pages/app/InviteAcceptPage.jsx'
 import ConnectorsPage from './pages/app/ConnectorsPage.jsx'
 import DataBrowser from './pages/app/DataBrowser.jsx'
 import QueriesPage from './pages/app/QueriesPage.jsx'
@@ -77,7 +82,11 @@ import BlendBuilder from './pages/app/BlendBuilder.jsx'
 import DashboardsPage from './pages/app/DashboardsPage.jsx'
 import FlowsPage from './pages/app/FlowsPage.jsx'
 import AutomationsPage from './pages/app/AutomationsPage.jsx'
-import SettingsPage from './pages/app/SettingsPage.jsx'
+import SettingsLayout from './pages/app/settings/SettingsLayout.jsx'
+import ProfileSettings from './pages/app/settings/ProfileSettings.jsx'
+import OrgSettings from './pages/app/settings/OrgSettings.jsx'
+import ProjectSettings from './pages/app/settings/ProjectSettings.jsx'
+import SecuritySettings from './pages/app/settings/SecuritySettings.jsx'
 import SecretsPage from './pages/app/SecretsPage.jsx'
 import DataExplorerPage from './pages/app/DataExplorerPage.jsx'
 
@@ -124,10 +133,12 @@ function EeBillingSlot() {
 
   // Re-read the slot each render — registry.js notifies the parent EeRouteGuard
   // via onSlotRegistered, which forces a re-render when EE populates the slot.
+  // Use createElement instead of JSX so the linter does not treat the slot
+  // component reference as a "component created during render".
   const BillingPage = getSlot('billing-page')
 
   if (!billingEnabled || !BillingPage) return null
-  return <BillingPage />
+  return createElement(BillingPage)
 }
 
 // ---------------------------------------------------------------------------
@@ -180,6 +191,7 @@ export default function App() {
           <Route path="dashboard" element={<Navigate to="/home" replace />} />
 
           <Route path="home" element={<HomePage />} />
+          <Route path="invite/:token" element={<InviteAcceptPage />} />
           <Route path="connectors" element={<ConnectorsPage />} />
           <Route path="connectors/:id/data" element={<DataBrowser />} />
           <Route path="data" element={<DataExplorerPage />} />
@@ -194,7 +206,15 @@ export default function App() {
           <Route path="editor/:id" element={<EditorPage />} />
           {/* Playground merged into Queries — keep route as a redirect so old links work */}
           <Route path="playground" element={<Navigate to="/queries" replace />} />
-          <Route path="settings" element={<SettingsPage />} />
+          {/* Settings — sub-nav layout with per-section routes */}
+          <Route path="settings" element={<SettingsLayout />}>
+            {/* /settings → /settings/profile */}
+            <Route index element={<Navigate to="profile" replace />} />
+            <Route path="profile" element={<ProfileSettings />} />
+            <Route path="organization" element={<OrgSettings />} />
+            <Route path="project" element={<ProjectSettings />} />
+            <Route path="security" element={<SecuritySettings />} />
+          </Route>
           {/* Secrets are flow-scoped — homed under the Flows section, not top-level nav. */}
           <Route path="flows/secrets" element={<SecretsPage />} />
 

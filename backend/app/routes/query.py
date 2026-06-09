@@ -506,6 +506,14 @@ async def query(
         registered.datastore_id if registered is not None else None
     )
 
+    # The virtual "Demo data" connector (id "__demo__") is backed by the same
+    # in-process demo connector as the no-datastore path — there is no datastore
+    # row and the dataset is shared across all orgs (never copied).  Normalise
+    # its sentinel id to None so it flows through the built-in demo branch below.
+    from app.routes.connectors import DEMO_CONNECTOR_ID as _DEMO_CONNECTOR_ID
+    if effective_datastore_id == _DEMO_CONNECTOR_ID:
+        effective_datastore_id = None
+
     # ``_net_cleanup`` tears down any ephemeral network proxy (e.g. a bridge
     # reverse-tunnel) opened while resolving the datastore's network_mode.  It
     # defaults to a no-op so the demo path and the direct path can invoke it
@@ -531,7 +539,7 @@ async def query(
                 404,
             )
         cfg: dict = dict(ds.get("config") or {})
-        ctype: str | None = cfg.get("type")
+        ctype: str | None = cfg.get("connector_type") or cfg.get("type")
 
         # ── (a) Secret injection (M22-A) ──────────────────────────────────────
         # Fetch the decrypted secret for this datastore (if any) and merge the
@@ -649,7 +657,44 @@ async def query(
                     pass
                 connector = factory(_conn)
             else:
-                connector = factory()
+                import duckdb as _duckdb_mem
+
+                _mem_conn = _duckdb_mem.connect(database=":memory:")
+                # Execute view_sql if present (e.g. datasets that register a
+                # Parquet-backed view: CREATE VIEW dataset AS read_parquet(...)).
+                _view_sql: str | None = cfg.get("view_sql")
+                # Multi-table S3 datastores (e.g. the per-project demo) may use
+                # an s3_views dict instead of a view_sql string.
+                if not _view_sql and cfg.get("s3_views"):
+                    try:
+                        from app.routes.data_browser import (  # noqa: PLC0415
+                            _build_view_sql_from_s3_views,
+                        )
+                        _view_sql = _build_view_sql_from_s3_views(cfg["s3_views"])
+                    except Exception:  # noqa: BLE001
+                        _view_sql = None
+                # If the views read from object storage (s3://), httpfs + an S3
+                # SECRET MUST be set up BEFORE the CREATE VIEW statements run —
+                # otherwise read_parquet('s3://...') fails and the views silently
+                # never exist, surfacing later as "Table not found".
+                if (_view_sql and "s3://" in _view_sql) or cfg.get("s3_views"):
+                    try:
+                        from app.connectors.duckdb_conn import setup_s3_httpfs  # noqa: PLC0415
+                        setup_s3_httpfs(_mem_conn, cfg)
+                    except Exception:  # noqa: BLE001
+                        pass
+                if _view_sql:
+                    # view_sql may carry MULTIPLE statements (one CREATE VIEW per
+                    # table for a multi-table S3 datastore) — execute each.
+                    for _stmt in _view_sql.split(";"):
+                        _stmt = _stmt.strip()
+                        if not _stmt:
+                            continue
+                        try:
+                            _mem_conn.execute(_stmt)
+                        except Exception:  # noqa: BLE001
+                            pass
+                connector = factory(_mem_conn)
         elif ctype == "postgres":
             # PostgresConnector takes a DSN string, not a raw config dict.
             # Assemble the DSN from the (now secret-enriched) config dict.

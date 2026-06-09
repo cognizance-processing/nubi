@@ -61,8 +61,43 @@ function _branchLabel(whenExpr, index) {
   return inner.length > 20 ? inner.slice(0, 18) + '…' : inner
 }
 
+function _runWhenLabel(expr) {
+  if (!expr) return 'if'
+  const inner = expr.replace(/^\s*\{\{\s*/, '').replace(/\s*\}\}\s*$/, '').trim()
+  return inner.length > 24 ? 'if ' + inner.slice(0, 22) + '…' : 'if ' + inner
+}
+
+function deriveCellBadges(task) {
+  const config = task?.config ?? {}
+  const mat = config.materialized
+  const materialized = mat && mat.kind && mat.kind !== 'view'
+    ? { kind: mat.kind, target: mat.target ?? null }
+    : null
+  const fe = config.for_each
+  const forEach = fe && (fe.items != null && fe.items !== '')
+    ? { items: fe.items, var: fe.var ?? 'item' }
+    : null
+  const runWhen = typeof config.run_when === 'string' && config.run_when.trim()
+    ? config.run_when.trim()
+    : null
+  return { materialized, forEach, runWhen }
+}
+
+function inferredRefs(sql, siblingKeys) {
+  if (!sql || !siblingKeys || siblingKeys.size === 0) return []
+  const refs = new Set()
+  const re = /\b(?:from|join)\s+["'`]?([A-Za-z_][\w]*)["'`]?/gi
+  let m
+  while ((m = re.exec(sql))) {
+    const id = m[1]
+    if (siblingKeys.has(id)) refs.add(id)
+  }
+  return [...refs]
+}
+
 function specToGraph(spec) {
   const tasks = spec?.tasks ?? []
+  const siblingKeys = new Set(tasks.map(t => t.key))
   const auto = autoLayout(tasks)
 
   const nodes = tasks.map(task => {
@@ -94,11 +129,16 @@ function specToGraph(spec) {
       }
     }
 
-    return { id: task.key, type: 'taskNode', position: pos, data: { task, taskRun: null } }
+    return { id: task.key, type: 'taskNode', position: pos, data: { task, taskRun: null, cellBadges: deriveCellBadges(task) } }
   })
 
   const edges = []
   for (const task of tasks) {
+    const runWhen = typeof task.config?.run_when === 'string' && task.config.run_when.trim()
+      ? task.config.run_when.trim()
+      : null
+    const condLabel = runWhen ? _runWhenLabel(runWhen) : null
+
     for (const need of (task.needs ?? [])) {
       edges.push({
         id: `${need}->${task.key}`,
@@ -106,7 +146,9 @@ function specToGraph(spec) {
         target: task.key,
         type: 'smoothstep',
         animated: false,
-        style: { strokeWidth: 1.5 },
+        ...(runWhen
+          ? { label: condLabel, data: { conditional: true }, style: { strokeWidth: 1.5, strokeDasharray: '5 3', stroke: '#f59e0b' } }
+          : { style: { strokeWidth: 1.5 } }),
       })
     }
 
@@ -148,22 +190,41 @@ function specToGraph(spec) {
         }
       }
     }
+
+    if (task.kind === 'query') {
+      const refs = inferredRefs(task.config?.sql, siblingKeys)
+      const explicitNeeds = new Set(task.needs ?? [])
+      for (const ref of refs) {
+        if (ref === task.key) continue
+        if (explicitNeeds.has(ref)) continue
+        if (edges.some(e => e.source === ref && e.target === task.key)) continue
+        edges.push({
+          id: `${ref}=>${task.key}`,
+          source: ref,
+          target: task.key,
+          type: 'smoothstep',
+          animated: false,
+          data: { inferred: true },
+          style: { strokeWidth: 1.5, strokeDasharray: '4 3', stroke: '#94a3b8' },
+        })
+      }
+    }
   }
 
   return { nodes, edges }
 }
 
 function graphToSpec(nodes, edges, meta = {}) {
-  const branchEdgeIds = new Set(
+  const skipEdgeIds = new Set(
     edges
-      .filter(e => e.data != null && 'branchCondIndex' in e.data)
+      .filter(e => e.data != null && ('branchCondIndex' in e.data || e.data.inferred))
       .map(e => e.id)
   )
 
   const needsMap = new Map()
   for (const node of nodes) needsMap.set(node.id, [])
   for (const edge of edges) {
-    if (branchEdgeIds.has(edge.id)) continue
+    if (skipEdgeIds.has(edge.id)) continue
     if (needsMap.has(edge.target)) needsMap.get(edge.target).push(edge.source)
   }
   const tasks = nodes.map(node => {
@@ -781,5 +842,171 @@ describe('_branchLabel', () => {
   it('short expressions are not truncated', () => {
     const label = _branchLabel('{{ x > 5 }}', 0)
     assert.equal(label, 'x > 5')
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Tests — inferred SQL dependency edges (SQLMesh-style)
+// ---------------------------------------------------------------------------
+
+// Two query cells: `second` selects FROM `first` (a sibling key) with no
+// explicit needs. It also references `demo`, a real warehouse table that is NOT
+// a sibling key and must be ignored.
+const INFERRED_SPEC = {
+  version: 1,
+  name: 'inferred',
+  params: [],
+  tasks: [
+    {
+      key: 'first', kind: 'query', needs: [],
+      config: { sql: 'SELECT id, value FROM demo' },
+      retries: 0, retry_backoff_s: 30, timeout_s: 60, cache_ttl_s: 0, ui: { x: 0, y: 0 },
+    },
+    {
+      key: 'second', kind: 'query', needs: [],
+      config: { sql: 'SELECT * FROM first JOIN demo USING (id)' },
+      retries: 0, retry_backoff_s: 30, timeout_s: 60, cache_ttl_s: 0, ui: { x: 260, y: 0 },
+    },
+  ],
+}
+
+describe('inferredRefs', () => {
+  it('matches FROM/JOIN identifiers that are sibling keys', () => {
+    const refs = inferredRefs('SELECT * FROM first JOIN second', new Set(['first', 'second']))
+    assert.deepEqual([...refs].sort(), ['first', 'second'])
+  })
+
+  it('ignores non-sibling tables', () => {
+    const refs = inferredRefs('SELECT * FROM demo', new Set(['first']))
+    assert.deepEqual(refs, [])
+  })
+
+  it('returns [] for empty sql or empty sibling set', () => {
+    assert.deepEqual(inferredRefs('', new Set(['first'])), [])
+    assert.deepEqual(inferredRefs('SELECT * FROM first', new Set()), [])
+  })
+})
+
+describe('specToGraph — inferred SQL edges', () => {
+  it('adds a dashed inferred edge for SELECT * FROM other_cell', () => {
+    const { edges } = specToGraph(INFERRED_SPEC)
+    const inferred = edges.find(e => e.source === 'first' && e.target === 'second')
+    assert.ok(inferred, 'expected an inferred edge from first to second')
+    assert.equal(inferred.data?.inferred, true)
+    assert.ok(inferred.style?.strokeDasharray, 'inferred edge should be dashed')
+  })
+
+  it('non-sibling table (demo) yields no edge', () => {
+    const { edges } = specToGraph(INFERRED_SPEC)
+    assert.ok(!edges.some(e => e.source === 'demo'), 'demo must not produce an edge')
+    assert.ok(!edges.some(e => e.target === 'demo'), 'demo must not produce an edge')
+  })
+
+  it('does not duplicate an edge already covered by explicit needs', () => {
+    const spec = {
+      version: 1, name: 'x', params: [],
+      tasks: [
+        { key: 'first', kind: 'query', needs: [], config: { sql: 'SELECT 1' } },
+        { key: 'second', kind: 'query', needs: ['first'], config: { sql: 'SELECT * FROM first' } },
+      ],
+    }
+    const { edges } = specToGraph(spec)
+    const fToS = edges.filter(e => e.source === 'first' && e.target === 'second')
+    assert.equal(fToS.length, 1, 'should be exactly one edge, not an explicit + inferred duplicate')
+    assert.ok(!fToS[0].data?.inferred, 'the single edge should be the explicit one')
+  })
+})
+
+describe('graphToSpec — inferred edges excluded from needs', () => {
+  it('inferred edge is NOT written into needs on round-trip', () => {
+    const { nodes, edges } = specToGraph(INFERRED_SPEC)
+    const spec = graphToSpec(nodes, edges, {
+      version: INFERRED_SPEC.version, name: INFERRED_SPEC.name, params: INFERRED_SPEC.params,
+    })
+    const second = spec.tasks.find(t => t.key === 'second')
+    assert.deepEqual(second.needs, [], 'inferred dep must not persist into needs')
+  })
+
+  it('round-trip is idempotent: edge re-derived from config.sql', () => {
+    const { nodes: n1, edges: e1 } = specToGraph(INFERRED_SPEC)
+    const spec2 = graphToSpec(n1, e1, {
+      version: INFERRED_SPEC.version, name: INFERRED_SPEC.name, params: INFERRED_SPEC.params,
+    })
+    const { edges: e2 } = specToGraph(spec2)
+    const inferred = e2.find(e => e.source === 'first' && e.target === 'second')
+    assert.ok(inferred?.data?.inferred, 'inferred edge re-derived after round-trip')
+  })
+})
+
+// ---------------------------------------------------------------------------
+// v4 cell-config: cellBadges derivation + run_when conditional edges
+// ---------------------------------------------------------------------------
+
+describe('deriveCellBadges', () => {
+  it('returns nulls when no config blocks are set', () => {
+    const b = deriveCellBadges({ config: { sql: 'SELECT 1' } })
+    assert.equal(b.materialized, null)
+    assert.equal(b.forEach, null)
+    assert.equal(b.runWhen, null)
+  })
+
+  it('materialized view ⇒ no badge (only full/incremental)', () => {
+    const b = deriveCellBadges({ config: { materialized: { kind: 'view' } } })
+    assert.equal(b.materialized, null)
+  })
+
+  it('materialized incremental ⇒ { kind, target }', () => {
+    const b = deriveCellBadges({ config: { materialized: { kind: 'incremental', target: 'orders/daily' } } })
+    assert.deepEqual(b.materialized, { kind: 'incremental', target: 'orders/daily' })
+  })
+
+  it('for_each ⇒ { items, var } with default var', () => {
+    const b = deriveCellBadges({ config: { for_each: { items: '{{ inputs.r.rows }}' } } })
+    assert.deepEqual(b.forEach, { items: '{{ inputs.r.rows }}', var: 'item' })
+  })
+
+  it('empty for_each items ⇒ no badge', () => {
+    assert.equal(deriveCellBadges({ config: { for_each: { items: '' } } }).forEach, null)
+  })
+
+  it('run_when ⇒ trimmed string; blank ⇒ null', () => {
+    assert.equal(deriveCellBadges({ config: { run_when: "  inputs.x == 1 " } }).runWhen, 'inputs.x == 1')
+    assert.equal(deriveCellBadges({ config: { run_when: '   ' } }).runWhen, null)
+  })
+})
+
+const RUN_WHEN_SPEC = {
+  version: 1,
+  name: 'gated',
+  params: [],
+  tasks: [
+    { key: 'classify', kind: 'python', needs: [], config: { code: 'result = {}' }, retries: 0, retry_backoff_s: 30, timeout_s: 60, cache_ttl_s: 0, ui: { x: 0, y: 0 } },
+    { key: 'act', kind: 'python', needs: ['classify'], config: { code: 'result = {}', run_when: "inputs.classify.label == 'high'" }, retries: 0, retry_backoff_s: 30, timeout_s: 60, cache_ttl_s: 0, ui: { x: 260, y: 0 } },
+  ],
+}
+
+describe('specToGraph — run_when conditional edges', () => {
+  it('node carries cellBadges.runWhen', () => {
+    const { nodes } = specToGraph(RUN_WHEN_SPEC)
+    const act = nodes.find(n => n.id === 'act')
+    assert.equal(act.data.cellBadges.runWhen, "inputs.classify.label == 'high'")
+  })
+
+  it('incoming edge to a run_when cell is marked conditional + dashed + labeled', () => {
+    const { edges } = specToGraph(RUN_WHEN_SPEC)
+    const e = edges.find(ed => ed.source === 'classify' && ed.target === 'act')
+    assert.ok(e, 'edge exists')
+    assert.equal(e.data?.conditional, true)
+    assert.equal(e.style.strokeDasharray, '5 3')
+    assert.ok(e.label.startsWith('if '))
+  })
+})
+
+describe('graphToSpec — run_when conditional edge survives into needs', () => {
+  it('conditional edge round-trips into needs (NOT skipped like branch/inferred)', () => {
+    const { nodes, edges } = specToGraph(RUN_WHEN_SPEC)
+    const spec = graphToSpec(nodes, edges, { version: 1, name: 'gated', params: [] })
+    const act = spec.tasks.find(t => t.key === 'act')
+    assert.deepEqual(act.needs, ['classify'], 'run_when dep is a real need and must persist')
   })
 })

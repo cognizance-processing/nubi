@@ -34,6 +34,7 @@ from fastapi import APIRouter, Depends, Query
 from pydantic import BaseModel
 
 from app.auth.deps import current_user
+from app.auth.roles import require_writer_default
 from app.config import get_settings
 from app.db import fetchrow
 from app.errors import AppError
@@ -158,7 +159,7 @@ class RestoreOut(BaseModel):
 # Endpoints
 # ---------------------------------------------------------------------------
 
-@router.post("/sync", response_model=SyncOut)
+@router.post("/sync", response_model=SyncOut, dependencies=[Depends(require_writer_default)])
 async def sync_resources(
     body: SyncIn = SyncIn(),
     user: dict[str, Any] = Depends(current_user),
@@ -257,7 +258,7 @@ async def get_history(
     return git_sync.history(path=path)
 
 
-@router.post("/restore", response_model=RestoreOut)
+@router.post("/restore", response_model=RestoreOut, dependencies=[Depends(require_writer_default)])
 async def restore_file(
     body: RestoreIn,
     user: dict[str, Any] = Depends(current_user),
@@ -483,7 +484,7 @@ async def _serialize_project(org_id: str, project_id: str, repo: Repo) -> list[d
 # ---------------------------------------------------------------------------
 
 
-@router.post("/connect", response_model=GitBindingOut)
+@router.post("/connect", response_model=GitBindingOut, dependencies=[Depends(require_writer_default)])
 async def connect_repo(
     body: ConnectIn,
     user: dict[str, Any] = Depends(current_user),
@@ -559,7 +560,7 @@ async def git_status(
     }
 
 
-@router.post("/pull", response_model=PullOut)
+@router.post("/pull", response_model=PullOut, dependencies=[Depends(require_writer_default)])
 async def pull_project(
     body: PullIn,
     user: dict[str, Any] = Depends(current_user),
@@ -615,7 +616,7 @@ async def pull_project(
     return {"imported": imported, "kinds": kinds}
 
 
-@router.post("/push", response_model=ProjectPushOut)
+@router.post("/push", response_model=ProjectPushOut, dependencies=[Depends(require_writer_default)])
 async def push_project(
     body: ProjectPushIn,
     user: dict[str, Any] = Depends(current_user),

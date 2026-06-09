@@ -89,7 +89,7 @@ for (const bp of BREAKPOINTS) {
 
       // Wait for the builder toolbar to appear (flow name input)
       await expect(
-        page.locator('input[placeholder="Flow name…"]').first()
+        page.locator('.react-flow').first()
       ).toBeVisible({ timeout: 10_000 })
 
       // No horizontal overflow in builder
@@ -108,7 +108,7 @@ for (const bp of BREAKPOINTS) {
       const newFlowBtn = page.getByRole('button', { name: /new flow/i }).first()
       await newFlowBtn.click()
       await expect(
-        page.locator('input[placeholder="Flow name…"]').first()
+        page.locator('.react-flow').first()
       ).toBeVisible({ timeout: 10_000 })
 
       if (bp.width < 768) {

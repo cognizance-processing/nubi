@@ -129,6 +129,11 @@ EE tiers are resolved from the `NUBI_LICENSE_KEY` environment variable:
 | `nubi_pro_...` | PRO |
 | `nubi_enterprise_...` | ENTERPRISE |
 
+> Note: STARTER and BUSINESS tiers are defined in `backend/app/ee/billing/tiers.py`
+> and enforced at billing time. The license-key prefix scheme (`license.py`) currently
+> maps only PRO and ENTERPRISE keys; STARTER and BUSINESS are activated through the
+> billing flow rather than a separate key prefix. This will be unified in a future release.
+
 The resolution logic lives in `backend/app/ee/licensing/license.py`.  It is
 intentionally simple and will be replaced by cryptographic signature
 verification in a future release.
@@ -141,3 +146,6 @@ For the full CE/EE architecture overview — including the CE-vs-EE feature
 table, Docker image build instructions, and how the auto pre-aggregations,
 Docker self-host, embed demo, and billing features map onto each tier — see
 [`docs/architecture-open-core.md`](./architecture-open-core.md).
+
+For the billing model (tiers, pricing, metered dimensions, FX, seat policy) see
+[`docs/billing-model.md`](./billing-model.md).

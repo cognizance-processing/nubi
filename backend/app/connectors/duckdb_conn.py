@@ -12,10 +12,15 @@ Design notes
   where DuckDB supports it.
 - ``register(tables)`` seeds named tables from a dict of ``{name: pa.Table}``
   so tests can inject arbitrary fixture data without touching the filesystem.
+- S3/httpfs: call ``setup_s3_httpfs(conn, cfg)`` before executing queries that
+  reference ``s3://`` paths.  The helper installs and loads the httpfs
+  extension, then registers a DuckDB S3 SECRET from ``cfg`` credentials or
+  the standard ``AWS_*`` / ``S3_*`` environment variables.
 """
 
 from __future__ import annotations
 
+import os
 from typing import TYPE_CHECKING, Iterator
 
 if TYPE_CHECKING:
@@ -25,6 +30,142 @@ if TYPE_CHECKING:
 from app.connectors.base import Connector
 from app.connectors.plan import PhysicalPlan
 from app.errors import AppError
+
+
+# ---------------------------------------------------------------------------
+# S3 / httpfs helper
+# ---------------------------------------------------------------------------
+
+
+def setup_s3_httpfs(
+    conn: "_duckdb_t.DuckDBPyConnection",
+    cfg: "dict | None" = None,
+) -> None:
+    """Install/load the httpfs extension and register an S3 SECRET on *conn*.
+
+    This is a no-op when neither *cfg* nor environment variables supply S3
+    credentials — the secret is only created when at least ``key_id`` is
+    resolvable, which avoids clobbering any ambient credential chain already
+    present in DuckDB's default provider.
+
+    Parameters
+    ----------
+    conn:
+        An open DuckDB connection.
+    cfg:
+        Optional connector configuration dict.  The following keys are
+        consumed if present:
+
+        ``s3_key_id`` / ``aws_access_key_id``
+            AWS/MinIO access key ID.
+        ``s3_secret`` / ``aws_secret_access_key``
+            AWS/MinIO secret access key.
+        ``s3_endpoint`` / ``endpoint_url``
+            Custom endpoint URL for MinIO or other S3-compatible services
+            (e.g. ``"http://localhost:9000"``).  The scheme is stripped when
+            building the DuckDB ``ENDPOINT`` option so that DuckDB receives
+            only ``host:port``.
+        ``s3_region`` / ``aws_region``
+            AWS region (defaults to ``"us-east-1"``).
+        ``s3_url_style``
+            ``"path"`` (default for MinIO) or ``"vhost"``.
+
+        When a key is absent from *cfg* the corresponding ``AWS_*`` /
+        ``S3_ENDPOINT_URL`` / ``S3_URL_STYLE`` environment variable is
+        consulted.
+
+    Side-effects
+    ------------
+    Executes ``INSTALL httpfs``, ``LOAD httpfs``, and optionally
+    ``CREATE OR REPLACE SECRET nubi_s3 (TYPE S3, ...)`` on *conn*.
+    All statements are idempotent.
+    """
+    cfg = cfg or {}
+
+    conn.execute("INSTALL httpfs")
+    conn.execute("LOAD httpfs")
+
+    # ---- credential resolution (cfg → env) --------------------------------
+    key_id = (
+        cfg.get("s3_key_id")
+        or cfg.get("aws_access_key_id")
+        or os.getenv("AWS_ACCESS_KEY_ID")
+        or os.getenv("S3_ACCESS_KEY", "")
+    )
+    secret = (
+        cfg.get("s3_secret")
+        or cfg.get("aws_secret_access_key")
+        or os.getenv("AWS_SECRET_ACCESS_KEY")
+        or os.getenv("S3_SECRET_KEY", "")
+    )
+
+    # Raw endpoint value may include a scheme (http:// / https://).  DuckDB's
+    # ENDPOINT option wants only the host[:port] portion.
+    endpoint_raw = (
+        cfg.get("s3_endpoint")
+        or cfg.get("endpoint_url")
+        or os.getenv("S3_ENDPOINT_URL")
+        or os.getenv("AWS_ENDPOINT_URL")
+        or ""
+    )
+    # Strip scheme so DuckDB only sees "host:port", and infer USE_SSL from the
+    # scheme (MinIO/local is plain http → USE_SSL false; AWS S3 is https → true).
+    endpoint = endpoint_raw
+    scheme_ssl: bool | None = None
+    if endpoint_raw.startswith("https://"):
+        endpoint = endpoint_raw[len("https://"):]
+        scheme_ssl = True
+    elif endpoint_raw.startswith("http://"):
+        endpoint = endpoint_raw[len("http://"):]
+        scheme_ssl = False
+    # Remove any trailing slash.
+    endpoint = endpoint.rstrip("/")
+
+    region = (
+        cfg.get("s3_region")
+        or cfg.get("aws_region")
+        or os.getenv("AWS_REGION")
+        or os.getenv("AWS_DEFAULT_REGION")
+        or os.getenv("S3_REGION")
+        or "us-east-1"
+    )
+    url_style = (
+        cfg.get("s3_url_style")
+        or os.getenv("S3_URL_STYLE")
+        or ("path" if endpoint else "vhost")
+    )
+
+    # Only register a secret when we have at least a key_id — otherwise rely
+    # on the default DuckDB credential chain.
+    if not key_id:
+        return
+
+    parts: list[str] = [
+        "TYPE S3",
+        f"KEY_ID '{key_id}'",
+        f"SECRET '{secret}'",
+        f"REGION '{region}'",
+        f"URL_STYLE '{url_style}'",
+    ]
+    if endpoint:
+        parts.append(f"ENDPOINT '{endpoint}'")
+        # USE_SSL: explicit cfg/env override, else inferred from the endpoint
+        # scheme (http→false for MinIO, https→true). Without this DuckDB defaults
+        # to SSL and fails against a plain-http MinIO endpoint with an
+        # "SSL connect error" on every PUT/GET.
+        ssl_override = cfg.get("s3_use_ssl")
+        if ssl_override is None:
+            ssl_override = os.getenv("S3_USE_SSL")
+        if ssl_override is not None:
+            use_ssl = str(ssl_override).strip().lower() in ("1", "true", "yes", "on")
+        elif scheme_ssl is not None:
+            use_ssl = scheme_ssl
+        else:
+            use_ssl = True
+        parts.append(f"USE_SSL {'true' if use_ssl else 'false'}")
+
+    secret_sql = "CREATE OR REPLACE SECRET nubi_s3 (\n    " + ",\n    ".join(parts) + "\n)"
+    conn.execute(secret_sql)
 
 
 class DuckDBConnector(Connector):

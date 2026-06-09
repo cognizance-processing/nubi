@@ -60,10 +60,14 @@ export default function EdgeCache({ className = '' }) {
         <rect x="206" y="184" width="56" height="12" rx="4" fill="url(#edg-mod)" fillOpacity="0.6" />
         <rect x="206" y="202" width="56" height="12" rx="4" fill="url(#edg-mod)" fillOpacity="0.35" />
 
-        {/* single line out: cache → warehouse */}
-        <path d="M 280 186 C 320 186, 332 186, 360 186"
+        {/* single line out: cache → warehouse (the one warehouse hit) */}
+        <path d="M 280 186 L 372 186"
           stroke="url(#edg-stroke)" strokeWidth="2.5" fill="none" strokeLinecap="round" />
-        <circle cx="324" cy="186" r="4" fill="#17b3a3" />
+        {/* "1×" pill emphasising the single collapsed request */}
+        <rect x="312" y="170" width="32" height="18" rx="9"
+          fill="#17b3a3" fillOpacity="0.12" stroke="#17b3a3" strokeWidth="1.25" strokeOpacity="0.55" />
+        <text x="328" y="183" textAnchor="middle" fontSize="11" fontWeight="700"
+          fontFamily="Space Grotesk, system-ui, sans-serif" fill="#17b3a3">1×</text>
 
         {/* warehouse cylinder (right) */}
         <g>

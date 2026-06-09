@@ -156,15 +156,12 @@ fi
 
 # ── 5. Start backend ──────────────────────────────────────────────────────────
 info "Starting backend (uvicorn) on port ${_BACKEND_PORT}..."
-(
-  cd "${REPO_ROOT}/backend"
+( cd "${REPO_ROOT}/backend" && \
   KERNEL_LOCAL_ENABLED="${KERNEL_LOCAL_ENABLED:-true}" \
-  "${PY}" -m uvicorn main:app \
+  exec "${PY}" -m uvicorn main:app \
     --host 0.0.0.0 \
     --port "${_BACKEND_PORT}" \
-    --log-level warning \
-    &
-)
+    --log-level warning ) &
 _BACKEND_PID=$!
 info "Backend PID: ${_BACKEND_PID}"
 

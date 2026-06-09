@@ -86,6 +86,9 @@ class InMemoryFlowStore:
         self._flow_run_index: dict[str, list[str]] = {}    # flow_id → [run_id]
         self._task_runs: dict[str, TaskRun] = {}           # task_run_id → TaskRun
         self._task_run_index: dict[str, list[str]] = {}    # flow_run_id → [task_run_id]
+        # Incremental materialization watermarks keyed by (flow_id, model_key,
+        # env) → ISO watermark string.  Mirrors the flow_watermarks Pg table.
+        self._watermarks: dict[tuple[str, str, str], str] = {}
 
     # ------------------------------------------------------------------
     # Flow operations
@@ -218,8 +221,13 @@ class InMemoryFlowStore:
         params: dict[str, Any],
         trigger: str,
         scheduled_at: datetime | None = None,
+        env: str = "prod",
     ) -> FlowRun:
-        """Create and store a new flow_run; return the stored dict."""
+        """Create and store a new flow_run; return the stored dict.
+
+        ``env`` is the resolved execution environment for this run (override →
+        spec.env → "prod").  It namespaces materialized/incremental targets.
+        """
         run_id = str(uuid.uuid4())
         now = datetime.now(timezone.utc)
         run: FlowRun = {
@@ -234,6 +242,7 @@ class InMemoryFlowStore:
             "finished_at": None,
             "error": None,
             "created_at": now,
+            "env": env or "prod",
         }
         self._flow_runs[run_id] = run
         self._flow_run_index.setdefault(str(flow_id), []).append(run_id)
@@ -464,6 +473,44 @@ class InMemoryFlowStore:
             count += 1
         return count
 
+    # ------------------------------------------------------------------
+    # Incremental watermark operations
+    # ------------------------------------------------------------------
+
+    async def get_watermark(
+        self, flow_id: str, model_key: str, env: str = "prod"
+    ) -> str | None:
+        """Return the stored incremental watermark, or ``None`` if unset."""
+        return self._watermarks.get(
+            (str(flow_id), str(model_key), str(env or "prod"))
+        )
+
+    async def set_watermark(
+        self, flow_id: str, model_key: str, env: str, watermark: str | None
+    ) -> None:
+        """Upsert the incremental watermark for ``(flow_id, model_key, env)``.
+
+        A ``None`` watermark is ignored (we never clobber a real watermark with
+        an empty advance).
+        """
+        if watermark is None:
+            return
+        self._watermarks[
+            (str(flow_id), str(model_key), str(env or "prod"))
+        ] = str(watermark)
+
+    async def copy_watermark(
+        self, flow_id: str, model_key: str, src_env: str, dst_env: str
+    ) -> str | None:
+        """Copy the watermark from *src_env* to *dst_env* (promote helper).
+
+        Returns the copied watermark, or ``None`` if the source had none.
+        """
+        wm = await self.get_watermark(flow_id, model_key, src_env)
+        if wm is not None:
+            await self.set_watermark(flow_id, model_key, dst_env, wm)
+        return wm
+
 
 # ---------------------------------------------------------------------------
 # PgFlowStore — asyncpg-backed production implementation
@@ -509,6 +556,9 @@ def _row_to_flow_run(row: Any) -> FlowRun:
     if "params" in d and not isinstance(d["params"], dict):
         import json  # noqa: PLC0415
         d["params"] = json.loads(d["params"])
+    # env column (migration 0026); old rows / pre-migration read as "prod".
+    if not d.get("env"):
+        d["env"] = "prod"
     return d
 
 
@@ -737,15 +787,20 @@ class PgFlowStore:
         params: dict[str, Any],
         trigger: str,
         scheduled_at: datetime | None = None,
+        env: str = "prod",
     ) -> FlowRun:
-        """Insert a new flow_run row and return the stored dict."""
+        """Insert a new flow_run row and return the stored dict.
+
+        ``env`` (migration 0026) is the resolved execution environment for this
+        run.  It namespaces materialized/incremental targets.
+        """
         import json  # noqa: PLC0415
         from app.db import fetchrow as db_fetchrow  # noqa: PLC0415
 
         row = await db_fetchrow(
             """
-            INSERT INTO flow_runs (flow_id, org_id, params, trigger, scheduled_at)
-            VALUES ($1::uuid, $2::uuid, $3::jsonb, $4, $5)
+            INSERT INTO flow_runs (flow_id, org_id, params, trigger, scheduled_at, env)
+            VALUES ($1::uuid, $2::uuid, $3::jsonb, $4, $5, $6)
             RETURNING *
             """,
             flow_id,
@@ -753,6 +808,7 @@ class PgFlowStore:
             json.dumps(params),
             trigger,
             scheduled_at,
+            env or "prod",
         )
         if row is None:  # pragma: no cover
             raise RuntimeError("INSERT INTO flow_runs returned no row.")
@@ -1025,6 +1081,64 @@ class PgFlowStore:
         except (ValueError, IndexError):
             return 0
 
+    # ------------------------------------------------------------------
+    # Incremental watermark operations (migration 0026)
+    # ------------------------------------------------------------------
+
+    async def get_watermark(
+        self, flow_id: str, model_key: str, env: str = "prod"
+    ) -> str | None:
+        """Return the stored incremental watermark, or ``None`` if unset."""
+        from app.db import fetchrow as db_fetchrow  # noqa: PLC0415
+
+        row = await db_fetchrow(
+            """
+            SELECT watermark FROM flow_watermarks
+            WHERE flow_id = $1::uuid AND model_key = $2 AND env = $3
+            """,
+            flow_id,
+            model_key,
+            env or "prod",
+        )
+        if row is None:
+            return None
+        wm = dict(row).get("watermark")
+        return str(wm) if wm is not None else None
+
+    async def set_watermark(
+        self, flow_id: str, model_key: str, env: str, watermark: str | None
+    ) -> None:
+        """Upsert the incremental watermark for ``(flow_id, model_key, env)``.
+
+        A ``None`` watermark is ignored so we never clobber a real watermark
+        with an empty advance.
+        """
+        if watermark is None:
+            return
+        from app.db import execute as db_execute  # noqa: PLC0415
+
+        await db_execute(
+            """
+            INSERT INTO flow_watermarks (flow_id, model_key, env, watermark, updated_at)
+            VALUES ($1::uuid, $2, $3, $4, now())
+            ON CONFLICT (flow_id, model_key, env)
+            DO UPDATE SET watermark = EXCLUDED.watermark, updated_at = now()
+            """,
+            flow_id,
+            model_key,
+            env or "prod",
+            str(watermark),
+        )
+
+    async def copy_watermark(
+        self, flow_id: str, model_key: str, src_env: str, dst_env: str
+    ) -> str | None:
+        """Copy the watermark from *src_env* to *dst_env* (promote helper)."""
+        wm = await self.get_watermark(flow_id, model_key, src_env)
+        if wm is not None:
+            await self.set_watermark(flow_id, model_key, dst_env, wm)
+        return wm
+
 
 # ---------------------------------------------------------------------------
 # Module-level singleton / provider
@@ -1059,3 +1173,38 @@ def set_flow_store(store: InMemoryFlowStore | PgFlowStore | None) -> None:
     """
     global _flow_store
     _flow_store = store
+
+
+# ---------------------------------------------------------------------------
+# Notebook helpers (no new table — notebooks are stored as flows)
+# ---------------------------------------------------------------------------
+
+
+def notebook_spec_from_flow(flow: Flow) -> "Any":
+    """Deserialise a stored ``Flow`` dict into a ``NotebookSpec``.
+
+    Notebooks are persisted as ordinary ``Flow`` rows; the ``spec`` JSONB
+    column holds the ``FlowSpec`` dict produced by ``notebook_to_flowspec()``.
+    This helper reconstructs the ``NotebookSpec`` envelope from the stored
+    ``FlowSpec`` dict and the ``flows.id`` field.
+
+    Returns a ``NotebookSpec`` instance.  Raises ``ValueError`` if the spec
+    dict is missing or cannot be parsed.
+
+    Parameters
+    ----------
+    flow:
+        A ``Flow`` dict as returned by ``get_flow`` / ``create_flow``.
+    """
+    from app.flows.notebook import flowspec_to_notebook  # noqa: PLC0415
+    from app.flows.spec import FlowSpec  # noqa: PLC0415
+
+    spec_dict = flow.get("spec")
+    if not isinstance(spec_dict, dict):
+        raise ValueError(
+            f"Flow {flow.get('id')!r} has no valid 'spec' dict; "
+            "cannot reconstruct NotebookSpec."
+        )
+    flow_spec = FlowSpec.model_validate(spec_dict)
+    notebook_id = str(flow.get("id") or "")
+    return flowspec_to_notebook(flow_spec, notebook_id=notebook_id)

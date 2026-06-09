@@ -39,6 +39,7 @@ import { useParams, Link, useSearchParams } from 'react-router-dom'
 import { get } from '../lib/api.js'
 import DashboardView from '../dashboards/DashboardView.jsx'
 import SpecRenderer from '../dashboards/SpecRenderer.jsx'
+import { useCanWrite } from '../contexts/OrgContext.jsx'
 
 // ---------------------------------------------------------------------------
 // Built-in sample dashboard HTML
@@ -128,6 +129,9 @@ function extractVarsFromURL(searchParams, knownVarNames) {
 export default function DashboardViewPage() {
   const { id } = useParams()
   const [searchParams, setSearchParams] = useSearchParams()
+
+  // Viewers (read-only) cannot edit — hide the "Edit in editor" link.
+  const canWrite = useCanWrite()
 
   // What to render — 'spec' | 'html' | null (loading / fallback)
   const [renderMode, setRenderMode] = useState(null)
@@ -303,7 +307,7 @@ export default function DashboardViewPage() {
       )}
 
       {/* Edit link for spec boards */}
-      {renderMode === 'spec' && boardId && id !== 'sample' && (
+      {canWrite && renderMode === 'spec' && boardId && id !== 'sample' && (
         <div className="mb-4 flex justify-end">
           <Link
             to={`/editor/${boardId}`}

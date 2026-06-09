@@ -32,7 +32,7 @@ tree.
 
 | Area | CE (OSS core) | EE (`backend/app/ee/`) |
 |------|--------------|------------------------|
-| Flows DAG engine | `app.flows` — work-pool executor, secrets, storage, extract/bucket_load nodes | — |
+| Flows DAG engine | `app.flows` — work-pool executor, secrets, storage backends, bucket_load / map / branch / map_collect nodes; code-first Python SDK (`backend/nubi/flows`) | — |
 | Auto pre-aggregations | `app.preagg` — query-log mining, rollup builder, scheduler | — |
 | Connectors (8 sources) | `app.connectors` — postgres, duckdb, http_json, mysql, mariadb, jdbc, snowflake, bigquery | — |
 | Query / RLS / cache | `app.routes.query` + planner + content-hash cache | — |
@@ -296,8 +296,9 @@ The billing subsystem is fully behind the EE gate:
 
 **Backend (`backend/app/ee/billing/`):**
 
-- `tiers.py` — tier → resource limits mapping (row limits, query quotas, etc.).
-- `paystack.py` — lazy-imported Paystack client (ZAR, 2.9% + R1 local fee);
+- `tiers.py` — authoritative tier catalogue: 5 tiers (FREE / STARTER / PRO / BUSINESS / ENTERPRISE), USD-anchored prices ($0 / $79 / $199 / $499 / $1,799/mo), resource limits (storage GB, compute units, embedded sessions, AI calls), overage rates, feature flags. **No per-seat pricing at any tier** — `max_seats = None` (unlimited) for all tiers. See [`docs/billing-model.md`](./billing-model.md).
+- `fx.py` — USD→ZAR conversion; daily FX refresh from frankfurter.app / open.er-api.com; 2% buffer + ceil-to-nearest-10 rule; emergency fallback at R16.26.
+- `paystack.py` — lazy-imported Paystack client (ZAR charges, 3.41% effective local-card rate);
   never imported at module top-level.
 - `store.py` — billing event store (InMemory + Pg dual pattern).
 - `routes.py` — EE billing routes mounted by `load_ee()` via `billing_setup(app)`.
@@ -343,6 +344,7 @@ Frontend
 | Document | Content |
 |---|---|
 | [`docs/open-core.md`](./open-core.md) | EeSeamAgent's original gate API spec (authoritative on the feature-gate contract) |
+| [`docs/billing-model.md`](./billing-model.md) | Billing model: tiers, pricing, metered dimensions, FX, seat policy |
 | [`docs/self-host.md`](./self-host.md) | Self-hosting guide for operators |
 | [`docs/embedding.md`](./embedding.md) | Embedding guide for host-app developers |
 | [`docs/flows.md`](./flows.md) | Flows DAG engine reference |

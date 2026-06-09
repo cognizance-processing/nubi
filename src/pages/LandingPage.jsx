@@ -24,6 +24,7 @@
  *  #about        — Footer brand tagline (re-used for about anchor)
  */
 
+import { useState, useEffect } from 'react'
 import { Link } from 'react-router-dom'
 import {
   ArrowRight,
@@ -46,15 +47,33 @@ import {
   Filter,
   Sparkles,
   ArrowRightCircle,
+  Star,
+  Headset,
+  Users,
+  Server,
+  SlidersHorizontal,
+  TrendingDown,
+  CheckCircle2,
+  XCircle,
+  Wallet,
 } from 'lucide-react'
+import {
+  TIERS,
+  BILLING_MODEL,
+  CALC_OPTIONS,
+  ORCH_CALC_OPTIONS,
+  ENTERPRISE_NOTE,
+  OVERAGE_RATES,
+  OVERAGE_NOTE,
+} from '../data/pricing.js'
+import { CONNECTOR_TYPES } from '../data/connectors.js'
+import { fetchPricingData } from '../lib/pricing.js'
 import HeroIllustration from '../components/illustrations/HeroIllustration.jsx'
 import KernelInBrowser from '../components/illustrations/KernelInBrowser.jsx'
 import EdgeCache from '../components/illustrations/EdgeCache.jsx'
-import EmbedAuth from '../components/illustrations/EmbedAuth.jsx'
-import LlmDashboards from '../components/illustrations/LlmDashboards.jsx'
-import ConnectorSdk from '../components/illustrations/ConnectorSdk.jsx'
-import FlowOrchestration from '../components/illustrations/FlowOrchestration.jsx'
 import WebGLPerf from '../components/illustrations/WebGLPerf.jsx'
+// Dev-centric features read better as real code than abstract art.
+import { ConnectorSdkCode, FlowCode, EmbedAuthCode, LlmDashboardCode } from '../components/illustrations/CodeTile.jsx'
 
 /* ─────────────────────────────────────────────────────────────────────────── */
 /*  Scoped animations — only on .nubi-lp so they don't bleed to other pages   */
@@ -176,6 +195,24 @@ const ScopedStyles = () => (
       border: 1px solid;
       line-height: 1.4;
       white-space: nowrap;
+    }
+
+    /* ── Cost-calculator range input ── */
+    .lp-range {
+      -webkit-appearance: none; appearance: none;
+      height: 6px; border-radius: 999px; cursor: pointer;
+      background: linear-gradient(90deg, #2456a6, #17b3a3);
+    }
+    .lp-range::-webkit-slider-thumb {
+      -webkit-appearance: none; appearance: none;
+      width: 20px; height: 20px; border-radius: 50%;
+      background: #fff; border: 3px solid #17b3a3;
+      box-shadow: 0 1px 4px rgba(27,35,99,0.25);
+    }
+    .lp-range::-moz-range-thumb {
+      width: 20px; height: 20px; border-radius: 50%;
+      background: #fff; border: 3px solid #17b3a3;
+      box-shadow: 0 1px 4px rgba(27,35,99,0.25);
     }
   `}</style>
 )
@@ -437,6 +474,544 @@ function DiffRow({ icon: Icon, title, desc, Illustration, reverse = false, badge
 }
 
 /* ─────────────────────────────────────────────────────────────────────────── */
+/*  §6 helpers — Pricing section (TierCards + CostCalculator)                  */
+/*  Pricing helpers — live data via src/lib/pricing.js; static fallback from src/data/pricing.js */
+/* ─────────────────────────────────────────────────────────────────────────── */
+
+const fmtUSD = (n) => {
+  if (!n) return '$0'
+  if (n >= 1e6) return `$${(n / 1e6).toFixed(n >= 1e7 ? 0 : 1)}M`
+  if (n >= 1e3) return `$${Math.round(n / 1e3)}k`
+  return `$${Math.round(n)}`
+}
+const fmtNum = (n) => (n >= 1000 ? `${(n / 1000).toFixed(n >= 10000 ? 0 : 1)}k` : `${n}`)
+
+const METER_ICONS = [Users, Zap, Database, Bot, Server]
+
+/** Landing-page tier card — matches PricingPage TierCard quality */
+function LpTierCard({ tier }) {
+  const hi = tier.highlight
+  return (
+    <div
+      className={`relative flex flex-col rounded-2xl border p-5 transition-all duration-200
+        ${hi
+          ? 'border-brand-teal/70 bg-surface shadow-xl ring-1 ring-brand-teal/20 lg:-translate-y-2 z-10'
+          : 'border-border bg-surface shadow-sm hover:-translate-y-1 hover:shadow-lg hover:border-brand-blue/40'}`}
+    >
+      {tier.badge && (
+        <span
+          className={`absolute -top-3 left-1/2 -translate-x-1/2 inline-flex items-center gap-1 px-3 py-1 rounded-full text-[10px] font-bold uppercase tracking-widest whitespace-nowrap shadow-sm
+            ${hi
+              ? 'bg-brand-gradient text-white'
+              : 'bg-surface-2 border border-border text-brand-teal'}`}
+        >
+          {tier.id === 'enterprise'
+            ? <Headset size={10} strokeWidth={2.5} />
+            : <Star size={10} strokeWidth={2.5} />}
+          {tier.badge}
+        </span>
+      )}
+      <h3 className="font-display text-base font-bold text-fg">{tier.name}</h3>
+      <div className="mt-1.5 flex items-end gap-1.5">
+        <span className="font-display text-3xl font-bold tracking-tight text-fg">{tier.price}</span>
+        <span className="text-xs text-muted mb-1">{tier.cadence}</span>
+      </div>
+      <p className="mt-2 text-[13px] text-muted leading-relaxed min-h-[52px]">{tier.tagline}</p>
+
+      <Link
+        to={tier.href}
+        className={`mt-4 inline-flex items-center justify-center gap-2 px-4 py-2.5 rounded-xl text-sm font-semibold transition-all min-h-[44px]
+          ${hi
+            ? 'bg-brand-gradient text-white hover:opacity-90 shadow-sm'
+            : 'bg-surface-2 border border-border text-fg hover:border-brand-blue hover:text-brand-blue'}`}
+      >
+        {tier.cta}
+        <ArrowRight size={14} strokeWidth={2.5} />
+      </Link>
+
+      <ul className="mt-5 flex flex-col gap-2">
+        {tier.features.map((f, i) => {
+          const isHeader = f.endsWith('plus:')
+          return (
+            <li
+              key={i}
+              className={`flex items-start gap-2 text-[13px]
+                ${isHeader ? 'text-muted font-semibold pt-1' : 'text-fg'}`}
+            >
+              {!isHeader && (
+                <Check size={14} strokeWidth={2.75} className="mt-0.5 shrink-0 text-brand-teal" />
+              )}
+              <span className={isHeader ? '' : 'leading-snug'}>{f}</span>
+            </li>
+          )
+        })}
+      </ul>
+    </div>
+  )
+}
+
+/** Landing-page cost calculator — mirrors PricingPage CostCalculator */
+function LpCostCalculator() {
+  const [sv, setSv] = useState(50)
+  const [editors, setEditors] = useState(5)
+  const viewers = Math.round(10 * Math.pow(2500, sv / 100))
+
+  const results = CALC_OPTIONS
+    .map(o => ({ ...o, cost: Math.round(o.annual(viewers, editors)) }))
+    .sort((a, b) => a.cost - b.cost)
+  const max = Math.max(...results.map(r => r.cost), 1)
+  const nubi = results.find(r => r.isNubi)
+  const cheapestComp = Math.min(...results.filter(r => !r.isNubi).map(r => r.cost))
+  const savings = Math.max(0, cheapestComp - (nubi?.cost ?? 0))
+  const multiple = nubi && nubi.cost > 0 ? cheapestComp / nubi.cost : null
+
+  return (
+    <div className="rounded-2xl border border-border bg-surface shadow-sm overflow-hidden">
+      {/* Inputs */}
+      <div className="grid md:grid-cols-2 gap-6 p-6 sm:p-8 border-b border-border bg-surface-2">
+        <div>
+          <div className="flex items-baseline justify-between mb-3">
+            <label htmlFor="lp-calc-viewers" className="text-sm font-semibold text-fg">
+              Dashboard viewers
+            </label>
+            <span className="font-display text-xl font-bold text-brand-blue">{fmtNum(viewers)}</span>
+          </div>
+          <input
+            id="lp-calc-viewers" type="range" min="0" max="100" value={sv}
+            onChange={e => setSv(Number(e.target.value))}
+            className="lp-range w-full"
+            aria-label="Dashboard viewers"
+          />
+          <div className="flex justify-between text-[11px] text-muted mt-1.5">
+            <span>10</span><span>25k</span>
+          </div>
+        </div>
+        <div>
+          <div className="flex items-baseline justify-between mb-3">
+            <label htmlFor="lp-calc-editors" className="text-sm font-semibold text-fg">
+              Editors (creators)
+            </label>
+            <span className="font-display text-xl font-bold text-brand-blue">{editors}</span>
+          </div>
+          <input
+            id="lp-calc-editors" type="range" min="1" max="50" value={editors}
+            onChange={e => setEditors(Number(e.target.value))}
+            className="lp-range w-full"
+            aria-label="Editors"
+          />
+          <div className="flex justify-between text-[11px] text-muted mt-1.5">
+            <span>1</span><span>50</span>
+          </div>
+        </div>
+      </div>
+
+      {/* Savings headline */}
+      <div className="flex flex-wrap items-center justify-center gap-2 px-6 py-4 text-center bg-brand-teal/[0.06] border-b border-border">
+        <TrendingDown size={18} className="text-brand-teal" />
+        <span className="text-sm sm:text-base text-fg">
+          Nubi costs{' '}
+          <strong className="text-brand-teal font-bold">{fmtUSD(nubi?.cost ?? 0)}/yr</strong>
+          {savings > 0 && (
+            <>
+              {' '}— that&rsquo;s{' '}
+              <strong className="text-brand-teal font-bold">{fmtUSD(savings)}/yr less</strong>
+              {multiple && multiple >= 2 && <> ({Math.round(multiple)}&times; cheaper)</>}{' '}
+              than the next option.
+            </>
+          )}
+        </span>
+      </div>
+
+      {/* Bars */}
+      <div className="p-6 sm:p-8 flex flex-col gap-3">
+        {results.map(r => (
+          <div
+            key={r.name}
+            className="grid grid-cols-[110px_1fr_auto] sm:grid-cols-[150px_1fr_auto] items-center gap-3"
+          >
+            <div className="min-w-0">
+              <div className={`text-sm font-semibold truncate ${r.isNubi ? 'text-brand-teal' : 'text-fg'}`}>
+                {r.isNubi && <Star size={12} className="inline mr-1 -mt-0.5 text-brand-teal" strokeWidth={2.5} />}
+                {r.name}{r.estimate ? <sup className="text-muted">†</sup> : null}
+              </div>
+              <div className="text-[11px] text-muted truncate hidden sm:block">{r.note}</div>
+            </div>
+            <div className="h-7 rounded-md bg-surface-2 overflow-hidden">
+              <div
+                className={`h-full rounded-md ${r.isNubi ? '' : 'bg-brand-blue/25'}`}
+                style={{
+                  width: `${Math.max(2, (r.cost / max) * 100)}%`,
+                  background: r.isNubi ? 'linear-gradient(90deg, #2456a6, #17b3a3)' : undefined,
+                }}
+              />
+            </div>
+            <div className={`text-sm font-bold tabular-nums text-right w-16 ${r.isNubi ? 'text-brand-teal' : 'text-fg'}`}>
+              {fmtUSD(r.cost)}
+            </div>
+          </div>
+        ))}
+      </div>
+      <p className="px-6 sm:px-8 pb-6 text-xs text-muted opacity-70 leading-relaxed">
+        Estimated annual cost from each vendor&rsquo;s public model (before your own warehouse compute).
+        † Looker is quote-only; figure is directional. Verify before switching.
+      </p>
+    </div>
+  )
+}
+
+/** Landing-page orchestration cost calculator — Flows vs standalone orchestrators */
+function LpOrchCalculator() {
+  const [envs, setEnvs] = useState(2)
+  const [hours, setHours] = useState(100)
+
+  const results = ORCH_CALC_OPTIONS
+    .map(o => ({ ...o, cost: Math.round(o.annual(envs, hours)) }))
+    .sort((a, b) => a.cost - b.cost)
+  const max = Math.max(...results.map(r => r.cost), 1)
+  const nubi = results.find(r => r.isNubi)
+  const cheapestComp = Math.min(...results.filter(r => !r.isNubi).map(r => r.cost))
+  const savings = Math.max(0, cheapestComp - (nubi?.cost ?? 0))
+
+  return (
+    <div className="rounded-2xl border border-border bg-surface shadow-sm overflow-hidden">
+      {/* Inputs */}
+      <div className="grid md:grid-cols-2 gap-6 p-6 sm:p-8 border-b border-border bg-surface-2">
+        <div>
+          <div className="flex items-baseline justify-between mb-3">
+            <label htmlFor="lp-orch-envs" className="text-sm font-semibold text-fg">Environments</label>
+            <span className="font-display text-xl font-bold text-brand-blue">{envs}</span>
+          </div>
+          <input
+            id="lp-orch-envs" type="range" min="1" max="5" value={envs}
+            onChange={e => setEnvs(Number(e.target.value))}
+            className="lp-range w-full" aria-label="Environments"
+          />
+          <div className="flex justify-between text-[11px] text-muted mt-1.5"><span>1</span><span>5</span></div>
+        </div>
+        <div>
+          <div className="flex items-baseline justify-between mb-3">
+            <label htmlFor="lp-orch-seats" className="text-sm font-semibold text-fg">Data engineers</label>
+            <span className="font-display text-xl font-bold text-brand-blue">{seats}</span>
+          </div>
+          <input
+            id="lp-orch-seats" type="range" min="1" max="25" value={seats}
+            onChange={e => setSeats(Number(e.target.value))}
+            className="lp-range w-full" aria-label="Data engineers"
+          />
+          <div className="flex justify-between text-[11px] text-muted mt-1.5"><span>1</span><span>25</span></div>
+        </div>
+      </div>
+
+      {/* Savings headline */}
+      <div className="flex flex-wrap items-center justify-center gap-2 px-6 py-4 text-center bg-brand-teal/[0.06] border-b border-border">
+        <TrendingDown size={18} className="text-brand-teal" />
+        <span className="text-sm sm:text-base text-fg">
+          Flows is{' '}
+          <strong className="text-brand-teal font-bold">included — $0 extra</strong>
+          {savings > 0 && (
+            <> , saving <strong className="text-brand-teal font-bold">{fmtUSD(savings)}/yr</strong> vs the cheapest standalone orchestrator.</>
+          )}
+        </span>
+      </div>
+
+      {/* Bars */}
+      <div className="p-6 sm:p-8 flex flex-col gap-3">
+        {results.map(r => (
+          <div key={r.name} className="grid grid-cols-[120px_1fr_auto] sm:grid-cols-[180px_1fr_auto] items-center gap-3">
+            <div className="min-w-0">
+              <div className={`text-sm font-semibold truncate ${r.isNubi ? 'text-brand-teal' : 'text-fg'}`}>
+                {r.isNubi && <Star size={12} className="inline mr-1 -mt-0.5 text-brand-teal" strokeWidth={2.5} />}
+                {r.name}{r.estimate ? <sup className="text-muted">†</sup> : null}
+              </div>
+              <div className="text-[11px] text-muted truncate hidden sm:block">{r.note}</div>
+            </div>
+            <div className="h-7 rounded-md bg-surface-2 overflow-hidden">
+              <div
+                className={`h-full rounded-md ${r.isNubi ? '' : 'bg-brand-blue/25'}`}
+                style={{
+                  width: `${Math.max(2, (r.cost / max) * 100)}%`,
+                  background: r.isNubi ? 'linear-gradient(90deg, #2456a6, #17b3a3)' : undefined,
+                }}
+              />
+            </div>
+            <div className={`text-sm font-bold tabular-nums text-right w-20 ${r.isNubi ? 'text-brand-teal' : 'text-fg'}`}>
+              {r.cost === 0 ? 'Included' : fmtUSD(r.cost)}
+            </div>
+          </div>
+        ))}
+      </div>
+      <p className="px-6 sm:px-8 pb-6 text-xs text-muted opacity-70 leading-relaxed">
+        Added annual cost of a standalone orchestrator alongside Nubi, from each vendor&rsquo;s public model.
+        Most bill per environment. † Self-host Airflow is infra + on-call estimate.
+      </p>
+    </div>
+  )
+}
+
+/**
+ * LpPricingSection — full pricing section for the landing page.
+ *
+ * Renders:
+ *  1. Hero header + "pricing that doesn't tax viewers" copy
+ *  2. Full tier cards grid — live data from GET /api/v1/pricing, falls back
+ *     to TIERS from src/data/pricing.js if the endpoint is unavailable.
+ *  3. What we charge / never charge cards (BILLING_MODEL)
+ *  4. Interactive cost calculator (CALC_OPTIONS)
+ *  5. CTA strip + micro-features
+ *
+ * Live data: fetchPricingData() from src/lib/pricing.js calls the public
+ * GET /api/v1/pricing endpoint (no auth required) and returns FALLBACK_TIERS
+ * on any error, so the section always renders. The live endpoint tiers are
+ * mapped to the LpTierCard display shape (price label, cadence, tagline, cta,
+ * href, features) using the TIERS array from src/data/pricing.js as the
+ * display-metadata source — the live endpoint provides pricing signals
+ * (usd_monthly_price, monthly_price_zar) that override the static prices.
+ */
+function LpPricingSection() {
+  const [liveTiers, setLiveTiers] = useState(TIERS)
+
+  useEffect(() => {
+    fetchPricingData().then(data => {
+      if (!Array.isArray(data?.tiers) || data.tiers.length === 0) return
+      // Merge live USD prices into the static display tiers.
+      // The API returns backend-shaped objects; we overlay price/cadence only
+      // and keep all other display fields (tagline, features, cta, href) from
+      // the static TIERS so the landing page copy stays under editorial control.
+      const merged = TIERS.map(staticTier => {
+        const live = data.tiers.find(t => t.tier === staticTier.id)
+        if (!live) return staticTier
+        const usd = parseFloat(live.usd_monthly_price ?? 0)
+        const price = usd === 0 ? '$0' : '$' + usd.toLocaleString('en-US')
+        return { ...staticTier, price }
+      })
+      setLiveTiers(merged)
+    })
+  }, [])
+
+  return (
+    <section id="pricing" className="scroll-mt-14 bg-bg">
+      {/* ── 6a: Header ── */}
+      <div className="relative overflow-hidden border-y border-border bg-surface-2 py-16 sm:py-20">
+        <div className="absolute top-0 left-0 right-0 h-1 bg-brand-gradient" />
+        <svg className="absolute inset-0 w-full h-full opacity-[0.03] pointer-events-none" aria-hidden="true">
+          <defs>
+            <pattern id="lp-pricing-dots" x="0" y="0" width="28" height="28" patternUnits="userSpaceOnUse">
+              <circle cx="1" cy="1" r="1" fill="currentColor" />
+            </pattern>
+          </defs>
+          <rect width="100%" height="100%" fill="url(#lp-pricing-dots)" className="text-brand-blue" />
+        </svg>
+        <div className="relative max-w-3xl mx-auto px-4 sm:px-6 text-center">
+          <p className="text-xs font-semibold tracking-widest uppercase mb-4 text-brand-teal">Pricing</p>
+          <h2 className="font-display text-3xl sm:text-5xl lg:text-6xl font-bold leading-tight mb-5 text-fg">
+            Pricing that doesn&rsquo;t{' '}
+            <span className="text-brand-gradient">tax your viewers.</span>
+          </h2>
+          <p className="text-sm sm:text-base lg:text-lg leading-relaxed text-muted">
+            Dashboards compute in your users&rsquo; browsers — an extra viewer costs us ≈ $0, and
+            we never charge for one. Pay for{' '}
+            <strong className="text-fg font-medium">storage</strong>,{' '}
+            <strong className="text-fg font-medium">compute</strong>, and{' '}
+            <strong className="text-fg font-medium">AI</strong>. Not for people looking at charts.
+          </p>
+        </div>
+      </div>
+
+      {/* ── 6b: Tier cards ── */}
+      <div className="py-14 sm:py-20 bg-bg">
+        <div className="max-w-[88rem] mx-auto px-4 sm:px-6 lg:px-8">
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-5 gap-5 xl:gap-4 items-start pt-3">
+            {liveTiers.map(t => <LpTierCard key={t.id} tier={t} />)}
+          </div>
+          <p className="mt-8 text-center text-sm text-muted">
+            {ENTERPRISE_NOTE}{' '}
+            <Link
+              to="/register"
+              className="text-brand-teal font-medium hover:underline inline-flex items-center gap-1"
+            >
+              Contact us <ChevronRight size={13} />
+            </Link>
+          </p>
+        </div>
+      </div>
+
+      {/* ── 6b-ii: Usage wallet / overage strip ── */}
+      <div className="pb-14 sm:pb-20 bg-bg">
+        <div className="max-w-5xl mx-auto px-4 sm:px-6 lg:px-8">
+          <div className="rounded-3xl border border-brand-teal/30 bg-surface shadow-sm overflow-hidden">
+            <div className="grid lg:grid-cols-[minmax(0,0.95fr)_minmax(0,1.05fr)]">
+              {/* Pitch */}
+              <div className="p-6 sm:p-8 bg-gradient-to-br from-brand-navy/[0.04] via-brand-blue/[0.04] to-brand-teal/[0.07] border-b lg:border-b-0 lg:border-r border-border flex flex-col justify-center">
+                <span className="inline-flex items-center gap-2 self-start text-[11px] font-semibold uppercase tracking-widest text-brand-teal mb-3">
+                  <span className="w-8 h-8 rounded-xl bg-brand-gradient text-white flex items-center justify-center">
+                    <Wallet size={15} strokeWidth={2} />
+                  </span>
+                  Buy more when you need it
+                </span>
+                <h3 className="font-display text-xl sm:text-2xl font-bold text-fg mb-2">
+                  A usage wallet — pay only for what you use
+                </h3>
+                <p className="text-sm text-muted leading-relaxed">{OVERAGE_NOTE}</p>
+              </div>
+              {/* Rates */}
+              <div className="grid grid-cols-1 sm:grid-cols-2 divide-y divide-border sm:divide-y-0 sm:[&>*:nth-child(n+3)]:border-t sm:[&>*:nth-child(2n)]:border-l border-border">
+                {OVERAGE_RATES.map((o, i) => {
+                  const Icon = METER_ICONS[(i + 2) % METER_ICONS.length]
+                  return (
+                    <div key={o.label} className="flex items-start gap-3 px-5 py-4 border-border">
+                      <span className="shrink-0 mt-0.5 w-8 h-8 rounded-lg bg-surface-2 border border-border flex items-center justify-center text-brand-blue">
+                        <Icon size={14} strokeWidth={2} />
+                      </span>
+                      <div className="min-w-0">
+                        <div className="flex items-baseline gap-1">
+                          <span className="font-display text-base font-bold text-fg tabular-nums">{o.rate}</span>
+                          <span className="text-[11px] text-muted">{o.unit}</span>
+                        </div>
+                        <p className="text-[12px] font-semibold text-fg leading-tight">{o.label}</p>
+                      </div>
+                    </div>
+                  )
+                })}
+                <div className="flex items-center px-5 py-4 border-t border-border bg-surface-2/40">
+                  <span className="inline-flex items-center gap-1.5 text-[11px] font-semibold text-brand-teal">
+                    <Check size={12} strokeWidth={3} /> Same rate, every paid tier — never per-seat
+                  </span>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      {/* ── 6c: What we charge / never charge ── */}
+      <div className="pb-14 sm:pb-20 bg-bg">
+        <div className="max-w-5xl mx-auto px-4 sm:px-6 lg:px-8">
+          <div className="grid md:grid-cols-2 gap-5">
+            <div className="rounded-2xl border border-border bg-surface p-6 sm:p-7">
+              <h3 className="flex items-center gap-2 font-display font-bold text-lg text-fg mb-4">
+                <CheckCircle2 size={18} className="text-brand-teal" /> What we charge for
+              </h3>
+              <ul className="flex flex-col gap-3">
+                {BILLING_MODEL.metered.map((m, i) => {
+                  const Icon = METER_ICONS[i % METER_ICONS.length]
+                  return (
+                    <li key={m.label} className="flex items-start gap-3">
+                      <span className="shrink-0 mt-0.5 w-7 h-7 rounded-lg bg-surface-2 border border-border flex items-center justify-center text-brand-blue">
+                        <Icon size={14} strokeWidth={2} />
+                      </span>
+                      <span className="text-sm text-muted leading-snug">
+                        <strong className="text-fg font-semibold">{m.label}.</strong> {m.desc}
+                      </span>
+                    </li>
+                  )
+                })}
+              </ul>
+            </div>
+            <div className="rounded-2xl border border-brand-teal/30 bg-surface p-6 sm:p-7">
+              <h3 className="flex items-center gap-2 font-display font-bold text-lg text-fg mb-4">
+                <XCircle size={18} className="text-muted" /> What we never charge for
+              </h3>
+              <ul className="flex flex-col gap-3">
+                {BILLING_MODEL.neverBilled.map(m => (
+                  <li key={m} className="flex items-start gap-3">
+                    <span className="shrink-0 mt-0.5 w-7 h-7 rounded-lg bg-brand-teal/10 flex items-center justify-center">
+                      <X size={14} strokeWidth={2.5} className="text-brand-teal" />
+                    </span>
+                    <span className="text-sm text-fg leading-snug">{m}</span>
+                  </li>
+                ))}
+              </ul>
+              <p className="mt-5 text-xs text-muted leading-relaxed border-t border-border pt-4">
+                Competitors meter the viewer — per-seat or per-query. That&rsquo;s the cost we designed away.
+              </p>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      {/* ── 6d: Cost calculator ── */}
+      <div className="pb-14 sm:pb-20 bg-bg">
+        <div className="max-w-4xl mx-auto px-4 sm:px-6 lg:px-8">
+          <div className="text-center mb-8">
+            <p className="text-xs font-semibold tracking-widest uppercase mb-4 text-brand-teal inline-flex items-center gap-1.5">
+              <SlidersHorizontal size={12} /> Estimate your cost
+            </p>
+            <h3 className="font-display text-3xl sm:text-4xl font-bold text-fg mb-3">
+              What would you pay?
+            </h3>
+            <p className="text-sm sm:text-base text-muted max-w-2xl mx-auto">
+              Drag the sliders to your scale and watch the gap.
+              Everyone else bills the viewer — we don&rsquo;t.
+            </p>
+          </div>
+
+          {/* Calculator 1 — BI viewer tax */}
+          <p className="text-[11px] font-semibold tracking-widest uppercase text-muted mb-2">
+            Calculator 1 · BI viewer cost
+          </p>
+          <LpCostCalculator />
+
+          {/* Calculator 2 — orchestration */}
+          <div className="mt-10">
+            <p className="text-[11px] font-semibold tracking-widest uppercase text-muted mb-2">
+              Calculator 2 · Orchestration cost
+            </p>
+            <p className="text-sm text-muted max-w-2xl mb-4">
+              Flows is built in. A standalone orchestrator (Prefect, Microsoft Fabric, MWAA,
+              self-host Airflow) is pure added cost — and most bill per environment.
+            </p>
+            <LpOrchCalculator />
+          </div>
+        </div>
+      </div>
+
+      {/* ── 6e: CTA + micro-features ── */}
+      <div className="relative overflow-hidden py-16 sm:py-24 bg-surface-2 border-t border-border">
+        <div className="absolute top-0 left-0 right-0 h-1 bg-brand-gradient" />
+        <div className="max-w-3xl mx-auto px-4 sm:px-6 text-center">
+          <h3 className="font-display text-3xl sm:text-5xl font-bold leading-tight mb-4 text-fg">
+            Start free.<br />
+            <span className="text-brand-gradient">Scale without the viewer tax.</span>
+          </h3>
+          <p className="text-sm sm:text-base text-muted mb-8 max-w-lg mx-auto">
+            Unlimited dashboard views on every plan, including Free. Upgrade for seats, embed
+            volume, governance, and dedicated support.
+          </p>
+          <div className="flex flex-col sm:flex-row gap-3 sm:gap-4 justify-center mb-8">
+            <Link
+              to="/register"
+              className="lp-cta-pulse inline-flex items-center justify-center gap-2 px-6 sm:px-8 py-4 rounded-xl text-base font-semibold transition-all bg-brand-gradient text-white hover:opacity-90 hover:-translate-y-0.5 min-h-[52px]"
+            >
+              Create free account
+              <ArrowRight size={16} strokeWidth={2.5} />
+            </Link>
+            <Link
+              to="/pricing"
+              className="inline-flex items-center justify-center gap-2 px-6 sm:px-8 py-4 rounded-xl text-base font-semibold transition-all bg-surface border border-border text-fg hover:border-brand-blue hover:text-brand-blue min-h-[52px]"
+            >
+              See full pricing →
+            </Link>
+          </div>
+          <div className="flex flex-wrap justify-center gap-x-6 sm:gap-x-8 gap-y-2 text-xs font-medium text-muted">
+            {[
+              'No credit card required',
+              'Free tier — no gotchas',
+              'Self-host connector option',
+              'Connector SDK included',
+            ].map(f => (
+              <span key={f} className="flex items-center gap-1.5">
+                <Check size={10} strokeWidth={3} className="text-accent" />
+                {f}
+              </span>
+            ))}
+          </div>
+        </div>
+      </div>
+    </section>
+  )
+}
+
+/* ─────────────────────────────────────────────────────────────────────────── */
 /*  Page                                                                       */
 /* ─────────────────────────────────────────────────────────────────────────── */
 
@@ -635,7 +1210,7 @@ export default function LandingPage() {
                 title="Auth-as-code embedding"
                 badge="Security"
                 desc="One JWT primitive powers users, groups, and embedding. Policies live as YAML/SQL in your repo — diffable, PR-reviewable. Predicate injection is AST-based (never string concat). Mount <nubi-dashboard basePath getToken /> and you're done."
-                Illustration={EmbedAuth}
+                Illustration={EmbedAuthCode}
                 reverse={true}
               />
 
@@ -644,7 +1219,7 @@ export default function LandingPage() {
                 title="LLM-authorable dashboards"
                 badge="AI-native"
                 desc="A dashboard is sanitized HTML/CSS with declarative <nubi-*> custom elements. LLMs author HTML natively. Four MCP tools (create_dashboard, author_dashboard, run_query, get_lineage) let agents build and iterate dashboards end-to-end."
-                Illustration={LlmDashboards}
+                Illustration={LlmDashboardCode}
                 reverse={false}
               />
 
@@ -654,7 +1229,7 @@ export default function LandingPage() {
                 title="SQL-first connector SDK"
                 badge="Extensibility"
                 desc="Point at a warehouse and go — no hand-written semantic model to start. A Python connector SDK lets you wrap any Arrow-returning function as a first-class source. The capability gate enforces the security floor: predicate_rls=False → 501."
-                Illustration={ConnectorSdk}
+                Illustration={ConnectorSdkCode}
                 reverse={true}
               />
 
@@ -664,10 +1239,64 @@ export default function LandingPage() {
                 title="Flows · LLM-native orchestration"
                 badge="Workflows"
                 desc="A lightweight Prefect alternative built in. Compose queries, Python, AI agents, multi-source materialized blends, archive extraction, and object-storage loads into a visual DAG that runs on Postgres alone — no Redis, no Celery. Retries, timeouts, and result caching per task; RLS-aware execution. Agents can author and run flows in natural language, or drag them together in the builder."
-                Illustration={FlowOrchestration}
+                Illustration={FlowCode}
                 reverse={false}
               />
             </div>
+          </div>
+        </section>
+
+        {/* ════════════════════════════════════════════════════════════════════
+            §3.5  CONNECTORS — brand logo wall
+            id="sources" — "connect to your whole stack"
+        ════════════════════════════════════════════════════════════════════ */}
+        <section id="sources" className="py-14 sm:py-20 lg:py-24 bg-surface-2 border-y border-border scroll-mt-14">
+          <div className="max-w-6xl mx-auto px-4 sm:px-6 lg:px-8">
+            <div className="text-center mb-10 sm:mb-14 max-w-2xl mx-auto">
+              <p className="text-xs font-semibold tracking-widest uppercase mb-4 text-brand-teal">
+                Connectors
+              </p>
+              <h2 className="font-display text-3xl sm:text-4xl lg:text-5xl font-bold leading-tight mb-4 sm:mb-5 text-fg">
+                Connect to your{' '}
+                <span className="text-brand-gradient">whole stack.</span>
+              </h2>
+              <p className="text-sm sm:text-base leading-relaxed text-muted">
+                Point Nubi at the warehouses, databases, and lakes you already run — no proprietary
+                semantic model to start. Relational, cloud-managed, warehouse, query-engine, and
+                object-storage sources are first-class, all enforcing the same security floor.
+              </p>
+            </div>
+
+            <div className="grid grid-cols-3 sm:grid-cols-4 md:grid-cols-5 lg:grid-cols-7 gap-3 sm:gap-4">
+              {CONNECTOR_TYPES.map((info) => (
+                <div
+                  key={info.id}
+                  title={info.description}
+                  className="group flex flex-col items-center gap-2.5 rounded-2xl border border-border bg-surface p-3 sm:p-4 transition-all duration-200 hover:-translate-y-1 hover:shadow-md hover:border-border/80"
+                >
+                  <span
+                    className="inline-flex items-center justify-center w-11 h-11 rounded-xl shrink-0"
+                    style={{ background: `${info.color}14` }}
+                  >
+                    <img
+                      src={info.logo}
+                      alt={info.label}
+                      className="w-6 h-6 object-contain transition-transform duration-200 group-hover:scale-110"
+                      loading="lazy"
+                    />
+                  </span>
+                  <span className="text-[11px] font-medium text-muted text-center leading-tight">
+                    {info.label}
+                  </span>
+                </div>
+              ))}
+            </div>
+
+            <p className="text-center text-xs sm:text-sm text-muted mt-8 sm:mt-10 max-w-xl mx-auto">
+              Don&rsquo;t see yours? The{' '}
+              <span className="text-fg font-medium">Python connector SDK</span> wraps any
+              Arrow-returning function as a first-class source — and JDBC covers the long tail.
+            </p>
           </div>
         </section>
 
@@ -982,124 +1611,12 @@ export default function LandingPage() {
         </section>
 
         {/* ════════════════════════════════════════════════════════════════════
-            §6  CLOSING CTA / PRICING CALLOUT
+            §6  FULL PRICING SECTION
             id="pricing" — scroll target for footer "Pricing" link
+            Renders live tier cards (GET /api/v1/pricing, falls back to
+            src/data/pricing.js) + cost calculator. No EE imports.
         ════════════════════════════════════════════════════════════════════ */}
-        <section id="pricing" className="relative py-20 sm:py-28 lg:py-36 overflow-hidden bg-surface-2 scroll-mt-14">
-          {/* Brand gradient accent strip at top */}
-          <div className="absolute top-0 left-0 right-0 h-1 bg-brand-gradient" />
-
-          {/* Decorative dot grid */}
-          <svg className="absolute inset-0 w-full h-full opacity-[0.035] pointer-events-none" aria-hidden="true">
-            <defs>
-              <pattern id="lp-cta-dots" x="0" y="0" width="32" height="32" patternUnits="userSpaceOnUse">
-                <circle cx="1" cy="1" r="1.2" fill="currentColor" />
-              </pattern>
-            </defs>
-            <rect width="100%" height="100%" fill="url(#lp-cta-dots)" className="text-brand-blue" />
-          </svg>
-
-          <div className="relative max-w-3xl mx-auto px-4 sm:px-6 text-center">
-            <p className="text-xs font-semibold tracking-widest uppercase mb-6 text-brand-teal">
-              Pricing
-            </p>
-            <h2 className="font-display text-3xl sm:text-5xl lg:text-6xl font-bold leading-tight mb-5 sm:mb-6 text-fg">
-              Your first dashboard
-              <br />
-              <span className="text-brand-gradient">is free. Really.</span>
-            </h2>
-            <p className="text-sm sm:text-base lg:text-lg leading-relaxed mb-8 text-muted">
-              Marginal cost per dashboard view is ≈ $0 — compute runs in the user&rsquo;s browser,
-              not our cloud. We charge for <strong className="text-fg font-medium">connector throughput</strong>,{' '}
-              <strong className="text-fg font-medium">embed views</strong>,{' '}
-              <strong className="text-fg font-medium">AI calls</strong>, and{' '}
-              <strong className="text-fg font-medium">on-demand server kernel time</strong> — never for
-              compute that runs in your users&rsquo; browsers.
-            </p>
-
-            {/* Pricing tiers */}
-            <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 mb-10 text-left">
-              {[
-                {
-                  tier: 'Free',
-                  price: '$0',
-                  note: 'Real free tier, no gotchas',
-                  bullets: ['Unlimited dashboard views', 'DuckDB-WASM kernel', '2 editors · 1 connector'],
-                },
-                {
-                  tier: 'Pro',
-                  price: '$49',
-                  note: 'For growing teams',
-                  bullets: ['Unlimited connectors', 'Edge cache + pre-aggs', 'AI / MCP · all Flow tasks'],
-                  highlight: true,
-                },
-                {
-                  tier: 'Scale',
-                  price: '$1,000',
-                  note: 'Dedicated support + SLA',
-                  bullets: ['High-volume embedding', 'SSO · RBAC · audit', 'Named contact + Slack'],
-                },
-              ].map(({ tier, price, note, bullets, highlight }) => (
-                <div
-                  key={tier}
-                  className={`rounded-xl p-5 border flex flex-col gap-3 ${
-                    highlight
-                      ? 'bg-brand-gradient text-white border-transparent'
-                      : 'bg-surface border-border'
-                  }`}
-                >
-                  <div>
-                    <div className="flex items-baseline gap-1.5">
-                      <p className={`font-display font-bold text-lg ${highlight ? 'text-white' : 'text-fg'}`}>{tier}</p>
-                      <span className={`font-display font-bold text-lg ${highlight ? 'text-white' : 'text-fg'}`}>· {price}</span>
-                      {tier !== 'Free' && <span className={`text-[11px] ${highlight ? 'text-white/60' : 'text-muted'}`}>/mo</span>}
-                    </div>
-                    <p className={`text-xs mt-0.5 ${highlight ? 'text-white/70' : 'text-muted'}`}>{note}</p>
-                  </div>
-                  <ul className="flex flex-col gap-1.5">
-                    {bullets.map(b => (
-                      <li key={b} className={`flex items-center gap-2 text-xs ${highlight ? 'text-white/90' : 'text-muted'}`}>
-                        <Check size={11} strokeWidth={3} className={highlight ? 'text-white' : 'text-accent'} />
-                        {b}
-                      </li>
-                    ))}
-                  </ul>
-                </div>
-              ))}
-            </div>
-
-            <div className="flex flex-col sm:flex-row gap-3 sm:gap-4 justify-center mb-10">
-              <Link
-                to="/register"
-                className="lp-cta-pulse inline-flex items-center justify-center gap-2 px-6 sm:px-8 py-4 rounded-xl text-base font-semibold transition-all bg-brand-gradient text-white hover:opacity-90 hover:-translate-y-0.5 min-h-[52px]"
-              >
-                Create free account
-                <ArrowRight size={16} strokeWidth={2.5} />
-              </Link>
-              <Link
-                to="/pricing"
-                className="inline-flex items-center justify-center gap-2 px-6 sm:px-8 py-4 rounded-xl text-base font-semibold transition-all bg-surface border border-border text-fg hover:border-brand-blue hover:text-brand-blue min-h-[52px]"
-              >
-                See full pricing →
-              </Link>
-            </div>
-
-            {/* Micro-features */}
-            <div className="flex flex-wrap justify-center gap-x-6 sm:gap-x-8 gap-y-2 text-xs font-medium text-muted">
-              {[
-                'No credit card required',
-                'Free tier — no gotchas',
-                'Self-host connector option',
-                'Connector SDK included',
-              ].map(f => (
-                <span key={f} className="flex items-center gap-1.5">
-                  <Check size={10} strokeWidth={3} className="text-accent" />
-                  {f}
-                </span>
-              ))}
-            </div>
-          </div>
-        </section>
+        <LpPricingSection />
 
         {/* ════════════════════════════════════════════════════════════════════
             §7  ABOUT — minimal "about" anchor for footer link

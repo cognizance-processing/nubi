@@ -34,6 +34,7 @@ import {
 } from 'lucide-react'
 import { Link } from 'react-router-dom'
 import { listSecrets, createSecret, deleteSecret } from '../../lib/secrets.js'
+import { useCanWrite } from '../../contexts/OrgContext.jsx'
 
 // ---------------------------------------------------------------------------
 // Toast notification
@@ -307,7 +308,7 @@ function AddSecretPanel({ open, onClose, onCreated }) {
 // Secret row
 // ---------------------------------------------------------------------------
 
-function SecretRow({ secret, onDelete }) {
+function SecretRow({ secret, onDelete, canWrite }) {
   const created = secret.created_at
     ? new Date(secret.created_at).toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' })
     : null
@@ -333,13 +334,15 @@ function SecretRow({ secret, onDelete }) {
       </p>
 
       {/* Delete */}
-      <button
-        onClick={() => onDelete(secret.name)}
-        title={`Delete ${secret.name}`}
-        className="inline-flex items-center justify-center w-8 h-8 rounded-lg border border-border text-muted hover:text-red-600 hover:bg-red-50 dark:hover:bg-red-900/20 hover:border-red-300 transition-colors focus:outline-none focus:ring-2 focus:ring-ring shrink-0"
-      >
-        <Trash2 size={13} strokeWidth={2} />
-      </button>
+      {canWrite && (
+        <button
+          onClick={() => onDelete(secret.name)}
+          title={`Delete ${secret.name}`}
+          className="inline-flex items-center justify-center w-8 h-8 rounded-lg border border-border text-muted hover:text-red-600 hover:bg-red-50 dark:hover:bg-red-900/20 hover:border-red-300 transition-colors focus:outline-none focus:ring-2 focus:ring-ring shrink-0"
+        >
+          <Trash2 size={13} strokeWidth={2} />
+        </button>
+      )}
     </div>
   )
 }
@@ -348,7 +351,7 @@ function SecretRow({ secret, onDelete }) {
 // Empty state
 // ---------------------------------------------------------------------------
 
-function EmptyState({ onAdd }) {
+function EmptyState({ onAdd, canWrite }) {
   return (
     <div className="flex flex-col items-center justify-center py-20 px-6 text-center">
       <div className="flex items-center justify-center w-16 h-16 rounded-2xl mb-5 bg-primary/10 shadow-sm">
@@ -359,13 +362,17 @@ function EmptyState({ onAdd }) {
         Add secrets to store credentials and API keys. Reference them in flow tasks as{' '}
         <code className="font-mono bg-surface-2 px-1.5 rounded text-xs">{'{{secrets.NAME}}'}</code>.
       </p>
-      <button
-        onClick={onAdd}
-        className="inline-flex items-center gap-2 px-5 py-2.5 bg-primary text-primary-fg rounded-xl text-sm font-semibold hover:opacity-90 transition-opacity focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2 shadow-md"
-      >
-        <Plus size={16} strokeWidth={2.5} />
-        Add your first secret
-      </button>
+      {canWrite ? (
+        <button
+          onClick={onAdd}
+          className="inline-flex items-center gap-2 px-5 py-2.5 bg-primary text-primary-fg rounded-xl text-sm font-semibold hover:opacity-90 transition-opacity focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2 shadow-md"
+        >
+          <Plus size={16} strokeWidth={2.5} />
+          Add your first secret
+        </button>
+      ) : (
+        <p className="text-xs text-muted">Read-only — ask an admin to add a secret.</p>
+      )}
     </div>
   )
 }
@@ -375,6 +382,7 @@ function EmptyState({ onAdd }) {
 // ---------------------------------------------------------------------------
 
 export default function SecretsPage() {
+  const canWrite = useCanWrite()
   const [secrets, setSecrets]         = useState([])
   const [listLoading, setListLoading] = useState(true)
   const [listError, setListError]     = useState(null)
@@ -476,13 +484,15 @@ export default function SecretsPage() {
             <RefreshCw size={15} className={listLoading ? 'animate-spin' : ''} strokeWidth={2} />
           </button>
 
-          <button
-            onClick={() => setPanelOpen(true)}
-            className="inline-flex items-center gap-2 px-4 py-2 rounded-xl bg-primary text-primary-fg text-sm font-semibold hover:opacity-90 transition-opacity focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2 shadow-sm"
-          >
-            <Plus size={15} strokeWidth={2.5} />
-            Add secret
-          </button>
+          {canWrite && (
+            <button
+              onClick={() => setPanelOpen(true)}
+              className="inline-flex items-center gap-2 px-4 py-2 rounded-xl bg-primary text-primary-fg text-sm font-semibold hover:opacity-90 transition-opacity focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2 shadow-sm"
+            >
+              <Plus size={15} strokeWidth={2.5} />
+              Add secret
+            </button>
+          )}
         </div>
       </div>
 
@@ -520,7 +530,7 @@ export default function SecretsPage() {
 
         {/* Empty state */}
         {!listLoading && !listError && secrets.length === 0 && (
-          <EmptyState onAdd={() => setPanelOpen(true)} />
+          <EmptyState onAdd={() => setPanelOpen(true)} canWrite={canWrite} />
         )}
 
         {/* Secrets list */}
@@ -540,6 +550,7 @@ export default function SecretsPage() {
                 key={secret.name}
                 secret={secret}
                 onDelete={setDeleteTarget}
+                canWrite={canWrite}
               />
             ))}
           </div>

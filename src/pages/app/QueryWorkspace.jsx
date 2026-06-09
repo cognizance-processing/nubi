@@ -66,6 +66,7 @@ import PythonCell from '../../components/PythonCell.jsx'
 import { runArrowQueryById, runArrowQuery, registerArrowTable, runLocalSqlForCell } from '../../lib/wasmRuntime.js'
 import { post, registerQuery, listDatastores } from '../../lib/api.js'
 import { useUi } from '../../contexts/UiContext.jsx'
+import { useCanWrite } from '../../contexts/OrgContext.jsx'
 
 // ---------------------------------------------------------------------------
 // Connector type → SQL dialect
@@ -780,6 +781,7 @@ function ScratchSqlCell({
   onMoveUp,
   onMoveDown,
   datastoreId,
+  dialect,
   registerRunner,
   cellRef,
   onResult,
@@ -923,6 +925,7 @@ function ScratchSqlCell({
               onChange={handleChange}
               onRun={running ? undefined : handleRun}
               height={`${editorH}px`}
+              dialect={dialect}
             />
             {isEmpty && (
               <p className="mt-1.5 text-[11px] text-muted flex items-center gap-1 flex-wrap">
@@ -1058,6 +1061,7 @@ function ScratchPythonCell({ cell, cellNumber, index, total, onRemove, onMoveUp,
 // ---------------------------------------------------------------------------
 
 export default function QueryWorkspace({ query, onQueryChange, onSaved, isNew }) {
+  const canWrite = useCanWrite()
   // ── PRIMARY cell: SQL / params state (the query of record) ──────────────
   const [sql, setSql] = useState(query?.sql ?? '')
   const [params, setParams] = useState(() => query?.params ?? [])
@@ -1490,16 +1494,18 @@ export default function QueryWorkspace({ query, onQueryChange, onSaved, isNew })
           </button>
         )}
 
-        {/* Schedule */}
-        <button
-          onClick={handleScheduleClick}
-          disabled={!isRegistered}
-          className="h-8 px-2.5 flex items-center gap-1.5 text-[11px] font-medium rounded-lg border border-border bg-surface text-muted hover:text-fg hover:bg-surface-2 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
-          title={isRegistered ? 'Run this query on a schedule' : 'Save the query first'}
-        >
-          <CalendarClock size={12} />
-          <span className="hidden sm:inline">Schedule</span>
-        </button>
+        {/* Schedule — mutating (creates a scheduled flow); writers only */}
+        {canWrite && (
+          <button
+            onClick={handleScheduleClick}
+            disabled={!isRegistered}
+            className="h-8 px-2.5 flex items-center gap-1.5 text-[11px] font-medium rounded-lg border border-border bg-surface text-muted hover:text-fg hover:bg-surface-2 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+            title={isRegistered ? 'Run this query on a schedule' : 'Save the query first'}
+          >
+            <CalendarClock size={12} />
+            <span className="hidden sm:inline">Schedule</span>
+          </button>
+        )}
 
         {/* View as code / Import */}
         <SpecIO
@@ -1509,26 +1515,32 @@ export default function QueryWorkspace({ query, onQueryChange, onSaved, isNew })
           query={query}
         />
 
-        {/* Save */}
-        <button
-          onClick={handleSaveClick}
-          disabled={saving}
-          className="h-8 px-2.5 flex items-center gap-1.5 text-[11px] font-medium rounded-lg border border-border bg-surface text-muted hover:text-fg hover:bg-surface-2 disabled:opacity-50 transition-colors"
-          title={isRegistered ? 'Update saved query (primary cell)' : 'Save query (primary cell)'}
-        >
-          {saving ? (
-            <Loader2 size={12} className="animate-spin" />
-          ) : saveStatus === 'ok' ? (
-            <CheckCircle2 size={12} className="text-emerald-500" />
-          ) : saveStatus === 'err' ? (
-            <AlertCircle size={12} className="text-rose-500" />
-          ) : (
-            <Save size={12} />
-          )}
-          <span className="hidden sm:inline">
-            {saving ? 'Saving…' : isRegistered ? 'Update' : 'Save'}
+        {/* Save — mutating (registerQuery); writers only */}
+        {canWrite ? (
+          <button
+            onClick={handleSaveClick}
+            disabled={saving}
+            className="h-8 px-2.5 flex items-center gap-1.5 text-[11px] font-medium rounded-lg border border-border bg-surface text-muted hover:text-fg hover:bg-surface-2 disabled:opacity-50 transition-colors"
+            title={isRegistered ? 'Update saved query (primary cell)' : 'Save query (primary cell)'}
+          >
+            {saving ? (
+              <Loader2 size={12} className="animate-spin" />
+            ) : saveStatus === 'ok' ? (
+              <CheckCircle2 size={12} className="text-emerald-500" />
+            ) : saveStatus === 'err' ? (
+              <AlertCircle size={12} className="text-rose-500" />
+            ) : (
+              <Save size={12} />
+            )}
+            <span className="hidden sm:inline">
+              {saving ? 'Saving…' : isRegistered ? 'Update' : 'Save'}
+            </span>
+          </button>
+        ) : (
+          <span className="h-8 px-2.5 flex items-center text-[11px] font-medium text-muted/70 select-none" title="Read-only access">
+            Read-only
           </span>
-        </button>
+        )}
 
         {/* Run (primary) */}
         <button
@@ -1733,6 +1745,7 @@ export default function QueryWorkspace({ query, onQueryChange, onSaved, isNew })
                   index={index}
                   total={scratchCells.length}
                   datastoreId={datastoreId}
+                  dialect={dialect}
                   onSqlChange={(val) => updateCellSql(cell.id, val)}
                   onRemove={() => removeCell(cell.id)}
                   onMoveUp={() => moveCell(cell.id, -1)}

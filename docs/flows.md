@@ -100,6 +100,9 @@ A FlowSpec is a JSON document (version 1) that describes the entire DAG. It is t
 | `name` | `string` | Human-readable flow name (e.g. `"daily_revenue"`). |
 | `params` | `array` | Flow-level parameter declarations (optional). |
 | `tasks` | `array` | Ordered list of task definitions that form the DAG. |
+| `env` | `string` | Execution environment tag (`"dev"`, `"staging"`, `"prod"`). Default `"prod"`. Materialize tasks stamp this into the DuckDB blend file path. |
+| `runtime_config` | `object` | Top-level runtime hints for the notebook envelope (not inside cells). Keys: `interactive_row_limit`, `duckdb_memory_limit`, `durable_compute`, `durable_timeout_s`. |
+| `view` | `string` | Active UI view: `"notebook"` (cell list) or `"dag"` (canvas). Default `"dag"`. Set automatically by the view toggle; not used by the execution engine. |
 
 ### Flow Parameters
 
@@ -119,7 +122,7 @@ A FlowSpec is a JSON document (version 1) that describes the entire DAG. It is t
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
 | `key` | `string` | — | Unique slug within this flow. Used as the task identifier in `needs` lists and `inputs` maps. |
-| `kind` | `string` | — | Execution kind: `query`, `python`, `agent`, `materialize`, `noop`, `extract`, `bucket_load`, or `preagg_refresh`. |
+| `kind` | `string` | — | Execution kind: `query`, `python`, `agent`, `materialize`, `noop`, `bucket_load`, `preagg_refresh`, `map`, `branch`, or `map_collect`. |
 | `needs` | `array` | `[]` | Upstream task keys this task depends on (DAG edges). Empty = root task. |
 | `config` | `object` | `{}` | Kind-specific configuration. See below. |
 | `retries` | `integer` | `0` | Number of retry attempts after the first failure. |
@@ -132,9 +135,17 @@ A FlowSpec is a JSON document (version 1) that describes the entire DAG. It is t
 
 ## Task Kinds
 
-### `query` — Run a Registered Query or SQL
+### `query` — Run a Registered Query or SQL (also: SQL cell)
 
 Executes a named query from the query registry (or raw SQL) against the warehouse, respecting RLS via the caller's claims.
+
+When used as a notebook SQL cell (`cell_type: "sql"`), three additional config keys are recognised:
+
+| Config key | Description |
+|------------|-------------|
+| `source_dialect` | SQL dialect the cell was authored in (e.g. `"bigquery"`). When set and the target dialect differs, sqlglot transpiles before planning. |
+| `datastore_id` | BYO warehouse connector UUID. Absent = demo DuckDB. |
+| `preview_limit` | Row cap for preview/interactive runs (default `500`). |
 
 ```json
 {
@@ -158,9 +169,15 @@ Executes a named query from the query registry (or raw SQL) against the warehous
 
 The task result contains `row_count` and the returned rows (Arrow-serialised).
 
-### `python` — Run a Python Script
+### `python` — Run a Python Script (also: Python cell)
 
 Runs arbitrary Python in the server kernel (same path as Jobs python executor). The variables `inputs` (a dict of upstream task results, keyed by task key) and `params` (the flow-level parameter values) are injected automatically. Assign the task output to `result`.
+
+When used as a notebook Python cell (`cell_type: "python"`), one additional config key is recognised:
+
+| Config key | Description |
+|------------|-------------|
+| `use_remote_kernel` | `true` to route to E2B/Modal in durable mode instead of local subprocess. |
 
 ```json
 {
@@ -258,36 +275,6 @@ A no-op task whose result is `{"inputs": {...}}` (all upstream results). Useful 
 
 No required config fields.
 
-### `extract` — Unpack an Archive from Storage
-
-Downloads an archive from object storage (or from an upstream task result), unpacks it, and uploads each extracted member to a destination storage prefix. Supports `zip`, `tar`, `tar.gz`/`tgz`, and bare `gz`. Every archive member is checked against a path-traversal guard before any I/O — members that resolve outside the extraction directory (e.g. `..` components, absolute paths) are rejected and the archive is refused.
-
-```json
-{
-  "key": "unzip",
-  "kind": "extract",
-  "needs": [],
-  "config": {
-    "source_uri": "s3://my-bucket/uploads/data.zip",
-    "dest_uri": "s3://my-bucket/extracted/",
-    "secret": "S3_CREDS",
-    "format": "auto"
-  }
-}
-```
-
-**Config fields:**
-
-| Field | Required | Description |
-|-------|----------|-------------|
-| `source_uri` | One of `source_uri` / `source` | Full storage URI of the archive (e.g. `s3://bucket/data.zip`, `file:///tmp/archive.tar.gz`). |
-| `source` | One of `source_uri` / `source` | Key of an upstream task whose result carries a `uri` (storage URI) or `bytes` (raw or base64-encoded) field. Mutually exclusive with `source_uri`. |
-| `dest_uri` | Yes | Storage URI prefix members are uploaded under, as `<dest_uri>/<member-relative-name>`. |
-| `secret` | No | Name of a secret whose JSON-decoded value is passed as the storage credentials dict. See [Secrets](/docs/secrets). If absent, environment / credential-chain auth is used. |
-| `format` | No | One of `auto`, `zip`, `tar`, `tar.gz`, `tgz`, `gz`. Default `auto` (detect from magic bytes / extension). |
-
-The task result is `{"files": [{"name", "size", "uri"}], "file_count": N}`.
-
 ### `bucket_load` — Write Data to Object Storage
 
 Serialises an upstream task's rows into the requested format and uploads them to object storage (S3, GCS, Azure, or local) via the `app.storage` abstraction.
@@ -318,6 +305,88 @@ Serialises an upstream task's rows into the requested format and uploads them to
 | `secret` | No | Name of a secret whose JSON-decoded value is the storage credentials dict. See [Secrets](/docs/secrets). |
 
 The task result is `{"uri", "format", "row_count", "bytes_written"}`.
+
+### `map` — Fan-Out Over an Iterable
+
+Resolves an expression to a list at runtime and executes a nested sub-DAG once per item in parallel (up to `max_concurrency`). Each item's child task-runs are stored in the same flow run using composite keys `"{map_key}[{i}].{child_task_key}"`. When all children complete, the map node collects results from `collect_key` and transitions to `success`.
+
+```json
+{
+  "key": "process_each_region",
+  "kind": "map",
+  "needs": ["get_regions"],
+  "config": {
+    "item_expr": "{{ inputs.get_regions.rows }}",
+    "item_var": "region",
+    "max_concurrency": 4,
+    "max_map_size": 1000,
+    "collect_key": "transform",
+    "body": [
+      {
+        "key": "fetch_data",
+        "kind": "query",
+        "needs": [],
+        "config": { "sql": "SELECT * FROM sales WHERE region = '{{ item.region_code }}'" },
+        "retries": 0, "retry_backoff_s": 30, "timeout_s": 60, "cache_ttl_s": 0,
+        "ui": { "x": 0, "y": 0 }
+      },
+      {
+        "key": "transform",
+        "kind": "python",
+        "needs": ["fetch_data"],
+        "config": { "code": "result = {k: v*2 for k, v in inputs['fetch_data']['rows'][0].items()}" },
+        "retries": 0, "retry_backoff_s": 30, "timeout_s": 60, "cache_ttl_s": 0,
+        "ui": { "x": 260, "y": 0 }
+      }
+    ]
+  }
+}
+```
+
+**Config fields:**
+
+| Field | Required | Description |
+|-------|----------|-------------|
+| `item_expr` | Yes | Template expression resolving to the iterable (e.g. `"{{ inputs.source.rows }}"`). Evaluated at runtime. |
+| `body` | Yes | Nested sub-DAG — non-empty list of TaskSpec dicts. Validated recursively; nested `map` nodes are prohibited. |
+| `item_var` | No | Variable namespace bound as `{{ item.<field> }}` in body task configs. Default `"item"`. |
+| `max_concurrency` | No | Maximum simultaneous child item executions. `0` = unlimited. |
+| `max_map_size` | No | Hard cap on item count. Runtime raises if exceeded. Default `1000`. |
+| `collect_key` | No | Which body task key's result is collected into the output list. Defaults to the last body node. |
+
+The map node transitions through an intermediate `waiting_children` state while children run. The final result when `success` is `{"items": [{"index": 0, "result": {...}}, ...], "item_count": N, "collect_key": "..."}`.
+
+### `branch` — Conditional Routing
+
+Evaluates an ordered list of boolean template conditions against upstream results and activates only the matching downstream tasks. Tasks in inactive branches are marked `upstream_failed`.
+
+```json
+{
+  "key": "route",
+  "kind": "branch",
+  "needs": ["classify"],
+  "config": {
+    "conditions": [
+      { "when": "{{ inputs.classify.label }} == 'high_value'", "next": ["enrich"] },
+      { "when": "{{ inputs.classify.label }} == 'low_value'",  "next": ["archive"] }
+    ],
+    "default": ["log_task"]
+  }
+}
+```
+
+**Config fields:**
+
+| Field | Required | Description |
+|-------|----------|-------------|
+| `conditions` | Yes | Ordered list of `{when, next}` dicts. First matching `when` expression wins. `when` is a boolean Python expression evaluated after `{{ }}` template resolution. `next` is a list of task keys to activate. |
+| `default` | No | Task keys to activate when no condition matches. If empty and no condition matches, all dependent tasks receive `upstream_failed`. |
+
+The branch result is `{"branch_taken": "condition_0" | "default", "branch_index": int}`. Rejoin (multiple conditions pointing to the same downstream task) is supported — the task is activated once by the first matching condition.
+
+### `map_collect` — Internal Map Fan-In Collector
+
+An internal handler used by the runtime to collect per-item results when a `map` node completes. This kind is managed automatically by the engine and is not intended to be authored directly in flow specs.
 
 ### `preagg_refresh` — Refresh Auto Pre-Aggregations
 
@@ -658,6 +727,48 @@ Request:
 
 `trigger` is always `"manual"` for API-triggered runs.
 
+### Notebook Endpoints
+
+These endpoints work alongside the standard flow CRUD. They accept `NotebookSpec` on the wire and round-trip via `notebook_to_flowspec()` / `flowspec_to_notebook()`. The executor always receives a plain `FlowSpec` — the notebook envelope is a UI concern only.
+
+**Save or create a notebook**
+
+```
+POST /api/v1/flows/notebooks
+Content-Type: application/json
+{ "notebook": { ...NotebookSpec... }, "name": "optional override" }
+```
+
+Response `201`: the created flow row.
+
+**Load a notebook**
+
+```
+GET /api/v1/flows/notebooks/{id}
+```
+
+Response `200`: `{ ...flow_row, notebook: NotebookSpec }`.
+
+**Preview a cell (interactive, row-capped, no work-pool)**
+
+```
+POST /api/v1/flows/preview
+Content-Type: application/json
+{ "spec": {...}, "cell_key": "revenue", "params": {}, "preview_limit": 500 }
+```
+
+Supply `spec` (inline) or `flow_id`. `cell_key` defaults to the last cell. All upstream cells are executed first in topological order. Response `200`: `{ cell_key, columns, rows, row_count, total_row_count }`.
+
+**Run a single cell durably**
+
+```
+POST /api/v1/flows/run-cell
+Content-Type: application/json
+{ "spec": {...}, "cell_key": "revenue", "params": {} }
+```
+
+Creates a temporary single-cell flow run through the normal work-pool path. Response `200`: `{ cell_key, columns, rows, row_count, flow_run_id }`. Poll logs via `GET /api/v1/flows/runs/{flow_run_id}/tasks/{task_key}/logs`.
+
 ### List Flow Runs
 
 ```
@@ -739,7 +850,7 @@ In the UI, the **Blend Builder** (`/blends`) provides a form-driven way to pick 
 2. Duplicate task `key` within the same flow.
 3. A `needs` entry references a task key that does not exist in the spec.
 4. The DAG contains a cycle (reported as `"Cycle detected: a → b → a."`).
-5. Missing kind-required config fields: `query`→`query_id` or `sql`; `python`→`code`; `agent`→`prompt`; `materialize`→`combine_sql`; `extract`→`dest_uri` plus exactly one of `source_uri`/`source`; `bucket_load`→`uri` and `source`; `preagg_refresh`→`org_id`. (`noop` has no required config fields.)
+5. Missing kind-required config fields: `query`→`query_id` or `sql`; `python`→`code`; `agent`→`prompt`; `materialize`→`combine_sql`; `bucket_load`→`uri` and `source`; `preagg_refresh`→`org_id`; `map`→`item_expr` and non-empty `body`; `branch`→non-empty `conditions` list. (`noop` and `map_collect` have no required config fields.)
 
 **Soft warnings** (prefixed `[warn]`, do not block create/update):
 
@@ -870,24 +981,33 @@ Agent: "Done. The flow ran successfully. Revenue was up 4.2% vs the prior day."
 
 ---
 
-## UI — React Flow DAG Builder
+## UI — Canvas and Notebook Views
 
-The Flows page (`/flows`) provides a visual canvas for authoring and monitoring flows, built on [React Flow](https://reactflow.dev/).
+The Flows page (`/flows`) provides two views of the same `FlowSpec`. A **ViewToggle** button in the toolbar switches between them at any time without changing the underlying spec.
 
-### Canvas Layout
+### Notebook View
+
+The notebook view renders the spec's tasks as an ordered list of cells (top-to-bottom, Jupyter-style). Each cell is a SQL cell (`cell_type: 'sql'`) or a Python cell (`cell_type: 'python'`) with a Monaco editor and an inline results grid. Use the `+ SQL` and `+ Python` buttons to add cells; drag the ordinal arrows to reorder. Click the run button on any cell to execute a fast in-process preview (capped at 500 rows by default). "Run all" triggers a full durable run via the work-pool.
+
+Reference upstream cells by key in SQL (`SELECT * FROM cell_revenue`) or in Python (`inputs["cell_revenue"]["rows"]`). See [Notebooks](/docs/notebooks) for the full cell reference.
+
+### Canvas View (DAG Builder)
+
+The canvas view renders the same spec as a React Flow graph. Nodes represent tasks; arrows represent `needs` dependencies. A minimap and zoom controls sit in the corner.
 
 - **Left panel** — list of your org's flows. Click to open in the builder; "New flow" seeds an empty spec.
-- **Center canvas** — the React Flow DAG. Nodes represent tasks; arrows represent `needs` dependencies. A minimap and zoom controls sit in the corner.
+- **Center canvas** — the React Flow DAG.
 - **Right panel (Inspector)** — appears when you click a node. Edit the task's key, kind, config, retries, timeout, and cache settings.
 
 ### Building a Flow
 
-1. **Add tasks** — drag task kinds (query / python / agent / noop) from the node palette onto the canvas.
+1. **Add tasks** — drag task kinds (query / python / agent / noop / map / branch) from the node palette onto the canvas.
 2. **Connect tasks** — drag from a source handle on one node to a target handle on another to create a `needs` edge.
-3. **Configure tasks** — click a node to open the inspector. Fill in the kind-specific config (query ID or SQL, Python code, or agent prompt). Set retries, timeout, and cache TTL.
-4. **Validate** — click "Validate" to call `POST /api/v1/flows/validate`. Any hard errors or warnings appear in an overlay panel.
-5. **Save** — click "Save" to create or update the flow (`POST /api/v1/flows` or `PUT /api/v1/flows/{id}`). Spec is rejected with an error message on validation failure.
-6. **Run** — click "Run" to trigger an immediate execution. The UI switches to the run view.
+3. **Configure tasks** — click a node to open the inspector. Fill in the kind-specific config (query ID or SQL, Python code, agent prompt, map config, or branch conditions). Set retries, timeout, and cache TTL.
+4. **Code panel** — click the `</>` button to open the editable Python SDK panel. Edit the generated scaffold and click "Apply code" to sync the canvas.
+5. **Validate** — click "Validate" to call `POST /api/v1/flows/validate`. Any hard errors or warnings appear in an overlay panel.
+6. **Save** — click "Save" to create or update the flow (`POST /api/v1/flows` or `PUT /api/v1/flows/{id}`). Spec is rejected with an error message on validation failure.
+7. **Run** — click "Run" to trigger an immediate execution. The UI switches to the run view.
 
 ### Task Node Colors
 
@@ -902,6 +1022,7 @@ Each node displays a status indicator dot colored by the current `task_run.state
 | `failed` | Red |
 | `retrying` | Orange |
 | `skipped` | Gray |
+| `waiting_children` | Purple (map fan-out in progress) |
 
 ### Live Run View
 
@@ -921,6 +1042,89 @@ All Flows operations are scoped to the caller's org:
 - AI tools (`create_flow`, `run_flow`, `get_flow_run`, `list_flows`) resolve the org from `claims["org_id"]`, which is set by the agentic chat endpoint (`POST /api/v1/ai/chat`) from the authenticated user's token.
 
 ---
+
+## Work-Pool Executor
+
+In production (`FLOWS_WORKER_ENABLED=true`) the engine runs a concurrent work-pool (`run_worker_pool`) rather than a single-threaded tick. Each worker claims a `ready` task-run, builds a `TaskContext` with secrets resolved via `secret_store.resolve_all(org_id)`, executes the handler, writes results back, and calls `advance_readiness`. The pool size is controlled by the concurrency parameter passed to `run_worker_pool`; it defaults to 4 concurrent workers. The scheduler tick (`flow_tick`) is separate from task execution — it only materialises due scheduled flows and reaps stale worker leases.
+
+## Code-First Python SDK
+
+Every flow is represented as a `FlowSpec` JSON document. The Python SDK (`backend/nubi/flows` — importable as `nubi.flows`) provides a tracing DSL so you can author flows as plain Python functions:
+
+```python
+from nubi.flows import flow, task, map_node, branch_node
+
+@task(kind="query", sql="SELECT DISTINCT region FROM sales")
+def get_regions(): pass
+
+@task(kind="python", code="result = [r['region'] for r in inputs['get_regions']['rows']]")
+def extract_codes(): pass
+
+@flow
+def my_pipeline():
+    regions = get_regions()
+    extract_codes(regions)
+
+spec = my_pipeline.compile()   # → FlowSpec dict, ready to POST /api/v1/flows
+```
+
+The `@flow` decorator attaches a `.compile()` method that traces the function body, records nodes and edges, and returns a valid `FlowSpec` dict. `map_node` and `branch_node` are supported in the same tracing context.
+
+### Codegen — FlowSpec → Python scaffold
+
+`flow_spec_to_sdk(spec)` generates scaffold-grade Python source from any `FlowSpec`. The generated source, when compiled, reproduces the spec 1:1 (modulo canvas `ui` coordinates). This powers the **in-builder code panel** (see below).
+
+### In-Builder Code Panel
+
+The FlowBuilder includes an editable code panel (`src/flows/CodePanel.jsx`) that is a first-class authoring surface alongside the canvas:
+
+- Fetches generated Python source via `POST /api/v1/flows/{id}/codegen` (or `POST /api/v1/flows/codegen` for unsaved flows).
+- The editor is **editable** — the author can modify the generated scaffold freely.
+- **"Apply code"** round-trips the edited Python source through `POST /api/v1/flows/compile` (subprocess-sandboxed on the backend) and syncs the canvas with the resulting `FlowSpec`.
+- Unsaved edits are tracked with a dirty-state indicator; compilation errors surface inline.
+
+The canvas and code panel are two views of the same `FlowSpec` — changes in either are reflected in the other via the shared spec state.
+
+### Archive Extraction (Python snippet)
+
+The `extract` task kind was **removed** from the engine. To unpack a zip or tar archive, use a `python` task. A canned snippet is available in the FlowBuilder snippet picker ("Extract archive (zip/tar)"):
+
+```python
+import os, zipfile, tarfile, pathlib
+
+src = inputs.get("fetch_file", {}).get("path") or params.get("archive_path", "")
+dest_dir = pathlib.Path(params.get("dest_dir", "/tmp/extracted"))
+dest_dir.mkdir(parents=True, exist_ok=True)
+
+if zipfile.is_zipfile(src):
+    with zipfile.ZipFile(src) as zf:
+        zf.extractall(dest_dir)
+elif tarfile.is_tarfile(src):
+    with tarfile.open(src) as tf:
+        tf.extractall(dest_dir)
+else:
+    raise ValueError(f"Unrecognised archive format: {src}")
+
+files = [str(p) for p in dest_dir.rglob("*") if p.is_file()]
+result = {"dest_dir": str(dest_dir), "files": files, "count": len(files)}
+```
+
+## Secrets in Flows
+
+Flow tasks reference org secrets by name using the `{{ secrets.NAME }}` template expression (see [Secrets](/docs/secrets)). Secrets are managed under `/api/v1/secrets` (not a global nav item). The `bucket_load` task's `secret` config field accepts a secret name whose JSON-decoded value is used as storage credentials. The executor resolves all secrets server-side before each task runs — the plaintext value is never sent to the client or logged.
+
+## Storage Backends
+
+The `bucket_load` task writes to object storage via the `app.storage` abstraction layer, which supports:
+
+| Backend | URI scheme | Notes |
+|---------|-----------|-------|
+| S3 / S3-compatible | `s3://bucket/path` | AWS S3, MinIO, Cloudflare R2 |
+| Google Cloud Storage | `gs://bucket/path` | GCS |
+| Azure Blob Storage | `az://container/path` | Azure Blob |
+| Local filesystem | `file:///abs/path` | Dev/self-hosted |
+
+Credentials are passed via the `secret` config field (a named org secret whose value is the credentials dict) or implicitly from the environment / credential chain.
 
 ## Environment Variables
 

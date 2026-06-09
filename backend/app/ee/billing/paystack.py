@@ -284,6 +284,74 @@ async def verify_transaction(
     )
 
 
+async def charge_saved_card(
+    *,
+    authorization_code: str,
+    email: str,
+    amount_zar_cents: int,
+    reference: str,
+    metadata: dict[str, Any] | None = None,
+    secret_key: str | None = None,
+) -> dict[str, Any]:
+    """Charge a saved Paystack authorization without the customer present.
+
+    Used exclusively by the wallet auto-topup path.  This calls
+    ``POST /transaction/charge_authorization`` on the Paystack API.
+
+    IMPORTANT: Paystack returns HTTP 200 even for declined charges — always
+    check ``result["data"]["status"] == "success"`` in the caller.  Do NOT
+    treat a 200 response as a successful charge.
+
+    Parameters
+    ----------
+    authorization_code:
+        The saved ``authorization.authorization_code`` from the first
+        successful payment (``AUTH_...``).
+    email:
+        The customer email that was used when the authorization was created.
+        This must match exactly — Paystack ties ``authorization_code`` to the
+        email used at the time of first payment.
+    amount_zar_cents:
+        Amount to charge in ZAR cents (1 ZAR = 100 units).
+        E.g. pass ``5000`` for ZAR 50.00.
+    reference:
+        Unique reference for this charge attempt.  Must be globally unique.
+    metadata:
+        Optional metadata dict stored against the Paystack transaction.
+    secret_key:
+        Override the env-based secret key (primarily for tests).
+
+    Returns
+    -------
+    dict
+        Full Paystack ``charge_authorization`` response body.
+        Check ``result["data"]["status"] == "success"`` before crediting wallet.
+        Check ``result["data"]["paused"] is True`` for 3DS challenges.
+
+    Raises
+    ------
+    RuntimeError
+        When ``PAYSTACK_SECRET_KEY`` is unset or Paystack returns a non-2xx
+        HTTP status (network/server error — distinct from a declined charge).
+    """
+    key = secret_key or _get_secret_key()
+    payload: dict[str, Any] = {
+        "authorization_code": authorization_code,
+        "email": email,
+        "amount": amount_zar_cents,
+        "currency": "ZAR",
+        "reference": reference,
+    }
+    if metadata:
+        payload["metadata"] = metadata
+
+    return await get_client().post(
+        "/transaction/charge_authorization",
+        secret_key=key,
+        payload=payload,
+    )
+
+
 def verify_webhook_signature(
     raw_body: bytes,
     x_paystack_signature: str,

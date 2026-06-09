@@ -428,6 +428,13 @@ def _reset_state():
         except Exception:
             pass
 
+        # ── Datasets catalog ──────────────────────────────────────────────────
+        try:
+            from app.datasets import set_catalog
+            set_catalog(None)
+        except Exception:
+            pass
+
         # ── Feature gate ──────────────────────────────────────────────────────
         try:
             from app.features import reset_for_tests as _reset_features
