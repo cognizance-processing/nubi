@@ -1318,6 +1318,10 @@ async def drain_flow_run(
         claims = {}
 
     steps = 0
+    # Run-scoped variable overlay (A5): a python cell's set_var values flow to
+    # later cells in THIS synchronous run (value-only; persist=True also hits
+    # the store). In-process only — the distributed claim path does not share it.
+    run_var_overlay: dict[str, Any] = {}
     while steps < max_steps:
         # Check if the flow_run itself is already terminal (advance may have done this).
         flow_run = await store.get_flow_run(flow_run_id)
@@ -1346,7 +1350,9 @@ async def drain_flow_run(
         if task_run is None:
             break
 
-        await _execute_claimed_task_run(store, task_run, now, claims)
+        await _execute_claimed_task_run(
+            store, task_run, now, claims, run_var_overlay=run_var_overlay
+        )
         steps += 1
 
     # Re-fetch and return the final state.
@@ -1841,6 +1847,7 @@ async def _execute_claimed_task_run(
     now: datetime,
     claims: dict[str, Any],
     secrets: dict[str, str] | None = None,
+    run_var_overlay: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Execute an already-claimed (state='running') task_run and update state.
 
@@ -1911,7 +1918,12 @@ async def _execute_claimed_task_run(
         now=now,
         secrets=resolved_secrets,
         org_id=org_id or None,
-        vars=await load_vars_namespace(org_id, (flow_dict or {}).get("project_id")),
+        # vars (A5): stored org/project vars overlaid with any values an earlier
+        # cell in THIS synchronous run published via set_var (run_var_overlay).
+        vars={
+            **(await load_vars_namespace(org_id, (flow_dict or {}).get("project_id"))),
+            **(run_var_overlay or {}),
+        },
         env=env,
         flow=flow_dict,
         watermark=watermark,
@@ -1924,6 +1936,19 @@ async def _execute_claimed_task_run(
     _apply_for_each_rewrite(full_task, task_spec)
 
     outcome = execute_task(full_task, ctx, claims)
+
+    # set_var (A5): persist=True flushes to the long-term store (visible to later
+    # cells via reload + future runs); and on the synchronous drain path, merge
+    # the run-scoped set_vars (value-only) into the overlay so later cells read
+    # non-persisted values too.
+    _vars_project = (flow_dict or {}).get("project_id")
+    await _flush_persisted_set_vars(outcome, org_id, _vars_project)
+    if run_var_overlay is not None:
+        _set_vars = outcome.get("set_vars") or {}
+        if isinstance(_set_vars, dict):
+            for _name, _entry in _set_vars.items():
+                if isinstance(_entry, dict):
+                    run_var_overlay[str(_name)] = _entry.get("value")
 
     attempt: int = int(task_run.get("attempt", 0))
     retries: int = int(task_spec.get("retries", 0))

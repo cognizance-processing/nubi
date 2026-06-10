@@ -75,3 +75,45 @@ async def test_flush_persists_only_persist_true():
         assert await store.get_var("org-test", "ephemeral") is None
     finally:
         set_var_store(None)
+
+
+# ---------------------------------------------------------------------------
+# Run-scoped overlay (persist=False) through the REAL synchronous drain (W1-B)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_set_var_overlay_visible_to_later_cell_in_drain():
+    from datetime import datetime, timezone
+    from app.flows.store import InMemoryFlowStore
+    from app.flows.runtime import materialize_flow_run, drain_flow_run
+    from app.vars.store import InMemoryVarStore, set_var_store
+
+    now = datetime(2026, 1, 1, tzinfo=timezone.utc)
+    org = "org-ovl"
+    var_store = InMemoryVarStore()
+    set_var_store(var_store)
+    store = InMemoryFlowStore()
+    try:
+        spec = {
+            "version": 1,
+            "name": "overlay",
+            "tasks": [
+                {"key": "a", "kind": "python", "cell_type": "python", "needs": [],
+                 "config": {"code": "set_var('cutoff', '2024-01-01')\nresult = {'set': True}"}},
+                {"key": "b", "kind": "python", "cell_type": "python", "needs": ["a"],
+                 "config": {"code": "result = {'echo': vars.get('cutoff')}"}},
+            ],
+        }
+        flow = await store.create_flow(org_id=org, created_by="u1", name="overlay", spec=spec)
+        frun = await materialize_flow_run(store, flow, {}, "manual", now)
+        await drain_flow_run(store, frun["id"], now, {"org_id": org, "sub": "u1"})
+
+        trs = {tr["task_key"]: tr for tr in await store.list_task_runs(frun["id"])}
+        # Cell B read the value cell A set via the run overlay (no store write).
+        assert trs["b"]["state"] == "success", trs["b"].get("error")
+        assert trs["b"]["result"]["echo"] == "2024-01-01"
+        # Non-persist: the long-term store was NOT written.
+        assert await var_store.get_var(org, "cutoff") is None
+    finally:
+        set_var_store(None)
