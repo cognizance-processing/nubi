@@ -18,13 +18,43 @@
  * Param resolution rules (resolveParams)
  * --------------------------------------
  * Each entry in widgetParams is either:
- *   { ref: '<varName>' }  → resolved to variables[varName] (undefined if unknown)
- *   <literal>             → passed through as-is
+ *   { ref: '<varName>' }            → resolved value (see multiselect shape below)
+ *   { ref: '<varName>', pick: 'mode' }   → 'all' | 'include' | 'exclude' string
+ *   { ref: '<varName>', pick: 'values' } → plain string[] (the selected values)
+ *   <literal>                       → passed through as-is
  *
  * If a ref points to an unknown variable name, the resolved value is undefined.
+ *
+ * Multiselect variable value shapes (Track F — F-P2)
+ * ---------------------------------------------------
+ * Filter widgets may write any of:
+ *   ["a", "b"]                          plain array — legacy include
+ *   { mode: "include", values: [...] }
+ *   { mode: "exclude", values: [...] }  "all but these"
+ *   { mode: "all" }                     no constraint
+ *
+ * When a ref has NO `pick` key the resolved value is:
+ *   - plain array  → passed through unchanged (full backward compat)
+ *   - structured   → normalized { mode, values } shape so query bindings can
+ *                    inspect it; query authors use the `pick` binding instead of
+ *                    a bare ref when they need separate mode / values params.
+ *
+ * When `pick: "mode"` is set the value resolves to the mode string
+ * ('all' | 'include' | 'exclude'), enabling SQL patterns like:
+ *   WHERE (:region_mode = 'all'
+ *      OR (:region_mode = 'include' AND region IN     (SELECT unnest(:region_values)))
+ *      OR (:region_mode = 'exclude' AND region NOT IN (SELECT unnest(:region_values))))
+ *
+ * When `pick: "values"` is set the value resolves to the raw string array, which
+ * the query layer binds as an array parameter for IN / NOT IN.
  */
 
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react'
+// Multiselect value-shape helpers from Track F — imported here so resolveParams
+// can call them directly (no re-implementation) and re-exported so callers can
+// interrogate raw variable values without importing from the inputs/ layer.
+import { isExclude, valuesOf, modeOf, normMulti } from './inputs/index.js'
+export { isExclude, valuesOf, modeOf, normMulti }
 
 // ---------------------------------------------------------------------------
 // Pure helper (exported for unit tests — no React required)
@@ -33,14 +63,21 @@ import { createContext, useCallback, useContext, useEffect, useMemo, useRef, use
 /**
  * Resolve a widget's params object against the current variable values map.
  *
- * @param {Record<string, {ref: string} | unknown>} widgetParams
+ * @param {Record<string, {ref: string, pick?: 'mode'|'values'} | unknown>} widgetParams
  *   The params field from a widget spec.  Each value is either a `{ref}` object
- *   (pointing to a variable name) or a literal value.
+ *   (optionally with a `pick` key) or a literal value.
  * @param {Record<string, unknown>} variables
  *   Current variable store state.
  * @returns {Record<string, unknown>}
  *   A new params object where every `{ref}` has been replaced by its variable
  *   value and every literal has been passed through unchanged.
+ *
+ *   Multiselect-aware resolution:
+ *   - `{ ref, pick: 'mode' }`   → 'all' | 'include' | 'exclude'
+ *   - `{ ref, pick: 'values' }` → string[]  (the selected values)
+ *   - `{ ref }` (no pick)       → plain array passed through unchanged (backward
+ *     compat); structured { mode, values } passed through as normalized { mode,
+ *     values } so callers that inspect the shape get a consistent object.
  */
 export function resolveParams(widgetParams, variables) {
   if (!widgetParams || typeof widgetParams !== 'object' || Array.isArray(widgetParams)) {
@@ -58,8 +95,32 @@ export function resolveParams(widgetParams, variables) {
       !Array.isArray(paramValue) &&
       Object.prototype.hasOwnProperty.call(paramValue, 'ref')
     ) {
-      // {ref: '<varName>'} — look up in variables; undefined if unknown
-      resolved[paramName] = variables[paramValue.ref]
+      // {ref: '<varName>', pick?: 'mode'|'values'} — look up in variables
+      const rawValue = variables[paramValue.ref]
+      const pick = paramValue.pick
+
+      if (pick === 'mode') {
+        // Resolve to the mode string: 'all' | 'include' | 'exclude'
+        resolved[paramName] = rawValue === undefined ? undefined : modeOf(rawValue)
+      } else if (pick === 'values') {
+        // Resolve to the plain string array regardless of include/exclude
+        resolved[paramName] = rawValue === undefined ? undefined : valuesOf(rawValue)
+      } else if (Array.isArray(rawValue)) {
+        // Plain array — pass through as-is (full backward compatibility)
+        resolved[paramName] = rawValue
+      } else if (
+        rawValue !== null &&
+        rawValue !== undefined &&
+        typeof rawValue === 'object' &&
+        ('mode' in rawValue || 'values' in rawValue)
+      ) {
+        // Structured multiselect value — normalize so callers get a consistent shape:
+        // { mode: 'all'|'include'|'exclude', values: string[] }
+        resolved[paramName] = normMulti(rawValue)
+      } else {
+        // Scalar, undefined, or any other type — pass through unchanged
+        resolved[paramName] = rawValue
+      }
     } else {
       // Literal — pass through as-is
       resolved[paramName] = paramValue

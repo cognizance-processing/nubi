@@ -89,6 +89,7 @@ import DashboardCodePanel from './DashboardCodePanel.jsx'
 import { VariableProvider } from '../dashboards/VariableStore.jsx'
 import SpecRenderer from '../dashboards/SpecRenderer.jsx'
 import { backgroundToCss, styleToCss } from '../dashboards/widgetHtml.js'
+import TabBar from '../dashboards/TabBar.jsx'
 import {
   DEVICE_TO_BREAKPOINT,
   buildResponsiveLayouts,
@@ -175,6 +176,50 @@ let _idCounter = 0
 function genId(type) {
   _idCounter += 1
   return `${type}_${_idCounter}`
+}
+
+// ---------------------------------------------------------------------------
+// Tab helpers (Track T — T5 editor)
+// ---------------------------------------------------------------------------
+
+// Tab-bar style tokens exposed in the inspector. ALL user-supplied colors / CSS
+// flow through the sanitized styleToCss/parseCssString path (never raw-injected).
+const TAB_VARIANTS = ['underline', 'pills', 'segmented']
+const TAB_ALIGNS = ['start', 'center', 'end', 'stretch']
+const TAB_SIZES = ['sm', 'md', 'lg']
+
+/** Generate a stable, collision-free tab id within the current tab list. */
+function genTabId(existing = []) {
+  const used = new Set(existing.map(t => t.id))
+  let n = existing.length + 1
+  let id = `t${n}`
+  while (used.has(id)) { n += 1; id = `t${n}` }
+  return id
+}
+
+/** The effective active tab id given the spec + a requested id (falls back to first). */
+function resolveActiveTab(spec, requested) {
+  const tabs = Array.isArray(spec.tabs) ? spec.tabs : []
+  if (tabs.length === 0) return null
+  if (requested && tabs.some(t => t.id === requested)) return requested
+  return tabs[0].id
+}
+
+/**
+ * Filter widgets down to a single tab for the canvas (mirrors SpecRenderer):
+ *   - no tabs → every widget (today's behavior)
+ *   - widget.tab_id === activeTabId → in
+ *   - widget.tab_id null/absent → belongs to the FIRST tab
+ */
+function widgetsForTab(spec, activeTabId) {
+  const tabs = Array.isArray(spec.tabs) ? spec.tabs : []
+  if (tabs.length === 0) return spec.widgets
+  const firstTabId = tabs[0]?.id ?? null
+  return spec.widgets.filter(w => {
+    const t = w.tab_id ?? null
+    if (t === activeTabId) return true
+    return t == null && activeTabId === firstTabId
+  })
 }
 
 // ---------------------------------------------------------------------------
@@ -1454,7 +1499,7 @@ function DashboardPanel({ spec, onSpecChange }) {
 // ConfigPanel — per-widget configuration
 // ---------------------------------------------------------------------------
 
-function ConfigPanel({ widget, onChange, onRemove, extraQueryIds, spec, activeBreakpoint = 'lg', onLayoutCommit }) {
+function ConfigPanel({ widget, onChange, onRemove, extraQueryIds, spec, activeBreakpoint = 'lg', onLayoutCommit, onMoveToTab }) {
   if (!widget) {
     return (
       <div className="flex flex-col items-center justify-center h-full text-sm text-muted py-8 px-4 text-center">
@@ -1482,6 +1527,20 @@ function ConfigPanel({ widget, onChange, onRemove, extraQueryIds, spec, activeBr
           <Trash2 size={13} /> Remove
         </button>
       </div>
+
+      {Array.isArray(spec?.tabs) && spec.tabs.length > 0 && onMoveToTab && (
+        <div>
+          <FieldLabel className="flex items-center gap-1.5"><LayoutGrid size={12} /> Move to tab</FieldLabel>
+          <select
+            className={selectCls}
+            data-testid="widget-move-to-tab"
+            value={widget.tab_id ?? spec.tabs[0].id}
+            onChange={e => onMoveToTab(widget.id, e.target.value)}
+          >
+            {spec.tabs.map(t => <option key={t.id} value={t.id}>{t.label || t.id}</option>)}
+          </select>
+        </div>
+      )}
 
       {isDataWidget && (
         <div className="space-y-1.5">
@@ -1730,6 +1789,315 @@ function WidgetHoverToolbar({ widget, onDuplicate, onDelete, visible, reorder = 
 }
 
 // ---------------------------------------------------------------------------
+// EditableTabStrip — edit-mode tab bar: add / inline-rename / drag-reorder / delete
+// ---------------------------------------------------------------------------
+
+/**
+ * The editor's tab strip. Distinct from the read-only TabBar.jsx used in the
+ * viewer/preview: here each tab is an editable, draggable, deletable chip plus an
+ * "Add tab" button. Reorder uses native HTML5 drag-and-drop (no extra deps).
+ *
+ * All mutations route through callbacks the parent wires to setSpec/history so
+ * undo/redo + dirty tracking + save keep working.
+ */
+function EditableTabStrip({
+  tabs, activeTabId, onActivate, onAdd, onRename, onReorder, onDeleteRequest,
+}) {
+  const [editingId, setEditingId] = useState(null)
+  const [draftLabel, setDraftLabel] = useState('')
+  const dragIndexRef = useRef(null)
+  const [overIndex, setOverIndex] = useState(null)
+
+  const startRename = (tab) => { setEditingId(tab.id); setDraftLabel(tab.label ?? '') }
+  const commitRename = () => {
+    if (editingId != null) {
+      const label = draftLabel.trim()
+      if (label) onRename(editingId, label)
+    }
+    setEditingId(null)
+  }
+
+  const onDrop = (toIndex) => {
+    const from = dragIndexRef.current
+    dragIndexRef.current = null
+    setOverIndex(null)
+    if (from == null || from === toIndex) return
+    onReorder(from, toIndex)
+  }
+
+  return (
+    <div
+      className="flex items-center gap-1 border-b border-border bg-surface px-2 h-9 shrink-0 overflow-x-auto"
+      data-testid="editor-tab-strip"
+    >
+      {tabs.map((tab, index) => {
+        const isActive = tab.id === activeTabId
+        const isEditing = editingId === tab.id
+        const isOver = overIndex === index
+        return (
+          <div
+            key={tab.id}
+            draggable={!isEditing}
+            onDragStart={(e) => { dragIndexRef.current = index; e.dataTransfer.effectAllowed = 'move' }}
+            onDragOver={(e) => { e.preventDefault(); setOverIndex(index) }}
+            onDragLeave={() => setOverIndex(o => (o === index ? null : o))}
+            onDrop={(e) => { e.preventDefault(); onDrop(index) }}
+            onDragEnd={() => { dragIndexRef.current = null; setOverIndex(null) }}
+            data-testid={`editor-tab-${tab.id}`}
+            className={`group flex items-center gap-1 h-7 pl-1.5 pr-1 rounded-lg border text-sm shrink-0 transition-colors ${
+              isActive ? 'border-primary bg-primary/10 text-primary' : 'border-border bg-surface text-muted hover:text-fg'
+            } ${isOver ? 'ring-2 ring-ring/50' : ''}`}
+          >
+            <GripVertical size={12} className="text-muted/50 cursor-grab active:cursor-grabbing shrink-0" />
+            {isEditing ? (
+              <input
+                autoFocus
+                value={draftLabel}
+                onChange={e => setDraftLabel(e.target.value)}
+                onBlur={commitRename}
+                onKeyDown={e => {
+                  if (e.key === 'Enter') { e.preventDefault(); commitRename() }
+                  if (e.key === 'Escape') { e.preventDefault(); setEditingId(null) }
+                }}
+                className="h-5 w-24 text-sm px-1 bg-surface border border-ring/40 rounded outline-none text-fg"
+                data-testid={`editor-tab-input-${tab.id}`}
+              />
+            ) : (
+              <button
+                type="button"
+                onClick={() => onActivate(tab.id)}
+                onDoubleClick={() => startRename(tab)}
+                className="font-medium px-1 whitespace-nowrap focus:outline-none"
+                title="Click to switch · double-click to rename"
+              >
+                {tab.label || 'Tab'}
+              </button>
+            )}
+            <button
+              type="button"
+              onClick={() => onDeleteRequest(tab)}
+              title="Delete tab"
+              aria-label={`Delete tab ${tab.label}`}
+              data-testid={`editor-tab-delete-${tab.id}`}
+              className="w-4 h-4 flex items-center justify-center rounded text-muted/50 hover:text-red-500 opacity-0 group-hover:opacity-100 focus:opacity-100 transition-opacity shrink-0"
+            >
+              <X size={11} />
+            </button>
+          </div>
+        )
+      })}
+      <button
+        type="button"
+        onClick={onAdd}
+        title="Add tab"
+        aria-label="Add tab"
+        data-testid="editor-tab-add"
+        className="flex items-center gap-1 h-7 px-2 rounded-lg border border-dashed border-border text-muted hover:text-primary hover:border-primary transition-colors shrink-0 text-xs font-medium"
+      >
+        <Plus size={13} /> Tab
+      </button>
+    </div>
+  )
+}
+
+// ---------------------------------------------------------------------------
+// DeleteTabDialog — prompt: move this tab's widgets elsewhere or delete them
+// ---------------------------------------------------------------------------
+
+function DeleteTabDialog({ tab, tabs, widgetCount, onMove, onDeleteWidgets, onCancel }) {
+  const others = tabs.filter(t => t.id !== tab.id)
+  const [target, setTarget] = useState(others[0]?.id ?? '')
+  return (
+    <div className="fixed inset-0 z-[60] flex items-center justify-center p-4" data-testid="delete-tab-dialog">
+      <div className="absolute inset-0 bg-black/40" onClick={onCancel} />
+      <div className="relative w-full max-w-sm rounded-2xl border border-border bg-surface shadow-2xl p-5 space-y-4">
+        <div>
+          <h3 className="text-sm font-semibold text-fg">Delete “{tab.label}”?</h3>
+          <p className="text-xs text-muted mt-1">
+            This tab has {widgetCount} widget{widgetCount === 1 ? '' : 's'}. Choose what to do with {widgetCount === 1 ? 'it' : 'them'}.
+          </p>
+        </div>
+        {others.length > 0 && (
+          <div className="space-y-1.5">
+            <FieldLabel>Move widgets to</FieldLabel>
+            <select className={selectCls} value={target} onChange={e => setTarget(e.target.value)} data-testid="delete-tab-move-target">
+              {others.map(t => <option key={t.id} value={t.id}>{t.label || t.id}</option>)}
+            </select>
+          </div>
+        )}
+        <div className="flex flex-col gap-2 pt-1">
+          {others.length > 0 && (
+            <button
+              type="button"
+              onClick={() => onMove(target)}
+              data-testid="delete-tab-move-btn"
+              className="w-full h-9 text-sm font-medium rounded-lg bg-primary text-primary-fg hover:opacity-90 transition-opacity">
+              Move widgets &amp; delete tab
+            </button>
+          )}
+          <button
+            type="button"
+            onClick={onDeleteWidgets}
+            data-testid="delete-tab-delete-widgets-btn"
+            className="w-full h-9 text-sm font-medium rounded-lg border border-red-300 text-red-600 hover:bg-red-50 transition-colors">
+            Delete tab &amp; its widgets
+          </button>
+          <button
+            type="button"
+            onClick={onCancel}
+            className="w-full h-9 text-sm font-medium rounded-lg border border-border text-muted hover:text-fg hover:bg-surface-2 transition-colors">
+            Cancel
+          </button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+// ---------------------------------------------------------------------------
+// TabsPanel — inspector: tab-bar tokens + per-tab style/background overrides
+// ---------------------------------------------------------------------------
+
+function TabsPanel({ spec, onSpecChange, activeTabId, onActivate, onAddTab }) {
+  const tabs = Array.isArray(spec.tabs) ? spec.tabs : []
+  const tabBar = spec.tab_bar ?? {}
+  const setTabBar = (patch) => {
+    const next = { ...tabBar, ...patch }
+    Object.keys(next).forEach(k => { if (next[k] === '' || next[k] == null) delete next[k] })
+    onSpecChange({ ...spec, tab_bar: next })
+  }
+  const activeTab = tabs.find(t => t.id === activeTabId) ?? null
+  const setTab = (id, patch) =>
+    onSpecChange({ ...spec, tabs: tabs.map(t => t.id === id ? { ...t, ...patch } : t) })
+  const setTabStyle = (id, patch) => {
+    const t = tabs.find(x => x.id === id)
+    const style = { ...(t?.style ?? {}), ...patch }
+    Object.keys(style).forEach(k => { if (style[k] === '' || style[k] == null) delete style[k] })
+    setTab(id, { style: Object.keys(style).length ? style : {} })
+  }
+
+  if (tabs.length === 0) {
+    return (
+      <div className="p-4 space-y-3 overflow-y-auto h-full">
+        <h3 className="text-sm font-semibold text-fg">Tabs</h3>
+        <p className="text-xs text-muted/80 leading-relaxed rounded-lg border border-dashed border-border bg-surface-2/30 p-3">
+          This dashboard has no tabs — it renders as a single canvas. Add a tab to
+          split it into multiple tabbed pages. Existing widgets stay on the first
+          tab; variables stay shared across all tabs.
+        </p>
+        <button
+          onClick={onAddTab}
+          data-testid="tabs-panel-add-first"
+          className="w-full flex items-center justify-center gap-2 h-9 text-sm font-medium rounded-lg border border-dashed border-border text-muted hover:text-primary hover:border-primary transition-colors">
+          <Plus size={14} /> Add first tab
+        </button>
+      </div>
+    )
+  }
+
+  // Live preview reuses the read-only viewer TabBar so the variant/colors match.
+  const previewTabs = tabs.length >= 2 ? tabs : [...tabs, { id: '__preview__', label: 'Preview' }]
+
+  return (
+    <div className="p-4 space-y-3 overflow-y-auto h-full">
+      <h3 className="text-sm font-semibold text-fg">Tabs</h3>
+
+      <Section title="Tab bar" icon={LayoutGrid}>
+        <div className="rounded-lg border border-border bg-surface px-2 py-1.5">
+          <TabBar tabs={previewTabs} activeTabId={activeTabId} onChange={() => {}} tabBar={tabBar} />
+        </div>
+        <div>
+          <FieldLabel>Variant</FieldLabel>
+          <div className="grid grid-cols-3 gap-1.5">
+            {TAB_VARIANTS.map(v => {
+              const active = (tabBar.variant ?? 'underline') === v
+              return (
+                <button key={v} onClick={() => setTabBar({ variant: v })}
+                  className={`h-7 text-[11px] font-medium rounded-lg border capitalize transition-all ${active ? 'bg-primary text-primary-fg border-primary' : 'bg-surface text-muted border-border hover:border-primary hover:text-primary'}`}>
+                  {v}
+                </button>
+              )
+            })}
+          </div>
+        </div>
+        <div className="grid grid-cols-2 gap-2">
+          <div>
+            <FieldLabel>Align</FieldLabel>
+            <select className={selectCls} value={tabBar.align ?? 'start'} onChange={e => setTabBar({ align: e.target.value })}>
+              {TAB_ALIGNS.map(a => <option key={a} value={a}>{a}</option>)}
+            </select>
+          </div>
+          <div>
+            <FieldLabel>Size</FieldLabel>
+            <select className={selectCls} value={tabBar.size ?? 'md'} onChange={e => setTabBar({ size: e.target.value })}>
+              {TAB_SIZES.map(s => <option key={s} value={s}>{s}</option>)}
+            </select>
+          </div>
+        </div>
+        <div className="flex items-center gap-2">
+          <input type="color" className="h-8 w-10 shrink-0 rounded-lg border border-border bg-surface cursor-pointer"
+            value={tabBar.accent ?? '#6366f1'} onChange={e => setTabBar({ accent: e.target.value })} />
+          <input type="text" className={`${inputCls} flex-1`} placeholder="Accent color (active tab)"
+            value={tabBar.accent ?? ''} onChange={e => setTabBar({ accent: e.target.value })} />
+        </div>
+        <div>
+          <FieldLabel>Custom CSS (sanitized)</FieldLabel>
+          <textarea rows={2} className={`${inputCls} h-auto py-1.5 font-mono text-xs resize-y`}
+            placeholder="border-radius: 10px; gap: 6px;"
+            value={tabBar.custom_css ?? ''} onChange={e => setTabBar({ custom_css: e.target.value || undefined })} />
+        </div>
+      </Section>
+
+      <Section title="Tabs" icon={Heading} defaultOpen>
+        <div className="flex flex-wrap gap-1.5">
+          {tabs.map(t => (
+            <button key={t.id} onClick={() => onActivate(t.id)}
+              className={`px-2.5 h-7 text-xs font-medium rounded-lg border transition-all ${t.id === activeTabId ? 'bg-primary text-primary-fg border-primary' : 'bg-surface text-muted border-border hover:border-primary hover:text-primary'}`}>
+              {t.label || t.id}
+            </button>
+          ))}
+        </div>
+        <p className="text-[10px] text-muted/70">Select a tab to edit its label, style &amp; background. Reorder/rename/delete from the strip above the canvas.</p>
+      </Section>
+
+      {activeTab && (
+        <Section title={`Tab · ${activeTab.label || activeTab.id}`} icon={Settings2} defaultOpen>
+          <div>
+            <FieldLabel>Label</FieldLabel>
+            <input type="text" className={inputCls} value={activeTab.label ?? ''}
+              onChange={e => setTab(activeTab.id, { label: e.target.value })} />
+          </div>
+          <div>
+            <FieldLabel>Icon (optional)</FieldLabel>
+            <input type="text" className={inputCls} placeholder="lucide name, e.g. BarChart3"
+              value={activeTab.icon ?? ''} onChange={e => setTab(activeTab.id, { icon: e.target.value || undefined })} />
+          </div>
+          <div className="space-y-1">
+            <SectionLabel>Active-tab accent override</SectionLabel>
+            <div className="flex items-center gap-2">
+              <input type="color" className="h-8 w-10 shrink-0 rounded-lg border border-border bg-surface cursor-pointer"
+                value={activeTab.style?.accent ?? '#6366f1'} onChange={e => setTabStyle(activeTab.id, { accent: e.target.value })} />
+              <input type="text" className={`${inputCls} flex-1`} placeholder="inherit from tab bar"
+                value={activeTab.style?.accent ?? ''} onChange={e => setTabStyle(activeTab.id, { accent: e.target.value })} />
+            </div>
+          </div>
+          <div>
+            <FieldLabel>Tab custom CSS (sanitized)</FieldLabel>
+            <textarea rows={2} className={`${inputCls} h-auto py-1.5 font-mono text-xs resize-y`}
+              placeholder="font-weight: 600;"
+              value={activeTab.style?.custom_css ?? ''} onChange={e => setTabStyle(activeTab.id, { custom_css: e.target.value || undefined })} />
+          </div>
+          <div className="space-y-1">
+            <SectionLabel>Canvas background (this tab)</SectionLabel>
+            <BackgroundEditor value={activeTab.background} onChange={bg => setTab(activeTab.id, { background: bg && bg.type ? bg : undefined })} />
+          </div>
+        </Section>
+      )}
+    </div>
+  )
+}
+
+// ---------------------------------------------------------------------------
 // DashboardEditor — main export
 // ---------------------------------------------------------------------------
 
@@ -1765,6 +2133,16 @@ export default function DashboardEditor({ boardId = null, onSaved }) {
     return () => window.removeEventListener('beforeunload', handler)
   }, [dirty])
 
+  // EditorPage's FILTERS button dispatches `nubi:open-filters` (OPEN_FILTERS_EVENT).
+  // It cannot reach the editor's state directly, so we listen on window and open
+  // the filters-drawer authoring panel here. Matches the seam documented in
+  // EditorPage.jsx.
+  useEffect(() => {
+    const open = () => { setFiltersOpen(true); setPreview(false) }
+    window.addEventListener('nubi:open-filters', open)
+    return () => window.removeEventListener('nubi:open-filters', open)
+  }, [])
+
   const commitSpec = useCallback((newSpec) => {
     setHist(h => historyPush(h, typeof newSpec === 'function' ? newSpec(h.present) : newSpec))
   }, [])
@@ -1788,6 +2166,17 @@ export default function DashboardEditor({ boardId = null, onSaved }) {
   // Below md the toolbar cluster (device switcher, zoom controls, panel toggles)
   // collapses behind a hamburger that opens this slide-out menu.
   const [mobileMenu, setMobileMenu] = useState(false)
+
+  // ── Tabs (Track T — T5 editor) ────────────────────────────────────────────
+  // Which tab the canvas is showing. null when the spec has no tabs (today's
+  // single-canvas behavior). When the spec HAS tabs we resolve to the first one
+  // if the requested id is gone (e.g. after a delete or an undo).
+  const [activeTabIdRaw, setActiveTabIdRaw] = useState(null)
+  const activeTabId = resolveActiveTab(spec, activeTabIdRaw)
+  // Pending delete-tab confirmation (null = no dialog). Holds the tab object.
+  const [deletingTab, setDeletingTab] = useState(null)
+  // Filters-drawer authoring panel (opened by EditorPage's nubi:open-filters event).
+  const [filtersOpen, setFiltersOpen] = useState(false)
 
   const { width: canvasWidth, containerRef: canvasRef } = useElementWidth(900)
   // The scrollable canvas viewport (pan surface + pinch-zoom target).
@@ -1890,7 +2279,8 @@ export default function DashboardEditor({ boardId = null, onSaved }) {
   // Use the active breakpoint's effective layout (override or fallback) and skip
   // widgets hidden at this breakpoint so the reserved height is accurate.
   const _rowH = spec.layout?.row_height ?? 60
-  const _maxBottom = spec.widgets.reduce((m, w) => {
+  // Reserve height for the ACTIVE tab's widgets only (the canvas shows just those).
+  const _maxBottom = widgetsForTab(spec, activeTabId).reduce((m, w) => {
     if (isHiddenAt(w, activeBreakpoint)) return m
     const p = effectivePos(w, spec, activeBreakpoint) ?? {}
     const y = (p.y ?? 1) - 1
@@ -2033,6 +2423,28 @@ export default function DashboardEditor({ boardId = null, onSaved }) {
   // ── Derived state ─────────────────────────────────────────────────────────
   const selectedWidget = spec.widgets.find(w => w.id === selectedId) ?? null
 
+  // Tabs (T5). When spec.tabs is empty this is the full widget list (today's
+  // behavior); otherwise the canvas only shows the active tab's widgets — exactly
+  // like SpecRenderer. Layout building, height reservation and GridCanvas all use
+  // this scoped list, while mutations still operate on the full spec by widget id.
+  const hasTabs = Array.isArray(spec.tabs) && spec.tabs.length > 0
+  const tabWidgets = useMemo(
+    () => widgetsForTab(spec, activeTabId),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [spec.widgets, spec.tabs, activeTabId],
+  )
+  // A spec whose widget list is scoped to the active tab — fed to the layout
+  // builder so off-tab widgets never participate in this tab's grid geometry.
+  const tabSpec = useMemo(
+    () => (hasTabs ? { ...spec, widgets: tabWidgets } : spec),
+    [spec, tabWidgets, hasTabs],
+  )
+  // Per-tab background falls back to the dashboard background (mirrors SpecRenderer).
+  const activeTab = hasTabs ? (spec.tabs.find(t => t.id === activeTabId) ?? null) : null
+  const canvasBackground = (activeTab?.background && activeTab.background.type)
+    ? activeTab.background
+    : spec.background
+
   // Per-device column counts (independent now — mobile is no longer locked to 1).
   //   lg = cols (canonical), md = cols_md (fallback cols), sm = cols_sm (fallback 1).
   const lgCols = spec.layout?.cols ?? 12
@@ -2044,15 +2456,16 @@ export default function DashboardEditor({ boardId = null, onSaved }) {
   // item keeps its per-type min sizes + authored static/min/max constraints.
   // The 0-based {i,x,y,w,h,...} items are EXACTLY the shape GridCanvas's `layout`
   // prop expects (identical to what RGL consumed) — the commit contract is unchanged.
+  // Built from tabSpec so each tab gets its own grid (off-tab widgets excluded).
   const gridLayouts = useMemo(() => {
     if (isDraggingRef.current && frozenLayoutsRef.current) return frozenLayoutsRef.current
-    const layouts = buildResponsiveLayouts(spec, lgCols, (w) => ({
+    const layouts = buildResponsiveLayouts(tabSpec, lgCols, (w) => ({
       minDefaults: WIDGET_MIN_SIZES[w.type] ?? { minW: 2, minH: 2 },
     }), { lg: lgCols, md: mdCols, sm: smCols })
     frozenLayoutsRef.current = layouts
     return layouts
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [spec.widgets, JSON.stringify(spec.responsive), lgCols, mdCols, smCols])
+  }, [tabWidgets, JSON.stringify(spec.responsive), lgCols, mdCols, smCols])
 
   // Grid flexibility options (spec.layout.*). The editor defaults to free-place
   // so drag-to-place keeps working; authors can opt into packing via the Advanced
@@ -2077,15 +2490,21 @@ export default function DashboardEditor({ boardId = null, onSaved }) {
     setHist(h => {
       const prev = h.present
       const cols = prev.layout?.cols ?? 12
+      // New widgets are placed within (and tagged for) the ACTIVE tab, so the
+      // free-spot scan only considers that tab's occupancy. With no tabs this is
+      // the full widget list and tab_id stays absent (today's behavior).
+      const tab = resolveActiveTab(prev, activeTabIdRaw)
+      const peers = tab ? widgetsForTab(prev, tab) : prev.widgets
       const size = WIDGET_SIZES[type] ?? WIDGET_SIZES.chart
-      const pos = findFreeSpot(prev.widgets, size.w, size.h, cols)
+      const pos = findFreeSpot(peers, size.w, size.h, cols)
       const widget = makeWidget(type, pos)
+      if (tab) widget.tab_id = tab
       const newSpec = { ...prev, widgets: [...prev.widgets, widget] }
       setTimeout(() => setSelectedId(widget.id), 0)
       return historyPush(h, newSpec)
     })
     setPreview(false)
-  }, [])
+  }, [activeTabIdRaw])
 
   const removeWidget = useCallback((id) => {
     setHist(h => historyPush(h, { ...h.present, widgets: h.present.widgets.filter(w => w.id !== id) }))
@@ -2099,7 +2518,12 @@ export default function DashboardEditor({ boardId = null, onSaved }) {
       if (!source) return h
       const cols = prev.layout?.cols ?? 12
       const size = source.pos ?? WIDGET_SIZES[source.type] ?? WIDGET_SIZES.chart
-      const pos = findFreeSpot(prev.widgets, size.w, size.h, cols)
+      // Scan only the source widget's tab so the clone lands beside its sibling
+      // (the spread keeps source.tab_id, so it stays on the same tab).
+      const peers = Array.isArray(prev.tabs) && prev.tabs.length
+        ? widgetsForTab(prev, resolveActiveTab(prev, source.tab_id ?? null))
+        : prev.widgets
+      const pos = findFreeSpot(peers, size.w, size.h, cols)
       const clone = { ...source, id: genId(source.type), pos: { ...size, ...pos } }
       const newSpec = { ...prev, widgets: [...prev.widgets, clone] }
       setTimeout(() => setSelectedId(clone.id), 0)
@@ -2110,6 +2534,92 @@ export default function DashboardEditor({ boardId = null, onSaved }) {
   const updateWidget = useCallback((updated) => {
     setSpec(prev => ({ ...prev, widgets: prev.widgets.map(w => w.id === updated.id ? updated : w) }))
   }, [])
+
+  // ── Tab mutations (T5) ─────────────────────────────────────────────────────
+  // All route through setHist so undo/redo + dirty tracking work.
+
+  // Add a tab. The FIRST tab created adopts all existing (untagged) widgets — they
+  // already implicitly belong to the first tab, so no widget mutation is needed.
+  const addTab = useCallback(() => {
+    setHist(h => {
+      const prev = h.present
+      const tabs = Array.isArray(prev.tabs) ? prev.tabs : []
+      const id = genTabId(tabs)
+      const next = { ...prev, tabs: [...tabs, { id, label: `Tab ${tabs.length + 1}` }] }
+      setTimeout(() => setActiveTabIdRaw(id), 0)
+      return historyPush(h, next)
+    })
+    setPreview(false)
+  }, [])
+
+  const renameTab = useCallback((id, label) => {
+    setSpec(prev => ({
+      ...prev,
+      tabs: (prev.tabs ?? []).map(t => t.id === id ? { ...t, label } : t),
+    }))
+  }, [setSpec])
+
+  const reorderTabs = useCallback((from, to) => {
+    setSpec(prev => {
+      const tabs = [...(prev.tabs ?? [])]
+      if (from < 0 || from >= tabs.length || to < 0 || to >= tabs.length) return prev
+      const [moved] = tabs.splice(from, 1)
+      tabs.splice(to, 0, moved)
+      return { ...prev, tabs }
+    })
+  }, [setSpec])
+
+  // Delete a tab. `mode` is 'move' (relocate its widgets to targetTabId) or
+  // 'delete' (remove the tab AND its widgets). Untagged widgets count as the
+  // first tab, so deleting the first tab must re-tag them onto the survivor.
+  const deleteTab = useCallback((tabId, mode, targetTabId = null) => {
+    setHist(h => {
+      const prev = h.present
+      const tabs = Array.isArray(prev.tabs) ? prev.tabs : []
+      const remaining = tabs.filter(t => t.id !== tabId)
+      const firstTabId = tabs[0]?.id ?? null
+      // Widgets belonging to the deleted tab: explicit match, plus untagged ones
+      // when deleting the first tab.
+      const belongs = (w) => {
+        const t = w.tab_id ?? null
+        return t === tabId || (t == null && tabId === firstTabId)
+      }
+      let widgets
+      if (mode === 'move' && targetTabId) {
+        widgets = prev.widgets.map(w => belongs(w) ? { ...w, tab_id: targetTabId } : w)
+      } else {
+        widgets = prev.widgets.filter(w => !belongs(w))
+      }
+      // If the new first tab changed (deleted the old first), normalise any
+      // widgets still tagged with the now-first tab's id so null === first holds.
+      const next = { ...prev, tabs: remaining.length ? remaining : undefined, widgets }
+      if (!remaining.length) {
+        // Last tab removed → tab_id becomes meaningless; strip it so widgets render.
+        next.widgets = widgets.map(w => (w.tab_id ? { ...w, tab_id: undefined } : w))
+      }
+      setTimeout(() => setActiveTabIdRaw(remaining[0]?.id ?? null), 0)
+      return historyPush(h, next)
+    })
+  }, [])
+
+  // "Move to tab →" widget action (context menu / inspector). null clears tab_id
+  // back to the implicit first tab.
+  const moveWidgetToTab = useCallback((widgetId, targetTabId) => {
+    setSpec(prev => ({
+      ...prev,
+      widgets: prev.widgets.map(w => w.id === widgetId
+        ? { ...w, tab_id: targetTabId ?? undefined }
+        : w),
+    }))
+  }, [setSpec])
+
+  // Confirm-delete flow: tabs with widgets prompt (move vs delete), empty tabs
+  // delete immediately.
+  const requestDeleteTab = useCallback((tab) => {
+    const count = widgetsForTab(spec, tab.id).length
+    if (count === 0) { deleteTab(tab.id, 'delete'); return }
+    setDeletingTab(tab)
+  }, [spec, deleteTab])
 
   // Commit a drag/resize/arrow-nudge into the ACTIVE breakpoint only.
   //   desktop (lg) → writes widget.pos (canonical)
@@ -2235,10 +2745,11 @@ export default function DashboardEditor({ boardId = null, onSaved }) {
   }, [])
 
   // ── Right-panel body (shared by desktop sidebar + mobile sheet) ───────────
-  const RIGHT_PANEL_TITLES = { add: 'Add widget', config: 'Configure', chat: 'Chat', board: 'Dashboard' }
+  const RIGHT_PANEL_TITLES = { add: 'Add widget', config: 'Configure', chat: 'Chat', board: 'Dashboard', tabs: 'Tabs' }
   const renderRightPanelBody = () => {
     if (rightPanel === 'add') return <AddPanel onAdd={addWidget} />
     if (rightPanel === 'board') return <DashboardPanel spec={spec} onSpecChange={setSpec} />
+    if (rightPanel === 'tabs') return <TabsPanel spec={spec} onSpecChange={setSpec} activeTabId={activeTabId} onActivate={setActiveTabIdRaw} onAddTab={addTab} />
     if (rightPanel === 'chat') return <ChatPanel boardId={savedBoardId} spec={spec} onApplySpec={handleAIApply} />
     return (
       <ConfigPanel
@@ -2249,6 +2760,7 @@ export default function DashboardEditor({ boardId = null, onSaved }) {
         spec={spec}
         activeBreakpoint={activeBreakpoint}
         onLayoutCommit={(item) => commitLayout([item])}
+        onMoveToTab={moveWidgetToTab}
       />
     )
   }
@@ -2318,6 +2830,7 @@ export default function DashboardEditor({ boardId = null, onSaved }) {
     { id: 'add',    Icon: Plus,         mobileSheet: 'palette', label: 'Add widget', title: 'Add widget',                ariaLabel: 'Add widget panel' },
     { id: 'config', Icon: Settings2,    mobileSheet: 'config',  label: 'Configure',  title: 'Configure selected widget', ariaLabel: 'Configure panel' },
     { id: 'board',  Icon: LayoutGrid,   mobileSheet: 'board',   label: 'Layout',     title: 'Layout, grid & variables',  ariaLabel: 'Layout panel' },
+    { id: 'tabs',   Icon: Heading,      mobileSheet: 'tabs',    label: 'Tabs',       title: 'Tab bar & per-tab style',   ariaLabel: 'Tabs panel' },
     { id: 'chat',   Icon: MessageSquare,mobileSheet: 'chat',    label: 'Chat',       title: 'AI Chat',                   ariaLabel: 'Chat panel' },
   ]
   const panelToggles = (compact = false) => (
@@ -2447,6 +2960,7 @@ export default function DashboardEditor({ boardId = null, onSaved }) {
   const renderSheetBody = () => {
     if (mobileSheet === 'palette') return <AddPanel onAdd={(t) => { addWidget(t); setMobileSheet(null) }} />
     if (mobileSheet === 'board') return <DashboardPanel spec={spec} onSpecChange={setSpec} />
+    if (mobileSheet === 'tabs') return <TabsPanel spec={spec} onSpecChange={setSpec} activeTabId={activeTabId} onActivate={setActiveTabIdRaw} onAddTab={addTab} />
     if (mobileSheet === 'chat') return <ChatPanel boardId={savedBoardId} spec={spec} onApplySpec={handleAIApply} />
     if (mobileSheet === 'config') return (
       <ConfigPanel
@@ -2457,6 +2971,7 @@ export default function DashboardEditor({ boardId = null, onSaved }) {
         spec={spec}
         activeBreakpoint={activeBreakpoint}
         onLayoutCommit={(item) => commitLayout([item])}
+        onMoveToTab={moveWidgetToTab}
       />
     )
     return null
@@ -2467,6 +2982,7 @@ export default function DashboardEditor({ boardId = null, onSaved }) {
     config: selectedWidget ? `Configure · ${selectedWidget.type}` : 'Configure',
     chat: 'Chat',
     board: 'Layout',
+    tabs: 'Tabs',
   }
 
   return (
@@ -2501,7 +3017,22 @@ export default function DashboardEditor({ boardId = null, onSaved }) {
         </main>
       ) : (
         /* ── Edit mode ── */
-        <div className="flex flex-1 min-h-0 overflow-hidden relative">
+        <div className="flex flex-col flex-1 min-h-0 overflow-hidden relative">
+
+          {/* ── Tab strip (T5): only shown once the dashboard has tabs ── */}
+          {hasTabs && (
+            <EditableTabStrip
+              tabs={spec.tabs}
+              activeTabId={activeTabId}
+              onActivate={setActiveTabIdRaw}
+              onAdd={addTab}
+              onRename={renameTab}
+              onReorder={reorderTabs}
+              onDeleteRequest={requestDeleteTab}
+            />
+          )}
+
+          <div className="flex flex-1 min-h-0 overflow-hidden relative">
 
           {/* ── Tablet slide-over backdrop (md only, not on lg+) ── */}
           {!rightCollapsed && (
@@ -2517,7 +3048,7 @@ export default function DashboardEditor({ boardId = null, onSaved }) {
             ref={mainRef}
             className="flex-1 min-w-0 overflow-auto p-3 sm:p-4 bg-bg"
             data-testid="editor-canvas"
-            style={{ ...backgroundToCss(spec.background), touchAction: 'pan-x pan-y' }}
+            style={{ ...backgroundToCss(canvasBackground), touchAction: 'pan-x pan-y' }}
             onClick={(e) => {
               // Click on empty canvas → deselect
               if (e.target === e.currentTarget) setSelectedId(null)
@@ -2578,12 +3109,12 @@ export default function DashboardEditor({ boardId = null, onSaved }) {
               {/* Mobile panel toggles are now in the topbar (panel-toggle-* buttons) */}
             </div>
 
-            {spec.widgets.length === 0 ? (
+            {tabWidgets.length === 0 ? (
               <div className="flex flex-col items-center justify-center py-16 sm:py-24 text-center bg-surface/60 border-2 border-dashed border-border rounded-2xl mx-2 h-full min-h-[50vh]">
                 <svg className="w-12 h-12 text-muted/25 mb-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1} d="M4 5a1 1 0 011-1h4a1 1 0 011 1v4a1 1 0 01-1 1H5a1 1 0 01-1-1V5zM14 5a1 1 0 011-1h4a1 1 0 011 1v4a1 1 0 01-1 1h-4a1 1 0 01-1-1V5zM4 15a1 1 0 011-1h4a1 1 0 011 1v4a1 1 0 01-1 1H5a1 1 0 01-1-1v-4zM14 15a1 1 0 011-1h4a1 1 0 011 1v4a1 1 0 01-1 1h-4a1 1 0 01-1-1v-4z" />
                 </svg>
-                <p className="text-sm font-medium text-fg mb-1">Your dashboard is empty</p>
+                <p className="text-sm font-medium text-fg mb-1">{hasTabs ? 'This tab is empty' : 'Your dashboard is empty'}</p>
                 <p className="text-xs text-muted/70 mb-5 px-4">
                   <span className="md:hidden">Tap <strong>Add</strong> below, or </span>
                   <span className="hidden md:inline">Use the <strong>Add</strong> panel, or </span>
@@ -2631,7 +3162,7 @@ export default function DashboardEditor({ boardId = null, onSaved }) {
                     free 2-D editing; mobile = drag-to-reorder stack. Keyed by
                     activeBreakpoint so a device switch remounts with fresh geometry. */}
                 <GridCanvas
-                  key={activeBreakpoint}
+                  key={`${activeBreakpoint}:${activeTabId ?? '_'}`}
                   layout={gridLayouts[activeBreakpoint]}
                   cols={editorGridCols}
                   rowHeight={spec.layout.row_height ?? 60}
@@ -2743,6 +3274,7 @@ export default function DashboardEditor({ boardId = null, onSaved }) {
               </div>
             </aside>
           )}
+          </div>
         </div>
       )}
 
@@ -2812,6 +3344,76 @@ export default function DashboardEditor({ boardId = null, onSaved }) {
             {/* Sheet body — scrollable */}
             <div className="flex-1 min-h-0 overflow-y-auto">
               {renderSheetBody()}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ── Delete-tab confirmation (T5) ──
+          A tab with widgets prompts: relocate them to another tab, or delete the
+          tab AND its widgets. Routed through deleteTab → setHist (undoable). */}
+      {deletingTab && (
+        <DeleteTabDialog
+          tab={deletingTab}
+          tabs={spec.tabs ?? []}
+          widgetCount={widgetsForTab(spec, deletingTab.id).length}
+          onMove={(targetId) => { deleteTab(deletingTab.id, 'move', targetId); setDeletingTab(null) }}
+          onDeleteWidgets={() => { deleteTab(deletingTab.id, 'delete'); setDeletingTab(null) }}
+          onCancel={() => setDeletingTab(null)}
+        />
+      )}
+
+      {/* ── Filters drawer (authoring) ──
+          Opened by EditorPage's FILTERS button via the nubi:open-filters event
+          (OPEN_FILTERS_EVENT seam). Lists the dashboard's filter widgets — the
+          ones a viewer would see in the global Filters drawer — and lets the
+          author add a filter or jump straight to one's settings. The drawer is
+          global across tabs (filter variables are dashboard-wide). */}
+      {filtersOpen && (
+        <div className="fixed inset-0 z-50 flex justify-end" data-testid="editor-filters-drawer">
+          <div className="absolute inset-0 bg-black/40" onClick={() => setFiltersOpen(false)} />
+          <div className="relative w-80 max-w-[90vw] h-full bg-surface border-l border-border shadow-2xl flex flex-col">
+            <div className="flex items-center justify-between px-4 h-12 border-b border-border shrink-0">
+              <span className="text-sm font-semibold text-fg flex items-center gap-2">
+                <FilterIcon size={15} className="text-primary" /> Filters
+              </span>
+              <button onClick={() => setFiltersOpen(false)} aria-label="Close filters"
+                className="w-8 h-8 flex items-center justify-center rounded-lg text-muted hover:text-fg hover:bg-surface-2 transition-colors">
+                <X size={16} />
+              </button>
+            </div>
+            <div className="flex-1 min-h-0 overflow-y-auto p-4 space-y-3">
+              <p className="text-xs text-muted/80 leading-relaxed">
+                Filter widgets drive dashboard variables. They are shared across all
+                tabs. Add one here, then configure its target variable &amp; options.
+              </p>
+              <button
+                onClick={() => { addWidget('filter'); setFiltersOpen(false); setRightPanel('config'); setRightCollapsed(false) }}
+                data-testid="filters-drawer-add"
+                className="w-full flex items-center justify-center gap-2 h-9 text-sm font-medium rounded-lg border border-dashed border-border text-muted hover:text-primary hover:border-primary transition-colors">
+                <Plus size={14} /> Add filter
+              </button>
+              <div className="space-y-1.5">
+                {spec.widgets.filter(w => w.type === 'filter').length === 0 ? (
+                  <p className="text-xs text-muted/70 rounded-lg border border-dashed border-border bg-surface-2/30 px-3 py-3 text-center">
+                    No filters yet.
+                  </p>
+                ) : (
+                  spec.widgets.filter(w => w.type === 'filter').map(w => (
+                    <button
+                      key={w.id}
+                      onClick={() => { setSelectedId(w.id); setRightPanel('config'); setRightCollapsed(false); setFiltersOpen(false) }}
+                      data-testid={`filters-drawer-item-${w.id}`}
+                      className="w-full flex items-center gap-2 px-3 py-2 rounded-lg border border-border bg-surface hover:border-primary text-left transition-colors">
+                      <FilterIcon size={14} className="text-muted shrink-0" />
+                      <span className="min-w-0 flex-1">
+                        <span className="block text-sm font-medium text-fg truncate">{w.props?.label || w.subtype || 'Filter'}</span>
+                        <span className="block text-[11px] text-muted truncate font-mono">{w.target_var || '(no variable)'}</span>
+                      </span>
+                    </button>
+                  ))
+                )}
+              </div>
             </div>
           </div>
         </div>
