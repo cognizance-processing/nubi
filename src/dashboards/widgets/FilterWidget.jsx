@@ -1,334 +1,70 @@
 /**
  * FilterWidget.jsx — Spec-driven interactive filter widget.
  *
+ * This is a thin dispatch layer over the accessible input PRIMITIVES in
+ * `src/dashboards/inputs/` (Combobox, MultiSelect, DateRangePicker, OptionList,
+ * Popover). The primitives render their dropdowns in a React portal so they
+ * escape the grid cell's `overflow-hidden` clipping (the known bug).
+ *
  * Props
  * -----
  * widget  {object}  A spec Widget object with type === 'filter'.
- *                   Shape:
- *                   {
- *                     id,
- *                     type: 'filter',
- *                     props: {
- *                       subtype:    'select' | 'multiselect' | 'daterange' | 'text',
- *                       target_var: string,           // variable name to write on change
- *                       label?:     string,
- *                       placeholder?: string,
- *                     }
- *                   }
- * options  {Array<{value: string|number, label?: string}>}
- *   Static options for select/multiselect.  In production this list will be
- *   populated from an options_query_id query result; for M14-B we accept it as
- *   a prop directly, defaulting to [].
+ *   {
+ *     id,
+ *     type: 'filter',
+ *     drawer?: boolean,           // rendered in the filters drawer vs on-grid
+ *     options_query_id?: string,  // static options source
+ *     search_query_id?: string,   // server-search source (F3)
+ *     props: {
+ *       subtype:    'select' | 'multiselect' | 'daterange' | 'text',
+ *       target_var: string,       // variable name to write on change
+ *       label?:     string,
+ *       placeholder?: string,
+ *       all_label?: string,
+ *       // behaviour ----------------------------------------------------------
+ *       searchable?: boolean, clearable?: boolean, select_all?: boolean,
+ *       exclude_toggle?: boolean, max_selected?: number,
+ *       options_mode?: 'static' | 'search', debounce_ms?: number,
+ *       options_params?: object,   // { search: { input: true } } marker
+ *       presets?: string[],
+ *       // appearance ----------------------------------------------------------
+ *       size?: 'sm' | 'md' | 'lg', display?: 'chips' | 'count' | 'summary',
+ *     }
+ *   }
  *
- * Behaviour
- * ---------
- * On every user interaction the widget calls useSetVariable()(target_var, newValue).
- * The VariableStore then propagates the new value to any data widget that refs
- * target_var in its params.
+ * options  {Array<{value, label}>}
+ *   Static options (from options_query_id, fetched by SpecRenderer's loader).
+ *   Backward compatible: defaults to []. In `search` mode the widget loads its
+ *   own options via useFilterOptions and the prop is used only as a seed.
  *
- * Styling: matches the minimal Tailwind classes used by KpiWidget / SpecRenderer.
+ * Value shapes (backward compatible)
+ * ----------------------------------
+ *   multiselect:  ["a","b"]  (legacy, = include)  |  {mode:"exclude",values:[…]}
+ *   daterange:    {from,to}  (legacy)             |  {preset:"last_30d"}
+ *   select/text:  string
+ *
+ * Behaviour: on every interaction the widget calls
+ * useSetVariable()(target_var, newValue); the VariableStore propagates it to any
+ * data widget that refs target_var.
  */
 
-import { useCallback, useId, useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useId, useMemo, useState } from 'react'
 import { useSetVariable, useVariable } from '../VariableStore.jsx'
+import {
+  Combobox,
+  MultiSelect,
+  DateRangePicker,
+  normOption,
+  useFilterOptions,
+} from '../inputs/index.js'
 
 // ---------------------------------------------------------------------------
-// Option helpers
+// Plain text filter (no dropdown — kept inline)
 // ---------------------------------------------------------------------------
 
-/** Normalise a raw option (string | {value,label}) to { v, l }. */
-function normOption(opt) {
-  const v = typeof opt === 'object' ? String(opt.value) : String(opt)
-  const l = typeof opt === 'object' ? (opt.label ?? v) : v
-  return { v, l }
-}
-
-// ---------------------------------------------------------------------------
-// VirtualList — windowed option list (no deps). Renders only visible rows so
-// large option sets (10k+) stay smooth.
-// ---------------------------------------------------------------------------
-
-const ROW_HEIGHT = 32       // px per option row
-const LIST_MAX_HEIGHT = 240 // px viewport for the dropdown list
-const OVERSCAN = 4          // extra rows above/below the viewport
-
-function VirtualList({ items, renderRow }) {
-  const [scrollTop, setScrollTop] = useState(0)
-  const total = items.length
-  const viewportH = Math.min(LIST_MAX_HEIGHT, total * ROW_HEIGHT)
-
-  const startIndex = Math.max(0, Math.floor(scrollTop / ROW_HEIGHT) - OVERSCAN)
-  const visibleCount = Math.ceil(viewportH / ROW_HEIGHT) + OVERSCAN * 2
-  const endIndex = Math.min(total, startIndex + visibleCount)
-  const padTop = startIndex * ROW_HEIGHT
-  const padBottom = (total - endIndex) * ROW_HEIGHT
-
-  return (
-    <div
-      className="overflow-y-auto"
-      style={{ height: viewportH }}
-      onScroll={e => setScrollTop(e.currentTarget.scrollTop)}
-      role="listbox"
-    >
-      <div style={{ height: padTop }} />
-      {items.slice(startIndex, endIndex).map((item, i) => renderRow(item, startIndex + i))}
-      <div style={{ height: padBottom }} />
-    </div>
-  )
-}
-
-// ---------------------------------------------------------------------------
-// Searchable single-select combobox
-// ---------------------------------------------------------------------------
-
-function SelectFilter({ label, placeholder, options, value, onChange }) {
+function TextFilter({ label, placeholder, value, onChange, size = 'md' }) {
   const uid = useId()
-  const [open, setOpen] = useState(false)
-  const [search, setSearch] = useState('')
-  const ref = useRef(null)
-
-  const normed = useMemo(() => options.map(normOption), [options])
-  const filtered = useMemo(() => {
-    const q = search.trim().toLowerCase()
-    if (!q) return normed
-    return normed.filter(o => o.l.toLowerCase().includes(q) || o.v.toLowerCase().includes(q))
-  }, [normed, search])
-
-  const selectedLabel = useMemo(() => {
-    const sel = normed.find(o => o.v === String(value ?? ''))
-    return sel?.l ?? ''
-  }, [normed, value])
-
-  useEffect(() => {
-    if (!open) return
-    function onDoc(e) { if (ref.current && !ref.current.contains(e.target)) setOpen(false) }
-    document.addEventListener('mousedown', onDoc)
-    return () => document.removeEventListener('mousedown', onDoc)
-  }, [open])
-
-  return (
-    <div className="flex flex-col gap-1 h-full px-5 py-4">
-      {label && (
-        <label htmlFor={uid} className="text-xs font-semibold text-muted uppercase tracking-wider">
-          {label}
-        </label>
-      )}
-      <div className="relative" ref={ref}>
-        <button
-          id={uid}
-          type="button"
-          onClick={() => setOpen(o => !o)}
-          aria-haspopup="listbox"
-          aria-expanded={open}
-          className="w-full flex items-center justify-between gap-2 rounded-lg border border-border bg-surface text-fg text-sm px-3 py-2 focus:outline-none focus:ring-2 focus:ring-brand-teal/40 cursor-pointer"
-        >
-          <span className={selectedLabel ? 'truncate' : 'truncate text-muted'}>
-            {selectedLabel || (placeholder ?? 'All')}
-          </span>
-          <span className="text-muted shrink-0">▾</span>
-        </button>
-
-        {open && (
-          <div className="absolute left-0 right-0 top-full mt-1 z-30 rounded-lg border border-border bg-surface shadow-lg overflow-hidden">
-            <div className="p-2 border-b border-border">
-              <input
-                type="text"
-                autoFocus
-                value={search}
-                onChange={e => setSearch(e.target.value)}
-                placeholder="Search…"
-                className="w-full rounded-md border border-border bg-surface text-fg text-sm px-2 py-1.5 focus:outline-none focus:ring-2 focus:ring-brand-teal/40"
-              />
-            </div>
-            {filtered.length === 0 ? (
-              <div className="px-3 py-3 text-xs text-muted italic">No matches</div>
-            ) : (
-              <VirtualList
-                items={[{ v: '', l: placeholder ?? 'All' }, ...filtered]}
-                renderRow={(o) => {
-                  const active = String(value ?? '') === o.v
-                  return (
-                    <button
-                      key={o.v || '__all__'}
-                      type="button"
-                      role="option"
-                      aria-selected={active}
-                      onClick={() => { onChange(o.v); setOpen(false); setSearch('') }}
-                      style={{ height: ROW_HEIGHT }}
-                      className={[
-                        'w-full text-left px-3 text-sm truncate transition-colors',
-                        active ? 'bg-brand-teal/10 text-brand-teal font-medium' : 'text-fg hover:bg-surface-2/70',
-                      ].join(' ')}
-                    >
-                      {o.l}
-                    </button>
-                  )
-                }}
-              />
-            )}
-          </div>
-        )}
-      </div>
-    </div>
-  )
-}
-
-// ---------------------------------------------------------------------------
-// Searchable multi-select combobox
-// ---------------------------------------------------------------------------
-
-function MultiSelectFilter({ label, placeholder, options, value, onChange }) {
-  const uid = useId()
-  const [open, setOpen] = useState(false)
-  const [search, setSearch] = useState('')
-  const ref = useRef(null)
-  const selected = Array.isArray(value) ? value.map(String) : []
-
-  const normed = useMemo(() => options.map(normOption), [options])
-  const filtered = useMemo(() => {
-    const q = search.trim().toLowerCase()
-    if (!q) return normed
-    return normed.filter(o => o.l.toLowerCase().includes(q) || o.v.toLowerCase().includes(q))
-  }, [normed, search])
-
-  function toggle(v) {
-    if (selected.includes(v)) onChange(selected.filter(s => s !== v))
-    else onChange([...selected, v])
-  }
-
-  useEffect(() => {
-    if (!open) return
-    function onDoc(e) { if (ref.current && !ref.current.contains(e.target)) setOpen(false) }
-    document.addEventListener('mousedown', onDoc)
-    return () => document.removeEventListener('mousedown', onDoc)
-  }, [open])
-
-  const summary = selected.length === 0
-    ? (placeholder ?? 'Select…')
-    : `${selected.length} selected`
-
-  return (
-    <div className="flex flex-col gap-1 h-full px-5 py-4">
-      {label && (
-        <span className="text-xs font-semibold text-muted uppercase tracking-wider">{label}</span>
-      )}
-      <div className="relative" ref={ref}>
-        <button
-          id={uid}
-          type="button"
-          onClick={() => setOpen(o => !o)}
-          aria-haspopup="listbox"
-          aria-expanded={open}
-          className="w-full flex items-center justify-between gap-2 rounded-lg border border-border bg-surface text-fg text-sm px-3 py-2 focus:outline-none focus:ring-2 focus:ring-brand-teal/40 cursor-pointer"
-        >
-          <span className={selected.length ? 'truncate' : 'truncate text-muted'}>{summary}</span>
-          <span className="flex items-center gap-1 shrink-0">
-            {selected.length > 0 && (
-              <span
-                role="button"
-                tabIndex={0}
-                onClick={e => { e.stopPropagation(); onChange([]) }}
-                className="text-[11px] text-muted hover:text-fg px-1"
-                title="Clear selection"
-              >
-                clear
-              </span>
-            )}
-            <span className="text-muted">▾</span>
-          </span>
-        </button>
-
-        {open && (
-          <div className="absolute left-0 right-0 top-full mt-1 z-30 rounded-lg border border-border bg-surface shadow-lg overflow-hidden">
-            <div className="p-2 border-b border-border">
-              <input
-                type="text"
-                autoFocus
-                value={search}
-                onChange={e => setSearch(e.target.value)}
-                placeholder="Search…"
-                className="w-full rounded-md border border-border bg-surface text-fg text-sm px-2 py-1.5 focus:outline-none focus:ring-2 focus:ring-brand-teal/40"
-              />
-            </div>
-            {filtered.length === 0 ? (
-              <div className="px-3 py-3 text-xs text-muted italic">No matches</div>
-            ) : (
-              <VirtualList
-                items={filtered}
-                renderRow={(o) => {
-                  const active = selected.includes(o.v)
-                  return (
-                    <button
-                      key={o.v}
-                      type="button"
-                      role="option"
-                      aria-selected={active}
-                      onClick={() => toggle(o.v)}
-                      style={{ height: ROW_HEIGHT }}
-                      className="w-full flex items-center gap-2 text-left px-3 text-sm text-fg hover:bg-surface-2/70 transition-colors"
-                    >
-                      <span
-                        className={[
-                          'inline-flex items-center justify-center w-4 h-4 rounded border shrink-0 text-[10px]',
-                          active ? 'bg-brand-teal border-brand-teal text-white' : 'border-border',
-                        ].join(' ')}
-                      >
-                        {active ? '✓' : ''}
-                      </span>
-                      <span className="truncate">{o.l}</span>
-                    </button>
-                  )
-                }}
-              />
-            )}
-          </div>
-        )}
-      </div>
-    </div>
-  )
-}
-
-function DateRangeFilter({ label, value, onChange }) {
-  // value: { from: string, to: string } | null
-  const from = value?.from ?? ''
-  const to   = value?.to   ?? ''
-
-  function handleFrom(e) {
-    onChange({ from: e.target.value, to })
-  }
-  function handleTo(e) {
-    onChange({ from, to: e.target.value })
-  }
-
-  return (
-    <div className="flex flex-col gap-1 h-full px-5 py-4">
-      {label && (
-        <span className="text-xs font-semibold text-muted uppercase tracking-wider">{label}</span>
-      )}
-      <div className="flex flex-wrap items-center gap-2">
-        <input
-          type="date"
-          value={from}
-          onChange={handleFrom}
-          aria-label={label ? `${label} from` : 'From date'}
-          className="flex-1 min-w-0 rounded-lg border border-border bg-surface text-fg text-sm px-3 py-2 focus:outline-none focus:ring-2 focus:ring-brand-teal/40"
-        />
-        <span className="text-muted text-xs">to</span>
-        <input
-          type="date"
-          value={to}
-          min={from || undefined}
-          onChange={handleTo}
-          aria-label={label ? `${label} to` : 'To date'}
-          className="flex-1 min-w-0 rounded-lg border border-border bg-surface text-fg text-sm px-3 py-2 focus:outline-none focus:ring-2 focus:ring-brand-teal/40"
-        />
-      </div>
-    </div>
-  )
-}
-
-function TextFilter({ label, placeholder, value, onChange }) {
-  const uid = useId()
+  const sizeCls = size === 'sm' ? 'text-xs px-2.5 py-1.5' : size === 'lg' ? 'text-base px-3.5 py-2.5' : 'text-sm px-3 py-2'
   return (
     <div className="flex flex-col gap-1 h-full px-5 py-4">
       {label && (
@@ -342,7 +78,11 @@ function TextFilter({ label, placeholder, value, onChange }) {
         value={value ?? ''}
         placeholder={placeholder ?? 'Filter…'}
         onChange={e => onChange(e.target.value)}
-        className="w-full rounded-lg border border-border bg-surface text-fg text-sm px-3 py-2 focus:outline-none focus:ring-2 focus:ring-brand-teal/40"
+        className={[
+          'w-full rounded-lg border border-border bg-surface text-fg',
+          sizeCls,
+          'focus:outline-none focus:ring-2 focus:ring-brand-teal/40',
+        ].join(' ')}
       />
     </div>
   )
@@ -358,67 +98,161 @@ function TextFilter({ label, placeholder, value, onChange }) {
 export default function FilterWidget({ widget, options = [] }) {
   const { props: wProps = {} } = widget
   const {
-    subtype    = 'select',
-    target_var = '',
+    subtype     = 'select',
+    target_var  = '',
     label,
     placeholder,
+    all_label   = 'All',
+    searchable  = true,
+    clearable   = false,
+    select_all  = true,
+    exclude_toggle = true,
+    max_selected,
+    display     = 'chips',
+    size        = 'md',
+    presets,
   } = wProps
 
   const setVariable = useSetVariable()
-
-  // Read the current variable value from the store so URL-seeded values (and
-  // any external initialValues) are reflected in the filter input on first render.
-  // Called unconditionally (hooks rules); returns undefined when target_var is
-  // empty or the variable has no value, which is handled below.
   const storeValue = useVariable(target_var)
 
-  // Derive a sensible empty value for each subtype.
+  // F3 — query-backed options. In `static` mode this stays empty and we use the
+  // `options` prop supplied by SpecRenderer's loader. In `search` mode the hook
+  // fetches (debounced) as the user types.
+  const {
+    options: queryOptions,
+    loading: optionsLoading,
+    mode: optionsMode,
+    onSearch,
+    labelFor,
+  } = useFilterOptions(widget)
+
+  // Choose the option source: search-mode results, else the static prop.
+  const rawOptions = optionsMode === 'search' && queryOptions.length > 0 ? queryOptions : options
+  const normed = useMemo(() => (rawOptions ?? []).map(normOption), [rawOptions])
+
+  // In search mode, ensure already-selected values still have a row+label even
+  // when they're not on the current result page (deep-link seeded).
+  const optionsForList = useMemo(() => {
+    if (optionsMode !== 'search') return normed
+    const present = new Set(normed.map(o => o.v))
+    const selectedValues = Array.isArray(storeValue)
+      ? storeValue.map(String)
+      : (storeValue && typeof storeValue === 'object' && Array.isArray(storeValue.values))
+        ? storeValue.values.map(String)
+        : (typeof storeValue === 'string' && storeValue ? [storeValue] : [])
+    const extras = selectedValues
+      .filter(v => !present.has(v))
+      .map(v => ({ v, l: labelFor(v) }))
+    return extras.length ? [...extras, ...normed] : normed
+  }, [normed, optionsMode, storeValue, labelFor])
+
   function emptyForSubtype(st) {
     if (st === 'multiselect') return []
     if (st === 'daterange')   return { from: '', to: '' }
     return ''
   }
 
-  // Local controlled state — seeded from the store value (URL param / default)
-  // on first render.  The store is written on every user interaction so data
-  // widgets re-query accordingly.
   const [localValue, setLocalValue] = useState(() => {
     if (storeValue !== undefined && storeValue !== null) return storeValue
     return emptyForSubtype(subtype)
   })
 
-  // Keep localValue in sync when the store value changes externally (e.g. the
-  // URL param changes programmatically or the board is navigated with a new URL).
-  // This runs only when the store value changes, not on every render.
   useEffect(() => {
     if (storeValue !== undefined && storeValue !== null) {
       setLocalValue(storeValue)
     }
-  // eslint-disable-next-line react-hooks/exhaustive-deps
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [storeValue])
 
   const handleChange = useCallback((newValue) => {
     setLocalValue(newValue)
-    if (target_var) {
-      setVariable(target_var, newValue)
-    }
+    if (target_var) setVariable(target_var, newValue)
   }, [target_var, setVariable])
 
-  const sharedProps = {
-    label,
-    placeholder,
-    options,
-    value: localValue,
-    onChange: handleChange,
-  }
+  // CSS variables bridge per-widget style across the portal boundary (F1 caveat:
+  // the portal escapes the widget subtree, so DOM inheritance won't reach it).
+  // We forward any `--*` custom properties declared on widget.style.
+  const styleVars = useMemo(() => {
+    const s = widget.style && typeof widget.style === 'object' ? widget.style : null
+    if (!s) return undefined
+    const out = {}
+    for (const [k, v] of Object.entries(s)) {
+      if (k.startsWith('--')) out[k] = v
+    }
+    return Object.keys(out).length ? out : undefined
+  }, [widget.style])
+
+  // widget.drawer: honoured by SpecRenderer for placement (drawer vs on-grid).
+  // No behaviour change is needed beyond keeping the same render; the portal
+  // works identically in both contexts.
+
+  const containerCls = widget.drawer
+    ? 'flex flex-col justify-start h-full bg-transparent'
+    : 'flex flex-col justify-center h-full bg-surface rounded-xl border border-border'
 
   return (
-    <div className="flex flex-col justify-center h-full bg-surface rounded-xl border border-border">
-      {subtype === 'select'      && <SelectFilter      {...sharedProps} />}
-      {subtype === 'multiselect' && <MultiSelectFilter {...sharedProps} />}
-      {subtype === 'daterange'   && <DateRangeFilter   {...sharedProps} />}
-      {subtype === 'text'        && <TextFilter        {...sharedProps} />}
-      {!['select','multiselect','daterange','text'].includes(subtype) && (
+    <div className={containerCls}>
+      {subtype === 'select' && (
+        <Combobox
+          label={label}
+          placeholder={placeholder}
+          allLabel={all_label}
+          options={optionsForList}
+          value={localValue}
+          onChange={handleChange}
+          clearable={clearable}
+          searchable={searchable}
+          size={size}
+          styleVars={styleVars}
+          onSearch={optionsMode === 'search' ? onSearch : undefined}
+          loading={optionsLoading}
+          typeToSearch={optionsMode === 'search'}
+        />
+      )}
+
+      {subtype === 'multiselect' && (
+        <MultiSelect
+          label={label}
+          placeholder={placeholder}
+          options={optionsForList}
+          value={localValue}
+          onChange={handleChange}
+          searchable={searchable}
+          excludeToggle={exclude_toggle !== false}
+          selectAll={select_all !== false}
+          maxSelected={max_selected}
+          display={display}
+          size={size}
+          styleVars={styleVars}
+          onSearch={optionsMode === 'search' ? onSearch : undefined}
+          loading={optionsLoading}
+          typeToSearch={optionsMode === 'search'}
+        />
+      )}
+
+      {subtype === 'daterange' && (
+        <DateRangePicker
+          label={label}
+          value={localValue}
+          onChange={handleChange}
+          presets={presets}
+          size={size}
+          styleVars={styleVars}
+        />
+      )}
+
+      {subtype === 'text' && (
+        <TextFilter
+          label={label}
+          placeholder={placeholder}
+          value={localValue}
+          onChange={handleChange}
+          size={size}
+        />
+      )}
+
+      {!['select', 'multiselect', 'daterange', 'text'].includes(subtype) && (
         <div className="flex items-center justify-center h-full px-5 py-4 text-sm text-muted">
           Unknown filter subtype: {subtype}
         </div>

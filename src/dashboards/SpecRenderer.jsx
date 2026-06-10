@@ -88,13 +88,19 @@ function normalizeWidget(raw) {
  * Loads options for a filter widget from options_query_id (if set) then
  * renders <FilterWidget>.  This is a one-shot fetch; it does NOT re-run when
  * variables change (the options list itself is not parameterised here).
+ *
+ * editMode — when true the live query fetch is skipped entirely (no wasm call
+ * needed in the editor canvas).  The widget still renders with an empty options
+ * list so the filter UI is fully visible for authoring (subtype, label, etc.).
  */
-function FilterWidgetLoader({ widget }) {
+function FilterWidgetLoader({ widget, editMode = false }) {
   const optionsQueryId = widget.options_query_id ?? widget.props?.options_query_id
   const [options, setOptions] = useState([])
 
   useEffect(() => {
-    if (!optionsQueryId) return
+    // Skip the fetch in edit mode — the editor doesn't need live option data
+    // and wasm may not be initialised in the editor canvas context.
+    if (!optionsQueryId || editMode) return
     let cancelled = false
 
     async function fetchOptions() {
@@ -126,7 +132,7 @@ function FilterWidgetLoader({ widget }) {
 
     fetchOptions()
     return () => { cancelled = true }
-  }, [optionsQueryId])
+  }, [optionsQueryId, editMode])
 
   return <FilterWidget widget={widget} options={options} />
 }
@@ -135,8 +141,16 @@ function FilterWidgetLoader({ widget }) {
 // Widget dispatcher
 // ---------------------------------------------------------------------------
 
-/** Map widget type to the right component. */
-function WidgetComponent({ widget, onOpenDrawer }) {
+/**
+ * Map widget type to the right component.
+ *
+ * editMode — passed down from SpecRenderer when the editor (W3-A) renders the
+ * spec for filter authoring.  Filter widgets render in BOTH modes so the
+ * filters drawer is accessible during editing; this flag is forwarded to
+ * FilterWidgetLoader so it can skip the live query fetch when appropriate
+ * (avoids spurious network calls in the editor canvas).
+ */
+function WidgetComponent({ widget, onOpenDrawer, editMode = false }) {
   // Normalize top-level spec fields into widget.props before dispatch
   const w = useMemo(() => normalizeWidget(widget), [widget])
 
@@ -165,7 +179,10 @@ function WidgetComponent({ widget, onOpenDrawer }) {
     case 'metric':  return <MetricWidget widget={w} />
     case 'table':   return <TableWidget  widget={w} />
     case 'pivot':   return <PivotWidget  widget={w} />
-    case 'filter':  return <FilterWidgetLoader widget={w} />
+    // Filter widgets render in both view mode AND edit mode so the filters
+    // drawer is available for authoring.  editMode suppresses the live query
+    // fetch (no wasm needed in the editor canvas).
+    case 'filter':  return <FilterWidgetLoader widget={w} editMode={editMode} />
     case 'text':    return <TextWidget   widget={w} />
     case 'section': return <SectionWidget widget={w} />
     default:
@@ -206,7 +223,9 @@ function SlideOver({ open, title, widgets, onClose, wide }) {
           ) : sorted.map(w => (
             <div
               key={w.id}
-              className="rounded-lg border border-border bg-surface overflow-hidden"
+              // Filter widgets: overflow-visible so dropdown popovers inside the
+              // drawer panel are not clipped by the card boundary.
+              className={`rounded-lg border border-border bg-surface ${w.type === 'filter' ? 'overflow-visible' : 'overflow-hidden'}`}
               style={{ minHeight: w.type === 'filter' ? undefined : 280 }}
             >
               <WidgetComponent widget={w} />
@@ -279,7 +298,7 @@ function buildVariableDefaults(specVariables) {
  * variable.  Used by DashboardViewPage to write the new value back to URL search
  * params so the state survives a refresh and is shareable.
  */
-export default function SpecRenderer({ spec, initialVariables = {}, onVariableChange, forceBreakpoint, activeTabId, onTabChange }) {
+export default function SpecRenderer({ spec, initialVariables = {}, onVariableChange, forceBreakpoint, activeTabId, onTabChange, editMode = false }) {
   if (!spec) {
     return (
       <div className="flex items-center justify-center py-16 text-sm text-muted">
@@ -495,12 +514,18 @@ export default function SpecRenderer({ spec, initialVariables = {}, onVariableCh
               const hasCustomBg = customStyle && (
                 'background' in customStyle || 'backgroundColor' in customStyle || 'backgroundImage' in customStyle
               )
+              // Filter widgets contain absolutely-positioned dropdown popovers.
+              // overflow-hidden clips those dropdowns (even when portaled, a stacking
+              // ancestor with overflow:hidden can suppress the portal's z-index in some
+              // browsers). Use overflow-visible for filter cells so open dropdowns
+              // are never clipped; the portal approach (W3-B) makes this fully safe.
+              const isFilter = widget.type === 'filter'
               return (
                 <div
-                  className={`w-full h-full overflow-hidden rounded-xl ${hasCustomBg ? '' : 'bg-surface border border-border shadow-sm'}`}
+                  className={`w-full h-full rounded-xl ${isFilter ? 'overflow-visible' : 'overflow-hidden'} ${hasCustomBg ? '' : 'bg-surface border border-border shadow-sm'}`}
                   style={customStyle}
                 >
-                  <WidgetComponent widget={widget} onOpenDrawer={setOpenDrawer} />
+                  <WidgetComponent widget={widget} onOpenDrawer={setOpenDrawer} editMode={editMode} />
                 </div>
               )
             }}
