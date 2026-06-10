@@ -1044,3 +1044,183 @@ class TestM14Regression:
         assert "variables" in props, (
             f"Schema should expose 'variables'; props: {list(props.keys())}"
         )
+
+
+# ---------------------------------------------------------------------------
+# 8. Track T — dashboard tabs (DASHBOARD_TABS_AND_FILTERS_IMPLEMENTATION.md T1)
+# ---------------------------------------------------------------------------
+
+
+def _make_tabbed_spec() -> dict[str, Any]:
+    """A spec with two tabs and widgets assigned to them."""
+    return {
+        "version": 1,
+        "title": "Tabbed Dashboard",
+        "layout": {"cols": 12, "row_height": 60},
+        "tabs": [
+            {"id": "t1", "label": "Overview"},
+            {"id": "t2", "label": "Details", "style": {"accent": "#0af"}},
+        ],
+        "widgets": [
+            {
+                "id": "w1",
+                "type": "kpi",
+                "query_id": "demo_all",
+                "tab_id": "t1",
+                "encoding": {"value": "id"},
+                "pos": {"x": 1, "y": 1, "w": 4, "h": 2},
+            },
+            {
+                "id": "w2",
+                "type": "table",
+                "query_id": "demo_all",
+                "tab_id": "t2",
+                "pos": {"x": 1, "y": 1, "w": 12, "h": 4},
+            },
+        ],
+    }
+
+
+class TestTrackTTabs:
+    """Track T: tabs field + tab_id validation."""
+
+    def test_tabbed_spec_validates(self):
+        spec, issues = validate_spec(_make_tabbed_spec())
+        hard_issues = [i for i in issues if "not in the registered" not in i]
+        assert spec is not None, f"Expected valid tabbed spec; issues: {issues}"
+        assert hard_issues == [], f"Unexpected hard issues: {hard_issues}"
+        assert len(spec.tabs) == 2
+        assert spec.tabs[0].id == "t1"
+        assert spec.tabs[1].style == {"accent": "#0af"}
+
+    def test_widget_with_valid_tab_id_passes(self):
+        spec, issues = validate_spec(_make_tabbed_spec())
+        hard_issues = [i for i in issues if "not in the registered" not in i]
+        assert spec is not None
+        assert hard_issues == [], f"Unexpected hard issues: {hard_issues}"
+        w1 = next(w for w in spec.widgets if w.id == "w1")
+        assert w1.tab_id == "t1"
+
+    def test_duplicate_tab_id_hard_error(self):
+        data = _make_tabbed_spec()
+        data["tabs"][1]["id"] = "t1"  # duplicate
+        spec, issues = validate_spec(data)
+        assert spec is not None, "Duplicate tab id is a soft-parse-OK hard issue, not a parse failure"
+        assert any("duplicate tab id" in i.lower() or "t1" in i for i in issues), (
+            f"Expected duplicate tab id issue, got: {issues}"
+        )
+
+    def test_undeclared_tab_id_hard_error(self):
+        data = _make_tabbed_spec()
+        data["widgets"][0]["tab_id"] = "t_missing"
+        spec, issues = validate_spec(data)
+        assert spec is not None
+        assert any(
+            "t_missing" in i and "not declared" in i for i in issues
+        ), f"Expected undeclared tab_id hard error, got: {issues}"
+
+    def test_tabless_spec_still_validates(self):
+        """Backward compat: a spec without tabs validates and tabs default empty."""
+        data = _good_spec_dict()
+        assert "tabs" not in data
+        spec, issues = validate_spec(data)
+        hard_issues = [i for i in issues if "not in the registered" not in i]
+        assert spec is not None, f"Expected valid tab-less spec; issues: {issues}"
+        assert hard_issues == [], f"Unexpected hard issues: {hard_issues}"
+        assert spec.tabs == []
+
+    def test_widget_tab_id_none_with_tabs_no_error(self):
+        """When tabs exist, a widget with tab_id None implicitly belongs to the first tab."""
+        data = _make_tabbed_spec()
+        data["widgets"][0]["tab_id"] = None
+        spec, issues = validate_spec(data)
+        hard_issues = [i for i in issues if "not in the registered" not in i]
+        assert spec is not None
+        assert hard_issues == [], f"tab_id None should not error: {hard_issues}"
+
+    def test_drawer_widget_ignores_tab_id(self):
+        """Drawer widgets ignore tab_id — an undeclared tab_id on a drawer is no error."""
+        data = _make_tabbed_spec()
+        data["widgets"][0]["drawer"] = True
+        data["widgets"][0]["drawer_group"] = "filters"
+        data["widgets"][0]["tab_id"] = "t_missing"
+        spec, issues = validate_spec(data)
+        hard_issues = [
+            i for i in issues
+            if "not in the registered" not in i and "t_missing" not in i
+        ]
+        assert spec is not None
+        assert not any("t_missing" in i for i in issues), (
+            f"Drawer widget tab_id should be ignored, got: {issues}"
+        )
+        assert hard_issues == []
+
+    def test_tab_id_undeclared_when_no_tabs_declared(self):
+        """A widget.tab_id set on a spec with no tabs is a hard error."""
+        data = _good_spec_dict()
+        data["widgets"][0]["tab_id"] = "t1"
+        spec, issues = validate_spec(data)
+        assert spec is not None
+        assert any("t1" in i and "not declared" in i for i in issues), (
+            f"Expected undeclared tab_id error when no tabs declared: {issues}"
+        )
+
+    def test_spec_json_schema_includes_tabs(self):
+        schema = spec_json_schema()
+        props = schema.get("properties", {})
+        assert "tabs" in props, (
+            f"Schema should expose 'tabs'; props: {list(props.keys())}"
+        )
+
+
+# ---------------------------------------------------------------------------
+# 9. Client-compute param class — Variable.mode (CLIENT_COMPUTE_PLAN.md §2.1)
+# ---------------------------------------------------------------------------
+
+
+class TestVariableMode:
+    """Variable.mode: optional 'scan'|'slice', absent/None behaves as today."""
+
+    def test_mode_slice_validates(self):
+        data = _make_variable_spec()
+        data["variables"][0]["mode"] = "slice"
+        spec, issues = validate_spec(data)
+        hard_issues = [
+            i for i in issues
+            if "not in the registered" not in i and "forward reference" not in i
+        ]
+        assert spec is not None, f"Expected valid spec with mode='slice'; issues: {issues}"
+        assert hard_issues == [], f"Unexpected hard issues: {hard_issues}"
+        assert spec.variables[0].mode == "slice"
+
+    def test_mode_scan_validates(self):
+        data = _make_variable_spec()
+        data["variables"][0]["mode"] = "scan"
+        spec, issues = validate_spec(data)
+        hard_issues = [
+            i for i in issues
+            if "not in the registered" not in i and "forward reference" not in i
+        ]
+        assert spec is not None
+        assert hard_issues == []
+        assert spec.variables[0].mode == "scan"
+
+    def test_mode_absent_still_validates(self):
+        """Backward compat: variables without 'mode' validate; mode defaults to None."""
+        data = _make_variable_spec()
+        assert "mode" not in data["variables"][0]
+        spec, issues = validate_spec(data)
+        hard_issues = [
+            i for i in issues
+            if "not in the registered" not in i and "forward reference" not in i
+        ]
+        assert spec is not None
+        assert hard_issues == []
+        assert spec.variables[0].mode is None
+
+    def test_invalid_mode_rejected(self):
+        data = _make_variable_spec()
+        data["variables"][0]["mode"] = "local"
+        spec, issues = validate_spec(data)
+        assert spec is None, "Expected parse failure for invalid Variable.mode"
+        assert len(issues) > 0

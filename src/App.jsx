@@ -48,7 +48,7 @@
  * without core ever statically importing src/ee.
  */
 
-import { Suspense, createElement } from 'react'
+import { Suspense, createElement, lazy } from 'react'
 import { Navigate, Routes, Route, useLocation } from 'react-router-dom'
 import { AuthProvider } from './contexts/AuthContext.jsx'
 import { UiProvider } from './contexts/UiContext.jsx'
@@ -74,39 +74,40 @@ import PricingPage from './pages/PricingPage.jsx'
 import LegalPage from './pages/LegalPage.jsx'
 import NotFound from './pages/NotFound.jsx'
 
-// Existing authed pages (do not edit these files)
-import DashboardViewPage from './pages/DashboardViewPage.jsx'
-import EditorPage from './pages/EditorPage.jsx'
+// Authed / heavy pages — lazy-loaded so their chunks (echarts, reactflow,
+// duckdb-wasm, monaco, apache-arrow) stay OUT of the public landing critical
+// path. Marketing routes above remain eager. All render inside the top-level
+// <Suspense> boundary around <Routes>.
+const DashboardViewPage = lazy(() => import('./pages/DashboardViewPage.jsx'))
+const EditorPage = lazy(() => import('./pages/EditorPage.jsx'))
 
-// New stub app pages
-import HomePage from './pages/app/HomePage.jsx'
-import InviteAcceptPage from './pages/app/InviteAcceptPage.jsx'
-import ConnectorsPage from './pages/app/ConnectorsPage.jsx'
-import DataBrowser from './pages/app/DataBrowser.jsx'
-import QueriesPage from './pages/app/QueriesPage.jsx'
-import BlendBuilder from './pages/app/BlendBuilder.jsx'
-import DashboardsPage from './pages/app/DashboardsPage.jsx'
-import FlowsPage from './pages/app/FlowsPage.jsx'
-import AutomationsPage from './pages/app/AutomationsPage.jsx'
-import SettingsLayout from './pages/app/settings/SettingsLayout.jsx'
-import ProfileSettings from './pages/app/settings/ProfileSettings.jsx'
-import OrgSettings from './pages/app/settings/OrgSettings.jsx'
-import MembersSettings from './pages/app/settings/MembersSettings.jsx'
-import ProjectSettings from './pages/app/settings/ProjectSettings.jsx'
-import SecuritySettings from './pages/app/settings/SecuritySettings.jsx'
-import SecretsPage from './pages/app/SecretsPage.jsx'
-import DataExplorerPage from './pages/app/DataExplorerPage.jsx'
+const HomePage = lazy(() => import('./pages/app/HomePage.jsx'))
+const InviteAcceptPage = lazy(() => import('./pages/app/InviteAcceptPage.jsx'))
+const ConnectorsPage = lazy(() => import('./pages/app/ConnectorsPage.jsx'))
+const DataBrowser = lazy(() => import('./pages/app/DataBrowser.jsx'))
+const QueriesPage = lazy(() => import('./pages/app/QueriesPage.jsx'))
+const BlendBuilder = lazy(() => import('./pages/app/BlendBuilder.jsx'))
+const DashboardsPage = lazy(() => import('./pages/app/DashboardsPage.jsx'))
+const FlowsPage = lazy(() => import('./pages/app/FlowsPage.jsx'))
+const AutomationsPage = lazy(() => import('./pages/app/AutomationsPage.jsx'))
+const SettingsLayout = lazy(() => import('./pages/app/settings/SettingsLayout.jsx'))
+const ProfileSettings = lazy(() => import('./pages/app/settings/ProfileSettings.jsx'))
+const OrgSettings = lazy(() => import('./pages/app/settings/OrgSettings.jsx'))
+const MembersSettings = lazy(() => import('./pages/app/settings/MembersSettings.jsx'))
+const ProjectSettings = lazy(() => import('./pages/app/settings/ProjectSettings.jsx'))
+const SecuritySettings = lazy(() => import('./pages/app/settings/SecuritySettings.jsx'))
+const SecretsPage = lazy(() => import('./pages/app/SecretsPage.jsx'))
+const DataExplorerPage = lazy(() => import('./pages/app/DataExplorerPage.jsx'))
 
-// Admin portal (superadmin-only; AdminLayout wraps RequireSuperadmin which
-// renders a 404-style view for non-superadmins so the portal stays hidden)
-import AdminLayout from './pages/admin/AdminLayout.jsx'
-import AdminOverviewPage from './pages/admin/AdminOverviewPage.jsx'
-import AdminUsersPage from './pages/admin/AdminUsersPage.jsx'
-import AdminOrgsPage from './pages/admin/AdminOrgsPage.jsx'
-import AdminOrgDetailPage from './pages/admin/AdminOrgDetailPage.jsx'
+// Admin portal (superadmin-only)
+const AdminLayout = lazy(() => import('./pages/admin/AdminLayout.jsx'))
+const AdminOverviewPage = lazy(() => import('./pages/admin/AdminOverviewPage.jsx'))
+const AdminUsersPage = lazy(() => import('./pages/admin/AdminUsersPage.jsx'))
+const AdminOrgsPage = lazy(() => import('./pages/admin/AdminOrgsPage.jsx'))
+const AdminOrgDetailPage = lazy(() => import('./pages/admin/AdminOrgDetailPage.jsx'))
 
 // Dev
-import IllustrationGallery from './pages/dev/IllustrationGallery.jsx'
+const IllustrationGallery = lazy(() => import('./pages/dev/IllustrationGallery.jsx'))
 
 // ---------------------------------------------------------------------------
 // EE dynamic mount (open-core boundary — NO static import of src/ee)
@@ -214,9 +215,30 @@ function AppShellWithProviders() {
 // App
 // ---------------------------------------------------------------------------
 
+// Fallback shown while a lazy route chunk loads. Minimal + theme-aware so it
+// doesn't flash a jarring colour during the brief fetch.
+function RouteFallback() {
+  return (
+    <div
+      style={{
+        minHeight: '60vh',
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'center',
+        color: 'var(--text-muted)',
+      }}
+      aria-busy="true"
+      aria-label="Loading"
+    />
+  )
+}
+
 export default function App() {
   return (
     <AuthProvider>
+      {/* Single Suspense boundary for every lazy-loaded route element. Eager
+          marketing routes never suspend, so the landing path is unaffected. */}
+      <Suspense fallback={<RouteFallback />}>
       <Routes>
 
         {/* ── Public routes — MainLayout (Navbar + optional Footer) ─────── */}
@@ -335,6 +357,7 @@ export default function App() {
         <Route path="*" element={<NotFound />} />
 
       </Routes>
+      </Suspense>
     </AuthProvider>
   )
 }

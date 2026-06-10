@@ -53,7 +53,7 @@ if TYPE_CHECKING:
     import pyarrow as pa
 
 from app.connectors.base import Connector
-from app.connectors.plan import PhysicalPlan
+from app.connectors.plan import PhysicalPlan, QueryEstimate
 from app.errors import AppError
 
 SOURCE_TYPE = "bigquery"
@@ -287,6 +287,32 @@ class BigQueryConnector(Connector):
                 f"BigQuery query failed: {exc}",
                 status=500,
             ) from exc
+
+    def estimate(self, plan: PhysicalPlan) -> "QueryEstimate | None":
+        """Exact bytes-scanned via a BigQuery dry-run job (free, synchronous).
+
+        BigQuery bills per byte scanned, so a dry run is the highest-value
+        pre-run guard: it returns ``total_bytes_processed`` without executing
+        the query or incurring cost. Runs the RLS-rewritten ``plan.sql`` so the
+        estimate respects the caller's scope. Any failure returns ``None``.
+        """
+        bigquery = _import_bigquery()
+        sql, ordered = _translate_placeholders(plan.sql, plan.params)
+        try:
+            client = self._build_client()
+            job_config = bigquery.QueryJobConfig(
+                query_parameters=self._build_query_params(ordered),
+                dry_run=True,
+                use_query_cache=False,
+            )
+            job = client.query(sql, job_config=job_config)
+            return QueryEstimate(
+                est_bytes_scanned=job.total_bytes_processed,
+                mechanism="bigquery_dry_run",
+                exact=True,
+            )
+        except Exception:  # noqa: BLE001 — advisory; never raise
+            return None
 
     def execute_stream(self, plan: PhysicalPlan) -> Iterator["pa.RecordBatch"]:
         """Execute *plan* and yield the result as a stream of RecordBatches.

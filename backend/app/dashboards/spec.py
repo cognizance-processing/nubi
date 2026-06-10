@@ -84,6 +84,45 @@ class Variable(BaseModel):
         Field(description="Variable value type.")
     )
     default: Any = Field(default=None, description="Default value for the variable.")
+    mode: Literal["scan", "slice"] | None = Field(
+        default=None,
+        description=(
+            "Client-compute param class (CLIENT_COMPUTE_PLAN.md §2.1). "
+            "'scan' (the default; None is treated as 'scan') means changing the "
+            "param re-reads server-side data. 'slice' marks a param that subsets "
+            "rows already fetched into the base result client-side (DuckDB-WASM) "
+            "and is never sent to the server. Pure metadata for now — absent/None "
+            "behaves exactly as today ('scan')."
+        ),
+    )
+
+
+class Tab(BaseModel):
+    """A dashboard tab (Track T — DASHBOARD_TABS_AND_FILTERS_IMPLEMENTATION.md T1).
+
+    Tabs are sections inside one board spec (Option A): one board, one spec, one
+    version history.  Variables remain dashboard-global (shared across all tabs);
+    tabs are a render partition, not a scope.  An empty/absent ``spec.tabs`` list
+    means the dashboard behaves exactly as today (no tabs).
+
+    Attributes
+    ----------
+    id:
+        Stable, unique string identifier within this spec (e.g. ``"t1"``).
+    label:
+        Human-readable tab label shown in the tab bar.
+    style:
+        Optional per-tab overrides of the tab-bar style tokens.  All
+        user-supplied colors/CSS flow through the sanitized ``tabStyleToCss``
+        path on the frontend — never interpolated raw.
+    """
+
+    id: str = Field(min_length=1, description="Stable, unique tab id within the spec.")
+    label: str = Field(min_length=1, description="Human-readable tab label.")
+    style: dict[str, Any] = Field(
+        default_factory=dict,
+        description="Per-tab overrides of the tab-bar style tokens (optional).",
+    )
 
 
 class Widget(BaseModel):
@@ -93,6 +132,12 @@ class Widget(BaseModel):
     ----------
     id:
         Stable, unique string identifier within this spec (e.g. ``"w1"``).
+    tab_id:
+        Optional id of the tab this widget belongs to (Track T).  When
+        ``spec.tabs`` is non-empty, a widget with ``tab_id is None`` implicitly
+        belongs to the **first** tab.  Drawer widgets (``drawer=True``) ignore
+        ``tab_id`` — drawers stay global across tabs.  ``tab_id`` must reference
+        a tab declared in ``spec.tabs`` (hard error otherwise).
     type:
         Widget kind — ``'kpi'``, ``'table'``, ``'chart'``, ``'filter'``,
         or ``'text'``.
@@ -136,6 +181,14 @@ class Widget(BaseModel):
         # Extended widget types (rendered by the frontend SpecRenderer):
         "metric", "pivot", "section", "html",
     ]
+    tab_id: str | None = Field(
+        default=None,
+        description=(
+            "Tab this widget belongs to (Track T). None => first tab when "
+            "spec.tabs is non-empty. Ignored for drawer widgets. Must reference "
+            "a declared tab id."
+        ),
+    )
     query_id: str = Field(default="", description="Backing query id (empty for text widgets).")
     chart_type: (
         Literal["line", "bar", "hbar", "scatter", "area", "pie", "donut", "heatmap", "gauge"]
@@ -215,6 +268,14 @@ class DashboardSpec(BaseModel):
         default_factory=list,
         description="Dashboard-level variables (optional).",
     )
+    tabs: list[Tab] = Field(
+        default_factory=list,
+        description=(
+            "Optional dashboard tabs (Track T). Empty/absent => no tabs, behaves "
+            "exactly as today. Widgets bind to a tab via 'tab_id'; widgets with "
+            "tab_id None implicitly belong to the first tab when tabs exist."
+        ),
+    )
     widgets: list[Widget] = Field(default_factory=list)
 
 
@@ -236,6 +297,9 @@ def validate_spec(data: Any) -> tuple[DashboardSpec | None, list[str]]:
     5. Text widgets must have ``content``.
     6. Widget ``params`` that use ``{ref: '<varName>'}`` must reference a
        declared variable name — undeclared refs are a hard error.
+    6b. Tabs (Track T): duplicate ``tab.id`` values and a ``widget.tab_id``
+       not declared in ``spec.tabs`` are hard errors (drawer widgets are
+       exempt; ``tab_id`` None implicitly maps to the first tab).
     7. Each ``query_id`` is checked against the live query registry.
        Unknown ids produce a warning (not a hard failure — forward compat).
 
@@ -334,6 +398,31 @@ def validate_spec(data: Any) -> tuple[DashboardSpec | None, list[str]]:
                         f"ref {ref_var!r} is not declared in spec 'variables'. "
                         f"Declared variables: {sorted(declared_var_names) or '[]'}."
                     )
+
+    # ── Step 6b: Tab validation (hard errors — mirror variable-ref rules) ─
+    # Duplicate tab ids are a hard error; a widget.tab_id that does not match a
+    # declared tab is a hard error (same severity as undeclared {ref} vars).
+    # Drawer widgets ignore tab_id; widgets with tab_id None implicitly belong
+    # to the first tab when tabs exist. Tabs absent/empty => unchanged behaviour.
+    declared_tab_ids: set[str] = set()
+    seen_tab_ids: set[str] = set()
+    for tab in spec.tabs:
+        if tab.id in seen_tab_ids:
+            issues.append(
+                f"Duplicate tab id {tab.id!r} — tab ids must be unique."
+            )
+        seen_tab_ids.add(tab.id)
+        declared_tab_ids.add(tab.id)
+
+    for widget in spec.widgets:
+        # Drawer widgets stay global across tabs — their tab_id is ignored.
+        if widget.drawer:
+            continue
+        if widget.tab_id is not None and widget.tab_id not in declared_tab_ids:
+            issues.append(
+                f"Widget {widget.id!r}: tab_id {widget.tab_id!r} is not declared "
+                f"in spec 'tabs'. Declared tabs: {sorted(declared_tab_ids) or '[]'}."
+            )
 
     # ── Step 7: Query id registry check (soft warning) ───────────────────
     try:

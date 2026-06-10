@@ -31,7 +31,7 @@ from typing import TYPE_CHECKING, Any, Iterator
 if TYPE_CHECKING:
     import pyarrow as pa
 
-from app.connectors.plan import PhysicalPlan
+from app.connectors.plan import PhysicalPlan, QueryEstimate
 
 
 class Connector(ABC):
@@ -150,6 +150,27 @@ class Connector(ABC):
         app.errors.AppError
             With an appropriate ``code`` and HTTP status if the query fails.
         """
+
+    # ------------------------------------------------------------------
+    # Optional pre-run estimate
+    # ------------------------------------------------------------------
+
+    def estimate(self, plan: PhysicalPlan) -> "QueryEstimate | None":
+        """Return a best-effort pre-run cost/scan estimate, or ``None``.
+
+        This is a NON-abstract, default-``None`` capability signal: a connector
+        that cannot dry-run/EXPLAIN simply inherits this and reports "estimate
+        unsupported". Overriding connectors MUST estimate the already-baked
+        ``plan.sql`` (which is RLS-rewritten) — never the caller's raw SQL — so
+        the estimate can never reveal rows outside the caller's scope. Any
+        engine error must be swallowed and reported as ``None`` rather than
+        raised: an estimate is advisory and must never block a run.
+
+        Note: this is deliberately NOT an 8th key in the strict ``capabilities()``
+        dict (``validate_capabilities`` asserts exactly 7 keys); the default-None
+        method is the backward-compatible "unsupported" signal.
+        """
+        return None
 
     # ------------------------------------------------------------------
     # Optional helper

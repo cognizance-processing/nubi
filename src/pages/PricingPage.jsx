@@ -655,8 +655,10 @@ export default function PricingPage() {
 
       {/* Tiers */}
       <section id="pricing" className="py-14 sm:py-20 scroll-mt-14">
-        <div className="max-w-[88rem] mx-auto px-4 sm:px-6 lg:px-8">
-          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-5 gap-5 xl:gap-4 items-start pt-3">
+        <div className="max-w-[88rem] 2xl:max-w-[110rem] mx-auto px-4 sm:px-6 lg:px-8">
+          {/* 3-col on laptops (lg–xl); only go 5-col at 2xl WITH a widened container,
+              so cards never get narrower as the screen grows (D responsive fix). */}
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 2xl:grid-cols-5 gap-5 items-start pt-3">
             {displayTiers.map(t => <TierCard key={t.id} tier={t} />)}
           </div>
           <p className="mt-10 mx-auto max-w-3xl text-center text-sm text-muted leading-relaxed">

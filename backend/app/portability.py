@@ -98,13 +98,22 @@ class KindHandler:
     Attributes
     ----------
     kind:
-        The envelope ``kind`` string (``"dashboard"`` | ``"query"``).
+        The envelope ``kind`` string (``"dashboard"`` | ``"query"`` | ``"flow"``).
     resource:
-        The org-scoped resource table name (``"boards"`` | ``"queries"``).
+        The org-scoped resource table name (``"boards"`` | ``"queries"`` |
+        ``"flows"``). For kinds not stored via the generic ``Repo`` (flows use
+        the flow store), this is informational and the caller branches on
+        ``kind`` for the upsert path.
+    folder:
+        The on-disk folder this kind serialises into (``"dashboards"`` |
+        ``"queries"`` | ``"flows"``). Centralising the folder map here lets
+        push AND pull iterate the registry so coverage stays symmetric — the
+        root cause of the "flows push but never pull" asymmetry.
     spec_from_row:
         Extract the portable spec dict from a stored row.
     row_fields:
-        Build the ``{name, config}`` create/update payload from an envelope.
+        Build the create/update payload from an envelope. Shape is kind-specific
+        (``{name, config}`` for repo-backed kinds; ``{name, spec, id}`` for flows).
     validate:
         Reuse the kind's existing validator; returns a list of issue strings
         (empty list = valid).
@@ -115,6 +124,7 @@ class KindHandler:
     spec_from_row: Callable[[dict[str, Any]], dict[str, Any]]
     row_fields: Callable[[dict[str, Any]], dict[str, Any]]
     validate: Callable[[dict[str, Any]], list[str]]
+    folder: str = ""
 
 
 # ── Dashboard handler ──────────────────────────────────────────────────────
@@ -244,10 +254,46 @@ def _query_validate(spec: dict[str, Any]) -> list[str]:
     return issues
 
 
+# ── Flow handler ───────────────────────────────────────────────────────────
+
+
+def _flow_spec_from_row(row: dict[str, Any]) -> dict[str, Any]:
+    """Return the canonical FlowSpec dict stored on a flow row.
+
+    Flows persist their spec in the ``spec`` column (not nested under
+    ``config``), so the portable spec IS that dict.
+    """
+    spec = row.get("spec")
+    return dict(spec) if isinstance(spec, dict) else {}
+
+
+def _flow_row_fields(env: dict[str, Any]) -> dict[str, Any]:
+    """Build the flow create/update payload ``{name, spec, id}`` from an envelope.
+
+    Flows are stored via the flow store rather than the generic ``Repo``, so the
+    payload carries ``spec`` (not ``config``) and the ``id`` for upsert keying.
+    """
+    spec = env.get("spec") or {}
+    meta = env.get("metadata") or {}
+    name = meta.get("name") or spec.get("name") or "Untitled flow"
+    return {"name": name, "spec": spec, "id": meta.get("id")}
+
+
+def _flow_validate(spec: dict[str, Any]) -> list[str]:
+    """Validate a flow spec via the existing FlowSpec validator."""
+    from app.flows.spec import validate_flow_spec
+
+    parsed, issues = validate_flow_spec(spec)
+    if parsed is None:
+        return issues or ["Invalid flow spec."]
+    return issues
+
+
 KIND_REGISTRY: dict[str, KindHandler] = {
     "dashboard": KindHandler(
         kind="dashboard",
         resource="boards",
+        folder="dashboards",
         spec_from_row=_dashboard_spec_from_row,
         row_fields=_dashboard_row_fields,
         validate=_dashboard_validate,
@@ -255,9 +301,18 @@ KIND_REGISTRY: dict[str, KindHandler] = {
     "query": KindHandler(
         kind="query",
         resource="queries",
+        folder="queries",
         spec_from_row=_query_spec_from_row,
         row_fields=_query_row_fields,
         validate=_query_validate,
+    ),
+    "flow": KindHandler(
+        kind="flow",
+        resource="flows",
+        folder="flows",
+        spec_from_row=_flow_spec_from_row,
+        row_fields=_flow_row_fields,
+        validate=_flow_validate,
     ),
 }
 

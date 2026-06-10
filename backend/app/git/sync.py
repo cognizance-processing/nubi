@@ -46,8 +46,10 @@ import json
 import os
 import subprocess
 import tempfile
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import TYPE_CHECKING, Any
+
+from app.errors import AppError
 
 if TYPE_CHECKING:
     from app.git.remote import RemoteAuth as _RemoteAuthType
@@ -546,8 +548,33 @@ class GitSync:
         ------
         FileNotFoundError
             If the file does not exist.
+        AppError
+            (``invalid_path``, 400) if *path* escapes ``self.repo_dir``
+            (absolute path, contains a ``..`` segment, or otherwise
+            resolves outside the repo directory).
         """
-        return (self.repo_dir / path).read_text(encoding="utf-8")
+        # Reject obviously unsafe inputs up front: absolute paths and any
+        # path that contains a parent-directory ('..') segment.
+        candidate_raw = PurePosixPath(path)
+        if candidate_raw.is_absolute() or Path(path).is_absolute() or ".." in candidate_raw.parts:
+            raise AppError(
+                "invalid_path",
+                "Path must be a relative path inside the repository.",
+                400,
+            )
+
+        base = self.repo_dir.resolve()
+        candidate = (self.repo_dir / path).resolve()
+        try:
+            candidate.relative_to(base)
+        except ValueError as exc:
+            raise AppError(
+                "invalid_path",
+                "Path resolves outside the repository.",
+                400,
+            ) from exc
+
+        return candidate.read_text(encoding="utf-8")
 
     def push(
         self,

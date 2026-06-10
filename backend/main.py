@@ -117,6 +117,10 @@ import app.routes.jobs  # noqa: F401, E402
 # ahead of the generic /{resource} catch-all in resources.py.
 import app.routes.flows  # noqa: F401, E402
 
+# Import variables route BEFORE resources so the /variables prefix routes are
+# registered ahead of the generic /{resource} catch-all in resources.py.
+import app.routes.variables  # noqa: F401, E402
+
 # Import git sync + chat gateway + connectors + bridges routes (prefixed) BEFORE
 # resources so they register ahead of the generic /{resource} catch-all.
 import app.routes.git  # noqa: F401, E402

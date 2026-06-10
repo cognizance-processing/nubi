@@ -233,6 +233,30 @@ All custom HTML is sanitized (DOMPurify) and every interpolated value is HTML-es
 
 ---
 
+## Tabs
+
+A dashboard can be split into **tabs** — sections inside one board. Tabs are a *render partition, not a scope*: it stays **one board, one spec, one version history**. Add tabs to `spec.tabs`; an empty or absent `tabs` list means the dashboard behaves exactly as today (no tab bar).
+
+- **Variables stay global.** Dashboard variables (and cross-filtering) are shared across every tab — switching tabs never resets a filter. Tabs partition *where widgets render*, not *what scope they read*.
+- **Widgets bind to a tab via `widget.tab_id`.** A widget's `tab_id` must reference a tab declared in `spec.tabs` (a `tab_id` pointing at no declared tab, or a duplicate `tab.id`, is a hard validation error).
+- **`tab_id: null` ⇒ first tab.** When `spec.tabs` is non-empty, a widget whose `tab_id` is `None` implicitly belongs to the **first** tab.
+- **Drawer widgets stay global.** A widget with `drawer=True` (the filters drawer or a drilldown drawer) ignores `tab_id` — drawers render across all tabs.
+
+Each tab has a stable, unique `id`, a human-readable `label`, and optional per-tab `style` overrides for the tab-bar tokens (all user-supplied colors/CSS flow through the sanitized style path — never interpolated raw).
+
+---
+
+## Scan vs slice params
+
+A dashboard variable carries an optional `mode` of `'scan'` or `'slice'` (per `CLIENT_COMPUTE_PLAN.md` §2.1). It classifies what changing that param does:
+
+- **`scan`** (the default — `None` is treated as `scan`) — changing the param **re-queries server-side data**. This is today's behaviour: a filter change re-reads from the source.
+- **`slice`** — marks a param that **subsets rows already fetched** into the base result client-side (DuckDB-WASM); it is never sent to the server, so refining it never triggers a server round-trip.
+
+`mode` is pure metadata for now: an absent or `None` value behaves exactly as today (`scan`).
+
+---
+
 ## Shareable views — route params
 
 URL-bound variables sync to and from the `/d/:id` query string. When a filter changes a variable, the new value is written back to the URL (shallow replace, no extra history entry), so the exact filtered view is shareable and refresh-safe:
@@ -287,12 +311,13 @@ The spec is a single JSON/YAML document with these top-level fields:
 | `version` | Schema version. Currently `1`. |
 | `title` | Dashboard title (also the board name). |
 | `layout` | Grid config: `cols` / `cols_md` / `cols_sm`, `row_height`, `gap`, `compaction`, `dense`, padding, `breakpoints`, `max_width`. |
-| `variables` | Dashboard variables (name, type, default, optional `url_bind`). |
+| `variables` | Dashboard variables (name, type, default, optional `url_bind`, optional `mode`). |
+| `tabs` | Optional list of tabs (each `id` + `label` + optional `style`). Empty/absent ⇒ no tabs (unchanged behaviour). See [Tabs](#tabs). |
 | `widgets` | Ordered list of widgets. |
 | `responsive` | Per-breakpoint (`md` / `sm`) position overrides keyed by widget id. |
 | `background` | Dashboard background descriptor. |
 
-Each widget carries: `id`, `type`, `query_id`, `encoding`, `props`, `pos`, and — depending on type — `chart_type`, `subtype`, `target_var`, `options_query_id`, `content`, `params`, plus optional `columnFormats`, `formattingRules`, `drilldown`, `style`, `html`, and `hidden`.
+Each widget carries: `id`, `type`, `query_id`, `encoding`, `props`, `pos`, `tab_id`, and — depending on type — `chart_type`, `subtype`, `target_var`, `options_query_id`, `content`, `params`, plus optional `columnFormats`, `formattingRules`, `drilldown`, `style`, `html`, and `hidden`.
 
 ### Minimal spec example
 

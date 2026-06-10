@@ -36,6 +36,16 @@ Click the active toggle again to collapse the sidebar entirely; re-open it with 
 
 The **Canvas / Notebook** toggle (Builder tab, top bar) switches how you see and edit the flow. Both edit the same underlying spec.
 
+### One flow, three views
+
+A flow is canonically a single `FlowSpec` — its cells, edges, params, and settings. That one spec is *projected* onto three surfaces, each round-tripping losslessly back to the spec:
+
+- **Notebook** — the spec's cells rendered as an ordered, top-to-bottom list. The fast authoring surface (one persona: the analyst iterating cell by cell).
+- **Canvas** — the same cells and edges rendered as a react-flow DAG, with node positions persisted. The structure surface (the engineer shaping a branching pipeline).
+- **File** — the spec serialized to a folder of reviewable files (`flow.toml` + `cells/*`; see [Flows on disk](/docs/git-sync#flows-on-disk)). The diff/review surface (the reviewer reading a pull request).
+
+There is no "primary" view and no separate copy: notebook, canvas, and file are three windows onto one `FlowSpec`. Editing in any view edits the same spec, and the projection is reversible — switching views, or loading the files back, reconstructs the spec exactly. This is the three-persona story: author, structure, review, over one source of truth.
+
 ### Notebook view
 
 ![Notebook view — Note, SQL, and Python cells in order, each with its own Run button](/docs/screenshots/flows-notebook.png)

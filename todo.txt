@@ -6,3 +6,13 @@ Output shape, a json file same name as query dictates the colum and types out ou
 File view in portal 
 
 Before run query, get estimate of compute like big query 
+
+
+ also we want a concept of dashboard tabs, so its like different dashboards as tabs. You must be able to customise the style of the
+  tabs and they must share variables. Does this make sense lets disucss
+────────────────────────────────────────────────────────────────────────────
+
+❯ also consider circular dependant filtering and filtering in general, sometimes there are filters that depend on outputs of other    
+    filters, that is a common case, and they need to refire to get data, we need to preagg where possible to help here so preagg system 
+    but be generic enough to account for this. we dont want to copy but you can look at legacy rendering engine which is ugly in        
+    legacy src contexts also slices and store folders. but we want a simpler more eff

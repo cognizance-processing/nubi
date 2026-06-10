@@ -562,6 +562,9 @@ def _handle_python(
     try:
         inputs_json = json.dumps(ctx.inputs)
         params_json = json.dumps(ctx.flow_params)
+        # Org/project variable namespace (A5) — read-only in python cells via the
+        # `vars` dict, mirroring the {{ vars.* }} SQL-cell namespace.
+        vars_json = json.dumps(ctx.vars or {})
         # Org secrets, resolved server-side by the runtime.  Injected via the
         # wrapper's JSON context (never via env vars — env stays scrubbed).
         secrets_json = json.dumps({str(k): str(v) for k, v in (ctx.secrets or {}).items()})
@@ -577,6 +580,7 @@ def _handle_python(
         # Inject flow context as local variables.
         inputs = _json.loads({inputs_json!r})
         params = _json.loads({params_json!r})
+        vars = _json.loads({vars_json!r})
         secrets = _json.loads({secrets_json!r})
 
         # ── DataFrame-native inputs (additive; pandas-guarded) ───────────

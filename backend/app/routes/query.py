@@ -104,6 +104,7 @@ from app.connectors.query_log import get_query_log
 from app.connectors.registry import get_connector_registry
 from app.queries import get_query_registry
 from app.queries.registry import QueryParam, RegisteredQuery, ensure_persisted_query
+from app.vars.store import get_var_store
 from app.repos.provider import get_repo
 from app.routes import api_router
 
@@ -118,6 +119,9 @@ from app.routes import api_router
 # Extend this set if more identity fields should be locked in future.
 _TOKEN_CLAIM_RESERVED_NAMES: frozenset[str] = frozenset(
     {
+        # `vars` is the org/project variable namespace ({{ vars.* }}); a caller
+        # must not be able to shadow it via named_params (workstream A5).
+        "vars",
         "policies",
         "user_id",
         "sub",
@@ -140,6 +144,29 @@ router = APIRouter(tags=["query"])
 logger = logging.getLogger("nubi.query")
 
 _ARROW_STREAM_MEDIA_TYPE = "application/vnd.apache.arrow.stream"
+
+
+async def _load_query_vars(
+    org_id: str, project_id: str | None
+) -> dict[str, object]:
+    """Return the ``{{ vars.* }}`` template namespace for an org (+ project).
+
+    Org-global variables (project_id NULL) are overlaid with project-scoped
+    variables — a project var SHADOWS an org-global var with the same key.
+    Best-effort: a store error yields an empty namespace rather than failing the
+    query (an undefined ``{{ vars.key }}`` will then surface as a clear 400).
+    """
+    store = get_var_store()
+    try:
+        merged: dict[str, object] = {
+            r["key"]: r["value"] for r in await store.list_vars(org_id, None)
+        }
+        if project_id:
+            for r in await store.list_vars(org_id, project_id):
+                merged[r["key"]] = r["value"]
+        return merged
+    except Exception:  # noqa: BLE001 — vars are advisory; never break the query path
+        return {}
 
 
 # ---------------------------------------------------------------------------
@@ -539,6 +566,21 @@ async def query(
     # is silently ignored and body.params (positional) is used as-is.
     effective_params: list = list(body.params)
 
+    # ── {{ vars.* }} templating namespace (workstream A5) ────────────────────
+    # Load org-global + project-scoped variables and expose them as the `vars`
+    # namespace in the SQL template context. The Jinja finalize hook binds each
+    # {{ vars.key }} as a positional parameter (NEVER string-concatenated), so
+    # vars automatically participate in the content-addressed cache key — two
+    # callers with different vars get different cached results. Only touch the
+    # store when the SQL is actually templated.
+    # org comes straight from the verified identity (set for embed + scoped
+    # first-party tokens — the contexts where dashboard vars apply). The full
+    # org_id is resolved later in this handler; identity.org is sufficient here.
+    _template_vars: dict[str, object] = {}
+    if "{{" in effective_sql and identity.org:
+        _vars_project = request.headers.get("X-Project-Id") or None
+        _template_vars = await _load_query_vars(identity.org, _vars_project)
+
     if registered is not None and registered.params:
         # named_input is the caller-supplied values (may be empty dict or None).
         named_input: dict = dict(body.named_params) if body.named_params else {}
@@ -587,14 +629,44 @@ async def query(
                 # see a None (falsy) value instead of raising on StrictUndefined.
                 resolved[param.name] = None
 
+        # Expose the variable namespace alongside the declared params so a
+        # registered query can reference both {{ my_param }} and {{ vars.key }}.
+        resolved["vars"] = _template_vars
+
         # Step 4: resolve {{name}} → $N and build positional params list.
         # This runs even when resolved is {} to strip any stale {{}} tokens
         # from queries that declare no required params.
         effective_sql, effective_params = resolve_named_params(effective_sql, resolved)
 
+    elif "{{" in effective_sql:
+        # No declared params, but the SQL is templated (e.g. uses {{ vars.* }}).
+        # Validate reserved names in any (ignored) named_params for consistency,
+        # then render with the vars namespace so {{ vars.key }} binds positionally.
+        for forbidden in (body.named_params or {}):
+            if forbidden in _TOKEN_CLAIM_RESERVED_NAMES:
+                raise _AppError(
+                    "param_name_reserved",
+                    f"Parameter name {forbidden!r} is reserved by the token/auth "
+                    "layer and cannot be set via named_params.",
+                    400,
+                )
+        try:
+            effective_sql, effective_params = resolve_named_params(
+                effective_sql, {"vars": _template_vars}
+            )
+        except KeyError as exc:
+            # An undefined {{ name }} (not under the vars namespace) in templated
+            # SQL — surface a clear 400 rather than a planner/parse error.
+            raise _AppError(
+                "unknown_template_var",
+                f"Template references an undefined variable: {exc}. "
+                "Use {{ vars.<key> }} for an org/project variable.",
+                400,
+            ) from exc
+
     elif body.named_params:
         # Caller supplied named_params but there is no registered query / no
-        # declared params.  Validate reserved names even in this case.
+        # declared params and no templating.  Validate reserved names.
         for forbidden in body.named_params:
             if forbidden in _TOKEN_CLAIM_RESERVED_NAMES:
                 raise _AppError(

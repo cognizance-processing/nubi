@@ -252,3 +252,53 @@ async def test_import_invalid_query_spec_returns_400(port_client):
         headers={**_auth(alice_id), "Content-Type": "application/yaml"},
     )
     assert imp.status_code == 400, imp.text
+
+
+# ---------------------------------------------------------------------------
+# Flow KindHandler unit tests (no DB) — registry-driven sync round-trip (A2/A3)
+# ---------------------------------------------------------------------------
+
+
+def test_kind_registry_has_flow_with_folder():
+    from app.portability import KIND_REGISTRY
+
+    assert "flow" in KIND_REGISTRY
+    # Folders are centralised so push AND pull iterate the same set.
+    assert KIND_REGISTRY["flow"].folder == "flows"
+    assert KIND_REGISTRY["dashboard"].folder == "dashboards"
+    assert KIND_REGISTRY["query"].folder == "queries"
+
+
+def test_flow_spec_from_row_and_row_fields_roundtrip():
+    from app.portability import KIND_REGISTRY
+
+    h = KIND_REGISTRY["flow"]
+    spec = {
+        "name": "nightly",
+        "tasks": [{"key": "a", "kind": "python", "config": {"code": "x = 1"}}],
+    }
+    row = {"id": "f-1", "name": "nightly", "spec": spec}
+
+    extracted = h.spec_from_row(row)
+    assert extracted == spec
+
+    env = {"metadata": {"name": "nightly", "id": "f-1"}, "spec": extracted}
+    fields = h.row_fields(env)
+    assert fields["name"] == "nightly"
+    assert fields["spec"] == spec
+    assert fields["id"] == "f-1"
+
+
+def test_flow_validate_rejects_bad_spec_and_accepts_good():
+    from app.portability import KIND_REGISTRY
+
+    h = KIND_REGISTRY["flow"]
+    # Missing tasks / wrong shape → hard issues.
+    assert h.validate({"tasks": [{"key": "a", "kind": "python", "config": {}}]})
+    # Valid minimal flow → no HARD issues ([warn] forward-refs allowed).
+    good = {
+        "name": "ok",
+        "tasks": [{"key": "a", "kind": "python", "config": {"code": "y = 2"}}],
+    }
+    hard = [i for i in h.validate(good) if not str(i).startswith("[warn]")]
+    assert hard == []

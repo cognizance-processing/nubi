@@ -95,6 +95,16 @@ class TestCellContractPreserved:
             handler(config, _ctx(), CLAIMS)
         assert "boom" in str(exc_info.value)
 
+    def test_python_cell_can_read_vars(self):
+        # A5: the {{ vars.* }} namespace is also a read-only `vars` dict in
+        # python cells (mirrors inputs/params/secrets injection).
+        handler = _python_handler()
+        ctx = TaskContext(vars={"region": "eu-west", "n": 3})
+        config = {"code": "result = {'r': vars['region'], 'doubled': vars['n'] * 2}"}
+        out = handler(config, ctx, CLAIMS)
+        assert out["r"] == "eu-west"
+        assert out["doubled"] == 6
+
 
 # ===========================================================================
 # 2. Timeout kills the process GROUP (no orphan grandchildren)

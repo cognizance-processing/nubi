@@ -28,7 +28,7 @@ if TYPE_CHECKING:
     import pyarrow as pa
 
 from app.connectors.base import Connector
-from app.connectors.plan import PhysicalPlan
+from app.connectors.plan import PhysicalPlan, QueryEstimate
 from app.errors import AppError
 
 
@@ -209,15 +209,27 @@ def setup_s3_httpfs(
     if not key_id:
         return
 
+    # B3: escape single quotes in every interpolated value so a value like
+    # `x'); ATTACH ...; --` cannot break out of its quoted SQL literal in the
+    # CREATE SECRET statement (defense-in-depth — the config is user-supplied).
+    def _sq(value: object) -> str:
+        return str(value).replace("'", "''")
+
     parts: list[str] = [
         "TYPE S3",
-        f"KEY_ID '{key_id}'",
-        f"SECRET '{secret}'",
-        f"REGION '{region}'",
-        f"URL_STYLE '{url_style}'",
+        f"KEY_ID '{_sq(key_id)}'",
+        f"SECRET '{_sq(secret)}'",
+        f"REGION '{_sq(region)}'",
+        f"URL_STYLE '{_sq(url_style)}'",
     ]
     if endpoint:
-        parts.append(f"ENDPOINT '{endpoint}'")
+        # B4: block pointing httpfs at the cloud-metadata IP / link-local via a
+        # crafted s3_endpoint (IMDS credential theft). Private/loopback stay
+        # allowed — self-hosted MinIO legitimately lives there.
+        from app.connectors.ssrf import guard_s3_endpoint  # noqa: PLC0415
+
+        guard_s3_endpoint(endpoint)
+        parts.append(f"ENDPOINT '{_sq(endpoint)}'")
         # USE_SSL: explicit cfg/env override, else inferred from the endpoint
         # scheme (http→false for MinIO, https→true). Without this DuckDB defaults
         # to SSL and fails against a plain-http MinIO endpoint with an
@@ -235,7 +247,7 @@ def setup_s3_httpfs(
 
     scope = cfg.get("s3_scope") or ""
     if scope:
-        parts.append(f"SCOPE '{scope}'")
+        parts.append(f"SCOPE '{_sq(scope)}'")
 
     secret_sql = "CREATE OR REPLACE SECRET nubi_s3 (\n    " + ",\n    ".join(parts) + "\n)"
     conn.execute(secret_sql)
@@ -359,6 +371,39 @@ class DuckDBConnector(Connector):
         """
         table = self.execute(plan)
         yield from table.to_batches()
+
+    def estimate(self, plan: PhysicalPlan) -> "QueryEstimate | None":
+        """Best-effort row estimate via DuckDB ``EXPLAIN`` cardinality.
+
+        ``EXPLAIN`` only plans (executes nothing), so it is safe on a hardened,
+        config-locked connection. DuckDB annotates operators with ``EC: <n>``
+        (estimated cardinality); we take the largest as the top-level estimate.
+        Any failure returns ``None`` — an estimate must never block a run.
+        """
+        import re
+
+        try:
+            rows = self._conn.execute(
+                f"EXPLAIN {plan.sql}", plan.params
+            ).fetchall()
+        except Exception:  # noqa: BLE001 — advisory; never raise
+            return None
+
+        # EXPLAIN returns (explain_key, explain_value) tuples; the physical plan
+        # annotates each operator's estimated cardinality as "~<n> row(s)"
+        # (commas as thousands separators). Take the largest as the top estimate.
+        text = "\n".join(str(cell) for row in rows for cell in row)
+        cards = [
+            int(m.replace(",", ""))
+            for m in re.findall(r"~\s*([\d,]+)\s+rows?", text)
+        ]
+        if not cards:
+            return QueryEstimate(mechanism="duckdb_explain", exact=False)
+        return QueryEstimate(
+            est_rows=max(cards),
+            mechanism="duckdb_explain",
+            exact=False,
+        )
 
     # ------------------------------------------------------------------
     # Seeding helper

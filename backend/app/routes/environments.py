@@ -714,5 +714,122 @@ async def get_project_git_graph(
     return await env_sync.project_git_graph(org_id=org_id, project_id=project_id)
 
 
+# ── Read-only git file view (charter A7) ──────────────────────────────────────
+
+#: Manifest / top-level files allowed for direct read alongside resource files.
+_GIT_FILE_ALLOWED_MANIFESTS: frozenset[str] = frozenset({"nubi.yaml"})
+
+
+async def _default_git_ref(project_id: str) -> str:
+    """Return the default ref for file-view requests.
+
+    Prefer the production env's bound branch (typically ``main``); otherwise
+    the first env that carries a branch; falling back to ``'main'``.
+    """
+    try:
+        envs = await get_env_store().list_environments(project_id)
+    except Exception:  # noqa: BLE001 — degrade to a sane default
+        envs = []
+    by_key = {e.get("key"): e for e in envs}
+    prod = by_key.get("prod")
+    if prod and prod.get("git_branch"):
+        return str(prod["git_branch"])
+    for env in envs:
+        if env.get("git_branch"):
+            return str(env["git_branch"])
+    return "main"
+
+
+def _validate_git_file_path(path: str) -> None:
+    """Raise AppError 400 unless *path* is a safe, allowlisted repo path.
+
+    A path is rejected when it is empty, contains a ``..`` segment, is
+    absolute, or does not live under a known resource folder
+    (:data:`env_sync.FOLDER_KIND`) nor equal an allowlisted manifest name.
+    """
+    candidate = (path or "").strip()
+    if not candidate:
+        raise AppError("invalid_path", "A non-empty 'path' is required.", 400)
+    if candidate.startswith("/") or "\\" in candidate:
+        raise AppError("invalid_path", "Path must be repo-relative.", 400)
+    parts = candidate.split("/")
+    if any(part in ("", "..", ".") for part in parts):
+        raise AppError("invalid_path", "Path traversal is not allowed.", 400)
+    top = parts[0]
+    if candidate in _GIT_FILE_ALLOWED_MANIFESTS:
+        return
+    if top not in env_sync.FOLDER_KIND:
+        raise AppError(
+            "invalid_path",
+            f"Path must live under a known resource folder ({', '.join(sorted(env_sync.FOLDER_KIND))}).",
+            400,
+        )
+
+
+@router.get("/projects/{project_id}/git/files")
+async def list_project_git_files(
+    project_id: str,
+    request: Request,
+    ref: str | None = None,
+    user: dict[str, Any] = Depends(current_user),
+    repo: Repo = Depends(get_repo),
+) -> dict[str, Any]:
+    """List the known resource files tracked at *ref* in the project repo.
+
+    ``{ref, files: [<path>, ...]}`` — the tracked files under the known
+    resource folders (plus an allowlisted manifest when present). ``ref``
+    defaults to the production env's bound branch. An empty list when the
+    project has no workspace repo yet (read-only; never a 5xx on git issues).
+    """
+    org_id = await resolve_org_id(str(user["id"]), repo, request)
+    await _require_project(project_id, org_id)
+    resolved_ref = (ref or "").strip() or await _default_git_ref(project_id)
+    git = env_sync.get_project_git(org_id, project_id)
+    if not git.exists():
+        return {"ref": resolved_ref, "files": []}
+    try:
+        files = list(git.list_known_files(resolved_ref))
+    except env_sync.GitEnvError:
+        return {"ref": resolved_ref, "files": []}
+    for manifest in sorted(_GIT_FILE_ALLOWED_MANIFESTS):
+        try:
+            if git.read_file(resolved_ref, manifest) is not None:
+                files.append(manifest)
+        except env_sync.GitEnvError:
+            pass
+    return {"ref": resolved_ref, "files": files}
+
+
+@router.get("/projects/{project_id}/git/files/content")
+async def get_project_git_file_content(
+    project_id: str,
+    request: Request,
+    path: str,
+    ref: str | None = None,
+    user: dict[str, Any] = Depends(current_user),
+    repo: Repo = Depends(get_repo),
+) -> dict[str, Any]:
+    """Return the content of a single tracked file at *ref*.
+
+    ``{path, ref, content}``. The path must live under a known resource
+    folder or equal an allowlisted manifest name and must not contain a
+    ``..`` segment (400 otherwise); a missing file yields 404.
+    """
+    org_id = await resolve_org_id(str(user["id"]), repo, request)
+    await _require_project(project_id, org_id)
+    _validate_git_file_path(path)
+    resolved_ref = (ref or "").strip() or await _default_git_ref(project_id)
+    git = env_sync.get_project_git(org_id, project_id)
+    content: str | None = None
+    if git.exists():
+        try:
+            content = git.read_file(resolved_ref, path)
+        except env_sync.GitEnvError:
+            content = None
+    if content is None:
+        raise AppError("not_found", "File not found at the requested ref.", 404)
+    return {"path": path, "ref": resolved_ref, "content": content}
+
+
 # ── Register on the shared api_router ─────────────────────────────────────────
 api_router.include_router(router)

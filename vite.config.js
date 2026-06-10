@@ -11,6 +11,23 @@ export default defineConfig(({ mode }) => {
 
   return {
     plugins: [react()],
+    build: {
+      rollupOptions: {
+        output: {
+          // Split the heaviest deps into their own vendor chunks so they are
+          // cached independently and only fetched by the lazy routes that use
+          // them (charts, flow canvas, in-browser SQL, code editor) — never on
+          // the public landing path.
+          manualChunks: {
+            echarts: ['echarts'],
+            reactflow: ['reactflow'],
+            arrow: ['apache-arrow'],
+            duckdb: ['@duckdb/duckdb-wasm'],
+            monaco: ['@monaco-editor/react'],
+          },
+        },
+      },
+    },
     // Define process.env so that CJS deps like react-draggable that reference
     // process.env.DRAGGABLE_DEBUG don't throw ReferenceError in the browser.
     define: {

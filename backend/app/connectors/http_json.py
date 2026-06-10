@@ -56,6 +56,7 @@ import pyarrow as pa
 
 from app.connectors.base import Connector
 from app.connectors.plan import PhysicalPlan
+from app.connectors.ssrf import guard_url
 from app.connectors.sdk import (
     apply_limit_postfetch,
     apply_projection_postfetch,
@@ -154,6 +155,11 @@ class HttpJsonConnector(Connector):
         # in every test environment and importing at module level would break pure
         # unit-test imports that monkeypatch httpx).
         import httpx  # noqa: PLC0415
+
+        # SSRF guard: reject the fetch if the target host resolves to an
+        # internal/loopback/link-local/metadata address before any outbound
+        # request is made.  Raises AppError("ssrf_blocked", 400) on a block.
+        guard_url(self._url)
 
         try:
             response = httpx.get(self._url, headers=self._headers)

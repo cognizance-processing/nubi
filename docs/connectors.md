@@ -372,6 +372,31 @@ get_connector_registry().register("my_source", MyConnector)
 
 Connectors are stateless with respect to individual queries; connection pools may live in instance state. The planner calls `capabilities()` to decide which push-downs are safe and then calls `execute()` or `execute_stream()` with a fully-baked `PhysicalPlan`.
 
+### Optional pre-run estimate
+
+A connector may implement an optional `estimate(plan)` hook that returns a best-effort, pre-run cost/scan estimate (a `QueryEstimate`) for a `PhysicalPlan`:
+
+```python
+def estimate(self, plan: PhysicalPlan) -> "QueryEstimate | None":
+    ...
+```
+
+Key properties:
+
+- **Opt-in, default unsupported.** The base `Connector.estimate` returns `None`. A connector that cannot dry-run or `EXPLAIN` simply inherits this; `None` means "estimate unsupported" (distinct from an estimate of zero). It is deliberately *not* an eighth `capabilities()` flag — `capabilities()` asserts exactly seven keys.
+- **Estimates the RLS-rewritten plan, never raw SQL.** An override must estimate `plan.sql`, which is already RLS-rewritten, so the estimate can never reveal rows outside the caller's scope.
+- **Advisory only — never blocks a run.** Any engine error is swallowed and reported as `None` rather than raised. An estimate is informational; it never gates execution.
+- **No user-facing route yet.** There is currently **no HTTP endpoint and no UI** for estimates — the hook exists on the connector interface only.
+
+Two built-in connectors implement it:
+
+| Connector | Mechanism (`QueryEstimate.mechanism`) | What it reports | `exact` |
+|---|---|---|---|
+| **BigQuery** | `bigquery_dry_run` | Exact `est_bytes_scanned` via a free, synchronous dry-run job (no execution, no cost). | `True` |
+| **DuckDB** | `duckdb_explain` | Approximate `est_rows` from `EXPLAIN` cardinality (`~<n> rows`); plans only, executes nothing. | `False` |
+
+`QueryEstimate` fields (`est_bytes_scanned`, `est_rows`, `est_cost`, `mechanism`, `exact`) are all best-effort and may be `None`. `est_cost` is an engine-native optimiser cost, not a currency value; the UI should prefix non-`exact` figures with `~`.
+
 ---
 
 ## Permissions

@@ -45,7 +45,13 @@ from app.git.sync import (
     serialize_envelope,
     serialize_resource,
 )
-from app.portability import parse_document, row_fields_for_kind, to_envelope
+from app.portability import (
+    KIND_REGISTRY,
+    parse_document,
+    row_fields_for_kind,
+    to_envelope,
+    validate_spec_for_kind,
+)
 from app.queries.registry import get_query_registry
 from app.repos import projects as projects_repo
 from app.repos.provider import Repo, get_repo
@@ -569,8 +575,10 @@ async def pull_project(
     """Fetch the project's remote branch and import/upsert resources via portability.
 
     DB stays canonical: each YAML envelope under ``base_path`` is parsed and
-    upserted into the matching resource table (dashboards/queries). Connectors
-    are never imported (no connector kind exists).
+    upserted into the matching resource. Folders are driven off ``KIND_REGISTRY``
+    so push and pull cover identical kinds — dashboards, queries, AND flows
+    (flows previously pushed but were never imported). Connectors are never
+    imported (no connector kind exists).
     """
     org_id = await _get_user_org(str(user["id"]), repo)
     provider, binding = await _provider_for_project(org_id, body.project_id)
@@ -581,11 +589,12 @@ async def pull_project(
     base = (binding.get("base_path") or "").strip("/")
     root = repo_dir / base if base else repo_dir
 
-    kinds = {"dashboard": 0, "query": 0, "flow": 0}
+    flow_store = None  # lazily constructed only if a flows/ folder exists
+    kinds = {kind: 0 for kind in KIND_REGISTRY}
     imported = 0
 
-    for folder, kind in (("dashboards", "dashboard"), ("queries", "query")):
-        dir_path = root / folder
+    for handler in KIND_REGISTRY.values():
+        dir_path = root / handler.folder
         if not dir_path.is_dir():
             continue
         for fp in sorted(dir_path.glob("*.y*ml")):
@@ -593,24 +602,59 @@ async def pull_project(
                 env = parse_document(fp.read_text(encoding="utf-8"))
             except AppError:
                 continue
-            fields = row_fields_for_kind(kind, env)
+            # Skip flow envelopes that fail HARD validation so a hand-edited or
+            # corrupt file can never register a broken flow. Soft "[warn]"
+            # issues (e.g. forward query_id refs) are allowed through. Dashboards
+            # and queries keep their prior import-without-validate behaviour.
+            spec = env.get("spec") or {}
+            if handler.kind == "flow":
+                hard = [
+                    i
+                    for i in validate_spec_for_kind(handler.kind, spec)
+                    if not str(i).startswith("[warn]")
+                ]
+                if hard:
+                    continue
+            fields = row_fields_for_kind(handler.kind, env)
             meta_id = (env.get("metadata") or {}).get("id")
-            resource = "boards" if kind == "dashboard" else "queries"
-            existing = None
-            if meta_id:
-                existing = await repo.get(resource, org_id, str(meta_id))
-            if existing is not None:
-                await repo.update(resource, org_id, str(meta_id), fields)
-            else:
-                await repo.create(
-                    resource,
-                    org_id,
-                    str(user["id"]),
-                    fields["name"],
-                    fields["config"],
-                    project_id=body.project_id,
+
+            if handler.kind == "flow":
+                if flow_store is None:
+                    from app.flows.store import get_flow_store
+
+                    flow_store = get_flow_store()
+                existing = (
+                    await flow_store.get_flow(str(meta_id)) if meta_id else None
                 )
-            kinds[kind] += 1
+                if existing is not None:
+                    await flow_store.update_flow(
+                        str(meta_id),
+                        {"name": fields["name"], "spec": fields["spec"]},
+                    )
+                else:
+                    await flow_store.create_flow(
+                        org_id,
+                        str(user["id"]),
+                        fields["name"],
+                        fields["spec"],
+                        project_id=body.project_id,
+                    )
+            else:
+                existing = None
+                if meta_id:
+                    existing = await repo.get(handler.resource, org_id, str(meta_id))
+                if existing is not None:
+                    await repo.update(handler.resource, org_id, str(meta_id), fields)
+                else:
+                    await repo.create(
+                        handler.resource,
+                        org_id,
+                        str(user["id"]),
+                        fields["name"],
+                        fields["config"],
+                        project_id=body.project_id,
+                    )
+            kinds[handler.kind] += 1
             imported += 1
 
     return {"imported": imported, "kinds": kinds}

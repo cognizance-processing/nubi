@@ -218,3 +218,4 @@ Connector secrets are never exposed to flow cell code — cells receive a resolv
 | Key rotation | `key_version` column + `CONNECTOR_SECRET_KEYS` multi-key registry enables zero-downtime rotation |
 | DDL/DML blocked at query layer | Planner rejects non-`SELECT` statements (DROP, DELETE, UPDATE, INSERT, CREATE, TRUNCATE) with `400` |
 | Named params never string-concatenated | Values go into positional `$N` bindings; they never appear in the rewritten SQL |
+| Pre-run estimates respect caller scope | The optional `Connector.estimate(plan)` hook estimates the RLS-rewritten `plan.sql` (never raw SQL), is advisory-only (swallows engine errors → `None`, never blocks a run), and has no user-facing route — see [Connectors](/docs/connectors#optional-pre-run-estimate) |

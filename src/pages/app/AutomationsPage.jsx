@@ -335,7 +335,7 @@ function FlowRunHistory({ flowId }) {
       )}
       {!loading && !error && runs.length > 0 && (
         <ul className="space-y-1.5">
-          {[...runs].reverse().slice(0, 20).map(run => {
+          {runs.slice(0, 20).map(run => {
             const isOpen = openRunId === run.id
             return (
               <li key={run.id} className="rounded-lg border border-border bg-surface overflow-hidden">

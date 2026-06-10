@@ -101,3 +101,44 @@ export async function getGitGraph(projectId) {
     return null
   }
 }
+
+/**
+ * List the tracked files in the project's synced repo (read-only file view).
+ *
+ * GET /projects/{projectId}/git/files?ref=
+ *
+ * @param {string} projectId
+ * @param {string} [ref] branch or sha; omit to use the project's default branch.
+ * @returns {Promise<{ ref: string, files: string[] } | null>}
+ *   null on failure so the file view can degrade (it is read-only sugar).
+ */
+export async function listGitFiles(projectId, ref) {
+  try {
+    const qs = ref ? `?ref=${encodeURIComponent(ref)}` : ''
+    return await get(`/projects/${projectId}/git/files${qs}`)
+  } catch (cause) {
+    console.warn('[gitenv] listGitFiles failed:', cause.message)
+    return null
+  }
+}
+
+/**
+ * Fetch the content of one tracked file at a ref.
+ *
+ * GET /projects/{projectId}/git/files/content?path=&ref=
+ *
+ * The backend allowlists paths to known resource folders and rejects ``..``
+ * traversal (400); a missing file is 404. This helper THROWS on those so the
+ * viewer can surface the backend message (mirrors the mutation helpers).
+ *
+ * @param {string} projectId
+ * @param {string} path repo-relative path (e.g. "queries/<id>.sql").
+ * @param {string} [ref] branch or sha; omit for the default branch.
+ * @returns {Promise<{ path: string, ref: string, content: string }>}
+ *   Throws on 400 (bad path) / 404 (missing) / other failure.
+ */
+export function getGitFileContent(projectId, path, ref) {
+  const params = new URLSearchParams({ path })
+  if (ref) params.set('ref', ref)
+  return get(`/projects/${projectId}/git/files/content?${params.toString()}`)
+}

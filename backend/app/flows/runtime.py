@@ -1002,6 +1002,7 @@ async def run_one_ready_task(
         no eligible task_run was available.
     """
     from app.flows.executor import TaskContext  # noqa: PLC0415
+    from app.vars.store import load_vars_namespace  # noqa: PLC0415
 
     if claims is None:
         claims = {}
@@ -1078,6 +1079,7 @@ async def run_one_ready_task(
         now=now,
         secrets=secrets,
         org_id=org_id or None,
+        vars=await load_vars_namespace(org_id, (flow_dict or {}).get("project_id")),
         env=env,
         flow=flow_dict,
         watermark=watermark,
@@ -1372,6 +1374,7 @@ def preview_cell(
         top level is the result of *target_key* specifically.
     """
     from app.flows.executor import TaskContext, execute_task  # noqa: PLC0415
+    from app.vars.store import load_vars_namespace  # noqa: PLC0415
 
     if claims is None:
         claims = {}
@@ -1431,6 +1434,8 @@ def preview_cell(
             now=now,
             secrets={},
             org_id=org_id,
+            # NOTE: this runtime preview helper is sync; {{ vars.* }} for the
+            # interactive path is supplied by the async preview route (flows.py).
             preview_mode=True,
             preview_limit=preview_limit,
         )
@@ -1822,6 +1827,7 @@ async def _execute_claimed_task_run(
         are resolved lazily via ``_resolve_secrets``.
     """
     from app.flows.executor import TaskContext, execute_task  # noqa: PLC0415
+    from app.vars.store import load_vars_namespace  # noqa: PLC0415
 
     task_run_id = task_run["id"]
     flow_run_id = task_run["flow_run_id"]
@@ -1867,6 +1873,7 @@ async def _execute_claimed_task_run(
         now=now,
         secrets=resolved_secrets,
         org_id=org_id or None,
+        vars=await load_vars_namespace(org_id, (flow_dict or {}).get("project_id")),
         env=env,
         flow=flow_dict,
         watermark=watermark,

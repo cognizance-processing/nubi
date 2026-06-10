@@ -17,6 +17,40 @@ from typing import Any
 from pydantic import BaseModel, Field
 
 
+class QueryEstimate(BaseModel):
+    """Pre-run cost/scan estimate for a ``PhysicalPlan`` (BigQuery-style dry-run).
+
+    Returned by the optional ``Connector.estimate(plan)`` hook. All numeric
+    fields are best-effort and may be ``None`` when the engine cannot supply
+    them; a connector that cannot estimate at all returns ``None`` (not an empty
+    estimate) so the caller can distinguish "unsupported" from "zero".
+
+    Fields
+    ------
+    est_bytes_scanned:
+        Estimated bytes the engine will read (BigQuery dry-run is exact here).
+    est_rows:
+        Estimated rows produced/scanned (from EXPLAIN cardinality).
+    est_cost:
+        Engine-native optimiser cost (Postgres/MySQL EXPLAIN cost units) — only
+        comparable within the same engine, never a currency value.
+    mechanism:
+        How the estimate was produced, e.g. ``"bigquery_dry_run"``,
+        ``"duckdb_explain"`` — for observability and UI labelling.
+    exact:
+        ``True`` only when the engine guarantees the figure (BigQuery bytes);
+        ``False`` for optimiser estimates the UI should prefix with ``~``.
+    """
+
+    est_bytes_scanned: int | None = None
+    est_rows: int | None = None
+    est_cost: float | None = None
+    mechanism: str = "unknown"
+    exact: bool = False
+
+    model_config = {"frozen": True}
+
+
 class PhysicalPlan(BaseModel):
     """Serialisable physical query plan produced by the planner.
 

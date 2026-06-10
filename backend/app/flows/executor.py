@@ -128,6 +128,10 @@ class TaskContext:
 
     flow_params: dict[str, Any] = field(default_factory=dict)
     inputs: dict[str, Any] = field(default_factory=dict)
+    # Org/project variable namespace for {{ vars.* }} in cell SQL/config
+    # (workstream A5). Populated by the runtime via load_vars_namespace; values
+    # are bound positionally in SQL cells (never interpolated), same as params.
+    vars: dict[str, Any] = field(default_factory=dict)
     now: datetime = field(default_factory=lambda: __import__("datetime").datetime.now(
         __import__("datetime").timezone.utc
     ))
@@ -213,6 +217,19 @@ def _resolve_value(expr: str, ctx: TaskContext) -> str:
                 return str(val) if val is not None else ""
         return str(val) if val is not None else ""
 
+    if namespace == "vars":
+        # Org/project variable namespace (string context, e.g. non-SQL config).
+        # SQL cells use the bound path (_resolve_native) instead.
+        if not rest:
+            return ""
+        val = ctx.vars
+        for key in rest:
+            if isinstance(val, dict):
+                val = val.get(key, "")
+            else:
+                return str(val) if val is not None else ""
+        return str(val) if val is not None else ""
+
     # Unknown namespace → empty string (soft failure).
     return ""
 
@@ -255,6 +272,115 @@ def _resolve_str(expr: str, ctx: TaskContext) -> str:
     internal function name.  Kept as a thin wrapper to avoid duplication.
     """
     return _resolve_string(expr, ctx)
+
+
+# ---------------------------------------------------------------------------
+# Safe SQL parameter binding (SECURITY: SQL injection prevention)
+# ---------------------------------------------------------------------------
+#
+# Background
+# ----------
+# For ``query`` cells the ``config["sql"]`` text may contain ``{{ params.x }}``,
+# ``{{ inputs.k.f }}`` and ``{{ item.f }}`` references.  These are USER-supplied
+# values (``body.params`` on /flows/run, /flows/preview, /flows/run-cell;
+# upstream cell outputs; map items).  The plain ``_resolve_config`` pass would
+# str-interpolate them DIRECTLY into the SQL text (``str(val)``, no escaping),
+# which lets an attacker inject e.g. ``x' UNION SELECT secret FROM other_tenant
+# --`` — a UNION the RLS predicate (added to the OUTER select only) never
+# filters.
+#
+# The fix mirrors the hardened /query path (app/connectors/template.py +
+# planner.resolve_named_params): every user-supplied value is BOUND as a
+# positional parameter ($N) on the PhysicalPlan and NEVER concatenated into the
+# SQL string.  We rewrite each ``{{ params.* }}`` / ``{{ inputs.* }}`` /
+# ``{{ item.* }}`` occurrence in the SQL into a unique Jinja placeholder
+# ``{{ __pN__ }}`` and feed the collected values through
+# ``resolve_named_params`` so the connector's parameterised interface ($N)
+# handles quoting/typing safely.
+#
+# ``{{ secrets.NAME }}`` is the one namespace resolved INLINE (a flow author who
+# can reference a secret can already SELECT it; secrets are server-trusted, not
+# attacker-controlled).  Resolved secret VALUES are still redacted from logs /
+# errors by ``_redact_outcome``.
+
+#: Namespaces whose values must be BOUND as parameters (never interpolated).
+_BOUND_NAMESPACES = ("params", "inputs", "item", "vars")
+
+
+def bind_sql_params(sql: str, ctx: TaskContext) -> tuple[str, list[Any]]:
+    """Rewrite *sql* so user-supplied template values become bound parameters.
+
+    Returns ``(rewritten_sql, positional_params)`` where:
+
+    - Every ``{{ params.* }}`` / ``{{ inputs.* }}`` / ``{{ item.* }}`` expression
+      has been replaced by a positional placeholder (``$1``, ``$2``, …) and its
+      resolved value appended to *positional_params* (bound as data, NOT parsed
+      as SQL).
+    - ``{{ secrets.NAME }}`` expressions are resolved INLINE (server-trusted),
+      matching prior behaviour; their values are still redacted from logs.
+
+    The rewritten SQL contains ONLY placeholders for user-controlled values, so
+    a value such as ``x' UNION SELECT … --`` can never break out of its literal
+    position.  This is the same guarantee the /query endpoint provides via
+    ``planner.resolve_named_params`` / ``template.render_sql_template`` — here we
+    emit the positional ``$N`` placeholders directly (no Jinja round-trip) so the
+    user's SQL text is never handed to a template engine.
+    """
+    params: list[Any] = []
+
+    def _sub(match: "re.Match[str]") -> str:
+        expr = match.group(1)
+        namespace = expr.split(".", 1)[0]
+        if namespace in _BOUND_NAMESPACES:
+            # Resolve the actual (possibly non-string) value and bind it as the
+            # next positional parameter — emit $N, NEVER the value text.
+            value = _resolve_native(expr, ctx)
+            params.append(value)
+            return f"${len(params)}"
+        if namespace == "secrets":
+            # Server-trusted: resolve inline (string), as before.  Secrets may
+            # appear in non-value positions; this preserves historical behaviour
+            # and log redaction still masks the resolved value.
+            return _resolve_value(expr, ctx)
+        # Unknown namespace → empty string (soft failure, matches _resolve_value).
+        return ""
+
+    rewritten = _TEMPLATE_RE.sub(_sub, sql)
+    return rewritten, params
+
+
+def _resolve_native(expr: str, ctx: TaskContext) -> Any:
+    """Resolve a template expression to its NATIVE value (not str-coerced).
+
+    Unlike ``_resolve_value`` (which always returns ``str``), this preserves the
+    underlying Python type (int/float/bool/None/str) so it can be bound as a
+    typed query parameter.  Used only for the ``params``/``inputs``/``item``
+    namespaces on the SQL-binding path.
+    """
+    parts = expr.split(".")
+    if not parts:
+        return None
+    namespace = parts[0]
+    rest = parts[1:]
+
+    if namespace == "params":
+        val: Any = ctx.flow_params
+    elif namespace == "inputs":
+        val = ctx.inputs
+    elif namespace == "item":
+        val = ctx.item if ctx.item is not None else {}
+    elif namespace == "vars":
+        val = ctx.vars
+    else:
+        return None
+
+    for key in rest:
+        if isinstance(val, dict):
+            val = val.get(key, None)
+        else:
+            # Cannot navigate deeper into a scalar — stop here.
+            break
+    return val
 
 
 # ---------------------------------------------------------------------------
@@ -382,6 +508,10 @@ def _execute_query_with_bridge(
     query_id: str | None = config.get("query_id")
     sql: str | None = config.get("sql")
     named_params: dict[str, Any] = config.get("named_params") or {}
+    # SECURITY: positional params bound from {{ params.* }}/{{ inputs.* }}/
+    # {{ item.* }} by bind_sql_params (execute_task) for the ad-hoc-SQL path.
+    # These are the user-supplied values — bound, never interpolated.
+    ad_hoc_params: list[Any] = config.get("__bound_params__") or []
 
     resolved_sql: str
     positional_params: list[Any] = []
@@ -411,13 +541,49 @@ def _execute_query_with_bridge(
                     )
             resolved_sql, positional_params = resolve_named_params(resolved_sql, resolved)
     elif sql is not None:
+        # ``sql`` was already rewritten to positional placeholders ($N) by
+        # bind_sql_params; the bound values arrive via ``__bound_params__``.
         resolved_sql = sql
+        positional_params = list(ad_hoc_params)
     else:
         raise AppError(
             "invalid_task_config",
             "query task requires 'query_id' or 'sql' in config.",
             400,
         )
+
+    # ── Resolve connector + target dialect ────────────────────────────────────
+    # Mirror registry._handle_query: a BYO-warehouse ``datastore_id`` resolves
+    # the user's actual connector (and dialect); absent, fall back to the demo
+    # DuckDB connector.  We reuse the registry's resolution / seeding / transpile
+    # helpers WITHOUT modifying registry.py so binding (above) applies uniformly
+    # across the demo and BYO-warehouse paths.
+    datastore_id: str | None = config.get("datastore_id")
+    source_dialect: str | None = config.get("source_dialect")
+
+    if datastore_id:
+        from app.flows.registry import _resolve_flow_connector  # noqa: PLC0415
+        import sqlglot  # noqa: PLC0415
+
+        org_id: str = ctx.org_id or (claims or {}).get("org_id", "") or ""
+        connector, target_dialect = _resolve_flow_connector(datastore_id, org_id)
+        seed_demo = False
+        # Transpile BEFORE planning (RLS injection) when authored in a different
+        # dialect — same ordering as registry._handle_query.
+        if source_dialect and source_dialect != target_dialect:
+            try:
+                resolved_sql = sqlglot.transpile(
+                    resolved_sql,
+                    read=source_dialect,
+                    write=target_dialect,
+                    unsupported_level=sqlglot.ErrorLevel.WARN,
+                )[0]
+            except Exception:  # noqa: BLE001
+                pass
+    else:
+        connector = DuckDBConnector()
+        target_dialect = "duckdb"
+        seed_demo = True
 
     # Apply preview row limit when running in preview mode.
     limit: int | None = ctx.preview_limit if ctx.preview_mode else None
@@ -426,26 +592,36 @@ def _execute_query_with_bridge(
         resolved_sql,
         claims=claims,
         params=positional_params,
+        dialect=target_dialect,
         limit=limit,
     )
 
-    connector = DuckDBConnector()
-
-    # Seed the demo table (mirrors _handle_query / _tool_run_query).
-    try:
-        import pyarrow as pa  # noqa: PLC0415
-
-        demo = pa.table(
-            {
-                "id": pa.array([1, 2, 3, 4, 5], type=pa.int32()),
-                "name": pa.array(["alpha", "beta", "gamma", "delta", "epsilon"]),
-                "active": pa.array([True, True, False, True, False]),
-                "value": pa.array([10.0, 20.0, 30.0, 40.0, 50.0], type=pa.float64()),
-            }
+    # ── Capability-gated RLS check (mirror registry._handle_query / query.py) ──
+    policies = (physical_plan.rls_claims or {}).get("policies") or {}
+    if policies and connector.capabilities().get("predicate_rls") is False:
+        raise AppError(
+            "source_unsupported_rls",
+            "This source does not support Row-Level Security (predicate_rls=False). "
+            "Cannot execute a policy-bearing query on an unsecurable source.",
+            501,
         )
-        connector.register({"demo": demo})
-    except Exception:  # noqa: BLE001
-        pass
+
+    # Seed the demo table (only on the fallback DuckDB path).
+    if seed_demo:
+        try:
+            import pyarrow as pa  # noqa: PLC0415
+
+            demo = pa.table(
+                {
+                    "id": pa.array([1, 2, 3, 4, 5], type=pa.int32()),
+                    "name": pa.array(["alpha", "beta", "gamma", "delta", "epsilon"]),
+                    "active": pa.array([True, True, False, True, False]),
+                    "value": pa.array([10.0, 20.0, 30.0, 40.0, 50.0], type=pa.float64()),
+                }
+            )
+            connector.register({"demo": demo})
+        except Exception:  # noqa: BLE001
+            pass
 
     # Register bridge tables (Python cell outputs) as in-memory DuckDB tables.
     if bridge_tables:
@@ -551,6 +727,34 @@ def execute_task(
             k: (_resolve_any(v, ctx) if k not in ("item_expr", "body") else v)
             for k, v in raw_config.items()
         }
+    elif kind == "query":
+        # ── SECURITY: bind, never interpolate, user values into SQL ───────────
+        # For query cells we MUST NOT str-interpolate {{ params.* }} /
+        # {{ inputs.* }} / {{ item.* }} into the SQL text (SQL injection — see
+        # bind_sql_params).  Resolve every OTHER config key normally, but route
+        # the 'sql' string through the parameterised binder so user values
+        # become bound positional params ($N), not literal SQL.  'named_params'
+        # (overrides for a REGISTERED query) are left raw for the registered-
+        # query path, which already binds them via resolve_named_params.
+        resolved_config = {
+            k: (_resolve_any(v, ctx) if k not in ("sql", "named_params") else v)
+            for k, v in raw_config.items()
+        }
+        raw_sql = raw_config.get("sql")
+        if isinstance(raw_sql, str):
+            bound_sql, bound_params = bind_sql_params(raw_sql, ctx)
+            resolved_config["sql"] = bound_sql
+            # Stash bound params so the executor-owned query handler binds them.
+            resolved_config["__bound_params__"] = bound_params
+        # named_params (registered-query overrides): values feed
+        # resolve_named_params downstream, which BINDS them — never concatenates
+        # — so resolving any {{ }} inside them is safe (and the values are bound,
+        # not interpolated into SQL).
+        if isinstance(raw_config.get("named_params"), dict):
+            resolved_config["named_params"] = {
+                pk: _resolve_any(pv, ctx)
+                for pk, pv in raw_config["named_params"].items()
+            }
     else:
         resolved_config = _resolve_config(raw_config, ctx)
 
@@ -600,20 +804,24 @@ def execute_task(
         # This keeps all bridge logic inside executor.py (our owned file) and
         # avoids modifying registry.py.
         if kind == "query":
+            # SECURITY: ALL query cells run through the executor-owned handler
+            # (not registry._handle_query) so user-supplied {{ params.* }} /
+            # {{ inputs.* }} / {{ item.* }} values are BOUND as positional params
+            # (via bind_sql_params + __bound_params__) on every path — durable,
+            # preview, and Python→SQL-bridge — never str-interpolated into SQL.
+            # The handler supports datastore_id / source_dialect by reusing the
+            # registry's resolution helpers, so BYO-warehouse behaviour is
+            # preserved.
             bridge_tables = _collect_bridge_tables(ctx)
-            if bridge_tables or ctx.preview_mode:
-                # Use the inline bridge handler.
-                def _bridge_handler(
-                    cfg: dict[str, Any],
-                    _ctx: TaskContext,
-                    _claims: dict[str, Any],
-                ) -> dict[str, Any]:
-                    return _execute_query_with_bridge(cfg, _ctx, _claims, bridge_tables)
 
-                handler: Any = _bridge_handler
-            else:
-                registry = get_task_kind_registry()
-                handler = registry.get(kind)
+            def _bridge_handler(
+                cfg: dict[str, Any],
+                _ctx: TaskContext,
+                _claims: dict[str, Any],
+            ) -> dict[str, Any]:
+                return _execute_query_with_bridge(cfg, _ctx, _claims, bridge_tables)
+
+            handler: Any = _bridge_handler
         else:
             registry = get_task_kind_registry()
             handler = registry.get(kind)

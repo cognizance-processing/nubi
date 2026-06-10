@@ -45,14 +45,16 @@ All flow state is held in an ``InMemoryFlowStore`` (singleton via
 
 from __future__ import annotations
 
+import hmac
 from datetime import datetime, timezone
 from typing import Any
 
 from fastapi import APIRouter, Depends, Header, Request, Response
 from pydantic import BaseModel
 
-from app.auth.deps import current_user
+from app.auth.deps import current_user, verified_identity
 from app.auth.roles import require_writer_default
+from app.auth.verify import VerifiedIdentity
 from app.config import get_settings
 from app.db import fetchrow
 from app.errors import AppError
@@ -297,6 +299,16 @@ def _serialize_flow(flow: dict[str, Any]) -> dict[str, Any]:
 
 def _serialize_flow_run(run: dict[str, Any]) -> dict[str, Any]:
     """Convert a flow_run dict to a JSON-serialisable form."""
+    # Run-level duration in seconds (None until both timestamps exist).
+    started = run.get("started_at")
+    finished = run.get("finished_at")
+    duration_s: float | None = None
+    if started and finished:
+        try:
+            duration_s = (finished - started).total_seconds()
+        except Exception:  # noqa: BLE001
+            pass
+
     return {
         "id": run["id"],
         "flow_id": run["flow_id"],
@@ -304,9 +316,11 @@ def _serialize_flow_run(run: dict[str, Any]) -> dict[str, Any]:
         "state": run["state"],
         "params": run.get("params", {}),
         "trigger": run["trigger"],
+        "env": run.get("env"),
         "scheduled_at": _dt_iso(run.get("scheduled_at")),
         "started_at": _dt_iso(run.get("started_at")),
         "finished_at": _dt_iso(run.get("finished_at")),
+        "duration_s": duration_s,
         "error": run.get("error"),
         "created_at": _dt_iso(run.get("created_at")),
     }
@@ -489,6 +503,7 @@ async def create_scheduled_query(
 async def create_blend(
     body: CreateBlendIn,
     user: dict[str, Any] = Depends(current_user),
+    identity: VerifiedIdentity = Depends(verified_identity),
     repo: Repo = Depends(get_repo),
     x_project_id: str | None = Header(default=None, alias="X-Project-Id"),
 ) -> dict[str, Any]:
@@ -615,7 +630,12 @@ async def create_blend(
         "kind": "access",
         "sub": str(user.get("id", "")),
         "org_id": org_id,
-        "policies": {},
+        # SECURITY (B2): RLS policies come from the VERIFIED caller identity, not
+        # an empty dict — so a flow query cell is row-filtered exactly like the
+        # /query endpoint. Empty policies (admin/unscoped caller) → unchanged.
+        # NOTE: scheduled runs (flows_tick, claims=None) are a separate path and
+        # still need an explicit owner/service policy context (design decision).
+        "policies": dict(identity.policies),
         "scope": ["read:*", "write:*"],
     }
     flow_run = await materialize_flow_run(store, flow, {}, "manual", now)
@@ -661,7 +681,8 @@ async def flows_tick(
             "FLOWS_TICK_SECRET is not set; the /flows/tick endpoint is disabled.",
             503,
         )
-    if not x_nubi_tick_secret or x_nubi_tick_secret != secret:
+    # Constant-time comparison (B7) — a plain != leaks the secret via timing.
+    if not x_nubi_tick_secret or not hmac.compare_digest(x_nubi_tick_secret, secret):
         raise AppError("unauthorized", "Invalid or missing X-Nubi-Tick-Secret.", 401)
 
     store = get_flow_store()
@@ -989,6 +1010,7 @@ async def compile_code(
 async def preview_cell(
     body: PreviewCellIn,
     user: dict[str, Any] = Depends(current_user),
+    identity: VerifiedIdentity = Depends(verified_identity),
     repo: Repo = Depends(get_repo),
 ) -> dict[str, Any]:
     """Run a notebook cell (or cells up-to-cell) in interactive/preview mode.
@@ -1081,7 +1103,12 @@ async def preview_cell(
         "kind": "access",
         "sub": str(user.get("id", "")),
         "org_id": org_id,
-        "policies": {},
+        # SECURITY (B2): RLS policies come from the VERIFIED caller identity, not
+        # an empty dict — so a flow query cell is row-filtered exactly like the
+        # /query endpoint. Empty policies (admin/unscoped caller) → unchanged.
+        # NOTE: scheduled runs (flows_tick, claims=None) are a separate path and
+        # still need an explicit owner/service policy context (design decision).
+        "policies": dict(identity.policies),
         "scope": ["read:*", "write:*"],
     }
 
@@ -1098,6 +1125,17 @@ async def preview_cell(
     # reach the client: execute_task redacts them from errors + captured logs.
     secrets: dict[str, str] = await _resolve_secrets(org_id)
 
+    # Org variable namespace for {{ vars.* }} in preview cells (A5). Loaded once
+    # for the whole preview (org-global scope; best-effort → {} on any error).
+    from app.vars.store import load_vars_namespace  # noqa: PLC0415
+
+    _preview_vars = await load_vars_namespace(org_id, None)
+
+    # Captured stdout/stderr of the TARGET cell, surfaced so notebook users can
+    # see print() debugging in the preview. Already secret-redacted by
+    # execute_task before it reaches us.
+    target_logs: list[str] = []
+
     for task in tasks_to_run:
         # Inject preview_limit into query task config so the handler respects it.
         task_config = dict(task.config)
@@ -1109,6 +1147,8 @@ async def preview_cell(
             inputs=inputs,
             now=now,
             secrets=secrets,
+            org_id=org_id,
+            vars=_preview_vars,
         )
 
         task_dict: dict[str, Any] = {
@@ -1122,6 +1162,9 @@ async def preview_cell(
         }
 
         exec_result = execute_task(task_dict, ctx, claims)
+
+        if task.key == cell_key:
+            target_logs = exec_result.get("logs") or []
 
         if exec_result["state"] not in ("success",):
             if task.key == cell_key:
@@ -1151,6 +1194,7 @@ async def preview_cell(
         "rows": capped_rows,
         "row_count": len(capped_rows),
         "total_row_count": len(raw_rows),
+        "logs": target_logs,
     }
 
 
@@ -1158,6 +1202,7 @@ async def preview_cell(
 async def run_cell(
     body: RunCellIn,
     user: dict[str, Any] = Depends(current_user),
+    identity: VerifiedIdentity = Depends(verified_identity),
     repo: Repo = Depends(get_repo),
 ) -> dict[str, Any]:
     """Run a single notebook cell durably via the work-pool runtime.
@@ -1241,7 +1286,12 @@ async def run_cell(
         "kind": "access",
         "sub": str(user.get("id", "")),
         "org_id": org_id,
-        "policies": {},
+        # SECURITY (B2): RLS policies come from the VERIFIED caller identity, not
+        # an empty dict — so a flow query cell is row-filtered exactly like the
+        # /query endpoint. Empty policies (admin/unscoped caller) → unchanged.
+        # NOTE: scheduled runs (flows_tick, claims=None) are a separate path and
+        # still need an explicit owner/service policy context (design decision).
+        "policies": dict(identity.policies),
         "scope": ["read:*", "write:*"],
     }
 
@@ -1576,6 +1626,7 @@ async def run_flow(
     flow_id: str,
     body: RunFlowIn = RunFlowIn(),
     user: dict[str, Any] = Depends(current_user),
+    identity: VerifiedIdentity = Depends(verified_identity),
     repo: Repo = Depends(get_repo),
 ) -> dict[str, Any]:
     """Run a flow synchronously (drain all tasks).
@@ -1620,7 +1671,12 @@ async def run_flow(
         "kind": "access",
         "sub": str(user.get("id", "")),
         "org_id": org_id,
-        "policies": {},
+        # SECURITY (B2): RLS policies come from the VERIFIED caller identity, not
+        # an empty dict — so a flow query cell is row-filtered exactly like the
+        # /query endpoint. Empty policies (admin/unscoped caller) → unchanged.
+        # NOTE: scheduled runs (flows_tick, claims=None) are a separate path and
+        # still need an explicit owner/service policy context (design decision).
+        "policies": dict(identity.policies),
         "scope": ["read:*", "write:*"],
     }
 

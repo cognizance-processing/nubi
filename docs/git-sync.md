@@ -108,6 +108,39 @@ The workspace root is set by `NUBI_GIT_WORKSPACE` (default: `<system-temp>/nubi_
 
 ---
 
+## Three on-disk layouts (and which path uses which)
+
+Nubi currently has **three** serializers that write resources to a branch. They are not interchangeable — each belongs to a different sync path. This is an honest snapshot of the current state, not an aspiration:
+
+| Format | Written by | Used by | Status |
+|---|---|---|---|
+| **`.yaml`** portability envelopes | `git/sync.py` `serialize_envelope` | Project-level `POST /git/push` (and `POST /git/pull` imports them back) | **Live** — the dashboards-as-code path. One file per resource: `dashboards/<slug>.yaml`, `queries/<slug>.yaml`, `flows/<slug>.yaml`. |
+| **`.json`** (+ `.sql` / `.meta.json` for queries) | `git/env_sync.py` `serialize_version_files` | Environment ⇄ branch sync (checkpoint / promote / env push & pull) — pins one resource *version* per branch | **Live** — the env-sync path. `queries/<id>.sql` + `queries/<id>.meta.json`, `dashboards/<id>.json`, `flows/<id>.json`. File stems are resource uuids. |
+| **`.toml`** + per-cell sidecars | `git/flow_files.py` `serialize_flow_files` | *(none yet)* | **Planned / experimental.** Pure functions exist and round-trip, but are **not wired into any sync path** today. See [Flows on disk](#flows-on-disk). |
+
+The two live formats differ deliberately: the `.yaml` envelope path keys files by **slug** (human-readable, one current version per resource), while the env-sync `.json` path keys files by **uuid** and pins a specific **version** per environment branch. The `.toml` per-cell layout is a third projection aimed at reviewable flow diffs and is documented below so callers know it exists, but nothing imports or exports it automatically yet.
+
+### Flows on disk
+
+`git/flow_files.py` projects a single `FlowSpec` onto a small, reviewable directory tree — the **file persona** of the [one flow, three views](/docs/flows#one-flow-three-views) model:
+
+```
+flows/<slug>__<id8>/
+    flow.toml                 # flow metadata + ordered cells + [layout] table
+    cells/01_<key>.sql        # source of an SQL cell      (config.sql)
+    cells/02_<key>.py         # source of a Python cell    (config.code)
+    cells/03_<key>.md         # source of a Markdown cell  (config.markdown)
+```
+
+- The directory is `flows/<slug>__<id8>`, where `<id8>` is the first 8 hex chars of the flow id (disambiguates same-named flows).
+- **Lossless.** `flow.toml` stores the *full* cell dict minus two things peeled into separate places: the editable **source** text (moved to the sidecar file) and the canvas **ui** coordinates (moved to a `[layout]` table, so dragging a node on the canvas never dirties a cell's diff). Loading re-merges both, so any current or future cell field survives the round-trip.
+- **Stable order.** Cells are written in spec order with a zero-padded `NN` prefix; the `[[cells]]` array in `flow.toml` is the authoritative load order.
+- **Only three cell kinds get a sidecar file** — SQL (`.sql` from `config.sql`), Python (`.py` from `config.code`), and Markdown (`.md` from `config.markdown`). Every other kind (map, branch, materialize, bucket_load, agent, plain noop) has no single "source" to extract, so its whole config stays inline in `flow.toml`.
+
+This layout is pure (no I/O) and **not yet wired into push/pull** — it is the planned/experimental third format from the table above.
+
+---
+
 ## API reference
 
 All endpoints require a valid Bearer token. Operations are org-scoped.
@@ -215,6 +248,54 @@ Request body:
 ### `GET /api/v1/git/status?project_id=<uuid>`
 
 Return the current git binding and last-sync info for a project. The token is never returned.
+
+---
+
+### `GET /api/v1/projects/{project_id}/git/files`
+
+Read-only listing of the resource files tracked at a ref in the project's workspace repo. Used by the in-app file viewer; makes no network call and never returns a 5xx on git problems.
+
+Query params:
+
+| Param | Description |
+|---|---|
+| `ref` | Optional git ref. Defaults to the **production environment's bound branch**, falling back to the first env that carries a branch, then to `main` (see `_default_git_ref`). |
+
+Response:
+
+```json
+{
+  "ref":   "main",
+  "files": ["queries/<id>.sql", "dashboards/<id>.json", "nubi.yaml"]
+}
+```
+
+Lists the tracked files under the known resource folders (`queries`, `dashboards`, `flows`) plus the `nubi.yaml` manifest when present. Returns an **empty `files` list** when the project has no workspace repo yet, or on any git error — never an error status.
+
+---
+
+### `GET /api/v1/projects/{project_id}/git/files/content?path=<path>&ref=<ref>`
+
+Read-only content of a single tracked file at a ref.
+
+Query params:
+
+| Param | Description |
+|---|---|
+| `path` | **Required.** Repo-relative path to the file. |
+| `ref` | Optional; same default as the listing endpoint (prod env's bound branch → first branch → `main`). |
+
+The `path` is **allowlisted**: it must live under one of the known resource folders (`queries`, `dashboards`, `flows`) or be exactly `nubi.yaml`. A path that is empty, absolute, contains a backslash, or has a `.`/`..` segment is rejected with **400** (`invalid_path`). A path that resolves to no tracked file at the ref returns **404** (`not_found`).
+
+Response:
+
+```json
+{
+  "path":    "queries/<id>.sql",
+  "ref":     "main",
+  "content": "SELECT 1"
+}
+```
 
 ---
 

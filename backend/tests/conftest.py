@@ -414,6 +414,15 @@ def _reset_state():
         except Exception:
             pass
 
+        # ── Variable store (A5) ───────────────────────────────────────────────
+        # Reset to a fresh in-memory store between tests for isolation symmetry
+        # with the flow store (vars persist across cases otherwise).
+        try:
+            from app.vars.store import set_var_store, InMemoryVarStore
+            set_var_store(InMemoryVarStore())
+        except Exception:
+            pass
+
         # ── Task-kind registry ────────────────────────────────────────────────
         try:
             from app.flows.registry import reset_for_tests as _reset_task_reg
