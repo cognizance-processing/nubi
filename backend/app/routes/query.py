@@ -237,6 +237,103 @@ async def _forward_heavy_query(request: Request, body: "QueryIn"):
         return None
 
 # ---------------------------------------------------------------------------
+# Output-shape contract validation (A4)
+# ---------------------------------------------------------------------------
+# A registered query may declare its output columns + portable types via
+# RegisteredQuery.output_schema.  After execution (cache MISS only — cached
+# bytes were validated when written), we normalise each Arrow field type to the
+# portable vocabulary and compare name + order + type against the declaration.
+#
+# Modes:
+#   WARN (default)  — attach an X-Nubi-Schema: MISMATCH response header + log.
+#   STRICT          — raise AppError("output_schema_mismatch", 422).  Enabled
+#                     by env NUBI_OUTPUT_SCHEMA_STRICT (truthy) OR a per-query
+#                     flag (RegisteredQuery.strict_output_schema).
+#
+# None output_schema => skip entirely (queries without a contract are
+# unaffected).
+
+
+def _portable_arrow_type(field_type: "pa.DataType") -> str:
+    """Normalise an Arrow field type to the portable contract vocabulary (A4).
+
+    Mapping (the only portable types are text|number|bool|date|timestamp|json):
+      int*/float*/decimal*           → number
+      utf8/large_utf8/string         → text
+      bool                           → bool
+      date32/date64                  → date
+      timestamp                      → timestamp
+      anything else (list/struct/…)  → json
+    """
+    t = field_type
+    if pa.types.is_boolean(t):
+        return "bool"
+    if (
+        pa.types.is_integer(t)
+        or pa.types.is_floating(t)
+        or pa.types.is_decimal(t)
+    ):
+        return "number"
+    if pa.types.is_string(t) or pa.types.is_large_string(t):
+        return "text"
+    if pa.types.is_date(t):
+        return "date"
+    if pa.types.is_timestamp(t):
+        return "timestamp"
+    return "json"
+
+
+def _validate_output_schema(
+    registered: "RegisteredQuery | None",
+    arrow_table: "pa.Table",
+) -> tuple[bool, str | None]:
+    """Validate the executed result against the declared output_schema (A4).
+
+    Returns ``(ok, detail)`` where *ok* is ``True`` when there is no declared
+    schema (skip) or the result matches name + order + portable type exactly,
+    and *detail* is a human-readable mismatch description otherwise.
+    """
+    if registered is None or registered.output_schema is None:
+        return True, None
+
+    declared = registered.output_schema
+    actual_schema = arrow_table.schema
+    actual_names = list(actual_schema.names)
+
+    if len(actual_names) != len(declared):
+        return False, (
+            f"column count mismatch: declared {len(declared)} "
+            f"({[c.name for c in declared]}), got {len(actual_names)} ({actual_names})"
+        )
+
+    for idx, col in enumerate(declared):
+        got_name = actual_names[idx]
+        got_type = _portable_arrow_type(actual_schema.field(idx).type)
+        if got_name != col.name:
+            return False, (
+                f"column {idx}: declared name {col.name!r}, got {got_name!r}"
+            )
+        if got_type != col.type:
+            return False, (
+                f"column {idx} ({col.name!r}): declared type {col.type!r}, "
+                f"got {got_type!r}"
+            )
+    return True, None
+
+
+def _output_schema_strict(registered: "RegisteredQuery | None") -> bool:
+    """Return True when output-schema mismatches must raise (STRICT mode)."""
+    if os.getenv("NUBI_OUTPUT_SCHEMA_STRICT", "").strip().lower() in (
+        "1",
+        "true",
+        "yes",
+        "on",
+    ):
+        return True
+    return bool(registered is not None and registered.strict_output_schema)
+
+
+# ---------------------------------------------------------------------------
 # Strict environment visibility for embed identities (DECISION 4)
 # ---------------------------------------------------------------------------
 
@@ -295,9 +392,16 @@ async def _apply_embed_env_pin(
     if not pinned or not pinned.get("sql"):
         return registered
 
-    from app.queries.registry import _params_from_config  # noqa: PLC0415
+    from app.queries.registry import (  # noqa: PLC0415
+        _params_from_config,
+        _schema_from_config,
+    )
 
     datastore_id = pinned.get("datastore_id")
+    # Carry the output-shape contract (A4) through the env-pin rebuild: prefer
+    # the pinned snapshot's declaration, falling back to the draft's when the
+    # snapshot does not carry one.
+    pinned_schema = _schema_from_config(pinned.get("output_schema"))
     return RegisteredQuery(
         id=registered.id,
         sql=str(pinned["sql"]),
@@ -306,6 +410,12 @@ async def _apply_embed_env_pin(
         params=tuple(_params_from_config(pinned.get("params"))),
         datastore_id=(
             str(datastore_id) if datastore_id is not None else registered.datastore_id
+        ),
+        output_schema=(
+            pinned_schema if pinned_schema is not None else registered.output_schema
+        ),
+        strict_output_schema=bool(
+            pinned.get("strict_output_schema", registered.strict_output_schema)
         ),
     )
 
@@ -1051,6 +1161,26 @@ async def query(
     try:
         arrow_table = connector.execute(physical_plan)
 
+        # ── 4b. Output-shape contract validation (A4) ────────────────────────
+        # Only on cache MISS — cached bytes were validated when first written.
+        # No declared output_schema → skipped entirely (queries without a
+        # contract are unaffected).  WARN mode (default) flags via a response
+        # header + log; STRICT mode raises 422 before serialisation.
+        _schema_ok, _schema_detail = _validate_output_schema(registered, arrow_table)
+        if not _schema_ok:
+            if _output_schema_strict(registered):
+                raise _AppError(
+                    "output_schema_mismatch",
+                    "Query result does not match the declared output_schema: "
+                    f"{_schema_detail}",
+                    422,
+                )
+            logger.warning(
+                "output_schema mismatch for query_id=%s: %s",
+                getattr(registered, "id", None),
+                _schema_detail,
+            )
+
         # ── 5. Serialise to Arrow IPC stream bytes ───────────────────────────
         full_bytes = table_to_ipc_bytes(arrow_table)
     finally:
@@ -1102,10 +1232,17 @@ async def query(
         pass
 
     # ── 7. Stream the response with MISS header ───────────────────────────────
+    # WARN-mode output-schema mismatch (A4): surface an advisory header so the
+    # caller can detect the contract drift without the request failing.  STRICT
+    # mode already raised 422 above, so reaching here with _schema_ok False
+    # means WARN mode.
+    _resp_headers = {"X-Nubi-Cache": "MISS"}
+    if not _schema_ok:
+        _resp_headers["X-Nubi-Schema"] = "MISMATCH"
     return StreamingResponse(
         ipc_stream_from_bytes(full_bytes),
         media_type=_ARROW_STREAM_MEDIA_TYPE,
-        headers={"X-Nubi-Cache": "MISS"},
+        headers=_resp_headers,
     )
 
 

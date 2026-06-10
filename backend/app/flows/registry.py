@@ -583,6 +583,15 @@ def _handle_python(
         vars = _json.loads({vars_json!r})
         secrets = _json.loads({secrets_json!r})
 
+        # set_var (A5): a python cell can publish a variable for LATER cells in
+        # the same run. Collected into `_set_vars`, emitted under the reserved
+        # `__set_vars__` key (never collides with user `result` keys). persist=True
+        # also flushes to the long-term store (handled by the runtime).
+        _set_vars = {{}}
+        def set_var(name, value, persist=False):
+            _set_vars[str(name)] = {{"value": value, "persist": bool(persist)}}
+            vars[str(name)] = value  # visible to the rest of THIS cell too
+
         # ── DataFrame-native inputs (additive; pandas-guarded) ───────────
         # For each upstream key whose result has {{rows, columns}}, expose a
         # pandas.DataFrame under `dataframes[key]`.  Degrades to an empty dict
@@ -630,6 +639,9 @@ def _handle_python(
                 _out = {{"value": _result_val}}
             except (TypeError, ValueError):
                 _out = {{"value": str(_result_val)}}
+
+        if _set_vars and isinstance(_out, dict):
+            _out["__set_vars__"] = _set_vars
 
         print("__FLOW_RESULT__:" + _json.dumps(_out, default=str))
     """)

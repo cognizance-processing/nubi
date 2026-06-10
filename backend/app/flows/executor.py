@@ -851,10 +851,16 @@ def execute_task(
             result = {"value": result}
 
         _meter(result)
-        return _redact_outcome(
-            {"state": "success", "result": result, "error": None, "logs": log_lines},
-            ctx.secrets,
-        )
+        # set_var (A5): a python cell publishes vars under the reserved
+        # __set_vars__ key. Lift them onto the outcome and strip the key so it
+        # never leaks into downstream `inputs` or stored results.
+        set_vars = result.pop("__set_vars__", None) if isinstance(result, dict) else None
+        outcome: dict[str, Any] = {
+            "state": "success", "result": result, "error": None, "logs": log_lines,
+        }
+        if isinstance(set_vars, dict) and set_vars:
+            outcome["set_vars"] = set_vars
+        return _redact_outcome(outcome, ctx.secrets)
 
     except Exception as exc:  # noqa: BLE001 — broad catch mirrors execute_job
         import traceback  # noqa: PLC0415

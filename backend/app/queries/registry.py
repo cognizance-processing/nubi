@@ -80,6 +80,37 @@ class QueryParam:
 
 
 # ---------------------------------------------------------------------------
+# OutputColumn — declared output-shape contract (A4)
+# ---------------------------------------------------------------------------
+
+# The PORTABLE output-type set: a tiny, connector-agnostic vocabulary that the
+# query route normalises every Arrow field type down to before comparing.  Any
+# Arrow type that does not map cleanly (lists, structs, maps, binary, …) falls
+# back to ``"json"``.
+PORTABLE_OUTPUT_TYPES: frozenset[str] = frozenset(
+    {"text", "number", "bool", "date", "timestamp", "json"}
+)
+
+
+@dataclass(frozen=True)
+class OutputColumn:
+    """A single declared output column for the output-shape contract (A4).
+
+    Attributes
+    ----------
+    name:
+        Output column name (must match the result column at the same position).
+    type:
+        One of the PORTABLE output types: ``text | number | bool | date |
+        timestamp | json``.  The route normalises the actual Arrow field type
+        to this vocabulary before comparing.
+    """
+
+    name: str
+    type: Literal["text", "number", "bool", "date", "timestamp", "json"] = "text"
+
+
+# ---------------------------------------------------------------------------
 # RegisteredQuery
 # ---------------------------------------------------------------------------
 
@@ -128,6 +159,8 @@ class RegisteredQuery:
     required_scope: str | None = None
     params: tuple[QueryParam, ...] = field(default_factory=tuple)
     datastore_id: str | None = None
+    output_schema: tuple[OutputColumn, ...] | None = None
+    strict_output_schema: bool = False
 
     def params_as_list(self) -> list[QueryParam]:
         """Return params as a plain list (convenience helper)."""
@@ -158,6 +191,8 @@ class QueryRegistry:
         required_scope: str | None = None,
         params: list[QueryParam] | None = None,
         datastore_id: str | None = None,
+        output_schema: list[OutputColumn] | None = None,
+        strict_output_schema: bool = False,
     ) -> RegisteredQuery:
         """Register a query and return the ``RegisteredQuery`` object.
 
@@ -197,6 +232,8 @@ class QueryRegistry:
             required_scope=required_scope,
             params=tuple(params) if params else (),
             datastore_id=datastore_id,
+            output_schema=tuple(output_schema) if output_schema else None,
+            strict_output_schema=strict_output_schema,
         )
         self._store[id] = rq
         return rq
@@ -367,6 +404,38 @@ def _params_from_config(raw: object) -> list[QueryParam]:
     return out
 
 
+def _schema_from_config(raw: object) -> tuple[OutputColumn, ...] | None:
+    """Build the declared ``output_schema`` from a persisted config value (A4).
+
+    The persisted form mirrors how ``params`` are persisted — a list of dicts::
+
+        [{"name": "id", "type": "number"}, {"name": "label", "type": "text"}]
+
+    Each ``type`` is coerced to the PORTABLE set
+    (``text|number|bool|date|timestamp|json``); an unknown/missing type falls
+    back to ``"text"``.  Returns ``None`` when the config carries no schema
+    (so queries without a declared contract skip validation entirely) and a
+    tuple of :class:`OutputColumn` otherwise.  Best-effort: never raises.
+    """
+    if raw is None:
+        return None
+    if not isinstance(raw, list):
+        return None
+    out: list[OutputColumn] = []
+    for item in raw:
+        if not isinstance(item, dict) or "name" not in item:
+            continue
+        try:
+            t = str(item.get("type") or "text").strip().lower()
+            if t not in PORTABLE_OUTPUT_TYPES:
+                t = "text"
+            out.append(OutputColumn(name=str(item["name"]), type=t))  # type: ignore[arg-type]
+        except Exception:
+            continue
+    # An explicit empty list is a declared (empty) contract → keep it as ().
+    return tuple(out)
+
+
 async def load_persisted_queries() -> int:
     """Load queries from the ``queries`` table into the runtime registry.
 
@@ -415,12 +484,15 @@ async def load_persisted_queries() -> int:
                 continue
 
             datastore_id = cfg.get("datastore_id")
+            _schema = _schema_from_config(cfg.get("output_schema"))
             registry.register(
                 id=str(row["id"]),
                 sql=str(sql),
                 name=str(cfg.get("name") or row["name"] or row["id"]),
                 params=_params_from_config(cfg.get("params")),
                 datastore_id=str(datastore_id) if datastore_id is not None else None,
+                output_schema=list(_schema) if _schema is not None else None,
+                strict_output_schema=bool(cfg.get("strict_output_schema", False)),
             )
             loaded += 1
         except Exception as exc:  # noqa: BLE001 — skip one bad row, keep going.
@@ -468,12 +540,15 @@ async def ensure_persisted_query(query_id: str):
         if not isinstance(cfg, dict) or not cfg.get("sql"):
             return None
         datastore_id = cfg.get("datastore_id")
+        _schema = _schema_from_config(cfg.get("output_schema"))
         registry.register(
             id=str(row["id"]),
             sql=str(cfg["sql"]),
             name=str(cfg.get("name") or row["name"] or row["id"]),
             params=_params_from_config(cfg.get("params")),
             datastore_id=str(datastore_id) if datastore_id is not None else None,
+            output_schema=list(_schema) if _schema is not None else None,
+            strict_output_schema=bool(cfg.get("strict_output_schema", False)),
         )
     except Exception as exc:  # noqa: BLE001
         logger.warning("ensure_persisted_query(%s): register failed: %s", query_id, exc)

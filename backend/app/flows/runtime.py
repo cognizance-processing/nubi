@@ -971,6 +971,40 @@ async def _execute_with_heartbeat(
 # ---------------------------------------------------------------------------
 
 
+async def _flush_persisted_set_vars(
+    outcome: dict[str, Any], org_id: str | None, project_id: str | None
+) -> None:
+    """Persist any ``set_var(..., persist=True)`` values from a cell outcome (A5).
+
+    A python cell publishes vars under ``outcome["set_vars"]`` as
+    ``{name: {"value": v, "persist": bool}}``. The ``persist=True`` ones are
+    written to the long-term variable store, so later cells (which rebuild their
+    ``vars`` namespace via ``load_vars_namespace``) and future runs see them.
+    Best-effort: a store error never fails the run. (Non-persisted, run-scoped
+    set_var propagation is a separate follow-up — see set_var design notes.)
+    """
+    if not org_id:
+        return
+    set_vars = outcome.get("set_vars") or {}
+    if not isinstance(set_vars, dict) or not set_vars:
+        return
+    persisted = {
+        k: e.get("value")
+        for k, e in set_vars.items()
+        if isinstance(e, dict) and e.get("persist")
+    }
+    if not persisted:
+        return
+    try:
+        from app.vars.store import get_var_store  # noqa: PLC0415
+
+        var_store = get_var_store()
+        for name, value in persisted.items():
+            await var_store.set_var(org_id, name, value, project_id=project_id)
+    except Exception:  # noqa: BLE001 — vars are advisory; never break the run
+        logger.warning("Failed to persist set_var values for org %s", org_id)
+
+
 async def run_one_ready_task(
     store: Any,
     now: datetime,
@@ -1102,6 +1136,10 @@ async def run_one_ready_task(
         worker_id=task_run.get("worker_id"),
         lease_seconds=lease_seconds,
     )
+
+    # set_var(persist=True) (A5): flush published vars to the long-term store so
+    # later cells (which reload via load_vars_namespace) and future runs see them.
+    await _flush_persisted_set_vars(outcome, org_id, (flow_dict or {}).get("project_id"))
 
     attempt: int = int(task_run.get("attempt", 0))
     retries: int = int(task_spec.get("retries", 0))

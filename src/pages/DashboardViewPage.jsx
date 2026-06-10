@@ -294,7 +294,7 @@ export default function DashboardViewPage() {
   }
 
   return (
-    <div className="max-w-6xl mx-auto px-4 sm:px-6 lg:px-8 py-8" data-testid="dashboard-view-page">
+    <div className="max-w-[110rem] mx-auto px-4 sm:px-6 lg:px-8 py-8" data-testid="dashboard-view-page">
 
       {/* Fallback / error notice */}
       {error && (
