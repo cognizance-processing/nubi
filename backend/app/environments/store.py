@@ -325,6 +325,16 @@ class InMemoryEnvStore:
         v = self._versions.get(str(version_id))
         return deepcopy(v) if v is not None else None
 
+    async def set_version_git_commit(
+        self, version_id: str, git_commit_sha: str
+    ) -> ResourceVersion | None:
+        """Stamp ``git_commit_sha`` on a version; return the updated copy."""
+        v = self._versions.get(str(version_id))
+        if v is None:
+            return None
+        v["git_commit_sha"] = _str_or_none(git_commit_sha)
+        return deepcopy(v)
+
     # ------------------------------------------------------------------
     # Pointer operations
     # ------------------------------------------------------------------
@@ -379,6 +389,57 @@ class InMemoryEnvStore:
         out.sort(
             key=lambda p: self._envs.get(p["environment_id"], {}).get("position", 0)
         )
+        return out
+
+    async def list_pointers_bulk(
+        self, kind: str, resource_ids: list[str]
+    ) -> dict[str, list[Pointer]]:
+        """Batched :meth:`list_pointers` for many resources at once.
+
+        Returns ``{resource_id: [enriched pointer, ...]}`` with an entry for
+        EVERY requested id (empty list when the resource has no pointers).
+        Used by list endpoints to attach ``pinned_envs`` per row without an
+        N+1 lookup.
+        """
+        wanted = {str(rid) for rid in resource_ids}
+        out: dict[str, list[Pointer]] = {rid: [] for rid in wanted}
+        for ptr in self._pointers.values():
+            rid = str(ptr["resource_id"])
+            if ptr["kind"] != kind or rid not in wanted:
+                continue
+            env = self._envs.get(ptr["environment_id"])
+            ver = self._versions.get(ptr["version_id"])
+            if env is None or ver is None:
+                continue
+            out[rid].append(
+                {
+                    "environment_id": ptr["environment_id"],
+                    "env_key": env["key"],
+                    "version_id": ptr["version_id"],
+                    "version": ver["version"],
+                    "promoted_at": ptr["promoted_at"],
+                    "promoted_by": ptr["promoted_by"],
+                }
+            )
+        for rid in out:
+            out[rid].sort(
+                key=lambda p: self._envs.get(p["environment_id"], {}).get("position", 0)
+            )
+        return out
+
+    async def list_env_pointers(self, environment_id: str) -> list[Pointer]:
+        """Return ALL pointers pinned in one environment (any kind/resource).
+
+        Used by the git-env layer (push / take_env) to serialize an
+        environment's full pinned state.  Ordered by (kind, resource_id).
+        """
+        eid = str(environment_id)
+        out = [
+            deepcopy(ptr)
+            for ptr in self._pointers.values()
+            if str(ptr["environment_id"]) == eid
+        ]
+        out.sort(key=lambda p: (p["kind"], p["resource_id"]))
         return out
 
     # ------------------------------------------------------------------
@@ -720,6 +781,22 @@ class PgEnvStore:
         )
         return _row_to_version(row) if row is not None else None
 
+    async def set_version_git_commit(
+        self, version_id: str, git_commit_sha: str
+    ) -> ResourceVersion | None:
+        """Stamp ``git_commit_sha`` on a version; return the updated dict."""
+        from app.db import fetchrow as db_fetchrow  # noqa: PLC0415
+
+        row = await db_fetchrow(
+            """
+            UPDATE resource_versions SET git_commit_sha = $1
+            WHERE id = $2::uuid RETURNING *
+            """,
+            git_commit_sha,
+            version_id,
+        )
+        return _row_to_version(row) if row is not None else None
+
     # ------------------------------------------------------------------
     # Pointer operations
     # ------------------------------------------------------------------
@@ -804,6 +881,68 @@ class PgEnvStore:
             out.append(d)
         return out
 
+    async def list_pointers_bulk(
+        self, kind: str, resource_ids: list[str]
+    ) -> dict[str, list[Pointer]]:
+        """Batched :meth:`list_pointers` for many resources at once.
+
+        Returns ``{resource_id: [enriched pointer, ...]}`` with an entry for
+        EVERY requested id (empty list when the resource has no pointers).
+        One ``ANY($2::uuid[])`` query — used by list endpoints to attach
+        ``pinned_envs`` per row without an N+1 lookup.
+        """
+        from app.db import fetch as db_fetch  # noqa: PLC0415
+
+        wanted = [str(rid) for rid in resource_ids]
+        out: dict[str, list[Pointer]] = {rid: [] for rid in wanted}
+        if not wanted:
+            return out
+        rows = await db_fetch(
+            """
+            SELECT re.resource_id,
+                   re.environment_id,
+                   e.key       AS env_key,
+                   re.version_id,
+                   rv.version,
+                   re.promoted_at,
+                   re.promoted_by
+            FROM resource_environments re
+            JOIN environments e       ON e.id  = re.environment_id
+            JOIN resource_versions rv ON rv.id = re.version_id
+            WHERE re.kind = $1 AND re.resource_id = ANY($2::uuid[])
+            ORDER BY re.resource_id, e.position ASC
+            """,
+            kind,
+            wanted,
+        )
+        for r in rows:
+            d = dict(r)
+            rid = str(d.pop("resource_id"))
+            for key in ("environment_id", "version_id", "promoted_by"):
+                if d.get(key) is not None:
+                    d[key] = str(d[key])
+            d["promoted_at"] = _iso(d.get("promoted_at"))
+            out.setdefault(rid, []).append(d)
+        return out
+
+    async def list_env_pointers(self, environment_id: str) -> list[Pointer]:
+        """Return ALL pointers pinned in one environment (any kind/resource).
+
+        Used by the git-env layer (push / take_env) to serialize an
+        environment's full pinned state.  Ordered by (kind, resource_id).
+        """
+        from app.db import fetch as db_fetch  # noqa: PLC0415
+
+        rows = await db_fetch(
+            """
+            SELECT * FROM resource_environments
+            WHERE environment_id = $1::uuid
+            ORDER BY kind ASC, resource_id ASC
+            """,
+            environment_id,
+        )
+        return [_row_to_pointer(r) for r in rows]
+
     # ------------------------------------------------------------------
     # Cleanup
     # ------------------------------------------------------------------
@@ -843,6 +982,93 @@ def get_env_store() -> InMemoryEnvStore | PgEnvStore:
     if _env_store is None:
         _env_store = PgEnvStore()
     return _env_store
+
+
+async def attach_pinned_envs(kind: str, rows: list[dict[str, Any]]) -> None:
+    """Attach ``pinned_envs: [env_key, ...]`` to every row dict, in place.
+
+    Used by list endpoints (boards/queries/flows) so the UI can render
+    "not in <env>" badges.  ALWAYS sets the key (``[]`` default); the batched
+    pointer lookup itself is best-effort — a missing/failing environments
+    layer never breaks a list endpoint.
+    """
+    for row in rows:
+        row["pinned_envs"] = []
+    if not rows:
+        return
+    try:
+        bulk = await get_env_store().list_pointers_bulk(
+            kind, [str(r["id"]) for r in rows]
+        )
+    except Exception:  # noqa: BLE001 — env layer must never break listing.
+        return
+    for row in rows:
+        row["pinned_envs"] = [
+            p["env_key"] for p in bulk.get(str(row["id"]), [])
+        ]
+
+
+async def resolve_default_env_config(
+    kind: str,
+    resource_id: str,
+    project_id: str | None,
+    org_id: str | None = None,
+) -> dict[str, Any] | None:
+    """Resolve a resource's pinned config in its project's DEFAULT environment.
+
+    Strict-visibility rule for embed/viewer identities (the default env is the
+    protected ``prod`` env in standard projects):
+
+    - default env has a pointer for the resource → return that pinned
+      version's ``config`` (the caller substitutes it for the draft);
+    - default env is PROTECTED and has NO pointer → raise ``AppError`` 404
+      (``not_published``) — drafts are never visible to embed identities in a
+      protected environment;
+    - default env exists, is NOT protected, and has no pointer → return
+      ``None`` (caller serves the draft);
+    - no resolvable project / default env / version (including any lookup
+      failure) → return ``None`` (draft; environments layer is optional).
+
+    ``project_id`` falls back to the org's default project when missing.
+    """
+    pid = project_id
+    try:
+        if not pid and org_id:
+            from app.routes._org import resolve_org_default_project_id  # noqa: PLC0415
+
+            pid = await resolve_org_default_project_id(org_id)
+        if not pid:
+            return None
+        store = get_env_store()
+        envs = await store.list_environments(str(pid))
+        default_env = next((e for e in envs if e.get("is_default")), None)
+        if default_env is None:
+            return None
+        pointer = await store.get_pointer(kind, str(resource_id), default_env["id"])
+        protected = bool(default_env.get("protected"))
+        env_key = default_env.get("key")
+    except Exception:  # noqa: BLE001 — env layer is optional; serve the draft.
+        return None
+
+    if pointer is None:
+        if protected:
+            from app.errors import AppError  # noqa: PLC0415
+
+            raise AppError(
+                "not_published",
+                f"Resource is not published to the {env_key!r} environment.",
+                404,
+            )
+        return None
+
+    try:
+        version = await get_env_store().get_version_by_id(pointer["version_id"])
+    except Exception:  # noqa: BLE001
+        return None
+    if version is None:
+        return None
+    config = version.get("config")
+    return config if isinstance(config, dict) else None
 
 
 def set_env_store(store: InMemoryEnvStore | PgEnvStore | None) -> None:

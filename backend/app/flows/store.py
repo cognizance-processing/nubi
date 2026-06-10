@@ -132,12 +132,22 @@ class InMemoryFlowStore:
         flow = self._flows.get(str(flow_id))
         return deepcopy(flow) if flow is not None else None
 
-    async def list_flows(self, org_id: str) -> list[Flow]:
-        """Return all flows belonging to *org_id*, sorted by created_at."""
+    async def list_flows(
+        self, org_id: str, project_id: str | None = None
+    ) -> list[Flow]:
+        """Return all flows belonging to *org_id*, sorted by created_at.
+
+        When *project_id* is provided the result is additionally scoped to
+        that project; when ``None`` all of the org's flows are returned.
+        """
         rows = [
             deepcopy(f)
             for f in self._flows.values()
             if str(f["org_id"]) == str(org_id)
+            and (
+                project_id is None
+                or str(f.get("project_id")) == str(project_id)
+            )
         ]
         rows.sort(key=lambda r: r["created_at"])
         return rows
@@ -718,14 +728,28 @@ class PgFlowStore:
         )
         return _row_to_flow(row) if row is not None else None
 
-    async def list_flows(self, org_id: str) -> list[Flow]:
-        """Return all flows belonging to *org_id*, sorted by created_at."""
+    async def list_flows(
+        self, org_id: str, project_id: str | None = None
+    ) -> list[Flow]:
+        """Return all flows belonging to *org_id*, sorted by created_at.
+
+        When *project_id* is provided the result is additionally scoped to
+        that project; when ``None`` all of the org's flows are returned.
+        """
         from app.db import fetch as db_fetch  # noqa: PLC0415
 
-        rows = await db_fetch(
-            "SELECT * FROM flows WHERE org_id = $1::uuid ORDER BY created_at ASC",
-            org_id,
-        )
+        if project_id is not None:
+            rows = await db_fetch(
+                "SELECT * FROM flows WHERE org_id = $1::uuid "
+                "AND project_id = $2::uuid ORDER BY created_at ASC",
+                org_id,
+                project_id,
+            )
+        else:
+            rows = await db_fetch(
+                "SELECT * FROM flows WHERE org_id = $1::uuid ORDER BY created_at ASC",
+                org_id,
+            )
         return [_row_to_flow(r) for r in rows]
 
     async def update_flow(self, flow_id: str, fields: dict[str, Any]) -> Flow | None:

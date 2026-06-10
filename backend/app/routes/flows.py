@@ -48,7 +48,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from typing import Any
 
-from fastapi import APIRouter, Depends, Header, Response
+from fastapi import APIRouter, Depends, Header, Request, Response
 from pydantic import BaseModel
 
 from app.auth.deps import current_user
@@ -1445,14 +1445,30 @@ async def create_flow(
 
 @router.get("", status_code=200)
 async def list_flows(
+    request: Request,
     user: dict[str, Any] = Depends(current_user),
     repo: Repo = Depends(get_repo),
 ) -> list[dict[str, Any]]:
-    """List all flows for the caller's org."""
+    """List flows for the caller's org, scoped to the active project.
+
+    ``X-Project-Id`` / ``?project_id=`` select the project (validated against
+    the org); otherwise the org's default project is used.  When no project
+    can be resolved (test doubles without a projects table) the list is
+    org-wide.  Each row carries ``pinned_envs``: the env keys that have a
+    pinned version of the flow (empty list when unversioned).
+    """
+    from app.routes._org import resolve_project_filter  # noqa: PLC0415
+
     org_id = await _get_user_org(str(user["id"]), repo)
+    project_id = await resolve_project_filter(org_id, request)
     store = get_flow_store()
-    flows = await store.list_flows(org_id)
-    return [_serialize_flow(f) for f in flows]
+    flows = await store.list_flows(org_id, project_id)
+    rows = [_serialize_flow(f) for f in flows]
+
+    from app.environments.store import attach_pinned_envs  # noqa: PLC0415
+
+    await attach_pinned_envs("flow", rows)
+    return rows
 
 
 @router.get("/{flow_id}", status_code=200)

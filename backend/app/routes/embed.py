@@ -337,6 +337,31 @@ async def get_embed_config(
             404,
         )
 
+    # ── STRICT ENV VISIBILITY (DECISION 4) — embed identities only ───────────
+    # Embed/viewer tokens resolve the board through the project's DEFAULT
+    # environment (the protected ``prod`` env in standard projects):
+    #   - a version pinned there → its snapshot config replaces the draft;
+    #   - default env PROTECTED with no pointer → 404 (drafts are never
+    #     visible to embed identities in a protected environment);
+    #   - no project/env data resolvable → draft (environments layer is
+    #     optional; first-party identities always see the draft).
+    if identity.kind == "embed":
+        from app.environments.store import resolve_default_env_config  # noqa: PLC0415
+
+        try:
+            pinned_config = await resolve_default_env_config(
+                "board", str(board["id"]), board.get("project_id"), org_id
+            )
+        except AppError:
+            # Uniform 404 shape with the missing-board case — no draft leak.
+            raise AppError(
+                "dashboard_not_found",
+                f"Dashboard {dashboard_id!r} not found.",
+                404,
+            )
+        if pinned_config is not None:
+            board = {**board, "config": pinned_config}
+
     # ── Build and return descriptor ───────────────────────────────────────────
     return _board_to_descriptor(dashboard_id, board)
 

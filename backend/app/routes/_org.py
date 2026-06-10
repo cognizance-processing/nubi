@@ -213,4 +213,7 @@ async def resolve_project_filter(org_id: str, request: Request) -> str | None:
     requested = _requested_project_id(request)
     if requested and await projects_repo.project_belongs_to_org(requested, org_id):
         return requested
-    return await projects_repo.get_default_project_id(org_id)
+    # Default-project fallback: resolve_org_default_project_id also tries the
+    # list-shaped projects query, which keeps headerless lists scoped under
+    # fetchrow-level test doubles that only serve list queries.
+    return await resolve_org_default_project_id(org_id)

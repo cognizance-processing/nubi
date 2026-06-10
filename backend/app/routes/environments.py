@@ -3,7 +3,7 @@
 Endpoints
 ---------
 GET    /projects/{project_id}/environments              -> [env]  (lazily ensures dev+prod)
-POST   /projects/{project_id}/environments {key, name}  -> 201 env
+POST   /projects/{project_id}/environments {key, name, git_branch?, from_branch?} -> 201 env
 PATCH  /environments/{env_id} {name?, is_default?, protected?, position?} -> env
 DELETE /environments/{env_id}                           -> 204 (409 if default/protected)
 GET    /versions/{kind}/{resource_id}                   -> {versions: [...], pointers: [...]}
@@ -11,6 +11,18 @@ POST   /versions/{kind}/{resource_id} {message?, env_key?='dev'} -> 201 checkpoi
 GET    /versions/{kind}/{resource_id}/{version}         -> full version incl config
 POST   /versions/{kind}/{resource_id}/{version}/restore -> updated draft
 POST   /environments/promote {kind, resource_id, from_env, to_env, include_dependencies?}
+POST   /environments/{env_id}/git/push {message?}       -> commit env pins to its branch (+remote)
+POST   /environments/{env_id}/git/pull {strategy?}      -> sync env from its branch (409 on divergence)
+GET    /projects/{project_id}/git/graph                 -> {branches: [...]} commit graph per env branch
+
+Git integration (DECISION 5 — service layer in ``app.git.env_sync``)
+--------------------------------------------------------------------
+Every environment is bound to a branch (``git_branch``) in the project's
+workspace repo.  Checkpoints commit to the env's branch and stamp
+``git_commit_sha``; promote merges branches best-effort (a conflict is
+reported as ``git_conflict`` WITHOUT rolling back pointers).  The whole git
+layer is optional: when no repo/remote exists every endpoint degrades to
+DB-only behaviour with ``warning`` fields — never a 5xx.
 
 ``kind`` is one of ``flow`` | ``board`` | ``query``.  Flows are read through
 the flow store (``app.flows.store``); boards/queries through the generic Repo.
@@ -33,6 +45,7 @@ from __future__ import annotations
 from typing import Any
 
 from fastapi import APIRouter, Depends, Request, Response
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
 from app.auth.deps import current_user
@@ -40,6 +53,7 @@ from app.auth.roles import require_writer
 from app.environments.store import get_env_store
 from app.errors import AppError
 from app.flows.store import get_flow_store
+from app.git import env_sync
 from app.repos import projects as projects_repo
 from app.repos.provider import Repo, get_repo
 from app.routes import api_router
@@ -57,10 +71,18 @@ _KIND_RESOURCE: dict[str, str] = {"board": "boards", "query": "queries"}
 
 
 class CreateEnvIn(BaseModel):
-    """Request body for POST /projects/{project_id}/environments."""
+    """Request body for POST /projects/{project_id}/environments.
+
+    ``git_branch`` overrides the creation default ('main' for key='prod',
+    else the key).  ``from_branch`` seeds the new environment from an
+    existing branch in the project's workspace repo (best-effort: a missing
+    repo/branch leaves the env empty with a ``warning`` in the response).
+    """
 
     key: str
     name: str
+    git_branch: str | None = None
+    from_branch: str | None = None
 
 
 class UpdateEnvIn(BaseModel):
@@ -87,6 +109,23 @@ class PromoteIn(BaseModel):
     from_env: str
     to_env: str
     include_dependencies: bool = True
+
+
+class EnvGitPushIn(BaseModel):
+    """Request body for POST /environments/{env_id}/git/push."""
+
+    message: str | None = None
+
+
+class EnvGitPullIn(BaseModel):
+    """Request body for POST /environments/{env_id}/git/pull.
+
+    ``strategy`` resolves a diverged branch: ``'take_branch'`` imports the
+    branch state into the env; ``'take_env'`` overwrites the branch from the
+    env's pinned state (push --force-with-lease semantics).
+    """
+
+    strategy: str | None = None
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -185,7 +224,13 @@ async def create_environment(
     user: dict[str, Any] = Depends(current_user),
     repo: Repo = Depends(get_repo),
 ) -> dict[str, Any]:
-    """Create a new environment in the project (key slugified, unique)."""
+    """Create a new environment in the project (key slugified, unique).
+
+    ``git_branch`` defaults per :func:`app.environments.store.default_git_branch`.
+    With ``from_branch`` the branch's known files (queries/, dashboards/,
+    flows/) are imported as pinned versions (best-effort; a missing repo or
+    branch adds a ``warning`` field and leaves the env empty).
+    """
     org_id = await resolve_org_id(str(user["id"]), repo, request)
     await _require_project(project_id, org_id)
 
@@ -203,9 +248,22 @@ async def create_environment(
 
     envs = await env_store.list_environments(project_id)
     position = max((int(e.get("position", 0)) for e in envs), default=-1) + 1
-    return await env_store.create_environment(
-        project_id, key, name, position=position
+    env = await env_store.create_environment(
+        project_id, key, name, position=position,
+        git_branch=(body.git_branch or "").strip() or None,
     )
+
+    # Optionally seed the new env from an existing branch (best-effort).
+    if body.from_branch:
+        result = await env_sync.import_branch_into_env(
+            org_id=org_id,
+            project_id=project_id,
+            env=env,
+            branch=body.from_branch.strip(),
+            user_id=str(user["id"]),
+        )
+        env = {**env, **result}
+    return env
 
 
 @router.patch("/environments/{env_id}", dependencies=[Depends(require_writer)])
@@ -351,6 +409,20 @@ async def checkpoint(
             kind, resource_id, env["id"], version["id"], promoted_by=str(user["id"])
         )
 
+        # Best-effort: commit the serialized resource to the env's branch and
+        # stamp git_commit_sha on the version.  Never fails the checkpoint.
+        git_info = await env_sync.commit_checkpoint(
+            org_id=org_id,
+            project_id=project_id,
+            env=env,
+            kind=kind,
+            resource_id=resource_id,
+            name=str(row.get("name") or ""),
+            version=version,
+            user_message=body.message,
+        )
+        version.update(git_info)
+
     return version
 
 
@@ -445,7 +517,10 @@ async def promote(
     For flows, incremental watermarks of materialize-type tasks are copied
     best-effort.  For boards with ``include_dependencies`` (default), every
     query referenced by the pinned board config that has a ``from_env``
-    pointer is promoted too.  Returns ``{promoted: [...]}``.
+    pointer is promoted too.  Returns ``{promoted: [...]}`` plus best-effort
+    git fields: ``git_merge`` (the from-env branch merged into the to-env
+    branch, ff preferred) or ``git_conflict: {files, from_sha, to_sha}``
+    (pointers are NOT rolled back) or ``git_warning``.
     """
     _require_kind(body.kind)
     org_id = await resolve_org_id(str(user["id"]), repo, request)
@@ -539,7 +614,104 @@ async def promote(
                 }
             )
 
-    return {"promoted": promoted}
+    # ── Best-effort git merge: from-env branch → to-env branch ──────────────
+    # A conflict (or absent git layer) never rolls back the pointer copies.
+    git_info = await env_sync.merge_env_branches(
+        org_id=org_id, project_id=project_id, from_env=from_env, to_env=to_env
+    )
+
+    return {"promoted": promoted, **git_info}
+
+
+# ── Environment ⇄ git branch sync (DECISION 5) ───────────────────────────────
+
+
+@router.post(
+    "/environments/{env_id}/git/push",
+    dependencies=[Depends(require_writer)],
+)
+async def push_environment_git(
+    env_id: str,
+    request: Request,
+    body: EnvGitPushIn = EnvGitPushIn(),
+    user: dict[str, Any] = Depends(current_user),
+    repo: Repo = Depends(get_repo),
+) -> dict[str, Any]:
+    """Serialize ALL resources pinned in the env to its branch (one commit).
+
+    Updates ``last_synced_sha`` and pushes the branch to the project's remote
+    when one is bound (``projects.git``).  Fully best-effort: an absent git
+    layer degrades to ``{committed: false, warnings: [...]}`` — never a 5xx.
+    """
+    org_id = await resolve_org_id(str(user["id"]), repo, request)
+    env = await _require_env(env_id, org_id, get_env_store())
+    return await env_sync.push_env(
+        org_id=org_id,
+        project_id=str(env["project_id"]),
+        env=env,
+        repo=repo,
+        message=body.message,
+    )
+
+
+@router.post(
+    "/environments/{env_id}/git/pull",
+    dependencies=[Depends(require_writer)],
+)
+async def pull_environment_git(
+    env_id: str,
+    request: Request,
+    body: EnvGitPullIn = EnvGitPullIn(),
+    user: dict[str, Any] = Depends(current_user),
+    repo: Repo = Depends(get_repo),
+) -> Any:
+    """Sync the environment from its branch (fetching the remote when bound).
+
+    - branch head == ``last_synced_sha`` → no-op (``up_to_date: true``);
+    - fast-forwardable from the last sync → changed files become new pinned
+      versions (parent = current pin) and ``last_synced_sha`` advances;
+    - DIVERGED → 409 ``{diverged: true, files, env_sha, branch_sha}`` unless
+      ``strategy`` is ``'take_branch'`` or ``'take_env'`` (force-with-lease
+      semantics: overwrite the branch from env state);
+    - no repo / branch → ``{pulled: false, warning}`` (never a 5xx).
+    """
+    if body.strategy is not None and body.strategy not in env_sync.PULL_STRATEGIES:
+        raise AppError(
+            "invalid_strategy",
+            "strategy must be 'take_branch' or 'take_env'.",
+            400,
+        )
+    org_id = await resolve_org_id(str(user["id"]), repo, request)
+    env = await _require_env(env_id, org_id, get_env_store())
+    result = await env_sync.pull_env(
+        org_id=org_id,
+        project_id=str(env["project_id"]),
+        env=env,
+        repo=repo,
+        user_id=str(user["id"]),
+        strategy=body.strategy,
+    )
+    if result.get("diverged"):
+        return JSONResponse(status_code=409, content=result)
+    return result
+
+
+@router.get("/projects/{project_id}/git/graph")
+async def get_project_git_graph(
+    project_id: str,
+    request: Request,
+    user: dict[str, Any] = Depends(current_user),
+    repo: Repo = Depends(get_repo),
+) -> dict[str, Any]:
+    """Return the commit graph for every env-bound branch in the project.
+
+    ``{branches: [{branch, env_key, head_sha, commits: [{sha, parents,
+    message, author, date}]}]}`` (≤100 commits per branch); an empty
+    structure when the project has no workspace repo yet.
+    """
+    org_id = await resolve_org_id(str(user["id"]), repo, request)
+    await _require_project(project_id, org_id)
+    return await env_sync.project_git_graph(org_id=org_id, project_id=project_id)
 
 
 # ── Register on the shared api_router ─────────────────────────────────────────

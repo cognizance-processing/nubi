@@ -149,7 +149,17 @@ async def list_resources(
     _require_valid_resource(resource)
     org_id = await resolve_org_id(str(user["id"]), repo, request)
     project_id = await resolve_project_filter(org_id, request)
-    return await repo.list(resource, org_id, project_id)
+    rows = await repo.list(resource, org_id, project_id)
+
+    # Strict-visibility support: versionable rows (boards/queries) always carry
+    # ``pinned_envs`` — the env keys that have a pinned version — so the UI can
+    # render "not in <env>" badges when the active env is protected.
+    kind = _RESOURCE_KIND.get(resource)
+    if kind is not None:
+        from app.environments.store import attach_pinned_envs  # noqa: PLC0415
+
+        await attach_pinned_envs(kind, rows)
+    return rows
 
 
 @router.post("/{resource}", status_code=201, dependencies=[Depends(require_writer)])
