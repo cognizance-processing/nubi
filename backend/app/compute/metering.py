@@ -308,6 +308,12 @@ async def record_usage(
     - ``kind="agent_run"``        — one remote-kernel / agent run (units=1).
     - ``kind="storage"``          — a storage snapshot; ``units`` = total GB
       (billing takes the period MAX, not the sum).
+    - ``kind="query_scan"``       — one cache-MISS query (W4-A); ``units`` =
+      BYTES SCANNED for that query (reconcile sums these into the per-org
+      TiB-scanned line). The bytes figure is best-effort: a true post-pruning
+      Parquet/httpfs byte count when the connector can surface one, else the
+      result Arrow table's total buffer footprint as a proxy. Metered on cache
+      MISS only — a cache HIT scans nothing and emits no query_scan event.
 
     Unlike the kernel path, ``units`` never defaults to ``elapsed_ms / 1000``
     — discrete dimensions are counted, not timed — so it is passed explicitly

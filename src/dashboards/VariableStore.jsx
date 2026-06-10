@@ -55,6 +55,9 @@ import { createContext, useCallback, useContext, useEffect, useMemo, useRef, use
 // interrogate raw variable values without importing from the inputs/ layer.
 import { isExclude, valuesOf, modeOf, normMulti } from './inputs/index.js'
 export { isExclude, valuesOf, modeOf, normMulti }
+// Cascading-filter dependency graph (Wave 4 §W4-G). Used to refire dependent
+// filter-option-queries when an upstream variable changes (country → city).
+import { buildFilterGraph, dirtySubgraph, staleOptionWidgetIds } from './filterGraph.js'
 
 // ---------------------------------------------------------------------------
 // Pure helper (exported for unit tests — no React required)
@@ -141,12 +144,20 @@ export const getResolvedParams = resolveParams
 
 const VariableContext = createContext(null)
 
+// Default debounce for cascading option refires. A deep cascade (country → city
+// → district …) must not fire one round-trip per keystroke; we coalesce rapid
+// upstream changes into a single downstream refire pass.
+const DEFAULT_CASCADE_DEBOUNCE_MS = 200
+
 /**
  * Provider that wraps a dashboard render tree.
  *
  * @param {{
  *   initialValues?: Record<string, unknown>,
  *   onVariableChange?: (name: string, value: unknown) => void,
+ *   spec?: object,
+ *   cascadeDebounceMs?: number,
+ *   onFilterGraphError?: (err: Error) => void,
  *   children: React.ReactNode
  * }} props
  *
@@ -154,14 +165,94 @@ const VariableContext = createContext(null)
  *   Used by DashboardViewPage to write changes back to the URL search params.
  *   The callback receives the variable name and new value.  Callers should
  *   use useCallback / a stable ref to avoid infinite re-renders.
+ *
+ * spec — optional dashboard spec. When provided, the provider builds the
+ *   cascading-filter dependency graph (§W4-G) so that changing one variable
+ *   marks the dependent filter-option-queries stale and they refire to fetch
+ *   fresh options (e.g. country → city). Cycles are REJECTED at build time;
+ *   the error is surfaced via onFilterGraphError and the dashboard falls back
+ *   to non-cascading behavior (every existing variable behavior is preserved
+ *   when there are no cross-filter dependencies).
+ *
+ * cascadeDebounceMs — coalesce window for the downstream refire (default 200ms).
  */
-export function VariableProvider({ initialValues = {}, onVariableChange, children }) {
+export function VariableProvider({
+  initialValues = {},
+  onVariableChange,
+  spec,
+  cascadeDebounceMs = DEFAULT_CASCADE_DEBOUNCE_MS,
+  onFilterGraphError,
+  children,
+}) {
   const [variables, setVariables] = useState(() => ({ ...initialValues }))
 
   // Keep a ref to the latest onVariableChange so the stable setVariable
   // callback can always call the most recent version without being re-created.
   const onChangeRef = useRef(onVariableChange)
   useEffect(() => { onChangeRef.current = onVariableChange }, [onVariableChange])
+
+  const onGraphErrorRef = useRef(onFilterGraphError)
+  useEffect(() => { onGraphErrorRef.current = onFilterGraphError }, [onFilterGraphError])
+
+  // ── Filter dependency graph (§W4-G) ──────────────────────────────────────
+  // Build once per spec identity. A rejected cycle is reported (not thrown) so a
+  // bad spec can't take down the whole dashboard render — cascades just disable.
+  const filterGraph = useMemo(() => {
+    if (!spec) return null
+    try {
+      return buildFilterGraph(spec)
+    } catch (err) {
+      // Defer the side-effecting report out of render.
+      setTimeout(() => { onGraphErrorRef.current?.(err) }, 0)
+      // eslint-disable-next-line no-console
+      console.warn('[VariableStore] filter graph build rejected:', err?.message)
+      return null
+    }
+  }, [spec])
+
+  // `staleEpochs[widgetId]` is a monotonically-increasing counter. When an
+  // upstream variable changes, the dependent option-query widgets get their
+  // epoch bumped → useFilterRefire(widgetId) observes the change and refires.
+  const [staleEpochs, setStaleEpochs] = useState({})
+
+  // Pending (debounced) cascade: collects the union of stale option-widget ids
+  // across rapid changes, then flushes once.
+  const pendingStaleRef = useRef(new Set())
+  const cascadeTimerRef = useRef(null)
+  const graphRef = useRef(filterGraph)
+  useEffect(() => { graphRef.current = filterGraph }, [filterGraph])
+  const debounceRef = useRef(cascadeDebounceMs)
+  useEffect(() => { debounceRef.current = cascadeDebounceMs }, [cascadeDebounceMs])
+
+  const flushCascade = useCallback(() => {
+    cascadeTimerRef.current = null
+    const ids = pendingStaleRef.current
+    if (ids.size === 0) return
+    pendingStaleRef.current = new Set()
+    setStaleEpochs(prev => {
+      const next = { ...prev }
+      for (const id of ids) next[id] = (next[id] ?? 0) + 1
+      return next
+    })
+  }, [])
+
+  // Queue the downstream option-query refires for a changed variable, debounced
+  // so a deep cascade triggered by keystrokes fires a single pass, not N.
+  const scheduleCascade = useCallback((changedVar) => {
+    const graph = graphRef.current
+    if (!graph) return
+    const dirty = dirtySubgraph(graph, changedVar)
+    const widgetIds = staleOptionWidgetIds(dirty)
+    if (widgetIds.length === 0) return
+    for (const id of widgetIds) pendingStaleRef.current.add(id)
+    if (cascadeTimerRef.current) clearTimeout(cascadeTimerRef.current)
+    cascadeTimerRef.current = setTimeout(flushCascade, debounceRef.current)
+  }, [flushCascade])
+
+  // Cleanup any in-flight cascade timer on unmount.
+  useEffect(() => () => {
+    if (cascadeTimerRef.current) clearTimeout(cascadeTimerRef.current)
+  }, [])
 
   // Stable setter — does NOT re-create on every render
   const setVariable = useCallback((name, value) => {
@@ -171,12 +262,17 @@ export function VariableProvider({ initialValues = {}, onVariableChange, childre
       // Fire the external callback (e.g. URL write-back) after state is queued.
       // We call it here (inside the updater) so we always have the real new value.
       setTimeout(() => { onChangeRef.current?.(name, value) }, 0)
+      // Schedule any cascading option-query refires (no-op without a graph or deps).
+      scheduleCascade(name)
       return next
     })
-  }, [])
+  }, [scheduleCascade])
 
   // Memoize the context value so consumers only re-render when variables change
-  const ctx = useMemo(() => ({ variables, setVariable }), [variables, setVariable])
+  const ctx = useMemo(
+    () => ({ variables, setVariable, filterGraph, staleEpochs }),
+    [variables, setVariable, filterGraph, staleEpochs],
+  )
 
   return (
     <VariableContext.Provider value={ctx}>
@@ -228,4 +324,39 @@ export function useResolvedParams(widgetParams) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [JSON.stringify(widgetParams), ctx.variables]
   )
+}
+
+/**
+ * Cascading-filter refire signal (§W4-G).
+ *
+ * Returns a monotonically-increasing "stale epoch" for a filter widget's
+ * option-query. It increments (after debounce) whenever an UPSTREAM variable the
+ * widget's options depend on changes — e.g. the `city` filter watches `country`.
+ * A filter widget can use it as a re-fetch dependency:
+ *
+ *   const refireEpoch = useFilterRefire(widget.id)
+ *   useEffect(() => { refetchOptions() }, [refireEpoch])  // skip 0 = initial mount
+ *
+ * Returns 0 when there is no graph or the widget has no upstream option-query
+ * dependencies, so widgets without cross-filter deps behave exactly as before.
+ *
+ * @param {string} widgetId
+ * @returns {number}
+ */
+export function useFilterRefire(widgetId) {
+  const ctx = useContext(VariableContext)
+  if (!ctx) throw new Error('useFilterRefire must be used inside <VariableProvider>')
+  return (widgetId != null && ctx.staleEpochs?.[widgetId]) || 0
+}
+
+/**
+ * Access the built filter dependency graph (or null when none / a cycle was
+ * rejected). Mainly for tooling / debugging the cascade.
+ *
+ * @returns {ReturnType<typeof buildFilterGraph> | null}
+ */
+export function useFilterGraph() {
+  const ctx = useContext(VariableContext)
+  if (!ctx) throw new Error('useFilterGraph must be used inside <VariableProvider>')
+  return ctx.filterGraph ?? null
 }

@@ -20,6 +20,23 @@ Closes one billing cycle for one organisation:
        and advance the subscription period.
     8. Email the invoice to the customer (best-effort).
 
+Pricing dimensions (v4 — June 2026)
+-------------------------------------
+| Dimension                       | Rate            | Free allowance        |
+|---------------------------------|-----------------|-----------------------|
+| storage_zar_per_gb_month        | R0.33/GB        | per-tier quota GB     |
+| scan_zar_per_tib (query_scan)   | R83/TiB         | 1 TiB/month (global)  |
+| compute_zar_per_1000_cu         | R100/1,000 CU   | per-tier quota CU     |
+| ai_call_zar_per_call            | R5.00/call      | per-tier quota calls  |
+| embedded_session_zar_per_10k    | R50/10K sess    | per-tier quota sess   |
+| agent_run_zar_per_run           | R2.00/run       | per-tier quota runs   |
+
+Bytes-scanned (``query_scan``) events are recorded by the core metering hook
+(W4-A) via ``record_usage(kind="query_scan", units=<bytes>)``.  Reconciliation
+sums all ``query_scan`` bytes for the period, converts bytes → TiB, subtracts
+the :data:`~app.ee.billing.tiers.SCAN_FREE_ALLOWANCE_TIB` allowance, and
+prices the remainder at the tier's ``scan_zar_per_tib`` rate.
+
 Everything that touches the network (Paystack) or sends mail is injectable so
 the cycle can be run end-to-end in tests and the simulation harness with no
 external services.  Time is injected too (``period_start`` / ``period_end`` /
@@ -46,7 +63,13 @@ from app.ee.billing.invoice import (
     build_invoice,
     business_info_from_settings,
 )
-from app.ee.billing.tiers import BillingTier, OverageRates, TierLimits, get_tier_limits
+from app.ee.billing.tiers import (
+    BillingTier,
+    OverageRates,
+    SCAN_FREE_ALLOWANCE_TIB,
+    TierLimits,
+    get_tier_limits,
+)
 
 logger = logging.getLogger("nubi.billing.reconcile")
 
@@ -66,6 +89,21 @@ class UsageSnapshot:
 
     Storage is a peak/representative GB figure for the period; the other
     dimensions are period totals.
+
+    Attributes
+    ----------
+    query_scan_bytes:
+        Total bytes scanned by DuckDB queries during the period, summed from
+        ``query_scan`` usage events recorded by the core metering hook.
+        Converted to TiB during overage computation; the first
+        :data:`~app.ee.billing.tiers.SCAN_FREE_ALLOWANCE_TIB` TiB/month are
+        free.  Recorded as raw bytes so precision is not lost at metering time.
+    warehouse_cu:
+        Informational breakout: the portion of compute_units consumed on the
+        warehouse (heavy-query pool).  NOT a separate billable dimension — it
+        is a subset of compute_units.  WAREHOUSE_CU_MULTIPLIER is now 1, so
+        these units carry no penalty; the field is retained for invoice display
+        ("of which warehouse") and ops visibility.
     """
 
     storage_gb: float = 0.0
@@ -73,10 +111,10 @@ class UsageSnapshot:
     ai_calls: int = 0
     embedded_sessions: int = 0
     agent_runs: int = 0
-    # Informational breakout: the portion of compute_units consumed on the
-    # warehouse (heavy-query pool), already 4×-multiplied at metering time.
-    # NOT a separate billable dimension — it is a subset of compute_units —
-    # but invoices and the current-cycle panel can show "of which warehouse".
+    # Bytes-scanned dimension (v4): total bytes read by DuckDB across all
+    # queries in the period; metered via kind="query_scan" usage events.
+    query_scan_bytes: int = 0
+    # Informational warehouse breakout (multiplier=1 since v4; no billing impact).
     warehouse_cu: int = 0
 
     def to_dict(self) -> dict[str, Any]:
@@ -86,12 +124,15 @@ class UsageSnapshot:
             "ai_calls": self.ai_calls,
             "embedded_sessions": self.embedded_sessions,
             "agent_runs": self.agent_runs,
+            "query_scan_bytes": self.query_scan_bytes,
             "warehouse_cu": self.warehouse_cu,
         }
 
 
 # Maps a usage_events ``kind`` to a UsageSnapshot dimension.  ``"kernel"`` is
 # the legacy compute kind already recorded by app.compute.metering.
+# ``"query_scan"`` is the v4 bytes-scanned dimension recorded by the core
+# metering hook (W4-A) via record_usage(kind="query_scan", units=<bytes>).
 _KIND_TO_DIMENSION = {
     "kernel": "compute_units",
     "compute": "compute_units",
@@ -101,6 +142,9 @@ _KIND_TO_DIMENSION = {
     "embed": "embedded_sessions",
     "agent_run": "agent_runs",
     "agent": "agent_runs",
+    # Bytes-scanned dimension (v4).
+    "query_scan": "query_scan_bytes",
+    "scan": "query_scan_bytes",
 }
 
 
@@ -142,6 +186,9 @@ async def aggregate_usage_for_org(
                         "warehouse": bool(r["is_warehouse"]),
                     }
                 )
+            elif kind in ("query_scan", "scan"):
+                # Bytes-scanned dimension (v4): units are raw bytes, summed.
+                events.append({"kind": "query_scan", "units": float(r["total_units"] or 0)})
             else:
                 # Count of events for discrete dimensions (ai_call, embed, agent).
                 for _ in range(int(r["n"])):
@@ -167,6 +214,10 @@ def aggregate_usage_from_events(events: list[dict[str, Any]]) -> UsageSnapshot:
     - ``kind="embedded_session"`` → embedded sessions (count / ``units``).
     - ``kind="agent_run"`` → agent runs (count / ``units``).
     - ``kind="storage"`` → storage GB (max ``units`` over the period).
+    - ``kind="query_scan"/"scan"`` → bytes scanned (summed ``units``, raw
+      bytes recorded by the core metering hook).  Converted bytes→TiB during
+      overage pricing; the first :data:`~app.ee.billing.tiers.SCAN_FREE_ALLOWANCE_TIB`
+      TiB/month are free.
     """
     snap = UsageSnapshot()
     storage_peak = 0.0
@@ -184,9 +235,15 @@ def aggregate_usage_from_events(events: list[dict[str, Any]]) -> UsageSnapshot:
             snap.compute_units += int(round(float(amount)))
             # Warehouse breakout: pre-aggregated DB rows carry a "warehouse"
             # flag; raw in-memory sink events carry the ":warehouse" tier
-            # suffix stamped by the heavy-query pool.
+            # suffix stamped by the heavy-query pool.  WAREHOUSE_CU_MULTIPLIER
+            # is 1 since v4 so warehouse_cu is informational only.
             if ev.get("warehouse") or str(ev.get("tier") or "").endswith(":warehouse"):
                 snap.warehouse_cu += int(round(float(amount)))
+        elif dim == "query_scan_bytes":
+            # Bytes are summed (not counted as discrete events).  units MUST
+            # be the raw byte count; fall back to 0 rather than 1 to avoid
+            # phantom scan charges when the field is missing.
+            snap.query_scan_bytes += int(round(float(amount or 0)))
         else:
             setattr(snap, dim, getattr(snap, dim) + int(round(float(amount or 1))))
     snap.storage_gb = storage_peak
@@ -249,6 +306,26 @@ def compute_overage_line_items(
                     amount, kind="overage",
                     quantity=Decimal(str(round(over_storage, 2))), unit="GB",
                     unit_price_zar=r.storage_zar_per_gb_month,
+                )
+            )
+
+    # Bytes scanned (v4) — billed per TiB beyond the free monthly allowance.
+    # The free allowance (SCAN_FREE_ALLOWANCE_TIB) is per org per month and is
+    # applied globally (not per query).  Conversion: bytes → TiB = bytes / 2^40.
+    _BYTES_PER_TIB = 2 ** 40  # 1,099,511,627,776 bytes
+    scan_tib = usage.query_scan_bytes / _BYTES_PER_TIB
+    over_scan_tib = _overage(scan_tib, SCAN_FREE_ALLOWANCE_TIB)
+    if over_scan_tib > 0 and r.scan_zar_per_tib:
+        amount = (Decimal(str(over_scan_tib)) * r.scan_zar_per_tib).quantize(
+            Decimal("0.01"), rounding=ROUND_HALF_UP
+        )
+        if amount > 0:
+            items.append(
+                InvoiceLineItem(
+                    f"Bytes scanned overage ({over_scan_tib:.4f} TiB over {SCAN_FREE_ALLOWANCE_TIB:g} TiB free)",
+                    amount, kind="overage",
+                    quantity=Decimal(str(round(over_scan_tib, 6))), unit="TiB",
+                    unit_price_zar=r.scan_zar_per_tib,
                 )
             )
 

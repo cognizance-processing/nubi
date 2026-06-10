@@ -15,15 +15,21 @@ branch:
 - ``open_change_request(title, body)`` — *optional* — open a PR / MR (only used
   when the configured branch differs from the repo default; best-effort).
 
-Auth model (MVP)
-----------------
-HTTPS basic auth with the PAT embedded in the URL:
+Auth model — SECURITY (ASKPASS, no argv token exposure)
+--------------------------------------------------------
+Credentials are delivered to git via GIT_ASKPASS so the PAT NEVER appears in
+process argv (visible via ``ps aux`` / ``/proc/<pid>/cmdline``).
 
-- GitHub: ``https://x-access-token:<token>@github.com/<owner>/<repo>.git``
-- GitLab: ``https://oauth2:<token>@gitlab.com/<group>/<repo>.git``
-
-The token is **never** written into the working tree or committed; it only ever
-appears in the transient remote URL passed to ``git`` for fetch/push.
+For every authenticated network operation (clone / fetch / push) we:
+1. Write an ephemeral GIT_ASKPASS helper script to a private temp file.
+   The script echoes the token when git asks for a password; the username is
+   the provider-specific dummy (``x-access-token`` for GitHub, ``oauth2`` for
+   GitLab).
+2. Pass the bare HTTPS URL (no ``user:token@`` prefix) in argv.
+3. Pass the augmented environment (``GIT_ASKPASS``, ``GIT_TERMINAL_PROMPT=0``,
+   ``GIT_CONFIG_COUNT/GIT_CONFIG_KEY/GIT_CONFIG_VALUE`` to disable the
+   credential helper cache) to the subprocess — NOT via argv.
+4. Delete the helper script immediately after the call (try/finally).
 
 ``requests``/``httpx`` are imported lazily inside ``open_change_request`` so the
 clone/pull/push path has no third-party dependency beyond the ``git`` CLI.
@@ -31,11 +37,15 @@ clone/pull/push path has no third-party dependency beyond the ``git`` CLI.
 
 from __future__ import annotations
 
+import os
 import re
+import stat
 import subprocess
+import tempfile
 from abc import ABC, abstractmethod
+from contextlib import contextmanager
 from pathlib import Path
-from typing import Any
+from typing import Any, Generator
 from urllib.parse import urlparse
 
 from app.errors import AppError
@@ -46,16 +56,88 @@ DEFAULT_AUTHOR_EMAIL = "nubi-git-sync@nubi.local"
 
 
 # ---------------------------------------------------------------------------
+# Credential helpers — NEVER embed the token in argv
+# ---------------------------------------------------------------------------
+
+
+@contextmanager
+def _askpass_env(username: str, token: str) -> Generator[dict[str, str], None, None]:
+    """Context manager that yields a subprocess env with GIT_ASKPASS set.
+
+    An ephemeral helper script is written to a private temp file; the script
+    echoes the token when git asks for the password (and the username when asked
+    for the username).  The bare repo URL (no ``user:token@``) must be used in
+    argv — the token is passed entirely through the environment.
+
+    The helper file is deleted in the finally block regardless of outcome.
+
+    Works for both GitHub (username=``x-access-token``) and GitLab
+    (username=``oauth2``).
+    """
+    # Build a minimal POSIX sh script that answers git's credential prompts.
+    # git calls GIT_ASKPASS with a single prompt string argument; we match on
+    # "Username" vs "Password" (case-insensitive) to reply appropriately.
+    #
+    # SECURITY — shell-injection hardening: the username and token are NOT
+    # interpolated directly into the shell script body.  Instead the script
+    # reads them from two dedicated env vars (_NUBI_GIT_USER / _NUBI_GIT_PASS)
+    # that are set in the subprocess environment.  This is safe for any token
+    # character set (no single-quote or backslash escaping needed) and the vars
+    # are prefixed with "_NUBI_GIT_" so they do not collide with user env.
+    script_content = (
+        "#!/bin/sh\n"
+        "case \"$1\" in\n"
+        "  *[Uu]sername*) printf '%s\\n' \"$_NUBI_GIT_USER\" ;;\n"
+        "  *[Pp]assword*) printf '%s\\n' \"$_NUBI_GIT_PASS\" ;;\n"
+        "  *) echo '' ;;\n"
+        "esac\n"
+    )
+    fd, askpass_path = tempfile.mkstemp(prefix="nubi_git_askpass_", suffix=".sh")
+    try:
+        with os.fdopen(fd, "w") as fh:
+            fh.write(script_content)
+        # Must be executable — chmod 700 (owner only, no group/other read).
+        os.chmod(askpass_path, stat.S_IRWXU)
+        env = {
+            **os.environ,
+            "GIT_ASKPASS": askpass_path,
+            # Token + username delivered via env, not embedded in the script.
+            "_NUBI_GIT_USER": username,
+            "_NUBI_GIT_PASS": token,
+            # Prevent git from falling back to an interactive terminal prompt.
+            "GIT_TERMINAL_PROMPT": "0",
+            # Disable any credential helper that might cache/re-use stale creds.
+            "GIT_CONFIG_COUNT": "1",
+            "GIT_CONFIG_KEY_0": "credential.helper",
+            "GIT_CONFIG_VALUE_0": "",
+        }
+        yield env
+    finally:
+        try:
+            os.unlink(askpass_path)
+        except OSError:
+            pass
+
+
+# ---------------------------------------------------------------------------
 # git CLI helper
 # ---------------------------------------------------------------------------
 
 
-def _run_git(repo_dir: Path | None, *args: str, allow_fail: bool = False) -> subprocess.CompletedProcess[str]:
+def _run_git(
+    repo_dir: Path | None,
+    *args: str,
+    allow_fail: bool = False,
+    env: dict[str, str] | None = None,
+) -> subprocess.CompletedProcess[str]:
     """Run ``git *args`` (optionally inside *repo_dir*) and return the result.
 
     Raises ``AppError('git_command_failed', 502)`` on a non-zero exit unless
     *allow_fail* is set, in which case the ``CompletedProcess`` is returned so
     the caller can inspect ``returncode``.
+
+    Pass *env* (from :func:`_askpass_env`) for authenticated operations — the
+    token must NEVER appear in *args*.
     """
     cmd = ["git", *args]
     result = subprocess.run(
@@ -63,6 +145,7 @@ def _run_git(repo_dir: Path | None, *args: str, allow_fail: bool = False) -> sub
         cwd=str(repo_dir) if repo_dir is not None else None,
         capture_output=True,
         text=True,
+        env=env,
         check=False,
     )
     if result.returncode != 0 and not allow_fail:
@@ -98,12 +181,22 @@ class RemoteProvider(ABC):
 
     @abstractmethod
     def authed_url(self) -> str:
-        """Return ``self.repo_url`` with the PAT embedded for HTTPS auth."""
+        """Return ``self.repo_url`` with the PAT embedded for HTTPS auth.
+
+        INTERNAL USE ONLY — only used by the HTTP API helpers (open_change_request)
+        where the URL is passed inside an Authorization header, not in argv.
+        Do NOT pass the result of this method to any git subprocess argument.
+        """
 
     @property
     @abstractmethod
     def provider(self) -> str:
         """Provider id (``'github'`` | ``'gitlab'``)."""
+
+    @property
+    @abstractmethod
+    def _askpass_username(self) -> str:
+        """The HTTPS basic-auth username for this provider's GIT_ASKPASS script."""
 
     # -- working-tree operations ------------------------------------------
 
@@ -113,41 +206,51 @@ class RemoteProvider(ABC):
         After this returns, *repo_dir* is a checkout of ``self.branch`` at the
         remote tip (creating an empty branch locally when the remote branch
         does not exist yet).
+
+        The PAT is passed via GIT_ASKPASS — it NEVER appears in argv.
+        The bare repo URL (no ``user:token@``) is used in all git commands.
         """
         repo_dir = Path(repo_dir)
-        authed = self.authed_url()
+        bare_url = self.repo_url  # no credentials — bare HTTPS URL only
 
-        if (repo_dir / ".git").exists():
-            # Existing clone: point origin at the (possibly refreshed) authed
-            # URL, fetch, and hard-reset to the remote branch tip.
-            _run_git(repo_dir, "remote", "set-url", "origin", authed, allow_fail=True)
-            fetched = _run_git(repo_dir, "fetch", "origin", self.branch, allow_fail=True)
-            if fetched.returncode == 0:
-                _run_git(repo_dir, "checkout", "-B", self.branch, "FETCH_HEAD")
-            else:
-                # Remote branch does not exist yet — ensure we are on it locally.
+        with _askpass_env(self._askpass_username, self.token) as auth_env:
+            if (repo_dir / ".git").exists():
+                # Existing clone: update origin to the current bare URL (removes
+                # any previously stored credential URL), then fetch + reset.
+                _run_git(repo_dir, "remote", "set-url", "origin", bare_url, allow_fail=True)
+                fetched = _run_git(
+                    repo_dir, "fetch", "origin", self.branch,
+                    allow_fail=True, env=auth_env,
+                )
+                if fetched.returncode == 0:
+                    _run_git(repo_dir, "checkout", "-B", self.branch, "FETCH_HEAD")
+                else:
+                    # Remote branch does not exist yet — ensure we are on it locally.
+                    _run_git(repo_dir, "checkout", "-B", self.branch)
+                self._ensure_identity(repo_dir)
+                return
+
+            repo_dir.mkdir(parents=True, exist_ok=True)
+            # Try a branch-scoped clone first; fall back to init for empty remotes.
+            # Bare URL in argv; token delivered via GIT_ASKPASS in env.
+            cloned = _run_git(
+                None,
+                "clone",
+                "--branch",
+                self.branch,
+                "--single-branch",
+                bare_url,
+                str(repo_dir),
+                allow_fail=True,
+                env=auth_env,
+            )
+            if cloned.returncode != 0:
+                # Empty remote or missing branch: init a fresh repo + add origin.
+                _run_git(repo_dir, "init")
+                # Store the bare URL as origin (no credentials in config).
+                _run_git(repo_dir, "remote", "add", "origin", bare_url, allow_fail=True)
                 _run_git(repo_dir, "checkout", "-B", self.branch)
             self._ensure_identity(repo_dir)
-            return
-
-        repo_dir.mkdir(parents=True, exist_ok=True)
-        # Try a branch-scoped clone first; fall back to init for empty remotes.
-        cloned = _run_git(
-            None,
-            "clone",
-            "--branch",
-            self.branch,
-            "--single-branch",
-            authed,
-            str(repo_dir),
-            allow_fail=True,
-        )
-        if cloned.returncode != 0:
-            # Empty remote or missing branch: init a fresh repo + add origin.
-            _run_git(repo_dir, "init")
-            _run_git(repo_dir, "remote", "add", "origin", authed, allow_fail=True)
-            _run_git(repo_dir, "checkout", "-B", self.branch)
-        self._ensure_identity(repo_dir)
 
     def push(
         self,
@@ -161,6 +264,8 @@ class RemoteProvider(ABC):
         Returns ``{committed: bool, sha: str, pushed: bool}``.  When the working
         tree is clean (nothing to commit) ``committed`` is ``False`` and no push
         is attempted.
+
+        The PAT is passed via GIT_ASKPASS — it NEVER appears in argv.
         """
         repo_dir = Path(repo_dir)
         self._ensure_identity(repo_dir, author_name, author_email)
@@ -177,8 +282,9 @@ class RemoteProvider(ABC):
         _run_git(repo_dir, "commit", "-m", message)
         sha = _run_git(repo_dir, "rev-parse", "HEAD").stdout.strip()
 
-        authed = self.authed_url()
-        _run_git(repo_dir, "push", authed, f"HEAD:{self.branch}")
+        bare_url = self.repo_url  # no credentials in argv
+        with _askpass_env(self._askpass_username, self.token) as auth_env:
+            _run_git(repo_dir, "push", bare_url, f"HEAD:{self.branch}", env=auth_env)
         return {"committed": True, "sha": sha, "pushed": True}
 
     def open_change_request(self, title: str, body: str = "") -> dict[str, Any] | None:
@@ -229,7 +335,12 @@ class GitHubProvider(RemoteProvider):
     def provider(self) -> str:
         return "github"
 
+    @property
+    def _askpass_username(self) -> str:
+        return "x-access-token"
+
     def authed_url(self) -> str:
+        """Token-embedded URL — for HTTP API calls only, NEVER pass to git argv."""
         return _inject_token(self.repo_url, "x-access-token", self.token)
 
     def open_change_request(self, title: str, body: str = "") -> dict[str, Any] | None:
@@ -297,7 +408,12 @@ class GitLabProvider(RemoteProvider):
     def provider(self) -> str:
         return "gitlab"
 
+    @property
+    def _askpass_username(self) -> str:
+        return "oauth2"
+
     def authed_url(self) -> str:
+        """Token-embedded URL — for HTTP API calls only, NEVER pass to git argv."""
         return _inject_token(self.repo_url, "oauth2", self.token)
 
     def open_change_request(self, title: str, body: str = "") -> dict[str, Any] | None:

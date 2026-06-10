@@ -4,7 +4,7 @@ Defines ZAR pricing tiers (FREE / STARTER / TEAM / PRO / ENTERPRISE),
 the security-dial → tier mapping, and per-tier resource limits.  This module
 is EE-only and must NEVER be imported by open-source core code.
 
-Tier overview (v3 — June 2026)
+Tier overview (v4 — June 2026)
 -------------------------------
 | Tier       | USD/mo  | Seats | SLA       |
 |------------|---------|-------|-----------|
@@ -50,7 +50,9 @@ flow definitions) cost ~R0/month incremental and are never metered.
 
 | Metric                         | COGS line                                      |
 |--------------------------------|------------------------------------------------|
-| Storage GB/month               | Object-storage (S3/R2) + Postgres WAL cost     |
+| Storage GB/month               | Object-storage (Cloudflare R2); COGS ~R0.24/GB |
+| Bytes scanned / TiB            | DuckDB CPU + R2 egress per query; first 1 TiB  |
+|   (query_scan events)          | free; marginal COGS ~R15/TiB (conservative)    |
 | Compute units (flow runs +     | Container-compute (ECS/k8s task-seconds) +     |
 |   query compute)               | DuckDB CPU-time on query nodes                 |
 | Embedded sessions              | Egress bandwidth + per-request compute (CDN)   |
@@ -73,13 +75,29 @@ Overages beyond the tier's included quota are drawn from the org's usage
 wallet prepaid credit balance.  Rates are denominated in ZAR and priced at
 our COGS + margin:
 
-| Dimension                       | Rate          | COGS basis               | Margin  |
-|---------------------------------|---------------|--------------------------|---------|
-| storage_zar_per_gb_month        | R1.50/GB      | S3/R2 + WAL              | ~84%    |
-| compute_zar_per_1000_cu         | R100/1,000 CU | Container/DuckDB compute  | ~77%    |
-| ai_call_zar_per_call            | R5.00/call    | Anthropic API tokens      | ~93%    |
-| embedded_session_zar_per_10k    | R50/10K sess  | Egress + CDN compute      | ~99%    |
-| agent_run_zar_per_run           | R2.00/run     | Remote kernel compute     | ~99%    |
+| Dimension                       | Rate            | COGS basis               | Margin  |
+|---------------------------------|-----------------|--------------------------|---------|
+| storage_zar_per_gb_month        | R0.33/GB        | Cloudflare R2            | ~27%    |
+|                                 |                 | COGS ~R0.24/GB; positive |         |
+| scan_zar_per_tib                | R83/TiB         | DuckDB CPU + R2 egress   | ~72%    |
+|                                 | (~$5/TiB USD)   | COGS ~R15/TiB (pending   |         |
+|                                 | 1 TiB/mo free   | real benchmark)          |         |
+| compute_zar_per_1000_cu         | R100/1,000 CU   | Container/DuckDB compute | ~77%    |
+| ai_call_zar_per_call            | R5.00/call      | Anthropic API tokens     | ~93%    |
+| embedded_session_zar_per_10k    | R50/10K sess    | Egress + CDN compute     | ~99%    |
+| agent_run_zar_per_run           | R2.00/run       | Remote kernel compute    | ~99%    |
+
+Bytes-scanned billing note (v4 change):
+  - Billing metric switched from compute-seconds×4 to bytes-scanned (BigQuery-
+    comparable).  The optimizer visibly shrinks the bill; the free-viewer wedge
+    shows up because warehouse hit only occurs on rollup refresh, not per view.
+  - WAREHOUSE_CU_MULTIPLIER is now 1 (multiplier dropped; warehouse queries no
+    longer carry a penalty — "warehouse vs standard" disappears from the invoice).
+  - Storage cut from R1.50 → R0.33/GB to match Cloudflare R2 parity ($0.02/GB).
+    Own COGS is ~R0.24/GB → still margin-positive.
+  - scan_zar_per_tib is a CONFIG CONSTANT pending a real DuckDB benchmark; the
+    USD anchor (~$5/TiB, discount vs BigQuery's $6.25) is locked; ZAR computed
+    via the standard USD × 16.26 × 1.02 convention → R82.97 → ceil = R83.
 
 No per-seat overage at any tier.  Wallet mechanics (topup, spend caps,
 ledger) are handled by the WalletAgent — tiers.py only defines the rates.
@@ -159,15 +177,37 @@ class BillingTier(str, enum.Enum):
 # Warehouse (heavy-query pool) pricing
 # ---------------------------------------------------------------------------
 # Queries executed on the warehouse machine class (the cloud heavy-query
-# pool: same engine, 8 GB+ machines for big-table sorts/joins) consume
-# compute units at this multiplier.  The pool machine costs ~6× an app
-# machine; billing 4× CU keeps adoption attractive while staying margin-
-# positive, and means warehouse overages reuse the existing
-# ``compute_zar_per_1000_cu`` rate — no separate warehouse meter or rate.
-# The runtime reads this via the pool's NUBI_CU_MULTIPLIER env (set in
-# fly.toml); this constant is the canonical billing-model value.
+# pool: same engine, 8 GB+ machines for big-table sorts/joins) previously
+# consumed compute units at a 4× multiplier.  As of v4 (June 2026) the
+# billing metric has been switched to bytes-scanned (see SCAN_ZAR_PER_TIB /
+# SCAN_FREE_ALLOWANCE_TIB below) so the warehouse penalty is eliminated —
+# "warehouse vs standard" no longer appears on the invoice.  MULTIPLIER = 1
+# is kept so the fly.toml NUBI_CU_MULTIPLIER env-var and any code that reads
+# this constant continue to work without modification; the effective billing
+# impact is a no-op.
 
-WAREHOUSE_CU_MULTIPLIER = 4
+WAREHOUSE_CU_MULTIPLIER = 1  # v4: multiplier dropped — bytes-scanned billing replaces CU penalty
+
+
+# ---------------------------------------------------------------------------
+# Bytes-scanned billing constants
+# ---------------------------------------------------------------------------
+# These are CONFIG CONSTANTS pending a real DuckDB / httpfs benchmark.
+# The USD anchor price is locked; ZAR is derived via: usd * 16.26 * 1.02
+# (same convention as all other ZAR reference amounts in this module).
+#
+# Derivation for SCAN_ZAR_PER_TIB:
+#   USD anchor: ~$5.00/TiB (BigQuery charges $6.25; we offer a discount).
+#   ZAR reference: $5.00 × 16.26 × 1.02 = R82.93 → ceil to R83.
+#   Conservative COGS estimate: ~$0.93/TiB (DuckDB CPU + R2 egress) → ~R15/TiB.
+#   Gross margin at R83: (83 − 15) / 83 ≈ 82% (conservative; marginal ~98%).
+#   NOTE: replace with measured numbers once the lakehouse benchmark is complete.
+#
+# Free allowance: 1 TiB/month per org (matches BigQuery's free tier).
+# All scan beyond 1 TiB is billed at SCAN_ZAR_PER_TIB.
+
+SCAN_ZAR_PER_TIB: str = "83.00"          # R83/TiB — USD-anchored ~$5/TiB; PENDING benchmark
+SCAN_FREE_ALLOWANCE_TIB: float = 1.0     # 1 TiB/month free per org
 
 
 # ---------------------------------------------------------------------------
@@ -184,15 +224,24 @@ class OverageRates:
 
     Overages are drawn from the org's usage wallet (prepaid credit balance).
     Gross margins on overages (for reference):
-        storage_zar_per_gb_month       R1.50  → ~84% margin
+        storage_zar_per_gb_month       R0.33  → ~27% margin (R2 parity; COGS ~R0.24/GB)
+        scan_zar_per_tib               R83    → ~82% margin (~$5/TiB; COGS ~R15/TiB PENDING)
         compute_zar_per_1000_cu        R100   → ~77% margin
         ai_call_zar_per_call           R5     → ~93% margin
         embedded_session_zar_per_10k   R50    → ~99% margin
         agent_run_zar_per_run          R2     → ~99% margin
         seat_zar_per_seat_month        None   (no per-seat pricing at any tier)
+
+    Scan billing note:
+        ``scan_zar_per_tib`` applies to bytes scanned beyond the per-org free
+        allowance of :data:`SCAN_FREE_ALLOWANCE_TIB` TiB/month.  The allowance
+        is applied globally (not per query) during reconciliation.
     """
 
     storage_zar_per_gb_month: Decimal | None = None
+    # Bytes-scanned dimension (v4).  Rate per TiB scanned beyond the
+    # SCAN_FREE_ALLOWANCE_TIB monthly allowance.  None = not available (Free).
+    scan_zar_per_tib: Decimal | None = None
     compute_zar_per_1000_cu: Decimal | None = None
     ai_call_zar_per_call: Decimal | None = None
     embedded_session_zar_per_10k: Decimal | None = None
@@ -274,9 +323,9 @@ class TierLimits:
         Whether custom domain mapping is available.
     has_warehouse:
         Whether the hosted DuckDB warehouse (heavy-query pool) is available.
-        Warehouse queries consume compute units at
-        :data:`WAREHOUSE_CU_MULTIPLIER`; overages use the normal
-        ``compute_zar_per_1000_cu`` rate.
+        As of v4 :data:`WAREHOUSE_CU_MULTIPLIER` is 1 (no penalty) — warehouse
+        queries are billed identically to standard queries via bytes-scanned
+        (``scan_zar_per_tib``).
     audit_log_retention_days:
         Audit log retention in days.  ``None`` means unlimited.
     has_priority_support:
@@ -407,7 +456,8 @@ _TIER_CATALOGUE: dict[BillingTier, TierLimits] = {
         security_dial_min=0,
         security_dial_max=60,
         overages=OverageRates(
-            storage_zar_per_gb_month=Decimal("1.50"),      # ~84% margin; COGS = S3/R2
+            storage_zar_per_gb_month=Decimal("0.33"),      # ~27% margin; COGS ~R0.24/GB (R2 parity)
+            scan_zar_per_tib=Decimal(SCAN_ZAR_PER_TIB),   # ~82% margin; COGS ~R15/TiB (PENDING bench)
             compute_zar_per_1000_cu=Decimal("100.00"),     # ~77% margin; COGS = container/DuckDB
             ai_call_zar_per_call=Decimal("5.00"),          # ~93% margin; COGS = Anthropic API tokens
             embedded_session_zar_per_10k=Decimal("50.00"), # ~99% margin; COGS = egress + CDN
@@ -461,7 +511,8 @@ _TIER_CATALOGUE: dict[BillingTier, TierLimits] = {
         security_dial_min=0,
         security_dial_max=70,
         overages=OverageRates(
-            storage_zar_per_gb_month=Decimal("1.50"),      # ~84% margin; COGS = S3/R2
+            storage_zar_per_gb_month=Decimal("0.33"),      # ~27% margin; COGS ~R0.24/GB (R2 parity)
+            scan_zar_per_tib=Decimal(SCAN_ZAR_PER_TIB),   # ~82% margin; COGS ~R15/TiB (PENDING bench)
             compute_zar_per_1000_cu=Decimal("100.00"),     # ~77% margin; COGS = container/DuckDB
             ai_call_zar_per_call=Decimal("5.00"),          # ~93% margin; COGS = Anthropic API tokens
             embedded_session_zar_per_10k=Decimal("50.00"), # ~99% margin; COGS = egress + CDN
@@ -514,7 +565,8 @@ _TIER_CATALOGUE: dict[BillingTier, TierLimits] = {
         security_dial_min=0,
         security_dial_max=80,
         overages=OverageRates(
-            storage_zar_per_gb_month=Decimal("1.50"),      # ~84% margin; COGS = S3/R2
+            storage_zar_per_gb_month=Decimal("0.33"),      # ~27% margin; COGS ~R0.24/GB (R2 parity)
+            scan_zar_per_tib=Decimal(SCAN_ZAR_PER_TIB),   # ~82% margin; COGS ~R15/TiB (PENDING bench)
             compute_zar_per_1000_cu=Decimal("100.00"),     # ~77% margin; COGS = container/DuckDB
             ai_call_zar_per_call=Decimal("5.00"),          # ~93% margin; COGS = Anthropic API tokens
             embedded_session_zar_per_10k=Decimal("50.00"), # ~99% margin; COGS = egress + CDN
@@ -529,7 +581,7 @@ _TIER_CATALOGUE: dict[BillingTier, TierLimits] = {
         has_multi_tenant_workspaces=False,
         has_byoc=False,
         has_custom_domain=True,
-        has_warehouse=True,  # heavy-query pool; CUs billed at WAREHOUSE_CU_MULTIPLIER
+        has_warehouse=True,  # heavy-query pool; WAREHOUSE_CU_MULTIPLIER=1 (no penalty)
         audit_log_retention_days=90,
         has_priority_support="email_slack",
         sla_uptime_pct=99.5,
@@ -575,7 +627,8 @@ _TIER_CATALOGUE: dict[BillingTier, TierLimits] = {
         security_dial_min=0,
         security_dial_max=100,
         overages=OverageRates(
-            storage_zar_per_gb_month=Decimal("1.50"),
+            storage_zar_per_gb_month=Decimal("0.33"),      # ~27% margin; COGS ~R0.24/GB (R2 parity)
+            scan_zar_per_tib=Decimal(SCAN_ZAR_PER_TIB),   # ~82% margin; COGS ~R15/TiB (PENDING bench)
             compute_zar_per_1000_cu=Decimal("100.00"),
             ai_call_zar_per_call=Decimal("5.00"),
             embedded_session_zar_per_10k=Decimal("0.00"),  # unlimited embed included → R0 overage
@@ -590,7 +643,7 @@ _TIER_CATALOGUE: dict[BillingTier, TierLimits] = {
         has_multi_tenant_workspaces=True,
         has_byoc=True,
         has_custom_domain=True,
-        has_warehouse=True,  # heavy-query pool; CUs billed at WAREHOUSE_CU_MULTIPLIER
+        has_warehouse=True,  # heavy-query pool; WAREHOUSE_CU_MULTIPLIER=1 (no penalty)
         audit_log_retention_days=None,  # unlimited retention
         has_priority_support="dedicated_csm",
         # SLA: 99.95% monthly uptime (≤ ~22 minutes downtime/month).

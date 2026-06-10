@@ -633,16 +633,11 @@ def spec_to_html(spec: DashboardSpec) -> str:
         f"{title_safe}</h2></div>",
     ]
 
-    for widget in spec.widgets:
+    def _widget_line(widget: "Widget") -> str:
         pos = widget.pos
         wrapper_style = _WIDGET_WRAPPER_STYLE.format(
-            col_start=pos.x,
-            col_span=pos.w,
-            row_start=pos.y,
-            row_span=pos.h,
+            col_start=pos.x, col_span=pos.w, row_start=pos.y, row_span=pos.h,
         )
-
-        # Build the inner nubi-* element.
         if widget.type == "kpi":
             inner = _kpi_tag(widget)
         elif widget.type == "table":
@@ -654,13 +649,44 @@ def spec_to_html(spec: DashboardSpec) -> str:
         elif widget.type == "text":
             inner = _text_tag(widget)
         else:
-            # Unreachable due to Literal type, but be defensive.
-            continue
-
-        lines.append(
+            return ""
+        return (
             f'  <div class="nubi-widget nubi-widget--{widget.type}"'
             f' style="{wrapper_style}">{inner}</div>'
         )
+
+    tabs = spec.tabs or []
+    if not tabs:
+        # No tabs — byte-identical to the prior single-section render.
+        for widget in spec.widgets:
+            line = _widget_line(widget)
+            if line:
+                lines.append(line)
+    else:
+        # Tabbed dashboard → stacked sections, one <h3> heading per tab in order.
+        # A widget with tab_id=None belongs to the FIRST tab; drawer widgets stay
+        # global (rendered once after all tab sections).
+        for idx, tab in enumerate(tabs):
+            label_safe = html.escape(tab.label or tab.id, quote=False)
+            lines.append(
+                f'  <div class="nubi-tab-section" data-tab-id="{html.escape(tab.id, quote=True)}"'
+                f' style="grid-column:1/-1;">'
+                f'<h3 style="margin:1rem 0 0.5rem;font-size:1.05rem;font-weight:600;">'
+                f"{label_safe}</h3></div>"
+            )
+            for widget in spec.widgets:
+                if getattr(widget, "drawer", False):
+                    continue
+                wt = widget.tab_id
+                if wt == tab.id or (wt is None and idx == 0):
+                    line = _widget_line(widget)
+                    if line:
+                        lines.append(line)
+        for widget in spec.widgets:
+            if getattr(widget, "drawer", False):
+                line = _widget_line(widget)
+                if line:
+                    lines.append(line)
 
     lines.append("</div>")
     return "\n".join(lines)

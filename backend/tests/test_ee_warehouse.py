@@ -67,7 +67,7 @@ class TestWarehouseTierFlags:
         assert is_feature_available(BillingTier.FREE, "warehouse") is False
 
     def test_multiplier_is_canonical_4x(self):
-        assert WAREHOUSE_CU_MULTIPLIER == 4
+        assert WAREHOUSE_CU_MULTIPLIER == 1  # bytes-scanned billing replaced the 4x warehouse penalty
 
 
 # ---------------------------------------------------------------------------

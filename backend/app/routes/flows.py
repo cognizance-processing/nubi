@@ -279,6 +279,47 @@ def _dt_iso(dt: datetime | None) -> str | None:
     return dt.isoformat()
 
 
+# Key under which the flow OWNER's RLS policy snapshot is stashed inside the
+# flow spec's free-form ``runtime_config`` dict (SECURITY B2).  ``runtime_config``
+# is the only spec field that survives ``validate_flow_spec`` re-validation
+# unchanged (FlowSpec ignores unknown top-level keys), and ``spec`` is the only
+# JSONB column the flow store lets us update — so this is the least-invasive,
+# store-compatible spot to persist the snapshot without a schema migration.
+OWNER_POLICIES_KEY = "__owner_policies__"
+
+
+def _snapshot_owner_policies(
+    spec_data: dict[str, Any] | None,
+    identity: VerifiedIdentity,
+) -> dict[str, Any] | None:
+    """Return *spec_data* with the owner's RLS policy snapshot stashed in it.
+
+    SECURITY (B2 — OWNER-POLICY SNAPSHOT): scheduled flow runs drain with
+    ``claims=None`` (no caller identity), so without a snapshot a flow query
+    cell would apply NO RLS.  We snapshot the creating/enabling identity's RLS
+    policies onto the flow (under ``spec.runtime_config[OWNER_POLICIES_KEY]``)
+    so the scheduler can run the flow under the OWNER's policies at tick time.
+
+    The snapshot REFRESHES every time the flow is created, edited, or enabled
+    (i.e. each time this runs in create_flow / update_flow), so a flow always
+    runs under the policies of whoever last persisted it.
+
+    Only RLS policy claims (e.g. ``{"tenant_id": "acme"}``) are stored — these
+    are row-filter values, never secrets.  An empty policy set (admin/unscoped
+    owner) is stored as ``{}``; the tick path treats that as "no extra filter",
+    preserving current behaviour.
+
+    Returns ``None`` when *spec_data* is falsy (nothing to snapshot onto).
+    """
+    if not spec_data:
+        return spec_data
+    spec_copy = dict(spec_data)
+    runtime_config = dict(spec_copy.get("runtime_config") or {})
+    runtime_config[OWNER_POLICIES_KEY] = dict(identity.policies or {})
+    spec_copy["runtime_config"] = runtime_config
+    return spec_copy
+
+
 def _serialize_flow(flow: dict[str, Any]) -> dict[str, Any]:
     """Convert a flow dict to a JSON-serialisable form."""
     return {
@@ -1456,6 +1497,7 @@ async def get_notebook(
 async def create_flow(
     body: CreateFlowIn,
     user: dict[str, Any] = Depends(current_user),
+    identity: VerifiedIdentity = Depends(verified_identity),
     repo: Repo = Depends(get_repo),
     x_project_id: str | None = Header(default=None, alias="X-Project-Id"),
 ) -> dict[str, Any]:
@@ -1479,12 +1521,18 @@ async def create_flow(
 
     project_id = await _resolve_project_id(org_id, x_project_id)
 
+    # SECURITY (B2): snapshot the OWNER's RLS policies onto the flow so scheduled
+    # runs (which drain with claims=None) row-filter exactly like the owner does.
+    spec_to_store = _snapshot_owner_policies(
+        spec.model_dump() if spec is not None else body.spec, identity
+    )
+
     store = get_flow_store()
     flow = await store.create_flow(
         org_id=org_id,
         created_by=str(user["id"]),
         name=body.name,
-        spec=spec.model_dump() if spec is not None else body.spec,
+        spec=spec_to_store,
         enabled=body.enabled,
         schedule=body.schedule,
         next_run_at=next_run_at,
@@ -1556,16 +1604,21 @@ async def update_flow(
     flow_id: str,
     body: UpdateFlowIn,
     user: dict[str, Any] = Depends(current_user),
+    identity: VerifiedIdentity = Depends(verified_identity),
     repo: Repo = Depends(get_repo),
 ) -> dict[str, Any]:
     """Update a flow's name, spec, enabled status, or schedule.
 
     Validates the spec if provided; returns 400 on hard errors.
     Returns 404 if the flow does not exist or belongs to a different org.
+
+    SECURITY (B2): editing or (re-)enabling a flow REFRESHES the owner RLS
+    policy snapshot stashed on the spec, so scheduled runs always row-filter
+    under the policies of whoever last persisted the flow.
     """
     org_id = await _get_user_org(str(user["id"]), repo)
     store = get_flow_store()
-    await _require_flow_in_org(flow_id, org_id, store)
+    existing = await _require_flow_in_org(flow_id, org_id, store)
 
     fields: dict[str, Any] = {}
     if body.name is not None:
@@ -1587,7 +1640,20 @@ async def update_flow(
         if not flow_spec_is_valid(issues):
             hard = [i for i in issues if not i.startswith("[warn]")]
             raise AppError("bad_flow_spec", "; ".join(hard), 400)
-        fields["spec"] = spec.model_dump() if spec is not None else body.spec
+        # Refresh the owner-policy snapshot onto the new spec being persisted.
+        fields["spec"] = _snapshot_owner_policies(
+            spec.model_dump() if spec is not None else body.spec, identity
+        )
+    else:
+        # No new spec supplied: refresh the snapshot in-place on the existing
+        # spec so an edit/enable that changes only name/enabled/schedule still
+        # re-anchors scheduled-run RLS to the current owner.  Re-persist spec
+        # only when the snapshot actually changed (avoid pointless writes).
+        existing_spec = existing.get("spec") or {}
+        if isinstance(existing_spec, dict):
+            refreshed = _snapshot_owner_policies(existing_spec, identity)
+            if refreshed is not None and refreshed != existing_spec:
+                fields["spec"] = refreshed
 
     updated = await store.update_flow(flow_id, fields)
     if updated is None:

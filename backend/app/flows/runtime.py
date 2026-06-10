@@ -104,6 +104,14 @@ _BLOCKING_STATES = frozenset({"failed", "timed_out", "upstream_failed", "skipped
 # (e.g. the non-taken arm of a branch), so they do NOT cause the flow_run to fail.
 _FLOW_FAIL_STATES = frozenset({"failed", "timed_out"})
 
+# SECURITY (B2 — OWNER-POLICY SNAPSHOT): key under which the flow OWNER's RLS
+# policy snapshot is stashed inside the flow spec's ``runtime_config`` dict.
+# Mirrors ``app.routes.flows.OWNER_POLICIES_KEY`` (kept as a local literal to
+# avoid a route→runtime import cycle).  Scheduled runs drain with no caller
+# identity (claims=None), so a flow query cell would otherwise apply NO RLS;
+# we thread these snapshotted policies into the execution claims instead.
+_OWNER_POLICIES_KEY = "__owner_policies__"
+
 # Default worker lease duration in seconds (matches claim_ready_task_run).
 _DEFAULT_LEASE_SECONDS = 300
 # Grace added on top of a task's ``timeout_s`` when deriving the claim lease,
@@ -1120,6 +1128,11 @@ async def run_one_ready_task(
     )
 
     # ── Execute ────────────────────────────────────────────────────────────────
+    # SECURITY (B2): worker-pool / scheduled execution carries no caller
+    # identity — fill in the flow OWNER's snapshotted RLS policies so query
+    # cells row-filter exactly as the owner does.  No-op when claims already
+    # carry policies (the synchronous interactive path).
+    exec_claims = _claims_with_owner_policies(claims, flow_dict, flow_run_id=flow_run_id)
     # Merge task_run with task_spec so execute_task sees kind/config/timeout.
     full_task = {**task_run, **task_spec}
     # for_each cells are rewritten into a legacy 'map' task so the existing
@@ -1131,7 +1144,7 @@ async def run_one_ready_task(
         store,
         full_task,
         ctx,
-        claims,
+        exec_claims,
         task_run_id=task_run_id,
         worker_id=task_run.get("worker_id"),
         lease_seconds=lease_seconds,
@@ -1822,6 +1835,67 @@ def _maybe_persist_materialized_cell(
     result.update(manifest)
 
 
+def _owner_policies_from_flow(flow: dict[str, Any] | None) -> dict[str, Any]:
+    """Extract the OWNER's snapshotted RLS policies from a flow dict (B2).
+
+    Returns the policy dict stashed at
+    ``flow['spec']['runtime_config'][_OWNER_POLICIES_KEY]`` by the create/enable
+    path in ``routes/flows.py``, or ``{}`` when the flow has no snapshot (older
+    flows created before B2, inline/transient flows).  An empty dict means "no
+    extra row filter" — i.e. current/legacy behaviour.
+    """
+    if not flow:
+        return {}
+    spec = flow.get("spec")
+    if not isinstance(spec, dict):
+        return {}
+    runtime_config = spec.get("runtime_config")
+    if not isinstance(runtime_config, dict):
+        return {}
+    policies = runtime_config.get(_OWNER_POLICIES_KEY)
+    return dict(policies) if isinstance(policies, dict) else {}
+
+
+def _claims_with_owner_policies(
+    claims: dict[str, Any],
+    flow: dict[str, Any] | None,
+    *,
+    flow_run_id: str | None = None,
+) -> dict[str, Any]:
+    """Return *claims* augmented with the flow OWNER's RLS policies (B2).
+
+    Scheduled / worker-pool execution claims carry no ``policies`` (the
+    scheduler drains with ``claims=None`` → ``{}``), so a flow query cell would
+    apply NO RLS — every tenant's rows would leak through.  When the incoming
+    claims lack a non-empty ``policies`` dict, we substitute the OWNER snapshot
+    captured at create/enable time (see ``_owner_policies_from_flow``), so a
+    scheduled run row-filters exactly as the flow's owner does interactively.
+
+    Interactive runs (``run_flow`` / preview / run-cell) already thread the
+    VERIFIED caller's policies into ``claims`` — those are left UNCHANGED; we
+    only fill in policies when none were supplied.
+
+    Backward-compat: a flow with no snapshot yields empty policies — the
+    pre-B2 behaviour — but we LOG it so the gap is observable (a scheduled flow
+    that should be RLS-scoped but predates the snapshot).
+    """
+    if claims.get("policies"):
+        # Caller already supplied policies (interactive path) — never override.
+        return claims
+    owner_policies = _owner_policies_from_flow(flow)
+    if not owner_policies:
+        logger.warning(
+            "Flow run %s executing with EMPTY RLS policies (no owner-policy "
+            "snapshot on the flow). Scheduled query cells apply no row filter; "
+            "edit/enable the flow to capture the owner's policies.",
+            flow_run_id or (flow or {}).get("id") or "?",
+        )
+        return claims
+    merged = dict(claims)
+    merged["policies"] = owner_policies
+    return merged
+
+
 async def _resolve_secrets(org_id: str) -> dict[str, str]:
     """Resolve all secrets for *org_id* from the secret store.
 
@@ -1935,7 +2009,13 @@ async def _execute_claimed_task_run(
     # fan-out machinery runs unchanged.
     _apply_for_each_rewrite(full_task, task_spec)
 
-    outcome = execute_task(full_task, ctx, claims)
+    # SECURITY (B2): when this drain path runs without a caller identity (a
+    # scheduled drain → claims has no policies), substitute the flow OWNER's
+    # snapshotted RLS policies so query cells still row-filter.  Interactive
+    # drains (run_flow / run-cell) already pass the caller's policies — kept.
+    exec_claims = _claims_with_owner_policies(claims, flow_dict, flow_run_id=flow_run_id)
+
+    outcome = execute_task(full_task, ctx, exec_claims)
 
     # set_var (A5): persist=True flushes to the long-term store (visible to later
     # cells via reload + future runs); and on the synchronous drain path, merge

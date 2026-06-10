@@ -562,19 +562,54 @@ class ProjectGit:
 
     # -- remote --------------------------------------------------------------
 
-    def fetch_branch(self, remote_url: str, branch: str) -> None:
-        """Fast-forward the local branch ref from the remote (best-effort ff)."""
-        self._git("fetch", remote_url, f"{branch}:{branch}")
+    def fetch_branch(
+        self,
+        bare_url: str,
+        branch: str,
+        askpass_username: str = "",
+        token: str = "",
+    ) -> None:
+        """Fast-forward the local branch ref from the remote (best-effort ff).
+
+        SECURITY: ``bare_url`` must be the plain HTTPS URL with NO credentials
+        embedded (no ``user:token@``).  The PAT is delivered to git via a
+        GIT_ASKPASS helper written to an ephemeral temp file — it NEVER appears
+        in argv.  See :func:`app.git.remotes._askpass_env` for the mechanism.
+        """
+        from app.git.remotes import _askpass_env  # noqa: PLC0415
+
+        if token:
+            with _askpass_env(askpass_username or "git", token) as auth_env:
+                self._git("fetch", bare_url, f"{branch}:{branch}", env=auth_env)
+        else:
+            self._git("fetch", bare_url, f"{branch}:{branch}")
 
     def push_branch(
-        self, remote_url: str, branch: str, force_with_lease: bool = False
+        self,
+        bare_url: str,
+        branch: str,
+        force_with_lease: bool = False,
+        askpass_username: str = "",
+        token: str = "",
     ) -> None:
-        """Push *branch* to *remote_url* (``--force-with-lease`` optional)."""
+        """Push *branch* to *bare_url* (``--force-with-lease`` optional).
+
+        SECURITY: ``bare_url`` must be the plain HTTPS URL with NO credentials
+        embedded (no ``user:token@``).  The PAT is delivered to git via a
+        GIT_ASKPASS helper written to an ephemeral temp file — it NEVER appears
+        in argv.  See :func:`app.git.remotes._askpass_env` for the mechanism.
+        """
+        from app.git.remotes import _askpass_env  # noqa: PLC0415
+
         args = ["push"]
         if force_with_lease:
             args.append("--force-with-lease")
-        args += [remote_url, f"refs/heads/{branch}:refs/heads/{branch}"]
-        self._git(*args)
+        args += [bare_url, f"refs/heads/{branch}:refs/heads/{branch}"]
+        if token:
+            with _askpass_env(askpass_username or "git", token) as auth_env:
+                self._git(*args, env=auth_env)
+        else:
+            self._git(*args)
 
 
 # ---------------------------------------------------------------------------
@@ -582,11 +617,16 @@ class ProjectGit:
 # ---------------------------------------------------------------------------
 
 
-async def _remote_authed_url(org_id: str, project_id: str) -> str | None:
-    """Return the project's token-authed remote URL, or None when unbound.
+async def _remote_provider(org_id: str, project_id: str) -> "Any | None":
+    """Return the project's :class:`~app.git.remotes.RemoteProvider`, or None.
 
     Reads the ``projects.git`` binding + the secret-store token exactly like
     ``app/routes/git.py``.  Best-effort: any failure returns None.
+
+    SECURITY: callers use the returned provider's ``.repo_url`` (bare, no
+    credentials) and ``._askpass_username`` / ``.token`` to drive
+    :meth:`ProjectGit.fetch_branch` / :meth:`ProjectGit.push_branch` so that
+    the PAT is delivered via GIT_ASKPASS and NEVER appears in subprocess argv.
     """
     try:
         from app.connectors.secret_store import get_secret_store  # noqa: PLC0415
@@ -601,10 +641,9 @@ async def _remote_authed_url(org_id: str, project_id: str) -> str | None:
         token = (secret or {}).get("token", "")
         if not token:
             return None
-        provider = make_provider(
+        return make_provider(
             binding["provider"], binding["repo_url"], binding.get("branch", "main"), token
         )
-        return provider.authed_url()
     except Exception:  # noqa: BLE001 — remote binding is optional
         return None
 
@@ -876,10 +915,15 @@ async def push_env(
             warnings.append("could not record last_synced_sha")
 
     pushed = False
-    remote_url = await _remote_authed_url(org_id, project_id)
-    if remote_url and sha:
+    # SECURITY: use the provider object so the token goes via GIT_ASKPASS, NOT argv.
+    remote = await _remote_provider(org_id, project_id)
+    if remote and sha:
         try:
-            git.push_branch(remote_url, branch)
+            git.push_branch(
+                remote.repo_url, branch,
+                askpass_username=remote._askpass_username,
+                token=remote.token,
+            )
             pushed = True
         except Exception as exc:  # noqa: BLE001 — remote push is best-effort
             warnings.append(f"remote push failed: {_scrub(str(exc))}")
@@ -929,10 +973,15 @@ async def pull_env(
                 "warning": "No git workspace repo for this project; nothing to pull.",
             }
 
-        remote_url = await _remote_authed_url(org_id, project_id)
-        if remote_url:
+        # SECURITY: use the provider object so the token goes via GIT_ASKPASS, NOT argv.
+        remote = await _remote_provider(org_id, project_id)
+        if remote:
             try:
-                git.fetch_branch(remote_url, branch)
+                git.fetch_branch(
+                    remote.repo_url, branch,
+                    askpass_username=remote._askpass_username,
+                    token=remote.token,
+                )
             except Exception as exc:  # noqa: BLE001 — fetch is best-effort
                 warnings.append(f"remote fetch failed: {_scrub(str(exc))}")
 
@@ -972,9 +1021,14 @@ async def pull_env(
             )
             if sha:
                 await store.update_environment(env["id"], {"last_synced_sha": sha})
-            if remote_url and sha:
+            if remote and sha:
                 try:
-                    git.push_branch(remote_url, branch, force_with_lease=True)
+                    git.push_branch(
+                        remote.repo_url, branch,
+                        force_with_lease=True,
+                        askpass_username=remote._askpass_username,
+                        token=remote.token,
+                    )
                 except Exception as exc:  # noqa: BLE001
                     warnings.append(f"remote push failed: {_scrub(str(exc))}")
             return {

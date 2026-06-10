@@ -485,3 +485,354 @@ def register_blend_query(
         name=f"Blend — {table}",
         datastore_id=str(datastore_id),
     )
+
+
+# ---------------------------------------------------------------------------
+# Universal rollup refresh via ANY connector (Managed Lakehouse §2)
+# ---------------------------------------------------------------------------
+#
+# The pre-agg system has three parts and only the *refresh* is per-connector
+# (MANAGED_LAKEHOUSE.md §1):
+#
+#   1. Rewrite / routing  — connector-agnostic (planner.route_to_rollup_shape).
+#   2. Materialization    — ALWAYS lands in the lakehouse (Parquet/DuckDB),
+#                           regardless of where the base data lives.
+#   3. Refresh            — run the aggregate via ``connector.execute(plan)``.
+#
+# ``refresh_rollup`` below generalises the DuckDB-only ``preagg.build_rollup``
+# write path so the aggregate can be executed against ANY connector and the
+# small grouped result landed as a lakehouse rollup.  RLS-key columns stay IN
+# the rollup grain (the rls_keys check is preserved verbatim) and incremental
+# refresh via a watermark is supported when the candidate declares a
+# ``time_column``.
+
+
+def _build_aggregate_sql(
+    *,
+    source_table: str,
+    dimensions: list[str],
+    measures: list[str],
+    rls_keys: list[str],
+    time_column: str | None = None,
+    watermark: str | None = None,
+) -> str:
+    """Build the rollup aggregate SQL for refresh against a source connector.
+
+    Mirrors :func:`app.connectors.preagg.build_rollup_sql` (RLS keys are added
+    to BOTH the SELECT and the GROUP BY so the rollup keeps a row per
+    ``(rls_key, dims)`` combination — pre-aggregating across the RLS key would be
+    unsound).  When *time_column* and *watermark* are supplied an incremental
+    ``WHERE "<time_column>" > <watermark>`` predicate is added so only new base
+    rows are re-aggregated.
+
+    Security note: the watermark is an org-scoped, engine-produced value (a prior
+    ``max(time_column)``), never end-user input.  It is rendered as a typed
+    literal here for the refresh-time aggregate only — the SERVED rollup is read
+    through the standard RLS-injecting planner path, never this SQL.
+    """
+    from app.connectors.preagg import build_rollup_sql  # noqa: PLC0415
+
+    sql = build_rollup_sql(source_table, dimensions, measures, rls_keys)
+
+    if time_column and watermark:
+        # Inject the watermark predicate BEFORE the GROUP BY via the AST so we
+        # never string-splice into the middle of the statement.  sqlglot binds
+        # the literal as a proper node (no concatenation into an executable
+        # fragment beyond a typed literal the engine re-quotes).
+        import sqlglot  # noqa: PLC0415
+        import sqlglot.expressions as exp  # noqa: PLC0415
+
+        try:
+            tree = sqlglot.parse_one(sql, dialect="postgres")
+            if isinstance(tree, exp.Select):
+                pred = exp.GT(
+                    this=exp.Column(this=exp.Identifier(this=time_column, quoted=True)),
+                    expression=exp.Literal.string(str(watermark)),
+                )
+                tree = tree.where(pred)
+                sql = tree.sql(dialect="postgres")
+        except Exception:  # noqa: BLE001
+            # If the predicate cannot be injected safely, fall back to a full
+            # refresh (correct, just less efficient) rather than risk an unsafe
+            # rewrite.
+            pass
+    return sql
+
+
+def _base_max_time(
+    connector: Any,
+    source_table: str,
+    time_column: str,
+    watermark: str | None,
+) -> str | None:
+    """Return ``max(time_column)`` over the base table via *connector*, or None.
+
+    Used to advance the incremental watermark from the BASE (the rollup output
+    is aggregated and no longer carries the raw time column).  Best-effort: any
+    engine error returns ``None`` so a refresh is never blocked by watermark
+    advancement.  The query is a baked aggregate over the source table with the
+    same watermark predicate as the refresh — no end-user input, no RLS surface
+    (it reads only a single timestamp, never rows).
+    """
+    if not time_column:
+        return None
+    from app.connectors.plan import PhysicalPlan  # noqa: PLC0415
+
+    sql = f'SELECT max("{time_column}") AS __wm FROM "{source_table}"'
+    if watermark:
+        # Same predicate the refresh used — only consider the new tail.
+        import sqlglot  # noqa: PLC0415
+        import sqlglot.expressions as exp  # noqa: PLC0415
+
+        try:
+            tree = sqlglot.parse_one(sql, dialect="postgres")
+            if isinstance(tree, exp.Select):
+                pred = exp.GT(
+                    this=exp.Column(this=exp.Identifier(this=time_column, quoted=True)),
+                    expression=exp.Literal.string(str(watermark)),
+                )
+                sql = tree.where(pred).sql(dialect="postgres")
+        except Exception:  # noqa: BLE001
+            pass
+    try:
+        plan = PhysicalPlan(sql=sql, params=[], cache_key=f"wm:{source_table}")
+        tbl = connector.execute(plan)
+        if hasattr(tbl, "read_all"):
+            tbl = tbl.read_all()
+        if tbl.num_rows == 0:
+            return None
+        val = tbl.column(0)[0].as_py()
+    except Exception:  # noqa: BLE001
+        return None
+    if val is None:
+        return None
+    from datetime import datetime  # noqa: PLC0415
+
+    return val.isoformat() if isinstance(val, datetime) else str(val)
+
+
+def refresh_rollup(
+    connector: Any,
+    candidate: dict[str, Any],
+    *,
+    rls_keys: list[str] | None = None,
+    env: str = "prod",
+    flow: dict[str, Any] | None = None,
+    watermark: str | None = None,
+    cache_key: str = "",
+) -> dict[str, Any]:
+    """Refresh a rollup by executing its aggregate against ANY connector.
+
+    This is the universal (connector-agnostic) refresh path: instead of reading
+    a DuckDB-resident base table, it asks *connector* to ``execute`` the rollup
+    aggregate and lands the small grouped result as a lakehouse rollup
+    (Parquet/DuckDB).  A BigQuery- or Snowflake-backed dashboard therefore pays
+    the warehouse cost ONCE per refresh, not per viewer (MANAGED_LAKEHOUSE.md §2).
+
+    Parameters
+    ----------
+    connector:
+        Any :class:`app.connectors.base.Connector` for the rollup's source.  Its
+        ``execute(plan)`` runs the aggregate and returns a ``pyarrow.Table``.
+    candidate:
+        The rollup spec: ``{table | source_table, dimensions, measures,
+        time_column?, materialized?}``.  ``materialized`` (optional) is the
+        lakehouse persistence block (``kind`` full/incremental, ``target``); when
+        absent the rollup lands in a local DuckDB file (back-compat with the
+        DuckDB-only path).
+    rls_keys:
+        Columns that MUST survive into the rollup grain so the planner can still
+        inject ``WHERE <key> = <claim>`` at READ time.  Verified post-refresh; a
+        dropped key raises ``rls_key_dropped`` — RLS is never weakened.
+    env / flow:
+        Env namespacing + base-uri resolution for the lakehouse target (same
+        contract as :func:`materialize_blend`).
+    watermark:
+        Stored watermark (ISO string) for incremental refresh, or ``None`` for a
+        full refresh.  Used only when the candidate declares a ``time_column``.
+
+    Returns
+    -------
+    dict
+        ``{source_table, table, dimensions, measures, rls_keys, columns,
+        row_count, materialized_kind, env, ...}``.  For lakehouse-persisted
+        rollups additionally ``physical_target``, ``rows_written``,
+        ``new_watermark``; for the local DuckDB fallback ``database``.
+
+    Raises
+    ------
+    AppError
+        ``rls_key_dropped`` (400) if a declared rls_key is not present in the
+        aggregate output columns.
+    """
+    from app.connectors.plan import PhysicalPlan  # noqa: PLC0415
+
+    rls_keys = list(rls_keys or [])
+    source_table = str(candidate.get("source_table") or candidate.get("table") or "")
+    dimensions = list(candidate.get("dimensions") or [])
+    measures = list(candidate.get("measures") or [])
+    time_column = candidate.get("time_column") or (
+        (candidate.get("materialized") or {}).get("time_column")
+    )
+
+    materialized: dict[str, Any] = dict(candidate.get("materialized") or {})
+    mat_kind: str = str(materialized.get("kind") or "view").lower()
+
+    # Incremental is SOUND only when the time grain is itself a rollup dimension
+    # (or a derived bucket of it): then every grain row belongs to exactly one
+    # time bucket and never straddles the watermark boundary, so re-computing the
+    # new tail and upserting BY GRAIN is correct even for additive measures
+    # (SUM/COUNT).  If the time_column is NOT a dimension, a partial recompute
+    # of the tail would REPLACE a grain that also accumulated older rows — that
+    # would under-count.  In that case we degrade to a FULL refresh (correct,
+    # just re-scans everything) rather than silently produce a wrong aggregate.
+    dim_set = {str(d).lower() for d in dimensions}
+    time_is_dimension = bool(time_column) and str(time_column).lower() in dim_set
+    is_incremental = (
+        mat_kind == "incremental" and bool(time_column) and time_is_dimension
+    )
+    if mat_kind == "incremental" and not is_incremental:
+        # Sound degradation: keep persistence in the lakehouse but overwrite.
+        materialized["kind"] = "full"
+        mat_kind = "full"
+    is_persisted = mat_kind in ("full", "incremental")
+
+    agg_sql = _build_aggregate_sql(
+        source_table=source_table,
+        dimensions=dimensions,
+        measures=measures,
+        rls_keys=rls_keys,
+        time_column=str(time_column) if (is_incremental and watermark) else None,
+        watermark=watermark if is_incremental else None,
+    )
+
+    # ── 1. Execute the aggregate against the source connector. ────────────────
+    # The plan is a baked SELECT (the aggregate) — the connector runs it
+    # verbatim; it never rewrites SQL or RLS (that is the planner's job).
+    plan = PhysicalPlan(sql=agg_sql, params=[], cache_key=cache_key or f"rollup:{source_table}")
+    result = connector.execute(plan)
+    if hasattr(result, "read_all"):
+        result = result.read_all()
+
+    # For incremental refresh, advance the watermark from the BASE (the rollup
+    # output is a GROUP BY and no longer carries the raw time_column).  We ask
+    # the SAME connector for max(time_column) over the rows just refreshed.
+    new_base_watermark: str | None = watermark
+    if is_incremental:
+        base_wm = _base_max_time(connector, source_table, str(time_column), watermark)
+        if base_wm is not None and (watermark is None or base_wm > watermark):
+            new_base_watermark = base_wm
+
+    columns: list[str] = list(result.schema.names)
+
+    # ── 2. RLS-key preservation check (CRITICAL — same invariant as everywhere)
+    missing = [k for k in rls_keys if k not in columns]
+    if missing:
+        raise AppError(
+            "rls_key_dropped",
+            f"Rollup refresh for {source_table!r} dropped declared rls_keys "
+            f"{missing!r}; the rollup must keep them so the planner can inject "
+            f"WHERE <key> = <claim> at read time. Rollup columns: {columns!r}.",
+            400,
+        )
+
+    row_count = result.num_rows
+    rollup_table = str(candidate.get("rollup_table") or f"rollup_{source_table}")
+
+    # ── 3a. Lakehouse-persisted (full/incremental) → Parquet in object storage.
+    if is_persisted:
+        from app.flows.incremental import (  # noqa: PLC0415
+            apply_incremental,
+            resolve_target_uri,
+        )
+
+        settings = _get_settings()
+        physical_target = resolve_target_uri(env, materialized, flow, settings)
+        mat_for_apply = dict(materialized)
+        mat_for_apply["__physical_target__"] = physical_target
+
+        # The watermark is applied at the BASE scan in _build_aggregate_sql (so
+        # the warehouse only re-aggregates new rows).  The rollup OUTPUT is a
+        # GROUP BY and does not carry the raw time_column, so apply_incremental
+        # must NOT re-filter the aggregated rows by time_column — instead we
+        # upsert on the rollup GRAIN (rls_keys + dimensions) so the freshly
+        # recomputed grain rows replace their stale counterparts.  We point its
+        # ``time_column`` at the first grain column (which DOES exist in the
+        # output, satisfying its validation) and pass watermark=None so its
+        # output-side filter is a no-op; the real watermark is advanced from the
+        # base above (``new_base_watermark``).
+        grain: list[str] = []
+        for c in list(rls_keys) + list(dimensions):
+            if c not in grain:
+                grain.append(c)
+        if mat_for_apply.get("kind") == "incremental":
+            if not mat_for_apply.get("unique_key"):
+                mat_for_apply["unique_key"] = list(grain)
+            if grain:
+                mat_for_apply["time_column"] = grain[0]
+            apply_watermark: str | None = None
+        else:
+            apply_watermark = watermark
+
+        storage = _open_storage_connector(physical_target)
+        try:
+            from datetime import datetime, timezone  # noqa: PLC0415
+
+            rows_written, _ = apply_incremental(
+                storage,
+                result,
+                mat_for_apply,
+                apply_watermark,
+                datetime.now(timezone.utc),
+            )
+        finally:
+            _close_storage_connector(storage)
+        # Advance the watermark from the base (incremental) or leave as-is.
+        new_watermark = new_base_watermark if is_incremental else watermark
+
+        return {
+            "source_table": source_table,
+            "table": rollup_table,
+            "dimensions": sorted(dimensions),
+            "measures": sorted(measures),
+            "rls_keys": rls_keys,
+            "columns": columns,
+            "row_count": row_count,
+            "materialized_kind": mat_kind,
+            "env": env,
+            "physical_target": physical_target,
+            "rows_written": rows_written,
+            "new_watermark": new_watermark,
+        }
+
+    # ── 3b. Local DuckDB fallback (back-compat with the DuckDB-only path). ─────
+    import duckdb  # noqa: PLC0415
+
+    database: str = str(candidate.get("database") or "")
+    if not database:
+        rollup_id = str(candidate.get("rollup_id") or f"{source_table}")
+        database = os.path.join(_seed_data_dir(), "rollups", f"{rollup_id}.duckdb")
+    os.makedirs(os.path.dirname(os.path.abspath(database)), exist_ok=True)
+
+    out = duckdb.connect(database=database)
+    try:
+        out.register("_rollup_src", result)
+        out.execute(f'DROP TABLE IF EXISTS "{rollup_table}"')
+        out.execute(f'CREATE TABLE "{rollup_table}" AS SELECT * FROM _rollup_src')
+        out.unregister("_rollup_src")
+    finally:
+        out.close()
+
+    return {
+        "source_table": source_table,
+        "table": rollup_table,
+        "database": database,
+        "dimensions": sorted(dimensions),
+        "measures": sorted(measures),
+        "rls_keys": rls_keys,
+        "columns": columns,
+        "row_count": row_count,
+        "materialized_kind": "view",
+        "env": env,
+        "new_watermark": watermark,
+    }

@@ -461,12 +461,20 @@ class RollupRouteResult:
         The id of the rollup that was used (``None`` when not routed).
     reason:
         Human-readable explanation (for observability / debugging).
+    pruned_partitions:
+        Partition columns the query's WHERE clause constrains AND the routed
+        rollup is partitioned by.  Surfaced for observability so the executor /
+        layout layer can range-prune the Parquet partitions it scans.  Empty
+        when the query is not routed or carries no partition predicate.  This is
+        an *informational* field — pruning never weakens RLS (the WHERE clause,
+        including any injected RLS predicate, is always preserved verbatim).
     """
 
     plan: PhysicalPlan
     routed: bool
     rollup_id: str | None = None
     reason: str = ""
+    pruned_partitions: tuple[str, ...] = ()
 
 
 def _measure_alias(func: str, col: str) -> str:
@@ -543,6 +551,20 @@ def route_to_rollup_shape(plan: PhysicalPlan, registry: Any) -> RollupRouteResul
         if not q_filter_cols.issubset(roll_cols):
             continue
 
+        # ── Rule 6 (partition pruning awareness, additive): if the rollup is
+        # partitioned by a column that the rollup ALSO carries in its grain,
+        # detect which of those partition columns the query's WHERE constrains.
+        # The predicate is preserved verbatim by the rewrite below, so DuckDB /
+        # the lakehouse layout can range-prune those partitions.  Soundness
+        # guard: a partition column MUST be in the rollup grain (else pruning a
+        # column the rollup does not carry would be incorrect) — partition
+        # columns not in roll_cols are simply ignored (no pruning claimed),
+        # never used to drop rows.
+        roll_partitions = _rollup_partition_cols(rollup)
+        pruned = tuple(
+            sorted(c for c in roll_partitions if c in roll_cols and c in q_filter_cols)
+        )
+
         # ── All rules hold → perform the AST rewrite. ────────────────────────
         rewritten = _rewrite_to_rollup(plan, rollup)
         if rewritten is None:
@@ -562,12 +584,36 @@ def route_to_rollup_shape(plan: PhysicalPlan, registry: Any) -> RollupRouteResul
             rls_claims=dict(plan.rls_claims),
             cache_key=new_cache_key,
         )
+        reason = f"sound superset rewrite onto {rollup.table}"
+        if pruned:
+            reason += f" (partition-pruned on {', '.join(pruned)})"
         return RollupRouteResult(
             new_plan, True, rollup_id=rollup.rollup_id,
-            reason=f"sound superset rewrite onto {rollup.table}",
+            reason=reason, pruned_partitions=pruned,
         )
 
     return RollupRouteResult(plan, False, reason="no sound rollup match")
+
+
+def _rollup_partition_cols(rollup: Any) -> set[str]:
+    """Return the partition columns a rollup is laid out by (lower-cased).
+
+    Read defensively off the rollup object so the planner stays decoupled from
+    the rollup dataclass shape: a rollup may declare ``partition_by`` /
+    ``partition_columns`` / ``partition_column`` (list or scalar).  Absent →
+    empty set (no partition awareness, identical to the prior behaviour).
+    """
+    for attr in ("partition_by", "partition_columns", "partition_column"):
+        val = getattr(rollup, attr, None)
+        if val is None:
+            continue
+        if isinstance(val, str):
+            return {val.lower()} if val else set()
+        try:
+            return {str(c).lower() for c in val if c}
+        except TypeError:
+            continue
+    return set()
 
 
 def _rewrite_to_rollup(plan: PhysicalPlan, rollup: Any) -> str | None:

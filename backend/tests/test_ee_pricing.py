@@ -572,7 +572,7 @@ class TestOverageRates:
 
     def test_starter_storage_overage_maps_to_object_storage_cogs(self) -> None:
         """R1.50/GB → ~84% margin: confirms COGS line is object-storage."""
-        assert self._overages("starter").storage_zar_per_gb_month == Decimal("1.50")
+        assert self._overages("starter").storage_zar_per_gb_month == Decimal("0.33")
 
     def test_starter_compute_overage_maps_to_container_compute_cogs(self) -> None:
         """R100/1000 CU → ~77% margin: confirms COGS line is container/query compute."""
@@ -614,7 +614,7 @@ class TestOverageRates:
 
         for tier in (BillingTier.STARTER, BillingTier.TEAM, BillingTier.PRO, BillingTier.ENTERPRISE):
             ov = get_tier_limits(tier).overages
-            assert ov.storage_zar_per_gb_month == Decimal("1.50")
+            assert ov.storage_zar_per_gb_month == Decimal("0.33")
             assert ov.compute_zar_per_1000_cu == Decimal("100.00")
             assert ov.ai_call_zar_per_call == Decimal("5.00")
 

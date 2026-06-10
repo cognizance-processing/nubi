@@ -70,6 +70,7 @@ from starlette.responses import FileResponse
 from app.config import get_settings
 from app.db import close_db, fetchrow, init_db
 from app.errors import register_handlers
+from app.middleware.ratelimit import register_ratelimit
 from app.routes import api_router
 
 # Import auth routes so they register themselves on api_router at import time.
@@ -339,6 +340,14 @@ def create_app() -> FastAPI:
         allow_methods=["*"],
         allow_headers=["*"],
     )
+
+    # ── Rate limiting ─────────────────────────────────────────────────────────
+    # In-process token-bucket limiting keyed by (org_or_ip, route_class).
+    # Applied to auth, query, and flow-run route classes.
+    # Configure via NUBI_RATELIMIT_* env vars (see app/middleware/ratelimit.py).
+    # Health checks, embed, and asset routes are always skipped.
+    # Disable globally with NUBI_RATELIMIT_ENABLED=false.
+    register_ratelimit(application)
 
     # ── Error handlers ────────────────────────────────────────────────────────
     register_handlers(application)
