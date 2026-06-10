@@ -78,6 +78,11 @@ export function OrgProvider({ children }) {
   const [orgs, setOrgs] = useState([])
   const [activeOrg, setActiveOrgState] = useState(null)
   const [loading, setLoading] = useState(true)
+  // True when GET /orgs SUCCEEDED but the user belongs to zero orgs
+  // (e.g. a brand-new Google OAuth user). The shell guard redirects such
+  // users to /onboarding. Transport errors do NOT set this — they fall back
+  // to DEFAULT_ORG so offline/dev still works.
+  const [hasNoOrgs, setHasNoOrgs] = useState(false)
 
   useEffect(() => {
     let cancelled = false
@@ -90,15 +95,24 @@ export function OrgProvider({ children }) {
           : Array.isArray(data)
           ? data
           : []
-        const resolved = list.length > 0 ? list : [DEFAULT_ORG]
 
         if (cancelled) return
 
-        setOrgs(resolved)
+        if (list.length === 0) {
+          // Successful response, zero memberships → forced onboarding.
+          setOrgs([])
+          setActiveOrgState(null)
+          _applyActiveOrg(null)
+          setHasNoOrgs(true)
+          return
+        }
+
+        setOrgs(list)
+        setHasNoOrgs(false)
 
         // Restore saved selection, defaulting to first org
         const savedId = getSavedOrgId()
-        const saved = resolved.find(o => o.id === savedId) ?? resolved[0]
+        const saved = list.find(o => o.id === savedId) ?? list[0]
         setActiveOrgState(saved)
         _applyActiveOrg(saved)
       } catch {
@@ -107,6 +121,7 @@ export function OrgProvider({ children }) {
           setOrgs([DEFAULT_ORG])
           setActiveOrgState(DEFAULT_ORG)
           _applyActiveOrg(DEFAULT_ORG)
+          setHasNoOrgs(false)
         }
       } finally {
         if (!cancelled) setLoading(false)
@@ -129,17 +144,30 @@ export function OrgProvider({ children }) {
   )
 
   return (
-    <OrgContext.Provider value={{ orgs, activeOrg, setActiveOrg, loading }}>
+    <OrgContext.Provider value={{ orgs, activeOrg, setActiveOrg, loading, hasNoOrgs }}>
       {children}
     </OrgContext.Provider>
   )
 }
 
 /**
- * @returns {{ orgs: Array<{id:string,name:string,role:string}>, activeOrg: Object|null, setActiveOrg: Function, loading: boolean }}
+ * @returns {{ orgs: Array<{id:string,name:string,role:string}>, activeOrg: Object|null, setActiveOrg: Function, loading: boolean, hasNoOrgs: boolean }}
  */
 export function useOrg() {
   const ctx = useContext(OrgContext)
   if (!ctx) throw new Error('useOrg must be used inside <OrgProvider>')
   return ctx
+}
+
+/**
+ * Whether the current user can write (create/edit/delete/run) in the active org.
+ * `viewer` is read-only; every other role (owner/admin/member) can write.
+ * Used to hide/disable mutating actions in the UI — the backend enforces the
+ * same rule authoritatively (see app/auth/roles.py).
+ *
+ * @returns {boolean}
+ */
+export function useCanWrite() {
+  const { activeOrg } = useOrg()
+  return activeOrg?.role !== 'viewer'
 }

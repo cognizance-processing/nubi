@@ -18,12 +18,13 @@ export default function WebGLPerf({ className = '' }) {
     if (x < 92 || x > 408 || y < 60 || y > 290) continue
     pts.push({ x, y, t: Math.max(0, Math.min(1, t + jy)) })
   }
-  // color stops along navy→teal by height
-  const col = (t) => (t > 0.66 ? '#2dd4bf' : t > 0.33 ? '#17b3a3' : '#2456a6')
+  // color stops along blue→teal by height; the low band uses a lightened
+  // brand blue — pure #2456a6 dots vanish on the dark-navy surface card.
+  const col = (t) => (t > 0.66 ? '#2dd4bf' : t > 0.33 ? '#17b3a3' : '#4d7fd6')
 
   return (
     <svg
-      viewBox="0 0 480 360"
+      viewBox="28 28 424 304"
       fill="none"
       xmlns="http://www.w3.org/2000/svg"
       className={className}
@@ -34,7 +35,7 @@ export default function WebGLPerf({ className = '' }) {
     >
       <defs>
         <linearGradient id="wgl-stroke" x1="0" y1="1" x2="1" y2="0">
-          <stop offset="0%" stopColor="#1b2363" />
+          <stop offset="0%" stopColor="#3b66c4" />
           <stop offset="45%" stopColor="#2456a6" />
           <stop offset="100%" stopColor="#17b3a3" />
         </linearGradient>
@@ -48,9 +49,19 @@ export default function WebGLPerf({ className = '' }) {
         fill="#2456a6" fillOpacity="0.03" stroke="url(#wgl-stroke)" strokeWidth="2" />
 
       <g clipPath="url(#wgl-clip)">
+        {/* faint grid lines for depth */}
+        {[122, 160, 198, 236].map((y) => (
+          <line key={`h${y}`} x1="84" y1={y} x2="416" y2={y}
+            stroke="#2456a6" strokeWidth="1" strokeOpacity="0.08" />
+        ))}
+        {[150, 216, 282, 348].map((x) => (
+          <line key={`v${x}`} x1={x} y1="62" x2={x} y2="294"
+            stroke="#2456a6" strokeWidth="1" strokeOpacity="0.08" />
+        ))}
+
         {/* axes */}
-        <line x1="84" y1="62" x2="84" y2="294" stroke="#2456a6" strokeWidth="1.5" strokeOpacity="0.3" />
-        <line x1="84" y1="294" x2="416" y2="294" stroke="#2456a6" strokeWidth="1.5" strokeOpacity="0.3" />
+        <line x1="84" y1="62" x2="84" y2="294" stroke="#b2c4e0" strokeWidth="1.5" />
+        <line x1="84" y1="294" x2="416" y2="294" stroke="#b2c4e0" strokeWidth="1.5" />
 
         {/* point cloud */}
         {pts.map((p, i) => (
@@ -60,7 +71,11 @@ export default function WebGLPerf({ className = '' }) {
 
         {/* cross-filter brush selection */}
         <rect x="250" y="96" width="130" height="104" rx="8"
-          fill="#2dd4bf" fillOpacity="0.08" stroke="#17b3a3" strokeWidth="1.75" strokeDasharray="5 5" />
+          fill="#2dd4bf" fillOpacity="0.08" stroke="#17b3a3" strokeWidth="1.75" strokeDasharray="5 4" />
+        {/* corner handles on the brush */}
+        {[[250, 96], [380, 96], [250, 200], [380, 200]].map(([hx, hy], i) => (
+          <circle key={i} cx={hx} cy={hy} r="3.25" fill="#17b3a3" />
+        ))}
       </g>
     </svg>
   )

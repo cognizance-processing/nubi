@@ -1,8 +1,22 @@
 """EE billing tier definitions for Nubi.
 
-Defines ZAR pricing tiers (FREE / STARTER / PRO / BUSINESS / ENTERPRISE),
+Defines ZAR pricing tiers (FREE / STARTER / TEAM / PRO / ENTERPRISE),
 the security-dial → tier mapping, and per-tier resource limits.  This module
 is EE-only and must NEVER be imported by open-source core code.
+
+Tier overview (v3 — June 2026)
+-------------------------------
+| Tier       | USD/mo  | Seats | SLA       |
+|------------|---------|-------|-----------|
+| Free       |   $0    | ∞     | none      |
+| Starter    |   $9    | ∞     | none      |
+| Team       |  $49    | ∞     | none      |
+| Pro        | $149    | ∞     | 99.5%     |
+| Enterprise | $1,000  | ∞     | 99.95%    |
+
+No per-seat pricing at any tier — unlimited seats everywhere.
+Overages beyond the tier's included quota are drawn from the org's
+usage wallet (prepaid credit balance).
 
 Pricing blueprint (June 2026, USD-anchored, ZAR @ R16.26 + 2% FX buffer)
 -------------------------------------------------------------------------
@@ -13,17 +27,62 @@ These are reference amounts only — the live ZAR amount at billing time is
 computed by ``app.ee.billing.fx.convert_usd_to_zar`` using the daily
 refreshed FX rate.
 
-Gross margins (≥70% target — all paid tiers meet this)
----------------------------------------------------------
-| Tier       | USD/mo | ZAR/mo | Total COGS | Gross Margin |
-|------------|--------|--------|------------|--------------|
-| Starter    |  $79   | R1,320 | R242.15    | 81.7%        |
-| Pro        | $199   | R3,310 | R906.71    | 72.6%        |
-| Business   | $499   | R8,280 | R2,440.34  | 70.5%        |
-| Enterprise | $1,799 |R29,840 | R6,808.93  | 77.2% hosted |
+Gross margins (≥70% floor, ≥75% target at all tiers; all tiers meet ≥75%)
+--------------------------------------------------------------------------
+| Tier       | USD/mo   | ZAR/mo   | Total COGS | Gross Margin     |
+|------------|----------|----------|------------|------------------|
+| Starter    |   $9     |   R150   |   R20.12   | 86.6%  ✓ ≥75%   |
+| Team       |  $49     |   R820   |  R117.96   | 85.6%  ✓ ≥75%   |
+| Pro        | $149     | R2,480   |  R504.57   | 79.7%  ✓ ≥75%   |
+| Enterprise | $1,000   | R16,590  | R4,065.72  | 75.5%  ✓ ≥75%   |
+
+Enterprise COGS includes SLA monitoring, on-call overhead, and dedicated
+CSM/support allocation (~R700/org/month premium over equivalent hosted infra).
 
 Free tier estimated COGS: R143.82/org/month (acquisition only, no revenue).
 Paystack effective rate used: 3.41% (local ZA card, incl. 15% VAT on fee).
+
+COGS line mapping (what each billable metric maps to in our cost structure)
+---------------------------------------------------------------------------
+Nubi charges ONLY for things that map to a real COGS line we pay for.
+Unlimited dimensions (seats, connectors count, dashboards, saved queries,
+flow definitions) cost ~R0/month incremental and are never metered.
+
+| Metric                         | COGS line                                      |
+|--------------------------------|------------------------------------------------|
+| Storage GB/month               | Object-storage (S3/R2) + Postgres WAL cost     |
+| Compute units (flow runs +     | Container-compute (ECS/k8s task-seconds) +     |
+|   query compute)               | DuckDB CPU-time on query nodes                 |
+| Embedded sessions              | Egress bandwidth + per-request compute (CDN)   |
+|   (/10K sessions)              | Each session = ~2 API calls + JS bundle egress |
+| AI / agent runs                | Anthropic Claude API token cost (Haiku ~$0.25/ |
+|   (per call)                   | 1M tok; each call ~200 tok → ~$0.00005)        |
+| Bandwidth (egress)             | Cloud provider egress; bundled into embedded   |
+|   (implicit)                   | session metering above                         |
+
+NOT metered (zero marginal COGS):
+  - Seats / viewers: 1 DB row + 1 auth check ≈ R0.001/user/month
+  - Connector count: 1 DB row + connection pool entry ≈ R0.002/connector/month
+  - Dashboard count: 1 DB row + JSON blob ≈ R0.001/dashboard/month
+  - Saved query count: 1 DB row ≈ R0.001/query/month
+  - Flow definition count: 1 DB row + JSON spec ≈ R0.001/flow/month
+
+Overage rates (wallet draw-down; COGS + margin)
+-----------------------------------------------
+Overages beyond the tier's included quota are drawn from the org's usage
+wallet prepaid credit balance.  Rates are denominated in ZAR and priced at
+our COGS + margin:
+
+| Dimension                       | Rate          | COGS basis               | Margin  |
+|---------------------------------|---------------|--------------------------|---------|
+| storage_zar_per_gb_month        | R1.50/GB      | S3/R2 + WAL              | ~84%    |
+| compute_zar_per_1000_cu         | R100/1,000 CU | Container/DuckDB compute  | ~77%    |
+| ai_call_zar_per_call            | R5.00/call    | Anthropic API tokens      | ~93%    |
+| embedded_session_zar_per_10k    | R50/10K sess  | Egress + CDN compute      | ~99%    |
+| agent_run_zar_per_run           | R2.00/run     | Remote kernel compute     | ~99%    |
+
+No per-seat overage at any tier.  Wallet mechanics (topup, spend caps,
+ledger) are handled by the WalletAgent — tiers.py only defines the rates.
 
 Seat policy
 -----------
@@ -31,6 +90,16 @@ Seat policy
 any tier.  One additional user = one DB row + one auth check; incremental
 COGS < R0.001/month.  Rate-limiting is enforced by compute quota (CU/month),
 not user count.
+
+Enterprise SLA
+--------------
+The Enterprise tier ($1,000/mo) includes a contractual SLA:
+  - Uptime: 99.95% monthly (allows ~22 min downtime/month)
+  - Incident response: P1 (site-down) < 30 minutes, P2 (degraded) < 2 hours
+  - Dedicated Customer Success Manager (CSM) with named contact
+  - Monthly business review calls
+  - Private Slack/Teams channel for support escalation
+  - 24/7 emergency on-call (P1 only)
 
 Security dial
 -------------
@@ -41,9 +110,10 @@ allowed dial range — higher tiers unlock a wider range.
 | Dial value | Minimum tier required |
 |------------|-----------------------|
 | 0–40       | Free                  |
-| 41–50      | Starter               |
-| 51–80      | Pro                   |
-| 81–100     | Business / Enterprise |
+| 41–60      | Starter               |
+| 61–70      | Team                  |
+| 71–80      | Pro                   |
+| 81–100     | Enterprise            |
 
 Usage
 -----
@@ -75,14 +145,29 @@ class BillingTier(str, enum.Enum):
 
     Enum order matters for ``all_tiers()`` — it yields tiers FREE → ENTERPRISE.
     The ``billing_tiers_enum_values`` canonical list is:
-    ["free", "starter", "pro", "business", "enterprise"].
+    ["free", "starter", "team", "pro", "enterprise"].
     """
 
     FREE = "free"
     STARTER = "starter"
+    TEAM = "team"
     PRO = "pro"
-    BUSINESS = "business"
     ENTERPRISE = "enterprise"
+
+
+# ---------------------------------------------------------------------------
+# Warehouse (heavy-query pool) pricing
+# ---------------------------------------------------------------------------
+# Queries executed on the warehouse machine class (the cloud heavy-query
+# pool: same engine, 8 GB+ machines for big-table sorts/joins) consume
+# compute units at this multiplier.  The pool machine costs ~6× an app
+# machine; billing 4× CU keeps adoption attractive while staying margin-
+# positive, and means warehouse overages reuse the existing
+# ``compute_zar_per_1000_cu`` rate — no separate warehouse meter or rate.
+# The runtime reads this via the pool's NUBI_CU_MULTIPLIER env (set in
+# fly.toml); this constant is the canonical billing-model value.
+
+WAREHOUSE_CU_MULTIPLIER = 4
 
 
 # ---------------------------------------------------------------------------
@@ -97,11 +182,12 @@ class OverageRates:
     All monetary amounts are in South African Rand (ZAR).
     ``None`` indicates overages are not available for this tier.
 
+    Overages are drawn from the org's usage wallet (prepaid credit balance).
     Gross margins on overages (for reference):
         storage_zar_per_gb_month       R1.50  → ~84% margin
         compute_zar_per_1000_cu        R100   → ~77% margin
-        ai_call_zar_per_call           R5     → ~99% margin
-        embedded_session_zar_per_10k   R50    → ~100% margin
+        ai_call_zar_per_call           R5     → ~93% margin
+        embedded_session_zar_per_10k   R50    → ~99% margin
         agent_run_zar_per_run          R2     → ~99% margin
         seat_zar_per_seat_month        None   (no per-seat pricing at any tier)
     """
@@ -168,6 +254,8 @@ class TierLimits:
         Maximum security-dial value that this tier supports (inclusive).
     overages:
         Per-unit overage rates for this tier.  See :class:`OverageRates`.
+        Overages beyond the included quota are drawn from the org's usage
+        wallet prepaid credit balance.
     has_white_label:
         White-label capability level.
     has_rls:
@@ -184,12 +272,21 @@ class TierLimits:
         Whether Bring-Your-Own-Cloud deployment is available.
     has_custom_domain:
         Whether custom domain mapping is available.
+    has_warehouse:
+        Whether the hosted DuckDB warehouse (heavy-query pool) is available.
+        Warehouse queries consume compute units at
+        :data:`WAREHOUSE_CU_MULTIPLIER`; overages use the normal
+        ``compute_zar_per_1000_cu`` rate.
     audit_log_retention_days:
         Audit log retention in days.  ``None`` means unlimited.
     has_priority_support:
         Priority support level: False / "email_slack" / "dedicated_csm".
     sla_uptime_pct:
         SLA uptime percentage.  ``None`` for tiers without SLA.
+    sla_response_time_p1_minutes:
+        P1 (site-down) incident response SLA in minutes.  ``None`` if no SLA.
+    sla_response_time_p2_hours:
+        P2 (degraded) incident response SLA in hours.  ``None`` if no SLA.
     infra_cogs_zar:
         Reference infrastructure COGS in ZAR (for margin tracking).
     total_cogs_zar:
@@ -225,9 +322,12 @@ class TierLimits:
     has_multi_tenant_workspaces: bool = False
     has_byoc: bool = False
     has_custom_domain: bool = False
+    has_warehouse: bool = False
     audit_log_retention_days: int | None = 0  # 0 = none; None = unlimited
     has_priority_support: Literal[False, "email_slack", "dedicated_csm"] = False
     sla_uptime_pct: float | None = None
+    sla_response_time_p1_minutes: int | None = None
+    sla_response_time_p2_hours: int | None = None
     # COGS / margin reference data (June 2026)
     infra_cogs_zar: Decimal = Decimal("0.00")
     total_cogs_zar: Decimal = Decimal("0.00")
@@ -254,7 +354,7 @@ _TIER_CATALOGUE: dict[BillingTier, TierLimits] = {
         max_query_rows=10_000,
         max_dashboards=5,
         max_flows=2,
-        max_storage_gb=2.0,
+        max_storage_gb=1.0,
         max_compute_units_per_month=500,
         max_embedded_sessions_per_month=0,
         max_agent_runs_per_month=0,
@@ -273,45 +373,48 @@ _TIER_CATALOGUE: dict[BillingTier, TierLimits] = {
         audit_log_retention_days=0,
         has_priority_support=False,
         sla_uptime_pct=None,
+        sla_response_time_p1_minutes=None,
+        sla_response_time_p2_hours=None,
         infra_cogs_zar=Decimal("143.82"),
         total_cogs_zar=Decimal("143.82"),
         gross_margin_pct=None,  # no revenue
     ),
 
-    # ── STARTER ($79/mo | R1,320 ZAR | 81.7% gross margin) ───────────────────
-    # Target: small teams, single-product SaaS.
-    # Annual: $790/yr (2 months free) → R1,100/mo equiv.
-    # COGS breakdown: Infra R197.22 + Paystack R44.93 = R242.15 total.
-    # Paystack (local ZA card, 3.41% effective): R1,320 × 3.41% ≈ R44.93.
-    # ZAR ref: R16.26 × 1.02 × $79 = R1,310.23 → ceil10 = R1,320.
+    # ── STARTER ($9/mo | R150 ZAR | 86.6% gross margin) ─────────────────────
+    # Target: individuals, early-stage startups, hobby projects.
+    # Annual: $90/yr (2 months free) → R125/mo equiv.
+    # COGS breakdown: Infra R15.00 + Paystack R5.12 = R20.12 total.
+    # Paystack (local ZA card, 3.41% effective incl. 15% VAT): R150 × 3.41% ≈ R5.12.
+    # ZAR ref: R16.26 × 1.02 × $9 = R149.33 → ceil10 = R150.
     # Unlimited seats and viewers — no per-seat pricing at this tier.
+    # Overages drawn from the org's usage wallet prepaid credit balance.
     BillingTier.STARTER: TierLimits(
         tier=BillingTier.STARTER,
-        usd_monthly_price=Decimal("79.00"),
-        usd_annual_price=Decimal("790.00"),
-        monthly_price_zar=Decimal("1320.00"),  # R16.26 × 1.02 × $79 = R1,310.23 → ceil10 = R1,320
+        usd_monthly_price=Decimal("9.00"),
+        usd_annual_price=Decimal("90.00"),
+        monthly_price_zar=Decimal("150.00"),  # R16.26 × 1.02 × $9 = R149.33 → ceil10 = R150
         max_seats=None,         # unlimited — no per-seat restriction
         max_viewer_seats=None,  # unlimited internal viewers
-        max_connectors=10,
-        max_query_rows=500_000,
-        max_dashboards=25,
-        max_flows=5,
-        max_storage_gb=10.0,
-        max_compute_units_per_month=5_000,
-        max_embedded_sessions_per_month=5_000,
-        max_agent_runs_per_month=0,  # no remote kernel
-        max_ai_calls_per_month=10,  # Haiku grounding only
+        max_connectors=5,
+        max_query_rows=100_000,
+        max_dashboards=10,
+        max_flows=3,
+        max_storage_gb=5.0,
+        max_compute_units_per_month=2_000,
+        max_embedded_sessions_per_month=1_000,
+        max_agent_runs_per_month=0,   # no remote kernel on entry tier
+        max_ai_calls_per_month=5,     # Haiku grounding only
         security_dial_min=0,
-        security_dial_max=50,
+        security_dial_max=60,
         overages=OverageRates(
-            storage_zar_per_gb_month=Decimal("1.50"),     # ~84% margin
-            compute_zar_per_1000_cu=Decimal("100.00"),    # ~77% margin
-            ai_call_zar_per_call=Decimal("5.00"),         # ~93% margin
-            embedded_session_zar_per_10k=Decimal("50.00"), # ~99% margin
-            agent_run_zar_per_run=None,
-            seat_zar_per_seat_month=None,  # upgrade to Pro instead
+            storage_zar_per_gb_month=Decimal("1.50"),      # ~84% margin; COGS = S3/R2
+            compute_zar_per_1000_cu=Decimal("100.00"),     # ~77% margin; COGS = container/DuckDB
+            ai_call_zar_per_call=Decimal("5.00"),          # ~93% margin; COGS = Anthropic API tokens
+            embedded_session_zar_per_10k=Decimal("50.00"), # ~99% margin; COGS = egress + CDN
+            agent_run_zar_per_run=None,                    # not available on Starter
+            seat_zar_per_seat_month=None,                  # no per-seat pricing at any tier
         ),
-        has_white_label="badge_removable",
+        has_white_label=False,
         has_rls="basic",
         has_sso_google=True,
         has_sso_saml=False,
@@ -319,25 +422,84 @@ _TIER_CATALOGUE: dict[BillingTier, TierLimits] = {
         has_multi_tenant_workspaces=False,
         has_byoc=False,
         has_custom_domain=False,
-        audit_log_retention_days=30,
+        audit_log_retention_days=7,
         has_priority_support=False,
-        sla_uptime_pct=99.5,
-        infra_cogs_zar=Decimal("197.22"),
-        total_cogs_zar=Decimal("242.15"),
-        gross_margin_pct=81.7,
+        sla_uptime_pct=None,  # no SLA on entry tier
+        sla_response_time_p1_minutes=None,
+        sla_response_time_p2_hours=None,
+        infra_cogs_zar=Decimal("15.00"),
+        total_cogs_zar=Decimal("20.12"),
+        gross_margin_pct=86.6,
     ),
 
-    # ── PRO ($199/mo | R3,310 ZAR | 72.6% gross margin) ─────────────────────
-    # Target: growing teams, embedded analytics ISVs.
-    # Annual: $1,990/yr (2 months free) → R2,760/mo equiv.
-    # COGS breakdown: Infra R795.14 + Paystack R111.57 = R906.71 total.
-    # ZAR ref: R16.26 × 1.02 × $199 = R3,300.45 → ceil10 = R3,310.
+    # ── TEAM ($49/mo | R820 ZAR | 85.6% gross margin) ───────────────────────
+    # Target: small teams that outgrew Starter but don't yet need Pro's scale,
+    # SLA, or full white-label.  Smooths the old $9 → $149 gap (was a 16.5×
+    # jump) into 5.4× (Starter → Team) and 3.0× (Team → Pro) steps.
+    # Annual: $490/yr (2 months free) → R683/mo equiv.
+    # COGS breakdown: Infra R90.00 + Paystack R27.96 = R117.96 total.
+    # Paystack (local ZA card, 3.41% effective): R820 × 3.41% ≈ R27.96.
+    # ZAR ref: R16.26 × 1.02 × $49 = R812.67 → ceil10 = R820.
     # Unlimited seats and viewers — no per-seat pricing at this tier.
+    # Overages drawn from the org's usage wallet prepaid credit balance.
+    BillingTier.TEAM: TierLimits(
+        tier=BillingTier.TEAM,
+        usd_monthly_price=Decimal("49.00"),
+        usd_annual_price=Decimal("490.00"),
+        monthly_price_zar=Decimal("820.00"),  # R16.26 × 1.02 × $49 = R812.67 → ceil10 = R820
+        max_seats=None,         # unlimited — no per-seat restriction
+        max_viewer_seats=None,  # unlimited internal viewers
+        max_connectors=15,
+        max_query_rows=1_000_000,
+        max_dashboards=30,
+        max_flows=8,
+        max_storage_gb=15.0,
+        max_compute_units_per_month=6_000,
+        max_embedded_sessions_per_month=5_000,
+        max_agent_runs_per_month=10,    # entry-level remote kernel allowance
+        max_ai_calls_per_month=15,      # Haiku grounding + light Sonnet chat
+        security_dial_min=0,
+        security_dial_max=70,
+        overages=OverageRates(
+            storage_zar_per_gb_month=Decimal("1.50"),      # ~84% margin; COGS = S3/R2
+            compute_zar_per_1000_cu=Decimal("100.00"),     # ~77% margin; COGS = container/DuckDB
+            ai_call_zar_per_call=Decimal("5.00"),          # ~93% margin; COGS = Anthropic API tokens
+            embedded_session_zar_per_10k=Decimal("50.00"), # ~99% margin; COGS = egress + CDN
+            agent_run_zar_per_run=Decimal("2.00"),         # ~99% margin; COGS = remote kernel compute
+            seat_zar_per_seat_month=None,                  # no per-seat pricing at any tier
+        ),
+        has_white_label="badge_removable",  # remove Nubi badge; full custom SDK is Pro+
+        has_rls="full_jwt",
+        has_sso_google=True,
+        has_sso_saml=False,             # SAML starts at Pro
+        has_scim=False,
+        has_multi_tenant_workspaces=False,
+        has_byoc=False,
+        has_custom_domain=False,        # custom domain starts at Pro
+        audit_log_retention_days=30,
+        has_priority_support=False,     # email/Slack priority starts at Pro
+        sla_uptime_pct=None,            # no contractual SLA below Pro
+        sla_response_time_p1_minutes=None,
+        sla_response_time_p2_hours=None,
+        infra_cogs_zar=Decimal("90.00"),
+        total_cogs_zar=Decimal("117.96"),
+        gross_margin_pct=85.6,
+    ),
+
+    # ── PRO ($149/mo | R2,480 ZAR | 79.7% gross margin) ─────────────────────
+    # Target: growing teams, ISVs building embedded analytics products.
+    # Annual: $1,490/yr (2 months free) → R2,067/mo equiv.
+    # COGS breakdown: Infra R420.00 + Paystack R84.57 = R504.57 total.
+    # Paystack (local ZA card, 3.41% effective): R2,480 × 3.41% ≈ R84.57.
+    # ZAR ref: R16.26 × 1.02 × $149 = R2,472.87 → ceil10 = R2,480.
+    # Unlimited seats and viewers — no per-seat pricing at this tier.
+    # Overages drawn from the org's usage wallet prepaid credit balance.
+    # SLA: 99.5% uptime; best-effort support (no dedicated CSM).
     BillingTier.PRO: TierLimits(
         tier=BillingTier.PRO,
-        usd_monthly_price=Decimal("199.00"),
-        usd_annual_price=Decimal("1990.00"),
-        monthly_price_zar=Decimal("3310.00"),  # R16.26 × 1.02 × $199 = R3,300.45 → ceil10 = R3,310
+        usd_monthly_price=Decimal("149.00"),
+        usd_annual_price=Decimal("1490.00"),
+        monthly_price_zar=Decimal("2480.00"),  # R16.26 × 1.02 × $149 = R2,472.87 → ceil10 = R2,480
         max_seats=None,         # unlimited — no per-seat restriction
         max_viewer_seats=None,  # unlimited internal viewers
         max_connectors=None,    # all connectors
@@ -345,19 +507,19 @@ _TIER_CATALOGUE: dict[BillingTier, TierLimits] = {
         max_dashboards=100,
         max_flows=20,
         max_storage_gb=50.0,
-        max_compute_units_per_month=10_000,
+        max_compute_units_per_month=15_000,
         max_embedded_sessions_per_month=25_000,
-        max_agent_runs_per_month=50,  # remote kernel included
-        max_ai_calls_per_month=50,    # Haiku grounding + Sonnet chat
+        max_agent_runs_per_month=50,     # remote kernel included
+        max_ai_calls_per_month=50,       # Haiku grounding + Sonnet chat
         security_dial_min=0,
         security_dial_max=80,
         overages=OverageRates(
-            storage_zar_per_gb_month=Decimal("1.50"),
-            compute_zar_per_1000_cu=Decimal("100.00"),
-            ai_call_zar_per_call=Decimal("5.00"),
-            embedded_session_zar_per_10k=Decimal("50.00"),
-            agent_run_zar_per_run=Decimal("2.00"),
-            seat_zar_per_seat_month=None,  # no per-seat pricing at any tier
+            storage_zar_per_gb_month=Decimal("1.50"),      # ~84% margin; COGS = S3/R2
+            compute_zar_per_1000_cu=Decimal("100.00"),     # ~77% margin; COGS = container/DuckDB
+            ai_call_zar_per_call=Decimal("5.00"),          # ~93% margin; COGS = Anthropic API tokens
+            embedded_session_zar_per_10k=Decimal("50.00"), # ~99% margin; COGS = egress + CDN
+            agent_run_zar_per_run=Decimal("2.00"),         # ~99% margin; COGS = remote kernel compute
+            seat_zar_per_seat_month=None,                  # no per-seat pricing at any tier
         ),
         has_white_label="full",
         has_rls="full_jwt",
@@ -367,80 +529,47 @@ _TIER_CATALOGUE: dict[BillingTier, TierLimits] = {
         has_multi_tenant_workspaces=False,
         has_byoc=False,
         has_custom_domain=True,
+        has_warehouse=True,  # heavy-query pool; CUs billed at WAREHOUSE_CU_MULTIPLIER
         audit_log_retention_days=90,
-        has_priority_support=False,
+        has_priority_support="email_slack",
         sla_uptime_pct=99.5,
-        infra_cogs_zar=Decimal("795.14"),
-        total_cogs_zar=Decimal("906.71"),
-        gross_margin_pct=72.6,
+        sla_response_time_p1_minutes=None,  # no contractual P1 SLA on Pro
+        sla_response_time_p2_hours=None,
+        infra_cogs_zar=Decimal("420.00"),
+        total_cogs_zar=Decimal("504.57"),
+        gross_margin_pct=79.7,
     ),
 
-    # ── BUSINESS ($499/mo | R8,280 ZAR | 70.5% gross margin) ────────────────
-    # Target: mid-market SaaS, multi-product analytics, multi-tenant workspaces.
-    # Annual: $4,990/yr (2 months free) → R6,900/mo equiv.
-    # COGS breakdown: Infra R2,163.05 + Paystack R277.29 = R2,440.34 total.
-    # Unlimited seats and viewers — no per-seat pricing at this tier.
-    BillingTier.BUSINESS: TierLimits(
-        tier=BillingTier.BUSINESS,
-        usd_monthly_price=Decimal("499.00"),
-        usd_annual_price=Decimal("4990.00"),
-        monthly_price_zar=Decimal("8280.00"),  # R16.26 × 1.02 × $499 = R8,276.01 → ceil10 = R8,280
-        max_seats=None,         # unlimited — no per-seat restriction
+    # ── ENTERPRISE ($1,000/mo floor | R16,590 ZAR | 75.5% gross margin) ─────
+    # Target: large SaaS, white-label platforms, BYOC/on-prem, compliance-heavy.
+    # Annual: $10,000/yr floor (2 months free) → R13,825/mo equiv.
+    # Typical contract: $1,000–$5,000/mo. BYOC pushes gross margin to ~86%.
+    # COGS breakdown:
+    #   Infra R3,000.00 (hosted; 500GB storage, 200K CU, unlimited embed sessions)
+    #   SLA / on-call / monitoring overhead R700.00 (99.95% SLA commitment)
+    #   Dedicated CSM allocation R700.00 (named contact, monthly reviews, Slack channel)
+    #   Subtotal infra+support R3,500.00 (approx)
+    #   Paystack (local ZA card, 3.41% effective): R16,590 × 3.41% ≈ R565.72
+    #   Total COGS: R4,065.72
+    # Paystack effective rate: 3.41% (same basis as other tiers).
+    # ZAR ref: R16.26 × 1.02 × $1,000 = R16,585.20 → ceil10 = R16,590.
+    # Unlimited seats, viewers, connectors, dashboards, flows.
+    # No per-seat pricing. Overages drawn from the org's usage wallet.
+    # SLA: 99.95% monthly uptime (~22 min/month), P1 < 30 min, P2 < 2 hr.
+    BillingTier.ENTERPRISE: TierLimits(
+        tier=BillingTier.ENTERPRISE,
+        usd_monthly_price=Decimal("1000.00"),   # floor; custom-quoted above
+        usd_annual_price=Decimal("10000.00"),   # floor annual (10 × $1,000)
+        monthly_price_zar=Decimal("16590.00"),  # R16.26 × 1.02 × $1,000 = R16,585.20 → ceil10 = R16,590
+        max_seats=None,         # unlimited
         max_viewer_seats=None,
         max_connectors=None,
         max_query_rows=None,    # unlimited
         max_dashboards=None,
-        max_flows=100,
-        max_storage_gb=200.0,
-        max_compute_units_per_month=40_000,
-        max_embedded_sessions_per_month=100_000,
-        max_agent_runs_per_month=200,
-        max_ai_calls_per_month=200,
-        security_dial_min=0,
-        security_dial_max=100,
-        overages=OverageRates(
-            storage_zar_per_gb_month=Decimal("1.50"),
-            compute_zar_per_1000_cu=Decimal("100.00"),
-            ai_call_zar_per_call=Decimal("5.00"),
-            embedded_session_zar_per_10k=Decimal("50.00"),
-            agent_run_zar_per_run=Decimal("2.00"),
-            seat_zar_per_seat_month=None,  # no per-seat pricing at any tier
-        ),
-        has_white_label="full_multi_tenant",
-        has_rls="full_jwt_passthrough",
-        has_sso_google=True,
-        has_sso_saml="unlimited_idps",
-        has_scim=True,
-        has_multi_tenant_workspaces=True,
-        has_byoc=False,
-        has_custom_domain=True,
-        audit_log_retention_days=365,
-        has_priority_support="email_slack",
-        sla_uptime_pct=99.9,
-        infra_cogs_zar=Decimal("2163.05"),
-        total_cogs_zar=Decimal("2440.34"),
-        gross_margin_pct=70.5,
-    ),
-
-    # ── ENTERPRISE ($1,799/mo floor | R29,840 ZAR | 77.2% hosted gross margin)
-    # Target: large SaaS, white-label, BYOC/on-prem. Custom-quoted.
-    # Annual: $17,990/yr floor (2 months free) → R24,870/mo equiv.
-    # Typical contract: $1,799–$5,000/mo. BYOC pushes GM to ~86%.
-    # COGS breakdown: Infra R5,812.62 + Paystack R996.31 = R6,808.93 total (hosted floor).
-    BillingTier.ENTERPRISE: TierLimits(
-        tier=BillingTier.ENTERPRISE,
-        usd_monthly_price=Decimal("1799.00"),   # floor; custom-quoted
-        usd_annual_price=Decimal("17990.00"),   # floor annual
-        monthly_price_zar=Decimal("29840.00"),  # R16.26 × 1.02 × $1,799 → ceil10 = R29,840
-        max_seats=None,     # unlimited
-        max_viewer_seats=None,
-        max_connectors=None,
-        max_query_rows=None,
-        max_dashboards=None,
-        max_flows=None,
+        max_flows=None,         # unlimited — flow definitions are DB rows (~R0.001/flow/mo COGS)
         max_storage_gb=500.0,   # hosted; None for BYOC
-        max_compute_units_per_month=200_000,  # hosted; None for BYOC
-        max_embedded_sessions_per_month=None,
+        max_compute_units_per_month=200_000,   # hosted; None for BYOC
+        max_embedded_sessions_per_month=None,  # unlimited embed sessions
         max_agent_runs_per_month=1_000,
         max_ai_calls_per_month=500,
         security_dial_min=0,
@@ -449,9 +578,9 @@ _TIER_CATALOGUE: dict[BillingTier, TierLimits] = {
             storage_zar_per_gb_month=Decimal("1.50"),
             compute_zar_per_1000_cu=Decimal("100.00"),
             ai_call_zar_per_call=Decimal("5.00"),
-            embedded_session_zar_per_10k=Decimal("0.00"),  # unlimited embed included
+            embedded_session_zar_per_10k=Decimal("0.00"),  # unlimited embed included → R0 overage
             agent_run_zar_per_run=Decimal("2.00"),
-            seat_zar_per_seat_month=None,  # unlimited seats
+            seat_zar_per_seat_month=None,                  # unlimited seats
         ),
         has_white_label="full_custom_sdk",
         has_rls="full_hipaa_ready",
@@ -461,12 +590,18 @@ _TIER_CATALOGUE: dict[BillingTier, TierLimits] = {
         has_multi_tenant_workspaces=True,
         has_byoc=True,
         has_custom_domain=True,
+        has_warehouse=True,  # heavy-query pool; CUs billed at WAREHOUSE_CU_MULTIPLIER
         audit_log_retention_days=None,  # unlimited retention
         has_priority_support="dedicated_csm",
-        sla_uptime_pct=99.99,
-        infra_cogs_zar=Decimal("5812.62"),
-        total_cogs_zar=Decimal("6808.93"),
-        gross_margin_pct=77.2,  # hosted; BYOC ~86%
+        # SLA: 99.95% monthly uptime (≤ ~22 minutes downtime/month).
+        # P1 (site-down, data-loss risk): first response ≤ 30 minutes, 24/7.
+        # P2 (major feature degraded): first response ≤ 2 hours, business hours.
+        sla_uptime_pct=99.95,
+        sla_response_time_p1_minutes=30,
+        sla_response_time_p2_hours=2,
+        infra_cogs_zar=Decimal("3500.00"),
+        total_cogs_zar=Decimal("4065.72"),
+        gross_margin_pct=75.5,  # hosted; BYOC ~86%
     ),
 }
 
@@ -482,12 +617,14 @@ _TIER_CATALOGUE: dict[BillingTier, TierLimits] = {
 # | Dial range | Threshold crossed | Minimum tier |
 # |------------|-------------------|--------------|
 # | 0–40       | none              | FREE         |
-# | 41–50      | 40                | STARTER      |
-# | 51–80      | 50                | PRO          |
-# | 81–100     | 80                | BUSINESS     |
+# | 41–60      | 40                | STARTER      |
+# | 61–70      | 60                | TEAM         |
+# | 71–80      | 70                | PRO          |
+# | 81–100     | 80                | ENTERPRISE   |
 _DIAL_TIER_ORDER: list[tuple[int, BillingTier]] = [
-    (80, BillingTier.BUSINESS),
-    (50, BillingTier.PRO),
+    (80, BillingTier.ENTERPRISE),
+    (70, BillingTier.PRO),
+    (60, BillingTier.TEAM),
     (40, BillingTier.STARTER),
     (0, BillingTier.FREE),
 ]
@@ -499,14 +636,15 @@ def tier_for_security_dial(dial_value: int) -> BillingTier:
     The security dial is an integer 0–100 representing how restrictive the
     platform's security posture is.  Higher dial values require paid tiers
     because they unlock features (e.g. row-level security, audit logs, SCIM)
-    that are only available in STARTER / PRO / BUSINESS / ENTERPRISE.
+    that are only available in STARTER / TEAM / PRO / ENTERPRISE.
 
     | Dial range | Minimum tier |
     |------------|--------------|
     | 0–40       | FREE         |
-    | 41–50      | STARTER      |
-    | 51–80      | PRO          |
-    | 81–100     | BUSINESS     |
+    | 41–60      | STARTER      |
+    | 61–70      | TEAM         |
+    | 71–80      | PRO          |
+    | 81–100     | ENTERPRISE   |
 
     Parameters
     ----------
@@ -568,6 +706,7 @@ def is_feature_available(tier: BillingTier, feature: str) -> bool:
         "multi_tenant_workspaces": "has_multi_tenant_workspaces",
         "byoc": "has_byoc",
         "custom_domain": "has_custom_domain",
+        "warehouse": "has_warehouse",
         "priority_support": "has_priority_support",
         "audit_logs": "audit_log_retention_days",
     }
@@ -655,8 +794,10 @@ def billing_tier_from_license_tier(license_tier_value: str) -> BillingTier:
 
     Accepts the string values from :class:`app.ee.licensing.license.Tier`
     (``"free"``, ``"pro"``, ``"enterprise"``) as well as the new billing
-    tier values (``"starter"``, ``"business"``).  Defaults to FREE for
-    unknown values.
+    tier values (``"starter"``).  Defaults to FREE for unknown values.
+
+    Legacy values from the 5-tier model (``"business"``) are mapped to
+    ENTERPRISE as the closest equivalent.
 
     Parameters
     ----------
@@ -668,8 +809,12 @@ def billing_tier_from_license_tier(license_tier_value: str) -> BillingTier:
     -------
     BillingTier
     """
+    normalized = license_tier_value.lower()
+    # Legacy 5-tier "business" → Enterprise (closest equivalent)
+    if normalized == "business":
+        return BillingTier.ENTERPRISE
     try:
-        return BillingTier(license_tier_value.lower())
+        return BillingTier(normalized)
     except ValueError:
         return BillingTier.FREE
 

@@ -52,7 +52,9 @@ test('register a fresh random user → lands on an authed route', async ({ page 
 
   await page.goto('/register')
 
-  await page.getByLabel('Name').fill('E2E Tester')
+  await page.locator('#name').fill('E2E Tester')
+  await page.locator('#orgName').fill('E2E Org')
+  await page.locator('#projectName').fill('E2E Project')
   await page.locator('input[type="email"]').fill(email)
   await page.locator('input[type="password"]').fill(password)
   await page.locator('button[type="submit"]').click()

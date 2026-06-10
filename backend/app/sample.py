@@ -1,10 +1,25 @@
 """Onboarding *sample bundle* seeder — a removable starter workspace.
 
-Every new org/project gets a small, real, explorable bundle so the user lands on
-a populated workspace instead of an empty one.  The bundle is created from the
+Every new org/project gets a real, explorable bundle so the user lands on a
+populated workspace instead of an empty one.  The bundle is created from the
 SAME declarative demo fixtures the superuser demo uses (``seed_data/demo/*.json``
-via ``app/demo_bundle.py``) — but only the ``starter`` subset of dashboards — and
-points at the ONE bundled, read-only DuckDB file (``seed_data/sample.duckdb``).
+via ``app/demo_bundle.py``) — the FULL set: four demo datasets (retail sales,
+SaaS metrics, web analytics, finance ops — 17 tables), all registered queries,
+and all 10 dashboards — pointing at a single REAL ``duckdb`` datastore that
+behaves exactly like a user-created connector (parquet + ``read_parquet`` views,
+no demo special-casing in the query pipeline):
+
+- **S3 configured** (``S3_ACCESS_KEY`` / ``AWS_ACCESS_KEY_ID`` env vars present):
+  every dataset is exported per-project to
+  ``s3://<bucket>/projects/<project_id>/demo/<dataset>/<table>.parquet`` and the
+  datastore config exposes all 17 tables as DuckDB views over those S3 parquet
+  files.  Each new project gets its own isolated file set (idempotent re-seeds
+  are safe — files are written only once per project).
+
+- **No S3** (offline dev / CI without MinIO): the same parquet files are written
+  once to the deterministic local directory
+  ``backend/seed_data/parquet/<dataset>/<table>.parquet`` and the datastore views
+  read those local files — local mode ALSO goes through parquet.
 
 Every row created here is tagged ``config.sample = true`` (plus a stable
 ``config.sample_id`` for idempotency) so the whole bundle can be bulk-removed —
@@ -16,6 +31,11 @@ Public API
     Idempotently create the starter bundle.  Safe to call on every signup / to
     re-run for "restore".  Never raises on the happy path — returns
     ``{"skipped": reason}`` if the demo dataset can't be built.
+``checkpoint_and_promote_bundle(org_id, project_id, created_by)``
+    Checkpoint every demo query/board/flow (v1) and pin it in the project's
+    dev AND prod environments so the demo works end-to-end under strict
+    protected-env visibility.  Best-effort — returns ``{"skipped": reason}``
+    instead of raising.
 ``remove_sample_bundle(org_id, project_id=None)``
     Delete every ``sample = true`` resource in the org (optionally scoped to a
     project).  Returns the per-resource delete counts.
@@ -26,12 +46,15 @@ from __future__ import annotations
 from typing import Any
 
 from app.demo_bundle import (
-    datastore_config,
+    _s3_is_configured,
+    export_demo_parquet_local,
+    export_demo_to_s3,
     load_boards,
     load_queries,
+    local_parquet_datastore_config,
     referenced_query_keys,
     resolve_placeholders,
-    sample_db_path,
+    s3_datastore_config,
 )
 from app.repos.provider import Repo, get_repo
 
@@ -92,31 +115,56 @@ async def seed_sample_bundle(
 ) -> dict[str, Any]:
     """Idempotently seed the removable starter bundle into *org_id* / *project_id*.
 
-    Creates a read-only "Sample" DuckDB datastore, the queries the starter boards
-    need, and the ``starter`` dashboard(s) from the shared demo fixtures — all
-    tagged ``sample=true``.  Designed to never break signup: returns
-    ``{"skipped": reason}`` if the bundled dataset can't be built.
+    When S3 is configured (``S3_ACCESS_KEY`` / ``AWS_ACCESS_KEY_ID`` env vars),
+    exports all four demo datasets to per-project S3 parquet files BEFORE creating
+    the datastore row, so the connector is live-backed by real object storage from
+    day one.  When S3 is absent, the same parquet files are written to the local
+    ``seed_data/parquet/`` directory and the views read those — both modes flow
+    through the identical parquet + ``read_parquet`` connector shape.
+
+    Creates a "Sample" DuckDB datastore, every query the demo boards reference,
+    and ALL demo dashboards from the shared fixtures — all tagged ``sample=true``.
+    Designed to never break signup: returns ``{"skipped": reason}`` if the demo
+    dataset can't be built.
     """
     repo = repo or get_repo()
 
-    try:
-        db_path = sample_db_path()
-    except Exception as exc:  # noqa: BLE001 — never fail signup over the sample bundle
-        return {"skipped": f"sample db unavailable: {exc}"}
+    # ── 1. Build / resolve the datastore config ────────────────────────────────
+    ds_config: dict[str, Any]
+
+    if project_id is not None and _s3_is_configured():
+        # S3 path: export per-project parquet files, then point the datastore at them.
+        try:
+            export_demo_to_s3(project_id)
+            ds_config = s3_datastore_config(project_id)
+        except Exception as exc:  # noqa: BLE001 — fall back gracefully
+            # S3 export failed; fall back to local parquet files.
+            try:
+                export_demo_parquet_local()
+                ds_config = local_parquet_datastore_config()
+            except Exception as exc2:  # noqa: BLE001
+                return {"skipped": f"demo export failed: {exc}; local fallback also failed: {exc2}"}
+    else:
+        # Local parquet path (no S3 configured or no project_id).
+        try:
+            export_demo_parquet_local()
+            ds_config = local_parquet_datastore_config()
+        except Exception as exc:  # noqa: BLE001 — never fail signup over the sample bundle
+            return {"skipped": f"demo parquet unavailable: {exc}"}
 
     created: list[str] = []
 
-    # 1. Sample datastore (points at the bundled read-only file).
+    # ── 2. Sample datastore ────────────────────────────────────────────────────
     ds, ds_created = await _upsert(
         repo, "datastores", org_id, created_by, "Sample",
-        datastore_config(db_path), SAMPLE_DS, project_id,
+        ds_config, SAMPLE_DS, project_id,
     )
     if ds_created:
         created.append("datastores")
     datastore_id = str(ds["id"])
 
-    # 2. Starter boards + the queries they reference (from shared fixtures).
-    boards = load_boards(starter_only=True)
+    # ── 3. All demo boards + the queries they reference ────────────────────────
+    boards = load_boards()
     queries = load_queries()
     needed = referenced_query_keys(boards)
 
@@ -134,7 +182,7 @@ async def seed_sample_bundle(
         if q_created:
             created.append("queries")
 
-    # 3. Starter dashboard(s) — resolve @placeholders to real query UUIDs.
+    # ── 4. Dashboards — resolve @placeholders to real query UUIDs ─────────────
     board_ids: list[str] = []
     for b in boards:
         spec = resolve_placeholders(b["spec"], idmap)
@@ -151,6 +199,80 @@ async def seed_sample_bundle(
         "board_ids": board_ids,
         "created": created,
     }
+
+
+async def checkpoint_and_promote_bundle(
+    org_id: str,
+    project_id: str,
+    created_by: str,
+    repo: Repo | None = None,
+) -> dict[str, Any]:
+    """Checkpoint the demo bundle (v1) and pin it in BOTH dev and prod.
+
+    A fresh demo project must work end-to-end under strict protected-env
+    visibility: every demo query/board/flow gets a v1 ``resource_versions``
+    snapshot and ``resource_environments`` pointers in the project's ``dev``
+    AND ``prod`` environments, exactly as if the user had checkpointed and
+    promoted each resource by hand.
+
+    Best-effort by design — returns ``{"skipped": reason}`` instead of
+    raising, so demo seeding can never break signup or ``seed --demo``.
+
+    Returns ``{"checkpointed": {"query": n, "board": n, "flow": n}}`` on
+    success.
+    """
+    repo = repo or get_repo()
+    try:
+        from app.environments.store import get_env_store  # noqa: PLC0415
+
+        env_store = get_env_store()
+        envs = await env_store.ensure_project_envs(str(project_id))
+        targets = [e for e in envs if e.get("key") in ("dev", "prod")]
+        if not targets:
+            return {"skipped": "project has no dev/prod environments"}
+    except Exception as exc:  # noqa: BLE001 — env store unavailable
+        return {"skipped": f"env store unavailable: {exc}"}
+
+    counts = {"query": 0, "board": 0, "flow": 0}
+
+    async def _pin(kind: str, resource_id: str, config: dict[str, Any]) -> None:
+        version = await env_store.create_version(
+            org_id=str(org_id),
+            project_id=str(project_id),
+            kind=kind,
+            resource_id=str(resource_id),
+            config=config,
+            created_by=str(created_by),
+            message="Demo seed",
+        )
+        for env in targets:
+            await env_store.set_pointer(
+                kind, str(resource_id), env["id"], version["id"],
+                promoted_by=str(created_by),
+            )
+        counts[kind] += 1
+
+    try:
+        # Queries + boards: the bundle rows are tagged config.sample = true.
+        for kind, table in (("query", "queries"), ("board", "boards")):
+            for row in await repo.list(table, org_id, project_id):
+                cfg = row.get("config") or {}
+                if cfg.get("sample") is not True:
+                    continue
+                await _pin(kind, str(row["id"]), cfg)
+
+        # Flows: snapshot the spec of every flow in the demo project.
+        from app.flows.store import get_flow_store  # noqa: PLC0415
+
+        flow_store = get_flow_store()
+        for flow in await flow_store.list_flows(str(org_id)):
+            if str(flow.get("project_id") or "") != str(project_id):
+                continue
+            await _pin("flow", str(flow["id"]), flow.get("spec") or {})
+    except Exception as exc:  # noqa: BLE001 — never fail seeding on promote
+        return {"skipped": f"checkpoint/promote failed: {exc}", "checkpointed": counts}
+
+    return {"checkpointed": counts}
 
 
 async def remove_sample_bundle(

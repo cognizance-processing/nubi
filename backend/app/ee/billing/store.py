@@ -19,7 +19,7 @@ Subscription shape
 ``{
     id: str (uuid),
     org_id: str (uuid),
-    tier: str (BillingTier value — "free"/"pro"/"enterprise"),
+    tier: str (BillingTier value — "free"/"starter"/"team"/"pro"/"enterprise"),
     status: str ("active"/"cancelled"/"past_due"/"trialing"),
     paystack_customer_code: str | None,
     paystack_subscription_code: str | None,
@@ -68,9 +68,14 @@ class BillingStore:
         paystack_subscription_code: str | None = None,
         current_period_start: datetime | None = None,
         current_period_end: datetime | None = None,
-        cancel_at_period_end: bool = False,
+        cancel_at_period_end: bool | None = None,
     ) -> Subscription:
         """Create or update the subscription for *org_id*.
+
+        Patch semantics: ``tier`` and ``status`` always overwrite; every other
+        kwarg left as ``None`` preserves the stored value (so a status-only
+        upsert — e.g. marking past_due on a failed charge — can never wipe the
+        billing period, Paystack codes, or a scheduled cancellation).
 
         Parameters
         ----------
@@ -91,6 +96,7 @@ class BillingStore:
             End of the current billing period.
         cancel_at_period_end:
             Whether the subscription is set to cancel at period end.
+            ``None`` keeps the stored flag (``False`` on first insert).
 
         Returns
         -------
@@ -176,21 +182,45 @@ class InMemoryBillingStore(BillingStore):
         paystack_subscription_code: str | None = None,
         current_period_start: datetime | None = None,
         current_period_end: datetime | None = None,
-        cancel_at_period_end: bool = False,
+        cancel_at_period_end: bool | None = None,
     ) -> Subscription:
         key = str(org_id)
         now = datetime.now(timezone.utc)
         existing = self._subscriptions.get(key)
+        prev: Subscription = existing or {}
+        # Patch semantics (mirrors PgBillingStore's COALESCEs): None kwargs
+        # preserve the stored value — a status-only upsert must never wipe the
+        # period, Paystack codes, or a scheduled cancellation.
         sub: Subscription = {
             "id": existing["id"] if existing else str(uuid.uuid4()),
             "org_id": key,
             "tier": tier,
             "status": status,
-            "paystack_customer_code": paystack_customer_code,
-            "paystack_subscription_code": paystack_subscription_code,
-            "current_period_start": current_period_start,
-            "current_period_end": current_period_end,
-            "cancel_at_period_end": cancel_at_period_end,
+            "paystack_customer_code": (
+                paystack_customer_code
+                if paystack_customer_code is not None
+                else prev.get("paystack_customer_code")
+            ),
+            "paystack_subscription_code": (
+                paystack_subscription_code
+                if paystack_subscription_code is not None
+                else prev.get("paystack_subscription_code")
+            ),
+            "current_period_start": (
+                current_period_start
+                if current_period_start is not None
+                else prev.get("current_period_start")
+            ),
+            "current_period_end": (
+                current_period_end
+                if current_period_end is not None
+                else prev.get("current_period_end")
+            ),
+            "cancel_at_period_end": (
+                cancel_at_period_end
+                if cancel_at_period_end is not None
+                else prev.get("cancel_at_period_end", False)
+            ),
             "created_at": existing["created_at"] if existing else now,
             "updated_at": now,
         }
@@ -268,7 +298,7 @@ class PgBillingStore(BillingStore):
         paystack_subscription_code: str | None = None,
         current_period_start: datetime | None = None,
         current_period_end: datetime | None = None,
-        cancel_at_period_end: bool = False,
+        cancel_at_period_end: bool | None = None,
     ) -> Subscription:
         from app.db import fetchrow  # noqa: PLC0415
 
@@ -279,7 +309,7 @@ class PgBillingStore(BillingStore):
                  paystack_subscription_code, current_period_start,
                  current_period_end, cancel_at_period_end)
             VALUES
-                ($1::uuid, $2, $3, $4, $5, $6, $7, $8)
+                ($1::uuid, $2, $3, $4, $5, $6, $7, COALESCE($8, false))
             ON CONFLICT (org_id) DO UPDATE SET
                 tier                      = EXCLUDED.tier,
                 status                    = EXCLUDED.status,
@@ -291,7 +321,10 @@ class PgBillingStore(BillingStore):
                                                      subscriptions.current_period_start),
                 current_period_end        = COALESCE(EXCLUDED.current_period_end,
                                                      subscriptions.current_period_end),
-                cancel_at_period_end      = EXCLUDED.cancel_at_period_end,
+                -- $8 (not EXCLUDED — already defaulted to false for the
+                -- insert): None keeps the stored flag, so a status-only
+                -- upsert never wipes a scheduled cancellation.
+                cancel_at_period_end      = COALESCE($8, subscriptions.cancel_at_period_end),
                 updated_at                = now()
             RETURNING id::text, org_id::text, tier, status,
                       paystack_customer_code, paystack_subscription_code,

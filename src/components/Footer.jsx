@@ -21,23 +21,25 @@ function scrollToId(id) {
 //   external: true   → plain <a> with target="_blank"
 //   (none / #)       → removed or replaced
 //
+const GITHUB_URL = 'https://github.com/exo-explore/nubi'
+
 const NAV_COLUMNS = [
   {
     label: 'Product',
     links: [
       { text: 'Dashboards', href: '/#features',    scroll: 'features' },
       { text: 'Embedding',  href: '/#embedding',   scroll: 'embedding' },
-      { text: 'Connectors', href: '/#connectors',  scroll: 'connectors' },
+      { text: 'Connectors', href: '/#sources',     scroll: 'sources' },
       { text: 'Pricing',    href: '/#pricing',     scroll: 'pricing' },
     ],
   },
   {
     label: 'Developers',
     links: [
-      { text: 'Docs',      to: '/docs',             internal: true },
-      { text: 'SDK',       to: '/docs/connector-sdk', internal: true },
-      { text: 'CLI',       to: '/docs/cli',          internal: true },
-      { text: 'MCP tools', to: '/docs/mcp',          internal: true },
+      { text: 'Docs',        to: '/docs',                internal: true },
+      { text: 'SDK & CLI',   to: '/docs/sdk-and-cli',    internal: true },
+      { text: 'AI & MCP',    to: '/docs/ai-and-mcp',     internal: true },
+      { text: 'Self-host',   to: '/docs/self-host',      internal: true },
     ],
   },
   {
@@ -52,17 +54,17 @@ const NAV_COLUMNS = [
   {
     label: 'Company',
     links: [
-      { text: 'About',    href: '/#about',   scroll: 'about' },
-      { text: 'Roadmap',  to: '/docs/roadmap', internal: true },
-      { text: 'Sign up',  to: '/register',     internal: true },
+      { text: 'About',       href: '/#about',        scroll: 'about' },
+      { text: 'Open core',   to: '/docs/open-core',  internal: true },
+      { text: 'Sign up',     to: '/register',        internal: true },
     ],
   },
   {
     label: 'Resources',
     links: [
-      { text: 'GitHub',    href: 'https://github.com/exo-explore/nubi', external: true },
-      { text: 'Changelog', to: '/docs/changelog',  internal: true },
-      { text: 'Status',    href: '/#uptime',        scroll: 'uptime' },
+      { text: 'GitHub',          href: GITHUB_URL,                external: true },
+      { text: 'Changelog',       href: `${GITHUB_URL}/releases`,  external: true },
+      { text: 'Getting started', to: '/docs/getting-started',     internal: true },
     ],
   },
 ]
@@ -145,7 +147,7 @@ export default function Footer() {
             {/* Short descriptor */}
             <p className="text-sm text-muted leading-relaxed max-w-[220px]">
               Embeddable analytics with near-zero marginal cost per view.
-              Powered by Pyodide, DuckDB-WASM, and Arrow IPC.
+              Powered by DuckDB-WASM and Arrow IPC.
             </p>
 
             {/* Social icons */}
@@ -200,33 +202,19 @@ export default function Footer() {
             <span className="text-muted">Apache-2.0</span>
           </p>
 
-          <nav className="flex items-center gap-4" aria-label="Legal navigation">
+          <nav className="flex items-center gap-4" aria-label="Footer navigation">
             <Link to="/docs" className="text-xs text-muted hover:text-fg transition-colors duration-150">
               Docs
             </Link>
             <Link to="/compare" className="text-xs text-muted hover:text-fg transition-colors duration-150">
               Compare
             </Link>
-            <a
-              href="/#privacy"
-              className="text-xs text-muted hover:text-fg transition-colors duration-150"
-              onClick={(e) => {
-                const el = document.getElementById('privacy')
-                if (el) { e.preventDefault(); el.scrollIntoView({ behavior: 'smooth' }) }
-              }}
-            >
+            <Link to="/privacy" className="text-xs text-muted hover:text-fg transition-colors duration-150">
               Privacy
-            </a>
-            <a
-              href="/#terms"
-              className="text-xs text-muted hover:text-fg transition-colors duration-150"
-              onClick={(e) => {
-                const el = document.getElementById('terms')
-                if (el) { e.preventDefault(); el.scrollIntoView({ behavior: 'smooth' }) }
-              }}
-            >
+            </Link>
+            <Link to="/terms" className="text-xs text-muted hover:text-fg transition-colors duration-150">
               Terms
-            </a>
+            </Link>
           </nav>
         </div>
 

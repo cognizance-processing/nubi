@@ -825,6 +825,139 @@ class TestAuthGuard:
 
 
 # ---------------------------------------------------------------------------
+# Tests: built-in demo connector (virtual / system, per-org hide + re-add)
+# ---------------------------------------------------------------------------
+
+
+class TestDemoConnector:
+
+    @pytest.mark.asyncio
+    async def test_demo_injected_into_list_by_default(self, connectors_client):
+        """GET /connectors injects the virtual demo connector for a fresh org."""
+        client, alice_id, org_id, repo = connectors_client
+
+        resp = await client.get("/api/v1/connectors", headers=_auth_headers(alice_id))
+        assert resp.status_code == 200, resp.text
+        items = resp.json()
+        demo = [c for c in items if c["id"] == "__demo__"]
+        assert len(demo) == 1, "Demo connector must be injected exactly once"
+        assert demo[0]["config"]["connector_type"] == "demo"
+        assert demo[0]["name"] == "Demo data"
+        _assert_no_secret_in_response(demo[0])
+
+    @pytest.mark.asyncio
+    async def test_demo_get_single(self, connectors_client):
+        """GET /connectors/__demo__ resolves the virtual connector."""
+        client, alice_id, org_id, repo = connectors_client
+        resp = await client.get("/api/v1/connectors/__demo__", headers=_auth_headers(alice_id))
+        assert resp.status_code == 200, resp.text
+        assert resp.json()["config"]["connector_type"] == "demo"
+
+    @pytest.mark.asyncio
+    async def test_demo_test_endpoint_ok(self, connectors_client):
+        """POST /connectors/__demo__/test → ok:True (no secret needed)."""
+        client, alice_id, org_id, repo = connectors_client
+        resp = await client.post(
+            "/api/v1/connectors/__demo__/test", headers=_auth_headers(alice_id)
+        )
+        assert resp.status_code == 200, resp.text
+        body = resp.json()
+        assert body["ok"] is True
+        assert body["type"] == "demo"
+
+    @pytest.mark.asyncio
+    async def test_demo_delete_hides_it_per_org(self, connectors_client):
+        """DELETE /connectors/__demo__ removes it from the org's list (204)."""
+        client, alice_id, org_id, repo = connectors_client
+
+        del_resp = await client.delete(
+            "/api/v1/connectors/__demo__", headers=_auth_headers(alice_id)
+        )
+        assert del_resp.status_code == 204, del_resp.text
+
+        list_resp = await client.get("/api/v1/connectors", headers=_auth_headers(alice_id))
+        ids = [c["id"] for c in list_resp.json()]
+        assert "__demo__" not in ids, "Demo connector must be hidden after delete"
+
+        # The hidden marker is internal bookkeeping — it must NOT surface as a connector.
+        names = [c["name"] for c in list_resp.json()]
+        assert "(demo connector hidden)" not in names
+
+        # GET single + test now report not-found / not-ok.
+        get_resp = await client.get("/api/v1/connectors/__demo__", headers=_auth_headers(alice_id))
+        assert get_resp.status_code == 404
+        test_resp = await client.post(
+            "/api/v1/connectors/__demo__/test", headers=_auth_headers(alice_id)
+        )
+        assert test_resp.json()["ok"] is False
+
+    @pytest.mark.asyncio
+    async def test_demo_delete_is_idempotent(self, connectors_client):
+        """Deleting the demo connector twice is a no-op (still 204, single marker)."""
+        client, alice_id, org_id, repo = connectors_client
+        await client.delete("/api/v1/connectors/__demo__", headers=_auth_headers(alice_id))
+        resp = await client.delete("/api/v1/connectors/__demo__", headers=_auth_headers(alice_id))
+        assert resp.status_code == 204
+
+        # Only one hidden marker row should exist for the org.
+        rows = await repo.list("datastores", org_id)
+        markers = [r for r in rows if r["config"].get("connector_type") == "__demo_hidden__"]
+        assert len(markers) == 1
+
+    @pytest.mark.asyncio
+    async def test_demo_readd_after_delete(self, connectors_client):
+        """POST {type:'demo'} re-adds the demo connector after removal."""
+        client, alice_id, org_id, repo = connectors_client
+
+        await client.delete("/api/v1/connectors/__demo__", headers=_auth_headers(alice_id))
+
+        add_resp = await client.post(
+            "/api/v1/connectors",
+            json={"name": "Demo data", "type": "demo", "config": {}, "secret": {}},
+            headers=_auth_headers(alice_id),
+        )
+        assert add_resp.status_code == 201, add_resp.text
+        assert add_resp.json()["id"] == "__demo__"
+
+        list_resp = await client.get("/api/v1/connectors", headers=_auth_headers(alice_id))
+        ids = [c["id"] for c in list_resp.json()]
+        assert "__demo__" in ids, "Demo connector must be back after re-add"
+
+        # The hidden marker must be gone (no orphaned bookkeeping rows).
+        rows = await repo.list("datastores", org_id)
+        markers = [r for r in rows if r["config"].get("connector_type") == "__demo_hidden__"]
+        assert markers == []
+
+    @pytest.mark.asyncio
+    async def test_demo_hide_is_per_org(self, connectors_app, fake_db):
+        """One org removing the demo connector must not affect another org."""
+        app, repo = connectors_app
+
+        alice_id, alice_org = str(uuid.uuid4()), str(uuid.uuid4())
+        fake_db.users[alice_id] = _make_user(alice_id, "alice@example.com")
+        repo.seed_org_member(org_id=alice_org, user_id=alice_id)
+
+        bob_id, bob_org = str(uuid.uuid4()), str(uuid.uuid4())
+        fake_db.users[bob_id] = _make_user(bob_id, "bob@example.com")
+        repo.seed_org_member(org_id=bob_org, user_id=bob_id)
+
+        transport = ASGITransport(app=app)
+        async with AsyncClient(
+            transport=transport, base_url="http://testserver", follow_redirects=False
+        ) as client:
+            # Alice removes the demo connector.
+            await client.delete("/api/v1/connectors/__demo__", headers=_auth_headers(alice_id))
+
+            alice_ids = [c["id"] for c in (await client.get(
+                "/api/v1/connectors", headers=_auth_headers(alice_id))).json()]
+            bob_ids = [c["id"] for c in (await client.get(
+                "/api/v1/connectors", headers=_auth_headers(bob_id))).json()]
+
+            assert "__demo__" not in alice_ids, "Alice hid the demo connector"
+            assert "__demo__" in bob_ids, "Bob must still see the demo connector"
+
+
+# ---------------------------------------------------------------------------
 # Tests: /test endpoint
 # ---------------------------------------------------------------------------
 

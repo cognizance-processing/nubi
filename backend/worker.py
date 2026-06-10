@@ -21,7 +21,8 @@ The worker starts two coroutines:
    ``TaskContext.secrets`` from the secret store.
 
 This same entrypoint is used for local development (invoked by the CLI) and
-for production worker processes (e.g. a separate Cloud Run worker service).
+for production worker processes (e.g. a separate worker process/machine, such
+as a Fly.io ``worker`` process).
 """
 
 from __future__ import annotations

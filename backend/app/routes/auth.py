@@ -7,6 +7,7 @@ POST   /auth/login             Authenticate with email+password.
 POST   /auth/refresh           Rotate the refresh cookie → new access token.
 POST   /auth/logout            Revoke session family, clear cookie.
 GET    /auth/me                Return the current user (Bearer required).
+GET    /auth/me/invites        Pending org invites for the current user's email.
 GET    /auth/google/start      Initiate Google OAuth (redirect).
 GET    /auth/google/callback   Handle Google OAuth callback (redirect).
 
@@ -42,7 +43,7 @@ from app.auth.jwt import decode_access_token, mint_access_token
 from app.auth.passwords import hash_password, verify_password
 from app.auth.sessions import issue_refresh, revoke_by_token, rotate_refresh
 from app.config import get_settings
-from app.db import execute, fetchrow
+from app.db import execute, fetch, fetchrow
 from app.errors import AppError
 from app.repos import projects as projects_repo
 from app.routes import api_router
@@ -74,6 +75,9 @@ class RegisterIn(BaseModel):
     # default org naming and a "Default" project, respectively.
     org_name: str | None = None
     project_name: str | None = None
+    # When true, also create the deletable "Demo" project (seeded with the demo
+    # bundle) alongside the first (empty) project. Best-effort.
+    demo_project: bool = False
 
     @field_validator("password")
     @classmethod
@@ -121,8 +125,9 @@ async def _create_personal_org(
 ) -> str:
     """Create a personal org, owner membership, and a default project.
 
-    The org slug is derived from the email local-part, made unique by
-    appending the first 8 characters of the user's UUID.
+    The org slug is clean-first and immutable: derived from the chosen org
+    name (or the email local-part), suffixed ONLY on collision — see
+    ``app.onboarding.insert_org_with_unique_slug``.
 
     A "Default" project (or *project_name* when supplied) is created for the
     new org so resource creation is frictionless — every org owns at least one
@@ -142,21 +147,14 @@ async def _create_personal_org(
         The new org's id.
     """
     org_id = str(uuid.uuid4())
-    base_slug = email.split("@")[0].lower()
-    # Sanitize slug: keep only alphanumerics and hyphens.
-    safe_slug = "".join(c if c.isalnum() or c == "-" else "-" for c in base_slug)
-    slug = f"{safe_slug}-{user_id[:8]}"
     final_org_name = (org_name or "").strip() or f"{name or email.split('@')[0]}'s workspace"
 
-    await execute(
-        """
-        INSERT INTO orgs (id, name, slug)
-        VALUES ($1, $2, $3)
-        """,
-        org_id,
-        final_org_name,
-        slug,
-    )
+    # Clean-first immutable slug: prefer the org name the user chose, else the
+    # email local-part; a suffix is appended only on collision.
+    from app.onboarding import insert_org_with_unique_slug  # noqa: PLC0415
+
+    slug_base = (org_name or "").strip() or email.split("@")[0]
+    await insert_org_with_unique_slug(org_id, final_org_name, slug_base)
     await execute(
         """
         INSERT INTO org_members (org_id, user_id, role)
@@ -167,47 +165,15 @@ async def _create_personal_org(
     )
 
     # Default project — keeps the org → project → resources model frictionless.
-    project = await projects_repo.create_project(
+    # The project starts EMPTY: demo content lives only in the optional "Demo"
+    # project (see app.onboarding.ensure_demo_project).
+    await projects_repo.create_project(
         org_id=org_id,
         name=(project_name or "").strip() or "Default",
         created_by=user_id,
     )
 
-    # Seed the removable onboarding *sample bundle* into the new default project
-    # so the user lands on a populated, explorable workspace (not an empty one).
-    await seed_sample_bundle_for_org(
-        org_id=org_id,
-        project_id=(project or {}).get("id"),
-        created_by=user_id,
-    )
-
     return org_id
-
-
-async def seed_sample_bundle_for_org(
-    org_id: str,
-    project_id: str | None,
-    created_by: str,
-) -> None:
-    """Seed the onboarding sample bundle into *org_id* / *project_id*.
-
-    Thin wrapper around ``app.sample.seed_sample_bundle`` shared by the register
-    flow, the Google-OAuth signup flow, and the explicit org-create endpoint.
-    Never raises — a sample-bundle failure must not break signup or org creation.
-    """
-    try:
-        if project_id is None:
-            project_id = await projects_repo.get_default_project_id(org_id)
-
-        from app.sample import seed_sample_bundle  # noqa: PLC0415
-
-        await seed_sample_bundle(
-            org_id=org_id,
-            project_id=project_id,
-            created_by=created_by,
-        )
-    except Exception:  # noqa: BLE001 — onboarding sample is best-effort
-        pass
 
 
 async def get_default_project(org_id: str) -> dict[str, Any] | None:
@@ -269,13 +235,23 @@ async def register(
     )
 
     # Create personal org + membership + default project (Supabase-style names).
-    await _create_personal_org(
+    org_id = await _create_personal_org(
         user_id,
         body.name,
         email,
         org_name=body.org_name,
         project_name=body.project_name,
     )
+
+    # Optionally create the deletable "Demo" project with the demo bundle.
+    # Best-effort — demo content must never break signup.
+    if body.demo_project:
+        try:
+            from app.onboarding import ensure_demo_project  # noqa: PLC0415
+
+            await ensure_demo_project(org_id, user_id)
+        except Exception:  # noqa: BLE001
+            pass
 
     # Fetch the full user row to build the response.
     user_row = await fetchrow(
@@ -292,6 +268,11 @@ async def register(
         ip=_client_ip(request),
     )
     set_refresh_cookie(response, raw_refresh, expires_at)
+
+    # Login analytics — best-effort, never blocks registration.
+    from app.login_events import record_login_event  # noqa: PLC0415
+
+    await record_login_event(user_id, request)
 
     return {"user": _serialize_user(user_row), "access_token": access_token}
 
@@ -342,6 +323,11 @@ async def login(
         ip=_client_ip(request),
     )
     set_refresh_cookie(response, raw_refresh, expires_at)
+
+    # Login analytics — best-effort, never blocks login.
+    from app.login_events import record_login_event  # noqa: PLC0415
+
+    await record_login_event(user_id, request)
 
     return {"user": _serialize_user(user_row), "access_token": access_token}
 
@@ -428,11 +414,94 @@ async def me(
 ) -> dict[str, Any]:
     """Return the currently authenticated user.
 
+    ``is_superadmin`` is read fresh from the user's DB row (never from JWT
+    claims) — it is informational for the frontend only; the /admin/* routes
+    re-check it server-side on every request.
+
     Returns
     -------
     200 {user}
     """
-    return {"user": _serialize_user(user)}
+    payload = _serialize_user(user)
+
+    is_superadmin = False
+    try:
+        row = await fetchrow(
+            "SELECT is_superadmin FROM users WHERE id = $1::uuid",
+            str(user["id"]),
+        )
+        if row is not None:
+            is_superadmin = bool(dict(row).get("is_superadmin"))
+    except Exception:  # noqa: BLE001 — pre-migration DBs simply report False
+        pass
+    payload["is_superadmin"] = is_superadmin
+
+    return {"user": payload}
+
+
+@router.get("/me/invites")
+async def my_invites(
+    user: dict[str, Any] = Depends(current_user),
+) -> dict[str, Any]:
+    """Return pending, non-expired org invites addressed to the caller's email.
+
+    Email matching is case-insensitive. No org membership is required — this
+    is exactly what an org-less (freshly OAuth-signed-up) user calls during
+    onboarding to discover invitations.
+
+    Returns
+    -------
+    200 {invites: [{id, org_id, org_name, role, token, created_at, expires_at}]}
+    """
+    from datetime import datetime, timezone  # noqa: PLC0415
+
+    email = str(user["email"]).strip().lower()
+    rows = await fetch(
+        """
+        SELECT i.id, i.org_id, i.role, i.token, i.created_at, i.expires_at,
+               o.name AS org_name
+        FROM org_invites i
+        JOIN orgs o ON o.id = i.org_id
+        WHERE lower(i.email) = $1
+          AND i.status = 'pending'
+          AND i.expires_at > now()
+        ORDER BY i.created_at DESC
+        """,
+        email,
+    )
+
+    now = datetime.now(tz=timezone.utc)
+    invites: list[dict[str, Any]] = []
+    for r in rows:
+        # Defensive expiry filter (test doubles may not evaluate the SQL).
+        expires_at = r["expires_at"]
+        expires_dt = (
+            datetime.fromisoformat(str(expires_at))
+            if not isinstance(expires_at, datetime)
+            else expires_at
+        )
+        if expires_dt.tzinfo is None:
+            expires_dt = expires_dt.replace(tzinfo=timezone.utc)
+        if expires_dt <= now:
+            continue
+
+        created_at = r["created_at"]
+        invites.append(
+            {
+                "id": str(r["id"]),
+                "org_id": str(r["org_id"]),
+                "org_name": r["org_name"],
+                "role": r["role"],
+                "token": r["token"],
+                "created_at": (
+                    created_at.isoformat()
+                    if hasattr(created_at, "isoformat")
+                    else str(created_at)
+                ),
+                "expires_at": expires_dt.isoformat(),
+            }
+        )
+    return {"invites": invites}
 
 
 @router.get("/google/start")
@@ -545,7 +614,9 @@ async def google_callback(
             picture,
             email_verified,
         )
-        await _create_personal_org(user_id, name, email)
+        # NOTE: no org/project is auto-created for OAuth signups. The frontend
+        # onboarding flow walks the new user through creating their first org
+        # (POST /orgs) and project (POST /projects) — Supabase-style.
 
         # Best-effort: ingest the Google avatar into our own storage so the
         # avatar is served from our domain.  Never fails the login flow.

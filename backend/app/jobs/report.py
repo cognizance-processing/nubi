@@ -11,9 +11,8 @@ Provides the building blocks for ``kind='report'`` scheduled jobs:
      the results as one CSV section per widget.  Returns the complete CSV as a
      ``str``.
 
-   - ``format='pdf'``:  A headless-render stub.  Returns placeholder bytes and
-     leaves a ``TODO`` note.  Wire a real headless renderer (e.g. Playwright
-     ``page.pdf()``) here when the rendering infrastructure is ready.
+   - ``format='pdf'``:  Renders a real, dependency-free A4 PDF (via
+     ``app.pdf``) — a branded header plus one compact data table per widget.
 
 2. ``EmailSender`` — provider interface (Protocol).
 
@@ -54,6 +53,9 @@ from __future__ import annotations
 
 import csv
 import io
+import smtplib
+from email.message import EmailMessage
+from email.utils import formataddr
 from typing import Any, Protocol, runtime_checkable
 
 
@@ -132,6 +134,100 @@ class NullSender:
         )
 
 
+class SmtpEmailSender:
+    """Synchronous SMTP sender implementing the :class:`EmailSender` protocol.
+
+    Used for both scheduled-report emails and billing invoice emails when
+    ``settings.SMTP_HOST`` is configured.  Stdlib ``smtplib`` only — no
+    external dependencies.
+    """
+
+    def __init__(
+        self,
+        *,
+        host: str,
+        port: int = 587,
+        username: str = "",
+        password: str = "",
+        use_tls: bool = True,
+        from_addr: str = "",
+        from_name: str = "",
+        timeout: float = 20.0,
+    ) -> None:
+        self.host = host
+        self.port = port
+        self.username = username
+        self.password = password
+        self.use_tls = use_tls
+        self.from_addr = from_addr
+        self.from_name = from_name
+        self.timeout = timeout
+
+    def send(
+        self,
+        to: str,
+        subject: str,
+        body: str,
+        attachment_name: str,
+        attachment_data: bytes | str,
+    ) -> None:
+        msg = EmailMessage()
+        msg["Subject"] = subject
+        msg["From"] = formataddr((self.from_name or self.from_addr, self.from_addr))
+        msg["To"] = to
+        msg.set_content(body)
+
+        data = attachment_data.encode("utf-8") if isinstance(attachment_data, str) else attachment_data
+        maintype, subtype = ("application", "pdf") if attachment_name.endswith(".pdf") else ("application", "octet-stream")
+        msg.add_attachment(data, maintype=maintype, subtype=subtype, filename=attachment_name)
+
+        if self.port == 465:
+            with smtplib.SMTP_SSL(self.host, self.port, timeout=self.timeout) as srv:
+                self._auth_and_send(srv, msg)
+        else:
+            with smtplib.SMTP(self.host, self.port, timeout=self.timeout) as srv:
+                if self.use_tls:
+                    srv.starttls()
+                self._auth_and_send(srv, msg)
+
+    def _auth_and_send(self, srv: smtplib.SMTP, msg: EmailMessage) -> None:
+        if self.username:
+            srv.login(self.username, self.password)
+        srv.send_message(msg)
+
+
+def get_default_sender(settings: Any | None = None) -> EmailSender:
+    """Return the configured email transport.
+
+    ``SmtpEmailSender`` when ``SMTP_HOST`` is set, otherwise a ``NullSender``
+    (no real delivery — reports/invoices are still generated and recorded, so
+    OSS builds and tests with no mail server keep working).
+    """
+    if settings is None:
+        from app.config import get_settings  # noqa: PLC0415
+
+        settings = get_settings()
+
+    host = (getattr(settings, "SMTP_HOST", "") or "").strip()
+    if not host:
+        return NullSender()
+
+    from_addr = (
+        (getattr(settings, "SMTP_FROM", "") or "").strip()
+        or (getattr(settings, "BILLING_EMAIL", "") or "").strip()
+        or (getattr(settings, "COMPANY_EMAIL", "") or "").strip()
+    )
+    return SmtpEmailSender(
+        host=host,
+        port=int(getattr(settings, "SMTP_PORT", 587) or 587),
+        username=(getattr(settings, "SMTP_USERNAME", "") or "").strip(),
+        password=getattr(settings, "SMTP_PASSWORD", "") or "",
+        use_tls=bool(getattr(settings, "SMTP_USE_TLS", True)),
+        from_addr=from_addr,
+        from_name=(getattr(settings, "COMPANY_NAME", "") or "Nubi").strip(),
+    )
+
+
 # ---------------------------------------------------------------------------
 # render_report
 # ---------------------------------------------------------------------------
@@ -161,7 +257,7 @@ def render_report(
     bytes | str
         For ``'csv'``: a UTF-8 ``str`` containing the full CSV (one section
         per widget with a ``# Widget: <id>`` header comment).
-        For ``'pdf'``: placeholder ``bytes`` (stub — see TODO below).
+        For ``'pdf'``: a valid ``%PDF-1.4`` document as ``bytes``.
 
     Raises
     ------
@@ -171,66 +267,54 @@ def render_report(
     if format == "csv":
         return _render_csv(board, params)
     if format == "pdf":
-        return _render_pdf_stub(board, params)
+        return _render_pdf(board, params)
     raise ValueError(f"Unsupported report format: {format!r}. Expected 'csv' or 'pdf'.")
 
 
-def _render_csv(board: dict[str, Any], params: dict[str, Any]) -> str:
-    """Render all widget queries from *board* into a multi-section CSV string."""
+def _iter_widget_tables(board: dict[str, Any], params: dict[str, Any]):
+    """Yield ``(widget_id, table, note)`` for each widget in *board*'s spec.
+
+    ``table`` is a pyarrow Table when the widget's query executed and returned
+    rows, else ``None`` with ``note`` carrying a human-readable reason (no
+    query_id / not in registry / missing param / execution error / no rows).
+    Shared by the CSV and PDF renderers so both walk the spec identically and
+    stay on the canonical planner path (named params are NEVER string-concat'd
+    into SQL).
+    """
     from app.queries.registry import get_query_registry
     from app.connectors import planner
     from app.connectors.duckdb_conn import DuckDBConnector
     from app.errors import AppError
+    import re as _re
 
     config: dict[str, Any] = board.get("config") or {}
     spec: dict[str, Any] | None = config.get("spec")
-
-    output = io.StringIO()
-    writer_helper = _CsvHelper(output)
-
-    board_name = board.get("name", board.get("id", "report"))
-
     if spec is None:
-        # Legacy HTML board — no widget queries available.
-        writer_helper.write_comment(f"Board: {board_name} (no spec — CSV not available)")
-        return output.getvalue()
-
+        return
     widgets: list[dict[str, Any]] = spec.get("widgets", [])
     if not widgets:
-        writer_helper.write_comment(f"Board: {board_name} — no widgets")
-        return output.getvalue()
+        return
 
     registry = get_query_registry()
     connector = DuckDBConnector()
+    placeholder_re = _re.compile(r"\{\{([A-Za-z_][A-Za-z0-9_]*)\}\}")
 
     for widget in widgets:
         widget_id = widget.get("id", "?")
         query_id: str | None = widget.get("query_id")
 
-        writer_helper.write_comment(f"Widget: {widget_id}")
-
         if not query_id:
-            writer_helper.write_comment(f"  (no query_id for widget {widget_id!r})")
+            yield widget_id, None, f"(no query_id for widget {widget_id!r})"
             continue
 
         rq = registry.get(query_id)
         if rq is None:
-            writer_helper.write_comment(
-                f"  query_id={query_id!r} not found in registry — skipped"
-            )
+            yield widget_id, None, f"query_id={query_id!r} not found in registry — skipped"
             continue
 
-        # Resolve named params: params override defaults; no token claims here
-        # (per-recipient RLS is applied upstream by injecting locked_params).
-        # Use the planner's own resolve_named_params if the SQL has {{name}} placeholders,
-        # so we stay on the canonical path (NEVER string-concat values into SQL).
-        import re as _re
-        _PLACEHOLDER_RE = _re.compile(r"\{\{([A-Za-z_][A-Za-z0-9_]*)\}\}")
         sql = rq.sql
         positional_params: list[Any] = []
-
-        if _PLACEHOLDER_RE.search(sql):
-            # Build a resolved dict: caller params > declared defaults.
+        if placeholder_re.search(sql):
             resolved: dict[str, Any] = {}
             if rq.params:
                 for p in rq.params:
@@ -241,60 +325,139 @@ def _render_csv(board: dict[str, Any], params: dict[str, Any]) -> str:
                 from app.connectors.planner import resolve_named_params
                 sql, positional_params = resolve_named_params(sql, resolved)
             except KeyError as exc:
-                writer_helper.write_comment(
-                    f"  missing param {exc} for query_id={query_id!r} — skipped"
-                )
+                yield widget_id, None, f"missing param {exc} for query_id={query_id!r} — skipped"
                 continue
 
         try:
             physical_plan = planner.plan(sql, params=positional_params if positional_params else None)
             table = connector.execute(physical_plan)
         except (AppError, Exception) as exc:
-            writer_helper.write_comment(f"  ERROR executing {query_id!r}: {exc}")
+            yield widget_id, None, f"ERROR executing {query_id!r}: {exc}"
             continue
 
-        # Write Arrow table as CSV rows
         if table.num_rows == 0:
-            writer_helper.write_comment(f"  (no rows for query_id={query_id!r})")
+            yield widget_id, None, f"(no rows for query_id={query_id!r})"
             continue
 
-        # Serialise to CSV via stdlib csv module
+        yield widget_id, table, None
+
+
+def _render_csv(board: dict[str, Any], params: dict[str, Any]) -> str:
+    """Render all widget queries from *board* into a multi-section CSV string."""
+    output = io.StringIO()
+    writer_helper = _CsvHelper(output)
+    board_name = board.get("name", board.get("id", "report"))
+
+    config: dict[str, Any] = board.get("config") or {}
+    spec = config.get("spec")
+    if spec is None:
+        writer_helper.write_comment(f"Board: {board_name} (no spec — CSV not available)")
+        return output.getvalue()
+    if not (spec.get("widgets") or []):
+        writer_helper.write_comment(f"Board: {board_name} — no widgets")
+        return output.getvalue()
+
+    for widget_id, table, note in _iter_widget_tables(board, params):
+        writer_helper.write_comment(f"Widget: {widget_id}")
+        if table is None:
+            writer_helper.write_comment(f"  {note}")
+            continue
         csv_writer = csv.writer(output)
-        # Header row
         csv_writer.writerow(table.schema.names)
-        # Data rows — convert each column to Python objects
         for row_idx in range(table.num_rows):
-            row_values = [
+            csv_writer.writerow([
                 table.column(col_name)[row_idx].as_py()
                 for col_name in table.schema.names
-            ]
-            csv_writer.writerow(row_values)
+            ])
 
     return output.getvalue()
 
 
-def _render_pdf_stub(board: dict[str, Any], params: dict[str, Any]) -> bytes:
-    """Placeholder PDF render.
+def _render_pdf(board: dict[str, Any], params: dict[str, Any]) -> bytes:
+    """Render *board* to a real, dependency-free A4 PDF (one table per widget).
 
-    TODO: replace this stub with a headless renderer (e.g. Playwright
-    ``page.pdf()`` or WeasyPrint) once the rendering infrastructure is in
-    place.  The pipeline is fully testable with this stub — the PDF bytes
-    are returned to the caller and attached to the email exactly as a real
-    renderer would produce them.
-
-    Returns
-    -------
-    bytes
-        UTF-8 encoded placeholder text that is NOT a valid PDF, clearly
-        labelled so callers can detect the stub path.
+    Produces a valid ``%PDF-1.4`` document with a branded header band (board
+    name + generated timestamp) and, for each widget query, a compact data
+    table (header row + sampled rows, zebra-striped). Paginates automatically.
     """
-    board_name = board.get("name", board.get("id", "report"))
-    placeholder = (
-        f"[PDF STUB] Board: {board_name}\n"
-        "This is a placeholder PDF produced by the stub renderer.\n"
-        "TODO: wire a real headless renderer (Playwright/WeasyPrint) here.\n"
+    from datetime import datetime, timezone
+    from app.pdf import (
+        Pdf, text_width, truncate,
+        PAGE_W, PAGE_H, MARGIN, CONTENT_W,
+        NAVY, TEAL, INK, MUTED, HAIR, ZEBRA,
     )
-    return placeholder.encode("utf-8")
+
+    MAX_ROWS_PER_WIDGET = 30  # keep report PDFs bounded; CSV export has the full data
+    board_name = str(board.get("name", board.get("id", "report")))
+    generated = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+
+    pdf = Pdf()
+
+    def header_band() -> float:
+        """Draw the top band; return the y baseline to start content below it."""
+        pdf.rect_fill(0, PAGE_H - 92, PAGE_W, 92, NAVY)
+        pdf.text(MARGIN, PAGE_H - 50, 20, board_name, bold=True, color=(1, 1, 1))
+        pdf.text(MARGIN, PAGE_H - 72, 10.5, f"Scheduled report  ·  generated {generated}",
+                 color=(0.78, 0.82, 0.88))
+        return PAGE_H - 122
+
+    y = header_band()
+
+    def ensure_space(needed: float) -> None:
+        nonlocal y
+        if y - needed < MARGIN:
+            pdf.new_page()
+            y = PAGE_H - MARGIN
+
+    config: dict[str, Any] = board.get("config") or {}
+    spec = config.get("spec")
+    if spec is None or not (spec.get("widgets") or []):
+        msg = "No spec — nothing to render." if spec is None else "No widgets on this board."
+        pdf.text(MARGIN, y, 11, msg, color=MUTED)
+        return pdf.to_bytes()
+
+    for widget_id, table, note in _iter_widget_tables(board, params):
+        ensure_space(40)
+        pdf.text(MARGIN, y, 12.5, f"Widget: {widget_id}", bold=True, color=NAVY)
+        y -= 16
+        if table is None:
+            pdf.text(MARGIN + 8, y, 10, str(note), color=MUTED)
+            y -= 22
+            continue
+
+        cols = list(table.schema.names)
+        n_cols = max(1, len(cols))
+        col_w = CONTENT_W / n_cols
+        row_h = 16.0
+
+        def draw_row(values, *, head: bool, idx: int = 0) -> None:
+            nonlocal y
+            ensure_space(row_h)
+            if head:
+                pdf.rect_fill(MARGIN, y - 4, CONTENT_W, row_h, TEAL)
+            elif idx % 2 == 1:
+                pdf.rect_fill(MARGIN, y - 4, CONTENT_W, row_h, ZEBRA)
+            for ci, val in enumerate(values):
+                cell = "" if val is None else str(val)
+                cell = truncate(cell, col_w - 10, 9)
+                pdf.text(MARGIN + ci * col_w + 5, y, 9, cell,
+                         bold=head, color=((1, 1, 1) if head else INK))
+            y -= row_h
+
+        draw_row(cols, head=True)
+        shown = min(table.num_rows, MAX_ROWS_PER_WIDGET)
+        for r in range(shown):
+            draw_row([table.column(c)[r].as_py() for c in cols], head=False, idx=r)
+        if table.num_rows > shown:
+            ensure_space(16)
+            pdf.text(MARGIN + 5, y, 8.5,
+                     f"... {table.num_rows - shown} more rows (full data in the CSV export)",
+                     color=MUTED)
+            y -= 14
+        pdf.line(MARGIN, y + 4, PAGE_W - MARGIN, y + 4, color=HAIR)
+        y -= 18
+
+    return pdf.to_bytes()
 
 
 class _CsvHelper:

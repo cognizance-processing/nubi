@@ -311,19 +311,22 @@ The Nubi backend verifies the signature (RS256 or ES256 via JWKS), `exp`, `aud`,
 
 ## Demo pages
 
-| Page | Bundle needed | Purpose |
-|------|--------------|---------|
-| `embed/demo.html` | `dist-embed/nubi-dashboard.js` | Three `<nubi-dashboard>` instances with different themes; event log. |
-| `embed/widgets-demo.html` | `dist-embed/nubi-widgets.js` | KPI cards, table, scatter/line/bar charts; event log; attribute reference. |
+The runnable demos live under [`examples/`](../examples/) so the source tree
+here stays pure component code:
 
-Both demos run entirely from built-in sample data — no backend is required.
-Open them directly in a browser after running the relevant build command:
+| Demo | Bundle needed | Purpose |
+|------|--------------|---------|
+| [`examples/embed-demo/`](../examples/embed-demo/) | `dist-embed/nubi-dashboard.js` | Full `<nubi-dashboard>` with per-tenant JWT RLS (`index.html`, needs the backend) and a zero-setup mock-token variant (`demo-mock.html`). |
+| [`examples/widgets-demo/`](../examples/widgets-demo/) | `dist-embed/nubi-widgets.js` | The standalone widget kit — `<nubi-kpi>` / `<nubi-table>` / `<nubi-chart>`. |
+
+The `demo-mock.html` and `widgets-demo` pages run entirely from built-in
+sample data — no backend required. Open them after building the bundles:
 
 ```bash
-# build both bundles, then open demo pages
+# build both bundles, then open the mock-data demos
 npm run build:embed && npm run build:widgets
-open embed/demo.html
-open embed/widgets-demo.html
+open examples/embed-demo/demo-mock.html
+open examples/widgets-demo/index.html
 ```
 
 ---
@@ -334,8 +337,6 @@ open embed/widgets-demo.html
 embed/
 ├── nubi-dashboard.js          <nubi-dashboard> custom element source
 ├── getToken.reference.js      Reference getToken() implementation + contract docs
-├── demo.html                  <nubi-dashboard> demo page
-├── widgets-demo.html          Widget kit demo page
 └── widgets/
     ├── index.js               Entry point — registerNubiWidgets()
     ├── nubi-kpi.js            <nubi-kpi> element

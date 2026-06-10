@@ -27,8 +27,9 @@
  *     nubi-dashboard.es.js   ← ES module (use with <script type="module">)
  *     nubi-dashboard.umd.js  ← UMD (use with <script src="...">)
  *
- * For the demo.html we reference ../dist-embed/nubi-dashboard.js which resolves
- * to the UMD build (the filename alias is set via fileNames below).
+ * The example pages (examples/embed-demo/*) reference
+ * ../../dist-embed/nubi-dashboard.js which resolves to the UMD build (the
+ * filename alias is set via fileNames below).
  */
 
 import { defineConfig } from 'vite'
@@ -62,7 +63,7 @@ export default defineConfig({
 
       // File names for each format.
       // The UMD build will be named nubi-dashboard.js (no format suffix) so that
-      // demo.html can reference ../dist-embed/nubi-dashboard.js as a plain script.
+      // the example pages can reference dist-embed/nubi-dashboard.js as a plain script.
       fileName: (format) =>
         format === 'umd' ? 'nubi-dashboard.js' : `nubi-dashboard.${format}.js`,
     },

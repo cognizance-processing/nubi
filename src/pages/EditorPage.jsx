@@ -9,13 +9,21 @@
  */
 
 import { useState } from 'react'
-import { useParams, Link, useNavigate } from 'react-router-dom'
+import { useParams, Link, useNavigate, Navigate } from 'react-router-dom'
 import DashboardEditor from '../editor/DashboardEditor.jsx'
+import { useCanWrite } from '../contexts/OrgContext.jsx'
 
 export default function EditorPage() {
   const { id } = useParams()  // undefined on /editor (new board)
   const navigate = useNavigate()
   const [savedBoard, setSavedBoard] = useState(null)
+
+  // The editor is pure editing — viewers (read-only) cannot reach it.
+  // Backend enforces the same rule on save (see app/auth/roles.py).
+  const canWrite = useCanWrite()
+  if (!canWrite) {
+    return <Navigate to="/dashboards" replace />
+  }
 
   function handleSaved(board) {
     setSavedBoard(board)

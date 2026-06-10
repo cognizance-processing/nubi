@@ -24,6 +24,7 @@
 
 import { memo } from 'react'
 import { Handle, Position } from 'reactflow'
+import { Database, Layers, Filter } from 'lucide-react'
 
 // ---------------------------------------------------------------------------
 // Color maps
@@ -33,8 +34,8 @@ const KIND_COLORS = {
   query:       { bg: 'bg-blue-500/10',    text: 'text-blue-600 dark:text-blue-400',       border: 'border-blue-200 dark:border-blue-800'       },
   python:      { bg: 'bg-violet-500/10',  text: 'text-violet-600 dark:text-violet-400',   border: 'border-violet-200 dark:border-violet-800'   },
   agent:       { bg: 'bg-emerald-500/10', text: 'text-emerald-600 dark:text-emerald-400', border: 'border-emerald-200 dark:border-emerald-800' },
-  materialize: { bg: 'bg-amber-500/10',   text: 'text-amber-600 dark:text-amber-400',     border: 'border-amber-200 dark:border-amber-800'     },
-  extract:     { bg: 'bg-sky-500/10',     text: 'text-sky-600 dark:text-sky-400',         border: 'border-sky-200 dark:border-sky-800'         },
+  materialize: { bg: 'bg-cyan-500/10',    text: 'text-cyan-600 dark:text-cyan-400',       border: 'border-cyan-200 dark:border-cyan-800'       },
+  preagg_refresh: { bg: 'bg-rose-500/10', text: 'text-rose-600 dark:text-rose-400',       border: 'border-rose-200 dark:border-rose-800'       },
   bucket_load: { bg: 'bg-orange-500/10',  text: 'text-orange-600 dark:text-orange-400',   border: 'border-orange-200 dark:border-orange-800'   },
   noop:        { bg: 'bg-slate-500/10',   text: 'text-slate-600 dark:text-slate-400',     border: 'border-slate-200 dark:border-slate-800'     },
 }
@@ -43,8 +44,8 @@ const KIND_ACCENT = {
   query:       'border-t-blue-400',
   python:      'border-t-violet-400',
   agent:       'border-t-emerald-400',
-  materialize: 'border-t-amber-400',
-  extract:     'border-t-sky-400',
+  materialize: 'border-t-cyan-400',
+  preagg_refresh: 'border-t-rose-400',
   bucket_load: 'border-t-orange-400',
   noop:        'border-t-slate-400',
 }
@@ -59,6 +60,7 @@ const STATE_DOT = {
   timed_out:       'bg-red-500',
   upstream_failed: 'bg-orange-400',
   cancelled:       'bg-gray-400',
+  skipped:         'bg-slate-300 dark:bg-slate-600',
 }
 
 const STATE_LABEL = {
@@ -71,6 +73,7 @@ const STATE_LABEL = {
   timed_out:       'timed out',
   upstream_failed: 'upstream failed',
   cancelled:       'cancelled',
+  skipped:         'skipped',
 }
 
 // States that show a red error ring on the node.
@@ -83,8 +86,10 @@ const WARNING_STATES = new Set(['upstream_failed', 'retrying'])
 // ---------------------------------------------------------------------------
 
 function TaskNode({ data, selected }) {
-  const { task, taskRun } = data
+  const { task, taskRun, cellBadges } = data
   const kind = task?.kind ?? 'noop'
+  const badges = cellBadges ?? {}
+  const hasRunWhen = !!badges.runWhen
   const state = taskRun?.state ?? null
   const kc = KIND_COLORS[kind] ?? KIND_COLORS.noop
   const accent = KIND_ACCENT[kind] ?? KIND_ACCENT.noop
@@ -108,6 +113,8 @@ function TaskNode({ data, selected }) {
         // top accent stripe
         'border-t-4',
         accent,
+        // run_when cells read as "conditional" via a dashed amber left border.
+        hasRunWhen ? 'border-l-4 border-l-amber-400/70' : '',
         // state-specific ring / border override
         isFailure
           ? 'border-red-400/70 shadow-lg shadow-red-500/10'
@@ -161,6 +168,40 @@ function TaskNode({ data, selected }) {
             </span>
           )}
         </div>
+
+        {/* Cell-config badges (v4 "cells, not kinds"): materialized / for_each /
+            run_when derived from config in specGraph.deriveCellBadges. */}
+        {(badges.materialized || badges.forEach || badges.runWhen) && (
+          <div className="flex items-center gap-1 flex-wrap mt-1.5">
+            {badges.materialized && (
+              <span
+                className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-md text-[9px] font-semibold border bg-cyan-500/10 text-cyan-700 dark:text-cyan-300 border-cyan-300/50 dark:border-cyan-800"
+                title={badges.materialized.target ? `→ table: ${badges.materialized.target}` : `→ table (${badges.materialized.kind})`}
+              >
+                <Database size={9} className="shrink-0" />
+                → table ({badges.materialized.kind})
+              </span>
+            )}
+            {badges.forEach && (
+              <span
+                className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-md text-[9px] font-semibold border bg-indigo-500/10 text-indigo-700 dark:text-indigo-300 border-indigo-300/50 dark:border-indigo-800"
+                title={`for each: ${badges.forEach.items}`}
+              >
+                <Layers size={9} className="shrink-0" />
+                for each
+              </span>
+            )}
+            {badges.runWhen && (
+              <span
+                className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-md text-[9px] font-semibold border bg-amber-500/10 text-amber-700 dark:text-amber-300 border-amber-300/50 dark:border-amber-800"
+                title={`runs when: ${badges.runWhen}`}
+              >
+                <Filter size={9} className="shrink-0" />
+                if
+              </span>
+            )}
+          </div>
+        )}
 
         {/* Attempt count (retrying or failed with attempt > 0) */}
         {taskRun && (taskRun.attempt ?? 0) > 0 && (

@@ -8,7 +8,8 @@
  *   - Header with "New dashboard" CTA → /editor
  *   - Search by name + sort (recent / name)
  *   - Responsive grid: 1 col → sm:2 → lg:3
- *   - Per-card actions: Open, Edit, Delete (confirm dialog)
+ *   - Per-card actions: Open, Edit, Delete (confirm dialog), plus versioning
+ *     via the overflow menu: Checkpoint / History / Promote
  *   - Loading skeleton, error state, empty state
  *   - Light + dark via semantic tokens
  */
@@ -20,19 +21,27 @@ import {
   ChevronDown,
   Code2,
   ExternalLink,
+  GitCommitHorizontal,
+  History,
   LayoutDashboard,
   Loader2,
   MoreVertical,
   Pencil,
   Plus,
+  Rocket,
   Search,
   Sparkles,
   Trash2,
   X,
 } from 'lucide-react'
 import * as api from '../../lib/api.js'
+import { checkpoint, listEnvironments } from '../../lib/versions.js'
+import VersionHistoryDialog from '../../components/app/VersionHistoryDialog.jsx'
+import PromoteDialog from '../../components/app/PromoteDialog.jsx'
 import { useUi } from '../../contexts/UiContext.jsx'
+import { useEnv } from '../../contexts/EnvContext.jsx'
 import { useProject } from '../../contexts/ProjectContext.jsx'
+import { useCanWrite } from '../../contexts/OrgContext.jsx'
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -114,7 +123,7 @@ function CardThumbnail({ board }) {
 }
 
 /** Three-dot dropdown menu on a card. */
-function CardMenu({ board, onEdit, onDelete }) {
+function CardMenu({ onEdit, onCheckpoint, onHistory, onPromote, onDelete }) {
   const [open, setOpen] = useState(false)
   const ref = useRef(null)
 
@@ -146,6 +155,27 @@ function CardMenu({ board, onEdit, onDelete }) {
           >
             <Pencil size={14} className="text-muted" />
             Edit
+          </button>
+          <button
+            onClick={(e) => { e.stopPropagation(); setOpen(false); onCheckpoint() }}
+            className="flex items-center gap-2.5 w-full px-4 py-2.5 text-sm text-fg hover:bg-surface-2 transition-colors"
+          >
+            <GitCommitHorizontal size={14} className="text-muted" />
+            Checkpoint
+          </button>
+          <button
+            onClick={(e) => { e.stopPropagation(); setOpen(false); onHistory() }}
+            className="flex items-center gap-2.5 w-full px-4 py-2.5 text-sm text-fg hover:bg-surface-2 transition-colors"
+          >
+            <History size={14} className="text-muted" />
+            History
+          </button>
+          <button
+            onClick={(e) => { e.stopPropagation(); setOpen(false); onPromote() }}
+            className="flex items-center gap-2.5 w-full px-4 py-2.5 text-sm text-fg hover:bg-surface-2 transition-colors"
+          >
+            <Rocket size={14} className="text-muted" />
+            Promote
           </button>
           <button
             onClick={(e) => { e.stopPropagation(); setOpen(false); onDelete() }}
@@ -219,10 +249,26 @@ function DeleteDialog({ board, onConfirm, onCancel, busy }) {
 }
 
 /** Single board card. */
-function BoardCard({ board, onDeleted }) {
+function BoardCard({ board, onDeleted, onRestored, canWrite, environments, strictEnv }) {
   const navigate = useNavigate()
   const [confirmDelete, setConfirmDelete] = useState(false)
   const [deleteBusy, setDeleteBusy] = useState(false)
+  const [historyOpen, setHistoryOpen] = useState(false)
+  const [promoteOpen, setPromoteOpen] = useState(false)
+
+  // Snapshot the board's saved config as a new version.
+  async function handleCheckpoint() {
+    const message = window.prompt('Checkpoint message (optional):', '')
+    if (message === null) return // cancelled
+    try {
+      const v = await checkpoint('board', board.id, { message: message.trim() || undefined })
+      window.alert(v?.deduped
+        ? `No changes since v${v.version} — the existing version was reused.`
+        : `Created version v${v?.version}.`)
+    } catch (err) {
+      window.alert(err?.message || 'Checkpoint failed.')
+    }
+  }
 
   async function handleDelete() {
     setDeleteBusy(true)
@@ -255,13 +301,31 @@ function BoardCard({ board, onDeleted }) {
               >
                 {board.name || 'Untitled dashboard'}
               </Link>
-              <p className="text-xs text-muted mt-0.5">{boardMeta(board.config)}</p>
+              <p className="text-xs text-muted mt-0.5 flex items-center gap-1.5 flex-wrap">
+                {boardMeta(board.config)}
+                {/* Strict-env visibility: the active env is protected and this
+                    board has no pinned version there (pinned_envs from the
+                    list API). */}
+                {strictEnv && Array.isArray(board.pinned_envs)
+                  && !board.pinned_envs.includes(strictEnv) && (
+                  <span
+                    title={`No version is pinned to ${strictEnv} — promote one to make it visible there.`}
+                    className="inline-flex items-center px-1.5 py-0.5 text-[10px] font-medium rounded bg-rose-500/10 text-rose-600 dark:text-rose-400 border border-rose-500/20"
+                  >
+                    not in {strictEnv}
+                  </span>
+                )}
+              </p>
             </div>
-            <CardMenu
-              board={board}
-              onEdit={() => navigate(`/editor/${board.id}`)}
-              onDelete={() => setConfirmDelete(true)}
-            />
+            {canWrite && (
+              <CardMenu
+                onEdit={() => navigate(`/editor/${board.id}`)}
+                onCheckpoint={handleCheckpoint}
+                onHistory={() => setHistoryOpen(true)}
+                onPromote={() => setPromoteOpen(true)}
+                onDelete={() => setConfirmDelete(true)}
+              />
+            )}
           </div>
 
           {/* Actions */}
@@ -273,13 +337,15 @@ function BoardCard({ board, onDeleted }) {
               <ExternalLink size={13} />
               Open
             </Link>
-            <Link
-              to={`/editor/${board.id}`}
-              className="flex items-center gap-1.5 flex-1 justify-center h-9 rounded-lg border border-border bg-surface-2 text-fg text-xs font-medium hover:bg-surface-2/60 transition-colors"
-            >
-              <Pencil size={13} />
-              Edit
-            </Link>
+            {canWrite && (
+              <Link
+                to={`/editor/${board.id}`}
+                className="flex items-center gap-1.5 flex-1 justify-center h-9 rounded-lg border border-border bg-surface-2 text-fg text-xs font-medium hover:bg-surface-2/60 transition-colors"
+              >
+                <Pencil size={13} />
+                Edit
+              </Link>
+            )}
           </div>
         </div>
       </article>
@@ -292,6 +358,27 @@ function BoardCard({ board, onDeleted }) {
           busy={deleteBusy}
         />
       )}
+
+      {/* Version history (kind='board') — restore refetches the board list */}
+      <VersionHistoryDialog
+        kind="board"
+        resourceId={board.id}
+        resourceName={board.name || 'Untitled dashboard'}
+        open={historyOpen}
+        onClose={() => setHistoryOpen(false)}
+        onRestored={onRestored}
+        environments={environments ?? undefined}
+      />
+
+      {/* Promote (kind='board') — also moves referenced queries; the dialog
+          surfaces the returned `promoted` list before closing */}
+      <PromoteDialog
+        kind="board"
+        resourceId={board.id}
+        open={promoteOpen}
+        onClose={() => setPromoteOpen(false)}
+        environments={environments ?? undefined}
+      />
     </>
   )
 }
@@ -319,7 +406,7 @@ function SkeletonCard() {
 }
 
 /** Empty state when no boards exist. */
-function EmptyState({ hasFilter, onClearFilter, onAskAI }) {
+function EmptyState({ hasFilter, onClearFilter, onAskAI, canWrite }) {
   if (hasFilter) {
     return (
       <div className="flex flex-col items-center justify-center py-24 px-6 text-center">
@@ -356,29 +443,32 @@ function EmptyState({ hasFilter, onClearFilter, onAskAI }) {
       </div>
 
       <h2 className="font-display font-semibold text-2xl text-fg mb-2">
-        Create your first dashboard
+        {canWrite ? 'Create your first dashboard' : 'No dashboards yet'}
       </h2>
       <p className="text-muted text-sm max-w-sm leading-relaxed mb-8">
-        Dashboards bring your data to life with charts, tables, and widgets.
-        Build one manually or let AI do the heavy lifting.
+        {canWrite
+          ? 'Dashboards bring your data to life with charts, tables, and widgets. Build one manually or let AI do the heavy lifting.'
+          : 'There are no dashboards to view yet. You have read-only access in this organisation.'}
       </p>
 
-      <div className="flex flex-col sm:flex-row gap-3">
-        <Link
-          to="/editor"
-          className="inline-flex items-center justify-center gap-2 h-11 px-6 rounded-xl bg-primary text-primary-fg text-sm font-semibold hover:opacity-90 transition-opacity"
-        >
-          <Plus size={16} />
-          New dashboard
-        </Link>
-        <button
-          onClick={onAskAI}
-          className="inline-flex items-center justify-center gap-2 h-11 px-6 rounded-xl border border-border bg-surface-2 text-fg text-sm font-semibold hover:bg-surface-2/60 transition-colors"
-        >
-          <Sparkles size={16} className="text-accent" />
-          Ask AI to build one
-        </button>
-      </div>
+      {canWrite && (
+        <div className="flex flex-col sm:flex-row gap-3">
+          <Link
+            to="/editor"
+            className="inline-flex items-center justify-center gap-2 h-11 px-6 rounded-xl bg-primary text-primary-fg text-sm font-semibold hover:opacity-90 transition-opacity"
+          >
+            <Plus size={16} />
+            New dashboard
+          </Link>
+          <button
+            onClick={onAskAI}
+            className="inline-flex items-center justify-center gap-2 h-11 px-6 rounded-xl border border-border bg-surface-2 text-fg text-sm font-semibold hover:bg-surface-2/60 transition-colors"
+          >
+            <Sparkles size={16} className="text-accent" />
+            Ask AI to build one
+          </button>
+        </div>
+      )}
     </div>
   )
 }
@@ -445,6 +535,29 @@ export default function DashboardsPage() {
   // Re-scope the list whenever the active project changes (api.js sends X-Project-Id).
   const { activeProject } = useProject()
   const projectId = activeProject?.id
+
+  // Project environments for the version/promote dialogs (null → dialogs fall
+  // back to their built-in dev/prod defaults).
+  const [environments, setEnvironments] = useState(null)
+  useEffect(() => {
+    let cancelled = false
+    if (!projectId) { setEnvironments(null); return }
+    listEnvironments(projectId).then(envs => { if (!cancelled) setEnvironments(envs) })
+    return () => { cancelled = true }
+  }, [projectId])
+
+  // Viewers are read-only — hide mutating actions (backend enforces too).
+  const canWrite = useCanWrite()
+
+  // Strict-env badges: when the ACTIVE env is protected, cards whose
+  // pinned_envs lack it get a 'not in <env>' chip. (NOTE: no 'View' action on
+  // boards — rendering an arbitrary version config would need the full board
+  // renderer mounted here; the history dialog still offers Restore/Promote.)
+  const { environments: envList, activeEnv } = useEnv()
+  const strictEnv = (Array.isArray(envList)
+    && envList.find(e => e.key === activeEnv)?.protected)
+    ? activeEnv
+    : null
 
   // Access the chat panel opener if UiContext is available
   let openChat = null
@@ -515,13 +628,19 @@ export default function DashboardsPage() {
           )}
         </div>
 
-        <Link
-          to="/editor"
-          className="inline-flex items-center justify-center gap-2 h-11 px-5 rounded-xl bg-primary text-primary-fg text-sm font-semibold hover:opacity-90 transition-opacity shrink-0 self-start sm:self-auto"
-        >
-          <Plus size={16} />
-          New dashboard
-        </Link>
+        {canWrite ? (
+          <Link
+            to="/editor"
+            className="inline-flex items-center justify-center gap-2 h-11 px-5 rounded-xl bg-primary text-primary-fg text-sm font-semibold hover:opacity-90 transition-opacity shrink-0 self-start sm:self-auto"
+          >
+            <Plus size={16} />
+            New dashboard
+          </Link>
+        ) : (
+          <span className="inline-flex items-center h-11 px-3 rounded-xl text-xs font-medium text-muted self-start sm:self-auto">
+            Read-only
+          </span>
+        )}
       </div>
 
       {/* ── Search + sort bar ────────────────────────────── */}
@@ -592,6 +711,7 @@ export default function DashboardsPage() {
           hasFilter={search.length > 0}
           onClearFilter={() => setSearch('')}
           onAskAI={handleAskAI}
+          canWrite={canWrite}
         />
       )}
 
@@ -603,6 +723,10 @@ export default function DashboardsPage() {
               key={board.id}
               board={board}
               onDeleted={handleDeleted}
+              onRestored={fetchBoards}
+              canWrite={canWrite}
+              environments={environments}
+              strictEnv={strictEnv}
             />
           ))}
         </div>

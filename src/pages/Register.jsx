@@ -24,12 +24,13 @@ export default function Register() {
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
   const [orgName, setOrgName] = useState('')
-  const [projectName, setProjectName] = useState('')
+  // First project defaults to "Default" (Supabase-style) but stays editable.
+  const [projectName, setProjectName] = useState('Default')
+  const [demoProject, setDemoProject] = useState(true)
   const [error, setError] = useState(null)
   const [pending, setPending] = useState(false)
 
-  // Suggested defaults shown as placeholders. If the user leaves a field blank
-  // we send these sensible defaults so the backend always names the org/project.
+  // Suggested examples shown as placeholders (both fields are required).
   const firstName = name.trim().split(/\s+/)[0]
   const orgPlaceholder = firstName ? `${firstName}'s Org` : 'My Org'
   const projectPlaceholder = 'Default'
@@ -37,11 +38,15 @@ export default function Register() {
   async function handleSubmit(e) {
     e.preventDefault()
     setError(null)
+    const org_name = orgName.trim()
+    const project_name = projectName.trim()
+    if (!org_name || !project_name) {
+      setError('Organization name and project name are required.')
+      return
+    }
     setPending(true)
     try {
-      const org_name = orgName.trim() || orgPlaceholder
-      const project_name = projectName.trim() || projectPlaceholder
-      await register({ name, email, password, org_name, project_name })
+      await register({ name, email, password, org_name, project_name, demo_project: demoProject })
       navigate('/dashboard', { replace: true })
     } catch (err) {
       setError(err.message)
@@ -133,6 +138,7 @@ export default function Register() {
             id="orgName"
             type="text"
             autoComplete="organization"
+            required
             value={orgName}
             onChange={e => setOrgName(e.target.value)}
             className="w-full px-4 py-3 bg-surface border border-border rounded-xl text-sm text-fg placeholder:text-muted focus:outline-none focus:ring-2 focus:ring-ring focus:border-transparent disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
@@ -151,6 +157,7 @@ export default function Register() {
           <input
             id="projectName"
             type="text"
+            required
             value={projectName}
             onChange={e => setProjectName(e.target.value)}
             className="w-full px-4 py-3 bg-surface border border-border rounded-xl text-sm text-fg placeholder:text-muted focus:outline-none focus:ring-2 focus:ring-ring focus:border-transparent disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
@@ -161,6 +168,26 @@ export default function Register() {
             We&apos;ll create this project to get you started. You can add more anytime.
           </p>
         </div>
+
+        <label
+          htmlFor="demoProject"
+          className="flex items-start gap-3 rounded-xl border border-border bg-surface px-4 py-3 cursor-pointer hover:bg-surface-2 transition-colors"
+        >
+          <input
+            id="demoProject"
+            type="checkbox"
+            checked={demoProject}
+            onChange={e => setDemoProject(e.target.checked)}
+            disabled={pending}
+            className="mt-0.5 h-4 w-4 shrink-0 rounded border-border text-primary accent-[var(--color-primary,#2456a6)] focus:outline-none focus:ring-2 focus:ring-ring"
+          />
+          <span>
+            <span className="block text-sm font-medium text-fg">Include demo project</span>
+            <span className="block mt-0.5 text-xs text-muted">
+              Add a Demo project with sample dashboards &amp; data — you can delete it anytime.
+            </span>
+          </span>
+        </label>
 
         <div>
           <label htmlFor="email" className="block text-sm font-medium text-fg mb-1.5">

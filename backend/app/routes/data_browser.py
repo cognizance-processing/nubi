@@ -33,7 +33,7 @@ from fastapi.responses import StreamingResponse
 
 from app.auth.deps import current_user
 from app.connectors.arrow_io import ipc_stream_from_bytes, table_to_ipc_bytes
-from app.connectors.duckdb_conn import DuckDBConnector
+from app.connectors.duckdb_conn import DuckDBConnector, setup_s3_httpfs
 from app.connectors.plan import PhysicalPlan
 from app.errors import AppError
 from app.repos.provider import get_repo, Repo
@@ -55,23 +55,17 @@ _demo_connector: DuckDBConnector | None = None
 
 
 def _get_demo_connector() -> DuckDBConnector:
-    """Return (or create) the module-level demo DuckDB connector."""
+    """Return (or create) the module-level demo DuckDB connector.
+
+    Same connector as the query route: the full 17-table demo dataset plus the
+    legacy ``demo`` table, so the Data browser lists every demo table (not just
+    the old single placeholder).
+    """
     global _demo_connector
     if _demo_connector is None:
-        conn = DuckDBConnector()
-        demo_table = pa.table(
-            {
-                "id": pa.array([1, 2, 3, 4, 5], type=pa.int32()),
-                "name": pa.array(
-                    ["alpha", "beta", "gamma", "delta", "epsilon"],
-                    type=pa.string(),
-                ),
-                "value": pa.array([1.1, 2.2, 3.3, 4.4, 5.5], type=pa.float64()),
-                "active": pa.array([True, False, True, False, True], type=pa.bool_()),
-            }
-        )
-        conn.register({"demo": demo_table})
-        _demo_connector = conn
+        from app.routes.query import _build_demo_connector  # noqa: PLC0415
+
+        _demo_connector = _build_demo_connector()
     return _demo_connector
 
 
@@ -108,10 +102,109 @@ async def _get_user_org(user_id: str, repo: Repo) -> str:
 # ---------------------------------------------------------------------------
 
 
+def _cfg_references_s3(cfg: dict[str, Any]) -> bool:
+    """Return True when *cfg* contains any s3:// references.
+
+    Checks:
+    - ``parquet_path``, ``database``, ``path``: ``startswith("s3://")``
+    - ``view_sql``: substring ``"s3://"`` anywhere in the string (a
+      multi-table view_sql starts with ``CREATE OR REPLACE VIEW`` but
+      references ``s3://`` URIs inside the read_parquet calls)
+    - ``s3_views`` dict values: ``startswith("s3://")``
+    """
+    # Strict startswith check for non-SQL fields (must be an s3:// URI)
+    for key in ("parquet_path", "database", "path"):
+        val = cfg.get(key) or ""
+        if isinstance(val, str) and val.startswith("s3://"):
+            return True
+    # view_sql may contain s3:// anywhere (single-table path or multi-table)
+    view_sql = cfg.get("view_sql") or ""
+    if isinstance(view_sql, str) and "s3://" in view_sql:
+        return True
+    # s3_views: {table_name: "s3://bucket/key.parquet", ...}
+    s3_views = cfg.get("s3_views")
+    if isinstance(s3_views, dict):
+        for v in s3_views.values():
+            if isinstance(v, str) and v.startswith("s3://"):
+                return True
+    return False
+
+
+def _build_view_sql_from_s3_views(s3_views: dict[str, str]) -> str:
+    """Build a multi-statement ``CREATE VIEW`` SQL string from an *s3_views* dict.
+
+    Each entry ``{table_name: s3_uri}`` produces:
+
+        CREATE OR REPLACE VIEW <table_name> AS
+            SELECT * FROM read_parquet('<s3_uri>');
+
+    The result is a single string with all statements separated by ``; \\n``.
+    This is the **canonical** config shape for the multi-table S3 connector
+    (documented here as the seam for DemoSeedAgent).
+
+    SEAM (DemoSeedAgent)
+    --------------------
+    To register a multi-table S3-backed datastore that flows through the normal
+    connector → /data-browser → /query pipeline, create a datastores row with
+    the following config shape::
+
+        {
+            "connector_type": "duckdb",
+            "database": ":memory:",
+            "s3_views": {
+                "sales":         "s3://<bucket>/projects/<project_id>/demo/sales.parquet",
+                "dim_customers": "s3://<bucket>/projects/<project_id>/demo/dim_customers.parquet",
+                "dim_products":  "s3://<bucket>/projects/<project_id>/demo/dim_products.parquet",
+                "dim_regions":   "s3://<bucket>/projects/<project_id>/demo/dim_regions.parquet",
+                "budget":        "s3://<bucket>/projects/<project_id>/demo/budget.parquet",
+                "targets":       "s3://<bucket>/projects/<project_id>/demo/targets.parquet",
+            },
+            # Optional S3 credential overrides (else env vars are used):
+            "s3_key_id":    "...",
+            "s3_secret":    "...",
+            "s3_endpoint":  "http://localhost:9000",
+            "s3_region":    "us-east-1",
+        }
+
+    Alternatively, supply a ``view_sql`` string containing one or more
+    semicolon-separated ``CREATE [OR REPLACE] VIEW`` statements — each will be
+    executed in order so every view is registered on the in-memory connection.
+    """
+    stmts = [
+        f"CREATE OR REPLACE VIEW {name} AS SELECT * FROM read_parquet('{uri}')"
+        for name, uri in s3_views.items()
+    ]
+    return ";\n".join(stmts)
+
+
 def _build_duckdb_connector(cfg: dict[str, Any]) -> DuckDBConnector:
-    """Build a DuckDB connector from datastore config (read-only file or memory)."""
+    """Build a DuckDB connector from datastore config (read-only file or memory).
+
+    Supported config shapes
+    -----------------------
+    **Local on-disk DuckDB file** — ``database`` / ``path`` is a real filesystem
+    path (not ``:memory:`` and not ``s3://``).  The file is opened read-only.
+
+    **Single-table Parquet view** — ``view_sql`` contains exactly one
+    ``CREATE VIEW … AS SELECT * FROM read_parquet('…')`` statement.
+
+    **Multi-table S3 views** (new) — ``s3_views`` is a dict mapping table names
+    to ``s3://`` URIs.  A ``CREATE OR REPLACE VIEW`` statement is built for each
+    entry.  See :func:`_build_view_sql_from_s3_views` for the full seam doc.
+
+    **Multi-statement view_sql** (new) — ``view_sql`` contains multiple
+    semicolon-separated ``CREATE [OR REPLACE] VIEW`` statements.  Each statement
+    is executed individually so that a failure in one does not silently swallow
+    the rest.
+
+    When *any* ``s3://`` reference is detected (via :func:`_cfg_references_s3`),
+    the httpfs extension is installed/loaded and a DuckDB S3 SECRET is registered
+    from ``cfg`` or the standard ``AWS_*`` / ``S3_ENDPOINT_URL`` environment
+    variables before any view SQL is executed.
+    Local ``/path/to/file`` paths continue to work without any changes.
+    """
     db_path = cfg.get("database") or cfg.get("path")
-    if db_path and db_path != ":memory:":
+    if db_path and db_path != ":memory:" and not db_path.startswith("s3://"):
         import duckdb as _duckdb
 
         _conn = _duckdb.connect(database=db_path, read_only=True)
@@ -120,7 +213,45 @@ def _build_duckdb_connector(cfg: dict[str, Any]) -> DuckDBConnector:
         except Exception:
             pass
         return DuckDBConnector(_conn)
-    return DuckDBConnector()
+
+    # In-memory path (also used for s3:// Parquet datasets and multi-table views):
+    # 1. Create a fresh in-memory connection.
+    # 2. If any s3:// references are present, install httpfs + register SECRET.
+    # 3. Build / execute all view SQL statements so every table is visible for
+    #    introspection and row-sampling.
+    import duckdb as _duckdb_mem
+
+    _conn = _duckdb_mem.connect(database=":memory:")
+
+    if _cfg_references_s3(cfg):
+        try:
+            setup_s3_httpfs(_conn, cfg)
+        except Exception:
+            pass  # best-effort; let the view_sql fail with a clear error
+
+    # --- Collect all view SQL statements -----------------------------------
+    # Priority: s3_views dict > view_sql string.
+    # When both are present, s3_views takes precedence and view_sql is ignored
+    # to avoid registering stale / conflicting views.
+    _s3_views: dict[str, str] | None = cfg.get("s3_views")
+    if isinstance(_s3_views, dict) and _s3_views:
+        _view_sql_combined = _build_view_sql_from_s3_views(_s3_views)
+    else:
+        _view_sql_combined = cfg.get("view_sql") or ""
+
+    # Execute each semicolon-delimited statement individually.  This means a
+    # failure on one view does not silently prevent subsequent views from being
+    # registered (important for the multi-table demo connector).
+    if _view_sql_combined:
+        for _stmt in _view_sql_combined.split(";"):
+            _stmt = _stmt.strip()
+            if _stmt:
+                try:
+                    _conn.execute(_stmt)
+                except Exception:
+                    pass  # best-effort; introspection will surface any gap
+
+    return DuckDBConnector(_conn)
 
 
 def _make_plan(sql: str) -> PhysicalPlan:
@@ -226,7 +357,11 @@ async def _resolve_connector_and_tables(
     repo: Repo,
 ) -> tuple[DuckDBConnector, list[dict[str, Any]]]:
     """Return (connector, tables) — works for demo (None) and real connectors."""
-    if datastore_id is None:
+    # The virtual "Demo data" connector (id "__demo__") resolves to the same
+    # in-process demo connector as the no-datastore path; the dataset is shared
+    # across orgs and never copied per org.
+    from app.routes.connectors import DEMO_CONNECTOR_ID as _DEMO_CONNECTOR_ID
+    if datastore_id is None or datastore_id == _DEMO_CONNECTOR_ID:
         connector = _get_demo_connector()
         tables = _introspect_tables_duckdb(connector)
         return connector, tables

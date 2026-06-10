@@ -37,6 +37,7 @@ from fastapi import APIRouter, Depends, Request, Response
 from pydantic import BaseModel
 
 from app.auth.deps import current_user
+from app.auth.roles import require_writer
 from app.db import fetchrow, fetch
 from app.errors import AppError
 from app.repos.base import VALID_RESOURCES
@@ -86,6 +87,47 @@ def _require_valid_resource(resource: str) -> None:
         raise AppError("not_found", f"Unknown resource: {resource!r}.", 404)
 
 
+# ── Environment / version helpers ─────────────────────────────────────────────
+
+# Versionable resources → polymorphic kind used by the environments store.
+_RESOURCE_KIND: dict[str, str] = {"boards": "board", "queries": "query"}
+
+
+async def _apply_env_resolution(
+    resource: str, row: dict[str, Any], org_id: str, env_key: str
+) -> None:
+    """Resolve ``?env=<key>`` for a get-one response (in place).
+
+    When the resource's project has an environment named *env_key* with a
+    pinned version for this row, the response ``config`` is replaced by the
+    pinned snapshot and ``resolved_version: {id, version}`` is added.  When no
+    pointer exists the draft is returned unchanged with
+    ``resolved_version: null``.
+    """
+    kind = _RESOURCE_KIND.get(resource)
+    if kind is None:
+        return
+    from app.environments.store import get_env_store  # noqa: PLC0415
+    from app.routes._org import resolve_org_default_project_id  # noqa: PLC0415
+
+    row["resolved_version"] = None
+    project_id = row.get("project_id") or await resolve_org_default_project_id(org_id)
+    if not project_id:
+        return
+    env_store = get_env_store()
+    env = await env_store.get_environment_by_key(str(project_id), env_key)
+    if env is None:
+        return
+    pointer = await env_store.get_pointer(kind, str(row["id"]), env["id"])
+    if pointer is None:
+        return
+    version = await env_store.get_version_by_id(pointer["version_id"])
+    if version is None:
+        return
+    row["config"] = version["config"]
+    row["resolved_version"] = {"id": version["id"], "version": version["version"]}
+
+
 # ── Endpoints ─────────────────────────────────────────────────────────────────
 
 @router.get("/{resource}")
@@ -107,10 +149,20 @@ async def list_resources(
     _require_valid_resource(resource)
     org_id = await resolve_org_id(str(user["id"]), repo, request)
     project_id = await resolve_project_filter(org_id, request)
-    return await repo.list(resource, org_id, project_id)
+    rows = await repo.list(resource, org_id, project_id)
+
+    # Strict-visibility support: versionable rows (boards/queries) always carry
+    # ``pinned_envs`` — the env keys that have a pinned version — so the UI can
+    # render "not in <env>" badges when the active env is protected.
+    kind = _RESOURCE_KIND.get(resource)
+    if kind is not None:
+        from app.environments.store import attach_pinned_envs  # noqa: PLC0415
+
+        await attach_pinned_envs(kind, rows)
+    return rows
 
 
-@router.post("/{resource}", status_code=201)
+@router.post("/{resource}", status_code=201, dependencies=[Depends(require_writer)])
 async def create_resource(
     resource: str,
     body: CreateIn,
@@ -158,10 +210,16 @@ async def get_resource(
     row = await repo.get(resource, org_id, id)
     if row is None:
         raise AppError("not_found", f"{resource[:-1].capitalize()} not found.", 404)
+
+    # ``?env=<key>``: serve the version pinned to that environment (boards /
+    # queries only); draft + resolved_version=null when nothing is pinned.
+    env_key = (request.query_params.get("env") or "").strip()
+    if env_key:
+        await _apply_env_resolution(resource, row, org_id, env_key)
     return row
 
 
-@router.put("/{resource}/{id}")
+@router.put("/{resource}/{id}", dependencies=[Depends(require_writer)])
 async def update_resource(
     resource: str,
     id: str,
@@ -189,7 +247,7 @@ async def update_resource(
     return row
 
 
-@router.delete("/{resource}/{id}", status_code=204)
+@router.delete("/{resource}/{id}", status_code=204, dependencies=[Depends(require_writer)])
 async def delete_resource(
     resource: str,
     id: str,
@@ -206,6 +264,17 @@ async def delete_resource(
     deleted = await repo.delete(resource, org_id, id)
     if not deleted:
         raise AppError("not_found", f"{resource[:-1].capitalize()} not found.", 404)
+
+    # Best-effort cleanup of versions + environment pointers (polymorphic
+    # tables — no FK cascade from the resource row).
+    kind = _RESOURCE_KIND.get(resource)
+    if kind is not None:
+        try:
+            from app.environments.store import get_env_store  # noqa: PLC0415
+
+            await get_env_store().delete_resource_data(kind, id)
+        except Exception:  # noqa: BLE001 — never fail the delete on cleanup
+            pass
     return Response(status_code=204)
 
 

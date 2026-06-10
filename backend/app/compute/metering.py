@@ -38,10 +38,13 @@ which uses asyncpg's own pool-level thread safety.
 
 from __future__ import annotations
 
+import logging
 import os
 import time
 from abc import ABC, abstractmethod
 from typing import Any
+
+logger = logging.getLogger("nubi.metering")
 
 
 # ---------------------------------------------------------------------------
@@ -266,6 +269,15 @@ async def record_kernel_usage(
     org_id:
         Organisation UUID string (may be ``None``).
     """
+    if org_id is None:
+        # Billing aggregation (app.ee.billing.reconcile.aggregate_usage_for_org)
+        # filters on org_id — a NULL-org event can never be billed or counted
+        # against any quota.  Catch unattributable callers early.
+        logger.warning(
+            "metering: kernel usage event for user=%s has no org_id — "
+            "it will not count toward any org's quota or billing",
+            user_id,
+        )
     await get_sink().record(
         user_id=user_id,
         tier=tier,
@@ -274,6 +286,85 @@ async def record_kernel_usage(
         org_id=org_id,
         kind="kernel",
     )
+
+
+async def record_usage(
+    *,
+    kind: str,
+    user_id: str,
+    org_id: str | None,
+    units: float = 1.0,
+    tier: str = "",
+    elapsed_ms: int = 0,
+    output_bytes: int = 0,
+) -> None:
+    """Record one usage event of an arbitrary billing *kind* via the active sink.
+
+    The generic counterpart of :func:`record_kernel_usage` for the non-kernel
+    metered dimensions consumed by ``app.ee.billing.reconcile``:
+
+    - ``kind="ai_call"``          — one AI generate/chat completion (units=1).
+    - ``kind="embedded_session"`` — one embedded view session (units=1).
+    - ``kind="agent_run"``        — one remote-kernel / agent run (units=1).
+    - ``kind="storage"``          — a storage snapshot; ``units`` = total GB
+      (billing takes the period MAX, not the sum).
+
+    Unlike the kernel path, ``units`` never defaults to ``elapsed_ms / 1000``
+    — discrete dimensions are counted, not timed — so it is passed explicitly
+    (default ``1.0``).
+
+    Parameters
+    ----------
+    kind:
+        Event category (see above).
+    user_id:
+        The authenticated user's ID.
+    org_id:
+        Organisation UUID string.  ``None`` is tolerated but logged: such
+        events are invisible to billing aggregation.
+    units:
+        Billing units for this event (default ``1.0``).
+    tier / elapsed_ms / output_bytes:
+        Optional extra dimensions (kept for parity with the sink schema).
+    """
+    if org_id is None:
+        logger.warning(
+            "metering: %s usage event for user=%s has no org_id — "
+            "it will not count toward any org's quota or billing",
+            kind,
+            user_id,
+        )
+    await get_sink().record(
+        user_id=user_id,
+        tier=tier,
+        elapsed_ms=elapsed_ms,
+        output_bytes=output_bytes,
+        org_id=org_id,
+        kind=kind,
+        units=units,
+    )
+
+
+def record_usage_safe(**kwargs: Any) -> None:
+    """Sync-safe, best-effort wrapper around :func:`record_usage`.
+
+    Mirrors :func:`record_kernel_usage_safe`: schedules fire-and-forget on a
+    running loop when one exists, else runs to completion.  Metering is
+    best-effort — failures are swallowed.
+    """
+    import asyncio
+
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        loop = None
+    try:
+        if loop is not None:
+            loop.create_task(record_usage(**kwargs))
+        else:
+            asyncio.run(record_usage(**kwargs))
+    except Exception:  # noqa: BLE001 — telemetry must never break the caller
+        pass
 
 
 def record_kernel_usage_safe(**kwargs: Any) -> None:

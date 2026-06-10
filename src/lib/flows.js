@@ -125,11 +125,15 @@ export async function validateFlow(spec) {
  * Trigger a synchronous run of a flow.
  * @param {string} id
  * @param {object} [params]  — runtime param overrides
+ * @param {string} [env]     — trigger-time environment override (dev/prod/custom).
+ *                             Omitted ⇒ backend resolves the project's default env.
  * @returns {Promise<object|null>}  flow_run + { task_runs: [...] }
  */
-export async function runFlow(id, params = {}) {
+export async function runFlow(id, params = {}, env) {
   try {
-    return await post(`${BASE}/${id}/run`, { params })
+    const body = { params }
+    if (env) body.env = env
+    return await post(`${BASE}/${id}/run`, body)
   } catch (err) {
     console.warn('[flows] runFlow failed:', err.message)
     return null
@@ -164,5 +168,52 @@ export async function getFlowRun(runId) {
   } catch (err) {
     console.warn('[flows] getFlowRun failed:', err.message)
     return null
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Codegen
+// ---------------------------------------------------------------------------
+
+/**
+ * Generate nubi.flows SDK code from a saved flow (POST /flows/{id}/codegen).
+ * @param {string} id
+ * @returns {Promise<{ source: string }|null>}
+ */
+export async function codegenFlow(id) {
+  try {
+    return await post(`${BASE}/${id}/codegen`, {})
+  } catch (err) {
+    console.warn('[flows] codegenFlow failed:', err.message)
+    return null
+  }
+}
+
+/**
+ * Generate nubi.flows SDK code from an inline spec (POST /flows/codegen).
+ * @param {object} spec
+ * @returns {Promise<{ source: string }|null>}
+ */
+export async function codegenSpec(spec) {
+  try {
+    return await post(`${BASE}/codegen`, { spec })
+  } catch (err) {
+    console.warn('[flows] codegenSpec failed:', err.message)
+    return null
+  }
+}
+
+/**
+ * Compile nubi.flows Python SDK source to a FlowSpec (POST /flows/compile).
+ * Returns { spec, issues } on success or null on failure.
+ * On a 400 compile_error the returned object has { error: string } shape.
+ */
+export async function compileCode(code) {
+  try {
+    return await post(`${BASE}/compile`, { code })
+  } catch (err) {
+    // Surface compile errors to the caller rather than swallowing them.
+    const msg = err?.body?.error?.message ?? err?.message ?? 'Compile failed.'
+    return { error: msg }
   }
 }

@@ -25,9 +25,13 @@
  *   onQueryChange {fn}           — called with updated query object (primary cell)
  *   onSaved       {fn}           — called after a successful save
  *   isNew         {boolean}      — true when editing an unsaved ad-hoc query
+ *   toolbarExtra  {ReactNode}    — optional cluster appended to the toolbar
+ *                                  (QueriesPage passes the Editor/Rollups view
+ *                                  toggle + Queries panel button)
  */
 
 import { useState, useCallback, useRef, useEffect } from 'react'
+import { createPortal } from 'react-dom'
 import { Link } from 'react-router-dom'
 import {
   Play,
@@ -51,6 +55,8 @@ import {
   Star,
   FileCode2,
   CalendarClock,
+  GitCommitHorizontal,
+  History,
   ExternalLink,
   Copy,
   Check,
@@ -64,36 +70,47 @@ import SpecIO from '../../components/SpecIO.jsx'
 import DataTable from '../../components/DataTable.jsx'
 import PythonCell from '../../components/PythonCell.jsx'
 import { runArrowQueryById, runArrowQuery, registerArrowTable, runLocalSqlForCell } from '../../lib/wasmRuntime.js'
-import { post, registerQuery, listDatastores } from '../../lib/api.js'
+import { get, post, registerQuery, listConnectors } from '../../lib/api.js'
+import { checkpoint, restoreVersion } from '../../lib/versions.js'
+import VersionHistoryDialog from '../../components/app/VersionHistoryDialog.jsx'
 import { useUi } from '../../contexts/UiContext.jsx'
+import { useCanWrite } from '../../contexts/OrgContext.jsx'
+import { dialectForConnectorType } from '../../lib/sqlDialect.js'
 
 // ---------------------------------------------------------------------------
 // Connector type → SQL dialect
 // ---------------------------------------------------------------------------
 
-const CONNECTOR_DIALECT = {
-  postgres: 'postgres',
-  redshift: 'postgres',
-  duckdb: 'duckdb',
-  mysql: 'mysql',
-  mariadb: 'mysql',
-  bigquery: 'bigquery',
-  http_json: 'duckdb',
-  none: 'duckdb',
-}
-
 const DEFAULT_DIALECT = 'duckdb'
 
+// The connector_type → dialect mapping lives in src/lib/sqlDialect.js (shared
+// with SqlEditor). We read the backend's canonical `config.connector_type`
+// field, falling back to legacy `config.type` / `type` for older shapes.
 function datastoreType(ds) {
-  return (ds?.config?.type ?? ds?.type ?? '').toString().toLowerCase()
+  return (
+    ds?.config?.connector_type ??
+    ds?.config?.type ??
+    ds?.type ??
+    ''
+  )
+    .toString()
+    .toLowerCase()
 }
 
+/**
+ * Derive the SQL dialect from the selected connector's type. The built-in
+ * "Demo data" connector (id __demo__, type "demo") runs on DuckDB-WASM, as
+ * does the empty/no-connector case. Unknown types fall back to DuckDB.
+ */
 function dialectForDatastore(datastores, datastoreId) {
-  if (!datastoreId) return DEFAULT_DIALECT
+  if (!datastoreId || datastoreId === DEMO_DATASTORE_ID) return DEFAULT_DIALECT
   const ds = datastores.find(d => d.id === datastoreId)
   if (!ds) return DEFAULT_DIALECT
-  return CONNECTOR_DIALECT[datastoreType(ds)] ?? DEFAULT_DIALECT
+  return dialectForConnectorType(datastoreType(ds))
 }
+
+// Sentinel id of the built-in virtual demo connector (matches the backend).
+const DEMO_DATASTORE_ID = '__demo__'
 
 // ---------------------------------------------------------------------------
 // Extract {{name}} placeholders from SQL text
@@ -619,22 +636,30 @@ function ConnectorPicker({ datastores, value, onChange }) {
         <Database size={12} className="text-primary shrink-0" />
         Connector
       </label>
-      <select
-        id="primary-connector"
-        value={value}
-        onChange={e => onChange(e.target.value)}
-        className="h-7 max-w-[180px] rounded-md border border-border bg-surface text-fg text-xs px-2 focus:outline-none focus:ring-1 focus:ring-ring cursor-pointer transition-colors hover:bg-surface-2"
-        title="Run / bind this query against a connector."
-      >
-        <option value="">Demo data (built-in)</option>
-        {datastores.map(ds => (
-          <option key={ds.id} value={ds.id}>{ds.name ?? ds.id}</option>
-        ))}
-      </select>
-      {!hasDatastores && (
-        <span className="hidden lg:inline text-[10px] text-muted/70">
-          No connectors yet — using demo data
-        </span>
+      {hasDatastores ? (
+        <select
+          id="primary-connector"
+          value={value}
+          onChange={e => onChange(e.target.value)}
+          className="h-7 max-w-[180px] rounded-md border border-border bg-surface text-fg text-xs px-2 focus:outline-none focus:ring-1 focus:ring-ring cursor-pointer transition-colors hover:bg-surface-2"
+          title="Run / bind this query against a connector."
+        >
+          {/* Connectors come from GET /connectors. The built-in "Demo data"
+              connector (id __demo__) is included by the backend ONLY in the
+              org's demo/default project — it is not hardcoded here. */}
+          {datastores.map(ds => (
+            <option key={ds.id} value={ds.id}>{ds.name ?? ds.id}</option>
+          ))}
+        </select>
+      ) : (
+        <Link
+          to="/connectors"
+          className="inline-flex items-center gap-1 h-7 px-2 rounded-md border border-dashed border-border bg-surface text-[11px] text-muted hover:text-fg hover:bg-surface-2 transition-colors"
+          title="This project has no connectors yet — add one"
+        >
+          <Plus size={11} />
+          No connectors yet — add one
+        </Link>
       )}
     </div>
   )
@@ -780,6 +805,7 @@ function ScratchSqlCell({
   onMoveUp,
   onMoveDown,
   datastoreId,
+  dialect,
   registerRunner,
   cellRef,
   onResult,
@@ -923,6 +949,7 @@ function ScratchSqlCell({
               onChange={handleChange}
               onRun={running ? undefined : handleRun}
               height={`${editorH}px`}
+              dialect={dialect}
             />
             {isEmpty && (
               <p className="mt-1.5 text-[11px] text-muted flex items-center gap-1 flex-wrap">
@@ -1057,7 +1084,30 @@ function ScratchPythonCell({ cell, cellNumber, index, total, onRemove, onMoveUp,
 // QueryWorkspace
 // ---------------------------------------------------------------------------
 
-export default function QueryWorkspace({ query, onQueryChange, onSaved, isNew }) {
+// ---------------------------------------------------------------------------
+// WorkspaceToolbar — renders the toolbar into the AppShell topbar slot when
+// available (single-top-bar pattern, like the dashboard editor's portaled
+// toolbar); falls back to an inline bar when no slot exists.
+// ---------------------------------------------------------------------------
+
+function WorkspaceToolbar({ slot, children }) {
+  if (slot) {
+    return createPortal(
+      <div className="flex items-center gap-1.5 w-full min-w-0">{children}</div>,
+      slot
+    )
+  }
+  return (
+    <div className="shrink-0 flex items-center gap-1.5 px-3 py-2 border-b border-border bg-surface-2/60 flex-wrap gap-y-2 min-h-[48px]">
+      {children}
+    </div>
+  )
+}
+
+export default function QueryWorkspace({ query, onQueryChange, onSaved, isNew, toolbarExtra = null }) {
+  const canWrite = useCanWrite()
+  // AppShell topbar slot — the toolbar portals into the single top bar.
+  const { topbarSlot } = useUi()
   // ── PRIMARY cell: SQL / params state (the query of record) ──────────────
   const [sql, setSql] = useState(query?.sql ?? '')
   const [params, setParams] = useState(() => query?.params ?? [])
@@ -1107,13 +1157,25 @@ export default function QueryWorkspace({ query, onQueryChange, onSaved, isNew })
 
   useEffect(() => {
     let alive = true
-    listDatastores().then(ds => { if (alive) setDatastores(Array.isArray(ds) ? ds : []) })
+    listConnectors().then(ds => { if (alive) setDatastores(Array.isArray(ds) ? ds : []) })
     return () => { alive = false }
   }, [])
 
   useEffect(() => {
     setDatastoreId(query?.datastore_id ?? '')
   }, [query?.id]) // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Once connectors load, ensure the selected id maps to a real option so the
+  // picker value and the auto-derived dialect stay in sync. If the query has no
+  // saved connector (or the saved one no longer exists), default to the demo
+  // connector when present, else the first available connector.
+  useEffect(() => {
+    if (datastores.length === 0) return
+    const exists = datastoreId && datastores.some(d => d.id === datastoreId)
+    if (exists) return
+    const demo = datastores.find(d => d.id === DEMO_DATASTORE_ID)
+    setDatastoreId((demo ?? datastores[0]).id)
+  }, [datastores]) // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
     const detected = dialectForDatastore(datastores, datastoreId)
@@ -1139,6 +1201,16 @@ export default function QueryWorkspace({ query, onQueryChange, onSaved, isNew })
   const [scheduleStatus, setScheduleStatus] = useState(null)
   const [scheduledFlow, setScheduledFlow] = useState(null)
 
+  // ── Version history (kind='query', saved queries only) ──────────────────
+  const [historyOpen, setHistoryOpen] = useState(false)
+  // Read-only version view — full version row (incl. config = {sql, params,
+  // datastore_id, ...}) loaded via the history dialog's View action. While
+  // set, the primary editor shows the version's SQL/params read-only under a
+  // banner; the draft (and the editor state) stays untouched.
+  const [viewingVersion, setViewingVersion] = useState(null)
+  const viewing = Boolean(viewingVersion)
+  const viewCfg = viewingVersion?.config ?? {}
+
   // ── AI assist ───────────────────────────────────────────────────────────
   const [showAi, setShowAi] = useState(false)
 
@@ -1151,10 +1223,12 @@ export default function QueryWorkspace({ query, onQueryChange, onSaved, isNew })
   const [runAllLoading, setRunAllLoading] = useState(false)
   const notebookBodyRef = useRef(null)
 
-  // Reset scratch cells when switching the active query of record.
+  // Reset scratch cells (and any read-only version view) when switching the
+  // active query of record.
   useEffect(() => {
     setScratchCells([])
     scratchRunners.current = new Map()
+    setViewingVersion(null)
   }, [query?.id]) // eslint-disable-line react-hooks/exhaustive-deps
 
   // ── Add cells ────────────────────────────────────────────────────────────
@@ -1222,7 +1296,7 @@ export default function QueryWorkspace({ query, onQueryChange, onSaved, isNew })
 
   // ── Run (primary cell / cell_1) ──────────────────────────────────────────
   const handleRun = useCallback(async () => {
-    if (running) return
+    if (running || viewingVersion) return
     setRunning(true)
     setRunError(null)
     setResult(null)
@@ -1272,7 +1346,7 @@ export default function QueryWorkspace({ query, onQueryChange, onSaved, isNew })
     } finally {
       setRunning(false)
     }
-  }, [running, query, isNew, sql, paramValues, params, datastoreId])
+  }, [running, viewingVersion, query, isNew, sql, paramValues, params, datastoreId])
 
   // ── Run all (primary + scratch SQL cells, top to bottom) ────────────────
   const handleRunAll = useCallback(async () => {
@@ -1344,14 +1418,93 @@ export default function QueryWorkspace({ query, onQueryChange, onSaved, isNew })
       })
       setShowSaveDialog(false)
       setTimeout(() => setSaveStatus(null), 2500)
+      return saved
     } catch (err) {
       console.error('[QueryWorkspace] save failed:', err)
       setSaveStatus('err')
       setTimeout(() => setSaveStatus(null), 3000)
+      return null
     } finally {
       setSaving(false)
     }
   }, [sql, params, query, isNew, onSaved, datastoreId])
+
+  // ── Checkpoint — snapshot the saved draft as a new version ───────────────
+  const handleCheckpoint = useCallback(async () => {
+    if (!query?.id || isNew) return
+    const message = window.prompt('Checkpoint message (optional):', '')
+    if (message === null) return // cancelled
+    // The backend snapshots the *persisted* draft — flush the editor state
+    // through the normal save path first so the checkpoint matches the screen.
+    const saved = await doSave(query.name)
+    if (!saved) {
+      window.alert('Save failed — checkpoint aborted.')
+      return
+    }
+    try {
+      const v = await checkpoint('query', query.id, { message: message.trim() || undefined })
+      window.alert(v?.deduped
+        ? `No changes since v${v.version} — the existing version was reused.`
+        : `Created version v${v?.version}.`)
+    } catch (cause) {
+      window.alert(cause?.message || 'Checkpoint failed.')
+    }
+  }, [query, isNew, doSave])
+
+  // ── After a version restore — the backend wrote the pinned config back into
+  //    the persisted queries row; re-read it, load it into the editor, and
+  //    re-register it so runs (by id) execute the restored SQL. ─────────────
+  const handleRestored = useCallback(async () => {
+    if (!query?.id) return
+    try {
+      const row = await get(`/queries/${query.id}`)
+      const cfg = row?.config ?? {}
+      const nextSql = typeof cfg.sql === 'string' ? cfg.sql : ''
+      const nextParams = Array.isArray(cfg.params) ? cfg.params : []
+      const nextDs = cfg.datastore_id ?? ''
+      setSql(nextSql)
+      setParams(nextParams)
+      setDatastoreId(nextDs)
+      const init = {}
+      nextParams.forEach(p => { if (p.default != null) init[p.name] = String(p.default) })
+      setParamValues(init)
+      // Sync the runtime registry so POST /query by id runs the restored SQL.
+      if (nextSql.trim()) {
+        const saved = await registerQuery({
+          id: query.id,
+          name: cfg.name ?? row?.name ?? query.name,
+          sql: nextSql,
+          params: nextParams,
+          ...(nextDs ? { datastore_id: nextDs } : {}),
+        })
+        onSaved?.({
+          ...query,
+          id: saved.id,
+          name: saved.name,
+          sql: saved.sql ?? nextSql,
+          params: saved.params ?? nextParams,
+          datastore_id: saved.datastore_id ?? (nextDs || null),
+          isNew: false,
+        })
+      }
+    } catch (err) {
+      console.warn('[QueryWorkspace] reload after restore failed:', err)
+      window.alert(err?.message || 'Restored, but reloading the query failed — refresh the page.')
+    }
+  }, [query, onSaved])
+
+  // ── Restore the version currently being VIEWED (banner action) ──────────
+  const restoreViewedVersion = useCallback(async () => {
+    if (!query?.id || !viewingVersion) return
+    if (!window.confirm(`Restore version v${viewingVersion.version} into the current draft? Unsaved draft changes are overwritten.`)) return
+    try {
+      await restoreVersion('query', query.id, viewingVersion.version)
+      setViewingVersion(null)
+      await handleRestored()
+    } catch (cause) {
+      window.alert(cause?.message || 'Restore failed.')
+    }
+  }, [query, viewingVersion, handleRestored])
 
   // ── Schedule ─────────────────────────────────────────────────────────────
   const handleScheduleClick = useCallback(() => {
@@ -1441,8 +1594,8 @@ export default function QueryWorkspace({ query, onQueryChange, onSaved, isNew })
   return (
     <div className="flex flex-col h-full overflow-hidden relative">
 
-      {/* ── Top toolbar ──────────────────────────────────────────────────── */}
-      <div className="shrink-0 flex items-center gap-1.5 px-3 py-2 border-b border-border bg-surface-2/60 flex-wrap gap-y-2 min-h-[48px]">
+      {/* ── Top toolbar — portaled into the AppShell top bar when available ── */}
+      <WorkspaceToolbar slot={topbarSlot}>
         <div className="flex items-center gap-2 min-w-0 flex-1">
           <span className="text-sm font-semibold font-display text-fg truncate">
             {query?.name ?? (isNew ? 'New query' : 'Ad-hoc query')}
@@ -1490,15 +1643,41 @@ export default function QueryWorkspace({ query, onQueryChange, onSaved, isNew })
           </button>
         )}
 
-        {/* Schedule */}
+        {/* Schedule — mutating (creates a scheduled flow); writers only */}
+        {canWrite && (
+          <button
+            onClick={handleScheduleClick}
+            disabled={!isRegistered || viewing}
+            className="h-8 px-2.5 flex items-center gap-1.5 text-[11px] font-medium rounded-lg border border-border bg-surface text-muted hover:text-fg hover:bg-surface-2 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+            title={isRegistered ? 'Run this query on a schedule' : 'Save the query first'}
+          >
+            <CalendarClock size={12} />
+            <span className="hidden sm:inline">Schedule</span>
+          </button>
+        )}
+
+        {/* Checkpoint — snapshot the saved draft as a new version; writers only */}
+        {canWrite && (
+          <button
+            onClick={handleCheckpoint}
+            disabled={!isRegistered || saving || viewing}
+            className="h-8 px-2.5 flex items-center gap-1.5 text-[11px] font-medium rounded-lg border border-border bg-surface text-muted hover:text-fg hover:bg-surface-2 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+            title={isRegistered ? 'Checkpoint — snapshot the current draft as a new version' : 'Save the query first'}
+          >
+            <GitCommitHorizontal size={12} />
+            <span className="hidden sm:inline">Checkpoint</span>
+          </button>
+        )}
+
+        {/* Version history — restore / promote checkpointed versions */}
         <button
-          onClick={handleScheduleClick}
+          onClick={() => setHistoryOpen(true)}
           disabled={!isRegistered}
           className="h-8 px-2.5 flex items-center gap-1.5 text-[11px] font-medium rounded-lg border border-border bg-surface text-muted hover:text-fg hover:bg-surface-2 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
-          title={isRegistered ? 'Run this query on a schedule' : 'Save the query first'}
+          title={isRegistered ? 'Version history' : 'Save the query first'}
         >
-          <CalendarClock size={12} />
-          <span className="hidden sm:inline">Schedule</span>
+          <History size={12} />
+          <span className="hidden sm:inline">History</span>
         </button>
 
         {/* View as code / Import */}
@@ -1509,31 +1688,37 @@ export default function QueryWorkspace({ query, onQueryChange, onSaved, isNew })
           query={query}
         />
 
-        {/* Save */}
-        <button
-          onClick={handleSaveClick}
-          disabled={saving}
-          className="h-8 px-2.5 flex items-center gap-1.5 text-[11px] font-medium rounded-lg border border-border bg-surface text-muted hover:text-fg hover:bg-surface-2 disabled:opacity-50 transition-colors"
-          title={isRegistered ? 'Update saved query (primary cell)' : 'Save query (primary cell)'}
-        >
-          {saving ? (
-            <Loader2 size={12} className="animate-spin" />
-          ) : saveStatus === 'ok' ? (
-            <CheckCircle2 size={12} className="text-emerald-500" />
-          ) : saveStatus === 'err' ? (
-            <AlertCircle size={12} className="text-rose-500" />
-          ) : (
-            <Save size={12} />
-          )}
-          <span className="hidden sm:inline">
-            {saving ? 'Saving…' : isRegistered ? 'Update' : 'Save'}
+        {/* Save — mutating (registerQuery); writers only */}
+        {canWrite ? (
+          <button
+            onClick={handleSaveClick}
+            disabled={saving || viewing}
+            className="h-8 px-2.5 flex items-center gap-1.5 text-[11px] font-medium rounded-lg border border-border bg-surface text-muted hover:text-fg hover:bg-surface-2 disabled:opacity-50 transition-colors"
+            title={isRegistered ? 'Update saved query (primary cell)' : 'Save query (primary cell)'}
+          >
+            {saving ? (
+              <Loader2 size={12} className="animate-spin" />
+            ) : saveStatus === 'ok' ? (
+              <CheckCircle2 size={12} className="text-emerald-500" />
+            ) : saveStatus === 'err' ? (
+              <AlertCircle size={12} className="text-rose-500" />
+            ) : (
+              <Save size={12} />
+            )}
+            <span className="hidden sm:inline">
+              {saving ? 'Saving…' : isRegistered ? 'Update' : 'Save'}
+            </span>
+          </button>
+        ) : (
+          <span className="h-8 px-2.5 flex items-center text-[11px] font-medium text-muted/70 select-none" title="Read-only access">
+            Read-only
           </span>
-        </button>
+        )}
 
         {/* Run (primary) */}
         <button
           onClick={handleRun}
-          disabled={running}
+          disabled={running || viewing}
           className="h-8 px-3 flex items-center gap-1.5 text-[11px] font-semibold rounded-lg bg-primary text-primary-fg hover:opacity-90 disabled:opacity-60 disabled:cursor-not-allowed transition-opacity"
           title="Run query (⌘/Ctrl+Enter)"
         >
@@ -1541,10 +1726,39 @@ export default function QueryWorkspace({ query, onQueryChange, onSaved, isNew })
           <span>{running ? 'Running…' : 'Run'}</span>
           <kbd className="hidden sm:inline text-[9px] opacity-50 font-mono ml-0.5">⌘↵</kbd>
         </button>
-      </div>
+
+        {/* Page-level extras (view toggle + side-panel buttons from QueriesPage) */}
+        {toolbarExtra}
+      </WorkspaceToolbar>
 
       {/* ── Scrollable notebook body ─────────────────────────────────────── */}
       <div ref={notebookBodyRef} className="flex-1 min-h-0 overflow-y-auto overflow-x-hidden">
+
+        {/* Read-only version-view banner — the editor below shows the
+            version's SQL/params; the draft is untouched until Restore. */}
+        {viewing && (
+          <div className="flex items-center gap-2 px-4 py-2 bg-sky-500/5 border-b border-sky-500/20 text-xs text-sky-700 dark:text-sky-400">
+            <History size={13} className="shrink-0" />
+            <span className="flex-1 min-w-0 truncate">
+              Viewing <span className="font-mono font-semibold">v{viewingVersion.version}</span> (read-only)
+              {viewingVersion.message ? <span className="text-muted"> — {viewingVersion.message}</span> : null}
+            </span>
+            {canWrite && (
+              <button
+                onClick={restoreViewedVersion}
+                className="shrink-0 px-2 h-6 rounded-md border border-sky-500/30 font-medium hover:bg-sky-500/10 transition-colors"
+              >
+                Restore
+              </button>
+            )}
+            <button
+              onClick={() => setViewingVersion(null)}
+              className="shrink-0 px-2 h-6 rounded-md border border-border text-fg font-medium hover:bg-surface-2 transition-colors"
+            >
+              Back to draft
+            </button>
+          </div>
+        )}
 
         {/* ════ PRIMARY CELL (cell_1 — the saved query of record) ══════════ */}
         <div className="px-3 pt-3">
@@ -1587,8 +1801,29 @@ export default function QueryWorkspace({ query, onQueryChange, onSaved, isNew })
               />
             </div>
 
+            {/* Version-view params — static, read-only */}
+            {viewing && Array.isArray(viewCfg.params) && viewCfg.params.length > 0 && (
+              <div className="px-3 py-2.5 border-b border-border bg-surface-2/40">
+                <p className="text-[10px] font-semibold text-muted uppercase tracking-wider mb-2">
+                  Parameters (v{viewingVersion.version})
+                </p>
+                <div className="flex flex-wrap gap-1.5">
+                  {viewCfg.params.map(p => (
+                    <span
+                      key={p.name}
+                      className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-mono bg-surface border border-border text-muted"
+                    >
+                      {p.name}
+                      <span className="text-muted/60">({p.type ?? 'text'})</span>
+                      {p.default != null && <span className="text-muted/60">= {String(p.default)}</span>}
+                    </span>
+                  ))}
+                </div>
+              </div>
+            )}
+
             {/* Param inputs */}
-            {hasParams && (
+            {!viewing && hasParams && (
               <div className="px-3 py-2.5 border-b border-border bg-surface-2/40">
                 <p className="text-[10px] font-semibold text-muted uppercase tracking-wider mb-2">Parameters</p>
                 <div className="flex flex-wrap gap-3">
@@ -1642,18 +1877,20 @@ export default function QueryWorkspace({ query, onQueryChange, onSaved, isNew })
               </div>
             )}
 
-            {/* SQL editor */}
+            {/* SQL editor — shows the viewed version's SQL read-only while a
+                version view is active; the draft SQL state is untouched. */}
             <div className="px-3 pt-3">
               <SqlEditor
-                value={sql}
-                onChange={handleSqlChange}
-                onRun={handleRun}
+                value={viewing ? (typeof viewCfg.sql === 'string' ? viewCfg.sql : '') : sql}
+                onChange={viewing ? () => {} : handleSqlChange}
+                onRun={viewing ? undefined : handleRun}
                 height={`${editorH}px`}
                 dialect={dialect}
                 onDialectChange={setDialect}
                 dialectHint={dialectHint}
+                readOnly={viewing}
               />
-              {isEmptyPrimary && (
+              {!viewing && isEmptyPrimary && (
                 <p className="mt-1.5 text-[11px] text-muted flex items-center gap-1 flex-wrap">
                   <FileCode2 size={11} className="text-primary/60 shrink-0" />
                   New here? Use the <span className="font-medium text-fg">Templates</span> menu above for starters, or
@@ -1733,6 +1970,7 @@ export default function QueryWorkspace({ query, onQueryChange, onSaved, isNew })
                   index={index}
                   total={scratchCells.length}
                   datastoreId={datastoreId}
+                  dialect={dialect}
                   onSqlChange={(val) => updateCellSql(cell.id, val)}
                   onRemove={() => removeCell(cell.id)}
                   onMoveUp={() => moveCell(cell.id, -1)}
@@ -1820,6 +2058,19 @@ export default function QueryWorkspace({ query, onQueryChange, onSaved, isNew })
           scheduling={scheduling}
           status={scheduleStatus}
           createdFlow={scheduledFlow}
+        />
+      )}
+
+      {/* ── Version history (kind='query', the saved query of record) ───── */}
+      {isRegistered && (
+        <VersionHistoryDialog
+          kind="query"
+          resourceId={query.id}
+          resourceName={query?.name ?? query.id}
+          open={historyOpen}
+          onClose={() => setHistoryOpen(false)}
+          onRestored={handleRestored}
+          onView={setViewingVersion}
         />
       )}
     </div>

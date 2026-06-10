@@ -1,17 +1,26 @@
 /**
- * PricingPage.jsx — customer-facing pricing / upgrade page (src/ee/billing/PricingPage.jsx)
+ * PricingPage.jsx — EE billing page (src/ee/billing/PricingPage.jsx)
  *
  * Slotted into core via 'billing-page' in registerBilling.js.  Mounted by
  * App.jsx at /billing when EE is loaded and useFeature('billing') is true.
  *
- * Layout
- * ------
- * 1. Page header (CreditCard icon, title, subtitle) — matches SettingsPage.jsx.
- * 2. Current plan summary strip (tier badge + seat usage).
- * 3. Monthly/Annual billing toggle.
- * 4. Tier grid — Free · Starter · Pro · Business · Enterprise — via TierCard.
- * 5. Overage rate schedule (collapsible).
- * 6. FxNotice (disclosure + current rate + last-updated timestamp).
+ * Architecture
+ * ------------
+ * All PRESENTATION is delegated to core components in src/components/pricing/:
+ *   - TierCards          → tier grid (OSS-safe; no checkout logic)
+ *   - PricingCalculator  → usage estimator + two-tab competitor comparison
+ *   - BillingToggle      → monthly/annual switch
+ *   - OverageTable       → collapsible overage rate schedule
+ *   - FxDisclosure       → ZAR/USD disclosure block
+ *
+ * EE-SPECIFIC behaviour in this file:
+ *   - fetchBillingStatus() → current tier, seat usage, renewal date
+ *   - fetchBillingTiers()  → live tier list (falls back to FALLBACK_TIERS)
+ *   - fetchFxRate()        → live USD→ZAR rate
+ *   - createCheckout()     → Paystack checkout session
+ *   - openBillingPortal()  → Paystack customer portal
+ *   - CurrentPlanStrip     → shows current plan badge + "Manage billing" link
+ *   - Checkout result banners (success / cancelled URL params)
  *
  * Data flow
  * ---------
@@ -21,11 +30,8 @@
  *
  * All three fetches run in parallel on mount.  If any fail the page degrades:
  *  - Status error → hides current-plan strip, still shows pricing table.
- *  - FX error     → shows reference prices from FALLBACK_TIERS; FxNotice flags fallback.
+ *  - FX error     → shows reference prices from FALLBACK_TIERS; FxDisclosure flags fallback.
  *  - Tiers error  → FALLBACK_TIERS used automatically by fetchBillingTiers().
- *
- * Styling follows SettingsPage.jsx pattern (max-w-5xl for the wider pricing
- * grid, standard header block with gradient icon).
  *
  * OSS degradation: registerBilling.js only calls registerSlot() when this
  * module is loaded, which only happens via the EE dynamic import in ee/index.js.
@@ -36,8 +42,6 @@ import { useEffect, useState, useCallback } from 'react'
 import {
   CreditCard,
   Users,
-  ChevronDown,
-  ChevronUp,
   Loader2,
   CheckCircle,
   AlertCircle,
@@ -50,74 +54,42 @@ import {
   createCheckout,
   openBillingPortal,
   FALLBACK_TIERS,
-  formatZar,
 } from '../../lib/ee/billing.js'
-import TierCard from './TierCard.jsx'
-import FxNotice from './FxNotice.jsx'
-import PricingCalculator from './PricingCalculator.jsx'
+
+// Core pricing components — OSS-safe, no EE imports inside them
+import TierCards from '../../components/pricing/TierCards.jsx'
+import PricingCalculator from '../../components/pricing/PricingCalculator.jsx'
+import { BillingToggle, OverageTable, FxDisclosure, WalletBillingExplainer } from '../../components/pricing/PricingTables.jsx'
 
 // ---------------------------------------------------------------------------
-// Overage rate schedule
-// ---------------------------------------------------------------------------
-
-const OVERAGES = [
-  { metric: 'Storage',            rate: 'R 1.50 / GB-month',       margin: '~84%',  note: 'Available on all paid tiers' },
-  { metric: 'Compute',            rate: 'R 100 / 1,000 CU',        margin: '~77%',  note: 'Starter+' },
-  { metric: 'AI calls',           rate: 'R 5 / call',              margin: '~99%',  note: 'Haiku grounding or Sonnet chat' },
-  { metric: 'Embedded sessions',  rate: 'R 50 / 10,000 sessions',  margin: '~99%',  note: 'Free on Enterprise; near-zero egress cost on R2' },
-  { metric: 'Agent / kernel run', rate: 'R 2 / run',               margin: '~99%',  note: 'Pro+ remote kernel (E2B)' },
-]
-
-function OverageTable() {
-  return (
-    <div className="overflow-x-auto rounded-xl border border-border">
-      <table className="min-w-full text-sm">
-        <thead>
-          <tr className="border-b border-border bg-surface-2">
-            <th className="text-left px-4 py-2.5 font-semibold text-muted text-xs uppercase tracking-wide">Metric</th>
-            <th className="text-left px-4 py-2.5 font-semibold text-muted text-xs uppercase tracking-wide">Rate (ZAR)</th>
-            <th className="text-left px-4 py-2.5 font-semibold text-muted text-xs uppercase tracking-wide hidden sm:table-cell">Notes</th>
-          </tr>
-        </thead>
-        <tbody>
-          {OVERAGES.map((row, i) => (
-            <tr key={row.metric} className={i % 2 === 0 ? 'bg-surface' : 'bg-surface-2'}>
-              <td className="px-4 py-2.5 font-medium text-fg">{row.metric}</td>
-              <td className="px-4 py-2.5 text-fg font-mono">{row.rate}</td>
-              <td className="px-4 py-2.5 text-muted hidden sm:table-cell">{row.notes ?? row.note}</td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
-    </div>
-  )
-}
-
-// ---------------------------------------------------------------------------
-// Current plan strip
+// Tier badge styles (EE-only; the badge is shown in the plan strip)
 // ---------------------------------------------------------------------------
 
 const TIER_LABELS = {
-  free: 'Free',
-  starter: 'Starter',
-  pro: 'Pro',
-  business: 'Business',
-  enterprise: 'Enterprise',
+  free: 'Free', starter: 'Starter', team: 'Team', pro: 'Pro', enterprise: 'Enterprise',
+  // Legacy tier IDs kept for backward compat during migration
+  launch: 'Starter', growth: 'Pro', scale: 'Enterprise',
 }
 
 const TIER_BADGE_STYLES = {
   free:       'bg-surface-2 text-muted',
   starter:    'bg-teal-100 text-teal-700 dark:bg-teal-900/40 dark:text-teal-300',
+  team:       'bg-violet-100 text-violet-700 dark:bg-violet-900/40 dark:text-violet-300',
   pro:        'bg-indigo-100 text-indigo-700 dark:bg-indigo-900/40 dark:text-indigo-300',
-  business:   'bg-violet-100 text-violet-700 dark:bg-violet-900/40 dark:text-violet-300',
   enterprise: 'bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-300',
+  // Legacy
+  launch: 'bg-teal-100 text-teal-700 dark:bg-teal-900/40 dark:text-teal-300',
+  growth: 'bg-indigo-100 text-indigo-700 dark:bg-indigo-900/40 dark:text-indigo-300',
+  scale:  'bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-300',
 }
+
+// ---------------------------------------------------------------------------
+// EE-only: Current plan strip
+// ---------------------------------------------------------------------------
 
 function CurrentPlanStrip({ status, onManage, managing }) {
   const tierLabel = TIER_LABELS[status.tier] ?? status.tier
   const badgeStyle = TIER_BADGE_STYLES[status.tier] ?? TIER_BADGE_STYLES.free
-  // Seats are unlimited on every tier — Nubi has no per-seat pricing.
-  const seatText = 'Unlimited seats'
 
   return (
     <div className="flex flex-wrap items-center gap-3 rounded-xl border border-border bg-surface-2 px-5 py-3">
@@ -126,7 +98,7 @@ function CurrentPlanStrip({ status, onManage, managing }) {
       </span>
       <span className="flex items-center gap-1.5 text-sm text-muted">
         <Users size={13} />
-        {seatText}
+        Unlimited seats
       </span>
       {status.renewal_date && (
         <span className="text-sm text-muted">
@@ -155,43 +127,6 @@ function CurrentPlanStrip({ status, onManage, managing }) {
 }
 
 // ---------------------------------------------------------------------------
-// Billing toggle (monthly / annual)
-// ---------------------------------------------------------------------------
-
-function BillingToggle({ value, onChange }) {
-  return (
-    <div className="flex items-center gap-3 justify-center">
-      <span className={`text-sm font-medium ${value === 'monthly' ? 'text-fg' : 'text-muted'}`}>
-        Monthly
-      </span>
-      <button
-        role="switch"
-        aria-checked={value === 'annual'}
-        onClick={() => onChange(value === 'monthly' ? 'annual' : 'monthly')}
-        className={[
-          'relative inline-flex h-6 w-11 shrink-0 rounded-full border-2 border-transparent transition-colors duration-200',
-          'focus:outline-none focus-visible:ring-2 focus-visible:ring-accent focus-visible:ring-offset-2',
-          value === 'annual' ? 'bg-accent' : 'bg-border',
-        ].join(' ')}
-      >
-        <span
-          className={[
-            'pointer-events-none inline-block h-5 w-5 rounded-full bg-white shadow ring-0 transition-transform duration-200',
-            value === 'annual' ? 'translate-x-5' : 'translate-x-0',
-          ].join(' ')}
-        />
-      </button>
-      <span className={`text-sm font-medium ${value === 'annual' ? 'text-fg' : 'text-muted'}`}>
-        Annual
-        <span className="ml-1.5 inline-flex items-center px-1.5 py-0.5 rounded-full bg-teal-100 text-teal-700 dark:bg-teal-900/30 dark:text-teal-300 text-[10px] font-bold uppercase tracking-wide">
-          2 months free
-        </span>
-      </span>
-    </div>
-  )
-}
-
-// ---------------------------------------------------------------------------
 // PricingPage
 // ---------------------------------------------------------------------------
 
@@ -207,7 +142,6 @@ export default function PricingPage() {
   const [upgradeLoading, setUpgradeLoading]   = useState(null)
   const [upgradeError, setUpgradeError]       = useState(null)
   const [managing, setManaging]               = useState(false)
-  const [showOverages, setShowOverages]       = useState(false)
 
   // URL param feedback (returned from Paystack redirect)
   const params = typeof window !== 'undefined'
@@ -226,9 +160,7 @@ export default function PricingPage() {
     ]).then(([s, t, fx]) => {
       if (cancelled) return
       setStatus(s)
-      if (s === null) {
-        setStatusError('Could not load billing status.')
-      }
+      if (s === null) setStatusError('Could not load billing status.')
       setTiers(t)
       setFxRate(fx.rate)
       setFxUpdatedAt(fx.updated_at)
@@ -239,6 +171,7 @@ export default function PricingPage() {
     return () => { cancelled = true }
   }, [])
 
+  // EE-specific: Paystack checkout
   const handleUpgrade = useCallback(async (tierId) => {
     setUpgradeLoading(tierId)
     setUpgradeError(null)
@@ -251,6 +184,7 @@ export default function PricingPage() {
     }
   }, [])
 
+  // EE-specific: Paystack customer portal
   const handleManage = useCallback(async () => {
     setManaging(true)
     try {
@@ -279,12 +213,12 @@ export default function PricingPage() {
         <div>
           <h1 className="font-display font-semibold text-2xl text-fg">Plans &amp; Billing</h1>
           <p className="text-muted text-sm">
-            Choose the plan that fits your team. All prices in ZAR, converted from USD daily.
+            Flat plan + prepaid usage wallet. Unlimited seats. All prices in ZAR, converted from USD daily.
           </p>
         </div>
       </header>
 
-      {/* Checkout result banners */}
+      {/* Checkout result banners (EE-specific) */}
       {checkoutStatus === 'success' && (
         <div className="flex items-center gap-3 rounded-xl bg-teal-50 dark:bg-teal-900/20 border border-teal-200 dark:border-teal-800 px-4 py-3 text-sm text-teal-800 dark:text-teal-200">
           <CheckCircle size={16} className="shrink-0" />
@@ -306,7 +240,7 @@ export default function PricingPage() {
         </div>
       )}
 
-      {/* Current plan strip */}
+      {/* Current plan strip (EE-specific) */}
       {loadingStatus ? (
         <div className="flex items-center gap-2 text-muted text-sm">
           <Loader2 size={15} className="animate-spin" />
@@ -323,7 +257,7 @@ export default function PricingPage() {
 
       {/* FX rate notice — compact strip above tiers */}
       {fxRate && (
-        <FxNotice
+        <FxDisclosure
           rate={fxRate}
           updatedAt={fxUpdatedAt}
           isFallback={fxFallback}
@@ -331,51 +265,30 @@ export default function PricingPage() {
         />
       )}
 
-      {/* Billing period toggle */}
+      {/* Billing period toggle — core component */}
       <BillingToggle value={billing} onChange={setBilling} />
 
-      {/* Tier grid */}
-      <section aria-label="Pricing tiers">
-        <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-5">
-          {tiers.map((tier) => (
-            <TierCard
-              key={tier.id}
-              tier={tier}
-              fxRate={fxRate}
-              currentTier={currentTier}
-              onUpgrade={handleUpgrade}
-              loading={upgradeLoading}
-              billing={billing}
-            />
-          ))}
-        </div>
-      </section>
+      {/* Tier grid — core component; onUpgrade wires in EE checkout */}
+      <TierCards
+        tiers={tiers}
+        fxRate={fxRate}
+        currentTier={currentTier}
+        billing={billing}
+        onUpgrade={handleUpgrade}
+        loading={upgradeLoading}
+      />
 
-      {/* Overage schedule (collapsible) */}
-      <section>
-        <button
-          onClick={() => setShowOverages((v) => !v)}
-          className="flex items-center gap-2 text-sm font-medium text-muted hover:text-fg transition-colors"
-          aria-expanded={showOverages}
-        >
-          {showOverages ? <ChevronUp size={15} /> : <ChevronDown size={15} />}
-          Overage rate schedule
-        </button>
-        {showOverages && (
-          <div className="mt-3">
-            <OverageTable />
-            <p className="text-xs text-muted mt-2">
-              Overages are billed monthly in arrears. Seats are unlimited at every tier — no per-seat charges.
-            </p>
-          </div>
-        )}
-      </section>
+      {/* How billing works: flat plan + wallet — core component */}
+      <WalletBillingExplainer />
 
-      {/* Pricing calculator — interactive usage estimator + competitor comparison */}
+      {/* Wallet overage schedule — core component */}
+      <OverageTable />
+
+      {/* Pricing calculator — core component with two-tab comparison */}
       <PricingCalculator fxRate={fxRate} />
 
-      {/* FX disclosure notice — full-width, below calculator */}
-      <FxNotice
+      {/* FX disclosure — full-width, below calculator */}
+      <FxDisclosure
         rate={fxRate}
         updatedAt={fxUpdatedAt}
         isFallback={fxFallback}
@@ -383,8 +296,11 @@ export default function PricingPage() {
 
       {/* Footer links */}
       <p className="text-xs text-muted border-t border-border pt-4">
-        All paid plans billed monthly (or annually — 2 months free) in ZAR via Paystack. VAT may apply.
-        Enterprise pricing is custom-quoted — contact{' '}
+        All paid plans (Starter, Team, Pro) billed monthly or annually — 2 months free on annual.
+        Enterprise pricing is custom-quoted and includes a dedicated SLA + named support engineer.
+        Usage overages are debited from your prepaid wallet balance in real-time.
+        All amounts in ZAR, charged via Paystack. VAT may apply.{' '}
+        Contact{' '}
         <a href="mailto:hello@nubi.dev" className="underline hover:text-fg transition-colors">
           hello@nubi.dev
         </a>{' '}

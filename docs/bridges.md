@@ -1,42 +1,46 @@
 # Bridges
 
-A Nubi bridge is a lightweight agent that runs **inside your VPC or on-prem network** and proxies database connections to the Nubi backend via an outbound WebSocket tunnel. This lets you query private databases (not reachable from the public internet) without opening inbound firewall ports.
+![Nubi self-host topology: bridge agent in the VPC, Nubi backend in the cloud](illustration:SelfHostTopology)
+
+A Nubi **bridge** is a lightweight agent that runs inside your VPC or on-prem network and proxies database connections to the Nubi backend over an outbound WebSocket tunnel. Private databases that are not reachable from the public internet can be queried without opening any inbound firewall ports.
 
 ---
 
-## How It Works
+## How it works
 
 ```
-Nubi backend  ←──── WebSocket tunnel ←────  Bridge agent (in your VPC)
-                                                      │
-                                              Private database
-                                             (Postgres, etc.)
+Bridge agent (in your VPC)
+  ↕  outbound WebSocket → wss://<control-plane>/api/v1/bridges/{id}/connect
+Nubi backend (BridgeBroker)
+  ↕  local TCP proxy (127.0.0.1:<ephemeral-port>)
+Connector (Postgres / MySQL / …)
 ```
 
-1. The bridge agent process starts inside your VPC and calls `WS /api/v1/bridges/{id}/connect` on the Nubi backend.
-2. The Nubi backend authenticates the agent using a `token` stored in the bridge's config.
-3. Once the WebSocket is accepted, the backend's `BridgeBroker` registers the connection.
-4. When a query targets a connector with `network_mode="bridge"`, the backend calls `resolve_network_async()`, which opens a local TCP proxy through the bridge agent's tunnel.
-5. The connector receives a `NetworkTarget` pointing at `127.0.0.1:<local-port>` — it connects there as if the database were local.
+1. The bridge agent starts inside your VPC and dials `WS /api/v1/bridges/{id}/connect`, supplying its secret token in the `X-Bridge-Token` header (or `?token=` query param).
+2. The backend validates the token against `bridge.config["token"]`. On success it accepts the WebSocket and marks `status='online'`.
+3. The `BridgeBroker` registers the live WebSocket in an **in-memory registry**. Connections do not persist across backend restarts — the agent must reconnect when the backend restarts.
+4. When a query targets a connector with `network_mode="bridge"`, the backend calls `resolve_network_async()`, which calls `broker.open_tcp_proxy(bridge_id, host, port)`.
+5. `open_tcp_proxy` starts an ephemeral TCP listener on `127.0.0.1` with an OS-assigned port and tunnels every TCP connection through the bridge agent to the target host inside the VPC.
+6. The connector receives a `NetworkTarget(host="127.0.0.1", port=<local>, mode="bridge")` and connects as if the database were local.
+
+If the bridge agent is not connected when a query is made, `open_tcp_proxy` raises `AppError("bridge_not_connected", 503)` and the request fails immediately rather than timing out silently.
 
 ---
 
-## Bridge REST Endpoints
+## REST endpoints
 
-All endpoints require a valid first-party Bearer token. Bridges are org-scoped.
+All CRUD endpoints require a valid first-party Bearer token. Operations are org-scoped — users can only see and manage bridges that belong to their org.
 
-| Method | Path | Description |
-|--------|------|-------------|
-| `POST` | `/api/v1/bridges` | Create a bridge record. Returns 201. |
-| `GET` | `/api/v1/bridges` | List all bridges for the caller's org. |
-| `GET` | `/api/v1/bridges/{id}` | Fetch a single bridge. Returns 404 if not found or wrong org. |
-| `DELETE` | `/api/v1/bridges/{id}` | Delete a bridge. Returns 204. |
-| `POST` | `/api/v1/bridges/{id}/heartbeat` | Update `status='online'` and `last_seen_at`. Bridge agents call this on a regular interval (e.g. every 30 s). |
-| `WS` | `/api/v1/bridges/{id}/connect` | WebSocket endpoint for bridge agents. |
+| Method | Path | Status | Notes |
+|--------|------|--------|-------|
+| `POST` | `/api/v1/bridges` | 201 | Create a bridge record. |
+| `GET` | `/api/v1/bridges` | 200 | List bridges for the caller's org. |
+| `GET` | `/api/v1/bridges/{id}` | 200 / 404 | 404 if not found or wrong org. |
+| `DELETE` | `/api/v1/bridges/{id}` | 204 / 404 | 404 if not found or wrong org. |
+| `POST` | `/api/v1/bridges/{id}/heartbeat` | 200 / 404 | Updates `status='online'` and `last_seen_at`. |
+| `WS` | `/api/v1/bridges/{id}/connect` | — | WebSocket endpoint for the bridge agent. |
 
----
-
-## Bridge Record Shape
+### Bridge record shape
 
 ```json
 {
@@ -45,20 +49,22 @@ All endpoints require a valid first-party Bearer token. Bridges are org-scoped.
   "created_by":   "uuid",
   "name":         "prod-vpc-bridge",
   "status":       "online",
-  "last_seen_at": "2024-01-15T07:00:01+00:00",
+  "last_seen_at": "2026-06-09T07:00:01+00:00",
   "config":       { "token": "secret-agent-token" },
-  "created_at":   "2024-01-14T09:00:00+00:00",
-  "updated_at":   "2024-01-15T07:00:01+00:00"
+  "created_at":   "2026-06-08T09:00:00+00:00",
+  "updated_at":   "2026-06-09T07:00:01+00:00"
 }
 ```
 
-`status` is `"offline"` at creation and transitions to `"online"` when the agent connects or sends a heartbeat.
+`status` is `"offline"` at creation. It transitions to `"online"` when the agent connects via WebSocket or sends a heartbeat. On disconnect, `status` is left unchanged (heartbeat TTL monitoring handles the offline transition in production).
+
+> **Current milestone:** bridges are stored in an in-process in-memory store (backed by a Python dict, not the database). The interface is designed for a mechanical swap to the already-deployed DB `bridges` table (migration 0009); the swap is a pending code change in `backend/app/routes/bridges.py`.
 
 ---
 
-## Setting Up a Bridge
+## Setting up a bridge
 
-### Step 1 — Create the Bridge Record
+### Step 1 — Create the bridge record
 
 ```json
 POST /api/v1/bridges
@@ -72,14 +78,16 @@ Authorization: Bearer <first-party-token>
 }
 ```
 
-Store the returned `id` — the bridge agent needs it.
+Save the returned `id` — the agent needs it.
 
-### Step 2 — Configure the Connector
+### Step 2 — Configure the connector
 
-Create or update a connector with `network_mode="bridge"` and `bridge_id` set to the bridge's UUID:
+Create or update a connector with `network_mode="bridge"` and `bridge_id` pointing at the bridge UUID:
 
 ```json
 POST /api/v1/connectors
+Authorization: Bearer <first-party-token>
+
 {
   "name": "prod-private-postgres",
   "type": "postgres",
@@ -98,85 +106,135 @@ POST /api/v1/connectors
 }
 ```
 
-### Step 3 — Start the Bridge Agent
+Database credentials are stored separately in `connector_secrets` (AES-256-GCM encrypted) and are never mixed with the bridge token. See [Connector security](/docs/connector-security) for details.
 
-Run the bridge agent process inside your VPC, pointing it at the Nubi backend:
+### Step 3 — Start the bridge agent
+
+Run the agent inside the VPC:
 
 ```bash
-# Using the nubi CLI (when bridge agent CLI ships)
-NUBI_API_URL=https://api.example.com \
 BRIDGE_ID=<bridge-uuid> \
 BRIDGE_TOKEN=my-secret-agent-token \
-  nubi bridge-agent start
-
-# Or directly with the Python agent module:
-python -m nubi_bridge.agent \
-  --backend wss://api.example.com/api/v1/bridges/<bridge-uuid>/connect \
-  --token my-secret-agent-token
+CONTROL_PLANE_URL=wss://api.nubi.dev/api/v1 \
+  python -m app.bridges.agent
 ```
 
-The agent connects via WebSocket, authenticates with the token, and is registered with the `BridgeBroker`.
+Optional:
+
+```bash
+BRIDGE_RECONNECT_DELAY=5   # seconds between reconnect attempts (default 5)
+```
+
+The agent connects, authenticates, and is registered with the `BridgeBroker`. It reconnects automatically if the WebSocket drops.
 
 ---
 
-## WebSocket Authentication
+## WebSocket authentication
 
-The bridge agent must supply its secret token in **one** of:
+The agent supplies its token in **one** of:
 
 - `X-Bridge-Token: <token>` request header
 - `?token=<token>` query parameter
 
-The token is validated against `bridge.config["token"]`. If the bridge row does not exist or the token does not match, the WebSocket is closed with code `4401` (unauthorized). A missing bridge row returns `4404`.
+The backend validates the token against `bridge.config["token"]`.
+
+| Condition | WebSocket close code |
+|-----------|----------------------|
+| No token supplied | `4401` |
+| Token does not match | `4401` |
+| Bridge ID not found | `4404` |
+| Token valid | Connection accepted |
 
 ---
 
-## Network Modes
+## Network modes
 
 | Mode | Status | Description |
 |------|--------|-------------|
-| `direct` | Available | Egress goes directly from the Nubi backend to the database. No extra infrastructure needed. |
-| `bridge` | Available | Routes through the Nubi bridge agent via WebSocket TCP proxy. |
+| `direct` | Available | Egress goes directly from the Nubi backend to the database. No extra infrastructure. |
+| `bridge` | Available | Routes through the bridge agent via WebSocket TCP proxy. |
 | `ssh_tunnel` | Planned (501) | SSH tunnel transport — not yet implemented. |
 | `psc` | Planned (501) | GCP Private Service Connect — not yet implemented. |
 | `cloudsql_proxy` | Planned (501) | Cloud SQL Auth Proxy — not yet implemented. |
 
-Requesting an unimplemented mode returns `501 Not Implemented` with a message explaining what infrastructure is required.
+Requesting an unimplemented mode returns `AppError("network_mode_unavailable", 501)` with a message describing what infrastructure is required.
+
+### Sync vs async resolution
+
+`resolve_network()` (sync) always returns `501` for `bridge` mode — it cannot start an async TCP proxy. The actual bridge proxy requires `resolve_network_async()`, which the query route calls. Callers that remain on the sync path will receive a clear `501` error pointing them to the async API.
 
 ---
 
-## Reachability Check
+## BridgeBroker and the TCP proxy protocol
 
-Before opening the TCP proxy, `resolve_network_async()` checks that the bridge agent is currently connected:
+`BridgeBroker` (`app.bridges.broker`) is a module-level singleton that holds the live registry of connected bridge WebSockets.
 
-```python
-if not broker.is_connected(bridge_id):
-    raise AppError(
-        "bridge_not_connected",
-        "Bridge has no connected agent. Start the bridge agent inside the VPC.",
-        501,
-    )
+### Opening a proxy
+
+When `resolve_network_async` needs a connection through a bridge:
+
+1. `broker.open_tcp_proxy(bridge_id, host, port)` is called.
+2. If no agent is registered for `bridge_id`, `AppError("bridge_not_connected", 503)` is raised immediately.
+3. Otherwise, an ephemeral `asyncio` TCP listener starts on `127.0.0.1:<OS-assigned-port>`.
+4. For every inbound TCP connection on that port, the broker allocates a `stream_id`, sends an **OPEN** frame to the agent, and waits up to 10 seconds for a **READY** (or **ERROR**) response.
+5. Once the stream is ready, bytes flow bidirectionally as **DATA** frames until either side closes.
+6. The caller receives `("127.0.0.1", local_port)` and passes it to the connector as a plain `NetworkTarget`.
+
+Cleanup (stopping the TCP listener and sending a **CLOSE** frame) is triggered via `NetworkTarget.cleanup()` after the query completes.
+
+### Binary frame protocol
+
+Every frame is length-prefixed:
+
+```
+[4 bytes big-endian uint32 total_length] [1 byte frame_type] [4 bytes uint32 stream_id] [payload]
 ```
 
-If the agent has disconnected or has not yet started, queries will fail with a clear 501 rather than timing out.
+`total_length` = 5-byte header + payload length (does **not** include the 4-byte prefix itself). On-wire size = `4 + total_length`.
+
+| Type | Value | Direction | Payload |
+|------|-------|-----------|---------|
+| `OPEN` | `0x01` | server → agent | 2-byte big-endian uint16 port + NUL-terminated UTF-8 hostname |
+| `READY` | `0x02` | agent → server | empty |
+| `ERROR` | `0x03` | agent → server | UTF-8 error message |
+| `DATA` | `0x04` | bidirectional | raw bytes |
+| `CLOSE` | `0x05` | bidirectional | empty |
+
+`stream_id` is a 32-bit unsigned integer allocated by the broker; the agent echoes it back in every response frame. `decode_frame` returns `(None, None, None, 0)` on an incomplete buffer and raises `FrameError` on an unknown frame type byte.
+
+### Agent-side behaviour
+
+The `BridgeAgent` (`app.bridges.agent`) processes frames from the control plane:
+
+- **OPEN** — dials `host:port` inside the VPC (10-second timeout), sends **READY** on success or **ERROR** on failure.
+- **DATA** — writes bytes to the matching TCP socket.
+- **CLOSE** — tears down the TCP connection and cancels the pump tasks.
+
+Pump tasks (`tcp_to_ws` and `ws_sender`) run concurrently per stream; a close from either side terminates both.
 
 ---
 
-## BridgeBroker — TCP Proxy Protocol
+## Live connection registry
 
-The `BridgeBroker` (`app.bridges.broker`) manages the collection of connected bridge WebSockets. When a query needs to open a TCP connection through the bridge:
+The `BridgeBroker` registry is **in-memory only** — it is not persisted to the database. This means:
 
-1. `broker.open_tcp_proxy(bridge_id, target_host, target_port)` sends an **OPEN frame** to the bridge agent.
-2. The bridge agent establishes the TCP connection to `target_host:target_port` and responds with a **READY frame** containing a local port.
-3. Data flows as binary frames in both directions (**DATA frames**).
-4. When the query is done, `broker.close_tcp_proxy(local_host, local_port)` sends a **CLOSE frame**.
-
-The connector receives a plain `(host, port)` `NetworkTarget` and is agnostic of the tunnel — it connects to `127.0.0.1:<local-port>` as if the database were local.
+- If the backend process restarts, all bridge agents must reconnect. The agent reconnects automatically (configurable via `BRIDGE_RECONNECT_DELAY`).
+- Multiple backend replicas (e.g. horizontal scaling) each hold their own independent registry. An agent connects to exactly one replica; queries routed to a different replica will not find the agent and will receive `503 bridge_not_connected`.
 
 ---
 
-## Security Notes
+## Security
 
-- The bridge agent token is stored in `bridge.config["token"]` (plain JSON in the `bridges` table). This is intentional: the token is NOT a database credential — it identifies the bridge agent, not a data store. Rotate it by updating the bridge record.
-- The bridge token is checked before the WebSocket handshake is accepted — unauthenticated agents are rejected before any data flows.
-- Bridge IDs are non-secret and stored in `datastores.config` alongside `network_mode`. The actual database credentials remain in `connector_secrets` (AES-256-GCM encrypted).
-- In production, run the bridge agent with limited outbound egress: it only needs to reach the Nubi backend WebSocket URL and the target database host.
+- The bridge token (`bridge.config["token"]`) is stored as plain JSON on the bridge row. It identifies the agent, not a data store, and has no database privileges. Rotate it by updating the bridge record and restarting the agent with the new token.
+- The token is checked before the WebSocket handshake is accepted — unauthenticated agents are rejected before any data flows.
+- `bridge_id` is non-secret and can appear in connector configs. Database passwords remain in `connector_secrets` (AES-256-GCM encrypted, org-scoped).
+- The bridge agent only needs outbound access to the Nubi backend WebSocket URL and the target database host inside the VPC. No inbound ports need to be opened.
+- All bridge CRUD operations enforce org-scoping: attempting to read, delete, or heartbeat a bridge belonging to a different org returns `404` (no information leak).
+
+---
+
+## Related docs
+
+- [Connectors](/docs/connectors) — configuring a connector with `network_mode="bridge"`
+- [Connector security](/docs/connector-security) — secret encryption, key rotation, network mode security
+- [Self-hosting](/docs/self-host) — deploying the Nubi backend

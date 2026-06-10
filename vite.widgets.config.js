@@ -10,8 +10,8 @@
  * - apache-arrow + regl ARE bundled in — the whole point is a single-file
  *   drop-in. Hosts need zero extra imports.
  * - UMD global name: NubiWidgets  (window.NubiWidgets.registerNubiWidgets)
- * - The UMD output is named nubi-widgets.js (no format suffix) so demo.html
- *   can reference it as a plain <script src>.
+ * - The UMD output is named nubi-widgets.js (no format suffix) so the
+ *   examples/widgets-demo page can reference it as a plain <script src>.
  * - Output dir: dist-embed/ (same as the nubi-dashboard bundle, different file).
  *   emptyOutDir: false so both builds can coexist.
  * - Target: es2020 — custom elements require at minimum ES2019.

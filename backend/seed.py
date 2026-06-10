@@ -1,37 +1,33 @@
-"""Seed the superuser, and optionally the comprehensive demo workspace.
+"""Seed the superuser, and optionally automate onboarding + the Demo project.
 
-Mirrors the /auth/register flow: argon2id password hash + a personal org with
-owner membership, so the seeded user can use the editor/boards immediately.
+By default this creates the BARE superuser account only (argon2id hash,
+``is_superadmin = true``) — no org, no project. On first login the superuser
+goes through the exact same /onboarding wizard as every other user (create
+org → "Default" project → optional Demo project).
 
-With ``--demo`` it ALSO materialises the full demo workspace for that user — one
-read-only DuckDB connector + the demo queries + all 10 dashboards — from the
-declarative fixtures in ``seed_data/demo/`` (see ``app/demo_bundle.py``).  New
-projects get only the small ``starter`` subset of those same fixtures, seeded by
-``app/sample.py`` on signup.
+``--demo`` automates that same onboarding flow for local dev and e2e (so a
+reset leaves a ready workspace without clicking through the wizard): it
+creates the personal org + EMPTY "Default" project via the same helper the
+/auth/register flow uses, then the org's deletable "Demo" project (identified
+by ``slug == 'demo'`` — see ``app/onboarding.py``) seeded with the demo
+bundle via the same shared helper used by POST /orgs/{org_id}/demo-project
+and the ``demo_project`` register flag. Nothing is ever seeded into the
+default project; demo content lives only in the Demo project.
 
 Usage:
-    cd backend && DATABASE_URL=postgresql://... python seed.py           # superuser only
-    cd backend && DATABASE_URL=postgresql://... python seed.py --demo    # + full demo
+    cd backend && DATABASE_URL=postgresql://... python seed.py           # bare superuser → onboarding wizard
+    cd backend && DATABASE_URL=postgresql://... python seed.py --demo    # + org/Default/Demo (dev & e2e)
 """
 
 from __future__ import annotations
 
 import asyncio
-import json
 import sys
 import uuid
-from typing import Any
 
 from app.auth.passwords import hash_password
 from app.config import get_settings
 from app.db import close_db, execute, fetchrow, init_db
-from app.demo_bundle import (
-    datastore_config,
-    load_boards,
-    load_queries,
-    resolve_placeholders,
-    sample_db_path,
-)
 from app.routes.auth import _create_personal_org
 
 # Superuser credentials come from the environment (SUPERUSER_* in the root .env),
@@ -41,48 +37,51 @@ TEST_EMAIL = _s.SUPERUSER_EMAIL
 TEST_PASSWORD = _s.SUPERUSER_PASSWORD
 TEST_NAME = _s.SUPERUSER_NAME
 
-DEMO_DS = "demo:datastore:duckdb"
-
 
 async def _ensure_superuser() -> str:
-    """Create the superuser + personal org if absent; return the user id."""
+    """Create the BARE superuser if absent; return the user id.
+
+    No org/project is created here — the superuser goes through the SAME
+    /onboarding wizard as every other user on first login (``--demo``
+    automates that flow via :func:`_ensure_workspace`).
+
+    Always (idempotently) marks the account ``is_superadmin = true`` — the
+    seed script and manual SQL are the ONLY ways to grant superadmin; no API
+    endpoint can set the flag.
+    """
     existing = await fetchrow("SELECT id FROM users WHERE email = $1", TEST_EMAIL)
     if existing is not None:
-        return str(existing["id"])
-    user_id = str(uuid.uuid4())
+        user_id = str(existing["id"])
+    else:
+        user_id = str(uuid.uuid4())
+        await execute(
+            "INSERT INTO users (id, email, password_hash, name, email_verified) "
+            "VALUES ($1, $2, $3, $4, true)",
+            user_id, TEST_EMAIL, hash_password(TEST_PASSWORD), TEST_NAME,
+        )
+    # Idempotent superadmin grant (see 0001_auth.sql header).
     await execute(
-        "INSERT INTO users (id, email, password_hash, name, email_verified) "
-        "VALUES ($1, $2, $3, $4, true)",
-        user_id, TEST_EMAIL, hash_password(TEST_PASSWORD), TEST_NAME,
+        "UPDATE users SET is_superadmin = true WHERE id = $1::uuid", user_id
     )
-    await _create_personal_org(user_id, TEST_NAME, TEST_EMAIL)
     return user_id
 
 
-# ── Idempotent upsert keyed by config.seed_id ─────────────────────────────────
+async def _ensure_workspace(user_id: str) -> None:
+    """Automate the onboarding flow: personal org + EMPTY "Default" project.
 
-async def _upsert(table: str, seed_id: str, org_id: str, created_by: str,
-                  name: str, config: dict[str, Any]) -> tuple[dict[str, Any], bool]:
-    existing = await fetchrow(
-        f"SELECT * FROM {table} WHERE org_id = $1::uuid AND config->>'seed_id' = $2 LIMIT 1",
-        org_id, seed_id,
+    Idempotent — skipped when the user already belongs to an org. Uses the
+    same ``_create_personal_org`` helper as /auth/register so the seeded
+    workspace is byte-for-byte what the wizard would have produced.
+    """
+    member = await fetchrow(
+        "SELECT org_id FROM org_members WHERE user_id = $1::uuid LIMIT 1", user_id
     )
-    if existing is not None:
-        return dict(existing), False
-    from app.repos import projects as projects_repo
-    project_id = await projects_repo.get_default_project_id(org_id)
-    cfg = json.dumps({**config, "seed_id": seed_id})
-    row = await fetchrow(
-        f"INSERT INTO {table} (org_id, created_by, name, config, project_id) "
-        f"VALUES ($1::uuid, $2::uuid, $3, $4::jsonb, $5::uuid) RETURNING *",
-        org_id, created_by, name, cfg, project_id,
-    )
-    assert row is not None
-    return dict(row), True
+    if member is None:
+        await _create_personal_org(user_id, TEST_NAME, TEST_EMAIL, project_name="Default")
 
 
-async def _seed_demo(user_id: str) -> None:
-    """Materialise the full demo workspace (all fixtures) for the superuser org."""
+async def _seed_demo_project(user_id: str) -> None:
+    """Create the superuser org's "Demo" project + demo bundle (idempotent)."""
     org_row = await fetchrow(
         "SELECT org_id FROM org_members WHERE user_id = $1::uuid ORDER BY org_id LIMIT 1",
         user_id,
@@ -90,36 +89,22 @@ async def _seed_demo(user_id: str) -> None:
     assert org_row is not None, "Superuser has no org membership."
     org_id = str(org_row["org_id"])
 
-    # 1. Datasource — one read-only DuckDB connector over the bundled file.
-    db_path = sample_db_path()
-    ds, ds_created = await _upsert("datastores", DEMO_DS, org_id, user_id, "Demo Data",
-                                  datastore_config(db_path))
-    datastore_id = str(ds["id"])
+    from app.onboarding import ensure_demo_project  # noqa: PLC0415
 
-    # 2. Queries (all of them) — build the @placeholder → uuid map.
-    queries = load_queries()
-    idmap: dict[str, str] = {}
-    q_created = 0
-    for key, q in queries.items():
-        row, created = await _upsert(
-            "queries", f"demo:query:{key}", org_id, user_id, q["name"],
-            {"sql": q["sql"], "datastore_id": datastore_id, "params": q["params"]},
-        )
-        idmap[f"@{key}"] = str(row["id"])
-        q_created += int(created)
-
-    # 3. Boards — resolve @placeholders to real query UUIDs.
-    boards = load_boards()
-    b_created = 0
-    for b in boards:
-        spec = resolve_placeholders(b["spec"], idmap)
-        _row, created = await _upsert("boards", b["seed_id"], org_id, user_id, b["name"],
-                                     {"spec": spec})
-        b_created += int(created)
-
-    print(f"  demo datastore [{'CREATED' if ds_created else 'exists '}]  Demo Data ({db_path})")
-    print(f"  demo queries   {q_created} created / {len(queries)} total")
-    print(f"  demo boards    {b_created} created / {len(boards)} total")
+    result = await ensure_demo_project(org_id, user_id)
+    project = result["project"]
+    status = "CREATED" if result["created"] else "exists "
+    seed = result["seed"] or {}
+    if "skipped" in seed:
+        seed_note = f"bundle skipped: {seed['skipped']}"
+    else:
+        seed_note = f"bundle created: {seed.get('created', [])!r}" if seed else "bundle: best-effort failure"
+    envs = seed.get("envs") or {}
+    if envs.get("checkpointed"):
+        seed_note += f"; checkpointed+promoted (dev+prod): {envs['checkpointed']!r}"
+    elif envs.get("skipped"):
+        seed_note += f"; env pinning skipped: {envs['skipped']}"
+    print(f"  demo project   [{status}]  {project.get('name')} ({project.get('id')}) — {seed_note}")
 
 
 async def main() -> None:
@@ -129,7 +114,10 @@ async def main() -> None:
         user_id = await _ensure_superuser()
         print(f"Superuser: {TEST_EMAIL} / {TEST_PASSWORD}")
         if demo:
-            await _seed_demo(user_id)
+            await _ensure_workspace(user_id)
+            await _seed_demo_project(user_id)
+        else:
+            print("  no workspace seeded — superuser will go through /onboarding on first login")
     finally:
         await close_db()
 

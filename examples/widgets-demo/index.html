@@ -1,0 +1,421 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Nubi Widget Kit — Demo (M8-A)</title>
+
+  <!--
+    Standalone demo for the Nubi Widget Kit.
+    =========================================
+    Loads dist-embed/nubi-widgets.js (the UMD bundle built by `npm run build:widgets`).
+    Uses NO live backend — all widgets render via their built-in sample-data fallbacks
+    so the page is visibly working without a running Nubi API.
+
+    To wire a real backend:
+      1. Add   backend="https://your-api.example.com"   to each widget tag.
+      2. Either add   token="<your-jwt>"   or implement a getToken function:
+             window.getToken = async () => { return await yourAuthFlow() }
+         and add   get-token="getToken"   to each widget tag.
+  -->
+
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    :root {
+      --nubi-bg:     #0f1117;
+      --nubi-fg:     #e2e8f0;
+      --nubi-accent: #1e2433;
+      --nubi-border: #2d3748;
+    }
+
+    body {
+      font-family: system-ui, -apple-system, 'Segoe UI', sans-serif;
+      background: #090c14;
+      color: #e2e8f0;
+      min-height: 100vh;
+      padding: 32px 24px 64px;
+    }
+
+    /* ---- page header ---- */
+    .page-header {
+      max-width: 1100px;
+      margin: 0 auto 36px;
+      border-bottom: 1px solid #1e2433;
+      padding-bottom: 24px;
+    }
+
+    .page-header h1 {
+      font-size: 22px;
+      font-weight: 700;
+      letter-spacing: -0.01em;
+      margin-bottom: 6px;
+    }
+
+    .page-header h1 span {
+      color: #6366f1;
+    }
+
+    .page-header p {
+      font-size: 13px;
+      color: #64748b;
+      max-width: 640px;
+    }
+
+    .page-header .pill {
+      display: inline-flex;
+      align-items: center;
+      gap: 5px;
+      font-size: 11px;
+      padding: 3px 9px;
+      border-radius: 20px;
+      background: #422006;
+      color: #fed7aa;
+      margin-top: 10px;
+      font-weight: 600;
+      letter-spacing: 0.04em;
+    }
+
+    /* ---- section headings ---- */
+    .section {
+      max-width: 1100px;
+      margin: 0 auto 40px;
+    }
+
+    .section h2 {
+      font-size: 13px;
+      font-weight: 600;
+      letter-spacing: 0.06em;
+      text-transform: uppercase;
+      color: #64748b;
+      margin-bottom: 14px;
+    }
+
+    /* ---- KPI row ---- */
+    .kpi-row {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+      gap: 16px;
+    }
+
+    nubi-kpi {
+      height: 110px;
+    }
+
+    /* ---- table section ---- */
+    .table-section nubi-table {
+      height: 280px;
+      display: block;
+    }
+
+    /* ---- charts grid ---- */
+    .charts-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(340px, 1fr));
+      gap: 20px;
+    }
+
+    nubi-chart {
+      height: 280px;
+      display: block;
+    }
+
+    /* ---- event log ---- */
+    .event-log {
+      max-width: 1100px;
+      margin: 0 auto;
+    }
+
+    .event-log h2 {
+      font-size: 13px;
+      font-weight: 600;
+      letter-spacing: 0.06em;
+      text-transform: uppercase;
+      color: #64748b;
+      margin-bottom: 10px;
+    }
+
+    #log {
+      background: #0f1117;
+      border: 1px solid #1e2433;
+      border-radius: 8px;
+      padding: 12px 16px;
+      font-family: 'Menlo', 'Consolas', monospace;
+      font-size: 11px;
+      line-height: 1.6;
+      color: #94a3b8;
+      min-height: 80px;
+      max-height: 200px;
+      overflow-y: auto;
+    }
+
+    #log .ready { color: #6ee7b7; }
+    #log .error { color: #fca5a5; }
+
+    /* ---- attribute reference table ---- */
+    .ref-section {
+      max-width: 1100px;
+      margin: 40px auto 0;
+      border-top: 1px solid #1e2433;
+      padding-top: 32px;
+    }
+
+    .ref-section h2 {
+      font-size: 13px;
+      font-weight: 600;
+      letter-spacing: 0.06em;
+      text-transform: uppercase;
+      color: #64748b;
+      margin-bottom: 14px;
+    }
+
+    .ref-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+      gap: 20px;
+    }
+
+    .ref-card {
+      background: #0f1117;
+      border: 1px solid #1e2433;
+      border-radius: 8px;
+      padding: 16px;
+    }
+
+    .ref-card h3 {
+      font-family: 'Menlo', 'Consolas', monospace;
+      font-size: 13px;
+      font-weight: 600;
+      color: #6366f1;
+      margin-bottom: 10px;
+    }
+
+    .ref-card dl {
+      display: grid;
+      grid-template-columns: auto 1fr;
+      gap: 4px 12px;
+      font-size: 11px;
+    }
+
+    .ref-card dt {
+      font-family: 'Menlo', 'Consolas', monospace;
+      color: #a5b4fc;
+      white-space: nowrap;
+    }
+
+    .ref-card dd {
+      color: #94a3b8;
+    }
+
+    .ref-card dd em { color: #e2e8f0; font-style: normal; }
+  </style>
+</head>
+
+<body>
+
+<!-- ===== Page Header ===================================================== -->
+<header class="page-header">
+  <h1>Nubi <span>Widget Kit</span> — M8-A</h1>
+  <p>
+    Declarative custom elements for LLM-authored dashboards.
+    All widgets fetch Arrow data and auto-select SVG vs WebGL by row count.
+    This demo renders entirely from built-in sample data — no backend needed.
+  </p>
+  <div class="pill">&#9673; SAMPLE DATA — preview fallback active</div>
+</header>
+
+<!-- ===== KPI Row ========================================================= -->
+<section class="section">
+  <h2>KPI Cards — &lt;nubi-kpi&gt;</h2>
+  <div class="kpi-row">
+    <nubi-kpi
+      query-id="revenue_total"
+      value-col="revenue"
+      label="Total Revenue"
+      format="currency"
+      get-token="mockGetToken">
+    </nubi-kpi>
+
+    <nubi-kpi
+      query-id="active_users"
+      value-col="count"
+      label="Active Users"
+      format="integer"
+      get-token="mockGetToken">
+    </nubi-kpi>
+
+    <nubi-kpi
+      query-id="conversion_rate"
+      value-col="revenue"
+      label="Sample Metric"
+      format="number"
+      get-token="mockGetToken">
+    </nubi-kpi>
+
+    <nubi-kpi
+      query-id="churn_rate"
+      value-col="value"
+      label="Avg Value"
+      format="number"
+      get-token="mockGetToken">
+    </nubi-kpi>
+  </div>
+</section>
+
+<!-- ===== Table =========================================================== -->
+<section class="section table-section">
+  <h2>Data Table — &lt;nubi-table&gt;</h2>
+  <nubi-table
+    query-id="events_summary"
+    limit="50"
+    get-token="mockGetToken">
+  </nubi-table>
+</section>
+
+<!-- ===== Charts ========================================================== -->
+<section class="section">
+  <h2>Charts — &lt;nubi-chart&gt; (auto SVG · WebGL threshold: 20 000 rows)</h2>
+  <div class="charts-grid">
+
+    <!-- Scatter (sample has 8 rows → SVG path) -->
+    <nubi-chart
+      query-id="scatter_demo"
+      type="scatter"
+      x="x"
+      y="y"
+      color="category"
+      get-token="mockGetToken">
+    </nubi-chart>
+
+    <!-- Line chart -->
+    <nubi-chart
+      query-id="revenue_over_time"
+      type="line"
+      x="id"
+      y="value"
+      get-token="mockGetToken">
+    </nubi-chart>
+
+    <!-- Bar chart -->
+    <nubi-chart
+      query-id="category_counts"
+      type="bar"
+      x="name"
+      y="value"
+      get-token="mockGetToken">
+    </nubi-chart>
+
+  </div>
+</section>
+
+<!-- ===== Event Log ======================================================= -->
+<section class="event-log">
+  <h2>Widget Events</h2>
+  <div id="log"><em style="color:#475569">Waiting for widget events…</em></div>
+</section>
+
+<!-- ===== Attribute Reference ============================================= -->
+<section class="ref-section">
+  <h2>Widget Attribute Reference</h2>
+  <div class="ref-grid">
+
+    <div class="ref-card">
+      <h3>&lt;nubi-kpi&gt;</h3>
+      <dl>
+        <dt>query-id</dt>   <dd><em>required</em> — registered query id</dd>
+        <dt>value-col</dt>  <dd><em>required</em> — column to read metric from</dd>
+        <dt>label</dt>      <dd>display label (default: value-col)</dd>
+        <dt>format</dt>     <dd>number | currency | percent | integer</dd>
+        <dt>token</dt>      <dd>static Bearer JWT</dd>
+        <dt>get-token</dt>  <dd>window function name → Promise&lt;string&gt;</dd>
+        <dt>backend</dt>    <dd>API base URL (default: localhost:8000)</dd>
+      </dl>
+    </div>
+
+    <div class="ref-card">
+      <h3>&lt;nubi-table&gt;</h3>
+      <dl>
+        <dt>query-id</dt>  <dd><em>required</em> — registered query id</dd>
+        <dt>limit</dt>     <dd>max rows displayed (default: 100)</dd>
+        <dt>columns</dt>   <dd>comma-separated column names to show</dd>
+        <dt>token</dt>     <dd>static Bearer JWT</dd>
+        <dt>get-token</dt> <dd>window function name → Promise&lt;string&gt;</dd>
+        <dt>backend</dt>   <dd>API base URL</dd>
+      </dl>
+    </div>
+
+    <div class="ref-card">
+      <h3>&lt;nubi-chart&gt;</h3>
+      <dl>
+        <dt>query-id</dt>  <dd><em>required</em> — registered query id</dd>
+        <dt>type</dt>      <dd>scatter | line | bar (default: scatter)</dd>
+        <dt>x</dt>         <dd><em>required</em> — X axis column name</dd>
+        <dt>y</dt>         <dd><em>required</em> — Y axis column name</dd>
+        <dt>color</dt>     <dd>categorical color column name</dd>
+        <dt>token</dt>     <dd>static Bearer JWT</dd>
+        <dt>get-token</dt> <dd>window function name → Promise&lt;string&gt;</dd>
+        <dt>backend</dt>   <dd>API base URL</dd>
+      </dl>
+      <p style="margin-top:10px;font-size:10px;color:#64748b">
+        Auto-selects WebGL when rows &gt; 20 000 (scatter); SVG otherwise.
+        Falls back to 2D canvas when WebGL is unavailable.
+      </p>
+    </div>
+
+  </div>
+</section>
+
+<!-- ===== Scripts ========================================================= -->
+<script>
+  /**
+   * Mock getToken — returns a non-verifiable fake JWT so the widget's
+   * _resolveToken() path succeeds. The POST to localhost:8000 will fail
+   * (no backend running) and widgets will fall through to sample data.
+   */
+  window.mockGetToken = async function() {
+    // Fake JWT (header.payload.sig) — not a real token, not verified.
+    const header  = btoa(JSON.stringify({ alg: 'HS256', typ: 'JWT' }))
+    const payload = btoa(JSON.stringify({
+      sub: 'demo-user',
+      org: 'demo-org',
+      exp: Math.floor(Date.now() / 1000) + 900,
+      scope: ['read:*'],
+    }))
+    return `${header}.${payload}.demo-sig`
+  }
+</script>
+
+<!--
+  Load the widget bundle built by:  npm run build:widgets
+  Path: ../../dist-embed/nubi-widgets.js  (UMD — auto-calls registerNubiWidgets())
+-->
+<script src="../../dist-embed/nubi-widgets.js"></script>
+
+<script>
+  // ---- Event log ----------------------------------------------------------
+  const log = document.getElementById('log')
+  let logCount = 0
+
+  function appendLog(cls, text) {
+    if (logCount === 0) log.innerHTML = ''
+    logCount++
+    const line = document.createElement('div')
+    line.className = cls
+    line.textContent = `[${new Date().toLocaleTimeString()}] ${text}`
+    log.appendChild(line)
+    log.scrollTop = log.scrollHeight
+  }
+
+  document.addEventListener('nubi:widget-ready', (e) => {
+    const d = e.detail || {}
+    appendLog('ready', `widget-ready on <${e.target.tagName.toLowerCase()}> — rows: ${d.rows}, renderer: ${d.renderer}`)
+  })
+
+  document.addEventListener('nubi:widget-error', (e) => {
+    const d = e.detail || {}
+    appendLog('error', `widget-error on <${e.target.tagName.toLowerCase()}> — ${d.message}`)
+  })
+</script>
+
+</body>
+</html>

@@ -84,8 +84,11 @@ against a tiny in-memory DuckDB database seeded with a ``demo`` table so that
 
 from __future__ import annotations
 
+import logging
+import os
+
 import pyarrow as pa
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Request, Response
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
@@ -134,7 +137,151 @@ _TOKEN_CLAIM_RESERVED_NAMES: frozenset[str] = frozenset(
 
 router = APIRouter(tags=["query"])
 
+logger = logging.getLogger("nubi.query")
+
 _ARROW_STREAM_MEDIA_TYPE = "application/vnd.apache.arrow.stream"
+
+
+# ---------------------------------------------------------------------------
+# Heavy-query pool forwarding (cloud "warehouse machine class")
+# ---------------------------------------------------------------------------
+# One architecture, two machine sizes: a datastore flagged
+# config.query_pool="heavy" gets its cache-MISS queries proxied verbatim to a
+# pool of bigger machines running the SAME image/code (on Fly: the `query`
+# process group, reachable over private networking).  The pool re-verifies the
+# token, re-plans, enforces quota, executes, and meters — this forwarder adds
+# no security or billing surface of its own.
+#
+# Env contract:
+#   NUBI_HEAVY_QUERY_URL  — base URL of the pool (e.g.
+#       "http://query.process.nubi.internal:8000").  Unset → never forward
+#       (self-host / local dev default: everything executes in-process).
+#   NUBI_QUERY_POOL=heavy — set ON the pool machines; short-circuits
+#       forwarding so the pool always executes locally (loop guard #1).
+# Loop guard #2: forwarded requests carry X-Nubi-Forwarded and are never
+# re-forwarded.
+
+
+async def _forward_heavy_query(request: Request, body: "QueryIn"):
+    """Proxy this query to the heavy pool; return the httpx response.
+
+    Returns ``None`` when the query should execute locally instead: no pool
+    configured, this process IS the pool, the request was already forwarded,
+    or the pool is unreachable (fail-open to local execution — the
+    per-connection DuckDB memory limit keeps that safe).  HTTP error
+    responses from the pool (4xx/5xx, e.g. 402 quota_exceeded) are returned
+    for verbatim propagation, NOT treated as fallback — falling back would
+    bypass the pool's quota/plan errors.
+    """
+    if os.getenv("NUBI_QUERY_POOL", "").strip().lower() == "heavy":
+        return None
+    base = os.getenv("NUBI_HEAVY_QUERY_URL", "").strip().rstrip("/")
+    if not base:
+        return None
+    if request.headers.get("x-nubi-forwarded"):
+        return None
+
+    import httpx  # noqa: PLC0415 — lazy: only the forwarding path needs it
+
+    headers: dict[str, str] = {
+        "content-type": "application/json",
+        "x-nubi-forwarded": "1",
+    }
+    # The pool re-runs full auth: forward the bearer token and the Origin
+    # header (embed_origin enforcement happens there too).
+    for h in ("authorization", "origin"):
+        v = request.headers.get(h)
+        if v:
+            headers[h] = v
+
+    try:
+        async with httpx.AsyncClient(
+            timeout=httpx.Timeout(300.0, connect=5.0)
+        ) as client:
+            return await client.post(
+                f"{base}/api/v1/query",
+                content=body.model_dump_json(exclude_none=True),
+                headers=headers,
+            )
+    except Exception:  # noqa: BLE001 — pool down/unreachable → execute locally
+        logger.warning(
+            "heavy-query pool %s unreachable — executing locally", base
+        )
+        return None
+
+# ---------------------------------------------------------------------------
+# Strict environment visibility for embed identities (DECISION 4)
+# ---------------------------------------------------------------------------
+
+
+def _is_uuid_str(value: object) -> bool:
+    """Return True when *value* parses as a uuid (persisted-row id shape)."""
+    import uuid as _uuid  # noqa: PLC0415
+
+    try:
+        _uuid.UUID(str(value))
+    except (ValueError, TypeError, AttributeError):
+        return False
+    return True
+
+
+async def _apply_embed_env_pin(
+    registered: RegisteredQuery,
+    query_id: str,
+    identity: VerifiedIdentity,
+) -> RegisteredQuery:
+    """Resolve the env-pinned definition of a persisted query for embed callers.
+
+    Embed/viewer identities never see drafts in a protected environment:
+
+    - slug-only registry ids (non-uuid — the embed allowlist: ``demo_all``,
+      host-registered slugs, …) pass through UNCHANGED;
+    - persisted queries (uuid ids) resolve through the project's DEFAULT
+      environment: when a version is pinned there, its snapshot ``config``
+      (sql / params / datastore binding) replaces the draft; when the default
+      env is PROTECTED and nothing is pinned, 404 ``not_published`` is raised;
+    - when no project/environment data is resolvable (org-less tokens, test
+      doubles without an env store) the draft is served — the environments
+      layer is optional.
+    """
+    if not _is_uuid_str(query_id):
+        return registered
+    org_id = identity.org
+    if not org_id:
+        return registered
+
+    row = None
+    try:
+        row = await get_repo().get("queries", org_id, str(query_id))
+    except Exception:  # noqa: BLE001 — repo unavailable → draft (best-effort)
+        row = None
+    if row is None:
+        return registered
+
+    from app.environments.store import resolve_default_env_config  # noqa: PLC0415
+
+    # May raise AppError 404 (not_published) when the default env is protected
+    # and the query has no pointer — that propagates to the caller by design.
+    pinned = await resolve_default_env_config(
+        "query", str(row["id"]), row.get("project_id"), org_id
+    )
+    if not pinned or not pinned.get("sql"):
+        return registered
+
+    from app.queries.registry import _params_from_config  # noqa: PLC0415
+
+    datastore_id = pinned.get("datastore_id")
+    return RegisteredQuery(
+        id=registered.id,
+        sql=str(pinned["sql"]),
+        name=str(pinned.get("name") or registered.name),
+        required_scope=registered.required_scope,
+        params=tuple(_params_from_config(pinned.get("params"))),
+        datastore_id=(
+            str(datastore_id) if datastore_id is not None else registered.datastore_id
+        ),
+    )
+
 
 # ---------------------------------------------------------------------------
 # Demo DuckDB connector (module-level singleton, lazily initialised)
@@ -146,28 +293,37 @@ _demo_connector: DuckDBConnector | None = None
 def _get_demo_connector() -> DuckDBConnector:
     """Return (or create) the module-level demo DuckDB connector.
 
-    Seeds a small ``demo`` table on first call.  Subsequent calls return the
-    same connector instance (the table is already registered).
+    Registers the full demo dataset (the 17 tables behind the demo dashboards/
+    queries — retail sales, SaaS metrics, web analytics, finance ops) plus the
+    tiny legacy ``demo`` table, so demo queries run and the Data browser lists
+    every table even on the built-in demo connector. Cached after first call.
     """
     global _demo_connector
     if _demo_connector is None:
-        conn = DuckDBConnector()  # fresh in-memory DB
-
-        demo_table = pa.table(
-            {
-                "id": pa.array([1, 2, 3, 4, 5], type=pa.int32()),
-                "name": pa.array(
-                    ["alpha", "beta", "gamma", "delta", "epsilon"],
-                    type=pa.string(),
-                ),
-                "value": pa.array([1.1, 2.2, 3.3, 4.4, 5.5], type=pa.float64()),
-                "active": pa.array([True, False, True, False, True], type=pa.bool_()),
-            }
-        )
-        conn.register({"demo": demo_table})
-        _demo_connector = conn
-
+        _demo_connector = _build_demo_connector()
     return _demo_connector
+
+
+def _build_demo_connector() -> DuckDBConnector:
+    """Build a DuckDBConnector with all demo tables registered."""
+    from seed_data.generators import build_all_flat  # noqa: PLC0415
+
+    conn = DuckDBConnector()  # fresh in-memory DB
+    tables = build_all_flat()  # the 17 demo-dataset tables
+    # Legacy 5-row ``demo`` table — kept for older fixtures/queries.
+    tables["demo"] = pa.table(
+        {
+            "id": pa.array([1, 2, 3, 4, 5], type=pa.int32()),
+            "name": pa.array(
+                ["alpha", "beta", "gamma", "delta", "epsilon"],
+                type=pa.string(),
+            ),
+            "value": pa.array([1.1, 2.2, 3.3, 4.4, 5.5], type=pa.float64()),
+            "active": pa.array([True, False, True, False, True], type=pa.bool_()),
+        }
+    )
+    conn.register(tables)
+    return conn
 
 
 # ---------------------------------------------------------------------------
@@ -235,6 +391,7 @@ class QueryIn(BaseModel):
 @router.post("/query")
 async def query(
     body: QueryIn,
+    request: Request,
     # verified_identity accepts both first-party HS256 and embed RS256/ES256
     # tokens.  It passes the request Origin header to verify_token so that
     # embed_origin enforcement is automatic — no extra logic needed here.
@@ -337,6 +494,11 @@ async def query(
                 f"This query requires scope: {registered.required_scope}",
                 403,
             )
+        # STRICT ENV VISIBILITY (DECISION 4): persisted queries resolve through
+        # the project's default (protected) environment for embed callers —
+        # pinned snapshot substituted, 404 when unpinned in a protected env,
+        # slug allowlist ids untouched.
+        registered = await _apply_embed_env_pin(registered, body.query_id, identity)
         # Use the server-authorised SQL; ignore body.sql entirely.
         effective_sql = registered.sql
     else:
@@ -506,22 +668,52 @@ async def query(
         registered.datastore_id if registered is not None else None
     )
 
+    # The virtual "Demo data" connector (id "__demo__") is backed by the same
+    # in-process demo connector as the no-datastore path — there is no datastore
+    # row and the dataset is shared across all orgs (never copied).  Normalise
+    # its sentinel id to None so it flows through the built-in demo branch below.
+    from app.routes.connectors import DEMO_CONNECTOR_ID as _DEMO_CONNECTOR_ID
+    if effective_datastore_id == _DEMO_CONNECTOR_ID:
+        effective_datastore_id = None
+
     # ``_net_cleanup`` tears down any ephemeral network proxy (e.g. a bridge
     # reverse-tunnel) opened while resolving the datastore's network_mode.  It
     # defaults to a no-op so the demo path and the direct path can invoke it
     # unconditionally in the finally block around execute().
     _net_cleanup = lambda: None  # noqa: E731
 
-    if effective_datastore_id is not None:
-        # Resolve org_id: embed tokens carry it in the token claim; first-party
-        # tokens require a DB lookup via get_user_org.
-        from app.routes.resources import get_user_org as _get_user_org
+    # ── 2b. Org attribution + usage quota (billing) ──────────────────────────
+    # Resolve the caller's org BEFORE building a connector so (a) the EE quota
+    # checker can gate compute up front and (b) the post-execute metering
+    # event is org-attributable.  Embed tokens carry the org in the token
+    # claim; first-party tokens require a DB lookup.  Demo-path callers
+    # without an org membership keep working (org_id=None → quota allows,
+    # metering logs a warning); the datastore path re-raises the original
+    # lookup error below to preserve its error contract.
+    from app.routes.resources import get_user_org as _get_user_org
 
-        repo = get_repo()
-        if identity.kind == "embed" and identity.org:
-            org_id = identity.org
-        else:
+    repo = get_repo()
+    org_id: str | None
+    _org_lookup_error: Exception | None = None
+    if identity.kind == "embed" and identity.org:
+        org_id = identity.org
+    else:
+        try:
             org_id = await _get_user_org(identity.user_id, repo)
+        except Exception as exc:  # noqa: BLE001 — demo path tolerates no-org callers
+            org_id = None
+            _org_lookup_error = exc
+
+    from app.features import enforce_quota as _enforce_quota
+
+    await _enforce_quota(org_id, "compute_units", amount=1.0)
+
+    # Connector kind for the metering event's ``tier`` dimension.
+    _conn_kind = "demo"
+
+    if effective_datastore_id is not None:
+        if org_id is None and _org_lookup_error is not None:
+            raise _org_lookup_error
 
         ds = await repo.get("datastores", org_id, effective_datastore_id)
         if ds is None:
@@ -531,7 +723,42 @@ async def query(
                 404,
             )
         cfg: dict = dict(ds.get("config") or {})
-        ctype: str | None = cfg.get("type")
+        ctype: str | None = cfg.get("connector_type") or cfg.get("type")
+        _conn_kind = ctype or "unknown"
+
+        # ── Heavy-query pool routing ──────────────────────────────────────────
+        # Datastores flagged query_pool="heavy" execute on the big-machine
+        # pool when one is configured.  Happens BEFORE secret injection /
+        # network resolution so this machine never opens tunnels or builds
+        # connectors for work it won't run.  The pool's Arrow bytes are
+        # cached here under the same content-addressed cache key, so
+        # subsequent identical queries are local HITs.
+        if str(cfg.get("query_pool") or "").strip().lower() == "heavy":
+            # Warehouse execution is tier-gated (EE: Pro+).  Enforced on the
+            # app machine before forwarding AND on the pool itself (this
+            # block runs in both processes — the pool just never forwards).
+            await _enforce_quota(org_id, "warehouse", amount=1.0)
+            _pool_resp = await _forward_heavy_query(request, body)
+            if _pool_resp is not None:
+                if _pool_resp.status_code == 200:
+                    cache.put(physical_plan.cache_key, _pool_resp.content)
+                    return StreamingResponse(
+                        ipc_stream_from_bytes(_pool_resp.content),
+                        media_type=_ARROW_STREAM_MEDIA_TYPE,
+                        headers={
+                            "X-Nubi-Cache": _pool_resp.headers.get(
+                                "x-nubi-cache", "MISS"
+                            ),
+                            "X-Nubi-Pool": "heavy",
+                        },
+                    )
+                # Pool answered with an error (quota 402, plan 400, …):
+                # propagate it verbatim — do NOT fall back to local execution.
+                return Response(
+                    content=_pool_resp.content,
+                    status_code=_pool_resp.status_code,
+                    media_type=_pool_resp.headers.get("content-type"),
+                )
 
         # ── (a) Secret injection (M22-A) ──────────────────────────────────────
         # Fetch the decrypted secret for this datastore (if any) and merge the
@@ -641,15 +868,61 @@ async def query(
                 import duckdb
 
                 _conn = duckdb.connect(database=_db_path, read_only=True)
-                try:
-                    # Defence-in-depth: a read-only file source has no need to
-                    # touch the local FS / network at query time.
-                    _conn.execute("SET enable_external_access=false")
-                except Exception:
-                    pass
+                # Defence-in-depth: a read-only file source has no need to
+                # touch the local FS / network at query time.
+                from app.connectors.duckdb_conn import harden_connection as _harden
+
+                _harden(_conn, disable_external_access=True)
                 connector = factory(_conn)
             else:
-                connector = factory()
+                import duckdb as _duckdb_mem
+
+                _mem_conn = _duckdb_mem.connect(database=":memory:")
+                # Execute view_sql if present (e.g. datasets that register a
+                # Parquet-backed view: CREATE VIEW dataset AS read_parquet(...)).
+                _view_sql: str | None = cfg.get("view_sql")
+                # Multi-table S3 datastores (e.g. the per-project demo) may use
+                # an s3_views dict instead of a view_sql string.
+                if not _view_sql and cfg.get("s3_views"):
+                    try:
+                        from app.routes.data_browser import (  # noqa: PLC0415
+                            _build_view_sql_from_s3_views,
+                        )
+                        _view_sql = _build_view_sql_from_s3_views(cfg["s3_views"])
+                    except Exception:  # noqa: BLE001
+                        _view_sql = None
+                # If the views read from object storage (s3://), httpfs + an S3
+                # SECRET MUST be set up BEFORE the CREATE VIEW statements run —
+                # otherwise read_parquet('s3://...') fails and the views silently
+                # never exist, surfacing later as "Table not found".
+                if (_view_sql and "s3://" in _view_sql) or cfg.get("s3_views"):
+                    try:
+                        from app.connectors.duckdb_conn import setup_s3_httpfs  # noqa: PLC0415
+                        setup_s3_httpfs(_mem_conn, cfg)
+                    except Exception:  # noqa: BLE001
+                        pass
+                if _view_sql:
+                    # view_sql may carry MULTIPLE statements (one CREATE VIEW per
+                    # table for a multi-table S3 datastore) — execute each.
+                    for _stmt in _view_sql.split(";"):
+                        _stmt = _stmt.strip()
+                        if not _stmt:
+                            continue
+                        try:
+                            _mem_conn.execute(_stmt)
+                        except Exception:  # noqa: BLE001
+                            pass
+                # Harden AFTER httpfs/secret setup and view creation
+                # (lock_configuration freezes settings).  Views scan lazily at
+                # query time, so the local filesystem is blocked only when the
+                # datastore reads object storage exclusively — a local-Parquet
+                # view still needs FS reads at scan time.
+                from app.connectors.duckdb_conn import harden_connection as _harden
+
+                _parquet_ref = str(cfg.get("parquet_path") or "")
+                _s3_only = bool(cfg.get("s3_views")) or _parquet_ref.startswith("s3://")
+                _harden(_mem_conn, block_local_fs=_s3_only)
+                connector = factory(_mem_conn)
         elif ctype == "postgres":
             # PostgresConnector takes a DSN string, not a raw config dict.
             # Assemble the DSN from the (now secret-enriched) config dict.
@@ -700,6 +973,9 @@ async def query(
     # For 'direct' mode / the demo path, _net_cleanup is a no-op.  Serialisation
     # runs inside the guard too because a connector may materialise the table
     # lazily and could still touch the tunnel during table_to_ipc_bytes.
+    import time as _time
+
+    _t0 = _time.perf_counter()
     try:
         arrow_table = connector.execute(physical_plan)
 
@@ -710,6 +986,39 @@ async def query(
             _net_cleanup()
         except Exception:  # noqa: BLE001 — cleanup must never mask the query result/error.
             pass
+
+    # ── 5b. Meter the execution (billing: compute_units) ─────────────────────
+    # One event per cache MISS — hits cost no compute and are not metered.
+    # units = compute-seconds (reconcile sums these into compute_units).
+    # On the heavy-query pool (the "warehouse machine class"), CUs are billed
+    # at a multiplier (NUBI_CU_MULTIPLIER, canonical value
+    # ee.billing.tiers.WAREHOUSE_CU_MULTIPLIER) and the event tier carries a
+    # ":warehouse" suffix for observability.
+    # Best-effort: metering must never break the query path.
+    _elapsed_ms = int((_time.perf_counter() - _t0) * 1000)
+    try:
+        from app.compute.metering import record_usage as _record_usage
+
+        _cu_multiplier = 1.0
+        try:
+            _cu_multiplier = max(float(os.getenv("NUBI_CU_MULTIPLIER", "1")), 1.0)
+        except ValueError:
+            pass
+        _meter_tier = _conn_kind
+        if os.getenv("NUBI_QUERY_POOL", "").strip().lower() == "heavy":
+            _meter_tier = f"{_conn_kind}:warehouse"
+
+        await _record_usage(
+            kind="compute",
+            user_id=str(identity.user_id or "embed"),
+            org_id=org_id,
+            units=(_elapsed_ms / 1000.0) * _cu_multiplier,
+            tier=_meter_tier,
+            elapsed_ms=_elapsed_ms,
+            output_bytes=len(full_bytes),
+        )
+    except Exception:  # noqa: BLE001 — telemetry must never break the caller
+        pass
 
     # ── 6. Cache the result ───────────────────────────────────────────────────
     cache.put(physical_plan.cache_key, full_bytes)
@@ -735,15 +1044,30 @@ async def query(
 
 @router.get("/query/registry")
 async def list_query_registry(
+    request: Request,
     identity: VerifiedIdentity = Depends(verified_identity),
 ) -> dict:
-    """Return all registered queries with their declared params.
+    """Return the registered queries visible to the caller.
 
     Auth mirrors the POST /query endpoint: requires a valid verified identity
     (first-party HS256 or embed RS256/ES256) with at least one read scope.
-    The list is the same for all authenticated callers (org-scoped in the sense
-    that registration is server-side and not per-org; a future version could
-    filter by org if per-org query libraries are introduced).
+
+    Scoping (strict isolation — DECISION 3): the registry singleton is
+    process-global, so the raw list spans every org.  The response is scoped
+    to the caller:
+
+    - first-party (kind='access'): entries whose persisted ``queries`` row
+      belongs to the caller's org + active project (``X-Org-Id`` /
+      ``X-Project-Id`` honoured, default project otherwise).  Slug-only
+      registry entries with no persisted row are EXCLUDED — they exist for
+      the embed allowlist, not first-party project browsing.
+    - embed (kind='embed'): entries whose persisted row belongs to the
+      token's org, PLUS slug-only allowlist entries (``demo_all``, host-
+      registered slug ids, …).
+
+    When org/project resolution is unavailable (no org membership, repo
+    without a queries table, org-less embed token) the unfiltered registry is
+    returned — the persistence-free demo path keeps working.
 
     Returns
     -------
@@ -767,8 +1091,40 @@ async def list_query_registry(
         )
 
     registry = get_query_registry()
+    entries = registry.all()
+
+    # ── ORG/PROJECT SCOPING (DECISION 3) ─────────────────────────────────────
+    row_ids: set[str] | None = None
+    include_slug_only = identity.kind == "embed"
+    try:
+        repo = get_repo()
+        if identity.kind == "embed":
+            if identity.org:
+                rows = await repo.list("queries", identity.org)
+                row_ids = {str(r["id"]) for r in rows}
+        else:
+            from app.routes._org import (  # noqa: PLC0415
+                resolve_org_id as _resolve_org_id,
+                resolve_project_filter as _resolve_project_filter,
+            )
+
+            _org_id = await _resolve_org_id(identity.user_id, repo, request)
+            _project_id = await _resolve_project_filter(_org_id, request)
+            rows = await repo.list("queries", _org_id, _project_id)
+            row_ids = {str(r["id"]) for r in rows}
+    except Exception:  # noqa: BLE001 — scoping unavailable → unfiltered list.
+        row_ids = None
+
+    if row_ids is not None:
+        entries = [
+            rq
+            for rq in entries
+            if rq.id in row_ids
+            or (include_slug_only and not _is_uuid_str(rq.id))
+        ]
+
     queries = []
-    for rq in registry.all():
+    for rq in entries:
         queries.append(
             {
                 "id": rq.id,
@@ -812,10 +1168,16 @@ class RegisterQueryIn(BaseModel):
     Attributes
     ----------
     id:
-        Optional stable URL-safe identifier.  When omitted a slug is derived
-        from *name* (lower-cased, spaces→underscores, non-alnum stripped).
-        When provided and a query with that id already exists it is overwritten
-        (upsert behaviour).
+        Optional stable URL-safe identifier.  When omitted the query is
+        persisted into the org's ``queries`` table first (upserting by a slug
+        derived from *name*) and the row uuid becomes the canonical id — the
+        same identifier is used by ``/queries/{id}`` and the versioning
+        endpoints (``/versions/query/{id}``).  When persistence is unavailable
+        the name-slug (lower-cased, spaces→underscores, non-alnum stripped) is
+        used as a memory-only fallback id.  When provided and a query with
+        that id already exists it is overwritten (upsert behaviour); uuid ids
+        upsert the matching ``queries`` row, non-uuid (slug) ids are
+        registry-only.
     name:
         Human-readable label.
     sql:
@@ -845,6 +1207,7 @@ class RegisterQueryIn(BaseModel):
 @router.post("/query/registry", status_code=201)
 async def register_query(
     body: RegisterQueryIn,
+    request: Request,
     identity: VerifiedIdentity = Depends(verified_identity),
 ) -> dict:
     """Register (or update) a query in the runtime QueryRegistry.
@@ -901,17 +1264,15 @@ async def register_query(
     if not body.sql.strip():
         raise _AppError("validation_error", "sql must not be empty.", 400)
 
-    # Derive a stable id from the name when not provided.
-    query_id: str
-    if body.id and body.id.strip():
-        query_id = body.id.strip()
-    else:
-        # slug: lowercase, replace spaces/hyphens with underscores, strip non-alnum_
-        slug = body.name.lower()
-        slug = _re.sub(r"[\s\-]+", "_", slug)
-        slug = _re.sub(r"[^a-z0-9_]", "", slug)
-        slug = slug.strip("_") or "query"
-        query_id = slug
+    # Legacy name-slug: persisted on the row (config.slug) so re-registering
+    # the same name without an id upserts the same row, and used as the
+    # memory-only fallback id when persistence is unavailable.
+    slug = body.name.lower()
+    slug = _re.sub(r"[\s\-]+", "_", slug)
+    slug = _re.sub(r"[^a-z0-9_]", "", slug)
+    slug = slug.strip("_") or "query"
+
+    explicit_id = body.id.strip() if body.id and body.id.strip() else None
 
     # Build the QueryParam list.
     param_objs = [
@@ -932,28 +1293,35 @@ async def register_query(
         else None
     )
 
-    # Register in the in-memory singleton (immediately runnable).
-    registry = get_query_registry()
-    rq = registry.register(
-        id=query_id,
-        sql=body.sql,
-        name=body.name,
-        required_scope=body.required_scope,
-        params=param_objs,
-        datastore_id=datastore_id,
-    )
+    # ── Canonical id + best-effort persistence ───────────────────────────────
+    # The registry id and the persisted ``queries`` row id must be the SAME
+    # identifier end-to-end: the versioning endpoints (/versions/query/{id}),
+    # the resource routes (/queries/{id}), and the startup loader
+    # (``load_persisted_queries`` re-registers rows under their row uuid) all
+    # resolve a query by the row id.  Therefore:
+    #
+    #   - explicit uuid id → upsert the row with that exact id (idempotent);
+    #   - explicit non-uuid (slug) id → registry-only registration (row PKs
+    #     are uuids; this matches the historical Pg behaviour where the
+    #     ``::uuid`` cast made persistence a silent no-op for slug ids — the
+    #     embed-allowlist use case that depends on stable slug ids);
+    #   - no id → persist FIRST (upserting by the name-slug stored in
+    #     ``config.slug`` so re-saving the same name updates the same row) and
+    #     adopt the row uuid as the registry id.  When persistence is
+    #     unavailable, fall back to the legacy name-slug (memory-only).
+    #
+    # The persisted ``config`` carries {sql, name, params, datastore_id} —
+    # exactly the shape ``ensure_persisted_query`` / ``load_persisted_queries``
+    # expect — so the datastore binding is restored on the next boot.  The
+    # whole block is wrapped in a broad try/except so the FakeDB test path and
+    # any DB hiccup never fail the registration (the in-memory registry
+    # mutation below is sufficient for the request to succeed).
+    import uuid as _uuid
 
-    # ── Best-effort persistence into the queries table ──────────────────────
-    # Write the query into the org-scoped ``queries`` resource so it survives a
-    # restart.  The persisted ``config`` carries {sql, name, params, datastore_id}
-    # which is exactly the shape ``ensure_persisted_query`` / ``load_persisted_
-    # queries`` expect — so the datastore binding is restored on the next boot.
-    # This is wrapped in a broad try/except so the in-memory test repo path and
-    # any DB hiccup never fail the registration (the in-memory registry mutation
-    # above is sufficient for the request to succeed).
     config = {
         "sql": body.sql,
         "name": body.name,
+        "slug": slug,
         "datastore_id": datastore_id,
         "params": [
             {
@@ -966,24 +1334,89 @@ async def register_query(
             for p in body.params
         ],
     }
+
+    def _is_uuid(value: str) -> bool:
+        try:
+            _uuid.UUID(value)
+        except (ValueError, TypeError):
+            return False
+        return True
+
+    query_id: str | None = explicit_id
     try:
-        from app.routes.resources import get_user_org as _get_user_org
+        from app.routes._org import (  # noqa: PLC0415
+            get_user_org as _get_user_org,
+            resolve_project_id_for_create as _resolve_project_id_for_create,
+        )
 
         repo = get_repo()
         org_id = await _get_user_org(identity.user_id, repo)
-        existing = await repo.get("queries", org_id, query_id)
-        if existing is not None:
-            await repo.update("queries", org_id, query_id, {"name": body.name, "config": config})
+        # Active project (X-Project-Id / ?project_id=, else the org default):
+        # persisted rows are project-scoped so the registry list can be too.
+        project_id = await _resolve_project_id_for_create(org_id, request)
+
+        if explicit_id is not None:
+            # Explicit id: persist only when it can be a row primary key.
+            if _is_uuid(explicit_id):
+                existing = await repo.get("queries", org_id, explicit_id)
+                if existing is not None:
+                    await repo.update(
+                        "queries",
+                        org_id,
+                        explicit_id,
+                        {"name": body.name, "config": config},
+                    )
+                else:
+                    await repo.create(
+                        resource="queries",
+                        org_id=org_id,
+                        created_by=identity.user_id,
+                        name=body.name,
+                        config=config,
+                        project_id=project_id,
+                        id=explicit_id,
+                    )
         else:
-            await repo.create(
-                resource="queries",
-                org_id=org_id,
-                created_by=identity.user_id,
-                name=body.name,
-                config=config,
-            )
+            # No id given: upsert by name-slug (within the active project),
+            # then adopt the row uuid.
+            existing = None
+            for row in await repo.list("queries", org_id, project_id):
+                if (row.get("config") or {}).get("slug") == slug:
+                    existing = row
+                    break
+            if existing is not None:
+                row_id = str(existing["id"])
+                await repo.update(
+                    "queries", org_id, row_id, {"name": body.name, "config": config}
+                )
+                query_id = row_id
+            else:
+                created = await repo.create(
+                    resource="queries",
+                    org_id=org_id,
+                    created_by=identity.user_id,
+                    name=body.name,
+                    config=config,
+                    project_id=project_id,
+                )
+                query_id = str(created["id"])
     except Exception:  # noqa: BLE001 — persistence is best-effort.
-        pass
+        query_id = explicit_id
+
+    if not query_id:
+        # Persistence unavailable and no explicit id — legacy slug fallback.
+        query_id = slug
+
+    # Register in the in-memory singleton (immediately runnable).
+    registry = get_query_registry()
+    rq = registry.register(
+        id=query_id,
+        sql=body.sql,
+        name=body.name,
+        required_scope=body.required_scope,
+        params=param_objs,
+        datastore_id=datastore_id,
+    )
 
     return {
         "id": rq.id,

@@ -2,7 +2,7 @@
  * Navbar — sticky app shell header.
  *
  * Left:   Logo (links to /)
- * Center: nav links — Docs, Compare, Pricing (scroll), Playground, Editor, Dashboard (auth-only)
+ * Center: nav links — Docs, Compare, Pricing, and Portal (auth-only; the /home app hub)
  * Right:  theme toggle (Sun/Moon) + user menu (avatar+logout) or login/register
  *
  * Responsive: collapses to a hamburger menu on mobile/tablet (< lg).
@@ -20,12 +20,12 @@ import Logo from './Logo.jsx'
 // scrollTo: if set, clicking the link smooth-scrolls to that section ID on the
 //           landing page (or navigates to /#id if not already on /).
 const NAV_LINKS = [
-  { label: 'Docs',       to: '/docs' },
-  { label: 'Compare',    to: '/compare' },
-  { label: 'Pricing',    to: '/pricing' },
-  { label: 'Playground', to: '/playground', authOnly: true },
-  { label: 'Editor',     to: '/editor',     authOnly: true },
-  { label: 'Dashboard',  to: '/dashboard',  authOnly: true },
+  { label: 'Docs',    to: '/docs' },
+  { label: 'Compare', to: '/compare' },
+  { label: 'Pricing', to: '/pricing' },
+  // One entry into the authenticated app (Playground / Editor / Dashboard all
+  // live inside it) — the /home hub.
+  { label: 'Portal',  to: '/home', authOnly: true },
 ]
 
 // ── Theme toggle button ───────────────────────────────────────────────────────
@@ -123,12 +123,12 @@ function UserMenu({ user, logout }) {
               <p className="text-xs text-muted truncate">{user.email}</p>
             </div>
             <Link
-              to="/dashboard"
+              to="/home"
               onClick={() => setOpen(false)}
               className="flex items-center gap-2 px-3 py-2.5 text-sm text-fg hover:bg-surface-2 transition-colors min-h-[44px]"
             >
               <LayoutDashboard size={14} className="text-muted" />
-              Dashboard
+              Portal
             </Link>
             <button
               onClick={handleLogout}
@@ -341,7 +341,7 @@ export default function Navbar() {
                   Signed in as {user.name || user.email}
                 </div>
                 <Link
-                  to="/dashboard"
+                  to="/home"
                   onClick={() => setMobileOpen(false)}
                   className="
                     flex items-center gap-2 px-3 py-3 rounded-lg
@@ -350,7 +350,7 @@ export default function Navbar() {
                   "
                 >
                   <LayoutDashboard size={15} className="text-muted" />
-                  Dashboard
+                  Portal
                 </Link>
                 <button
                   onClick={async () => { setMobileOpen(false); await logout(); navigate('/') }}

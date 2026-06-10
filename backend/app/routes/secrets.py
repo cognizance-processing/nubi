@@ -30,6 +30,7 @@ from fastapi import APIRouter, Depends, Response
 from pydantic import BaseModel
 
 from app.auth.deps import current_user
+from app.auth.roles import require_writer_default
 from app.db import fetchrow
 from app.errors import AppError
 from app.repos.provider import Repo, get_repo
@@ -116,7 +117,7 @@ def _serialize_secret(secret: dict[str, Any]) -> dict[str, Any]:
 # ---------------------------------------------------------------------------
 
 
-@router.post("", status_code=201)
+@router.post("", status_code=201, dependencies=[Depends(require_writer_default)])
 async def set_secret(
     body: SetSecretIn,
     user: dict[str, Any] = Depends(current_user),
@@ -174,7 +175,7 @@ async def list_secrets(
     return [_serialize_secret(s) for s in secrets]
 
 
-@router.delete("/{name}", status_code=204)
+@router.delete("/{name}", status_code=204, dependencies=[Depends(require_writer_default)])
 async def delete_secret(
     name: str,
     user: dict[str, Any] = Depends(current_user),

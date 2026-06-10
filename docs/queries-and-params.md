@@ -1,268 +1,294 @@
-# Queries & Parameters
+# Queries & parameters
 
-Nubi's query endpoint accepts SQL (inline or from the registry) with positional or named parameters and an optional datastore selector. The planner translates it through sqlglot into a `PhysicalPlan`, injects RLS predicates at the AST level, checks the content-addressed cache, then streams Arrow IPC back to the caller.
+The **Queries** workspace is Nubi's SQL IDE. Write SQL against any connector, turn a query into a reusable, parameterized **saved query**, and explore data in a notebook of scratch cells. Saved queries are the building blocks that dashboards, flows, and scheduled reports read from.
 
----
+Open it from the sidebar (route `/queries`).
 
-## Query Endpoint
-
-```
-POST /api/v1/query
-Authorization: Bearer <jwt>
-Content-Type: application/json
-```
-
-### Request Body
-
-```json
-{
-  "sql":          "SELECT region, SUM(revenue) AS total FROM sales WHERE year = $1 GROUP BY 1",
-  "params":       [2024],
-  "query_id":     null,
-  "named_params": null,
-  "datastore_id": null
-}
-```
-
-| Field | Type | Description |
-|-------|------|-------------|
-| `sql` | `string` | Inline SQL SELECT. Ignored for embed-kind tokens — those must use `query_id`. |
-| `params` | `array` | Positional values bound to `$1`, `$2`, … placeholders. |
-| `query_id` | `string \| null` | ID of a registered query. Required for embed tokens; optional for first-party tokens. |
-| `named_params` | `object \| null` | Named values resolved against the registered query's declared `params` list. See [Named Params](#named-params) below. |
-| `datastore_id` | `string \| null` | Routes the query to a specific datastore (org-scoped). Defaults to the built-in DuckDB demo dataset. |
-
-### Response
-
-`Content-Type: application/vnd.apache.arrow.stream`
-
-Arrow IPC stream. The `X-Nubi-Cache` response header is `HIT` or `MISS`.
+![Write SQL and see results instantly in the browser](illustration:QueryWorkspace)
 
 ---
 
-## Positional Parameters
+## The layout
 
-Placeholders use `$N` syntax (1-indexed). The backend rewrites them through sqlglot to the connector's native dialect (`%s` for asyncpg, `?` for DuckDB).
+![The query workspace running a registered query — Monaco SQL editor, results grid, and the registry list on the right](/docs/screenshots/queries-editor.png)
+
+On a desktop screen the page has two parts:
+
+- **Query workspace** (main area) — a notebook-style editor. The top **primary query** cell is your query of record; below it you can add session-only scratch cells.
+- **Queries panel** (right sidebar, toggled from the toolbar) — search, a **New query** button, a **Blend sources** link, and the list of queries (drafts on top, the saved **Registry** below). A view toggle in the toolbar switches the main area between **Editor** and **Rollups** (pre-aggregation candidates).
+
+On smaller screens the Queries panel collapses into a **dropdown** at the top, and the editor and results stack vertically.
+
+> If your role is read-only, you will see a "Read-only access" notice and the **Save**, **New query**, and **Schedule** actions are hidden — you can still browse and run queries.
+
+---
+
+## How the browser kernel works
+
+When you click **Run**, your SQL travels like this:
+
+1. The primary cell sends the query to the server (or, for cross-cell joins, executes entirely in DuckDB-WASM in your browser).
+2. The server planner parses the SQL with sqlglot, injects any RLS predicates at the AST level, and checks the content-hashed edge cache.
+3. Results stream back as **Apache Arrow IPC** over HTTP — no WebSocket, no polling. Arrow's columnar binary format means large result sets arrive and render fast.
+4. The result is registered in the browser's **DuckDB-WASM** engine as `cell_1`, so later scratch cells can query it locally with zero server round-trips.
+
+**Python cells** are different: they run on a metered, scale-to-zero server kernel (not in the browser). Use them for steps SQL cannot express.
+
+---
+
+## Writing SQL
+
+The primary query cell is bordered and badged **Primary query**. Type your SQL into the Monaco editor inside it.
+
+The editor gives you:
+
+- **Syntax highlighting** and a dark/light theme that follows the app.
+- **Autocomplete** for SQL keywords plus the tables and columns it knows about for the selected connector. Press `.` or keep typing to trigger suggestions.
+- **Live validation** — a moment after you stop typing, parse errors appear as red squiggles. Validation is dialect-aware (see [Choosing a dialect](#choosing-a-dialect)).
+
+### Starter templates
+
+Click **Templates** in the editor toolbar to drop a ready-made starter query at your cursor. Options range from a basic `SELECT` to a `GROUP BY` aggregate, date-range filters, multi-select `IN (…)`, a date + filter combo, and a window-function running total. Templates that use parameters show how many `{{param}}` placeholders they introduce.
 
 ```sql
-SELECT date, amount
+SELECT
+  category,
+  COUNT(*)   AS n,
+  SUM(value) AS total
+FROM demo
+GROUP BY category
+ORDER BY n DESC
+```
+
+### Generate SQL with AI
+
+Use the **AI assist** input to describe what you want in plain English — for example, "Show total sales by region for last 30 days" — and Nubi generates SQL into the primary cell, grounded on the real table and column catalog for your selected connector. Click **Open chat** to continue in the full AI chat.
+
+---
+
+## Choosing a connector
+
+Each query runs against a **connector** (a data source you have set up). The **Connector** picker sits on the right of the primary cell's header.
+
+1. Open the **Connector** dropdown.
+2. Pick one of your connectors, or leave it on **Demo data (built-in)** to run against Nubi's bundled DuckDB demo dataset.
+
+If you have not added any connectors yet, the picker shows only **Demo data** with a "No connectors yet" hint. See [Connectors](/docs/connectors) to add real data sources.
+
+### Choosing a dialect
+
+When you pick a connector, Nubi auto-detects the SQL **dialect** for supported connector families (DuckDB, Postgres/Redshift, MySQL/MariaDB, and BigQuery) and shows it in the editor toolbar with a "from \<connector\>" hint. Other connector types (Snowflake, ClickHouse, SQL Server, etc.) default to DuckDB dialect — you can override it from the **Dialect** dropdown. Validation and autocomplete follow that dialect, and Nubi transpiles where needed.
+
+---
+
+## Parameters
+
+Parameters let one saved query serve many cases: a dashboard filter, a per-recipient report value, or a scheduled run input. Declare a parameter by writing its name in double curly braces anywhere in your SQL:
+
+```sql
+SELECT *
 FROM sales
-WHERE year = $1
-  AND region = $2
-ORDER BY date
+WHERE region = {{region}}
+  AND year   = {{year}}
+ORDER BY date DESC
 ```
 
-Params array: `[2024, "EMEA"]`
+As soon as the editor sees `{{region}}` and `{{year}}`, a **Parameters** panel appears above the SQL with one row per parameter.
 
-> Never interpolate user-supplied values into SQL strings. Always use `$N` params — they are bound by the connector driver, not string-concatenated.
+### Parameter types
+
+Each parameter has a **type** that controls the input field and how the value is coerced before the query runs:
+
+| Type | Input rendered | Notes |
+|------|---------------|-------|
+| `text` | Text field | Default type. Value passed as a string. |
+| `number` | Number field | Coerced to a numeric value at run time. |
+| `boolean` | Text field | `"true"` / `"false"` → bound as a boolean. |
+| `date` | Date picker | ISO date string. |
+| `daterange` | Date picker | Start/end pair. |
+| `select` | Text field (or driven by `options_query_id`) | One value from a fixed list. |
+| `multiselect` | Text field | Multiple values; use the `inclause` filter in Jinja templates. |
+
+> The `boolean` type is supported by the planner but the UI currently renders it as a text field — type `true` or `false`.
+
+Set the type by clicking the type label in the Parameters panel row. You can also mark a parameter **required** (red `*`) — submitting the query without that parameter returns an HTTP 400 error instead of silently passing a null.
+
+### Defaults and resolution order
+
+Each parameter can have a **default value**. The placeholder in the input field shows the default when no value has been typed.
+
+Resolution order at run time (first non-null value wins):
+
+1. The value the **caller** supplies (dashboard filter, flow cell override, embed token locked value, or the value you typed in the workspace).
+2. The **default** declared on the parameter.
+3. `null` — allowed only for non-required parameters.
+
+### Values are never string-concatenated
+
+This is the most important safety property of Nubi's parameter system. When the planner resolves `{{region}}` it rewrites the SQL to a positional binding (`$1`, `$2`, …) and passes the value through the connector's parameterized query interface — asyncpg for Postgres, DuckDB's own binding for DuckDB. The raw value is never interpolated into the SQL string at any point. SQL injection via a parameter value is structurally impossible.
+
+The same applies to RLS predicates: they are injected as AST-level `col = value` equality nodes by sqlglot, never by string concatenation.
+
+### Parameter examples
+
+A date-range filter:
+
+```sql
+SELECT order_id, total, created_at
+FROM orders
+WHERE created_at >= {{start_date}}
+  AND created_at <  {{end_date}}
+ORDER BY created_at DESC
+```
+
+Declare `start_date` and `end_date` as type `date`. A dashboard's date-range filter widget can then drive both values.
+
+A select with a nullable "show all" default:
+
+```sql
+SELECT *
+FROM demo
+WHERE (name = {{region}} OR {{region}} IS NULL)
+```
+
+Declare `region` as type `text`, required `false`, default `null`. When `region` is null the `OR {{region}} IS NULL` arm returns all rows — no separate "all" value needed.
+
+A multi-value `IN` filter (Jinja template syntax):
+
+```sql
+SELECT *
+FROM products
+WHERE category IN ({{categories | inclause}})
+```
+
+The `inclause` filter expands a multiselect value into `($1, $2, $3, …)` bound parameters. The values are still bound positionally — never concatenated.
 
 ---
 
-## Named Params
+## Running a query
 
-Registered queries declare typed named parameters using `{{name}}` placeholders in their SQL. The server resolves `{{name}}` to positional `$N` bindings before execution — values are never string-concatenated.
+- Click **Run** in the top toolbar, or press **Cmd/Ctrl + Enter** in the editor, to run the primary cell.
+- The button shows **Running…** while the result streams, then the **Results** grid fills in below.
 
-### `QueryParam` Fields
+Above the grid you will see the **row count**, the **elapsed time** in milliseconds, and a **cache badge** when the result came from cache:
 
-| Field | Type | Description |
-|-------|------|-------------|
-| `name` | `string` | Must match a `{{name}}` placeholder in the SQL. |
-| `type` | `string` | `text` \| `number` \| `date` \| `daterange` \| `select` \| `multiselect` |
-| `default` | `any` | Default value when caller does not supply this param. |
-| `required` | `bool` | `true` → caller must supply a value; missing required param → HTTP 400. |
-| `options_query_id` | `string \| null` | Registered query whose results populate a `select`/`multiselect` option list (used by the frontend). |
+| Badge | Meaning |
+|-------|---------|
+| (none) | Fresh result — a cache miss. |
+| **HIT** | Served from the content-addressed edge cache. Identical query, params, and RLS context as a prior run. |
+| **LOCAL** | Computed in your browser's DuckDB-WASM engine (cross-cell join or local transform). |
+| **SAMPLE** | A sampled/preview result, not the full dataset. |
 
-### Example Registered Query with Named Params
+### How a cache hit works
 
-```json
-{
-  "id": "sales_by_region",
-  "sql": "SELECT date, amount FROM sales WHERE region = {{region}} AND year = {{year}}",
-  "name": "Sales by region",
-  "params": [
-    { "name": "region", "type": "text",   "required": true },
-    { "name": "year",   "type": "number", "default": 2024 }
-  ]
-}
-```
+Every physical plan has a **cache key**: the SHA-256 digest of the canonical JSON of `{sql, params, rls_claims}`. Two runs hit the same cache entry when:
 
-Call it with named params:
+- the final rewritten SQL is identical (same source SQL, same connector dialect, same RLS predicates injected),
+- the positional parameter values are identical, and
+- the RLS `policies` claims in the token are identical.
 
-```json
-POST /api/v1/query
-{
-  "query_id":     "sales_by_region",
-  "named_params": { "region": "EMEA" }
-}
-```
+Token expiry (`exp`), subject (`sub`), and other JWT metadata are excluded from the key, so a token refresh does not bust the cache.
 
-`year` defaults to `2024`; `region` is supplied. The server resolves `{{region}}` → `$1` and `{{year}}` → `$2`, then executes `SELECT date, amount FROM sales WHERE region = $1 AND year = $2` with params `["EMEA", 2024]`.
+### Viewing results
 
-### Security Constraints on Named Params
-
-Token-claim-reserved names cannot be set via `named_params` — the server rejects them with HTTP 400:
-
-```
-policies, user_id, sub, org, org_id, project, roles, scope, iss, aud, exp, iat, embed_origin, kind
-```
-
-Resolution precedence (security-critical): **token/RLS claims > named_params values > query default**.
+Results render in an interactive **data table** with paging (50 rows per page) and a toolbar for sorting and column controls. Query errors show inline in the results area with the message from the server.
 
 ---
 
-## Security: Embed Tokens and the Allowlist Gate
+## Scratch cells — exploring like a notebook
 
-Embed tokens (`kind='embed'`) **cannot execute arbitrary SQL**. They must reference a server-registered query via `query_id`. The registered SQL is used verbatim; any `sql` field in the request body is silently ignored.
+Below the primary query you can add **scratch cells** to explore without touching your saved query. Use the **+ SQL** / **+ Python** buttons in the toolbar, the footer buttons, or hover the divider between cells and click the inline chips.
 
-First-party tokens (`kind='access'`) may run arbitrary SELECT SQL or optionally reference a registered query.
+Each cell has its own Run button (and **Cmd/Ctrl + Enter**), its own results grid, and controls to **collapse**, **move up/down**, and **remove** it. Drag the handle under the editor to resize it.
+
+### Cross-cell data flow
+
+Every cell's result is registered in the browser's DuckDB-WASM engine under a name. The primary query is **`cell_1`**, the first scratch cell is **`cell_2`**, and so on. Click the `#cell_N` badge in a cell header to copy the name. You can then read one cell's output from a later SQL cell:
+
+```sql
+-- cell_3: aggregate the result of cell_2 locally in the browser
+SELECT category, COUNT(*) AS n
+FROM cell_2
+GROUP BY category
+ORDER BY n DESC
+```
+
+This cross-cell join runs entirely in DuckDB-WASM in your browser — no server round-trip, no cold start. Chain a warehouse query into local transforms, pivots, and aggregations freely.
+
+**Python cells** run on an on-demand server kernel for steps SQL cannot express (custom data-wrangling, ML scoring, etc.).
+
+Click **Run all** in the toolbar to run the primary query then every SQL scratch cell, top to bottom.
+
+> Scratch cells are **session-only** — they are not saved. Only the primary query is persisted when you Save.
 
 ---
 
-## Query Registry
+## Saving a query
 
-Registered queries are stored server-side and referenced by `id` or slug. List them:
+Saving turns your primary cell into a reusable, named entry in the query **registry** for the current project.
 
-```
-GET /api/v1/query/registry
-Authorization: Bearer <jwt>
-```
+1. Click **Save** in the top toolbar.
+2. On a new query, a dialog asks for a **name**. Enter one and confirm.
+3. The query moves from **Drafts** into the **Registry** list in the Queries panel, and the toolbar badge changes from **unsaved** to the saved name.
 
-Response:
+For an already-saved query the button reads **Update** and saves in place (no name prompt). What gets saved: the SQL, the parameter declarations (name, type, default, required flag), and the selected connector.
 
-```json
-{
-  "queries": [
-    {
-      "id":             "demo_all",
-      "name":           "Demo — all rows",
-      "required_scope": null,
-      "params":         []
-    },
-    {
-      "id":             "sales_by_region",
-      "name":           "Sales by region",
-      "required_scope": null,
-      "params": [
-        { "name": "region", "type": "text",   "default": null, "required": true,  "options_query_id": null },
-        { "name": "year",   "type": "number", "default": 2024, "required": false, "options_query_id": null }
-      ]
-    }
-  ]
-}
-```
+Drafts (unsaved, ad-hoc queries) live only in your current session — create one any time with **New query**.
 
-### Seeded Demo Queries
+### Query id
 
-| ID | SQL | Description |
-|----|-----|-------------|
-| `demo_all` | `SELECT * FROM demo` | All 5 demo rows |
-| `demo_active` | `SELECT * FROM demo WHERE active = true` | Active rows only |
-| `demo_points_10k` | `generate_series(1, 10000)` | 10 000 synthetic scatter points (`id, x, y, category`) |
-| `demo_points_100k` | `generate_series(1, 100000)` | 100 000 synthetic scatter points |
-| `demo_points_500k` | `generate_series(1, 500000)` | 500 000 synthetic scatter points |
+Every saved query gets a stable **id** (shown in small monospace type under the query name in the Queries panel). This id is how dashboards and flows reference your query — rename it freely without breaking anything that binds to it by id.
 
-### Registering a Query Programmatically
+### View as code / import
 
-```python
-from app.queries.registry import get_query_registry, QueryParam
-
-registry = get_query_registry()
-registry.register(
-    id="revenue_by_month",
-    sql="SELECT month, SUM(revenue) AS total FROM sales WHERE region = {{region}} GROUP BY 1 ORDER BY 1",
-    name="Revenue by month",
-    params=[
-        QueryParam(name="region", type="text", required=True),
-    ],
-)
-```
-
-Or via AI text-to-SQL with `save_as`:
-
-```json
-POST /api/v1/ai/sql
-{
-  "question":   "revenue by month for a given region",
-  "save_as":    "revenue_by_month"
-}
-```
-
-The `{{name}}` placeholders found in the generated SQL are automatically inferred as `QueryParam` descriptors (type `text`, not required, no default).
-
-### `required_scope`
-
-A `RegisteredQuery` can carry a `required_scope` string. When set, the caller must carry that scope (or a wildcard covering it) in addition to the base read scope. Example:
-
-```python
-registry.register(
-    id="admin_audit_log",
-    sql="SELECT * FROM audit_log",
-    name="Admin audit log",
-    required_scope="read:query:admin_audit_log",
-)
-```
-
-Tokens without the required scope receive HTTP 403 when they request this query.
+The **SpecIO** control in the toolbar lets you view the query as a portable spec (SQL + params + connector slug) and apply an imported spec back into the editor — handy for copying a query between environments or version control. See [Git Sync](/docs/git-sync).
 
 ---
 
-## Query Library UI
+## Scheduling a query
 
-The `/queries` route in the frontend lists all registered queries. Each card shows:
+Once a query is saved, click **Schedule** in the toolbar to run it automatically on a schedule (this creates a one-cell flow under the hood).
 
-- The query `id` and `name`
-- The full SQL in a read-only code editor
-- Input fields for each declared `param`
+1. Give the scheduled run a **name**.
+2. Choose **Interval** (e.g. every 6 hours) or **Cron** (a standard 5-field expression like `0 9 * * *` for every day at 09:00). The dialog shows the schedule in plain language as you type.
+3. Current parameter values are captured for each run.
+4. Confirm, then click **Open Automations** to manage it.
 
-Click **Run** to execute the query with the supplied params and see the first 100 rows of the Arrow result inline.
-
----
-
-## Content-Addressed Cache
-
-Every query + params + RLS policy set maps to a SHA-256 cache key:
-
-```
-cache_key = SHA-256(canonical_json({"sql": <rewritten SQL>, "params": [...], "rls": {...policies...}}))
-```
-
-- Keys are sorted, compact JSON — no whitespace.
-- Only `claims.policies` enters the key. `exp`, `sub`, `iat` and other JWT claims are excluded, so token rotation does not blow the cache.
-- N viewers with identical queries and identical RLS context share one cache slot.
-
-The cache is LRU + TTL with a Redis-swappable interface. Cache status is surfaced in `X-Nubi-Cache: HIT | MISS`.
-
-See [Cache-Key Spec](/docs/cache-key-spec) for the full algorithm, test vectors, and Rust pseudocode.
+Scheduled queries are managed on the **Automations** page. For exports and emailed reports, see [Exports & Scheduled Reports](/docs/exports-and-jobs).
 
 ---
 
-## Pushdown Behaviour
+## How saved queries feed dashboards and flows
 
-| Operation | Pushed down if… |
-|-----------|-----------------|
-| Predicate (`WHERE`) | `predicate_pushdown=True` |
-| Projection (`SELECT cols`) | `projection_pushdown=True` |
-| `LIMIT` | implicit for SQL connectors |
-| RLS injection | `predicate_rls=True` (SQL: AST; API connectors: post-fetch) |
+A saved query is referenced everywhere by its **id**:
 
-Operations that cannot be pushed down are applied post-fetch in Python.
+- **Dashboards** — chart, table, KPI, and pivot widgets bind to a saved query by id. Any parameters you declared become dashboard variables and filter inputs viewers can change. See [Dashboards](/docs/dashboards).
+- **Flows** — a SQL cell in a flow can reference a saved query by id and override its named parameters per run, chaining the result into downstream SQL or Python cells. See [Flows](/docs/flows).
+- **Scheduled reports & exports** — recipients receive the query's output as CSV or PDF, with per-recipient locked parameter values. See [Exports & Scheduled Reports](/docs/exports-and-jobs).
+
+Because the id is stable, editing and re-saving a query updates every dashboard and flow that uses it automatically.
 
 ---
 
-## Pre-Aggregations
+## Blending multiple sources
 
-The MCP tool `propose_materialized_view` analyses the query log and returns rollup suggestions:
+Need to join two to four different connectors into one dataset? Click **Blend sources** in the Queries panel (route `/queries/blend`) to open the **Blend Builder**. Pick source queries, write the SQL that merges them, declare any row-level-security key columns that must survive the merge, and optionally set a refresh schedule. Nubi materializes the combined result into a single, cheap-to-read dataset and gives you a query id to bind widgets to.
 
-```json
-[
-  {
-    "base_table":  "sales",
-    "dimensions":  ["region", "month"],
-    "measures":    ["SUM(revenue)"],
-    "hit_count":   42,
-    "bytes_saved": 1048576
-  }
-]
-```
+Blends materialize on a schedule rather than joining live on every view — the same "pay once, read cheap" pattern as [materialized SQL cells in Flows](/docs/flows).
 
-Pre-aggregations collapse the warehouse hit count for high-traffic queries, extending the zero-cost advantage to diverse workloads where the raw content-addressed cache hit rate would otherwise be low.
+---
+
+## Rollups (suggested pre-aggregations)
+
+Switch the toolbar toggle from **Editor** to **Rollups** to see pre-aggregation candidates Nubi mined from your query log, ranked by how often they would help. Build one in a click to accelerate frequently-run aggregate queries. See [Pre-Aggregations](/docs/pre-aggregations) for how mining, building, and transparent routing work.
+
+---
+
+## Tips
+
+- **Cmd/Ctrl + Enter** runs the focused cell — faster than reaching for Run.
+- Declare a parameter the instant you type `{{name}}`; set its type and default before saving so dashboards and schedules get sensible inputs.
+- Use scratch cells to prototype joins and transforms, then fold the final SQL into the primary cell and Save.
+- Watch the **HIT** badge — it means viewers downstream get the same near-instant, near-zero-cost result without re-running the query.
+- Use the search box in the Queries panel to find a query by name or id once your registry grows.
+- A `select` or `multiselect` parameter can set `options_query_id` to another saved query — its results populate the option list automatically.

@@ -29,7 +29,7 @@ import * as arrow from 'apache-arrow'
 import * as duckdb from '@duckdb/duckdb-wasm'
 import { getAccessToken } from './api.js'
 
-const BACKEND_URL = import.meta.env.VITE_BACKEND_URL ?? 'http://localhost:8000'
+const BACKEND_URL = import.meta.env.VITE_BACKEND_URL ?? ''
 
 // ---------------------------------------------------------------------------
 // SAMPLE_TABLE — graceful fallback when backend is unavailable

@@ -15,8 +15,8 @@ Genuinely unlimited embedded viewers at a flat platform fee — the most generou
 
 ## Limitation
 
-Cloud-only; no self-host option. The flat fee starts at $800/month annual — significantly higher than Nubi Starter ($79/month). No in-browser compute: all queries push to the warehouse. No WebGL or Arrow IPC path. The $800/month entry is the lowest cost viable option for embedded analytics but is still 10× Nubi's Starter tier. AI features are limited compared to newer entrants.
+Cloud-only; no self-host option. The flat fee starts at $800/month annual — significantly higher than Nubi's entry tiers (Starter $9/month, Team $49/month). No in-browser compute: all queries push to the warehouse. No WebGL or Arrow IPC path. The $800/month entry is the lowest cost viable option for embedded analytics but is still ~16× Nubi Team ($49/month, 5,000 embedded sessions) or ~5× Nubi Pro ($149/month, 25,000 embedded sessions). AI features are limited compared to newer entrants.
 
 ## Notes
 
-Holistics is the strongest direct competitor for the "unlimited embedded viewers, flat fee" positioning. Nubi Pro at $199/month offers an equivalent unlimited-viewer model at roughly one-fifth the price of Holistics Entry. The key Nubi differentiator is the near-zero marginal cost of browser-side compute at high cache-hit rates; Holistics is all warehouse-pushdown and therefore passes warehouse query costs through to customers. Holistics has a more mature ecosystem and a stronger track record with mid-market ISVs.
+Holistics is the strongest direct competitor for the "unlimited embedded viewers, flat fee" positioning. Nubi Pro at $149/month offers an equivalent unlimited-viewer model at roughly one-fifth the price of Holistics Entry ($800/month annual). The key Nubi differentiator is the near-zero marginal cost of browser-side compute at high cache-hit rates; Holistics is all warehouse-pushdown and therefore passes warehouse query costs through to customers. Holistics has a more mature ecosystem and a stronger track record with mid-market ISVs.

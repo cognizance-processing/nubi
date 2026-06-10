@@ -85,7 +85,7 @@ import MetricWidget from '../dashboards/widgets/MetricWidget.jsx'
 import PivotWidget from '../dashboards/widgets/PivotWidget.jsx'
 import SectionWidget from '../dashboards/widgets/SectionWidget.jsx'
 import ExportShareMenu from '../components/ExportShareMenu.jsx'
-import SpecIO from '../components/SpecIO.jsx'
+import DashboardCodePanel from './DashboardCodePanel.jsx'
 import { VariableProvider } from '../dashboards/VariableStore.jsx'
 import SpecRenderer from '../dashboards/SpecRenderer.jsx'
 import { backgroundToCss, styleToCss } from '../dashboards/widgetHtml.js'
@@ -2428,7 +2428,7 @@ export default function DashboardEditor({ boardId = null, onSaved }) {
         </button>
 
         <div className="hidden sm:block">
-          <SpecIO kind="dashboard" spec={spec} onApply={applySpec} board={savedBoardId} />
+          <DashboardCodePanel kind="dashboard" spec={spec} onApply={applySpec} board={savedBoardId} />
         </div>
 
         <div className="hidden sm:block">

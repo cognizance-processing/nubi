@@ -6,21 +6,31 @@
  *   - Floating node palette (add query / python / agent / noop tasks)
  *   - Drag-to-connect edges (creates needs relationships)
  *   - Click to select → opens NodeInspector drawer
- *   - Toolbar: Validate, Save (create/update), Run
- *   - Calls validateFlow, createFlow/updateFlow, runFlow from flows.js
+ *   - Canvas / Notebook view toggle (the only in-component toolbar)
  *   - Fully responsive: mobile bottom-sheet for palette + inspector
  *
+ * The flow name + Validate/Save/Run/Code actions, the Builder/Runs switcher
+ * and the notebook controls (add-cell / Lineage / plan-gated Run all) live in
+ * the app top bar — FlowsPage portals them there (mirrors the dashboard
+ * editor). This component only owns the canvas, the notebook body, and the
+ * code panel (whose visibility is controlled by the `codeOpen` prop). Saving
+ * (manual + autosave) is owned by FlowsPage.
+ *
  * Props:
- *   flow        {object|null}   — existing flow row (null for new)
- *   spec        {object}        — current FlowSpec (controlled)
- *   onSpecChange {Function}     — called with updated spec on every edit
- *   onSaved     {Function}      — called with saved flow row after create/update
- *   onRun       {Function}      — called with { flowRun, runId } after triggering
+ *   flow           {object|null}  — existing flow row (null for new)
+ *   spec           {object}       — current FlowSpec (controlled)
+ *   onSpecChange   {Function}     — called with updated spec on every edit
+ *   onRun          {Function}     — passed through to NotebookView
+ *   env            {string}       — run environment; passed to NotebookView
+ *   lineageOpen    {boolean}      — notebook lineage panel visibility (top-bar toggle)
+ *   onLineageClose {Function}     — passed to NotebookView's lineage panel
+ *   codeOpen       {boolean}      — whether the Python code panel is shown
+ *   onCodeClose    {Function}     — called to dismiss the code panel
  */
 
 import 'reactflow/dist/style.css'
 
-import { useState, useCallback, useMemo, useRef, useEffect } from 'react'
+import { useState, useCallback, useMemo, useRef, useEffect, forwardRef, useImperativeHandle } from 'react'
 import ReactFlow, {
   Background,
   BackgroundVariant,
@@ -33,33 +43,19 @@ import ReactFlow, {
 } from 'reactflow'
 
 import {
-  Play,
-  Save,
-  ShieldCheck,
   Plus,
-  AlertCircle,
-  CheckCircle2,
-  Loader2,
-  Code2,
-  Database,
-  Bot,
-  Zap,
   X,
-  Layers,
   SlidersHorizontal,
-  ChevronDown,
-  FolderInput,
-  Upload,
-  GitBranch,
-  GitMerge,
 } from 'lucide-react'
 
-import { validateFlow, createFlow, updateFlow, runFlow } from '../lib/flows.js'
 import { specToGraph, graphToSpec } from './specGraph.js'
+import NotebookView from './NotebookView.jsx'
 import TaskNode from './nodes/TaskNode.jsx'
 import MapGroupNode from './nodes/MapGroupNode.jsx'
 import BranchNode from './nodes/BranchNode.jsx'
 import NodeInspector from './NodeInspector.jsx'
+import CodePanel from './CodePanel.jsx'
+import { AddTaskPanel } from './AddTaskPanel.jsx'
 
 // ---------------------------------------------------------------------------
 // Node types registration (must be stable — defined outside component)
@@ -71,20 +67,6 @@ const NODE_TYPES = {
   branchNode: BranchNode,
 }
 
-// ---------------------------------------------------------------------------
-// Palette item definitions
-// ---------------------------------------------------------------------------
-
-const PALETTE_ITEMS = [
-  { kind: 'query',       label: 'Query',       Icon: Database,    color: 'text-blue-500',    defaultConfig: { query_id: '' } },
-  { kind: 'python',      label: 'Python',      Icon: Code2,       color: 'text-violet-500',  defaultConfig: { code: '# Write your task code here\nresult = {}' } },
-  { kind: 'agent',       label: 'Agent',       Icon: Bot,         color: 'text-emerald-500', defaultConfig: { prompt: '', max_steps: 4 } },
-  { kind: 'extract',     label: 'Extract',     Icon: FolderInput, color: 'text-sky-500',     defaultConfig: { source_uri: '', dest_uri: '', secret: '', format: 'auto' } },
-  { kind: 'bucket_load', label: 'Bucket load', Icon: Upload,      color: 'text-orange-500',  defaultConfig: { uri: '', secret: '', format: 'parquet', source: '' } },
-  { kind: 'noop',        label: 'Noop',        Icon: Zap,         color: 'text-slate-400',   defaultConfig: {} },
-  { kind: 'map',         label: 'Map (fan-out)', Icon: GitBranch,  color: 'text-indigo-500',  defaultConfig: { item_expr: '', item_var: 'item', max_concurrency: 0, max_map_size: 1000, collect_key: '', body: [] } },
-  { kind: 'branch',      label: 'Branch',      Icon: GitMerge,    color: 'text-amber-500',   defaultConfig: { conditions: [], default: [] } },
-]
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -102,13 +84,17 @@ const KIND_TO_NODE_TYPE = {
   branch: 'branchNode',
 }
 
-function makeTaskNode(kind, position, defaultConfig) {
+function makeTaskNode(kind, position, defaultConfig, cellType) {
   const key = genKey(kind)
   const nodeType = KIND_TO_NODE_TYPE[kind] ?? 'taskNode'
   const baseData = {
     task: {
       key,
       kind,
+      // Stamp the user-facing cell type ('sql' | 'python' | 'markdown') so the
+      // notebook/canvas render the cell correctly. Falls back to inferring from
+      // kind for legacy/programmatic callers that don't pass one.
+      cell_type: cellType ?? (kind === 'python' ? 'python' : kind === 'noop' ? 'markdown' : 'sql'),
       needs: [],
       config: defaultConfig,
       retries: 0,
@@ -133,64 +119,11 @@ function makeTaskNode(kind, position, defaultConfig) {
 }
 
 // ---------------------------------------------------------------------------
-// ValidationBanner
-// ---------------------------------------------------------------------------
-
-function ValidationBanner({ issues, onClose }) {
-  if (!issues) return null
-  const valid = issues.length === 0
-  return (
-    <div
-      className={[
-        'flex items-start gap-2 px-4 py-2.5 text-xs border-b',
-        valid
-          ? 'bg-green-500/5 border-green-500/20 text-green-700 dark:text-green-400'
-          : 'bg-rose-500/5 border-rose-500/20 text-rose-700 dark:text-rose-400',
-      ].join(' ')}
-    >
-      {valid
-        ? <CheckCircle2 size={14} className="shrink-0 mt-0.5" />
-        : <AlertCircle size={14} className="shrink-0 mt-0.5" />
-      }
-      <div className="flex-1">
-        {valid
-          ? 'Flow spec is valid.'
-          : <><strong>Validation issues:</strong><ul className="mt-1 space-y-0.5 list-disc list-inside">{issues.map((i, idx) => <li key={idx}>{i}</li>)}</ul></>
-        }
-      </div>
-      <button onClick={onClose} className="shrink-0 opacity-60 hover:opacity-100 transition-opacity">
-        <X size={13} />
-      </button>
-    </div>
-  )
-}
-
-// ---------------------------------------------------------------------------
 // NodePaletteDesktop — floating Panel inside ReactFlow (desktop only)
 // ---------------------------------------------------------------------------
 
-function NodePaletteDesktop({ onAdd }) {
-  return (
-    <Panel position="top-left">
-      <div className="bg-surface border border-border rounded-xl shadow-lg p-2 space-y-1 min-w-[130px]">
-        <p className="text-[10px] font-semibold text-muted/70 uppercase tracking-widest px-1 pb-1">Add task</p>
-        {PALETTE_ITEMS.map((item) => {
-          const ItemIcon = item.Icon
-          return (
-            <button
-              key={item.kind}
-              onClick={() => onAdd(item.kind, item.defaultConfig)}
-              className="w-full flex items-center gap-2.5 px-2.5 py-2 rounded-lg text-xs font-medium text-fg hover:bg-surface-2 transition-colors group"
-            >
-              <ItemIcon size={14} className={[item.color, 'shrink-0'].join(' ')} />
-              <span className="flex-1 text-left">{item.label}</span>
-            </button>
-          )
-        })}
-      </div>
-    </Panel>
-  )
-}
+// (The desktop "Add task" palette now lives in the FlowsPage shared RHS sidebar;
+// see src/flows/AddTaskPanel.jsx and FlowBuilder's imperative `addNode` handle.)
 
 // ---------------------------------------------------------------------------
 // MobileBottomSheet — shared bottom sheet wrapper
@@ -249,20 +182,8 @@ function MobileBottomSheet({ open, onClose, title, children }) {
 function MobilePaletteSheet({ open, onClose, onAdd }) {
   return (
     <MobileBottomSheet open={open} onClose={onClose} title="Add task">
-      <div className="px-4 py-3 space-y-1">
-        {PALETTE_ITEMS.map((item) => {
-          const ItemIcon = item.Icon
-          return (
-            <button
-              key={item.kind}
-              onClick={() => { onAdd(item.kind, item.defaultConfig); onClose() }}
-              className="w-full flex items-center gap-3 px-3 py-3.5 rounded-xl text-sm font-medium text-fg hover:bg-surface-2 active:bg-surface-2 transition-colors min-h-[52px]"
-            >
-              <ItemIcon size={18} className={[item.color, 'shrink-0'].join(' ')} />
-              <span className="flex-1 text-left">{item.label}</span>
-            </button>
-          )
-        })}
+      <div className="px-2 py-1">
+        <AddTaskPanel onAdd={(kind, config, cellType) => { onAdd(kind, config, cellType); onClose() }} />
       </div>
     </MobileBottomSheet>
   )
@@ -281,6 +202,7 @@ function MobileInspectorSheet({ open, onClose, task, onChange }) {
             task={task}
             onChange={onChange}
             onClose={onClose}
+            showHeader={false}
           />
         </div>
       )}
@@ -292,7 +214,18 @@ function MobileInspectorSheet({ open, onClose, task, onChange }) {
 // FlowBuilder
 // ---------------------------------------------------------------------------
 
-export default function FlowBuilder({ flow, spec, onSpecChange, onSaved, onRun }) {
+const FlowBuilder = forwardRef(function FlowBuilder({ flow, spec, onSpecChange, onRun, env = 'prod', lineageOpen = false, onLineageClose, onSelectedTaskChange, codeOpen = false, onCodeClose, onViewModeChange }, ref) {
+  // ── View mode: 'canvas' | 'notebook' ─────────────────────────────────────
+  // Initialise from spec.view if present; fall back to 'canvas'.
+  const [viewMode, setViewMode] = useState(() => spec?.view === 'notebook' ? 'notebook' : 'canvas')
+
+  // Report the current view up so the app top bar (FlowsPage) can render the
+  // Canvas/Notebook switcher. Fires on mount + whenever the view changes.
+  useEffect(() => {
+    onViewModeChange?.(viewMode)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [viewMode])
+
   // ── React Flow state ─────────────────────────────────────────────────────
   const [nodes, setNodes, onNodesChange] = useNodesState(
     () => specToGraph(spec).nodes
@@ -303,6 +236,10 @@ export default function FlowBuilder({ flow, spec, onSpecChange, onSaved, onRun }
   const reactFlowWrapper = useRef(null)
   const [rfInstance, setRfInstance] = useState(null)
 
+  // Ref onto NotebookView so top-bar actions (Run all / add cell) can be
+  // forwarded through this component's own imperative handle.
+  const notebookRef = useRef(null)
+
   // ── Inspector ─────────────────────────────────────────────────────────────
   const [selectedNodeId, setSelectedNodeId] = useState(null)
 
@@ -311,30 +248,22 @@ export default function FlowBuilder({ flow, spec, onSpecChange, onSaved, onRun }
   const [mobileInspectorOpen, setMobileInspectorOpen] = useState(false)
 
   // ── Detect mobile ─────────────────────────────────────────────────────────
-  // We use a simple state tracking via window width (updates on resize)
-  const [isMobile, setIsMobile] = useState(() => typeof window !== 'undefined' && window.innerWidth < 768)
+  // Initialise from matchMedia so the useState lazy initialiser already has the
+  // correct value; the effect only subscribes to future changes.
+  const [isMobile, setIsMobile] = useState(
+    () => typeof window !== 'undefined' && window.matchMedia('(max-width: 767px)').matches
+  )
   useEffect(() => {
     const mq = window.matchMedia('(max-width: 767px)')
     const handler = (e) => setIsMobile(e.matches)
     mq.addEventListener('change', handler)
-    setIsMobile(mq.matches)
     return () => mq.removeEventListener('change', handler)
   }, [])
 
-  // When a node is selected on mobile, open the inspector sheet
-  useEffect(() => {
-    if (selectedNodeId && isMobile) {
-      setMobileInspectorOpen(true)
-    }
-  }, [selectedNodeId, isMobile])
-
-  // ── UI state ──────────────────────────────────────────────────────────────
-  const [validationIssues, setValidationIssues] = useState(null)
-  const [saving, setSaving] = useState(false)
-  const [running, setRunning] = useState(false)
-  const [validating, setValidating] = useState(false)
-  const [saveError, setSaveError] = useState(null)
-  const [runError, setRunError] = useState(null)
+  // When a node is selected on mobile, open the inspector sheet.
+  // Derive this in the click handler rather than an effect to avoid the
+  // synchronous setState-in-effect lint rule.
+  // (The actual open call is inside onNodeClick below.)
 
   // ── Derive meta from spec ─────────────────────────────────────────────────
   const meta = useMemo(() => ({
@@ -353,6 +282,26 @@ export default function FlowBuilder({ flow, spec, onSpecChange, onSaved, onRun }
     const s = graphToSpec(ns ?? nodes, es ?? edges, meta)
     onSpecChange?.(s)
   }, [nodes, edges, meta, onSpecChange])
+
+  // ── View switch (canvas ↔ notebook) ───────────────────────────────────────
+  // Both views edit the SAME FlowSpec but hold their working state differently
+  // (canvas → nodes/edges; notebook → spec.tasks). Switching must hand the live
+  // state across or tasks are lost:
+  //   • leaving canvas → flush the graph into the spec (buildSpec)
+  //   • entering canvas → rebuild nodes/edges from the (notebook-edited) spec
+  const handleViewChange = useCallback((mode) => {
+    if (mode === viewMode) return
+    if (viewMode === 'canvas') {
+      const s = buildSpec()
+      onSpecChange?.({ ...s, view: mode })
+    } else {
+      const g = specToGraph(spec)
+      setNodes(g.nodes)
+      setEdges(g.edges)
+      onSpecChange?.({ ...spec, view: mode })
+    }
+    setViewMode(mode)
+  }, [viewMode, buildSpec, spec, onSpecChange, setNodes, setEdges])
 
   // ── Node change handler (update task data when inspector edits) ───────────
   const handleTaskChange = useCallback((updatedTask) => {
@@ -391,6 +340,9 @@ export default function FlowBuilder({ flow, spec, onSpecChange, onSaved, onRun }
       setNodes(nds => {
         const targetNeeds = next
           .filter(e => e.target === params.target)
+          // Skip visual-only edges (branch routing + inferred SQL deps) so they
+          // are never written into needs — mirrors graphToSpec / specToGraph.
+          .filter(e => !(e.data != null && ('branchCondIndex' in e.data || e.data.inferred)))
           .map(e => e.source)
         const updated = nds.map(n =>
           n.id === params.target
@@ -412,10 +364,12 @@ export default function FlowBuilder({ flow, spec, onSpecChange, onSaved, onRun }
         setNodes(currentNodes => {
           const needsMap = new Map(currentNodes.map(n => [n.id, []]))
           for (const e of currentEdges) {
-            // Skip branch-labeled routing edges — they are visual only.
-            // Authoritative routing lives in config.conditions[i].next.
-            // These edges are identified by data.branchCondIndex (set by specToGraph).
-            if (e.data != null && 'branchCondIndex' in e.data) continue
+            // Skip visual-only edges — they must never become needs:
+            //  • branch-labeled routing edges (data.branchCondIndex); authoritative
+            //    routing lives in config.conditions[i].next.
+            //  • inferred SQL dependency edges (data.inferred); re-derived from
+            //    config.sql on every specToGraph, never persisted.
+            if (e.data != null && ('branchCondIndex' in e.data || e.data.inferred)) continue
             if (needsMap.has(e.target)) needsMap.get(e.target).push(e.source)
           }
           const updated = currentNodes.map(n => ({
@@ -434,7 +388,7 @@ export default function FlowBuilder({ flow, spec, onSpecChange, onSaved, onRun }
   }, [onEdgesChange, setEdges, setNodes, notifySpecChange])
 
   // ── Add node from palette ─────────────────────────────────────────────────
-  const handleAddNode = useCallback((kind, defaultConfig) => {
+  const handleAddNode = useCallback((kind, defaultConfig, cellType) => {
     const centerX = rfInstance
       ? rfInstance.getViewport().x / -rfInstance.getViewport().zoom + 300
       : 300
@@ -442,7 +396,7 @@ export default function FlowBuilder({ flow, spec, onSpecChange, onSaved, onRun }
       ? rfInstance.getViewport().y / -rfInstance.getViewport().zoom + 200
       : 200
 
-    const newNode = makeTaskNode(kind, { x: centerX, y: centerY }, defaultConfig)
+    const newNode = makeTaskNode(kind, { x: centerX, y: centerY }, defaultConfig, cellType)
     setNodes(nds => {
       const next = [...nds, newNode]
       notifySpecChange(next, edges)
@@ -454,7 +408,8 @@ export default function FlowBuilder({ flow, spec, onSpecChange, onSaved, onRun }
   // ── Node click → inspector ─────────────────────────────────────────────────
   const onNodeClick = useCallback((_evt, node) => {
     setSelectedNodeId(node.id)
-  }, [])
+    if (isMobile) setMobileInspectorOpen(true)
+  }, [isMobile])
 
   const onPaneClick = useCallback(() => {
     setSelectedNodeId(null)
@@ -465,51 +420,40 @@ export default function FlowBuilder({ flow, spec, onSpecChange, onSaved, onRun }
   const selectedNode = nodes.find(n => n.id === selectedNodeId)
   const selectedTask = selectedNode?.data?.task ?? null
 
-  // ── Validate ───────────────────────────────────────────────────────────────
-  const handleValidate = useCallback(async () => {
-    setValidating(true)
-    setValidationIssues(null)
-    const s = buildSpec()
-    const result = await validateFlow(s)
-    setValidationIssues(result?.issues ?? [])
-    setValidating(false)
-  }, [buildSpec])
+  // Expose an imperative API + report the current selection upward, so the
+  // page-level shared RHS sidebar (FlowsPage) can host the "Add task" palette
+  // and the task inspector while this component keeps the React Flow state.
+  useImperativeHandle(ref, () => ({
+    addNode: handleAddNode,
+    updateSelectedTask: handleTaskChange,
+    clearSelection: () => setSelectedNodeId(null),
+    setView: handleViewChange,
+    // Notebook-view passthroughs (no-ops while the canvas view is active):
+    runAll: () => notebookRef.current?.runAll(),
+    addCell: (cellType) => notebookRef.current?.addCell(cellType),
+  }), [handleAddNode, handleTaskChange, handleViewChange])
 
-  // ── Save ───────────────────────────────────────────────────────────────────
-  const handleSave = useCallback(async () => {
-    setSaving(true)
-    setSaveError(null)
-    const s = buildSpec()
-    let saved
-    if (flow?.id) {
-      saved = await updateFlow(flow.id, { name: s.name, spec: s })
-    } else {
-      saved = await createFlow(s.name, s)
-    }
-    setSaving(false)
-    if (!saved) {
-      setSaveError('Save failed — check the console for details.')
-    } else {
-      onSaved?.(saved)
-    }
-  }, [buildSpec, flow, onSaved])
+  // selectedTask's reference is stable across renders unless the selected node
+  // changes or its data is edited, so this only fires on real changes.
+  useEffect(() => {
+    onSelectedTaskChange?.(selectedTask)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedTask])
 
-  // ── Run ────────────────────────────────────────────────────────────────────
-  const handleRun = useCallback(async () => {
-    if (!flow?.id) {
-      setRunError('Save the flow first before running.')
-      return
-    }
-    setRunning(true)
-    setRunError(null)
-    const result = await runFlow(flow.id, {})
-    setRunning(false)
-    if (!result) {
-      setRunError('Run failed — check the console for details.')
-    } else {
-      onRun?.({ flowRun: result, runId: result.id })
-    }
-  }, [flow, onRun])
+  // ── Code panel spec apply ─────────────────────────────────────────────────
+  // Called when the user clicks "Apply code" in CodePanel.  The panel has
+  // round-tripped the Python source → FlowSpec via the backend sandbox.
+  // We apply the incoming spec to the canvas (nodes + edges) and propagate
+  // upward.  Canvas positions (ui.x/y) from the compile result are {0,0}
+  // (scaffold-grade); we auto-layout by resetting to specToGraph which uses
+  // the layered auto-layout fallback when ui coords are zero.
+  const handleCodeApply = useCallback((incomingSpec) => {
+    if (!incomingSpec) return
+    const { nodes: newNodes, edges: newEdges } = specToGraph(incomingSpec)
+    setNodes(newNodes)
+    setEdges(newEdges)
+    onSpecChange?.(incomingSpec)
+  }, [setNodes, setEdges, onSpecChange])
 
   // ── Node position change → sync ui coords ─────────────────────────────────
   const onNodesChangeWrapped = useCallback((changes) => {
@@ -534,96 +478,43 @@ export default function FlowBuilder({ flow, spec, onSpecChange, onSaved, onRun }
     }
   }, [onNodesChange, setNodes, edges, notifySpecChange])
 
+  // ── If notebook view is active, delegate entirely to NotebookView ─────────
+  if (viewMode === 'notebook') {
+    return (
+      <div className="flex flex-col h-full overflow-hidden">
+        {/* The toolbar lives in the app top bar (FlowsPage portals it). */}
+        <div className="flex-1 min-h-0 overflow-hidden">
+          <NotebookView
+            ref={notebookRef}
+            flow={flow}
+            spec={spec}
+            onSpecChange={onSpecChange}
+            onRun={onRun}
+            env={env}
+            lineageOpen={lineageOpen}
+            onLineageClose={onLineageClose}
+          />
+        </div>
+      </div>
+    )
+  }
+
   return (
     <div className="flex flex-col h-full overflow-hidden">
 
-      {/* ── Toolbar ──────────────────────────────────────────────────────── */}
-      <div className="shrink-0 flex items-center gap-1.5 sm:gap-2 px-2 sm:px-4 py-2 border-b border-border bg-surface-2/40 overflow-x-auto">
-        {/* Flow name — wider on desktop */}
-        <input
-          type="text"
-          value={spec?.name ?? ''}
-          onChange={e => onSpecChange?.({ ...spec, name: e.target.value })}
-          placeholder="Flow name…"
-          className="h-9 px-2.5 text-sm font-medium border border-border rounded-lg bg-surface text-fg placeholder:text-muted/50 focus:outline-none focus:ring-2 focus:ring-ring/60 w-28 sm:w-44 shrink-0"
-        />
-
-        <div className="flex-1 min-w-0" />
-
-        {/* Validate — hidden label on xs */}
-        <button
-          onClick={handleValidate}
-          disabled={validating}
-          className="flex items-center gap-1.5 px-2 sm:px-3 h-9 text-xs font-medium rounded-lg border border-border bg-surface text-fg hover:bg-surface-2 disabled:opacity-50 transition-colors shrink-0 min-h-[36px]"
-          title="Validate flow"
-        >
-          {validating
-            ? <Loader2 size={13} className="animate-spin" />
-            : <ShieldCheck size={13} />
-          }
-          <span className="hidden sm:inline">Validate</span>
-        </button>
-
-        {/* Save */}
-        <button
-          onClick={handleSave}
-          disabled={saving}
-          className="flex items-center gap-1.5 px-2 sm:px-3 h-9 text-xs font-medium rounded-lg border border-border bg-surface text-fg hover:bg-surface-2 disabled:opacity-50 transition-colors shrink-0 min-h-[36px]"
-          title="Save flow"
-        >
-          {saving
-            ? <Loader2 size={13} className="animate-spin" />
-            : <Save size={13} />
-          }
-          <span className="hidden sm:inline">Save</span>
-        </button>
-
-        {/* Run */}
-        <button
-          onClick={handleRun}
-          disabled={running || !flow?.id}
-          title={!flow?.id ? 'Save the flow first' : 'Run flow'}
-          className="flex items-center gap-1.5 px-2 sm:px-3 h-9 text-xs font-medium rounded-lg bg-primary text-primary-fg hover:opacity-90 disabled:opacity-50 disabled:cursor-not-allowed transition-all shrink-0 min-h-[36px]"
-        >
-          {running
-            ? <Loader2 size={13} className="animate-spin" />
-            : <Play size={13} />
-          }
-          <span className="hidden sm:inline">Run</span>
-        </button>
-
-        {/* Mobile: Add node button */}
+      {/* ── Mobile-only add bar. The view switcher + actions live in the app
+          top bar (FlowsPage); desktop adds via the top-bar "Add task" toggle. ─ */}
+      <div className="md:hidden shrink-0 flex items-center justify-end px-2 py-1.5 border-b border-border bg-surface-2/40">
         <button
           onClick={() => setMobilePaletteOpen(true)}
-          className="md:hidden flex items-center gap-1.5 px-2 h-9 text-xs font-medium rounded-lg border border-dashed border-border text-muted hover:text-fg hover:bg-surface-2 transition-colors shrink-0 min-h-[36px]"
+          className="flex items-center gap-1.5 px-2 h-8 text-xs font-medium rounded-lg border border-dashed border-border text-muted hover:text-fg hover:bg-surface-2 transition-colors shrink-0"
           title="Add task"
           aria-label="Add task"
         >
           <Plus size={13} />
+          Add task
         </button>
       </div>
-
-      {/* Error banners */}
-      {saveError && (
-        <div className="shrink-0 flex items-center gap-2 px-4 py-2 bg-rose-500/5 border-b border-rose-500/20 text-xs text-rose-600 dark:text-rose-400">
-          <AlertCircle size={13} />
-          <span className="flex-1 min-w-0">{saveError}</span>
-          <button onClick={() => setSaveError(null)} className="ml-auto opacity-60 hover:opacity-100 shrink-0"><X size={12} /></button>
-        </div>
-      )}
-      {runError && (
-        <div className="shrink-0 flex items-center gap-2 px-4 py-2 bg-rose-500/5 border-b border-rose-500/20 text-xs text-rose-600 dark:text-rose-400">
-          <AlertCircle size={13} />
-          <span className="flex-1 min-w-0">{runError}</span>
-          <button onClick={() => setRunError(null)} className="ml-auto opacity-60 hover:opacity-100 shrink-0"><X size={12} /></button>
-        </div>
-      )}
-
-      {/* Validation banner */}
-      <ValidationBanner
-        issues={validationIssues}
-        onClose={() => setValidationIssues(null)}
-      />
 
       {/* ── Canvas + inspector row ────────────────────────────────────────── */}
       <div className="flex flex-1 min-h-0 overflow-hidden">
@@ -672,7 +563,6 @@ export default function FlowBuilder({ flow, spec, onSpecChange, onSaved, onRun }
                     query:       '#3b82f6',
                     python:      '#8b5cf6',
                     agent:       '#10b981',
-                    extract:     '#0ea5e9',
                     bucket_load: '#f97316',
                     noop:        '#94a3b8',
                     map:         '#6366f1',
@@ -681,10 +571,6 @@ export default function FlowBuilder({ flow, spec, onSpecChange, onSaved, onRun }
                 }}
                 maskColor="rgba(0,0,0,0.05)"
               />
-            </div>
-            {/* Node palette: desktop floating panel */}
-            <div className="hidden md:block">
-              <NodePaletteDesktop onAdd={handleAddNode} />
             </div>
           </ReactFlow>
 
@@ -701,13 +587,14 @@ export default function FlowBuilder({ flow, spec, onSpecChange, onSaved, onRun }
           )}
         </div>
 
-        {/* Inspector drawer — desktop inline */}
-        {selectedTask && !isMobile && (
-          <div className="shrink-0 w-72 xl:w-80 overflow-hidden">
-            <NodeInspector
-              task={selectedTask}
-              onChange={handleTaskChange}
-              onClose={() => setSelectedNodeId(null)}
+        {/* Code panel — editable Python editor, desktop inline */}
+        {codeOpen && !isMobile && (
+          <div className="shrink-0 w-80 xl:w-96 overflow-hidden border-l border-border">
+            <CodePanel
+              flowId={flow?.id ?? null}
+              spec={!flow?.id ? buildSpec() : null}
+              onSpecChange={handleCodeApply}
+              onClose={onCodeClose}
             />
           </div>
         )}
@@ -726,6 +613,24 @@ export default function FlowBuilder({ flow, spec, onSpecChange, onSaved, onRun }
         task={selectedTask}
         onChange={handleTaskChange}
       />
+
+      {/* Code panel — editable Python editor, mobile bottom sheet */}
+      <MobileBottomSheet
+        open={codeOpen && isMobile}
+        onClose={onCodeClose}
+        title="Flow code (Python)"
+      >
+        <div className="h-[70vh]">
+          <CodePanel
+            flowId={flow?.id ?? null}
+            spec={!flow?.id ? buildSpec() : null}
+            onSpecChange={handleCodeApply}
+            onClose={onCodeClose}
+          />
+        </div>
+      </MobileBottomSheet>
     </div>
   )
-}
+})
+
+export default FlowBuilder

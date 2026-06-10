@@ -238,6 +238,112 @@ class TestLocalRunPython:
 
 
 @pytest.mark.skipif(not _BACKEND_AVAILABLE, reason="Backend package not importable")
+class TestLocalRunSecrets:
+    """'nubi flows run' wires local secrets (env + ~/.nubi/secrets) into tasks."""
+
+    _SECRET_FLOW_SPEC: dict = {
+        "version": 1,
+        "name": "secret_flow",
+        "params": [],
+        "tasks": [
+            {
+                "key": "read_secret",
+                "kind": "python",
+                "needs": [],
+                "config": {"code": "result = {'token': secrets.get('MY_TOKEN', '<missing>')}"},
+            }
+        ],
+    }
+
+    def test_env_var_secret_reaches_task_context(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """NUBI_SECRET_<NAME> env vars populate TaskContext.secrets."""
+        from nubi_cli.flows_files import dump_flow  # noqa: PLC0415
+
+        flow_file = tmp_path / "secret_flow.yaml"
+        dump_flow(self._SECRET_FLOW_SPEC, flow_file)
+
+        monkeypatch.setattr("nubi_cli.main._LOCAL_SECRETS_PATH", tmp_path / "secrets")
+        monkeypatch.setenv("NUBI_SECRET_MY_TOKEN", "env-tok-123")
+
+        result = runner.invoke(app, ["flows", "run", str(flow_file)])
+
+        assert result.exit_code == 0, result.output + (result.stderr or "")
+        # The secret VALUE must appear in the printed task result.
+        assert "env-tok-123" in result.output
+
+    def test_local_secrets_file_reaches_task_context(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Secrets from ~/.nubi/secrets populate TaskContext.secrets."""
+        from nubi_cli.flows_files import dump_flow  # noqa: PLC0415
+
+        flow_file = tmp_path / "secret_flow.yaml"
+        dump_flow(self._SECRET_FLOW_SPEC, flow_file)
+
+        secrets_path = tmp_path / "secrets"
+        secrets_path.write_text(json.dumps({"MY_TOKEN": "file-tok-456"}))
+        monkeypatch.setattr("nubi_cli.main._LOCAL_SECRETS_PATH", secrets_path)
+        monkeypatch.delenv("NUBI_SECRET_MY_TOKEN", raising=False)
+
+        result = runner.invoke(app, ["flows", "run", str(flow_file)])
+
+        assert result.exit_code == 0, result.output + (result.stderr or "")
+        assert "file-tok-456" in result.output
+
+    def test_env_var_overrides_secrets_file(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """When both define the same name, NUBI_SECRET_* wins over the file."""
+        from nubi_cli.flows_files import dump_flow  # noqa: PLC0415
+
+        flow_file = tmp_path / "secret_flow.yaml"
+        dump_flow(self._SECRET_FLOW_SPEC, flow_file)
+
+        secrets_path = tmp_path / "secrets"
+        secrets_path.write_text(json.dumps({"MY_TOKEN": "file-tok-456"}))
+        monkeypatch.setattr("nubi_cli.main._LOCAL_SECRETS_PATH", secrets_path)
+        monkeypatch.setenv("NUBI_SECRET_MY_TOKEN", "env-tok-789")
+
+        result = runner.invoke(app, ["flows", "run", str(flow_file)])
+
+        assert result.exit_code == 0, result.output + (result.stderr or "")
+        assert "env-tok-789" in result.output
+        assert "file-tok-456" not in result.output
+
+    def test_secret_template_interpolation_in_config(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """{{ secrets.NAME }} in a task config resolves before execution."""
+        from nubi_cli.flows_files import dump_flow  # noqa: PLC0415
+
+        spec = {
+            "version": 1,
+            "name": "secret_template_flow",
+            "params": [],
+            "tasks": [
+                {
+                    "key": "templated",
+                    "kind": "python",
+                    "needs": [],
+                    "config": {"code": "result = {'tok': '{{ secrets.MY_TOKEN }}'}"},
+                }
+            ],
+        }
+        flow_file = tmp_path / "secret_template_flow.yaml"
+        dump_flow(spec, flow_file)
+
+        monkeypatch.setattr("nubi_cli.main._LOCAL_SECRETS_PATH", tmp_path / "secrets")
+        monkeypatch.setenv("NUBI_SECRET_MY_TOKEN", "tpl-tok-321")
+
+        result = runner.invoke(app, ["flows", "run", str(flow_file)])
+
+        assert result.exit_code == 0, result.output + (result.stderr or "")
+        assert "tpl-tok-321" in result.output
+
+
+@pytest.mark.skipif(not _BACKEND_AVAILABLE, reason="Backend package not importable")
 class TestLocalRunErrors:
     """'nubi flows run' exits non-zero on invalid file or failed spec."""
 
@@ -341,6 +447,33 @@ class TestFlowsPush:
         result = runner.invoke(app, ["flows", "push"])
 
         assert result.exit_code != 0
+
+    def test_push_no_args_discovers_files_in_cwd(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """With no file args, *.yaml/*.json in the cwd are discovered and pushed."""
+        from nubi_cli.flows_files import dump_flow  # noqa: PLC0415
+
+        dump_flow(_NOOP_FLOW_SPEC, tmp_path / "discovered.yaml")
+        json_spec = dict(_PYTHON_FLOW_SPEC)
+        dump_flow(json_spec, tmp_path / "discovered.json")
+
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.setattr("nubi_cli.main.load_token", lambda: "test-token")
+
+        mock_get = MagicMock(return_value=_make_response(json_data=[]))
+        mock_post = MagicMock(return_value=_make_response(json_data={"id": "new-uuid"}))
+        monkeypatch.setattr("nubi_cli.client.get", mock_get)
+        monkeypatch.setattr("nubi_cli.client.post", mock_post)
+
+        result = runner.invoke(app, ["flows", "push"])
+
+        assert result.exit_code == 0, result.output
+        assert "discovered.yaml" in result.output
+        assert "discovered.json" in result.output
+        assert mock_post.call_count == 2
+        pushed_names = {c[1]["json"]["name"] for c in mock_post.call_args_list}
+        assert pushed_names == {"test_noop_flow", "test_python_flow"}
 
 
 # ---------------------------------------------------------------------------

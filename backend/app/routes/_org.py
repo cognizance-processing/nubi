@@ -174,16 +174,46 @@ async def resolve_project_id_for_create(org_id: str, request: Request) -> str | 
     return await projects_repo.get_default_project_id(org_id)
 
 
-async def resolve_project_filter(org_id: str, request: Request) -> str | None:
-    """Resolve an optional project filter for list endpoints.
+async def resolve_org_default_project_id(org_id: str) -> str | None:
+    """Return the org's default (oldest) project id, or ``None``.
 
-    Returns the requested project id when ``X-Project-Id`` / ``?project_id=`` is
-    present *and* valid for *org_id*; otherwise ``None`` (meaning: don't filter,
-    return all the org's resources — existing behaviour preserved).
+    Prefers :func:`projects_repo.get_default_project_id` and falls back to the
+    first row of :func:`projects_repo.list_projects` — both mean "the org's
+    oldest project" in production, but the fallback also resolves under
+    fetchrow-level test doubles that only serve list-shaped project queries.
+    Used by the environments/versions resolution paths.
+    """
+    from app.repos import projects as projects_repo  # noqa: PLC0415
+
+    pid = await projects_repo.get_default_project_id(org_id)
+    if pid:
+        return pid
+    try:
+        rows = await projects_repo.list_projects(org_id)
+    except Exception:  # noqa: BLE001 — degrade gracefully like the repo helpers
+        return None
+    return str(rows[0]["id"]) if rows else None
+
+
+async def resolve_project_filter(org_id: str, request: Request) -> str | None:
+    """Resolve the project filter for list endpoints.
+
+    Mirrors :func:`resolve_project_id_for_create`: honour ``X-Project-Id`` /
+    ``?project_id=`` when present and valid for *org_id*, else fall back to the
+    org's default project. Lists are therefore scoped to one project (the active
+    one, or the default) instead of returning *every* project's resources —
+    otherwise the onboarding demo bundle, which lives in the default project,
+    leaks into every other project's queries/dashboards/connectors lists.
+
+    Returns ``None`` only when no default project can be resolved (e.g. test
+    doubles without a projects table), in which case the list is unfiltered.
     """
     from app.repos import projects as projects_repo  # noqa: PLC0415
 
     requested = _requested_project_id(request)
     if requested and await projects_repo.project_belongs_to_org(requested, org_id):
         return requested
-    return None
+    # Default-project fallback: resolve_org_default_project_id also tries the
+    # list-shaped projects query, which keeps headerless lists scoped under
+    # fetchrow-level test doubles that only serve list queries.
+    return await resolve_org_default_project_id(org_id)

@@ -169,21 +169,43 @@ def _bootstrap(registry: ConnectorRegistry) -> None:
         ``PostgresConnector`` — ADBC-backed, native Arrow, full push-down + RLS.
     ``'duckdb'``
         ``DuckDBConnector`` — local DuckDB, used for fixtures and conformance.
+    ``'duckdb_storage'``
+        ``DuckDBStorageConnector`` — object-storage-aware DuckDB connector.
+        Supports local file paths AND ``s3://`` URIs (MinIO / AWS S3 via
+        httpfs).  Auto-detects scheme from ``config["database"]``.  Use this
+        type for lakehouse datastores backed by MinIO or S3.
     ``'http_json'``
         ``HttpJsonConnector`` — REST/JSON API source; post-fetch RLS via
         ``apply_rls_postfetch`` (fail-closed).  No predicate push-down.
     """
+    from app.connectors.athena import AthenaConnector
     from app.connectors.bigquery import BigQueryConnector
+    from app.connectors.clickhouse import ClickHouseConnector
+    from app.connectors.databricks import DatabricksConnector
     from app.connectors.duckdb_conn import DuckDBConnector
+    from app.connectors.duckdb_storage import DuckDBStorageConnector
     from app.connectors.http_json import HttpJsonConnector
     from app.connectors.jdbc import JDBCConnector
     from app.connectors.mariadb import MariaDBConnector
     from app.connectors.mysql import MySQLConnector
+    from app.connectors.oracle import OracleConnector
     from app.connectors.postgres import PostgresConnector
     from app.connectors.snowflake import SnowflakeConnector
+    from app.connectors.sqlserver import SQLServerConnector
+    from app.connectors.trino import TrinoConnector
 
     registry.register("postgres", PostgresConnector)
     registry.register("duckdb", DuckDBConnector)
+    # ``duckdb_storage`` is the object-storage-aware variant of the DuckDB
+    # connector.  It auto-detects the scheme from ``config["database"]`` and
+    # bootstraps httpfs + S3 secrets for s3:// URIs; for local paths it
+    # behaves identically to opening a read-only DuckDB file.  Use
+    # ``connector_type: "duckdb_storage"`` in the datastore config when the
+    # database lives in MinIO / S3 or is referenced by an s3:// URI.
+    registry.register(
+        "duckdb_storage",
+        lambda config: DuckDBStorageConnector.from_config(config),
+    )
     registry.register("http_json", lambda config: HttpJsonConnector(config))
 
     # MySQL / MariaDB: the connector takes a MySQL-URI DSN, but the registry
@@ -208,6 +230,66 @@ def _bootstrap(registry: ConnectorRegistry) -> None:
     # via query.py's generic secret-fallback merge.
     registry.register("bigquery", lambda config: BigQueryConnector(config))
     registry.register("snowflake", lambda config: SnowflakeConnector(config))
+
+    # Postgres wire-compatible engines reuse PostgresConnector via a config→DSN
+    # wrapper.  They flow through query.py's ``else: factory(cfg)`` path, where
+    # the decrypted password is merged into cfg generically before the factory
+    # runs, so the wrapper can assemble a complete DSN from cfg.
+    #   - redshift      Amazon Redshift (pg wire, default port 5439)
+    #   - cockroachdb   CockroachDB (pg wire, default port 26257)
+    #   - cloudsql      Google Cloud SQL for PostgreSQL
+    registry.register("redshift", lambda config: PostgresConnector(_pg_dsn_from_config(config)))
+    registry.register("cockroachdb", lambda config: PostgresConnector(_pg_dsn_from_config(config)))
+    registry.register("cloudsql", lambda config: PostgresConnector(_pg_dsn_from_config(config)))
+
+    # Microsoft T-SQL family — SQL Server, Azure SQL Database, and Azure Synapse
+    # all speak T-SQL and share a single connector.
+    registry.register("sqlserver", lambda config: SQLServerConnector(config))
+    registry.register("azuresql", lambda config: SQLServerConnector(config))
+    registry.register("azuresynapse", lambda config: SQLServerConnector(config))
+
+    # Other warehouses / engines.  Each takes the config dict directly and
+    # imports its driver lazily, so the registry imports cleanly uninstalled.
+    registry.register("oracle", lambda config: OracleConnector(config))
+    registry.register("clickhouse", lambda config: ClickHouseConnector(config))
+    registry.register("databricks", lambda config: DatabricksConnector(config))
+    registry.register("athena", lambda config: AthenaConnector(config))
+
+    # Trino and Presto share the Trino DBAPI client (Trino is the successor; the
+    # client is protocol-compatible for the SQL paths Nubi uses).
+    registry.register("trino", lambda config: TrinoConnector(config))
+    registry.register("presto", lambda config: TrinoConnector(config))
+
+
+def _pg_dsn_from_config(config: dict[str, Any]) -> str:
+    """Assemble a ``postgresql://`` DSN from a datastore config dict.
+
+    Shared by every Postgres wire-compatible engine (postgres, redshift,
+    cockroachdb, cloudsql).  Accepts either a pre-built ``dsn`` key (used
+    verbatim) or the individual host/port/database/user/password parts;
+    credentials are URL-encoded.  An optional ``sslmode`` is appended as a query
+    parameter.
+    """
+    dsn = config.get("dsn")
+    if dsn:
+        return str(dsn)
+
+    from urllib.parse import quote
+
+    host = config.get("host", "localhost")
+    port = config.get("port", 5432)
+    database = config.get("database") or config.get("dbname") or "postgres"
+    user = config.get("user") or config.get("username") or "postgres"
+    password = config.get("password", "")
+    sslmode = config.get("sslmode")
+
+    userinfo = quote(str(user), safe="")
+    if password:
+        userinfo += ":" + quote(str(password), safe="")
+    dsn = f"postgresql://{userinfo}@{host}:{port}/{database}"
+    if sslmode:
+        dsn += f"?sslmode={sslmode}"
+    return dsn
 
 
 def _mysql_dsn_from_config(config: dict[str, Any]) -> str:

@@ -15,6 +15,13 @@
     --brand-teal:  #17b3a3;
     --brand-cyan:  #2dd4bf;
     --brand-gradient: linear-gradient(135deg, #1b2363, #2456a6, #17b3a3);
+    /* Gradient for text-fill — starts lighter in dark mode so the first words
+       don't sink into the dark background (navy-on-navy is unreadable). */
+    --brand-text-gradient: linear-gradient(135deg, #1b2363, #2456a6, #17b3a3);
+  }
+
+  .dark {
+    --brand-text-gradient: linear-gradient(135deg, #7da3f0, #4d8de0, #2dd4bf);
   }
 
   /* ── LIGHT mode (default) ────────────────────────────────────────────────── */

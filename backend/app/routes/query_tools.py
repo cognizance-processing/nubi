@@ -98,11 +98,18 @@ class ValidateIn(BaseModel):
 
 
 class ValidationError(BaseModel):
-    """A single parse error, positioned for Monaco markers (1-based line/col)."""
+    """A single parse error, positioned for Monaco markers (1-based line/col).
+
+    ``severity`` mirrors the Monaco ``MarkerSeverity`` string values the
+    frontend maps to ``monaco.MarkerSeverity.Error`` / ``.Warning`` etc.
+    Currently all sqlglot parse errors are classified as ``'error'``; reserved
+    ``'warning'`` for future lint/hint diagnostics.
+    """
 
     message: str
     line: int
     col: int
+    severity: str = "error"  # 'error' | 'warning' | 'info' | 'hint'
 
 
 class ValidateOut(BaseModel):
@@ -117,12 +124,17 @@ async def validate_sql(
     body: ValidateIn,
     _user: dict[str, Any] = Depends(current_user),
 ) -> ValidateOut:
-    """Parse *sql* with sqlglot in *dialect* and return positioned errors.
+    """Parse *sql* with sqlglot in *dialect* and return positioned errors/warnings.
 
     Returns ``{ok: True, errors: []}`` for empty/whitespace SQL so the editor
     does not flag a blank cell.  On a parse failure returns ``{ok: False,
     errors: [...]}`` with one entry per error sqlglot reports, each carrying a
     1-based ``line``/``col`` suitable for Monaco markers.
+
+    When the SQL parses successfully a lightweight AST-based WARNING pass is
+    also run (see ``_lint_warnings``).  Warnings do NOT set ``ok=False`` — they
+    are purely advisory markers appended to the ``errors`` list with
+    ``severity='warning'``.
     """
     sql = body.sql or ""
     dialect = _normalise_dialect(body.dialect)
@@ -136,17 +148,19 @@ async def validate_sql(
     try:
         # parse() surfaces all statements; a ParseError aggregates every issue
         # sqlglot found, each with line/col context in ``.errors``.
-        sqlglot.parse(sql, dialect=dialect)
+        stmts = sqlglot.parse(sql, dialect=dialect)
     except ParseError as exc:
         errors = _parse_errors_from_exc(exc, sql)
         return ValidateOut(ok=False, errors=errors)
     except Exception as exc:  # noqa: BLE001 — any other sqlglot error → single marker
         return ValidateOut(
             ok=False,
-            errors=[ValidationError(message=str(exc).strip() or "Invalid SQL", line=1, col=1)],
+            errors=[ValidationError(message=str(exc).strip() or "Invalid SQL", line=1, col=1, severity="error")],
         )
 
-    return ValidateOut(ok=True, errors=[])
+    # Parse succeeded — run the advisory WARNING pass.
+    warnings = _lint_warnings(stmts or [])
+    return ValidateOut(ok=True, errors=warnings)
 
 
 def _parse_errors_from_exc(exc: Any, sql: str) -> list[ValidationError]:
@@ -175,7 +189,7 @@ def _parse_errors_from_exc(exc: Any, sql: str) -> list[ValidationError]:
             col = max(1, int(col)) if col is not None else 1
         except (TypeError, ValueError):
             col = 1
-        out.append(ValidationError(message=message, line=line, col=col))
+        out.append(ValidationError(message=message, line=line, col=col, severity="error"))
 
     if not out:
         # No structured positions — surface the raw message at the start.
@@ -184,9 +198,125 @@ def _parse_errors_from_exc(exc: Any, sql: str) -> list[ValidationError]:
                 message=str(exc).strip().splitlines()[0] if str(exc).strip() else "Invalid SQL",
                 line=1,
                 col=1,
+                severity="error",
             )
         )
     return out
+
+
+def _lint_warnings(stmts: list[Any]) -> list[ValidationError]:
+    """Run an AST-level advisory WARNING pass over successfully-parsed statements.
+
+    Checks performed
+    ----------------
+    (a) ``SELECT *`` — suggests using explicit column names instead of a
+        star-expansion, which can cause brittle pipelines when upstream
+        schemas change.
+    (b) ``DELETE`` or ``UPDATE`` without a ``WHERE`` clause — these mutate
+        every row in the table, which is almost certainly unintentional.
+    (c) Cartesian / comma-join (a ``FROM`` clause with multiple comma-separated
+        tables and no explicit JOIN condition) — these produce a cross-product
+        and are usually a forgotten WHERE predicate.
+
+    Warnings do NOT affect ``ok`` — they are purely advisory.  The line/col
+    of the offending node is used when available; otherwise defaults to (1, 1).
+
+    Parameters
+    ----------
+    stmts:
+        The list of sqlglot AST nodes returned by ``sqlglot.parse()``.
+
+    Returns
+    -------
+    list[ValidationError]
+        Zero or more ``severity='warning'`` entries.
+    """
+    import sqlglot.expressions as _exp  # noqa: PLC0415
+
+    warnings: list[ValidationError] = []
+
+    def _pos(node: Any) -> tuple[int, int]:
+        """Extract 1-based (line, col) from a sqlglot node, defaulting to (1,1)."""
+        meta = getattr(node, "meta", None) or {}
+        line = meta.get("line") or 1
+        col = meta.get("col") or 1
+        try:
+            line = max(1, int(line))
+            col = max(1, int(col))
+        except (TypeError, ValueError):
+            line, col = 1, 1
+        return line, col
+
+    for stmt in stmts:
+        if stmt is None:
+            continue
+
+        # ── (a) SELECT * ─────────────────────────────────────────────────────
+        if isinstance(stmt, _exp.Select):
+            for star_node in stmt.find_all(_exp.Star):
+                # Only flag top-level stars; nested ones (e.g. COUNT(*)) are OK
+                # when they appear inside an aggregate function.
+                if isinstance(star_node.parent, _exp.AggFunc):
+                    continue
+                line, col = _pos(star_node)
+                warnings.append(
+                    ValidationError(
+                        message=(
+                            "SELECT * detected — consider naming columns explicitly "
+                            "to avoid breakage when the source schema changes."
+                        ),
+                        line=line,
+                        col=col,
+                        severity="warning",
+                    )
+                )
+                break  # one warning per SELECT * statement is enough
+
+        # ── (b) DELETE / UPDATE without WHERE ────────────────────────────────
+        if isinstance(stmt, (_exp.Delete, _exp.Update)):
+            where_node = stmt.args.get("where")
+            if where_node is None:
+                stmt_name = "DELETE" if isinstance(stmt, _exp.Delete) else "UPDATE"
+                line, col = _pos(stmt)
+                warnings.append(
+                    ValidationError(
+                        message=(
+                            f"{stmt_name} without a WHERE clause will affect every row "
+                            "in the table — add a WHERE condition or this is almost "
+                            "certainly unintentional."
+                        ),
+                        line=line,
+                        col=col,
+                        severity="warning",
+                    )
+                )
+
+        # ── (c) Cartesian / comma-join ────────────────────────────────────────
+        # A FROM clause that lists ≥ 2 tables via comma (no explicit JOIN) AND
+        # has no WHERE clause is almost certainly a cross-product.
+        if isinstance(stmt, _exp.Select):
+            from_node = stmt.args.get("from")
+            joins = stmt.args.get("joins") or []
+            where_node = stmt.args.get("where")
+            # from_node.expressions holds the comma-separated table refs.
+            from_tables: list[Any] = []
+            if from_node is not None:
+                from_tables = getattr(from_node, "expressions", []) or []
+            if len(from_tables) >= 2 and not joins and where_node is None:
+                line, col = _pos(from_node)
+                warnings.append(
+                    ValidationError(
+                        message=(
+                            "Possible cartesian join: multiple tables in FROM without "
+                            "an explicit JOIN or WHERE condition produce a cross-product."
+                        ),
+                        line=line,
+                        col=col,
+                        severity="warning",
+                    )
+                )
+
+    return warnings
 
 
 # ---------------------------------------------------------------------------
@@ -397,6 +527,17 @@ async def _resolve_datastore_connector(
     build a read-only connector; other types raise a 400 so the UI can show a
     clear "introspection not supported" message rather than a 500.
     """
+    # The built-in "Demo data" connector is virtual: a sentinel id with no
+    # datastores row (and not a UUID).  Route it to the same in-process demo
+    # DuckDB the /data browser uses, BEFORE any datastores lookup — otherwise
+    # the org-scoped ``WHERE id = $1::uuid`` query raises a DataError → 500.
+    from app.routes.connectors import DEMO_CONNECTOR_ID  # noqa: PLC0415
+
+    if datastore_id == DEMO_CONNECTOR_ID:
+        from app.routes.data_browser import _get_demo_connector  # noqa: PLC0415
+
+        return _get_demo_connector()
+
     from app.repos.provider import get_repo
     from app.routes.resources import get_user_org
 

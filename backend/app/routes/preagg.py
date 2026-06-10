@@ -42,6 +42,7 @@ from fastapi import APIRouter, Depends, Request
 from pydantic import BaseModel
 
 from app.auth.deps import current_user
+from app.auth.roles import require_writer
 from app.connectors.preagg import (
     RollupCandidate,
     build_rollup,
@@ -136,7 +137,7 @@ class BuildRollupIn(BaseModel):
     datastore_id: str | None = None
 
 
-@router.post("/preagg/build", status_code=201)
+@router.post("/preagg/build", status_code=201, dependencies=[Depends(require_writer)])
 async def preagg_build(
     body: BuildRollupIn,
     request: Request,

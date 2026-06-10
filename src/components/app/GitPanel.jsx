@@ -29,6 +29,7 @@ import {
 } from 'lucide-react'
 import * as api from '../../lib/api.js'
 import { useProject } from '../../contexts/ProjectContext.jsx'
+import GitGraphDialog from './GitGraphDialog.jsx'
 
 const PROVIDERS = [
   { id: 'github', label: 'GitHub' },
@@ -44,6 +45,7 @@ export default function GitPanel() {
   const [error, setError] = useState(null)
   const [busy, setBusy] = useState(null) // 'connect' | 'push' | 'pull' | null
   const [result, setResult] = useState(null) // { kind, text }
+  const [graphOpen, setGraphOpen] = useState(false) // env branch graph dialog
 
   // Connect form
   const [form, setForm] = useState({
@@ -265,6 +267,15 @@ export default function GitPanel() {
               )}
               Pull
             </button>
+            {/* Link-out: per-environment branch graph (push/pull per env lives there) */}
+            <button
+              type="button"
+              onClick={() => setGraphOpen(true)}
+              className="inline-flex items-center gap-2 px-4 py-2 rounded-xl text-sm font-medium text-fg bg-bg border border-border hover:border-primary transition-colors"
+            >
+              <GitBranch size={16} />
+              Branch graph
+            </button>
           </div>
         )}
 
@@ -382,6 +393,9 @@ export default function GitPanel() {
           </div>
         )}
       </div>
+
+      {/* Per-environment commit graph + branch sync actions */}
+      <GitGraphDialog open={graphOpen} onClose={() => setGraphOpen(false)} />
     </div>
   )
 }

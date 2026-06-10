@@ -44,8 +44,10 @@ import { tableFromIPC } from 'apache-arrow'
  *
  * @param {object} options
  * @param {string} options.baseUrl   — Base URL of the Nubi backend, e.g.
- *                                    "https://api.example.com". Should NOT
- *                                    include a trailing slash or "/api/v1".
+ *                                    "https://api.example.com". Trailing
+ *                                    slashes and an "/api/v1" suffix are both
+ *                                    handled, so "https://api.example.com/api/v1/"
+ *                                    works too.
  * @param {string | (() => Promise<string> | string)} options.getToken
  *                                  — Either a static JWT string or an async
  *                                    function that returns a JWT. Called
@@ -209,10 +211,48 @@ export function createNubiClient({ baseUrl, getToken }) {
     const trimmed = arg.trim()
     // Has whitespace → definitely SQL
     if (/\s/.test(trimmed)) return false
-    // Starts with a SQL keyword → SQL
-    if (/^(select|with|insert|update|delete|create|drop|alter|explain)/i.test(trimmed)) return false
+    // Starts with a SQL keyword (as a whole word) → SQL. The \b means
+    // "selected_users" or "with_totals" are still treated as query ids,
+    // while a bare "select" (useless as a query id anyway) counts as SQL.
+    if (/^(select|with|insert|update|delete|create|drop|alter|explain)\b/i.test(trimmed)) return false
     // Everything else (uuid, slug, "my_query_name") → treat as query_id
     return true
+  }
+
+  /**
+   * Normalise the caller-supplied params option into the backend's contract.
+   *
+   * The backend accepts:
+   *   - `params: list`        — positional values bound to $1/$2/...
+   *   - `named_params: dict`  — only for registered queries that declare params
+   *
+   * Mapping:
+   *   - Array                          → { params }
+   *   - Object with contiguous 1-based numeric keys ("1".."N")
+   *                                    → positional array (key "1" → index 0)
+   *                                      → { params }
+   *   - Any other object (named, sparse, or 0-based keys) → { named_params }
+   *
+   * @param {object | any[] | undefined} params
+   * @returns {{ params?: any[], named_params?: object }}
+   */
+  function normaliseParams(params) {
+    if (params === undefined || params === null) return {}
+    if (Array.isArray(params)) return { params }
+
+    const keys = Object.keys(params)
+    if (keys.length > 0 && keys.every((k) => /^\d+$/.test(k))) {
+      const nums = keys.map(Number).sort((a, b) => a - b)
+      // Only a contiguous 1-based key set is unambiguously positional;
+      // sparse or 0-based keys would silently shift $N bindings, so they
+      // fall through to named_params instead.
+      if (nums[0] === 1 && nums[nums.length - 1] === nums.length) {
+        // Positional object shape: { '1': a, '2': b } → [a, b]
+        return { params: nums.map((k) => params[String(k)]) }
+      }
+    }
+
+    return { named_params: params }
   }
 
   /**
@@ -220,13 +260,16 @@ export function createNubiClient({ baseUrl, getToken }) {
    *
    * @param {string} sqlOrId     — An inline SQL string OR a registered query id.
    * @param {object} [options]
-   * @param {object} [options.params]   — Optional query parameters.
+   * @param {object | any[]} [options.params]
+   *   — Optional query parameters. An array (or an object keyed by '1','2',...)
+   *     is sent as positional `params`; an object with named keys is sent as
+   *     `named_params` (valid only for registered queries that declare params).
    * @returns {Promise<import('apache-arrow').Table>}
    */
   async function query(sqlOrId, { params } = {}) {
     const body = looksLikeQueryId(sqlOrId)
-      ? { query_id: sqlOrId, ...(params ? { params } : {}) }
-      : { sql: sqlOrId, ...(params ? { params } : {}) }
+      ? { query_id: sqlOrId, ...normaliseParams(params) }
+      : { sql: sqlOrId, ...normaliseParams(params) }
 
     const buffer = await apiFetchBinary('/query', {
       method: 'POST',
@@ -355,9 +398,12 @@ export function createNubiClient({ baseUrl, getToken }) {
         dashboard._nubiGetTokenBridge = bridgeName
       }
 
+      // The <nubi-dashboard> element appends /api/v1 itself, so strip any
+      // trailing /api/v1 (and trailing slashes) from the backend URL to avoid
+      // requests against /api/v1/api/v1/...
       dashboard.setAttribute(
         'backend',
-        (backend ?? origin).replace(/\/+$/, ''),
+        (backend ?? origin).replace(/\/+$/, '').replace(/\/api\/v1$/, ''),
       )
 
       el.appendChild(dashboard)

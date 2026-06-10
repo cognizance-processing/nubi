@@ -1,0 +1,8 @@
+Information about runs, 
+Config file source destination,
+Variables for the flows, needs to be able to set by python blocks
+Variables long term storage 
+Output shape, a json file same name as query dictates the colum and types out output
+File view in portal 
+
+Before run query, get estimate of compute like big query 

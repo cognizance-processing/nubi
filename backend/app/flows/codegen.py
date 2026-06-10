@@ -38,7 +38,7 @@ process_each_region as map, aggregate):
     # Auto-generated scaffold from FlowSpec "daily_revenue_v2"
     # Edit task configs; do not restructure the graph here — use the canvas or recompile.
 
-    from nubi.sdk import flow, task, map_node, branch_node
+    from nubi.flows import flow, task, map_node, branch_node, FlowParam
 
     @task(kind="query", sql="SELECT DISTINCT region FROM sales")
     def get_regions(): pass
@@ -507,7 +507,7 @@ def flow_spec_to_sdk(spec: FlowSpec) -> str:
         "# Edit task configs; do not restructure the graph here"
         " — use the canvas or recompile.",
         "",
-        "from nubi.sdk import flow, task, map_node, branch_node",
+        "from nubi.flows import flow, task, map_node, branch_node, FlowParam",
         "",
     ]
 
@@ -546,26 +546,25 @@ def flow_spec_to_sdk(spec: FlowSpec) -> str:
     lines.append("")
     lines.append("")
 
-    if params_as_dicts:
-        param_parts: list[str] = []
-        for p in params_as_dicts:
-            name = p["name"]
-            default = p.get("default")
-            ptype = p.get("type", "text")
-            required = p.get("required", False)
-            if ptype == "text" and not required and default is not None:
-                param_parts.append(f"{name}={_repr_value(default)}")
-            else:
-                # Emit as FlowParam dict.
-                pdict: dict[str, Any] = {"type": ptype}
-                if default is not None:
-                    pdict["default"] = default
-                if required:
-                    pdict["required"] = True
-                param_parts.append(f"{name}={_repr_value(pdict)}")
-        lines.append(f"spec = {spec.name}.compile({', '.join(param_parts)})")
-    else:
-        lines.append(f"spec = {spec.name}.compile()")
+    compile_parts: list[str] = []
+
+    for p in params_as_dicts:
+        name = p["name"]
+        default = p.get("default")
+        ptype = p.get("type", "text")
+        required = p.get("required", False)
+        if ptype == "text" and not required and default is not None:
+            compile_parts.append(f"{name}={_repr_value(default)}")
+        else:
+            # Emit as FlowParam dict.
+            pdict: dict[str, Any] = {"type": ptype}
+            if default is not None:
+                pdict["default"] = default
+            if required:
+                pdict["required"] = True
+            compile_parts.append(f"{name}={_repr_value(pdict)}")
+
+    lines.append(f"spec = {spec.name}.compile({', '.join(compile_parts)})")
 
     lines.append("")
 

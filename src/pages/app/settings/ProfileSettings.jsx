@@ -1,5 +1,5 @@
 /**
- * ProfileSettings — manage your personal profile.
+ * ProfileSettings — manage your personal profile (account scope).
  *
  * Allows updating display name and avatar.
  * The avatar defaults to the Google OAuth picture; the user can override
@@ -9,10 +9,18 @@
  */
 
 import { useState } from 'react'
-import { User, Loader2, CheckCircle } from 'lucide-react'
 import { useAuth } from '../../../contexts/AuthContext.jsx'
 import AvatarField from '../../../components/app/AvatarField.jsx'
 import { updateMe } from '../../../lib/settings.js'
+import {
+  SettingsPageHeader,
+  SettingsCard,
+  Field,
+  PrimaryButton,
+  SavedBadge,
+  ErrorText,
+  inputCls,
+} from './SettingsUI.jsx'
 
 export default function ProfileSettings() {
   const { user } = useAuth()
@@ -44,84 +52,58 @@ export default function ProfileSettings() {
 
   return (
     <div className="space-y-6">
-      {/* Section header */}
-      <div className="flex items-start gap-4 pb-5 border-b border-border">
-        <div
-          className="flex items-center justify-center w-10 h-10 rounded-xl shrink-0"
-          style={{ background: 'linear-gradient(135deg, #1b2363, #2456a6, #17b3a3)' }}
+      <SettingsPageHeader
+        title="Profile"
+        description="Your display name and the avatar other members see."
+      />
+
+      <form onSubmit={handleSave}>
+        <SettingsCard
+          title="Your profile"
+          footer={
+            <>
+              <PrimaryButton type="submit" busy={saving} disabled={saving}>
+                Save profile
+              </PrimaryButton>
+              <SavedBadge show={saved} />
+              <ErrorText>{error}</ErrorText>
+            </>
+          }
         >
-          <User size={18} className="text-white" />
-        </div>
-        <div>
-          <h2 className="font-display font-semibold text-base text-fg">Your profile</h2>
-          <p className="text-sm text-muted mt-0.5">
-            Update your display name and the avatar other members see.
-            Your email address cannot be changed here.
-          </p>
-        </div>
-      </div>
+          <div className="space-y-5 max-w-md">
+            <Field
+              label="Avatar"
+              hint={
+                !avatarUrl && user?.avatar_url
+                  ? 'Using your Google profile picture. Set a custom URL or upload a file to override it.'
+                  : undefined
+              }
+            >
+              <AvatarField
+                value={avatarUrl || user?.avatar_url || ''}
+                onChange={setAvatarUrl}
+                fallbackName={name || user?.email || '?'}
+              />
+            </Field>
 
-      <form onSubmit={handleSave} className="space-y-6 max-w-md">
-        {/* Avatar */}
-        <div className="space-y-1.5">
-          <label className="block text-xs font-medium text-muted">Avatar</label>
-          <AvatarField
-            value={avatarUrl || user?.avatar_url || ''}
-            onChange={setAvatarUrl}
-            fallbackName={name || user?.email || '?'}
-          />
-          {!avatarUrl && user?.avatar_url && (
-            <p className="text-xs text-muted">
-              Using your Google profile picture. Set a custom URL or upload a file to override it.
-            </p>
-          )}
-        </div>
+            <Field label="Display name" htmlFor="profile-name">
+              <input
+                id="profile-name"
+                type="text"
+                value={name}
+                onChange={(e) => setName(e.target.value)}
+                placeholder="Your name"
+                className={inputCls}
+              />
+            </Field>
 
-        {/* Display name */}
-        <div className="space-y-1.5">
-          <label className="block text-xs font-medium text-muted" htmlFor="profile-name">
-            Display name
-          </label>
-          <input
-            id="profile-name"
-            type="text"
-            value={name}
-            onChange={(e) => setName(e.target.value)}
-            placeholder="Your name"
-            className="w-full px-3 py-2 rounded-xl bg-bg border border-border text-sm text-fg placeholder:text-muted focus:outline-none focus:border-primary"
-          />
-        </div>
-
-        {/* Email (read-only) */}
-        <div className="space-y-1.5">
-          <label className="block text-xs font-medium text-muted">Email address</label>
-          <div className="px-3 py-2 rounded-xl bg-bg/60 border border-border text-sm text-muted select-all">
-            {user?.email ?? '—'}
+            <Field label="Email address" hint="Your email address cannot be changed here.">
+              <div className="px-3 py-2 rounded-xl bg-bg/60 border border-border text-sm text-muted select-all">
+                {user?.email ?? '—'}
+              </div>
+            </Field>
           </div>
-        </div>
-
-        {/* Save */}
-        <div className="flex items-center gap-3">
-          <button
-            type="submit"
-            disabled={saving}
-            className="inline-flex items-center gap-2 px-4 py-2 rounded-xl text-sm font-medium text-white transition-opacity disabled:opacity-50"
-            style={{ background: 'linear-gradient(135deg, #2456a6, #17b3a3)' }}
-          >
-            {saving ? <Loader2 size={15} className="animate-spin" /> : null}
-            Save profile
-          </button>
-          {saved && (
-            <span className="inline-flex items-center gap-1.5 text-sm text-emerald-600 dark:text-emerald-400">
-              <CheckCircle size={15} />
-              Saved
-            </span>
-          )}
-        </div>
-
-        {error && (
-          <p className="text-sm text-red-600 dark:text-red-400">{error}</p>
-        )}
+        </SettingsCard>
       </form>
     </div>
   )

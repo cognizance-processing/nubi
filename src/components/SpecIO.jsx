@@ -28,9 +28,11 @@
  */
 
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { Code2, Download, Upload, Copy, Check, X, FileUp } from 'lucide-react'
+import { createPortal } from 'react-dom'
+import { Code2, Download, Upload, Copy, Check, X, FileUp, AlertCircle } from 'lucide-react'
 import yaml from 'js-yaml'
 import { get, post } from '../lib/api.js'
+import CodeEditor from './CodeEditor.jsx'
 
 // ---------------------------------------------------------------------------
 // helpers
@@ -102,6 +104,40 @@ function download(filename, content, mime) {
 // component
 // ---------------------------------------------------------------------------
 
+/**
+ * Parse JSON text and return an array of Monaco-style markers for any
+ * syntax errors. Returns [] when the JSON is valid.
+ */
+function jsonMarkers(text) {
+  try {
+    JSON.parse(text)
+    return []
+  } catch (e) {
+    // V8's SyntaxError message often contains "at position N" or "line M col N".
+    const msg = e.message ?? 'JSON syntax error'
+    // Try to extract line/col from the message.
+    const posMatch = msg.match(/line (\d+) column (\d+)/i)
+    const line = posMatch ? parseInt(posMatch[1], 10) : 1
+    const col = posMatch ? parseInt(posMatch[2], 10) : 1
+    return [{ line, col, message: msg, severity: 'error' }]
+  }
+}
+
+/**
+ * Parse YAML text and return Monaco markers for parse errors.
+ * js-yaml throws YAMLException with mark.line / mark.column.
+ */
+function yamlMarkers(text) {
+  try {
+    yaml.load(text)
+    return []
+  } catch (e) {
+    const line = (e.mark?.line ?? 0) + 1
+    const col = (e.mark?.column ?? 0) + 1
+    return [{ line, col, message: e.reason ?? e.message ?? 'YAML error', severity: 'error' }]
+  }
+}
+
 export default function SpecIO({ kind, spec, onApply, board = null, query = null }) {
   const [open, setOpen] = useState(false)
   // 'view' | 'edit' — view shows code; edit accepts a paste + Apply/Import.
@@ -114,6 +150,8 @@ export default function SpecIO({ kind, spec, onApply, board = null, query = null
   const [notice, setNotice] = useState(null)
   const ref = useRef(null)
   const fileRef = useRef(null)
+  // Track problem count from the Monaco view editor (for the problems indicator)
+  const [viewMarkerCount, setViewMarkerCount] = useState(0)
 
   const envelope = useMemo(
     () => buildEnvelope(kind, spec, board, query),
@@ -123,17 +161,31 @@ export default function SpecIO({ kind, spec, onApply, board = null, query = null
     try { return dumpEnvelope(envelope, format) } catch (e) { return `# Failed to serialise: ${e.message}` }
   }, [envelope, format])
 
+  // Compute Monaco markers for the view-mode code (highlight spec errors).
+  const viewMarkers = useMemo(() => {
+    if (format === 'json') return jsonMarkers(codeText)
+    // For YAML, validate; but serialisation errors shouldn't normally happen
+    // since we build the envelope ourselves. Still, guard for robustness.
+    return yamlMarkers(codeText)
+  }, [codeText, format])
+
+  // Keep the problems count in sync so we can show the badge.
+  useEffect(() => {
+    setViewMarkerCount(viewMarkers.length)
+  }, [viewMarkers])
+
   const baseName = slugify(envelope.metadata.name)
   const savedId = envelope.metadata.id
 
-  // Close on outside-click / Escape.
+  // Close on Escape. NOTE: the panel is portaled to <body> as a fixed
+  // slide-over (see below), so it lives outside `ref` — an outside-click
+  // listener would fire on the panel's own content and close it immediately.
+  // The explicit close (X) button is the only pointer affordance.
   useEffect(() => {
     if (!open) return
-    const onDown = (e) => { if (ref.current && !ref.current.contains(e.target)) setOpen(false) }
     const onKey = (e) => { if (e.key === 'Escape') setOpen(false) }
-    window.addEventListener('mousedown', onDown)
     window.addEventListener('keydown', onKey)
-    return () => { window.removeEventListener('mousedown', onDown); window.removeEventListener('keydown', onKey) }
+    return () => window.removeEventListener('keydown', onKey)
   }, [open])
 
   // Reset transient state when the menu closes.
@@ -220,25 +272,27 @@ export default function SpecIO({ kind, spec, onApply, board = null, query = null
   const itemCls =
     'w-full flex items-center gap-2.5 px-3 py-2 text-sm text-fg rounded-lg hover:bg-surface-2 disabled:opacity-50 transition-colors text-left'
 
-  return (
-    <div className="relative" ref={ref}>
-      <button
-        type="button"
-        onClick={() => setOpen(o => !o)}
-        className={`px-2.5 h-8 text-xs font-medium rounded-lg border transition-all focus:outline-none focus:ring-2 focus:ring-ring/60 flex items-center gap-1.5 whitespace-nowrap ${
-          open ? 'bg-surface-2 border-primary text-primary' : 'bg-surface text-fg border-border hover:bg-surface-2'
-        }`}
-        title="View as code, export or import this resource"
-      >
-        <Code2 size={14} />
-        <span className="hidden sm:inline">Code</span>
-      </button>
-
-      {open && (
-        <div className="absolute right-0 top-full mt-2 z-50 w-[26rem] max-w-[calc(100vw-2rem)] bg-surface border border-border rounded-xl shadow-xl overflow-hidden">
-          {/* Header: mode + format toggles */}
-          <div className="flex items-center gap-2 px-3 h-11 border-b border-border">
-            <div className="flex items-center rounded-lg border border-border overflow-hidden">
+  // The slide-over panel. Portaled to <body> as a `position: fixed` element
+  // so it can NEVER be clipped by an ancestor's overflow. WHY this matters:
+  // SpecIO's trigger lives in the query-workspace toolbar, which is portaled
+  // into the AppShell topbar slot (`overflow-x-auto`). Per the CSS spec,
+  // `overflow-x: auto` forces `overflow-y` to compute to `auto` too, so an
+  // `position: absolute` dropdown anchored there was clipped to the ~56px bar
+  // and rendered at ~0px height — the Code button "did nothing". Fixed-position
+  // portaling mirrors the dashboard fix (src/editor/DashboardCodePanel.jsx).
+  const panel = (
+    <aside
+      data-testid="query-code-panel"
+      aria-label="Query code editor"
+      className="fixed right-0 top-14 bottom-0 z-40 w-[min(42rem,100vw)] bg-surface border-l border-border shadow-2xl flex flex-col"
+    >
+      {/* Header: title + mode + format toggles */}
+      <div className="flex items-center gap-2 px-3 h-11 border-b border-border shrink-0">
+            <Code2 size={14} className="text-muted shrink-0" />
+            <span className="text-xs font-semibold text-fg whitespace-nowrap hidden sm:inline">
+              {kind === 'query' ? 'Query code' : 'Resource code'}
+            </span>
+            <div className="flex items-center rounded-lg border border-border overflow-hidden ml-1">
               {[
                 { v: 'view', l: 'View' },
                 { v: 'edit', l: 'Edit / Import' },
@@ -275,9 +329,10 @@ export default function SpecIO({ kind, spec, onApply, board = null, query = null
 
             <button
               type="button"
+              data-testid="query-code-panel-close"
               onClick={() => setOpen(false)}
               className="h-7 w-7 flex items-center justify-center rounded-lg text-muted hover:text-fg hover:bg-surface-2 transition-colors"
-              title="Close"
+              title="Close (Esc)"
             >
               <X size={14} />
             </button>
@@ -285,21 +340,40 @@ export default function SpecIO({ kind, spec, onApply, board = null, query = null
 
           {/* Body */}
           {mode === 'view' ? (
-            <div className="p-3 space-y-2.5">
-              <div className="relative">
-                <pre className="text-[11px] leading-relaxed font-mono bg-surface-2 border border-border rounded-lg p-2.5 max-h-72 overflow-auto text-fg whitespace-pre">
-                  {codeText}
-                </pre>
+            <div className="p-3 space-y-2.5 flex-1 min-h-0 flex flex-col">
+              {/* Monaco editor — read-only, with error squiggles for invalid JSON/YAML */}
+              <div className="relative flex-1 min-h-0">
+                <CodeEditor
+                  value={codeText}
+                  language={format === 'json' ? 'json' : 'yaml'}
+                  markers={viewMarkers}
+                  markerId="nubi-spec"
+                  height="100%"
+                  readOnly
+                  fontSize={12}
+                  lineNumbers="off"
+                  wordWrap="on"
+                  minimap={false}
+                  padding={{ top: 6, bottom: 6 }}
+                />
+                {/* Problems badge — shown when there are errors */}
+                {viewMarkerCount > 0 && (
+                  <div className="absolute bottom-1.5 left-1.5 flex items-center gap-1 px-1.5 py-0.5 rounded bg-rose-500/15 border border-rose-500/30 text-rose-500 text-[10px] font-semibold pointer-events-none select-none">
+                    <AlertCircle size={9} />
+                    {viewMarkerCount} problem{viewMarkerCount !== 1 ? 's' : ''}
+                  </div>
+                )}
+                {/* Copy button */}
                 <button
                   type="button"
                   onClick={copyCode}
-                  className="absolute top-1.5 right-1.5 p-1.5 rounded-lg border border-border bg-surface hover:text-primary hover:border-primary text-muted transition-colors"
+                  className="absolute top-1.5 right-1.5 p-1.5 rounded-lg border border-border bg-surface hover:text-primary hover:border-primary text-muted transition-colors z-10"
                   title="Copy to clipboard"
                 >
                   {copied ? <Check size={13} className="text-emerald-500" /> : <Copy size={13} />}
                 </button>
               </div>
-              <div className="flex items-center gap-2">
+              <div className="flex items-center gap-2 shrink-0">
                 <button
                   type="button"
                   onClick={exportFile}
@@ -318,20 +392,19 @@ export default function SpecIO({ kind, spec, onApply, board = null, query = null
                   Copy
                 </button>
               </div>
-              <p className="text-[10px] text-muted/70 leading-relaxed">
+              <p className="text-[10px] text-muted/70 leading-relaxed shrink-0">
                 The <span className="font-mono">{API_VERSION}</span> envelope above reflects your current
                 {savedId ? ' saved' : ' unsaved'} edits — portable & LLM-editable.
               </p>
             </div>
           ) : (
-            <div className="p-3 space-y-2.5">
+            <div className="p-3 space-y-2.5 flex-1 min-h-0 flex flex-col overflow-y-auto">
               <textarea
                 value={draft}
                 onChange={e => { setDraft(e.target.value); setError(null); setNotice(null) }}
                 placeholder={`Paste a ${format.toUpperCase()} envelope (or bare spec) here…`}
                 spellCheck={false}
-                rows={9}
-                className="w-full text-[11px] leading-relaxed font-mono bg-surface-2 border border-border rounded-lg p-2.5 text-fg placeholder:text-muted/50 focus:outline-none focus:ring-2 focus:ring-ring/60 focus:border-ring/40 resize-y"
+                className="w-full flex-1 min-h-[12rem] text-[11px] leading-relaxed font-mono bg-surface-2 border border-border rounded-lg p-2.5 text-fg placeholder:text-muted/50 focus:outline-none focus:ring-2 focus:ring-ring/60 focus:border-ring/40 resize-none"
               />
 
               <div className="flex items-center gap-2">
@@ -388,14 +461,34 @@ export default function SpecIO({ kind, spec, onApply, board = null, query = null
             </div>
           )}
 
-          {(error || notice) && (
-            <div className="px-3 pb-3 -mt-1">
-              {error && <p className="text-[11px] text-rose-500">{error}</p>}
-              {notice && <p className="text-[11px] text-emerald-600 dark:text-emerald-400">{notice}</p>}
-            </div>
-          )}
+      {(error || notice) && (
+        <div className="px-3 pb-3 -mt-1 shrink-0" data-testid="query-code-panel-status">
+          {error && <p className="text-[11px] text-rose-500">{error}</p>}
+          {notice && <p className="text-[11px] text-emerald-600 dark:text-emerald-400">{notice}</p>}
         </div>
       )}
+    </aside>
+  )
+
+  return (
+    <div className="relative" ref={ref}>
+      {/* Trigger — stays inline in the (overflow-clipped) toolbar; the panel
+          itself is portaled to <body> so it can never be clipped. */}
+      <button
+        type="button"
+        data-testid="query-code-btn"
+        onClick={() => setOpen(o => !o)}
+        aria-pressed={open}
+        className={`px-2.5 h-8 text-xs font-medium rounded-lg border transition-all focus:outline-none focus:ring-2 focus:ring-ring/60 flex items-center gap-1.5 whitespace-nowrap ${
+          open ? 'bg-surface-2 border-primary text-primary' : 'bg-surface text-fg border-border hover:bg-surface-2'
+        }`}
+        title="View as code, export or import this resource"
+      >
+        <Code2 size={14} />
+        <span className="hidden sm:inline">Code</span>
+      </button>
+
+      {open && createPortal(panel, document.body)}
     </div>
   )
 }

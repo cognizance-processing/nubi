@@ -50,3 +50,12 @@ legacy/
 # NOTE: only the generated *.duckdb files are ignored — the declarative demo
 # fixtures in backend/seed_data/demo/*.json ARE tracked (source of truth).
 *.duckdb
+
+# Generated local demo parquet files (written on demand by
+# backend/app/demo_bundle.export_demo_parquet_local).
+backend/seed_data/parquet/
+
+# Playwright test artifacts (generated; the 500KB+ report HTML otherwise breaks
+# Vite's dependency scan — also excluded in vite.config.js optimizeDeps.entries).
+playwright-report/
+test-results/

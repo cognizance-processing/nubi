@@ -28,10 +28,11 @@ from __future__ import annotations
 import json
 from typing import Any, Literal
 
-from fastapi import APIRouter, Depends, Response
+from fastapi import APIRouter, Depends, Request, Response
 from pydantic import BaseModel, model_validator
 
 from app.auth.deps import current_user
+from app.auth.roles import require_writer_default
 from app.db import fetchrow
 from app.errors import AppError
 from app.repos.provider import get_repo, Repo
@@ -43,7 +44,78 @@ router = APIRouter(prefix="/connectors", tags=["connectors"])
 
 # ── Connector type literal ────────────────────────────────────────────────────
 
-ConnectorType = Literal["postgres", "duckdb", "http_json", "bigquery"]
+ConnectorType = Literal[
+    # Relational
+    "postgres", "mysql", "mariadb", "sqlserver", "oracle", "cockroachdb",
+    # Cloud-managed SQL
+    "cloudsql", "azuresql",
+    # Cloud warehouses
+    "bigquery", "snowflake", "redshift", "databricks", "clickhouse", "azuresynapse",
+    # Query engines
+    "athena", "trino", "presto",
+    # Lakehouse & files
+    "duckdb", "duckdb_storage",
+    # APIs & custom
+    "http_json", "jdbc",
+    # Built-in demo dataset (virtual — re-adds the demo connector after removal)
+    "demo",
+]
+
+# ── Built-in demo connector (virtual / system) ────────────────────────────────
+# The demo dataset is IDENTICAL for every org and lives in-process (a tiny
+# in-memory DuckDB ``demo`` table seeded in routes/query.py).  Rather than
+# physically copying it per org, we expose a single VIRTUAL connector that
+# ``GET /connectors`` injects into every org's list.  Removing it (DELETE) writes
+# a per-org "hidden" marker row (in the existing ``datastores`` table, so org
+# scoping is automatic and no migration is required); re-adding it (POST type
+# "demo") deletes that marker.  Querying / data-browsing the demo connector is
+# handled by routes/query.py + routes/data_browser.py, which recognise the
+# sentinel id and route to the shared in-process demo connector.
+
+DEMO_CONNECTOR_ID = "__demo__"
+DEMO_CONNECTOR_NAME = "Demo data"
+# Marker connector_type written to the per-org "hidden" datastore row.  It is
+# deliberately NOT in ConnectorType / CONNECTOR_TYPES so it never renders as a
+# real connector and is filtered out of the list.
+_DEMO_HIDDEN_MARKER = "__demo_hidden__"
+
+
+def _demo_connector_row(org_id: str) -> dict[str, Any]:
+    """Return the virtual demo-connector row injected into a list response.
+
+    Shaped like a real datastore row so the frontend renders it identically.
+    It carries no secret material and a fixed, non-UUID sentinel id.
+    """
+    return {
+        "id": DEMO_CONNECTOR_ID,
+        "org_id": org_id,
+        "project_id": None,
+        "created_by": None,
+        "name": DEMO_CONNECTOR_NAME,
+        "config": {
+            "connector_type": "demo",
+            "description": "Built-in sample dataset — query it instantly, no setup.",
+            "read_only": True,
+            "system": True,
+        },
+        "created_at": "1970-01-01T00:00:00+00:00",
+        "updated_at": "1970-01-01T00:00:00+00:00",
+    }
+
+
+async def _find_demo_hidden_row(org_id: str, repo: Repo) -> dict[str, Any] | None:
+    """Return the per-org demo-hidden marker datastore row, or ``None``."""
+    rows = await repo.list("datastores", org_id)
+    for row in rows:
+        cfg = row.get("config")
+        if isinstance(cfg, dict) and cfg.get("connector_type") == _DEMO_HIDDEN_MARKER:
+            return row
+    return None
+
+
+async def _demo_is_hidden(org_id: str, repo: Repo) -> bool:
+    """Return ``True`` if this org has removed the demo connector."""
+    return (await _find_demo_hidden_row(org_id, repo)) is not None
 
 # ── Secret-key allowlist per connector type ───────────────────────────────────
 # These are the ONLY keys that belong in the secret blob; everything else goes
@@ -51,7 +123,15 @@ ConnectorType = Literal["postgres", "duckdb", "http_json", "bigquery"]
 # omit secret keys if they are not applicable.
 
 _SECRET_KEYS: frozenset[str] = frozenset(
-    {"password", "service_account_json", "token", "api_key"}
+    {
+        "password",
+        "service_account_json",
+        "token",
+        "api_key",
+        "access_token",          # Databricks
+        "aws_secret_access_key",  # Athena / object storage
+        "private_key",            # Snowflake key-pair auth
+    }
 )
 
 # ── Pydantic schemas ──────────────────────────────────────────────────────────
@@ -82,6 +162,9 @@ class ConnectorSecret(BaseModel):
     service_account_json: str | None = None
     token: str | None = None
     api_key: str | None = None
+    access_token: str | None = None
+    aws_secret_access_key: str | None = None
+    private_key: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
         """Return only the non-None values for storage in the secret store."""
@@ -244,7 +327,7 @@ def _build_config(connector_type: str, non_secret_config: dict[str, Any]) -> dic
 # ── Endpoints ─────────────────────────────────────────────────────────────────
 
 
-@router.post("", status_code=201)
+@router.post("", status_code=201, dependencies=[Depends(require_writer_default)])
 async def create_connector(
     body: CreateConnectorIn,
     user: dict[str, Any] = Depends(current_user),
@@ -258,6 +341,16 @@ async def create_connector(
     Returns the datastore row without any secret material.
     """
     org_id = await _get_user_org(str(user["id"]), repo)
+
+    # ── Demo connector re-add ─────────────────────────────────────────────────
+    # The demo connector is virtual; "creating" it simply clears the per-org
+    # "hidden" marker so GET /connectors injects it again.  No datastore row and
+    # no secret are written for the demo connector itself.
+    if body.type == "demo":
+        hidden = await _find_demo_hidden_row(org_id, repo)
+        if hidden is not None:
+            await repo.delete("datastores", org_id, str(hidden["id"]))
+        return _sanitise(_demo_connector_row(org_id))
 
     # Build the safe config — explicitly excludes all secret keys
     safe_config = _build_config(body.type, body.config.to_safe_dict())
@@ -288,19 +381,59 @@ async def create_connector(
 
 @router.get("")
 async def list_connectors(
+    request: Request,
     user: dict[str, Any] = Depends(current_user),
     repo: Repo = Depends(get_repo),
 ) -> list[dict[str, Any]]:
-    """List all connectors for the caller's org (no secret material returned)."""
+    """List all connectors for the caller's org (no secret material returned).
+
+    The built-in virtual "Demo data" connector is surfaced ONLY in the org's
+    demo/default project — other projects start empty and require a real
+    connector. Real datastores remain org-wide.
+    """
     org_id = await _get_user_org(str(user["id"]), repo)
 
     all_datastores = await repo.list("datastores", org_id)
-    # Filter to rows where config identifies them as a connector
+    # Filter to rows where config identifies them as a connector.  The
+    # ``__demo_hidden__`` marker row is excluded — it is internal bookkeeping,
+    # not a real connector.
     connectors = [
         row for row in all_datastores
-        if isinstance(row.get("config"), dict) and "connector_type" in row["config"]
+        if isinstance(row.get("config"), dict)
+        and "connector_type" in row["config"]
+        and row["config"]["connector_type"] != _DEMO_HIDDEN_MARKER
+        # System rows (e.g. the seeded demo datastore that backs the demo
+        # dashboards by id) are internal — the branded virtual "Demo data"
+        # connector is surfaced instead, so they never render as a raw card.
+        and not row["config"].get("system")
     ]
-    return [_sanitise(row) for row in connectors]
+    result = [_sanitise(row) for row in connectors]
+
+    # Inject the virtual demo connector ONLY in the org's demo/default project
+    # (and unless the org removed it). Other projects start empty so the user
+    # connects their own data — there is no demo connector to fall back on.
+    if await _in_demo_project(org_id, request) and not await _demo_is_hidden(org_id, repo):
+        result.insert(0, _sanitise(_demo_connector_row(org_id)))
+
+    return result
+
+
+async def _in_demo_project(org_id: str, request: Request) -> bool:
+    """Whether the request targets the org's demo/default project.
+
+    The demo bundle is seeded into the default project at onboarding, so the
+    virtual demo connector belongs there. Returns True when the active project
+    (``X-Project-Id`` else the default) is the default project, or when no
+    project can be resolved (e.g. test doubles without a projects table).
+    """
+    from app.repos import projects as projects_repo  # noqa: PLC0415
+    from app.routes._org import resolve_project_filter  # noqa: PLC0415
+
+    default_project = await projects_repo.get_default_project_id(org_id)
+    if default_project is None:
+        return True  # no projects table / single-project test double → show demo
+    active_project = await resolve_project_filter(org_id, request)
+    return active_project is None or str(active_project) == str(default_project)
 
 
 @router.get("/{connector_id}")
@@ -314,6 +447,13 @@ async def get_connector(
     Returns 404 if not found or belongs to a different org.
     """
     org_id = await _get_user_org(str(user["id"]), repo)
+
+    # Virtual demo connector — resolvable unless this org removed it.
+    if connector_id == DEMO_CONNECTOR_ID:
+        if await _demo_is_hidden(org_id, repo):
+            raise AppError("not_found", "Connector not found.", 404)
+        return _sanitise(_demo_connector_row(org_id))
+
     row = await repo.get("datastores", org_id, connector_id)
     if row is None:
         raise AppError("not_found", "Connector not found.", 404)
@@ -322,7 +462,7 @@ async def get_connector(
     return _sanitise(row)
 
 
-@router.put("/{connector_id}")
+@router.put("/{connector_id}", dependencies=[Depends(require_writer_default)])
 async def update_connector(
     connector_id: str,
     body: UpdateConnectorIn,
@@ -373,7 +513,7 @@ async def update_connector(
     return _sanitise(row)
 
 
-@router.delete("/{connector_id}", status_code=204)
+@router.delete("/{connector_id}", status_code=204, dependencies=[Depends(require_writer_default)])
 async def delete_connector(
     connector_id: str,
     user: dict[str, Any] = Depends(current_user),
@@ -384,6 +524,21 @@ async def delete_connector(
     Returns 204 on success, 404 if not found or belongs to a different org.
     """
     org_id = await _get_user_org(str(user["id"]), repo)
+
+    # ── Demo connector removal ────────────────────────────────────────────────
+    # The demo connector is virtual and shared across orgs — we never delete the
+    # underlying dataset.  Removing it for this org simply records a per-org
+    # "hidden" marker row so GET /connectors stops injecting it.  Idempotent.
+    if connector_id == DEMO_CONNECTOR_ID:
+        if not await _demo_is_hidden(org_id, repo):
+            await repo.create(
+                resource="datastores",
+                org_id=org_id,
+                created_by=str(user["id"]),
+                name="(demo connector hidden)",
+                config={"connector_type": _DEMO_HIDDEN_MARKER},
+            )
+        return Response(status_code=204)
 
     # Verify row exists and is a connector before deleting
     existing = await repo.get("datastores", org_id, connector_id)
@@ -428,6 +583,17 @@ async def test_connector(
         or a structured error result if a layer is missing.
     """
     org_id = await _get_user_org(str(user["id"]), repo)
+
+    # Virtual demo connector — always resolvable (no secret, in-process data).
+    if connector_id == DEMO_CONNECTOR_ID:
+        ok = not await _demo_is_hidden(org_id, repo)
+        return {
+            "ok": ok,
+            "checked": "demo dataset ready" if ok else "demo connector removed",
+            "connector_id": connector_id,
+            "type": "demo",
+            "layers": {"config": ok, "secret": ok},
+        }
 
     row = await repo.get("datastores", org_id, connector_id)
     config_ok = (

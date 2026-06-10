@@ -1,8 +1,9 @@
-import ReactMarkdown from 'react-markdown'
+import ReactMarkdown, { defaultUrlTransform } from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter'
 import { oneDark } from 'react-syntax-highlighter/dist/esm/styles/prism'
 import { Link } from 'react-router-dom'
+import { resolveDocIllustration } from './illustrations/docMap.js'
 
 /**
  * Anchored heading helper — creates an id from text content
@@ -135,20 +136,25 @@ const components = {
   // react-markdown passes `inline` for single-backtick code
   code({ className, children, ...props }) {
     const match = /language-(\w+)/.exec(className || '')
-    const isBlock = Boolean(match)
+    const raw = String(children).replace(/\n$/, '')
+    // Treat any multi-line fence as a block, even an unlabeled ``` ``` fence
+    // (react-markdown v9 only tags a language on labeled fences, so ASCII
+    // diagrams in bare fences would otherwise collapse into inline code).
+    const isBlock = Boolean(match) || raw.includes('\n')
 
     if (isBlock) {
+      const lang = match ? match[1] : 'text'
       return (
         <div className="my-5 rounded-xl overflow-hidden border border-border shadow-lg">
           <SyntaxHighlighter
             style={oneDark}
-            language={match[1]}
+            language={lang}
             PreTag="div"
             className="!rounded-none !m-0 text-sm"
-            showLineNumbers={match[1] !== 'bash' && match[1] !== 'sh' && match[1] !== 'text'}
+            showLineNumbers={lang !== 'bash' && lang !== 'sh' && lang !== 'text'}
             {...props}
           >
-            {String(children).replace(/\n$/, '')}
+            {raw}
           </SyntaxHighlighter>
         </div>
       )
@@ -168,6 +174,27 @@ const components = {
   // ── Pre (wraps fenced code) ───────────────────────────────────────────────
   pre({ children }) {
     return <>{children}</>
+  },
+
+  // ── Images — `illustration:Name` renders a brand SVG; else a plain image ──
+  img({ src, alt }) {
+    const Illo = resolveDocIllustration(src)
+    if (Illo) {
+      return (
+        <figure className="my-8">
+          <div className="rounded-2xl border border-border bg-surface-2 px-5 py-6 sm:px-8 sm:py-8">
+            <Illo className="w-full h-auto max-w-xl mx-auto" />
+          </div>
+          {alt ? (
+            <figcaption className="mt-3 text-center text-xs text-muted">{alt}</figcaption>
+          ) : null}
+        </figure>
+      )
+    }
+    return (
+      <img src={src} alt={alt || ''} loading="lazy"
+        className="my-6 rounded-xl border border-border max-w-full h-auto" />
+    )
   },
 
   // ── Tables (GFM) ─────────────────────────────────────────────────────────
@@ -209,10 +236,21 @@ const components = {
   },
 }
 
+/**
+ * Preserve our `illustration:` scheme (react-markdown's default urlTransform
+ * sanitises unknown protocols to an empty string, which would drop the
+ * illustration src before the `img` handler can map it). Everything else falls
+ * back to the library's default sanitiser.
+ */
+function urlTransform(url) {
+  if (typeof url === 'string' && url.startsWith('illustration:')) return url
+  return defaultUrlTransform(url)
+}
+
 export default function MarkdownRenderer({ content }) {
   return (
     <article className="max-w-none">
-      <ReactMarkdown remarkPlugins={[remarkGfm]} components={components}>
+      <ReactMarkdown remarkPlugins={[remarkGfm]} urlTransform={urlTransform} components={components}>
         {content}
       </ReactMarkdown>
     </article>

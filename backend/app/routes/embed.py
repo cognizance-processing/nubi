@@ -309,6 +309,25 @@ async def get_embed_config(
 
         org_id = await get_user_org(identity.user_id, repo)
 
+    # ── BILLING: embedded sessions are a metered dimension ───────────────────
+    # Each embed-token config fetch starts one embedded view session
+    # (tiers.max_embedded_sessions_per_month).  First-party tokens are NOT
+    # metered here — internal dashboard views are never billed.  Quota
+    # enforcement is a no-op in OSS builds (no EE checker registered); FREE
+    # tier (0 sessions, no overage rate) hard-stops with 402.
+    if identity.kind == "embed":
+        from app.compute.metering import record_usage  # noqa: PLC0415
+        from app.features import enforce_quota  # noqa: PLC0415
+
+        await enforce_quota(org_id, "embedded_sessions", amount=1.0)
+        await record_usage(
+            kind="embedded_session",
+            user_id=identity.user_id,
+            org_id=org_id,
+            units=1.0,
+            tier="embed_config",
+        )
+
     # ── Load board from repo ──────────────────────────────────────────────────
     board = await repo.get("boards", org_id, dashboard_id)
     if board is None:
@@ -317,6 +336,31 @@ async def get_embed_config(
             f"Dashboard {dashboard_id!r} not found.",
             404,
         )
+
+    # ── STRICT ENV VISIBILITY (DECISION 4) — embed identities only ───────────
+    # Embed/viewer tokens resolve the board through the project's DEFAULT
+    # environment (the protected ``prod`` env in standard projects):
+    #   - a version pinned there → its snapshot config replaces the draft;
+    #   - default env PROTECTED with no pointer → 404 (drafts are never
+    #     visible to embed identities in a protected environment);
+    #   - no project/env data resolvable → draft (environments layer is
+    #     optional; first-party identities always see the draft).
+    if identity.kind == "embed":
+        from app.environments.store import resolve_default_env_config  # noqa: PLC0415
+
+        try:
+            pinned_config = await resolve_default_env_config(
+                "board", str(board["id"]), board.get("project_id"), org_id
+            )
+        except AppError:
+            # Uniform 404 shape with the missing-board case — no draft leak.
+            raise AppError(
+                "dashboard_not_found",
+                f"Dashboard {dashboard_id!r} not found.",
+                404,
+            )
+        if pinned_config is not None:
+            board = {**board, "config": pinned_config}
 
     # ── Build and return descriptor ───────────────────────────────────────────
     return _board_to_descriptor(dashboard_id, board)

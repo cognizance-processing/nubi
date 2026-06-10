@@ -1,76 +1,41 @@
 {
   "kpis": {
-    "name": "Demo \u2014 totals",
+    "name": "Retail — totals",
     "sql": "SELECT ROUND(SUM(nsv), 2) AS total_nsv, SUM(units) AS total_units, ROUND(SUM(volume), 1) AS total_volume, ROUND(AVG(nsv), 2) AS avg_nsv FROM sales",
     "params": []
   },
   "trend": {
-    "name": "Demo \u2014 monthly trend",
+    "name": "Retail — monthly trend",
     "sql": "SELECT month, ROUND(SUM(nsv), 2) AS nsv, SUM(units) AS units, ROUND(SUM(volume), 1) AS volume FROM sales GROUP BY month ORDER BY month",
     "params": []
   },
   "region": {
-    "name": "Demo \u2014 NSV by region",
+    "name": "Retail — NSV by region",
     "sql": "SELECT region, ROUND(SUM(nsv), 2) AS nsv FROM sales GROUP BY region ORDER BY nsv DESC",
     "params": []
   },
-  "category": {
-    "name": "Demo \u2014 NSV by category",
-    "sql": "SELECT category, ROUND(SUM(nsv), 2) AS nsv FROM sales GROUP BY category ORDER BY nsv DESC",
-    "params": []
-  },
-  "channel": {
-    "name": "Demo \u2014 NSV by channel",
-    "sql": "SELECT channel, ROUND(SUM(nsv), 2) AS nsv FROM sales GROUP BY channel ORDER BY nsv DESC",
-    "params": []
-  },
-  "brand": {
-    "name": "Demo \u2014 top brands",
-    "sql": "SELECT brand, ROUND(SUM(nsv), 2) AS nsv FROM sales GROUP BY brand ORDER BY nsv DESC LIMIT 10",
-    "params": []
-  },
-  "supplier": {
-    "name": "Demo \u2014 by supplier",
-    "sql": "SELECT supplier, ROUND(SUM(nsv), 2) AS nsv, SUM(units) AS units, ROUND(SUM(volume), 1) AS volume FROM sales GROUP BY supplier ORDER BY nsv DESC",
-    "params": []
-  },
-  "opco": {
-    "name": "Demo \u2014 NSV by OpCo",
-    "sql": "SELECT opco, ROUND(SUM(nsv), 2) AS nsv FROM sales GROUP BY opco ORDER BY nsv DESC",
-    "params": []
-  },
   "pgroup": {
-    "name": "Demo \u2014 by product group",
+    "name": "Retail — by product group",
     "sql": "SELECT product_group, ROUND(SUM(nsv), 2) AS nsv, SUM(units) AS units FROM sales GROUP BY product_group ORDER BY nsv DESC",
     "params": []
   },
-  "customers": {
-    "name": "Demo \u2014 top customers",
-    "sql": "SELECT customer, ROUND(SUM(nsv), 2) AS nsv FROM sales GROUP BY customer ORDER BY nsv DESC LIMIT 10",
-    "params": []
-  },
   "heatmap": {
-    "name": "Demo \u2014 region \u00d7 month",
+    "name": "Retail — region × month",
     "sql": "SELECT region, month, ROUND(SUM(nsv), 2) AS nsv FROM sales GROUP BY region, month ORDER BY region, month",
     "params": []
   },
   "avb": {
-    "name": "Demo \u2014 actual vs budget (monthly)",
+    "name": "Retail — actual vs budget (monthly)",
     "sql": "SELECT a.month AS month, a.actual AS actual, b.budget AS budget FROM (SELECT month, ROUND(SUM(nsv), 2) AS actual FROM sales GROUP BY month) a JOIN (SELECT month, ROUND(SUM(budget_nsv), 2) AS budget FROM budget GROUP BY month) b ON a.month = b.month ORDER BY a.month",
     "params": []
   },
   "variance": {
-    "name": "Demo \u2014 budget variance by region",
+    "name": "Retail — budget variance by region",
     "sql": "SELECT a.region AS region, a.actual AS actual, b.budget AS budget, ROUND(a.actual - b.budget, 2) AS variance, ROUND(100.0 * (a.actual - b.budget) / NULLIF(b.budget, 0), 1) AS variance_pct FROM (SELECT region, ROUND(SUM(nsv), 2) AS actual FROM sales GROUP BY region) a JOIN (SELECT region, ROUND(SUM(budget_nsv), 2) AS budget FROM budget GROUP BY region) b ON a.region = b.region ORDER BY variance DESC",
     "params": []
   },
-  "cyly": {
-    "name": "Demo \u2014 CY vs LY by product group",
-    "sql": "SELECT product_group, ROUND(SUM(CASE WHEN year = 2026 THEN nsv ELSE 0 END), 2) AS cy, ROUND(SUM(CASE WHEN year = 2025 THEN nsv ELSE 0 END), 2) AS ly, ROUND(SUM(CASE WHEN year = 2026 THEN nsv ELSE 0 END) - SUM(CASE WHEN year = 2025 THEN nsv ELSE 0 END), 2) AS delta FROM sales GROUP BY product_group ORDER BY cy DESC",
-    "params": []
-  },
   "drill": {
-    "name": "Demo \u2014 region drilldown ({{region}})",
+    "name": "Retail — region drilldown ({{region}})",
     "sql": "SELECT month, product_group, ROUND(SUM(nsv), 2) AS nsv FROM sales WHERE ({{region}} IS NULL OR region = {{region}}) GROUP BY month, product_group ORDER BY month, nsv DESC",
     "params": [
       {
@@ -83,7 +48,7 @@
     ]
   },
   "prod_for_region": {
-    "name": "Demo \u2014 products in region ({{region}})",
+    "name": "Retail — products in region ({{region}})",
     "sql": "SELECT product_group, ROUND(SUM(nsv), 2) AS nsv, SUM(units) AS units FROM sales WHERE ({{region}} IS NULL OR region = {{region}}) GROUP BY product_group ORDER BY nsv DESC",
     "params": [
       {
@@ -95,83 +60,180 @@
       }
     ]
   },
-  "filt_month": {
-    "name": "Demo \u2014 monthly NSV (filtered)",
-    "sql": "SELECT month, ROUND(SUM(nsv), 2) AS nsv FROM sales WHERE ({{region}} IS NULL OR region = {{region}}) AND ({{channel}} IS NULL OR channel = {{channel}}) AND ({{category}} IS NULL OR category = {{category}}) GROUP BY month ORDER BY month",
-    "params": [
-      {
-        "name": "region",
-        "type": "select",
-        "default": null,
-        "required": false,
-        "options_query_id": null
-      },
-      {
-        "name": "channel",
-        "type": "select",
-        "default": null,
-        "required": false,
-        "options_query_id": null
-      },
-      {
-        "name": "category",
-        "type": "select",
-        "default": null,
-        "required": false,
-        "options_query_id": null
-      }
-    ]
-  },
-  "filt_table": {
-    "name": "Demo \u2014 region \u00d7 channel \u00d7 category (filtered)",
-    "sql": "SELECT region, channel, category, ROUND(SUM(nsv), 2) AS nsv, SUM(units) AS units FROM sales WHERE ({{region}} IS NULL OR region = {{region}}) AND ({{channel}} IS NULL OR channel = {{channel}}) AND ({{category}} IS NULL OR category = {{category}}) GROUP BY region, channel, category ORDER BY nsv DESC",
-    "params": [
-      {
-        "name": "region",
-        "type": "select",
-        "default": null,
-        "required": false,
-        "options_query_id": null
-      },
-      {
-        "name": "channel",
-        "type": "select",
-        "default": null,
-        "required": false,
-        "options_query_id": null
-      },
-      {
-        "name": "category",
-        "type": "select",
-        "default": null,
-        "required": false,
-        "options_query_id": null
-      }
-    ]
-  },
   "region_opt": {
-    "name": "Demo \u2014 region options",
+    "name": "Retail — region options",
     "sql": "SELECT DISTINCT region AS value, region AS label FROM sales ORDER BY 1",
     "params": []
   },
-  "channel_opt": {
-    "name": "Demo \u2014 channel options",
-    "sql": "SELECT DISTINCT channel AS value, channel AS label FROM sales ORDER BY 1",
+  "saas_kpis": {
+    "name": "SaaS — headline metrics",
+    "sql": "SELECT ROUND(SUM(amount), 2) AS mrr, ROUND(SUM(amount) * 12, 2) AS arr, COUNT(DISTINCT account_id) AS active_accounts, ROUND(SUM(amount) / NULLIF(COUNT(DISTINCT account_id), 0), 2) AS arpa FROM saas_invoices WHERE month = (SELECT MAX(month) FROM saas_invoices)",
     "params": []
   },
-  "category_opt": {
-    "name": "Demo \u2014 category options",
-    "sql": "SELECT DISTINCT category AS value, category AS label FROM sales ORDER BY 1",
+  "saas_mrr_trend": {
+    "name": "SaaS — MRR trend",
+    "sql": "SELECT month, ROUND(SUM(amount), 2) AS mrr, COUNT(DISTINCT account_id) AS active_accounts FROM saas_invoices GROUP BY month ORDER BY month",
     "params": []
   },
-  "opco_opt": {
-    "name": "Demo \u2014 OpCo options",
-    "sql": "SELECT DISTINCT opco AS value, opco AS label FROM sales ORDER BY 1",
+  "saas_mrr_by_plan": {
+    "name": "SaaS — MRR by plan over time",
+    "sql": "SELECT month, plan, ROUND(SUM(amount), 2) AS mrr FROM saas_invoices GROUP BY month, plan ORDER BY month, plan",
     "params": []
   },
-  "supplier_opt": {
-    "name": "Demo \u2014 supplier options",
-    "sql": "SELECT DISTINCT supplier AS value, supplier AS label FROM sales ORDER BY 1",
+  "saas_plan_mix": {
+    "name": "SaaS — plan mix (current month)",
+    "sql": "SELECT plan, COUNT(DISTINCT account_id) AS accounts, ROUND(SUM(amount), 2) AS mrr FROM saas_invoices WHERE month = (SELECT MAX(month) FROM saas_invoices) GROUP BY plan ORDER BY mrr DESC",
+    "params": []
+  },
+  "saas_churn": {
+    "name": "SaaS — new vs churned by month",
+    "sql": "SELECT month, SUM(CASE WHEN event_type = 'new' THEN 1 ELSE 0 END) AS new_accounts, SUM(CASE WHEN event_type = 'churn' THEN 1 ELSE 0 END) AS churned, ROUND(SUM(mrr_delta), 2) AS net_mrr_change FROM saas_subscription_events GROUP BY month ORDER BY month",
+    "params": []
+  },
+  "saas_cohort": {
+    "name": "SaaS — cohort retention",
+    "sql": "SELECT a.signup_month AS cohort, (CAST(substr(i.month, 1, 4) AS INTEGER) * 12 + CAST(substr(i.month, 6, 2) AS INTEGER)) - (CAST(substr(a.signup_month, 1, 4) AS INTEGER) * 12 + CAST(substr(a.signup_month, 6, 2) AS INTEGER)) AS months_since, COUNT(DISTINCT i.account_id) AS active FROM saas_invoices i JOIN saas_accounts a ON i.account_id = a.account_id GROUP BY 1, 2 ORDER BY 1, 2",
+    "params": []
+  },
+  "saas_segment": {
+    "name": "SaaS — MRR by segment (current month)",
+    "sql": "SELECT a.segment, ROUND(SUM(i.amount), 2) AS mrr, COUNT(DISTINCT i.account_id) AS accounts FROM saas_invoices i JOIN saas_accounts a ON i.account_id = a.account_id WHERE i.month = (SELECT MAX(month) FROM saas_invoices) GROUP BY a.segment ORDER BY mrr DESC",
+    "params": []
+  },
+  "saas_top_accounts": {
+    "name": "SaaS — top accounts by MRR",
+    "sql": "SELECT a.account, a.segment, i.plan, ROUND(SUM(i.amount), 2) AS mrr FROM saas_invoices i JOIN saas_accounts a ON i.account_id = a.account_id WHERE i.month = (SELECT MAX(month) FROM saas_invoices) GROUP BY a.account, a.segment, i.plan ORDER BY mrr DESC LIMIT 15",
+    "params": []
+  },
+  "saas_mrr_filt": {
+    "name": "SaaS — MRR trend (filtered)",
+    "sql": "SELECT month, ROUND(SUM(amount), 2) AS mrr FROM saas_invoices WHERE ({{plan}} IS NULL OR plan = {{plan}}) GROUP BY month ORDER BY month",
+    "params": [
+      {
+        "name": "plan",
+        "type": "select",
+        "default": null,
+        "required": false,
+        "options_query_id": null
+      }
+    ]
+  },
+  "saas_plan_opt": {
+    "name": "SaaS — plan options",
+    "sql": "SELECT plan AS value, plan AS label FROM saas_plans ORDER BY tier",
+    "params": []
+  },
+  "web_kpis": {
+    "name": "Web — headline metrics",
+    "sql": "SELECT COUNT(*) AS sessions, SUM(pageviews) AS total_pageviews, ROUND(100.0 * SUM(converted) / COUNT(*), 2) AS conversion_pct, ROUND(100.0 * SUM(bounced) / COUNT(*), 1) AS bounce_pct FROM web_sessions",
+    "params": []
+  },
+  "web_traffic_trend": {
+    "name": "Web — sessions & conversions by month",
+    "sql": "SELECT month, COUNT(*) AS sessions, SUM(converted) AS conversions FROM web_sessions GROUP BY month ORDER BY month",
+    "params": []
+  },
+  "web_source": {
+    "name": "Web — sessions by source",
+    "sql": "SELECT utm_source, COUNT(*) AS sessions, SUM(converted) AS conversions, ROUND(100.0 * SUM(converted) / COUNT(*), 2) AS conv_rate_pct FROM web_sessions GROUP BY utm_source ORDER BY sessions DESC",
+    "params": []
+  },
+  "web_device": {
+    "name": "Web — sessions by device",
+    "sql": "SELECT device, COUNT(*) AS sessions FROM web_sessions GROUP BY device ORDER BY sessions DESC",
+    "params": []
+  },
+  "web_country": {
+    "name": "Web — sessions by country",
+    "sql": "SELECT country, COUNT(*) AS sessions, SUM(converted) AS conversions FROM web_sessions GROUP BY country ORDER BY sessions DESC LIMIT 10",
+    "params": []
+  },
+  "web_funnel": {
+    "name": "Web — signup funnel",
+    "sql": "SELECT step, MIN(page) AS page, COUNT(DISTINCT session_id) AS sessions FROM web_pageviews WHERE step IS NOT NULL GROUP BY step ORDER BY step",
+    "params": []
+  },
+  "web_top_pages": {
+    "name": "Web — top pages",
+    "sql": "SELECT page, COUNT(*) AS pageviews FROM web_pageviews GROUP BY page ORDER BY pageviews DESC LIMIT 10",
+    "params": []
+  },
+  "web_filt_trend": {
+    "name": "Web — monthly sessions (filtered)",
+    "sql": "SELECT month, COUNT(*) AS sessions, SUM(converted) AS conversions FROM web_sessions WHERE ({{source}} IS NULL OR utm_source = {{source}}) AND ({{device}} IS NULL OR device = {{device}}) GROUP BY month ORDER BY month",
+    "params": [
+      {
+        "name": "source",
+        "type": "select",
+        "default": null,
+        "required": false,
+        "options_query_id": null
+      },
+      {
+        "name": "device",
+        "type": "select",
+        "default": null,
+        "required": false,
+        "options_query_id": null
+      }
+    ]
+  },
+  "web_source_opt": {
+    "name": "Web — source options",
+    "sql": "SELECT DISTINCT utm_source AS value, utm_source AS label FROM web_sessions ORDER BY 1",
+    "params": []
+  },
+  "web_device_opt": {
+    "name": "Web — device options",
+    "sql": "SELECT DISTINCT device AS value, device AS label FROM web_sessions ORDER BY 1",
+    "params": []
+  },
+  "fin_kpis": {
+    "name": "Finance — headline metrics",
+    "sql": "SELECT (SELECT ROUND(SUM(amount), 2) FROM fin_invoices) AS total_billed, (SELECT ROUND(SUM(amount), 2) FROM fin_payments) AS total_collected, (SELECT ROUND(SUM(amount), 2) FROM fin_invoices WHERE status <> 'paid') AS open_ar, (SELECT ROUND(SUM(amount), 2) FROM fin_expenses WHERE month = (SELECT MAX(month) FROM fin_expenses)) AS latest_month_expenses",
+    "params": []
+  },
+  "fin_cashflow": {
+    "name": "Finance — monthly cashflow",
+    "sql": "SELECT m.month AS month, COALESCE(b.billed, 0) AS billed, COALESCE(c.collected, 0) AS collected, COALESCE(e.expenses, 0) AS expenses, ROUND(COALESCE(c.collected, 0) - COALESCE(e.expenses, 0), 2) AS net_cash FROM (SELECT DISTINCT month FROM fin_expenses) m LEFT JOIN (SELECT month, ROUND(SUM(amount), 2) AS billed FROM fin_invoices GROUP BY month) b ON m.month = b.month LEFT JOIN (SELECT month, ROUND(SUM(amount), 2) AS collected FROM fin_payments GROUP BY month) c ON m.month = c.month LEFT JOIN (SELECT month, ROUND(SUM(amount), 2) AS expenses FROM fin_expenses GROUP BY month) e ON m.month = e.month ORDER BY m.month",
+    "params": []
+  },
+  "fin_ar_aging": {
+    "name": "Finance — AR aging (open invoices)",
+    "sql": "SELECT CASE WHEN days_past <= 0 THEN 'Current' WHEN days_past <= 30 THEN '1-30 days' WHEN days_past <= 60 THEN '31-60 days' WHEN days_past <= 90 THEN '61-90 days' ELSE '90+ days' END AS bucket, ROUND(SUM(amount), 2) AS amount, COUNT(*) AS invoices FROM (SELECT amount, (DATE '2026-05-31' - due_date) AS days_past FROM fin_invoices WHERE status <> 'paid') t GROUP BY 1 ORDER BY MIN(days_past)",
+    "params": []
+  },
+  "fin_expense_dept": {
+    "name": "Finance — expenses by department",
+    "sql": "SELECT department, ROUND(SUM(amount), 2) AS amount FROM fin_expenses GROUP BY department ORDER BY amount DESC",
+    "params": []
+  },
+  "fin_expense_cat_trend": {
+    "name": "Finance — expenses by category over time",
+    "sql": "SELECT month, category, ROUND(SUM(amount), 2) AS amount FROM fin_expenses GROUP BY month, category ORDER BY month, amount DESC",
+    "params": []
+  },
+  "fin_headcount_trend": {
+    "name": "Finance — total headcount by month",
+    "sql": "SELECT month, SUM(headcount) AS headcount FROM fin_headcount GROUP BY month ORDER BY month",
+    "params": []
+  },
+  "fin_expense_filt": {
+    "name": "Finance — monthly expenses (filtered)",
+    "sql": "SELECT month, ROUND(SUM(amount), 2) AS amount FROM fin_expenses WHERE ({{department}} IS NULL OR department = {{department}}) GROUP BY month ORDER BY month",
+    "params": [
+      {
+        "name": "department",
+        "type": "select",
+        "default": null,
+        "required": false,
+        "options_query_id": null
+      }
+    ]
+  },
+  "fin_dept_opt": {
+    "name": "Finance — department options",
+    "sql": "SELECT DISTINCT department AS value, department AS label FROM fin_expenses ORDER BY 1",
     "params": []
   }
 }

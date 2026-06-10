@@ -11,11 +11,16 @@ Covers
 - ``load_ee()`` registers feature checkers when a valid key is present.
 - License tier resolution from ``NUBI_LICENSE_KEY``.
 - ``reset_for_tests`` restores the initial state.
+- The migration runner's open-core ledger re-keying: billing migrations that
+  moved from core into ``database/migrations/ee/`` must never be re-applied
+  to databases that recorded them under their legacy bare file names.
 """
 
 from __future__ import annotations
 
+import importlib.util
 import os
+from pathlib import Path
 
 import pytest
 
@@ -359,3 +364,152 @@ class TestLicenseTier:
         reset_license_cache()
         lic = get_license()
         assert lic.tier is Tier.PRO
+
+
+# ---------------------------------------------------------------------------
+# Migration runner — open-core (ee/) discovery
+# ---------------------------------------------------------------------------
+
+_REPO_ROOT = Path(__file__).resolve().parents[2]
+
+
+def _load_migrate_module():
+    """Import database/migrate.py (a standalone script, not a package)."""
+    path = _REPO_ROOT / "database" / "migrate.py"
+    spec = importlib.util.spec_from_file_location("nubi_database_migrate", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+class TestMigrateEeDiscovery:
+    """EE billing migrations live in ee/, keyed ee/<file>, applied after core.
+
+    OSS self-host (no --ee) must never see them in the discovered set.
+    """
+
+    def test_discovered_ee_migrations_are_prefixed_and_after_core(self) -> None:
+        """The on-disk layout keys EE billing files as ee/<file>, after core."""
+        migrate = _load_migrate_module()
+
+        versions = [v for v, _ in migrate.discover_migrations(include_ee=True)]
+        for name in (
+            "0017_billing.sql",
+            "0018_fx_rates.sql",
+            "0022_wallet.sql",
+            "0027_invoices.sql",
+        ):
+            assert f"ee/{name}" in versions
+            assert name not in versions  # moved out of core
+        ee_start = min(
+            i for i, v in enumerate(versions) if v.startswith("ee/")
+        )
+        assert all(v.startswith("ee/") for v in versions[ee_start:])
+
+    def test_oss_core_discovery_excludes_billing(self) -> None:
+        """OSS self-host (no --ee) must not see any billing migrations."""
+        migrate = _load_migrate_module()
+
+        versions = [v for v, _ in migrate.discover_migrations(include_ee=False)]
+        assert not any(v.startswith("ee/") for v in versions)
+        assert "0017_billing.sql" not in versions
+
+
+# ---------------------------------------------------------------------------
+# Usage-quota enforcement hook (register_quota_checker / check_quota /
+# enforce_quota) — the core side of the EE billing quota gate.
+# ---------------------------------------------------------------------------
+
+
+class TestQuotaHook:
+    """Core quota hook: OSS default allow, EE checker honoured, fail-open."""
+
+    @pytest.mark.asyncio
+    async def test_no_checker_allows_everything(self) -> None:
+        from app.features import check_quota, enforce_quota
+
+        allowed, reason = await check_quota("org-1", "compute_units", 1.0)
+        assert allowed is True
+        assert reason == ""
+        # enforce_quota must be a no-op (no exception).
+        await enforce_quota("org-1", "compute_units", 1.0)
+
+    @pytest.mark.asyncio
+    async def test_none_org_allows_even_with_denying_checker(self) -> None:
+        """Unattributable usage cannot be quota-checked (metering warns instead)."""
+        from app.features import check_quota, register_quota_checker
+
+        register_quota_checker(lambda *, org_id, dimension, amount: (False, "denied"))
+        allowed, _ = await check_quota(None, "compute_units", 1.0)
+        assert allowed is True
+
+    @pytest.mark.asyncio
+    async def test_sync_checker_denial_propagates(self) -> None:
+        from app.features import check_quota, register_quota_checker
+
+        register_quota_checker(
+            lambda *, org_id, dimension, amount: (False, f"no {dimension} for {org_id}")
+        )
+        allowed, reason = await check_quota("org-1", "ai_calls", 1.0)
+        assert allowed is False
+        assert reason == "no ai_calls for org-1"
+
+    @pytest.mark.asyncio
+    async def test_async_checker_is_awaited(self) -> None:
+        from app.features import check_quota, register_quota_checker
+
+        async def _checker(*, org_id: str, dimension: str, amount: float):
+            return (False, "async deny")
+
+        register_quota_checker(_checker)
+        allowed, reason = await check_quota("org-1", "embedded_sessions", 1.0)
+        assert allowed is False
+        assert reason == "async deny"
+
+    @pytest.mark.asyncio
+    async def test_enforce_quota_raises_402_on_denial(self) -> None:
+        from app.errors import AppError
+        from app.features import enforce_quota, register_quota_checker
+
+        register_quota_checker(lambda *, org_id, dimension, amount: (False, "upgrade required"))
+        with pytest.raises(AppError) as excinfo:
+            await enforce_quota("org-1", "compute_units", 1.0)
+        assert excinfo.value.status == 402
+        assert excinfo.value.code == "quota_exceeded"
+        assert "upgrade required" in excinfo.value.message
+
+    @pytest.mark.asyncio
+    async def test_broken_checker_fails_open(self) -> None:
+        """A crashing billing checker must never take down request handling."""
+        from app.features import check_quota, register_quota_checker
+
+        def _boom(*, org_id: str, dimension: str, amount: float):
+            raise RuntimeError("checker exploded")
+
+        register_quota_checker(_boom)
+        allowed, _ = await check_quota("org-1", "compute_units", 1.0)
+        assert allowed is True
+
+    def test_non_callable_checker_raises_type_error(self) -> None:
+        from app.features import register_quota_checker
+
+        with pytest.raises(TypeError):
+            register_quota_checker("not-callable")  # type: ignore[arg-type]
+
+    @pytest.mark.asyncio
+    async def test_register_none_unregisters(self) -> None:
+        from app.features import check_quota, register_quota_checker
+
+        register_quota_checker(lambda *, org_id, dimension, amount: (False, "deny"))
+        register_quota_checker(None)
+        allowed, _ = await check_quota("org-1", "compute_units", 1.0)
+        assert allowed is True
+
+    @pytest.mark.asyncio
+    async def test_reset_for_tests_clears_quota_checker(self) -> None:
+        from app.features import check_quota, register_quota_checker, reset_for_tests
+
+        register_quota_checker(lambda *, org_id, dimension, amount: (False, "deny"))
+        reset_for_tests()
+        allowed, _ = await check_quota("org-1", "compute_units", 1.0)
+        assert allowed is True

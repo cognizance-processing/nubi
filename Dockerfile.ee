@@ -1,0 +1,97 @@
+# syntax=docker/dockerfile:1
+# Nubi EE combined image — identical to the root Dockerfile EXCEPT the build
+# context includes backend/app/ee/ (see Dockerfile.ee.dockerignore, which
+# BuildKit pairs with this file automatically; fly.toml sets it explicitly).
+#
+# This is the image for Nubi Cloud / licensed EE deployments: load_ee() in
+# backend/main.py finds app.ee at startup and mounts the EE routers (billing,
+# licensing, SSO). EE migrations (database/migrations/ee/) are applied by the
+# release command (`python /app/database/migrate.py --ee`, see fly.toml).
+# Activation at runtime is via the NUBI_LICENSE_KEY secret.
+#
+# KEEP IN SYNC with ./Dockerfile — the stages below are intentionally
+# identical; only the paired .dockerignore differs.
+
+# ── Stage 1: frontend build (Vite SPA) ──────────────────────────────────────
+# No VITE_BACKEND_URL on purpose: the SPA is served by the backend itself, so
+# all /api/v1 calls are same-origin.
+FROM node:20-alpine AS frontend
+WORKDIR /build
+
+COPY package.json package-lock.json ./
+RUN npm ci
+
+# Source needed by `vite build` (docs/ is bundled by src/docs/registry.js).
+COPY index.html vite.config.js tailwind.config.js postcss.config.js ./
+COPY public/ public/
+COPY src/ src/
+COPY docs/ docs/
+
+RUN npm run build
+
+# Embed bundles (<nubi-dashboard> / <nubi-widgets> drop-in scripts) → dist-embed/.
+# Served by the backend at /embed/* (see the embed block in backend/main.py).
+COPY vite.embed.config.js vite.widgets.config.js ./
+COPY embed/ embed/
+RUN npm run build:embed && npm run build:widgets
+
+# ── Stage 2: Python dependencies ────────────────────────────────────────────
+FROM python:3.13-slim AS pydeps
+WORKDIR /build
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends gcc libpq-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY requirements.txt .
+RUN pip install --upgrade pip \
+    && pip install --no-cache-dir --prefix=/install -r requirements.txt
+
+# ── Stage 3: runtime ────────────────────────────────────────────────────────
+FROM python:3.13-slim AS runtime
+WORKDIR /app
+
+# libpq is required at runtime by asyncpg / adbc-driver-postgresql.
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends libpq5 \
+    && rm -rf /var/lib/apt/lists/*
+
+# Python packages from the build stage.
+COPY --from=pydeps /install /usr/local
+
+# Backend source — INCLUDES app/ee/ (EE image; context allows it).
+COPY backend/app /app/backend/app
+COPY backend/main.py /app/backend/main.py
+COPY backend/worker.py /app/backend/worker.py
+
+# Seed sources needed at runtime by the onboarding demo bundle
+# (app/demo_bundle.py imports seed_data.generators and seed_data_duckdb;
+# parquet/duckdb artefacts are regenerated on demand, see .dockerignore).
+COPY backend/seed.py /app/backend/seed.py
+COPY backend/seed_data_duckdb.py /app/backend/seed_data_duckdb.py
+COPY backend/seed_data/ /app/backend/seed_data/
+
+# Migrations (run on Fly via `release_command`, see fly.toml).
+COPY database/ /app/database/
+
+# Built SPA — backend/main.py serves it when STATIC_DIR points here.
+COPY --from=frontend /build/dist /app/dist
+ENV STATIC_DIR=/app/dist
+
+# Embed bundles — backend/main.py mounts them at /embed/* when present.
+COPY --from=frontend /build/dist-embed /app/dist-embed
+ENV EMBED_STATIC_DIR=/app/dist-embed
+
+# Non-root user for security.
+RUN useradd --no-create-home --shell /bin/false appuser
+# demo_bundle regenerates parquet/duckdb seed artefacts under seed_data/.
+RUN chown -R appuser /app/backend/seed_data
+USER appuser
+
+# Both process commands (fly.toml [processes]) run from this directory.
+WORKDIR /app/backend
+
+EXPOSE 8000
+# Default command = the web process; fly.toml overrides per process.
+# Migrations are NOT run here — Fly's release_command handles them.
+CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000", "--workers", "2"]

@@ -366,11 +366,21 @@ def flow(fn: Callable) -> Callable:
             - A dict with a ``"type"`` key → passed through verbatim as the
               param spec dict.
 
+            The reserved keyword ``__env__`` is accepted for backward
+            compatibility but IGNORED: flow specs no longer carry an ``env``
+            field — the execution environment is resolved at trigger time
+            (explicit override → the flow's project default environment).
+            It is filtered out of ``params`` and never declares a param.
+
         Returns
         -------
         dict
             A valid FlowSpec dict (``version: 1``).
         """
+        # Reserved kwarg: __env__ is legacy — strip it so it never becomes a
+        # param.  Specs carry no env; resolution happens at trigger time.
+        flow_params.pop("__env__", None)
+
         ctx = _TraceContext()
         token = _TRACE_CTX.set(ctx)
         try:
@@ -408,12 +418,13 @@ def flow(fn: Callable) -> Callable:
                 "ui":              {"x": 0.0, "y": 0.0},
             })
 
-        return {
+        spec: dict[str, Any] = {
             "version": 1,
             "name":    fn.__name__,
             "params":  params,
             "tasks":   tasks,
         }
+        return spec
 
     fn.compile = compile  # type: ignore[attr-defined]
     fn.fn = fn            # type: ignore[attr-defined]

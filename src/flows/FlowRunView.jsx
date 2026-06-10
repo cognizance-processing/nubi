@@ -15,7 +15,7 @@
 
 import 'reactflow/dist/style.css'
 
-import { useState, useEffect, useRef, useCallback, useMemo } from 'react'
+import { useState, useEffect, useRef, useCallback, useMemo, useSyncExternalStore } from 'react'
 import ReactFlow, {
   Background,
   BackgroundVariant,
@@ -35,6 +35,7 @@ import {
   Terminal,
   RefreshCw,
   Timer,
+  Layers,
 } from 'lucide-react'
 
 import { getFlowRun } from '../lib/flows.js'
@@ -316,6 +317,27 @@ function TaskRunsSummary({ taskRuns }) {
 }
 
 // ---------------------------------------------------------------------------
+// Mobile media query (subscribed via useSyncExternalStore — no setState-in-effect)
+// ---------------------------------------------------------------------------
+
+const MOBILE_QUERY = '(max-width: 767px)'
+
+function subscribeMobile(callback) {
+  if (typeof window === 'undefined') return () => {}
+  const mq = window.matchMedia(MOBILE_QUERY)
+  mq.addEventListener('change', callback)
+  return () => mq.removeEventListener('change', callback)
+}
+
+function getMobileSnapshot() {
+  return typeof window !== 'undefined' && window.matchMedia(MOBILE_QUERY).matches
+}
+
+function getMobileServerSnapshot() {
+  return false
+}
+
+// ---------------------------------------------------------------------------
 // FlowRunView
 // ---------------------------------------------------------------------------
 
@@ -327,14 +349,7 @@ export default function FlowRunView({ runId, spec, onClose }) {
   const pollingRef = useRef(null)
 
   // ── Detect mobile ─────────────────────────────────────────────────────────
-  const [isMobile, setIsMobile] = useState(() => typeof window !== 'undefined' && window.innerWidth < 768)
-  useEffect(() => {
-    const mq = window.matchMedia('(max-width: 767px)')
-    const handler = (e) => setIsMobile(e.matches)
-    mq.addEventListener('change', handler)
-    setIsMobile(mq.matches)
-    return () => mq.removeEventListener('change', handler)
-  }, [])
+  const isMobile = useSyncExternalStore(subscribeMobile, getMobileSnapshot, getMobileServerSnapshot)
 
   // ── Build base graph from spec (structure never changes mid-run) ──────────
   const { nodes: baseNodes, edges } = useMemo(() => specToGraph(spec ?? {}), [spec])
@@ -401,6 +416,15 @@ export default function FlowRunView({ runId, spec, onClose }) {
           <span className="ml-1.5 sm:ml-2 text-xs text-muted font-mono">{runId?.slice(0, 8)}…</span>
         </div>
         {flowRun && <StateBadge state={flowRun.state} />}
+        {flowRun?.env && (
+          <span
+            className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[11px] font-medium bg-violet-100 text-violet-700 dark:bg-violet-900/30 dark:text-violet-400 shrink-0"
+            title="Environment this run targeted"
+          >
+            <Layers size={10} />
+            {flowRun.env}
+          </span>
+        )}
         {!flowRun && !error && <Loader2 size={13} className="animate-spin text-muted shrink-0" />}
         {error && (
           <div className="flex items-center gap-1.5 text-xs text-rose-600 dark:text-rose-400 shrink-0">

@@ -144,7 +144,7 @@ export default function ExportShareMenu({ board, spec }) {
       setShare({
         _local: true,
         embed_url: `${origin}/embed/${board ?? '<board-id>'}`,
-        snippet: `<nubi-dashboard board="${board ?? '<board-id>'}" get-token="yourGetToken"></nubi-dashboard>`,
+        snippet: `<nubi-dashboard dashboard-id="${board ?? '<board-id>'}" get-token="yourGetToken"></nubi-dashboard>`,
         rls: 'Embedding uses a short-lived host-signed JWT whose claims carry RLS policies; row filtering happens server-side in the connector.',
         mint: { token: null, max_ttl_minutes: 15 },
       })

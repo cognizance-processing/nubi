@@ -1,198 +1,169 @@
-# AI, Chat & MCP
+# AI, chat & MCP
 
-Nubi's AI surface lets LLMs and MCP agents author dashboards, run queries, inspect lineage, and propose pre-aggregations — without ever writing fetch, WebGL, or auth code. A Slack and WhatsApp chat gateway routes inbound messages through the same agentic loop, so your data is a message away.
+![Ask questions, build dashboards, and explore data with Nubi AI](illustration:LlmDashboards)
 
----
+Nubi has a built-in AI assistant that lives on every page of the app, plus an MCP server that lets external agents (Claude Desktop, Claude Code, and other MCP clients) reach into your workspace. The in-app agent can write and run SQL, explore your schema, and build dashboards for you — and because it runs through Nubi's query planner, it stays inside your row-level-security boundary the whole time.
 
-## LLM Providers
+This page covers:
 
-Configure the provider via environment variables:
-
-| Variable | Value |
-|----------|-------|
-| `LLM_PROVIDER` | `anthropic` \| `openai` \| `gemini` (default: `null` → `NullProvider`) |
-| `ANTHROPIC_API_KEY` | API key when `LLM_PROVIDER=anthropic` |
-| `OPENAI_API_KEY` | API key when `LLM_PROVIDER=openai` |
-| `GEMINI_API_KEY` | API key when `LLM_PROVIDER=gemini` |
-
-The `NullProvider` is deterministic and offline — it returns canned responses. No API keys required for development.
+- The **Nubi AI chat panel** — what you click and what you see.
+- **Grounded text-to-SQL** — turning a question into a validated query.
+- **Natural-language dashboard generation** — describing a dashboard and watching it build.
+- The **dashboard editor assistant** — conversational edits on a live board.
+- The **MCP server** — six tools that external agents use to author dashboards and run queries.
 
 ---
 
-## Grounded Ask — `POST /api/v1/ai/ask`
+## The Nubi AI chat panel
 
-Accepts a natural-language question, runs the deterministic grounding pipeline (token-overlap scoring over the query registry + lineage graph), calls the LLM, and returns a SQL suggestion with grounding context.
+The assistant is always one click away from anywhere in the app.
 
-```json
-POST /api/v1/ai/ask
-{ "question": "What was our revenue by region last quarter?" }
-```
+### Opening chat
 
-Response:
+1. Look at the top-right of the topbar for the **chat button** (speech-bubble icon).
+2. Click it to slide the **Nubi AI** panel in from the right. Click it again — or the **✕** in the panel header — to close. On a small screen the panel opens full-screen.
+3. When the panel is empty you'll see a welcome card with four starter prompts you can tap to send instantly:
+   - **Build a sales dashboard**
+   - **Show revenue by region**
+   - **Which queries run slowest?**
+   - **Summarise connected data sources**
 
-```json
-{
-  "grounding": {
-    "relevant_tables":  ["sales", "regions"],
-    "relevant_columns": [{"table": "sales", "column": "revenue"}],
-    "related_queries":  ["revenue_by_month"],
-    "snippets":         [...]
-  },
-  "suggestion": "SELECT region, SUM(revenue) FROM sales WHERE quarter = 'Q4' GROUP BY 1",
-  "provider":   "anthropic"
-}
-```
+> The global chat button is hidden on pages that embed their own assistant. Most notably, the dashboard editor has its own chat tuned for the board in front of you — see [The dashboard editor assistant](#the-dashboard-editor-assistant).
 
----
+### Choosing a model
 
-## Text-to-SQL — `POST /api/v1/ai/sql`
+Next to the close button in the panel header is a model picker. Options reflect the providers your workspace has configured (Anthropic Claude, OpenAI GPT-4o, Google Gemini, or a self-hosted model). The **Nubi Default** option uses whatever provider the workspace admin set in Organization Settings.
 
-Grounded SQL generation with optional auto-registration. Validates the generated SQL with sqlglot.
+If no provider API key is configured, the assistant still runs in a deterministic offline mode — useful for trying the flow end-to-end without connecting an LLM.
 
-```json
-POST /api/v1/ai/sql
-{
-  "question":     "revenue by month for a given region",
-  "datastore_id": null,
-  "save_as":      "revenue_by_month_region"
-}
-```
+### Sending a message
 
-Response:
+1. Type into the box at the bottom. Press **Enter** to send; use **Shift+Enter** for a newline.
+2. While the assistant works the send button becomes a **stop** button (■). Click it at any time to cancel.
 
-```json
-{
-  "sql":           "SELECT month, SUM(revenue) FROM sales WHERE region = {{region}} GROUP BY 1",
-  "valid":         true,
-  "issues":        [],
-  "provider":      "null",
-  "grounding":     { ... },
-  "registered_id": "revenue_by_month_region"
-}
-```
+### Watching the assistant work
 
-When `save_as` is provided, the generated SQL is registered into the query registry. `{{name}}` placeholders in the generated SQL are automatically inferred as `QueryParam` descriptors (type `text`, not required, no default).
+Nubi's chat streams its work as it happens — you watch each step, not just a final answer.
 
----
+- A pulsing **status line** ("Thinking…", "Running query…") appears first.
+- Each tool the agent calls shows up as a **tool block** that animates from *running…* to a result, with a spinner that turns into a green check on success or a red alert on failure.
+- The written reply then **streams in token by token** with a blinking caret.
 
-## AI Dashboard Generation — `POST /api/v1/ai/dashboard`
+Tool blocks are collapsed by default. **Click any block to expand it** and see the exact arguments and the full result. Each block is labelled by what it does:
 
-Generates a full `DashboardSpec` + compiled HTML from a natural-language question.
+| Tool block | What you see when expanded |
+|---|---|
+| **Get schema** | The catalog (tables + columns) the assistant is grounding against. |
+| **List queries** | Your registered queries with their ids and parameters. |
+| **Generate SQL** | The generated SQL, a `valid` / `needs review` badge, the tables referenced, and any validation issues. |
+| **Create query** | The query id and SQL that was saved to the registry. |
+| **Run query** | A row/column count and a preview of the first rows. |
+| **Create dashboard** | The dashboard spec and a chip for each widget type added. |
+| **Edit dashboard** | The applied operation (add/move/configure/remove widget) and the re-validated spec. |
 
-```json
-POST /api/v1/ai/dashboard
-{ "question": "Show me revenue by region for Q1 2024" }
-```
+Because every step is visible, you can always see why the assistant answered the way it did — which tables it scanned, which SQL it ran, how many rows came back.
 
-Pipeline:
-1. **Grounding** — `build_catalog` inspects the connected query registry + lineage graph.
-2. **LLM generation** — the provider generates a `DashboardSpec` referencing real registered query IDs and real column names.
-3. **Compilation** — `spec_to_html` compiles the spec to a CSS-grid HTML fragment.
-4. **Validation** — `validate_dashboard_html` runs server-side sanity checks.
-5. **Response** — returns spec dict, HTML, grounding, provider name, and validation result.
+### What the assistant can do
 
-Get the JSON Schema for the spec (for grounding your own LLMs):
+Just ask in plain language. Common requests:
 
-```
-GET /api/v1/ai/dashboard/schema
-```
+- **"Show me revenue by region last quarter."** → generates SQL, runs it, and summarises the result with a preview table.
+- **"Build a sales dashboard."** → generates the SQL behind each widget and assembles a live dashboard.
+- **"Which of my queries scan the most data?"** → lists and inspects your registered queries.
+- **"Summarise the data sources I have connected."** → reads the catalog and explains what's available.
+
+The assistant only ever queries data you're allowed to see. Its access is scoped to your account and your organisation's row-level-security policies.
 
 ---
 
-## Agentic Chat — `POST /api/v1/ai/chat`
+## Grounded text-to-SQL
 
-The agentic chat endpoint runs a multi-step tool-calling loop and returns the final reply plus a log of all tool actions taken.
+When you ask a data question, Nubi doesn't send a blank prompt to the model and hope. It **grounds** the request first: it reads your query registry and lineage graph to find the tables and columns that actually relate to your question, then instructs the model to write SQL against only those real names. The generated SQL is parsed and validated before you see it.
 
-```json
-POST /api/v1/ai/chat
-{
-  "messages": [
-    { "role": "user", "content": "Show me a dashboard of revenue by region" }
-  ],
-  "board_id": null
-}
+In chat this happens automatically inside the **Generate SQL** tool block. Expand it to see:
+
+- The SQL itself.
+- A **`valid`** or **`needs review`** badge (Nubi parses the SQL with sqlglot to check it).
+- The tables it references.
+- Any issues the validator caught.
+
+```sql
+SELECT region, SUM(revenue) AS revenue
+FROM sales
+WHERE quarter = 'Q4'
+GROUP BY region
+ORDER BY revenue DESC
 ```
 
-Response:
+**How grounding works under the hood:** the pipeline tokenises your question, scores each table and column by token overlap, keeps the top-5 tables and top-20 columns, and injects only those into the LLM prompt. Tables with zero relevance score are excluded entirely — the model never even sees them, so it can't hallucinate them into the SQL.
 
-```json
-{
-  "reply":   "I've created a Revenue by Region dashboard for you.",
-  "actions": [
-    { "tool": "generate_sql",     "arguments": {...}, "result": {...} },
-    { "tool": "create_dashboard", "arguments": {...}, "result": {...} }
-  ]
-}
-```
-
-### Agent Tool Registry
-
-The agent has access to these 7 tools (from `app.ai.tools`):
-
-| Tool | Description |
-|------|-------------|
-| `get_schema` | Return the catalog schema (tables + columns) from the query registry + lineage graph. |
-| `list_queries` | Return all registered queries with their ids, names, and param descriptors. |
-| `generate_sql` | Generate a grounded SQL SELECT from a natural-language question. |
-| `create_query` | Register a query in the query registry under a given id. |
-| `run_query` | Execute a registered query (or ad-hoc SELECT) and return JSON rows. |
-| `create_dashboard` | Generate a `DashboardSpec` for a natural-language question, compile to HTML, and validate. |
-| `edit_dashboard` | Apply an edit operation (`add_widget` / `move_widget` / `configure_widget` / `remove_widget`) to a DashboardSpec and re-validate. |
-
-All tool calls pass `claims` through to the planner — the agent never exceeds the caller's auth scope. `run_query` injects RLS predicates from `claims["policies"]` before executing.
-
-### `edit_dashboard` Operations
-
-```json
-{ "action": "add_widget",      "widget": { ...Widget... } }
-{ "action": "move_widget",     "widget_id": "w1", "pos": {"x":1,"y":2,"w":4,"h":2} }
-{ "action": "configure_widget","widget_id": "w1", "updates": {"props": {"label": "Q4 Revenue"}} }
-{ "action": "remove_widget",   "widget_id": "w1" }
-```
-
-Returns `{spec, valid, issues}`. The `id` and `type` fields of an existing widget are immutable; `configure_widget` ignores them.
-
-### NullProvider Scripted Path
-
-With NullProvider (no API key), the agent follows a deterministic scripted path based on intent keywords:
-
-- Contains "chart", "dashboard", "visuali", "graph", "plot" → `generate_sql → create_dashboard → reply`
-- Contains "run", "query", "execute", "fetch", "show", "list" → `generate_sql → run_query → reply`
-- Any other message → `generate_sql → reply`
+To **keep** a generated query, ask the assistant to save it (e.g. *"save this as revenue_by_region"*). Saved queries get a stable id and any `{{placeholder}}` in the SQL becomes a typed parameter. See [Queries & Parameters](/docs/queries-and-params) for the full parameter system.
 
 ---
 
-## MCP Server
+## Natural-language dashboard generation
 
-The Nubi MCP server exposes 6 tools to any MCP-compatible client (Claude Desktop, Claude Code, etc.) via stdio transport.
+Ask for a dashboard and Nubi builds a real one — not a screenshot, a live, cross-filtering board bound to your queries.
 
-### Installation
+1. In chat, type something like **"Build a revenue dashboard for Q1 by region"** (or tap the **Build a sales dashboard** suggestion).
+2. Watch the **Generate SQL** block produce the query each widget will read from.
+3. Watch the **Create dashboard** block assemble the board. Expand it to see the dashboard name and a chip for each widget added.
+4. The assistant replies with a summary and a link to open the dashboard.
+
+Under the hood Nubi generates a structured **DashboardSpec** (referencing real query ids and real column names), compiles it to dashboard HTML, and validates it. Dashboards are composed only of Nubi's sandboxed widget elements — so a generated dashboard can never contain scripts or unsafe markup. Widgets are limited to the types Nubi supports: `kpi`, `metric`, `chart`, `table`, `pivot`, `filter`, `text`, and `section`. See [Dashboards](/docs/dashboards) for the full widget and chart reference.
+
+---
+
+## The dashboard editor assistant
+
+The dashboard editor has its own embedded assistant, tuned for changing the board you're currently editing.
+
+1. Open a dashboard in the editor.
+2. Use the editor's chat to describe a change in plain language — for example *"add a KPI for total orders"*, *"turn the bar chart into a line chart"*, or *"remove the region filter"*.
+3. The assistant proposes an updated spec. When it has one ready, you get an **Apply** button — clicking it updates the live board in front of you.
+4. The panel keeps a conversation history and a **New chat** button so you can start a fresh thread without losing the board.
+
+This is the conversational counterpart to the drag-and-drop canvas: edit by hand, by chat, or both.
+
+> You can also inspect and hand-edit the raw spec in the editor's **Code** panel (the slide-over showing YAML/JSON). Changes made there are validated before being applied.
+
+---
+
+## MCP server — let external agents author dashboards
+
+Nubi ships a **Model Context Protocol (MCP)** server. Register it with an MCP client (Claude Desktop, Claude Code, etc.) and that agent can discover your queries, run them, explore SQL lineage, and author dashboards directly in your Nubi workspace — all over a local stdio connection.
+
+### The six tools
+
+| Tool | Signature | What it does |
+|---|---|---|
+| `list_dashboards` | `() → [{id, name}]` | List every entry in the query registry so the agent can discover ids. |
+| `run_query` | `(query_id, limit=100) → {columns, rows, row_count}` | Execute a registered query and return a JSON preview (up to `limit` rows). |
+| `list_lineage` | `() → {available, graph}` | Return the SQL lineage graph (which queries derive from which tables). Returns `{available: false, reason: "..."}` when the lineage module is not yet built. |
+| `propose_materialized_view` | `() → [{base_table, dimensions, measures, hits, est_bytes_saved}]` | Analyse the query log and suggest pre-aggregation rollups for high-frequency GROUP BY patterns. |
+| `create_dashboard` | `(name, spec_or_html, org_id="mcp") → {id, name}` | Validate and store a dashboard. Accepts a DashboardSpec dict (preferred) or an HTML string. Non-conforming content is rejected. |
+| `author_dashboard` | `(question) → {id, html_preview}` | Generate a dashboard from a natural-language question and store it in one call. |
+
+`create_dashboard` and `author_dashboard` both validate before storing: only Nubi's widget elements are allowed (`<nubi-kpi>`, `<nubi-table>`, `<nubi-chart>`, `<nubi-filter>`, `<nubi-text>`); `<script>` tags and inline event handlers are rejected.
+
+Dashboards an agent authors over MCP appear in your workspace alongside boards you build by hand or in chat.
+
+### Install
 
 ```bash
 cd mcp
 pip install -r requirements.txt
 ```
 
-### Running
+This installs the MCP Python SDK plus connector dependencies.
+
+### Register with Claude Code
 
 ```bash
-python -m nubi_mcp.server
+claude mcp add nubi -- python -m nubi_mcp.server
 ```
 
-### Tools
-
-| Tool | Signature | Description |
-|------|-----------|-------------|
-| `list_dashboards` | `() → [{id, name}]` | List all registered dashboards/queries |
-| `run_query` | `(query_id, limit=100) → {columns, rows, row_count}` | Execute a registered query and return a JSON preview |
-| `list_lineage` | `() → {available, graph}` | Return the SQL lineage graph |
-| `propose_materialized_view` | `() → [{base_table, dimensions, measures, hit_count, bytes_saved}]` | Suggest pre-aggregation rollups from the query log |
-| `create_dashboard` | `(name, html, org_id) → {id, name}` | Validate and store a dashboard HTML document |
-| `author_dashboard` | `(question) → {id, html_preview}` | Ground a question and auto-generate a dashboard |
-
-### Registering with Claude Desktop
-
-Add to `~/Library/Application Support/Claude/claude_desktop_config.json`:
+Or add it manually to your project's `.claude/settings.json`:
 
 ```json
 {
@@ -206,86 +177,68 @@ Add to `~/Library/Application Support/Claude/claude_desktop_config.json`:
 }
 ```
 
-### Registering with Claude Code
+Replace `/absolute/path/to/nubi/mcp` with the real path to the `mcp/` directory in your checkout.
+
+### Register with Claude Desktop
+
+Edit the Claude Desktop config file:
+
+- **macOS:** `~/Library/Application Support/Claude/claude_desktop_config.json`
+- **Windows:** `%APPDATA%\Claude\claude_desktop_config.json`
+
+```json
+{
+  "mcpServers": {
+    "nubi": {
+      "command": "python",
+      "args": ["-m", "nubi_mcp.server"],
+      "cwd": "/absolute/path/to/nubi/mcp"
+    }
+  }
+}
+```
+
+If you use a virtual environment, point `command` at that environment's Python binary:
+
+```json
+{
+  "mcpServers": {
+    "nubi": {
+      "command": "/absolute/path/to/venv/bin/python",
+      "args": ["-m", "nubi_mcp.server"],
+      "cwd": "/absolute/path/to/nubi/mcp"
+    }
+  }
+}
+```
+
+Restart the client after editing the config. Then try: *"list my Nubi dashboards"* or *"author a Nubi dashboard showing revenue by region"*.
+
+### Run it manually (smoke-test)
 
 ```bash
-claude mcp add nubi -- python -m nubi_mcp.server
+cd mcp
+python -m nubi_mcp.server
 ```
+
+The server communicates over **stdio**. You won't see output unless an MCP client connects, but a clean start confirms the install is valid.
 
 ---
 
-## Dashboard Authoring Rules for LLMs
+## Tips
 
-When calling `create_dashboard` or `author_dashboard`, generated HTML must follow these rules:
-
-1. Use only `<nubi-kpi>`, `<nubi-table>`, `<nubi-chart>`, `<nubi-filter>`, `<nubi-text>` widget elements — plus standard layout HTML.
-2. No `<script>` tags. No inline event handlers (`onclick`, `onload`, etc.).
-3. No `javascript:` URLs.
-4. Widget `query-id` attributes must reference registered query ids.
-5. Widget `get-token` and `backend` attributes are added by the Nubi SDK at render time — do not hard-code tokens.
-
-The DOMPurify sanitizer enforces these rules server-side. Non-conformant HTML is rejected with a validation error before storage.
+- **Expand tool blocks.** The fastest way to trust an answer is to open the *Generate SQL* and *Run query* blocks and read the actual SQL and row count.
+- **Use suggestions to learn the patterns.** The starter chips show the kinds of phrasing the assistant handles well.
+- **Stop early.** If a response goes the wrong direction, click ■ and rephrase — you don't have to wait for it to finish.
+- **Save generated SQL.** Ask the assistant to save any query you want to reuse; it gets a stable id and typed parameters.
+- **Edit dashboards conversationally.** Open a board in the editor and ask for changes; apply the ones you like and ignore the rest.
 
 ---
 
-## SQL Lineage
+## Related
 
-`GET /api/v1/lineage` returns the lineage graph extracted by sqlglot from the query registry:
-
-```json
-{
-  "nodes": ["sales", "orders", "revenue_summary"],
-  "edges": [
-    { "from": "sales",  "to": "revenue_summary" },
-    { "from": "orders", "to": "revenue_summary" }
-  ]
-}
-```
-
-The MCP `list_lineage` tool surfaces the same graph. If the lineage module is not yet available, the tool returns `{ "available": false, "reason": "..." }` rather than crashing.
-
----
-
-## Slack & WhatsApp Chat Gateway
-
-Nubi's chat gateway receives inbound messages from Slack and WhatsApp and routes them through the agentic AI loop. The actual reply is delivered back through the messaging platform.
-
-### Slack Webhook
-
-```
-POST /api/v1/chat/slack
-```
-
-Verifies the request signature using **HMAC-SHA256** over the raw request body with `SLACK_SIGNING_SECRET`. Returns 200 on success, 401 if the signature is invalid. The endpoint delegates to `handle_inbound("slack", payload)` which normalises the payload and calls the agent.
-
-Configure in Slack's App settings → Event Subscriptions → Request URL.
-
-Required env var: `SLACK_SIGNING_SECRET`
-
-### WhatsApp Webhook
-
-```
-POST /api/v1/chat/whatsapp
-```
-
-Verifies the `X-Hub-Signature-256` header using **HMAC-SHA256** with `WHATSAPP_APP_SECRET`. Returns 200 on success, 401 if the signature is invalid.
-
-Configure in the WhatsApp Cloud API → Webhooks settings.
-
-Required env var: `WHATSAPP_APP_SECRET`
-
-### Response Shape
-
-Both endpoints return:
-
-```json
-{
-  "ok":       true,
-  "text":     "Here is your revenue by region dashboard...",
-  "has_image": false
-}
-```
-
-When the agent produces a chart, `has_image` is `true` and `image_png` carries a PNG byte blob delivered as an attachment via the platform adapter.
-
-> **Authentication note:** Both webhook endpoints do NOT require a Nubi Bearer token — they are external webhook entry points. HMAC signature verification is the authentication mechanism.
+- [Dashboards](/docs/dashboards) — widget types, chart types, and the editor.
+- [Queries & Parameters](/docs/queries-and-params) — saving generated SQL and using `{{named}}` parameters.
+- [Flows](/docs/flows) — put the AI agent in a scheduled, multi-step pipeline.
+- [Pre-Aggregations](/docs/pre-aggregations) — the rollups `propose_materialized_view` suggests.
+- [Organization Settings](/docs/organization-settings) — configure your workspace's LLM provider and API keys.

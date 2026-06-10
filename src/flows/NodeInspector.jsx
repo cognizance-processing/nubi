@@ -3,13 +3,12 @@
  *
  * Editable fields:
  *   - key (text, unique slug)
- *   - kind (select: query | python | agent | extract | bucket_load | noop | map | branch)
+ *   - kind (select: query | python | agent | bucket_load | noop | map | branch)
  *   - needs (read-only, derived from edges)
  *   - kind-specific config:
  *       query:       query_id (text) OR sql (textarea)
- *       python:      code (@monaco-editor/react)
+ *       python:      code (@monaco-editor/react) + snippet picker
  *       agent:       prompt (textarea), max_steps (number)
- *       extract:     source_uri | input, dest_uri, secret (select), format (auto|zip|tar|tar.gz)
  *       bucket_load: uri, secret (select), format, source
  *       noop:        (nothing)
  *       map:         item_expr, item_var, max_concurrency, max_map_size, collect_key, body (JSON)
@@ -28,6 +27,8 @@ import { useState, useCallback, useEffect } from 'react'
 import { X, ChevronDown, Plus, Trash2 } from 'lucide-react'
 import Editor from '@monaco-editor/react'
 import { listSecrets } from '../lib/secrets.js'
+import { get } from '../lib/api.js'
+import { PYTHON_EXAMPLES } from './pythonExamples.js'
 
 // ---------------------------------------------------------------------------
 // Shared styled primitives
@@ -81,32 +82,44 @@ function NumberField({ label, value, onChange, min = 0, placeholder = '' }) {
 // ---------------------------------------------------------------------------
 
 function QueryConfig({ config, onChange }) {
-  const useQueryId = config.query_id !== undefined || !config.sql
+  // Mode is derived from which key is *present* (sql defined → raw SQL),
+  // NOT from truthiness — otherwise an empty SQL box flips back to Query ID.
+  const mode = config.sql !== undefined ? 'sql' : 'query_id'
+
+  // Connectors for the "run against" picker. Falls back to DuckDB-only if the
+  // request fails (e.g. offline) — the picker still works.
+  const [connectors, setConnectors] = useState([])
+  useEffect(() => {
+    let cancelled = false
+    get('/connectors')
+      .then(rows => { if (!cancelled) setConnectors(Array.isArray(rows) ? rows : []) })
+      .catch(() => { /* ignore */ })
+    return () => { cancelled = true }
+  }, [])
+
   return (
     <div className="space-y-3">
       {/* Toggle: query_id vs raw SQL */}
       <div className="flex h-8 rounded-lg border border-border overflow-hidden">
-        {['query_id', 'sql'].map(mode => {
-          const active = mode === 'query_id' ? useQueryId : !useQueryId
-          return (
-            <button
-              key={mode}
-              onClick={() => {
-                if (mode === 'query_id') onChange({ query_id: config.query_id ?? '', sql: undefined })
-                else onChange({ sql: config.sql ?? '', query_id: undefined })
-              }}
-              className={[
-                'flex-1 text-xs font-medium transition-colors capitalize',
-                active ? 'bg-primary text-primary-fg' : 'bg-surface text-muted hover:text-primary',
-              ].join(' ')}
-            >
-              {mode === 'query_id' ? 'Query ID' : 'Raw SQL'}
-            </button>
-          )
-        })}
+        {[['query_id', 'Query ID'], ['sql', 'Raw SQL']].map(([m, label]) => (
+          <button
+            key={m}
+            onClick={() => {
+              if (m === mode) return
+              if (m === 'query_id') onChange({ ...config, query_id: config.query_id ?? '', sql: undefined })
+              else onChange({ ...config, sql: config.sql ?? '', query_id: undefined })
+            }}
+            className={[
+              'flex-1 text-xs font-medium transition-colors',
+              m === mode ? 'bg-primary text-primary-fg' : 'bg-surface text-muted hover:text-primary',
+            ].join(' ')}
+          >
+            {label}
+          </button>
+        ))}
       </div>
 
-      {useQueryId ? (
+      {mode === 'query_id' ? (
         <div>
           <FieldLabel>Query ID</FieldLabel>
           <input
@@ -127,22 +140,83 @@ function QueryConfig({ config, onChange }) {
             placeholder="SELECT * FROM ..."
             onChange={e => onChange({ ...config, sql: e.target.value })}
           />
+          <p className="text-[10px] text-muted/60 mt-1">
+            <code className="font-mono bg-surface-2 px-0.5 rounded">{'{{ secrets.NAME }}'}</code>{' '}
+            is resolved at run time.
+          </p>
         </div>
       )}
+
+      {/* Connector / datastore to run against */}
+      <div>
+        <FieldLabel>Run against (connector)</FieldLabel>
+        <select
+          className={selectCls}
+          value={config.datastore_id ?? ''}
+          onChange={e => onChange({ ...config, datastore_id: e.target.value || undefined })}
+        >
+          <option value="">DuckDB · in-memory (upstream task outputs)</option>
+          {connectors.map(c => (
+            <option key={c.id} value={c.id}>
+              {c.name}{c.config?.connector_type ? ` · ${c.config.connector_type}` : ''}
+            </option>
+          ))}
+        </select>
+        <p className="text-[10px] text-muted/60 mt-1">
+          {mode === 'sql'
+            ? 'Raw SQL runs against this connector. Leave as DuckDB to query the outputs of upstream tasks in-memory.'
+            : 'Optionally override which connector this registered query runs against. Leave as DuckDB for the default.'}
+        </p>
+      </div>
     </div>
   )
 }
 
 function PythonConfig({ config, onChange }) {
+  const [snippetOpen, setSnippetOpen] = useState(false)
+
+  const insertSnippet = (code) => {
+    onChange({ ...config, code })
+    setSnippetOpen(false)
+  }
+
   return (
-    <div>
-      <FieldLabel>Python code</FieldLabel>
-      <p className="text-[10px] text-muted mb-1.5">
-        Variables available: <code className="font-mono bg-surface-2 px-1 rounded">inputs</code>, <code className="font-mono bg-surface-2 px-1 rounded">params</code>. Bind result to <code className="font-mono bg-surface-2 px-1 rounded">result</code>.
+    <div className="space-y-2">
+      {/* Snippet picker */}
+      <div className="relative">
+        <button
+          type="button"
+          onClick={() => setSnippetOpen(v => !v)}
+          className="flex items-center gap-1.5 px-2.5 py-1.5 text-[11px] font-medium rounded-lg border border-border bg-surface hover:bg-surface-2 text-muted hover:text-fg transition-colors"
+        >
+          <ChevronDown size={11} className={`shrink-0 transition-transform ${snippetOpen ? 'rotate-180' : ''}`} />
+          Insert example…
+        </button>
+        {snippetOpen && (
+          <div className="absolute z-20 top-full left-0 mt-1 min-w-[220px] py-1.5 rounded-xl bg-surface border border-border shadow-lg shadow-black/10">
+            {PYTHON_EXAMPLES.map(ex => (
+              <button
+                key={ex.label}
+                onClick={() => insertSnippet(ex.code)}
+                className="w-full text-left px-3 py-2 text-xs text-fg hover:bg-surface-2 transition-colors"
+              >
+                {ex.label}
+              </button>
+            ))}
+          </div>
+        )}
+      </div>
+
+      {/* Help text */}
+      <p className="text-[10px] text-muted">
+        Variables: <code className="font-mono bg-surface-2 px-1 rounded">inputs</code>, <code className="font-mono bg-surface-2 px-1 rounded">params</code>, <code className="font-mono bg-surface-2 px-1 rounded">secrets</code>. Bind output to <code className="font-mono bg-surface-2 px-1 rounded">result</code>.
+        {' '}<code className="font-mono bg-surface-2 px-1 rounded">{'{{ secrets.NAME }}'}</code> is resolved at run time.
       </p>
-      <div className="rounded-lg border border-border overflow-hidden" style={{ height: 220 }}>
+
+      {/* Monaco editor */}
+      <div className="rounded-lg border border-border overflow-hidden" style={{ height: 280 }}>
         <Editor
-          defaultLanguage="python"
+          language="python"
           value={config.code ?? '# Write your task code here\nresult = {}'}
           onChange={val => onChange({ ...config, code: val ?? '' })}
           theme="vs-dark"
@@ -153,6 +227,9 @@ function PythonConfig({ config, onChange }) {
             scrollBeyondLastLine: false,
             padding: { top: 8, bottom: 8 },
             wordWrap: 'on',
+            tabSize: 4,
+            insertSpaces: true,
+            automaticLayout: true,
           }}
         />
       </div>
@@ -197,6 +274,354 @@ function NoopConfig() {
 }
 
 // ---------------------------------------------------------------------------
+// MaterializeConfig — merge upstream sources into a materialized dataset
+// ---------------------------------------------------------------------------
+
+/**
+ * Config panel for the 'materialize' task kind. Merges the upstream source-task
+ * results in DuckDB via `combine_sql` and writes them to a single materialized
+ * dataset (see app/flows/materialize.py).
+ *
+ * Fields:
+ *   combine_sql — required SQL merging the source tables (each source is
+ *                 registered as a DuckDB table named after its task key).
+ *   sources     — list of upstream task keys to register as tables.
+ *   table       — target table name (default 'blend').
+ *   rls_keys    — columns that MUST survive the merge so row-level security can
+ *                 filter at read time.
+ */
+function MaterializeConfig({ config, onChange }) {
+  const csv = (arr) => (Array.isArray(arr) ? arr.join(', ') : (arr ?? ''))
+  const parse = (s) => s.split(',').map(x => x.trim()).filter(Boolean)
+  return (
+    <div className="space-y-3">
+      <div>
+        <FieldLabel>Combine SQL</FieldLabel>
+        <textarea
+          className={textareaCls}
+          rows={5}
+          value={config.combine_sql ?? ''}
+          placeholder="SELECT * FROM source_a UNION ALL SELECT * FROM source_b"
+          onChange={e => onChange({ ...config, combine_sql: e.target.value })}
+        />
+        <p className="text-[10px] text-muted/60 mt-1">Reference each upstream source by its task key (registered as a DuckDB table).</p>
+      </div>
+      <div>
+        <FieldLabel>Sources (task keys)</FieldLabel>
+        <input
+          type="text"
+          className={inputCls}
+          value={csv(config.sources)}
+          placeholder="source_a, source_b"
+          onChange={e => onChange({ ...config, sources: parse(e.target.value) })}
+        />
+      </div>
+      <div>
+        <FieldLabel>Target table</FieldLabel>
+        <input
+          type="text"
+          className={inputCls}
+          value={config.table ?? ''}
+          placeholder="blend"
+          onChange={e => onChange({ ...config, table: e.target.value })}
+        />
+      </div>
+      <div>
+        <FieldLabel>RLS keys (preserved columns)</FieldLabel>
+        <input
+          type="text"
+          className={inputCls}
+          value={csv(config.rls_keys)}
+          placeholder="org_id, tenant_id"
+          onChange={e => onChange({ ...config, rls_keys: parse(e.target.value) })}
+        />
+        <p className="text-[10px] text-muted/60 mt-1">Columns that must survive the merge so RLS can filter rows at read time.</p>
+      </div>
+
+      <MaterializedSection config={config} onChange={onChange} />
+    </div>
+  )
+}
+
+// ---------------------------------------------------------------------------
+// MaterializedSection — SQLMesh-style materialization strategy
+// ---------------------------------------------------------------------------
+
+/**
+ * Edits the nested `config.materialized` block on a 'materialize' task. This is
+ * the PINNED shape — bound EXACTLY to the nested object, no flat keys:
+ *
+ *   config.materialized = {
+ *     kind:        'view' | 'full' | 'incremental'   (default 'view')
+ *     target:      string   (required when kind != 'view'; logical path, no env prefix)
+ *     time_column: string   (required when kind == 'incremental')
+ *     unique_key:  string[] (optional; present ⇒ upsert/merge, absent ⇒ append)
+ *     lookback:    string   (optional, e.g. '3 days')
+ *   }
+ *
+ * Absent ⇒ behaves as today (kind='view', no persistence). Targets are written
+ * under an env-scoped path/prefix so dev and prod never clobber each other.
+ */
+function MaterializedSection({ config, onChange }) {
+  const mat = config.materialized ?? {}
+  const kind = mat.kind ?? 'view'
+
+  const csv = (arr) => (Array.isArray(arr) ? arr.join(', ') : (arr ?? ''))
+  const parse = (s) => s.split(',').map(x => x.trim()).filter(Boolean)
+
+  // Write back into the nested object. Strip empty optional keys so we don't
+  // persist noise into the spec.
+  const setMat = (patch) => {
+    const next = { ...mat, ...patch }
+    if (next.kind === 'view') {
+      // View ⇒ no persistence; clear the strategy-specific keys.
+      onChange({ ...config, materialized: { kind: 'view' } })
+      return
+    }
+    // Drop empties for cleanliness.
+    if (!next.target) delete next.target
+    if (!next.time_column) delete next.time_column
+    if (!next.lookback) delete next.lookback
+    if (!next.unique_key || next.unique_key.length === 0) delete next.unique_key
+    onChange({ ...config, materialized: next })
+  }
+
+  return (
+    <div className="pt-1 mt-1 border-t border-border/60 space-y-3">
+      <p className="text-[10px] font-semibold text-muted/70 uppercase tracking-widest">Materialization</p>
+
+      <div>
+        <FieldLabel>Strategy</FieldLabel>
+        <select
+          className={selectCls}
+          value={kind}
+          onChange={e => setMat({ kind: e.target.value })}
+        >
+          <option value="view">View — no persistence (default)</option>
+          <option value="full">Full — overwrite target each run</option>
+          <option value="incremental">Incremental — append/merge new rows</option>
+        </select>
+        <p className="text-[10px] text-muted/60 mt-1">
+          {kind === 'view' && 'Registers an in-memory query only — nothing is persisted.'}
+          {kind === 'full' && 'Overwrites the target table in object storage on every run.'}
+          {kind === 'incremental' && 'Processes only rows newer than the stored watermark, then appends or merges.'}
+        </p>
+      </div>
+
+      {kind !== 'view' && (
+        <div>
+          <FieldLabel>Target (logical path)</FieldLabel>
+          <input
+            type="text"
+            className={inputCls}
+            value={mat.target ?? ''}
+            placeholder="orders/daily"
+            onChange={e => setMat({ target: e.target.value })}
+          />
+          <p className="text-[10px] text-muted/60 mt-1">
+            Logical path without env prefix — written under <code className="font-mono bg-surface-2 px-0.5 rounded">{'<env>/<target>'}</code> so dev and prod never clobber each other.
+          </p>
+        </div>
+      )}
+
+      {kind === 'incremental' && (
+        <>
+          <div>
+            <FieldLabel>Time column</FieldLabel>
+            <input
+              type="text"
+              className={inputCls}
+              value={mat.time_column ?? ''}
+              placeholder="updated_at"
+              onChange={e => setMat({ time_column: e.target.value })}
+            />
+            <p className="text-[10px] text-muted/60 mt-1">Only rows where this column is newer than the stored watermark are processed.</p>
+          </div>
+          <div>
+            <FieldLabel>Unique key (optional)</FieldLabel>
+            <input
+              type="text"
+              className={inputCls}
+              value={csv(mat.unique_key)}
+              placeholder="id, region"
+              onChange={e => setMat({ unique_key: parse(e.target.value) })}
+            />
+            <p className="text-[10px] text-muted/60 mt-1">Present ⇒ upsert/merge on these columns; blank ⇒ append.</p>
+          </div>
+          <div>
+            <FieldLabel>Lookback (optional)</FieldLabel>
+            <input
+              type="text"
+              className={inputCls}
+              value={mat.lookback ?? ''}
+              placeholder="3 days"
+              onChange={e => setMat({ lookback: e.target.value })}
+            />
+            <p className="text-[10px] text-muted/60 mt-1">Reprocess a window before the watermark to catch late-arriving rows.</p>
+          </div>
+        </>
+      )}
+    </div>
+  )
+}
+
+// ---------------------------------------------------------------------------
+// ForEachSection — fan out a SQL/Python cell once per item (v4 cell config)
+// ---------------------------------------------------------------------------
+
+/**
+ * Edits the `config.for_each` block on a 'query'/'python' cell. PINNED shape:
+ *
+ *   config.for_each = {
+ *     items:           string  (template expr OR upstream ref → must resolve to a list)
+ *     var:             string  (default 'item' — the bound variable name)
+ *     max_concurrency: number  (default 0 = unlimited)
+ *   }
+ *
+ * Absent/empty `items` ⇒ no fan-out. Replaces the standalone 'map' kind for
+ * authoring; the cell's own body IS the per-item body at run time.
+ */
+function ForEachSection({ config, onChange }) {
+  const fe = config.for_each ?? {}
+  const enabled = fe.items != null && fe.items !== ''
+
+  const setFe = (patch) => {
+    const next = { ...fe, ...patch }
+    // Empty items ⇒ remove the whole block (no fan-out).
+    if (next.items == null || next.items === '') {
+      // eslint-disable-next-line no-unused-vars
+      const { for_each, ...rest } = config
+      onChange(rest)
+      return
+    }
+    if (next.var === '' || next.var == null) next.var = 'item'
+    if (!next.max_concurrency) delete next.max_concurrency
+    onChange({ ...config, for_each: next })
+  }
+
+  return (
+    <div className="pt-1 mt-1 border-t border-border/60 space-y-3">
+      <p className="text-[10px] font-semibold text-muted/70 uppercase tracking-widest">For each (fan-out)</p>
+
+      <div>
+        <FieldLabel>Items (list expression)</FieldLabel>
+        <input
+          type="text"
+          className={inputCls}
+          value={fe.items ?? ''}
+          placeholder={`{{ inputs.get_regions.rows }}`}
+          onChange={e => setFe({ items: e.target.value })}
+        />
+        <p className="text-[10px] text-muted/60 mt-1">
+          Template expression or upstream ref that resolves to a list. The cell
+          body runs once per item. Leave blank to disable fan-out.
+        </p>
+      </div>
+
+      {enabled && (
+        <div className="grid grid-cols-2 gap-3">
+          <div>
+            <FieldLabel>Item variable</FieldLabel>
+            <input
+              type="text"
+              className={inputCls}
+              value={fe.var ?? 'item'}
+              placeholder="item"
+              onChange={e => setFe({ var: e.target.value })}
+            />
+          </div>
+          <div>
+            <FieldLabel>Max concurrency</FieldLabel>
+            <input
+              type="number"
+              min={0}
+              className={inputCls}
+              value={fe.max_concurrency ?? 0}
+              placeholder="0 = unlimited"
+              onChange={e => setFe({ max_concurrency: parseInt(e.target.value, 10) || 0 })}
+            />
+          </div>
+        </div>
+      )}
+    </div>
+  )
+}
+
+// ---------------------------------------------------------------------------
+// RunWhenSection — gate a cell on a safe boolean expression (v4 cell config)
+// ---------------------------------------------------------------------------
+
+/**
+ * Edits the `config.run_when` block — a STRING boolean expression over
+ * inputs/params/secrets. Empty/absent ⇒ always runs. False at run time ⇒ the
+ * cell is 'skipped'. Replaces the standalone 'branch' kind for authoring.
+ */
+function RunWhenSection({ config, onChange }) {
+  const setRunWhen = (val) => {
+    if (val == null || val.trim() === '') {
+      // eslint-disable-next-line no-unused-vars
+      const { run_when, ...rest } = config
+      onChange(rest)
+      return
+    }
+    onChange({ ...config, run_when: val })
+  }
+
+  return (
+    <div className="pt-1 mt-1 border-t border-border/60 space-y-3">
+      <p className="text-[10px] font-semibold text-muted/70 uppercase tracking-widest">Run when (gate)</p>
+
+      <div>
+        <FieldLabel>Condition</FieldLabel>
+        <input
+          type="text"
+          className={inputCls}
+          value={config.run_when ?? ''}
+          placeholder={`inputs.classify.label == 'high_value'`}
+          onChange={e => setRunWhen(e.target.value)}
+        />
+        <p className="text-[10px] text-muted/60 mt-1">
+          Safe boolean over{' '}
+          <code className="font-mono bg-surface-2 px-0.5 rounded">inputs</code>,{' '}
+          <code className="font-mono bg-surface-2 px-0.5 rounded">params</code>,{' '}
+          <code className="font-mono bg-surface-2 px-0.5 rounded">secrets</code>.
+          False ⇒ the cell is skipped. Blank ⇒ always runs.
+        </p>
+      </div>
+    </div>
+  )
+}
+
+// ---------------------------------------------------------------------------
+// PreaggRefreshConfig — rebuild pre-aggregation rollups from the query log
+// ---------------------------------------------------------------------------
+
+/**
+ * Config panel for the 'preagg_refresh' task kind. Mines an org's query log and
+ * rebuilds pre-aggregation rollups (see app/preagg/scheduler.py).
+ *
+ * Fields:
+ *   org_id — required org whose query log is mined.
+ */
+function PreaggRefreshConfig({ config, onChange }) {
+  return (
+    <div className="space-y-3">
+      <div>
+        <FieldLabel>Org ID</FieldLabel>
+        <input
+          type="text"
+          className={inputCls}
+          value={config.org_id ?? ''}
+          placeholder="org whose query log is mined"
+          onChange={e => onChange({ ...config, org_id: e.target.value })}
+        />
+        <p className="text-[10px] text-muted/60 mt-1">Mines this org's query log and rebuilds pre-aggregation rollups — usually your current org id.</p>
+      </div>
+    </div>
+  )
+}
+
+// ---------------------------------------------------------------------------
 // SecretSelect — dropdown populated from GET /secrets
 // ---------------------------------------------------------------------------
 
@@ -235,123 +660,6 @@ function SecretSelect({ value, onChange }) {
         ))}
         {loading && <option disabled>Loading…</option>}
       </select>
-    </div>
-  )
-}
-
-// ---------------------------------------------------------------------------
-// ExtractConfig — source/dest archive extraction task
-// ---------------------------------------------------------------------------
-
-const EXTRACT_FORMATS = ['auto', 'zip', 'tar', 'tar.gz']
-
-/**
- * Config panel for the 'extract' task kind.
- *
- * Fields:
- *   source_uri  — cloud/local URI to the archive, OR empty to use an upstream input
- *   input       — upstream input key to use instead of source_uri (mutually exclusive)
- *   dest_uri    — where to write extracted files
- *   secret      — secret name for storage credentials (resolved server-side)
- *   format      — archive format: auto | zip | tar | tar.gz
- */
-function ExtractConfig({ config, onChange }) {
-  const useInput = config.input !== undefined && config.source_uri === undefined
-
-  return (
-    <div className="space-y-3">
-      {/* Source toggle: URI vs upstream input */}
-      <div className="flex h-8 rounded-lg border border-border overflow-hidden">
-        {['source_uri', 'input'].map(mode => {
-          const active = mode === 'source_uri' ? !useInput : useInput
-          return (
-            <button
-              key={mode}
-              onClick={() => {
-                if (mode === 'source_uri') {
-                  onChange({ ...config, source_uri: config.source_uri ?? '', input: undefined })
-                } else {
-                  onChange({ ...config, input: config.input ?? '', source_uri: undefined })
-                }
-              }}
-              className={[
-                'flex-1 text-xs font-medium transition-colors capitalize',
-                active ? 'bg-primary text-primary-fg' : 'bg-surface text-muted hover:text-primary',
-              ].join(' ')}
-            >
-              {mode === 'source_uri' ? 'URI' : 'Input key'}
-            </button>
-          )
-        })}
-      </div>
-
-      {/* Source URI or input key */}
-      {!useInput ? (
-        <div>
-          <FieldLabel>Source URI</FieldLabel>
-          <input
-            type="text"
-            className={inputCls}
-            value={config.source_uri ?? ''}
-            placeholder="s3://bucket/archive.zip"
-            onChange={e => onChange({ ...config, source_uri: e.target.value })}
-          />
-        </div>
-      ) : (
-        <div>
-          <FieldLabel>Input key</FieldLabel>
-          <input
-            type="text"
-            className={inputCls}
-            value={config.input ?? ''}
-            placeholder="e.g. upstream_task"
-            onChange={e => onChange({ ...config, input: e.target.value })}
-          />
-          <p className="text-[10px] text-muted mt-1">
-            Key of the upstream task whose result provides the archive path.
-          </p>
-        </div>
-      )}
-
-      {/* Dest URI */}
-      <div>
-        <FieldLabel>Destination URI</FieldLabel>
-        <input
-          type="text"
-          className={inputCls}
-          value={config.dest_uri ?? ''}
-          placeholder="s3://bucket/extracted/"
-          onChange={e => onChange({ ...config, dest_uri: e.target.value })}
-        />
-      </div>
-
-      {/* Secret */}
-      <div>
-        <FieldLabel>Credentials secret</FieldLabel>
-        <SecretSelect
-          value={config.secret ?? ''}
-          onChange={name => onChange({ ...config, secret: name })}
-        />
-        <p className="text-[10px] text-muted mt-1">
-          Secret holding cloud credentials. Resolved server-side at run time.
-        </p>
-      </div>
-
-      {/* Format */}
-      <div>
-        <FieldLabel>Archive format</FieldLabel>
-        <div className="relative">
-          <select
-            className={selectCls}
-            value={config.format ?? 'auto'}
-            onChange={e => onChange({ ...config, format: e.target.value })}
-          >
-            {EXTRACT_FORMATS.map(f => (
-              <option key={f} value={f}>{f}</option>
-            ))}
-          </select>
-        </div>
-      </div>
     </div>
   )
 }
@@ -726,19 +1034,21 @@ function BranchConfig({ config, onChange }) {
 // NodeInspector
 // ---------------------------------------------------------------------------
 
-const KINDS = ['query', 'python', 'agent', 'extract', 'bucket_load', 'noop', 'map', 'branch']
+const KINDS = ['query', 'python', 'agent', 'bucket_load', 'materialize', 'preagg_refresh', 'noop', 'map', 'branch']
 
-export default function NodeInspector({ task, onChange, onClose }) {
+export default function NodeInspector({ task, onChange, onClose, readOnly = false, showHeader = true }) {
   // Validate key locally (only on blur to avoid stuttering)
   const [keyError, setKeyError] = useState(null)
 
   const setField = useCallback((field, value) => {
+    if (readOnly) return
     onChange({ ...task, [field]: value })
-  }, [task, onChange])
+  }, [task, onChange, readOnly])
 
   const setConfig = useCallback((newConfig) => {
+    if (readOnly) return
     onChange({ ...task, config: newConfig })
-  }, [task, onChange])
+  }, [task, onChange, readOnly])
 
   if (!task) return null
 
@@ -756,23 +1066,33 @@ export default function NodeInspector({ task, onChange, onClose }) {
 
   return (
     <aside className="flex flex-col h-full border-l border-border bg-surface overflow-hidden">
-      {/* Header */}
-      <div className="shrink-0 flex items-center justify-between px-4 py-3 border-b border-border">
-        <div>
-          <h3 className="text-sm font-semibold text-fg">Task inspector</h3>
-          <p className="text-[11px] text-muted font-mono mt-0.5">{task.key}</p>
+      {/* Header — only when standalone. When embedded in a titled panel/sheet
+          (FlowsPage sidebar, mobile sheet) the host already labels it, so
+          rendering our own "Task inspector · <key>" here would be redundant. */}
+      {showHeader && (
+        <div className="shrink-0 flex items-center justify-between px-4 py-3 border-b border-border">
+          <div>
+            <h3 className="text-sm font-semibold text-fg">Task inspector</h3>
+            <p className="text-[11px] text-muted font-mono mt-0.5">{task.key}</p>
+          </div>
+          <button
+            onClick={onClose}
+            className="w-7 h-7 flex items-center justify-center rounded-lg text-muted hover:text-fg hover:bg-surface-2 transition-colors"
+            title="Close inspector"
+          >
+            <X size={15} />
+          </button>
         </div>
-        <button
-          onClick={onClose}
-          className="w-7 h-7 flex items-center justify-center rounded-lg text-muted hover:text-fg hover:bg-surface-2 transition-colors"
-          title="Close inspector"
-        >
-          <X size={15} />
-        </button>
-      </div>
+      )}
+
+      {readOnly && (
+        <p className="shrink-0 px-4 py-1.5 text-[11px] text-muted bg-surface-2/60 border-b border-border">
+          Read-only — you don’t have permission to edit this flow.
+        </p>
+      )}
 
       {/* Scrollable body */}
-      <div className="flex-1 overflow-y-auto px-4 py-4 space-y-5">
+      <fieldset disabled={readOnly} className="flex-1 overflow-y-auto px-4 py-4 space-y-5 min-w-0 disabled:opacity-70">
 
         {/* ── Identity ─────────────────────────────────────────── */}
         <section className="space-y-3">
@@ -803,13 +1123,16 @@ export default function NodeInspector({ task, onChange, onClose }) {
                   query:       { query_id: '' },
                   python:      { code: '# Write your task code here\nresult = {}' },
                   agent:       { prompt: '', max_steps: 4 },
-                  extract:     { source_uri: '', dest_uri: '', secret: '', format: 'auto' },
                   bucket_load: { uri: '', secret: '', format: 'parquet', source: '' },
                   noop:        {},
                   map:         { item_expr: '', item_var: 'item', max_concurrency: 0, max_map_size: 1000, collect_key: '', body: [] },
                   branch:      { conditions: [], default: [] },
                 }
-                onChange({ ...task, kind, config: defaultConfigs[kind] ?? {} })
+                // Keep cell_type coherent for the three user-facing cell kinds.
+                const cellTypeFor = { query: 'sql', python: 'python', noop: 'markdown' }
+                const patch = { ...task, kind, config: defaultConfigs[kind] ?? {} }
+                if (cellTypeFor[kind]) patch.cell_type = cellTypeFor[kind]
+                onChange(patch)
               }}
             >
               {KINDS.map(k => <option key={k} value={k}>{k}</option>)}
@@ -840,12 +1163,26 @@ export default function NodeInspector({ task, onChange, onClose }) {
           {task.kind === 'query'       && <QueryConfig      config={config} onChange={setConfig} />}
           {task.kind === 'python'      && <PythonConfig     config={config} onChange={setConfig} />}
           {task.kind === 'agent'       && <AgentConfig      config={config} onChange={setConfig} />}
-          {task.kind === 'extract'     && <ExtractConfig    config={config} onChange={setConfig} />}
           {task.kind === 'bucket_load' && <BucketLoadConfig config={config} onChange={setConfig} />}
+          {task.kind === 'materialize'    && <MaterializeConfig    config={config} onChange={setConfig} />}
+          {task.kind === 'preagg_refresh' && <PreaggRefreshConfig  config={config} onChange={setConfig} />}
           {task.kind === 'map'         && <MapConfig        config={config} onChange={setConfig} />}
           {task.kind === 'branch'      && <BranchConfig     config={config} onChange={setConfig} />}
           {(task.kind === 'noop' || !task.kind) && <NoopConfig />}
         </section>
+
+        {/* ── Cell behaviour (v4 "cells, not kinds") ────────────────────────
+            Materialization (SQL only), For-each, and Run-when are config blocks
+            on a SQL/Python cell — the modern way to author what used to be the
+            materialize/map/branch kinds. Shown only for the two cell kinds. */}
+        {(task.kind === 'query' || task.kind === 'python') && (
+          <section className="space-y-3">
+            <p className="text-[10px] font-semibold text-muted/70 uppercase tracking-widest">Cell behaviour</p>
+            {task.kind === 'query' && <MaterializedSection config={config} onChange={setConfig} />}
+            <ForEachSection config={config} onChange={setConfig} />
+            <RunWhenSection config={config} onChange={setConfig} />
+          </section>
+        )}
 
         {/* ── Execution settings ───────────────────────────────── */}
         <section className="space-y-3">
@@ -883,7 +1220,7 @@ export default function NodeInspector({ task, onChange, onClose }) {
           </div>
         </section>
 
-      </div>
+      </fieldset>
     </aside>
   )
 }

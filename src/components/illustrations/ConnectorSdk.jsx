@@ -10,13 +10,13 @@ export default function ConnectorSdk({ className = '' }) {
   const area = `${curve} L 376 180 L 280 180 Z`
   const C = 106.8 // donut r=17
   const segs = [
-    { len: C * 0.46, off: 0, color: '#2456a6' },
+    { len: C * 0.46, off: 0, color: '#3b6fd0' },
     { len: C * 0.30, off: C * 0.46, color: '#17b3a3' },
     { len: C * 0.24, off: C * 0.76, color: '#2dd4bf' },
   ]
   return (
     <svg
-      viewBox="0 0 480 360"
+      viewBox="26 52 444 256"
       fill="none"
       xmlns="http://www.w3.org/2000/svg"
       className={className}
@@ -27,7 +27,7 @@ export default function ConnectorSdk({ className = '' }) {
     >
       <defs>
         <linearGradient id="con-stroke" x1="0" y1="1" x2="1" y2="0">
-          <stop offset="0%" stopColor="#1b2363" />
+          <stop offset="0%" stopColor="#3b66c4" />
           <stop offset="45%" stopColor="#2456a6" />
           <stop offset="100%" stopColor="#17b3a3" />
         </linearGradient>
@@ -41,7 +41,7 @@ export default function ConnectorSdk({ className = '' }) {
           <stop offset="100%" stopColor="#2456a6" stopOpacity="0.0" />
         </linearGradient>
         <clipPath id="con-clip">
-          <rect x="16" y="40" width="448" height="280" rx="16" />
+          <rect x="26" y="52" width="444" height="256" rx="16" />
         </clipPath>
       </defs>
 
@@ -49,7 +49,7 @@ export default function ConnectorSdk({ className = '' }) {
         {/* fan-in connectors */}
         {sources.map((y, i) => (
           <path key={i} d={`M 92 ${y} C 134 ${y}, 142 ${hub.y}, 160 ${hub.y}`}
-            stroke="#2456a6" strokeWidth="1.75" strokeOpacity="0.4" fill="none" />
+            stroke="#a7bbdb" strokeWidth="1.75" fill="none" />
         ))}
 
         {/* source: database cylinder */}
@@ -76,17 +76,17 @@ export default function ConnectorSdk({ className = '' }) {
 
         {/* output dashboard window */}
         <rect x="262" y="66" width="198" height="228" rx="14" fill="#2456a6" fillOpacity="0.04" stroke="url(#con-stroke)" strokeWidth="2" />
-        <line x1="262" y1="92" x2="460" y2="92" stroke="#2456a6" strokeWidth="1.5" strokeOpacity="0.4" />
-        <circle cx="276" cy="79" r="3" fill="#2456a6" fillOpacity="0.45" />
+        <line x1="262" y1="92" x2="460" y2="92" stroke="#a7bbdb" strokeWidth="1.5" />
+        <circle cx="276" cy="79" r="3" fill="#9cb3d7" />
         <circle cx="288" cy="79" r="3" fill="#17b3a3" fillOpacity="0.55" />
 
         {/* chart panel */}
-        <rect x="274" y="102" width="104" height="86" rx="9" fill="#2456a6" fillOpacity="0.04" stroke="#2456a6" strokeWidth="1.25" strokeOpacity="0.28" />
+        <rect x="274" y="102" width="104" height="86" rx="9" fill="#2456a6" fillOpacity="0.04" stroke="#c2d0e6" strokeWidth="1.25" />
         <path d={area} fill="url(#con-area)" />
         <path d={curve} stroke="url(#con-stroke)" strokeWidth="2.25" strokeLinecap="round" strokeLinejoin="round" />
 
         {/* donut panel */}
-        <rect x="384" y="102" width="64" height="86" rx="9" fill="#2456a6" fillOpacity="0.04" stroke="#2456a6" strokeWidth="1.25" strokeOpacity="0.28" />
+        <rect x="384" y="102" width="64" height="86" rx="9" fill="#2456a6" fillOpacity="0.04" stroke="#c2d0e6" strokeWidth="1.25" />
         <g transform="rotate(-90 416 145)">
           {segs.map((s, i) => (
             <circle key={i} cx="416" cy="145" r="17" fill="none" stroke={s.color} strokeWidth="8.5"
@@ -95,18 +95,18 @@ export default function ConnectorSdk({ className = '' }) {
         </g>
 
         {/* table panel */}
-        <rect x="274" y="196" width="174" height="86" rx="9" fill="#2456a6" fillOpacity="0.04" stroke="#2456a6" strokeWidth="1.25" strokeOpacity="0.28" />
+        <rect x="274" y="196" width="174" height="86" rx="9" fill="#2456a6" fillOpacity="0.04" stroke="#c2d0e6" strokeWidth="1.25" />
         {[286, 350, 408].map((x, i) => (
-          <rect key={i} x={x} y="208" width={i === 0 ? 44 : 32} height="6" rx="3" fill="#2456a6" fillOpacity="0.4" />
+          <rect key={i} x={x} y="208" width={i === 0 ? 44 : 32} height="6" rx="3" fill="#a7bbdb" />
         ))}
-        <line x1="274" y1="222" x2="448" y2="222" stroke="#2456a6" strokeWidth="1" strokeOpacity="0.18" />
+        <line x1="274" y1="222" x2="448" y2="222" stroke="#d8e1ef" strokeWidth="1" />
         {[0, 1, 2].map((r) => {
           const y = 236 + r * 15
           return (
             <g key={r}>
-              <circle cx="294" cy={y} r="3.5" fill={['#2456a6', '#17b3a3', '#2dd4bf'][r]} />
-              <rect x="306" y={y - 3} width="38" height="6" rx="3" fill="#2456a6" fillOpacity="0.3" />
-              <rect x="350" y={y - 3} width="36" height="6" rx="3" fill="#2456a6" fillOpacity="0.2" />
+              <circle cx="294" cy={y} r="3.5" fill={['#3b6fd0', '#17b3a3', '#2dd4bf'][r]} />
+              <rect x="306" y={y - 3} width="38" height="6" rx="3" fill="#bdcce4" />
+              <rect x="350" y={y - 3} width="36" height="6" rx="3" fill="#d3dded" />
               <rect x="408" y={y - 5} width="36" height="11" rx="5.5" fill="#17b3a3" fillOpacity="0.14" stroke="#17b3a3" strokeWidth="1" strokeOpacity="0.45" />
             </g>
           )

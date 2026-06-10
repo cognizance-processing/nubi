@@ -42,6 +42,8 @@ async def init_db() -> None:
         min_size=2,
         max_size=10,
         command_timeout=30,
+        timeout=10.0,   # abort TCP handshake after 10 s; surfaces clear error instead of hanging
+                        # (asyncpg's connect() param is `timeout`, not `connect_timeout`)
     )
 
 
@@ -87,7 +89,7 @@ async def get_connection() -> AsyncIterator[Connection]:
                 await conn.execute("UPDATE ...", ...)
 
     """
-    async with get_pool().acquire() as conn:
+    async with get_pool().acquire(timeout=30.0) as conn:
         yield conn  # type: ignore[misc]
 
 
@@ -106,7 +108,7 @@ async def fetch(query: str, *args: object) -> list[Record]:
     list[asyncpg.Record]
         Possibly empty list of result rows.
     """
-    async with get_pool().acquire() as conn:
+    async with get_pool().acquire(timeout=30.0) as conn:
         return await conn.fetch(query, *args)
 
 
@@ -124,7 +126,7 @@ async def fetchrow(query: str, *args: object) -> Record | None:
     -------
     asyncpg.Record | None
     """
-    async with get_pool().acquire() as conn:
+    async with get_pool().acquire(timeout=30.0) as conn:
         return await conn.fetchrow(query, *args)
 
 
@@ -143,5 +145,5 @@ async def execute(query: str, *args: object) -> str:
     str
         asyncpg command-status tag, e.g. ``"INSERT 0 1"``.
     """
-    async with get_pool().acquire() as conn:
+    async with get_pool().acquire(timeout=30.0) as conn:
         return await conn.execute(query, *args)

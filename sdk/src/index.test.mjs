@@ -198,7 +198,112 @@ describe('query()', () => {
     // The mock last-call check is already in earlier tests; just assert no throw
   })
 
-  it('passes params when provided', async () => {
+  it('sends { query_id } for ids that merely start with a SQL keyword', async () => {
+    const arrowBuf = buildArrowBuffer()
+
+    for (const id of ['selected_users', 'with_totals', 'update_log']) {
+      const mockFetch = makeFetchMock({
+        status: 200,
+        body: arrowBuf,
+        headers: { 'content-type': 'application/vnd.apache.arrow.stream' },
+      })
+      globalThis.fetch = mockFetch
+
+      const client = createNubiClient({ baseUrl: BASE_URL, getToken: STATIC_TOKEN })
+      await client.query(id)
+
+      const body = parsedBody(mockFetch)
+      assert.equal(body.query_id, id, `"${id}" should be sent as query_id`)
+      assert.equal(body.sql, undefined, `"${id}" should NOT be sent as sql`)
+    }
+  })
+
+  it('sends { sql } for keyword-led SQL statements', async () => {
+    const arrowBuf = buildArrowBuffer()
+
+    for (const sql of ['select 1', 'SELECT * FROM t']) {
+      const mockFetch = makeFetchMock({
+        status: 200,
+        body: arrowBuf,
+        headers: { 'content-type': 'application/vnd.apache.arrow.stream' },
+      })
+      globalThis.fetch = mockFetch
+
+      const client = createNubiClient({ baseUrl: BASE_URL, getToken: STATIC_TOKEN })
+      await client.query(sql)
+
+      const body = parsedBody(mockFetch)
+      assert.equal(body.sql, sql, `"${sql}" should be sent as sql`)
+      assert.equal(body.query_id, undefined, `"${sql}" should NOT be sent as query_id`)
+    }
+  })
+
+  it('sends an array params option as positional { params }', async () => {
+    const arrowBuf = buildArrowBuffer()
+    const mockFetch = makeFetchMock({
+      status: 200,
+      body: arrowBuf,
+      headers: { 'content-type': 'application/vnd.apache.arrow.stream' },
+    })
+    globalThis.fetch = mockFetch
+
+    const client = createNubiClient({ baseUrl: BASE_URL, getToken: STATIC_TOKEN })
+    await client.query('SELECT * FROM sales WHERE region = $1', { params: ['EMEA', 42] })
+
+    const body = parsedBody(mockFetch)
+    assert.deepEqual(body, {
+      sql: 'SELECT * FROM sales WHERE region = $1',
+      params: ['EMEA', 42],
+    })
+  })
+
+  it('converts an all-numeric-key params object into positional { params }', async () => {
+    const arrowBuf = buildArrowBuffer()
+    const mockFetch = makeFetchMock({
+      status: 200,
+      body: arrowBuf,
+      headers: { 'content-type': 'application/vnd.apache.arrow.stream' },
+    })
+    globalThis.fetch = mockFetch
+
+    const client = createNubiClient({ baseUrl: BASE_URL, getToken: STATIC_TOKEN })
+    await client.query('SELECT $1, $2', { params: { 2: 'second', 1: 'first' } })
+
+    const body = parsedBody(mockFetch)
+    assert.deepEqual(body, {
+      sql: 'SELECT $1, $2',
+      params: ['first', 'second'],
+    })
+  })
+
+  it('sends sparse or 0-based numeric-key params objects as { named_params }', async () => {
+    const arrowBuf = buildArrowBuffer()
+    const mockFetch = makeFetchMock({
+      status: 200,
+      body: arrowBuf,
+      headers: { 'content-type': 'application/vnd.apache.arrow.stream' },
+    })
+    globalThis.fetch = mockFetch
+
+    const client = createNubiClient({ baseUrl: BASE_URL, getToken: STATIC_TOKEN })
+    // Key '2' with no '1' is ambiguous as a positional binding — it must NOT
+    // silently become params[0] (which would bind $1 instead of $2).
+    await client.query('my_query', { params: { 2: 'x' } })
+
+    const body = parsedBody(mockFetch)
+    assert.deepEqual(body, {
+      query_id: 'my_query',
+      named_params: { 2: 'x' },
+    })
+
+    await client.query('my_query', { params: { 0: 'a', 1: 'b' } })
+    assert.deepEqual(parsedBody(mockFetch), {
+      query_id: 'my_query',
+      named_params: { 0: 'a', 1: 'b' },
+    })
+  })
+
+  it('sends an object params option with named keys as { named_params }', async () => {
     const arrowBuf = buildArrowBuffer()
     const mockFetch = makeFetchMock({
       status: 200,
@@ -211,7 +316,10 @@ describe('query()', () => {
     await client.query('my_query', { params: { date: '2024-01' } })
 
     const body = parsedBody(mockFetch)
-    assert.deepEqual(body.params, { date: '2024-01' })
+    assert.deepEqual(body, {
+      query_id: 'my_query',
+      named_params: { date: '2024-01' },
+    })
   })
 
   it('parses the Arrow IPC buffer and returns a Table with correct schema', async () => {
@@ -429,6 +537,100 @@ describe('baseUrl normalisation', () => {
     await client.auth.me()
 
     assert.equal(mockFetch.lastCall().url, 'http://localhost:8000/api/v1/auth/me')
+  })
+})
+
+// ---------------------------------------------------------------------------
+
+describe('embed.mount()', () => {
+  // Minimal DOM stubs — node:test has no document/window.
+  let savedDocument
+  let savedWindow
+
+  /** Build a fake element with just the API mount() uses. */
+  function makeFakeElement(tagName) {
+    const attrs = new Map()
+    return {
+      tagName,
+      attrs,
+      parentNode: null,
+      setAttribute(name, value) {
+        attrs.set(name, String(value))
+      },
+      getAttribute(name) {
+        return attrs.get(name) ?? null
+      },
+      appendChild(child) {
+        child.parentNode = this
+        return child
+      },
+      removeChild(child) {
+        child.parentNode = null
+        return child
+      },
+    }
+  }
+
+  beforeEach(() => {
+    savedDocument = globalThis.document
+    savedWindow = globalThis.window
+    globalThis.document = { createElement: (tag) => makeFakeElement(tag) }
+    globalThis.window = {}
+  })
+
+  afterEach(() => {
+    globalThis.document = savedDocument
+    globalThis.window = savedWindow
+  })
+
+  it('strips a trailing /api/v1 from the default backend attribute', () => {
+    let createdEl = null
+    globalThis.document = {
+      createElement(tag) {
+        createdEl = makeFakeElement(tag)
+        return createdEl
+      },
+    }
+
+    const client = createNubiClient({
+      baseUrl: 'https://x.com/api/v1/',
+      getToken: STATIC_TOKEN,
+    })
+
+    const container = makeFakeElement('div')
+    const handle = client.embed.mount(container, { query: 'q' })
+
+    assert.ok(createdEl, 'should create a nubi-dashboard element')
+    assert.equal(createdEl.tagName, 'nubi-dashboard')
+    assert.equal(createdEl.getAttribute('query'), 'q')
+    assert.equal(createdEl.getAttribute('backend'), 'https://x.com')
+    assert.equal(createdEl.parentNode, container)
+
+    handle.unmount()
+    assert.equal(createdEl.parentNode, null)
+  })
+
+  it('strips /api/v1 from an explicitly passed backend option', () => {
+    let createdEl = null
+    globalThis.document = {
+      createElement(tag) {
+        createdEl = makeFakeElement(tag)
+        return createdEl
+      },
+    }
+
+    const client = createNubiClient({
+      baseUrl: 'https://x.com',
+      getToken: STATIC_TOKEN,
+    })
+
+    const container = makeFakeElement('div')
+    client.embed.mount(container, {
+      query: 'q',
+      backend: 'https://other.example.com/api/v1/',
+    })
+
+    assert.equal(createdEl.getAttribute('backend'), 'https://other.example.com')
   })
 })
 

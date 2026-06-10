@@ -1,0 +1,114 @@
+# fly.toml — Nubi production app on Fly.io.
+#
+# ONE combined image (root Dockerfile: FastAPI + built SPA), THREE processes:
+#   app    — uvicorn serving /api/v1 + the embedded SPA (same origin)
+#   worker — flows worker (scheduler loop + worker pool, backend/worker.py)
+#   query  — heavy-query pool: same image/code on bigger machines; app
+#            machines forward queries for datastores flagged
+#            config.query_pool="heavy" here over private networking
+#
+# State lives elsewhere: Postgres on Neon (DATABASE_URL secret), object
+# storage on Cloudflare R2 (S3-compatible; FLOWS_MATERIALIZE_BASE_URI +
+# S3_* secrets). Machines are stateless and disposable.
+#
+# Deploy: scripts/deploy-fly.sh (first run + secrets) or CI
+# (.github/workflows/deploy-main.yml). Docs: docs/cloud.md.
+
+app = "nubi"
+primary_region = "jnb" # Johannesburg
+
+[build]
+  # Nubi Cloud runs the EE image (includes backend/app/ee/: billing, licensing,
+  # SSO — activated at runtime by the NUBI_LICENSE_KEY secret). OSS self-hosters
+  # should switch both lines to "Dockerfile" / ".dockerignore".
+  dockerfile = "Dockerfile.ee"
+  ignorefile = "Dockerfile.ee.dockerignore"
+
+[deploy]
+  # Forward-only migration runner; runs in a one-off release machine before
+  # the new image is rolled out. Needs the DATABASE_URL secret. --ee also
+  # applies database/migrations/ee/ (billing/wallet/fx tables) AFTER core;
+  # drop the flag for OSS deploys.
+  release_command = "python /app/database/migrate.py --ee"
+
+[processes]
+  # Working directory is /app/backend (see Dockerfile), so these are exactly
+  # the local dev commands.
+  app = "uvicorn main:app --host 0.0.0.0 --port 8000 --workers 2"
+  worker = "python worker.py"
+  # Heavy-query pool ("warehouse machine class"): identical code, bigger VM
+  # (see [[vm]] below).  The inline exports override the app-wide [env]:
+  # NUBI_QUERY_POOL=heavy is the forwarding loop guard (the pool never
+  # re-forwards), and the DuckDB budget is sized to the pool's RAM.
+  # Not behind the HTTP proxy → always-on.  Disable with
+  # `fly scale count query=0`; app machines then fall back to local
+  # execution automatically (clean per-query memory errors, never OOM).
+  # NUBI_CU_MULTIPLIER=4 — warehouse queries bill compute units at 4×
+  # (canonical value: backend/app/ee/billing/tiers.py WAREHOUSE_CU_MULTIPLIER).
+  query = "sh -c 'export NUBI_QUERY_POOL=heavy NUBI_DUCKDB_MEMORY_LIMIT=6GB NUBI_CU_MULTIPLIER=4; exec uvicorn main:app --host 0.0.0.0 --port 8000 --workers 1'"
+
+[env]
+  ENV = "production"
+  STATIC_DIR = "/app/dist"
+  # Per-connection DuckDB memory cap (app/worker machines have 1 GB RAM): a
+  # too-big query fails with a clean, tenant-attributable error instead of
+  # OOM-killing the machine and dropping every in-flight request.
+  NUBI_DUCKDB_MEMORY_LIMIT = "512MB"
+  # Heavy-query pool endpoint (the `query` process group over Fly private
+  # networking).  Pool machines ignore this via NUBI_QUERY_POOL=heavy.
+  NUBI_HEAVY_QUERY_URL = "http://query.process.nubi.internal:8000"
+  # Worker tuning (read by backend/worker.py in the worker process).
+  FLOWS_WORKER_CONCURRENCY = "4"
+  FLOWS_WORKER_INTERVAL_S = "5"
+  FLOWS_WORKER_LEASE_S = "300"
+
+[http_service]
+  processes = ["app"]
+  internal_port = 8000
+  force_https = true
+  # Fly's proxy stops idle app machines and wakes them on demand, but we keep
+  # at least one warm: embeds + SSE streams need fast first byte.
+  auto_stop_machines = "stop"
+  auto_start_machines = true
+  min_machines_running = 1
+
+  [http_service.concurrency]
+    type = "requests"
+    soft_limit = 200
+    hard_limit = 250
+
+[checks]
+  [checks.health]
+    processes = ["app"]
+    type = "http"
+    port = 8000
+    path = "/health"
+    method = "GET"
+    interval = "15s"
+    timeout = "5s"
+    grace_period = "30s"
+
+# The worker process has no [http_service]: it is never auto-stopped by the
+# proxy and runs always-on. Scale with `fly scale count worker=N`; for
+# queue-based autoscaling, run fly-autoscaler against pending task_runs depth.
+
+[[vm]]
+  processes = ["app"]
+  size = "shared-cpu-1x"
+  memory = "1gb"
+
+[[vm]]
+  processes = ["worker"]
+  size = "shared-cpu-1x"
+  memory = "1gb"
+
+[[vm]]
+  # Heavy-query pool: the "warehouse machine class".  8 GB gives DuckDB a
+  # ~6 GB budget (NUBI_DUCKDB_MEMORY_LIMIT=6GB set inline in [processes]) —
+  # enough for held operations (sorts/joins/distinct) on ~100M-row tables
+  # and streamed aggregates on ~1B-row tables.  Scale memory up (and the
+  # inline limit with it) per docs/cloud.md before reaching for an external
+  # warehouse.
+  processes = ["query"]
+  size = "shared-cpu-4x"
+  memory = "8gb"

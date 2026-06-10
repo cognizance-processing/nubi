@@ -48,6 +48,7 @@ import {
 } from 'lucide-react'
 
 import { get, post } from '../../lib/api.js'
+import { useCanWrite } from '../../contexts/OrgContext.jsx'
 import SqlEditor from '../../components/SqlEditor.jsx'
 
 // ---------------------------------------------------------------------------
@@ -162,7 +163,7 @@ function RlsKeysInput({ keys, onChange }) {
 // ---------------------------------------------------------------------------
 
 function SourceRow({
-  source, index, canRemove, registeredQueries, datastores,
+  source, index, canRemove, canWrite, registeredQueries, datastores,
   duplicateKey, onChange, onRemove,
 }) {
   const set = (patch) => onChange({ ...source, ...patch })
@@ -215,15 +216,17 @@ function SourceRow({
           })}
         </div>
 
-        <button
-          type="button"
-          onClick={onRemove}
-          disabled={!canRemove}
-          title={canRemove ? 'Remove source' : `At least ${MIN_SOURCES} sources required`}
-          className="flex items-center justify-center w-8 h-8 rounded-lg border border-border text-muted hover:text-rose-500 hover:border-rose-500/40 disabled:opacity-30 disabled:hover:text-muted disabled:hover:border-border transition-colors shrink-0"
-        >
-          <Trash2 size={13} />
-        </button>
+        {canWrite && (
+          <button
+            type="button"
+            onClick={onRemove}
+            disabled={!canRemove}
+            title={canRemove ? 'Remove source' : `At least ${MIN_SOURCES} sources required`}
+            className="flex items-center justify-center w-8 h-8 rounded-lg border border-border text-muted hover:text-rose-500 hover:border-rose-500/40 disabled:opacity-30 disabled:hover:text-muted disabled:hover:border-border transition-colors shrink-0"
+          >
+            <Trash2 size={13} />
+          </button>
+        )}
       </div>
 
       {duplicateKey && (
@@ -281,6 +284,7 @@ function SourceRow({
 
 export default function BlendBuilder() {
   const navigate = useNavigate()
+  const canWrite = useCanWrite()
 
   // Reference data
   const [registeredQueries, setRegisteredQueries] = useState([])
@@ -531,14 +535,16 @@ export default function BlendBuilder() {
               Sources
               <span className="text-[11px] font-normal text-muted">({sources.length}/{MAX_SOURCES})</span>
             </h2>
-            <button
-              type="button"
-              onClick={addSource}
-              disabled={sources.length >= MAX_SOURCES}
-              className="inline-flex items-center gap-1.5 h-8 px-2.5 text-xs font-medium rounded-lg border border-dashed border-border text-muted hover:text-fg hover:bg-surface-2 disabled:opacity-40 transition-colors"
-            >
-              <Plus size={13} /> Add source
-            </button>
+            {canWrite && (
+              <button
+                type="button"
+                onClick={addSource}
+                disabled={sources.length >= MAX_SOURCES}
+                className="inline-flex items-center gap-1.5 h-8 px-2.5 text-xs font-medium rounded-lg border border-dashed border-border text-muted hover:text-fg hover:bg-surface-2 disabled:opacity-40 transition-colors"
+              >
+                <Plus size={13} /> Add source
+              </button>
+            )}
           </div>
           <p className="text-[11px] text-muted -mt-1">
             Each source has a unique <span className="font-mono text-fg/80">alias</span> (its DuckDB
@@ -551,6 +557,7 @@ export default function BlendBuilder() {
               source={s}
               index={i}
               canRemove={sources.length > MIN_SOURCES}
+              canWrite={canWrite}
               registeredQueries={registeredQueries}
               datastores={datastores}
               duplicateKey={dupKeys.has(s.key.trim()) && Boolean(s.key.trim())}
@@ -719,14 +726,20 @@ export default function BlendBuilder() {
           >
             Cancel
           </button>
-          <button
-            type="submit"
-            disabled={!canSubmit}
-            className="inline-flex items-center gap-2 h-9 px-5 text-sm font-semibold bg-primary text-primary-fg rounded-lg hover:opacity-90 disabled:opacity-40 disabled:cursor-not-allowed transition-opacity"
-          >
-            {submitting ? <Loader2 size={15} className="animate-spin" /> : <Combine size={15} />}
-            {submitting ? 'Creating…' : 'Create blend'}
-          </button>
+          {canWrite ? (
+            <button
+              type="submit"
+              disabled={!canSubmit}
+              className="inline-flex items-center gap-2 h-9 px-5 text-sm font-semibold bg-primary text-primary-fg rounded-lg hover:opacity-90 disabled:opacity-40 disabled:cursor-not-allowed transition-opacity"
+            >
+              {submitting ? <Loader2 size={15} className="animate-spin" /> : <Combine size={15} />}
+              {submitting ? 'Creating…' : 'Create blend'}
+            </button>
+          ) : (
+            <span className="text-xs font-medium text-muted/70 select-none">
+              Read-only — you don’t have permission to create blends.
+            </span>
+          )}
         </div>
       </form>
     </div>

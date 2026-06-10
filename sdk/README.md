@@ -9,6 +9,22 @@ resources, and embed mounting — in a single, zero-React, drop-in ESM package.
 
 ## Installation
 
+`@nubi/sdk` is not yet published to npm. Build it from source and consume it
+as a local dependency:
+
+```bash
+cd sdk
+npm install
+npm run build    # produces dist/nubi-sdk.js and dist/nubi-sdk.umd.cjs
+```
+
+```bash
+npm install /path/to/nubi/sdk
+# or in package.json: "@nubi/sdk": "file:../nubi/sdk"
+```
+
+Once published, installation will be:
+
 ```bash
 npm install @nubi/sdk
 ```
@@ -47,7 +63,7 @@ const { user } = await client.auth.me()
 ```js
 // Inline SQL — sends { sql }
 const table = await client.query('SELECT * FROM sales WHERE region = $1', {
-  params: { '1': 'EMEA' },
+  params: ['EMEA'],
 })
 
 // Registered query id — sends { query_id }
@@ -57,6 +73,21 @@ const table = await client.query('revenue_by_month')
 console.log(table.numRows)                     // Apache Arrow Table
 console.log(table.getChild('amount').get(0))   // columnar access
 ```
+
+`params` accepts three shapes:
+
+- **Array** — `{ params: ['EMEA'] }` is sent as positional `params` bound to
+  `$1`, `$2`, … (index 0 binds `$1`).
+- **Object with contiguous 1-based numeric keys** — `{ params: { '1': 'EMEA' } }`
+  is converted to a positional array (`'1'` binds `$1`) and sent as `params`.
+  The keys must be exactly `'1'..'N'`; sparse or 0-based keys are sent as
+  `named_params` instead.
+- **Object with named keys** — `{ params: { region: 'EMEA' } }` is sent as
+  `named_params`; valid only for registered query ids that declare parameters.
+
+Note: query ids must be **registered** queries (`POST /query/registry`) —
+otherwise the backend returns `403 query_not_registered`. See the
+[Embedding docs](../docs/embedding.md).
 
 Returns an [Apache Arrow `Table`](https://arrow.apache.org/docs/js/).
 The backend responds with `Content-Type: application/vnd.apache.arrow.stream`;
@@ -197,7 +228,10 @@ Theme the widget via CSS custom properties on any ancestor:
       },
     })
 
-    // Run a query and log the result
+    // Run a query and log the result.
+    // With an embed token, 'revenue_by_month' must be a registered query
+    // (POST /query/registry) — otherwise the backend returns
+    // 403 query_not_registered. See ../docs/embedding.md.
     const table = await client.query('revenue_by_month')
     console.log('rows:', table.numRows)
 

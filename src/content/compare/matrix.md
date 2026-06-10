@@ -10,7 +10,7 @@ dimensions:
     description: "Wire format used to move query results to the frontend. Arrow IPC is columnar and zero-copy; JSON adds serialisation overhead and memory pressure at scale."
   - key: viz
     label: "Viz Capability & Row Ceiling"
-    description: "Rendering technology and practical row limit before performance degrades. WebGL GPU rendering handles 1M+ points; SVG/Canvas degrades past ~50k–100k rows."
+    description: "Rendering technology and practical row limit before performance degrades in the browser, plus how results reach the chart layer."
   - key: caching
     label: Caching & Pre-aggregation
     description: "How repeated queries are served without hitting the warehouse every time. Auto pre-agg vs manual; edge cache vs server cache; cross-user vs per-session."
@@ -31,7 +31,7 @@ dimensions:
     description: "Whether the tool can be fully self-hosted in a customer's own infrastructure, and the cost/complexity of doing so."
 matrix:
   kernel:
-    Nubi: "Pyodide+DuckDB-WASM in browser by default; on-demand server (E2B/Modal, scale-to-zero) for ~10% of workloads"
+    Nubi: "DuckDB-WASM (SQL) in browser by default; on-demand server kernel (E2B/Modal, scale-to-zero) for Python and heavy workloads"
     Hex: "Python kernel per session, Hex cloud; 10–30 s cold starts; per-minute billing"
     Cube: "No kernel; warehouse + Cube Store for pre-aggs; hourly infra billing"
     Metabase: "Server-side SQL push to warehouse; no in-browser compute"
@@ -65,7 +65,7 @@ matrix:
     GoodData: "JSON rows via GoodData API; no Arrow IPC"
     Omni: "JSON rows; no Arrow IPC"
   viz:
-    Nubi: "WebGL/WebGPU (regl) on Arrow buffers; 1M+ pts at 60 fps; auto-upgrade above row threshold"
+    Nubi: "Apache ECharts (canvas) on Arrow buffers; no JSON round-trip; fast on large result sets"
     Hex: "Plotly/SVG; degrades past ~50 k rows; no WebGL"
     Cube: "Bring-your-own frontend; no built-in viz"
     Metabase: "40+ charts SVG/Canvas; no WebGL; degrades past tens-of-thousands rows"
@@ -99,7 +99,7 @@ matrix:
     GoodData: "In-memory result cache; no auto pre-agg"
     Omni: "Query result cache; details unverified (est.)"
   embedding:
-    Nubi: "<nubi-dashboard> → <nubi-widget> → <nubi-editor>; JWKS-native; unlimited viewers all paid tiers; no separate SDK"
+    Nubi: "<nubi-dashboard> + cell-level <nubi-kpi>/<nubi-table>/<nubi-chart>; JWKS-native; unlimited viewers all paid tiers; no separate SDK"
     Hex: "Enterprise add-on only; bolt-on auth; expensive; not a core surface"
     Cube: "Core strength (headless); JWT→SQL RLS; Viewer $20/user/month (Premium+)"
     Metabase: "Static embed (free/Starter w/ branding); white-label on Pro ($575+/month); every viewer = paid seat (~$150k/yr for 1k viewers)"
@@ -150,7 +150,7 @@ matrix:
     GoodData: "AI Stories (narrative generation); NL→metrics; AI-powered insights; growing roadmap"
     Omni: "NL→SQL; AI-assisted analysis; details unverified (est.)"
   pricing:
-    Nubi: "Usage-based, no-per-seat: Starter $79/mo | Pro $199/mo | Business $499/mo | Enterprise from $1,799/mo; unlimited users and viewers at every tier; billed ZAR via Paystack"
+    Nubi: "Usage-based, no-per-seat: Free $0 | Starter $9/mo | Team $49/mo | Pro $149/mo | Enterprise from $1,000/mo; unlimited editors and viewers at every tier; billed ZAR via Paystack"
     Hex: "Per-seat: Community free; Professional $36/editor/month; Team $75/editor/month; compute add-on"
     Cube: "Per-developer + hourly infra: Free hobbyist; Starter $40/dev/month; Premium $80/dev/month"
     Metabase: "Tiered: OSS free; Starter $100+$6/user/month; Pro $575+$12/user/month; Enterprise $20 k+/year (~$39k/yr median)"

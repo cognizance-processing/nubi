@@ -23,8 +23,20 @@
 
 import { useState, useCallback } from 'react'
 import { runPythonCell, SAMPLE_TABLE } from '../lib/wasmRuntime.js'
+import CodeEditor from './CodeEditor.jsx'
 
-const DEFAULT_CODE = "result = inputs['input']"
+/**
+ * Default scaffold for a new Python cell.
+ * Mirrors the flows python node convention: inputs, params → result.
+ */
+export const PYTHON_SCAFFOLD = `# Python transform — runs against the data above.
+# Available:
+#   inputs  — dict of upstream results keyed by cell ref (e.g. inputs['cell_1'])
+#   params  — query params dict (e.g. params['region'])
+# Bind your output to 'result' (a pyarrow Table, list, or dict).
+result = inputs.get('input')`
+
+const DEFAULT_CODE = PYTHON_SCAFFOLD
 // Default named-inputs map: one row binding query 'demo_all' as inputs['input']
 // (back-compat with the previous single-input behaviour).
 const DEFAULT_INPUTS = [{ name: 'input', queryId: 'demo_all' }]
@@ -128,38 +140,37 @@ export default function PythonCell() {
     : []
 
   return (
-    <div className="rounded-xl border border-gray-200 bg-white shadow-sm overflow-hidden">
+    <div className="rounded-xl border border-border bg-surface shadow-sm overflow-hidden">
       {/* Code input area */}
-      <div className="p-4 border-b border-gray-100">
-        <label className="block text-xs font-medium text-gray-500 mb-2 uppercase tracking-wide">
+      <div className="p-3 border-b border-border">
+        <label className="block text-[10px] font-semibold text-muted uppercase tracking-wider mb-2">
           Python
         </label>
-        <textarea
-          className="w-full font-mono text-sm text-gray-800 bg-gray-50 border border-gray-200 rounded-lg p-3 resize-y min-h-[100px] focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent transition"
+        {/* Monaco editor with Python syntax highlighting */}
+        <CodeEditor
           value={code}
-          onChange={e => setCode(e.target.value)}
-          onKeyDown={e => {
-            if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') {
-              e.preventDefault()
-              if (!loading) handleRun()
-            }
-          }}
-          spellCheck={false}
-          placeholder="result = inputs['input']"
-          aria-label="Python code input"
+          onChange={setCode}
+          language="python"
+          height="160px"
+          fontSize={13}
+          onRun={loading ? undefined : handleRun}
+          padding={{ top: 6, bottom: 6 }}
         />
 
         {/* Named inputs map: { name → query_id } */}
         <div className="mt-3">
-          <label className="block text-xs font-medium text-gray-500 mb-1 uppercase tracking-wide">
+          <label className="block text-[10px] font-semibold text-muted uppercase tracking-wider mb-1.5">
             Inputs
-            <span className="ml-1 font-normal normal-case text-gray-400">(each row binds a query&#39;s rows as <code className="font-mono bg-gray-100 px-1 rounded">inputs[&#39;&lt;name&gt;&#39;]</code>)</span>
+            <span className="ml-1 font-normal normal-case text-muted/70">
+              (each row binds a query's rows as{' '}
+              <code className="font-mono bg-surface-2 px-1 rounded">inputs['&lt;name&gt;']</code>)
+            </span>
           </label>
 
-          <div className="space-y-2">
+          <div className="space-y-1.5">
             {/* Column headers */}
-            <div className="flex items-center gap-2 text-[10px] font-medium text-gray-400 uppercase tracking-wide">
-              <span className="w-40">Name</span>
+            <div className="flex items-center gap-2 text-[9px] font-semibold text-muted/60 uppercase tracking-wider">
+              <span className="w-36">Name</span>
               <span className="flex-1">Query ID</span>
               <span className="w-7" aria-hidden="true" />
             </div>
@@ -168,7 +179,7 @@ export default function PythonCell() {
               <div key={idx} className="flex items-center gap-2">
                 <input
                   type="text"
-                  className="w-40 font-mono text-sm text-gray-800 bg-gray-50 border border-gray-200 rounded-lg px-3 py-1.5 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent transition"
+                  className="w-36 font-mono text-xs text-fg bg-surface-2 border border-border rounded-lg px-2.5 py-1.5 focus:outline-none focus:ring-1 focus:ring-ring transition-colors"
                   value={row.name}
                   onChange={e => updateRow(idx, { name: e.target.value })}
                   placeholder="input"
@@ -176,7 +187,7 @@ export default function PythonCell() {
                 />
                 <input
                   type="text"
-                  className="flex-1 font-mono text-sm text-gray-800 bg-gray-50 border border-gray-200 rounded-lg px-3 py-1.5 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent transition"
+                  className="flex-1 font-mono text-xs text-fg bg-surface-2 border border-border rounded-lg px-2.5 py-1.5 focus:outline-none focus:ring-1 focus:ring-ring transition-colors"
                   value={row.queryId}
                   onChange={e => updateRow(idx, { queryId: e.target.value })}
                   placeholder="demo_all"
@@ -185,7 +196,7 @@ export default function PythonCell() {
                 <button
                   type="button"
                   onClick={() => removeRow(idx)}
-                  className="w-7 h-7 shrink-0 flex items-center justify-center text-gray-400 hover:text-red-600 hover:bg-red-50 rounded-lg transition-colors focus:outline-none focus:ring-2 focus:ring-red-300"
+                  className="w-7 h-7 shrink-0 flex items-center justify-center text-muted hover:text-rose-500 hover:bg-rose-500/10 rounded-lg transition-colors"
                   aria-label={`Remove input ${idx + 1}`}
                   title="Remove input"
                 >
@@ -198,36 +209,39 @@ export default function PythonCell() {
           <button
             type="button"
             onClick={addRow}
-            className="mt-2 text-xs font-medium text-blue-600 hover:text-blue-700 focus:outline-none focus:underline"
+            className="mt-1.5 text-[11px] font-medium text-primary hover:opacity-80 transition-opacity"
           >
             + Add input
           </button>
         </div>
 
         {/* Run button row */}
-        <div className="mt-3 flex items-center gap-3">
+        <div className="mt-3 flex items-center gap-2.5">
           <button
             onClick={handleRun}
             disabled={loading || !code.trim()}
-            className="px-4 py-2 text-sm font-medium text-white bg-blue-600 rounded-lg hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-1"
+            className="inline-flex items-center gap-1.5 h-9 px-4 text-xs font-semibold bg-primary text-primary-fg rounded-lg hover:opacity-90 disabled:opacity-50 disabled:cursor-not-allowed transition-opacity"
           >
             {loading ? 'Running…' : 'Run'}
           </button>
-          <span className="text-xs text-gray-400">Ctrl+Enter</span>
+          <span className="text-[11px] text-muted select-none">Ctrl+Enter</span>
         </div>
       </div>
 
       {/* Helper note */}
-      <div className="px-4 py-2 bg-blue-50 border-b border-blue-100 text-xs text-blue-700">
-        Code runs server-side in an on-demand kernel. Bind <code className="font-mono bg-blue-100 px-1 rounded">result</code> to a pyarrow Table;{' '}
-        each input row binds that query&#39;s rows as <code className="font-mono bg-blue-100 px-1 rounded">inputs[&#39;&lt;name&gt;&#39;]</code> (e.g. <code className="font-mono bg-blue-100 px-1 rounded">inputs[&#39;input&#39;]</code>).
+      <div className="px-3 py-2 bg-primary/5 border-b border-border text-[11px] text-muted">
+        Code runs server-side in an on-demand kernel. Bind{' '}
+        <code className="font-mono bg-surface-2 px-1 rounded text-fg/80">result</code>{' '}
+        to a pyarrow Table;{' '}
+        each input row binds that query's rows as{' '}
+        <code className="font-mono bg-surface-2 px-1 rounded text-fg/80">inputs['&lt;name&gt;']</code>.
       </div>
 
       {/* Loading spinner */}
       {loading && (
-        <div className="p-6 flex items-center gap-3 text-sm text-gray-500">
+        <div className="p-6 flex items-center gap-3 text-xs text-muted">
           <div
-            className="h-4 w-4 rounded-full border-2 border-blue-600 border-t-transparent animate-spin"
+            className="h-4 w-4 rounded-full border-2 border-primary border-t-transparent animate-spin"
             role="status"
             aria-label="Running kernel"
           />
@@ -237,7 +251,7 @@ export default function PythonCell() {
 
       {/* Non-blocking fallback notice */}
       {!loading && notice && (
-        <div className="px-4 py-2 bg-amber-50 border-b border-amber-100 text-xs text-amber-700 flex items-start gap-2">
+        <div className="px-3 py-2 bg-amber-500/5 border-b border-amber-500/20 text-[11px] text-amber-600 dark:text-amber-400 flex items-start gap-2">
           <span className="shrink-0 mt-0.5">&#9888;</span>
           <span>{notice}</span>
         </div>
@@ -247,20 +261,20 @@ export default function PythonCell() {
       {!loading && result && (
         <div>
           {/* Metadata bar */}
-          <div className="px-4 py-2 bg-gray-50 border-b border-gray-100 flex items-center justify-between text-xs text-gray-500">
+          <div className="px-3 py-2 bg-surface-2/60 border-b border-border flex items-center justify-between text-[11px] text-muted">
             <span>
               rows:{' '}
-              <span className="font-mono font-semibold text-gray-700">
+              <span className="font-mono font-semibold text-fg">
                 {result.numRows.toLocaleString()}
               </span>
               {result.numRows > MAX_ROWS && (
-                <span className="ml-1 text-gray-400">(showing first {MAX_ROWS})</span>
+                <span className="ml-1 text-muted/70">(showing first {MAX_ROWS})</span>
               )}
             </span>
             <div className="flex items-center gap-2">
               {elapsedMs !== null && (
-                <span className="font-mono text-gray-400">
-                  elapsed: {elapsedMs.toLocaleString()} ms
+                <span className="font-mono text-muted">
+                  {elapsedMs.toLocaleString()} ms
                 </span>
               )}
               <TierBadge tier={tier} />
@@ -269,13 +283,13 @@ export default function PythonCell() {
 
           {/* Table */}
           <div className="overflow-x-auto">
-            <table className="w-full text-sm border-collapse">
+            <table className="w-full text-xs border-collapse">
               <thead>
-                <tr className="bg-gray-50">
+                <tr className="bg-surface-2/40">
                   {columns.map(col => (
                     <th
                       key={col}
-                      className="px-4 py-2 text-left text-xs font-semibold text-gray-600 border-b border-gray-200 whitespace-nowrap"
+                      className="px-3 py-2 text-left text-[10px] font-semibold text-muted border-b border-border whitespace-nowrap"
                     >
                       {col}
                     </th>
@@ -286,16 +300,16 @@ export default function PythonCell() {
                 {rows.map((row, ri) => (
                   <tr
                     key={ri}
-                    className={ri % 2 === 0 ? 'bg-white' : 'bg-gray-50/60'}
+                    className={ri % 2 === 0 ? 'bg-surface' : 'bg-surface-2/30'}
                   >
                     {row.map((cell, ci) => (
                       <td
                         key={ci}
-                        className="px-4 py-2 text-gray-700 border-b border-gray-100 font-mono text-xs whitespace-nowrap max-w-xs truncate"
+                        className="px-3 py-1.5 text-fg/80 border-b border-border/40 font-mono whitespace-nowrap max-w-xs truncate"
                         title={cell}
                       >
                         {cell === 'NULL' ? (
-                          <span className="text-gray-300 italic">NULL</span>
+                          <span className="text-muted/40 italic">NULL</span>
                         ) : (
                           cell
                         )}
@@ -307,7 +321,7 @@ export default function PythonCell() {
                   <tr>
                     <td
                       colSpan={columns.length || 1}
-                      className="px-4 py-6 text-center text-sm text-gray-400"
+                      className="px-3 py-6 text-center text-xs text-muted"
                     >
                       No rows returned.
                     </td>
@@ -321,9 +335,9 @@ export default function PythonCell() {
 
       {/* Empty initial state */}
       {!loading && !result && !notice && (
-        <div className="px-4 py-8 text-center text-sm text-gray-400">
+        <div className="px-4 py-8 text-center text-xs text-muted">
           Enter a Python snippet above and click{' '}
-          <span className="font-medium text-gray-500">Run</span>.
+          <span className="font-medium text-fg/80">Run</span>.
         </div>
       )}
     </div>

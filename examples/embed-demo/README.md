@@ -263,7 +263,8 @@ uses the token's `policies`. This is a hard security property — see
 
 ```
 examples/embed-demo/
-├── index.html      Host page with tenant switcher + live JWT inspector
+├── index.html      Host page with tenant switcher + live JWT inspector (needs the backend)
+├── demo-mock.html  Zero-setup variant: mock token, built-in sample data, no backend
 └── README.md       This file
 
 scripts/

@@ -298,7 +298,7 @@ const ALL_COMPETITORS = [
     isNubi: true,
     category: 'Embedded BI + Flows',
     pricingModel: 'Usage-based flat tiers',
-    entryPrice: '$0 free / $79/mo Starter',
+    entryPrice: '$0 free / $9/mo Starter',
     entryEst: false,
     seatModel: 'Unlimited users & viewers at every tier — no per-seat charge',
     embedding: 'Core surface: JWKS-native JWT RLS; unlimited viewers all paid tiers',
@@ -319,7 +319,7 @@ const ALL_COMPETITORS = [
     embedding: 'White-label on Pro ($575+/mo); per-viewer seat cost at scale is prohibitive',
     selfHost: 'Yes — AGPL OSS free; Pro self-hosted same fee as cloud',
     strengths: 'Largest open-source community; lowest barrier for non-technical users; free AGPL self-host; Data Studio semantic layer (v59, 2026)',
-    weaknesses: 'Per-viewer seat penalty; AGPL compliance burden for SaaS; no WebGL/Arrow; no ZAR billing',
+    weaknesses: 'Per-viewer seat penalty; AGPL compliance burden for SaaS; no Arrow path; no ZAR billing',
     sourceUrl: 'https://www.metabase.com/pricing/',
   },
   {
@@ -417,7 +417,7 @@ const ALL_COMPETITORS = [
     embedding: 'Limited; Enterprise-only; not a core product surface',
     selfHost: 'No — cloud-only SaaS',
     strengths: 'Viewers genuinely free at every tier (aligns with no-viewer-seat philosophy); distinctive canvas layout for narrative analytics; strong SQL + Python + dbt integration',
-    weaknesses: 'Scale tier requires minimum 15 editors ($1,035/mo minimum); embedding is limited and Enterprise-only; cloud-only; no WebGL; no ZAR billing',
+    weaknesses: 'Scale tier requires minimum 15 editors ($1,035/mo minimum); embedding is limited and Enterprise-only; cloud-only; no Arrow path; no ZAR billing',
     sourceUrl: 'https://count.co/pricing',
   },
   /* ── EMBEDDED ANALYTICS SPECIALISTS ── */
@@ -432,7 +432,7 @@ const ALL_COMPETITORS = [
     embedding: 'Core product; React/Vue SDK; $499/mo for 1,000 sessions; $200 per additional 500 sessions overage',
     selfHost: 'No — cloud-only SaaS',
     strengths: 'Developer-first SDK; purpose-built for embedding; session-based model is predictable; strong React/Vue component library; good CI/CD workflow support on Premium',
-    weaknesses: '$499/mo for only 1,000 sessions is expensive vs Nubi Starter ($79/mo for 5,000 sessions); steep overage at $200/500 additional sessions; no open-source core; no in-browser compute',
+    weaknesses: '$499/mo for only 1,000 sessions is expensive vs Nubi Starter ($9/mo for 1,000 sessions) or Team ($49/mo for 5,000 sessions); steep overage at $200/500 additional sessions; no open-source core; no in-browser compute',
     sourceUrl: 'https://embeddable.com/pricing',
   },
   {
@@ -446,7 +446,7 @@ const ALL_COMPETITORS = [
     embedding: 'Unlimited embedded viewers on flat fee; RLS on SCS tier ($2,000/mo annual); SAML/SCIM',
     selfHost: 'No — cloud-only SaaS',
     strengths: 'Genuinely unlimited embedded viewers at flat fee — the most viewer-generous model in this range; strong RLS passthrough auth; mature ISV track record; unlimited reports on Standard+',
-    weaknesses: '$800/mo annual entry is 10× Nubi Starter; cloud-only; no in-browser compute; limited AI maturity; no ZAR billing; no self-host',
+    weaknesses: '$800/mo annual entry is 16× Nubi Team ($49/mo) or 89× Nubi Starter ($9/mo); cloud-only; no in-browser compute; limited AI maturity; no ZAR billing; no self-host',
     sourceUrl: 'https://www.holistics.io/pricing/',
   },
   {
@@ -647,7 +647,7 @@ const PRIMARY_ROWS = [
     label: 'Compute kernel',
     hex:  'Python per session, Hex cloud (10–30 s cold, per-minute billing)',
     cube: 'n/a — warehouse + Cube Store; hourly infra billing',
-    nubi: 'Pyodide+DuckDB-WASM in browser by default; on-demand server (E2B/Modal, scale-to-zero) only when needed',
+    nubi: 'DuckDB-WASM (SQL) in browser by default; on-demand server (E2B/Modal, scale-to-zero) for Python and heavy workloads',
   },
   {
     label: 'Result transport',
@@ -659,7 +659,7 @@ const PRIMARY_ROWS = [
     label: 'Viz ceiling',
     hex:  'Plotly/SVG — chokes past ~50 k rows',
     cube: 'Bring-your-own frontend; no built-in viz',
-    nubi: 'WebGL/WebGPU (regl) on Arrow buffers — 1M+ points at 60 fps',
+    nubi: 'Apache ECharts (canvas) on Arrow buffers — fast on large result sets',
   },
   {
     label: 'Caching',
@@ -677,13 +677,13 @@ const PRIMARY_ROWS = [
     label: 'Embedding',
     hex:  'Enterprise add-on only; bolt-on auth; not a core surface',
     cube: 'Core strength (headless only); JWT→SQL RLS; viewer seats $20+/month',
-    nubi: 'Core product surface: <nubi-dashboard> → <nubi-widget> → <nubi-editor>; JWKS-native; no separate SDK',
+    nubi: 'Core product surface: <nubi-dashboard> plus cell-level <nubi-kpi>/<nubi-table>/<nubi-chart>; JWKS-native; no separate SDK',
   },
   {
     label: 'Pricing',
     hex:  'Per-seat + compute add-on (kernels cost real money)',
     cube: 'Per-developer + hourly infra (on top of seats)',
-    nubi: 'No per-seat pricing at any tier: Starter $79/mo | Pro $199/mo | Business $499/mo | Enterprise from $1,799/mo. Pay for compute, storage, AI calls, and embed sessions — never for users. Billed in ZAR via Paystack.',
+    nubi: 'No per-seat pricing at any tier: Starter $9/mo | Team $49/mo | Pro $149/mo | Enterprise from $1,000/mo. Pay for compute, storage, AI calls, and embed sessions — never for users. Billed in ZAR via Paystack.',
   },
 ]
 
@@ -1058,14 +1058,14 @@ export default function ComparePage() {
                     Analytics compute runs in the user's browser by default — marginal cost per embed view ≈&nbsp;$0 at high cache-hit rates.
                     Unlimited users and viewers at every tier — no per-seat penalty.
                     ZAR-native billing via Paystack — no competitor prices in ZAR.
-                    Arrow IPC + WebGL handles 1M+ point datasets.
+                    Arrow IPC + ECharts canvas rendering keeps large result sets fast in the browser.
                   </p>
                 </blockquote>
 
                 <div className="flex flex-wrap gap-2.5">
                   {[
                     { icon: <Zap size={12} strokeWidth={2.5} />, text: '≈ $0 marginal cost / embed view' },
-                    { icon: <Layers size={12} strokeWidth={2.5} />, text: '1M+ pts at 60 fps (WebGL)' },
+                    { icon: <Layers size={12} strokeWidth={2.5} />, text: 'Arrow IPC — zero-copy to charts' },
                     { icon: <Shield size={12} strokeWidth={2.5} />, text: 'JWKS-native auth — no SDK bolt-on' },
                     { icon: <Users size={12} strokeWidth={2.5} />, text: 'Unlimited users at every tier' },
                     { icon: <DollarSign size={12} strokeWidth={2.5} />, text: 'ZAR billing via Paystack — no competitor does this' },
@@ -1117,7 +1117,7 @@ export default function ComparePage() {
             <div className="grid grid-cols-2 sm:grid-cols-4 divide-x divide-y sm:divide-y-0 divide-white/10">
               {[
                 { value: '≈ $0', label: 'marginal cost per dashboard view' },
-                { value: '1M+', label: 'data points at 60 fps via WebGL' },
+                { value: '0 s', label: 'cold-start — kernel runs in the tab' },
                 { value: '∞', label: 'users & viewers — no per-seat pricing' },
                 { value: '$0', label: 'competitor prices in ZAR (only Nubi does)' },
               ].map(({ value, label }) => (
@@ -1257,12 +1257,12 @@ export default function ComparePage() {
               <WhyCard
                 icon={Zap}
                 title="Near-zero marginal cost"
-                body="Compute runs in the viewer's browser (Pyodide + DuckDB-WASM). 500 concurrent embedded viewers sharing the same dashboard collapse to 1 warehouse hit — the advantage is real at high cache-hit rates and extends to diverse workloads via automatic pre-aggregations."
+                body="Compute runs in the viewer's browser (DuckDB-WASM, SQL). 500 concurrent embedded viewers sharing the same dashboard collapse to 1 warehouse hit — the advantage is real at high cache-hit rates and extends to diverse workloads via automatic pre-aggregations."
               />
               <WhyCard
                 icon={Layers}
                 title="Arrow IPC end-to-end"
-                body="Results move as columnar Arrow buffers over WebSocket. The viz layer reads them directly — no JSON serialisation round-trip. WebGL/WebGPU renders 1M+ points at 60 fps via regl; <nubi-chart> auto-upgrades to WebGL above a configurable row threshold."
+                body="Results move as columnar Arrow buffers over WebSocket. The viz layer reads them directly — no JSON serialisation round-trip. <nubi-chart> renders on canvas via Apache ECharts, so charts stay fast and responsive even on large result sets."
               />
               <WhyCard
                 icon={Shield}
@@ -1278,7 +1278,7 @@ export default function ComparePage() {
                 Honest limitations
               </p>
               <p className="text-sm text-muted leading-relaxed">
-                The cost advantage is real <strong className="text-fg">only at high cache-hit / pre-aggregation rates</strong> — 500 analysts each slicing differently reverts to warehouse scans. Browser memory cap (~4 GB) requires aggressive pushdown. Pyodide native-wheel gaps mean on-demand kernel is a launch requirement, not optional. NoSQL deliberately out of scope. M10 self-host stack not yet shipped.
+                The cost advantage is real <strong className="text-fg">only at high cache-hit / pre-aggregation rates</strong> — 500 analysts each slicing differently reverts to warehouse scans. Browser memory cap (~4 GB) requires aggressive pushdown. The browser only runs SQL (DuckDB-WASM), so Python and native-wheel workloads route to the on-demand server kernel — a launch requirement for those, not optional. NoSQL deliberately out of scope. M10 self-host stack not yet shipped.
               </p>
             </div>
           </div>

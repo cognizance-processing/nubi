@@ -123,10 +123,16 @@ class InMemoryRepo:
         name: str,
         config: dict[str, Any],
         project_id: str | None = None,
+        id: str | None = None,
     ) -> dict[str, Any]:
-        """Insert a new row and return the created dict."""
+        """Insert a new row and return the created dict.
+
+        When *id* is provided the row is stored under that exact id (the
+        caller already minted a stable identifier); otherwise a uuid4 is
+        generated.
+        """
         table = _validate_resource(resource)
-        row_id = str(uuid.uuid4())
+        row_id = str(id) if id else str(uuid.uuid4())
         now = _now_iso()
         row: dict[str, Any] = {
             "id": row_id,
@@ -169,3 +175,15 @@ class InMemoryRepo:
             return False
         del self._store[table][str(id)]
         return True
+
+    def get_sync(self, resource: str, org_id: str, id: str) -> dict | None:
+        """Synchronous wrapper around ``get`` for use in threadpool handlers.
+
+        Runs ``self.get(resource, org_id, id)`` in a new event loop created
+        for this call.  Use this method only from non-async contexts (e.g.
+        flow task handlers that run in a ``ThreadPoolExecutor`` thread).
+
+        Returns ``None`` when the row is not found or belongs to a different org.
+        """
+        import asyncio  # noqa: PLC0415
+        return asyncio.run(self.get(resource, org_id, id))

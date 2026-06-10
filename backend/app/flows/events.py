@@ -72,6 +72,7 @@ EventType = Literal[
     "task_retrying",
     "task_timed_out",
     "task_upstream_failed",
+    "task_skipped",
     "flow_started",
     "flow_success",
     "flow_failed",

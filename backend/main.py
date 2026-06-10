@@ -96,6 +96,12 @@ import app.routes.embed  # noqa: F401, E402
 # Import compute route so it registers itself on api_router at import time.
 import app.routes.compute  # noqa: F401, E402
 
+# Import data-browser route (the /data/* table + row endpoints the Data page
+# calls) so it self-registers on api_router. Without this import the routes are
+# never mounted and /data/* falls through to the /{resource} catch-all, 404-ing
+# as "Unknown resource: 'data'". Must be before resources.py's catch-all below.
+import app.routes.data_browser  # noqa: F401, E402
+
 # Import lineage route BEFORE resources so its concrete /lineage prefix routes
 # are registered ahead of the generic /{resource} catch-all in resources.py.
 import app.routes.lineage  # noqa: F401, E402
@@ -151,6 +157,26 @@ from app.routes.export_share import router as export_share_router  # noqa: E402
 
 api_router.include_router(query_tools_router)
 api_router.include_router(export_share_router)
+
+# Import JWT issuers route (org-scoped CRUD for embed JWKS configs) BEFORE
+# resources so the /security prefix routes are registered ahead of the generic
+# /{resource} catch-all in resources.py.
+import app.routes.jwt_issuers  # noqa: F401, E402
+
+# Import datasets route (lakehouse CSV upload + materialise + catalog) BEFORE
+# resources so the /datasets prefix routes are registered ahead of the generic
+# /{resource} catch-all in resources.py.
+import app.routes.datasets  # noqa: F401, E402
+
+# Import super-admin routes (/admin/*, gated by require_superadmin) BEFORE
+# resources so the /admin prefix routes are registered ahead of the generic
+# /{resource} catch-all in resources.py.
+import app.routes.admin  # noqa: F401, E402
+
+# Import environments + versions routes (/projects/{id}/environments,
+# /environments/*, /versions/*) BEFORE resources so they register ahead of the
+# generic /{resource} catch-all in resources.py.
+import app.routes.environments  # noqa: F401, E402
 
 # Import resources route so it registers itself on api_router at import time.
 import app.routes.resources  # noqa: F401, E402
@@ -373,6 +399,17 @@ def create_app() -> FastAPI:
 
         return {"status": "ok", "db": db_status}
 
+    # ── Embed bundles (combined image) ────────────────────────────────────────
+    # dist-embed/ holds the <nubi-dashboard>/<nubi-widgets> drop-in scripts
+    # (vite.embed.config.js / vite.widgets.config.js). Mounted at /embed/* so
+    # the documented `https://<host>/embed/nubi-dashboard.js` URLs are served
+    # same-origin. Inert when the directory is absent (tests/dev).
+    embed_dir = os.getenv("EMBED_STATIC_DIR") or str(
+        Path(__file__).resolve().parents[1] / "dist-embed"
+    )
+    if os.path.isdir(embed_dir):
+        application.mount("/embed", StaticFiles(directory=embed_dir), name="embed")
+
     # ── Static SPA (combined image) ───────────────────────────────────────────
     # When a built frontend is present (STATIC_DIR or <repo>/dist), serve it on
     # the same origin as the API. Inert when absent — so tests/dev are unaffected.
@@ -391,7 +428,9 @@ def create_app() -> FastAPI:
             API and health routes are registered earlier and take precedence; this
             only catches everything else.
             """
-            if full_path.startswith(("api/", "health", "docs", "redoc", "openapi")):
+            if full_path.startswith(
+                ("api/", "health", "docs", "redoc", "openapi", "embed/")
+            ):
                 raise HTTPException(status_code=404, detail="Not found")
             candidate = os.path.join(static_dir, full_path)
             if full_path and os.path.isfile(candidate):

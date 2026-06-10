@@ -89,7 +89,7 @@ for (const bp of BREAKPOINTS) {
 
       // Wait for the builder toolbar to appear (flow name input)
       await expect(
-        page.locator('input[placeholder="Flow name…"]').first()
+        page.locator('.react-flow').first()
       ).toBeVisible({ timeout: 10_000 })
 
       // No horizontal overflow in builder
@@ -108,7 +108,7 @@ for (const bp of BREAKPOINTS) {
       const newFlowBtn = page.getByRole('button', { name: /new flow/i }).first()
       await newFlowBtn.click()
       await expect(
-        page.locator('input[placeholder="Flow name…"]').first()
+        page.locator('.react-flow').first()
       ).toBeVisible({ timeout: 10_000 })
 
       if (bp.width < 768) {
@@ -127,10 +127,15 @@ for (const bp of BREAKPOINTS) {
         // Close the sheet
         await page.keyboard.press('Escape')
       } else {
-        // Tablet / desktop: the floating palette panel should be inside the canvas
-        // (it's a Panel component inside ReactFlow — look for "Add task" text)
-        const palettePanel = page.getByText('Add task').first()
-        await expect(palettePanel).toBeVisible({ timeout: 5_000 })
+        // Tablet / desktop: the Add-task palette lives in the shared RHS
+        // sidebar, opened via the "Add task" panel toggle in the app top bar.
+        const addToggle = page.locator('button[aria-label="Add task"]:visible').first()
+        await expect(addToggle).toBeVisible({ timeout: 5_000 })
+        await addToggle.click()
+
+        // The palette panel shows the task type buttons (e.g. "SQL query")
+        const queryBtn = page.getByRole('button', { name: /sql query/i })
+        await expect(queryBtn.first()).toBeVisible({ timeout: 5_000 })
 
         // No overflow on desktop
         await assertNoHorizontalOverflow(page, `${bp.name} palette visible`)

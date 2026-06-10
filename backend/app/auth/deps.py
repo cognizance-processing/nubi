@@ -32,7 +32,7 @@ from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
 from app.auth.denylist import get_token_denylist
 from app.auth.jwt import decode_access_token
-from app.auth.verify import VerifiedIdentity, verify_token
+from app.auth.verify import VerifiedIdentity, verify_token_async
 from app.db import fetchrow
 from app.errors import AppError
 
@@ -138,7 +138,7 @@ async def verified_identity(
     # pinning without any additional logic here.
     expected_origin: str | None = request.headers.get("origin")
 
-    identity = verify_token(credentials.credentials, expected_origin=expected_origin)
+    identity = await verify_token_async(credentials.credentials, expected_origin=expected_origin)
 
     # Denylist check for first-party (HS256) access tokens only.
     # Embed tokens are short-lived, audience-scoped and host-signed; they

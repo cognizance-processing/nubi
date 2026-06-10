@@ -1,0 +1,66 @@
+# Dockerfile.ee.dockerignore — build-context ignore for the EE image.
+#
+# BuildKit pairs this file with Dockerfile.ee automatically
+# (docker build -f Dockerfile.ee .); fly.toml also sets it via build.ignorefile.
+#
+# IDENTICAL to .dockerignore EXCEPT backend/app/ee/ is NOT excluded — the EE
+# image ships the commercial backend (billing, licensing, SSO). Keep the two
+# files in sync apart from that one entry.
+
+# ── Node / frontend build artefacts ──────────────────────────────────────────
+node_modules/
+dist/
+dist-embed/
+
+# ── Generated seed data (rebuilt at runtime by demo_bundle/seed_data_duckdb) ──
+backend/seed_data/parquet/
+backend/seed_data/rollups/
+backend/seed_data/blends/
+*.duckdb
+
+# ── Python caches ─────────────────────────────────────────────────────────────
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+*.egg-info/
+.eggs/
+.venv/
+venv/
+env/
+
+# ── Test / dev tooling ─────────────────────────────────────────────────────────
+backend/tests/
+e2e/
+playwright-report/
+test-results/
+*.test.mjs
+*.spec.js
+*.spec.ts
+
+# ── Secrets / local config ─────────────────────────────────────────────────────
+.env
+.env.*
+!.env.compose
+*.local
+
+# ── Git / CI ──────────────────────────────────────────────────────────────────
+.git/
+.github/
+.gitignore
+
+# ── Docs / media ──────────────────────────────────────────────────────────────
+# docs/ must stay IN the context: src/docs/registry.js bundles /docs/*.md into
+# the SPA at build time. Root-level *.md stay excluded (glob does not cross "/").
+*.md
+!requirements.txt
+
+# ── Misc development files ────────────────────────────────────────────────────
+*.mjs
+billing-model/
+cli/
+legacy/
+mcp/
+sdk/
+# embed/ stays IN the context — dist-embed is built in-image and served at /embed/*.

@@ -1,8 +1,11 @@
 /**
- * OrgSettings — rename your organisation, set its avatar, and optionally
- * delete it.
+ * OrgSettings — organisation "General" section.
  *
- * Delete rules:
+ * Rename the organisation, set its avatar, jump to Members / Billing, and
+ * optionally delete it.  Member management lives in its own section
+ * (/settings/members — MembersSettings.jsx).
+ *
+ * Delete rules (unchanged):
  *   - First fetch GET /orgs/{id}/deletion-impact.
  *   - If can_delete is false (org has projects), show the blocker message
  *     and DISABLE the delete button with a clear explanation.
@@ -11,14 +14,57 @@
  */
 
 import { useEffect, useState, useCallback } from 'react'
-import { Building2, Loader2, CheckCircle, AlertTriangle, Trash2 } from 'lucide-react'
+import { Link } from 'react-router-dom'
+import {
+  AlertTriangle,
+  Trash2,
+  Users,
+  CreditCard,
+  ChevronRight,
+} from 'lucide-react'
 import { useOrg } from '../../../contexts/OrgContext.jsx'
+import { useFeature } from '../../../lib/features.js'
 import AvatarField from '../../../components/app/AvatarField.jsx'
 import DangerDeleteDialog from '../../../components/app/DangerDeleteDialog.jsx'
 import { updateOrg, deleteOrg, getOrgDeletionImpact } from '../../../lib/settings.js'
+import {
+  SettingsPageHeader,
+  SettingsCard,
+  Field,
+  PrimaryButton,
+  SavedBadge,
+  ErrorText,
+  DangerZone,
+  DangerRow,
+  DangerButton,
+  inputCls,
+} from './SettingsUI.jsx'
+
+// ---------------------------------------------------------------------------
+// Quick-link card (Members / Billing entry points)
+// ---------------------------------------------------------------------------
+
+function QuickLink({ to, Icon, title, description }) {
+  return (
+    <Link
+      to={to}
+      className="group flex items-center gap-3 px-4 py-3.5 rounded-2xl border border-border bg-surface hover:border-primary/40 hover:bg-surface-2/50 transition-colors"
+    >
+      <div className="flex items-center justify-center w-9 h-9 rounded-xl bg-primary/10 text-primary shrink-0">
+        <Icon size={16} />
+      </div>
+      <div className="min-w-0 flex-1">
+        <p className="text-sm font-medium text-fg">{title}</p>
+        <p className="text-xs text-muted truncate">{description}</p>
+      </div>
+      <ChevronRight size={15} className="text-muted/50 group-hover:text-muted shrink-0 transition-colors" />
+    </Link>
+  )
+}
 
 export default function OrgSettings() {
   const { activeOrg, orgs, setActiveOrg } = useOrg()
+  const billingEnabled = useFeature('billing')
   const orgId = activeOrg?.id ?? null
 
   const [orgName, setOrgName] = useState(activeOrg?.name ?? '')
@@ -100,131 +146,124 @@ export default function OrgSettings() {
   // Determine blocker text
   const projectsBlocker = impact?.blockers?.find((b) => b.type === 'projects')
   const canDelete = impact?.can_delete === true
+  // Org rename/branding/delete are owner/admin only (backend enforces via _require_manage).
+  const canManage = ['owner', 'admin'].includes(activeOrg?.role)
 
   return (
-    <div className="space-y-8">
-      {/* Section header */}
-      <div className="flex items-start gap-4 pb-5 border-b border-border">
-        <div
-          className="flex items-center justify-center w-10 h-10 rounded-xl shrink-0"
-          style={{ background: 'linear-gradient(135deg, #1b2363, #2456a6, #17b3a3)' }}
-        >
-          <Building2 size={18} className="text-white" />
-        </div>
-        <div>
-          <h2 className="font-display font-semibold text-base text-fg">Organisation settings</h2>
-          <p className="text-sm text-muted mt-0.5">
-            Manage the name and branding of your organisation. Changes affect all members.
-          </p>
-        </div>
-      </div>
+    <div className="space-y-6">
+      <SettingsPageHeader
+        title="General"
+        description="Your organisation's name and branding. Changes affect all members."
+      />
 
       {isPersonal ? (
-        <p className="text-sm text-muted">
-          The personal workspace cannot be renamed or deleted.
-        </p>
+        <SettingsCard>
+          <p className="text-sm text-muted">
+            The personal workspace cannot be renamed or deleted. Create an organisation to
+            collaborate with a team.
+          </p>
+        </SettingsCard>
       ) : (
         <>
-          {/* Rename / avatar form */}
-          <form onSubmit={handleSave} className="space-y-6 max-w-md">
-            {/* Avatar */}
-            <div className="space-y-1.5">
-              <label className="block text-xs font-medium text-muted">Organisation avatar</label>
-              <AvatarField
-                value={avatarUrl}
-                onChange={setAvatarUrl}
-                fallbackName={orgName || activeOrg?.name || '?'}
-              />
-            </div>
-
-            {/* Name */}
-            <div className="space-y-1.5">
-              <label className="block text-xs font-medium text-muted" htmlFor="org-name">
-                Organisation name
-              </label>
-              <input
-                id="org-name"
-                type="text"
-                value={orgName}
-                onChange={(e) => setOrgName(e.target.value)}
-                placeholder="My Organisation"
-                className="w-full px-3 py-2 rounded-xl bg-bg border border-border text-sm text-fg placeholder:text-muted focus:outline-none focus:border-primary"
-              />
-            </div>
-
-            {/* Save */}
-            <div className="flex items-center gap-3">
-              <button
-                type="submit"
-                disabled={saving}
-                className="inline-flex items-center gap-2 px-4 py-2 rounded-xl text-sm font-medium text-white transition-opacity disabled:opacity-50"
-                style={{ background: 'linear-gradient(135deg, #2456a6, #17b3a3)' }}
+          {/* Profile card — owner/admin only */}
+          {canManage ? (
+            <form onSubmit={handleSave}>
+              <SettingsCard
+                title="Organisation profile"
+                description="The name and avatar shown across the app and to invited members."
+                footer={
+                  <>
+                    <PrimaryButton type="submit" busy={saving} disabled={saving}>
+                      Save changes
+                    </PrimaryButton>
+                    <SavedBadge show={saved} />
+                    <ErrorText>{saveError}</ErrorText>
+                  </>
+                }
               >
-                {saving ? <Loader2 size={15} className="animate-spin" /> : null}
-                Save changes
-              </button>
-              {saved && (
-                <span className="inline-flex items-center gap-1.5 text-sm text-emerald-600 dark:text-emerald-400">
-                  <CheckCircle size={15} />
-                  Saved
-                </span>
-              )}
-            </div>
-
-            {saveError && (
-              <p className="text-sm text-red-600 dark:text-red-400">{saveError}</p>
-            )}
-          </form>
-
-          {/* Danger zone */}
-          <div className="rounded-2xl border border-red-200 dark:border-red-900 overflow-hidden">
-            <div className="px-5 py-4 bg-red-50 dark:bg-red-950/30 border-b border-red-200 dark:border-red-900">
-              <h3 className="font-semibold text-sm text-red-700 dark:text-red-400">Danger zone</h3>
-            </div>
-
-            <div className="px-5 py-4 space-y-4">
-              <div className="flex items-start justify-between gap-4">
-                <div className="min-w-0">
-                  <p className="text-sm font-medium text-fg">Delete this organisation</p>
-                  <p className="text-xs text-muted mt-0.5">
-                    Permanently deletes the organisation and all of its resources. This cannot be
-                    undone.
-                  </p>
-
-                  {/* Blocker message */}
-                  {projectsBlocker && (
-                    <div className="mt-3 flex items-start gap-2 px-3 py-2.5 rounded-xl bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-800 text-xs text-amber-700 dark:text-amber-300">
-                      <AlertTriangle size={14} className="shrink-0 mt-0.5" />
-                      <span>
-                        This organisation has {projectsBlocker.count} project
-                        {projectsBlocker.count !== 1 ? 's' : ''}. Delete all projects first before
-                        deleting the organisation.
-                      </span>
-                    </div>
-                  )}
-
-                  {impactError && (
-                    <p className="mt-2 text-xs text-red-600 dark:text-red-400">{impactError}</p>
-                  )}
+                <div className="space-y-5 max-w-md">
+                  <Field label="Organisation avatar">
+                    <AvatarField
+                      value={avatarUrl}
+                      onChange={setAvatarUrl}
+                      fallbackName={orgName || activeOrg?.name || '?'}
+                    />
+                  </Field>
+                  <Field label="Organisation name" htmlFor="org-name">
+                    <input
+                      id="org-name"
+                      type="text"
+                      value={orgName}
+                      onChange={(e) => setOrgName(e.target.value)}
+                      placeholder="My Organisation"
+                      className={inputCls}
+                    />
+                  </Field>
                 </div>
+              </SettingsCard>
+            </form>
+          ) : (
+            <SettingsCard title="Organisation profile">
+              <p className="text-sm text-muted">
+                You have read-only access to this organisation&apos;s settings.
+              </p>
+            </SettingsCard>
+          )}
 
-                <button
-                  type="button"
+          {/* Entry points: members + billing */}
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+            <QuickLink
+              to="/settings/members"
+              Icon={Users}
+              title="Members"
+              description="Invite teammates and manage roles"
+            />
+            {billingEnabled && (
+              <QuickLink
+                to="/billing"
+                Icon={CreditCard}
+                title="Billing"
+                description="Plan, usage, and invoices"
+              />
+            )}
+          </div>
+
+          {/* Danger zone — owner/admin only */}
+          {canManage && (
+            <DangerZone>
+              <DangerRow
+                title="Delete this organisation"
+                description="Permanently deletes the organisation and all of its resources. This cannot be undone."
+                extra={
+                  <>
+                    {projectsBlocker && (
+                      <div className="mt-3 flex items-start gap-2 px-3 py-2.5 rounded-xl bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-800 text-xs text-amber-700 dark:text-amber-300">
+                        <AlertTriangle size={14} className="shrink-0 mt-0.5" />
+                        <span>
+                          This organisation has {projectsBlocker.count} project
+                          {projectsBlocker.count !== 1 ? 's' : ''}. Delete all projects first
+                          before deleting the organisation.
+                        </span>
+                      </div>
+                    )}
+                    {impactError && (
+                      <p className="mt-2 text-xs text-red-600 dark:text-red-400">{impactError}</p>
+                    )}
+                  </>
+                }
+              >
+                <DangerButton
                   onClick={() => setDialogOpen(true)}
                   disabled={impactLoading || !canDelete}
-                  className="inline-flex items-center gap-2 px-3 py-2 rounded-xl text-sm font-medium text-red-600 dark:text-red-400 border border-red-200 dark:border-red-800 hover:bg-red-50 dark:hover:bg-red-950/30 transition-colors disabled:opacity-40 disabled:cursor-not-allowed shrink-0"
+                  busy={impactLoading}
                   title={!canDelete && projectsBlocker ? 'Delete all projects first' : undefined}
                 >
-                  {impactLoading ? (
-                    <Loader2 size={15} className="animate-spin" />
-                  ) : (
-                    <Trash2 size={15} />
-                  )}
+                  {!impactLoading && <Trash2 size={15} />}
                   Delete organisation
-                </button>
-              </div>
-            </div>
-          </div>
+                </DangerButton>
+              </DangerRow>
+            </DangerZone>
+          )}
         </>
       )}
 

@@ -230,24 +230,26 @@ class TestRenderReportCsv:
 
 
 class TestRenderReportPdf:
-    def test_pdf_stub_returns_bytes(self):
+    def test_pdf_returns_bytes(self):
         board = _make_board()
         result = render_report(board, params={}, format="pdf")
         assert isinstance(result, bytes)
         assert len(result) > 0
 
-    def test_pdf_stub_contains_todo_marker(self):
+    def test_pdf_is_a_valid_pdf(self):
         board = _make_board()
         result = render_report(board, params={}, format="pdf")
-        text = result.decode("utf-8")
-        assert "TODO" in text or "stub" in text.lower()
+        # Real PDF: %PDF header, an xref table, and the EOF marker.
+        assert result.startswith(b"%PDF-1.4")
+        assert b"xref" in result
+        assert result.rstrip().endswith(b"%%EOF")
 
-    def test_pdf_stub_includes_board_name(self):
+    def test_pdf_includes_board_name(self):
         board = _make_board()
         board["name"] = "My Special Board"
         result = render_report(board, params={}, format="pdf")
-        text = result.decode("utf-8")
-        assert "My Special Board" in text
+        # The board name is drawn into the content stream as a PDF literal.
+        assert b"My Special Board" in result
 
     def test_pdf_bad_format_raises(self):
         board = _make_board()

@@ -89,15 +89,8 @@ async function fetchRows(datastoreId, table, limit = DEFAULT_LIMIT) {
     throw new Error(`Row fetch failed (${resp.status}): ${txt}`)
   }
   const buf = await resp.arrayBuffer()
-  const reader = arrow.RecordBatchReader.fromByteStream(
-    new ReadableStream({
-      start(ctrl) {
-        ctrl.enqueue(new Uint8Array(buf))
-        ctrl.close()
-      },
-    })
-  )
-  // Synchronous open (buffer already complete)
+  // Buffer is already complete → synchronous IPC decode. (apache-arrow has no
+  // `fromByteStream`; `RecordBatchReader.from()` is the supported entry point.)
   const arrowReader = arrow.RecordBatchReader.from(new Uint8Array(buf))
   const tbl = new arrow.Table([...arrowReader])
   return { table: tbl, rowCount: tbl.numRows }
@@ -350,9 +343,12 @@ export default function DataExplorerPage() {
         const data = await get('/connectors')
         if (cancelled) return
         const list = Array.isArray(data) ? data : (data?.connectors ?? [])
-        setConnectors([DEMO_ENTRY, ...list])
+        // The backend already injects the virtual "Demo data" connector into
+        // this list, so don't prepend our own — that produced a duplicate demo
+        // entry. Fall back to the local demo entry only if the list is empty.
+        setConnectors(list.length ? list : [DEMO_ENTRY])
       } catch {
-        // Keep demo entry
+        // Keep the local demo entry as a fallback.
       }
     })()
     return () => { cancelled = true }

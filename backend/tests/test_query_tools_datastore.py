@@ -140,6 +140,25 @@ async def test_unknown_datastore_404(client_with_ds):
 
 
 @pytest.mark.asyncio
+async def test_demo_sentinel_lists_and_previews(client_with_ds):
+    # Regression: the virtual "Demo data" connector uses the non-UUID sentinel
+    # id "__demo__".  _resolve_datastore_connector must route it to the
+    # in-process demo DuckDB instead of querying datastores by UUID (which
+    # raised asyncpg DataError → 500 on the data-browser "View data" page).
+    ac, user_id, _ds_id = client_with_ds
+    resp = await ac.get("/api/v1/datastores/__demo__/tables", headers=_auth(user_id))
+    assert resp.status_code == 200, resp.text
+    assert "demo" in {t["name"] for t in resp.json()["tables"]}
+
+    prev = await ac.get(
+        "/api/v1/datastores/__demo__/tables/demo/preview?limit=5",
+        headers=_auth(user_id),
+    )
+    assert prev.status_code == 200, prev.text
+    assert prev.json()["table"] == "demo"
+
+
+@pytest.mark.asyncio
 async def test_no_token_401(client_with_ds):
     ac, _user_id, ds_id = client_with_ds
     resp = await ac.get(f"/api/v1/datastores/{ds_id}/tables")

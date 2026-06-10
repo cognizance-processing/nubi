@@ -12,6 +12,7 @@
 import { Outlet, useLocation } from 'react-router-dom'
 import Navbar from '../components/Navbar.jsx'
 import Footer from '../components/Footer.jsx'
+import ScrollToTop from '../components/ScrollToTop.jsx'
 
 /** Prefixes whose pages should NOT display the marketing footer. */
 const APP_PREFIXES = ['/docs', '/editor', '/playground', '/dashboard', '/d/']
@@ -31,6 +32,8 @@ export default function MainLayout() {
 
   return (
     <div className="min-h-screen flex flex-col bg-bg text-fg">
+      {/* Reset window scroll on route change (public pages use window scroll) */}
+      <ScrollToTop />
       <Navbar />
 
       <main className="flex-1">

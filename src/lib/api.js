@@ -185,6 +185,32 @@ export function get(path) {
   return request(path, { method: 'GET' })
 }
 
+/**
+ * GET /path returning a Blob (e.g. a PDF download).
+ *
+ * Attaches the in-memory access token + active-org header just like `request`,
+ * but reads the body as a Blob instead of JSON. Does NOT auto-retry on 401
+ * (downloads are user-initiated; a stale session surfaces as an error the
+ * caller can show). Throws on non-2xx.
+ *
+ * @param {string} path
+ * @returns {Promise<Blob>}
+ */
+export async function getBlob(path) {
+  const headers = new Headers()
+  if (_accessToken) headers.set('Authorization', `Bearer ${_accessToken}`)
+  if (_activeOrgId) headers.set('X-Org-Id', _activeOrgId)
+  if (_activeProjectId) headers.set('X-Project-Id', _activeProjectId)
+
+  const response = await fetch(`${BASE}${path}`, { method: 'GET', headers, credentials: 'include' })
+  if (!response.ok) {
+    const err = new Error(`Download failed: ${response.status} ${response.statusText}`)
+    err.status = response.status
+    throw err
+  }
+  return response.blob()
+}
+
 /** POST /path with JSON body */
 export function post(path, body) {
   return request(path, { method: 'POST', body: body !== undefined ? JSON.stringify(body) : undefined })
@@ -193,6 +219,11 @@ export function post(path, body) {
 /** PUT /path with JSON body */
 export function put(path, body) {
   return request(path, { method: 'PUT', body: body !== undefined ? JSON.stringify(body) : undefined })
+}
+
+/** PATCH /path with JSON body */
+export function patch(path, body) {
+  return request(path, { method: 'PATCH', body: body !== undefined ? JSON.stringify(body) : undefined })
 }
 
 /** DELETE /path (named 'del' to avoid reserved-word clash) */
@@ -435,6 +466,35 @@ export async function listDatastores() {
 }
 
 /**
+ * List the active project's connectors (the project-scoped, working endpoint).
+ *
+ * GET /api/v1/connectors
+ *
+ * Unlike GET /datastores (which does not exist and always yields []), this is
+ * the real, project-scoped endpoint. The backend injects the built-in virtual
+ * "Demo data" connector (id ``__demo__``) ONLY in the org's demo/default
+ * project — other projects start empty. Each row carries
+ * ``config.connector_type`` (postgres | bigquery | mysql | duckdb | demo | …)
+ * with no secret material.
+ *
+ * Returns [] on any failure so the connector picker degrades gracefully.
+ *
+ * @returns {Promise<Array<{ id: string, name: string, config?: { connector_type?: string } }>>}
+ */
+export async function listConnectors() {
+  try {
+    const data = await get('/connectors')
+    if (Array.isArray(data)) return data
+    if (Array.isArray(data?.connectors)) return data.connectors
+    if (Array.isArray(data?.items)) return data.items
+    return []
+  } catch (cause) {
+    console.warn('[api] listConnectors failed; returning []:', cause.message)
+    return []
+  }
+}
+
+/**
  * List a datastore's tables (with cheap row counts) for the data browser.
  *
  * GET /api/v1/datastores/{id}/tables
@@ -468,6 +528,54 @@ export function previewDatastoreTable(datastoreId, table, limit = 50) {
   return get(
     `/datastores/${datastoreId}/tables/${encodeURIComponent(table)}/preview?limit=${limit}`,
   )
+}
+
+// ---------------------------------------------------------------------------
+// Orgs + onboarding
+// ---------------------------------------------------------------------------
+
+/**
+ * Create an organization for the current user (they become its owner).
+ *
+ * POST /api/v1/orgs { name }
+ *
+ * @param {string} name
+ * @returns {Promise<{ id: string, name: string, role: string }>}
+ */
+export function createOrg(name) {
+  return post('/orgs', { name })
+}
+
+/**
+ * List pending (non-expired) org invites addressed to the current user's email.
+ *
+ * GET /api/v1/auth/me/invites
+ *
+ * Returns [] on any failure so onboarding degrades gracefully.
+ *
+ * @returns {Promise<Array<{ id: string, org_id: string, org_name: string, role: string, token: string, created_at: string, expires_at: string }>>}
+ */
+export async function getMyInvites() {
+  try {
+    const data = await get('/auth/me/invites')
+    return Array.isArray(data?.invites) ? data.invites : []
+  } catch (cause) {
+    console.warn('[api] getMyInvites failed; returning []:', cause.message)
+    return []
+  }
+}
+
+/**
+ * Idempotently create + seed the "Demo" project (sample dashboards, queries
+ * and a datastore) in the given org.
+ *
+ * POST /api/v1/orgs/{orgId}/demo-project
+ *
+ * @param {string} orgId
+ * @returns {Promise<{ project: Object, created: boolean, seed: Object }>}
+ */
+export function createDemoProject(orgId) {
+  return post(`/orgs/${orgId}/demo-project`)
 }
 
 // ---------------------------------------------------------------------------

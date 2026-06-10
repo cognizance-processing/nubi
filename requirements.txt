@@ -16,6 +16,7 @@ jinja2>=3.1  # SQL templating in app/connectors/planner.py (non-lazy import)
 sqlglot>=25.0
 pyarrow>=14.0
 duckdb>=1.0
+pandas>=2.0  # DataFrame-native Python flow cells (app/flows/registry.py _handle_python)
 adbc-driver-postgresql>=1.0
 adbc-driver-manager>=1.0
 

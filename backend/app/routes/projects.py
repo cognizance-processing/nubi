@@ -34,6 +34,7 @@ from fastapi import APIRouter, Depends, Request, Response
 from pydantic import BaseModel
 
 from app.auth.deps import current_user
+from app.auth.roles import require_writer
 from app.errors import AppError
 from app.repos import projects as projects_repo
 from app.repos.provider import Repo, get_repo
@@ -123,14 +124,18 @@ async def list_projects(
     return await projects_repo.list_projects(org_id)
 
 
-@router.post("", status_code=201)
+@router.post("", status_code=201, dependencies=[Depends(require_writer)])
 async def create_project(
     body: CreateProjectIn,
     request: Request,
     user: dict[str, Any] = Depends(current_user),
     repo: Repo = Depends(get_repo),
 ) -> dict[str, Any]:
-    """Create a new project in the caller's org (slug unique per org)."""
+    """Create a new project in the caller's org (slug unique per org).
+
+    New projects start EMPTY — demo content lives only in the org's optional
+    "Demo" project (POST /orgs/{org_id}/demo-project).
+    """
     name = body.name.strip()
     if not name:
         raise AppError("invalid_request", "Project name is required.", 400)
@@ -230,7 +235,7 @@ async def get_project(
     return proj
 
 
-@router.patch("/{project_id}")
+@router.patch("/{project_id}", dependencies=[Depends(require_writer)])
 async def patch_project(
     project_id: str,
     body: PatchProjectIn,
@@ -280,7 +285,7 @@ async def patch_project(
     return proj
 
 
-@router.put("/{project_id}")
+@router.put("/{project_id}", dependencies=[Depends(require_writer)])
 async def update_project(
     project_id: str,
     body: UpdateProjectIn,
@@ -306,7 +311,7 @@ async def update_project(
     return proj
 
 
-@router.delete("/{project_id}", status_code=204)
+@router.delete("/{project_id}", status_code=204, dependencies=[Depends(require_writer)])
 async def delete_project(
     project_id: str,
     body: DeleteProjectIn,

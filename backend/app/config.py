@@ -20,6 +20,18 @@ _REPO_ROOT = Path(__file__).resolve().parents[2]
 _ENV_FILE = os.getenv("ENV_FILE", ".env")
 _ENV_FILE_PATH = _ENV_FILE if os.path.isabs(_ENV_FILE) else str(_REPO_ROOT / _ENV_FILE)
 
+# Also export the env file into os.environ (real env always wins). Several
+# subsystems read os.getenv directly rather than Settings — notably the
+# S3/MinIO parquet machinery (S3_ENDPOINT_URL / S3_ACCESS_KEY / S3_SECRET_KEY
+# in demo_bundle.py, connectors/duckdb_conn.py, duckdb_storage.py) — so keys
+# defined only in .env must land in the process environment too.
+try:
+    from dotenv import load_dotenv
+
+    load_dotenv(_ENV_FILE_PATH, override=False)
+except ImportError:  # pragma: no cover — python-dotenv ships with pydantic-settings
+    pass
+
 
 class Settings(BaseSettings):
     """All runtime configuration read from environment variables.
@@ -103,14 +115,23 @@ class Settings(BaseSettings):
     # so a single environment variable can turn on all scheduled automation.
     FLOWS_SCHEDULER_ENABLED: bool | None = None
 
-    # ── Flows tick (Cloud Run / Cloud Scheduler) ─────────────────────────────
-    # Shared secret for the internal POST /flows/tick endpoint.  Google Cloud
-    # Scheduler calls /flows/tick on cron with the header
-    # ``X-Nubi-Tick-Secret: <FLOWS_TICK_SECRET>`` so the engine advances without
-    # an always-on worker (Cloud Run throttles CPU off-request + scales to zero).
+    # ── Flows tick (external scheduler / cron) ───────────────────────────────
+    # Shared secret for the internal POST /flows/tick endpoint.  An external
+    # scheduler (e.g. a cron machine or scheduled job) calls /flows/tick with
+    # the header ``X-Nubi-Tick-Secret: <FLOWS_TICK_SECRET>`` so the engine
+    # advances without an always-on worker — needed on platforms that throttle
+    # CPU outside requests or scale to zero.
     # When empty the /flows/tick endpoint is disabled (returns 503).  This is
     # NOT a user JWT — it gates the internal scheduler webhook only.
     FLOWS_TICK_SECRET: str = ""
+
+    # ── Flows materialization target (incremental / full models) ─────────────
+    # Base URI under which materialized flow models are written, env-namespaced
+    # as ``<base>/<env>/<target>.parquet``.  Use an object-storage URI in prod
+    # (e.g. ``s3://my-bucket/flows`` on any S3-compatible store such as
+    # Cloudflare R2) so targets survive stateless/ephemeral containers.  When empty, incremental.py falls back to a local path
+    # (``<backend>/seed_data/materialized``) — fine for local dev only.
+    FLOWS_MATERIALIZE_BASE_URI: str = ""
 
     @field_validator("FLOWS_SCHEDULER_ENABLED", mode="before")
     @classmethod
@@ -213,6 +234,40 @@ class Settings(BaseSettings):
     # Optional.  Set ALERT_EMAIL_RECIPIENT to receive alert emails.
     # Uses the NullSender (no real delivery) unless an SMTP/SES sender is wired.
     ALERT_EMAIL_RECIPIENT: str = ""     # Address to send alert emails to
+
+    # ── Outbound SMTP (invoices + report emails) ─────────────────────────────
+    # Optional.  When SMTP_HOST is set the billing module sends invoice PDFs via
+    # SMTP; otherwise it falls back to the NullSender (no real delivery — useful
+    # in tests / local dev / OSS builds with no mail server).
+    SMTP_HOST: str = ""                 # e.g. "smtp.sendgrid.net" / "email-smtp.eu-west-1.amazonaws.com"
+    SMTP_PORT: int = 587                # 587 (STARTTLS) or 465 (implicit TLS)
+    SMTP_USERNAME: str = ""             # SMTP auth username (e.g. "apikey" for SendGrid)
+    SMTP_PASSWORD: str = ""             # SMTP auth password / API key
+    SMTP_USE_TLS: bool = True           # STARTTLS on port 587
+    SMTP_FROM: str = ""                 # From address; defaults to BILLING_EMAIL when empty
+
+    # ── Business / billing entity (invoices + VAT) ───────────────────────────
+    # These appear on generated invoice PDFs.  VAT is charged ONLY when
+    # COMPANY_VAT_NUMBER is set (non-empty): if you are not VAT-registered,
+    # leave it blank and no VAT line is added to invoices.
+    COMPANY_NAME: str = "Nubi"                       # legal trading name on invoices
+    COMPANY_LEGAL_NAME: str = ""                     # registered legal name (defaults to COMPANY_NAME)
+    COMPANY_REG_NUMBER: str = ""                     # company registration number
+    COMPANY_VAT_NUMBER: str = ""                     # VAT/tax number — empty ⇒ no VAT charged
+    COMPANY_VAT_RATE: float = 0.15                   # VAT rate (0.15 = 15%, SA standard rate)
+    COMPANY_ADDRESS: str = ""                        # multi-line address (use \n for line breaks)
+    COMPANY_EMAIL: str = "billing@nubi.io"           # billing contact email shown on invoices
+    COMPANY_WEBSITE: str = "https://nubi.io"         # website shown on invoices
+    BILLING_EMAIL: str = "billing@nubi.io"           # From / reply-to address for invoice emails
+    INVOICE_NUMBER_PREFIX: str = "NUBI"              # invoice number prefix, e.g. NUBI-2026-000123
+    INVOICE_CURRENCY: str = "ZAR"                    # billing currency (we collect in ZAR via Paystack)
+
+    # ── IP geolocation (login analytics) ─────────────────────────────────────
+    # Optional ipinfo.io token (free tier works) used to lazily geolocate the
+    # IPs recorded in login_events.  When empty, no external lookups happen —
+    # login analytics still work, locations just stay null.  Results are cached
+    # in the ip_geo table; private/loopback IPs are never looked up.
+    IPINFO_TOKEN: str = ""
 
     # ── Remote git push (M20-B) ──────────────────────────────────────────────
     # All optional — existing deployments continue to work with no changes.

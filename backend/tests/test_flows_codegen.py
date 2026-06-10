@@ -202,7 +202,10 @@ class TestLinearFlowCodegen:
 
     def test_import_line(self, spec):
         source = flow_spec_to_sdk(spec)
-        assert "from nubi.sdk import flow, task, map_node, branch_node" in source
+        assert (
+            "from nubi.flows import flow, task, map_node, branch_node, FlowParam"
+            in source
+        )
 
     def test_flow_decorator(self, spec):
         source = flow_spec_to_sdk(spec)
@@ -443,6 +446,202 @@ async def codegen_client(app, fake_db):
 # ---------------------------------------------------------------------------
 # 8. REST endpoint smoke test (POST /flows/codegen)
 # ---------------------------------------------------------------------------
+# (tests follow below)
+
+# ---------------------------------------------------------------------------
+# 9. POST /flows/compile — Python SDK source → FlowSpec round-trip
+# ---------------------------------------------------------------------------
+
+
+_SIMPLE_NOOP_CODE = """\
+from nubi.flows import flow, task
+
+@task(kind="noop")
+def step(): pass
+
+
+@flow
+def my_flow():
+    step()
+
+
+spec = my_flow.compile()
+"""
+
+_LINEAR_CODE = """\
+from nubi.flows import flow, task
+
+@task(kind="query", sql="SELECT 1")
+def pull(): pass
+
+@task(kind="python", code="result = 42")
+def xform(): pass
+
+
+@flow
+def pipeline():
+    pull_handle = pull()
+    xform_handle = xform(pull_handle)
+
+
+spec = pipeline.compile()
+"""
+
+
+class TestCompileEndpoint:
+    @pytest.mark.asyncio
+    async def test_valid_noop_returns_spec(self, codegen_client):
+        """POST /flows/compile with valid noop flow returns 200 + spec dict."""
+        client, alice_id, *_ = codegen_client
+        resp = await client.post(
+            "/api/v1/flows/compile",
+            json={"code": _SIMPLE_NOOP_CODE},
+            headers=_auth_headers(alice_id),
+        )
+        assert resp.status_code == 200, resp.text
+        data = resp.json()
+        assert "spec" in data
+        spec = data["spec"]
+        assert spec["name"] == "my_flow"
+        assert len(spec["tasks"]) == 1
+        assert spec["tasks"][0]["key"] == "step"
+        assert spec["tasks"][0]["kind"] == "noop"
+
+    @pytest.mark.asyncio
+    async def test_linear_flow_needs_preserved(self, codegen_client):
+        """Upstream/downstream needs are correctly reconstructed by compile."""
+        client, alice_id, *_ = codegen_client
+        resp = await client.post(
+            "/api/v1/flows/compile",
+            json={"code": _LINEAR_CODE},
+            headers=_auth_headers(alice_id),
+        )
+        assert resp.status_code == 200, resp.text
+        spec = resp.json()["spec"]
+        assert spec["name"] == "pipeline"
+        keys = [t["key"] for t in spec["tasks"]]
+        assert "pull" in keys
+        assert "xform" in keys
+        # xform must declare pull as a dependency
+        xform_task = next(t for t in spec["tasks"] if t["key"] == "xform")
+        assert "pull" in xform_task["needs"]
+
+    @pytest.mark.asyncio
+    async def test_syntax_error_returns_400(self, codegen_client):
+        """Code with a syntax error returns 400 compile_error."""
+        client, alice_id, *_ = codegen_client
+        resp = await client.post(
+            "/api/v1/flows/compile",
+            json={"code": "def broken(: pass"},
+            headers=_auth_headers(alice_id),
+        )
+        assert resp.status_code == 400, resp.text
+        assert resp.json()["error"]["code"] == "compile_error"
+
+    @pytest.mark.asyncio
+    async def test_no_spec_variable_returns_400(self, codegen_client):
+        """Code that never calls .compile() (no `spec` var) returns 400."""
+        client, alice_id, *_ = codegen_client
+        resp = await client.post(
+            "/api/v1/flows/compile",
+            json={"code": "x = 1 + 1"},
+            headers=_auth_headers(alice_id),
+        )
+        assert resp.status_code == 400, resp.text
+        assert resp.json()["error"]["code"] == "compile_error"
+
+    @pytest.mark.asyncio
+    async def test_empty_code_returns_400(self, codegen_client):
+        """Empty code string returns 400 compile_error."""
+        client, alice_id, *_ = codegen_client
+        resp = await client.post(
+            "/api/v1/flows/compile",
+            json={"code": ""},
+            headers=_auth_headers(alice_id),
+        )
+        assert resp.status_code == 400, resp.text
+        assert resp.json()["error"]["code"] == "compile_error"
+
+    @pytest.mark.asyncio
+    async def test_issues_returned(self, codegen_client):
+        """The response includes an ``issues`` list (may be empty for valid code)."""
+        client, alice_id, *_ = codegen_client
+        resp = await client.post(
+            "/api/v1/flows/compile",
+            json={"code": _SIMPLE_NOOP_CODE},
+            headers=_auth_headers(alice_id),
+        )
+        assert resp.status_code == 200, resp.text
+        assert "issues" in resp.json()
+        assert isinstance(resp.json()["issues"], list)
+
+    @pytest.mark.asyncio
+    async def test_codegen_then_compile_full_roundtrip(self, codegen_client):
+        """End-to-end CodePanel path: /codegen -> /compile preserves env + materialized.
+
+        This exercises the real subprocess in /flows/compile against the source
+        emitted by /flows/codegen — the exact "Apply code" flow.  Would have
+        caught the broken `from nubi.sdk import` header (subprocess exec fails).
+        """
+        client, alice_id, *_ = codegen_client
+        original_spec = {
+            "version": 1,
+            "name": "incr_pipeline",
+            "params": [],
+            "tasks": [
+                _make_task("pull", "query", [], sql="SELECT * FROM raw"),
+                _make_task(
+                    "blend",
+                    "materialize",
+                    ["pull"],
+                    combine_sql="SELECT * FROM pull",
+                    materialized={
+                        "kind": "incremental",
+                        "target": "sales_daily",
+                        "time_column": "event_ts",
+                        "unique_key": ["id"],
+                        "lookback": "3 days",
+                    },
+                ),
+            ],
+        }
+
+        # 1. spec -> source
+        cg = await client.post(
+            "/api/v1/flows/codegen",
+            json={"spec": original_spec},
+            headers=_auth_headers(alice_id),
+        )
+        assert cg.status_code == 200, cg.text
+        source = cg.json()["source"]
+        assert "from nubi.flows import" in source
+        assert "materialized=" in source
+
+        # 2. source -> spec (real subprocess exec)
+        cp = await client.post(
+            "/api/v1/flows/compile",
+            json={"code": source},
+            headers=_auth_headers(alice_id),
+        )
+        assert cp.status_code == 200, cp.text
+        spec = cp.json()["spec"]
+
+        assert spec["name"] == "incr_pipeline"
+        assert "env" not in spec  # specs carry no env (resolved at trigger time)
+        blend = next(t for t in spec["tasks"] if t["key"] == "blend")
+        assert "pull" in blend["needs"]
+        assert blend["config"]["combine_sql"] == "SELECT * FROM pull"
+        assert blend["config"]["materialized"] == {
+            "kind": "incremental",
+            "target": "sales_daily",
+            "time_column": "event_ts",
+            "unique_key": ["id"],
+            "lookback": "3 days",
+        }
+
+
+# ---------------------------------------------------------------------------
+# Real endpoint smoke tests follow
 
 
 class TestCodegenEndpoint:
@@ -477,7 +676,7 @@ class TestCodegenEndpoint:
         assert resp.status_code == 200, resp.text
         data = resp.json()
         assert "source" in data
-        assert "from nubi.sdk import" in data["source"]
+        assert "from nubi.flows import" in data["source"]
         assert "def endpoint_test():" in data["source"]
 
     @pytest.mark.asyncio
@@ -555,3 +754,113 @@ class TestCodegenEndpoint:
         assert "source" in data
         assert data["flow_id"] == flow_id
         assert "def persisted_flow():" in data["source"]
+
+
+# ---------------------------------------------------------------------------
+# In-process exec+compile round-trip (route-facing app.flows.codegen)
+#
+# These exec the GENERATED source the same way the /flows/compile subprocess
+# does — they would have caught the `from nubi.sdk import ...` regression that
+# only manifests when the generated import line is actually executed.
+# ---------------------------------------------------------------------------
+
+
+def _exec_compiled_spec(src: str) -> dict:
+    """Exec generated source (which ends in `spec = <flow>.compile(...)`)."""
+    ns: dict = {}
+    exec(src, ns)  # noqa: S102 — controlled test code, generated source
+    out = ns.get("spec")
+    assert out is not None, f"Generated source produced no `spec`:\n{src}"
+    return out
+
+
+class TestCodegenExecRoundTrip:
+    def test_generated_import_actually_executes(self):
+        """The generated header import must resolve (regression guard)."""
+        spec = _simple_spec(
+            "exec_rt",
+            [
+                _make_task("pull", "query", [], sql="SELECT 1"),
+                _make_task("xform", "python", ["pull"], code="result = {'x': 1}"),
+            ],
+        )
+        src = flow_spec_to_sdk(spec)
+        # nubi.sdk does not exist — only nubi.flows.  Exec must not raise.
+        out = _exec_compiled_spec(src)
+        assert out["name"] == "exec_rt"
+        keys = {t["key"] for t in out["tasks"]}
+        assert keys == {"pull", "xform"}
+        xform = [t for t in out["tasks"] if t["key"] == "xform"][0]
+        assert xform["needs"] == ["pull"]
+
+    def test_materialized_incremental_block_round_trips(self):
+        """The nested config.materialized dict survives codegen → exec."""
+        materialized = {
+            "kind": "incremental",
+            "target": "sales_daily",
+            "time_column": "event_ts",
+            "unique_key": ["id", "region"],
+            "lookback": "3 days",
+        }
+        spec = _simple_spec(
+            "mat_rt",
+            [
+                _make_task("pull", "query", [], sql="SELECT * FROM raw"),
+                _make_task(
+                    "blend",
+                    "materialize",
+                    ["pull"],
+                    combine_sql="SELECT * FROM pull",
+                    materialized=materialized,
+                ),
+            ],
+        )
+        src = flow_spec_to_sdk(spec)
+        assert "materialized=" in src
+        out = _exec_compiled_spec(src)
+        blend = [t for t in out["tasks"] if t["key"] == "blend"][0]
+        assert blend["config"]["materialized"] == materialized
+        assert blend["config"]["combine_sql"] == "SELECT * FROM pull"
+
+    def test_materialized_full_block_round_trips(self):
+        materialized = {"kind": "full", "target": "snapshot"}
+        spec = _simple_spec(
+            "mat_full",
+            [
+                _make_task("pull", "query", [], sql="SELECT 1"),
+                _make_task(
+                    "blend",
+                    "materialize",
+                    ["pull"],
+                    combine_sql="SELECT * FROM pull",
+                    materialized=materialized,
+                ),
+            ],
+        )
+        out = _exec_compiled_spec(flow_spec_to_sdk(spec))
+        blend = [t for t in out["tasks"] if t["key"] == "blend"][0]
+        assert blend["config"]["materialized"] == materialized
+
+    def test_legacy_env_key_is_stripped_and_never_emitted(self):
+        """A legacy spec 'env' key is ignored: no __env__ in codegen output."""
+        data = {
+            "version": 1,
+            "name": "env_rt",
+            "params": [],
+            "env": "dev",  # legacy key — stripped by validation, never an error
+            "tasks": [_make_task("step", "noop", [])],
+        }
+        spec, issues = validate_flow_spec(data)
+        assert spec is not None and not [i for i in issues if not i.startswith("[warn]")]
+        src = flow_spec_to_sdk(spec)
+        assert "__env__" not in src
+        out = _exec_compiled_spec(src)
+        assert "env" not in out
+
+    def test_codegen_never_emits_env_kwarg(self):
+        """Specs carry no env, so codegen output never contains __env__."""
+        spec = _simple_spec("env_prod", [_make_task("step", "noop", [])])
+        src = flow_spec_to_sdk(spec)
+        assert "__env__" not in src
+        out = _exec_compiled_spec(src)
+        assert "env" not in out

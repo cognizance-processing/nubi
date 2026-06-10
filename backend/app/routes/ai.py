@@ -61,6 +61,7 @@ fully deterministic and require no network access.
 
 from __future__ import annotations
 
+import logging
 import re
 from typing import Any
 
@@ -71,7 +72,56 @@ from pydantic import BaseModel
 from app.ai.grounding import build_catalog, build_prompt, ground
 from app.ai.provider import get_provider
 from app.auth.deps import current_user
+from app.compute.metering import record_usage
+from app.features import enforce_quota
 from app.routes import api_router
+
+logger = logging.getLogger("nubi.ai")
+
+
+# ---------------------------------------------------------------------------
+# Billing — AI calls are a metered dimension (tiers.max_ai_calls_per_month)
+# ---------------------------------------------------------------------------
+
+
+async def _resolve_org_id(user: dict[str, Any]) -> str | None:
+    """Best-effort org resolution for billing attribution (never raises)."""
+    try:
+        from app.repos.provider import get_repo  # noqa: PLC0415
+        from app.routes._org import get_user_org  # noqa: PLC0415
+
+        return await get_user_org(str(user["id"]), get_repo())
+    except Exception:  # noqa: BLE001 — attribution is best-effort, never a 500
+        logger.warning(
+            "ai: could not resolve org for user=%s — "
+            "AI call will be metered without org attribution",
+            user.get("id"),
+        )
+        return None
+
+
+async def _enforce_ai_quota(user: dict[str, Any]) -> str | None:
+    """Resolve the caller's org and enforce the ai_calls quota.
+
+    Returns the org_id for subsequent metering.  Raises
+    ``AppError("quota_exceeded", …, 402)`` when the EE-registered quota
+    checker denies (e.g. FREE tier: 0 AI calls, no overage billing).
+    A no-op allow in OSS builds (no checker registered).
+    """
+    org_id = await _resolve_org_id(user)
+    await enforce_quota(org_id, "ai_calls", amount=1.0)
+    return org_id
+
+
+async def _record_ai_call(user: dict[str, Any], org_id: str | None, *, endpoint: str) -> None:
+    """Record one ai_call usage event (kind='ai_call', units=1)."""
+    await record_usage(
+        kind="ai_call",
+        user_id=str(user.get("id", "")),
+        org_id=org_id,
+        units=1.0,
+        tier=endpoint,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -153,11 +203,15 @@ async def ask(
         If ``LLM_PROVIDER`` is explicitly set but the corresponding API key is
         absent.
     """
+    org_id = await _enforce_ai_quota(_user)
+
     catalog = build_catalog()
     grounding = ground(body.question, catalog)
     provider = get_provider()
     system_prompt, user_prompt = build_prompt(body.question, grounding)
     suggestion = provider.complete(user_prompt, system=system_prompt)
+
+    await _record_ai_call(_user, org_id, endpoint="ai_ask")
 
     return AskResponse(
         grounding=grounding,
@@ -210,6 +264,8 @@ async def create_dashboard(
     from app.ai.dashboard import generate_dashboard_spec, validate_dashboard_html  # noqa: PLC0415
     from app.dashboards.spec import spec_to_html  # noqa: PLC0415
 
+    org_id = await _enforce_ai_quota(_user)
+
     catalog = build_catalog()
     provider = get_provider()
     spec = generate_dashboard_spec(body.question, catalog, provider)
@@ -220,6 +276,8 @@ async def create_dashboard(
     # ran it internally; we run it again here for the response body — cheap,
     # deterministic, no network).
     grounding = ground(body.question, catalog)
+
+    await _record_ai_call(_user, org_id, endpoint="ai_dashboard")
 
     return DashboardResponse(
         spec=spec.model_dump(),
@@ -351,6 +409,8 @@ async def ai_chat(
     """
     from app.ai.agent import run_agent  # noqa: PLC0415
 
+    org_id = await _enforce_ai_quota(_user)
+
     provider = get_provider()
 
     # Build first-party claims from the authenticated user.
@@ -366,6 +426,8 @@ async def ai_chat(
     messages = [{"role": m.role, "content": m.content} for m in body.messages]
 
     result = run_agent(messages, provider, claims, max_steps=8)
+
+    await _record_ai_call(_user, org_id, endpoint="ai_chat")
 
     return ChatResponse(
         reply=result["reply"],
@@ -396,7 +458,14 @@ async def ai_chat_stream(
 
     from app.ai.agent import run_agent_stream  # noqa: PLC0415
 
+    org_id = await _enforce_ai_quota(_user)
+
     provider = get_provider()
+
+    # Record the AI call up-front: a streamed agent run consumes the call
+    # when dispatched (the stream may be abandoned mid-flight by the client).
+    await _record_ai_call(_user, org_id, endpoint="ai_chat_stream")
+
     claims: dict[str, Any] = {
         "kind": "access",
         "sub": str(_user.get("id", "")),
@@ -500,6 +569,8 @@ async def generate_sql_endpoint(
     from app.ai.sql import generate_sql  # noqa: PLC0415
     from app.queries.registry import QueryParam, get_query_registry  # noqa: PLC0415
 
+    org_id = await _enforce_ai_quota(_user)
+
     catalog = build_catalog()
     grounding = ground(body.question, catalog)
     provider = get_provider()
@@ -532,6 +603,8 @@ async def generate_sql_endpoint(
             params=params if params else None,
         )
         registered_id = body.save_as
+
+    await _record_ai_call(_user, org_id, endpoint="ai_sql")
 
     return SqlResponse(
         sql=sql,

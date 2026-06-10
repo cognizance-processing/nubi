@@ -8,8 +8,23 @@ TaskUi
     Canvas position for a task node in the React Flow builder.
 TaskSpec
     A single task in the flow DAG (key, kind, needs, config, retries, …).
+    Cell-specific additions (all optional, backward-compatible):
+      cell_type       — user-facing label: 'sql' | 'python' | 'markdown' | None.
+      execution_mode  — per-cell override: 'preview' | 'durable' | None (inherit).
+      freshness_sla_s — stale-alert threshold in seconds (0 = no alert).
+    Cell config keys (stored in the existing ``config`` dict):
+      source_dialect  — SQL dialect the cell was authored in.
+      datastore_id    — BYO warehouse connector id (absent = demo DuckDB).
+      preview_limit   — row cap for interactive/preview runs (default 500).
+      use_remote_kernel — route Python cell to E2B/Modal in durable mode.
 FlowSpec
-    The complete flow specification document (version, name, params, tasks).
+    The complete flow specification document (version, name, params, tasks,
+    runtime_config).
+    runtime_config  — top-level runtime hints dict (not inside cells).
+    NOTE: the spec deliberately carries NO ``env`` field — the execution
+    environment is resolved at trigger time (explicit override → the flow's
+    project default environment).  A legacy ``env`` key in incoming spec
+    dicts is ignored (stripped by validation), never an error.
 
 validate_flow_spec(data) -> (FlowSpec | None, list[str])
     Parse a raw dict into a FlowSpec, collecting all validation issues.
@@ -32,7 +47,6 @@ Supported task kinds
 - ``agent``         — run an LLM-agent step.
 - ``materialize``   — merge upstream results into a DuckDB materialization.
 - ``noop``          — no-operation (useful as a join/synchronisation point).
-- ``extract``       — unpack an archive from storage and re-upload members.
 - ``bucket_load``   — upload upstream task result to a storage bucket.
 - ``preagg_refresh``— refresh a pre-aggregated rollup for an org.
 - ``map``           — fan-out over an iterable; body is a nested sub-DAG.
@@ -89,6 +103,63 @@ class FlowParam(BaseModel):
     required: bool = Field(default=False, description="Whether the param is required.")
 
 
+class MaterializedConfig(BaseModel):
+    """SQLMesh-style materialization config for a ``materialize`` task.
+
+    Stored nested under ``config['materialized']``.  Absent ⇒ the task behaves
+    as today (``kind="view"`` — no persistence).
+
+    Attributes
+    ----------
+    kind:
+        ``'view'`` (no persistence, current behaviour), ``'full'`` (overwrite
+        the target each run), or ``'incremental'`` (process only rows newer than
+        the stored watermark; append or upsert into the target).
+    target:
+        Logical target path WITHOUT the env prefix.  Required when
+        ``kind != 'view'``.  The runtime joins ``<base_uri>/<env>/<target>`` to
+        form the physical object-storage URI so dev/prod never clobber.
+    time_column:
+        Column carrying the row timestamp.  Required when ``kind ==
+        'incremental'`` — only rows where ``time_column > watermark`` (minus an
+        optional ``lookback``) are processed.
+    unique_key:
+        Optional list of columns forming the merge key.  When present the
+        incremental write upserts (delete-then-insert) on these columns; when
+        absent rows are appended.
+    lookback:
+        Optional human duration (e.g. ``'3 days'``, ``'12h'``) re-processed
+        below the watermark to absorb late-arriving rows.
+    base_uri:
+        Optional per-task override of the materialization base URI.
+    """
+
+    kind: Literal["view", "full", "incremental"] = Field(
+        default="view",
+        description="Materialization kind (view/full/incremental).",
+    )
+    target: str | None = Field(
+        default=None,
+        description="Logical target path (no env prefix); required for full/incremental.",
+    )
+    time_column: str | None = Field(
+        default=None,
+        description="Timestamp column for incremental watermarking.",
+    )
+    unique_key: list[str] = Field(
+        default_factory=list,
+        description="Merge key columns (present ⇒ upsert; absent ⇒ append).",
+    )
+    lookback: str | None = Field(
+        default=None,
+        description="Optional lookback window re-processed below the watermark.",
+    )
+    base_uri: str | None = Field(
+        default=None,
+        description="Optional per-task override of the materialization base URI.",
+    )
+
+
 class TaskUi(BaseModel):
     """Canvas position for a task node in the React Flow builder.
 
@@ -114,7 +185,7 @@ class TaskSpec(BaseModel):
         canonical task identifier in ``needs`` lists and ``inputs`` maps.
     kind:
         Execution kind — ``'query'``, ``'python'``, ``'agent'``,
-        ``'materialize'``, ``'noop'``, ``'extract'``, ``'bucket_load'``,
+        ``'materialize'``, ``'noop'``, ``'bucket_load'``,
         ``'preagg_refresh'``, ``'map'``, ``'branch'``, or ``'map_collect'``.
     needs:
         List of upstream task keys this task depends on.  An empty list
@@ -135,11 +206,6 @@ class TaskSpec(BaseModel):
           table name, default ``blend``), ``datastore_id`` / ``query_id`` (the
           pre-created rows the result is exposed through).
         - ``noop``        → no required fields.
-        - ``extract``     → ``dest_uri`` (required) AND either ``source_uri``
-          or ``source`` (exactly one required).  Optional: ``secret``,
-          ``format`` (``'auto'``|``'zip'``|``'tar'``|``'tar.gz'``|``'tgz'``|
-          ``'gz'``).  Unpacks an archive from storage and uploads the extracted
-          members to *dest_uri*.
         - ``bucket_load`` → ``uri`` (required destination URI) AND ``source``
           (required — key of an upstream task whose result provides the data).
           Optional: ``format`` (``'csv'``|``'json'``|``'ndjson'``|``'parquet'``,
@@ -178,7 +244,6 @@ class TaskSpec(BaseModel):
         "agent",
         "materialize",
         "noop",
-        "extract",
         "bucket_load",
         "preagg_refresh",
         "map",          # fan-out; config.body is a sub-DAG of TaskSpec dicts
@@ -206,6 +271,32 @@ class TaskSpec(BaseModel):
     ui: TaskUi = Field(
         default_factory=TaskUi,
         description="Builder canvas position (ignored by the engine).",
+    )
+
+    # ── Notebook / cell extensions (additive, all optional) ──────────────
+    cell_type: Literal["sql", "python", "markdown"] | None = Field(
+        default=None,
+        description=(
+            "User-facing cell label.  Maps to kind: sql→query, python→python, "
+            "markdown→noop.  None for plain flow tasks (backward-compatible)."
+        ),
+    )
+    execution_mode: Literal["preview", "durable"] | None = Field(
+        default=None,
+        description=(
+            "Per-cell execution-mode override.  None = inherit from the "
+            "parent notebook's execution_mode.  'preview' = interactive / "
+            "sampled run.  'durable' = full work-pool run."
+        ),
+    )
+    freshness_sla_s: int = Field(
+        default=0,
+        ge=0,
+        description=(
+            "Stale-alert threshold in seconds.  0 = no alert.  When > 0, "
+            "the flow_tick emits a staleness event if the cell has not "
+            "succeeded within this window."
+        ),
     )
 
 
@@ -238,11 +329,93 @@ class FlowSpec(BaseModel):
         default_factory=list,
         description="Ordered list of tasks forming the DAG.",
     )
+    runtime_config: dict[str, Any] = Field(
+        default_factory=dict,
+        description=(
+            "Top-level runtime hints for the notebook envelope.  Not stored "
+            "inside cells.  Keys are free-form; the notebook runtime consults "
+            "this dict for settings such as interactive_row_limit and "
+            "duckdb_memory_limit."
+        ),
+    )
 
 
 # ---------------------------------------------------------------------------
 # validate_flow_spec
 # ---------------------------------------------------------------------------
+
+
+def _validate_materialized_block(task: "TaskSpec", issues: list[str]) -> None:
+    """Validate the optional nested ``config.materialized`` block (if present).
+
+    Shared by the legacy ``materialize`` task AND ``query`` (SQL) cells — the
+    block has IDENTICAL shape/checks for both: full/incremental require
+    ``target``; incremental additionally requires ``time_column``.  Absent ⇒
+    valid (no-op).
+    """
+    mat = task.config.get("materialized")
+    if mat is None:
+        return
+    label = task.kind
+    if not isinstance(mat, dict):
+        issues.append(
+            f"Task {task.key!r} ({label}): 'materialized' must be a nested object."
+        )
+        return
+    try:
+        mat_cfg = MaterializedConfig.model_validate(mat)
+    except Exception as exc:  # noqa: BLE001 — pydantic ValidationError
+        issues.append(
+            f"Task {task.key!r} ({label}): invalid 'materialized' config: {exc}"
+        )
+        return
+    if mat_cfg.kind in ("full", "incremental") and not mat_cfg.target:
+        issues.append(
+            f"Task {task.key!r} ({label}): 'materialized.target' is required "
+            f"when kind={mat_cfg.kind!r}."
+        )
+    if mat_cfg.kind == "incremental" and not mat_cfg.time_column:
+        issues.append(
+            f"Task {task.key!r} ({label}): 'materialized.time_column' is "
+            "required when kind='incremental'."
+        )
+
+
+def _validate_cell_config_blocks(task: "TaskSpec", issues: list[str]) -> None:
+    """Validate the optional ``for_each`` / ``run_when`` cell config blocks.
+
+    Additive (cells-not-kinds); absent ⇒ valid.
+
+    - ``for_each`` must be an object carrying a non-empty string ``items``.
+    - ``run_when`` must be a string.
+    """
+    cfg = task.config
+
+    fe = cfg.get("for_each")
+    if fe is not None:
+        if not isinstance(fe, dict):
+            issues.append(
+                f"Task {task.key!r}: 'for_each' must be a nested object "
+                "with an 'items' expression."
+            )
+        else:
+            items = fe.get("items")
+            if not items or not isinstance(items, str) or not items.strip():
+                issues.append(
+                    f"Task {task.key!r}: 'for_each.items' must be a non-empty "
+                    "string expression resolving to a list."
+                )
+            var = fe.get("var")
+            if var is not None and not isinstance(var, str):
+                issues.append(
+                    f"Task {task.key!r}: 'for_each.var' must be a string."
+                )
+
+    rw = cfg.get("run_when")
+    if rw is not None and not isinstance(rw, str):
+        issues.append(
+            f"Task {task.key!r}: 'run_when' must be a string boolean expression."
+        )
 
 
 def validate_flow_spec(data: Any) -> tuple[FlowSpec | None, list[str]]:
@@ -262,8 +435,6 @@ def validate_flow_spec(data: Any) -> tuple[FlowSpec | None, list[str]]:
        - ``agent``       → ``prompt`` must be present.
        - ``materialize`` → ``combine_sql`` must be present.
        - ``noop``        → no requirements.
-       - ``extract``     → ``dest_uri`` must be present, AND exactly one of
-         ``source_uri`` or ``source`` must be present.
        - ``bucket_load`` → ``uri`` and ``source`` must both be present.
        - ``map``         → ``item_expr`` and ``body`` must be present;
          ``body`` is validated recursively as a sub-DAG; nested map nodes
@@ -369,12 +540,18 @@ def validate_flow_spec(data: Any) -> tuple[FlowSpec | None, list[str]]:
     # ── Step 5: Kind-specific config validation ───────────────────────────
     for task in spec.tasks:
         cfg = task.config
+        # ── Cell config blocks (cells-not-kinds; additive, all optional) ──────
+        # These apply to any cell regardless of kind; absent ⇒ valid.
+        _validate_cell_config_blocks(task, issues)
         if task.kind == "query":
             if not cfg.get("query_id") and not cfg.get("sql"):
                 issues.append(
                     f"Task {task.key!r} (query): config must include "
                     "'query_id' or 'sql'."
                 )
+            # A SQL cell may persist its own SELECT result via config.materialized
+            # (full/incremental) — same shape/checks as the materialize task.
+            _validate_materialized_block(task, issues)
         elif task.kind == "python":
             if not cfg.get("code"):
                 issues.append(
@@ -391,23 +568,8 @@ def validate_flow_spec(data: Any) -> tuple[FlowSpec | None, list[str]]:
                     f"Task {task.key!r} (materialize): config must include "
                     "'combine_sql'."
                 )
-        elif task.kind == "extract":
-            if not cfg.get("dest_uri"):
-                issues.append(
-                    f"Task {task.key!r} (extract): config must include 'dest_uri'."
-                )
-            has_source_uri = bool(cfg.get("source_uri"))
-            has_source = bool(cfg.get("source"))
-            if has_source_uri and has_source:
-                issues.append(
-                    f"Task {task.key!r} (extract): config must specify either "
-                    "'source_uri' or 'source', not both."
-                )
-            elif not has_source_uri and not has_source:
-                issues.append(
-                    f"Task {task.key!r} (extract): config must include either "
-                    "'source_uri' or 'source'."
-                )
+            # Validate the optional nested materialization config block.
+            _validate_materialized_block(task, issues)
         elif task.kind == "bucket_load":
             if not cfg.get("uri"):
                 issues.append(

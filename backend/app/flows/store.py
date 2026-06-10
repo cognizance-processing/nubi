@@ -6,7 +6,7 @@ used in tests.
 
 ``PgFlowStore`` is the asyncpg-backed production store that maps each method
 to a parameterised SQL query against the ``flows``, ``flow_runs``, and
-``task_runs`` tables (from migration 0012).  Rows are converted to plain
+``task_runs`` tables (from 0004_flows.sql).  Rows are converted to plain
 dicts; jsonb and datetime values match the shape produced by
 ``InMemoryFlowStore``.
 
@@ -73,11 +73,11 @@ class InMemoryFlowStore:
     parent_task_run_id(str|None), branch_taken(str|None)}``
 
     ``parent_task_run_id`` — for map child task_runs, points to the parent
-    map task_run.  NULL for all other task_runs (migration 0020).
+    map task_run.  NULL for all other task_runs.
 
     ``branch_taken`` — for branch task_runs, stores the branch label that was
     taken (e.g. ``"condition_0"``, ``"default"``).  NULL for all other
-    task_runs (migration 0020).
+    task_runs.
     """
 
     def __init__(self) -> None:
@@ -86,6 +86,9 @@ class InMemoryFlowStore:
         self._flow_run_index: dict[str, list[str]] = {}    # flow_id → [run_id]
         self._task_runs: dict[str, TaskRun] = {}           # task_run_id → TaskRun
         self._task_run_index: dict[str, list[str]] = {}    # flow_run_id → [task_run_id]
+        # Incremental materialization watermarks keyed by (flow_id, model_key,
+        # env) → ISO watermark string.  Mirrors the flow_watermarks Pg table.
+        self._watermarks: dict[tuple[str, str, str], str] = {}
 
     # ------------------------------------------------------------------
     # Flow operations
@@ -129,12 +132,22 @@ class InMemoryFlowStore:
         flow = self._flows.get(str(flow_id))
         return deepcopy(flow) if flow is not None else None
 
-    async def list_flows(self, org_id: str) -> list[Flow]:
-        """Return all flows belonging to *org_id*, sorted by created_at."""
+    async def list_flows(
+        self, org_id: str, project_id: str | None = None
+    ) -> list[Flow]:
+        """Return all flows belonging to *org_id*, sorted by created_at.
+
+        When *project_id* is provided the result is additionally scoped to
+        that project; when ``None`` all of the org's flows are returned.
+        """
         rows = [
             deepcopy(f)
             for f in self._flows.values()
             if str(f["org_id"]) == str(org_id)
+            and (
+                project_id is None
+                or str(f.get("project_id")) == str(project_id)
+            )
         ]
         rows.sort(key=lambda r: r["created_at"])
         return rows
@@ -218,8 +231,14 @@ class InMemoryFlowStore:
         params: dict[str, Any],
         trigger: str,
         scheduled_at: datetime | None = None,
+        env: str = "prod",
     ) -> FlowRun:
-        """Create and store a new flow_run; return the stored dict."""
+        """Create and store a new flow_run; return the stored dict.
+
+        ``env`` is the resolved execution environment for this run (override →
+        the flow's project default env → "prod").  It namespaces
+        materialized/incremental targets.
+        """
         run_id = str(uuid.uuid4())
         now = datetime.now(timezone.utc)
         run: FlowRun = {
@@ -234,6 +253,7 @@ class InMemoryFlowStore:
             "finished_at": None,
             "error": None,
             "created_at": now,
+            "env": env or "prod",
         }
         self._flow_runs[run_id] = run
         self._flow_run_index.setdefault(str(flow_id), []).append(run_id)
@@ -298,10 +318,10 @@ class InMemoryFlowStore:
                 "started_at": tr.get("started_at", None),
                 "finished_at": tr.get("finished_at", None),
                 "created_at": tr.get("created_at", now),
-                # Work-pool lease fields (migration 0016).
+                # Work-pool lease fields.
                 "lease_expires_at": tr.get("lease_expires_at", None),
                 "worker_id": tr.get("worker_id", None),
-                # Map / branch fields (migration 0020).
+                # Map / branch fields.
                 # parent_task_run_id: set on map child task_runs to the parent
                 #   map task_run id; NULL for all other task_runs.
                 "parent_task_run_id": tr.get("parent_task_run_id", None),
@@ -420,6 +440,49 @@ class InMemoryFlowStore:
         oldest["lease_expires_at"] = (now + timedelta(seconds=lease_seconds)) if lease_seconds else None
         return deepcopy(oldest)
 
+    async def extend_task_lease(
+        self,
+        task_run_id: str,
+        worker_id: str | None,
+        new_expiry: datetime,
+    ) -> bool:
+        """Extend the worker lease on a claimed (running) task_run.
+
+        Used by the worker heartbeat to keep a long-running task's lease
+        fresh so ``reap_expired_leases`` does not re-queue it mid-execution.
+
+        The extension is conditional: it only applies when the task_run is
+        still ``'running'`` AND its stored ``worker_id`` matches *worker_id*
+        (``None`` matches ``None``).  If the lease was stolen (reaped and
+        re-claimed by another worker), the worker_id no longer matches and
+        this is a no-op returning ``False`` — the original worker learns it
+        has lost the lease.
+
+        Parameters
+        ----------
+        task_run_id:
+            The claimed task_run's id.
+        worker_id:
+            The claiming worker's id, as passed to ``claim_ready_task_run``.
+        new_expiry:
+            The new ``lease_expires_at`` value (injected clock + lease).
+
+        Returns
+        -------
+        bool
+            ``True`` if the lease was extended; ``False`` if the task_run is
+            missing, not running, or owned by a different worker.
+        """
+        tr = self._task_runs.get(str(task_run_id))
+        if tr is None:
+            return False
+        if tr["state"] != "running":
+            return False
+        if tr.get("worker_id") != worker_id:
+            return False
+        tr["lease_expires_at"] = new_expiry
+        return True
+
     async def reap_expired_leases(self, now: datetime) -> int:
         """Re-queue task_runs whose worker lease has expired.
 
@@ -464,6 +527,44 @@ class InMemoryFlowStore:
             count += 1
         return count
 
+    # ------------------------------------------------------------------
+    # Incremental watermark operations
+    # ------------------------------------------------------------------
+
+    async def get_watermark(
+        self, flow_id: str, model_key: str, env: str = "prod"
+    ) -> str | None:
+        """Return the stored incremental watermark, or ``None`` if unset."""
+        return self._watermarks.get(
+            (str(flow_id), str(model_key), str(env or "prod"))
+        )
+
+    async def set_watermark(
+        self, flow_id: str, model_key: str, env: str, watermark: str | None
+    ) -> None:
+        """Upsert the incremental watermark for ``(flow_id, model_key, env)``.
+
+        A ``None`` watermark is ignored (we never clobber a real watermark with
+        an empty advance).
+        """
+        if watermark is None:
+            return
+        self._watermarks[
+            (str(flow_id), str(model_key), str(env or "prod"))
+        ] = str(watermark)
+
+    async def copy_watermark(
+        self, flow_id: str, model_key: str, src_env: str, dst_env: str
+    ) -> str | None:
+        """Copy the watermark from *src_env* to *dst_env* (promote helper).
+
+        Returns the copied watermark, or ``None`` if the source had none.
+        """
+        wm = await self.get_watermark(flow_id, model_key, src_env)
+        if wm is not None:
+            await self.set_watermark(flow_id, model_key, dst_env, wm)
+        return wm
+
 
 # ---------------------------------------------------------------------------
 # PgFlowStore — asyncpg-backed production implementation
@@ -481,7 +582,7 @@ def _row_to_flow(row: Any) -> Flow:
     - ``spec`` jsonb is returned as a Python dict.
     """
     d = dict(row)
-    for key in ("id", "org_id", "created_by"):
+    for key in ("id", "org_id", "project_id", "created_by"):
         if key in d and d[key] is not None and not isinstance(d[key], str):
             d[key] = str(d[key])
     for key in ("next_run_at", "last_run_at", "created_at", "updated_at"):
@@ -509,6 +610,9 @@ def _row_to_flow_run(row: Any) -> FlowRun:
     if "params" in d and not isinstance(d["params"], dict):
         import json  # noqa: PLC0415
         d["params"] = json.loads(d["params"])
+    # env column; old rows / pre-migration read as "prod".
+    if not d.get("env"):
+        d["env"] = "prod"
     return d
 
 
@@ -544,7 +648,7 @@ def _row_to_task_run(row: Any) -> TaskRun:
     # Ensure lease fields are present (older rows pre-migration may lack them).
     d.setdefault("lease_expires_at", None)
     d.setdefault("worker_id", None)
-    # Map / branch fields added in migration 0020; default to None for older rows.
+    # Map / branch fields; default to None for older rows.
     if "parent_task_run_id" in d and d["parent_task_run_id"] is not None:
         d["parent_task_run_id"] = str(d["parent_task_run_id"])
     else:
@@ -560,8 +664,8 @@ class PgFlowStore:
     (which acquire a connection from the pool automatically).
 
     All SQL is parameterised with ``$N`` placeholders.  Column names match
-    the ``flows``, ``flow_runs``, and ``task_runs`` tables from migration
-    0012.
+    the ``flows``, ``flow_runs``, and ``task_runs`` tables from
+    0004_flows.sql.
 
     Rows returned by asyncpg are converted to plain dicts that match the
     shape produced by ``InMemoryFlowStore``.
@@ -582,9 +686,17 @@ class PgFlowStore:
         next_run_at: datetime | None = None,
         project_id: str | None = None,
     ) -> Flow:
-        """Insert a new flow row and return the stored dict."""
+        """Insert a new flow row and return the stored dict.
+
+        ``flows.project_id`` is NOT NULL: when the caller passes ``None`` the
+        org's default project is resolved as a fallback so the insert always
+        carries a project.
+        """
         import json  # noqa: PLC0415
         from app.db import fetchrow as db_fetchrow  # noqa: PLC0415
+        from app.repos.pg import resolve_required_project_id  # noqa: PLC0415
+
+        project_id = await resolve_required_project_id(org_id, project_id)
 
         row = await db_fetchrow(
             """
@@ -616,14 +728,28 @@ class PgFlowStore:
         )
         return _row_to_flow(row) if row is not None else None
 
-    async def list_flows(self, org_id: str) -> list[Flow]:
-        """Return all flows belonging to *org_id*, sorted by created_at."""
+    async def list_flows(
+        self, org_id: str, project_id: str | None = None
+    ) -> list[Flow]:
+        """Return all flows belonging to *org_id*, sorted by created_at.
+
+        When *project_id* is provided the result is additionally scoped to
+        that project; when ``None`` all of the org's flows are returned.
+        """
         from app.db import fetch as db_fetch  # noqa: PLC0415
 
-        rows = await db_fetch(
-            "SELECT * FROM flows WHERE org_id = $1::uuid ORDER BY created_at ASC",
-            org_id,
-        )
+        if project_id is not None:
+            rows = await db_fetch(
+                "SELECT * FROM flows WHERE org_id = $1::uuid "
+                "AND project_id = $2::uuid ORDER BY created_at ASC",
+                org_id,
+                project_id,
+            )
+        else:
+            rows = await db_fetch(
+                "SELECT * FROM flows WHERE org_id = $1::uuid ORDER BY created_at ASC",
+                org_id,
+            )
         return [_row_to_flow(r) for r in rows]
 
     async def update_flow(self, flow_id: str, fields: dict[str, Any]) -> Flow | None:
@@ -698,7 +824,7 @@ class PgFlowStore:
         """Atomically claim a due scheduled flow's slot (multi-instance safe).
 
         Uses a single ``UPDATE … WHERE id = $1 AND (next_run_at IS NULL OR
-        next_run_at <= $2) RETURNING *``.  Only ONE concurrent Cloud Run
+        next_run_at <= $2) RETURNING *``.  Only ONE concurrent app
         instance wins the row (the others see ``next_run_at`` already advanced
         and get no row back), so a due flow is materialized exactly once per
         schedule slot even when N instances tick simultaneously.  Task draining
@@ -737,15 +863,20 @@ class PgFlowStore:
         params: dict[str, Any],
         trigger: str,
         scheduled_at: datetime | None = None,
+        env: str = "prod",
     ) -> FlowRun:
-        """Insert a new flow_run row and return the stored dict."""
+        """Insert a new flow_run row and return the stored dict.
+
+        ``env`` is the resolved execution environment for this
+        run.  It namespaces materialized/incremental targets.
+        """
         import json  # noqa: PLC0415
         from app.db import fetchrow as db_fetchrow  # noqa: PLC0415
 
         row = await db_fetchrow(
             """
-            INSERT INTO flow_runs (flow_id, org_id, params, trigger, scheduled_at)
-            VALUES ($1::uuid, $2::uuid, $3::jsonb, $4, $5)
+            INSERT INTO flow_runs (flow_id, org_id, params, trigger, scheduled_at, env)
+            VALUES ($1::uuid, $2::uuid, $3::jsonb, $4, $5, $6)
             RETURNING *
             """,
             flow_id,
@@ -753,6 +884,7 @@ class PgFlowStore:
             json.dumps(params),
             trigger,
             scheduled_at,
+            env or "prod",
         )
         if row is None:  # pragma: no cover
             raise RuntimeError("INSERT INTO flow_runs returned no row.")
@@ -885,7 +1017,7 @@ class PgFlowStore:
         allowed = {
             "state", "attempt", "result", "error", "logs",
             "scheduled_at", "started_at", "finished_at", "cache_key",
-            # Map / branch fields (migration 0020).
+            # Map / branch fields.
             "branch_taken",
         }
         updates: list[str] = []
@@ -997,6 +1129,37 @@ class PgFlowStore:
             )
         return _row_to_task_run(row) if row is not None else None
 
+    async def extend_task_lease(
+        self,
+        task_run_id: str,
+        worker_id: str | None,
+        new_expiry: datetime,
+    ) -> bool:
+        """Extend the worker lease on a claimed (running) task_run.
+
+        Conditional UPDATE: only applies when the row is still ``'running'``
+        AND its ``worker_id`` matches (``IS NOT DISTINCT FROM`` so ``None``
+        matches ``NULL``).  Returns ``True`` when a row was updated — i.e.
+        the calling worker still owns the lease.  Semantics are identical to
+        ``InMemoryFlowStore.extend_task_lease``.
+        """
+        from app.db import fetchrow as db_fetchrow  # noqa: PLC0415
+
+        row = await db_fetchrow(
+            """
+            UPDATE task_runs
+            SET lease_expires_at = $3
+            WHERE id = $1::uuid
+              AND state = 'running'
+              AND worker_id IS NOT DISTINCT FROM $2
+            RETURNING id
+            """,
+            task_run_id,
+            worker_id,
+            new_expiry,
+        )
+        return row is not None
+
     async def reap_expired_leases(self, now: datetime) -> int:
         """Re-queue task_runs whose worker lease has expired.
 
@@ -1024,6 +1187,64 @@ class PgFlowStore:
             return int(status.split()[-1])
         except (ValueError, IndexError):
             return 0
+
+    # ------------------------------------------------------------------
+    # Incremental watermark operations (flow_watermarks table)
+    # ------------------------------------------------------------------
+
+    async def get_watermark(
+        self, flow_id: str, model_key: str, env: str = "prod"
+    ) -> str | None:
+        """Return the stored incremental watermark, or ``None`` if unset."""
+        from app.db import fetchrow as db_fetchrow  # noqa: PLC0415
+
+        row = await db_fetchrow(
+            """
+            SELECT watermark FROM flow_watermarks
+            WHERE flow_id = $1::uuid AND model_key = $2 AND env = $3
+            """,
+            flow_id,
+            model_key,
+            env or "prod",
+        )
+        if row is None:
+            return None
+        wm = dict(row).get("watermark")
+        return str(wm) if wm is not None else None
+
+    async def set_watermark(
+        self, flow_id: str, model_key: str, env: str, watermark: str | None
+    ) -> None:
+        """Upsert the incremental watermark for ``(flow_id, model_key, env)``.
+
+        A ``None`` watermark is ignored so we never clobber a real watermark
+        with an empty advance.
+        """
+        if watermark is None:
+            return
+        from app.db import execute as db_execute  # noqa: PLC0415
+
+        await db_execute(
+            """
+            INSERT INTO flow_watermarks (flow_id, model_key, env, watermark, updated_at)
+            VALUES ($1::uuid, $2, $3, $4, now())
+            ON CONFLICT (flow_id, model_key, env)
+            DO UPDATE SET watermark = EXCLUDED.watermark, updated_at = now()
+            """,
+            flow_id,
+            model_key,
+            env or "prod",
+            str(watermark),
+        )
+
+    async def copy_watermark(
+        self, flow_id: str, model_key: str, src_env: str, dst_env: str
+    ) -> str | None:
+        """Copy the watermark from *src_env* to *dst_env* (promote helper)."""
+        wm = await self.get_watermark(flow_id, model_key, src_env)
+        if wm is not None:
+            await self.set_watermark(flow_id, model_key, dst_env, wm)
+        return wm
 
 
 # ---------------------------------------------------------------------------
@@ -1059,3 +1280,38 @@ def set_flow_store(store: InMemoryFlowStore | PgFlowStore | None) -> None:
     """
     global _flow_store
     _flow_store = store
+
+
+# ---------------------------------------------------------------------------
+# Notebook helpers (no new table — notebooks are stored as flows)
+# ---------------------------------------------------------------------------
+
+
+def notebook_spec_from_flow(flow: Flow) -> "Any":
+    """Deserialise a stored ``Flow`` dict into a ``NotebookSpec``.
+
+    Notebooks are persisted as ordinary ``Flow`` rows; the ``spec`` JSONB
+    column holds the ``FlowSpec`` dict produced by ``notebook_to_flowspec()``.
+    This helper reconstructs the ``NotebookSpec`` envelope from the stored
+    ``FlowSpec`` dict and the ``flows.id`` field.
+
+    Returns a ``NotebookSpec`` instance.  Raises ``ValueError`` if the spec
+    dict is missing or cannot be parsed.
+
+    Parameters
+    ----------
+    flow:
+        A ``Flow`` dict as returned by ``get_flow`` / ``create_flow``.
+    """
+    from app.flows.notebook import flowspec_to_notebook  # noqa: PLC0415
+    from app.flows.spec import FlowSpec  # noqa: PLC0415
+
+    spec_dict = flow.get("spec")
+    if not isinstance(spec_dict, dict):
+        raise ValueError(
+            f"Flow {flow.get('id')!r} has no valid 'spec' dict; "
+            "cannot reconstruct NotebookSpec."
+        )
+    flow_spec = FlowSpec.model_validate(spec_dict)
+    notebook_id = str(flow.get("id") or "")
+    return flowspec_to_notebook(flow_spec, notebook_id=notebook_id)

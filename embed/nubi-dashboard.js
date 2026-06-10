@@ -6,7 +6,11 @@
  *
  * ATTRIBUTES
  * ----------
- * query      (required) SQL string or a named query id.
+ * query         SQL string or a named query id. Takes precedence over
+ *               `dashboard-id` if both are set.
+ * dashboard-id  A dashboard (board) id. The element fetches the read-only
+ *               descriptor from GET /api/v1/embed/config/{id} and renders
+ *               each widget that references a registered query id.
  * token      Static JWT string. If absent, `get-token` is used instead.
  * get-token  Name of a function on `window` that returns Promise<string> | string.
  * backend    Base URL of the Nubi API, e.g. "https://api.example.com".
@@ -251,6 +255,30 @@ const STYLES = /* css */ `
     text-overflow: ellipsis;
   }
 
+  .nubi-widget-title {
+    margin: 0;
+    padding: 10px 12px 6px;
+    font-size: 12px;
+    font-weight: 600;
+    letter-spacing: 0.03em;
+    color: var(--nubi-fg, #e2e8f0);
+    opacity: 0.85;
+  }
+
+  .nubi-widget-error {
+    padding: 8px 12px;
+    font-size: 11px;
+    color: #f87171;
+  }
+
+  .nubi-empty {
+    padding: 32px;
+    text-align: center;
+    color: var(--nubi-fg, #e2e8f0);
+    opacity: 0.55;
+    font-size: 12px;
+  }
+
   .nubi-loading {
     padding: 32px;
     text-align: center;
@@ -304,7 +332,7 @@ class NubiDashboard extends HTMLElement {
   // ---- Custom element lifecycle ------------------------------------------
 
   static get observedAttributes() {
-    return ['query', 'token', 'get-token', 'backend', 'theme']
+    return ['query', 'dashboard-id', 'token', 'get-token', 'backend', 'theme']
   }
 
   constructor() {
@@ -368,7 +396,11 @@ class NubiDashboard extends HTMLElement {
 
   /** @returns {string} */
   _backendUrl() {
-    return (this.getAttribute('backend') || 'http://localhost:8000').replace(/\/$/, '')
+    // Hosts sometimes paste a backend URL that already ends in /api/v1; the
+    // element appends /api/v1 itself, so strip the suffix to avoid doubling.
+    return (this.getAttribute('backend') || 'http://localhost:8000')
+      .replace(/\/+$/, '')
+      .replace(/\/api\/v1$/, '')
   }
 
   // ---- DOM helpers -------------------------------------------------------
@@ -417,6 +449,14 @@ class NubiDashboard extends HTMLElement {
     }
   }
 
+  /** Set the toolbar title text (truncated like the scaffold default). */
+  _setTitle(text) {
+    const titleEl = this._shadow.querySelector('.nubi-title')
+    if (!titleEl) return
+    const str = String(text ?? '')
+    titleEl.textContent = str.length > 60 ? str.slice(0, 57) + '…' : str
+  }
+
   /** Show an error message (only used as last resort; usually we fall to sample). */
   _showError(msg) {
     const wrap = this._shadow.querySelector('.nubi-table-wrap')
@@ -433,7 +473,9 @@ class NubiDashboard extends HTMLElement {
     const style = document.createElement('style')
     style.textContent = STYLES
 
-    const queryLabel = this.getAttribute('query') || 'Query'
+    const queryLabel = this.getAttribute('query')
+      || this.getAttribute('dashboard-id')
+      || 'Query'
     const titleText = queryLabel.length > 60
       ? queryLabel.slice(0, 57) + '…'
       : queryLabel
@@ -460,6 +502,164 @@ class NubiDashboard extends HTMLElement {
     this._shadow.insertBefore(style, this._shadow.firstChild)
   }
 
+  // ---- Dashboard descriptor render -----------------------------------------
+
+  /**
+   * Fetch the embed descriptor for `dashboard-id` and render its widgets.
+   *
+   * Each widget that references a registered query id is executed via
+   * POST /api/v1/query ({ query_id }) and rendered as a stacked section with
+   * the widget's title as a heading. Returns `true` when the descriptor was
+   * rendered (including the empty state); `false` on a config fetch/auth
+   * failure so the caller can fall back to the sample table.
+   *
+   * @param {{ ac: AbortController, t0: number, backend: string,
+   *           token: string | null, dashboardId: string }} opts
+   * @returns {Promise<boolean>}
+   */
+  async _renderDashboard({ ac, t0, backend, token, dashboardId }) {
+    const jsonHeaders = { 'Accept': 'application/json' }
+    const queryHeaders = {
+      'Content-Type': 'application/json',
+      'Accept': 'application/vnd.apache.arrow.stream',
+    }
+    if (token) {
+      jsonHeaders['Authorization'] = `Bearer ${token}`
+      queryHeaders['Authorization'] = `Bearer ${token}`
+    }
+
+    // --- Fetch the read-only descriptor --------------------------------------
+    let descriptor
+    try {
+      const response = await fetch(`${backend}/api/v1/embed/config/${encodeURIComponent(dashboardId)}`, {
+        method: 'GET',
+        headers: jsonHeaders,
+        credentials: 'omit',
+        signal: ac.signal,
+      })
+      if (ac.signal.aborted) return true
+
+      if (!response.ok) {
+        const httpMsg = `Embed config API returned HTTP ${response.status}`
+        console.warn(`[nubi-dashboard] ${httpMsg} — showing sample`)
+        this.dispatchEvent(new CustomEvent('nubi:error', {
+          bubbles: true, composed: true,
+          detail: { message: httpMsg },
+        }))
+        return false
+      }
+
+      descriptor = await response.json()
+    } catch (err) {
+      if (err.name === 'AbortError') return true
+      console.warn('[nubi-dashboard] Embed config fetch error — showing sample:', err.message)
+      this.dispatchEvent(new CustomEvent('nubi:error', {
+        bubbles: true, composed: true,
+        detail: { message: err.message },
+      }))
+      return false
+    }
+
+    if (ac.signal.aborted) return true
+
+    this._setTitle(descriptor.title || dashboardId)
+
+    // --- Widgets that reference a registered query id -------------------------
+    const widgets = Array.isArray(descriptor.widgets) ? descriptor.widgets : []
+    const renderable = widgets.filter(w => w && (w.query_id || w.props?.query_id))
+
+    if (renderable.length === 0) {
+      const wrap = this._shadow.querySelector('.nubi-table-wrap')
+      if (wrap) {
+        wrap.innerHTML = '<div class="nubi-empty">This dashboard has no embeddable widgets yet — add a widget backed by a registered query to see data here.</div>'
+      }
+      const badge = this._shadow.querySelector('.nubi-badge')
+      if (badge) {
+        badge.textContent = 'EMPTY'
+        badge.className = 'nubi-badge miss'
+      }
+      const footer = this._shadow.querySelector('.nubi-footer')
+      if (footer) footer.textContent = '0 widgets'
+
+      this.dispatchEvent(new CustomEvent('nubi:ready', {
+        bubbles: true, composed: true,
+        detail: { rowCount: 0 },
+      }))
+      return true
+    }
+
+    // --- Run each widget's query and stack the results ------------------------
+    const sections = []
+    let totalRows = 0
+    let anyMiss = false
+
+    for (let i = 0; i < renderable.length; i++) {
+      const widget = renderable[i]
+      const queryId = widget.query_id || widget.props?.query_id
+      const widgetTitle = widget.title || widget.props?.title || `Widget ${i + 1}`
+      const heading = `<h3 class="nubi-widget-title">${escapeHtml(String(widgetTitle))}</h3>`
+
+      try {
+        const response = await fetch(`${backend}/api/v1/query`, {
+          method: 'POST',
+          headers: queryHeaders,
+          body: JSON.stringify({ query_id: queryId }),
+          credentials: 'omit',
+          signal: ac.signal,
+        })
+        if (ac.signal.aborted) return true
+
+        if (!response.ok) {
+          throw new Error(`Query API returned HTTP ${response.status}`)
+        }
+
+        const cacheStatus = response.headers.get('X-Nubi-Cache') ?? 'MISS'
+        if (cacheStatus !== 'HIT') anyMiss = true
+
+        const buf = await response.arrayBuffer()
+        if (ac.signal.aborted) return true
+
+        const table = tableFromIPC(new Uint8Array(buf))
+        totalRows += table.numRows
+        sections.push(heading + arrowTableToHTML(table, 100))
+      } catch (err) {
+        if (err.name === 'AbortError') return true
+        console.warn(`[nubi-dashboard] Widget query ${queryId} failed:`, err.message)
+        sections.push(`${heading}<div class="nubi-widget-error">Failed to load: ${escapeHtml(err.message)}</div>`)
+        anyMiss = true
+      }
+    }
+
+    const elapsedMs = Math.round(performance.now() - t0)
+
+    const wrap = this._shadow.querySelector('.nubi-table-wrap')
+    if (wrap) wrap.innerHTML = sections.join('')
+
+    const sampleNote = this._shadow.querySelector('.nubi-sample-note')
+    if (sampleNote) sampleNote.style.display = 'none'
+
+    const badge = this._shadow.querySelector('.nubi-badge')
+    if (badge) {
+      badge.textContent = anyMiss ? 'LIVE' : 'CACHE HIT'
+      badge.className = anyMiss ? 'nubi-badge miss' : 'nubi-badge hit'
+    }
+
+    const footer = this._shadow.querySelector('.nubi-footer')
+    if (footer) {
+      footer.textContent = `${renderable.length} widget${renderable.length !== 1 ? 's' : ''} · ${totalRows.toLocaleString()} row${totalRows !== 1 ? 's' : ''} · ${elapsedMs}ms`
+    }
+
+    this.dispatchEvent(new CustomEvent('nubi:query-run', {
+      bubbles: true, composed: true,
+      detail: { rowCount: totalRows, cacheStatus: anyMiss ? 'MISS' : 'HIT', elapsedMs, sample: false },
+    }))
+    this.dispatchEvent(new CustomEvent('nubi:ready', {
+      bubbles: true, composed: true,
+      detail: { rowCount: totalRows },
+    }))
+    return true
+  }
+
   // ---- Core render -------------------------------------------------------
 
   async _render() {
@@ -475,6 +675,7 @@ class NubiDashboard extends HTMLElement {
 
     const t0 = performance.now()
     const sql = this.getAttribute('query') || ''
+    const dashboardId = this.getAttribute('dashboard-id') || ''
     const backend = this._backendUrl()
 
     // --- Resolve token -------------------------------------------------------
@@ -486,6 +687,16 @@ class NubiDashboard extends HTMLElement {
     }
 
     if (ac.signal.aborted) return
+
+    // --- Dashboard descriptor path (query attribute takes precedence) ---------
+    if (!sql && dashboardId && backend) {
+      const ok = await this._renderDashboard({ ac, t0, backend, token, dashboardId })
+      if (ok || ac.signal.aborted) {
+        this._rendering = false
+        return
+      }
+      // Config fetch/auth failure — fall through to the sample fallback below.
+    }
 
     // --- Attempt real fetch --------------------------------------------------
     if (sql && backend) {

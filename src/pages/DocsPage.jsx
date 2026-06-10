@@ -5,8 +5,10 @@ import {
   Home, Layers, Cpu, Wrench, Zap, Database, Code, Bot,
   ArrowLeft, ArrowRight, Hash, ChevronDown, Command,
   ExternalLink, ThumbsUp, ThumbsDown, Copy, Check,
+  Cloud, Lock, Settings, Rocket,
 } from 'lucide-react'
 import { DOC_GROUPS, getDocs, getDoc } from '../docs/registry.js'
+import DocsHome from './docs/DocsHome.jsx'
 import MarkdownRenderer from '../components/MarkdownRenderer.jsx'
 
 // ── Scoped styles ─────────────────────────────────────────────────────────────
@@ -154,10 +156,18 @@ const DocsStyles = () => (
 // ── Group + icon metadata ─────────────────────────────────────────────────────
 
 const GROUP_META = {
-  'Home':              { icon: Home,     color: 'text-brand-teal',  label: 'Start here' },
-  'Overview':          { icon: Zap,      color: 'text-amber-500',   label: 'Get oriented' },
-  'Core Platform':     { icon: Database, color: 'text-brand-blue',  label: 'Foundation' },
-  'Build & Integrate': { icon: Wrench,   color: 'text-accent',      label: 'Integration' },
+  'Home':                  { icon: Home,     color: 'text-brand-teal', label: 'Start here' },
+  // Using Nubi
+  'Get started':           { icon: Zap,      color: 'text-amber-500',  label: 'New here?' },
+  'Work with data':        { icon: Database, color: 'text-brand-blue', label: 'Build' },
+  'Automate & build':      { icon: Wrench,   color: 'text-accent',     label: 'Automate' },
+  'Your account':          { icon: Settings, color: 'text-muted',      label: 'Manage' },
+  // Nubi Cloud
+  'Cloud & billing':       { icon: Cloud,    color: 'text-brand-teal', label: 'Managed' },
+  // Open-source project
+  'Self-host':             { icon: Rocket,   color: 'text-brand-blue', label: 'Run it' },
+  'Security & internals':  { icon: Lock,     color: 'text-amber-500',  label: 'Internals' },
+  'Build on Nubi':         { icon: Code,     color: 'text-accent',     label: 'Extend' },
 }
 
 function docIcon(slug) {
@@ -569,9 +579,17 @@ function SidebarContent({ activeSlug, onNavClick, onOpenSearch }) {
             const meta = GROUP_META[group.name] ?? { icon: FileText, color: 'text-muted', label: '' }
             const GroupIcon = meta.icon
             const isOpen = openGroups[group.name] ?? true
+            // Render a section header the first time a new section appears.
+            const prevSection = gi > 0 ? DOC_GROUPS[gi - 1].section : null
+            const showSectionHeader = group.section && group.section !== prevSection
 
             return (
               <div key={group.name} className={`docs-group ${gi > 0 ? 'pt-3 mt-2 border-t border-border/50' : 'pt-1'}`}>
+                {showSectionHeader && (
+                  <p className="px-2 pt-2 pb-1.5 text-[10px] font-bold uppercase tracking-[0.16em] text-fg/40 font-display">
+                    {group.section}
+                  </p>
+                )}
                 <button
                   onClick={() => toggleGroup(group.name)}
                   className="w-full flex items-center gap-2 px-2 py-1.5 mb-0.5 rounded-md hover:bg-surface-2/60 transition-colors group/grp"
@@ -1046,6 +1064,8 @@ export default function DocsPage() {
               >
                 {isUnknown ? (
                   <DocNotFound slug={slug} />
+                ) : activeSlug === 'home' ? (
+                  <DocsHome onOpenSearch={() => setSearchOpen(true)} />
                 ) : doc ? (
                   <div className="max-w-[760px] docs-prose">
                     <DocBreadcrumb doc={doc} />

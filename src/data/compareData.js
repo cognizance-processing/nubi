@@ -41,27 +41,27 @@ export const NUBI = {
   name: "Nubi",
   tagline: "Browser-first analytics kernel — near-zero marginal cost per embedded view at high cache-hit rates",
   kernel:
-    "Pyodide (Python) + DuckDB-WASM in the browser by default; on-demand server kernel (E2B/Modal, scale-to-zero) only for the ~10% of workloads that need it. Cost drivers: connector throughput + embed views + AI calls + kernel-seconds.",
+    "DuckDB-WASM (SQL) in the browser by default; on-demand server kernel (E2B/Modal, scale-to-zero) for the Python and heavy workloads that need it. Cost drivers: connector throughput + embedded sessions + AI calls + kernel-seconds.",
   transport:
     "Arrow IPC over WebSocket — columnar buffers land directly in the browser; viz reads buffers without re-serialisation.",
   viz:
-    "WebGL/WebGPU on Arrow buffers via regl; <nubi-chart> auto-upgrades to WebGL above a configurable row threshold. 1M+ point scatter at 60 fps. LLM-authorable HTML/CSS dashboards with sanitised custom elements (<nubi-kpi>, <nubi-table>, <nubi-chart>).",
+    "Apache ECharts (canvas) rendering directly on Arrow buffers — no JSON round-trip, stays fast on large result sets. LLM-authorable HTML/CSS dashboards with sanitised custom elements (<nubi-kpi>, <nubi-table>, <nubi-chart>).",
   caching:
     "Content-hashed edge cache keyed on (serialised plan + RLS-affecting JWT claims) — N viewers of the same dashboard collapse to 1 warehouse hit. Automatic pre-aggregations mined from query log (rollup suggester + routing) extend the advantage to diverse-slice workloads.",
   embedding:
-    "Core product surface: read-only <nubi-dashboard> (iframe + web component, JWT-scoped, CSS-var theming) → cell-level <nubi-widget> → embedded <nubi-editor> → headless PNG/PDF render → bring-your-own-frontend (engine as library). Auth-as-code: host publishes JWKS, implements getToken(), mounts component. No separate embed SDK required.",
+    "Core product surface: read-only <nubi-dashboard> (iframe + web component, JWT-scoped, CSS-var theming) plus cell-level <nubi-kpi>/<nubi-table>/<nubi-chart> → scheduled PDF/CSV exports → bring-your-own-frontend (engine as library). Auth-as-code: host publishes JWKS, implements getToken(), mounts component. No separate embed SDK required.",
   modeling:
     "Low — point at a warehouse and go. No hand-written semantic model required to start. Auth policies live as TypeScript/SQL in the repo (diffable, PR-reviewable). SQL-first connector SDK; Python connector SDK for arbitrary Arrow-returning sources. NoSQL is deliberately out of scope.",
   ai:
-    "Lineage-indexed retrieval + LLM generation grounded on real catalog. POST /ai/ask. MCP server (4 tools): agents author dashboards via HTML/CSS + <nubi-*> custom elements. AI calls metered per-token (cost passed through at margin). LLM-authorable dashboard output is HTML/CSS sanitised by DOMPurify.",
+    "Lineage-indexed retrieval + LLM generation grounded on real catalog. POST /ai/ask. MCP server (6 tools): agents author dashboards via HTML/CSS + <nubi-*> custom elements. AI calls metered per-call ($0.30/call overage; quota included in each paid tier). LLM-authorable dashboard output is HTML/CSS sanitised by DOMPurify.",
   pricing:
-    "Usage-based: connector throughput (bytes/queries) + embed views (per-thousand) + AI calls (per-token) + on-demand kernel time (per-second, scale-to-zero) + scheduled jobs (separate SKU). Genuine free tier structurally viable — browser compute is free to Nubi, so Hex can't match it without bleeding kernel cost. Billed in ZAR via Paystack.",
+    "Usage-based: connector throughput (bytes/queries) + embedded sessions (per 10,000) + AI calls (per-call) + on-demand kernel time (scale-to-zero) + flows/scheduled jobs included in plan (no separate SKU). Genuine free tier structurally viable — browser compute is free to Nubi, so Hex can't match it without bleeding kernel cost. Billed in ZAR via Paystack.",
   selfHost:
     "Planned (M10 — Docker Compose stack, not yet shipped). Intermediate today: hosted control plane + self-hosted connector so warehouse credentials never leave the customer's network.",
   strength:
-    "Near-zero marginal cost per embedded view at high cache-hit rates (compute is the user's browser). Arrow IPC + WebGL/WebGPU enables 1M+ point rendering. Auto pre-aggregations replicate Cube's core weapon without requiring a hand-written semantic model. Auth-as-code with JWT/JWKS is structurally simpler than bolt-on embed SDKs.",
+    "Near-zero marginal cost per embedded view at high cache-hit rates (compute is the user's browser). Arrow IPC + ECharts canvas rendering keeps large result sets fast in the browser. Auto pre-aggregations replicate Cube's core weapon without requiring a hand-written semantic model. Auth-as-code with JWT/JWKS is structurally simpler than bolt-on embed SDKs.",
   limitation:
-    "Cost advantage is real only at high cache-hit / pre-aggregation rates — 500 analysts each slicing differently reverts to warehouse scans. Browser memory cap (~4 GB) requires aggressive pushdown. Pyodide native-wheel gaps mean on-demand kernel is a launch requirement, not optional. NoSQL deliberately out of scope. M10 self-host stack not yet shipped.",
+    "Cost advantage is real only at high cache-hit / pre-aggregation rates — 500 analysts each slicing differently reverts to warehouse scans. Browser memory cap (~4 GB) requires aggressive pushdown. The browser only runs SQL (DuckDB-WASM), so Python and native-wheel workloads route to the on-demand server kernel — a launch requirement for those, not optional. NoSQL deliberately out of scope. M10 self-host stack not yet shipped.",
 };
 
 // ---------------------------------------------------------------------------
@@ -156,7 +156,7 @@ export const COMPETITORS = [
     strength:
       "Lowest barrier to entry for non-technical users; strong open-source community; free self-host; new Data Studio semantic layer (2026).",
     limitation:
-      "No viewer-only pricing tier — every embedded viewer is a full paid seat, making large-scale embedding very expensive. No WebGL or Arrow path. Pre-aggregation is manual. Open Source requires AGPL compliance.",
+      "No viewer-only pricing tier — every embedded viewer is a full paid seat, making large-scale embedding very expensive. No Arrow path. Pre-aggregation is manual. Open Source requires AGPL compliance.",
     sourceUrls: [
       "https://www.metabase.com/pricing/",
       "https://www.metabase.com/features/semantic-layer",
@@ -322,7 +322,7 @@ export const COMPETITORS = [
     strength:
       "Fully open source (no license cost); Apache 2.0 license (no AGPL compliance burden); large community; low barrier to start; ECharts viz library is capable.",
     limitation:
-      "No Arrow IPC; no WebGL GPU rendering; no automatic pre-aggregation; no formal semantic layer; embedded viewer pricing on Preset can add up quickly; AI features limited/unverified; self-hosting requires significant DevOps investment.",
+      "No Arrow IPC; no automatic pre-aggregation; no formal semantic layer; embedded viewer pricing on Preset can add up quickly; AI features limited/unverified; self-hosting requires significant DevOps investment.",
     sourceUrls: [
       "https://preset.io/pricing/",
       "https://superset.apache.org/",
@@ -352,7 +352,7 @@ export const COMPARE_DIMENSIONS = [
     key: "viz",
     label: "Viz Capability & Row Ceiling",
     description:
-      "Rendering technology and practical row limit before performance degrades. WebGL GPU rendering handles 1M+ points; SVG/Canvas degrades past ~50k–100k rows.",
+      "Rendering technology and practical row limit before performance degrades in the browser, plus how results reach the chart layer.",
   },
   {
     key: "caching",
@@ -399,7 +399,7 @@ export const COMPARE_DIMENSIONS = [
 export const MATRIX = {
   // Rows = dimension keys; columns = tool names
   kernel: {
-    Nubi:    "Pyodide+DuckDB-WASM in browser by default; on-demand server (E2B/Modal, scale-to-zero) for ~10% of workloads",
+    Nubi:    "DuckDB-WASM (SQL) in browser by default; on-demand server (E2B/Modal, scale-to-zero) for Python and heavy workloads",
     Hex:     "Python kernel per session, Hex cloud; 10–30s cold starts; per-minute billing",
     Cube:    "No kernel; warehouse + Cube Store for pre-aggs; hourly infra billing",
     Metabase:"Server-side SQL push to warehouse; no in-browser compute",
@@ -421,7 +421,7 @@ export const MATRIX = {
     "Preset / Superset": "JSON rows over HTTP; no Arrow IPC",
   },
   viz: {
-    Nubi:    "WebGL/WebGPU (regl) on Arrow buffers; 1M+ pts at 60fps; auto-upgrade above row threshold",
+    Nubi:    "Apache ECharts (canvas) on Arrow buffers; no JSON round-trip; fast on large result sets",
     Hex:     "Plotly/SVG; degrades past ~50k rows; no WebGL",
     Cube:    "Bring-your-own frontend; no built-in viz",
     Metabase:"40+ charts SVG/Canvas; no WebGL; degrades past tens-of-thousands rows",
@@ -443,7 +443,7 @@ export const MATRIX = {
     "Preset / Superset": "Redis query result cache (configurable TTL); no auto pre-agg; manual dbt/Cube needed",
   },
   embedding: {
-    Nubi:    "Core surface: <nubi-dashboard> → <nubi-widget> → <nubi-editor>; JWKS-native; no separate SDK",
+    Nubi:    "Core surface: <nubi-dashboard> + cell-level <nubi-kpi>/<nubi-table>/<nubi-chart>; JWKS-native; no separate SDK",
     Hex:     "Enterprise add-on only; bolt-on auth; expensive; not a core surface",
     Cube:    "Core strength (headless); JWT→SQL RLS; Viewer $20/user/month (Premium+)",
     Metabase:"Static embed (free/Starter w/ branding); white-label on Pro ($575+/month); every viewer = paid seat",
@@ -476,7 +476,7 @@ export const MATRIX = {
     "Preset / Superset": "NL-to-SQL via optional LLM plugin; Preset AI roadmap unverified; limited GA AI",
   },
   pricing: {
-    Nubi:    "Usage-based: connector bytes + embed views/1k + AI tokens + kernel-seconds; genuine free tier (browser compute is free to Nubi); billed ZAR via Paystack",
+    Nubi:    "Usage-based: connector bytes + embedded sessions/10k + AI calls (per-call) + kernel-seconds; flows included (no separate SKU); genuine free tier (browser compute is free to Nubi); billed ZAR via Paystack",
     Hex:     "Per-seat: Community free; Professional $36/editor/month; Team $75/editor/month; compute add-on",
     Cube:    "Per-developer + hourly infra: Free hobbyist; Starter $40/dev/month; Premium $80/dev/month",
     Metabase:"Tiered: OSS free; Starter $100+$6/user/month; Pro $575+$12/user/month; Enterprise $20k+/year",
@@ -520,7 +520,7 @@ export const NUBI_FLOWS = {
   selfHost:
     "Ships inside Nubi — uses Nubi's existing Postgres. No additional broker infrastructure required. FLOWS_WORKER_ENABLED flag gates the background worker.",
   pricing:
-    "Included in Nubi's usage-based pricing (no separate SKU for the orchestration engine). Flow runs consume connector bytes + AI tokens + kernel-seconds depending on task kinds used.",
+    "Included in Nubi's usage-based pricing (no separate SKU for the orchestration engine). Flow runs consume connector bytes + AI calls (per-call) + kernel-seconds depending on task kinds used.",
   strength:
     "Zero additional infra overhead — runs on Nubi's existing Postgres with no Redis/Celery/K8s. RLS-aware multi-tenant execution (JWT claims flow through to every data task). LLM-native: an agent can author and run flows in natural language. Visual React Flow DAG builder like Prefect/n8n.",
   limitation:
