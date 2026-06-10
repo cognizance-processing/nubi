@@ -95,6 +95,14 @@ The big architectural one — orchestrator writes `MANAGED_LAKEHOUSE.md` design 
 
 ---
 
+## WAVE 5 — AI-native: agent-authoring, metrics layer, answers-first, ops maturity
+See **`AI_NATIVE_PLAN.md`** for the full breakdown. Summary of the through-line: make the
+existing spec/embed/governance/query-registry machinery legible + safe for agents we don't
+control (validate-with-structured-errors → context API → repair loop → MCP/OpenAPI/llms.txt
+front doors → agent-sandbox tokens/idempotency → metrics/semantic layer → ask/pin/watch →
+Redis cache + SLOs + compliance + headless preview). Waves A–E, design-doc-first for the
+metrics layer (`METRICS_LAYER.md`) and answers-first.
+
 ## Invariants (every agent)
 - Open-core: billing/cloud stays in `ee/`; **secrets never written to synced files**.
 - RLS preserved through any rewrite; bound params never string-concatenated.

@@ -323,6 +323,141 @@ async def dashboard_schema(
 
 
 # ---------------------------------------------------------------------------
+# GET /ai/context — single-call authoring context for external agents (M23-A)
+# ---------------------------------------------------------------------------
+
+
+#: Static authoring conventions block.  Kept short + factual: it tells an agent
+#: how to wire a query's params/outputs into a DashboardSpec.  Echoed verbatim
+#: in both the full and compact /ai/context responses.
+_AI_CONTEXT_CONVENTIONS: dict[str, Any] = {
+    "query_binding": (
+        "Bind a widget to a query by its `id`. The widget's data columns must "
+        "reference names from that query's `output_schema` — never invent column "
+        "names."
+    ),
+    "params": (
+        "A query's `params` are named placeholders. Supply values per param "
+        "`name`; respect `required` and `type`. `select`/`multiselect` params draw "
+        "their options from `options_query_id` (another query's id)."
+    ),
+    "variables": (
+        "Dashboard-level variables are referenced in text/config with the "
+        "`{{vars.<name>}}` template syntax and are routed to a query's matching "
+        "param by name at execution time."
+    ),
+    "spec_binding": (
+        "Author specs against GET /ai/dashboard/schema. Every query_id and column "
+        "you reference must exist in this context; values flow query.params -> "
+        "named_params and query.output_schema -> widget columns."
+    ),
+}
+
+
+def _context_query_entry(rq: Any, *, compact: bool) -> dict[str, Any]:
+    """Build one /ai/context query entry from a ``RegisteredQuery``.
+
+    Full form carries ``{id, name, description, datastore, params, output_schema}``.
+    Compact form drops verbose fields (``description``, ``datastore``, per-param
+    ``default``/``options_query_id``) to shrink the token footprint while keeping
+    everything an agent needs to bind names.
+    """
+    from app.ai.grounding import (  # noqa: PLC0415
+        _output_schema_to_dicts,
+        _params_to_dicts,
+    )
+
+    params = _params_to_dicts(rq.params)
+    output_schema = _output_schema_to_dicts(rq.output_schema)
+
+    if compact:
+        return {
+            "id": rq.id,
+            "name": rq.name,
+            "params": [
+                {"name": p["name"], "type": p["type"], "required": p["required"]}
+                for p in params
+            ],
+            "output_schema": output_schema,
+        }
+
+    return {
+        "id": rq.id,
+        "name": rq.name,
+        # No dedicated description field on RegisteredQuery — fall back to name.
+        "description": rq.name,
+        "datastore": rq.datastore_id,
+        "params": params,
+        "output_schema": output_schema,
+    }
+
+
+@api_router.get("/ai/context", tags=["ai"])
+async def ai_context(
+    q: str | None = None,
+    compact: bool = False,
+    _user: dict[str, Any] = Depends(current_user),
+) -> dict[str, Any]:
+    """Return everything an external agent needs to author against in one call.
+
+    The response lists every registered query with its real ``params`` and
+    ``output_schema`` (so the agent binds to real names instead of guessing —
+    the chief cause of invalid specs) plus a static ``conventions`` block
+    describing how variables / ``{{vars.*}}`` / spec binding work.
+
+    Token-budget controls
+    ----------------------
+    ``?q=<text>``
+        Reuse the deterministic grounding scorer to rank + filter the queries
+        to the ones most relevant to *text*.  Queries whose tables score zero
+        are dropped; the rest are ordered most-relevant-first.  Omit ``q`` to
+        return every query (registry order).
+    ``?compact=true``
+        Return a trimmed per-query shape (drops ``description``, ``datastore``,
+        and per-param ``default``/``options_query_id``) to shrink the payload.
+
+    Requires a valid Bearer token (same auth as the sibling schema endpoint).
+
+    Returns
+    -------
+    dict
+        ``{queries: [{id, name, [description, datastore,] params, output_schema}],
+        conventions: {...}, compact: bool, filtered_by: str | None}``
+
+    Raises
+    ------
+    AppError("unauthorized", 401)
+        If no valid Bearer token is provided.
+    """
+    from app.queries.registry import get_query_registry  # noqa: PLC0415
+
+    registry = get_query_registry()
+    all_queries = registry.all()
+
+    if q:
+        # Rank + filter via the deterministic grounding scorer so the response
+        # only carries the queries most relevant to the agent's intent.
+        catalog = build_catalog()
+        grounding = ground(q, catalog)
+        # related_queries is an ordered (most-relevant-first) list of ids.
+        ranked_ids = list(grounding.get("related_queries", []))
+        order = {qid: i for i, qid in enumerate(ranked_ids)}
+        by_id = {rq.id: rq for rq in all_queries}
+        selected = [by_id[qid] for qid in ranked_ids if qid in by_id]
+    else:
+        selected = all_queries
+
+    queries = [_context_query_entry(rq, compact=compact) for rq in selected]
+
+    return {
+        "queries": queries,
+        "conventions": _AI_CONTEXT_CONVENTIONS,
+        "compact": compact,
+        "filtered_by": q,
+    }
+
+
+# ---------------------------------------------------------------------------
 # POST /ai/chat — agentic chat with tool registry (M21-A)
 # ---------------------------------------------------------------------------
 

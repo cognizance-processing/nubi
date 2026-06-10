@@ -12,7 +12,13 @@ generate_dashboard_spec(question, catalog, provider) -> DashboardSpec
 
     With a real provider the model is given a tight prompt that includes the
     full JSON Schema for DashboardSpec and is instructed to emit a valid JSON
-    DashboardSpec using ONLY grounded query_ids and real columns.
+    DashboardSpec using ONLY grounded query_ids and real columns.  The output
+    is run through a generate -> validate -> repair loop: hard validation
+    errors are fed back to the model for up to ``MAX_DASHBOARD_REPAIR_ROUNDS``
+    attempts.  If the spec is STILL invalid after the final round the failure
+    is surfaced LOUDLY (``AppError`` with the structured issues) rather than
+    being silently swallowed by the NullProvider template — the deterministic
+    template is reserved exclusively for the genuine no-API-key path.
 
 generate_dashboard_html(question, catalog, provider) -> str
     Backward-compatible wrapper: ``spec_to_html(generate_dashboard_spec(...))``.
@@ -44,11 +50,19 @@ Design notes
 from __future__ import annotations
 
 import json
+import logging
 import re
 from typing import Any
 
 from app.ai.grounding import ground
 from app.ai.provider import LLMProvider, NullProvider
+
+logger = logging.getLogger("nubi.ai.dashboard")
+
+#: Maximum number of generation attempts for the real-provider path (the first
+#: generation plus repair rounds).  ``repair_rounds`` in the returned metadata
+#: counts only the follow-up repair attempts (i.e. ``attempts - 1``).
+MAX_DASHBOARD_REPAIR_ROUNDS: int = 3
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -147,6 +161,79 @@ Question: {question}
 Generate a DashboardSpec JSON object that answers the question using ONLY the
 grounded query_ids and column names listed above.
 """.strip()
+
+#: Concise repair prompt fed back to the model when its spec failed validation.
+#: The original system prompt (with the full schema + grounding) is re-sent so
+#: the model still has the schema in context; this user message just lists the
+#: concrete errors to fix and asks for a corrected spec only.
+_SPEC_REPAIR_USER = """\
+Your previous DashboardSpec JSON had these validation errors:
+{issues}
+
+Return a corrected DashboardSpec JSON object that fixes ALL of the errors above.
+Output ONLY the JSON object — no markdown fences, no explanation.
+""".strip()
+
+
+def _is_warning(issue: str) -> bool:
+    """Return True when *issue* is a soft warning rather than a hard error.
+
+    ``validate_spec`` returns plain strings.  Two flavours are treated as
+    non-blocking warnings:
+
+    1. Anything explicitly prefixed with ``[warn]`` (the documented warning
+       convention — future-proofs against validators that adopt the prefix).
+    2. Unknown-``query_id`` / ``options_query_id`` registry messages, which
+       ``validate_spec`` itself documents as soft "forward reference" warnings
+       (Step 7) rather than hard failures.
+
+    Everything else (Pydantic field errors, missing chart encodings, undeclared
+    variable/tab refs, duplicate ids, …) is a HARD error that must be repaired.
+    """
+    stripped = issue.lstrip()
+    if stripped.lower().startswith("[warn]"):
+        return True
+    # Registry "not in the registered query registry" messages are soft.
+    return "not in the registered" in issue
+
+
+def _hard_errors(issues: list[str]) -> list[str]:
+    """Filter *issues* down to the hard (blocking) errors only."""
+    return [i for i in issues if not _is_warning(i)]
+
+
+def _strip_fences(raw_response: str) -> str:
+    """Strip leading/trailing markdown code fences from an LLM JSON response."""
+    cleaned = raw_response.strip()
+    if cleaned.startswith("```"):
+        lines = cleaned.splitlines()
+        start = 1 if lines[0].startswith("```") else 0
+        end = len(lines) - 1 if lines[-1].strip() == "```" else len(lines)
+        cleaned = "\n".join(lines[start:end]).strip()
+    return cleaned
+
+
+def _attach_meta(
+    spec: "DashboardSpec",
+    *,
+    generated_by: str,
+    valid: bool,
+    repair_rounds: int,
+    issues: list[str],
+) -> "DashboardSpec":
+    """Attach repair/provenance metadata to *spec* without polluting model_dump.
+
+    The metadata is stored via ``object.__setattr__`` so it is introspectable by
+    callers/tests (``spec.repair_rounds`` etc.) but does NOT leak into
+    ``spec.model_dump()`` — keeping the existing ``/ai/dashboard`` response
+    shape unchanged.  ``generated_by`` distinguishes the legitimate no-LLM
+    template (``"null_template"``) from an LLM-authored spec (``"llm"``).
+    """
+    object.__setattr__(spec, "generated_by", generated_by)
+    object.__setattr__(spec, "valid", valid)
+    object.__setattr__(spec, "repair_rounds", repair_rounds)
+    object.__setattr__(spec, "issues", list(issues))
+    return spec
 
 
 # ---------------------------------------------------------------------------
@@ -355,8 +442,25 @@ def generate_dashboard_spec(
     Returns
     -------
     DashboardSpec
-        A fully validated spec.  Falls back to a deterministic NullProvider
-        spec if the LLM response cannot be parsed or fails validation.
+        A validated spec.  The returned instance carries introspectable
+        metadata (NOT part of ``model_dump()``):
+
+        - ``generated_by``  — ``"null_template"`` (legit no-LLM deterministic
+          template) or ``"llm"`` (LLM-authored, possibly repaired).
+        - ``valid``         — ``True`` when no hard errors remain.
+        - ``repair_rounds`` — number of follow-up repair attempts (0 = clean on
+          the first try / NullProvider).
+        - ``issues``        — remaining validation issues (warnings only on the
+          happy path).
+
+    Raises
+    ------
+    AppError("dashboard_generation_failed", 422)
+        Real-provider path ONLY: when the LLM output still fails validation
+        after the maximum number of repair rounds.  This is the LOUD failure
+        that replaces the old silent ``_build_null_spec`` substitution — the
+        structured ``issues`` are surfaced to the caller (an external agent)
+        so they can be fixed.  The NullProvider/no-API-key path NEVER raises.
     """
     from app.dashboards.spec import (  # noqa: PLC0415
         validate_spec,
@@ -368,7 +472,17 @@ def generate_dashboard_spec(
     grounding = ground(question, catalog)
 
     if isinstance(provider, NullProvider):
-        return _build_null_spec(question, grounding, catalog)
+        # Genuine no-LLM path: the deterministic template is EXPECTED behaviour,
+        # not a swallowed error.  Mark it clearly as the no-LLM template so it
+        # can never be confused with a failed-and-hidden LLM generation.
+        spec = _build_null_spec(question, grounding, catalog)
+        return _attach_meta(
+            spec,
+            generated_by="null_template",
+            valid=True,
+            repair_rounds=0,
+            issues=[],
+        )
 
     # ── Real LLM path ───────────────────────────────────────────────────────
     snippets_text = (
@@ -391,33 +505,75 @@ def generate_dashboard_spec(
         query_ids=query_ids_text,
         fallback_id=fallback_id,
     )
+
+    # ── generate → validate → repair loop ────────────────────────────────────
+    # Round 0 is the initial generation; subsequent rounds feed the hard errors
+    # back to the model.  We retry up to MAX_DASHBOARD_REPAIR_ROUNDS attempts
+    # total and stop early as soon as the spec is valid (no hard errors).
     user = _SPEC_USER.format(question=question)
+    last_spec: "DashboardSpec | None" = None
+    last_issues: list[str] = []
 
-    raw_response = provider.complete(user, system=system)
+    for attempt in range(MAX_DASHBOARD_REPAIR_ROUNDS):
+        raw_response = provider.complete(user, system=system)
 
-    # Attempt to parse + validate the JSON response.
-    try:
-        # Strip markdown code fences if present.
-        cleaned = raw_response.strip()
-        if cleaned.startswith("```"):
-            lines = cleaned.splitlines()
-            # Remove first and last fence lines.
-            start = 1 if lines[0].startswith("```") else 0
-            end = len(lines) - 1 if lines[-1].strip() == "```" else len(lines)
-            cleaned = "\n".join(lines[start:end]).strip()
+        spec: "DashboardSpec | None"
+        try:
+            data = json.loads(_strip_fences(raw_response))
+            spec, issues = validate_spec(data)
+        except Exception as exc:  # noqa: BLE001 — malformed/non-JSON output
+            spec, issues = None, [f"Response was not valid JSON: {exc}"]
 
-        data = json.loads(cleaned)
-        spec, issues = validate_spec(data)
-        if spec is not None and not any("required" in i.lower() or "field" in i.lower() for i in issues if "not in the registered" not in i):
-            return spec
-        if spec is not None:
-            # Soft issues only (e.g. unknown query_id warnings) — still usable.
-            return spec
-    except Exception:  # noqa: BLE001
-        pass
+        hard = _hard_errors(issues) if spec is not None else issues
 
-    # Fallback: return a deterministic spec if LLM output cannot be parsed.
-    return _build_null_spec(question, grounding, catalog)
+        if spec is not None and not hard:
+            # Valid (warnings allowed).  ``attempt`` repair rounds preceded this
+            # success (0 means it was clean on the very first generation).
+            return _attach_meta(
+                spec,
+                generated_by="llm",
+                valid=True,
+                repair_rounds=attempt,
+                issues=issues,
+            )
+
+        # Remember the best (most-recent) attempt for the loud-failure payload.
+        last_spec, last_issues = spec, issues
+
+        # If we have budget left, feed the hard errors back for a repair round.
+        next_round = attempt + 1
+        if next_round < MAX_DASHBOARD_REPAIR_ROUNDS:
+            logger.info(
+                "dashboard repair round %d/%d — feeding back %d hard error(s): %s",
+                next_round,
+                MAX_DASHBOARD_REPAIR_ROUNDS - 1,
+                len(hard),
+                hard,
+            )
+            user = _SPEC_REPAIR_USER.format(
+                issues="\n".join(f"- {i}" for i in hard) or "- (response was not valid JSON)",
+            )
+
+    # ── Loud failure: still invalid after the max rounds ──────────────────────
+    # Do NOT silently substitute _build_null_spec and pretend success — surface
+    # the structured issues so the (external agent) caller can fix them.
+    repair_rounds = MAX_DASHBOARD_REPAIR_ROUNDS - 1
+    final_hard = _hard_errors(last_issues) if last_spec is not None else last_issues
+    logger.warning(
+        "dashboard generation FAILED after %d repair round(s); %d hard error(s) remain: %s",
+        repair_rounds,
+        len(final_hard),
+        final_hard,
+    )
+
+    from app.errors import AppError  # noqa: PLC0415 — avoid circular import at top
+
+    raise AppError(
+        "dashboard_generation_failed",
+        "LLM dashboard generation failed validation after "
+        f"{repair_rounds} repair round(s). Issues: {final_hard}",
+        422,
+    )
 
 
 def generate_dashboard_html(

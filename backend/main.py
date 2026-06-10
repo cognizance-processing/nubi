@@ -110,6 +110,11 @@ import app.routes.lineage  # noqa: F401, E402
 # Import AI grounding route so it registers itself on api_router at import time.
 import app.routes.ai  # noqa: F401, E402
 
+# Import dashboards route (POST /dashboards/validate — structured spec validation
+# for external AI agents) BEFORE resources so its /dashboards prefix routes are
+# registered ahead of the generic /{resource} catch-all in resources.py.
+import app.routes.dashboards  # noqa: F401, E402
+
 # Import jobs route BEFORE resources so the /jobs prefix routes are registered
 # ahead of the generic /{resource} catch-all in resources.py.
 import app.routes.jobs  # noqa: F401, E402
@@ -342,11 +347,23 @@ def create_app() -> FastAPI:
     )
 
     # ── Rate limiting ─────────────────────────────────────────────────────────
-    # In-process token-bucket limiting keyed by (org_or_ip, route_class).
-    # Applied to auth, query, and flow-run route classes.
+    # In-process (best-effort, per-worker) token-bucket limiting keyed by the
+    # *trusted client IP* per route_class (auth, query, flow-run).
     # Configure via NUBI_RATELIMIT_* env vars (see app/middleware/ratelimit.py).
     # Health checks, embed, and asset routes are always skipped.
     # Disable globally with NUBI_RATELIMIT_ENABLED=false.
+    #
+    # SECURITY — trusted proxy / forwarded headers:
+    #   The limiter keys on request.client.host (the real TCP peer) and never on
+    #   the attacker-controlled left-most X-Forwarded-For entry.  This app runs
+    #   behind the Fly proxy.  If you ever want uvicorn/Starlette to REWRITE
+    #   request.client.host from X-Forwarded-For, you MUST restrict that to the
+    #   trusted proxy only, e.g. launch with
+    #       uvicorn --forwarded-allow-ips="<fly-proxy-cidr>"
+    #   (NOT the default "*", which would let any client spoof its source IP and
+    #   defeat the limiter).  We deliberately do not enable forwarded-header
+    #   rewriting here so the real peer is used as-is; the authoritative limit is
+    #   enforced at the edge (Fly/Cloudflare) regardless.
     register_ratelimit(application)
 
     # ── Error handlers ────────────────────────────────────────────────────────

@@ -159,7 +159,22 @@ def build_catalog() -> dict[str, Any]:
                         "id": "<query_id>",
                         "name": "<human name>",
                         "tables": ["<table>", ...],
-                        "outputs": ["<output_col>", ...]
+                        "outputs": ["<output_col>", ...],
+                        "datastore": "<datastore_id>" | None,
+                        "params": [
+                            {
+                                "name": "<param>",
+                                "type": "<text|number|date|...>",
+                                "default": <any>,
+                                "required": <bool>,
+                                "options_query_id": "<id>" | None,
+                            },
+                            ...
+                        ],
+                        "output_schema": [
+                            {"name": "<col>", "type": "<text|number|...>"},
+                            ...
+                        ],
                     },
                     ...
                 ]
@@ -169,7 +184,11 @@ def build_catalog() -> dict[str, Any]:
         referenced across registered queries that touch that table.
 
         ``queries`` is a list of lightweight query descriptors (no SQL text,
-        which could be large) useful for relevance ranking.
+        which could be large) useful for relevance ranking.  Each descriptor
+        ALSO carries the declared ``params`` and ``output_schema`` pulled
+        straight off the :class:`RegisteredQuery` so an agent binding a widget
+        to a query knows the real parameter names and output column names —
+        the chief source of invalid specs is guessing these.
     """
     from app.lineage.graph import build_graph  # noqa: PLC0415
     from app.queries.registry import get_query_registry  # noqa: PLC0415
@@ -205,10 +224,54 @@ def build_catalog() -> dict[str, Any]:
                 "name": rq.name,
                 "tables": detail.get("tables", []),
                 "outputs": detail.get("outputs", []),
+                # NEW: real declared params + output schema off the RegisteredQuery
+                # so agents author specs against real names instead of guessing.
+                "datastore": rq.datastore_id,
+                "params": _params_to_dicts(rq.params),
+                "output_schema": _output_schema_to_dicts(rq.output_schema),
             }
         )
 
     return {"tables": tables, "queries": queries_list}
+
+
+# ---------------------------------------------------------------------------
+# RegisteredQuery → portable dict helpers (params / output schema)
+# ---------------------------------------------------------------------------
+
+
+def _params_to_dicts(params: Any) -> list[dict[str, Any]]:
+    """Serialise a ``RegisteredQuery.params`` tuple to plain JSON-able dicts.
+
+    Each entry carries ``name``, ``type``, ``default``, ``required`` and
+    ``options_query_id`` — everything an agent needs to bind a parameter to a
+    widget/variable.  Tolerant of ``None``/empty input (returns ``[]``).
+    """
+    out: list[dict[str, Any]] = []
+    for p in params or ():
+        out.append(
+            {
+                "name": p.name,
+                "type": p.type,
+                "default": p.default,
+                "required": p.required,
+                "options_query_id": p.options_query_id,
+            }
+        )
+    return out
+
+
+def _output_schema_to_dicts(output_schema: Any) -> list[dict[str, Any]]:
+    """Serialise a ``RegisteredQuery.output_schema`` tuple to plain dicts.
+
+    Each entry carries the output column ``name`` and its portable ``type``
+    (``text|number|bool|date|timestamp|json``).  ``None`` (no declared
+    contract) and empty tuples both yield ``[]``.
+    """
+    out: list[dict[str, Any]] = []
+    for c in output_schema or ():
+        out.append({"name": c.name, "type": c.type})
+    return out
 
 
 # ---------------------------------------------------------------------------
@@ -245,6 +308,12 @@ def ground(question: str, catalog: dict[str, Any]) -> dict[str, Any]:
         ``related_queries``
             List of query ID strings whose tables overlap with relevant tables,
             up to ``MAX_QUERIES``.
+        ``related_query_details``
+            Parallel list of richer descriptors for the same related queries —
+            ``{id, name, params, output_schema}`` — so callers that want the
+            real param/output names without re-reading the catalog can get them
+            cheaply.  ADD-ONLY: ``related_queries`` (the ID-string list) is left
+            untouched so existing callers / ``build_prompt`` keep working.
         ``snippets``
             List of short text strings like
             ``"table users(id, name, tenant_id)"`` — one per relevant table,
@@ -302,9 +371,20 @@ def ground(question: str, catalog: dict[str, Any]) -> dict[str, Any]:
     # ── Related query IDs ────────────────────────────────────────────────────
     relevant_table_set = set(relevant_tables)
     related_query_ids: list[str] = []
+    related_query_details: list[dict[str, Any]] = []
     for qd in catalog_queries:
         if relevant_table_set.intersection(qd.get("tables", [])):
             related_query_ids.append(qd["id"])
+            # Surface the richer descriptor (params + output schema) cheaply —
+            # these may be absent on hand-built catalogs, so default safely.
+            related_query_details.append(
+                {
+                    "id": qd["id"],
+                    "name": qd.get("name", qd["id"]),
+                    "params": qd.get("params", []),
+                    "output_schema": qd.get("output_schema", []),
+                }
+            )
         if len(related_query_ids) >= MAX_QUERIES:
             break
 
@@ -322,6 +402,7 @@ def ground(question: str, catalog: dict[str, Any]) -> dict[str, Any]:
         "relevant_tables": relevant_tables,
         "relevant_columns": relevant_columns,
         "related_queries": related_query_ids,
+        "related_query_details": related_query_details,
         "snippets": snippets,
     }
 
