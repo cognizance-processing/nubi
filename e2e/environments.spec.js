@@ -1,7 +1,8 @@
 /**
  * e2e/environments.spec.js
  *
- * Project environments + resource versioning (migration 0029):
+ * Project environments + resource versioning (folded baseline:
+ * migrations 0005_environments_versions.sql + the env<->git-branch sync):
  *   1. /flows — the run-environment selector lists the project's 'dev' and
  *      'prod' environments, sourced from GET /projects/{id}/environments
  *      (not the legacy localStorage fallback).
@@ -9,6 +10,14 @@
  *      and History (version history) controls.
  *   3. /dashboards — a board card's overflow menu exposes History
  *      (switches to the seeded Demo project, which carries boards).
+ *   4. /dashboards — History opens the version-timeline dialog: the seeded
+ *      boards are checkpointed (v1) and promoted, so the timeline shows v1
+ *      with dev + prod pointer chips and a Restore action.
+ *   5. sidebar — env rows show their bound git branch (dev→dev, prod→main)
+ *      and the selector header opens the Branch graph (GitGraphDialog).
+ *   6. /flows — strict-env badge: a freshly saved (never checkpointed) flow
+ *      shows a 'not in prod' chip in the rail when the run env is the
+ *      protected prod environment (pinned_envs from GET /flows).
  *
  * Notes:
  *   - The flows builder toolbar (env selector, Validate, Checkpoint, History)
@@ -121,4 +130,112 @@ test('board card overflow menu exposes History', async ({ page }) => {
   await expect(page.getByRole('button', { name: 'History', exact: true })).toBeVisible()
   await expect(page.getByRole('button', { name: 'Checkpoint', exact: true })).toBeVisible()
   await expect(page.getByRole('button', { name: 'Promote', exact: true })).toBeVisible()
+})
+
+// ---------------------------------------------------------------------------
+// 4. Dashboards: History opens the version timeline (seeded boards are
+//    checkpointed v1 + promoted to dev AND prod by seed --demo)
+// ---------------------------------------------------------------------------
+
+test('board History opens the version timeline with env pointer chips', async ({ page }) => {
+  await loginAs(page)
+  await page.goto('/dashboards')
+  await expect(page.getByRole('heading', { name: 'Dashboards' })).toBeVisible({ timeout: 20_000 })
+
+  let menuButtons = page.getByRole('button', { name: 'Board options' })
+  if (await menuButtons.count() === 0) {
+    const switcher = page.getByRole('button', { name: 'Switch project' })
+    await switcher.click()
+    const demo = page.getByRole('button', { name: /Demo/ }).first()
+    test.skip(await demo.count() === 0, 'No Demo project to source boards from')
+    await demo.click()
+    menuButtons = page.getByRole('button', { name: 'Board options' })
+  }
+  const visible = await menuButtons.first()
+    .waitFor({ state: 'visible', timeout: 20_000 })
+    .then(() => true, () => false)
+  test.skip(!visible, 'No boards in any reachable project')
+
+  await menuButtons.first().click()
+  await page.getByRole('button', { name: 'History', exact: true }).click()
+
+  // VersionHistoryDialog renders the VersionTimeline.
+  const dialog = page.getByRole('dialog').filter({ hasText: 'Version history' })
+  await expect(dialog).toBeVisible({ timeout: 20_000 })
+  await expect(dialog.getByText('v1', { exact: true }).first()).toBeVisible({ timeout: 20_000 })
+  // Seeded boards are promoted, so v1 carries dev + prod pointer chips …
+  await expect(dialog.getByTitle('Pinned to prod').first()).toBeVisible()
+  await expect(dialog.getByTitle('Pinned to dev').first()).toBeVisible()
+  // … and the per-row Restore action is offered.
+  await expect(dialog.getByTitle('Restore v1 into the draft').first()).toBeVisible()
+  await page.keyboard.press('Escape')
+})
+
+// ---------------------------------------------------------------------------
+// 5. Sidebar: env rows show bound git branches; header opens the branch graph
+// ---------------------------------------------------------------------------
+
+test('sidebar env selector shows git branches and opens the branch graph dialog', async ({ page }) => {
+  await loginAs(page)
+  await page.goto('/dashboards')
+  await expect(page.getByRole('heading', { name: 'Dashboards' })).toBeVisible({ timeout: 20_000 })
+
+  await page.getByRole('button', { name: 'Switch environment' }).click()
+
+  // Env rows are bound to git branches at creation (prod→main, dev→dev).
+  await expect(page.getByText('main', { exact: true }).first()).toBeVisible({ timeout: 10_000 })
+
+  // The dropdown header's git button opens the GitGraphDialog.
+  await page.getByRole('button', { name: 'Open git branch graph' }).click()
+  const graph = page.getByRole('dialog').filter({ hasText: 'Branch graph' })
+  await expect(graph).toBeVisible({ timeout: 20_000 })
+  // Either branch columns (after a checkpoint) or the no-repo empty state —
+  // both prove the dialog wired up; just require it rendered content.
+  await expect(graph.getByText(/Branch graph/)).toBeVisible()
+  await page.keyboard.press('Escape')
+})
+
+// ---------------------------------------------------------------------------
+// 6. Flows: strict-env badge — unpromoted flow shows 'not in prod' when the
+//    run environment is the protected prod env
+// ---------------------------------------------------------------------------
+
+test('unpromoted flow shows a "not in prod" badge under the prod run env', async ({ page }) => {
+  await loginAs(page)
+  await page.goto('/flows')
+
+  // Create + save a fresh flow (never checkpointed → pinned_envs []).
+  // Two "New flow" buttons exist (desktop rail + mobile sheet) — use the
+  // visible one for the current viewport.
+  await page.getByRole('button', { name: 'New flow' }).filter({ visible: true }).first().click()
+  const createResponse = page.waitForResponse(
+    res => res.request().method() === 'POST' && /\/flows$/.test(new URL(res.url()).pathname),
+    { timeout: 20_000 },
+  )
+  await page.getByTitle('Save flow').click()
+  const created = await (await createResponse).json()
+  expect(created.id).toBeTruthy()
+
+  try {
+    // The create response carries no pinned_envs — refresh the rail so the
+    // row comes from GET /flows (which always includes pinned_envs).
+    await page.getByTitle('Refresh flows').filter({ visible: true }).first().click()
+
+    // Switch the run environment to prod (protected) — strict visibility.
+    const envButton = page.getByRole('button', { name: 'Run environment' })
+    await expect(envButton).toBeVisible({ timeout: 20_000 })
+    await envButton.click()
+    await page.getByRole('option', { name: 'prod', exact: true }).click()
+
+    // The rail row for the new flow carries the strict-env chip.
+    const row = page.locator('aside button').filter({ hasText: created.id.slice(0, 8) }).first()
+    await expect(row).toBeVisible({ timeout: 20_000 })
+    await expect(row.getByText('not in prod')).toBeVisible({ timeout: 20_000 })
+  } finally {
+    // Cleanup: delete the flow we created (confirm() dialog auto-accepted).
+    page.once('dialog', d => d.accept())
+    const row = page.locator('aside button').filter({ hasText: created.id.slice(0, 8) }).first()
+    await row.hover().catch(() => {})
+    await row.getByTitle('Delete flow').click({ timeout: 10_000 }).catch(() => {})
+  }
 })

@@ -16,12 +16,35 @@
  *
  * After a successful promote the dialog shows the returned `promoted` list
  * (everything that moved) and the user closes it explicitly.
+ *
+ * Git layer (best-effort, pointers are authoritative): the promote response
+ * may carry `git_merge` (from-env branch merged into to-env branch — shown as
+ * a footnote), `git_warning`, or `git_conflict: {files, from_sha, to_sha}`.
+ * A conflict does NOT roll back the promoted pointers; the dialog lists the
+ * conflicting files and offers:
+ *   - 'Resolve on provider' — link to the bound remote repo (GET /git/status)
+ *   - 'Use environment state' — overwrite the to-env branch from its pinned
+ *     state via POST /environments/{id}/git/pull {strategy: 'take_env'}
+ *     (push --force-with-lease semantics).
  */
 
 import { useEffect, useState } from 'react'
-import { ArrowRight, CheckCircle2, Loader2, Rocket, X } from 'lucide-react'
+import {
+  AlertTriangle,
+  ArrowRight,
+  CheckCircle2,
+  ExternalLink,
+  GitMerge,
+  Loader2,
+  Rocket,
+  Upload,
+  X,
+} from 'lucide-react'
 
 import { promote } from '../../lib/versions.js'
+import { pullEnvironment } from '../../lib/gitenv.js'
+import { get } from '../../lib/api.js'
+import { useProject } from '../../contexts/ProjectContext.jsx'
 
 const FALLBACK_ENVS = [{ key: 'dev', name: 'Development' }, { key: 'prod', name: 'Production' }]
 
@@ -40,12 +63,18 @@ export default function PromoteDialog({
   defaultFrom = 'dev',
   defaultTo = 'prod',
 }) {
+  const { activeProject } = useProject()
   const envs = Array.isArray(environments) && environments.length > 0 ? environments : FALLBACK_ENVS
   const [fromEnv, setFromEnv] = useState(defaultFrom)
   const [toEnv, setToEnv] = useState(defaultTo)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState(null)
   const [promoted, setPromoted] = useState(null) // result list after success
+  // Best-effort git outcome of the promote: { merge?, conflict?, warning? }.
+  const [git, setGit] = useState(null)
+  const [gitBusy, setGitBusy] = useState(false)
+  const [gitNotice, setGitNotice] = useState(null) // after 'Use environment state'
+  const [repoUrl, setRepoUrl] = useState(null) // bound remote, for the provider link
 
   // Reset whenever the dialog is (re)opened for a resource.
   useEffect(() => {
@@ -55,7 +84,21 @@ export default function PromoteDialog({
     setBusy(false)
     setError(null)
     setPromoted(null)
+    setGit(null)
+    setGitBusy(false)
+    setGitNotice(null)
   }, [open, resourceId, defaultFrom, defaultTo])
+
+  // On a merge conflict, look up the project's remote binding (if any) so we
+  // can link out to the provider. Graceful: no binding → no link.
+  useEffect(() => {
+    if (!git?.conflict || !activeProject?.id) return
+    let cancelled = false
+    get(`/git/status?project_id=${encodeURIComponent(activeProject.id)}`)
+      .then(res => { if (!cancelled) setRepoUrl(res?.binding?.repo_url || null) })
+      .catch(() => { if (!cancelled) setRepoUrl(null) })
+    return () => { cancelled = true }
+  }, [git?.conflict, activeProject?.id])
 
   // ESC to close
   useEffect(() => {
@@ -75,10 +118,37 @@ export default function PromoteDialog({
     try {
       const result = await promote({ kind, resource_id: resourceId, from_env: fromEnv, to_env: toEnv })
       setPromoted(Array.isArray(result?.promoted) ? result.promoted : [])
+      setGit(
+        result?.git_merge || result?.git_conflict || result?.git_warning
+          ? { merge: result.git_merge, conflict: result.git_conflict, warning: result.git_warning }
+          : null,
+      )
     } catch (cause) {
       setError(cause?.message || 'Promote failed.')
     } finally {
       setBusy(false)
+    }
+  }
+
+  // Conflict resolution: overwrite the to-env branch from the environment's
+  // pinned state (pull with strategy take_env — force-with-lease semantics).
+  const toEnvRow = envs.find(e => e.key === toEnv && e.id)
+
+  async function handleUseEnvState() {
+    if (!toEnvRow?.id) return
+    setGitBusy(true)
+    try {
+      const res = await pullEnvironment(toEnvRow.id, { strategy: 'take_env' })
+      setGit(g => ({ ...g, conflict: null }))
+      setGitNotice(
+        res?.sha
+          ? `Branch overwritten from "${toEnv}" @ ${String(res.sha).slice(0, 7)}.`
+          : res?.warning || 'Branch overwritten from the environment state.',
+      )
+    } catch (cause) {
+      setGitNotice(cause?.message || 'Could not overwrite the branch.')
+    } finally {
+      setGitBusy(false)
     }
   }
 
@@ -175,25 +245,91 @@ export default function PromoteDialog({
                 {error && <p className="text-xs text-red-500">{error}</p>}
               </>
             ) : (
-              /* ---- Result: what was promoted ---- */
-              <div className="rounded-xl border border-emerald-300/50 dark:border-emerald-700/50 bg-emerald-50 dark:bg-emerald-900/10 px-4 py-3 space-y-2">
-                <p className="flex items-center gap-2 text-sm font-medium text-emerald-700 dark:text-emerald-400">
-                  <CheckCircle2 size={15} className="shrink-0" />
-                  Promoted {promoted.length} item{promoted.length === 1 ? '' : 's'}
-                </p>
-                <ul className="space-y-1">
-                  {promoted.map((item, i) => (
-                    <li key={i} className="flex items-center gap-2 text-xs text-emerald-700 dark:text-emerald-400">
-                      <span className={['w-1.5 h-1.5 rounded-full shrink-0', envDotClass(item.to_env)].join(' ')} />
-                      <span className="font-medium">{item.kind}</span>
-                      <span className="font-mono truncate">{String(item.resource_id).slice(0, 8)}…</span>
-                      <span className="font-mono">v{item.version ?? '?'}</span>
-                      <span className="text-muted ml-auto font-mono shrink-0">
-                        {item.from_env} → {item.to_env}
+              /* ---- Result: what was promoted + git outcome ---- */
+              <div className="space-y-3">
+                <div className="rounded-xl border border-emerald-300/50 dark:border-emerald-700/50 bg-emerald-50 dark:bg-emerald-900/10 px-4 py-3 space-y-2">
+                  <p className="flex items-center gap-2 text-sm font-medium text-emerald-700 dark:text-emerald-400">
+                    <CheckCircle2 size={15} className="shrink-0" />
+                    Promoted {promoted.length} item{promoted.length === 1 ? '' : 's'}
+                  </p>
+                  <ul className="space-y-1">
+                    {promoted.map((item, i) => (
+                      <li key={i} className="flex items-center gap-2 text-xs text-emerald-700 dark:text-emerald-400">
+                        <span className={['w-1.5 h-1.5 rounded-full shrink-0', envDotClass(item.to_env)].join(' ')} />
+                        <span className="font-medium">{item.kind}</span>
+                        <span className="font-mono truncate">{String(item.resource_id).slice(0, 8)}…</span>
+                        <span className="font-mono">v{item.version ?? '?'}</span>
+                        <span className="text-muted ml-auto font-mono shrink-0">
+                          {item.from_env} → {item.to_env}
+                        </span>
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+
+                {/* Git merge footnote (best-effort, branches followed the pointers) */}
+                {git?.merge?.merged && (
+                  <p className="flex items-center gap-1.5 text-xs text-muted px-1">
+                    <GitMerge size={12} className="shrink-0 text-violet-500" />
+                    <span className="truncate">
+                      Branch <span className="font-mono">{git.merge.from_branch}</span> merged into{' '}
+                      <span className="font-mono">{git.merge.to_branch}</span>
+                      {git.merge.sha ? <> @ <span className="font-mono">{String(git.merge.sha).slice(0, 7)}</span></> : null}
+                      {git.merge.ff ? ' (fast-forward)' : ''}
+                    </span>
+                  </p>
+                )}
+                {git?.warning && !git?.conflict && (
+                  <p className="text-xs text-muted px-1">{git.warning}</p>
+                )}
+
+                {/* Git merge conflict — pointers promoted, branches diverged */}
+                {git?.conflict && (
+                  <div className="rounded-xl border border-amber-300/60 dark:border-amber-700/60 bg-amber-50 dark:bg-amber-900/10 px-4 py-3 space-y-2">
+                    <p className="flex items-start gap-2 text-xs font-medium text-amber-700 dark:text-amber-400">
+                      <AlertTriangle size={13} className="shrink-0 mt-0.5" />
+                      <span>
+                        The promote succeeded, but the git branches could not be merged
+                        (<span className="font-mono">{String(git.conflict.from_sha || '').slice(0, 7)}</span> vs{' '}
+                        <span className="font-mono">{String(git.conflict.to_sha || '').slice(0, 7)}</span>).
                       </span>
-                    </li>
-                  ))}
-                </ul>
+                    </p>
+                    {Array.isArray(git.conflict.files) && git.conflict.files.length > 0 && (
+                      <ul className="max-h-24 overflow-y-auto space-y-0.5">
+                        {git.conflict.files.map(file => (
+                          <li key={file} className="text-[11px] font-mono text-amber-700/80 dark:text-amber-400/80 truncate">
+                            {file}
+                          </li>
+                        ))}
+                      </ul>
+                    )}
+                    <div className="flex flex-wrap items-center gap-2 pt-0.5">
+                      <button
+                        type="button"
+                        onClick={handleUseEnvState}
+                        disabled={gitBusy || !toEnvRow?.id}
+                        title={`Overwrite the "${toEnv}" branch from its pinned environment state (force-with-lease)`}
+                        className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-[11px] font-semibold border border-amber-400/60 text-amber-700 dark:text-amber-400 hover:bg-amber-100 dark:hover:bg-amber-900/30 transition-colors disabled:opacity-50"
+                      >
+                        {gitBusy ? <Loader2 size={11} className="animate-spin" /> : <Upload size={11} />}
+                        Use environment state
+                      </button>
+                      {repoUrl && (
+                        <a
+                          href={repoUrl.replace(/\.git$/, '')}
+                          target="_blank"
+                          rel="noreferrer"
+                          className="inline-flex items-center gap-1 text-[11px] font-medium text-amber-700 dark:text-amber-400 hover:underline"
+                        >
+                          Resolve on provider <ExternalLink size={10} />
+                        </a>
+                      )}
+                    </div>
+                  </div>
+                )}
+                {gitNotice && (
+                  <p className="text-xs text-muted px-1">{gitNotice}</p>
+                )}
               </div>
             )}
           </div>

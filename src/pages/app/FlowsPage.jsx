@@ -71,7 +71,7 @@ import {
 import { useUi } from '../../contexts/UiContext.jsx'
 import { useCanWrite } from '../../contexts/OrgContext.jsx'
 import { useEnv, envDotClass } from '../../contexts/EnvContext.jsx'
-import { checkpoint } from '../../lib/versions.js'
+import { checkpoint, restoreVersion } from '../../lib/versions.js'
 import VersionHistoryDialog from '../../components/app/VersionHistoryDialog.jsx'
 import {
   listFlows,
@@ -132,7 +132,7 @@ function RunStateDot({ state }) {
 // FlowListItem — entry in the left rail
 // ---------------------------------------------------------------------------
 
-function FlowListItem({ flow, isActive, onClick, onDelete, canWrite }) {
+function FlowListItem({ flow, isActive, onClick, onDelete, canWrite, strictEnv }) {
   const [deleting, setDeleting] = useState(false)
 
   const handleDelete = useCallback(async (e) => {
@@ -168,6 +168,17 @@ function FlowListItem({ flow, isActive, onClick, onDelete, canWrite }) {
               draft
             </span>
           )}
+          {/* Strict-env visibility: the active env is protected and this flow
+              has no pinned version there (pinned_envs from the list API). */}
+          {!flow._isNew && strictEnv && Array.isArray(flow.pinned_envs)
+            && !flow.pinned_envs.includes(strictEnv) && (
+            <span
+              title={`No version is pinned to ${strictEnv} — promote one to make it visible there.`}
+              className="inline-flex items-center px-1 py-0.5 text-[9px] font-medium rounded bg-rose-500/10 text-rose-600 dark:text-rose-400 border border-rose-500/20 mt-1"
+            >
+              not in {strictEnv}
+            </span>
+          )}
         </div>
       </div>
 
@@ -190,7 +201,7 @@ function FlowListItem({ flow, isActive, onClick, onDelete, canWrite }) {
 // FlowList — shared content between rail and bottom sheet
 // ---------------------------------------------------------------------------
 
-function FlowList({ flows, activeId, loading, onSelect, onNew, onRefresh, onDelete, onItemClick, showHeader = true, canWrite = true }) {
+function FlowList({ flows, activeId, loading, onSelect, onNew, onRefresh, onDelete, onItemClick, showHeader = true, canWrite = true, strictEnv = null }) {
   const handleSelect = useCallback((flow) => {
     onSelect(flow)
     onItemClick?.()
@@ -248,6 +259,7 @@ function FlowList({ flows, activeId, loading, onSelect, onNew, onRefresh, onDele
             onClick={handleSelect}
             onDelete={onDelete}
             canWrite={canWrite}
+            strictEnv={strictEnv}
           />
         ))}
       </div>
@@ -259,7 +271,7 @@ function FlowList({ flows, activeId, loading, onSelect, onNew, onRefresh, onDele
 // MobileFlowsSheet — bottom sheet for flow list on mobile
 // ---------------------------------------------------------------------------
 
-function MobileFlowsSheet({ open, onClose, flows, activeId, loading, onSelect, onNew, onRefresh, onDelete, canWrite }) {
+function MobileFlowsSheet({ open, onClose, flows, activeId, loading, onSelect, onNew, onRefresh, onDelete, canWrite, strictEnv = null }) {
   return (
     <>
       {/* Backdrop */}
@@ -310,6 +322,7 @@ function MobileFlowsSheet({ open, onClose, flows, activeId, loading, onSelect, o
           onDelete={onDelete}
           onItemClick={onClose}
           canWrite={canWrite}
+          strictEnv={strictEnv}
         />
       </div>
     </>
@@ -826,6 +839,10 @@ export default function FlowsPage() {
   } = useEnv()
   // Version-history dialog visibility (kind='flow', the active flow).
   const [historyOpen, setHistoryOpen] = useState(false)
+  // Read-only version view — full version row (incl. config = the flow spec)
+  // loaded via the history dialog's View action. While set, the builder shows
+  // the version's spec read-only under a banner; the draft stays untouched.
+  const [viewingVersion, setViewingVersion] = useState(null)
 
   // ── Dirty tracking + autosave ─────────────────────────────────────────────
   // JSON snapshot of the last-saved spec; refreshed on flow select, new draft
@@ -874,6 +891,7 @@ export default function FlowsPage() {
   // ── Select a flow (declared early; used by the route-param effect below) ──
   const selectFlow = useCallback((flow) => {
     saveSeqRef.current += 1 // invalidate in-flight saves from the previous flow
+    setViewingVersion(null)
     setActiveFlow(flow)
     setActiveSpec(flow.spec ?? EMPTY_SPEC)
     setSavedSnapshotJson(JSON.stringify(flow.spec ?? EMPTY_SPEC))
@@ -885,7 +903,7 @@ export default function FlowsPage() {
     if (flow.id && !flow._isNew) {
       navigate(`/flows/${flow.id}`, { replace: true })
     }
-  }, [navigate, setSaveError, setLineageOpen])
+  }, [navigate, setSaveError, setLineageOpen, setViewingVersion])
 
   // List-click selection — guards in-app swaps away from a dirty editor.
   // (The route-param effect below still calls selectFlow directly.)
@@ -934,6 +952,7 @@ export default function FlowsPage() {
   const handleNew = useCallback(() => {
     if (dirty && !window.confirm(UNSAVED_CONFIRM_MSG)) return
     saveSeqRef.current += 1 // invalidate in-flight saves from the previous flow
+    setViewingVersion(null)
     const draft = { ...newFlowDraft(), _localId: `draft-${Date.now()}` }
     setLocalDrafts(prev => [draft, ...prev])
     setActiveFlow(draft)
@@ -945,7 +964,7 @@ export default function FlowsPage() {
     setActiveTab('builder')
     setActiveRunId(null)
     navigate('/flows', { replace: true })
-  }, [navigate, dirty, setSaveError, setLineageOpen])
+  }, [navigate, dirty, setSaveError, setLineageOpen, setViewingVersion])
 
   // ── After save callback ───────────────────────────────────────────────────
   const handleSaved = useCallback((savedFlow) => {
@@ -1108,8 +1127,20 @@ export default function FlowsPage() {
     if (!activeFlow?.id) return
     const fresh = await getFlow(activeFlow.id)
     if (fresh) {
-      selectFlow(fresh)
+      selectFlow(fresh) // also clears any read-only version view
       setSavedFlows(prev => prev.map(f => (f.id === fresh.id ? fresh : f)))
+    }
+  }
+
+  // ── Restore the version currently being VIEWED (banner action) ────────────
+  const restoreViewedVersion = async () => {
+    if (!activeFlow?.id || !viewingVersion) return
+    if (!window.confirm(`Restore version v${viewingVersion.version} into the current draft? Unsaved draft changes are overwritten.`)) return
+    try {
+      await restoreVersion('flow', activeFlow.id, viewingVersion.version)
+      await handleRestored()
+    } catch (cause) {
+      window.alert(cause?.message || 'Restore failed.')
     }
   }
 
@@ -1132,6 +1163,13 @@ export default function FlowsPage() {
   // ── All flows (drafts first, then saved) ──────────────────────────────────
   const allFlows = [...localDrafts, ...savedFlows]
   const activeId = activeFlow?.id ?? activeFlow?._localId
+
+  // Strict-env badges: when the ACTIVE env is protected, rail items whose
+  // pinned_envs (from the list API) lack it get a 'not in <env>' chip.
+  const strictEnv = useMemo(() => {
+    const row = Array.isArray(projectEnvs) ? projectEnvs.find(e => e.key === runEnv) : null
+    return row?.protected ? runEnv : null
+  }, [projectEnvs, runEnv])
 
   // ── Empty state ───────────────────────────────────────────────────────────
   const showEmpty = !activeFlow
@@ -1440,15 +1478,41 @@ export default function FlowsPage() {
                 </div>
               )}
 
+              {/* Read-only version-view banner — builder shows the version's
+                  spec; the draft is untouched until Restore. */}
+              {viewingVersion && activeTab === 'builder' && (
+                <div className="shrink-0 flex items-center gap-2 px-4 py-2 bg-sky-500/5 border-b border-sky-500/20 text-xs text-sky-700 dark:text-sky-400">
+                  <History size={13} className="shrink-0" />
+                  <span className="flex-1 min-w-0 truncate">
+                    Viewing <span className="font-mono font-semibold">v{viewingVersion.version}</span> (read-only)
+                    {viewingVersion.message ? <span className="text-muted"> — {viewingVersion.message}</span> : null}
+                  </span>
+                  {canWrite && (
+                    <button
+                      onClick={restoreViewedVersion}
+                      className="shrink-0 px-2 h-6 rounded-md border border-sky-500/30 font-medium hover:bg-sky-500/10 transition-colors"
+                    >
+                      Restore
+                    </button>
+                  )}
+                  <button
+                    onClick={() => setViewingVersion(null)}
+                    className="shrink-0 px-2 h-6 rounded-md border border-border text-fg font-medium hover:bg-surface-2 transition-colors"
+                  >
+                    Back to draft
+                  </button>
+                </div>
+              )}
+
               {/* Tab content */}
               <div className="flex-1 min-h-0 overflow-hidden">
                 {activeTab === 'builder' && (
                   <FlowBuilder
-                    key={activeFlow?.id ?? activeFlow?._localId}
+                    key={`${activeFlow?.id ?? activeFlow?._localId}${viewingVersion ? `:view-v${viewingVersion.version}` : ''}`}
                     ref={flowBuilderRef}
                     flow={activeFlow?._isNew ? null : activeFlow}
-                    spec={activeSpec}
-                    onSpecChange={setActiveSpec}
+                    spec={viewingVersion ? (viewingVersion.config ?? {}) : activeSpec}
+                    onSpecChange={viewingVersion ? () => {} : setActiveSpec}
                     onRun={handleRun}
                     env={runEnv}
                     lineageOpen={lineageOpen}
@@ -1533,6 +1597,7 @@ export default function FlowsPage() {
                   onDelete={handleDelete}
                   showHeader={false}
                   canWrite={canWrite}
+                  strictEnv={strictEnv}
                 />
               )}
               {rightPanel === 'add' && (
@@ -1573,6 +1638,7 @@ export default function FlowsPage() {
         onRefresh={loadFlows}
         onDelete={handleDelete}
         canWrite={canWrite}
+        strictEnv={strictEnv}
       />
 
       {/* ── Version history (kind='flow', the active saved flow) ───────────── */}
@@ -1584,6 +1650,7 @@ export default function FlowsPage() {
           open={historyOpen}
           onClose={() => setHistoryOpen(false)}
           onRestored={handleRestored}
+          onView={(v) => { setViewingVersion(v); setActiveTab('builder') }}
           environments={projectEnvs ?? undefined}
         />
       )}

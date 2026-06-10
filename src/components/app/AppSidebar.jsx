@@ -34,6 +34,7 @@ import {
   Building2,
   FolderGit2,
   Folder,
+  GitBranch,
   Plus,
   Check,
   Settings,
@@ -47,6 +48,8 @@ import { useUi } from '../../contexts/UiContext.jsx'
 import { useOrg } from '../../contexts/OrgContext.jsx'
 import { useProject } from '../../contexts/ProjectContext.jsx'
 import { useEnv, envDotClass } from '../../contexts/EnvContext.jsx'
+import { getGitGraph } from '../../lib/gitenv.js'
+import GitGraphDialog from './GitGraphDialog.jsx'
 import Logo from '../Logo.jsx'
 
 // ---------------------------------------------------------------------------
@@ -214,9 +217,16 @@ function SidebarProjectSelector({ collapsed }) {
 
 function SidebarEnvSelector({ collapsed }) {
   const { environments, activeEnv, setActiveEnv, addEnv, removeEnv } = useEnv()
+  const { activeProject } = useProject()
   const [open, setOpen] = useState(false)
   const [adding, setAdding] = useState(false)
   const [draft, setDraft] = useState('')
+  // Git additions: branch graph dialog + optional from-branch on create.
+  const [graphOpen, setGraphOpen] = useState(false)
+  // Branch list cache keyed by project so a project switch invalidates it
+  // without a state-resetting effect.
+  const [branchCache, setBranchCache] = useState(null) // { projectId, list }
+  const [fromBranch, setFromBranch] = useState('')
   const ref = useRef(null)
   const inputRef = useRef(null)
 
@@ -233,6 +243,28 @@ function SidebarEnvSelector({ collapsed }) {
   }, [open])
 
   useEffect(() => { if (adding) inputRef.current?.focus() }, [adding])
+
+  // Feed the optional 'from branch' picker from the project's git graph the
+  // first time the add form opens (graceful: null graph → no picker).
+  useEffect(() => {
+    if (!adding || !activeProject?.id) return
+    if (branchCache?.projectId === activeProject.id) return
+    let cancelled = false
+    getGitGraph(activeProject.id).then(graph => {
+      if (cancelled) return
+      setBranchCache({
+        projectId: activeProject.id,
+        list: (graph?.branches ?? []).map(b => b.branch),
+      })
+    })
+    return () => { cancelled = true }
+  }, [adding, branchCache, activeProject?.id])
+
+  // Guard the no-cache + no-project case: `undefined === undefined` would
+  // otherwise be true and `null.list` would throw during the initial render.
+  const branches = branchCache && branchCache.projectId === activeProject?.id
+    ? branchCache.list
+    : null
 
   // API mode once the project's environments loaded; before that (or when the
   // API is unavailable) list the standard pair so the control stays usable.
@@ -257,13 +289,16 @@ function SidebarEnvSelector({ collapsed }) {
     if (!key) return
     if (!rows.some(e => e.key === key)) {
       try {
-        await addEnv(key)
+        // Optionally seed the new env from an existing git branch.
+        const created = await addEnv(key, fromBranch ? { from_branch: fromBranch } : {})
+        if (created?.warning) window.alert(created.warning)
       } catch (err) {
         window.alert(err?.message ?? 'Could not create environment.')
         return
       }
     }
     setDraft('')
+    setFromBranch('')
     select(key)
   }
 
@@ -314,7 +349,18 @@ function SidebarEnvSelector({ collapsed }) {
           bg-surface border border-border shadow-lg shadow-black/10
           ${collapsed ? 'left-full top-0 ml-2' : 'left-2 right-2'}
         `}>
-          <p className="px-3 py-1 text-[10px] font-semibold text-muted uppercase tracking-wider">Environments</p>
+          <div className="flex items-center px-3 py-1">
+            <p className="text-[10px] font-semibold text-muted uppercase tracking-wider flex-1">Environments</p>
+            <button
+              type="button"
+              onClick={() => { setOpen(false); setAdding(false); setGraphOpen(true) }}
+              title="Branch graph"
+              aria-label="Open git branch graph"
+              className="w-6 h-6 flex items-center justify-center rounded-md text-muted/70 hover:text-fg hover:bg-surface-2 transition-colors shrink-0"
+            >
+              <GitBranch size={12} />
+            </button>
+          </div>
           <ul role="listbox" className="max-h-60 overflow-y-auto">
             {rows.map(env => {
               const isCustom = apiMode && !env.is_default && !env.protected && !env._ghost
@@ -327,7 +373,16 @@ function SidebarEnvSelector({ collapsed }) {
                     className="group flex items-center gap-2 w-full px-3 py-2 text-sm text-fg hover:bg-surface-2 transition-colors text-left min-h-[36px]"
                   >
                     <span className={`w-2 h-2 rounded-full shrink-0 ${envDotClass(env.key)}`} />
-                    <span className="flex-1 truncate font-mono text-xs">{env.key}</span>
+                    <span className="flex-1 min-w-0 leading-tight">
+                      <span className="block truncate font-mono text-xs">{env.key}</span>
+                      {/* Bound git branch (env ⇄ branch sync, see GitGraphDialog) */}
+                      {env.git_branch && (
+                        <span className="flex items-center gap-1 text-[10px] font-mono text-muted/60">
+                          <GitBranch size={9} className="shrink-0" />
+                          <span className="truncate">{env.git_branch}</span>
+                        </span>
+                      )}
+                    </span>
                     {env.protected && (
                       <span title="Protected environment" className="shrink-0 flex items-center">
                         <Lock size={11} className="text-muted/60" />
@@ -356,30 +411,46 @@ function SidebarEnvSelector({ collapsed }) {
             <>
               <div className="my-1 border-t border-border" />
               {adding ? (
-                <div className="flex items-center gap-1 px-2 py-1">
-                  <input
-                    ref={inputRef}
-                    type="text"
-                    value={draft}
-                    placeholder="staging"
-                    aria-label="New environment key"
-                    className="h-7 flex-1 min-w-0 text-xs font-mono border border-border rounded-md px-2 bg-surface text-fg placeholder:text-muted/50 focus:outline-none focus:ring-2 focus:ring-ring/60"
-                    onChange={e => setDraft(e.target.value)}
-                    onKeyDown={e => {
-                      if (e.key === 'Enter') commitNew()
-                      if (e.key === 'Escape') { setAdding(false); setDraft('') }
-                    }}
-                  />
-                  <button
-                    onClick={commitNew}
-                    className="h-7 px-2 rounded-md text-xs font-medium bg-primary text-primary-fg hover:opacity-90 transition-opacity shrink-0"
-                  >
-                    Add
-                  </button>
+                <div className="px-2 py-1 space-y-1">
+                  <div className="flex items-center gap-1">
+                    <input
+                      ref={inputRef}
+                      type="text"
+                      value={draft}
+                      placeholder="staging"
+                      aria-label="New environment key"
+                      className="h-7 flex-1 min-w-0 text-xs font-mono border border-border rounded-md px-2 bg-surface text-fg placeholder:text-muted/50 focus:outline-none focus:ring-2 focus:ring-ring/60"
+                      onChange={e => setDraft(e.target.value)}
+                      onKeyDown={e => {
+                        if (e.key === 'Enter') commitNew()
+                        if (e.key === 'Escape') { setAdding(false); setDraft(''); setFromBranch('') }
+                      }}
+                    />
+                    <button
+                      onClick={commitNew}
+                      className="h-7 px-2 rounded-md text-xs font-medium bg-primary text-primary-fg hover:opacity-90 transition-opacity shrink-0"
+                    >
+                      Add
+                    </button>
+                  </div>
+                  {/* Optional: seed the env from an existing git branch */}
+                  {Array.isArray(branches) && branches.length > 0 && (
+                    <select
+                      value={fromBranch}
+                      onChange={e => setFromBranch(e.target.value)}
+                      aria-label="Seed new environment from git branch (optional)"
+                      className="h-7 w-full text-[11px] font-mono border border-border rounded-md px-1.5 bg-surface text-muted focus:outline-none focus:ring-2 focus:ring-ring/60"
+                    >
+                      <option value="">empty environment</option>
+                      {branches.map(branch => (
+                        <option key={branch} value={branch}>from branch: {branch}</option>
+                      ))}
+                    </select>
+                  )}
                 </div>
               ) : (
                 <button
-                  onClick={() => setAdding(true)}
+                  onClick={() => { setFromBranch(''); setAdding(true) }}
                   className="flex items-center gap-2 w-full px-3 py-2 text-sm text-muted hover:text-fg hover:bg-surface-2 transition-colors text-left min-h-[36px]"
                 >
                   <Plus size={13} className="shrink-0" />
@@ -390,6 +461,9 @@ function SidebarEnvSelector({ collapsed }) {
           )}
         </div>
       )}
+
+      {/* Per-project commit graph + env branch sync actions */}
+      <GitGraphDialog open={graphOpen} onClose={() => setGraphOpen(false)} />
     </div>
   )
 }

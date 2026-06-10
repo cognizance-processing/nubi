@@ -45,14 +45,20 @@ export async function listEnvironments(projectId) {
 /**
  * Create an environment in a project.
  *
- * POST /projects/{projectId}/environments { key, name }
+ * POST /projects/{projectId}/environments { key, name, git_branch?, from_branch? }
+ *
+ * git_branch defaults server-side ('main' for key 'prod', else the key).
+ * from_branch seeds the new env from an existing branch in the project's git
+ * workspace repo (best-effort — the response carries `imported` counts, or a
+ * `warning` string when the repo/branch is missing and the env stays empty).
  *
  * @param {string} projectId
- * @param {{ key: string, name: string }} body
- * @returns {Promise<Object>} the created environment row. Throws on failure.
+ * @param {{ key: string, name: string, git_branch?: string, from_branch?: string }} body
+ * @returns {Promise<Object>} the created environment row (+ imported?/warning?).
+ *   Throws on failure.
  */
-export function createEnvironment(projectId, { key, name }) {
-  return post(`/projects/${projectId}/environments`, { key, name })
+export function createEnvironment(projectId, { key, name, git_branch, from_branch }) {
+  return post(`/projects/${projectId}/environments`, { key, name, git_branch, from_branch })
 }
 
 /**

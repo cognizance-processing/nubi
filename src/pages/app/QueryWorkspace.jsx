@@ -71,7 +71,7 @@ import DataTable from '../../components/DataTable.jsx'
 import PythonCell from '../../components/PythonCell.jsx'
 import { runArrowQueryById, runArrowQuery, registerArrowTable, runLocalSqlForCell } from '../../lib/wasmRuntime.js'
 import { get, post, registerQuery, listConnectors } from '../../lib/api.js'
-import { checkpoint } from '../../lib/versions.js'
+import { checkpoint, restoreVersion } from '../../lib/versions.js'
 import VersionHistoryDialog from '../../components/app/VersionHistoryDialog.jsx'
 import { useUi } from '../../contexts/UiContext.jsx'
 import { useCanWrite } from '../../contexts/OrgContext.jsx'
@@ -1203,6 +1203,13 @@ export default function QueryWorkspace({ query, onQueryChange, onSaved, isNew, t
 
   // ── Version history (kind='query', saved queries only) ──────────────────
   const [historyOpen, setHistoryOpen] = useState(false)
+  // Read-only version view — full version row (incl. config = {sql, params,
+  // datastore_id, ...}) loaded via the history dialog's View action. While
+  // set, the primary editor shows the version's SQL/params read-only under a
+  // banner; the draft (and the editor state) stays untouched.
+  const [viewingVersion, setViewingVersion] = useState(null)
+  const viewing = Boolean(viewingVersion)
+  const viewCfg = viewingVersion?.config ?? {}
 
   // ── AI assist ───────────────────────────────────────────────────────────
   const [showAi, setShowAi] = useState(false)
@@ -1216,10 +1223,12 @@ export default function QueryWorkspace({ query, onQueryChange, onSaved, isNew, t
   const [runAllLoading, setRunAllLoading] = useState(false)
   const notebookBodyRef = useRef(null)
 
-  // Reset scratch cells when switching the active query of record.
+  // Reset scratch cells (and any read-only version view) when switching the
+  // active query of record.
   useEffect(() => {
     setScratchCells([])
     scratchRunners.current = new Map()
+    setViewingVersion(null)
   }, [query?.id]) // eslint-disable-line react-hooks/exhaustive-deps
 
   // ── Add cells ────────────────────────────────────────────────────────────
@@ -1287,7 +1296,7 @@ export default function QueryWorkspace({ query, onQueryChange, onSaved, isNew, t
 
   // ── Run (primary cell / cell_1) ──────────────────────────────────────────
   const handleRun = useCallback(async () => {
-    if (running) return
+    if (running || viewingVersion) return
     setRunning(true)
     setRunError(null)
     setResult(null)
@@ -1337,7 +1346,7 @@ export default function QueryWorkspace({ query, onQueryChange, onSaved, isNew, t
     } finally {
       setRunning(false)
     }
-  }, [running, query, isNew, sql, paramValues, params, datastoreId])
+  }, [running, viewingVersion, query, isNew, sql, paramValues, params, datastoreId])
 
   // ── Run all (primary + scratch SQL cells, top to bottom) ────────────────
   const handleRunAll = useCallback(async () => {
@@ -1484,6 +1493,19 @@ export default function QueryWorkspace({ query, onQueryChange, onSaved, isNew, t
     }
   }, [query, onSaved])
 
+  // ── Restore the version currently being VIEWED (banner action) ──────────
+  const restoreViewedVersion = useCallback(async () => {
+    if (!query?.id || !viewingVersion) return
+    if (!window.confirm(`Restore version v${viewingVersion.version} into the current draft? Unsaved draft changes are overwritten.`)) return
+    try {
+      await restoreVersion('query', query.id, viewingVersion.version)
+      setViewingVersion(null)
+      await handleRestored()
+    } catch (cause) {
+      window.alert(cause?.message || 'Restore failed.')
+    }
+  }, [query, viewingVersion, handleRestored])
+
   // ── Schedule ─────────────────────────────────────────────────────────────
   const handleScheduleClick = useCallback(() => {
     if (isNew || !query?.id) {
@@ -1625,7 +1647,7 @@ export default function QueryWorkspace({ query, onQueryChange, onSaved, isNew, t
         {canWrite && (
           <button
             onClick={handleScheduleClick}
-            disabled={!isRegistered}
+            disabled={!isRegistered || viewing}
             className="h-8 px-2.5 flex items-center gap-1.5 text-[11px] font-medium rounded-lg border border-border bg-surface text-muted hover:text-fg hover:bg-surface-2 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
             title={isRegistered ? 'Run this query on a schedule' : 'Save the query first'}
           >
@@ -1638,7 +1660,7 @@ export default function QueryWorkspace({ query, onQueryChange, onSaved, isNew, t
         {canWrite && (
           <button
             onClick={handleCheckpoint}
-            disabled={!isRegistered || saving}
+            disabled={!isRegistered || saving || viewing}
             className="h-8 px-2.5 flex items-center gap-1.5 text-[11px] font-medium rounded-lg border border-border bg-surface text-muted hover:text-fg hover:bg-surface-2 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
             title={isRegistered ? 'Checkpoint — snapshot the current draft as a new version' : 'Save the query first'}
           >
@@ -1670,7 +1692,7 @@ export default function QueryWorkspace({ query, onQueryChange, onSaved, isNew, t
         {canWrite ? (
           <button
             onClick={handleSaveClick}
-            disabled={saving}
+            disabled={saving || viewing}
             className="h-8 px-2.5 flex items-center gap-1.5 text-[11px] font-medium rounded-lg border border-border bg-surface text-muted hover:text-fg hover:bg-surface-2 disabled:opacity-50 transition-colors"
             title={isRegistered ? 'Update saved query (primary cell)' : 'Save query (primary cell)'}
           >
@@ -1696,7 +1718,7 @@ export default function QueryWorkspace({ query, onQueryChange, onSaved, isNew, t
         {/* Run (primary) */}
         <button
           onClick={handleRun}
-          disabled={running}
+          disabled={running || viewing}
           className="h-8 px-3 flex items-center gap-1.5 text-[11px] font-semibold rounded-lg bg-primary text-primary-fg hover:opacity-90 disabled:opacity-60 disabled:cursor-not-allowed transition-opacity"
           title="Run query (⌘/Ctrl+Enter)"
         >
@@ -1711,6 +1733,32 @@ export default function QueryWorkspace({ query, onQueryChange, onSaved, isNew, t
 
       {/* ── Scrollable notebook body ─────────────────────────────────────── */}
       <div ref={notebookBodyRef} className="flex-1 min-h-0 overflow-y-auto overflow-x-hidden">
+
+        {/* Read-only version-view banner — the editor below shows the
+            version's SQL/params; the draft is untouched until Restore. */}
+        {viewing && (
+          <div className="flex items-center gap-2 px-4 py-2 bg-sky-500/5 border-b border-sky-500/20 text-xs text-sky-700 dark:text-sky-400">
+            <History size={13} className="shrink-0" />
+            <span className="flex-1 min-w-0 truncate">
+              Viewing <span className="font-mono font-semibold">v{viewingVersion.version}</span> (read-only)
+              {viewingVersion.message ? <span className="text-muted"> — {viewingVersion.message}</span> : null}
+            </span>
+            {canWrite && (
+              <button
+                onClick={restoreViewedVersion}
+                className="shrink-0 px-2 h-6 rounded-md border border-sky-500/30 font-medium hover:bg-sky-500/10 transition-colors"
+              >
+                Restore
+              </button>
+            )}
+            <button
+              onClick={() => setViewingVersion(null)}
+              className="shrink-0 px-2 h-6 rounded-md border border-border text-fg font-medium hover:bg-surface-2 transition-colors"
+            >
+              Back to draft
+            </button>
+          </div>
+        )}
 
         {/* ════ PRIMARY CELL (cell_1 — the saved query of record) ══════════ */}
         <div className="px-3 pt-3">
@@ -1753,8 +1801,29 @@ export default function QueryWorkspace({ query, onQueryChange, onSaved, isNew, t
               />
             </div>
 
+            {/* Version-view params — static, read-only */}
+            {viewing && Array.isArray(viewCfg.params) && viewCfg.params.length > 0 && (
+              <div className="px-3 py-2.5 border-b border-border bg-surface-2/40">
+                <p className="text-[10px] font-semibold text-muted uppercase tracking-wider mb-2">
+                  Parameters (v{viewingVersion.version})
+                </p>
+                <div className="flex flex-wrap gap-1.5">
+                  {viewCfg.params.map(p => (
+                    <span
+                      key={p.name}
+                      className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-mono bg-surface border border-border text-muted"
+                    >
+                      {p.name}
+                      <span className="text-muted/60">({p.type ?? 'text'})</span>
+                      {p.default != null && <span className="text-muted/60">= {String(p.default)}</span>}
+                    </span>
+                  ))}
+                </div>
+              </div>
+            )}
+
             {/* Param inputs */}
-            {hasParams && (
+            {!viewing && hasParams && (
               <div className="px-3 py-2.5 border-b border-border bg-surface-2/40">
                 <p className="text-[10px] font-semibold text-muted uppercase tracking-wider mb-2">Parameters</p>
                 <div className="flex flex-wrap gap-3">
@@ -1808,18 +1877,20 @@ export default function QueryWorkspace({ query, onQueryChange, onSaved, isNew, t
               </div>
             )}
 
-            {/* SQL editor */}
+            {/* SQL editor — shows the viewed version's SQL read-only while a
+                version view is active; the draft SQL state is untouched. */}
             <div className="px-3 pt-3">
               <SqlEditor
-                value={sql}
-                onChange={handleSqlChange}
-                onRun={handleRun}
+                value={viewing ? (typeof viewCfg.sql === 'string' ? viewCfg.sql : '') : sql}
+                onChange={viewing ? () => {} : handleSqlChange}
+                onRun={viewing ? undefined : handleRun}
                 height={`${editorH}px`}
                 dialect={dialect}
                 onDialectChange={setDialect}
                 dialectHint={dialectHint}
+                readOnly={viewing}
               />
-              {isEmptyPrimary && (
+              {!viewing && isEmptyPrimary && (
                 <p className="mt-1.5 text-[11px] text-muted flex items-center gap-1 flex-wrap">
                   <FileCode2 size={11} className="text-primary/60 shrink-0" />
                   New here? Use the <span className="font-medium text-fg">Templates</span> menu above for starters, or
@@ -1999,6 +2070,7 @@ export default function QueryWorkspace({ query, onQueryChange, onSaved, isNew, t
           open={historyOpen}
           onClose={() => setHistoryOpen(false)}
           onRestored={handleRestored}
+          onView={setViewingVersion}
         />
       )}
     </div>

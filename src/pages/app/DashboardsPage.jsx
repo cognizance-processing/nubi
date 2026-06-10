@@ -39,6 +39,7 @@ import { checkpoint, listEnvironments } from '../../lib/versions.js'
 import VersionHistoryDialog from '../../components/app/VersionHistoryDialog.jsx'
 import PromoteDialog from '../../components/app/PromoteDialog.jsx'
 import { useUi } from '../../contexts/UiContext.jsx'
+import { useEnv } from '../../contexts/EnvContext.jsx'
 import { useProject } from '../../contexts/ProjectContext.jsx'
 import { useCanWrite } from '../../contexts/OrgContext.jsx'
 
@@ -248,7 +249,7 @@ function DeleteDialog({ board, onConfirm, onCancel, busy }) {
 }
 
 /** Single board card. */
-function BoardCard({ board, onDeleted, onRestored, canWrite, environments }) {
+function BoardCard({ board, onDeleted, onRestored, canWrite, environments, strictEnv }) {
   const navigate = useNavigate()
   const [confirmDelete, setConfirmDelete] = useState(false)
   const [deleteBusy, setDeleteBusy] = useState(false)
@@ -300,7 +301,21 @@ function BoardCard({ board, onDeleted, onRestored, canWrite, environments }) {
               >
                 {board.name || 'Untitled dashboard'}
               </Link>
-              <p className="text-xs text-muted mt-0.5">{boardMeta(board.config)}</p>
+              <p className="text-xs text-muted mt-0.5 flex items-center gap-1.5 flex-wrap">
+                {boardMeta(board.config)}
+                {/* Strict-env visibility: the active env is protected and this
+                    board has no pinned version there (pinned_envs from the
+                    list API). */}
+                {strictEnv && Array.isArray(board.pinned_envs)
+                  && !board.pinned_envs.includes(strictEnv) && (
+                  <span
+                    title={`No version is pinned to ${strictEnv} — promote one to make it visible there.`}
+                    className="inline-flex items-center px-1.5 py-0.5 text-[10px] font-medium rounded bg-rose-500/10 text-rose-600 dark:text-rose-400 border border-rose-500/20"
+                  >
+                    not in {strictEnv}
+                  </span>
+                )}
+              </p>
             </div>
             {canWrite && (
               <CardMenu
@@ -534,6 +549,16 @@ export default function DashboardsPage() {
   // Viewers are read-only — hide mutating actions (backend enforces too).
   const canWrite = useCanWrite()
 
+  // Strict-env badges: when the ACTIVE env is protected, cards whose
+  // pinned_envs lack it get a 'not in <env>' chip. (NOTE: no 'View' action on
+  // boards — rendering an arbitrary version config would need the full board
+  // renderer mounted here; the history dialog still offers Restore/Promote.)
+  const { environments: envList, activeEnv } = useEnv()
+  const strictEnv = (Array.isArray(envList)
+    && envList.find(e => e.key === activeEnv)?.protected)
+    ? activeEnv
+    : null
+
   // Access the chat panel opener if UiContext is available
   let openChat = null
   try {
@@ -701,6 +726,7 @@ export default function DashboardsPage() {
               onRestored={fetchBoards}
               canWrite={canWrite}
               environments={environments}
+              strictEnv={strictEnv}
             />
           ))}
         </div>

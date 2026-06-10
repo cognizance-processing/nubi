@@ -15,7 +15,7 @@
  * /flows/{id}/run {env}) consume the active key.
  *
  * Environment shape: { id, project_id, key, name, is_default, protected,
- * position, created_at }
+ * position, created_at, git_branch, last_synced_sha }
  *
  * Exposes (useEnv()):
  *   environments   {Array<Environment>|null} — null until loaded / when the
@@ -24,7 +24,8 @@
  *   activeEnv      {string} — the selected env key (default 'prod')
  *   setActiveEnv(key) — switch active env, persists per-project
  *   refresh()      — re-fetch the env list for the active project
- *   addEnv(key)    — create an environment, refresh (throws on failure)
+ *   addEnv(key, opts) — create an environment, refresh (throws on failure);
+ *                  opts: { git_branch?, from_branch? } (git workspace seeding)
  *   removeEnv(env) — delete an environment ({id,key}), refresh; resets the
  *                  selection to the default env when the active one was
  *                  removed (throws on failure, e.g. 409 default/protected)
@@ -145,9 +146,17 @@ export function EnvProvider({ children }) {
   }, [projectId])
 
   const addEnv = useCallback(
-    async (key) => {
+    async (key, opts = {}) => {
       if (!projectId) throw new Error('No active project.')
-      const created = await createEnvironment(projectId, { key, name: key })
+      // opts: { git_branch?, from_branch? } — from_branch seeds the new env
+      // from an existing branch in the project's git workspace repo (the
+      // response may carry `imported` counts or a `warning`, see lib docs).
+      const created = await createEnvironment(projectId, {
+        key,
+        name: key,
+        git_branch: opts.git_branch,
+        from_branch: opts.from_branch,
+      })
       await refresh()
       return created
     },

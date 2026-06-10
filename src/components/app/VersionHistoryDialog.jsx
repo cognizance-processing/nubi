@@ -2,8 +2,11 @@
  * VersionHistoryDialog — version history modal for a versioned resource
  * (flow / board / query).
  *
- * Lists the resource's checkpointed versions (newest first) with the
- * environment pointers shown as chips on the pinned rows. Per-row actions:
+ * Renders the resource's checkpointed versions as a VersionTimeline (vertical
+ * rail, newest first, env-pointer chips on pinned rows). Per-row actions:
+ *   - View (when onView is given): fetches the FULL version (incl. config via
+ *     getVersion) and hands it to the host so it can show that version
+ *     read-only; the dialog closes afterwards.
  *   - Restore: write that version's config back into the draft (confirmed via
  *     window.confirm; calls onRestored() afterwards so the host can reload).
  *   - Promote: opens PromoteDialog pre-filled with that row's env (when the
@@ -16,20 +19,17 @@
  *   open         {boolean}
  *   onClose      {() => void}
  *   onRestored   {() => void}  called after a successful restore
+ *   onView       {(version) => void}?  optional — receives the full version
+ *                row { id, version, config, message, created_at, ... }
  *   environments {Array}?    optional env list passed through to PromoteDialog
  */
 
 import { useCallback, useEffect, useState } from 'react'
-import { History, Loader2, RefreshCw, Rocket, RotateCcw, X } from 'lucide-react'
+import { History, Loader2, RefreshCw, X } from 'lucide-react'
 
-import { listVersions, restoreVersion } from '../../lib/versions.js'
+import { getVersion, listVersions, restoreVersion } from '../../lib/versions.js'
 import PromoteDialog from './PromoteDialog.jsx'
-
-function envChipClass(key) {
-  if (key === 'prod') return 'bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border-emerald-500/30'
-  if (key === 'dev') return 'bg-sky-500/10 text-sky-600 dark:text-sky-400 border-sky-500/30'
-  return 'bg-violet-500/10 text-violet-600 dark:text-violet-400 border-violet-500/30'
-}
+import VersionTimeline from './VersionTimeline.jsx'
 
 export default function VersionHistoryDialog({
   kind,
@@ -38,6 +38,7 @@ export default function VersionHistoryDialog({
   open,
   onClose,
   onRestored,
+  onView,
   environments,
 }) {
   const [loading, setLoading] = useState(false)
@@ -45,6 +46,7 @@ export default function VersionHistoryDialog({
   const [pointers, setPointers] = useState([])
   const [error, setError] = useState(null)
   const [restoring, setRestoring] = useState(null)   // version number in flight
+  const [viewing, setViewing] = useState(null)       // version number being fetched for View
   const [promoteFrom, setPromoteFrom] = useState(null) // env key → PromoteDialog open
 
   const load = useCallback(async () => {
@@ -78,10 +80,6 @@ export default function VersionHistoryDialog({
 
   if (!open) return null
 
-  /** Env-pointer chips for one version row. */
-  const chipsFor = (versionId) =>
-    pointers.filter(p => p.version_id === versionId)
-
   async function handleRestore(v) {
     if (!window.confirm(`Restore version v${v.version} into the current draft? Unsaved draft changes are overwritten.`)) return
     setRestoring(v.version)
@@ -94,6 +92,19 @@ export default function VersionHistoryDialog({
     } finally {
       setRestoring(null)
     }
+  }
+
+  // View — fetch the full version (incl. config) and hand it to the host.
+  async function handleView(v) {
+    setViewing(v.version)
+    const full = await getVersion(kind, resourceId, v.version)
+    setViewing(null)
+    if (!full) {
+      window.alert(`Could not load v${v.version}.`)
+      return
+    }
+    onView?.(full)
+    onClose()
   }
 
   return (
@@ -149,8 +160,8 @@ export default function VersionHistoryDialog({
             </button>
           </div>
 
-          {/* Body */}
-          <div className="flex-1 min-h-0 overflow-y-auto px-4 py-3 space-y-1.5">
+          {/* Body — timeline */}
+          <div className="flex-1 min-h-0 overflow-y-auto px-4 py-3">
             {loading && versions.length === 0 && (
               <div className="flex items-center gap-2 text-xs text-muted py-8 justify-center">
                 <Loader2 size={13} className="animate-spin" />
@@ -169,69 +180,17 @@ export default function VersionHistoryDialog({
               </div>
             )}
 
-            {versions.map(v => {
-              const chips = chipsFor(v.id)
-              return (
-                <div
-                  key={v.id}
-                  className="flex items-center gap-3 px-3 py-2.5 rounded-xl border border-border bg-surface hover:bg-surface-2/60 transition-colors"
-                >
-                  <span className="shrink-0 w-10 text-xs font-mono font-semibold text-fg">
-                    v{v.version}
-                  </span>
-
-                  <div className="flex-1 min-w-0">
-                    <p className="text-xs text-fg truncate">
-                      {v.message || <span className="text-muted italic">No message</span>}
-                    </p>
-                    <p className="text-[10px] text-muted mt-0.5">
-                      {v.created_at ? new Date(v.created_at).toLocaleString() : ''}
-                    </p>
-                  </div>
-
-                  {/* Env-pointer badges */}
-                  {chips.length > 0 && (
-                    <div className="shrink-0 flex items-center gap-1">
-                      {chips.map(p => (
-                        <span
-                          key={p.environment_id}
-                          title={`Pinned to ${p.env_key}`}
-                          className={[
-                            'inline-flex items-center px-1.5 py-0.5 text-[10px] font-mono font-medium rounded-md border',
-                            envChipClass(p.env_key),
-                          ].join(' ')}
-                        >
-                          {p.env_key}
-                        </span>
-                      ))}
-                    </div>
-                  )}
-
-                  {/* Row actions */}
-                  <div className="shrink-0 flex items-center gap-0.5">
-                    <button
-                      type="button"
-                      onClick={() => handleRestore(v)}
-                      disabled={restoring !== null}
-                      title={`Restore v${v.version} into the draft`}
-                      className="w-7 h-7 flex items-center justify-center rounded-lg text-muted hover:text-fg hover:bg-surface-2 transition-colors disabled:opacity-40"
-                    >
-                      {restoring === v.version
-                        ? <Loader2 size={13} className="animate-spin" />
-                        : <RotateCcw size={13} />}
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => setPromoteFrom(chips[0]?.env_key ?? 'dev')}
-                      title="Promote between environments"
-                      className="w-7 h-7 flex items-center justify-center rounded-lg text-muted hover:text-fg hover:bg-surface-2 transition-colors"
-                    >
-                      <Rocket size={13} />
-                    </button>
-                  </div>
-                </div>
-              )
-            })}
+            {versions.length > 0 && (
+              <VersionTimeline
+                versions={versions}
+                pointers={pointers}
+                restoring={restoring}
+                viewing={viewing}
+                onView={onView ? handleView : undefined}
+                onRestore={handleRestore}
+                onPromote={(envKey) => setPromoteFrom(envKey)}
+              />
+            )}
           </div>
 
           {/* Footer */}

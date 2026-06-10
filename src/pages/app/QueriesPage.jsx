@@ -49,6 +49,7 @@ import {
 
 import { get, listRegisteredQueries, registerQuery } from '../../lib/api.js'
 import VersionHistoryDialog from '../../components/app/VersionHistoryDialog.jsx'
+import { useEnv } from '../../contexts/EnvContext.jsx'
 import { useProject } from '../../contexts/ProjectContext.jsx'
 import { useCanWrite } from '../../contexts/OrgContext.jsx'
 import { useUi } from '../../contexts/UiContext.jsx'
@@ -74,7 +75,7 @@ function newAdHocQuery() {
 // QueryListItem — single entry in the left rail
 // ---------------------------------------------------------------------------
 
-function QueryListItem({ query, isActive, onClick, onHistory }) {
+function QueryListItem({ query, isActive, onClick, onHistory, strictEnv }) {
   const hasParams = Array.isArray(query.params) && query.params.length > 0
   const isSaved = Boolean(query.id) && !query.isNew
 
@@ -128,6 +129,18 @@ function QueryListItem({ query, isActive, onClick, onHistory }) {
                 draft
               </span>
             )}
+            {/* Strict-env visibility: the active env is protected and this
+                query has no pinned version there (pinned_envs joined from
+                the persisted GET /queries rows). */}
+            {!query.isNew && strictEnv && Array.isArray(query.pinned_envs)
+              && !query.pinned_envs.includes(strictEnv) && (
+              <span
+                title={`No version is pinned to ${strictEnv} — promote one to make it visible there.`}
+                className="inline-flex items-center px-1 py-0.5 text-[9px] font-medium rounded bg-rose-500/10 text-rose-600 dark:text-rose-400 border border-rose-500/20 mt-1"
+              >
+                not in {strictEnv}
+              </span>
+            )}
           </div>
         </div>
       </button>
@@ -152,7 +165,7 @@ function QueryListItem({ query, isActive, onClick, onHistory }) {
 // blend, drafts + registry list). Header/collapse chrome lives in the page.
 // ---------------------------------------------------------------------------
 
-function QueriesPanel({ queries, localQueries, activeId, loading, onSelect, onNewQuery, onRefresh, searchQuery, onSearchChange, canWrite, onHistory }) {
+function QueriesPanel({ queries, localQueries, activeId, loading, onSelect, onNewQuery, onRefresh, searchQuery, onSearchChange, canWrite, onHistory, strictEnv }) {
   const allItems = [
     ...localQueries,
     ...queries,
@@ -261,6 +274,7 @@ function QueriesPanel({ queries, localQueries, activeId, loading, onSelect, onNe
                 isActive={activeId === q.id}
                 onClick={() => onSelect(q)}
                 onHistory={onHistory}
+                strictEnv={strictEnv}
               />
             ))}
           </div>
@@ -367,6 +381,14 @@ export default function QueriesPage() {
   const projectId = activeProject?.id
   const canWrite = useCanWrite()
 
+  // Strict-env badges: when the ACTIVE env is protected, registry rows whose
+  // pinned_envs lack it get a 'not in <env>' chip.
+  const { environments, activeEnv } = useEnv()
+  const strictEnv = (Array.isArray(environments)
+    && environments.find(e => e.key === activeEnv)?.protected)
+    ? activeEnv
+    : null
+
   // AppShell topbar slot — page toolbars portal into the single top bar
   // (dashboard-editor pattern). The shell's own Chat button handles chat.
   const { topbarSlot, chatOpen, closeChat } = useUi()
@@ -413,14 +435,26 @@ export default function QueriesPage() {
     setLoadingRegistry(true)
     setRegistryError(null)
     try {
-      const data = await listRegisteredQueries()
-      setRegisteredQueries(data)
+      // pinned_envs lives on the persisted rows (GET /queries — strict-env
+      // list contract), not the runtime registry — fetch both and join by id.
+      const [data, rows] = await Promise.all([
+        listRegisteredQueries(),
+        get('/queries').catch(() => null),
+      ])
+      const pinnedById = new Map()
+      for (const r of Array.isArray(rows) ? rows : []) {
+        if (Array.isArray(r.pinned_envs)) pinnedById.set(r.id, r.pinned_envs)
+      }
+      const merged = data.map(q =>
+        pinnedById.has(q.id) ? { ...q, pinned_envs: pinnedById.get(q.id) } : q
+      )
+      setRegisteredQueries(merged)
 
       // Auto-select first local draft (or first registered if no drafts yet)
       setActiveQuery(prev => {
         if (prev) return prev // keep selection
         if (localQueries.length > 0) return localQueries[0]
-        if (data.length > 0) return data[0]
+        if (merged.length > 0) return merged[0]
         return null
       })
     } catch (err) {
@@ -751,6 +785,7 @@ export default function QueriesPage() {
               onSearchChange={setRailSearch}
               canWrite={canWrite}
               onHistory={setHistoryQuery}
+              strictEnv={strictEnv}
             />
           </div>
         </aside>
