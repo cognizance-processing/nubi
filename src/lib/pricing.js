@@ -165,7 +165,7 @@ export const FALLBACK_TIERS = [
       '15,000 compute units / month',
       '25,000 embedded sessions / month',
       '50 AI calls / month · 50 agent / kernel runs',
-      'Hosted DuckDB warehouse — big-table queries on 8 GB+ machines (4× CU)',
+      'Lakehouse queries — pay per TiB scanned ($5/TiB, first 1 TiB/mo free)',
       'All connectors',
       '100 dashboards · 20 scheduled flows',
       'Full RLS with JWT claims',
@@ -198,7 +198,7 @@ export const FALLBACK_TIERS = [
       '200,000 compute units / month',
       'Unlimited embedded sessions',
       '500 AI calls / month · 1,000 agent / kernel runs',
-      'Hosted DuckDB warehouse — dedicated machines, ~1B-row tables (4× CU)',
+      'Lakehouse queries — pay per TiB scanned ($5/TiB, first 1 TiB/mo free)',
       'All connectors + custom connector SDK',
       'Unlimited dashboards & scheduled flows',
       'Full RLS + host-signed JWT pass-through',
@@ -460,26 +460,59 @@ export const FALLBACK_COMPETITORS_ORCHESTRATION = [
 ]
 
 // ---------------------------------------------------------------------------
-// Warehouse / OLAP competitor models
+// Lakehouse data pricing — pay-per-scan + storage (BigQuery-comparable model)
 // ---------------------------------------------------------------------------
 
 /**
- * Warehouse queries (hosted DuckDB heavy-query pool, Pro+) bill compute units
- * at this multiplier.  Mirrors backend WAREHOUSE_CU_MULTIPLIER (tiers.py) and
- * the pool's NUBI_CU_MULTIPLIER (fly.toml).
+ * Nubi lakehouse: pay per TiB scanned + storage on Cloudflare R2.
+ * Dashboard views are FREE — they compute in the user's browser (DuckDB-WASM).
+ * The first 1 TiB of scan per month is free (BigQuery parity).
+ *
+ * Pricing (USD):
+ *   Scan:    $5.00 / TiB  (BigQuery charges $6.25/TiB — we are cheaper)
+ *   Storage: $0.02 / GB-month  (R2 rate — same as BigQuery's storage tier)
+ *   Free:    first 1 TiB scanned / month always free
+ */
+export const LAKEHOUSE_SCAN_USD_PER_TIB   = 5.00
+export const LAKEHOUSE_STORAGE_USD_PER_GB = 0.02
+export const LAKEHOUSE_FREE_SCAN_TIB      = 1        // first 1 TiB/mo free
+
+/**
+ * Estimate monthly USD cost for a lakehouse workload.
+ *
+ * cost = max(0, tb_scanned - FREE_SCAN_TIB) * SCAN_RATE
+ *       + storage_gb * STORAGE_RATE
+ *
+ * Dashboard views are free — they run the DuckDB-WASM kernel in the browser
+ * and never touch the server. This cost is purely for server-side / heavy
+ * queries and data storage.
+ *
+ * @param {{ queries_per_month: number, avg_gb_scanned: number, storage_gb: number }} params
+ * @returns {{ scan_usd: number, storage_usd: number, total_usd: number, tb_scanned: number }}
+ */
+export function estimateLakehouseCost({ queries_per_month, avg_gb_scanned, storage_gb }) {
+  const tb_scanned = (queries_per_month * avg_gb_scanned) / 1024
+  const billable_tb = Math.max(0, tb_scanned - LAKEHOUSE_FREE_SCAN_TIB)
+  const scan_usd = billable_tb * LAKEHOUSE_SCAN_USD_PER_TIB
+  const storage_usd = (storage_gb ?? 0) * LAKEHOUSE_STORAGE_USD_PER_GB
+  return {
+    scan_usd,
+    storage_usd,
+    total_usd: scan_usd + storage_usd,
+    tb_scanned,
+    billable_tb,
+  }
+}
+
+/**
+ * @deprecated Use estimateLakehouseCost() instead.
+ * Kept for backward compatibility. The 4× CU multiplier model has been
+ * replaced by the pay-per-TiB-scan + storage model.
  */
 export const WAREHOUSE_CU_MULTIPLIER = 4
 
 /**
- * Estimate the monthly CU cost of a warehouse workload.
- *
- * 1 CU ≈ 1 compute-second on a standard node.  The pool scans object-storage
- * Parquet at roughly 1 GB/s effective (column pruning means most queries
- * touch far less than the table size), and warehouse seconds bill at
- * WAREHOUSE_CU_MULTIPLIER.
- *
- * @param {{ queries_per_month: number, avg_gb_scanned: number }} w
- * @returns {number} estimated compute units / month
+ * @deprecated Use estimateLakehouseCost() instead.
  */
 export function estimateWarehouseCu({ queries_per_month, avg_gb_scanned }) {
   const secondsPerQuery = Math.max(avg_gb_scanned / 1.0, 0.1)
@@ -487,67 +520,33 @@ export function estimateWarehouseCu({ queries_per_month, avg_gb_scanned }) {
 }
 
 /**
- * Warehouse / OLAP competitors for the pricing calculator.
- *
- * model(usage) receives { data_gb, queries_per_month, avg_gb_scanned } and
- * returns estimated USD/month.  Coarse public-pricing models (June 2026);
- * the calculator shows a verify-with-vendor disclaimer.
+ * Reference data: the primary comparable is BigQuery on-demand.
+ * Nubi is ~20% cheaper on scan ($5/TiB vs $6.25/TiB), same storage rate,
+ * and dashboard views are free (BigQuery charges for every query including
+ * dashboard refreshes). Kept as a reference object; not used for head-to-head
+ * price comparison tables.
  */
-export const FALLBACK_COMPETITORS_WAREHOUSE = [
-  {
-    id: 'bigquery_ondemand',
-    name: 'Google BigQuery (on-demand)',
-    url: 'https://cloud.google.com/bigquery/pricing',
-    note: '$6.25/TB scanned — first 1 TB/mo and 10 GB storage free, then $0.02/GB. Effectively serverless; excels at multi-TB scale.',
-    model_type: 'per-scan',
-    model({ data_gb, queries_per_month, avg_gb_scanned }) {
-      const tbScanned = (queries_per_month * avg_gb_scanned) / 1024
-      const scanCost = Math.max(0, tbScanned - 1) * 6.25
-      const storageCost = Math.max(0, data_gb - 10) * 0.02
-      return scanCost + storageCost
-    },
-  },
-  {
-    id: 'clickhouse_cloud',
-    name: 'ClickHouse Cloud (Scale)',
-    url: 'https://clickhouse.com/pricing',
-    note: 'Smallest service ≈ $0.40/hr while awake + compressed storage. Assumes auto-idle with a 15-min window — steady query traffic keeps it awake.',
-    model_type: 'infra',
-    model({ data_gb, queries_per_month, avg_gb_scanned }) {
-      const scanHours = (queries_per_month * avg_gb_scanned) / 3600
-      // Each query burst keeps the service awake ~15 min before idling.
-      // Spread-out traffic above ~3k queries/mo is effectively always-on.
-      const awakeHours = Math.min(730, Math.max(scanHours, queries_per_month * 0.25))
-      return awakeHours * 0.4 + data_gb * 0.03
-    },
-  },
-  {
-    id: 'motherduck',
-    name: 'MotherDuck (Standard)',
-    url: 'https://motherduck.com/pricing',
-    note: '$25/user/mo + ~$0.25/CU-hr beyond included compute + $0.08/GB. Closest architecture to Nubi — also serverless DuckDB.',
-    model_type: 'per-scan',
-    model({ data_gb, queries_per_month, avg_gb_scanned }) {
-      const cuHours = (queries_per_month * avg_gb_scanned) / 3600
-      return 25 + Math.max(0, cuHours - 10) * 0.25 + data_gb * 0.08
-    },
-  },
-  {
-    id: 'snowflake_standard',
-    name: 'Snowflake (Standard, XS)',
-    url: 'https://www.snowflake.com/pricing',
-    note: '~$2/credit, XS = 1 credit/hr while running + $23/TB storage. Assumes a well-tuned 1-min auto-suspend — default 10-min suspend costs much more.',
-    model_type: 'infra',
-    model({ data_gb, queries_per_month, avg_gb_scanned }) {
-      const scanHours = (queries_per_month * avg_gb_scanned) / 3600
-      // Generous assumption: 1-minute auto-suspend, so each query burst
-      // bills ~1 minute of warehouse time beyond its own scan.
-      const suspendOverheadHours = (queries_per_month * 1) / 60 / 60
-      const activeHours = Math.min(730, Math.max(scanHours, suspendOverheadHours))
-      return activeHours * 2 + (data_gb / 1024) * 23
-    },
-  },
-]
+export const BIGQUERY_REFERENCE = {
+  id: 'bigquery_ondemand',
+  name: 'Google BigQuery (on-demand)',
+  url: 'https://cloud.google.com/bigquery/pricing',
+  scan_usd_per_tib: 6.25,
+  storage_usd_per_gb: 0.02,
+  free_scan_tib: 1,
+  free_storage_gb: 10,
+  note: '$6.25/TiB scanned (Nubi: $5/TiB) — same pay-per-scan model. First 1 TiB/mo free. Storage $0.02/GB.',
+}
+
+/**
+ * @deprecated The lakehouse is no longer positioned as a competitor to
+ * dedicated warehouses. Use it for BI-scale workloads; connect your own
+ * BigQuery/Snowflake/ClickHouse as a Nubi datastore for multi-TB workloads
+ * and Nubi pushes queries down to their engine.
+ *
+ * Kept for backward compatibility with any callers; the PricingCalculator
+ * no longer renders a head-to-head competitor bar chart for warehouses.
+ */
+export const FALLBACK_COMPETITORS_WAREHOUSE = []
 
 // ---------------------------------------------------------------------------
 // Nubi tier engine for the calculator — Free / Starter / Team / Pro / Enterprise
@@ -713,6 +712,7 @@ const BASE = (import.meta.env?.DEV || !_backendUrl) ? '/api/v1' : _backendUrl + 
  *   fx: { rate: number, updated_at: string | null, fallback: boolean },
  *   competitors_bi: object[],
  *   competitors_orchestration: object[],
+ *   lakehouse: { scan_usd_per_tib: number, storage_usd_per_gb: number, free_scan_tib: number },
  * }} PricingData
  */
 
@@ -722,6 +722,11 @@ const BASE = (import.meta.env?.DEV || !_backendUrl) ? '/api/v1' : _backendUrl + 
  * @returns {Promise<PricingData>}
  */
 export async function fetchPricingData() {
+  const lakehouseFallback = {
+    scan_usd_per_tib: LAKEHOUSE_SCAN_USD_PER_TIB,
+    storage_usd_per_gb: LAKEHOUSE_STORAGE_USD_PER_GB,
+    free_scan_tib: LAKEHOUSE_FREE_SCAN_TIB,
+  }
   try {
     const res = await fetch(`${BASE}/pricing`, { credentials: 'omit' })
     if (!res.ok) throw new Error(`HTTP ${res.status}`)
@@ -735,9 +740,8 @@ export async function fetchPricingData() {
       competitors_orchestration: Array.isArray(data?.competitors_orchestration) && data.competitors_orchestration.length
         ? data.competitors_orchestration
         : FALLBACK_COMPETITORS_ORCHESTRATION,
-      // Warehouse competitor models are functions, so they always come from
-      // the frontend fallback list (the API cannot ship pricing models).
-      competitors_warehouse: FALLBACK_COMPETITORS_WAREHOUSE,
+      // Lakehouse pricing constants — always from frontend (authoritative source).
+      lakehouse: lakehouseFallback,
     }
   } catch {
     return {
@@ -745,7 +749,7 @@ export async function fetchPricingData() {
       fx: { rate: 16.26, updated_at: null, fallback: true },
       competitors_bi: FALLBACK_COMPETITORS_BI,
       competitors_orchestration: FALLBACK_COMPETITORS_ORCHESTRATION,
-      competitors_warehouse: FALLBACK_COMPETITORS_WAREHOUSE,
+      lakehouse: lakehouseFallback,
     }
   }
 }

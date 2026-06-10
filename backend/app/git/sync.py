@@ -142,7 +142,7 @@ def serialize_resource(kind: str, resource: dict[str, Any]) -> list[dict[str, st
             "required_scope": required_scope,
         }
 
-        return [
+        items: list[dict[str, str]] = [
             {
                 "path": f"queries/{resource_id}.sql",
                 "content": sql,
@@ -152,6 +152,22 @@ def serialize_resource(kind: str, resource: dict[str, Any]) -> list[dict[str, st
                 "content": json.dumps(meta, indent=2, sort_keys=True),
             },
         ]
+        # Output-shape sidecar: emit queries/<id>.json = output_schema as
+        # [{name,type}] when the config declares one (skip when absent).
+        output_schema = config.get("output_schema")
+        if isinstance(output_schema, list) and output_schema:
+            schema = [
+                {"name": str(c["name"]), "type": str(c.get("type") or "text")}
+                for c in output_schema
+                if isinstance(c, dict) and c.get("name") is not None
+            ]
+            items.append(
+                {
+                    "path": f"queries/{resource_id}.json",
+                    "content": json.dumps(schema, indent=2, sort_keys=True),
+                }
+            )
+        return items
 
     if kind == "dashboard":
         # Store the entire config dict (the board spec) as pretty-printed

@@ -28,12 +28,13 @@
 import { useState, useMemo, useCallback } from 'react'
 import {
   ChevronDown, ChevronUp, Info, Users, Zap, Database, Globe, Cpu,
-  GitBranch, Server, BarChart3, Wallet, Warehouse, Search,
+  GitBranch, Server, BarChart3, Wallet, HardDrive, Search,
 } from 'lucide-react'
 import {
-  computeZar, formatZar, recommendNubi, estimateWarehouseCu,
+  computeZar, formatZar, recommendNubi,
+  estimateLakehouseCost,
+  LAKEHOUSE_SCAN_USD_PER_TIB, LAKEHOUSE_STORAGE_USD_PER_GB, LAKEHOUSE_FREE_SCAN_TIB,
   FALLBACK_COMPETITORS_BI, FALLBACK_COMPETITORS_ORCHESTRATION,
-  FALLBACK_COMPETITORS_WAREHOUSE, WAREHOUSE_CU_MULTIPLIER,
   WALLET_OVERAGE_RATES,
 } from '../../lib/pricing.js'
 
@@ -448,178 +449,162 @@ function OrchComparisonSection({ competitors, orchUsage, onOrchUsage, fxRate, re
 }
 
 // ---------------------------------------------------------------------------
-// Warehouse / OLAP comparison section
+// Lakehouse data cost section
 // ---------------------------------------------------------------------------
 
-const DEFAULT_WAREHOUSE_USAGE = {
-  data_gb: 100,            // total Parquet in the lakehouse
-  queries_per_month: 5000, // warehouse-pool queries (big-table, cache misses)
-  avg_gb_scanned: 2,       // per-query working set after partition/column pruning
+const DEFAULT_LAKEHOUSE_USAGE = {
+  storage_gb: 100,          // Parquet data in R2
+  queries_per_month: 5000,  // server-side query executions (cache misses)
+  avg_gb_scanned: 2,        // per-query working set (post column/partition pruning)
 }
 
-function WarehouseComparisonSection({ competitors, whUsage, onWhUsage, fxRate }) {
+function LakehouseSection({ lhUsage, onLhUsage, fxRate }) {
   const rate = fxRate ?? 16.26
 
-  // Nubi cost: Pro+ plan (warehouse is a Pro/Enterprise feature) carrying the
-  // dataset in lakehouse storage and the workload as 4×-billed compute units.
-  const warehouseCu = estimateWarehouseCu(whUsage)
-  const recommendation = recommendNubi(
-    {
-      storage_gb: whUsage.data_gb,
-      compute_units: warehouseCu,
-      embedded_sessions: 0,
-      agent_runs: 0,
-      connectors: 1,
-      flow_runs_per_month: 0,
-    },
-    fxRate,
-    { minTierId: 'pro' },
-  )
-  const nubiUsd = recommendation.tier.usd_monthly + Math.ceil(recommendation.overage_zar / rate)
+  const est = estimateLakehouseCost(lhUsage)
+  const totalZar = Math.ceil(est.total_usd * rate)
 
-  // Honest envelope: Nubi's warehouse is a single machine per query.  Beyond
-  // this, a dedicated warehouse is genuinely the better tool — say so.
-  const outOfEnvelope = whUsage.data_gb > 1000 || whUsage.avg_gb_scanned > 20
+  // BigQuery on-demand reference for comparison
+  const bqScanCost = Math.max(0, est.tb_scanned - 1) * 6.25
+  const bqStorageCost = Math.max(0, lhUsage.storage_gb - 10) * 0.02
+  const bqTotal = bqScanCost + bqStorageCost
+  const bqZar = Math.ceil(bqTotal * rate)
+
+  const withinFree = est.billable_tb === 0
+  const savingsVsBq = Math.max(0, bqTotal - est.total_usd)
 
   return (
     <div className="space-y-4">
-      {/* Context note — fair framing in BOTH directions */}
+      {/* Context note */}
       <div className="rounded-xl bg-surface-2 border border-border px-4 py-3 text-xs text-muted space-y-1">
         <p className="font-semibold text-fg text-sm">
-          The hosted DuckDB warehouse runs big-table queries on dedicated 8 GB+ machines — no separate warehouse bill.
+          Pay per TiB scanned ($5/TiB) + storage ($0.02/GB-month) — dashboard views are free.
         </p>
         <p>
-          Warehouse queries draw from the same compute-unit quota at a {WAREHOUSE_CU_MULTIPLIER}× rate;
-          repeated dashboard reads come from rollups and cache for free.
-          To keep the comparison fair: the engines below are <strong className="text-fg">warehouse-only</strong> —
-          they don't include dashboards, embedded analytics, or orchestration, while the Nubi price does.
-          They are also distributed engines that genuinely outperform Nubi's single-node pool on
-          multi-terabyte scans and huge ad-hoc joins.
+          Nubi uses the same pay-per-scan model as BigQuery, at a ~20% lower scan rate.
+          The first 1 TiB of scan per month is free. Dashboard views run in the browser
+          (DuckDB-WASM) and scan zero bytes on our servers — no per-viewer compute charge ever.
+          Pre-run scan estimates let you see the cost before running a query.
         </p>
       </div>
 
-      {outOfEnvelope && (
-        <div className="rounded-xl bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-800 px-4 py-3 text-xs text-amber-800 dark:text-amber-200">
-          <strong>At this scale, a dedicated warehouse is the right tool.</strong>{' '}
-          Nubi's hosted warehouse runs each query on one machine — its sweet spot is tables up to
-          ~1B rows with selective scans. For workloads like this, connect your own BigQuery or
-          ClickHouse as a Nubi datastore instead: queries push down to their engine, on their billing,
-          and your dashboards, RLS, and caching stay in Nubi.
-        </div>
-      )}
-
-      {/* Warehouse-specific usage inputs */}
+      {/* Lakehouse-specific usage inputs */}
       <div className="rounded-xl border border-border px-4 py-4 space-y-4 bg-surface">
-        <p className="text-xs font-semibold text-muted uppercase tracking-wide">Warehouse usage inputs</p>
+        <p className="text-xs font-semibold text-muted uppercase tracking-wide">Lakehouse usage inputs</p>
         <div className="grid gap-4 sm:grid-cols-2">
           <UsageInput
-            label="Dataset size"
+            label="Storage (R2 Parquet)"
             icon={Database}
-            value={whUsage.data_gb}
-            onChange={(v) => onWhUsage('data_gb', v)}
-            min={10} max={2000} step={10} unit=" GB"
+            value={lhUsage.storage_gb}
+            onChange={(v) => onLhUsage('storage_gb', v)}
+            min={1} max={5000} step={10} unit=" GB"
           />
           <UsageInput
-            label="Warehouse queries / month"
+            label="Server-side queries / month"
             icon={Search}
-            value={whUsage.queries_per_month}
-            onChange={(v) => onWhUsage('queries_per_month', v)}
-            min={100} max={100000} step={100}
+            value={lhUsage.queries_per_month}
+            onChange={(v) => onLhUsage('queries_per_month', v)}
+            min={0} max={100000} step={100}
           />
           <UsageInput
             label="Avg data scanned / query"
             icon={Cpu}
-            value={whUsage.avg_gb_scanned}
-            onChange={(v) => onWhUsage('avg_gb_scanned', v)}
-            min={0.5} max={50} step={0.5} unit=" GB"
+            value={lhUsage.avg_gb_scanned}
+            onChange={(v) => onLhUsage('avg_gb_scanned', v)}
+            min={0.1} max={50} step={0.1} unit=" GB"
           />
         </div>
         <p className="text-[11px] text-muted/80">
-          ≈ {warehouseCu.toLocaleString()} compute units / month at the {WAREHOUSE_CU_MULTIPLIER}× warehouse rate.
-          Partitioned Parquet + column pruning means a typical query scans a small fraction of the dataset.
+          {est.tb_scanned.toFixed(2)} TiB total scan / month — {est.billable_tb.toFixed(2)} TiB billable
+          (first {LAKEHOUSE_FREE_SCAN_TIB} TiB free).
+          Partitioned Parquet + column pruning typically reduces scans to a small fraction of dataset size.
         </p>
       </div>
 
-      <div className="overflow-x-auto rounded-xl border border-border">
+      {/* Cost breakdown */}
+      <div className="rounded-xl border border-border overflow-hidden">
         <table className="min-w-full text-sm">
           <thead>
             <tr className="border-b border-border bg-surface-2">
-              <th className="text-left px-4 py-2.5 font-semibold text-muted text-xs uppercase tracking-wide">Engine</th>
-              <th className="text-left px-4 py-2.5 font-semibold text-muted text-xs uppercase tracking-wide hidden sm:table-cell">Pricing model</th>
-              <th className="text-right px-4 py-2.5 font-semibold text-muted text-xs uppercase tracking-wide">Est. USD/mo</th>
-              <th className="text-right px-4 py-2.5 font-semibold text-muted text-xs uppercase tracking-wide">Est. ZAR/mo</th>
+              <th className="text-left px-4 py-2.5 font-semibold text-muted text-xs uppercase tracking-wide">Line item</th>
+              <th className="text-left px-4 py-2.5 font-semibold text-muted text-xs uppercase tracking-wide hidden sm:table-cell">Rate</th>
+              <th className="text-right px-4 py-2.5 font-semibold text-muted text-xs uppercase tracking-wide">USD/mo</th>
+              <th className="text-right px-4 py-2.5 font-semibold text-muted text-xs uppercase tracking-wide">ZAR/mo</th>
             </tr>
           </thead>
           <tbody>
-            {/* Nubi row pinned first */}
+            {/* Nubi total row */}
             <tr className="border-b border-border bg-accent/5">
               <td className="px-4 py-2.5">
                 <span className="font-semibold text-sm text-fg">
-                  Nubi {recommendation.tier.name} + hosted warehouse
+                  {withinFree ? 'Nubi — free tier' : 'Nubi Lakehouse total'}
                 </span>
                 <div className="mt-0.5 flex flex-wrap gap-1">
                   <span className="inline-flex items-center px-1.5 py-0.5 rounded-full bg-teal-100 text-teal-700 dark:bg-teal-900/30 dark:text-teal-300 text-[9px] font-bold uppercase tracking-wide">
-                    BI + flows included
+                    dashboard views free
                   </span>
                   <span className="inline-flex items-center px-1.5 py-0.5 rounded-full bg-teal-100 text-teal-700 dark:bg-teal-900/30 dark:text-teal-300 text-[9px] font-bold uppercase tracking-wide">
-                    cached reads free
+                    first 1 TiB free
                   </span>
                 </div>
               </td>
               <td className="px-4 py-2.5 text-xs text-muted hidden sm:table-cell">
-                Plan + {WAREHOUSE_CU_MULTIPLIER}× CU on warehouse scans
+                ${LAKEHOUSE_SCAN_USD_PER_TIB}/TiB scan · ${LAKEHOUSE_STORAGE_USD_PER_GB}/GB storage
               </td>
               <td className="px-4 py-2.5 text-right font-mono text-sm font-bold text-fg">
-                {fmtUsd(nubiUsd)}
+                {withinFree ? '$0' : fmtUsd(est.total_usd)}
               </td>
               <td className="px-4 py-2.5 text-right font-mono text-sm font-bold text-fg">
-                {formatZar(recommendation.total_zar)}
+                {withinFree ? 'R 0' : formatZar(totalZar)}
               </td>
             </tr>
-
-            {competitors.map((comp) => {
-              let usdCost = null
-              try { usdCost = comp.model({ ...whUsage }) } catch { /* ignore */ }
-              const zarCost = usdCost != null ? Math.ceil(usdCost * rate) : null
-
-              return (
-                <tr key={comp.id} className="border-b border-border last:border-0">
-                  <td className="px-4 py-2.5">
-                    <span className="font-medium text-sm text-fg">{comp.name}</span>
-                    {comp.model_type === 'per-scan' && (
-                      <span className="ml-1.5 inline-flex items-center px-1.5 py-0.5 rounded-full bg-orange-100 text-orange-700 dark:bg-orange-900/30 dark:text-orange-300 text-[9px] font-bold uppercase tracking-wide">
-                        per-scan metered
-                      </span>
-                    )}
-                    {comp.model_type === 'infra' && (
-                      <span className="ml-1.5 inline-flex items-center px-1.5 py-0.5 rounded-full bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-300 text-[9px] font-bold uppercase tracking-wide">
-                        always-on cost
-                      </span>
-                    )}
-                    <p className="text-xs text-muted mt-0.5 leading-tight">{comp.note}</p>
-                  </td>
-                  <td className="px-4 py-2.5 text-xs text-muted hidden sm:table-cell">
-                    {comp.model_type === 'per-scan' ? 'Pay per TB scanned' : 'Provisioned service'}
-                  </td>
-                  <td className="px-4 py-2.5 text-right font-mono text-sm text-fg">
-                    {usdCost != null ? fmtUsd(usdCost) : 'Custom'}
-                  </td>
-                  <td className="px-4 py-2.5 text-right font-mono text-sm text-fg">
-                    {zarCost != null ? formatZar(zarCost) : 'Custom'}
-                  </td>
-                </tr>
-              )
-            })}
+            {/* Scan sub-line */}
+            <tr className="border-b border-border bg-accent/[0.02]">
+              <td className="px-4 py-2 pl-8 text-xs text-muted">Scan ({est.billable_tb.toFixed(2)} billable TiB)</td>
+              <td className="px-4 py-2 text-xs text-muted hidden sm:table-cell">${LAKEHOUSE_SCAN_USD_PER_TIB}/TiB</td>
+              <td className="px-4 py-2 text-right font-mono text-xs text-muted">{fmtUsd(est.scan_usd)}</td>
+              <td className="px-4 py-2 text-right font-mono text-xs text-muted">{formatZar(Math.ceil(est.scan_usd * rate))}</td>
+            </tr>
+            {/* Storage sub-line */}
+            <tr className="border-b border-border bg-accent/[0.02]">
+              <td className="px-4 py-2 pl-8 text-xs text-muted">Storage ({lhUsage.storage_gb.toLocaleString()} GB)</td>
+              <td className="px-4 py-2 text-xs text-muted hidden sm:table-cell">${LAKEHOUSE_STORAGE_USD_PER_GB}/GB</td>
+              <td className="px-4 py-2 text-right font-mono text-xs text-muted">{fmtUsd(est.storage_usd)}</td>
+              <td className="px-4 py-2 text-right font-mono text-xs text-muted">{formatZar(Math.ceil(est.storage_usd * rate))}</td>
+            </tr>
+            {/* Dashboard views */}
+            <tr className="border-b border-border">
+              <td className="px-4 py-2 pl-8 text-xs text-muted">Dashboard views</td>
+              <td className="px-4 py-2 text-xs text-muted hidden sm:table-cell">Browser DuckDB-WASM</td>
+              <td className="px-4 py-2 text-right font-mono text-xs font-semibold text-teal-600 dark:text-teal-400">Free</td>
+              <td className="px-4 py-2 text-right font-mono text-xs font-semibold text-teal-600 dark:text-teal-400">Free</td>
+            </tr>
+            {/* BigQuery reference */}
+            <tr>
+              <td className="px-4 py-2.5">
+                <span className="font-medium text-sm text-muted">BigQuery on-demand (reference)</span>
+                <p className="text-xs text-muted/70 mt-0.5">$6.25/TiB scan · $0.02/GB storage · charges for dashboard refreshes too</p>
+              </td>
+              <td className="px-4 py-2.5 text-xs text-muted hidden sm:table-cell">$6.25/TiB</td>
+              <td className="px-4 py-2.5 text-right font-mono text-sm text-muted">{fmtUsd(bqTotal)}</td>
+              <td className="px-4 py-2.5 text-right font-mono text-sm text-muted">{formatZar(bqZar)}</td>
+            </tr>
           </tbody>
         </table>
       </div>
 
+      {savingsVsBq > 1 && (
+        <div className="rounded-xl bg-teal-50 dark:bg-teal-900/20 border border-teal-200 dark:border-teal-800 px-4 py-3 text-xs text-teal-800 dark:text-teal-200">
+          At this workload, Nubi saves <strong>{fmtUsd(savingsVsBq)}/mo</strong> vs BigQuery on data costs alone —
+          before accounting for the fact that dashboard views are free on Nubi.
+        </div>
+      )}
+
       <p className="text-xs text-muted/80 italic">
-        Fair-comparison notes: competitor estimates assume well-tuned auto-idle/auto-suspend (real bills
-        are often higher with default settings); Nubi's estimate assumes your workload fits a single
-        8 GB+ machine per query and that repeat queries hit cache/rollups. Standalone warehouses don't
-        include dashboards, embedded analytics, flows, or connectors — but they outperform Nubi on
-        multi-TB scans. If you already pay for one, connect it as a datastore instead of moving data.
+        Server-side queries are those not served from rollup cache. Dashboard views run in the browser
+        and are always free. If you outgrow the single-node lakehouse, connect your own BigQuery or
+        Snowflake as a Nubi datastore — queries push down to their engine on their billing while
+        dashboards, RLS, and caching stay in Nubi. Prices as of June 2026; verify before switching.
       </p>
     </div>
   )
@@ -651,23 +636,21 @@ export default function PricingCalculator({
   fxRate = null,
   competitorsBi = null,
   competitorsOrch = null,
-  competitorsWarehouse = null,
 }) {
   const [usage, setUsage] = useState(DEFAULT_USAGE)
   const [seats, setSeats] = useState(DEFAULT_SEATS)
-  const [activeTab, setActiveTab] = useState('bi') // 'bi' | 'orchestration' | 'warehouse'
+  const [activeTab, setActiveTab] = useState('bi') // 'bi' | 'orchestration' | 'lakehouse'
   const [showComparison, setShowComparison] = useState(true)
   const [orchUsage, setOrchUsage] = useState(DEFAULT_ORCH_USAGE)
-  const [whUsage, setWhUsage] = useState(DEFAULT_WAREHOUSE_USAGE)
+  const [lhUsage, setLhUsage] = useState(DEFAULT_LAKEHOUSE_USAGE)
 
   const setField = useCallback((key, val) => setUsage((u) => ({ ...u, [key]: val })), [])
   const setSeatField = useCallback((key, val) => setSeats((s) => ({ ...s, [key]: val })), [])
   const setOrchField = useCallback((key, val) => setOrchUsage((u) => ({ ...u, [key]: val })), [])
-  const setWhField = useCallback((key, val) => setWhUsage((u) => ({ ...u, [key]: val })), [])
+  const setLhField = useCallback((key, val) => setLhUsage((u) => ({ ...u, [key]: val })), [])
 
   const biCompetitors = competitorsBi ?? FALLBACK_COMPETITORS_BI
   const orchCompetitors = competitorsOrch ?? FALLBACK_COMPETITORS_ORCHESTRATION
-  const warehouseCompetitors = competitorsWarehouse ?? FALLBACK_COMPETITORS_WAREHOUSE
 
   const recommendation = useMemo(() => recommendNubi(usage, fxRate), [usage, fxRate])
 
@@ -807,11 +790,11 @@ export default function PricingCalculator({
                   vs Data Orchestration
                 </Tab>
                 <Tab
-                  active={activeTab === 'warehouse'}
-                  onClick={() => setActiveTab('warehouse')}
-                  icon={Warehouse}
+                  active={activeTab === 'lakehouse'}
+                  onClick={() => setActiveTab('lakehouse')}
+                  icon={HardDrive}
                 >
-                  vs Warehouse / OLAP
+                  Lakehouse data cost
                 </Tab>
               </div>
 
@@ -836,11 +819,10 @@ export default function PricingCalculator({
                 />
               )}
 
-              {activeTab === 'warehouse' && (
-                <WarehouseComparisonSection
-                  competitors={warehouseCompetitors}
-                  whUsage={whUsage}
-                  onWhUsage={setWhField}
+              {activeTab === 'lakehouse' && (
+                <LakehouseSection
+                  lhUsage={lhUsage}
+                  onLhUsage={setLhField}
                   fxRate={fxRate}
                 />
               )}

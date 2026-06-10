@@ -184,12 +184,19 @@ def _query_spec_from_row(row: dict[str, Any]) -> dict[str, Any]:
     config = row.get("config") or {}
     if not isinstance(config, dict):
         config = {}
-    return {
+    spec: dict[str, Any] = {
         "name": config.get("name") or row.get("name") or "",
         "sql": config.get("sql", ""),
         "params": config.get("params") or [],
         "datastore_id": config.get("datastore_id"),
     }
+    # Output-shape contract: carry the declared output_schema ([{name,type}])
+    # so it round-trips through export/import. Absent → omitted entirely (a
+    # query without a declared contract stays contract-less on re-import).
+    output_schema = config.get("output_schema")
+    if isinstance(output_schema, list):
+        spec["output_schema"] = output_schema
+    return spec
 
 
 def _query_row_fields(env: dict[str, Any]) -> dict[str, Any]:
@@ -207,6 +214,11 @@ def _query_row_fields(env: dict[str, Any]) -> dict[str, Any]:
         "params": spec.get("params") or [],
         "datastore_id": spec.get("datastore_id"),
     }
+    # Re-import the output-shape contract when the envelope declares one (skip
+    # entirely otherwise — see _query_spec_from_row).
+    output_schema = spec.get("output_schema")
+    if isinstance(output_schema, list):
+        config["output_schema"] = output_schema
     return {"name": name, "config": config}
 
 

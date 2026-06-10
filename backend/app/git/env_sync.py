@@ -27,16 +27,32 @@ never blocks a data operation and never raises out of this module's async
 API.  The workspace repo is created lazily on the first git-env operation
 that needs to write.
 
-On-disk layout (per branch)
----------------------------
+On-disk layout (per branch) — CANONICAL CHOICE
+-----------------------------------------------
 - ``queries/<id>.sql`` + ``queries/<id>.meta.json``  (meta: name + non-SQL config)
+- ``queries/<id>.json``  (OPTIONAL output-shape sidecar: the query's declared
+  ``output_schema`` as ``[{name, type}]`` — emitted only when the config carries
+  one; loaded back into ``config['output_schema']`` on pull/import).
 - ``dashboards/<id>.json``                            (name + board config)
-- ``flows/<id>.json``                                 (name + flow spec)
+- ``flows/<slug>__<id8>/`` — the **flows-as-files** tree (``flow.toml`` +
+  per-cell ``cells/NN_<key>.{sql,py,md}`` sidecars, see ``app/git/flow_files.py``).
 
-File stems are the resource uuids so a branch round-trips losslessly through
-``resource_versions``.  Like ``app/git/remotes.py`` we drive the ``git`` CLI
-directly (branch checkout/merge are awkward through GitPython); the repo
-itself is initialised with the same identity as :mod:`app.git.sync`.
+Canonical flow layout decision
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+The per-cell directory tree (``flows/<slug>__<id8>/flow.toml`` + ``cells/…``) is
+the ONE canonical on-disk form for flows. It REPLACES the legacy single-blob
+``flows/<id>.json`` envelope: a flow is the only resource whose source spans
+multiple editable files (sql/python/markdown cells), so per-cell projection is
+what makes git diffs reviewable. The flow's REAL uuid lives in ``flow.toml``'s
+``[flow].id`` (the directory ``id8`` is only an 8-char disambiguator), so a
+pull resolves the resource id from the manifest, not from the path. Legacy
+``flows/<id>.json`` blobs are still *readable* on pull for back-compat but are
+never written by serialization.
+
+File stems for queries/boards are the resource uuids so a branch round-trips
+losslessly through ``resource_versions``.  Like ``app/git/remotes.py`` we drive
+the ``git`` CLI directly (branch checkout/merge are awkward through GitPython);
+the repo itself is initialised with the same identity as :mod:`app.git.sync`.
 """
 
 from __future__ import annotations
@@ -48,6 +64,8 @@ import subprocess
 import tempfile
 from pathlib import Path
 from typing import Any
+
+from app.git.flow_files import flow_dir, load_flow_files, serialize_flow_files
 
 # ---------------------------------------------------------------------------
 # Constants / kind mapping
@@ -97,31 +115,68 @@ def get_project_git(org_id: str, project_id: str) -> "ProjectGit":
 # ---------------------------------------------------------------------------
 
 
+def _output_schema_sidecar(config: dict[str, Any]) -> list[dict[str, str]] | None:
+    """Return the ``queries/<id>.json`` output-shape sidecar payload, or None.
+
+    The sidecar mirrors the query's declared ``output_schema`` as a list of
+    ``{name, type}`` objects (the exact persisted shape ``registry`` consumes).
+    Returns ``None`` when the config carries NO ``output_schema`` (no sidecar is
+    emitted — the file is absent on disk); an explicit empty list is a declared
+    (empty) contract and round-trips as ``[]``.
+    """
+    raw = config.get("output_schema")
+    if raw is None or not isinstance(raw, list):
+        return None
+    schema: list[dict[str, str]] = []
+    for item in raw:
+        if isinstance(item, dict) and item.get("name") is not None:
+            schema.append({"name": str(item["name"]), "type": str(item.get("type") or "text")})
+    return schema
+
+
 def serialize_version_files(
     kind: str, resource_id: str, name: str, config: dict[str, Any]
 ) -> list[dict[str, str]]:
     """Serialize one pinned version to ``{path, content}`` items.
 
     - ``query`` → ``queries/<id>.sql`` (raw SQL) + ``queries/<id>.meta.json``
-      (``{id, name, config}`` with the SQL key stripped — full fidelity).
+      (``{id, name, config}`` with the SQL key stripped — full fidelity), PLUS
+      an optional ``queries/<id>.json`` output-shape sidecar (only when the
+      config declares an ``output_schema``).
     - ``board`` → ``dashboards/<id>.json`` (``{id, name, config}``).
-    - ``flow``  → ``flows/<id>.json`` (``{id, name, spec}``).
+    - ``flow``  → the canonical flows-as-files tree under
+      ``flows/<slug>__<id8>/`` (``flow.toml`` + per-cell ``cells/NN_<key>.*``).
+      The flow's spec is ``config`` (env-pinned flow versions store the spec in
+      the version ``config`` column).
     """
     rid = str(resource_id)
     config = config or {}
     if kind == "query":
+        # The output_schema lives ONLY in the sidecar (queries/<id>.json), so it
+        # is stripped from meta.json to avoid duplication / drift.
         meta = {
             "id": rid,
             "name": name or "",
-            "config": {k: v for k, v in config.items() if k != "sql"},
+            "config": {
+                k: v for k, v in config.items() if k not in ("sql", "output_schema")
+            },
         }
-        return [
+        items = [
             {"path": f"queries/{rid}.sql", "content": str(config.get("sql", ""))},
             {
                 "path": f"queries/{rid}.meta.json",
                 "content": json.dumps(meta, indent=2, sort_keys=True),
             },
         ]
+        schema = _output_schema_sidecar(config)
+        if schema is not None:
+            items.append(
+                {
+                    "path": f"queries/{rid}.json",
+                    "content": json.dumps(schema, indent=2, sort_keys=True),
+                }
+            )
+        return items
     if kind == "board":
         doc = {"id": rid, "name": name or "", "config": config}
         return [
@@ -131,28 +186,46 @@ def serialize_version_files(
             }
         ]
     if kind == "flow":
-        doc = {"id": rid, "name": name or "", "spec": config}
-        return [
-            {
-                "path": f"flows/{rid}.json",
-                "content": json.dumps(doc, indent=2, sort_keys=True),
-            }
-        ]
+        # Canonical flow layout: the per-cell file tree (see module docstring).
+        # serialize_flow_files emits flows/<slug>__<id8>/flow.toml + cells/*.
+        return serialize_flow_files(rid, name or str(config.get("name") or ""), config)
     raise ValueError(f"Unknown version kind: {kind!r}.")
 
 
 def refs_from_paths(paths: list[str]) -> set[tuple[str, str]]:
-    """Map repo file paths to ``(kind, resource_id)`` pairs (known folders only)."""
+    """Map repo file paths to ``(kind, ref_key)`` pairs (known folders only).
+
+    For queries/boards the ``ref_key`` IS the resource uuid (the file stem).
+    For the nested flows-as-files layout (``flows/<slug>__<id8>/…``) the
+    ``ref_key`` is the flow DIRECTORY name (``<slug>__<id8>``) — the path only
+    carries an 8-char id, so the real uuid is recovered from ``flow.toml`` at
+    load time (see :func:`load_resource_at`). A legacy ``flows/<id>.json`` blob
+    still maps to ``("flow", <id>)`` for back-compat reads.
+    """
     refs: set[tuple[str, str]] = set()
     for raw in paths:
         parts = str(raw).strip().split("/")
-        if len(parts) != 2:
+        if len(parts) < 2:
             continue
-        folder, fname = parts
+        folder = parts[0]
         kind = FOLDER_KIND.get(folder)
         if kind is None:
             continue
+        if kind == "flow":
+            # Nested per-cell layout: flows/<dir>/(flow.toml|cells/…) → the dir.
+            if len(parts) >= 3:
+                refs.add((kind, parts[1]))
+            elif len(parts) == 2 and parts[1].endswith(".json"):
+                # Legacy single-blob flow: flows/<id>.json.
+                refs.add((kind, parts[1][: -len(".json")]))
+            continue
+        if len(parts) != 2:
+            continue
+        fname = parts[1]
         if kind == "query":
+            # queries/<id>.json is the output-shape SIDECAR, not a standalone
+            # resource — it is loaded alongside the .sql/.meta.json, never on
+            # its own, so it is NOT treated as a ref here.
             if fname.endswith(".meta.json"):
                 refs.add((kind, fname[: -len(".meta.json")]))
             elif fname.endswith(".sql"):
@@ -162,12 +235,58 @@ def refs_from_paths(paths: list[str]) -> set[tuple[str, str]]:
     return refs
 
 
+def _load_flow_at(
+    git: "ProjectGit", ref: str, ref_key: str
+) -> tuple[dict[str, Any], str, str] | None:
+    """Reconstruct ``(spec, name, real_id)`` for a flow at *ref*.
+
+    *ref_key* is either the nested flow DIRECTORY name (``<slug>__<id8>``) or a
+    legacy ``<id>`` stem. The real resource uuid is read from ``flow.toml``'s
+    ``[flow].id`` (falling back to the path stem for legacy blobs).
+    """
+    # Legacy single-blob flow: flows/<id>.json.
+    legacy = git.read_file(ref, f"flows/{ref_key}.json")
+    if legacy is not None:
+        doc = json.loads(legacy)
+        spec = doc.get("spec") or {}
+        if not isinstance(spec, dict):
+            return None
+        return spec, str(doc.get("name") or ""), str(doc.get("id") or ref_key)
+
+    # Nested per-cell layout: read every file under flows/<ref_key>/ relative
+    # to the flow dir so load_flow_files can re-merge sidecars.
+    base = f"flows/{ref_key}"
+    prefix = base + "/"
+    rel_files: dict[str, str] = {}
+    for path in git.list_known_files(ref):
+        if path.startswith(prefix):
+            content = git.read_file(ref, path)
+            if content is not None:
+                rel_files[path[len(prefix):]] = content
+    if "flow.toml" not in rel_files:
+        return None
+    spec = load_flow_files(rel_files)
+    import toml  # noqa: PLC0415 — only needed to recover [flow].id
+
+    meta = (toml.loads(rel_files["flow.toml"]).get("flow") or {})
+    real_id = str(meta.get("id") or "").strip()
+    return spec, str(spec.get("name") or ""), real_id or ref_key
+
+
 def load_resource_at(
     git: "ProjectGit", ref: str, kind: str, resource_id: str
-) -> tuple[dict[str, Any], str] | None:
-    """Deserialize ``(config, name)`` for a resource at *ref*; None if absent."""
+) -> tuple[dict[str, Any], str, str] | None:
+    """Deserialize ``(config, name, resource_id)`` for a resource at *ref*.
+
+    Returns None when the resource is absent. The third element is the CANONICAL
+    resource uuid: identical to the passed *resource_id* for queries/boards, but
+    recovered from ``flow.toml``'s ``[flow].id`` for flows (the ref key for a
+    flow is its directory name, which only carries an 8-char id).
+    """
     rid = str(resource_id)
     try:
+        if kind == "flow":
+            return _load_flow_at(git, ref, rid)
         if kind == "query":
             sql = git.read_file(ref, f"queries/{rid}.sql")
             meta_raw = git.read_file(ref, f"queries/{rid}.meta.json")
@@ -176,17 +295,27 @@ def load_resource_at(
             meta = json.loads(meta_raw) if meta_raw else {}
             config = dict(meta.get("config") or {})
             config["sql"] = sql if sql is not None else config.get("sql", "")
-            return config, str(meta.get("name") or "")
+            # Output-shape sidecar (queries/<id>.json): load it back into the
+            # config when present; absent → leave output_schema untouched.
+            schema_raw = git.read_file(ref, f"queries/{rid}.json")
+            if schema_raw is not None:
+                try:
+                    schema = json.loads(schema_raw)
+                    if isinstance(schema, list):
+                        config["output_schema"] = schema
+                except json.JSONDecodeError:
+                    pass
+            return config, str(meta.get("name") or ""), rid
         folder = KIND_FOLDER[kind]
         raw = git.read_file(ref, f"{folder}/{rid}.json")
         if raw is None:
             return None
         doc = json.loads(raw)
-        config = doc.get("spec" if kind == "flow" else "config") or {}
+        config = doc.get("config") or {}
         if not isinstance(config, dict):
             return None
-        return config, str(doc.get("name") or "")
-    except (json.JSONDecodeError, GitEnvError, OSError):
+        return config, str(doc.get("name") or ""), rid
+    except (json.JSONDecodeError, GitEnvError, OSError, ValueError):
         return None
 
 
@@ -539,11 +668,11 @@ async def _import_refs(
 
     store = get_env_store()
     counts: dict[str, int] = {}
-    for kind, rid in sorted(refs):
-        loaded = load_resource_at(git, head, kind, rid)
+    for kind, ref_key in sorted(refs):
+        loaded = load_resource_at(git, head, kind, ref_key)
         if loaded is None:
             continue
-        config, _name = loaded
+        config, _name, rid = loaded  # rid is the CANONICAL uuid (flow.toml id)
         try:
             pointer = await store.get_pointer(kind, rid, env["id"])
             version = await store.create_version(

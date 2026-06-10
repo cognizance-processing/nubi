@@ -16,15 +16,16 @@ import {
   Check, X, ArrowRight, ChevronRight, Headset, Star,
   Zap, Database, Bot, Server, Users, XCircle, CheckCircle2,
   SlidersHorizontal, TrendingDown, Shield, Wallet, GitFork, Gauge,
-  Warehouse,
+  HardDrive,
 } from 'lucide-react'
 import {
   TIERS, BILLING_MODEL, BI_COMPARISON, ORCH_COMPARISON, PRICING_FAQ, ENTERPRISE_NOTE,
   CALC_OPTIONS, ORCH_CALC_OPTIONS, OVERAGE_RATES, OVERAGE_NOTE,
 } from '../data/pricing.js'
 import {
-  fetchPricingData, recommendNubi, estimateWarehouseCu,
-  FALLBACK_COMPETITORS_WAREHOUSE, WAREHOUSE_CU_MULTIPLIER,
+  fetchPricingData,
+  estimateLakehouseCost,
+  LAKEHOUSE_SCAN_USD_PER_TIB, LAKEHOUSE_STORAGE_USD_PER_GB, LAKEHOUSE_FREE_SCAN_TIB,
 } from '../lib/pricing.js'
 
 const fmtUSD = (n) => {
@@ -241,7 +242,7 @@ function CostCalculator() {
         ))}
       </div>
       <p className="px-6 sm:px-8 pb-6 text-xs text-muted opacity-70 leading-relaxed">
-        Estimated annual cost from each vendor’s public model (before your own warehouse compute).
+        Estimated annual cost from each vendor’s public model (BI platform only; lakehouse data cost is separate).
         † Looker is quote-only; figure is directional. Your actual cost depends on contract terms — verify before switching.
       </p>
     </div>
@@ -404,44 +405,25 @@ function OrchCalculator() {
 }
 
 /* ─────────────────────────────────────────────────────────────────────────── */
-/*  Warehouse cost calculator — the THIRD calculator                           */
+/*  Lakehouse cost calculator — the THIRD calculator                           */
 /* ─────────────────────────────────────────────────────────────────────────── */
 
-function WarehouseCalculator() {
-  const [dataGb, setDataGb] = useState(100)
+function LakehouseCalculator() {
+  const [storageGb, setStorageGb] = useState(100)
   const [queries, setQueries] = useState(5000)
   const [scanGb, setScanGb] = useState(2)
 
-  const whUsage = { data_gb: dataGb, queries_per_month: queries, avg_gb_scanned: scanGb }
-  const warehouseCu = estimateWarehouseCu(whUsage)
-  const rec = recommendNubi(
-    {
-      storage_gb: dataGb, compute_units: warehouseCu, embedded_sessions: 0,
-      agent_runs: 0, connectors: 1, flow_runs_per_month: 0,
-    },
-    null,
-    { minTierId: 'pro' },
-  )
-  const nubiCost = Math.round(rec.tier.usd_monthly + rec.overage_zar / 16.26)
+  const est = estimateLakehouseCost({
+    queries_per_month: queries,
+    avg_gb_scanned: scanGb,
+    storage_gb: storageGb,
+  })
 
-  const results = [
-    {
-      name: `Nubi ${rec.tier.name} + warehouse`,
-      note: `Full BI platform included · warehouse scans at ${WAREHOUSE_CU_MULTIPLIER}× CU`,
-      isNubi: true,
-      cost: nubiCost,
-    },
-    ...FALLBACK_COMPETITORS_WAREHOUSE.map((c) => ({
-      name: c.name,
-      note: c.note,
-      isNubi: false,
-      estimate: true,
-      cost: Math.round(c.model(whUsage)),
-    })),
-  ].sort((a, b) => a.cost - b.cost)
-
-  const max = Math.max(...results.map((r) => r.cost), 1)
-  const outOfEnvelope = dataGb > 1000 || scanGb > 20
+  const withinFree = est.billable_tb === 0
+  const bqScanCost = Math.max(0, est.tb_scanned - 1) * 6.25
+  const bqStorageCost = Math.max(0, storageGb - 10) * 0.02
+  const bqTotal = bqScanCost + bqStorageCost
+  const savingsVsBq = Math.max(0, bqTotal - est.total_usd)
 
   return (
     <div className="rounded-2xl border border-border bg-surface shadow-sm overflow-hidden">
@@ -449,94 +431,143 @@ function WarehouseCalculator() {
       <div className="grid md:grid-cols-3 gap-6 p-6 sm:p-8 border-b border-border bg-surface-2">
         <div>
           <div className="flex items-baseline justify-between mb-3">
-            <label htmlFor="wh-data" className="text-sm font-semibold text-fg">Dataset size (GB)</label>
-            <span className="font-display text-xl font-bold text-brand-blue">{dataGb.toLocaleString()}</span>
+            <label htmlFor="lh-storage" className="text-sm font-semibold text-fg">Storage (GB)</label>
+            <span className="font-display text-xl font-bold text-brand-blue">{storageGb.toLocaleString()}</span>
           </div>
           <input
-            id="wh-data" type="range" min="10" max="2000" step="10" value={dataGb}
-            onChange={(e) => setDataGb(Number(e.target.value))}
-            className="nubi-range w-full" aria-label="Dataset size in GB"
+            id="lh-storage" type="range" min="1" max="5000" step="10" value={storageGb}
+            onChange={(e) => setStorageGb(Number(e.target.value))}
+            className="nubi-range w-full" aria-label="Storage in GB"
           />
-          <div className="flex justify-between text-[11px] text-muted mt-1.5"><span>10 GB</span><span>2 TB</span></div>
+          <div className="flex justify-between text-[11px] text-muted mt-1.5"><span>1 GB</span><span>5 TB</span></div>
         </div>
         <div>
           <div className="flex items-baseline justify-between mb-3">
-            <label htmlFor="wh-queries" className="text-sm font-semibold text-fg">Warehouse queries / mo</label>
+            <label htmlFor="lh-queries" className="text-sm font-semibold text-fg">Server-side queries / mo</label>
             <span className="font-display text-xl font-bold text-brand-blue">{fmtNum(queries)}</span>
           </div>
           <input
-            id="wh-queries" type="range" min="100" max="50000" step="100" value={queries}
+            id="lh-queries" type="range" min="0" max="50000" step="100" value={queries}
             onChange={(e) => setQueries(Number(e.target.value))}
-            className="nubi-range w-full" aria-label="Warehouse queries per month"
+            className="nubi-range w-full" aria-label="Server-side queries per month"
           />
-          <div className="flex justify-between text-[11px] text-muted mt-1.5"><span>100</span><span>50k</span></div>
+          <div className="flex justify-between text-[11px] text-muted mt-1.5"><span>0</span><span>50k</span></div>
         </div>
         <div>
           <div className="flex items-baseline justify-between mb-3">
-            <label htmlFor="wh-scan" className="text-sm font-semibold text-fg">Avg scanned / query (GB)</label>
+            <label htmlFor="lh-scan" className="text-sm font-semibold text-fg">Avg scanned / query (GB)</label>
             <span className="font-display text-xl font-bold text-brand-blue">{scanGb}</span>
           </div>
           <input
-            id="wh-scan" type="range" min="0.5" max="50" step="0.5" value={scanGb}
+            id="lh-scan" type="range" min="0.1" max="50" step="0.1" value={scanGb}
             onChange={(e) => setScanGb(Number(e.target.value))}
             className="nubi-range w-full" aria-label="Average GB scanned per query"
           />
-          <div className="flex justify-between text-[11px] text-muted mt-1.5"><span>0.5</span><span>50</span></div>
+          <div className="flex justify-between text-[11px] text-muted mt-1.5"><span>0.1</span><span>50</span></div>
         </div>
       </div>
 
       {/* Headline */}
       <div className="flex flex-wrap items-center justify-center gap-2 px-6 py-4 text-center bg-brand-teal/[0.06] border-b border-border">
-        <Warehouse size={18} className="text-brand-teal" />
+        <HardDrive size={18} className="text-brand-teal" />
         <span className="text-sm sm:text-base text-fg">
-          Hosted warehouse on Nubi ≈ <strong className="text-brand-teal font-bold">{fmtUSD(nubiCost)}/mo</strong>{' '}
-          — and that price includes the entire BI platform, not just the engine.
+          {withinFree
+            ? <><strong className="text-brand-teal font-bold">Free</strong> — within the 1 TiB/mo free scan tier</>
+            : <>Lakehouse data cost ≈ <strong className="text-brand-teal font-bold">{fmtUSD(est.total_usd)}/mo</strong>
+              {savingsVsBq > 1 && <> — <strong className="text-brand-teal font-bold">{fmtUSD(savingsVsBq)}</strong> less than BigQuery</>}</>
+          }
+          {' '}<span className="text-muted text-xs">(dashboard views are always free)</span>
         </span>
       </div>
 
-      {/* Honest out-of-envelope callout */}
-      {outOfEnvelope && (
-        <div className="px-6 py-3 text-xs sm:text-sm bg-amber-50 dark:bg-amber-900/20 border-b border-amber-200 dark:border-amber-800 text-amber-800 dark:text-amber-200">
-          <strong>Honest note:</strong> at this scale a dedicated warehouse is the better tool — Nubi's
-          pool runs each query on one machine. Connect your own BigQuery or ClickHouse as a Nubi
-          datastore instead; queries push down to their engine while dashboards, RLS, and caching stay in Nubi.
+      {/* Cost breakdown */}
+      <div className="grid sm:grid-cols-3 divide-y sm:divide-y-0 sm:divide-x divide-border border-b border-border">
+        {/* Scan cost */}
+        <div className="px-6 py-5">
+          <p className="text-xs font-semibold uppercase tracking-widest text-muted mb-1">Scan cost</p>
+          <p className="font-display text-2xl font-bold text-fg tabular-nums">
+            {fmtUSD(est.scan_usd)}<span className="text-sm font-normal text-muted">/mo</span>
+          </p>
+          <p className="text-xs text-muted mt-1">
+            {est.tb_scanned.toFixed(2)} TiB total — {est.billable_tb.toFixed(2)} TiB billable<br />
+            ($5/TiB · first {LAKEHOUSE_FREE_SCAN_TIB} TiB free)
+          </p>
         </div>
-      )}
-
-      {/* Bars */}
-      <div className="p-6 sm:p-8 flex flex-col gap-3">
-        {results.map((r) => (
-          <div key={r.name} className="grid grid-cols-[120px_1fr_auto] sm:grid-cols-[190px_1fr_auto] items-center gap-3">
-            <div className="min-w-0">
-              <div className={`text-sm font-semibold truncate ${r.isNubi ? 'text-brand-teal' : 'text-fg'}`}>
-                {r.isNubi && <Star size={12} className="inline mr-1 -mt-0.5 text-brand-teal" strokeWidth={2.5} />}
-                {r.name}{r.estimate ? <sup className="text-muted">†</sup> : null}
-              </div>
-              <div className="text-[11px] text-muted truncate hidden sm:block">{r.note}</div>
-            </div>
-            <div className="h-7 rounded-md bg-surface-2 overflow-hidden">
-              <div
-                className={`h-full rounded-md ${r.isNubi ? '' : 'bg-brand-blue/25'}`}
-                style={{
-                  width: `${Math.max(r.isNubi ? 0 : 2, (r.cost / max) * 100)}%`,
-                  background: r.isNubi ? 'linear-gradient(90deg, #2456a6, #17b3a3)' : undefined,
-                }}
-              />
-            </div>
-            <div className={`text-sm font-bold tabular-nums text-right w-16 ${r.isNubi ? 'text-brand-teal' : 'text-fg'}`}>
-              {fmtUSD(r.cost)}
-            </div>
-          </div>
-        ))}
+        {/* Storage cost */}
+        <div className="px-6 py-5">
+          <p className="text-xs font-semibold uppercase tracking-widest text-muted mb-1">Storage cost</p>
+          <p className="font-display text-2xl font-bold text-fg tabular-nums">
+            {fmtUSD(est.storage_usd)}<span className="text-sm font-normal text-muted">/mo</span>
+          </p>
+          <p className="text-xs text-muted mt-1">
+            {storageGb.toLocaleString()} GB × ${LAKEHOUSE_STORAGE_USD_PER_GB}/GB<br />
+            (Cloudflare R2 — no egress fees)
+          </p>
+        </div>
+        {/* Dashboard views */}
+        <div className="px-6 py-5">
+          <p className="text-xs font-semibold uppercase tracking-widest text-muted mb-1">Dashboard views</p>
+          <p className="font-display text-2xl font-bold text-brand-teal tabular-nums">
+            Free
+          </p>
+          <p className="text-xs text-muted mt-1">
+            Browser DuckDB kernel — compute<br />
+            runs in your users' browser, not ours
+          </p>
+        </div>
       </div>
-      <p className="px-6 sm:px-8 pb-6 text-xs text-muted opacity-70 leading-relaxed">
-        † Fair-comparison notes: vendor estimates assume well-tuned auto-idle / auto-suspend — default
-        settings usually cost more; BigQuery's free tier (1 TB scan + 10 GB storage/mo) is included.
-        These engines are warehouse-only (no dashboards, embedding, or flows) and genuinely outperform
-        Nubi's single-machine pool on multi-TB scans — if you already run one, connect it as a Nubi
-        datastore instead of migrating data. Directional estimates from public pricing pages
-        (June 2026), not quotes.
-      </p>
+
+      {/* Pre-run estimate callout */}
+      <div className="flex items-start gap-3 px-6 py-4 border-b border-border bg-surface-2/60">
+        <Database size={16} className="mt-0.5 shrink-0 text-brand-blue" />
+        <p className="text-xs text-muted leading-relaxed">
+          <strong className="text-fg">Pre-run scan estimate</strong> — like BigQuery's dry-run, Nubi shows
+          you how many bytes a query will scan <em>before</em> you run it, so there are no surprise costs.
+          Queries that hit the rollup cache scan zero bytes.
+        </p>
+      </div>
+
+      {/* BigQuery reference comparison */}
+      <div className="px-6 py-5">
+        <p className="text-xs font-semibold uppercase tracking-widest text-muted mb-3">
+          Comparable: Google BigQuery on-demand
+        </p>
+        <div className="rounded-xl border border-border overflow-hidden">
+          <table className="w-full text-sm">
+            <thead>
+              <tr className="border-b border-border bg-surface-2">
+                <th className="text-left px-4 py-2 text-xs font-semibold text-muted uppercase tracking-wide"> </th>
+                <th className="text-right px-4 py-2 text-xs font-semibold text-muted uppercase tracking-wide">Scan rate</th>
+                <th className="text-right px-4 py-2 text-xs font-semibold text-muted uppercase tracking-wide">Storage rate</th>
+                <th className="text-right px-4 py-2 text-xs font-semibold text-muted uppercase tracking-wide">This workload</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr className="border-b border-border bg-accent/5">
+                <td className="px-4 py-2.5 font-semibold text-brand-teal flex items-center gap-1.5">
+                  <Star size={12} className="text-brand-teal" strokeWidth={2.5} /> Nubi Lakehouse
+                </td>
+                <td className="px-4 py-2.5 text-right text-brand-teal font-bold">$5/TiB</td>
+                <td className="px-4 py-2.5 text-right text-brand-teal font-bold">$0.02/GB</td>
+                <td className="px-4 py-2.5 text-right font-bold text-brand-teal">{fmtUSD(est.total_usd)}/mo</td>
+              </tr>
+              <tr>
+                <td className="px-4 py-2.5 font-medium text-muted">BigQuery on-demand</td>
+                <td className="px-4 py-2.5 text-right text-muted">$6.25/TiB</td>
+                <td className="px-4 py-2.5 text-right text-muted">$0.02/GB</td>
+                <td className="px-4 py-2.5 text-right text-muted">{fmtUSD(bqTotal)}/mo</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+        <p className="mt-3 text-xs text-muted opacity-80 leading-relaxed">
+          Same pay-per-scan model, ~20% cheaper scan rate. First 1 TiB/month free on both.
+          BigQuery also charges for dashboard query refreshes — Nubi dashboard views run in the
+          browser and scan zero bytes. If you outgrow the single-node lakehouse, connect your own
+          BigQuery or Snowflake as a Nubi datastore and queries push down to their engine, on their
+          billing, while dashboards, RLS, and caching stay in Nubi.
+        </p>
+      </div>
     </div>
   )
 }
@@ -756,7 +787,7 @@ export default function PricingPage() {
             <Eyebrow>The viewer tax</Eyebrow>
             <h2 className="font-display text-3xl sm:text-4xl font-bold text-fg mb-3">What 500 viewers cost</h2>
             <p className="text-sm sm:text-base text-muted max-w-2xl mx-auto">
-              Illustrative annual cost to serve ~500 dashboard viewers, before warehouse compute,
+              Illustrative annual cost to serve ~500 dashboard viewers (lakehouse data cost is separate),
               derived from each vendor’s public model. Everyone else scales with viewers or queries. We don’t.
             </p>
           </div>
@@ -801,26 +832,28 @@ export default function PricingPage() {
         </div>
       </section>
 
-      {/* Warehouse — what the lakehouse is, what it costs, where it ends */}
+      {/* Lakehouse — what it is, what it costs, how to grow out of it */}
       <section className="py-14 sm:py-20">
         <div className="max-w-5xl mx-auto px-4 sm:px-6 lg:px-8">
           <div className="text-center mb-10">
-            <Eyebrow><span className="inline-flex items-center gap-1.5"><Warehouse size={12} /> Hosted warehouse · Pro &amp; Enterprise</span></Eyebrow>
-            <h2 className="font-display text-3xl sm:text-4xl font-bold text-fg mb-3">A warehouse line item of zero — within its limits</h2>
+            <Eyebrow><span className="inline-flex items-center gap-1.5"><HardDrive size={12} /> Lakehouse data · all plans</span></Eyebrow>
+            <h2 className="font-display text-3xl sm:text-4xl font-bold text-fg mb-3">Pay per TiB scanned — dashboard views are free</h2>
             <p className="text-sm sm:text-base text-muted max-w-2xl mx-auto">
-              Your datasets live as open Parquet in object storage; DuckDB queries them on dedicated
-              8 GB+ machines, billed as ordinary compute units at {WAREHOUSE_CU_MULTIPLIER}× — no per-TB
-              scan fees, no always-on cluster. The honest scope: each query runs on one machine, so the
-              sweet spot is tables up to ~1B rows with selective scans. Bigger than that? Connect the
-              warehouse you already have as a datastore and Nubi pushes queries down to it.
+              Your data lives as open Parquet on Cloudflare R2. DuckDB queries it on-demand —
+              you pay <strong className="text-fg">$5/TiB scanned</strong> (first 1 TiB/month always free),
+              plus <strong className="text-fg">$0.02/GB/month</strong> storage. That's cheaper than
+              BigQuery. Dashboard views run in the user's browser — the DuckDB-WASM kernel costs us
+              nothing, so we charge you nothing for them. When you outgrow the single-node lakehouse,
+              connect your own BigQuery or Snowflake — Nubi pushes queries down to their engine while
+              dashboards, RLS, and caching stay in Nubi.
             </p>
           </div>
 
-          {/* Calculator 3 — warehouse */}
+          {/* Calculator 3 — lakehouse */}
           <div className="text-center mb-8">
-            <Eyebrow><span className="inline-flex items-center gap-1.5"><SlidersHorizontal size={12} /> Calculator 3 · Warehouse</span></Eyebrow>
+            <Eyebrow><span className="inline-flex items-center gap-1.5"><SlidersHorizontal size={12} /> Calculator 3 · Lakehouse data cost</span></Eyebrow>
           </div>
-          <WarehouseCalculator />
+          <LakehouseCalculator />
         </div>
       </section>
 
