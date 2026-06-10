@@ -240,8 +240,15 @@ function topoSortOrThrow(nodes, edges) {
       if (d === 0) unlocked.push(to)
     }
     if (unlocked.length) {
-      queue.push(...unlocked.sort())
-      queue.sort()
+      // Sort only this freshly-unlocked batch (stable, lexicographic) and append.
+      // Previously the WHOLE queue was re-sorted after every unlock — O(n² log n)
+      // for an n-node graph. Sorting each batch once keeps output deterministic
+      // (a valid, stable topological order) at O(n log n) overall. The exact
+      // ordering is batch-grouped rather than a global priority queue, but it is
+      // still deterministic — which is all `order` (consumed in topological /
+      // firing order by dirtySubgraph) requires.
+      unlocked.sort()
+      queue.push(...unlocked)
     }
   }
 

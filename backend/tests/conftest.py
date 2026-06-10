@@ -48,6 +48,14 @@ os.environ["COOKIE_SECURE"] = "false"
 os.environ["ENV"] = "test"
 os.environ.pop("CORS_ORIGINS", None)
 
+# The rate limiter is a real, IP-keyed middleware (see app/middleware/ratelimit.py).
+# The whole hermetic suite drives a SINGLE in-process TestClient, so EVERY request
+# shares one client-IP bucket — with limiting on, thousands of suite requests would
+# exhaust the per-IP cap and 429 unrelated tests. Disable it globally here (the
+# module's documented dev/test escape hatch); test_ratelimit.py re-enables it in
+# isolation to verify the limiter itself still works.
+os.environ.setdefault("NUBI_RATELIMIT_ENABLED", "false")
+
 
 # ---------------------------------------------------------------------------
 # In-memory fake database

@@ -484,6 +484,7 @@ async def validate_flow(
 async def create_scheduled_query(
     body: ScheduledQueryIn,
     user: dict[str, Any] = Depends(current_user),
+    identity: VerifiedIdentity = Depends(verified_identity),
     repo: Repo = Depends(get_repo),
     x_project_id: str | None = Header(default=None, alias="X-Project-Id"),
 ) -> dict[str, Any]:
@@ -526,12 +527,20 @@ async def create_scheduled_query(
 
     project_id = await _resolve_project_id(org_id, x_project_id)
 
+    # SECURITY (B2): this endpoint persists an ENABLED, SCHEDULED flow, so the
+    # owner's RLS policies MUST be snapshotted onto the stored spec — otherwise
+    # the scheduler drains the query with claims=None → NO RLS → cross-tenant
+    # leak on every tick. Snapshot before persist (mirrors create_flow).
+    spec_to_store = _snapshot_owner_policies(
+        spec.model_dump() if spec is not None else spec_data, identity
+    )
+
     store = get_flow_store()
     flow = await store.create_flow(
         org_id=org_id,
         created_by=str(user["id"]),
         name=body.name,
-        spec=spec.model_dump() if spec is not None else spec_data,
+        spec=spec_to_store,
         enabled=True,
         schedule=body.schedule,
         next_run_at=next_run_at,
@@ -646,12 +655,20 @@ async def create_blend(
     now = datetime.now(timezone.utc)
     next_run_at = _compute_next_run_at(body.schedule, now)
 
+    # SECURITY (B2): a blend is an ENABLED, SCHEDULED flow whose refresh task
+    # re-runs on cron with claims=None. Snapshot the owner's RLS policies onto
+    # the PERSISTED spec (not just the transient immediate-run claims below), so
+    # every scheduled refresh row-filters under the owner's scope.
+    spec_to_store = _snapshot_owner_policies(
+        spec.model_dump() if spec is not None else spec_data, identity
+    )
+
     store = get_flow_store()
     flow = await store.create_flow(
         org_id=org_id,
         created_by=str(user["id"]),
         name=body.name,
-        spec=spec.model_dump() if spec is not None else spec_data,
+        spec=spec_to_store,
         enabled=True,
         schedule=body.schedule,
         next_run_at=next_run_at,

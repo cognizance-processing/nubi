@@ -30,7 +30,7 @@
  * location remains the top-level spec fields; the props shim is renderer-internal.
  */
 
-import { useState, useEffect, useMemo, useRef } from 'react'
+import { useState, useEffect, useMemo, useRef, useCallback } from 'react'
 import GridCanvas from './grid/GridCanvas.jsx'
 import TabBar from './TabBar.jsx'
 import { getBreakpointFromWidth } from './grid/breakpoints.js'
@@ -298,15 +298,11 @@ function buildVariableDefaults(specVariables) {
  * variable.  Used by DashboardViewPage to write the new value back to URL search
  * params so the state survives a refresh and is shareable.
  */
-export default function SpecRenderer({ spec, initialVariables = {}, onVariableChange, forceBreakpoint, activeTabId, onTabChange, editMode = false }) {
-  if (!spec) {
-    return (
-      <div className="flex items-center justify-center py-16 text-sm text-muted">
-        No spec provided.
-      </div>
-    )
-  }
-
+// Inner component — ASSUMES `spec` is non-null (the null-guard lives in the
+// thin wrapper below). Because the early return is gone, every hook here runs
+// unconditionally on every render, satisfying the Rules of Hooks even as `spec`
+// transitions undefined → loaded (async fetch / embed hydration).
+function SpecRendererInner({ spec, initialVariables = {}, onVariableChange, forceBreakpoint, activeTabId, onTabChange, editMode = false }) {
   const cols = spec.layout?.cols ?? 12
   const rowHeight = spec.layout?.row_height ?? 60
   const allWidgets = spec.widgets ?? []
@@ -323,7 +319,6 @@ export default function SpecRenderer({ spec, initialVariables = {}, onVariableCh
 
   // Partition out drawer widgets (drawer:true) — they render in slide-overs,
   // not on the main grid. Group them by drawer_group ('filters' or 'dg_*').
-  // eslint-disable-next-line react-hooks/rules-of-hooks
   const { widgets, drawerGroups } = useMemo(() => {
     const grid = []
     const groups = {}
@@ -338,7 +333,6 @@ export default function SpecRenderer({ spec, initialVariables = {}, onVariableCh
     return { widgets: grid, drawerGroups: groups }
   }, [JSON.stringify(allWidgets)])
 
-  // eslint-disable-next-line react-hooks/rules-of-hooks
   const [openDrawer, setOpenDrawer] = useState(null)
   const hasFilters = (drawerGroups.filters?.length ?? 0) > 0
 
@@ -353,7 +347,6 @@ export default function SpecRenderer({ spec, initialVariables = {}, onVariableCh
   // to before (no TabBar, no widget filtering).
   const tabs = Array.isArray(spec.tabs) ? spec.tabs : []
   const firstTabId = tabs[0]?.id ?? null
-  // eslint-disable-next-line react-hooks/rules-of-hooks
   const [internalTabId, setInternalTabId] = useState(null)
   const effectiveTabId = activeTabId ?? internalTabId ?? firstTabId
   const setTab = onTabChange ?? setInternalTabId
@@ -384,7 +377,6 @@ export default function SpecRenderer({ spec, initialVariables = {}, onVariableCh
   // locked params from an embed token cannot be overridden by URL params.
   // A future embed integration should populate initialVariables from the token
   // and strip the same keys from the URL before passing the remainder here.
-  // eslint-disable-next-line react-hooks/rules-of-hooks
   const variableDefaults = useMemo(
     () => ({
       ...buildVariableDefaults(spec.variables),
@@ -394,7 +386,6 @@ export default function SpecRenderer({ spec, initialVariables = {}, onVariableCh
     [JSON.stringify(spec.variables), JSON.stringify(initialVariables)],
   )
 
-  // eslint-disable-next-line react-hooks/rules-of-hooks
   const layouts = useMemo(
     () => buildLayouts({ ...spec, widgets: tabbedWidgets }, cols, colsByBp),
     // Rebuild when grid widgets or the per-breakpoint overrides change.
@@ -404,12 +395,9 @@ export default function SpecRenderer({ spec, initialVariables = {}, onVariableCh
 
   // Measure the container width via a ResizeObserver so breakpoint selection
   // tracks the live layout (replaces RGL's useContainerWidth hook).
-  // eslint-disable-next-line react-hooks/rules-of-hooks
   const containerRef = useRef(null)
-  // eslint-disable-next-line react-hooks/rules-of-hooks
   const [width, setWidth] = useState(1200)
 
-  // eslint-disable-next-line react-hooks/rules-of-hooks
   useEffect(() => {
     const el = containerRef.current
     if (!el) return
@@ -432,7 +420,6 @@ export default function SpecRenderer({ spec, initialVariables = {}, onVariableCh
   // (already-filtered) layout array.
   const renderBreakpoint = forceBreakpoint ?? getBreakpointFromWidth(breakpoints, width || 1200)
   const visibleWidgets = tabbedWidgets.filter(w => !isHiddenAt(w, renderBreakpoint))
-  // eslint-disable-next-line react-hooks/rules-of-hooks
   const visibleWidgetsById = useMemo(
     () => new Map(visibleWidgets.map(w => [w.id, w])),
     [visibleWidgets],
@@ -453,8 +440,39 @@ export default function SpecRenderer({ spec, initialVariables = {}, onVariableCh
     ? { x: spec.layout.container_padding[0] ?? 0, y: spec.layout.container_padding[1] ?? 0 }
     : { x: spec.layout?.padding_x ?? 0, y: spec.layout?.padding_y ?? 0 }
 
-  // eslint-disable-next-line react-hooks/rules-of-hooks
   const bgStyle = useMemo(() => backgroundToCss(spec.background), [JSON.stringify(spec.background)])
+
+  // Stable per-cell renderer. GridCanvas's renderGridItem useCallback depends on
+  // renderItem, so an inline arrow here would rebuild it every render and remount
+  // the entire widget subtree on any SpecRenderer state change (width/ResizeObserver,
+  // tab switch, variable change). Memoize so it only rebuilds when the visible
+  // widget set or editMode actually changes. (setOpenDrawer is a stable state
+  // setter; included for lint correctness. styleToCss / WidgetComponent are
+  // module-level and need no dep.)
+  const renderItem = useCallback((item) => {
+    const widget = visibleWidgetsById.get(item.i)
+    if (!widget) return null
+    // When a widget declares its own style (incl. transparent bg) don't
+    // force the opaque default surface — let the style win.
+    const customStyle = styleToCss(widget.style)
+    const hasCustomBg = customStyle && (
+      'background' in customStyle || 'backgroundColor' in customStyle || 'backgroundImage' in customStyle
+    )
+    // Filter widgets contain absolutely-positioned dropdown popovers.
+    // overflow-hidden clips those dropdowns (even when portaled, a stacking
+    // ancestor with overflow:hidden can suppress the portal's z-index in some
+    // browsers). Use overflow-visible for filter cells so open dropdowns
+    // are never clipped; the portal approach (W3-B) makes this fully safe.
+    const isFilter = widget.type === 'filter'
+    return (
+      <div
+        className={`w-full h-full rounded-xl ${isFilter ? 'overflow-visible' : 'overflow-hidden'} ${hasCustomBg ? '' : 'bg-surface border border-border shadow-sm'}`}
+        style={customStyle}
+      >
+        <WidgetComponent widget={widget} onOpenDrawer={setOpenDrawer} editMode={editMode} />
+      </div>
+    )
+  }, [visibleWidgetsById, editMode, setOpenDrawer])
 
   return (
     <VariableProvider initialValues={variableDefaults} onVariableChange={onVariableChange}>
@@ -505,30 +523,7 @@ export default function SpecRenderer({ spec, initialVariables = {}, onVariableCh
             draggable={false}
             resizable={false}
             compaction={compactionMode}
-            renderItem={(item) => {
-              const widget = visibleWidgetsById.get(item.i)
-              if (!widget) return null
-              // When a widget declares its own style (incl. transparent bg) don't
-              // force the opaque default surface — let the style win.
-              const customStyle = styleToCss(widget.style)
-              const hasCustomBg = customStyle && (
-                'background' in customStyle || 'backgroundColor' in customStyle || 'backgroundImage' in customStyle
-              )
-              // Filter widgets contain absolutely-positioned dropdown popovers.
-              // overflow-hidden clips those dropdowns (even when portaled, a stacking
-              // ancestor with overflow:hidden can suppress the portal's z-index in some
-              // browsers). Use overflow-visible for filter cells so open dropdowns
-              // are never clipped; the portal approach (W3-B) makes this fully safe.
-              const isFilter = widget.type === 'filter'
-              return (
-                <div
-                  className={`w-full h-full rounded-xl ${isFilter ? 'overflow-visible' : 'overflow-hidden'} ${hasCustomBg ? '' : 'bg-surface border border-border shadow-sm'}`}
-                  style={customStyle}
-                >
-                  <WidgetComponent widget={widget} onOpenDrawer={setOpenDrawer} editMode={editMode} />
-                </div>
-              )
-            }}
+            renderItem={renderItem}
           />
         )}
       </div>
@@ -541,4 +536,25 @@ export default function SpecRenderer({ spec, initialVariables = {}, onVariableCh
       />
     </VariableProvider>
   )
+}
+
+// ---------------------------------------------------------------------------
+// SpecRenderer (public default export) — thin null-guard WRAPPER.
+// ---------------------------------------------------------------------------
+//
+// Keeping the null-guard out here (and out of SpecRendererInner) means the inner
+// component's hooks always run unconditionally. When `spec` transitions
+// undefined → loaded (async fetch / embed hydration), React mounts a fresh
+// SpecRendererInner with a consistent hook order instead of throwing
+// "Rendered more hooks than during the previous render". The export name/shape
+// is unchanged — callers still `import SpecRenderer from '.../SpecRenderer.jsx'`.
+export default function SpecRenderer(props) {
+  if (!props.spec) {
+    return (
+      <div className="flex items-center justify-center py-16 text-sm text-muted">
+        No spec provided.
+      </div>
+    )
+  }
+  return <SpecRendererInner {...props} />
 }

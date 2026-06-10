@@ -514,6 +514,12 @@ def route_to_rollup_shape(plan: PhysicalPlan, registry: Any) -> RollupRouteResul
     object, same cache_key) so RLS + cache behaviour is preserved on the
     non-routed path.
     """
+    # PERF (hot path): the rollup registry is empty in the common/default case
+    # (no built rollups). Short-circuit BEFORE the sqlglot parse so every plain
+    # query doesn't pay extract_shape()'s pure-Python parse cost for nothing.
+    if not registry.all_rollups():
+        return RollupRouteResult(plan, False, reason="no rollups registered")
+
     # Lazy import to avoid a cycle (preagg imports query_log; planner imports
     # query_log; preagg imports planner only at call sites).
     from app.connectors.query_log import extract_shape  # noqa: PLC0415
@@ -544,10 +550,13 @@ def route_to_rollup_shape(plan: PhysicalPlan, registry: Any) -> RollupRouteResul
                 break
         if not ok_measures:
             continue
-        # Rule 5: every filtered column present in the rollup.
-        roll_cols = roll_dims | set(rollup.rls_keys) | {
-            c for (_f, c) in roll_measures if c != "*"
-        }
+        # Rule 5: every filtered column present in the rollup GRAIN.
+        # SECURITY/CORRECTNESS: only grain columns (dims + RLS keys) survive the
+        # rollup verbatim. A measure's SOURCE column (e.g. `amount` behind
+        # `sum_amount`) does NOT exist in the rollup, so a `WHERE amount > 100`
+        # would reference a missing column and produce wrong results / an error.
+        # Such a filter is never sound post-rollup → leave the plan untouched.
+        roll_cols = roll_dims | set(rollup.rls_keys)
         if not q_filter_cols.issubset(roll_cols):
             continue
 

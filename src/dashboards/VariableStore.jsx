@@ -142,7 +142,18 @@ export const getResolvedParams = resolveParams
 // React context
 // ---------------------------------------------------------------------------
 
-const VariableContext = createContext(null)
+// Split contexts to bound re-render fan-out (Finding 3):
+//  - VariableActionsContext holds ONLY stable references (the setter + the
+//    filter graph). Its identity never changes after mount, so components that
+//    only need to SET a variable (useSetVariable) never re-render when variable
+//    VALUES change.
+//  - VariableValuesContext holds the changing `variables` map.
+//  - VariableEpochsContext holds the cascade `staleEpochs` map.
+// Keeping them separate means a single variable change re-renders only the
+// value/epoch readers, not every consumer in a 30-widget dashboard.
+const VariableActionsContext = createContext(null)
+const VariableValuesContext = createContext(null)
+const VariableEpochsContext = createContext(null)
 
 // Default debounce for cascading option refires. A deep cascade (country → city
 // → district …) must not fire one round-trip per keystroke; we coalesce rapid
@@ -254,30 +265,50 @@ export function VariableProvider({
     if (cascadeTimerRef.current) clearTimeout(cascadeTimerRef.current)
   }, [])
 
-  // Stable setter — does NOT re-create on every render
+  // Stable setter — does NOT re-create on every render.
+  // The state updater MUST stay pure (Finding 2): React 18 Strict Mode runs
+  // updaters twice in dev, so any side effect placed inside would double-fire
+  // (URL write-back firing twice per keystroke, cascades scheduled twice). We
+  // therefore (a) keep the updater pure — it only computes/returns next state —
+  // and (b) run the side effects ONCE here in the callback body. To preserve the
+  // "skip when unchanged" optimization we read the latest variables from a ref so
+  // we can detect a no-op change without depending on `variables` in useCallback.
+  const variablesRef = useRef(variables)
+  useEffect(() => { variablesRef.current = variables }, [variables])
+
   const setVariable = useCallback((name, value) => {
+    // Skip when value is unchanged — no state write, no side effects, no re-render.
+    if (variablesRef.current[name] === value) return
+
+    // Pure updater: compute and return next state only.
     setVariables(prev => {
-      if (prev[name] === value) return prev   // bail out early — no re-render
-      const next = { ...prev, [name]: value }
-      // Fire the external callback (e.g. URL write-back) after state is queued.
-      // We call it here (inside the updater) so we always have the real new value.
-      setTimeout(() => { onChangeRef.current?.(name, value) }, 0)
-      // Schedule any cascading option-query refires (no-op without a graph or deps).
-      scheduleCascade(name)
-      return next
+      if (prev[name] === value) return prev
+      return { ...prev, [name]: value }
     })
+
+    // Side effects live OUTSIDE the updater so they run exactly once per call.
+    // Fire the external callback (e.g. URL write-back) after state is queued.
+    setTimeout(() => { onChangeRef.current?.(name, value) }, 0)
+    // Schedule any cascading option-query refires (no-op without a graph or deps).
+    scheduleCascade(name)
   }, [scheduleCascade])
 
-  // Memoize the context value so consumers only re-render when variables change
-  const ctx = useMemo(
-    () => ({ variables, setVariable, filterGraph, staleEpochs }),
-    [variables, setVariable, filterGraph, staleEpochs],
+  // Stable actions value — only `setVariable` + `filterGraph` (both stable after
+  // mount), so its identity never changes once the graph settles. useSetVariable
+  // / useFilterGraph consumers don't re-render on variable-value changes.
+  const actions = useMemo(
+    () => ({ setVariable, filterGraph }),
+    [setVariable, filterGraph],
   )
 
   return (
-    <VariableContext.Provider value={ctx}>
-      {children}
-    </VariableContext.Provider>
+    <VariableActionsContext.Provider value={actions}>
+      <VariableValuesContext.Provider value={variables}>
+        <VariableEpochsContext.Provider value={staleEpochs}>
+          {children}
+        </VariableEpochsContext.Provider>
+      </VariableValuesContext.Provider>
+    </VariableActionsContext.Provider>
   )
 }
 
@@ -292,9 +323,9 @@ export function VariableProvider({
  * @returns {unknown}
  */
 export function useVariable(name) {
-  const ctx = useContext(VariableContext)
-  if (!ctx) throw new Error('useVariable must be used inside <VariableProvider>')
-  return ctx.variables[name]
+  const variables = useContext(VariableValuesContext)
+  if (!variables) throw new Error('useVariable must be used inside <VariableProvider>')
+  return variables[name]
 }
 
 /**
@@ -304,9 +335,9 @@ export function useVariable(name) {
  * @returns {(name: string, value: unknown) => void}
  */
 export function useSetVariable() {
-  const ctx = useContext(VariableContext)
-  if (!ctx) throw new Error('useSetVariable must be used inside <VariableProvider>')
-  return ctx.setVariable
+  const actions = useContext(VariableActionsContext)
+  if (!actions) throw new Error('useSetVariable must be used inside <VariableProvider>')
+  return actions.setVariable
 }
 
 /**
@@ -317,12 +348,12 @@ export function useSetVariable() {
  * @returns {Record<string, unknown>}
  */
 export function useResolvedParams(widgetParams) {
-  const ctx = useContext(VariableContext)
-  if (!ctx) throw new Error('useResolvedParams must be used inside <VariableProvider>')
+  const variables = useContext(VariableValuesContext)
+  if (!variables) throw new Error('useResolvedParams must be used inside <VariableProvider>')
   return useMemo(
-    () => resolveParams(widgetParams, ctx.variables),
+    () => resolveParams(widgetParams, variables),
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [JSON.stringify(widgetParams), ctx.variables]
+    [JSON.stringify(widgetParams), variables]
   )
 }
 
@@ -344,9 +375,9 @@ export function useResolvedParams(widgetParams) {
  * @returns {number}
  */
 export function useFilterRefire(widgetId) {
-  const ctx = useContext(VariableContext)
-  if (!ctx) throw new Error('useFilterRefire must be used inside <VariableProvider>')
-  return (widgetId != null && ctx.staleEpochs?.[widgetId]) || 0
+  const staleEpochs = useContext(VariableEpochsContext)
+  if (!staleEpochs) throw new Error('useFilterRefire must be used inside <VariableProvider>')
+  return (widgetId != null && staleEpochs[widgetId]) || 0
 }
 
 /**
@@ -356,7 +387,7 @@ export function useFilterRefire(widgetId) {
  * @returns {ReturnType<typeof buildFilterGraph> | null}
  */
 export function useFilterGraph() {
-  const ctx = useContext(VariableContext)
-  if (!ctx) throw new Error('useFilterGraph must be used inside <VariableProvider>')
-  return ctx.filterGraph ?? null
+  const actions = useContext(VariableActionsContext)
+  if (!actions) throw new Error('useFilterGraph must be used inside <VariableProvider>')
+  return actions.filterGraph ?? null
 }

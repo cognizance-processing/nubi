@@ -1400,9 +1400,18 @@ async def query(
     # ee.billing.tiers.WAREHOUSE_CU_MULTIPLIER) and the event tier carries a
     # ":warehouse" suffix for observability.
     # Best-effort: metering must never break the query path.
+    #
+    # SCALABILITY (HIGH): the response is NO LONGER blocked on the metering
+    # INSERTs. Previously each usage event was ``await``-ed inline, adding two
+    # serialised ``INSERT INTO usage_events`` round-trips to user-visible query
+    # latency AND gating ``cache.put`` behind them. We now schedule the writes
+    # fire-and-forget via ``record_usage_safe`` (it ``create_task``s on the
+    # running loop and swallows any exception, so the request can never crash on
+    # a metering failure). The event fields (kind, units, org, tier, …) are
+    # IDENTICAL to before — only the timing relative to the response changes.
     _elapsed_ms = int((_time.perf_counter() - _t0) * 1000)
     try:
-        from app.compute.metering import record_usage as _record_usage
+        from app.compute.metering import record_usage_safe as _record_usage_safe
 
         _cu_multiplier = 1.0
         try:
@@ -1413,7 +1422,9 @@ async def query(
         if os.getenv("NUBI_QUERY_POOL", "").strip().lower() == "heavy":
             _meter_tier = f"{_conn_kind}:warehouse"
 
-        await _record_usage(
+        # Fire-and-forget: not awaited, so the response is not delayed by the
+        # compute INSERT. Identical fields to the previous awaited call.
+        _record_usage_safe(
             kind="compute",
             user_id=str(identity.user_id or "embed"),
             org_id=org_id,
@@ -1440,14 +1451,21 @@ async def query(
     # ``units`` is the scanned-byte count; reconcile (W4-B) sums query_scan
     # units into the TiB-scanned line. Best-effort: never breaks the query path.
     try:
-        from app.compute.metering import record_usage as _record_usage_scan
+        from app.compute.metering import record_usage_safe as _record_usage_scan_safe
 
-        try:
-            _scanned_bytes = int(arrow_table.get_total_buffer_size())
-        except Exception:  # noqa: BLE001 — fall back to serialised IPC size
-            _scanned_bytes = len(full_bytes)
+        # SCALABILITY (LOW): use the already-serialised Arrow IPC length
+        # (``full_bytes``, computed above for the response/cache) as the
+        # scanned-bytes proxy instead of ``arrow_table.get_total_buffer_size()``,
+        # which would re-walk/materialise the whole Arrow table on the hot path
+        # purely to produce a metering number. ``len(full_bytes)`` was already
+        # the fallback here, so no new work is done. It remains an UNDER-counting
+        # proxy (wide scans that aggregate down to a small result are
+        # under-counted) pending W4-D/W4-F real lakehouse byte counters.
+        _scanned_bytes = len(full_bytes)
 
-        await _record_usage_scan(
+        # Fire-and-forget: not awaited, so the response (and ``cache.put`` below)
+        # is not delayed by the query_scan INSERT. Identical fields to before.
+        _record_usage_scan_safe(
             kind="query_scan",
             user_id=str(identity.user_id or "embed"),
             org_id=org_id,

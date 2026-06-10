@@ -2,10 +2,25 @@
 
 Design notes
 ------------
-This is an *application-level* limiter — a convenience guard for runaway
-clients and misconfigured scripts.  A true edge limiter (Cloudflare, Nginx,
-Fly.io's TCP proxy rate-limit) is a separate production concern and is NOT
-replaced by this module.
+This is a BEST-EFFORT, PER-PROCESS *application-level* limiter — a convenience
+soft guard for runaway clients and misconfigured scripts.  It is explicitly
+NOT the authoritative rate limit.
+
+    !!! The authoritative limit MUST be enforced at the edge (Fly.io's TCP
+        proxy rate-limit / Cloudflare / Nginx).  This module does NOT replace
+        that and cannot give a hard global ceiling — see "Per-process caveat".
+
+Per-process caveat (do not rely on this for a global ceiling)
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+The ``_buckets`` store lives in one OS process.  The app runs
+``uvicorn --workers 2`` (see Dockerfile / fly.toml) and Fly scales to multiple
+machines, so the true ceiling is ``workers × machines × rpm`` and is
+non-deterministic (load-balancing decides which worker/machine sees a request).
+To partially compensate we divide the configured rpm by an *estimate* of the
+local worker count (``WEB_CONCURRENCY`` / ``UVICORN_WORKERS`` env var, default
+1 if unset) so each worker's cap approximates ``rpm / workers``.  This only
+accounts for workers in THIS machine — cross-machine multiplication remains and
+is intentionally left to the edge limiter.
 
 Architecture
 ~~~~~~~~~~~~
@@ -26,12 +41,26 @@ Requests are classified into one of three buckets (or SKIP):
 
 Identity key
 ~~~~~~~~~~~~
-Within each bucket the limiting key is, in order of preference:
+The limiting key MUST be derived from something the client cannot freely
+forge.  This middleware runs BEFORE authentication, so it deliberately does
+NOT trust:
 
-    1. Authenticated org_id from the Bearer JWT ``org`` claim.
-    2. Forwarded-for IP (``X-Forwarded-For``, first entry only).
-    3. ``request.client.host`` (TCP peer).
-    4. ``"unknown"`` (edge case; never throttled — safer than false-positive).
+  * the Bearer JWT ``org`` claim — the token signature is not verified here,
+    so an attacker could forge an arbitrary ``org`` to poison a victim's
+    bucket or rotate ``org`` per request to dodge their own cap; and
+  * the LEFT-most ``X-Forwarded-For`` entry — that value is fully
+    attacker-controlled (anyone can send a fresh one per request), which would
+    hand each request its own bucket and defeat the limit entirely.
+
+The key is therefore the *trusted client IP* (see ``_client_ip``):
+
+    1. ``request.client.host`` — the real TCP peer (under Fly this is the
+       proxy; for auth routes this is what we want to throttle on).
+    2. The RIGHT-most ``X-Forwarded-For`` entry as a fallback only — that
+       entry is the one appended by the trusted proxy, not the client.
+    3. ``"unknown"`` — a single SHARED, conservatively-throttled bucket when no
+       peer is available (anonymous floods stay bounded; we never skip
+       limiting entirely).
 
 Configuration (NUBI_RATELIMIT_* env vars)
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -117,9 +146,19 @@ class _Config:
         if self._loaded:
             return
         self.enabled = _bool_env("NUBI_RATELIMIT_ENABLED", default=True)
-        self.auth_rpm = _int_env("NUBI_RATELIMIT_AUTH_RPM", default=30)
-        self.query_rpm = _int_env("NUBI_RATELIMIT_QUERY_RPM", default=120)
-        self.flowrun_rpm = _int_env("NUBI_RATELIMIT_FLOWRUN_RPM", default=60)
+        # FINDING 4 (best-effort): the in-process bucket store is per-worker, so
+        # N uvicorn workers on this machine multiply the effective cap by N.
+        # Divide the configured rpm by the local worker count so each worker's
+        # cap approximates rpm/N.  We read it from the standard env vars used by
+        # the launcher (Dockerfile/fly.toml run `uvicorn --workers 2`).  This
+        # only corrects for *local* workers — cross-machine multiplication is
+        # intentionally left to the edge limiter (Fly/Cloudflare).
+        # TODO: when an explicit worker-count is plumbed through (e.g. set
+        # WEB_CONCURRENCY alongside `--workers`), this estimate becomes exact.
+        workers = max(1, _int_env("WEB_CONCURRENCY", _int_env("UVICORN_WORKERS", 1)))
+        self.auth_rpm = max(1, _int_env("NUBI_RATELIMIT_AUTH_RPM", default=30) // workers)
+        self.query_rpm = max(1, _int_env("NUBI_RATELIMIT_QUERY_RPM", default=120) // workers)
+        self.flowrun_rpm = max(1, _int_env("NUBI_RATELIMIT_FLOWRUN_RPM", default=60) // workers)
         self.burst_factor = _float_env("NUBI_RATELIMIT_BURST_FACTOR", default=1.5)
         self._loaded = True
 
@@ -271,47 +310,70 @@ def _classify(path: str) -> tuple[str | None, int]:
 # ── Identity resolution ────────────────────────────────────────────────────────
 
 
-def _extract_identity(request: Request) -> str:
-    """Return the best available identity key for rate-limiting.
+# Shared bucket key used when no trusted client IP is available.  This is a
+# SINGLE bucket all such requests share, so anonymous floods stay bounded
+# (FINDING 3 — we never skip limiting for these).
+_UNKNOWN_IDENTITY = "unknown"
 
-    Tries (in order):
-    1. org claim in Bearer JWT (header decode only — no signature verify; we
-       only need a stable key, not auth).
-    2. First entry in X-Forwarded-For.
-    3. TCP peer host.
-    4. "unknown" (never throttled — see middleware).
+
+def _client_ip(request: Request) -> str | None:
+    """Return the *trusted* client IP, or ``None`` if none is available.
+
+    SECURITY (FINDING 1): we must NOT trust client-supplied addressing.
+
+      * ``request.client.host`` is the real TCP peer — the address the socket
+        is actually connected to.  Behind the Fly proxy this is the proxy's
+        address, which is exactly what we want to throttle on (and for auth
+        routes specifically, the real peer is the only acceptable key — a
+        spoofable header must never grant a fresh bucket).  It is preferred.
+
+      * The LEFT-most ``X-Forwarded-For`` entry is fully attacker-controlled
+        (the client can send any value, and a unique one per request), so we
+        NEVER key on it.  Only the RIGHT-most entry — the hop appended by the
+        trusted proxy closest to us — is used, and only as a fallback when the
+        TCP peer is genuinely unavailable.
     """
-    # 1. JWT org claim (fast path — no crypto, just base64 decode).
-    auth_header = request.headers.get("authorization", "")
-    if auth_header.lower().startswith("bearer "):
-        token = auth_header[7:]
-        try:
-            import base64
-            import json as _json
+    # 1. Real TCP peer (preferred, non-forgeable at this layer).
+    if request.client and request.client.host:
+        return request.client.host
 
-            parts = token.split(".")
-            if len(parts) == 3:
-                # Pad the payload segment.
-                payload_b64 = parts[1] + "=" * (-len(parts[1]) % 4)
-                payload = _json.loads(base64.urlsafe_b64decode(payload_b64))
-                org = payload.get("org") or payload.get("org_id") or payload.get("sub")
-                if org and isinstance(org, str):
-                    return f"org:{org}"
-        except Exception:  # noqa: BLE001
-            pass  # fall through to IP
-
-    # 2. X-Forwarded-For (first non-empty entry).
+    # 2. Fallback: RIGHT-most XFF entry (appended by the trusted proxy).
+    #    Never the left-most — that is the attacker-controlled value.
     xff = request.headers.get("x-forwarded-for", "")
     if xff:
-        first_ip = xff.split(",")[0].strip()
-        if first_ip:
-            return f"ip:{first_ip}"
+        entries = [p.strip() for p in xff.split(",") if p.strip()]
+        if entries:
+            return entries[-1]
 
-    # 3. TCP peer.
-    if request.client and request.client.host:
-        return f"ip:{request.client.host}"
+    return None
 
-    return "unknown"
+
+def _extract_identity(request: Request) -> str:
+    """Return the rate-limiting key — derived only from non-forgeable signals.
+
+    This middleware runs BEFORE authentication, so the key is NOT taken from
+    the (unverified) JWT ``org`` claim (FINDING 2): an attacker could forge an
+    arbitrary ``org`` to poison another tenant's bucket, or rotate it per
+    request to dodge their own cap.  We key on the trusted client IP instead.
+
+    If upstream auth ever attaches a *verified* identity to ``request.state``
+    before this middleware runs, read the org from there — but today nothing
+    does, so we deliberately fall through to the IP key for every route class
+    (including auth, per FINDING 1).
+    """
+    # If a VERIFIED identity is ever attached upstream, trust that (forge-proof).
+    verified_org = getattr(request.state, "org_id", None)
+    if isinstance(verified_org, str) and verified_org:
+        return f"org:{verified_org}"
+
+    # Otherwise key on the trusted client IP (real TCP peer; right-most XFF as a
+    # last resort).  See _client_ip for the SECURITY rationale.
+    ip = _client_ip(request)
+    if ip:
+        return f"ip:{ip}"
+
+    # No peer available → shared, throttled bucket (FINDING 3 — not skipped).
+    return _UNKNOWN_IDENTITY
 
 
 # ── Middleware ─────────────────────────────────────────────────────────────────
@@ -340,9 +402,9 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
             return await call_next(request)
 
         identity = _extract_identity(request)
-        if identity == "unknown":
-            # Can't identify the caller — pass through (safer than false-positive).
-            return await call_next(request)
+        # FINDING 3: we do NOT pass 'unknown' through unthrottled.  When the
+        # caller can't be identified they share a single conservative bucket
+        # (identity == _UNKNOWN_IDENTITY) so anonymous floods stay bounded.
 
         now = time.monotonic()
         _maybe_cleanup(now)

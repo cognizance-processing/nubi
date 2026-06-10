@@ -48,8 +48,8 @@
  * data widget that refs target_var.
  */
 
-import { useCallback, useEffect, useId, useMemo, useState } from 'react'
-import { useSetVariable, useVariable } from '../VariableStore.jsx'
+import { useCallback, useEffect, useId, useMemo, useRef, useState } from 'react'
+import { useFilterRefire, useSetVariable, useVariable } from '../VariableStore.jsx'
 import {
   Combobox,
   MultiSelect,
@@ -126,6 +126,23 @@ export default function FilterWidget({ widget, options = [] }) {
     onSearch,
     labelFor,
   } = useFilterOptions(widget)
+
+  // Cascading-filter refire (Finding 1 / §W4-G). When an UPSTREAM variable this
+  // widget's options depend on changes (e.g. country → city), VariableStore bumps
+  // this widget's stale epoch. We key on `widget.id`, the exact id the filter
+  // graph / scheduleCascade marks stale (staleOptionWidgetIds → widget.id).
+  const refireEpoch = useFilterRefire(widget.id)
+  // Refetch the options when the epoch increments — but NOT on initial mount
+  // (epoch 0), so widgets without upstream deps behave exactly as before. We
+  // refetch via onSearch('') (the hook's debounced refetch entrypoint), which
+  // re-runs the options query with the now-current upstream variable values.
+  const onSearchRef = useRef(onSearch)
+  useEffect(() => { onSearchRef.current = onSearch }, [onSearch])
+  useEffect(() => {
+    if (refireEpoch > 0) onSearchRef.current?.('')
+    // Intentionally depend ONLY on refireEpoch so this fires once per cascade bump.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [refireEpoch])
 
   // Choose the option source: search-mode results, else the static prop.
   const rawOptions = optionsMode === 'search' && queryOptions.length > 0 ? queryOptions : options

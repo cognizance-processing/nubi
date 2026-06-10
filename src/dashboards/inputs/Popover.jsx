@@ -85,12 +85,44 @@ export default function Popover({
     }
 
     measure()
-    window.addEventListener('resize', measure)
+
+    // Throttle re-measure so we don't force a layout read (getBoundingClientRect)
+    // + setState on EVERY raw scroll/resize event. `measure` itself stays the
+    // authoritative reposition; these wrappers just coalesce how often it runs.
+    let raf = 0          // pending requestAnimationFrame id (0 = none)
+    let resizeTimer = 0  // pending resize debounce timeout id (0 = none)
+
+    // Scroll: coalesce to at most one measure per animation frame. With the
+    // capture-phase listener firing for every ancestor scroll container (and
+    // possibly several open popovers), this collapses dozens of layout reads
+    // per second down to one per frame.
+    const onScroll = () => {
+      if (raf) cancelAnimationFrame(raf)
+      raf = requestAnimationFrame(() => {
+        raf = 0
+        measure()
+      })
+    }
+
+    // Resize: the browser already coalesces resize events, so a short debounce
+    // is enough to avoid a burst of measures while the user drags the window.
+    const onResize = () => {
+      if (resizeTimer) clearTimeout(resizeTimer)
+      resizeTimer = setTimeout(() => {
+        resizeTimer = 0
+        measure()
+      }, 100)
+    }
+
+    window.addEventListener('resize', onResize)
     // Capture scroll on any ancestor (grid scroll containers) so we re-anchor.
-    window.addEventListener('scroll', measure, true)
+    window.addEventListener('scroll', onScroll, true)
     return () => {
-      window.removeEventListener('resize', measure)
-      window.removeEventListener('scroll', measure, true)
+      window.removeEventListener('resize', onResize)
+      window.removeEventListener('scroll', onScroll, true)
+      // Drop any pending throttled work so a measure can't fire after unmount/close.
+      if (raf) cancelAnimationFrame(raf)
+      if (resizeTimer) clearTimeout(resizeTimer)
     }
   }, [open, anchorRef, matchWidth, maxHeight])
 
