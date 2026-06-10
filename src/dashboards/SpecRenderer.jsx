@@ -32,6 +32,7 @@
 
 import { useState, useEffect, useMemo, useRef } from 'react'
 import GridCanvas from './grid/GridCanvas.jsx'
+import TabBar from './TabBar.jsx'
 import { getBreakpointFromWidth } from './grid/breakpoints.js'
 import ChartWidget from './widgets/ChartWidget.jsx'
 import KpiWidget from './widgets/KpiWidget.jsx'
@@ -278,7 +279,7 @@ function buildVariableDefaults(specVariables) {
  * variable.  Used by DashboardViewPage to write the new value back to URL search
  * params so the state survives a refresh and is shareable.
  */
-export default function SpecRenderer({ spec, initialVariables = {}, onVariableChange, forceBreakpoint }) {
+export default function SpecRenderer({ spec, initialVariables = {}, onVariableChange, forceBreakpoint, activeTabId, onTabChange }) {
   if (!spec) {
     return (
       <div className="flex items-center justify-center py-16 text-sm text-muted">
@@ -321,6 +322,36 @@ export default function SpecRenderer({ spec, initialVariables = {}, onVariableCh
   // eslint-disable-next-line react-hooks/rules-of-hooks
   const [openDrawer, setOpenDrawer] = useState(null)
   const hasFilters = (drawerGroups.filters?.length ?? 0) > 0
+
+  // -------------------------------------------------------------------------
+  // Tabs (SHARED CONTRACT)
+  // -------------------------------------------------------------------------
+  // The renderer is controlled when an onTabChange callback is supplied; the
+  // activeTabId prop is then the source of truth. Without a callback it falls
+  // back to uncontrolled internal state. The effective tab resolves as:
+  //   activeTabId ?? internalState ?? spec.tabs[0]?.id
+  // When spec.tabs is empty/absent there are no tabs and behavior is identical
+  // to before (no TabBar, no widget filtering).
+  const tabs = Array.isArray(spec.tabs) ? spec.tabs : []
+  const firstTabId = tabs[0]?.id ?? null
+  // eslint-disable-next-line react-hooks/rules-of-hooks
+  const [internalTabId, setInternalTabId] = useState(null)
+  const effectiveTabId = activeTabId ?? internalTabId ?? firstTabId
+  const setTab = onTabChange ?? setInternalTabId
+
+  // Filter grid widgets down to the active tab. A widget belongs to the active
+  // tab when its tab_id matches the effective tab, OR its tab_id is null/absent
+  // and the effective tab is the first tab (null === first tab). With no tabs
+  // every widget passes through unchanged.
+  const tabbedWidgets = useMemo(() => {
+    if (tabs.length === 0) return widgets
+    return widgets.filter((w) => {
+      const t = w.tab_id ?? null
+      if (t === effectiveTabId) return true
+      return t == null && effectiveTabId === firstTabId
+    })
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [widgets, effectiveTabId, firstTabId, tabs.length])
   const drawerTitle = openDrawer === 'filters'
     ? (spec.drawer?.title || 'Filters')
     : (widgets.find(w => w.props?.drilldown_group === openDrawer)?.props?.title || 'Drill down')
@@ -346,10 +377,10 @@ export default function SpecRenderer({ spec, initialVariables = {}, onVariableCh
 
   // eslint-disable-next-line react-hooks/rules-of-hooks
   const layouts = useMemo(
-    () => buildLayouts({ ...spec, widgets }, cols, colsByBp),
+    () => buildLayouts({ ...spec, widgets: tabbedWidgets }, cols, colsByBp),
     // Rebuild when grid widgets or the per-breakpoint overrides change.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [widgets, cols, colsByBp.md, colsByBp.sm, JSON.stringify(spec.responsive)],
+    [tabbedWidgets, cols, colsByBp.md, colsByBp.sm, JSON.stringify(spec.responsive)],
   )
 
   // Measure the container width via a ResizeObserver so breakpoint selection
@@ -381,7 +412,7 @@ export default function SpecRenderer({ spec, initialVariables = {}, onVariableCh
   // widgets hidden at this breakpoint so the rendered children match the
   // (already-filtered) layout array.
   const renderBreakpoint = forceBreakpoint ?? getBreakpointFromWidth(breakpoints, width || 1200)
-  const visibleWidgets = widgets.filter(w => !isHiddenAt(w, renderBreakpoint))
+  const visibleWidgets = tabbedWidgets.filter(w => !isHiddenAt(w, renderBreakpoint))
   // eslint-disable-next-line react-hooks/rules-of-hooks
   const visibleWidgetsById = useMemo(
     () => new Map(visibleWidgets.map(w => [w.id, w])),
@@ -430,7 +461,17 @@ export default function SpecRenderer({ spec, initialVariables = {}, onVariableCh
             )}
           </div>
         )}
-        {widgets.length === 0 ? (
+        {tabs.length > 1 && (
+          <div className="mb-4">
+            <TabBar
+              tabs={tabs}
+              activeTabId={effectiveTabId}
+              onChange={setTab}
+              tabBar={spec.tabBar}
+            />
+          </div>
+        )}
+        {tabbedWidgets.length === 0 ? (
           <div className="flex items-center justify-center py-16 text-sm text-muted border-2 border-dashed border-border rounded-xl bg-surface">
             No widgets in this dashboard.
           </div>

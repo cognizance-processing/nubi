@@ -244,6 +244,30 @@ export default function DashboardViewPage() {
     [JSON.stringify(urlVars), JSON.stringify(embedLockedParams)],
   )
 
+  // ---------------------------------------------------------------------------
+  // Tab ↔ URL sync (_tab param)
+  // ---------------------------------------------------------------------------
+
+  // Read the _tab URL param (underscore-prefixed to avoid collisions with user
+  // variable names).  Falls back to the first tab when absent or unrecognised.
+  const activeTabId = useMemo(() => {
+    const tabParam = searchParams.get('_tab')
+    const firstTabId = spec?.tabs?.[0]?.id ?? null
+    if (!tabParam) return firstTabId
+    // Validate: only accept the param if it matches a declared tab id
+    const knownTabIds = (spec?.tabs ?? []).map(t => t.id)
+    return knownTabIds.includes(tabParam) ? tabParam : firstTabId
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [searchParams.get('_tab'), spec?.tabs])
+
+  const handleTabChange = useCallback((id) => {
+    setSearchParams(prev => {
+      const next = new URLSearchParams(prev)
+      next.set('_tab', id)
+      return next
+    }, { replace: true })
+  }, [setSearchParams])
+
   /**
    * Called by filter widgets (via the VariableStore) when a variable changes.
    * Writes the new value back to the URL as a search param (shallow replace).
@@ -325,6 +349,8 @@ export default function DashboardViewPage() {
             spec={spec}
             initialVariables={initialVariables}
             onVariableChange={handleVariableChange}
+            activeTabId={activeTabId}
+            onTabChange={handleTabChange}
           />
         </div>
       )}
