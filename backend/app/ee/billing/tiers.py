@@ -156,6 +156,21 @@ class BillingTier(str, enum.Enum):
 
 
 # ---------------------------------------------------------------------------
+# Warehouse (heavy-query pool) pricing
+# ---------------------------------------------------------------------------
+# Queries executed on the warehouse machine class (the cloud heavy-query
+# pool: same engine, 8 GB+ machines for big-table sorts/joins) consume
+# compute units at this multiplier.  The pool machine costs ~6× an app
+# machine; billing 4× CU keeps adoption attractive while staying margin-
+# positive, and means warehouse overages reuse the existing
+# ``compute_zar_per_1000_cu`` rate — no separate warehouse meter or rate.
+# The runtime reads this via the pool's NUBI_CU_MULTIPLIER env (set in
+# fly.toml); this constant is the canonical billing-model value.
+
+WAREHOUSE_CU_MULTIPLIER = 4
+
+
+# ---------------------------------------------------------------------------
 # Overage rate schedule
 # ---------------------------------------------------------------------------
 
@@ -257,6 +272,11 @@ class TierLimits:
         Whether Bring-Your-Own-Cloud deployment is available.
     has_custom_domain:
         Whether custom domain mapping is available.
+    has_warehouse:
+        Whether the hosted DuckDB warehouse (heavy-query pool) is available.
+        Warehouse queries consume compute units at
+        :data:`WAREHOUSE_CU_MULTIPLIER`; overages use the normal
+        ``compute_zar_per_1000_cu`` rate.
     audit_log_retention_days:
         Audit log retention in days.  ``None`` means unlimited.
     has_priority_support:
@@ -302,6 +322,7 @@ class TierLimits:
     has_multi_tenant_workspaces: bool = False
     has_byoc: bool = False
     has_custom_domain: bool = False
+    has_warehouse: bool = False
     audit_log_retention_days: int | None = 0  # 0 = none; None = unlimited
     has_priority_support: Literal[False, "email_slack", "dedicated_csm"] = False
     sla_uptime_pct: float | None = None
@@ -508,6 +529,7 @@ _TIER_CATALOGUE: dict[BillingTier, TierLimits] = {
         has_multi_tenant_workspaces=False,
         has_byoc=False,
         has_custom_domain=True,
+        has_warehouse=True,  # heavy-query pool; CUs billed at WAREHOUSE_CU_MULTIPLIER
         audit_log_retention_days=90,
         has_priority_support="email_slack",
         sla_uptime_pct=99.5,
@@ -568,6 +590,7 @@ _TIER_CATALOGUE: dict[BillingTier, TierLimits] = {
         has_multi_tenant_workspaces=True,
         has_byoc=True,
         has_custom_domain=True,
+        has_warehouse=True,  # heavy-query pool; CUs billed at WAREHOUSE_CU_MULTIPLIER
         audit_log_retention_days=None,  # unlimited retention
         has_priority_support="dedicated_csm",
         # SLA: 99.95% monthly uptime (≤ ~22 minutes downtime/month).
@@ -683,6 +706,7 @@ def is_feature_available(tier: BillingTier, feature: str) -> bool:
         "multi_tenant_workspaces": "has_multi_tenant_workspaces",
         "byoc": "has_byoc",
         "custom_domain": "has_custom_domain",
+        "warehouse": "has_warehouse",
         "priority_support": "has_priority_support",
         "audit_logs": "audit_log_retention_days",
     }

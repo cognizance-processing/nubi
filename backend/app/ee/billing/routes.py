@@ -188,6 +188,8 @@ def _build_tier_display(tier_limits: Any) -> dict[str, Any]:
     """Convert a TierLimits dataclass to a JSON-serialisable display dict."""
     from decimal import Decimal  # noqa: PLC0415
 
+    from app.ee.billing.tiers import WAREHOUSE_CU_MULTIPLIER  # noqa: PLC0415
+
     def _dec(v: Any) -> Any:
         """Convert Decimal to str for JSON safety; leave None/int/float as-is."""
         return str(v) if isinstance(v, Decimal) else v
@@ -230,6 +232,10 @@ def _build_tier_display(tier_limits: Any) -> dict[str, Any]:
             "has_multi_tenant_workspaces": tier_limits.has_multi_tenant_workspaces,
             "has_byoc": tier_limits.has_byoc,
             "has_custom_domain": tier_limits.has_custom_domain,
+            "has_warehouse": tier_limits.has_warehouse,
+            "warehouse_cu_multiplier": (
+                WAREHOUSE_CU_MULTIPLIER if tier_limits.has_warehouse else None
+            ),
             "audit_log_retention_days": tier_limits.audit_log_retention_days,
             "has_priority_support": tier_limits.has_priority_support,
             # SLA fields — present on Pro (uptime only) and Enterprise (full contractual SLA)

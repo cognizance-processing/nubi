@@ -101,6 +101,19 @@ the built SPA embedded — runs as **two processes**:
 |---|---|
 | `app` | Fly's proxy auto-stops idle machines and auto-starts them on demand, with **at least one machine always warm** (`min_machines_running = 1`) so embeds and SSE streams get fast first responses. Concurrency limits: 200 soft / 250 hard requests per machine; add machines as traffic grows. |
 | `worker` | Always-on, count 1 (no HTTP service, so the proxy never stops it). Scale horizontally with `fly scale count worker=N` — workers lease `task_runs` so replicas don't collide — or automatically with **fly-autoscaler** keyed on pending `task_runs` queue depth. |
+| `query` | The **heavy-query pool** ("warehouse machine class"): identical image and code on bigger machines (8 GB default; DuckDB budget set inline via `NUBI_DUCKDB_MEMORY_LIMIT`). App machines forward queries for datastores flagged `config.query_pool="heavy"` to `NUBI_HEAVY_QUERY_URL` (`query.process.<app>.internal:8000` over private networking). Loop-guarded (`NUBI_QUERY_POOL=heavy` + `X-Nubi-Forwarded`); pool errors (e.g. 402 quota) propagate verbatim; an unreachable pool falls back to local execution, kept safe by the per-connection memory limit. Forwarded results are cached on the app machine under the same content-addressed cache key. Scale vertically (`fly scale vm … --process-group query`, raising the inline memory limit with it) before reaching for an external warehouse; disable entirely with `fly scale count query=0`. |
+
+### Sizing the heavy-query pool
+
+Rules of thumb (≈70% of machine RAM as DuckDB budget; ~50–100 B/row in memory):
+
+| Pool machine | DuckDB budget | Sort/join/distinct capacity | Comfortable table size |
+|---|---|---|---|
+| 8 GB (default) | ~6 GB | ~60–120M rows | ~1B rows (dashboard workloads) |
+| 16 GB | ~11 GB | ~120–250M rows | several B rows |
+| 32–64 GB | ~25–45 GB | ~0.5–1B rows | 10B+ rows |
+
+Streamed aggregates (`GROUP BY` over filtered scans) are not memory-bound and scale with dataset size at any machine size. Beyond this ladder, register the customer's own warehouse (e.g. BigQuery) as a datastore and push queries down through the connector layer instead of hosting the data.
 
 ### Deploy runbook
 

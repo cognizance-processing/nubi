@@ -70,6 +70,20 @@ async def _check(*, org_id: str, dimension: str, amount: float) -> tuple[bool, s
     if not get_license().is_paid:
         return True, ""
 
+    # "warehouse" is a feature gate, not a numeric quota: heavy-query-pool
+    # execution is available on tiers with has_warehouse and consumes normal
+    # compute units (at WAREHOUSE_CU_MULTIPLIER), which the compute_units
+    # dimension already meters and limits.
+    if dimension == "warehouse":
+        tier = await _resolve_tier(org_id)
+        if get_tier_limits(tier).has_warehouse:
+            return True, ""
+        return False, (
+            f"The hosted warehouse (heavy-query pool) is available on the Pro "
+            f"and Enterprise plans. The {tier.value} plan executes queries on "
+            f"standard machines. Upgrade your plan to run warehouse queries."
+        )
+
     attrs = _DIMENSIONS.get(dimension)
     if attrs is None:
         return True, ""  # unknown dimension → allow (mirrors is_within_quota)

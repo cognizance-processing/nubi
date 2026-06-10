@@ -90,7 +90,7 @@ export default {
           background: 'linear-gradient(135deg, #1b2363, #2456a6, #17b3a3)',
         },
         '.text-brand-gradient': {
-          background: 'linear-gradient(135deg, #1b2363, #2456a6, #17b3a3)',
+          background: 'var(--brand-text-gradient, linear-gradient(135deg, #1b2363, #2456a6, #17b3a3))',
           '-webkit-background-clip': 'text',
           '-webkit-text-fill-color': 'transparent',
           'background-clip': 'text',

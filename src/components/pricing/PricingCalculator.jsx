@@ -28,11 +28,12 @@
 import { useState, useMemo, useCallback } from 'react'
 import {
   ChevronDown, ChevronUp, Info, Users, Zap, Database, Globe, Cpu,
-  GitBranch, Server, BarChart3, Wallet,
+  GitBranch, Server, BarChart3, Wallet, Warehouse, Search,
 } from 'lucide-react'
 import {
-  computeZar, formatZar, recommendNubi,
+  computeZar, formatZar, recommendNubi, estimateWarehouseCu,
   FALLBACK_COMPETITORS_BI, FALLBACK_COMPETITORS_ORCHESTRATION,
+  FALLBACK_COMPETITORS_WAREHOUSE, WAREHOUSE_CU_MULTIPLIER,
   WALLET_OVERAGE_RATES,
 } from '../../lib/pricing.js'
 
@@ -447,6 +448,184 @@ function OrchComparisonSection({ competitors, orchUsage, onOrchUsage, fxRate, re
 }
 
 // ---------------------------------------------------------------------------
+// Warehouse / OLAP comparison section
+// ---------------------------------------------------------------------------
+
+const DEFAULT_WAREHOUSE_USAGE = {
+  data_gb: 100,            // total Parquet in the lakehouse
+  queries_per_month: 5000, // warehouse-pool queries (big-table, cache misses)
+  avg_gb_scanned: 2,       // per-query working set after partition/column pruning
+}
+
+function WarehouseComparisonSection({ competitors, whUsage, onWhUsage, fxRate }) {
+  const rate = fxRate ?? 16.26
+
+  // Nubi cost: Pro+ plan (warehouse is a Pro/Enterprise feature) carrying the
+  // dataset in lakehouse storage and the workload as 4×-billed compute units.
+  const warehouseCu = estimateWarehouseCu(whUsage)
+  const recommendation = recommendNubi(
+    {
+      storage_gb: whUsage.data_gb,
+      compute_units: warehouseCu,
+      embedded_sessions: 0,
+      agent_runs: 0,
+      connectors: 1,
+      flow_runs_per_month: 0,
+    },
+    fxRate,
+    { minTierId: 'pro' },
+  )
+  const nubiUsd = recommendation.tier.usd_monthly + Math.ceil(recommendation.overage_zar / rate)
+
+  // Honest envelope: Nubi's warehouse is a single machine per query.  Beyond
+  // this, a dedicated warehouse is genuinely the better tool — say so.
+  const outOfEnvelope = whUsage.data_gb > 1000 || whUsage.avg_gb_scanned > 20
+
+  return (
+    <div className="space-y-4">
+      {/* Context note — fair framing in BOTH directions */}
+      <div className="rounded-xl bg-surface-2 border border-border px-4 py-3 text-xs text-muted space-y-1">
+        <p className="font-semibold text-fg text-sm">
+          The hosted DuckDB warehouse runs big-table queries on dedicated 8 GB+ machines — no separate warehouse bill.
+        </p>
+        <p>
+          Warehouse queries draw from the same compute-unit quota at a {WAREHOUSE_CU_MULTIPLIER}× rate;
+          repeated dashboard reads come from rollups and cache for free.
+          To keep the comparison fair: the engines below are <strong className="text-fg">warehouse-only</strong> —
+          they don't include dashboards, embedded analytics, or orchestration, while the Nubi price does.
+          They are also distributed engines that genuinely outperform Nubi's single-node pool on
+          multi-terabyte scans and huge ad-hoc joins.
+        </p>
+      </div>
+
+      {outOfEnvelope && (
+        <div className="rounded-xl bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-800 px-4 py-3 text-xs text-amber-800 dark:text-amber-200">
+          <strong>At this scale, a dedicated warehouse is the right tool.</strong>{' '}
+          Nubi's hosted warehouse runs each query on one machine — its sweet spot is tables up to
+          ~1B rows with selective scans. For workloads like this, connect your own BigQuery or
+          ClickHouse as a Nubi datastore instead: queries push down to their engine, on their billing,
+          and your dashboards, RLS, and caching stay in Nubi.
+        </div>
+      )}
+
+      {/* Warehouse-specific usage inputs */}
+      <div className="rounded-xl border border-border px-4 py-4 space-y-4 bg-surface">
+        <p className="text-xs font-semibold text-muted uppercase tracking-wide">Warehouse usage inputs</p>
+        <div className="grid gap-4 sm:grid-cols-2">
+          <UsageInput
+            label="Dataset size"
+            icon={Database}
+            value={whUsage.data_gb}
+            onChange={(v) => onWhUsage('data_gb', v)}
+            min={10} max={2000} step={10} unit=" GB"
+          />
+          <UsageInput
+            label="Warehouse queries / month"
+            icon={Search}
+            value={whUsage.queries_per_month}
+            onChange={(v) => onWhUsage('queries_per_month', v)}
+            min={100} max={100000} step={100}
+          />
+          <UsageInput
+            label="Avg data scanned / query"
+            icon={Cpu}
+            value={whUsage.avg_gb_scanned}
+            onChange={(v) => onWhUsage('avg_gb_scanned', v)}
+            min={0.5} max={50} step={0.5} unit=" GB"
+          />
+        </div>
+        <p className="text-[11px] text-muted/80">
+          ≈ {warehouseCu.toLocaleString()} compute units / month at the {WAREHOUSE_CU_MULTIPLIER}× warehouse rate.
+          Partitioned Parquet + column pruning means a typical query scans a small fraction of the dataset.
+        </p>
+      </div>
+
+      <div className="overflow-x-auto rounded-xl border border-border">
+        <table className="min-w-full text-sm">
+          <thead>
+            <tr className="border-b border-border bg-surface-2">
+              <th className="text-left px-4 py-2.5 font-semibold text-muted text-xs uppercase tracking-wide">Engine</th>
+              <th className="text-left px-4 py-2.5 font-semibold text-muted text-xs uppercase tracking-wide hidden sm:table-cell">Pricing model</th>
+              <th className="text-right px-4 py-2.5 font-semibold text-muted text-xs uppercase tracking-wide">Est. USD/mo</th>
+              <th className="text-right px-4 py-2.5 font-semibold text-muted text-xs uppercase tracking-wide">Est. ZAR/mo</th>
+            </tr>
+          </thead>
+          <tbody>
+            {/* Nubi row pinned first */}
+            <tr className="border-b border-border bg-accent/5">
+              <td className="px-4 py-2.5">
+                <span className="font-semibold text-sm text-fg">
+                  Nubi {recommendation.tier.name} + hosted warehouse
+                </span>
+                <div className="mt-0.5 flex flex-wrap gap-1">
+                  <span className="inline-flex items-center px-1.5 py-0.5 rounded-full bg-teal-100 text-teal-700 dark:bg-teal-900/30 dark:text-teal-300 text-[9px] font-bold uppercase tracking-wide">
+                    BI + flows included
+                  </span>
+                  <span className="inline-flex items-center px-1.5 py-0.5 rounded-full bg-teal-100 text-teal-700 dark:bg-teal-900/30 dark:text-teal-300 text-[9px] font-bold uppercase tracking-wide">
+                    cached reads free
+                  </span>
+                </div>
+              </td>
+              <td className="px-4 py-2.5 text-xs text-muted hidden sm:table-cell">
+                Plan + {WAREHOUSE_CU_MULTIPLIER}× CU on warehouse scans
+              </td>
+              <td className="px-4 py-2.5 text-right font-mono text-sm font-bold text-fg">
+                {fmtUsd(nubiUsd)}
+              </td>
+              <td className="px-4 py-2.5 text-right font-mono text-sm font-bold text-fg">
+                {formatZar(recommendation.total_zar)}
+              </td>
+            </tr>
+
+            {competitors.map((comp) => {
+              let usdCost = null
+              try { usdCost = comp.model({ ...whUsage }) } catch { /* ignore */ }
+              const zarCost = usdCost != null ? Math.ceil(usdCost * rate) : null
+
+              return (
+                <tr key={comp.id} className="border-b border-border last:border-0">
+                  <td className="px-4 py-2.5">
+                    <span className="font-medium text-sm text-fg">{comp.name}</span>
+                    {comp.model_type === 'per-scan' && (
+                      <span className="ml-1.5 inline-flex items-center px-1.5 py-0.5 rounded-full bg-orange-100 text-orange-700 dark:bg-orange-900/30 dark:text-orange-300 text-[9px] font-bold uppercase tracking-wide">
+                        per-scan metered
+                      </span>
+                    )}
+                    {comp.model_type === 'infra' && (
+                      <span className="ml-1.5 inline-flex items-center px-1.5 py-0.5 rounded-full bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-300 text-[9px] font-bold uppercase tracking-wide">
+                        always-on cost
+                      </span>
+                    )}
+                    <p className="text-xs text-muted mt-0.5 leading-tight">{comp.note}</p>
+                  </td>
+                  <td className="px-4 py-2.5 text-xs text-muted hidden sm:table-cell">
+                    {comp.model_type === 'per-scan' ? 'Pay per TB scanned' : 'Provisioned service'}
+                  </td>
+                  <td className="px-4 py-2.5 text-right font-mono text-sm text-fg">
+                    {usdCost != null ? fmtUsd(usdCost) : 'Custom'}
+                  </td>
+                  <td className="px-4 py-2.5 text-right font-mono text-sm text-fg">
+                    {zarCost != null ? formatZar(zarCost) : 'Custom'}
+                  </td>
+                </tr>
+              )
+            })}
+          </tbody>
+        </table>
+      </div>
+
+      <p className="text-xs text-muted/80 italic">
+        Fair-comparison notes: competitor estimates assume well-tuned auto-idle/auto-suspend (real bills
+        are often higher with default settings); Nubi's estimate assumes your workload fits a single
+        8 GB+ machine per query and that repeat queries hit cache/rollups. Standalone warehouses don't
+        include dashboards, embedded analytics, flows, or connectors — but they outperform Nubi on
+        multi-TB scans. If you already pay for one, connect it as a datastore instead of moving data.
+      </p>
+    </div>
+  )
+}
+
+// ---------------------------------------------------------------------------
 // PricingCalculator — main export
 // ---------------------------------------------------------------------------
 
@@ -472,19 +651,23 @@ export default function PricingCalculator({
   fxRate = null,
   competitorsBi = null,
   competitorsOrch = null,
+  competitorsWarehouse = null,
 }) {
   const [usage, setUsage] = useState(DEFAULT_USAGE)
   const [seats, setSeats] = useState(DEFAULT_SEATS)
-  const [activeTab, setActiveTab] = useState('bi') // 'bi' | 'orchestration'
+  const [activeTab, setActiveTab] = useState('bi') // 'bi' | 'orchestration' | 'warehouse'
   const [showComparison, setShowComparison] = useState(true)
   const [orchUsage, setOrchUsage] = useState(DEFAULT_ORCH_USAGE)
+  const [whUsage, setWhUsage] = useState(DEFAULT_WAREHOUSE_USAGE)
 
   const setField = useCallback((key, val) => setUsage((u) => ({ ...u, [key]: val })), [])
   const setSeatField = useCallback((key, val) => setSeats((s) => ({ ...s, [key]: val })), [])
   const setOrchField = useCallback((key, val) => setOrchUsage((u) => ({ ...u, [key]: val })), [])
+  const setWhField = useCallback((key, val) => setWhUsage((u) => ({ ...u, [key]: val })), [])
 
   const biCompetitors = competitorsBi ?? FALLBACK_COMPETITORS_BI
   const orchCompetitors = competitorsOrch ?? FALLBACK_COMPETITORS_ORCHESTRATION
+  const warehouseCompetitors = competitorsWarehouse ?? FALLBACK_COMPETITORS_WAREHOUSE
 
   const recommendation = useMemo(() => recommendNubi(usage, fxRate), [usage, fxRate])
 
@@ -623,6 +806,13 @@ export default function PricingCalculator({
                 >
                   vs Data Orchestration
                 </Tab>
+                <Tab
+                  active={activeTab === 'warehouse'}
+                  onClick={() => setActiveTab('warehouse')}
+                  icon={Warehouse}
+                >
+                  vs Warehouse / OLAP
+                </Tab>
               </div>
 
               {/* Tab panels */}
@@ -643,6 +833,15 @@ export default function PricingCalculator({
                   onOrchUsage={setOrchField}
                   fxRate={fxRate}
                   recommendation={recommendation}
+                />
+              )}
+
+              {activeTab === 'warehouse' && (
+                <WarehouseComparisonSection
+                  competitors={warehouseCompetitors}
+                  whUsage={whUsage}
+                  onWhUsage={setWhField}
+                  fxRate={fxRate}
                 />
               )}
 

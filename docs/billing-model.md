@@ -71,6 +71,18 @@ Overage rates are drawn from the org's **usage wallet** (prepaid credit balance)
 Overages are available from Starter tier upward.  The Free tier has hard stops;
 overages require an upgrade.
 
+### Warehouse queries (heavy-query pool)
+
+Queries against datastores flagged for the **hosted DuckDB warehouse** (the
+heavy-query pool — same engine on 8 GB+ machines, for big-table sorts/joins
+and ~1B-row workloads) consume compute units at a **4× multiplier**
+(`WAREHOUSE_CU_MULTIPLIER` in `tiers.py`; runtime `NUBI_CU_MULTIPLIER` on the
+pool process). There is **no separate warehouse meter or rate**: warehouse CUs
+draw from the same monthly CU quota, and overage uses the normal
+R100/1,000 CU rate. Availability is a tier feature: **Pro and Enterprise**
+(`has_warehouse`); Free/Starter/Team queries always run on standard machines
+(the quota checker denies the `warehouse` dimension with an upgrade prompt).
+
 ---
 
 ## Dimensions That Are NOT Metered
@@ -99,6 +111,7 @@ The following have near-zero marginal COGS and are never charged:
 | Embedded sessions/mo | 0 | 1,000 | 5,000 | 25,000 | Unlimited |
 | Agent runs/mo | 0 | 0 | 10 | 50 | 1,000 |
 | AI calls/mo | 0 | 5 | 15 | 50 | 500 |
+| Warehouse (heavy-query pool) | — | — | — | ✓ (4× CU) | ✓ (4× CU) |
 
 ---
 

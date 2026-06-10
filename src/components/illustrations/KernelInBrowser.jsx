@@ -7,7 +7,7 @@ export default function KernelInBrowser({ className = '' }) {
   const pins = [0, 1, 2, 3, 4, 5]
   return (
     <svg
-      viewBox="0 0 480 360"
+      viewBox="28 28 424 304"
       fill="none"
       xmlns="http://www.w3.org/2000/svg"
       className={className}
@@ -18,7 +18,7 @@ export default function KernelInBrowser({ className = '' }) {
     >
       <defs>
         <linearGradient id="krn-stroke" x1="0" y1="1" x2="1" y2="0">
-          <stop offset="0%" stopColor="#1b2363" />
+          <stop offset="0%" stopColor="#3b66c4" />
           <stop offset="45%" stopColor="#2456a6" />
           <stop offset="100%" stopColor="#17b3a3" />
         </linearGradient>
@@ -39,28 +39,30 @@ export default function KernelInBrowser({ className = '' }) {
       {/* Browser window */}
       <rect x="40" y="40" width="400" height="280" rx="16"
         fill="#2456a6" fillOpacity="0.04" stroke="url(#krn-stroke)" strokeWidth="2" />
-      <line x1="40" y1="76" x2="440" y2="76" stroke="#2456a6" strokeWidth="1.5" strokeOpacity="0.5" />
-      <circle cx="60" cy="58" r="4" fill="#2456a6" fillOpacity="0.45" />
+      <line x1="40" y1="76" x2="440" y2="76" stroke="#92abd3" strokeWidth="1.5" />
+      <circle cx="60" cy="58" r="4" fill="#9cb3d7" />
       <circle cx="76" cy="58" r="4" fill="#17b3a3" fillOpacity="0.55" />
       <circle cx="92" cy="58" r="4" fill="#2dd4bf" fillOpacity="0.7" />
 
       <g clipPath="url(#krn-clip)">
+        {/* chip — scaled up to fill the browser frame */}
+        <g transform="translate(240 186) scale(1.22) translate(-240 -180)">
         {/* chip pins */}
         {pins.map((i) => {
           const x = 178 + i * 21.6
-          return <rect key={`t${i}`} x={x} y="118" width="9" height="14" rx="2.5" fill="#2456a6" fillOpacity="0.6" />
+          return <rect key={`t${i}`} x={x} y="118" width="9" height="14" rx="2.5" fill="#7c9aca" />
         })}
         {pins.map((i) => {
           const x = 178 + i * 21.6
-          return <rect key={`b${i}`} x={x} y="228" width="9" height="14" rx="2.5" fill="#2456a6" fillOpacity="0.6" />
+          return <rect key={`b${i}`} x={x} y="228" width="9" height="14" rx="2.5" fill="#7c9aca" />
         })}
         {pins.map((i) => {
           const y = 150 + i * 11.5
-          return <rect key={`l${i}`} x="146" y={y} width="14" height="7" rx="2.5" fill="#2456a6" fillOpacity="0.6" />
+          return <rect key={`l${i}`} x="146" y={y} width="14" height="7" rx="2.5" fill="#7c9aca" />
         })}
         {pins.map((i) => {
           const y = 150 + i * 11.5
-          return <rect key={`r${i}`} x="320" y={y} width="14" height="7" rx="2.5" fill="#2456a6" fillOpacity="0.6" />
+          return <rect key={`r${i}`} x="320" y={y} width="14" height="7" rx="2.5" fill="#7c9aca" />
         })}
 
         {/* chip body */}
@@ -74,11 +76,12 @@ export default function KernelInBrowser({ className = '' }) {
               fill="#ffffff" fillOpacity={0.55 + ((c + r) % 2) * 0.3} />
           ))
         )}
+        </g>
 
         {/* result emitted below — tiny chart */}
-        <polyline points="180,288 210,278 238,284 266,266 300,272"
+        <polyline points="166,296 204,284 240,290 278,268 322,276"
           stroke="url(#krn-accent)" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" fill="none" />
-        <circle cx="300" cy="272" r="4" fill="#17b3a3" />
+        <circle cx="322" cy="276" r="4" fill="#17b3a3" />
       </g>
     </svg>
   )

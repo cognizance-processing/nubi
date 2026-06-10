@@ -16,12 +16,16 @@ import {
   Check, X, ArrowRight, ChevronRight, Headset, Star,
   Zap, Database, Bot, Server, Users, XCircle, CheckCircle2,
   SlidersHorizontal, TrendingDown, Shield, Wallet, GitFork, Gauge,
+  Warehouse,
 } from 'lucide-react'
 import {
   TIERS, BILLING_MODEL, BI_COMPARISON, ORCH_COMPARISON, PRICING_FAQ, ENTERPRISE_NOTE,
   CALC_OPTIONS, ORCH_CALC_OPTIONS, OVERAGE_RATES, OVERAGE_NOTE,
 } from '../data/pricing.js'
-import { fetchPricingData } from '../lib/pricing.js'
+import {
+  fetchPricingData, recommendNubi, estimateWarehouseCu,
+  FALLBACK_COMPETITORS_WAREHOUSE, WAREHOUSE_CU_MULTIPLIER,
+} from '../lib/pricing.js'
 
 const fmtUSD = (n) => {
   if (!n) return '$0'
@@ -399,6 +403,144 @@ function OrchCalculator() {
   )
 }
 
+/* ─────────────────────────────────────────────────────────────────────────── */
+/*  Warehouse cost calculator — the THIRD calculator                           */
+/* ─────────────────────────────────────────────────────────────────────────── */
+
+function WarehouseCalculator() {
+  const [dataGb, setDataGb] = useState(100)
+  const [queries, setQueries] = useState(5000)
+  const [scanGb, setScanGb] = useState(2)
+
+  const whUsage = { data_gb: dataGb, queries_per_month: queries, avg_gb_scanned: scanGb }
+  const warehouseCu = estimateWarehouseCu(whUsage)
+  const rec = recommendNubi(
+    {
+      storage_gb: dataGb, compute_units: warehouseCu, embedded_sessions: 0,
+      agent_runs: 0, connectors: 1, flow_runs_per_month: 0,
+    },
+    null,
+    { minTierId: 'pro' },
+  )
+  const nubiCost = Math.round(rec.tier.usd_monthly + rec.overage_zar / 16.26)
+
+  const results = [
+    {
+      name: `Nubi ${rec.tier.name} + warehouse`,
+      note: `Full BI platform included · warehouse scans at ${WAREHOUSE_CU_MULTIPLIER}× CU`,
+      isNubi: true,
+      cost: nubiCost,
+    },
+    ...FALLBACK_COMPETITORS_WAREHOUSE.map((c) => ({
+      name: c.name,
+      note: c.note,
+      isNubi: false,
+      estimate: true,
+      cost: Math.round(c.model(whUsage)),
+    })),
+  ].sort((a, b) => a.cost - b.cost)
+
+  const max = Math.max(...results.map((r) => r.cost), 1)
+  const outOfEnvelope = dataGb > 1000 || scanGb > 20
+
+  return (
+    <div className="rounded-2xl border border-border bg-surface shadow-sm overflow-hidden">
+      {/* Inputs */}
+      <div className="grid md:grid-cols-3 gap-6 p-6 sm:p-8 border-b border-border bg-surface-2">
+        <div>
+          <div className="flex items-baseline justify-between mb-3">
+            <label htmlFor="wh-data" className="text-sm font-semibold text-fg">Dataset size (GB)</label>
+            <span className="font-display text-xl font-bold text-brand-blue">{dataGb.toLocaleString()}</span>
+          </div>
+          <input
+            id="wh-data" type="range" min="10" max="2000" step="10" value={dataGb}
+            onChange={(e) => setDataGb(Number(e.target.value))}
+            className="nubi-range w-full" aria-label="Dataset size in GB"
+          />
+          <div className="flex justify-between text-[11px] text-muted mt-1.5"><span>10 GB</span><span>2 TB</span></div>
+        </div>
+        <div>
+          <div className="flex items-baseline justify-between mb-3">
+            <label htmlFor="wh-queries" className="text-sm font-semibold text-fg">Warehouse queries / mo</label>
+            <span className="font-display text-xl font-bold text-brand-blue">{fmtNum(queries)}</span>
+          </div>
+          <input
+            id="wh-queries" type="range" min="100" max="50000" step="100" value={queries}
+            onChange={(e) => setQueries(Number(e.target.value))}
+            className="nubi-range w-full" aria-label="Warehouse queries per month"
+          />
+          <div className="flex justify-between text-[11px] text-muted mt-1.5"><span>100</span><span>50k</span></div>
+        </div>
+        <div>
+          <div className="flex items-baseline justify-between mb-3">
+            <label htmlFor="wh-scan" className="text-sm font-semibold text-fg">Avg scanned / query (GB)</label>
+            <span className="font-display text-xl font-bold text-brand-blue">{scanGb}</span>
+          </div>
+          <input
+            id="wh-scan" type="range" min="0.5" max="50" step="0.5" value={scanGb}
+            onChange={(e) => setScanGb(Number(e.target.value))}
+            className="nubi-range w-full" aria-label="Average GB scanned per query"
+          />
+          <div className="flex justify-between text-[11px] text-muted mt-1.5"><span>0.5</span><span>50</span></div>
+        </div>
+      </div>
+
+      {/* Headline */}
+      <div className="flex flex-wrap items-center justify-center gap-2 px-6 py-4 text-center bg-brand-teal/[0.06] border-b border-border">
+        <Warehouse size={18} className="text-brand-teal" />
+        <span className="text-sm sm:text-base text-fg">
+          Hosted warehouse on Nubi ≈ <strong className="text-brand-teal font-bold">{fmtUSD(nubiCost)}/mo</strong>{' '}
+          — and that price includes the entire BI platform, not just the engine.
+        </span>
+      </div>
+
+      {/* Honest out-of-envelope callout */}
+      {outOfEnvelope && (
+        <div className="px-6 py-3 text-xs sm:text-sm bg-amber-50 dark:bg-amber-900/20 border-b border-amber-200 dark:border-amber-800 text-amber-800 dark:text-amber-200">
+          <strong>Honest note:</strong> at this scale a dedicated warehouse is the better tool — Nubi's
+          pool runs each query on one machine. Connect your own BigQuery or ClickHouse as a Nubi
+          datastore instead; queries push down to their engine while dashboards, RLS, and caching stay in Nubi.
+        </div>
+      )}
+
+      {/* Bars */}
+      <div className="p-6 sm:p-8 flex flex-col gap-3">
+        {results.map((r) => (
+          <div key={r.name} className="grid grid-cols-[120px_1fr_auto] sm:grid-cols-[190px_1fr_auto] items-center gap-3">
+            <div className="min-w-0">
+              <div className={`text-sm font-semibold truncate ${r.isNubi ? 'text-brand-teal' : 'text-fg'}`}>
+                {r.isNubi && <Star size={12} className="inline mr-1 -mt-0.5 text-brand-teal" strokeWidth={2.5} />}
+                {r.name}{r.estimate ? <sup className="text-muted">†</sup> : null}
+              </div>
+              <div className="text-[11px] text-muted truncate hidden sm:block">{r.note}</div>
+            </div>
+            <div className="h-7 rounded-md bg-surface-2 overflow-hidden">
+              <div
+                className={`h-full rounded-md ${r.isNubi ? '' : 'bg-brand-blue/25'}`}
+                style={{
+                  width: `${Math.max(r.isNubi ? 0 : 2, (r.cost / max) * 100)}%`,
+                  background: r.isNubi ? 'linear-gradient(90deg, #2456a6, #17b3a3)' : undefined,
+                }}
+              />
+            </div>
+            <div className={`text-sm font-bold tabular-nums text-right w-16 ${r.isNubi ? 'text-brand-teal' : 'text-fg'}`}>
+              {fmtUSD(r.cost)}
+            </div>
+          </div>
+        ))}
+      </div>
+      <p className="px-6 sm:px-8 pb-6 text-xs text-muted opacity-70 leading-relaxed">
+        † Fair-comparison notes: vendor estimates assume well-tuned auto-idle / auto-suspend — default
+        settings usually cost more; BigQuery's free tier (1 TB scan + 10 GB storage/mo) is included.
+        These engines are warehouse-only (no dashboards, embedding, or flows) and genuinely outperform
+        Nubi's single-machine pool on multi-TB scans — if you already run one, connect it as a Nubi
+        datastore instead of migrating data. Directional estimates from public pricing pages
+        (June 2026), not quotes.
+      </p>
+    </div>
+  )
+}
+
 /**
  * Merge live tier data from the /api/v1/pricing endpoint into the static TIERS
  * array.  The live data provides the up-to-date ZAR price (computed with the
@@ -654,6 +796,29 @@ export default function PricingPage() {
             </div>
             <OrchCalculator />
           </div>
+        </div>
+      </section>
+
+      {/* Warehouse — what the lakehouse is, what it costs, where it ends */}
+      <section className="py-14 sm:py-20">
+        <div className="max-w-5xl mx-auto px-4 sm:px-6 lg:px-8">
+          <div className="text-center mb-10">
+            <Eyebrow><span className="inline-flex items-center gap-1.5"><Warehouse size={12} /> Hosted warehouse · Pro &amp; Enterprise</span></Eyebrow>
+            <h2 className="font-display text-3xl sm:text-4xl font-bold text-fg mb-3">A warehouse line item of zero — within its limits</h2>
+            <p className="text-sm sm:text-base text-muted max-w-2xl mx-auto">
+              Your datasets live as open Parquet in object storage; DuckDB queries them on dedicated
+              8 GB+ machines, billed as ordinary compute units at {WAREHOUSE_CU_MULTIPLIER}× — no per-TB
+              scan fees, no always-on cluster. The honest scope: each query runs on one machine, so the
+              sweet spot is tables up to ~1B rows with selective scans. Bigger than that? Connect the
+              warehouse you already have as a datastore and Nubi pushes queries down to it.
+            </p>
+          </div>
+
+          {/* Calculator 3 — warehouse */}
+          <div className="text-center mb-8">
+            <Eyebrow><span className="inline-flex items-center gap-1.5"><SlidersHorizontal size={12} /> Calculator 3 · Warehouse</span></Eyebrow>
+          </div>
+          <WarehouseCalculator />
         </div>
       </section>
 

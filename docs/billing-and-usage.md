@@ -94,7 +94,7 @@ We meter only the five dimensions that map to a real cost we pay on your behalf:
 | Metered dimension | What it measures |
 |-------------------|------------------|
 | **Storage (GB)** | Object storage your org consumes |
-| **Compute units (CU)** | Flow runs + query compute on Nubi's nodes. Each server-side query execution records one event (compute-seconds + bytes returned); cached reads are never metered |
+| **Compute units (CU)** | Flow runs + query compute on Nubi's nodes. Each server-side query execution records one event (compute-seconds + bytes returned); cached reads are never metered. **Warehouse queries** (the hosted heavy-query pool, Pro+) consume CUs at 4× — same quota, same overage rate, no separate meter |
 | **Embedded sessions** | Embedded dashboard loads per month |
 | **AI calls** | Text-to-SQL, MCP tools, and agent steps |
 | **Agent / kernel runs** | On-demand server kernels (Team & Pro+) |

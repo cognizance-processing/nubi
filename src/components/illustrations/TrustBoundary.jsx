@@ -6,7 +6,7 @@
 export default function TrustBoundary({ className = '' }) {
   return (
     <svg
-      viewBox="0 0 480 360"
+      viewBox="40 70 400 230"
       fill="none"
       xmlns="http://www.w3.org/2000/svg"
       className={className}
@@ -17,7 +17,7 @@ export default function TrustBoundary({ className = '' }) {
     >
       <defs>
         <linearGradient id="tbd-stroke" x1="0" y1="1" x2="1" y2="0">
-          <stop offset="0%" stopColor="#1b2363" />
+          <stop offset="0%" stopColor="#3b66c4" />
           <stop offset="45%" stopColor="#2456a6" />
           <stop offset="100%" stopColor="#17b3a3" />
         </linearGradient>
@@ -26,7 +26,7 @@ export default function TrustBoundary({ className = '' }) {
           <stop offset="100%" stopColor="#2dd4bf" />
         </linearGradient>
         <clipPath id="tbd-clip">
-          <rect x="20" y="30" width="440" height="300" rx="16" />
+          <rect x="40" y="70" width="400" height="230" rx="16" />
         </clipPath>
       </defs>
 
@@ -35,17 +35,17 @@ export default function TrustBoundary({ className = '' }) {
         <rect x="56" y="104" width="148" height="152" rx="14"
           fill="#2456a6" fillOpacity="0.05" stroke="url(#tbd-stroke)" strokeWidth="2" />
         {/* readable config rows: dot + line pairs */}
-        <circle cx="80" cy="136" r="4" fill="#2456a6" fillOpacity="0.6" />
-        <line x1="92" y1="136" x2="180" y2="136" stroke="#2456a6" strokeWidth="2" strokeOpacity="0.35" strokeLinecap="round" />
-        <circle cx="80" cy="166" r="4" fill="#2456a6" fillOpacity="0.6" />
-        <line x1="92" y1="166" x2="164" y2="166" stroke="#2456a6" strokeWidth="2" strokeOpacity="0.35" strokeLinecap="round" />
+        <circle cx="80" cy="136" r="4" fill="#7c9aca" />
+        <line x1="92" y1="136" x2="180" y2="136" stroke="#b2c4e0" strokeWidth="2" strokeLinecap="round" />
+        <circle cx="80" cy="166" r="4" fill="#7c9aca" />
+        <line x1="92" y1="166" x2="164" y2="166" stroke="#b2c4e0" strokeWidth="2" strokeLinecap="round" />
         <circle cx="80" cy="196" r="4" fill="#17b3a3" />
-        <line x1="92" y1="196" x2="172" y2="196" stroke="#2456a6" strokeWidth="2" strokeOpacity="0.35" strokeLinecap="round" />
-        <circle cx="80" cy="226" r="4" fill="#2456a6" fillOpacity="0.6" />
-        <line x1="92" y1="226" x2="152" y2="226" stroke="#2456a6" strokeWidth="2" strokeOpacity="0.35" strokeLinecap="round" />
+        <line x1="92" y1="196" x2="172" y2="196" stroke="#b2c4e0" strokeWidth="2" strokeLinecap="round" />
+        <circle cx="80" cy="226" r="4" fill="#7c9aca" />
+        <line x1="92" y1="226" x2="152" y2="226" stroke="#b2c4e0" strokeWidth="2" strokeLinecap="round" />
 
         {/* link: config → sealed secrets */}
-        <path d="M 204 180 L 252 180" stroke="#2456a6" strokeWidth="2" strokeOpacity="0.45" strokeLinecap="round" />
+        <path d="M 204 180 L 252 180" stroke="#9cb3d7" strokeWidth="2" strokeLinecap="round" />
         <circle cx="228" cy="180" r="4.5" fill="#17b3a3" />
 
         {/* ── shield (right) wrapping the sealed card ── */}
@@ -56,7 +56,7 @@ export default function TrustBoundary({ className = '' }) {
         <rect x="288" y="142" width="104" height="92" rx="12"
           fill="#2456a6" fillOpacity="0.06" stroke="url(#tbd-seal)" strokeWidth="2.25" />
         {/* cipher rows: dots only (unreadable) */}
-        <g fill="#2456a6" fillOpacity="0.5">
+        <g fill="#92abd3">
           <circle cx="306" cy="206" r="3" />
           <circle cx="318" cy="206" r="3" />
           <circle cx="330" cy="206" r="3" />

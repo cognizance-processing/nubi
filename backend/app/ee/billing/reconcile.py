@@ -73,6 +73,11 @@ class UsageSnapshot:
     ai_calls: int = 0
     embedded_sessions: int = 0
     agent_runs: int = 0
+    # Informational breakout: the portion of compute_units consumed on the
+    # warehouse (heavy-query pool), already 4×-multiplied at metering time.
+    # NOT a separate billable dimension — it is a subset of compute_units —
+    # but invoices and the current-cycle panel can show "of which warehouse".
+    warehouse_cu: int = 0
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -81,6 +86,7 @@ class UsageSnapshot:
             "ai_calls": self.ai_calls,
             "embedded_sessions": self.embedded_sessions,
             "agent_runs": self.agent_runs,
+            "warehouse_cu": self.warehouse_cu,
         }
 
 
@@ -112,12 +118,14 @@ async def aggregate_usage_for_org(
 
         rows = await fetch(
             """
-            SELECT kind, COALESCE(SUM(units), 0) AS total_units,
+            SELECT kind,
+                   (tier LIKE '%:warehouse') AS is_warehouse,
+                   COALESCE(SUM(units), 0) AS total_units,
                    COUNT(*) AS n, COALESCE(MAX(units), 0) AS max_units
             FROM usage_events
             WHERE org_id = $1::uuid
               AND created_at >= $2 AND created_at < $3
-            GROUP BY kind
+            GROUP BY kind, (tier LIKE '%:warehouse')
             """,
             str(org_id), period_start, period_end,
         )
@@ -127,7 +135,13 @@ async def aggregate_usage_for_org(
             if kind == "storage":
                 events.append({"kind": "storage", "units": float(r["max_units"] or 0)})
             elif kind in ("kernel", "compute"):
-                events.append({"kind": "compute", "units": float(r["total_units"] or 0)})
+                events.append(
+                    {
+                        "kind": "compute",
+                        "units": float(r["total_units"] or 0),
+                        "warehouse": bool(r["is_warehouse"]),
+                    }
+                )
             else:
                 # Count of events for discrete dimensions (ai_call, embed, agent).
                 for _ in range(int(r["n"])):
@@ -168,6 +182,11 @@ def aggregate_usage_from_events(events: list[dict[str, Any]]) -> UsageSnapshot:
         amount = units if units is not None else 1
         if dim == "compute_units":
             snap.compute_units += int(round(float(amount)))
+            # Warehouse breakout: pre-aggregated DB rows carry a "warehouse"
+            # flag; raw in-memory sink events carry the ":warehouse" tier
+            # suffix stamped by the heavy-query pool.
+            if ev.get("warehouse") or str(ev.get("tier") or "").endswith(":warehouse"):
+                snap.warehouse_cu += int(round(float(amount)))
         else:
             setattr(snap, dim, getattr(snap, dim) + int(round(float(amount or 1))))
     snap.storage_gb = storage_peak

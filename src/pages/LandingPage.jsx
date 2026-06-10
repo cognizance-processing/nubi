@@ -35,6 +35,7 @@ import {
   Globe,
   Bot,
   Workflow,
+  Warehouse,
   ChevronRight,
   Check,
   X,
@@ -67,7 +68,10 @@ import {
   OVERAGE_NOTE,
 } from '../data/pricing.js'
 import { CONNECTOR_TYPES } from '../data/connectors.js'
-import { fetchPricingData } from '../lib/pricing.js'
+import {
+  fetchPricingData, recommendNubi, estimateWarehouseCu,
+  FALLBACK_COMPETITORS_WAREHOUSE, WAREHOUSE_CU_MULTIPLIER,
+} from '../lib/pricing.js'
 import HeroIllustration from '../components/illustrations/HeroIllustration.jsx'
 import QueryWorkspace from '../components/illustrations/QueryWorkspace.jsx'
 import DashboardCanvas from '../components/illustrations/DashboardCanvas.jsx'
@@ -76,6 +80,7 @@ import EdgeCache from '../components/illustrations/EdgeCache.jsx'
 import WebGLPerf from '../components/illustrations/WebGLPerf.jsx'
 import ConnectorSdk from '../components/illustrations/ConnectorSdk.jsx'
 import EmbedAuth from '../components/illustrations/EmbedAuth.jsx'
+import LakehouseFlow from '../components/illustrations/LakehouseFlow.jsx'
 // Dev-centric features read better as real code than abstract art.
 import { ConnectorSdkCode, FlowCode, EmbedAuthCode, LlmDashboardCode } from '../components/illustrations/CodeTile.jsx'
 
@@ -335,7 +340,7 @@ function SectionCta({ sub }) {
         </Link>
         <Link
           to="/pricing"
-          className="inline-flex items-center justify-center gap-2 px-6 py-3 rounded-xl text-sm font-semibold transition-all bg-surface border border-border text-fg hover:border-brand-blue hover:text-brand-blue min-h-[44px]"
+          className="inline-flex items-center justify-center gap-2 px-6 py-3 rounded-xl text-sm font-semibold transition-all bg-surface border border-border text-fg hover:border-brand-blue hover:text-primary min-h-[44px]"
         >
           See pricing
         </Link>
@@ -587,7 +592,7 @@ function LpTierCard({ tier }) {
         className={`mt-4 inline-flex items-center justify-center gap-2 px-4 py-2.5 rounded-xl text-sm font-semibold transition-all min-h-[44px]
           ${hi
             ? 'bg-brand-gradient text-white hover:opacity-90 shadow-sm'
-            : 'bg-surface-2 border border-border text-fg hover:border-brand-blue hover:text-brand-blue'}`}
+            : 'bg-surface-2 border border-border text-fg hover:border-brand-blue hover:text-primary'}`}
       >
         {tier.cta}
         <ArrowRight size={14} strokeWidth={2.5} />
@@ -638,7 +643,7 @@ function LpCostCalculator() {
             <label htmlFor="lp-calc-viewers" className="text-sm font-semibold text-fg">
               Dashboard viewers
             </label>
-            <span className="font-display text-xl font-bold text-brand-blue">{fmtNum(viewers)}</span>
+            <span className="font-display text-xl font-bold text-primary">{fmtNum(viewers)}</span>
           </div>
           <input
             id="lp-calc-viewers" type="range" min="0" max="100" value={sv}
@@ -655,7 +660,7 @@ function LpCostCalculator() {
             <label htmlFor="lp-calc-editors" className="text-sm font-semibold text-fg">
               Editors (creators)
             </label>
-            <span className="font-display text-xl font-bold text-brand-blue">{editors}</span>
+            <span className="font-display text-xl font-bold text-primary">{editors}</span>
           </div>
           <input
             id="lp-calc-editors" type="range" min="1" max="50" value={editors}
@@ -743,7 +748,7 @@ function LpOrchCalculator() {
         <div>
           <div className="flex items-baseline justify-between mb-3">
             <label htmlFor="lp-orch-envs" className="text-sm font-semibold text-fg">Environments</label>
-            <span className="font-display text-xl font-bold text-brand-blue">{envs}</span>
+            <span className="font-display text-xl font-bold text-primary">{envs}</span>
           </div>
           <input
             id="lp-orch-envs" type="range" min="1" max="5" value={envs}
@@ -755,7 +760,7 @@ function LpOrchCalculator() {
         <div>
           <div className="flex items-baseline justify-between mb-3">
             <label htmlFor="lp-orch-gb" className="text-sm font-semibold text-fg">Data processed (GB/mo)</label>
-            <span className="font-display text-xl font-bold text-brand-blue">{fmtNum(gb)}</span>
+            <span className="font-display text-xl font-bold text-primary">{fmtNum(gb)}</span>
           </div>
           <input
             id="lp-orch-gb" type="range" min="0" max="10000" step="100" value={gb}
@@ -815,6 +820,138 @@ function LpOrchCalculator() {
   )
 }
 
+/** Landing-page warehouse cost calculator — hosted lakehouse vs standalone warehouses */
+function LpWarehouseCalculator() {
+  const [dataGb, setDataGb] = useState(100)
+  const [queries, setQueries] = useState(5000)
+  const [scanGb, setScanGb] = useState(2)
+
+  const whUsage = { data_gb: dataGb, queries_per_month: queries, avg_gb_scanned: scanGb }
+  const warehouseCu = estimateWarehouseCu(whUsage)
+  const rec = recommendNubi(
+    {
+      storage_gb: dataGb, compute_units: warehouseCu, embedded_sessions: 0,
+      agent_runs: 0, connectors: 1, flow_runs_per_month: 0,
+    },
+    null,
+    { minTierId: 'pro' },
+  )
+  const nubiCost = Math.round(rec.tier.usd_monthly + rec.overage_zar / 16.26)
+
+  const results = [
+    {
+      name: `Nubi ${rec.tier.name}`,
+      note: `Full BI platform included · warehouse scans at ${WAREHOUSE_CU_MULTIPLIER}× CU`,
+      isNubi: true,
+      cost: nubiCost,
+    },
+    ...FALLBACK_COMPETITORS_WAREHOUSE.map(c => ({
+      name: c.name,
+      note: c.note,
+      isNubi: false,
+      estimate: true,
+      cost: Math.round(c.model(whUsage)),
+    })),
+  ].sort((a, b) => a.cost - b.cost)
+  const max = Math.max(...results.map(r => r.cost), 1)
+  const outOfEnvelope = dataGb > 1000 || scanGb > 20
+
+  return (
+    <div className="rounded-2xl border border-border bg-surface shadow-sm overflow-hidden">
+      {/* Inputs */}
+      <div className="grid md:grid-cols-3 gap-6 p-6 sm:p-8 border-b border-border bg-surface-2">
+        <div>
+          <div className="flex items-baseline justify-between mb-3">
+            <label htmlFor="lp-wh-data" className="text-sm font-semibold text-fg">Dataset (GB)</label>
+            <span className="font-display text-xl font-bold text-primary">{fmtNum(dataGb)}</span>
+          </div>
+          <input
+            id="lp-wh-data" type="range" min="10" max="2000" step="10" value={dataGb}
+            onChange={e => setDataGb(Number(e.target.value))}
+            className="lp-range w-full" aria-label="Dataset size in GB"
+          />
+          <div className="flex justify-between text-[11px] text-muted mt-1.5"><span>10 GB</span><span>2 TB</span></div>
+        </div>
+        <div>
+          <div className="flex items-baseline justify-between mb-3">
+            <label htmlFor="lp-wh-queries" className="text-sm font-semibold text-fg">Big queries / mo</label>
+            <span className="font-display text-xl font-bold text-primary">{fmtNum(queries)}</span>
+          </div>
+          <input
+            id="lp-wh-queries" type="range" min="100" max="50000" step="100" value={queries}
+            onChange={e => setQueries(Number(e.target.value))}
+            className="lp-range w-full" aria-label="Warehouse queries per month"
+          />
+          <div className="flex justify-between text-[11px] text-muted mt-1.5"><span>100</span><span>50k</span></div>
+        </div>
+        <div>
+          <div className="flex items-baseline justify-between mb-3">
+            <label htmlFor="lp-wh-scan" className="text-sm font-semibold text-fg">Scanned / query (GB)</label>
+            <span className="font-display text-xl font-bold text-primary">{scanGb}</span>
+          </div>
+          <input
+            id="lp-wh-scan" type="range" min="0.5" max="50" step="0.5" value={scanGb}
+            onChange={e => setScanGb(Number(e.target.value))}
+            className="lp-range w-full" aria-label="Average GB scanned per query"
+          />
+          <div className="flex justify-between text-[11px] text-muted mt-1.5"><span>0.5</span><span>50</span></div>
+        </div>
+      </div>
+
+      {/* Headline — monthly (warehouse vendors quote monthly) */}
+      <div className="flex flex-wrap items-center justify-center gap-2 px-6 py-4 text-center bg-brand-teal/[0.06] border-b border-border">
+        <TrendingDown size={18} className="text-brand-teal" />
+        <span className="text-sm sm:text-base text-fg">
+          Hosted warehouse ≈ <strong className="text-brand-teal font-bold">{fmtUSD(nubiCost)}/mo</strong>
+          {' '}— and that price includes the whole BI platform, not just the engine.
+        </span>
+      </div>
+
+      {/* Honest out-of-envelope note */}
+      {outOfEnvelope && (
+        <div className="px-6 py-3 text-xs sm:text-sm bg-amber-50 dark:bg-amber-900/20 border-b border-amber-200 dark:border-amber-800 text-amber-800 dark:text-amber-200">
+          <strong>Honest note:</strong> at this scale a dedicated warehouse is the better tool — Nubi
+          runs each query on one machine. Connect your own BigQuery or ClickHouse as a datastore and
+          Nubi pushes queries down to it.
+        </div>
+      )}
+
+      {/* Bars */}
+      <div className="p-6 sm:p-8 flex flex-col gap-3">
+        {results.map(r => (
+          <div key={r.name} className="grid grid-cols-[120px_1fr_auto] sm:grid-cols-[180px_1fr_auto] items-center gap-3">
+            <div className="min-w-0">
+              <div className={`text-sm font-semibold truncate ${r.isNubi ? 'text-brand-teal' : 'text-fg'}`}>
+                {r.isNubi && <Star size={12} className="inline mr-1 -mt-0.5 text-brand-teal" strokeWidth={2.5} />}
+                {r.name}{r.estimate ? <sup className="text-muted">†</sup> : null}
+              </div>
+              <div className="text-[11px] text-muted truncate hidden sm:block">{r.note}</div>
+            </div>
+            <div className="h-7 rounded-md bg-surface-2 overflow-hidden">
+              <div
+                className={`h-full rounded-md ${r.isNubi ? '' : 'bg-brand-blue/25'}`}
+                style={{
+                  width: `${Math.max(2, (r.cost / max) * 100)}%`,
+                  background: r.isNubi ? 'linear-gradient(90deg, #2456a6, #17b3a3)' : undefined,
+                }}
+              />
+            </div>
+            <div className={`text-sm font-bold tabular-nums text-right w-16 ${r.isNubi ? 'text-brand-teal' : 'text-fg'}`}>
+              {fmtUSD(r.cost)}
+            </div>
+          </div>
+        ))}
+      </div>
+      <p className="px-6 sm:px-8 pb-6 text-xs text-muted opacity-70 leading-relaxed">
+        Monthly estimates. † Vendor figures assume well-tuned auto-idle / auto-suspend (defaults cost
+        more) and include free tiers; they are warehouse-only — no dashboards, embedding, or flows —
+        but genuinely outperform Nubi&rsquo;s single-machine pool on multi-TB scans. Directional, not
+        quotes — verify with the vendor.
+      </p>
+    </div>
+  )
+}
+
 /**
  * LpPricingSection — full pricing section for the landing page.
  *
@@ -866,7 +1003,7 @@ function LpPricingSection() {
               <circle cx="1" cy="1" r="1" fill="currentColor" />
             </pattern>
           </defs>
-          <rect width="100%" height="100%" fill="url(#lp-pricing-dots)" className="text-brand-blue" />
+          <rect width="100%" height="100%" fill="url(#lp-pricing-dots)" className="text-primary" />
         </svg>
         <div className="relative max-w-3xl mx-auto px-4 sm:px-6 text-center">
           <p className="text-xs font-semibold tracking-widest uppercase mb-4 text-brand-teal">Pricing</p>
@@ -926,7 +1063,7 @@ function LpPricingSection() {
                   const Icon = METER_ICONS[(i + 2) % METER_ICONS.length]
                   return (
                     <div key={o.label} className="flex items-start gap-3 px-5 py-4 border-border">
-                      <span className="shrink-0 mt-0.5 w-8 h-8 rounded-lg bg-surface-2 border border-border flex items-center justify-center text-brand-blue">
+                      <span className="shrink-0 mt-0.5 w-8 h-8 rounded-lg bg-surface-2 border border-border flex items-center justify-center text-primary">
                         <Icon size={14} strokeWidth={2} />
                       </span>
                       <div className="min-w-0">
@@ -963,7 +1100,7 @@ function LpPricingSection() {
                   const Icon = METER_ICONS[i % METER_ICONS.length]
                   return (
                     <li key={m.label} className="flex items-start gap-3">
-                      <span className="shrink-0 mt-0.5 w-7 h-7 rounded-lg bg-surface-2 border border-border flex items-center justify-center text-brand-blue">
+                      <span className="shrink-0 mt-0.5 w-7 h-7 rounded-lg bg-surface-2 border border-border flex items-center justify-center text-primary">
                         <Icon size={14} strokeWidth={2} />
                       </span>
                       <span className="text-sm text-muted leading-snug">
@@ -1029,6 +1166,19 @@ function LpPricingSection() {
             </p>
             <LpOrchCalculator />
           </div>
+
+          {/* Calculator 3 — warehouse */}
+          <div className="mt-10">
+            <p className="text-[11px] font-semibold tracking-widest uppercase text-muted mb-2">
+              Calculator 3 · Warehouse cost
+            </p>
+            <p className="text-sm text-muted max-w-2xl mb-4">
+              The lakehouse (Pro+) runs big-table queries on dedicated machines, billed as ordinary
+              compute units at {WAREHOUSE_CU_MULTIPLIER}× — no per-TB scan fees, no always-on cluster.
+              Compare against running a standalone warehouse for the same workload.
+            </p>
+            <LpWarehouseCalculator />
+          </div>
         </div>
       </div>
 
@@ -1054,7 +1204,7 @@ function LpPricingSection() {
             </Link>
             <Link
               to="/pricing"
-              className="inline-flex items-center justify-center gap-2 px-6 sm:px-8 py-4 rounded-xl text-base font-semibold transition-all bg-surface border border-border text-fg hover:border-brand-blue hover:text-brand-blue min-h-[52px]"
+              className="inline-flex items-center justify-center gap-2 px-6 sm:px-8 py-4 rounded-xl text-base font-semibold transition-all bg-surface border border-border text-fg hover:border-brand-blue hover:text-primary min-h-[52px]"
             >
               See full pricing →
             </Link>
@@ -1140,7 +1290,7 @@ export default function LandingPage() {
                   </Link>
                   <Link
                     to="/docs"
-                    className="inline-flex items-center justify-center gap-2 px-6 py-3.5 rounded-xl text-base font-semibold transition-all bg-surface-2 border border-border text-fg hover:border-brand-blue hover:text-brand-blue min-h-[48px]"
+                    className="inline-flex items-center justify-center gap-2 px-6 py-3.5 rounded-xl text-base font-semibold transition-all bg-surface-2 border border-border text-fg hover:border-brand-blue hover:text-primary min-h-[48px]"
                   >
                     View docs
                   </Link>
@@ -1230,7 +1380,7 @@ export default function LandingPage() {
               </p>
               <h2 className="font-display text-3xl sm:text-4xl lg:text-5xl font-bold text-fg">
                 One workspace, from{' '}
-                <span className="text-brand-blue">SQL</span> to{' '}
+                <span className="text-primary">SQL</span> to{' '}
                 <span className="text-brand-teal">embedded dashboard</span>.
               </h2>
               <p className="text-sm sm:text-base leading-relaxed mt-4 text-muted max-w-2xl mx-auto">
@@ -1292,7 +1442,7 @@ export default function LandingPage() {
                 Why Nubi
               </p>
               <h2 className="font-display text-3xl sm:text-4xl lg:text-5xl font-bold leading-tight mb-4 sm:mb-5 text-fg">
-                Seven decisions that make{' '}
+                Eight decisions that make{' '}
                 <span className="text-brand-gradient">everything cheaper.</span>
               </h2>
               <p className="text-sm sm:text-base leading-relaxed text-muted">
@@ -1363,13 +1513,23 @@ export default function LandingPage() {
               />
 
               <DiffRow
+                id="warehouse"
+                icon={Warehouse}
+                title="The lakehouse: a warehouse you don't run"
+                badge="Pro & Enterprise"
+                desc="What it is: your datasets stored as open Parquet in object storage, queried by DuckDB — no proprietary format, no cluster to operate. What it's for: BI-scale analytics — uploads, flow outputs, and fact tables into the hundreds of millions of rows, with big sorts and joins running on dedicated 8 GB+ warehouse machines billed as ordinary compute units at 4×. What it isn't: a Snowflake replacement — each query runs on one machine, so multi-terabyte scans and huge ad-hoc joins belong in a dedicated warehouse. When you outgrow it, nothing migrates: connect your BigQuery or ClickHouse as a datastore and Nubi pushes queries down, while dashboards, RLS, caching, and rollups stay exactly where they are."
+                Illustration={LakehouseFlow}
+                reverse={false}
+              />
+
+              <DiffRow
                 id="flows"
                 icon={Workflow}
                 title="Flows · LLM-native orchestration"
                 badge="Workflows"
                 desc="A lightweight Prefect alternative built in. Three cell types — SQL, Python, and notes — wired into a DAG you edit as a notebook or a visual canvas. Materialization, fan-out, and conditional gates are cell settings, and it all runs on Postgres alone — no Redis, no Celery. Retries, timeouts, and result caching per task. AI tools let agents author and run flows in natural language."
                 Illustration={FlowCode}
-                reverse={false}
+                reverse={true}
               />
             </div>
           </div>
@@ -1560,7 +1720,7 @@ export default function LandingPage() {
 
             {/* Architecture note */}
             <div className="mt-10 sm:mt-12 mx-auto max-w-3xl rounded-2xl p-5 sm:p-6 text-sm leading-relaxed text-center bg-surface border border-border">
-              <strong className="text-brand-blue font-semibold">One language, one engine, one wire format.</strong>
+              <strong className="text-primary font-semibold">One language, one engine, one wire format.</strong>
               {' '}Python everywhere (FastAPI + connector planner + flows executor). DuckDB everywhere (WASM in the browser, embedded in the connector).
               Arrow IPC at every boundary — results stream from connector to browser with no serialization tax.
               <span className="text-muted"> sqlglot rewrites SQL between dialects on the server.</span>
@@ -1711,7 +1871,7 @@ export default function LandingPage() {
                         <div className="grid grid-cols-[1.6fr_1fr_1fr_1.15fr] bg-surface-2 border-t border-border">
                           <div className="py-2 px-5 col-span-1 flex items-center gap-2">
                             <span className="w-1.5 h-1.5 rounded-full bg-brand-teal" />
-                            <span className="text-[11px] font-bold uppercase tracking-widest text-brand-blue">{category}</span>
+                            <span className="text-[11px] font-bold uppercase tracking-widest text-primary">{category}</span>
                           </div>
                           <div className="border-l border-border" />
                           <div className="border-l border-border" />

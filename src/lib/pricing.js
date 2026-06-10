@@ -165,6 +165,7 @@ export const FALLBACK_TIERS = [
       '15,000 compute units / month',
       '25,000 embedded sessions / month',
       '50 AI calls / month · 50 agent / kernel runs',
+      'Hosted DuckDB warehouse — big-table queries on 8 GB+ machines (4× CU)',
       'All connectors',
       '100 dashboards · 20 scheduled flows',
       'Full RLS with JWT claims',
@@ -197,6 +198,7 @@ export const FALLBACK_TIERS = [
       '200,000 compute units / month',
       'Unlimited embedded sessions',
       '500 AI calls / month · 1,000 agent / kernel runs',
+      'Hosted DuckDB warehouse — dedicated machines, ~1B-row tables (4× CU)',
       'All connectors + custom connector SDK',
       'Unlimited dashboards & scheduled flows',
       'Full RLS + host-signed JWT pass-through',
@@ -458,6 +460,96 @@ export const FALLBACK_COMPETITORS_ORCHESTRATION = [
 ]
 
 // ---------------------------------------------------------------------------
+// Warehouse / OLAP competitor models
+// ---------------------------------------------------------------------------
+
+/**
+ * Warehouse queries (hosted DuckDB heavy-query pool, Pro+) bill compute units
+ * at this multiplier.  Mirrors backend WAREHOUSE_CU_MULTIPLIER (tiers.py) and
+ * the pool's NUBI_CU_MULTIPLIER (fly.toml).
+ */
+export const WAREHOUSE_CU_MULTIPLIER = 4
+
+/**
+ * Estimate the monthly CU cost of a warehouse workload.
+ *
+ * 1 CU ≈ 1 compute-second on a standard node.  The pool scans object-storage
+ * Parquet at roughly 1 GB/s effective (column pruning means most queries
+ * touch far less than the table size), and warehouse seconds bill at
+ * WAREHOUSE_CU_MULTIPLIER.
+ *
+ * @param {{ queries_per_month: number, avg_gb_scanned: number }} w
+ * @returns {number} estimated compute units / month
+ */
+export function estimateWarehouseCu({ queries_per_month, avg_gb_scanned }) {
+  const secondsPerQuery = Math.max(avg_gb_scanned / 1.0, 0.1)
+  return Math.ceil(queries_per_month * secondsPerQuery * WAREHOUSE_CU_MULTIPLIER)
+}
+
+/**
+ * Warehouse / OLAP competitors for the pricing calculator.
+ *
+ * model(usage) receives { data_gb, queries_per_month, avg_gb_scanned } and
+ * returns estimated USD/month.  Coarse public-pricing models (June 2026);
+ * the calculator shows a verify-with-vendor disclaimer.
+ */
+export const FALLBACK_COMPETITORS_WAREHOUSE = [
+  {
+    id: 'bigquery_ondemand',
+    name: 'Google BigQuery (on-demand)',
+    url: 'https://cloud.google.com/bigquery/pricing',
+    note: '$6.25/TB scanned — first 1 TB/mo and 10 GB storage free, then $0.02/GB. Effectively serverless; excels at multi-TB scale.',
+    model_type: 'per-scan',
+    model({ data_gb, queries_per_month, avg_gb_scanned }) {
+      const tbScanned = (queries_per_month * avg_gb_scanned) / 1024
+      const scanCost = Math.max(0, tbScanned - 1) * 6.25
+      const storageCost = Math.max(0, data_gb - 10) * 0.02
+      return scanCost + storageCost
+    },
+  },
+  {
+    id: 'clickhouse_cloud',
+    name: 'ClickHouse Cloud (Scale)',
+    url: 'https://clickhouse.com/pricing',
+    note: 'Smallest service ≈ $0.40/hr while awake + compressed storage. Assumes auto-idle with a 15-min window — steady query traffic keeps it awake.',
+    model_type: 'infra',
+    model({ data_gb, queries_per_month, avg_gb_scanned }) {
+      const scanHours = (queries_per_month * avg_gb_scanned) / 3600
+      // Each query burst keeps the service awake ~15 min before idling.
+      // Spread-out traffic above ~3k queries/mo is effectively always-on.
+      const awakeHours = Math.min(730, Math.max(scanHours, queries_per_month * 0.25))
+      return awakeHours * 0.4 + data_gb * 0.03
+    },
+  },
+  {
+    id: 'motherduck',
+    name: 'MotherDuck (Standard)',
+    url: 'https://motherduck.com/pricing',
+    note: '$25/user/mo + ~$0.25/CU-hr beyond included compute + $0.08/GB. Closest architecture to Nubi — also serverless DuckDB.',
+    model_type: 'per-scan',
+    model({ data_gb, queries_per_month, avg_gb_scanned }) {
+      const cuHours = (queries_per_month * avg_gb_scanned) / 3600
+      return 25 + Math.max(0, cuHours - 10) * 0.25 + data_gb * 0.08
+    },
+  },
+  {
+    id: 'snowflake_standard',
+    name: 'Snowflake (Standard, XS)',
+    url: 'https://www.snowflake.com/pricing',
+    note: '~$2/credit, XS = 1 credit/hr while running + $23/TB storage. Assumes a well-tuned 1-min auto-suspend — default 10-min suspend costs much more.',
+    model_type: 'infra',
+    model({ data_gb, queries_per_month, avg_gb_scanned }) {
+      const scanHours = (queries_per_month * avg_gb_scanned) / 3600
+      // Generous assumption: 1-minute auto-suspend, so each query burst
+      // bills ~1 minute of warehouse time beyond its own scan.
+      const suspendOverheadHours = (queries_per_month * 1) / 60 / 60
+      const activeHours = Math.min(730, Math.max(scanHours, suspendOverheadHours))
+      return activeHours * 2 + (data_gb / 1024) * 23
+    },
+  },
+]
+
+// ---------------------------------------------------------------------------
 // Nubi tier engine for the calculator — Free / Starter / Team / Pro / Enterprise
 // ---------------------------------------------------------------------------
 
@@ -530,12 +622,17 @@ const NUBI_TIERS_CALC = [
  *
  * @param {{ storage_gb, compute_units, embedded_sessions, agent_runs, connectors, flow_runs_per_month }} usage
  * @param {number|null} fxRate
+ * @param {{ minTierId?: string }} [opts]  minTierId floors the recommendation
+ *   (e.g. 'pro' for warehouse workloads — the heavy-query pool is Pro+).
  * @returns {{ tier, base_zar, overage_zar, total_zar, overages, is_exact_fit }}
  */
-export function recommendNubi(usage, fxRate) {
+export function recommendNubi(usage, fxRate, opts = {}) {
   const rate = fxRate ?? 16.26
+  const minIdx = opts.minTierId
+    ? Math.max(NUBI_TIERS_CALC.findIndex((t) => t.id === opts.minTierId), 0)
+    : 0
 
-  for (const tier of NUBI_TIERS_CALC) {
+  for (const tier of NUBI_TIERS_CALC.slice(minIdx)) {
     const q = tier.quotas
     const fits =
       (q.connectors === Infinity || q.connectors >= usage.connectors) &&
@@ -554,7 +651,7 @@ export function recommendNubi(usage, fxRate) {
   // No exact-fit tier — show overages on the highest-quota paid tier with defined
   // overage rates (iterate backward so we pick the most generous included quota,
   // giving the smallest/most realistic overage estimate for the calculator).
-  for (let i = NUBI_TIERS_CALC.length - 1; i >= 1; i--) {
+  for (let i = NUBI_TIERS_CALC.length - 1; i >= Math.max(minIdx, 1); i--) {
     const tier = NUBI_TIERS_CALC[i]
     if (!tier.overages) continue
     const q = tier.quotas
@@ -638,6 +735,9 @@ export async function fetchPricingData() {
       competitors_orchestration: Array.isArray(data?.competitors_orchestration) && data.competitors_orchestration.length
         ? data.competitors_orchestration
         : FALLBACK_COMPETITORS_ORCHESTRATION,
+      // Warehouse competitor models are functions, so they always come from
+      // the frontend fallback list (the API cannot ship pricing models).
+      competitors_warehouse: FALLBACK_COMPETITORS_WAREHOUSE,
     }
   } catch {
     return {
@@ -645,6 +745,7 @@ export async function fetchPricingData() {
       fx: { rate: 16.26, updated_at: null, fallback: true },
       competitors_bi: FALLBACK_COMPETITORS_BI,
       competitors_orchestration: FALLBACK_COMPETITORS_ORCHESTRATION,
+      competitors_warehouse: FALLBACK_COMPETITORS_WAREHOUSE,
     }
   }
 }

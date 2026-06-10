@@ -103,6 +103,12 @@ function CurrentCycleCard({ cycle }) {
             unit={d.unit}
           />
         ))}
+        {Number(cycle.usage?.warehouse_cu ?? 0) > 0 && (
+          <p className="text-[11px] text-muted -mt-1.5 pl-0.5">
+            of which warehouse queries (billed at 4×):{' '}
+            {Number(cycle.usage.warehouse_cu).toLocaleString('en-ZA')} CU
+          </p>
+        )}
       </div>
       <div className="flex items-center justify-between border-t border-border pt-3 text-sm">
         <span className="text-muted">Projected overage this cycle</span>

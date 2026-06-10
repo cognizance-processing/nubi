@@ -24,7 +24,7 @@ export default function WebGLPerf({ className = '' }) {
 
   return (
     <svg
-      viewBox="0 0 480 360"
+      viewBox="28 28 424 304"
       fill="none"
       xmlns="http://www.w3.org/2000/svg"
       className={className}
@@ -35,7 +35,7 @@ export default function WebGLPerf({ className = '' }) {
     >
       <defs>
         <linearGradient id="wgl-stroke" x1="0" y1="1" x2="1" y2="0">
-          <stop offset="0%" stopColor="#1b2363" />
+          <stop offset="0%" stopColor="#3b66c4" />
           <stop offset="45%" stopColor="#2456a6" />
           <stop offset="100%" stopColor="#17b3a3" />
         </linearGradient>
@@ -60,8 +60,8 @@ export default function WebGLPerf({ className = '' }) {
         ))}
 
         {/* axes */}
-        <line x1="84" y1="62" x2="84" y2="294" stroke="#2456a6" strokeWidth="1.5" strokeOpacity="0.35" />
-        <line x1="84" y1="294" x2="416" y2="294" stroke="#2456a6" strokeWidth="1.5" strokeOpacity="0.35" />
+        <line x1="84" y1="62" x2="84" y2="294" stroke="#b2c4e0" strokeWidth="1.5" />
+        <line x1="84" y1="294" x2="416" y2="294" stroke="#b2c4e0" strokeWidth="1.5" />
 
         {/* point cloud */}
         {pts.map((p, i) => (

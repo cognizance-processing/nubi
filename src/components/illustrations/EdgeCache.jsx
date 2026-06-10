@@ -8,7 +8,7 @@ export default function EdgeCache({ className = '' }) {
   const cacheX = 232, cacheY = 186 // center of cache module
   return (
     <svg
-      viewBox="0 0 480 360"
+      viewBox="30 46 420 282"
       fill="none"
       xmlns="http://www.w3.org/2000/svg"
       className={className}
@@ -19,7 +19,7 @@ export default function EdgeCache({ className = '' }) {
     >
       <defs>
         <linearGradient id="edg-stroke" x1="0" y1="1" x2="1" y2="0">
-          <stop offset="0%" stopColor="#1b2363" />
+          <stop offset="0%" stopColor="#3b66c4" />
           <stop offset="45%" stopColor="#2456a6" />
           <stop offset="100%" stopColor="#17b3a3" />
         </linearGradient>
@@ -29,7 +29,7 @@ export default function EdgeCache({ className = '' }) {
           <stop offset="100%" stopColor="#2dd4bf" />
         </linearGradient>
         <clipPath id="edg-clip">
-          <rect x="20" y="30" width="440" height="300" rx="16" />
+          <rect x="30" y="46" width="420" height="282" rx="16" />
         </clipPath>
       </defs>
 
@@ -38,7 +38,7 @@ export default function EdgeCache({ className = '' }) {
         {viewers.map((y, i) => (
           <path key={i}
             d={`M 96 ${y} C 150 ${y}, 168 ${cacheY}, 188 ${cacheY}`}
-            stroke="#2456a6" strokeWidth="1.75" strokeOpacity="0.4" fill="none" />
+            stroke="#a7bbdb" strokeWidth="1.75" fill="none" />
         ))}
 
         {/* viewer nodes (left) */}
@@ -47,8 +47,8 @@ export default function EdgeCache({ className = '' }) {
             <rect x="46" y={y - 16} width="48" height="32" rx="8"
               fill="#2456a6" fillOpacity="0.05" stroke="url(#edg-stroke)" strokeWidth="1.75" />
             <circle cx="60" cy={y} r="4" fill="#17b3a3" />
-            <line x1="72" y1={y - 4} x2="86" y2={y - 4} stroke="#2456a6" strokeWidth="2" strokeOpacity="0.4" strokeLinecap="round" />
-            <line x1="72" y1={y + 4} x2="82" y2={y + 4} stroke="#2456a6" strokeWidth="2" strokeOpacity="0.4" strokeLinecap="round" />
+            <line x1="72" y1={y - 4} x2="86" y2={y - 4} stroke="#a7bbdb" strokeWidth="2" strokeLinecap="round" />
+            <line x1="72" y1={y + 4} x2="82" y2={y + 4} stroke="#a7bbdb" strokeWidth="2" strokeLinecap="round" />
           </g>
         ))}
 
@@ -74,7 +74,7 @@ export default function EdgeCache({ className = '' }) {
           <ellipse cx="404" cy="158" rx="32" ry="11" fill="#2456a6" fillOpacity="0.08" stroke="url(#edg-stroke)" strokeWidth="2" />
           <path d="M 372 158 L 372 214 A 32 11 0 0 0 436 214 L 436 158"
             fill="#2456a6" fillOpacity="0.05" stroke="url(#edg-stroke)" strokeWidth="2" />
-          <path d="M 372 186 A 32 11 0 0 0 436 186" stroke="#2456a6" strokeWidth="1.5" strokeOpacity="0.35" fill="none" />
+          <path d="M 372 186 A 32 11 0 0 0 436 186" stroke="#b2c4e0" strokeWidth="1.5" fill="none" />
         </g>
       </g>
     </svg>
