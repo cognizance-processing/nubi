@@ -1271,12 +1271,15 @@ export default function LandingPage() {
                 </h1>
 
                 <p className="text-base sm:text-lg lg:text-xl leading-relaxed mb-8 sm:mb-10 max-w-lg text-muted">
-                  A DuckDB-WASM kernel computes inside the user&rsquo;s tab —
-                  no per-session cloud kernel, no cold starts, so an extra
-                  viewer costs ≈ $0 and we never charge for one. Unlimited
-                  seats on every tier, Flows orchestration built in, open-core
-                  and self-hostable. Embed it in your SaaS for a{' '}
-                  <strong className="text-fg font-semibold">fraction of what per-seat BI charges.</strong>
+                  A DuckDB-WASM kernel runs{' '}
+                  <strong className="text-fg font-semibold">inside the browser tab</strong>{' '}
+                  — no cloud kernel, no cold starts. So an extra viewer costs{' '}
+                  <strong className="text-fg font-semibold">≈ $0</strong>, and we never
+                  charge for one:{' '}
+                  <strong className="text-fg font-semibold">unlimited seats on every plan.</strong>{' '}
+                  Flows orchestration built in, open-core, self-hostable — embed it in
+                  your SaaS for a{' '}
+                  <strong className="text-fg font-semibold">fraction of per-seat BI.</strong>
                 </p>
 
                 {/* CTAs */}
