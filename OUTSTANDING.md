@@ -71,8 +71,9 @@ Baseline at audit: commit `16f31d0` (Wave C). Waves A/B/C done. Verify commands:
 
 - [ ] **Real scanned-bytes counters**: replace the Arrow-IPC-length proxy in `routes/query.py`
   with DuckDB post-pruning byte counters (parquet_metadata/httpfs) before `$5/TiB` is a public price.
-- [ ] **Legacy `app/git/remote.py` argv-token push** (B5 low): delete/refactor to askpass like
-  `remotes.py`; add a CI grep guard against `user:token@`/`git push <authed_url>` in argv.
+- [x] **Legacy `app/git/remote.py` argv-token push** (B5 low): `_git_push` now uses the hardened
+  `GIT_ASKPASS` helper (token in env, bare URL in argv); both callers pass bare URLs. Regression
+  guard test asserts no token in argv + creds via env. ✅ `963dcbd` (backend 3462).
 - [ ] **FlyMachineExecutor wake/sleep** (`app/compute/serverless_exec.py`): real Fly Machines
   API wake/sleep (default HeavyPoolExecutor already works; this is explicit control).
 - [ ] **Lakehouse optimizer deeper bits** (`app/lakehouse/optimizer.py`): write rollups to R2
