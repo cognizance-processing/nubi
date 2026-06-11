@@ -193,6 +193,11 @@ import app.routes.environments  # noqa: F401, E402
 # /{resource} catch-all in resources.py.
 import app.routes.metrics  # noqa: F401, E402
 
+# Import watches route (monitored metric thresholds → AI-explained alerts) so it
+# registers itself on api_router at import time — BEFORE resources so /watches/{id}
+# lands ahead of the generic /{resource} catch-all in resources.py.
+import app.routes.watches  # noqa: F401, E402
+
 # Import resources route so it registers itself on api_router at import time.
 import app.routes.resources  # noqa: F401, E402
 

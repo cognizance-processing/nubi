@@ -25,12 +25,29 @@ This scripted path ensures the test suite passes with no model/network access.
 
 Real-provider path
 ------------------
-A real provider (Anthropic, OpenAI, Gemini) is expected to support a tool-use
-protocol via its ``complete()`` method.  Because the base ``LLMProvider.complete``
-only returns text, real-provider tool use requires subclass extension (future
-work).  For now the real-provider path falls back to the same scripted behaviour
-as NullProvider after calling ``complete()`` once for the initial intent, then
-executes the scripted tool chain.
+A real provider (Anthropic, OpenAI, Gemini) drives a REAL tool-use loop.  The
+base ``LLMProvider.complete()`` only returns text, so we define a simple,
+text-based tool-call protocol (no native function-calling needed):
+
+  * The system prompt lists the available tools (name + JSON input schema) and
+    instructs the model to either CALL a tool by emitting a single JSON object::
+
+        {"tool": "<tool name>", "arguments": { ... }}
+
+    (optionally fenced in a ```json code block, optionally surrounded by prose),
+    or to give its FINAL answer as plain text with NO JSON tool block.
+
+  * Each turn we call ``provider.complete(conversation, system=...)``.  We parse
+    the reply: if it contains a tool-call JSON object we ``execute_tool(name,
+    arguments, claims)`` (claims threaded for RLS), append the observation to the
+    conversation, and loop.  A plain-text reply with no tool block is the final
+    answer and ends the loop.
+
+  * The loop is bounded by ``max_steps`` tool calls.  If the cap is hit before a
+    final text reply, we terminate gracefully and synthesise a reply from the
+    observations gathered so far.
+
+The return shape is IDENTICAL to the NullProvider path: ``{reply, actions}``.
 
 Signature (locked — M22 codes against it)
 -----------------------------------------
@@ -39,12 +56,13 @@ Signature (locked — M22 codes against it)
 
 from __future__ import annotations
 
+import json
 import re
 import time
 from typing import Any, Iterator
 
 from app.ai.provider import LLMProvider, NullProvider
-from app.ai.tools import execute_tool
+from app.ai.tools import execute_tool, tool_schemas
 
 
 # ---------------------------------------------------------------------------
@@ -94,6 +112,201 @@ def _extract_question(messages: list[dict[str, Any]]) -> str:
                     if isinstance(block, dict) and block.get("type") == "text":
                         return block.get("text", "")
     return "show me the data"
+
+
+# ---------------------------------------------------------------------------
+# Real-provider tool-call protocol (text-based)
+# ---------------------------------------------------------------------------
+
+
+def _tool_use_system_prompt() -> str:
+    """Build the system prompt describing the tool-call protocol + tool catalog."""
+    schemas = tool_schemas()
+    lines = [
+        "You are Nubi's analytics assistant. You can call tools to answer the "
+        "user's request. Prefer GOVERNED metrics (list_metrics / query_metric) "
+        "over hallucinated SQL when a metric fits the question.",
+        "",
+        "To call a tool, reply with ONE JSON object and nothing else:",
+        '  {"tool": "<tool name>", "arguments": { ... }}',
+        "",
+        "When you are done and want to give the user your final answer, reply "
+        "with plain text and NO JSON tool object.",
+        "",
+        "Available tools:",
+    ]
+    for s in schemas:
+        lines.append(
+            f"- {s['name']}: {s['description']} "
+            f"input_schema={json.dumps(s['input_schema'])}"
+        )
+    return "\n".join(lines)
+
+
+def _render_conversation(
+    messages: list[dict[str, Any]],
+    transcript: list[dict[str, Any]],
+) -> str:
+    """Render the conversation + tool transcript into a single prompt string.
+
+    *messages* is the caller's history; *transcript* is the running list of
+    assistant tool calls and their observations appended during the loop.
+    """
+    parts: list[str] = []
+    for msg in messages:
+        role = msg.get("role", "user")
+        content = msg.get("content", "")
+        if isinstance(content, list):
+            content = " ".join(
+                b.get("text", "")
+                for b in content
+                if isinstance(b, dict) and b.get("type") == "text"
+            )
+        parts.append(f"{role}: {content}")
+    for entry in transcript:
+        if entry.get("type") == "tool_call":
+            parts.append(
+                f"assistant: {json.dumps({'tool': entry['tool'], 'arguments': entry['arguments']})}"
+            )
+        elif entry.get("type") == "observation":
+            parts.append(
+                f"tool ({entry['tool']}): {json.dumps(entry['result'], default=str)[:4000]}"
+            )
+    parts.append("assistant:")
+    return "\n".join(parts)
+
+
+def _parse_tool_call(text: str) -> dict[str, Any] | None:
+    """Parse a tool-call JSON object from *text*, tolerating fences/prose.
+
+    Returns ``{"tool": str, "arguments": dict}`` when a well-formed tool call is
+    found, else ``None`` (meaning the text is a final plain-text answer).
+    """
+    if not text:
+        return None
+
+    candidates: list[str] = []
+
+    # 1. Fenced ```json ... ``` or ``` ... ``` blocks.
+    for m in re.finditer(r"```(?:json)?\s*(.*?)```", text, re.DOTALL):
+        candidates.append(m.group(1).strip())
+
+    # 2. The raw text itself (model may emit bare JSON).
+    candidates.append(text.strip())
+
+    # 3. The first balanced {...} span anywhere in the text.
+    brace = _first_json_object(text)
+    if brace is not None:
+        candidates.append(brace)
+
+    for cand in candidates:
+        if not cand:
+            continue
+        try:
+            obj = json.loads(cand)
+        except (ValueError, TypeError):
+            continue
+        if isinstance(obj, dict) and isinstance(obj.get("tool"), str):
+            args = obj.get("arguments")
+            if not isinstance(args, dict):
+                args = {}
+            return {"tool": obj["tool"], "arguments": args}
+    return None
+
+
+def _first_json_object(text: str) -> str | None:
+    """Return the first balanced ``{...}`` substring of *text*, or ``None``."""
+    start = text.find("{")
+    if start == -1:
+        return None
+    depth = 0
+    in_str = False
+    escaped = False
+    for i in range(start, len(text)):
+        ch = text[i]
+        if in_str:
+            if escaped:
+                escaped = False
+            elif ch == "\\":
+                escaped = True
+            elif ch == '"':
+                in_str = False
+            continue
+        if ch == '"':
+            in_str = True
+        elif ch == "{":
+            depth += 1
+        elif ch == "}":
+            depth -= 1
+            if depth == 0:
+                return text[start : i + 1]
+    return None
+
+
+def _run_real_provider_loop(
+    messages: list[dict[str, Any]],
+    provider: LLMProvider,
+    claims: dict[str, Any],
+    max_steps: int,
+) -> dict[str, Any]:
+    """Drive the real-provider tool-use loop. Returns ``{reply, actions}``.
+
+    See the module docstring for the text-based tool-call protocol.  Every tool
+    execution threads *claims* through ``execute_tool`` so RLS is enforced and
+    scope is never widened.  Bounded by *max_steps* tool calls.
+    """
+    system = _tool_use_system_prompt()
+    transcript: list[dict[str, Any]] = []
+    actions: list[dict[str, Any]] = []
+
+    steps = 0
+    final_reply: str | None = None
+    # One extra completion budget beyond max_steps so the model can produce a
+    # final text answer immediately after its last permitted tool call.
+    while steps <= max_steps:
+        prompt = _render_conversation(messages, transcript)
+        try:
+            reply_text = provider.complete(prompt, system=system)
+        except Exception:  # noqa: BLE001 — provider failure → terminate gracefully.
+            break
+
+        call = _parse_tool_call(reply_text)
+        if call is None:
+            # Plain-text reply → final answer.
+            final_reply = (reply_text or "").strip()
+            break
+
+        if steps >= max_steps:
+            # Model still wants a tool but we've hit the cap — stop here.
+            break
+
+        tool_name = call["tool"]
+        arguments = call["arguments"]
+        try:
+            result = execute_tool(tool_name, arguments, claims)
+        except Exception as exc:  # noqa: BLE001 — surface tool errors to the model.
+            result = {"error": {"code": "tool_error", "message": str(exc)}}
+
+        transcript.append({"type": "tool_call", "tool": tool_name, "arguments": arguments})
+        transcript.append({"type": "observation", "tool": tool_name, "result": result})
+        actions.append({"tool": tool_name, "arguments": arguments, "result": result})
+        steps += 1
+
+    if final_reply is None or not final_reply:
+        final_reply = _synthesise_reply(actions)
+
+    return {"reply": final_reply, "actions": actions}
+
+
+def _synthesise_reply(actions: list[dict[str, Any]]) -> str:
+    """Compose a deterministic fallback reply from the gathered tool actions."""
+    if not actions:
+        return "I wasn't able to complete a tool call for your request."
+    summary = ", ".join(a["tool"] for a in actions)
+    last = actions[-1].get("result") or {}
+    if isinstance(last, dict) and "row_count" in last:
+        return f"I ran {summary} and the final step returned {last['row_count']} row(s)."
+    return f"I ran the following tools for your request: {summary}."
 
 
 # ---------------------------------------------------------------------------
@@ -287,40 +500,12 @@ def run_agent(
         actions = actions[:max_steps]
         return {"reply": reply, "actions": actions}
 
-    # ── Real provider path ──────────────────────────────────────────────────
-    # The base LLMProvider.complete() returns text only (no native tool use).
-    # We call complete() once for the intent, then follow the same scripted
-    # tool chain.  Future subclasses can override with native tool-use protocols.
-    try:
-        _initial_response = provider.complete(
-            question,
-            system=(
-                "You are a Nubi AI assistant. "
-                "Decide what to do for the user's request. "
-                "Respond with just your intent: 'chart', 'run', or 'sql'."
-            ),
-        )
-        intent_signal = _initial_response.lower()
-        if "chart" in intent_signal or "dashboard" in intent_signal:
-            intent = "chart"
-        elif "run" in intent_signal or "query" in intent_signal:
-            intent = "run"
-        else:
-            intent = _build_intent(last_user_text)
-    except Exception:  # noqa: BLE001
-        intent = _build_intent(last_user_text)
-
-    if intent == "chart":
-        actions, reply = _scripted_chart_sequence(question, claims)
-    elif intent == "run":
-        actions, reply = _scripted_run_sequence(question, claims)
-    else:
-        actions, reply = _scripted_default_sequence(question, claims)
-
-    # Enforce max_steps by trimming excess actions.
-    actions = actions[:max_steps]
-
-    return {"reply": reply, "actions": actions}
+    # ── Real provider path — iterative tool-use loop ────────────────────────
+    # The base LLMProvider.complete() returns text only, so we drive a
+    # text-based tool-call protocol (see module docstring): the model emits a
+    # JSON {"tool", "arguments"} object to call a tool, or plain text to finish.
+    # Every tool execution threads ``claims`` for RLS; bounded by max_steps.
+    return _run_real_provider_loop(messages, provider, claims, max_steps)
 
 
 # ---------------------------------------------------------------------------
@@ -438,6 +623,70 @@ def _final_reply_text(
         return _scripted()
 
 
+def _stream_real_provider_loop(
+    messages: list[dict[str, Any]],
+    provider: LLMProvider,
+    claims: dict[str, Any],
+    *,
+    max_steps: int,
+    pace: float,
+) -> Iterator[dict[str, Any]]:
+    """Stream the real-provider tool-use loop as live events.
+
+    Mirrors :func:`_run_real_provider_loop` but yields ``tool_start`` /
+    ``tool_result`` / ``text`` / ``done`` events as each step happens. Every
+    tool execution threads *claims* for RLS; bounded by *max_steps*.
+    """
+    system = _tool_use_system_prompt()
+    transcript: list[dict[str, Any]] = []
+    actions: list[dict[str, Any]] = []
+
+    steps = 0
+    final_reply: str | None = None
+    while steps <= max_steps:
+        prompt = _render_conversation(messages, transcript)
+        try:
+            reply_text = provider.complete(prompt, system=system)
+        except Exception:  # noqa: BLE001 — provider failure → terminate.
+            break
+
+        call = _parse_tool_call(reply_text)
+        if call is None:
+            final_reply = (reply_text or "").strip()
+            break
+
+        if steps >= max_steps:
+            break
+
+        tool_name = call["tool"]
+        arguments = call["arguments"]
+        tid = f"t{steps + 1}"
+        yield {"type": "status", "text": f"Calling {tool_name}…"}
+        yield {"type": "tool_start", "id": tid, "tool": tool_name, "arguments": arguments}
+        time.sleep(pace * 6)
+        try:
+            result = execute_tool(tool_name, arguments, claims)
+            ok = not (isinstance(result, dict) and "error" in result)
+        except Exception as exc:  # noqa: BLE001
+            result = {"error": {"code": "tool_error", "message": str(exc)}}
+            ok = False
+        summary = _summarise_result(tool_name, result)
+        transcript.append({"type": "tool_call", "tool": tool_name, "arguments": arguments})
+        transcript.append({"type": "observation", "tool": tool_name, "result": result})
+        actions.append({"tool": tool_name, "arguments": arguments, "result": summary})
+        yield {"type": "tool_result", "id": tid, "tool": tool_name, "ok": ok, "result": summary}
+        steps += 1
+
+    if final_reply is None or not final_reply:
+        final_reply = _synthesise_reply(actions)
+
+    yield {"type": "status", "text": "Writing response…"}
+    for chunk in _tokenise_for_stream(final_reply):
+        yield {"type": "text", "delta": chunk}
+        time.sleep(pace)
+    yield {"type": "done", "reply": final_reply, "actions": actions}
+
+
 def run_agent_stream(
     messages: list[dict[str, Any]],
     provider: LLMProvider,
@@ -453,19 +702,12 @@ def run_agent_stream(
 
     yield {"type": "status", "text": "Understanding your request…"}
 
-    # Real provider: ask once for intent (best-effort; never blocks the plan).
+    # ── Real provider — iterative tool-use loop, streamed live ──────────────
     if not isinstance(provider, NullProvider):
-        try:
-            signal = provider.complete(
-                question,
-                system="Reply with one word — the user's intent: 'chart', 'run', or 'sql'.",
-            ).lower()
-            if "chart" in signal or "dashboard" in signal:
-                intent = "chart"
-            elif "run" in signal or "query" in signal:
-                intent = "run"
-        except Exception:  # noqa: BLE001
-            pass
+        yield from _stream_real_provider_loop(
+            messages, provider, claims, max_steps=max_steps, pace=pace
+        )
+        return
 
     actions: list[dict[str, Any]] = []
     step = 0

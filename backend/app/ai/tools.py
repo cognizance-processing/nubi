@@ -279,6 +279,113 @@ def _seed_demo_table(connector: Any) -> None:
         pass  # If seeding fails, the query will just fail naturally.
 
 
+def _tool_list_metrics(claims: dict[str, Any]) -> dict[str, Any]:
+    """Return all registered governed metrics.
+
+    Each entry mirrors the metrics list-view shape: ``id``, ``name``,
+    ``measure`` ({name, agg, expr, type, format}), ``dimensions`` (allowed
+    grouping columns), ``time_grains`` (allowed bucket grains), and
+    ``description``.  These are GOVERNED definitions — the agent must answer
+    metric questions from these rather than hallucinating SQL.
+
+    Returns ``{metrics: list[dict]}``.
+    """
+    from app.metrics.registry import get_metric_registry  # noqa: PLC0415
+
+    registry = get_metric_registry()
+    metrics: list[dict[str, Any]] = []
+    for m in registry.all():
+        td = m.time_dimension
+        metrics.append(
+            {
+                "id": m.id,
+                "name": m.name,
+                "measure": {
+                    "name": m.measure.name,
+                    "agg": m.measure.agg,
+                    "expr": m.measure.expr,
+                    "type": m.measure.type,
+                    "format": m.measure.format,
+                },
+                "dimensions": [d.name for d in m.dimensions],
+                "time_grains": list(td.grains) if td is not None else [],
+                "description": m.description,
+            }
+        )
+    return {"metrics": metrics}
+
+
+def _tool_query_metric(
+    claims: dict[str, Any],
+    metric_id: str,
+    dimensions: list[str] | None = None,
+    time_grain: str | None = None,
+    filters: list[dict[str, Any]] | None = None,
+    limit: int | None = None,
+) -> dict[str, Any]:
+    """Execute a GOVERNED metric query and return its rows.
+
+    Builds a :class:`MetricQuery` via ``MetricQuery.from_dict``, resolves the
+    metric from the registry, compiles it to ``(sql, params)`` via
+    ``compile_metric``, then executes it through the SAME in-process plan +
+    DuckDB-execute path that :func:`_tool_run_query` uses — so the caller's
+    *claims* are passed to the planner and RLS predicates are injected at the
+    AST level.  The metric layer never lets a caller widen scope (only allowed
+    dimensions / grains / filter fields compile) and RLS narrows rows further.
+
+    On an unknown metric or any ``MetricError`` (unknown dimension, bad grain,
+    bad filter field/op/value, …) this returns a structured
+    ``{error: {code, message}}`` instead of raising past the tool boundary.
+
+    Returns ``{columns, rows, row_count}`` on success.
+    """
+    from app.connectors.duckdb_conn import DuckDBConnector  # noqa: PLC0415
+    from app.connectors.planner import plan, resolve_named_params  # noqa: PLC0415
+    from app.metrics.compile import compile_metric  # noqa: PLC0415
+    from app.metrics.models import MetricError, MetricQuery  # noqa: PLC0415
+    from app.metrics.registry import get_metric_registry  # noqa: PLC0415
+
+    # ── Resolve the governed metric definition (unknown → structured error) ──
+    registry = get_metric_registry()
+    metric = registry.get(metric_id)
+    if metric is None:
+        return {
+            "error": {
+                "code": "metric_not_found",
+                "message": f"No metric found for id={metric_id!r}.",
+            }
+        }
+
+    # ── Build the MetricQuery + compile to (sql, params) — governance here ──
+    try:
+        mq = MetricQuery.from_dict(
+            {
+                "metric_id": metric_id,
+                "dimensions": dimensions or [],
+                "time_grain": time_grain,
+                "filters": filters or [],
+                "limit": limit,
+            }
+        )
+        sql, named_params = compile_metric(metric, mq)
+    except MetricError as exc:
+        return {"error": {"code": exc.code, "message": exc.message}}
+
+    # ── Resolve {{name}} placeholders → positional params (planner helper) ──
+    effective_sql, positional_params = resolve_named_params(sql, named_params)
+
+    # ── Plan + execute via DuckDB — the SAME path run_query uses, so the ──
+    #    caller's claims drive RLS predicate injection in the planner.
+    physical_plan = plan(effective_sql, claims=claims, params=positional_params)
+    connector = DuckDBConnector()
+    _seed_demo_table(connector)
+
+    arrow_table = connector.execute(physical_plan)
+    columns = arrow_table.schema.names
+    rows = arrow_table.to_pylist()
+    return {"columns": columns, "rows": rows, "row_count": len(rows)}
+
+
 def _tool_create_dashboard(
     question: str,
     claims: dict[str, Any],
@@ -506,6 +613,55 @@ _SCHEMA_RUN_QUERY: dict[str, Any] = {
     "additionalProperties": False,
 }
 
+_SCHEMA_LIST_METRICS: dict[str, Any] = {
+    "type": "object",
+    "properties": {},
+    "additionalProperties": False,
+}
+
+_SCHEMA_QUERY_METRIC: dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "metric_id": {
+            "type": "string",
+            "description": "Id of a registered governed metric (see list_metrics).",
+        },
+        "dimensions": {
+            "type": "array",
+            "items": {"type": "string"},
+            "description": "Allowed dimensions to group by (subset of the metric's dims).",
+        },
+        "time_grain": {
+            "type": "string",
+            "enum": ["hour", "day", "week", "month", "quarter", "year"],
+            "description": "Optional time bucket grain (requires the metric to declare a time dimension).",
+        },
+        "filters": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "field": {"type": "string"},
+                    "op": {
+                        "type": "string",
+                        "enum": ["=", "!=", "<", "<=", ">", ">=", "in", "not_in"],
+                    },
+                    "value": {},
+                },
+                "required": ["field"],
+                "additionalProperties": False,
+            },
+            "description": "Filters on allowed dimensions or the time column (values are bound, not concatenated).",
+        },
+        "limit": {
+            "type": "integer",
+            "description": "Optional row limit.",
+        },
+    },
+    "required": ["metric_id"],
+    "additionalProperties": False,
+}
+
 _SCHEMA_CREATE_DASHBOARD: dict[str, Any] = {
     "type": "object",
     "properties": {
@@ -585,6 +741,27 @@ def _make_registry() -> dict[str, ToolDef]:
     ) -> dict[str, Any]:
         return _tool_run_query(claims, query_id=query_id, sql=sql, named_params=named_params)
 
+    def _wrap_list_metrics(claims: dict[str, Any], **_kw: Any) -> dict[str, Any]:
+        return _tool_list_metrics(claims)
+
+    def _wrap_query_metric(
+        claims: dict[str, Any],
+        metric_id: str,
+        dimensions: list[str] | None = None,
+        time_grain: str | None = None,
+        filters: list[dict[str, Any]] | None = None,
+        limit: int | None = None,
+        **_kw: Any,
+    ) -> dict[str, Any]:
+        return _tool_query_metric(
+            claims,
+            metric_id,
+            dimensions=dimensions,
+            time_grain=time_grain,
+            filters=filters,
+            limit=limit,
+        )
+
     def _wrap_create_dashboard(
         claims: dict[str, Any],
         question: str,
@@ -635,6 +812,25 @@ def _make_registry() -> dict[str, ToolDef]:
             ),
             json_schema=_SCHEMA_RUN_QUERY,
             fn=_wrap_run_query,
+        ),
+        ToolDef(
+            name="list_metrics",
+            description=(
+                "List all registered governed metrics (id, name, measure, dimensions, "
+                "time_grains, description). Answer metric questions from these, not raw SQL."
+            ),
+            json_schema=_SCHEMA_LIST_METRICS,
+            fn=_wrap_list_metrics,
+        ),
+        ToolDef(
+            name="query_metric",
+            description=(
+                "Execute a GOVERNED metric query (group by allowed dimensions / time_grain, "
+                "filtered) and return rows. Caller's RLS claims are enforced — results never "
+                "exceed caller scope. Use this to answer metric questions instead of hallucinated SQL."
+            ),
+            json_schema=_SCHEMA_QUERY_METRIC,
+            fn=_wrap_query_metric,
         ),
         ToolDef(
             name="create_dashboard",

@@ -63,17 +63,20 @@ from __future__ import annotations
 
 import logging
 import re
-from typing import Any
+import uuid
+from typing import Any, Literal
 
-from fastapi import Depends
-from fastapi.responses import StreamingResponse
+from fastapi import Depends, Request
+from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel
 
 from app.ai.grounding import build_catalog, build_prompt, ground
 from app.ai.provider import get_provider
 from app.auth.deps import current_user
 from app.compute.metering import record_usage
+from app.errors import AppError
 from app.features import enforce_quota
+from app.repos.provider import Repo, get_repo
 from app.routes import api_router
 
 logger = logging.getLogger("nubi.ai")
@@ -871,3 +874,297 @@ async def generate_sql_endpoint(
         grounding=grounding,
         registered_id=registered_id,
     )
+
+
+# ---------------------------------------------------------------------------
+# POST /ai/pin — pin a governed answer onto a dashboard as a widget (ask→PIN)
+# ---------------------------------------------------------------------------
+#
+# This is the "ask → PIN" step: an answer the user trusts (a registered query,
+# or a governed metric backed by a query) plus a chosen visualisation becomes a
+# *validated* dashboard widget.  We compose the widget into a board spec, run it
+# through the SAME ``validate_spec`` + structured-errors path that
+# ``POST /dashboards/validate`` uses, and only persist when it is valid.  An
+# invalid pin returns repair-grade structured errors (path + code +
+# valid_options) so an agent can fix the viz in one round-trip.
+
+
+class PinSource(BaseModel):
+    """The governed answer being pinned — EXACTLY ONE of ``query_id`` /
+    ``metric_id`` must be set.
+
+    ``query_id``
+        A registered query id (the widget binds directly to it).
+    ``metric_id``
+        A governed metric id.  Dashboard widgets bind to a ``query_id`` only —
+        the canonical ``DashboardSpec`` has no native metric binding — so pinning
+        a metric directly returns a clear 400 (``metric_pin_unsupported``).  We do
+        not fabricate a binding the spec cannot honour: expose the metric as a
+        registered query and pin that ``query_id`` instead.
+    """
+
+    query_id: str | None = None
+    metric_id: str | None = None
+
+
+class PinViz(BaseModel):
+    """The visualisation to render the pinned answer with."""
+
+    type: Literal["kpi", "table", "chart"]
+    chart_type: str | None = None
+    encoding: dict[str, str] | None = None
+
+
+class PinRequest(BaseModel):
+    """Request body for POST /ai/pin."""
+
+    title: str
+    source: PinSource
+    viz: PinViz
+    board_id: str | None = None
+    params: dict[str, Any] | None = None
+
+
+class PinResponse(BaseModel):
+    """Response body for POST /ai/pin (success)."""
+
+    board_id: str
+    widget_id: str
+    spec: dict[str, Any]
+    valid: bool
+
+
+def _next_widget_pos(widgets: list[dict[str, Any]], cols: int = 12) -> dict[str, int]:
+    """Pick a sensible default grid position for an appended widget.
+
+    Places the new widget on a fresh row below everything already on the board
+    (so it never overlaps an existing widget).  Width defaults to a third of the
+    grid (4 of 12 cols); a single-widget board starts at the top-left.
+    """
+    bottom = 1
+    for w in widgets:
+        pos = w.get("pos") or {}
+        try:
+            y = int(pos.get("y", 1))
+            h = int(pos.get("h", 1))
+        except (TypeError, ValueError):
+            continue
+        bottom = max(bottom, y + h)
+    width = 4 if cols >= 4 else cols
+    return {"x": 1, "y": bottom, "w": width, "h": 3}
+
+
+def _build_pin_widget(
+    body: PinRequest, widget_id: str, pos: dict[str, int]
+) -> dict[str, Any]:
+    """Build a Widget dict from the pin request's source + viz.
+
+    The widget binds directly to ``source.query_id`` (the only binding the
+    canonical spec supports), carries the chosen viz ``encoding``/``chart_type``,
+    and folds in any bound ``params`` for the source query.
+    """
+    widget: dict[str, Any] = {
+        "id": widget_id,
+        "type": body.viz.type,
+        "query_id": body.source.query_id or "",
+        "encoding": dict(body.viz.encoding or {}),
+        "props": {},
+        "pos": pos,
+    }
+    if body.viz.chart_type is not None:
+        widget["chart_type"] = body.viz.chart_type
+    if body.params:
+        # Bound params for the source query (literal scalars; refs would have to
+        # resolve to declared spec variables, which a freshly pinned answer has
+        # none of — so callers pass literals here).
+        widget["params"] = dict(body.params)
+    return widget
+
+
+@api_router.post("/ai/pin", response_model=PinResponse, tags=["ai"])
+async def pin_answer(
+    body: PinRequest,
+    request: Request,
+    user: dict[str, Any] = Depends(current_user),
+    repo: Repo = Depends(get_repo),
+) -> Any:
+    """Pin a governed answer onto a dashboard as a *validated* widget (ask→PIN).
+
+    Pipeline
+    --------
+    1. Resolve the caller's org/project (same helpers the resources routes use)
+       and require a first-party authenticated user.
+    2. Resolve the source binding — EXACTLY ONE of ``source.query_id`` /
+       ``source.metric_id``.  A bare ``metric_id`` is honestly rejected
+       (``metric_pin_unsupported``): the spec binds widgets to queries, not
+       metrics — expose the metric as a query and pin that query_id.
+    3. Build a Widget dict from source + viz with a stable id + default pos.
+    4. Compose the target spec: append to ``board_id``'s spec, or start a new
+       single-widget ``DashboardSpec``.
+    5. Validate via ``validate_spec`` → on error, return a structured 400 built
+       with the SAME ``to_structured_issues`` helper ``/dashboards/validate``
+       uses (repair-grade: path + code + valid_options).  Nothing is persisted.
+    6. Persist: create a new board or update the existing one, then return
+       ``{board_id, widget_id, spec, valid: true}``.
+
+    Parameters
+    ----------
+    body:
+        ``{title, source:{query_id?|metric_id?}, viz:{type, chart_type?,
+        encoding?}, board_id?, params?}``.
+    request:
+        Used for org/project resolution (honours ``X-Org-Id`` / ``?project_id``).
+    user:
+        Injected by ``current_user``; ensures a first-party authenticated caller.
+    repo:
+        Resource repository (boards live in the ``boards`` resource).
+
+    Returns
+    -------
+    PinResponse
+        ``{board_id, widget_id, spec, valid: true}`` on success.
+
+    Raises
+    ------
+    AppError("unauthorized", 401)
+        No valid Bearer token.
+    AppError("invalid_pin_source", 400)
+        Neither or both of ``query_id`` / ``metric_id`` supplied.
+    AppError("metric_pin_unsupported", 400)
+        A ``metric_id`` source — there is no native metric binding in the spec.
+    AppError("not_found", 404)
+        ``board_id`` given but no such board for the caller's org.
+    AppError("invalid_pin_spec", 400)
+        The composed spec failed validation — body carries structured
+        ``errors``/``warnings`` (same shape as ``/dashboards/validate``).
+    """
+    from app.dashboards.errors import to_structured_issues  # noqa: PLC0415
+    from app.dashboards.spec import validate_spec  # noqa: PLC0415
+    from app.routes._org import (  # noqa: PLC0415
+        resolve_org_id,
+        resolve_project_id_for_create,
+    )
+
+    # ── Step 1: org/project resolution (resources-route conventions) ──────────
+    org_id = await resolve_org_id(str(user["id"]), repo, request)
+
+    # ── Step 2: validate the source binding (EXACTLY ONE id) ──────────────────
+    # The source names the governed answer being pinned. A query_id binds the
+    # widget directly. A metric_id is GOVERNED but the canonical DashboardSpec
+    # has NO native metric binding — so a bare metric pin is honestly rejected
+    # (metric_pin_unsupported) rather than faking a binding the spec can't honour.
+    # To pin a metric, expose it as a registered query and pin that query_id; the
+    # caller may stamp the originating metric on the widget via ``params`` /
+    # ``viz`` props if they want provenance.
+    has_query = bool(body.source.query_id)
+    has_metric = bool(body.source.metric_id)
+    if has_query == has_metric:
+        # Neither set, or both set — the source is ambiguous.
+        raise AppError(
+            "invalid_pin_source",
+            "source must set EXACTLY ONE of 'query_id' or 'metric_id'.",
+            400,
+        )
+    if has_metric:
+        # Honest limitation: no native metric binding in the spec.  We verify the
+        # metric exists (so the error names the real reason) and return a clear
+        # 400 pointing the caller at the supported query-backed path.
+        registry = _get_metric_registry()
+        known = registry is not None and registry.get(body.source.metric_id) is not None
+        detail = "" if known else " (note: that metric id is also not registered)"
+        raise AppError(
+            "metric_pin_unsupported",
+            (
+                "Pinning a metric directly is not supported: a dashboard widget "
+                "binds to a 'query_id', not a 'metric_id'. Expose the metric as a "
+                "registered query and pin that query_id instead." + detail
+            ),
+            400,
+        )
+
+    # ── Step 3: build the widget ──────────────────────────────────────────────
+    widget_id = "w_" + uuid.uuid4().hex[:8]
+
+    # ── Step 4: compose the target spec (new board or append) ─────────────────
+    existing_row: dict[str, Any] | None = None
+    if body.board_id:
+        existing_row = await repo.get("boards", org_id, body.board_id)
+        if existing_row is None:
+            raise AppError("not_found", "Board not found.", 404)
+        spec_data = _board_spec_from_config(existing_row.get("config"))
+        widgets = list(spec_data.get("widgets") or [])
+        cols = int((spec_data.get("layout") or {}).get("cols", 12))
+        pos = _next_widget_pos(widgets, cols)
+        widget = _build_pin_widget(body, widget_id, pos)
+        widgets.append(widget)
+        spec_data["widgets"] = widgets
+        # Preserve the existing board title; default it if the board had none.
+        spec_data.setdefault("title", existing_row.get("name") or body.title)
+    else:
+        pos = _next_widget_pos([])
+        widget = _build_pin_widget(body, widget_id, pos)
+        spec_data = {"version": 1, "title": body.title, "widgets": [widget]}
+
+    # ── Step 5: validate — reuse the structured-errors helper (NO persist) ────
+    _spec, raw_issues = validate_spec(spec_data)
+    structured = to_structured_issues(spec_data, raw_issues)
+    errors = [i.to_dict() for i in structured if i.severity == "error"]
+    if errors:
+        warnings = [i.to_dict() for i in structured if i.severity == "warning"]
+        # Repair-grade 400: same structured-issue shape as POST /dashboards/validate
+        # (path + code + valid_options), wrapped in the standard error envelope so
+        # an agent can fix the viz in one round-trip.  NOTHING is persisted.
+        return JSONResponse(
+            status_code=400,
+            content={
+                "error": {
+                    "code": "invalid_pin_spec",
+                    "message": "The pinned widget produced an invalid dashboard spec.",
+                    "valid": False,
+                    "errors": errors,
+                    "warnings": warnings,
+                }
+            },
+        )
+
+    # ── Step 6: persist (create or update) ────────────────────────────────────
+    config = {"spec": spec_data}
+    if existing_row is not None:
+        updated = await repo.update(
+            "boards", org_id, body.board_id, {"config": config}
+        )
+        if updated is None:  # pragma: no cover — re-check after the get above
+            raise AppError("not_found", "Board not found.", 404)
+        board_id = str(updated["id"])
+    else:
+        project_id = await resolve_project_id_for_create(org_id, request)
+        created = await repo.create(
+            resource="boards",
+            org_id=org_id,
+            created_by=str(user["id"]),
+            name=body.title,
+            config=config,
+            project_id=project_id,
+        )
+        board_id = str(created["id"])
+
+    return PinResponse(
+        board_id=board_id,
+        widget_id=widget_id,
+        spec=spec_data,
+        valid=True,
+    )
+
+
+def _board_spec_from_config(config: Any) -> dict[str, Any]:
+    """Return the canonical DashboardSpec dict stored in a board ``config``.
+
+    Mirrors ``app.portability._dashboard_spec_from_row``: the editor nests the
+    spec under ``config['spec']``; we fall back to treating the whole config as
+    the spec for forward/backward compat.  Always returns a fresh dict.
+    """
+    if isinstance(config, dict) and isinstance(config.get("spec"), dict):
+        return dict(config["spec"])
+    if isinstance(config, dict):
+        return dict(config)
+    return {}
