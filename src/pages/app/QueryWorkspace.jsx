@@ -67,6 +67,7 @@ import {
 
 import SqlEditor from '../../components/SqlEditor.jsx'
 import SpecIO from '../../components/SpecIO.jsx'
+import QueryCodeView from './QueryCodeView.jsx'
 import DataTable from '../../components/DataTable.jsx'
 import PythonCell from '../../components/PythonCell.jsx'
 import { runArrowQueryById, runArrowQuery, registerArrowTable, runLocalSqlForCell } from '../../lib/wasmRuntime.js'
@@ -1214,6 +1215,11 @@ export default function QueryWorkspace({ query, onQueryChange, onSaved, isNew, t
   // ── AI assist ───────────────────────────────────────────────────────────
   const [showAi, setShowAi] = useState(false)
 
+  // ── VS Code-style "Code" view (files: <slug>.sql + <slug>.meta.json) ──────
+  // Additional full-pane mode alongside the notebook editor; replaces the
+  // notebook body when on. SQL edits round-trip through handleSqlChange.
+  const [codeView, setCodeView] = useState(false)
+
   // ── Primary editor height ───────────────────────────────────────────────
   const { editorH, startDrag } = useResizableHeight(DEFAULT_EDITOR_H)
 
@@ -1612,6 +1618,34 @@ export default function QueryWorkspace({ query, onQueryChange, onSaved, isNew, t
           )}
         </div>
 
+        {/* View switcher — Notebook / Code (VS Code-style files view). Mirrors
+            the flows view switcher; Code replaces the notebook body with the
+            <slug>.sql + <slug>.meta.json file view. */}
+        <div className="flex h-8 rounded-lg border border-border overflow-hidden shrink-0" data-testid="query-view-switcher">
+          {[
+            { id: 'notebook', Icon: Terminal, title: 'Notebook / editor view' },
+            { id: 'code', Icon: FileCode2, title: 'Code / Files view (.sql + .meta.json)' },
+          ].map((v, i) => {
+            const active = v.id === 'code' ? codeView : !codeView
+            return (
+              <button
+                key={v.id}
+                onClick={() => setCodeView(v.id === 'code')}
+                title={v.title}
+                aria-label={v.title}
+                aria-pressed={active}
+                className={[
+                  'flex items-center justify-center w-8 transition-colors',
+                  i > 0 ? 'border-l border-border' : '',
+                  active ? 'bg-primary text-primary-fg' : 'bg-surface text-muted hover:text-fg hover:bg-surface-2',
+                ].join(' ')}
+              >
+                <v.Icon size={14} />
+              </button>
+            )
+          })}
+        </div>
+
         {/* Add cells — always visible */}
         <div className="flex items-center rounded-lg border border-border overflow-hidden shrink-0">
           <button
@@ -1731,8 +1765,21 @@ export default function QueryWorkspace({ query, onQueryChange, onSaved, isNew, t
         {toolbarExtra}
       </WorkspaceToolbar>
 
+      {/* ── Code view — full-pane VS Code-style .sql + .meta.json files ── */}
+      {codeView && (
+        <div className="flex-1 min-h-0 overflow-hidden">
+          <QueryCodeView
+            sql={viewing ? (typeof viewCfg.sql === 'string' ? viewCfg.sql : sql) : sql}
+            params={viewing ? (Array.isArray(viewCfg.params) ? viewCfg.params : params) : params}
+            datastoreId={viewing ? (viewCfg.datastore_id ?? '') : datastoreId}
+            query={query}
+            onSqlChange={viewing ? undefined : handleSqlChange}
+          />
+        </div>
+      )}
+
       {/* ── Scrollable notebook body ─────────────────────────────────────── */}
-      <div ref={notebookBodyRef} className="flex-1 min-h-0 overflow-y-auto overflow-x-hidden">
+      <div ref={notebookBodyRef} className={`flex-1 min-h-0 overflow-y-auto overflow-x-hidden${codeView ? ' hidden' : ''}`}>
 
         {/* Read-only version-view banner — the editor below shows the
             version's SQL/params; the draft is untouched until Restore. */}

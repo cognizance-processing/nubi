@@ -45,7 +45,7 @@ import {
   BarChart3, LineChart, AreaChart, ScatterChart, PieChart, Gauge, Grid3x3,
   BarChartHorizontal, Table2, Hash, Filter as FilterIcon, Type, Heading,
   Monitor, Tablet, Smartphone, ChevronDown, Settings, LayoutGrid, MessageSquare,
-  ZoomIn, ZoomOut, Maximize2, Menu, ChevronUp, Sigma,
+  ZoomIn, ZoomOut, Maximize2, Menu, ChevronUp, Sigma, FileCode2, LayoutDashboard,
 } from 'lucide-react'
 
 // Device viewport presets for the editor's responsive preview/edit switcher.
@@ -88,6 +88,7 @@ import PivotWidget from '../dashboards/widgets/PivotWidget.jsx'
 import SectionWidget from '../dashboards/widgets/SectionWidget.jsx'
 import ExportShareMenu from '../components/ExportShareMenu.jsx'
 import DashboardCodePanel from './DashboardCodePanel.jsx'
+import DashboardCodeView from './DashboardCodeView.jsx'
 import { VariableProvider } from '../dashboards/VariableStore.jsx'
 import SpecRenderer from '../dashboards/SpecRenderer.jsx'
 import { backgroundToCss, styleToCss } from '../dashboards/widgetHtml.js'
@@ -2332,6 +2333,9 @@ export default function DashboardEditor({ boardId = null, onSaved }) {
 
   const [selectedId, setSelectedId] = useState(null)
   const [preview, setPreview] = useState(false)
+  // VS Code-style full-pane "Code" view (third mode alongside edit + preview).
+  // When on, the canvas is replaced by DashboardCodeView (dashboard.json editor).
+  const [codeView, setCodeView] = useState(false)
   const [saving, setSaving] = useState(false)
   const [saveError, setSaveError] = useState(null)
   const [loading, setLoading] = useState(!!boardId)
@@ -3130,12 +3134,42 @@ export default function DashboardEditor({ boardId = null, onSaved }) {
           <Menu size={16} />
         </button>
 
-        <button onClick={() => setPreview(p => !p)}
-          className={`px-2.5 h-8 text-xs font-medium rounded-lg border transition-all focus:outline-none whitespace-nowrap ${
-            preview ? 'bg-primary text-primary-fg border-primary hover:opacity-90' : 'bg-surface text-fg border-border hover:bg-surface-2'
-          }`}>
-          {preview ? 'Edit' : 'Preview'}
-        </button>
+        {/* View switcher — Canvas / Code (VS Code-style files view) — mirrors
+            the flows view switcher. Code view replaces the canvas with the
+            dashboard.json editor. Preview keeps its own toggle (below). */}
+        <div className="flex h-8 rounded-lg border border-border overflow-hidden shrink-0" data-testid="dashboard-view-switcher">
+          {[
+            { id: 'canvas', Icon: LayoutDashboard, title: 'Canvas / grid view' },
+            { id: 'code', Icon: FileCode2, title: 'Code / Files view (dashboard.json)' },
+          ].map((v, i) => {
+            const active = v.id === 'code' ? codeView : (!codeView && !preview)
+            return (
+              <button
+                key={v.id}
+                onClick={() => { setCodeView(v.id === 'code'); if (v.id === 'code') setPreview(false) }}
+                title={v.title}
+                aria-label={v.title}
+                aria-pressed={active}
+                className={[
+                  'flex items-center justify-center w-8 transition-colors',
+                  i > 0 ? 'border-l border-border' : '',
+                  active ? 'bg-primary text-primary-fg' : 'bg-surface text-muted hover:text-fg hover:bg-surface-2',
+                ].join(' ')}
+              >
+                <v.Icon size={14} />
+              </button>
+            )
+          })}
+        </div>
+
+        {!codeView && (
+          <button onClick={() => setPreview(p => !p)}
+            className={`px-2.5 h-8 text-xs font-medium rounded-lg border transition-all focus:outline-none whitespace-nowrap ${
+              preview ? 'bg-primary text-primary-fg border-primary hover:opacity-90' : 'bg-surface text-fg border-border hover:bg-surface-2'
+            }`}>
+            {preview ? 'Edit' : 'Preview'}
+          </button>
+        )}
 
         <div className="hidden sm:block">
           <DashboardCodePanel kind="dashboard" spec={spec} onApply={applySpec} board={savedBoardId} />
@@ -3188,8 +3222,12 @@ export default function DashboardEditor({ boardId = null, onSaved }) {
       {/* Editor toolbar lives in the single app top bar (portaled into AppTopbar). */}
       {topbarSlot && createPortal(editorToolbar, topbarSlot)}
 
-      {/* ── Preview mode — rendered inside the same device frame + zoom ── */}
-      {preview ? (
+      {/* ── Code view — full-pane VS Code-style dashboard.json editor ── */}
+      {codeView ? (
+        <div className="flex-1 min-h-0 overflow-hidden">
+          <DashboardCodeView spec={spec} onSpecChange={setSpec} board={savedBoardId} />
+        </div>
+      ) : preview ? (
         <main ref={mainRef} className="flex-1 overflow-auto p-3 sm:p-6 bg-bg" style={{ touchAction: 'pan-x pan-y' }}>
           <div ref={canvasRef} className="w-full">
             <div
