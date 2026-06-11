@@ -26,10 +26,6 @@
 import { useState, useEffect, useCallback, useMemo, useRef } from 'react'
 import Editor from '@monaco-editor/react'
 import {
-  Database,
-  FileCode2,
-  FileText,
-  FileJson,
   Code2,
   Copy,
   Check,
@@ -44,72 +40,51 @@ import {
 } from 'lucide-react'
 import { post } from '../lib/api.js'
 import { compileCode } from '../lib/flows.js'
-
-const FLOW_PY_ID = '__flow_py__'
+import { useTheme } from '../contexts/ThemeContext.jsx'
+import {
+  FLOW_PY_ID,
+  buildCellFiles,
+  deriveLoadKey,
+  classifyCodegenError,
+  selectActiveId,
+  activeSourceFor,
+} from './flowCodeView.logic.js'
 
 // ---------------------------------------------------------------------------
-// Cell → virtual-file mapping
+// Codegen fetch (flow.py)
 // ---------------------------------------------------------------------------
 
 /**
- * Resolve the editable-source projection for a task. Returns the config key
- * that holds the source, the file extension, the Monaco language, and an icon.
- * `key === null` ⇒ no single source string ⇒ render the config as read-only JSON.
+ * Fetch the generated nubi.flows source for the current spec.
+ *
+ * We always prefer the inline-spec endpoint when a spec is available so the
+ * code view reflects the LIVE (possibly unsaved / just-edited) spec rather than
+ * the persisted DB row — the saved-flow `/flows/{id}/codegen` route would
+ * silently re-generate from stale storage and discard in-memory edits/Apply.
+ *
+ * Returns a discriminated render state:
+ *   { source }                  — generated source ready to edit
+ *   { unavailable: true }       — codegen endpoint not deployed (404)
+ *   { invalidSpec, error }      — spec can't be generated yet (400/422); a
+ *                                 normal transient state for a half-built flow
+ *   { error }                   — hard failure (network / 500)
  */
-function fileMetaForTask(task) {
-  const ct = task?.cell_type
-  const kind = task?.kind
-  if (ct === 'sql' || kind === 'query') {
-    return { ext: 'sql', lang: 'sql', key: 'sql', Icon: Database }
-  }
-  if (ct === 'python' || kind === 'python') {
-    return { ext: 'py', lang: 'python', key: 'code', Icon: FileCode2 }
-  }
-  if (ct === 'markdown' || kind === 'note') {
-    return { ext: 'md', lang: 'markdown', key: 'markdown', Icon: FileText }
-  }
-  // agent / materialize / branch / map / noop / bucket_load / … — no single
-  // source string; expose the raw config read-only as JSON.
-  return { ext: 'json', lang: 'json', key: null, Icon: FileJson }
-}
-
-/** Build the virtual file list (cells/…) from the spec's tasks. */
-function buildCellFiles(spec) {
-  const tasks = Array.isArray(spec?.tasks) ? spec.tasks : []
-  return tasks.map((task, index) => {
-    const meta = fileMetaForTask(task)
-    const safeKey = String(task?.key ?? `task_${index + 1}`).replace(/[^\w.-]+/g, '_')
-    const num = String(index + 1).padStart(2, '0')
-    return {
-      id: `cell:${index}`,
-      index,
-      task,
-      name: `${num}_${safeKey}.${meta.ext}`,
-      ...meta,
-    }
-  })
-}
-
-// ---------------------------------------------------------------------------
-// Codegen fetch (flow.py) — mirrors CodePanel
-// ---------------------------------------------------------------------------
-
 async function fetchCodegen(flowId, spec) {
   try {
     let data
-    if (flowId) {
-      data = await post(`/flows/${flowId}/codegen`, {})
-    } else if (spec) {
+    if (spec) {
       data = await post(`/flows/codegen`, { spec })
+    } else if (flowId) {
+      data = await post(`/flows/${flowId}/codegen`, {})
     } else {
       return { source: null, error: 'No flow id or spec provided.' }
     }
-    return { source: data?.source ?? data?.code ?? null, error: null }
+    return { source: data?.source ?? data?.code ?? null }
   } catch (err) {
-    if (err?.status === 404 || err?.message?.includes('404')) {
-      return { source: null, error: null, unavailable: true }
-    }
-    return { source: null, error: err.message ?? 'Codegen request failed.' }
+    const { kind, message } = classifyCodegenError(err)
+    if (kind === 'unavailable') return { source: null, unavailable: true }
+    if (kind === 'invalidSpec') return { source: null, invalidSpec: true, error: message }
+    return { source: null, error: message }
   }
 }
 
@@ -158,6 +133,8 @@ function FileRow({ file, active, dirty, onSelect }) {
 
 export default function FlowCodeView({ flow, spec, onSpecChange }) {
   const flowId = flow?.id ?? null
+  const { theme } = useTheme()
+  const monacoTheme = theme === 'dark' ? 'vs-dark' : 'light'
 
   const cellFiles = useMemo(() => buildCellFiles(spec), [spec])
 
@@ -165,16 +142,22 @@ export default function FlowCodeView({ flow, spec, onSpecChange }) {
   const [cellsOpen, setCellsOpen] = useState(true)
   const [copied, setCopied] = useState(false)
 
-  // flow.py state (generated; editable with explicit Apply)
-  const [pyState, setPyState] = useState({ loading: true, source: null, error: null, unavailable: false })
+  // flow.py state (generated; editable with explicit Apply).
+  // `invalidSpec` is a SOFT state: the spec is half-built (e.g. an empty SQL
+  // cell), so the codegen 400'd — we show a gentle hint, not a hard error.
+  const [pyState, setPyState] = useState({
+    loading: true, source: null, error: null, unavailable: false, invalidSpec: false,
+  })
   const [pyValue, setPyValue] = useState(null)
   const [pyDirty, setPyDirty] = useState(false)
   const [applying, setApplying] = useState(false)
   const [applyError, setApplyError] = useState(null)
   const [applySuccess, setApplySuccess] = useState(false)
 
-  // Re-fetch flow.py only when the flow identity / spec content changes.
-  const loadKey = flowId ? `id:${flowId}` : spec ? `spec:${JSON.stringify(spec)}` : null
+  // Re-fetch flow.py when the flow identity OR the live spec content changes —
+  // keying on spec content (even for saved flows) keeps the generated code in
+  // sync with in-memory edits / Apply instead of the stale persisted row.
+  const loadKey = deriveLoadKey(flowId, spec)
   const lastLoadKeyRef = useRef(null)
 
   useEffect(() => {
@@ -182,14 +165,20 @@ export default function FlowCodeView({ flow, spec, onSpecChange }) {
     lastLoadKeyRef.current = loadKey
     let cancelled = false
     const run = async () => {
-      setPyState({ loading: true, source: null, error: null, unavailable: false })
+      setPyState({ loading: true, source: null, error: null, unavailable: false, invalidSpec: false })
       setPyDirty(false)
       setApplyError(null)
       setApplySuccess(false)
       const result = await fetchCodegen(flowId, spec)
       if (cancelled) return
       const src = result.source ?? null
-      setPyState({ loading: false, source: src, error: result.error ?? null, unavailable: result.unavailable ?? false })
+      setPyState({
+        loading: false,
+        source: src,
+        error: result.error ?? null,
+        unavailable: result.unavailable ?? false,
+        invalidSpec: result.invalidSpec ?? false,
+      })
       setPyValue(src)
     }
     run()
@@ -198,9 +187,7 @@ export default function FlowCodeView({ flow, spec, onSpecChange }) {
 
   // Derive the effective selection during render (no setState-in-effect): if the
   // selected cell file disappears (task deleted), fall back to flow.py.
-  const activeId = (selectedId === FLOW_PY_ID || cellFiles.some(f => f.id === selectedId))
-    ? selectedId
-    : FLOW_PY_ID
+  const activeId = selectActiveId(selectedId, cellFiles)
 
   const selectedCell = cellFiles.find(f => f.id === activeId) || null
 
@@ -249,21 +236,21 @@ export default function FlowCodeView({ flow, spec, onSpecChange }) {
     }
     setApplySuccess(true)
     setPyDirty(false)
-    // Force a codegen refresh against the new spec on next render.
-    lastLoadKeyRef.current = null
     setTimeout(() => setApplySuccess(false), 2000)
+    // Applying the compiled spec updates the live spec → loadKey changes →
+    // the effect re-generates flow.py from it on the next render (no manual
+    // ref reset needed, which previously refetched the STALE persisted row).
     onSpecChange?.(result.spec)
   }, [pyValue, onSpecChange])
 
   // ── Copy active file ───────────────────────────────────────────────────────
   const activeName = activeId === FLOW_PY_ID ? 'flow.py' : (selectedCell?.name ?? '')
-  const activeSource = activeId === FLOW_PY_ID
-    ? (pyValue ?? pyState.source ?? '')
-    : selectedCell
-      ? (selectedCell.key !== null
-          ? String(selectedCell.task?.config?.[selectedCell.key] ?? '')
-          : JSON.stringify(selectedCell.task?.config ?? {}, null, 2))
-      : ''
+  const activeSource = activeSourceFor({
+    activeId,
+    pyValue,
+    pySource: pyState.source,
+    selectedCell,
+  })
 
   const handleCopy = useCallback(() => {
     if (!activeSource) return
@@ -410,7 +397,28 @@ export default function FlowCodeView({ flow, spec, onSpecChange }) {
                   Generating code…
                 </div>
               )}
-              {!pyState.loading && pyState.error && (
+              {/* Half-built spec (e.g. an empty SQL cell): codegen can't run
+                  yet. This is the common "doesn't work" case — show a gentle
+                  hint with the backend's reason, not a scary red failure. */}
+              {!pyState.loading && pyState.invalidSpec && (
+                <div className="flex flex-col items-center justify-center h-full gap-3 text-center px-6">
+                  <Code2 size={28} className="text-muted/40" />
+                  <div className="max-w-sm">
+                    <p className="text-sm font-medium text-fg">flow.py isn’t ready yet</p>
+                    <p className="text-xs text-muted mt-1">
+                      Finish the cells first — every SQL cell needs a query and Python cells need code.
+                      The generated <code className="text-muted">flow.py</code> will appear once the
+                      flow is valid.
+                    </p>
+                    {pyState.error && (
+                      <p className="mt-2 text-[11px] font-mono text-amber-600 dark:text-amber-400 break-words whitespace-pre-wrap">
+                        {pyState.error}
+                      </p>
+                    )}
+                  </div>
+                </div>
+              )}
+              {!pyState.loading && !pyState.invalidSpec && pyState.error && (
                 <div className="flex items-start gap-2 m-4 p-3 rounded-xl border border-rose-500/20 bg-rose-500/5 text-xs text-rose-600 dark:text-rose-400">
                   <AlertCircle size={13} className="shrink-0 mt-0.5" />
                   <span>{pyState.error}</span>
@@ -427,12 +435,12 @@ export default function FlowCodeView({ flow, spec, onSpecChange }) {
                   </div>
                 </div>
               )}
-              {!pyState.loading && !pyState.error && !pyState.unavailable && (
+              {!pyState.loading && !pyState.error && !pyState.unavailable && !pyState.invalidSpec && (
                 <Editor
                   language="python"
                   value={pyValue ?? pyState.source ?? ''}
                   onChange={handlePyChange}
-                  theme="vs-dark"
+                  theme={monacoTheme}
                   options={{ ...MONACO_OPTIONS, readOnly: false, contextmenu: true }}
                 />
               )}
@@ -443,7 +451,7 @@ export default function FlowCodeView({ flow, spec, onSpecChange }) {
               language={selectedCell.lang}
               value={activeSource}
               onChange={readOnlyCell ? undefined : (val => handleCellChange(selectedCell, val))}
-              theme="vs-dark"
+              theme={monacoTheme}
               options={{ ...MONACO_OPTIONS, readOnly: readOnlyCell, contextmenu: !readOnlyCell }}
             />
           ) : (
