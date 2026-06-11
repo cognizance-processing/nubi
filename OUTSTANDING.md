@@ -15,12 +15,12 @@ Baseline at audit: commit `16f31d0` (Wave C). Waves A/B/C done. Verify commands:
 ## P0 — critical path
 
 - [x] **Wave D1 — real provider tool-use loop** (`app/ai/agent.py`, `tools.py`): iterative
-  tool loop + `list_metrics`/`query_metric` governed tools, RLS via claims. *Committed pending.*
+  tool loop + `list_metrics`/`query_metric` governed tools, RLS via claims. ✅ `47e5556`.
 - [x] **Wave D2 — ask→pin** (`POST /ai/pin`, `routes/ai.py`): answer→validated widget,
-  structured-error validation, append-or-create board. *Committed pending.*
+  structured-error validation, append-or-create board. ✅ `47e5556`.
 - [x] **Wave D3 — watch** (`app/ai/watch.py`, `routes/watches.py`, `0009_watches.sql`):
   metric threshold → AI explanation (deterministic under NullProvider) → notify channel;
-  CRUD + `/evaluate` + `/tick`. *Committed pending verification.*
+  CRUD + `/evaluate` + `/tick`. ✅ `47e5556` (backend 3405 / mcp 67 / build green).
 - [ ] **Wave E1 — Redis cache + invalidation** (`app/connectors/cache.py`): pluggable
   shared backend (Redis) behind the current in-process cache, TTL-per-query, explicit
   invalidation endpoint. **Also back the rate-limiter buckets with the same store** to close
@@ -30,8 +30,8 @@ Baseline at audit: commit `16f31d0` (Wave C). Waves A/B/C done. Verify commands:
 
 ## P1 — high value
 
-- [ ] **usage_events(org_id, created_at) index** — add a migration; reconcile
-  (`ee/billing/reconcile.py`) currently has no covering index → full scans at volume.
+- [x] **usage_events(org_id, created_at) index** — ✅ already exists (`0006_platform.sql:53`);
+  audit false-positive. No action.
 - [ ] **Wave E2 — SLOs/observability**: latency percentiles + a status surface + documented
   rate limits (instrument query path; expose a metrics endpoint).
 - [ ] **Wave E3 — compliance posture**: `docs/compliance.md` (SOC 2 / POPIA / GDPR checklist,
