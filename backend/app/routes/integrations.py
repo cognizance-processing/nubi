@@ -1,31 +1,32 @@
-"""Integration management endpoints for Nubi.
+"""Per-org connected-integration CRUD for Nubi.
 
-Provides visibility into configured notification channels and the ability to
-send test alerts.
+A *connected integration* (Slack / WhatsApp / Google Chat / Teams / Email /
+webhook) powers BOTH inbound chat and outbound alerts for an org. This router
+is real per-org persistence on top of :class:`app.notify.integrations.IntegrationStore`
+(non-secret config in ``org_integrations``, secret material AES-256-GCM encrypted
+in ``integration_secrets``).
 
 Endpoints
 ---------
-GET  /integrations
-    List all known notification channels with their configuration status
-    (configured / unconfigured).  Does NOT expose secrets.
+GET    /integrations            — list the org's integrations (secrets scrubbed;
+                                  each carries ``configured: bool``).
+POST   /integrations            — create an integration (secret split out + encrypted).
+GET    /integrations/{id}       — fetch one (secrets scrubbed).
+PUT    /integrations/{id}       — update non-secret config and/or rotate the secret.
+DELETE /integrations/{id}       — delete the integration + its secret blob.
+POST   /integrations/{id}/test  — build the live channel and send a test message.
 
-POST /integrations/test
-    Send a test alert through all configured channels (or NullChannel when
-    none are set).  Returns which channels received the alert.
+Security contract
+-----------------
+- Secret fields (per ``SECRET_KEYS_BY_KIND``) are NEVER stored in ``config`` and
+  NEVER returned in any response — listings carry only non-secret config plus a
+  ``configured`` boolean.
+- All operations are org-scoped via ``current_user`` + ``resolve_org_id``; a row
+  belonging to a different org is treated as not-found (404, no info leak).
 
-POST /integrations          (optional — org-scoped config save, best-effort)
-    Persist per-org channel overrides.  Not wired to a real store yet; accepts
-    and returns the payload so that callers can verify schema round-trips.
-
-Authentication
---------------
-All endpoints require a valid first-party Bearer token (``current_user``).
-
-Wiring
-------
-Self-registers on ``api_router`` at the bottom of this module — the
-orchestrator imports it in ``main.py`` and the router is mounted automatically,
-mirroring the pattern used by ``routes/git.py`` and ``routes/chat.py``.
+The router self-registers on the shared ``api_router`` at import time, mirroring
+``routes/connectors.py`` — ``main.py`` mounts ``api_router`` so it is picked up
+automatically.
 """
 
 from __future__ import annotations
@@ -33,10 +34,21 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Request, Response
 from pydantic import BaseModel
 
 from app.auth.deps import current_user
+from app.errors import AppError
+from app.notify.integrations import (
+    VALID_KINDS,
+    get_integration_store,
+    merged_channel_config,
+    public_row,
+    split_secret,
+)
+from app.repos.provider import Repo, get_repo
+from app.routes import api_router
+from app.routes._org import resolve_org_id
 
 logger = logging.getLogger(__name__)
 
@@ -44,211 +56,230 @@ router = APIRouter(prefix="/integrations", tags=["integrations"])
 
 
 # ---------------------------------------------------------------------------
-# Helper: resolve channel status from settings
+# Request models
 # ---------------------------------------------------------------------------
 
 
-def _channel_status() -> list[dict[str, Any]]:
-    """Return a list of channel dicts with ``name``, ``kind``, and ``configured`` flag.
+class CreateIntegrationIn(BaseModel):
+    """Request body for POST /integrations.
 
-    Never includes secret values.
+    ``config`` carries the FULL field set the caller submits (secret +
+    non-secret); the store splits secret fields out per ``SECRET_KEYS_BY_KIND``
+    and encrypts them. Callers therefore do not pre-separate secrets.
     """
-    try:
-        from app.config import get_settings  # noqa: PLC0415
-
-        s = get_settings()
-    except Exception:  # noqa: BLE001
-        s = None
-
-    def _bool(val: str) -> bool:
-        return bool(val and val.strip())
-
-    channels = [
-        {
-            "name": "slack_webhook",
-            "kind": "slack",
-            "configured": _bool(getattr(s, "SLACK_ALERT_WEBHOOK", "")),
-            "description": "Slack Incoming Webhook for alert delivery.",
-        },
-        {
-            "name": "slack_bot",
-            "kind": "slack",
-            "configured": _bool(getattr(s, "SLACK_BOT_TOKEN", "")),
-            "description": "Slack bot token (chat.postMessage + chart uploads).",
-        },
-        {
-            "name": "whatsapp",
-            "kind": "whatsapp",
-            "configured": (
-                _bool(getattr(s, "WHATSAPP_SEND_TOKEN", ""))
-                and _bool(getattr(s, "WHATSAPP_PHONE_NUMBER_ID", ""))
-                and _bool(getattr(s, "WHATSAPP_ALERT_RECIPIENT", ""))
-            ),
-            "description": "WhatsApp Cloud API for alert delivery.",
-        },
-        {
-            "name": "email",
-            "kind": "email",
-            "configured": _bool(getattr(s, "ALERT_EMAIL_RECIPIENT", "")),
-            "description": "Email channel for alert delivery.",
-        },
-    ]
-    return channels
-
-
-# ---------------------------------------------------------------------------
-# Request / response models
-# ---------------------------------------------------------------------------
-
-
-class TestAlertRequest(BaseModel):
-    """Request body for POST /integrations/test."""
-
-    use_null: bool = False
-    """When True, always use NullChannel (dry-run — no real delivery)."""
-
-    message: str = "Nubi test alert — integration check."
-    """Custom message for the test alert."""
-
-
-class IntegrationConfigRequest(BaseModel):
-    """Request body for POST /integrations (save channel config)."""
 
     kind: str
-    """Channel kind: ``"slack"``, ``"whatsapp"``, ``"email"``."""
-
+    name: str
     config: dict[str, Any] = {}
-    """Channel-specific configuration key/values (excluding secrets)."""
+    enabled: bool = True
+
+
+class UpdateIntegrationIn(BaseModel):
+    """Request body for PUT /integrations/{id}. All fields optional."""
+
+    name: str | None = None
+    config: dict[str, Any] | None = None
+    enabled: bool | None = None
+
+
+class TestIntegrationIn(BaseModel):
+    """Request body for POST /integrations/{id}/test."""
+
+    message: str = "Nubi test message — integration check."
 
 
 # ---------------------------------------------------------------------------
-# Routes
+# Helpers
+# ---------------------------------------------------------------------------
+
+
+def _validate_kind(kind: str) -> str:
+    """Return the normalised kind or raise a 400 AppError."""
+    norm = (kind or "").lower().strip()
+    if norm not in VALID_KINDS:
+        raise AppError(
+            "invalid_kind",
+            f"Unknown integration kind {kind!r}. Expected one of: {sorted(VALID_KINDS)}.",
+            400,
+        )
+    return norm
+
+
+async def _scrubbed(store: Any, row: dict[str, Any], org_id: str) -> dict[str, Any]:
+    """Return the listing-safe shape of *row* with a ``configured`` flag.
+
+    ``configured`` is True when a (non-empty) secret blob exists for the
+    integration — i.e. it has the credentials needed to deliver. Email
+    integrations need no secret, so they are ``configured`` whenever they exist.
+    """
+    has_secret = await store.has_secret(str(row["id"]), org_id)
+    configured = has_secret or row.get("kind") == "email"
+    return public_row(row, configured=configured)
+
+
+# ---------------------------------------------------------------------------
+# Endpoints
 # ---------------------------------------------------------------------------
 
 
 @router.get("")
 async def list_integrations(
-    _user: dict[str, Any] = Depends(current_user),
+    request: Request,
+    user: dict[str, Any] = Depends(current_user),
+    repo: Repo = Depends(get_repo),
 ) -> dict[str, Any]:
-    """List all notification channels with their configuration status.
-
-    Returns
-    -------
-    dict
-        ``{"channels": [...], "any_configured": bool}``
-    """
-    channels = _channel_status()
-    return {
-        "channels": channels,
-        "any_configured": any(ch["configured"] for ch in channels),
-    }
+    """List the caller's org integrations (no secret material returned)."""
+    org_id = await resolve_org_id(str(user["id"]), repo, request)
+    store = get_integration_store()
+    rows = await store.list_for_org(org_id)
+    items = [await _scrubbed(store, row, org_id) for row in rows]
+    return {"integrations": items}
 
 
-@router.post("/test")
-async def test_alert(
-    body: TestAlertRequest,
-    _user: dict[str, Any] = Depends(current_user),
+@router.post("", status_code=201)
+async def create_integration(
+    body: CreateIntegrationIn,
+    request: Request,
+    user: dict[str, Any] = Depends(current_user),
+    repo: Repo = Depends(get_repo),
 ) -> dict[str, Any]:
-    """Send a test alert via all configured channels.
+    """Create an integration. Secret fields are split out and encrypted at rest."""
+    org_id = await resolve_org_id(str(user["id"]), repo, request)
+    kind = _validate_kind(body.kind)
 
-    When ``use_null=true`` the alert is sent to a NullChannel (no real
-    network calls) — useful for verifying the alert pipeline without
-    delivering to external services.
-
-    Returns
-    -------
-    dict
-        ``{"sent": [{"channel": ..., "kind": ..., "null": bool}], "message": str}``
-    """
-    from app.notify.alerts import notify_alert  # noqa: PLC0415
-    from app.notify.channels import NullChannel  # noqa: PLC0415
-
-    event = {
-        "kind": "test",
-        "status": "failed",  # use "failed" so format_alert_text renders an alert icon
-        "name": "Test Alert",
-        "id": "test-001",
-        "error": body.message,
-    }
-
-    sent_info: list[dict[str, Any]] = []
-
-    if body.use_null:
-        ch = NullChannel()
-        notify_alert(event, channels=[ch])
-        sent_info.append({"channel": "NullChannel", "kind": "null", "null": True, "records": ch.sent})
-    else:
-        from app.notify.alerts import _get_configured_channels  # noqa: PLC0415
-
-        channels = _get_configured_channels()
-        notify_alert(event, channels=channels)
-        for ch in channels:
-            is_null = isinstance(ch, NullChannel)
-            sent_info.append({
-                "channel": type(ch).__name__,
-                "kind": "null" if is_null else type(ch).__name__.replace("Channel", "").lower(),
-                "null": is_null,
-            })
-
-    return {
-        "ok": True,
-        "message": body.message,
-        "sent": sent_info,
-    }
+    config, secret = split_secret(kind, body.config)
+    store = get_integration_store()
+    row = await store.create(
+        org_id=org_id,
+        created_by=str(user["id"]),
+        kind=kind,
+        name=body.name,
+        config=config,
+        secret=secret,
+        enabled=body.enabled,
+    )
+    return await _scrubbed(store, row, org_id)
 
 
-@router.post("")
-async def save_integration_config(
-    body: IntegrationConfigRequest,
-    _user: dict[str, Any] = Depends(current_user),
+@router.get("/{integration_id}")
+async def get_integration(
+    integration_id: str,
+    request: Request,
+    user: dict[str, Any] = Depends(current_user),
+    repo: Repo = Depends(get_repo),
 ) -> dict[str, Any]:
-    """Accept and validate a channel configuration request.
+    """Fetch one integration (no secret material). 404 if absent or cross-org."""
+    org_id = await resolve_org_id(str(user["id"]), repo, request)
+    store = get_integration_store()
+    row = await store.get(integration_id, org_id)
+    if row is None:
+        raise AppError("not_found", "Integration not found.", 404)
+    return await _scrubbed(store, row, org_id)
 
-    Note: This endpoint currently performs schema validation only.
-    Persisting channel config to a DB/secrets store is a future enhancement.
-    Secrets should be injected via environment variables, not stored here.
 
-    Returns
-    -------
-    dict
-        The accepted configuration (secrets stripped).
+@router.put("/{integration_id}")
+async def update_integration(
+    integration_id: str,
+    body: UpdateIntegrationIn,
+    request: Request,
+    user: dict[str, Any] = Depends(current_user),
+    repo: Repo = Depends(get_repo),
+) -> dict[str, Any]:
+    """Update non-secret config and/or rotate the secret. 404 if absent/cross-org."""
+    org_id = await resolve_org_id(str(user["id"]), repo, request)
+    store = get_integration_store()
+
+    existing = await store.get(integration_id, org_id)
+    if existing is None:
+        raise AppError("not_found", "Integration not found.", 404)
+
+    kind = existing["kind"]
+    config_update: dict[str, Any] | None = None
+    secret_update: dict[str, Any] | None = None
+    if body.config is not None:
+        config_update, secret_update = split_secret(kind, body.config)
+
+    row = await store.update(
+        integration_id,
+        org_id,
+        name=body.name,
+        config=config_update,
+        secret=secret_update,
+        enabled=body.enabled,
+    )
+    if row is None:
+        raise AppError("not_found", "Integration not found.", 404)
+    return await _scrubbed(store, row, org_id)
+
+
+@router.delete("/{integration_id}", status_code=204)
+async def delete_integration(
+    integration_id: str,
+    request: Request,
+    user: dict[str, Any] = Depends(current_user),
+    repo: Repo = Depends(get_repo),
+) -> Response:
+    """Delete the integration + its secret blob. 204 on success, 404 otherwise."""
+    org_id = await resolve_org_id(str(user["id"]), repo, request)
+    store = get_integration_store()
+    deleted = await store.delete(integration_id, org_id)
+    if not deleted:
+        raise AppError("not_found", "Integration not found.", 404)
+    return Response(status_code=204)
+
+
+@router.post("/{integration_id}/test")
+async def test_integration(
+    integration_id: str,
+    body: TestIntegrationIn,
+    request: Request,
+    user: dict[str, Any] = Depends(current_user),
+    repo: Repo = Depends(get_repo),
+) -> dict[str, Any]:
+    """Build the live channel for this integration and send a test message.
+
+    Reports ``sent`` (True when a real channel delivered) per integration. A
+    delivery failure is reported, not raised. Never returns secret material.
     """
-    allowed_kinds = {"slack", "whatsapp", "email", "null"}
-    if body.kind not in allowed_kinds:
-        from fastapi import HTTPException  # noqa: PLC0415
-        raise HTTPException(
-            status_code=400,
-            detail={
-                "code": "invalid_kind",
-                "message": (
-                    f"Unknown channel kind {body.kind!r}. "
-                    f"Expected one of: {sorted(allowed_kinds)}."
-                ),
-            },
-        )
+    from app.notify.channels import NullChannel, get_channel  # noqa: PLC0415
+    from app.notify.integrations import _channel_kind_for  # noqa: PLC0415
 
-    # Strip any secret-looking keys from the echo (defense-in-depth).
-    _secret_keys = {"token", "secret", "password", "key", "bot_token", "webhook_url"}
-    safe_config = {
-        k: ("***" if any(s in k.lower() for s in _secret_keys) else v)
-        for k, v in body.config.items()
-    }
+    org_id = await resolve_org_id(str(user["id"]), repo, request)
+    store = get_integration_store()
 
-    return {
-        "ok": True,
-        "kind": body.kind,
-        "config": safe_config,
-        "note": (
-            "Config accepted for validation. To persist, set the corresponding "
-            "environment variables (SLACK_BOT_TOKEN, SLACK_ALERT_WEBHOOK, etc.)."
-        ),
-    }
+    row = await store.get(integration_id, org_id)
+    if row is None:
+        raise AppError("not_found", "Integration not found.", 404)
+
+    kind = (row.get("kind") or "").lower().strip()
+    secret = await store.get_secret(integration_id, org_id) or {}
+    merged = merged_channel_config(kind, row.get("config") or {}, secret)
+    channel = get_channel(_channel_kind_for(kind), merged)
+
+    if isinstance(channel, NullChannel):
+        return {
+            "ok": False,
+            "sent": False,
+            "kind": kind,
+            "detail": "Integration is not fully configured (missing credentials).",
+        }
+
+    try:
+        channel.send(body.message)
+    except Exception as exc:  # noqa: BLE001 — surface delivery errors, never raise.
+        logger.info("test_integration(%s): delivery failed: %s", integration_id, exc)
+        return {
+            "ok": False,
+            "sent": False,
+            "kind": kind,
+            "detail": f"Delivery failed: {exc}",
+        }
+
+    return {"ok": True, "sent": True, "kind": kind}
 
 
 # ---------------------------------------------------------------------------
-# Self-register on the shared api_router (mirrors routes/git.py)
+# Self-register on the shared api_router (mirrors routes/connectors.py)
 # ---------------------------------------------------------------------------
-
-from app.routes import api_router  # noqa: E402
 
 api_router.include_router(router)

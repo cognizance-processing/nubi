@@ -107,8 +107,42 @@ def format_alert_text(event: dict[str, Any]) -> str:
 # ---------------------------------------------------------------------------
 
 
-def _get_configured_channels() -> list[Any]:
+def _org_integration_channels(org_id: str) -> list[Any]:
+    """Resolve the org's connected-integration channels (best-effort, sync).
+
+    ``channels_for_org`` is async; drive it to completion so the synchronous
+    ``notify_alert`` path can include per-org integrations. Degrades to an empty
+    list on any failure (no loop / DB error / already inside a running loop) —
+    org integrations are strictly additive on top of the app-settings channels.
+    """
+    import asyncio  # noqa: PLC0415
+
+    from app.notify.integrations import channels_for_org  # noqa: PLC0415
+
+    try:
+        try:
+            asyncio.get_running_loop()
+        except RuntimeError:
+            return asyncio.run(channels_for_org(org_id))
+        logger.debug(
+            "alerts: running loop present — skipping inline org integration "
+            "resolution for org %s.",
+            org_id,
+        )
+        return []
+    except Exception as exc:  # noqa: BLE001 — org integrations are best-effort.
+        logger.warning("alerts: org integration resolution failed: %s", exc)
+        return []
+
+
+def _get_configured_channels(org_id: str | None = None) -> list[Any]:
     """Return a list of configured Channel objects from app settings.
+
+    When *org_id* is given, the org's ENABLED connected integrations
+    (``org_integrations``) are ALSO appended via
+    :func:`app.notify.integrations.channels_for_org` — additive on top of the
+    app-settings channels below, so existing behaviour is preserved when no org
+    integrations exist.
 
     Falls back gracefully when settings are absent or credentials are
     incomplete.  Always returns at least a NullChannel so that alert
@@ -165,6 +199,10 @@ def _get_configured_channels() -> list[Any]:
     except Exception as exc:  # noqa: BLE001
         logger.warning("alerts: could not load settings for channel resolution: %s", exc)
 
+    # ── Per-org connected integrations (additive) ──────────────────────────
+    if org_id:
+        channels.extend(_org_integration_channels(str(org_id)))
+
     if not channels:
         channels.append(NullChannel())
 
@@ -195,7 +233,11 @@ def notify_alert(
         Optional PNG bytes to attach (e.g. a chart related to the failure).
     """
     text = format_alert_text(event)
-    _channels = channels if channels is not None else _get_configured_channels()
+    _channels = (
+        channels
+        if channels is not None
+        else _get_configured_channels(event.get("org_id"))
+    )
 
     for ch in _channels:
         try:

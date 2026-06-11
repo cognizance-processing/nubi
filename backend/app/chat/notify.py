@@ -231,7 +231,7 @@ def should_alert(config: dict[str, Any], state: str) -> bool:
 # ---------------------------------------------------------------------------
 
 
-def channels_for(config: dict[str, Any]) -> list[Any]:
+def channels_for(config: dict[str, Any], *, org_id: str | None = None) -> list[Any]:
     """Build the list of delivery channels for *config*.
 
     Resolution order, per provider:
@@ -243,6 +243,12 @@ def channels_for(config: dict[str, Any]) -> list[Any]:
     WhatsApp — a ``whatsapp_to`` override in *config* (combined with the app's
     send token + phone number id), else the app settings
     (``WHATSAPP_ALERT_RECIPIENT``).
+
+    Per-org connected integrations — when *org_id* is given, every ENABLED
+    integration the org connected (``org_integrations``) is ALSO appended via
+    :func:`app.notify.integrations.channels_for_org`. This is additive: the
+    config/app-settings channels above remain the fallback so existing
+    watch/flow-run behaviour is unchanged when no org integrations exist.
 
     Channels with no usable credentials are skipped (``get_channel`` returns a
     ``NullChannel`` which we drop).  When nothing is configured the result is an
@@ -300,7 +306,44 @@ def channels_for(config: dict[str, Any]) -> list[Any]:
         if not isinstance(ch, NullChannel):
             channels.append(ch)
 
+    # ── Per-org connected integrations (additive) ──────────────────────────
+    if org_id:
+        channels.extend(_org_integration_channels(org_id))
+
     return channels
+
+
+def _org_integration_channels(org_id: str) -> list[Any]:
+    """Resolve the org's connected-integration channels (best-effort, sync).
+
+    ``channels_for_org`` is async; this helper runs it to completion so the
+    synchronous ``channels_for`` callers (flow-run / watch dispatch) can include
+    org integrations without an async signature change. Any failure (no event
+    loop available in a weird context, DB error, …) degrades to an empty list —
+    org integrations are strictly additive, never load-bearing.
+    """
+    import asyncio  # noqa: PLC0415
+
+    from app.notify.integrations import channels_for_org  # noqa: PLC0415
+
+    try:
+        try:
+            asyncio.get_running_loop()
+        except RuntimeError:
+            # No running loop — safe to drive the coroutine to completion.
+            return asyncio.run(channels_for_org(org_id))
+        # We are already inside a running loop (async caller invoked the sync
+        # helper). Resolving here would require nesting; skip rather than risk a
+        # deadlock — async callers should prefer awaiting channels_for_org.
+        logger.debug(
+            "channels_for: running loop present — skipping inline org integration "
+            "resolution for org %s (use channels_for_org directly).",
+            org_id,
+        )
+        return []
+    except Exception as exc:  # noqa: BLE001 — org integrations are best-effort.
+        logger.warning("channels_for: org integration resolution failed: %s", exc)
+        return []
 
 
 # ---------------------------------------------------------------------------

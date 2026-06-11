@@ -394,6 +394,49 @@ async def delete_watch(
 # ---------------------------------------------------------------------------
 
 
+async def _feed_breach(
+    summary: dict[str, Any], watch: Watch, *, identity: VerifiedIdentity | None
+) -> None:
+    """Also land a breached watch in the in-app feed + Web Push (best-effort).
+
+    Additive to the existing channel send in ``run_watch`` → ``fire_watch``: that
+    keeps firing the org's configured channels; this routes the SAME breach
+    through the unified ``notify_event`` dispatch so it shows up in the
+    notification center and as a push. Never raises — a feed/push failure must
+    not regress a watch evaluation.
+    """
+    if not summary.get("breached"):
+        return
+    try:
+        from app.notify.dispatch import notify_event
+        from app.repos.provider import get_repo
+        from app.routes._org import get_user_org
+
+        org_id = None
+        if identity is not None and getattr(identity, "user_id", None):
+            org_id = await get_user_org(identity.user_id, get_repo())
+        if not org_id:
+            return  # No tenant context (system tick) — nothing to scope the feed to.
+
+        await notify_event(
+            org_id,
+            {
+                "type": "watch_breach",
+                "title": f"Watch breached: {watch.name}",
+                "body": summary.get("explanation") or "",
+                "severity": "warning",
+                "link": f"/watches/{watch.id}",
+                "metadata": {
+                    "watch_id": watch.id,
+                    "metric_id": watch.metric_id,
+                    "value": summary.get("value"),
+                },
+            },
+        )
+    except Exception as exc:  # noqa: BLE001 — feed dispatch is strictly best-effort.
+        logger.warning("watch %s: feed dispatch failed: %s", watch.id, exc)
+
+
 async def _resolve_metric_for_watch(metric_id: str):
     registry = get_metric_registry()
     metric = registry.get(metric_id) or await ensure_persisted_metric(metric_id)
@@ -425,6 +468,7 @@ async def evaluate_watch_now(
     claims = {"policies": identity.policies}
     summary = await run_watch(watch, metric, claims)
     summary["id"] = watch.id
+    await _feed_breach(summary, watch, identity=identity)
     return summary
 
 

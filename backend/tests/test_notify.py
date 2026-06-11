@@ -33,8 +33,6 @@ from typing import Any
 from unittest.mock import MagicMock, patch
 
 import pytest
-from fastapi import FastAPI
-from fastapi.testclient import TestClient
 
 
 # ---------------------------------------------------------------------------
@@ -183,6 +181,105 @@ class TestWhatsAppChannel:
             ch = WhatsAppChannel(token="only-token")
             ch.send("no phone id or recipient")
         mock_post.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# 4b: GoogleChatChannel + TeamsChannel (mocked httpx)
+# ---------------------------------------------------------------------------
+
+
+class TestGoogleChatChannel:
+    def test_send_correct_payload(self):
+        from app.notify.channels import GoogleChatChannel
+
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+
+        with patch("httpx.post", return_value=mock_resp) as mock_post:
+            ch = GoogleChatChannel(webhook_url="https://chat.googleapis.com/v1/spaces/x")
+            ch.send("Google Chat alert!")
+
+        mock_post.assert_called_once()
+        call_args = mock_post.call_args
+        url = call_args[0][0] if call_args[0] else call_args.args[0]
+        assert "chat.googleapis.com" in url
+        payload = call_args[1].get("json") or {}
+        assert payload == {"text": "Google Chat alert!"}
+
+    def test_send_failure_raises(self):
+        from app.notify.channels import GoogleChatChannel, ChannelError
+
+        mock_resp = MagicMock()
+        mock_resp.status_code = 404
+        mock_resp.text = "Not Found"
+
+        with patch("httpx.post", return_value=mock_resp):
+            ch = GoogleChatChannel(webhook_url="https://chat.googleapis.com/v1/spaces/x")
+            with pytest.raises(ChannelError):
+                ch.send("fail")
+
+    def test_no_webhook_no_call(self):
+        from app.notify.channels import GoogleChatChannel
+
+        with patch("httpx.post") as mock_post:
+            ch = GoogleChatChannel()
+            ch.send("no webhook")
+        mock_post.assert_not_called()
+
+    def test_get_channel_builds_google_chat(self):
+        from app.notify.channels import get_channel, GoogleChatChannel, NullChannel
+
+        ch = get_channel("google_chat", {"webhook_url": "https://chat.googleapis.com/x"})
+        assert isinstance(ch, GoogleChatChannel)
+        assert isinstance(get_channel("google_chat", {}), NullChannel)
+
+
+class TestTeamsChannel:
+    def test_send_correct_payload(self):
+        from app.notify.channels import TeamsChannel
+
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+
+        with patch("httpx.post", return_value=mock_resp) as mock_post:
+            ch = TeamsChannel(webhook_url="https://outlook.office.com/webhook/abc")
+            ch.send("Teams alert!")
+
+        mock_post.assert_called_once()
+        call_args = mock_post.call_args
+        url = call_args[0][0] if call_args[0] else call_args.args[0]
+        assert "outlook.office.com" in url
+        payload = call_args[1].get("json") or {}
+        assert payload.get("text") == "Teams alert!"
+        # MessageCard schema for reliable Teams rendering.
+        assert payload.get("@type") == "MessageCard"
+
+    def test_send_failure_raises(self):
+        from app.notify.channels import TeamsChannel, ChannelError
+
+        mock_resp = MagicMock()
+        mock_resp.status_code = 400
+        mock_resp.text = "Bad Request"
+
+        with patch("httpx.post", return_value=mock_resp):
+            ch = TeamsChannel(webhook_url="https://outlook.office.com/webhook/abc")
+            with pytest.raises(ChannelError):
+                ch.send("fail")
+
+    def test_no_webhook_no_call(self):
+        from app.notify.channels import TeamsChannel
+
+        with patch("httpx.post") as mock_post:
+            ch = TeamsChannel()
+            ch.send("no webhook")
+        mock_post.assert_not_called()
+
+    def test_get_channel_builds_teams(self):
+        from app.notify.channels import get_channel, TeamsChannel, NullChannel
+
+        ch = get_channel("teams", {"webhook_url": "https://outlook.office.com/webhook/x"})
+        assert isinstance(ch, TeamsChannel)
+        assert isinstance(get_channel("teams", {}), NullChannel)
 
 
 # ---------------------------------------------------------------------------
@@ -495,109 +592,8 @@ class TestFlowListener:
         )
 
 
-# ---------------------------------------------------------------------------
-# 15-17: /integrations routes
-# ---------------------------------------------------------------------------
-
-
-def _make_integrations_app():
-    """Build a minimal FastAPI app that includes the integrations router."""
-    from fastapi import FastAPI
-
-    # We must import the router module AFTER the api_router is defined.
-    # Since routes/integrations.py self-registers on api_router, we include
-    # api_router directly.
-    from app.routes import api_router  # noqa: PLC0415
-    import app.routes.integrations  # noqa: PLC0415, F401 — triggers self-registration
-
-    test_app = FastAPI()
-    test_app.include_router(api_router, prefix="/api/v1")
-    return test_app
-
-
-def _auth_headers() -> dict[str, str]:
-    """Return a fake Bearer token header that satisfies current_user (mocked)."""
-    return {"Authorization": "Bearer fake-test-token"}
-
-
-class TestIntegrationsRoutes:
-    @pytest.fixture
-    def tc(self):
-        """Build and return a TestClient for the integrations app with auth bypassed."""
-        from app.auth.deps import current_user as _cu
-
-        fake_user = {"id": "u1", "email": "test@nubi.dev", "name": "Tester"}
-
-        async def _fake_current_user():
-            return fake_user
-
-        app = _make_integrations_app()
-        app.dependency_overrides[_cu] = _fake_current_user
-        return TestClient(app)
-
-    def test_list_integrations(self, tc):
-        resp = tc.get("/api/v1/integrations")
-        assert resp.status_code == 200
-        data = resp.json()
-        assert "channels" in data
-        assert isinstance(data["channels"], list)
-        assert len(data["channels"]) >= 4  # slack_webhook, slack_bot, whatsapp, email
-        assert "any_configured" in data
-
-    def test_list_integrations_channel_schema(self, tc):
-        resp = tc.get("/api/v1/integrations")
-        channels = resp.json()["channels"]
-        for ch in channels:
-            assert "name" in ch
-            assert "kind" in ch
-            assert "configured" in ch
-            assert isinstance(ch["configured"], bool)
-
-    def test_test_alert_use_null_true(self, tc):
-        resp = tc.post(
-            "/api/v1/integrations/test",
-            json={"use_null": True, "message": "unit test ping"},
-        )
-        assert resp.status_code == 200
-        data = resp.json()
-        assert data["ok"] is True
-        assert "sent" in data
-        assert any(s["null"] for s in data["sent"])
-        # Should have recorded the send
-        assert any("records" in s for s in data["sent"])
-        records = next(s for s in data["sent"] if "records" in s)["records"]
-        assert len(records) >= 1
-        assert "unit test ping" in records[0]["text"]
-
-    def test_test_alert_use_null_false(self, tc):
-        """use_null=False should run through configured channels (all Null in test env)."""
-        resp = tc.post(
-            "/api/v1/integrations/test",
-            json={"use_null": False, "message": "real channel test"},
-        )
-        assert resp.status_code == 200
-        data = resp.json()
-        assert data["ok"] is True
-        assert isinstance(data["sent"], list)
-
-    def test_save_integration_config_slack(self, tc):
-        resp = tc.post(
-            "/api/v1/integrations",
-            json={"kind": "slack", "config": {"channel": "#ops", "webhook_url": "https://x.com"}},
-        )
-        assert resp.status_code == 200
-        data = resp.json()
-        assert data["ok"] is True
-        assert data["kind"] == "slack"
-        # webhook_url should be redacted
-        assert data["config"].get("webhook_url") == "***"
-
-    def test_save_integration_config_invalid_kind(self, tc):
-        resp = tc.post(
-            "/api/v1/integrations",
-            json={"kind": "fax", "config": {}},
-        )
-        assert resp.status_code in (400, 422)
+# NOTE: per-org /integrations CRUD (the real route that replaced the old
+# app-settings channel-status shim) is covered in tests/test_integrations_route.py.
 
 
 # ---------------------------------------------------------------------------

@@ -75,6 +75,11 @@ matplotlib>=3.7
 # M22-B: reverse-tunnel bridge transport (TCP-over-WebSocket)
 websockets>=12.0
 
+# Web Push (VAPID) for in-app notification push delivery (app/notify/push.py).
+# Optional at runtime: app.notify.push degrades to a logged no-op when this is
+# not installed or VAPID keys are unset, so it never blocks the dispatch path.
+pywebpush>=1.14.0
+
 # Test dependencies
 pytest>=8.0
 pytest-asyncio>=1.0

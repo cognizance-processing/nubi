@@ -140,6 +140,11 @@ import app.routes.orgs  # noqa: F401, E402
 # its /integrations prefix; before the generic /{resource} catch-all.
 import app.routes.integrations  # noqa: F401, E402
 
+# Notifications (in-app feed) + Web Push (VAPID) — self-register on api_router
+# with their /notifications and /push prefixes; before the generic catch-all.
+import app.routes.notifications  # noqa: F401, E402
+import app.routes.push  # noqa: F401, E402
+
 # Import projects route BEFORE resources so the /projects prefix routes are
 # registered ahead of the generic /{resource} catch-all in resources.py.
 import app.routes.projects  # noqa: F401, E402

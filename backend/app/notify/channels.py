@@ -2,9 +2,11 @@
 
 Provides a ``Channel`` interface with four implementations:
 - ``NullChannel``     — records sends in memory; no network (tests / unconfigured).
-- ``SlackChannel``    — posts via Incoming Webhook URL or chat.postMessage bot token.
-- ``WhatsAppChannel`` — posts via WhatsApp Cloud API (Meta Graph API).
-- ``EmailChannel``    — reuses the ``EmailSender`` protocol from jobs.report.
+- ``SlackChannel``      — posts via Incoming Webhook URL or chat.postMessage bot token.
+- ``WhatsAppChannel``   — posts via WhatsApp Cloud API (Meta Graph API).
+- ``GoogleChatChannel`` — posts via a Google Chat incoming webhook URL.
+- ``TeamsChannel``      — posts via a Microsoft Teams incoming webhook URL.
+- ``EmailChannel``      — reuses the ``EmailSender`` protocol from jobs.report.
 
 Factory
 -------
@@ -28,6 +30,8 @@ __all__ = [
     "NullChannel",
     "SlackChannel",
     "WhatsAppChannel",
+    "GoogleChatChannel",
+    "TeamsChannel",
     "EmailChannel",
     "get_channel",
     "ChannelError",
@@ -256,6 +260,93 @@ class WhatsAppChannel:
 
 
 # ---------------------------------------------------------------------------
+# GoogleChatChannel — Google Chat incoming webhook
+# ---------------------------------------------------------------------------
+
+
+class GoogleChatChannel:
+    """Send messages to a Google Chat space via an incoming webhook.
+
+    Google Chat incoming webhooks accept a simple ``POST {webhook_url}`` with a
+    JSON body of ``{"text": ...}`` (basic text message). A 2xx response is
+    success; anything else raises :class:`ChannelError`.
+
+    Parameters
+    ----------
+    webhook_url:
+        The Google Chat space incoming-webhook URL.
+    """
+
+    def __init__(self, *, webhook_url: str = "") -> None:
+        self.webhook_url = webhook_url
+
+    def send(self, text: str, image_png: bytes | None = None) -> None:
+        """Deliver *text* to the configured Google Chat webhook.
+
+        Google Chat incoming webhooks do not accept binary attachments, so
+        *image_png* is ignored (the text is delivered as-is).
+        """
+        if not self.webhook_url:
+            logger.warning("GoogleChatChannel.send called but webhook_url is not set.")
+            return
+
+        import httpx  # lazy — no network at import time
+
+        payload = {"text": text}
+        resp = httpx.post(self.webhook_url, json=payload, timeout=10)
+        if resp.status_code not in (200, 201):
+            raise ChannelError(
+                f"Google Chat webhook returned {resp.status_code}: {resp.text[:200]}"
+            )
+
+
+# ---------------------------------------------------------------------------
+# TeamsChannel — Microsoft Teams incoming webhook
+# ---------------------------------------------------------------------------
+
+
+class TeamsChannel:
+    """Send messages to a Microsoft Teams channel via an incoming webhook.
+
+    Teams incoming webhooks accept a ``POST {webhook_url}``. We send a minimal
+    MessageCard payload (``{"text": ...}`` is also accepted by the connector,
+    but the legacy MessageCard schema renders reliably across Teams clients).
+    A 2xx response is success; anything else raises :class:`ChannelError`.
+
+    Parameters
+    ----------
+    webhook_url:
+        The Microsoft Teams incoming-webhook URL.
+    """
+
+    def __init__(self, *, webhook_url: str = "") -> None:
+        self.webhook_url = webhook_url
+
+    def send(self, text: str, image_png: bytes | None = None) -> None:
+        """Deliver *text* to the configured Teams webhook.
+
+        Teams incoming webhooks do not accept binary attachments, so
+        *image_png* is ignored (the text is delivered as-is).
+        """
+        if not self.webhook_url:
+            logger.warning("TeamsChannel.send called but webhook_url is not set.")
+            return
+
+        import httpx  # lazy
+
+        payload = {
+            "@type": "MessageCard",
+            "@context": "https://schema.org/extensions",
+            "text": text,
+        }
+        resp = httpx.post(self.webhook_url, json=payload, timeout=10)
+        if resp.status_code not in (200, 201):
+            raise ChannelError(
+                f"Teams webhook returned {resp.status_code}: {resp.text[:200]}"
+            )
+
+
+# ---------------------------------------------------------------------------
 # EmailChannel — wraps EmailSender from jobs.report
 # ---------------------------------------------------------------------------
 
@@ -328,6 +419,10 @@ def get_channel(kind: str, config: dict[str, Any]) -> Channel:
     ``"whatsapp"``
         Requires ``token``, ``phone_number_id``, and ``recipient``.
         Falls back to ``NullChannel`` if any are absent.
+    ``"google_chat"``
+        Requires ``webhook_url``.  Falls back to ``NullChannel`` if absent.
+    ``"teams"``
+        Requires ``webhook_url``.  Falls back to ``NullChannel`` if absent.
     ``"email"``
         Requires ``recipient``; uses ``NullSender`` when no real sender is
         supplied in ``config["sender"]``.
@@ -365,6 +460,20 @@ def get_channel(kind: str, config: dict[str, Any]) -> Channel:
             logger.debug("get_channel('whatsapp'): incomplete credentials — returning NullChannel.")
             return NullChannel()
         return WhatsAppChannel(token=token, phone_number_id=phone_number_id, recipient=recipient)
+
+    if kind == "google_chat":
+        webhook_url = config.get("webhook_url") or ""
+        if not webhook_url:
+            logger.debug("get_channel('google_chat'): no webhook_url — returning NullChannel.")
+            return NullChannel()
+        return GoogleChatChannel(webhook_url=webhook_url)
+
+    if kind == "teams":
+        webhook_url = config.get("webhook_url") or ""
+        if not webhook_url:
+            logger.debug("get_channel('teams'): no webhook_url — returning NullChannel.")
+            return NullChannel()
+        return TeamsChannel(webhook_url=webhook_url)
 
     if kind == "email":
         from app.jobs.report import NullSender  # lazy local import
