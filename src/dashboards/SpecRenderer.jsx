@@ -49,6 +49,28 @@ import { backgroundToCss, styleToCss } from './widgetHtml.js'
 import { buildResponsiveLayouts, isHiddenAt } from './responsiveLayout.js'
 
 // ---------------------------------------------------------------------------
+// Placement (SHARED CONTRACT)
+// ---------------------------------------------------------------------------
+
+/**
+ * Effective placement for a widget: 'grid' | 'header' | 'drawer'.
+ *
+ * Contract (shared with backend + editor):
+ *   - if widget.placement is set, use it;
+ *   - else if widget.drawer === true, treat as 'drawer' (legacy flag);
+ *   - else 'grid' (default).
+ *
+ * Header widgets render in the horizontal filter bar above the grid, ordered by
+ * widget.order (pos ignored). Grid widgets render in the GridCanvas. Drawer
+ * widgets render in the slide-over panel.
+ */
+function effectivePlacement(w) {
+  if (w?.placement) return w.placement
+  if (w?.drawer === true) return 'drawer'
+  return 'grid'
+}
+
+// ---------------------------------------------------------------------------
 // Spec → props normalization
 // ---------------------------------------------------------------------------
 
@@ -317,20 +339,28 @@ function SpecRendererInner({ spec, initialVariables = {}, onVariableChange, forc
     sm: spec.layout?.cols_sm ?? 1,
   }
 
-  // Partition out drawer widgets (drawer:true) — they render in slide-overs,
-  // not on the main grid. Group them by drawer_group ('filters' or 'dg_*').
-  const { widgets, drawerGroups } = useMemo(() => {
+  // Partition widgets by effective placement (SHARED CONTRACT):
+  //   'drawer' → slide-over panel, grouped by drawer_group ('filters' or 'dg_*')
+  //   'header' → horizontal filter bar above the grid (ordered by widget.order)
+  //   'grid'   → the main GridCanvas (default)
+  // The legacy drawer:true flag still resolves to 'drawer' via effectivePlacement,
+  // so a spec with no placement-tagged widgets partitions exactly as before.
+  const { widgets, headerWidgets, drawerGroups } = useMemo(() => {
     const grid = []
+    const header = []
     const groups = {}
     for (const w of allWidgets) {
-      if (w.drawer) {
+      const placement = effectivePlacement(w)
+      if (placement === 'drawer') {
         const g = w.drawer_group || 'filters'
         ;(groups[g] ??= []).push(w)
+      } else if (placement === 'header') {
+        header.push(w)
       } else {
         grid.push(w)
       }
     }
-    return { widgets: grid, drawerGroups: groups }
+    return { widgets: grid, headerWidgets: header, drawerGroups: groups }
   }, [JSON.stringify(allWidgets)])
 
   const [openDrawer, setOpenDrawer] = useState(null)
@@ -364,6 +394,21 @@ function SpecRendererInner({ spec, initialVariables = {}, onVariableChange, forc
     })
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [widgets, effectiveTabId, firstTabId, tabs.length])
+
+  // Header (filter-bar) widgets, tab-scoped exactly like grid widgets, then
+  // sorted by widget.order ascending (pos is ignored for header placement).
+  const tabbedHeaderWidgets = useMemo(() => {
+    const scoped = tabs.length === 0
+      ? headerWidgets
+      : headerWidgets.filter((w) => {
+          const t = w.tab_id ?? null
+          if (t === effectiveTabId) return true
+          return t == null && effectiveTabId === firstTabId
+        })
+    return [...scoped].sort((a, b) => (a.order ?? 0) - (b.order ?? 0))
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [headerWidgets, effectiveTabId, firstTabId, tabs.length])
+
   const drawerTitle = openDrawer === 'filters'
     ? (spec.drawer?.title || 'Filters')
     : (widgets.find(w => w.props?.drilldown_group === openDrawer)?.props?.title || 'Drill down')
@@ -506,6 +551,20 @@ function SpecRendererInner({ spec, initialVariables = {}, onVariableChange, forc
               onChange={setTab}
               tabBar={spec.tabBar}
             />
+          </div>
+        )}
+        {tabbedHeaderWidgets.length > 0 && (
+          <div className="nubi-filter-bar flex flex-wrap items-end gap-3 px-1 pb-4 mb-4 border-b border-border">
+            {tabbedHeaderWidgets.map((w) => (
+              <div
+                key={w.id}
+                // Header filters are compact: auto width (not full grid cells).
+                // overflow-visible so filter dropdown popovers are not clipped.
+                className="min-w-[10rem] max-w-xs overflow-visible"
+              >
+                <WidgetComponent widget={w} onOpenDrawer={setOpenDrawer} editMode={editMode} />
+              </div>
+            ))}
           </div>
         )}
         {tabbedWidgets.length === 0 ? (

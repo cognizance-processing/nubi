@@ -209,7 +209,24 @@ class Widget(BaseModel):
     props:
         Arbitrary extra widget props (e.g. ``label``, ``limit``, ``format``).
     pos:
-        Grid position/size.
+        Grid position/size.  Used for ``placement == 'grid'`` widgets; ignored
+        for ``'header'`` / ``'drawer'`` placed widgets (which use ``order``).
+    placement:
+        Where this widget renders relative to the grid (additive; default
+        ``'grid'`` => unchanged behaviour):
+          - ``'grid'``   — a normal layout widget positioned by ``pos``.
+          - ``'header'`` — rendered in a horizontal FILTER BAR above the grid
+            (below the tab bar), ordered by ``order`` and IGNORING ``pos``.
+            Typically a filter or text widget. Tab scoping matches grid widgets
+            (a header filter with a ``tab_id`` shows on that tab; ``tab_id`` None
+            => first tab / global per the existing rules).
+          - ``'drawer'`` — rendered inside the slide-over drawer, equivalent to
+            the legacy ``drawer=True`` / ``drawer_group 'filters'`` mechanism.
+        BACK-COMPAT: a widget with the legacy ``drawer=True`` and the DEFAULT
+        ``placement`` ('grid', i.e. not explicitly set otherwise) has an
+        EFFECTIVE placement of ``'drawer'``. Use :func:`effective_placement`
+        (or :meth:`Widget.effective_placement`) to resolve this so callers do
+        not re-derive it. ``drawer`` / ``drawer_group`` keep working unchanged.
     subtype:
         Filter widget sub-type — ``'select'``, ``'multiselect'``,
         ``'daterange'``, or ``'text'``.  Required when ``type == 'filter'``.
@@ -257,6 +274,18 @@ class Widget(BaseModel):
     encoding: dict[str, str] = Field(default_factory=dict)
     props: dict[str, Any] = Field(default_factory=dict)
     pos: WidgetPos
+    # ── placement (grid / header filter-bar / drawer) ─────────────────────
+    placement: Literal["grid", "header", "drawer"] = Field(
+        default="grid",
+        description=(
+            "Where this widget renders relative to the grid. 'grid' (default) "
+            "uses pos; 'header' renders in the horizontal filter bar above the "
+            "grid (ordered by 'order', ignores pos); 'drawer' renders in the "
+            "slide-over drawer. Legacy drawer=True with the default placement "
+            "resolves to an effective placement of 'drawer' (see "
+            "effective_placement)."
+        ),
+    )
     # ── drawer / drilldown placement ──────────────────────────────────────
     # A widget with ``drawer=True`` is NOT placed on the main grid; instead it
     # is rendered inside a slide-out drawer keyed by ``drawer_group``:
@@ -296,6 +325,30 @@ class Widget(BaseModel):
             "Named param bindings: {paramName: {ref:'<varName>'} | <literal>}."
         ),
     )
+
+    def effective_placement(self) -> str:
+        """Resolve this widget's effective placement ('grid'|'header'|'drawer').
+
+        Back-compat: a widget with the legacy ``drawer=True`` and the DEFAULT
+        ``placement`` ('grid') is treated as ``'drawer'``. An explicit
+        ``placement`` always wins (so ``placement='header'`` is honoured even if
+        ``drawer`` were somehow True). Otherwise the stored ``placement`` is
+        returned verbatim.
+        """
+        return effective_placement(self)
+
+
+def effective_placement(widget: "Widget") -> str:
+    """Module-level resolver for a widget's effective placement.
+
+    Returns one of ``'grid'`` | ``'header'`` | ``'drawer'``. The legacy
+    ``drawer=True`` flag maps to ``'drawer'`` ONLY when ``placement`` is still
+    the default ``'grid'`` (i.e. not explicitly set to something else), keeping
+    every existing drawer spec rendering identically.
+    """
+    if widget.placement == "grid" and widget.drawer:
+        return "drawer"
+    return widget.placement
 
 
 class DashboardSpec(BaseModel):
@@ -548,6 +601,22 @@ def validate_spec(data: Any) -> tuple[DashboardSpec | None, list[str]]:
     except Exception:  # noqa: BLE001 — metric registry unavailable; skip silently
         pass
 
+    # ── Step 10: header-bar placement sanity (soft warning) ──────────────────
+    # The header filter bar is intended for filter/text widgets. A non-filter/
+    # text widget placed there is a soft WARNING (not a hard error) — it still
+    # renders; this just nudges the author. Mirrors the '[warn]'-prefixed soft
+    # style used for metric forward-refs.
+    for widget in spec.widgets:
+        if effective_placement(widget) == "header" and widget.type not in (
+            "filter",
+            "text",
+        ):
+            issues.append(
+                f"[warn] Widget {widget.id!r} ({widget.type}): placement 'header' "
+                "is intended for filter/text widgets (the header bar is a filter "
+                "bar) — a non-filter widget there may look out of place."
+            )
+
     return spec, issues
 
 
@@ -797,39 +866,86 @@ def spec_to_html(spec: DashboardSpec) -> str:
         f"{title_safe}</h2></div>",
     ]
 
+    def _inner_tag(widget: "Widget") -> str:
+        if widget.type == "kpi":
+            return _kpi_tag(widget)
+        if widget.type == "table":
+            return _table_tag(widget)
+        if widget.type == "chart":
+            return _chart_tag(widget)
+        if widget.type == "filter":
+            return _filter_tag(widget)
+        if widget.type == "text":
+            return _text_tag(widget)
+        return ""
+
     def _widget_line(widget: "Widget") -> str:
         pos = widget.pos
         wrapper_style = _WIDGET_WRAPPER_STYLE.format(
             col_start=pos.x, col_span=pos.w, row_start=pos.y, row_span=pos.h,
         )
-        if widget.type == "kpi":
-            inner = _kpi_tag(widget)
-        elif widget.type == "table":
-            inner = _table_tag(widget)
-        elif widget.type == "chart":
-            inner = _chart_tag(widget)
-        elif widget.type == "filter":
-            inner = _filter_tag(widget)
-        elif widget.type == "text":
-            inner = _text_tag(widget)
-        else:
+        inner = _inner_tag(widget)
+        if not inner:
             return ""
         return (
             f'  <div class="nubi-widget nubi-widget--{widget.type}"'
             f' style="{wrapper_style}">{inner}</div>'
         )
 
+    def _header_bar(widgets: list["Widget"]) -> list[str]:
+        """Render a horizontal filter bar containing ``widgets`` in ``order``.
+
+        Returns ``[]`` when there are no header widgets so the output is
+        byte-identical to before whenever nothing is header-placed (no empty
+        bar). The bar spans the full grid width and ignores each widget's
+        ``pos`` (header widgets are laid out by the frontend flex bar).
+        """
+        ordered = sorted(widgets, key=lambda w: w.order)
+        inner_lines: list[str] = []
+        for widget in ordered:
+            inner = _inner_tag(widget)
+            if not inner:
+                continue
+            inner_lines.append(
+                f'    <div class="nubi-filter-bar__item'
+                f' nubi-widget--{widget.type}">{inner}</div>'
+            )
+        if not inner_lines:
+            return []
+        return [
+            '  <div class="nubi-filter-bar" style="grid-column:1/-1;'
+            'display:flex;flex-wrap:wrap;gap:0.5rem;align-items:flex-end;">',
+            *inner_lines,
+            "  </div>",
+        ]
+
+    # Bucket every widget by its EFFECTIVE placement (legacy drawer=True =>
+    # 'drawer'). Header widgets render in the filter bar; grid widgets in the
+    # grid; drawer widgets stay in the drawer exactly as before.
+    header_widgets = [w for w in spec.widgets if effective_placement(w) == "header"]
+    grid_widgets = [w for w in spec.widgets if effective_placement(w) == "grid"]
+    drawer_widgets = [w for w in spec.widgets if effective_placement(w) == "drawer"]
+
     tabs = spec.tabs or []
     if not tabs:
-        # No tabs — byte-identical to the prior single-section render.
+        # No tabs — header bar (if any) precedes the grid render. With no header
+        # widgets this is byte-identical to the prior single-section render: the
+        # non-header widgets (grid + legacy drawer) keep their original document
+        # order. (The pre-placement no-tabs path rendered every widget inline in
+        # order, so drawer-effective widgets stay where they were.)
+        lines.extend(_header_bar(header_widgets))
         for widget in spec.widgets:
+            if effective_placement(widget) == "header":
+                continue
             line = _widget_line(widget)
             if line:
                 lines.append(line)
     else:
         # Tabbed dashboard → stacked sections, one <h3> heading per tab in order.
         # A widget with tab_id=None belongs to the FIRST tab; drawer widgets stay
-        # global (rendered once after all tab sections).
+        # global (rendered once after all tab sections). Header widgets are tab-
+        # scoped the same way grid widgets are — a per-tab filter bar before that
+        # tab's grid widgets.
         for idx, tab in enumerate(tabs):
             label_safe = html.escape(tab.label or tab.id, quote=False)
             lines.append(
@@ -838,19 +954,21 @@ def spec_to_html(spec: DashboardSpec) -> str:
                 f'<h3 style="margin:1rem 0 0.5rem;font-size:1.05rem;font-weight:600;">'
                 f"{label_safe}</h3></div>"
             )
-            for widget in spec.widgets:
-                if getattr(widget, "drawer", False):
-                    continue
+
+            def _on_tab(widget: "Widget", _idx: int = idx, _tab=tab) -> bool:
                 wt = widget.tab_id
-                if wt == tab.id or (wt is None and idx == 0):
+                return wt == _tab.id or (wt is None and _idx == 0)
+
+            lines.extend(_header_bar([w for w in header_widgets if _on_tab(w)]))
+            for widget in grid_widgets:
+                if _on_tab(widget):
                     line = _widget_line(widget)
                     if line:
                         lines.append(line)
-        for widget in spec.widgets:
-            if getattr(widget, "drawer", False):
-                line = _widget_line(widget)
-                if line:
-                    lines.append(line)
+        for widget in drawer_widgets:
+            line = _widget_line(widget)
+            if line:
+                lines.append(line)
 
     lines.append("</div>")
     return "\n".join(lines)

@@ -190,6 +190,26 @@ const TAB_VARIANTS = ['underline', 'pills', 'segmented']
 const TAB_ALIGNS = ['start', 'center', 'end', 'stretch']
 const TAB_SIZES = ['sm', 'md', 'lg']
 
+/**
+ * Effective placement for a widget: 'grid' | 'header' | 'drawer'.
+ * SHARED CONTRACT (mirrors SpecRenderer.effectivePlacement + backend):
+ *   - explicit widget.placement wins;
+ *   - else widget.drawer === true → 'drawer' (legacy flag);
+ *   - else 'grid' (default).
+ */
+function effectivePlacement(w) {
+  if (w?.placement) return w.placement
+  if (w?.drawer === true) return 'drawer'
+  return 'grid'
+}
+
+/** Filter widgets eligible for the above-grid filter bar (placement → 'header'),
+ *  scoped to a tab like widgetsForTab, then ordered by widget.order ascending. */
+function headerWidgetsForTab(spec, activeTabId) {
+  const scoped = widgetsForTab(spec, activeTabId).filter(w => effectivePlacement(w) === 'header')
+  return [...scoped].sort((a, b) => (a.order ?? 0) - (b.order ?? 0))
+}
+
 /** Generate a stable, collision-free tab id within the current tab list. */
 function genTabId(existing = []) {
   const used = new Set(existing.map(t => t.id))
@@ -957,12 +977,63 @@ function ConditionalRulesEditor({ columns, rules, onChange }) {
   )
 }
 
+// ---------------------------------------------------------------------------
+// PlacementControl — where a widget renders: in the grid, in the above-grid
+// filter bar (header), or in the slide-over drawer. Writes widget.placement and
+// keeps the legacy drawer flag in sync for back-compat (so old viewers + the
+// filters-drawer authoring panel still see drawer filters).
+// ---------------------------------------------------------------------------
+
+const PLACEMENT_OPTIONS = [
+  { id: 'grid',   label: 'In grid',          hint: 'A normal grid cell you drag & resize.' },
+  { id: 'header', label: 'Above grid (bar)', hint: 'A compact control in the filter bar above the grid.' },
+  { id: 'drawer', label: 'In drawer',        hint: 'Lives in the slide-over Filters drawer.' },
+]
+
+/** Apply a placement choice to a widget, keeping the legacy drawer flag/group in
+ *  sync (drawer → drawer=true + drawer_group='filters'; grid/header → drawer=false). */
+function applyPlacement(widget, placement) {
+  const next = { ...widget, placement }
+  if (placement === 'drawer') {
+    next.drawer = true
+    if (!next.drawer_group) next.drawer_group = 'filters'
+  } else {
+    next.drawer = false
+  }
+  return next
+}
+
+function PlacementControl({ widget, onChange }) {
+  const current = effectivePlacement(widget)
+  const active = PLACEMENT_OPTIONS.find(o => o.id === current) ?? PLACEMENT_OPTIONS[0]
+  return (
+    <div>
+      <FieldLabel className="flex items-center gap-1.5"><LayoutGrid size={12} /> Placement</FieldLabel>
+      <div className="grid grid-cols-3 gap-1.5" data-testid="widget-placement-control">
+        {PLACEMENT_OPTIONS.map(o => (
+          <button key={o.id} type="button"
+            onClick={() => onChange(applyPlacement(widget, o.id))}
+            data-testid={`placement-${o.id}`}
+            title={o.hint}
+            className={`h-8 px-1.5 text-[11px] font-medium rounded-lg border transition-all focus:outline-none focus:ring-2 focus:ring-ring/50 ${
+              current === o.id ? 'bg-primary text-primary-fg border-primary shadow-sm' : 'bg-surface text-muted border-border hover:border-primary hover:text-primary'
+            }`}>
+            {o.label}
+          </button>
+        ))}
+      </div>
+      <p className="text-[10px] text-muted/70 mt-1">{active.hint}</p>
+    </div>
+  )
+}
+
 function FilterConfig({ widget, onChange }) {
   const setField = (key, val) => onChange({ ...widget, [key]: val })
   const props = widget.props ?? {}
   const setProps = (key, val) => onChange({ ...widget, props: { ...props, [key]: val } })
   return (
     <div className="space-y-3">
+      <PlacementControl widget={widget} onChange={onChange} />
       <div>
         <FieldLabel>Label</FieldLabel>
         <input type="text" className={inputCls} value={props.label ?? ''} onChange={e => setProps('label', e.target.value)} />
@@ -991,6 +1062,7 @@ function FilterConfig({ widget, onChange }) {
 function TextConfig({ widget, onChange }) {
   return (
     <div className="space-y-3">
+      <PlacementControl widget={widget} onChange={onChange} />
       <div>
         <FieldLabel>Markdown content</FieldLabel>
         <textarea rows={8} className={`${inputCls} h-auto py-1.5 resize-y font-mono text-xs leading-relaxed`}
@@ -1845,6 +1917,59 @@ function WidgetHoverToolbar({ widget, onDuplicate, onDelete, visible, reorder = 
 }
 
 // ---------------------------------------------------------------------------
+// EditorFilterBar — the above-grid filter bar, rendered in the editor canvas so
+// header-placed filters (placement: 'header') are VISIBLE + selectable. Mirrors
+// the renderer's `nubi-filter-bar` flex-wrap strip. Each chip is selectable
+// (opens its inspector) and removable; clicking the empty bar background passes
+// through to the canvas's deselect handler.
+// ---------------------------------------------------------------------------
+
+function EditorFilterBar({ widgets, selectedId, onSelect, onRemove }) {
+  if (!widgets || widgets.length === 0) return null
+  return (
+    <div
+      className="nubi-filter-bar flex flex-wrap items-end gap-3 px-1 pb-4 mb-4 border-b border-border"
+      data-testid="editor-filter-bar"
+    >
+      {widgets.map(w => {
+        const isSelected = selectedId === w.id
+        return (
+          <div
+            key={w.id}
+            data-testid={`filter-bar-item-${w.id}`}
+            onClick={(e) => { e.stopPropagation(); onSelect(w.id) }}
+            className={`group relative min-w-[10rem] max-w-xs rounded-lg border-2 bg-surface px-2.5 py-1.5 cursor-pointer transition-all overflow-visible ${
+              isSelected ? 'border-primary shadow-md' : 'border-border hover:border-primary/50'
+            }`}
+            title="Click to configure · in the filter bar"
+          >
+            <button
+              type="button"
+              onClick={(e) => { e.stopPropagation(); onRemove(w.id) }}
+              data-testid={`filter-bar-remove-${w.id}`}
+              title="Remove filter"
+              aria-label="Remove filter"
+              className="absolute -top-2 -right-2 w-5 h-5 flex items-center justify-center rounded-full bg-surface border border-border text-muted hover:text-red-500 hover:border-red-400 shadow-sm opacity-0 group-hover:opacity-100 focus:opacity-100 transition-opacity z-10"
+            >
+              <X size={11} />
+            </button>
+            <p className="text-[10px] font-medium text-muted truncate flex items-center gap-1">
+              <FilterIcon size={11} className="shrink-0" />
+              {w.props?.label || w.subtype || (w.type === 'text' ? 'Text' : 'Filter')}
+            </p>
+            <p className="text-xs font-mono text-fg truncate mt-0.5">
+              {w.type === 'filter'
+                ? `${w.subtype ?? 'select'} → ${w.target_var || '(no var)'}`
+                : ((w.content ?? '').split('\n')[0] || 'text')}
+            </p>
+          </div>
+        )
+      })}
+    </div>
+  )
+}
+
+// ---------------------------------------------------------------------------
 // EditableTabStrip — edit-mode tab bar: add / inline-rename / drag-reorder / delete
 // ---------------------------------------------------------------------------
 
@@ -2335,8 +2460,10 @@ export default function DashboardEditor({ boardId = null, onSaved }) {
   // Use the active breakpoint's effective layout (override or fallback) and skip
   // widgets hidden at this breakpoint so the reserved height is accurate.
   const _rowH = spec.layout?.row_height ?? 60
-  // Reserve height for the ACTIVE tab's widgets only (the canvas shows just those).
+  // Reserve height for the ACTIVE tab's GRID widgets only (the canvas grid shows
+  // just those — header/drawer widgets render outside the GridCanvas).
   const _maxBottom = widgetsForTab(spec, activeTabId).reduce((m, w) => {
+    if (effectivePlacement(w) !== 'grid') return m
     if (isHiddenAt(w, activeBreakpoint)) return m
     const p = effectivePos(w, spec, activeBreakpoint) ?? {}
     const y = (p.y ?? 1) - 1
@@ -2484,16 +2611,30 @@ export default function DashboardEditor({ boardId = null, onSaved }) {
   // like SpecRenderer. Layout building, height reservation and GridCanvas all use
   // this scoped list, while mutations still operate on the full spec by widget id.
   const hasTabs = Array.isArray(spec.tabs) && spec.tabs.length > 0
+  // All of the active tab's widgets (any placement) — used for emptiness checks.
   const tabWidgets = useMemo(
     () => widgetsForTab(spec, activeTabId),
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [spec.widgets, spec.tabs, activeTabId],
   )
-  // A spec whose widget list is scoped to the active tab — fed to the layout
-  // builder so off-tab widgets never participate in this tab's grid geometry.
+  // ONLY grid-placed widgets get grid cells — header (filter bar) and drawer
+  // widgets are excluded from the GridCanvas layout (mirrors SpecRenderer).
+  const gridTabWidgets = useMemo(
+    () => tabWidgets.filter(w => effectivePlacement(w) === 'grid'),
+    [tabWidgets],
+  )
+  // Header-placed (above-grid filter bar) widgets for the active tab, ordered.
+  const headerTabWidgets = useMemo(
+    () => headerWidgetsForTab(spec, activeTabId),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [spec.widgets, spec.tabs, activeTabId],
+  )
+  // A spec whose widget list is scoped to the active tab's GRID widgets only — fed
+  // to the layout builder so off-tab and non-grid widgets never participate in
+  // this tab's grid geometry.
   const tabSpec = useMemo(
-    () => (hasTabs ? { ...spec, widgets: tabWidgets } : spec),
-    [spec, tabWidgets, hasTabs],
+    () => ({ ...spec, widgets: gridTabWidgets }),
+    [spec, gridTabWidgets],
   )
   // Per-tab background falls back to the dashboard background (mirrors SpecRenderer).
   const activeTab = hasTabs ? (spec.tabs.find(t => t.id === activeTabId) ?? null) : null
@@ -2521,7 +2662,7 @@ export default function DashboardEditor({ boardId = null, onSaved }) {
     frozenLayoutsRef.current = layouts
     return layouts
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [tabWidgets, JSON.stringify(spec.responsive), lgCols, mdCols, smCols])
+  }, [gridTabWidgets, JSON.stringify(spec.responsive), lgCols, mdCols, smCols])
 
   // Grid flexibility options (spec.layout.*). The editor defaults to free-place
   // so drag-to-place keeps working; authors can opt into packing via the Advanced
@@ -3211,6 +3352,20 @@ export default function DashboardEditor({ boardId = null, onSaved }) {
                     transformOrigin: 'top left',
                   }}
                 >
+                {/* Above-grid filter bar (placement: 'header'). Rendered between the
+                    tab strip and the GridCanvas so header filters are visible +
+                    editable in-place. Mirrors the renderer's `nubi-filter-bar`.
+                    Padded to match the grid's container padding so it lines up. */}
+                {headerTabWidgets.length > 0 && (
+                  <div style={{ paddingLeft: editorPadding.x, paddingRight: editorPadding.x, paddingTop: editorPadding.y }}>
+                    <EditorFilterBar
+                      widgets={headerTabWidgets}
+                      selectedId={selectedId}
+                      onSelect={(id) => { setSelectedId(id); setRightCollapsed(false); setRightPanel(p => p === 'chat' ? p : 'config'); setMobileSheet('config') }}
+                      onRemove={removeWidget}
+                    />
+                  </div>
+                )}
                 {/* CSS-Grid engine (dnd-kit). GridCanvas owns drag/resize math + zoom
                     scaling and the column-guide / ghost overlays. We feed it the SAME
                     0-based layout array RGL consumed and the SAME commit callback, so
