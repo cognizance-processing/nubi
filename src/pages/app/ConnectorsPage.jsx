@@ -23,10 +23,12 @@
 
 import { useEffect, useState, useCallback, useRef, useMemo } from 'react'
 import { createPortal } from 'react-dom'
-import { Link } from 'react-router-dom'
+import { Link, useNavigate } from 'react-router-dom'
 import {
   Plus,
   Plug,
+  Warehouse,
+  Sparkles,
   Pencil,
   Trash2,
   Zap,
@@ -317,7 +319,7 @@ function EmptyState({ onAdd, canWrite }) {
 // Type picker step
 // ---------------------------------------------------------------------------
 
-function TypePicker({ onSelect }) {
+function TypePicker({ onSelect, onChooseManaged }) {
   const [query, setQuery] = useState('')
 
   const groups = useMemo(() => {
@@ -340,6 +342,52 @@ function TypePicker({ onSelect }) {
 
   return (
     <div className="flex flex-col gap-5">
+      {/* Storage choice — managed lakehouse (recommended) vs bring your own.
+          The managed option routes to the Lakehouse page; the connector type
+          list below is the bring-your-own-bucket / external-source path. */}
+      <div className="space-y-2.5">
+        <span className="text-[11px] font-semibold uppercase tracking-wider text-muted">
+          Where should your data live?
+        </span>
+        <button
+          type="button"
+          onClick={onChooseManaged}
+          className="
+            relative w-full flex items-start gap-3 p-4 rounded-xl text-left
+            border border-primary/40 bg-primary/5
+            hover:border-primary/60 hover:bg-primary/10 hover:shadow-sm
+            transition-all duration-150 group
+            focus:outline-none focus:ring-2 focus:ring-ring
+          "
+        >
+          <span className="flex items-center justify-center w-9 h-9 rounded-xl bg-brand-gradient shadow-sm shrink-0">
+            <Warehouse size={18} className="text-white" strokeWidth={2} />
+          </span>
+          <div className="flex-1 min-w-0">
+            <div className="flex flex-wrap items-center gap-1.5">
+              <span className="text-sm font-semibold text-fg">Use Nubi managed lakehouse</span>
+              <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[10px] font-medium bg-primary/15 text-primary border border-primary/20">
+                <Sparkles size={9} strokeWidth={2.4} /> Recommended
+              </span>
+            </div>
+            <p className="text-[11px] text-muted mt-0.5 leading-snug">
+              No bucket to manage — isolated, secure storage Nubi runs for you,
+              billed by usage. Demo data available.
+            </p>
+          </div>
+          <ChevronRight
+            size={15}
+            className="text-primary/70 group-hover:text-primary group-hover:translate-x-0.5 transition-all shrink-0 mt-1"
+          />
+        </button>
+      </div>
+
+      <div className="flex items-center gap-2">
+        <span className="h-px flex-1 bg-border" />
+        <span className="text-[11px] font-medium text-muted">or bring your own bucket / source</span>
+        <span className="h-px flex-1 bg-border" />
+      </div>
+
       <p className="text-sm text-muted">
         Choose the type of data source you want to connect.
       </p>
@@ -723,6 +771,7 @@ function Toast({ message, type, onDismiss }) {
 // ---------------------------------------------------------------------------
 
 export default function ConnectorsPage() {
+  const navigate = useNavigate()
   // Re-scope the list whenever the active project changes (api.js sends X-Project-Id).
   const { activeProject } = useProject()
   const projectId = activeProject?.id
@@ -1035,7 +1084,10 @@ export default function ConnectorsPage() {
       {/* Slide-over */}
       <SlideOver open={slideOpen} onClose={closeSlide} title={slideTitle}>
         {slideStep === 'type' && !editTarget && (
-          <TypePicker onSelect={handleTypePick} />
+          <TypePicker
+            onSelect={handleTypePick}
+            onChooseManaged={() => { closeSlide(); navigate('/lakehouse') }}
+          />
         )}
 
         {slideStep === 'form' && selectedType && (

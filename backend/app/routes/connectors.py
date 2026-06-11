@@ -484,6 +484,19 @@ async def update_connector(
     if not isinstance(existing.get("config"), dict) or "connector_type" not in existing["config"]:
         raise AppError("not_found", "Connector not found.", 404)
 
+    # SECURITY: the managed-lakehouse datastore's storage path is server-pinned
+    # to the org's isolated prefix (orgs/<org_id>/lake/). It must NOT be editable
+    # via this route — otherwise a user could repoint `database` at another org's
+    # prefix or an arbitrary URL. Managed lakes are provisioned/managed through
+    # /lakehouse only.
+    if existing["config"].get("managed_lake") is True:
+        raise AppError(
+            "managed_lake_immutable",
+            "This is a Nubi-managed lakehouse — its storage path is server-pinned "
+            "and cannot be edited here. Manage it via /lakehouse.",
+            409,
+        )
+
     # Build the update fields dict
     fields: dict[str, Any] = {}
     if body.name is not None:
@@ -546,6 +559,16 @@ async def delete_connector(
         raise AppError("not_found", "Connector not found.", 404)
     if not isinstance(existing.get("config"), dict) or "connector_type" not in existing["config"]:
         raise AppError("not_found", "Connector not found.", 404)
+
+    # SECURITY: managed lakehouses must be deprovisioned through DELETE /lakehouse
+    # (which also deletes the org's prefix objects). Deleting just the row here
+    # would orphan stored data and leave it billable. Refuse.
+    if existing["config"].get("managed_lake") is True:
+        raise AppError(
+            "managed_lake_immutable",
+            "This is a Nubi-managed lakehouse — deprovision it via DELETE /lakehouse.",
+            409,
+        )
 
     deleted = await repo.delete("datastores", org_id, connector_id)
     if not deleted:

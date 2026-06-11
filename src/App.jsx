@@ -84,6 +84,7 @@ const EditorPage = lazy(() => import('./pages/EditorPage.jsx'))
 const HomePage = lazy(() => import('./pages/app/HomePage.jsx'))
 const InviteAcceptPage = lazy(() => import('./pages/app/InviteAcceptPage.jsx'))
 const ConnectorsPage = lazy(() => import('./pages/app/ConnectorsPage.jsx'))
+const LakehousePage = lazy(() => import('./pages/app/LakehousePage.jsx'))
 const DataBrowser = lazy(() => import('./pages/app/DataBrowser.jsx'))
 const QueriesPage = lazy(() => import('./pages/app/QueriesPage.jsx'))
 const BlendBuilder = lazy(() => import('./pages/app/BlendBuilder.jsx'))
@@ -275,6 +276,7 @@ export default function App() {
           <Route path="invite/:token" element={<InviteAcceptPage />} />
           <Route path="connectors" element={<ConnectorsPage />} />
           <Route path="connectors/:id/data" element={<DataBrowser />} />
+          <Route path="lakehouse" element={<LakehousePage />} />
           <Route path="data" element={<DataExplorerPage />} />
           <Route path="queries" element={<QueriesPage />} />
           <Route path="queries/:id" element={<QueriesPage />} />

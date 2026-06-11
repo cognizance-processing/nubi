@@ -230,6 +230,13 @@ api_router.include_router(ops_router)
 # table; billing stays in EE. Self-registers on api_router at import time.
 import app.routes.usage  # noqa: F401, E402
 
+# Import managed-lakehouse route (/lakehouse — provision/use/delete a Nubi-managed
+# per-org isolated storage area) BEFORE resources so its /lakehouse prefix routes
+# are registered ahead of the generic /{resource} catch-all in resources.py.
+# Self-registers on api_router at import time. Distinct from the /lakehouse
+# OPTIMIZER package (app.lakehouse) — this is the provisioning surface.
+import app.routes.lakehouse  # noqa: F401, E402
+
 # Import resources route so it registers itself on api_router at import time.
 import app.routes.resources  # noqa: F401, E402
 

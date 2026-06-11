@@ -23,6 +23,7 @@ import { Link, NavLink, useMatch } from 'react-router-dom'
 import {
   Home,
   Plug,
+  Warehouse,
   FileCode2,
   LayoutDashboard,
   Workflow,
@@ -472,6 +473,7 @@ function SidebarEnvSelector({ collapsed }) {
 const NAV_ITEMS = [
   { label: 'Home',        to: '/home',        Icon: Home },
   { label: 'Connectors',  to: '/connectors',  Icon: Plug },
+  { label: 'Lakehouse',   to: '/lakehouse',   Icon: Warehouse },
   { label: 'Data',        to: '/data',        Icon: Table2 },
   { label: 'Queries',     to: '/queries',     Icon: FileCode2 },
   { label: 'Dashboards',  to: '/dashboards',  Icon: LayoutDashboard },
