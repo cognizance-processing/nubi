@@ -289,6 +289,13 @@ async def create_resource(
     org_id = await resolve_org_id(str(user["id"]), repo, request)
     project_id = await resolve_project_id_for_create(org_id, request)
 
+    # A query with a `config.metric` block IS a governed metric — validate it
+    # with the SAME rules as the /metrics write path (no-op for plain queries).
+    if resource == "queries":
+        from app.routes.metrics import validate_query_metric_block  # noqa: PLC0415
+
+        validate_query_metric_block(body.config or {})
+
     # Env-scoped write enforcement (agent sandbox) — before any DB mutation.
     # Covers every resource kind, versionable or not.
     await _check_env_write(resource, claims, request, org_id, project_id)
@@ -364,6 +371,13 @@ async def update_resource(
     """
     _require_valid_resource(resource)
     org_id = await resolve_org_id(str(user["id"]), repo, request)
+
+    # Validate an updated query's optional `config.metric` block (no-op for plain
+    # queries / when config is omitted) — same rules as the /metrics write path.
+    if resource == "queries" and body.config is not None:
+        from app.routes.metrics import validate_query_metric_block  # noqa: PLC0415
+
+        validate_query_metric_block(body.config)
 
     # Env-scoped write enforcement (agent sandbox) — before any DB mutation.
     await _check_env_write(resource, claims, request, org_id, None)

@@ -3,8 +3,18 @@
 This mirrors ``app/queries/registry.py`` verbatim in shape: a plain dict-backed
 singleton with ``register`` / ``unregister`` / ``get`` / ``all``, a module-level
 ``get_metric_registry()`` accessor, a ``reset_for_tests()`` helper, and a
-DB-backed loader (``load_persisted_metrics``) that hydrates the registry from the
-``metrics`` table (migration 0008) at startup.
+DB-backed loader that hydrates the registry at startup.
+
+Source of metrics
+-----------------
+Metrics are SOURCED from queries-with-``config.metric`` (the query/metric
+unification): a ``queries`` row whose ``config`` carries a ``metric`` block IS a
+governed metric, keyed by ``config.metric.slug``. ``load_metrics_from_queries``
+is the startup loader; ``ensure_persisted_metric`` resolves one such query by
+slug on a registry miss. The legacy ``metrics``-table loader
+(``load_persisted_metrics``, migration 0008) is retained but deprecated —
+migration 0012 moves each ``metrics`` row into a query-with-``config.metric``,
+preserving the slug so consumers keep resolving the same id.
 
 Where the query registry stores ``RegisteredQuery`` rows, this registry stores
 :class:`app.metrics.models.MetricDefinition` objects directly — the definition is
@@ -85,6 +95,11 @@ class MetricRegistry:
 # ---------------------------------------------------------------------------
 
 _registry: MetricRegistry | None = None
+
+#: Ids of the in-code seed metrics (no backing query row). The ``/metrics`` list
+#: route always keeps these visible regardless of org scoping, since they belong
+#: to no tenant. Keep in sync with :func:`_seed_demo_metrics`.
+SEED_METRIC_IDS: frozenset[str] = frozenset({"demo_revenue"})
 
 
 def _seed_demo_metrics(registry: MetricRegistry) -> None:
@@ -170,6 +185,11 @@ async def load_persisted_metrics() -> int:
     table is unavailable.
 
     Returns the number of metrics successfully registered.
+
+    DEPRECATED source — the ``metrics`` table is being collapsed into
+    queries-with-``config.metric`` (migration 0012). Startup now calls
+    :func:`load_metrics_from_queries`; this loader is retained for the
+    pre-migration window / direct callers and is a no-op once the table is empty.
     """
     try:
         from app.db import fetch
@@ -199,21 +219,135 @@ async def load_persisted_metrics() -> int:
     return loaded
 
 
-async def ensure_persisted_metric(metric_id: str) -> MetricDefinition | None:
-    """Lazily load a single persisted metric on a registry miss.
+# ---------------------------------------------------------------------------
+# Query-backed metric loader (queries-with-`config.metric` → registry)
+# ---------------------------------------------------------------------------
+# The unified source of metrics: a ``queries`` row whose ``config`` carries a
+# ``metric`` block IS a governed metric. The registry sources metrics from those
+# rows (keyed by ``config.metric.slug``), so a plain query is unaffected and a
+# query-with-metric is consumable by AI/watches/pre-agg/dashboards unchanged.
 
-    Mirrors ``ensure_persisted_query``: the runtime registry is populated at
-    startup, so metrics created while the server is running on another process
-    are invisible until restart. The routes call this on a ``registry.get()``
-    miss to load just that row from the DB. Best-effort: returns the metric if
-    found+loaded, else ``None``.
+
+def _coerce_config(config: object) -> dict | None:
+    """Return *config* as a dict (parsing JSON text), or ``None`` if not a dict."""
+    import json
+
+    if isinstance(config, str):
+        try:
+            config = json.loads(config)
+        except (ValueError, TypeError):
+            return None
+    return config if isinstance(config, dict) else None
+
+
+def _definition_from_query_row(row: object) -> MetricDefinition | None:
+    """Build a :class:`MetricDefinition` from a query-with-``config.metric`` row.
+
+    Maps a ``queries`` row onto the metric contract (Section 1 of the
+    query/metric unification doc):
+
+    - ``id``           = ``config.metric.slug``  (the stable metric id)
+    - ``name``         = ``query.name``
+    - ``base_sql``     = ``config.sql``          (``base_table`` stays ``None`` —
+                          queries are SQL, used as a trusted subquery)
+    - ``datastore_id`` = ``config.datastore_id``
+    - measure / dimensions / time_dimension / default_filters / rls_keys /
+      owner / description = from ``config.metric.*``
+
+    Reuses ``MetricDefinition.from_dict`` so validation rules are identical to
+    the ``metrics``-table path. Returns ``None`` when the row has no usable
+    ``config.metric`` block (so a plain query is silently skipped).
+    """
+    config = _coerce_config(row["config"])  # type: ignore[index]
+    if config is None:
+        return None
+    metric = config.get("metric")
+    if not isinstance(metric, dict):
+        return None
+    slug = str(metric.get("slug") or "").strip()
+    if not slug:
+        return None
+
+    data: dict = {
+        "id": slug,
+        "name": row["name"],  # type: ignore[index]
+        "measure": metric.get("measure") or {},
+        "base_sql": config.get("sql"),
+        "base_table": None,
+        "datastore_id": config.get("datastore_id"),
+        "dimensions": metric.get("dimensions") or [],
+        "time_dimension": metric.get("time_dimension"),
+        "default_filters": metric.get("default_filters") or [],
+        "rls_keys": metric.get("rls_keys") or [],
+        "owner": metric.get("owner"),
+        "description": metric.get("description") or "",
+    }
+    return MetricDefinition.from_dict(data)
+
+
+async def load_metrics_from_queries() -> int:
+    """Load metrics from queries-with-``config.metric`` into the runtime registry.
+
+    The unified source: ``SELECT … FROM queries WHERE config ? 'metric'`` →
+    :func:`_definition_from_query_row` → register by ``config.metric.slug``.
+    Tenant/registry semantics mirror :func:`load_persisted_metrics` (process-
+    global singleton; org scoping happens at the route layer). Best-effort:
+    never crashes startup.
+
+    Returns the number of metrics successfully registered.
+    """
+    try:
+        from app.db import fetch
+
+        rows = await fetch(
+            "SELECT id, org_id, project_id, name, config FROM queries "
+            "WHERE config ? 'metric'"
+        )
+    except Exception as exc:  # noqa: BLE001 — best-effort; never crash startup.
+        logger.warning(
+            "load_metrics_from_queries: could not read queries table: %s", exc
+        )
+        return 0
+
+    registry = get_metric_registry()
+    loaded = 0
+    for row in rows:
+        try:
+            metric = _definition_from_query_row(row)
+            if metric is None:
+                continue
+            registry.register(metric)
+            loaded += 1
+        except Exception as exc:  # noqa: BLE001 — skip one bad row, keep going.
+            logger.warning(
+                "load_metrics_from_queries: skipping malformed query-metric row: %s",
+                exc,
+            )
+            continue
+
+    if loaded:
+        logger.info(
+            "load_metrics_from_queries: registered %d query-backed metrics", loaded
+        )
+    return loaded
+
+
+async def ensure_persisted_metric(metric_id: str) -> MetricDefinition | None:
+    """Lazily load a single metric on a registry miss, by its slug.
+
+    The metric id IS the ``config.metric.slug`` of the backing query. The runtime
+    registry is populated at startup, so a metric authored on another process is
+    invisible until restart — the routes call this on a ``registry.get()`` miss
+    to load just that query-with-metric from the DB. Best-effort: returns the
+    metric if found+loaded, else ``None``.
     """
     registry = get_metric_registry()
     try:
         from app.db import fetchrow
 
         row = await fetchrow(
-            "SELECT id, slug, name, definition FROM metrics WHERE id = $1::uuid",
+            "SELECT id, org_id, project_id, name, config FROM queries "
+            "WHERE config->'metric'->>'slug' = $1 LIMIT 1",
             metric_id,
         )
     except Exception as exc:  # noqa: BLE001 — best-effort; never crash the request.
@@ -222,7 +356,7 @@ async def ensure_persisted_metric(metric_id: str) -> MetricDefinition | None:
     if row is None:
         return None
     try:
-        metric = _definition_from_row(row)
+        metric = _definition_from_query_row(row)
         if metric is None:
             return None
         registry.register(metric)

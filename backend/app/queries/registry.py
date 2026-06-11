@@ -161,6 +161,10 @@ class RegisteredQuery:
     datastore_id: str | None = None
     output_schema: tuple[OutputColumn, ...] | None = None
     strict_output_schema: bool = False
+    # Optional "expose as metric" block (config.metric) — present ⇒ this query is
+    # a governed metric (docs/query-metric-unification.md). Carried so the
+    # registry GET can round-trip it back to the query editor.
+    metric: dict | None = None
 
     def params_as_list(self) -> list[QueryParam]:
         """Return params as a plain list (convenience helper)."""
@@ -193,6 +197,7 @@ class QueryRegistry:
         datastore_id: str | None = None,
         output_schema: list[OutputColumn] | None = None,
         strict_output_schema: bool = False,
+        metric: dict | None = None,
     ) -> RegisteredQuery:
         """Register a query and return the ``RegisteredQuery`` object.
 
@@ -234,6 +239,7 @@ class QueryRegistry:
             datastore_id=datastore_id,
             output_schema=tuple(output_schema) if output_schema else None,
             strict_output_schema=strict_output_schema,
+            metric=metric or None,
         )
         self._store[id] = rq
         return rq
@@ -493,6 +499,7 @@ async def load_persisted_queries() -> int:
                 datastore_id=str(datastore_id) if datastore_id is not None else None,
                 output_schema=list(_schema) if _schema is not None else None,
                 strict_output_schema=bool(cfg.get("strict_output_schema", False)),
+                metric=cfg.get("metric") if isinstance(cfg.get("metric"), dict) else None,
             )
             loaded += 1
         except Exception as exc:  # noqa: BLE001 — skip one bad row, keep going.
@@ -549,6 +556,7 @@ async def ensure_persisted_query(query_id: str):
             datastore_id=str(datastore_id) if datastore_id is not None else None,
             output_schema=list(_schema) if _schema is not None else None,
             strict_output_schema=bool(cfg.get("strict_output_schema", False)),
+            metric=cfg.get("metric") if isinstance(cfg.get("metric"), dict) else None,
         )
     except Exception as exc:  # noqa: BLE001
         logger.warning("ensure_persisted_query(%s): register failed: %s", query_id, exc)

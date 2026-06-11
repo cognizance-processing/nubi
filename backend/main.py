@@ -266,7 +266,7 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
     """
     from app.flows.runtime import start_flow_worker, stop_flow_worker
     from app.jobs.runtime import start_scheduler, stop_scheduler
-    from app.metrics.registry import load_persisted_metrics
+    from app.metrics.registry import load_metrics_from_queries
     from app.queries.registry import load_persisted_queries
 
     await init_db()
@@ -276,10 +276,11 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
     # against their bound datastore.  Best-effort: never crashes startup.
     await load_persisted_queries()
 
-    # Load persisted metrics (from the `metrics` table) into the runtime metric
-    # registry so the semantic layer is available from the first request.
-    # Best-effort: never crashes startup (mirror of the queries hook above).
-    await load_persisted_metrics()
+    # Load metrics from queries-with-`config.metric` into the runtime metric
+    # registry so the semantic layer is available from the first request. Metrics
+    # are now SOURCED from queries (the `metrics` table is deprecated; migration
+    # 0012 moves its rows into queries). Best-effort: never crashes startup.
+    await load_metrics_from_queries()
 
     settings = get_settings()
     if settings.JOBS_SCHEDULER_ENABLED:

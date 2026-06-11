@@ -182,13 +182,64 @@ def _build_definition(data: dict[str, Any], *, metric_id: str) -> MetricDefiniti
     return metric
 
 
+def validate_query_metric_block(config: dict[str, Any]) -> None:
+    """Validate a query's optional ``config.metric`` block (no-op if absent).
+
+    A query becomes a governed metric when its ``config`` carries a ``metric``
+    key (Section 1 of the query/metric unification). This reuses
+    :func:`_build_definition` — the SAME validation the ``/metrics`` write path
+    runs — so the rules are identical: a valid measure (a non-count agg needs a
+    real ``expr``) over a source (here ``config.sql`` → ``base_sql``), with
+    well-formed dimensions/time/rls. A plain query (no ``metric`` block) is
+    unaffected.
+
+    Raises :class:`AppError` (400) on an invalid block so the resource write
+    route surfaces a structured error.
+    """
+    metric_block = config.get("metric")
+    if metric_block is None:
+        return
+    if not isinstance(metric_block, dict):
+        raise AppError(
+            "invalid_metric",
+            "config.metric must be an object describing the governed metric.",
+            400,
+        )
+    slug = str(metric_block.get("slug") or "").strip()
+    if not slug:
+        raise AppError(
+            "invalid_metric",
+            "config.metric.slug is required (the stable metric id).",
+            400,
+        )
+    # Assemble the MetricDefinition shape the metrics write path validates:
+    # base_sql comes from config.sql (queries are SQL — base_table stays None).
+    definition_data = {
+        "name": slug,
+        "measure": metric_block.get("measure") or {},
+        "base_sql": config.get("sql"),
+        "datastore_id": config.get("datastore_id"),
+        "dimensions": metric_block.get("dimensions") or [],
+        "time_dimension": metric_block.get("time_dimension"),
+        "default_filters": metric_block.get("default_filters") or [],
+        "rls_keys": metric_block.get("rls_keys") or [],
+        "owner": metric_block.get("owner"),
+        "description": metric_block.get("description") or "",
+    }
+    try:
+        _build_definition(definition_data, metric_id=slug)
+    except MetricError as exc:
+        raise AppError(exc.code, exc.message, 400) from exc
+
+
 # ---------------------------------------------------------------------------
-# Persistence (best-effort, mirrors register_query) — direct against `metrics`
+# Persistence (best-effort) — UPSERT a query-with-`config.metric` by (org, slug)
 # ---------------------------------------------------------------------------
-# NOTE: the `metrics` table is NOT in the resources Repo allowlist (its columns
-# differ: slug/definition vs name/config), so we persist via the app.db helpers
-# directly — exactly the layer load_persisted_metrics reads back from. All DB
-# work is wrapped so a FakeDB/no-DB path never fails the request: the in-memory
+# Metrics are now SOURCED from queries: a `queries` row whose `config` carries a
+# `metric` block IS the governed metric (keyed by config.metric.slug). The
+# /metrics write path therefore UPSERTs a query (not the deprecated `metrics`
+# table) so legacy callers still work but land in the unified store. All DB work
+# is wrapped so a FakeDB/no-DB path never fails the request: the in-memory
 # registry mutation alone is sufficient for the route to succeed.
 
 
@@ -200,22 +251,69 @@ def _slugify(value: str) -> str:
     return slug.strip("_") or "metric"
 
 
+def _query_config_from_metric(metric: MetricDefinition, slug: str) -> dict[str, Any]:
+    """Build the ``queries.config`` (with a ``metric`` block) for *metric*.
+
+    ``config.sql`` is the metric's base SQL — for a legacy ``base_table`` metric
+    we synthesise ``SELECT * FROM <table>`` so the unified store always carries a
+    SQL base grain (the same conversion the migration does). The ``metric`` block
+    mirrors ``config.metric.*`` in the unification contract, keyed by *slug*.
+    """
+    td = metric.time_dimension
+    sql = metric.base_sql or (
+        f"SELECT * FROM {metric.base_table}" if metric.base_table else None
+    )
+    return {
+        "sql": sql,
+        "datastore_id": metric.datastore_id,
+        "metric": {
+            "slug": slug,
+            "measure": {
+                "name": metric.measure.name,
+                "agg": metric.measure.agg,
+                "expr": metric.measure.expr,
+                "type": metric.measure.type,
+                "format": metric.measure.format,
+            },
+            "dimensions": [
+                {"name": d.name, "expr": d.expr, "type": d.type}
+                for d in metric.dimensions
+            ],
+            "time_dimension": (
+                {
+                    "column": td.column,
+                    "grains": list(td.grains),
+                    "default_grain": td.default_grain,
+                }
+                if td is not None
+                else None
+            ),
+            "default_filters": list(metric.default_filters),
+            "rls_keys": list(metric.rls_keys),
+            "owner": metric.owner,
+            "description": metric.description,
+        },
+    }
+
+
 async def _persist_metric(
     metric: MetricDefinition,
     identity: VerifiedIdentity,
     request: Request,
 ) -> str:
-    """Best-effort upsert into the ``metrics`` table; return the canonical id.
+    """Best-effort UPSERT of a query-with-``config.metric``; return the slug id.
 
-    Returns the persisted row id (adopted as the registry id) when persistence
-    succeeds, else the provisional ``metric.id`` (slug fallback) so the registry
-    mutation in the route is still coherent.
+    The metric is stored as a ``queries`` row whose ``config`` carries a
+    ``metric`` block, upserted by (org_id, ``config.metric.slug``). The canonical
+    metric id IS the slug (stable across the migration), so this returns the slug
+    regardless of whether the DB write lands.
     """
     import json
     import uuid
 
-    slug = _slugify(metric.name or metric.id)
-    definition_json = json.dumps(metric.to_dict())
+    slug = metric.id if not _is_uuid_str(metric.id) else _slugify(metric.name)
+    config = _query_config_from_metric(metric, slug)
+    config_json = json.dumps(config)
 
     try:
         from app.db import execute, fetchrow
@@ -228,34 +326,40 @@ async def _persist_metric(
         org_id = await get_user_org(identity.user_id, repo)
         project_id = await resolve_project_id_for_create(org_id, request)
 
-        # Upsert by (org_id, slug) — the table's UNIQUE constraint. ON CONFLICT
-        # refreshes name/definition/updated_at and returns the stable row id.
-        row = await fetchrow(
-            """
-            INSERT INTO metrics
-                (id, org_id, project_id, created_by, slug, name, definition)
-            VALUES ($1::uuid, $2::uuid, $3::uuid, $4::uuid, $5, $6, $7::jsonb)
-            ON CONFLICT (org_id, slug) DO UPDATE
-                SET name = EXCLUDED.name,
-                    definition = EXCLUDED.definition,
-                    updated_at = now()
-            RETURNING id
-            """,
-            str(uuid.uuid4()),
+        # UPSERT by (org_id, config.metric.slug): update an existing backing
+        # query if one already exposes this slug in the org, else insert a new
+        # one. (No DB UNIQUE on the slug — we resolve the existing id first.)
+        existing = await fetchrow(
+            "SELECT id FROM queries WHERE org_id = $1::uuid "
+            "AND config->'metric'->>'slug' = $2 LIMIT 1",
             org_id,
-            project_id,
-            identity.user_id,
             slug,
-            metric.name,
-            definition_json,
         )
-        if row is not None and row.get("id"):
-            return str(row["id"])
-        # FakeDB / drivers that don't RETURNING: best-effort execute, keep id.
-        await execute("SELECT 1")
+        if existing is not None and existing.get("id"):
+            await execute(
+                "UPDATE queries SET name = $1, config = $2::jsonb, updated_at = now() "
+                "WHERE id = $3::uuid",
+                metric.name,
+                config_json,
+                str(existing["id"]),
+            )
+        else:
+            await execute(
+                """
+                INSERT INTO queries
+                    (id, org_id, project_id, created_by, name, config)
+                VALUES ($1::uuid, $2::uuid, $3::uuid, $4::uuid, $5, $6::jsonb)
+                """,
+                str(uuid.uuid4()),
+                org_id,
+                project_id,
+                identity.user_id,
+                metric.name,
+                config_json,
+            )
     except Exception:  # noqa: BLE001 — persistence is best-effort.
         pass
-    return metric.id
+    return slug
 
 
 # ---------------------------------------------------------------------------
@@ -301,7 +405,11 @@ async def list_metrics(
     metrics = registry.all()
 
     # ── Org scoping (best-effort) ────────────────────────────────────────────
-    row_ids: set[str] | None = None
+    # Metrics are query-backed: the visible set is the slugs exposed by this
+    # org's queries-with-`config.metric`. In-code seeds (e.g. demo_revenue) have
+    # no backing query row and are always visible. When scoping is unavailable
+    # (no DB) the registry list is returned unfiltered.
+    slugs: set[str] | None = None
     try:
         from app.db import fetch
         from app.routes._org import resolve_org_id, resolve_project_filter
@@ -319,23 +427,28 @@ async def list_metrics(
             )
             if project_id:
                 rows = await fetch(
-                    "SELECT id FROM metrics WHERE org_id = $1::uuid "
-                    "AND project_id = $2::uuid",
+                    "SELECT config->'metric'->>'slug' AS slug FROM queries "
+                    "WHERE org_id = $1::uuid AND project_id = $2::uuid "
+                    "AND config ? 'metric'",
                     org_id,
                     project_id,
                 )
             else:
                 rows = await fetch(
-                    "SELECT id FROM metrics WHERE org_id = $1::uuid", org_id
+                    "SELECT config->'metric'->>'slug' AS slug FROM queries "
+                    "WHERE org_id = $1::uuid AND config ? 'metric'",
+                    org_id,
                 )
-            row_ids = {str(r["id"]) for r in rows}
+            slugs = {str(r["slug"]) for r in rows if r.get("slug")}
     except Exception:  # noqa: BLE001 — scoping unavailable → unfiltered list.
-        row_ids = None
+        slugs = None
 
-    if row_ids is not None:
-        metrics = [
-            m for m in metrics if m.id in row_ids or not _is_uuid_str(m.id)
-        ]
+    if slugs is not None:
+        # Keep org-owned query-backed metrics + the in-code seeds (which belong
+        # to no tenant, e.g. demo_revenue).
+        from app.metrics.registry import SEED_METRIC_IDS  # noqa: PLC0415
+
+        metrics = [m for m in metrics if m.id in slugs or m.id in SEED_METRIC_IDS]
 
     return {"metrics": [_metric_summary(m) for m in metrics]}
 
@@ -449,15 +562,26 @@ async def delete_metric(
     metric_id: str,
     identity: VerifiedIdentity = Depends(verified_identity),
 ) -> dict:
-    """Unregister the metric and delete its persisted row (best-effort)."""
+    """Stop exposing the metric: unregister it + clear the backing query's block.
+
+    DELETE semantics (the safe, non-destructive option): we CLEAR the ``metric``
+    block from the backing query rather than deleting the query, so the query's
+    SQL — which the author may still want as a plain query — survives. The metric
+    id (slug) simply stops resolving. ``metric_id`` is the slug. Best-effort: the
+    in-memory unregister alone makes the route effective in a no-DB context.
+    """
     _require_first_party_write(identity)
 
     get_metric_registry().unregister(metric_id)
     try:
         from app.db import execute
 
-        await execute("DELETE FROM metrics WHERE id = $1::uuid", metric_id)
-    except Exception:  # noqa: BLE001 — deletion of the row is best-effort.
+        await execute(
+            "UPDATE queries SET config = config - 'metric', updated_at = now() "
+            "WHERE config->'metric'->>'slug' = $1",
+            metric_id,
+        )
+    except Exception:  # noqa: BLE001 — clearing the block is best-effort.
         pass
     return {"id": metric_id, "deleted": True}
 

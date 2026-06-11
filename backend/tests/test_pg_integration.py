@@ -724,3 +724,181 @@ async def test_flow_create_and_run_end_to_end(pg_db):
 
     finally:
         app_db._pool = original_pool
+
+
+# ---------------------------------------------------------------------------
+# Query/Metric unification — migration 0012 + slug stability
+# ---------------------------------------------------------------------------
+
+
+async def _create_project(pool, org_id: str, created_by: str) -> str:
+    """Insert a project in the test org; return its id."""
+    pid = str(uuid.uuid4())
+    await _execute(
+        pool,
+        "INSERT INTO projects (id, org_id, name, slug, created_by) "
+        "VALUES ($1, $2, $3, $4, $5)",
+        pid,
+        org_id,
+        "Metric Migration Project",
+        f"mmp-{pid[:8]}",
+        created_by,
+    )
+    return pid
+
+
+def _read_migration_0012() -> str:
+    from pathlib import Path  # noqa: PLC0415
+
+    path = (
+        Path(__file__).parent.parent.parent
+        / "database"
+        / "migrations"
+        / "0012_metrics_to_queries.sql"
+    )
+    return path.read_text(encoding="utf-8")
+
+
+@pytest.mark.asyncio(loop_scope="session")
+async def test_migration_0012_moves_metric_to_query_preserving_slug(pg_db):
+    """0012 moves a `metrics` row into a query-with-config.metric, keeping slug."""
+    pool = pg_db
+    uid, oid = await _create_user_and_org(pool)
+    pid = await _create_project(pool, oid, uid)
+
+    # Seed a legacy metric row (base_table form → migration synthesises SQL).
+    definition = {
+        "id": "revenue",
+        "name": "Revenue",
+        "measure": {"name": "revenue", "agg": "sum", "expr": "amount",
+                    "type": "additive", "format": "currency"},
+        "base_table": "orders",
+        "datastore_id": None,
+        "dimensions": [{"name": "region", "expr": None, "type": "text"}],
+        "time_dimension": {"column": "order_date",
+                           "grains": ["day", "week", "month"],
+                           "default_grain": "day"},
+        "default_filters": [],
+        "rls_keys": ["tenant_id"],
+        "owner": None,
+        "description": "Total revenue",
+    }
+    await _execute(
+        pool,
+        "INSERT INTO metrics (id, org_id, project_id, created_by, slug, name, "
+        "definition) VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb)",
+        str(uuid.uuid4()), oid, pid, uid, "revenue", "Revenue",
+        json.dumps(definition),
+    )
+
+    # Run migration 0012 (it already ran at session start, but only over rows
+    # that existed then — this metric is new, so it backfills now).
+    await _execute(pool, _read_migration_0012())
+
+    q = await _fetchrow(
+        pool,
+        "SELECT name, config FROM queries WHERE org_id = $1::uuid "
+        "AND config->'metric'->>'slug' = $2",
+        oid, "revenue",
+    )
+    assert q is not None, "migration did not create a query for slug 'revenue'"
+    config = q["config"]
+    if isinstance(config, str):
+        config = json.loads(config)
+    # Slug preserved + SQL synthesised from base_table.
+    assert config["metric"]["slug"] == "revenue"
+    assert config["sql"] == "SELECT * FROM orders"
+    assert config["metric"]["measure"]["expr"] == "amount"
+    assert config["metric"]["rls_keys"] == ["tenant_id"]
+    assert config["metric"]["time_dimension"]["column"] == "order_date"
+    assert q["name"] == "Revenue"
+
+
+@pytest.mark.asyncio(loop_scope="session")
+async def test_migration_0012_is_idempotent(pg_db):
+    """Re-running 0012 does not duplicate the backing query for a slug."""
+    pool = pg_db
+    uid, oid = await _create_user_and_org(pool)
+    pid = await _create_project(pool, oid, uid)
+
+    definition = {
+        "id": "signups", "name": "Signups",
+        "measure": {"name": "signups", "agg": "count", "expr": "*"},
+        "base_sql": "SELECT created_at, plan FROM users_raw",
+        "dimensions": [{"name": "plan", "expr": None, "type": "text"}],
+        "time_dimension": None, "default_filters": [], "rls_keys": [],
+    }
+    await _execute(
+        pool,
+        "INSERT INTO metrics (id, org_id, project_id, created_by, slug, name, "
+        "definition) VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb)",
+        str(uuid.uuid4()), oid, pid, uid, "signups", "Signups",
+        json.dumps(definition),
+    )
+
+    await _execute(pool, _read_migration_0012())
+    await _execute(pool, _read_migration_0012())  # second run = no-op
+
+    rows = await _fetch(
+        pool,
+        "SELECT id FROM queries WHERE org_id = $1::uuid "
+        "AND config->'metric'->>'slug' = $2",
+        oid, "signups",
+    )
+    assert len(rows) == 1, f"expected exactly one backing query, got {len(rows)}"
+    # base_sql preserved verbatim (not table-synthesised).
+    q = await _fetchrow(
+        pool,
+        "SELECT config FROM queries WHERE org_id = $1::uuid "
+        "AND config->'metric'->>'slug' = $2",
+        oid, "signups",
+    )
+    config = q["config"]
+    if isinstance(config, str):
+        config = json.loads(config)
+    assert config["sql"] == "SELECT created_at, plan FROM users_raw"
+
+
+@pytest.mark.asyncio(loop_scope="session")
+async def test_migrated_slug_resolves_through_registry(pg_db):
+    """A watch's metric_id (slug) still resolves after migration → query-backed."""
+    pool = pg_db
+    uid, oid = await _create_user_and_org(pool)
+    pid = await _create_project(pool, oid, uid)
+
+    definition = {
+        "id": "orders_total", "name": "Orders total",
+        "measure": {"name": "orders", "agg": "sum", "expr": "value"},
+        "base_table": "demo",
+        "dimensions": [{"name": "name", "expr": None, "type": "text"}],
+        "time_dimension": None, "default_filters": [], "rls_keys": [],
+    }
+    await _execute(
+        pool,
+        "INSERT INTO metrics (id, org_id, project_id, created_by, slug, name, "
+        "definition) VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb)",
+        str(uuid.uuid4()), oid, pid, uid, "orders_total", "Orders total",
+        json.dumps(definition),
+    )
+    await _execute(pool, _read_migration_0012())
+
+    # Resolve the migrated slug via the registry seam consumers (watches/AI) use.
+    import app.db as app_db  # noqa: PLC0415
+    from app.metrics.registry import (  # noqa: PLC0415
+        ensure_persisted_metric,
+        reset_for_tests,
+    )
+
+    original_pool = app_db._pool
+    app_db._pool = pool
+    reset_for_tests()
+    try:
+        metric = await ensure_persisted_metric("orders_total")
+    finally:
+        app_db._pool = original_pool
+        reset_for_tests()
+
+    assert metric is not None, "migrated slug failed to resolve via the registry"
+    assert metric.id == "orders_total"  # slug stability invariant
+    assert metric.base_sql == "SELECT * FROM demo"
+    assert metric.measure.expr == "value"

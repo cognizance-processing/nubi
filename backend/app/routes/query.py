@@ -1707,6 +1707,7 @@ async def list_query_registry(
                 "id": rq.id,
                 "name": rq.name,
                 "sql": rq.sql,
+                "metric": rq.metric,
                 "required_scope": rq.required_scope,
                 "datastore_id": rq.datastore_id,
                 "params": [
@@ -1779,6 +1780,10 @@ class RegisterQueryIn(BaseModel):
     params: list[QueryParamIn] = []
     required_scope: str | None = None
     datastore_id: str | None = None
+    # Optional "expose as metric" block (query/metric unification) — validated +
+    # persisted into config.metric so the metric registry picks this query up as
+    # a governed metric (docs/query-metric-unification.md).
+    metric: dict | None = None
 
 
 @router.post("/query/registry", status_code=201)
@@ -1912,6 +1917,16 @@ async def register_query(
         ],
     }
 
+    # "Expose as metric" (query/metric unification): validate the optional metric
+    # block against the same rules the /metrics write path uses, then carry it in
+    # config.metric so the metric registry loads this query as a governed metric.
+    # An absent/empty block leaves the query a plain query.
+    if body.metric:
+        from app.routes.metrics import validate_query_metric_block  # noqa: PLC0415
+
+        validate_query_metric_block({**config, "metric": body.metric})
+        config["metric"] = body.metric
+
     def _is_uuid(value: str) -> bool:
         try:
             _uuid.UUID(value)
@@ -1993,6 +2008,7 @@ async def register_query(
         required_scope=body.required_scope,
         params=param_objs,
         datastore_id=datastore_id,
+        metric=config.get("metric"),
     )
 
     return {
@@ -2001,6 +2017,7 @@ async def register_query(
         "sql": rq.sql,
         "required_scope": rq.required_scope,
         "datastore_id": rq.datastore_id,
+        "metric": rq.metric,
         "params": [
             {
                 "name": p.name,
