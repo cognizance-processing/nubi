@@ -457,6 +457,18 @@ def _reset_state():
         except Exception:
             pass
 
+        # ── Bridge-token store (§7) ───────────────────────────────────────────
+        # Fresh in-memory store so minted bridge tokens never leak across tests
+        # (the default Pg store can't run against the fake DB).
+        try:
+            from app.auth.bridge_tokens import (
+                InMemoryBridgeTokenStore,
+                set_bridge_token_store_for_tests,
+            )
+            set_bridge_token_store_for_tests(InMemoryBridgeTokenStore())
+        except Exception:
+            pass
+
         # ── Datasets catalog ──────────────────────────────────────────────────
         try:
             from app.datasets import set_catalog

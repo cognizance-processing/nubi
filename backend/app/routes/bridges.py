@@ -44,8 +44,9 @@ from typing import Any
 from fastapi import APIRouter, Depends, Response, WebSocket, WebSocketDisconnect
 from pydantic import BaseModel
 
+from app.auth.bridge_tokens import get_bridge_token_store
 from app.auth.deps import current_user
-from app.auth.roles import require_writer_default
+from app.auth.roles import get_org_role, require_writer_default
 from app.bridges.broker import get_broker
 from app.errors import AppError
 from app.repos.provider import Repo, get_repo
@@ -319,6 +320,135 @@ async def bridge_heartbeat(
     return row
 
 
+# ───────────────────────────────────────────────────────────────────────────
+# Bridge-token management (§7) — mint / list / rotate / revoke
+# ───────────────────────────────────────────────────────────────────────────
+#
+# A bridge token is the credential the agent presents on every tunnel
+# handshake/heartbeat (hashed at rest, bound to (org, bridge)). These routes are
+# owner/admin-only and org-scoped — minting a bridge credential is a privileged,
+# audit-worthy action, stricter than the writer guard on bridge CRUD.
+
+
+async def _require_owner_or_admin(user_id: str, org_id: str, repo: Repo) -> None:
+    """Raise 403 unless the caller is an owner/admin of *org_id*."""
+    role = await get_org_role(user_id, org_id, repo)
+    if role not in ("owner", "admin"):
+        raise AppError(
+            "forbidden",
+            "Only org owners and admins can manage bridge tokens.",
+            403,
+        )
+
+
+class BridgeTokenIn(BaseModel):
+    """Request body for POST /bridges/{id}/tokens."""
+
+    name: str = "bridge token"
+
+
+@router.post("/{bridge_id}/tokens", status_code=201)
+async def mint_bridge_token(
+    bridge_id: str,
+    body: BridgeTokenIn,
+    user: dict[str, Any] = Depends(current_user),
+    repo: Repo = Depends(get_repo),
+) -> dict[str, Any]:
+    """Mint a new bridge token for *bridge_id* (owner/admin, org-scoped).
+
+    The raw ``nubi_br_…`` token is returned EXACTLY ONCE here and never again —
+    only its SHA-256 hash is stored. Hand it to the agent
+    (``nubi bridge start --token …``).
+    """
+    org_id = await _get_user_org(str(user["id"]), repo)
+    await _require_owner_or_admin(str(user["id"]), org_id, repo)
+    bridge = await get_bridge_store().get(org_id, bridge_id)
+    if bridge is None:
+        raise AppError("bridge_not_found", f"Bridge {bridge_id!r} not found.", 404)
+
+    from app.auth.bridge_tokens import _public_row  # noqa: PLC0415
+
+    raw, row = await get_bridge_token_store().mint(org_id, bridge_id, body.name)
+    return {"token": raw, "bridge_token": _public_row(row)}
+
+
+@router.get("/{bridge_id}/tokens")
+async def list_bridge_tokens(
+    bridge_id: str,
+    user: dict[str, Any] = Depends(current_user),
+    repo: Repo = Depends(get_repo),
+) -> dict[str, Any]:
+    """List a bridge's tokens (no token material; owner/admin, org-scoped)."""
+    org_id = await _get_user_org(str(user["id"]), repo)
+    await _require_owner_or_admin(str(user["id"]), org_id, repo)
+    bridge = await get_bridge_store().get(org_id, bridge_id)
+    if bridge is None:
+        raise AppError("bridge_not_found", f"Bridge {bridge_id!r} not found.", 404)
+    tokens = await get_bridge_token_store().list_for_bridge(org_id, bridge_id)
+    return {"bridge_tokens": tokens}
+
+
+@router.post("/{bridge_id}/tokens/{token_id}/rotate", status_code=201)
+async def rotate_bridge_token(
+    bridge_id: str,
+    token_id: str,
+    user: dict[str, Any] = Depends(current_user),
+    repo: Repo = Depends(get_repo),
+) -> dict[str, Any]:
+    """Rotate a bridge token: mint a replacement, grace-window the old one (§7).
+
+    During the grace window BOTH tokens validate, so a running agent can swap
+    its token without a tunnel drop. The new raw token is returned once.
+    """
+    org_id = await _get_user_org(str(user["id"]), repo)
+    await _require_owner_or_admin(str(user["id"]), org_id, repo)
+    bridge = await get_bridge_store().get(org_id, bridge_id)
+    if bridge is None:
+        raise AppError("bridge_not_found", f"Bridge {bridge_id!r} not found.", 404)
+
+    from app.auth.bridge_tokens import _public_row  # noqa: PLC0415
+
+    result = await get_bridge_token_store().rotate(token_id, org_id, bridge_id)
+    if result is None:
+        raise AppError("bridge_token_not_found", f"Token {token_id!r} not found.", 404)
+    raw, row = result
+    return {"token": raw, "bridge_token": _public_row(row)}
+
+
+@router.delete("/{bridge_id}/tokens/{token_id}", status_code=204)
+async def revoke_bridge_token(
+    bridge_id: str,
+    token_id: str,
+    user: dict[str, Any] = Depends(current_user),
+    repo: Repo = Depends(get_repo),
+) -> Response:
+    """Revoke a bridge token and drop the live tunnel (§7).
+
+    Revocation sets ``revoked_at`` so every subsequent handshake/heartbeat
+    fails, AND immediately drops the live WebSocket tunnel via the broker — the
+    bridge goes ``offline`` and connectors pinned to it fail fast with
+    ``bridge_not_connected`` rather than hanging.
+    """
+    org_id = await _get_user_org(str(user["id"]), repo)
+    await _require_owner_or_admin(str(user["id"]), org_id, repo)
+    bridge = await get_bridge_store().get(org_id, bridge_id)
+    if bridge is None:
+        raise AppError("bridge_not_found", f"Bridge {bridge_id!r} not found.", 404)
+
+    revoked = await get_bridge_token_store().revoke(token_id, org_id, bridge_id)
+    if not revoked:
+        raise AppError("bridge_token_not_found", f"Token {token_id!r} not found.", 404)
+
+    # Drop the live tunnel so the now-untrusted agent cannot keep tunnelling.
+    await get_broker().drop(bridge_id)
+    # Reflect the offline transition on the bridge row.
+    row = _bridge_store._rows.get(bridge_id)
+    if row is not None:
+        row["status"] = "offline"
+        row["updated_at"] = _now_iso()
+    return Response(status_code=204)
+
+
 # ── WS /bridges/{id}/connect — bridge agent tunnel ────────────────────────
 
 
@@ -362,15 +492,30 @@ async def bridge_connect(
         return
 
     # --- Bridge row lookup (no org-scoping needed here; token IS the secret) --
-    # We scan all orgs since the agent only knows its bridge_id and token.
-    # In production a real DB query would look this up by id directly.
+    # The agent only knows its bridge_id and token. The token authenticates the
+    # CONTROL CHANNEL ONLY (§7): it lets the agent open the tunnel and claim its
+    # bridge's tasks — by itself it reads no secrets and no storage.
     row: dict[str, Any] | None = _bridge_store._rows.get(bridge_id)
     if row is None:
         await websocket.close(code=4404)
         return
 
-    expected_token: str = str(row.get("config", {}).get("token") or "")
-    if not expected_token or supplied_token != expected_token:
+    # Hashed, rotatable bridge token (§7): validate against the bridge_tokens
+    # store, which binds the token to (org_id, bridge_id). A revoked token (or
+    # one past its rotation grace window) fails here, so the handshake is
+    # rejected before accept(). ADDITIVE: fall back to the legacy plaintext
+    # ``config["token"]`` so existing bridges keep working unchanged.
+    authed = False
+    binding = await get_bridge_token_store().validate(supplied_token)
+    if binding is not None:
+        token_org_id, token_bridge_id = binding
+        if token_bridge_id == bridge_id and token_org_id == str(row.get("org_id")):
+            authed = True
+    if not authed:
+        legacy_token: str = str(row.get("config", {}).get("token") or "")
+        if legacy_token and supplied_token == legacy_token:
+            authed = True
+    if not authed:
         await websocket.close(code=4401)
         return
 

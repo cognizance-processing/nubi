@@ -429,6 +429,26 @@ class BridgeBroker:
         """Return True if an agent is currently registered for *bridge_id*."""
         return bridge_id in self._agents
 
+    async def drop(self, bridge_id: str) -> bool:
+        """Forcibly drop the live tunnel for *bridge_id* (revocation path, §7).
+
+        Called when a bridge token is revoked: the broker tears down the live
+        WebSocket connection so a now-untrusted agent cannot keep tunnelling.
+        The bridge transitions to ``offline`` and connectors pinned to it then
+        fail fast (``open_tcp_proxy`` raises ``bridge_not_connected``) rather
+        than hanging on a dead tunnel.
+
+        Returns True if a connection was dropped, False if none was registered.
+        Idempotent.
+        """
+        async with self._lock:
+            conn = self._agents.pop(bridge_id, None)
+        if conn is None:
+            return False
+        await conn.close()
+        logger.info("bridge %s tunnel dropped (token revoked)", bridge_id)
+        return True
+
     # ------------------------------------------------------------------
     # TCP proxy management
     # ------------------------------------------------------------------

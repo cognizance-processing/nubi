@@ -256,3 +256,26 @@ class S3StorageClient(StorageClient):
     def delete(self, key: str) -> None:
         """Delete ``s3://<bucket>/<key>`` (no-op if it does not exist)."""
         self._client().delete_object(Bucket=self._bucket, Key=key.lstrip("/"))
+
+    # ------------------------------------------------------------------
+    # Presigned URLs (write-only grants — ingestion design §7)
+    # ------------------------------------------------------------------
+
+    def presign_put(self, key: str, expires_in: int) -> str:
+        """Return a presigned URL that allows a single ``PutObject`` to *key*.
+
+        Used to mint a WRITE-ONLY, prefix-pinned, short-TTL grant to an
+        untrusted bridge agent (design §7): the agent can PUT bytes to exactly
+        this key for *expires_in* seconds and can do nothing else — no list, no
+        read, no delete, and no PUT to any other key.
+
+        SECURITY NOTE (design §7): an S3 presigned URL is **not revocable
+        mid-TTL** — once issued it is valid until it expires. Keep *expires_in*
+        short (15–60 min). Azure SAS-via-stored-access-policy is revocable if a
+        deployment needs mid-TTL revocation; that is a per-backend choice.
+        """
+        return self._client().generate_presigned_url(
+            "put_object",
+            Params={"Bucket": self._bucket, "Key": key.lstrip("/")},
+            ExpiresIn=int(expires_in),
+        )
