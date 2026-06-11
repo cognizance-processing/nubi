@@ -167,8 +167,9 @@ class GitLabTokenAuth(RemoteAuth):
                 "GitLabTokenAuth.push() requires remote_url.",
                 400,
             )
-        authed = self.authed_url(remote_url)
-        _git_push(repo_dir, authed, branch)
+        # SECURITY (B5): pass the BARE url + credentials via GIT_ASKPASS — the
+        # token is never placed in argv (do NOT use authed_url here).
+        _git_push(repo_dir, remote_url, branch, username="oauth2", password=self.token)
 
 
 # ---------------------------------------------------------------------------
@@ -375,8 +376,15 @@ class GitHubAppAuth(RemoteAuth):
                 "GitHubAppAuth.push() requires remote_url.",
                 400,
             )
-        authed = self.authed_url(remote_url)
-        _git_push(repo_dir, authed, branch)
+        # SECURITY (B5): pass the BARE url + the installation token via
+        # GIT_ASKPASS — the token is never placed in argv (do NOT use authed_url).
+        _git_push(
+            repo_dir,
+            remote_url,
+            branch,
+            username="x-access-token",
+            password=self.installation_token(),
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -445,25 +453,43 @@ def make_remote_auth(config: Any) -> RemoteAuth:
 # ---------------------------------------------------------------------------
 
 
-def _git_push(repo_dir: Path, authed_url: str, branch: str) -> None:
-    """Run ``git push <url> <branch>`` in *repo_dir*.
+def _git_push(
+    repo_dir: Path,
+    remote_url: str,
+    branch: str,
+    *,
+    username: str,
+    password: str,
+) -> None:
+    """Run ``git push <bare-url> <branch>`` with credentials via GIT_ASKPASS.
+
+    SECURITY (B5): the PAT/token is delivered through the environment using the
+    hardened ``GIT_ASKPASS`` helper (shared with ``app.git.remotes``) — it NEVER
+    appears in the subprocess argv (``ps``/``/proc`` exposure). The URL passed to
+    git is the BARE ``remote_url`` with no ``user:token@`` embedded.
 
     Raises
     ------
     AppError
-        If the push fails.
+        If the push fails (stderr is scrubbed of any leaked credentials first).
     """
-    result = subprocess.run(
-        ["git", "push", authed_url, branch],
-        cwd=str(repo_dir),
-        capture_output=True,
-        text=True,
-        check=False,
-    )
+    # Lazy import to keep module load order simple (remotes.py owns the hardened
+    # askpass helper; no import cycle — remotes.py does not import this module).
+    from app.git.remotes import _askpass_env, _scrub  # noqa: PLC0415
+
+    with _askpass_env(username, password) as env:
+        result = subprocess.run(
+            ["git", "push", remote_url, branch],
+            cwd=str(repo_dir),
+            capture_output=True,
+            text=True,
+            env=env,
+            check=False,
+        )
     if result.returncode != 0:
         raise AppError(
             "git_push_failed",
-            f"git push failed: {result.stderr[:400]}",
+            f"git push failed: {_scrub(result.stderr)[:400]}",
             502,
         )
 

@@ -284,6 +284,33 @@ class TestGitLabTokenAuth:
         # Should still inject credentials even if host doesn't match
         assert "tok" in url
 
+
+# ---------------------------------------------------------------------------
+# SECURITY (B5): the PAT must NEVER appear in the git push argv — it is
+# delivered via GIT_ASKPASS. Guards against a regression to the old
+# `git push https://user:token@host` (token visible in ps/proc).
+# ---------------------------------------------------------------------------
+
+
+class TestPushNoTokenInArgv:
+    def test_gitlab_push_uses_askpass_not_argv(self, tmp_path):
+        auth = GitLabTokenAuth(token="glpat-supersecret", host="gitlab.com")
+        url = "https://gitlab.com/org/repo.git"
+        with patch("app.git.remote.subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(returncode=0, stderr="")
+            auth.push(tmp_path, branch="main", remote_url=url)
+        mock_run.assert_called_once()
+        call = mock_run.call_args
+        argv = call.args[0]
+        # Bare URL in argv; the token appears in NO argv element.
+        assert argv == ["git", "push", url, "main"]
+        assert all("glpat-supersecret" not in str(a) for a in argv)
+        # Credentials delivered through the GIT_ASKPASS env, not argv.
+        env = call.kwargs["env"]
+        assert env.get("GIT_ASKPASS")
+        assert env.get("_NUBI_GIT_USER") == "oauth2"
+        assert env.get("_NUBI_GIT_PASS") == "glpat-supersecret"
+
     def test_push_without_remote_url_raises(self):
         auth = GitLabTokenAuth(token="tok")
         with pytest.raises(AppError) as exc_info:
