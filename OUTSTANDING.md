@@ -80,8 +80,9 @@ Baseline at audit: commit `16f31d0` (Wave C). Waves A/B/C done. Verify commands:
   Parquet (not local DuckDB), auto incremental refresh, HLL/t-digest sketches.
 - [ ] **Real-remote git push/pull verification** for the PAT/askpass path (needs a live remote;
   can't fully automate — document a manual test).
-- [ ] **Provider model routing** (`routes/ai.py` TODO): thread the requested model through to
-  the provider/agent.
+- [x] **Provider model routing** (`routes/ai.py` TODO): `model` threaded through complete() /
+  run_agent / generate_dashboard_spec with a strict per-provider allowlist (unknown → 400
+  model_not_allowed). ✅ `b82f3a9` (backend 3485). *Note:* `/ai/sql` has no model field yet.
 - [ ] **Dashboard variable URL sync** (`DashboardViewPage.jsx` TODO M14-C-sync): URLSyncProvider.
 
 ---
