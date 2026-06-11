@@ -78,8 +78,8 @@ class RegisterIn(BaseModel):
     # default org naming and a "Default" project, respectively.
     org_name: str | None = None
     project_name: str | None = None
-    # When true, also create the deletable "Demo" project (seeded with the demo
-    # bundle) alongside the first (empty) project. Best-effort.
+    # When true, seed the removable demo bundle INTO the org's single default
+    # project (no separate "Demo" project). Best-effort.
     demo_project: bool = False
 
     @field_validator("password")
@@ -174,8 +174,8 @@ async def _create_personal_org(
     )
 
     # Default project — keeps the org → project → resources model frictionless.
-    # The project starts EMPTY: demo content lives only in the optional "Demo"
-    # project (see app.onboarding.ensure_demo_project).
+    # The project starts EMPTY; demo content is seeded INTO this same project
+    # only when the caller opts in (the register `demo_project` flag below).
     await projects_repo.create_project(
         org_id=org_id,
         name=(project_name or "").strip() or "Default",
@@ -252,13 +252,21 @@ async def register(
         project_name=body.project_name,
     )
 
-    # Optionally create the deletable "Demo" project with the demo bundle.
-    # Best-effort — demo content must never break signup.
+    # Optionally seed the removable demo bundle INTO the org's single default
+    # project (no separate "Demo" project). Best-effort — demo content must
+    # never break signup.
     if body.demo_project:
         try:
-            from app.onboarding import ensure_demo_project  # noqa: PLC0415
+            from app.sample import (  # noqa: PLC0415
+                checkpoint_and_promote_bundle,
+                seed_sample_bundle,
+            )
 
-            await ensure_demo_project(org_id, user_id)
+            default_pid = await projects_repo.get_default_project_id(org_id)
+            if default_pid is not None:
+                seed = await seed_sample_bundle(org_id, default_pid, user_id)
+                if "skipped" not in seed:
+                    await checkpoint_and_promote_bundle(org_id, default_pid, user_id)
         except Exception:  # noqa: BLE001
             pass
 

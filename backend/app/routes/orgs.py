@@ -5,8 +5,6 @@ Endpoints
 GET    /orgs              — list the orgs the current user belongs to.
 GET    /orgs/{id}         — fetch a single org the user is a member of (404 otherwise).
 POST   /orgs              — create a new org with the current user as owner.
-POST   /orgs/{id}/demo-project — idempotently create + seed the deletable "Demo" project.
-POST   /orgs/{id}/demo-project/relocate — move any mis-placed demo bundle into the Demo project.
 PATCH  /orgs/{id}         — rename an org and/or set its avatar_url.
 GET    /orgs/{id}/deletion-impact — describe what would be deleted (can_delete, blockers, deletes).
 DELETE /orgs/{id}         — delete an org (409 if projects exist; requires confirm_name).
@@ -42,15 +40,13 @@ import secrets
 import uuid
 from typing import Any
 
-from fastapi import APIRouter, Depends, Response
+from fastapi import APIRouter, Depends
 from pydantic import BaseModel
 
 from app.auth.deps import current_user
-from app.auth.roles import get_org_role
 from app.db import execute, fetch, fetchrow
 from app.errors import AppError
 from app.repos import projects as projects_repo
-from app.repos.provider import Repo, get_repo
 from app.routes import api_router
 
 # ── Sub-router ────────────────────────────────────────────────────────────────
@@ -470,8 +466,9 @@ async def create_org(
     )
 
     # Every org gets a frictionless default project from the moment it exists.
-    # The project starts EMPTY — demo content lives only in the optional "Demo"
-    # project (POST /orgs/{org_id}/demo-project).
+    # The project starts EMPTY — demo content is seeded into THIS project only
+    # when the user opts in (the onboarding "add demo data" path via
+    # POST /projects/sample/restore).
     await projects_repo.create_project(
         org_id=org_id,
         name="Default",
@@ -479,82 +476,6 @@ async def create_org(
     )
 
     return OrgDetailResponse(id=org_id, name=body.name, role="owner")
-
-
-@router.post("/{org_id}/demo-project")
-async def create_demo_project(
-    org_id: str,
-    response: Response,
-    user: dict[str, Any] = Depends(current_user),
-    repo: Repo = Depends(get_repo),
-) -> dict[str, Any]:
-    """Idempotently create the org's "Demo" project and seed the demo bundle.
-
-    The Demo project is a regular project (identified by ``slug == 'demo'``,
-    see ``app.onboarding``) holding the removable demo content. It is deletable
-    via the normal DELETE /projects/{id} flow.
-
-    Role enforcement: the caller must be an org member with write access
-    (owner/admin/member); viewers get 403, non-members 404.
-
-    Returns
-    -------
-    201 {project, created: true, seed}   — when the Demo project was created.
-    200 {project, created: false, seed}  — when it already existed (reused).
-    """
-    user_id = str(user["id"])
-    role = await get_org_role(user_id, org_id, repo)
-    if role is None:
-        raise AppError("not_found", "Org not found.", 404)
-    if role == "viewer":
-        raise AppError(
-            "forbidden",
-            "Viewers have read-only access and cannot create the demo project.",
-            403,
-        )
-
-    from app.onboarding import ensure_demo_project  # noqa: PLC0415
-
-    result = await ensure_demo_project(org_id, user_id, repo=repo)
-    response.status_code = 201 if result["created"] else 200
-    return result
-
-
-@router.post("/{org_id}/demo-project/relocate")
-async def relocate_demo_project(
-    org_id: str,
-    user: dict[str, Any] = Depends(current_user),
-    repo: Repo = Depends(get_repo),
-) -> dict[str, Any]:
-    """Move any mis-placed demo bundle into the org's "Demo" project.
-
-    Remediation for environments where the demo bundle was previously seeded
-    into the user's Default/working project: this finds the sample-tagged rows
-    sitting outside the Demo project, removes that mis-placed bundle, and
-    re-seeds it cleanly into the Demo project (creating it if needed). See
-    ``app.onboarding.relocate_demo_to_demo_project``.
-
-    Role enforcement: owner/admin only — this rewrites org-wide demo content.
-    Idempotent: a no-op (``relocated=false``) once everything is in place.
-
-    Returns
-    -------
-    200 {relocated, removed, demo}
-    """
-    user_id = str(user["id"])
-    role = await get_org_role(user_id, org_id, repo)
-    if role is None:
-        raise AppError("not_found", "Org not found.", 404)
-    if role not in ("owner", "admin"):
-        raise AppError(
-            "forbidden",
-            "Only owners and admins can relocate the demo project.",
-            403,
-        )
-
-    from app.onboarding import relocate_demo_to_demo_project  # noqa: PLC0415
-
-    return await relocate_demo_to_demo_project(org_id, user_id, repo=repo)
 
 
 @router.patch("/{org_id}", response_model=OrgDetailResponse)

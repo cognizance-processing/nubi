@@ -79,7 +79,8 @@ export function AuthProvider({ children }) {
    * Register a new account.
    * Optional workspace fields (org_name, project_name, demo_project) are
    * passed straight through to POST /auth/register so the backend creates
-   * the user's first org/project (and the seeded Demo project) atomically.
+   * the user's first org/project (and, when demo_project is set, seeds the
+   * demo bundle INTO that single project) atomically.
    * @param {{ email: string, password: string, name: string, org_name?: string, project_name?: string, demo_project?: boolean }} fields
    */
   async function register({ email, password, name, org_name, project_name, demo_project }) {

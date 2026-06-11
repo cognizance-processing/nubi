@@ -1,22 +1,21 @@
-"""Seed the superuser, and optionally automate onboarding + the Demo project.
+"""Seed the superuser, and optionally automate onboarding + demo data.
 
 By default this creates the BARE superuser account only (argon2id hash,
 ``is_superadmin = true``) — no org, no project. On first login the superuser
 goes through the exact same /onboarding wizard as every other user (create
-org → "Default" project → optional Demo project).
+org → "Default" project → optional demo data).
 
 ``--demo`` automates that same onboarding flow for local dev and e2e (so a
 reset leaves a ready workspace without clicking through the wizard): it
-creates the personal org + EMPTY "Default" project via the same helper the
-/auth/register flow uses, then the org's deletable "Demo" project (identified
-by ``slug == 'demo'`` — see ``app/onboarding.py``) seeded with the demo
-bundle via the same shared helper used by POST /orgs/{org_id}/demo-project
-and the ``demo_project`` register flag. Nothing is ever seeded into the
-default project; demo content lives only in the Demo project.
+creates the personal org + "Default" project via the same helper the
+/auth/register flow uses, then seeds the removable demo bundle INTO that single
+default project (the same ``seed_sample_bundle`` the ``demo_project`` register
+flag and POST /projects/sample/restore use). There is NO separate "Demo"
+project — demo content lives in the default project the user works in.
 
 Usage:
     cd backend && DATABASE_URL=postgresql://... python seed.py           # bare superuser → onboarding wizard
-    cd backend && DATABASE_URL=postgresql://... python seed.py --demo    # + org/Default/Demo (dev & e2e)
+    cd backend && DATABASE_URL=postgresql://... python seed.py --demo    # + org/Default seeded with demo (dev & e2e)
 """
 
 from __future__ import annotations
@@ -67,7 +66,7 @@ async def _ensure_superuser() -> str:
 
 
 async def _ensure_workspace(user_id: str) -> None:
-    """Automate the onboarding flow: personal org + EMPTY "Default" project.
+    """Automate the onboarding flow: personal org + "Default" project.
 
     Idempotent — skipped when the user already belongs to an org. Uses the
     same ``_create_personal_org`` helper as /auth/register so the seeded
@@ -80,8 +79,18 @@ async def _ensure_workspace(user_id: str) -> None:
         await _create_personal_org(user_id, TEST_NAME, TEST_EMAIL, project_name="Default")
 
 
-async def _seed_demo_project(user_id: str) -> None:
-    """Create the superuser org's "Demo" project + demo bundle (idempotent)."""
+async def _seed_demo(user_id: str) -> None:
+    """Seed the demo bundle INTO the superuser org's default project (idempotent).
+
+    There is no separate "Demo" project — demo content lives in the org's single
+    default project, exactly like the onboarding "add demo data" path.
+    """
+    from app.repos import projects as projects_repo  # noqa: PLC0415
+    from app.sample import (  # noqa: PLC0415
+        checkpoint_and_promote_bundle,
+        seed_sample_bundle,
+    )
+
     org_row = await fetchrow(
         "SELECT org_id FROM org_members WHERE user_id = $1::uuid ORDER BY org_id LIMIT 1",
         user_id,
@@ -89,32 +98,21 @@ async def _seed_demo_project(user_id: str) -> None:
     assert org_row is not None, "Superuser has no org membership."
     org_id = str(org_row["org_id"])
 
-    from app.onboarding import (  # noqa: PLC0415
-        ensure_demo_project,
-        relocate_demo_to_demo_project,
-    )
+    project = await projects_repo.get_default_project(org_id)
+    assert project is not None, "Superuser org has no default project."
+    project_id = str(project["id"])
 
-    # Self-heal: move any demo bundle previously seeded into the Default/working
-    # project (older code paths) into the dedicated Demo project. Idempotent and
-    # best-effort — a no-op once everything already lives in the Demo project.
-    reloc = await relocate_demo_to_demo_project(org_id, user_id)
-    if reloc.get("relocated"):
-        print(f"  demo relocate  [MOVED   ]  removed misplaced bundle: {reloc.get('removed')!r}")
-
-    result = await ensure_demo_project(org_id, user_id)
-    project = result["project"]
-    status = "CREATED" if result["created"] else "exists "
-    seed = result["seed"] or {}
+    seed = await seed_sample_bundle(org_id, project_id, user_id)
     if "skipped" in seed:
         seed_note = f"bundle skipped: {seed['skipped']}"
     else:
-        seed_note = f"bundle created: {seed.get('created', [])!r}" if seed else "bundle: best-effort failure"
-    envs = seed.get("envs") or {}
-    if envs.get("checkpointed"):
-        seed_note += f"; checkpointed+promoted (dev+prod): {envs['checkpointed']!r}"
-    elif envs.get("skipped"):
-        seed_note += f"; env pinning skipped: {envs['skipped']}"
-    print(f"  demo project   [{status}]  {project.get('name')} ({project.get('id')}) — {seed_note}")
+        seed_note = f"bundle created: {seed.get('created', [])!r}"
+        envs = await checkpoint_and_promote_bundle(org_id, project_id, user_id)
+        if envs.get("checkpointed"):
+            seed_note += f"; checkpointed+promoted (dev+prod): {envs['checkpointed']!r}"
+        elif envs.get("skipped"):
+            seed_note += f"; env pinning skipped: {envs['skipped']}"
+    print(f"  demo data      [SEEDED ]  {project.get('name')} ({project_id}) — {seed_note}")
 
 
 async def main() -> None:
@@ -125,7 +123,7 @@ async def main() -> None:
         print(f"Superuser: {TEST_EMAIL} / {TEST_PASSWORD}")
         if demo:
             await _ensure_workspace(user_id)
-            await _seed_demo_project(user_id)
+            await _seed_demo(user_id)
         else:
             print("  no workspace seeded — superuser will go through /onboarding on first login")
     finally:

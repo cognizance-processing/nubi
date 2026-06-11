@@ -182,9 +182,9 @@ export default function Register() {
             className="mt-0.5 h-4 w-4 shrink-0 rounded border-border text-primary accent-[var(--color-primary,#2456a6)] focus:outline-none focus:ring-2 focus:ring-ring"
           />
           <span>
-            <span className="block text-sm font-medium text-fg">Include demo project</span>
+            <span className="block text-sm font-medium text-fg">Add demo data</span>
             <span className="block mt-0.5 text-xs text-muted">
-              Add a Demo project with sample dashboards &amp; data — you can delete it anytime.
+              Seed your project with sample dashboards &amp; data — you can remove it anytime.
             </span>
           </span>
         </label>

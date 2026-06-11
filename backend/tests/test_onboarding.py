@@ -1,27 +1,24 @@
-"""Tests for the Supabase-style onboarding backend.
+"""Tests for the Supabase-style onboarding backend (single-project demo model).
 
 Coverage
 --------
-POST /orgs/{org_id}/demo-project:
-1.  Creates a "Demo" project (slug 'demo'), seeds the demo bundle into it
-    (sample-tagged resources scoped to the Demo project) → 201, created=true.
-2.  Idempotent — second call returns the same project → 200, created=false,
-    and no duplicate resources are seeded.
-3.  Role enforcement — viewer → 403, non-member → 404.
-4.  The Demo project appears in GET /projects.
-5.  Deletable via the existing DELETE /projects/{id} when another project
-    exists → 204.
-6.  Blocked (409) only when it is the org's last project.
+POST /projects/sample/restore  (the way to add demo data to the ACTIVE project):
+1.  Seeds the demo bundle INTO the active/default project (sample-tagged rows
+    scoped to that project) → 200, no separate "Demo" project is created.
+2.  Idempotent — a second call reuses existing rows (no duplicates).
+3.  Honours X-Project-Id — seeds into the requested project.
+
+POST /projects/sample/remove:
+4.  Bulk-removes the sample-tagged rows from the active project.
+5.  No-op (all-zero / null) when nothing is seeded.
 
 POST /auth/register:
-7.  demo_project=true → 2 projects (named first project + "Demo") and the demo
-    bundle seeded into the Demo project only.
-8.  Without demo_project → exactly 1 EMPTY project (no sample-tagged
-    resources anywhere).
+6.  demo_project=true → exactly ONE project, with the demo bundle seeded into it.
+7.  Without demo_project → exactly ONE EMPTY project (no sample-tagged resources).
 
 Google OAuth new-user onboarding:
-9.  New OAuth user gets NO auto-created org/project (bare user only).
-10. Org-less user: GET /orgs → {"orgs": []} (no 500), GET /auth/me works,
+8.  New OAuth user gets NO auto-created org/project (bare user only).
+9.  Org-less user: GET /orgs → {"orgs": []} (no 500), GET /auth/me works,
     then POST /orgs (first org, no prior membership) → 201, then
     POST /projects → 201.
 
@@ -122,6 +119,11 @@ def _projects_patches(state: ProjectsState):
         if q.startswith("INSERT INTO PROJECTS"):
             pid, org_id, name, slug, created_by, _git = args
             return dict(state.add(str(org_id), str(name), str(slug), created_by, project_id=str(pid)))
+        if "SELECT 1 FROM PROJECTS WHERE ID" in q:
+            # project_belongs_to_org(project_id, org_id)
+            pid, org_id = str(args[0]), str(args[1])
+            row = state.projects.get(pid)
+            return {"exists": 1} if row and row["org_id"] == org_id else None
         if "SELECT 1 FROM PROJECTS" in q:
             org_id, slug = str(args[0]), str(args[1])
             for r in state.projects.values():
@@ -173,12 +175,12 @@ async def _sample_resource_counts(repo: InMemoryRepo, org_id: str) -> dict[str, 
 
 
 # ---------------------------------------------------------------------------
-# Fixture: client + owner user + org with a Default project
+# Fixture: client + owner user + org with a single default project
 # ---------------------------------------------------------------------------
 
 @pytest_asyncio.fixture
 async def onboard(app, fake_db):
-    """Yield (client, user_id, org_id, repo, state) for demo-project tests."""
+    """Yield (client, user_id, org_id, repo, state) for sample-bundle tests."""
     user_id = str(uuid.uuid4())
     org_id = str(uuid.uuid4())
     fake_db.users[user_id] = _user(user_id)
@@ -207,131 +209,102 @@ async def onboard(app, fake_db):
 
 
 # ---------------------------------------------------------------------------
-# POST /orgs/{org_id}/demo-project
+# POST /projects/sample/restore — seed demo INTO the active/default project
 # ---------------------------------------------------------------------------
 
-class TestDemoProjectEndpoint:
+class TestSampleRestoreSeedsActiveProject:
     @pytest.mark.asyncio
-    async def test_creates_and_seeds_demo_project(self, onboard):
+    async def test_seeds_default_project_no_separate_demo_project(self, onboard):
+        """Restore seeds the default project; it never creates a "Demo" project."""
         ac, user_id, org_id, repo, state = onboard
+        default_id = state.for_org(org_id)[0]["id"]
 
-        resp = await ac.post(f"/api/v1/orgs/{org_id}/demo-project", headers=_auth(user_id))
-
-        assert resp.status_code == 201, resp.text
-        body = resp.json()
-        assert body["created"] is True
-        project = body["project"]
-        assert project["name"] == "Demo"
-        assert project["slug"] == "demo"
-        assert project["org_id"] == org_id
-        assert project["id"] in state.projects
-
-        # The demo bundle is seeded INTO the Demo project, sample-tagged.
-        datastores = await repo.list("datastores", org_id)
-        assert datastores, "demo bundle was not seeded"
-        for kind in ("datastores", "queries", "boards"):
-            for row in await repo.list(kind, org_id):
-                assert row["config"].get("sample") is True
-                assert str(row["project_id"]) == str(project["id"])
-
-    @pytest.mark.asyncio
-    async def test_idempotent_second_call_returns_existing(self, onboard):
-        ac, user_id, org_id, repo, state = onboard
-
-        first = await ac.post(f"/api/v1/orgs/{org_id}/demo-project", headers=_auth(user_id))
-        assert first.status_code == 201
-        counts_after_first = await _sample_resource_counts(repo, org_id)
-
-        second = await ac.post(f"/api/v1/orgs/{org_id}/demo-project", headers=_auth(user_id))
-        assert second.status_code == 200, second.text
-        body = second.json()
-        assert body["created"] is False
-        assert body["project"]["id"] == first.json()["project"]["id"]
-
-        # No duplicate projects, no duplicate seeded resources.
-        assert len([p for p in state.for_org(org_id) if p["slug"] == "demo"]) == 1
-        assert await _sample_resource_counts(repo, org_id) == counts_after_first
-
-    @pytest.mark.asyncio
-    async def test_viewer_gets_403(self, onboard, fake_db):
-        ac, _user_id, org_id, repo, _state = onboard
-        viewer_id = str(uuid.uuid4())
-        fake_db.users[viewer_id] = _user(viewer_id, "viewer@example.com")
-        repo.seed_org_member(org_id, viewer_id, role="viewer")
-
-        resp = await ac.post(f"/api/v1/orgs/{org_id}/demo-project", headers=_auth(viewer_id))
-        assert resp.status_code == 403
-
-    @pytest.mark.asyncio
-    async def test_non_member_gets_404(self, onboard, fake_db):
-        ac, _user_id, org_id, _repo, _state = onboard
-        outsider_id = str(uuid.uuid4())
-        fake_db.users[outsider_id] = _user(outsider_id, "outsider@example.com")
-
-        resp = await ac.post(f"/api/v1/orgs/{org_id}/demo-project", headers=_auth(outsider_id))
-        assert resp.status_code == 404
-
-    @pytest.mark.asyncio
-    async def test_demo_project_appears_in_project_list(self, onboard):
-        ac, user_id, org_id, _repo, _state = onboard
-        created = await ac.post(f"/api/v1/orgs/{org_id}/demo-project", headers=_auth(user_id))
-        demo_id = created.json()["project"]["id"]
-
-        resp = await ac.get("/api/v1/projects", headers=_auth(user_id))
+        resp = await ac.post("/api/v1/projects/sample/restore", headers=_auth(user_id))
         assert resp.status_code == 200, resp.text
-        ids = [p["id"] for p in resp.json()]
-        names = [p["name"] for p in resp.json()]
-        assert demo_id in ids
-        assert "Demo" in names
+        body = resp.json()
+        assert body["project_id"] == default_id
+
+        # No second project was created — still exactly the one default project.
+        assert len(state.for_org(org_id)) == 1
+        assert not any(p["slug"] == "demo" for p in state.for_org(org_id))
+
+        # The demo bundle landed in the default project, sample-tagged.
+        for kind in ("datastores", "queries", "boards"):
+            rows = await repo.list(kind, org_id)
+            assert rows, f"no {kind} seeded"
+            for row in rows:
+                assert row["config"].get("sample") is True
+                assert str(row["project_id"]) == str(default_id)
 
     @pytest.mark.asyncio
-    async def test_demo_project_deletable_when_not_last(self, onboard):
-        ac, user_id, org_id, _repo, state = onboard
-        created = await ac.post(f"/api/v1/orgs/{org_id}/demo-project", headers=_auth(user_id))
-        demo_id = created.json()["project"]["id"]
-        assert len(state.for_org(org_id)) == 2  # Default + Demo
+    async def test_restore_is_idempotent(self, onboard):
+        ac, user_id, org_id, repo, state = onboard
+        first = await ac.post("/api/v1/projects/sample/restore", headers=_auth(user_id))
+        assert first.status_code == 200
+        counts = await _sample_resource_counts(repo, org_id)
 
-        resp = await ac.request(
-            "DELETE",
-            f"/api/v1/projects/{demo_id}",
-            headers=_auth(user_id),
-            json={"confirm_name": "Demo"},
-        )
-        assert resp.status_code == 204, resp.text
-        assert demo_id not in state.projects
-
-    @pytest.mark.asyncio
-    async def test_demo_project_delete_blocked_only_when_last(self, onboard, fake_db):
-        """In an org whose ONLY project is Demo, deletion → 409 (last-project rule)."""
-        ac, _u, _o, repo, state = onboard
-        user_id = str(uuid.uuid4())
-        org_id = str(uuid.uuid4())  # fresh org with NO Default project
-        fake_db.users[user_id] = _user(user_id, "solo@example.com")
-        repo.seed_org_member(org_id, user_id, role="owner")
-
-        created = await ac.post(f"/api/v1/orgs/{org_id}/demo-project", headers=_auth(user_id))
-        assert created.status_code == 201, created.text
-        demo_id = created.json()["project"]["id"]
+        second = await ac.post("/api/v1/projects/sample/restore", headers=_auth(user_id))
+        assert second.status_code == 200
+        assert await _sample_resource_counts(repo, org_id) == counts
+        # No extra project created on the second call either.
         assert len(state.for_org(org_id)) == 1
 
-        resp = await ac.request(
-            "DELETE",
-            f"/api/v1/projects/{demo_id}",
-            headers={**_auth(user_id), "X-Org-Id": org_id},
-            json={"confirm_name": "Demo"},
-        )
-        assert resp.status_code == 409, resp.text
-        assert resp.json()["error"]["code"] == "cannot_delete_last_project"
-        assert demo_id in state.projects  # still there
-
-
-# ---------------------------------------------------------------------------
-# POST /auth/register with/without demo_project
-# ---------------------------------------------------------------------------
-
-class TestRegisterDemoProject:
     @pytest.mark.asyncio
-    async def test_register_with_demo_project_creates_two_projects(self, client, fake_db):
+    async def test_restore_honours_x_project_id(self, onboard):
+        """When X-Project-Id targets a second project, the bundle seeds there."""
+        ac, user_id, org_id, repo, state = onboard
+        second = state.add(org_id, "Analytics", "analytics", user_id)
+
+        resp = await ac.post(
+            "/api/v1/projects/sample/restore",
+            headers={**_auth(user_id), "X-Project-Id": second["id"]},
+        )
+        assert resp.status_code == 200, resp.text
+        assert resp.json()["project_id"] == second["id"]
+
+        for kind in ("datastores", "queries", "boards"):
+            for row in await repo.list(kind, org_id):
+                assert str(row["project_id"]) == str(second["id"])
+
+
+# ---------------------------------------------------------------------------
+# POST /projects/sample/remove — remove demo from the active project
+# ---------------------------------------------------------------------------
+
+class TestSampleRemove:
+    @pytest.mark.asyncio
+    async def test_remove_clears_active_project(self, onboard):
+        ac, user_id, org_id, repo, state = onboard
+        default_id = state.for_org(org_id)[0]["id"]
+        await ac.post("/api/v1/projects/sample/restore", headers=_auth(user_id))
+        assert await repo.list("datastores", org_id)
+
+        resp = await ac.post("/api/v1/projects/sample/remove", headers=_auth(user_id))
+        assert resp.status_code == 200, resp.text
+        assert resp.json()["project_id"] == default_id
+        assert await repo.list("datastores", org_id) == []
+        assert await repo.list("queries", org_id) == []
+        assert await repo.list("boards", org_id) == []
+
+    @pytest.mark.asyncio
+    async def test_remove_without_bundle_is_noop(self, onboard):
+        ac, user_id, org_id, _repo, state = onboard
+        default_id = state.for_org(org_id)[0]["id"]
+        resp = await ac.post("/api/v1/projects/sample/remove", headers=_auth(user_id))
+        assert resp.status_code == 200, resp.text
+        body = resp.json()
+        assert body["project_id"] == default_id
+        # All-zero counts — nothing was seeded.
+        assert all(v == 0 for v in body["removed"].values())
+
+
+# ---------------------------------------------------------------------------
+# POST /auth/register with/without demo_project (single-project model)
+# ---------------------------------------------------------------------------
+
+class TestRegisterDemoData:
+    @pytest.mark.asyncio
+    async def test_register_with_demo_seeds_single_project(self, client, fake_db):
         repo = InMemoryRepo()
         set_repo(repo)
         state = ProjectsState()
@@ -356,23 +329,21 @@ class TestRegisterDemoProject:
 
         assert resp.status_code == 201, resp.text
         projects = list(state.projects.values())
-        assert len(projects) == 2
-        assert sorted(p["name"] for p in projects) == ["Demo", "Main"]
+        # Exactly ONE project — no separate "Demo" project.
+        assert len(projects) == 1
+        assert projects[0]["name"] == "Main"
 
         org_id = projects[0]["org_id"]
-        demo = next(p for p in projects if p["name"] == "Demo")
-        assert demo["slug"] == "demo"
-
-        # The demo bundle was seeded into the Demo project only.
+        # The demo bundle was seeded INTO that single project.
         datastores = await repo.list("datastores", org_id)
         assert datastores, "demo bundle was not seeded"
         for kind in ("datastores", "queries", "boards"):
             for row in await repo.list(kind, org_id):
                 assert row["config"].get("sample") is True
-                assert str(row["project_id"]) == str(demo["id"])
+                assert str(row["project_id"]) == str(projects[0]["id"])
 
     @pytest.mark.asyncio
-    async def test_register_without_demo_project_creates_one_empty_project(self, client, fake_db):
+    async def test_register_without_demo_creates_one_empty_project(self, client, fake_db):
         repo = InMemoryRepo()
         set_repo(repo)
         state = ProjectsState()
@@ -434,146 +405,6 @@ def _orgs_route_patches(fake_db):
         patch("app.routes.orgs.execute", side_effect=fake_db.fake_execute),
         patch("app.routes.orgs.fetchrow", side_effect=fake_db.fake_fetchrow),
     ]
-
-
-class TestSampleRestoreTargetsDemo:
-    @pytest.mark.asyncio
-    async def test_restore_seeds_demo_project_not_active(self, onboard):
-        """POST /sample/restore seeds the Demo project, never the Default one."""
-        ac, user_id, org_id, repo, state = onboard
-        default_id = state.for_org(org_id)[0]["id"]
-
-        resp = await ac.post("/api/v1/projects/sample/restore", headers=_auth(user_id))
-        assert resp.status_code == 200, resp.text
-
-        # A Demo project (slug 'demo') was created and the bundle landed there.
-        demo = next((p for p in state.for_org(org_id) if p["slug"] == "demo"), None)
-        assert demo is not None, "restore did not create the Demo project"
-        assert resp.json()["project"]["id"] == demo["id"]
-
-        for kind in ("datastores", "queries", "boards"):
-            rows = await repo.list(kind, org_id)
-            assert rows, f"no {kind} seeded"
-            for row in rows:
-                assert row["config"].get("sample") is True
-                assert str(row["project_id"]) == str(demo["id"])
-                assert str(row["project_id"]) != str(default_id)
-
-    @pytest.mark.asyncio
-    async def test_restore_is_idempotent(self, onboard):
-        ac, user_id, org_id, repo, state = onboard
-        first = await ac.post("/api/v1/projects/sample/restore", headers=_auth(user_id))
-        assert first.status_code == 200
-        counts = await _sample_resource_counts(repo, org_id)
-
-        second = await ac.post("/api/v1/projects/sample/restore", headers=_auth(user_id))
-        assert second.status_code == 200
-        assert await _sample_resource_counts(repo, org_id) == counts
-        assert len([p for p in state.for_org(org_id) if p["slug"] == "demo"]) == 1
-
-    @pytest.mark.asyncio
-    async def test_remove_targets_demo_project(self, onboard):
-        ac, user_id, org_id, repo, _state = onboard
-        await ac.post("/api/v1/projects/sample/restore", headers=_auth(user_id))
-        assert await repo.list("datastores", org_id)
-
-        resp = await ac.post("/api/v1/projects/sample/remove", headers=_auth(user_id))
-        assert resp.status_code == 200, resp.text
-        assert await repo.list("datastores", org_id) == []
-        assert await repo.list("queries", org_id) == []
-        assert await repo.list("boards", org_id) == []
-
-    @pytest.mark.asyncio
-    async def test_remove_without_demo_project_is_noop(self, onboard):
-        ac, user_id, _org_id, _repo, _state = onboard
-        resp = await ac.post("/api/v1/projects/sample/remove", headers=_auth(user_id))
-        assert resp.status_code == 200, resp.text
-        assert resp.json() == {"removed": {}, "project_id": None}
-
-
-class TestRelocateDemoToDemoProject:
-    @pytest.mark.asyncio
-    async def test_relocates_default_seeded_bundle_into_demo(self, onboard):
-        """A bundle wrongly seeded into the Default project moves into Demo."""
-        from app.onboarding import relocate_demo_to_demo_project
-        from app.sample import seed_sample_bundle
-
-        _ac, user_id, org_id, repo, state = onboard
-        default_id = str(state.for_org(org_id)[0]["id"])
-
-        # Simulate the pollution: bundle seeded into the Default project.
-        await seed_sample_bundle(org_id, default_id, user_id, repo=repo)
-        for kind in ("datastores", "queries", "boards"):
-            for row in await repo.list(kind, org_id):
-                assert str(row["project_id"]) == default_id
-
-        result = await relocate_demo_to_demo_project(org_id, user_id, repo=repo)
-        assert result["relocated"] is True
-
-        demo = next(p for p in state.for_org(org_id) if p["slug"] == "demo")
-        # Every sample row now lives in the Demo project — none left in Default.
-        for kind in ("datastores", "queries", "boards"):
-            rows = await repo.list(kind, org_id)
-            assert rows
-            for row in rows:
-                assert str(row["project_id"]) == str(demo["id"])
-                assert str(row["project_id"]) != default_id
-
-    @pytest.mark.asyncio
-    async def test_relocate_is_idempotent(self, onboard):
-        from app.onboarding import relocate_demo_to_demo_project
-        from app.sample import seed_sample_bundle
-
-        _ac, user_id, org_id, repo, state = onboard
-        default_id = str(state.for_org(org_id)[0]["id"])
-        await seed_sample_bundle(org_id, default_id, user_id, repo=repo)
-
-        first = await relocate_demo_to_demo_project(org_id, user_id, repo=repo)
-        assert first["relocated"] is True
-        counts = await _sample_resource_counts(repo, org_id)
-
-        # Second run: nothing misplaced → no-op, no duplicates.
-        second = await relocate_demo_to_demo_project(org_id, user_id, repo=repo)
-        assert second["relocated"] is False
-        assert await _sample_resource_counts(repo, org_id) == counts
-        assert len([p for p in state.for_org(org_id) if p["slug"] == "demo"]) == 1
-
-    @pytest.mark.asyncio
-    async def test_relocate_when_already_clean_only_ensures_demo(self, onboard):
-        from app.onboarding import relocate_demo_to_demo_project
-
-        _ac, user_id, org_id, repo, state = onboard
-        result = await relocate_demo_to_demo_project(org_id, user_id, repo=repo)
-        assert result["relocated"] is False
-        demo = next(p for p in state.for_org(org_id) if p["slug"] == "demo")
-        for row in await repo.list("datastores", org_id):
-            assert str(row["project_id"]) == str(demo["id"])
-
-    @pytest.mark.asyncio
-    async def test_relocate_is_tenant_scoped(self, onboard, fake_db):
-        """Relocating org A's demo never touches org B's resources."""
-        from app.onboarding import relocate_demo_to_demo_project
-        from app.sample import seed_sample_bundle
-
-        _ac, user_a, org_a, repo, state = onboard
-        default_a = str(state.for_org(org_a)[0]["id"])
-
-        # Second tenant with its own polluted Default project.
-        user_b = str(uuid.uuid4())
-        org_b = str(uuid.uuid4())
-        fake_db.users[user_b] = _user(user_b, "tenant-b@example.com")
-        repo.seed_org_member(org_b, user_b, role="owner")
-        default_b = state.add(org_b, "Default", "default", user_b)["id"]
-        await seed_sample_bundle(org_b, str(default_b), user_b, repo=repo)
-
-        # Relocate ONLY org A.
-        await seed_sample_bundle(org_a, default_a, user_a, repo=repo)
-        await relocate_demo_to_demo_project(org_a, user_a, repo=repo)
-
-        # Org B is untouched: still no Demo project, bundle still in its Default.
-        assert not any(p["slug"] == "demo" for p in state.for_org(org_b))
-        for row in await repo.list("datastores", org_b):
-            assert str(row["project_id"]) == str(default_b)
 
 
 class TestOAuthOrglessOnboarding:

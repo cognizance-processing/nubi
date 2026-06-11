@@ -566,16 +566,27 @@ export async function getMyInvites() {
 }
 
 /**
- * Idempotently create + seed the "Demo" project (sample dashboards, queries
- * and a datastore) in the given org.
+ * (Re-)seed the removable demo bundle (sample dashboards, queries and a
+ * datastore) INTO the active project — there is no separate "Demo" project.
+ * Scoped to the active project via the X-Project-Id header. Idempotent.
  *
- * POST /api/v1/orgs/{orgId}/demo-project
+ * POST /api/v1/projects/sample/restore
  *
- * @param {string} orgId
- * @returns {Promise<{ project: Object, created: boolean, seed: Object }>}
+ * @returns {Promise<{ project_id: string|null, seed: Object }>}
  */
-export function createDemoProject(orgId) {
-  return post(`/orgs/${orgId}/demo-project`)
+export function restoreSample() {
+  return post('/projects/sample/restore')
+}
+
+/**
+ * Bulk-remove every sample-tagged resource from the active project.
+ *
+ * POST /api/v1/projects/sample/remove
+ *
+ * @returns {Promise<{ removed: Object, project_id: string|null }>}
+ */
+export function removeSample() {
+  return post('/projects/sample/remove')
 }
 
 // ---------------------------------------------------------------------------

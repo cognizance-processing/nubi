@@ -133,8 +133,9 @@ async def create_project(
 ) -> dict[str, Any]:
     """Create a new project in the caller's org (slug unique per org).
 
-    New projects start EMPTY — demo content lives only in the org's optional
-    "Demo" project (POST /orgs/{org_id}/demo-project).
+    New projects start EMPTY — demo content is seeded into a project only when
+    the user opts in (onboarding, or POST /projects/sample/restore for the
+    active project).
     """
     name = body.name.strip()
     if not name:
@@ -391,22 +392,21 @@ async def remove_sample(
     user: dict[str, Any] = Depends(current_user),
     repo: Repo = Depends(get_repo),
 ) -> dict[str, Any]:
-    """Bulk-remove every ``sample=true`` resource from the org's Demo project.
+    """Bulk-remove every ``sample=true`` resource from the ACTIVE project.
 
-    Demo content lives ONLY in the dedicated "Demo" project (slug ``demo``), so
-    remove is scoped there — never the user's working/Default project. If the
-    org has no Demo project, this is a no-op (all-zero counts). Idempotent.
+    Demo content lives in the user's working project, so remove is scoped to
+    the active project (``X-Project-Id`` else the org's default). If no project
+    can be resolved this is a no-op (all-zero counts). Idempotent.
     """
-    from app.onboarding import find_demo_project  # noqa: PLC0415
+    from app.routes._org import resolve_project_filter  # noqa: PLC0415
     from app.sample import remove_sample_bundle  # noqa: PLC0415
 
     org_id = await _resolve_org_id(str(user["id"]), repo, request)
-    demo = await find_demo_project(org_id)
-    if demo is None:
+    project_id = await resolve_project_filter(org_id, request)
+    if project_id is None:
         return {"removed": {}, "project_id": None}
-    project_id = str(demo["id"])
-    counts = await remove_sample_bundle(org_id, project_id, repo)
-    return {"removed": counts, "project_id": project_id}
+    counts = await remove_sample_bundle(org_id, str(project_id), repo)
+    return {"removed": counts, "project_id": str(project_id)}
 
 
 @router.post("/sample/restore")
@@ -415,17 +415,34 @@ async def restore_sample(
     user: dict[str, Any] = Depends(current_user),
     repo: Repo = Depends(get_repo),
 ) -> dict[str, Any]:
-    """Re-seed the onboarding sample bundle into the org's Demo project.
+    """(Re-)seed the onboarding sample bundle into the ACTIVE project.
 
-    Demo content lives ONLY in the dedicated "Demo" project (slug ``demo``);
-    restore therefore (re-)creates that project and seeds the bundle there —
-    never the user's working/Default project. Idempotent — re-running when the
-    bundle still exists is a no-op (existing rows reused, nothing duplicated).
+    Demo content lives in the user's working project (``X-Project-Id`` else the
+    org's default) — there is no separate "Demo" project. Idempotent: re-running
+    when the bundle still exists reuses the existing rows (nothing duplicated).
+    The bundle is also checkpointed + promoted into dev/prod so it works
+    end-to-end under strict protected-env visibility.
     """
-    from app.onboarding import ensure_demo_project  # noqa: PLC0415
+    from app.routes._org import resolve_project_filter  # noqa: PLC0415
+    from app.sample import (  # noqa: PLC0415
+        checkpoint_and_promote_bundle,
+        seed_sample_bundle,
+    )
 
     org_id = await _resolve_org_id(str(user["id"]), repo, request)
-    return await ensure_demo_project(org_id, str(user["id"]), repo=repo)
+    project_id = await resolve_project_filter(org_id, request)
+    seed = await seed_sample_bundle(
+        org_id, str(project_id) if project_id is not None else None,
+        str(user["id"]), repo=repo,
+    )
+    if project_id is not None and "skipped" not in seed:
+        try:
+            seed["envs"] = await checkpoint_and_promote_bundle(
+                org_id, str(project_id), str(user["id"]), repo=repo,
+            )
+        except Exception:  # noqa: BLE001 — never fail restore on env pinning
+            pass
+    return {"project_id": str(project_id) if project_id is not None else None, "seed": seed}
 
 
 # ── Register on the shared api_router ─────────────────────────────────────────

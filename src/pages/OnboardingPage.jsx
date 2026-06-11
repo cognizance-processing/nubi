@@ -9,8 +9,9 @@
  * Two paths out:
  *   1. Accept a pending invite → acceptInvite(token), persist the org id and
  *      hard-redirect to /home so OrgContext/ProjectContext refetch.
- *   2. Create a workspace → POST /orgs → POST /projects {name} → optional
- *      POST /orgs/{id}/demo-project → hard-redirect to /home.
+ *   2. Create a workspace → POST /orgs → POST /projects {name} → optionally
+ *      seed the demo bundle INTO that project (POST /projects/sample/restore,
+ *      scoped via X-Project-Id) → hard-redirect to /home.
  *
  * Users who already belong to an org are bounced straight to /home.
  */
@@ -127,10 +128,16 @@ export default function OnboardingPage() {
       api.setActiveOrgId(org.id)
 
       const project = await api.createProject(project_name)
-      if (project?.id) saveActiveProjectId(org.id, project.id)
+      if (project?.id) {
+        saveActiveProjectId(org.id, project.id)
+        // Scope subsequent calls (the demo seed) to the project just created.
+        api.setActiveProjectId(project.id)
+      }
 
       if (demoProject) {
-        await api.createDemoProject(org.id)
+        // Seed the removable demo bundle INTO this single project — no separate
+        // "Demo" project. X-Project-Id (set above) targets the new project.
+        await api.restoreSample()
       }
 
       // Hard navigation so OrgContext/ProjectContext refetch from scratch.
@@ -309,11 +316,11 @@ export default function OnboardingPage() {
                   </div>
 
                   <label
-                    htmlFor="ob-demo-project"
+                    htmlFor="ob-demo-data"
                     className="flex items-start gap-3 rounded-xl border border-border bg-bg px-4 py-3 cursor-pointer hover:bg-surface-2 transition-colors"
                   >
                     <input
-                      id="ob-demo-project"
+                      id="ob-demo-data"
                       type="checkbox"
                       checked={demoProject}
                       onChange={(e) => setDemoProject(e.target.checked)}
@@ -321,9 +328,9 @@ export default function OnboardingPage() {
                       className="mt-0.5 h-4 w-4 shrink-0 rounded border-border text-primary accent-[var(--color-primary,#2456a6)] focus:outline-none focus:ring-2 focus:ring-ring"
                     />
                     <span>
-                      <span className="block text-sm font-medium text-fg">Include demo project</span>
+                      <span className="block text-sm font-medium text-fg">Add demo data</span>
                       <span className="block mt-0.5 text-xs text-muted">
-                        Add a Demo project with sample dashboards &amp; data — you can delete it anytime.
+                        Seed your project with sample dashboards &amp; data — you can remove it anytime.
                       </span>
                     </span>
                   </label>
