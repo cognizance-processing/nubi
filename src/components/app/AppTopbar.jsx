@@ -201,7 +201,9 @@ export default function AppTopbar({ onMobileMenuOpen }) {
 
       {/* ── Right: AI chat toggle + user avatar (far right) ── */}
       <div className="flex items-center gap-2 shrink-0">
-        {/* Hide global chat button when the current page owns chat (e.g. editor) */}
+        {/* Mobile-only chat toggle. On desktop (md+) the chat toggle lives in the
+            persistent right-edge rail (AppRightRail) alongside Git/Versions, so
+            the rail is the single RHS switcher and we avoid a duplicate button. */}
         {!pageOwnsChat && (
           <button
             onClick={toggleChat}
@@ -209,7 +211,7 @@ export default function AppTopbar({ onMobileMenuOpen }) {
             aria-pressed={chatOpen}
             data-testid="global-chat-btn"
             className={`
-              flex items-center justify-center w-9 h-9 rounded-lg
+              md:hidden flex items-center justify-center w-9 h-9 rounded-lg
               border border-border
               transition-colors duration-150
               focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-1

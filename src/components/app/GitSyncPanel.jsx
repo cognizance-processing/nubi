@@ -435,7 +435,7 @@ export default function GitSyncPanel({ projectId, open, onClose, envId }) {
               {/* Active environment + Push/Pull */}
               <div className="rounded-xl border border-border bg-surface-2/40 px-4 py-3.5 space-y-3">
                 <div className="flex items-center gap-2">
-                  <span className="text-xs font-medium text-muted">Active environment</span>
+                  <span className="text-[11px] font-semibold uppercase tracking-wide text-muted">Sync</span>
                   {envKey ? (
                     <span className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full bg-surface border border-border text-[11px] font-mono text-fg">
                       <span className={`w-1.5 h-1.5 rounded-full ${envDotClass(envKey)}`} />
@@ -452,14 +452,13 @@ export default function GitSyncPanel({ projectId, open, onClose, envId }) {
                     graph to sync a specific environment branch.
                   </p>
                 ) : (
-                  <div className="flex flex-wrap gap-2">
+                  <div className="grid grid-cols-2 gap-2">
                     <button
                       type="button"
                       onClick={handlePush}
                       disabled={!canSync}
                       title={`Push pinned ${envKey ?? 'env'} resources to its branch`}
-                      className="inline-flex items-center gap-2 px-3.5 py-2 rounded-xl text-sm font-medium text-white transition-opacity disabled:opacity-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/60"
-                      style={{ background: 'linear-gradient(135deg, #2456a6, #17b3a3)' }}
+                      className="inline-flex items-center justify-center gap-2 px-3.5 py-2 rounded-xl text-sm font-semibold bg-primary text-primary-fg hover:bg-primary/90 transition-colors disabled:opacity-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/60"
                     >
                       {busy === 'push' ? (
                         <Loader2 size={15} className="animate-spin" />
@@ -473,7 +472,7 @@ export default function GitSyncPanel({ projectId, open, onClose, envId }) {
                       onClick={() => handlePull()}
                       disabled={!canSync}
                       title={`Pull this environment's branch into ${envKey ?? 'env'}`}
-                      className="inline-flex items-center gap-2 px-3.5 py-2 rounded-xl text-sm font-medium text-fg bg-bg border border-border hover:border-primary transition-colors disabled:opacity-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/60"
+                      className="inline-flex items-center justify-center gap-2 px-3.5 py-2 rounded-xl text-sm font-medium text-fg bg-surface border border-border hover:border-primary hover:bg-surface-2 transition-colors disabled:opacity-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/60"
                     >
                       {busy === 'pull' ? (
                         <Loader2 size={15} className="animate-spin" />
