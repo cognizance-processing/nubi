@@ -188,6 +188,11 @@ import app.routes.admin  # noqa: F401, E402
 # generic /{resource} catch-all in resources.py.
 import app.routes.environments  # noqa: F401, E402
 
+# Import metrics route (semantic layer) so it registers itself on api_router at
+# import time — BEFORE resources so /metrics/{id} lands ahead of the generic
+# /{resource} catch-all in resources.py.
+import app.routes.metrics  # noqa: F401, E402
+
 # Import resources route so it registers itself on api_router at import time.
 import app.routes.resources  # noqa: F401, E402
 
@@ -217,6 +222,7 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
     """
     from app.flows.runtime import start_flow_worker, stop_flow_worker
     from app.jobs.runtime import start_scheduler, stop_scheduler
+    from app.metrics.registry import load_persisted_metrics
     from app.queries.registry import load_persisted_queries
 
     await init_db()
@@ -225,6 +231,11 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
     # registry so that dashboard widgets referencing only a query_id execute
     # against their bound datastore.  Best-effort: never crashes startup.
     await load_persisted_queries()
+
+    # Load persisted metrics (from the `metrics` table) into the runtime metric
+    # registry so the semantic layer is available from the first request.
+    # Best-effort: never crashes startup (mirror of the queries hook above).
+    await load_persisted_metrics()
 
     settings = get_settings()
     if settings.JOBS_SCHEDULER_ENABLED:

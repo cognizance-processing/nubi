@@ -656,6 +656,191 @@ def _preview_widget(
     return {"columns": list(columns), "rows": rows, "row_count": total_rows}
 
 
+def _metric_registry() -> Any:
+    """Return the metrics registry singleton, adapting to its accessor name.
+
+    ``app/metrics/registry.py`` is owned by another agent and mirrors
+    ``QueryRegistry`` (``get_metric_registry()`` → registry with ``all()`` /
+    ``get(id)`` / ``register(...)``). We import the factory here so the in-process
+    metric tools reach the same singleton the backend routes use.
+    """
+    from app.metrics.registry import get_metric_registry  # noqa: PLC0415
+
+    return get_metric_registry()
+
+
+def _metric_to_dict(md: Any) -> dict[str, Any]:
+    """Serialise a ``MetricDefinition`` to the agent-facing summary shape.
+
+    ``{id, name, measure:{name,agg,expr}, dimensions:[name...], time_grains:[...],
+    description}`` — the same shape ``/ai/context`` emits, so an agent sees a
+    consistent view across HTTP + MCP.
+    """
+    return {
+        "id": md.id,
+        "name": md.name,
+        "measure": {
+            "name": md.measure.name,
+            "agg": md.measure.agg,
+            "expr": md.measure.expr,
+        },
+        "dimensions": [d.name for d in md.dimensions],
+        "time_grains": list(md.time_dimension.grains) if md.time_dimension else [],
+        "description": md.description,
+    }
+
+
+def _list_metrics() -> list[dict[str, Any]]:
+    """Return all registered governed metrics as summary dicts.
+
+    Reads the in-process metrics registry singleton (mirrors ``list_dashboards``
+    over the query registry). Each entry is
+    ``{id, name, measure, dimensions, time_grains, description}``. Use the ``id``
+    with ``query_metric`` to run a governed aggregation; you may only group by the
+    listed ``dimensions`` and bucket by one of the listed ``time_grains``.
+
+    Returns
+    -------
+    list[dict]
+        One summary dict per registered metric (insertion order).
+    """
+    registry = _metric_registry()
+    accessor = getattr(registry, "all", None) or getattr(registry, "list", None)
+    metrics = list(accessor()) if callable(accessor) else []
+    return [_metric_to_dict(md) for md in metrics]
+
+
+def _query_metric(
+    metric_id: str,
+    dimensions: "list[str] | None" = None,
+    time_grain: "str | None" = None,
+    filters: "list[dict[str, Any]] | None" = None,
+    limit: "int | None" = None,
+) -> dict[str, Any]:
+    """Query a GOVERNED metric: group by allowed dims + grain, filtered, executed.
+
+    Builds a :class:`~app.metrics.models.MetricQuery` from the arguments
+    (``MetricQuery.from_dict``), compiles it to SQL via
+    ``app.metrics.compile.compile_metric`` (which ENFORCES governance: every
+    dimension must be one of the metric's allowed dimensions, every filter field
+    an allowed dim or the time column, and ``time_grain`` an allowed grain — a
+    violation raises ``MetricError`` → ``{ok:false, error}``), then EXECUTES the
+    compiled SQL through the same self-contained in-memory DuckDB path
+    ``run_query``/``preview_widget`` use (``planner.plan`` → ``DuckDBConnector``)
+    and returns the rows.
+
+    Governance, not validity, is the point: an agent answers from the metric's
+    definition instead of hand-writing SQL, so two answers can't silently disagree.
+
+    Transport note: like the other execution tools, this does NOT apply per-org
+    RLS rewrites (there is no org/claims context in-process). If compilation
+    succeeds but execution is impractical for a given metric (e.g. its
+    ``base_table`` is not present in the in-memory DuckDB), the error is surfaced
+    in ``{ok:false, error}`` so the agent can fall back to the dry-SQL form via
+    POST /metrics/{id}/sql.
+
+    Parameters
+    ----------
+    metric_id:
+        Id of a registered metric (discover via ``list_metrics``).
+    dimensions:
+        Subset of the metric's allowed dimension names to group by. ``None`` →
+        no extra grouping (just the measure, plus the time bucket if a grain is
+        given).
+    time_grain:
+        One of the metric's allowed grains (``hour|day|week|month|quarter|year``)
+        to bucket the time dimension by. ``None`` → no time bucketing.
+    filters:
+        List of ``{field, op, value}`` dicts on allowed dims / the time column.
+        ``value`` is bound as a parameter (never concatenated).
+    limit:
+        Optional row cap applied in the compiled SQL.
+
+    Returns
+    -------
+    dict
+        On success: ``{ok: true, columns, rows, row_count, sql}`` — the executed
+        result plus the compiled SQL for transparency.
+        On a governance violation: ``{ok: false, error: {code, message}}``.
+    """
+    from app.metrics.models import MetricError, MetricQuery  # noqa: PLC0415
+
+    registry = _metric_registry()
+    md = registry.get(metric_id)
+    if md is None:
+        accessor = getattr(registry, "all", None) or getattr(registry, "list", None)
+        known = [m.id for m in (accessor() if callable(accessor) else [])]
+        return {
+            "ok": False,
+            "error": {
+                "code": "unknown_metric",
+                "message": f"Unknown metric_id {metric_id!r}. Known ids: {known}",
+            },
+        }
+
+    mq = MetricQuery.from_dict(
+        {
+            "metric_id": metric_id,
+            "dimensions": dimensions or [],
+            "time_grain": time_grain,
+            "filters": filters or [],
+            "limit": limit,
+        }
+    )
+
+    # ── Compile (governs dims/filters/grain) → (sql, params) ──────────────────
+    try:
+        from app.metrics.compile import compile_metric  # noqa: PLC0415
+
+        sql, params = compile_metric(md, mq, dialect="duckdb")
+    except MetricError as exc:
+        return {"ok": False, "error": {"code": exc.code, "message": exc.message}}
+
+    # ── Execute through the same in-memory DuckDB path run_query uses ─────────
+    from app.connectors import planner  # noqa: PLC0415
+    from app.connectors.duckdb_conn import DuckDBConnector  # noqa: PLC0415
+
+    try:
+        connector = DuckDBConnector()
+        physical_plan = planner.plan(sql, dialect="duckdb", params=params or None)
+        table = connector.execute(physical_plan)
+    except Exception as exc:  # noqa: BLE001 — surface as a dry-run fallback.
+        # Compilation succeeded (governance passed) but execution is impractical
+        # in the in-process context (e.g. base_table absent). Return the compiled
+        # SQL so the agent can still introspect / run it via POST /metrics/{id}/sql.
+        return {
+            "ok": False,
+            "error": {
+                "code": "execution_unavailable",
+                "message": (
+                    f"Metric compiled but could not execute in-process: "
+                    f"{type(exc).__name__}: {exc}. Use POST /metrics/{metric_id}/sql "
+                    f"for the compiled SQL."
+                ),
+            },
+            "sql": sql,
+            "params": params,
+        }
+
+    total_rows = table.num_rows
+    columns = table.schema.names
+    preview_table = table.slice(0, min(limit, total_rows)) if limit else table
+
+    rows: list[list[Any]] = []
+    if preview_table.num_rows > 0:
+        col_arrays = [col.to_pylist() for col in preview_table.columns]
+        for i in range(preview_table.num_rows):
+            rows.append([arr[i] for arr in col_arrays])
+
+    return {
+        "ok": True,
+        "columns": list(columns),
+        "rows": rows,
+        "row_count": total_rows,
+        "sql": sql,
+    }
+
+
 #: Environments an MCP write may target by default. ``upsert_dashboard`` refuses
 #: to write to anything else (e.g. ``prod``) — production is reached only via the
 #: governed ``promote`` operation, which is the human-gate.
@@ -991,7 +1176,10 @@ def _build_mcp_server() -> "_FastMCP":  # type: ignore[return]
             "-> draft a DashboardSpec -> validate_spec (repair until valid) -> "
             "estimate_query / preview_widget (sanity-check) -> upsert_dashboard "
             "(governed write to DEV; refuses invalid specs) -> promote "
-            "(human-gated publish to prod)."
+            "(human-gated publish to prod). "
+            "For consistent numbers, prefer the semantic layer: list_metrics to "
+            "discover governed metrics, then query_metric to run one (group by "
+            "allowed dimensions + time grain, filtered) instead of hand-writing SQL."
         ),
     )
 
@@ -1157,6 +1345,48 @@ def _build_mcp_server() -> "_FastMCP":  # type: ignore[return]
     ) -> dict[str, Any]:
         """Preview a registered query's result (small, row-limited)."""
         return _preview_widget(query_id, params, limit)
+
+    # ── Governed metrics / semantic layer (Wave C3) ───────────────────────────
+
+    @server.tool(
+        name="list_metrics",
+        description=(
+            "Discover GOVERNED metrics (the semantic layer): each is a business "
+            "definition (e.g. revenue = SUM(amount)) with an owner, allowed "
+            "dimensions and time grains. Returns a list of "
+            "{id, name, measure:{name,agg,expr}, dimensions:[...], time_grains:[...], "
+            "description}. Prefer querying a matching metric (via query_metric) over "
+            "hand-writing SQL so answers stay consistent. Use the id with query_metric."
+        ),
+    )
+    def list_metrics() -> list[dict[str, Any]]:
+        """List the registered governed metrics."""
+        return _list_metrics()
+
+    @server.tool(
+        name="query_metric",
+        description=(
+            "Query a GOVERNED metric by id: group by a SUBSET of its allowed "
+            "dimensions, bucket by an allowed time_grain, and apply filters "
+            "([{field, op, value}] on allowed dims/the time column). It compiles the "
+            "metric to SQL (rejecting unknown dims/grains/filter fields — that "
+            "governance is the point) and executes it via the in-memory DuckDB path. "
+            "Returns {ok:true, columns, rows, row_count, sql} on success, or "
+            "{ok:false, error:{code,message}} on a governance violation. If the "
+            "metric compiles but cannot execute in-process, the compiled sql is "
+            "returned so you can run it via POST /metrics/{id}/sql. Discover ids and "
+            "allowed dimensions/grains via list_metrics first."
+        ),
+    )
+    def query_metric(
+        metric_id: str,
+        dimensions: "list[str] | None" = None,
+        time_grain: "str | None" = None,
+        filters: "list[dict[str, Any]] | None" = None,
+        limit: "int | None" = None,
+    ) -> dict[str, Any]:
+        """Compile + execute a governed metric query and return rows."""
+        return _query_metric(metric_id, dimensions, time_grain, filters, limit)
 
     @server.tool(
         name="upsert_dashboard",

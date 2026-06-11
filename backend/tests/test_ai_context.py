@@ -65,6 +65,56 @@ def _make_user(user_id: str) -> dict[str, Any]:
 _FIXTURE_QUERY_ID = "ctx_orders_by_region"
 
 
+#: A registered metric id used as a fixture for the /ai/context metrics block.
+_FIXTURE_METRIC_ID = "ctx_revenue"
+
+
+def _register_fixture_metric() -> str:
+    """Register a governed metric and return its id, or skip if the layer's absent.
+
+    The metrics registry (``app/metrics/registry.py``) is built by another wave;
+    if it isn't present yet we skip the test rather than fail. We construct a
+    real ``MetricDefinition`` (revenue = SUM(amount), groupable by region, monthly
+    grain) and register it, adapting to whatever the registry's register signature
+    accepts (mirrors ``QueryRegistry.register``).
+    """
+    try:
+        from app.metrics.models import (
+            Dimension,
+            Measure,
+            MetricDefinition,
+            TimeDimension,
+        )
+        from app.metrics.registry import get_metric_registry
+    except Exception as exc:  # noqa: BLE001
+        pytest.skip(f"metrics registry not available yet: {exc}")
+
+    md = MetricDefinition(
+        id=_FIXTURE_METRIC_ID,
+        name="Revenue",
+        measure=Measure(name="revenue", agg="sum", expr="amount"),
+        base_table="orders",
+        dimensions=(Dimension(name="region", type="text"),),
+        time_dimension=TimeDimension(
+            column="created_at",
+            grains=("month", "quarter", "year"),
+            default_grain="month",
+        ),
+        rls_keys=("org_id",),
+        description="Total order revenue (SUM of amount).",
+    )
+
+    registry = get_metric_registry()
+    # Adapt to the registry's register signature: prefer register(definition),
+    # fall back to register(id=..., definition=...) if it mirrors QueryRegistry's
+    # keyword style.
+    try:
+        registry.register(md)
+    except TypeError:
+        registry.register(id=md.id, definition=md)  # type: ignore[call-arg]
+    return _FIXTURE_METRIC_ID
+
+
 def _register_fixture_query() -> str:
     """Register a query with real params + output_schema; return its id."""
     registry = get_query_registry()
@@ -196,6 +246,7 @@ class TestContextEndpoint:
         assert resp.status_code == 200
         body = resp.json()
         assert "queries" in body
+        assert "metrics" in body
         assert "conventions" in body
         assert "compact" in body
         assert "filtered_by" in body
@@ -309,3 +360,69 @@ class TestContextEndpoint:
         p = entry["params"][0]
         assert "default" in p
         assert "options_query_id" in p
+
+
+# ---------------------------------------------------------------------------
+# 3. GET /ai/context — metrics block (Wave C3)
+# ---------------------------------------------------------------------------
+
+
+class TestContextMetricsBlock:
+    """The /ai/context `metrics` block surfaces registered governed metrics."""
+
+    @pytest.mark.asyncio
+    async def test_metrics_block_is_present(self, ctx_client):
+        """The response always carries a `metrics` list (possibly empty)."""
+        ac, user_id = ctx_client
+        resp = await ac.get("/api/v1/ai/context", headers=_auth_headers(user_id))
+        assert resp.status_code == 200
+        body = resp.json()
+        assert "metrics" in body
+        assert isinstance(body["metrics"], list)
+
+    @pytest.mark.asyncio
+    async def test_conventions_mention_metrics(self, ctx_client):
+        """The conventions block explains how to query a governed metric."""
+        ac, user_id = ctx_client
+        resp = await ac.get("/api/v1/ai/context", headers=_auth_headers(user_id))
+        conventions = resp.json()["conventions"]
+        assert "metrics" in conventions
+        assert "/metrics/" in conventions["metrics"]
+
+    @pytest.mark.asyncio
+    async def test_fixture_metric_has_full_shape(self, ctx_client):
+        """A registered metric surfaces with {id, name, measure, dimensions,
+        time_grains, description}."""
+        mid = _register_fixture_metric()  # skips if the registry isn't built yet
+        ac, user_id = ctx_client
+        resp = await ac.get("/api/v1/ai/context", headers=_auth_headers(user_id))
+        body = resp.json()
+        entry = next(m for m in body["metrics"] if m["id"] == mid)
+
+        assert entry["name"] == "Revenue"
+        assert entry["measure"] == {"name": "revenue", "agg": "sum", "expr": "amount"}
+        assert entry["dimensions"] == ["region"]
+        assert entry["time_grains"] == ["month", "quarter", "year"]
+        assert entry["description"] == "Total order revenue (SUM of amount)."
+
+    @pytest.mark.asyncio
+    async def test_compact_trims_metric_shape(self, ctx_client):
+        """`?compact=true` trims a metric to {id, name, measure, dimensions}."""
+        mid = _register_fixture_metric()
+        ac, user_id = ctx_client
+        resp = await ac.get(
+            "/api/v1/ai/context",
+            params={"compact": "true"},
+            headers=_auth_headers(user_id),
+        )
+        body = resp.json()
+        assert body["compact"] is True
+        entry = next(m for m in body["metrics"] if m["id"] == mid)
+
+        assert set(entry.keys()) == {"id", "name", "measure", "dimensions"}
+        # Compact drops the verbose fields.
+        assert "time_grains" not in entry
+        assert "description" not in entry
+        # Core fields remain accurate.
+        assert entry["measure"]["agg"] == "sum"
+        assert entry["dimensions"] == ["region"]

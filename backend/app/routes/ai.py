@@ -351,6 +351,17 @@ _AI_CONTEXT_CONVENTIONS: dict[str, Any] = {
         "you reference must exist in this context; values flow query.params -> "
         "named_params and query.output_schema -> widget columns."
     ),
+    "metrics": (
+        "A `metric` is a GOVERNED business definition (e.g. `revenue = SUM(amount)`) "
+        "compiled to SQL on demand — prefer it over hand-writing SQL when one fits, "
+        "so two answers can't silently disagree. Query a metric via "
+        "POST /metrics/{id}/query with a MetricQuery body: `dimensions` (a SUBSET of "
+        "the metric's allowed `dimensions`), `time_grain` (one of the metric's "
+        "`time_grains`), and `filters` ([{field, op, value}] on allowed dims or the "
+        "time column). Asking for an unknown dimension / grain / filter field is "
+        "rejected (400) — that governance is the point. Use POST /metrics/{id}/sql "
+        "for a dry compile (returns sql + params, no execution)."
+    ),
 }
 
 
@@ -392,6 +403,99 @@ def _context_query_entry(rq: Any, *, compact: bool) -> dict[str, Any]:
     }
 
 
+def _get_metric_registry() -> Any:
+    """Return the metrics registry singleton, adapting to its accessor name.
+
+    The metrics registry (``app/metrics/registry.py``) is owned by another agent
+    and mirrors :class:`~app.queries.registry.QueryRegistry`. We import its
+    ``get_metric_registry`` factory defensively: if the module is not present
+    (e.g. the registry wave hasn't landed yet) we return ``None`` and the caller
+    simply emits an empty ``metrics`` list — ``/ai/context`` never 500s on this.
+    """
+    try:
+        from app.metrics.registry import get_metric_registry  # noqa: PLC0415
+    except Exception:  # noqa: BLE001 — registry may not exist yet; degrade gracefully.
+        return None
+    try:
+        return get_metric_registry()
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _metrics_from(registry: Any) -> list[Any]:
+    """List all metric definitions from *registry*, tolerant of accessor names.
+
+    Mirrors ``QueryRegistry.all()`` but adapts if the metrics registry exposes
+    ``list()`` instead (the contract says one of list/all/get).
+    """
+    if registry is None:
+        return []
+    for accessor in ("all", "list"):
+        fn = getattr(registry, accessor, None)
+        if callable(fn):
+            try:
+                return list(fn())
+            except Exception:  # noqa: BLE001
+                return []
+    return []
+
+
+def _context_metric_entry(md: Any, *, compact: bool) -> dict[str, Any]:
+    """Build one /ai/context metric entry from a ``MetricDefinition``.
+
+    Full form carries ``{id, name, measure, dimensions, time_grains, description}``;
+    compact form trims to ``{id, name, measure, dimensions}`` to shrink the
+    token footprint (mirrors the query entry's compact shape).
+    """
+    measure = {
+        "name": md.measure.name,
+        "agg": md.measure.agg,
+        "expr": md.measure.expr,
+    }
+    dimensions = [d.name for d in md.dimensions]
+
+    if compact:
+        return {
+            "id": md.id,
+            "name": md.name,
+            "measure": measure,
+            "dimensions": dimensions,
+        }
+
+    time_grains = list(md.time_dimension.grains) if md.time_dimension else []
+    return {
+        "id": md.id,
+        "name": md.name,
+        "measure": measure,
+        "dimensions": dimensions,
+        "time_grains": time_grains,
+        "description": md.description,
+    }
+
+
+def _metric_matches(md: Any, q: str) -> bool:
+    """Cheap relevance filter: token overlap on a metric's name/description/id.
+
+    The grounding scorer ranks *queries* by their tables/columns; metrics have no
+    tables in the catalog, so we do a simple lowercase token-match over the
+    metric's id/name/description/dimension names instead of over-engineering a
+    second scorer.
+    """
+    tokens = {t for t in re.split(r"\W+", q.lower()) if t}
+    if not tokens:
+        return True
+    haystack = " ".join(
+        [
+            md.id,
+            md.name,
+            md.description or "",
+            " ".join(d.name for d in md.dimensions),
+        ]
+    ).lower()
+    hay_tokens = {t for t in re.split(r"\W+", haystack) if t}
+    return bool(tokens & hay_tokens)
+
+
 @api_router.get("/ai/context", tags=["ai"])
 async def ai_context(
     q: str | None = None,
@@ -422,7 +526,15 @@ async def ai_context(
     -------
     dict
         ``{queries: [{id, name, [description, datastore,] params, output_schema}],
+        metrics: [{id, name, measure, dimensions, [time_grains, description]}],
         conventions: {...}, compact: bool, filtered_by: str | None}``
+
+        Each ``metrics`` entry describes a GOVERNED definition: ``measure`` is
+        ``{name, agg, expr}``, ``dimensions`` is the list of allowed grouping
+        column names, and (full form only) ``time_grains`` lists the buckets the
+        metric can be queried at. ``?compact=true`` trims a metric to
+        ``{id, name, measure, dimensions}``; ``?q=`` keeps only metrics whose
+        id/name/description/dimensions share a token with the query text.
 
     Raises
     ------
@@ -449,8 +561,18 @@ async def ai_context(
 
     queries = [_context_query_entry(rq, compact=compact) for rq in selected]
 
+    # ── Governed metrics (Wave C3) ────────────────────────────────────────────
+    # Additive: a `metrics` list alongside `queries` so an agent discovers the
+    # governed semantic-layer definitions it can query via POST /metrics/{id}/query.
+    metric_registry = _get_metric_registry()
+    all_metrics = _metrics_from(metric_registry)
+    if q:
+        all_metrics = [md for md in all_metrics if _metric_matches(md, q)]
+    metrics = [_context_metric_entry(md, compact=compact) for md in all_metrics]
+
     return {
         "queries": queries,
+        "metrics": metrics,
         "conventions": _AI_CONTEXT_CONVENTIONS,
         "compact": compact,
         "filtered_by": q,
