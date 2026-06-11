@@ -51,6 +51,7 @@ import {
   evaluateWatch,
   listMetrics,
 } from '../../lib/watches.js'
+import { listIntegrations } from '../../lib/integrationsApi.js'
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -298,6 +299,7 @@ function blankDraft() {
     thresholdValue: '',
     changeOp: '>',
     changeValue: '',
+    integrationId: '',
     slackWebhook: '',
     slackChannel: '',
     enabled: true,
@@ -319,6 +321,7 @@ function draftFromWatch(watch) {
     thresholdValue: r.threshold?.value ?? '',
     changeOp: r.comparison?.op ?? '>',
     changeValue: r.comparison?.value ?? '',
+    integrationId: cfg.channel_config?.integration_id ?? '',
     slackWebhook: cfg.channel_config?.slack_webhook ?? '',
     slackChannel: cfg.channel_config?.slack_channel ?? '',
     enabled: cfg.enabled === undefined ? true : Boolean(cfg.enabled),
@@ -361,8 +364,14 @@ function bodyFromDraft(draft) {
   }
 
   const channel_config = {}
-  if (draft.slackWebhook.trim()) channel_config.slack_webhook = draft.slackWebhook.trim()
-  if (draft.slackChannel.trim()) channel_config.slack_channel = draft.slackChannel.trim()
+  // Prefer a connected integration; fall back to the free-form Slack fields
+  // (kept for orgs that have not connected any integration yet).
+  if (draft.integrationId) {
+    channel_config.integration_id = draft.integrationId
+  } else {
+    if (draft.slackWebhook.trim()) channel_config.slack_webhook = draft.slackWebhook.trim()
+    if (draft.slackChannel.trim()) channel_config.slack_channel = draft.slackChannel.trim()
+  }
   if (Object.keys(channel_config).length > 0) config.channel_config = channel_config
 
   config.enabled = Boolean(draft.enabled)
@@ -374,7 +383,7 @@ const FIELD_CLS =
   'w-full h-9 px-2.5 text-sm rounded-lg border border-border bg-surface text-fg placeholder:text-muted/50 focus:outline-none focus:ring-2 focus:ring-ring/60'
 const LABEL_CLS = 'block text-xs font-medium text-fg/80 mb-1'
 
-function WatchModal({ open, initial, metrics, onClose, onSaved }) {
+function WatchModal({ open, initial, metrics, integrations, onClose, onSaved }) {
   const [draft, setDraft] = useState(blankDraft)
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState(null)
@@ -588,32 +597,65 @@ function WatchModal({ open, initial, metrics, onClose, onSaved }) {
             </div>
           )}
 
-          {/* Channel config */}
+          {/* Channel config — pick a connected integration, or fall back to a
+              free-form Slack webhook when none are connected. */}
           <div className="rounded-lg border border-border bg-surface-2/30 p-3 space-y-3">
-            <p className="text-xs font-semibold text-fg/80">Alert channel (Slack)</p>
-            <div>
-              <label className={LABEL_CLS}>Webhook URL</label>
-              <input
-                type="text"
-                value={draft.slackWebhook}
-                onChange={e => set({ slackWebhook: e.target.value })}
-                placeholder="https://hooks.slack.com/services/…"
-                className={[FIELD_CLS, 'font-mono text-xs'].join(' ')}
-              />
-            </div>
-            <div>
-              <label className={LABEL_CLS}>Channel</label>
-              <input
-                type="text"
-                value={draft.slackChannel}
-                onChange={e => set({ slackChannel: e.target.value })}
-                placeholder="#alerts"
-                className={FIELD_CLS}
-              />
-            </div>
-            <p className="text-[11px] text-muted">
-              Leave both blank to evaluate without notifying (test mode).
-            </p>
+            <p className="text-xs font-semibold text-fg/80">Alert channel</p>
+
+            {integrations.length > 0 ? (
+              <>
+                <div>
+                  <label className={LABEL_CLS}>Connected integration</label>
+                  <select
+                    value={draft.integrationId}
+                    onChange={e => set({ integrationId: e.target.value })}
+                    className={FIELD_CLS}
+                  >
+                    <option value="">No notification (test mode)</option>
+                    {integrations.map(it => (
+                      <option key={it.id} value={it.id}>
+                        {(it.name || it.kind)}
+                        {it.enabled === false ? ' (disabled)' : ''}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+                <p className="text-[11px] text-muted">
+                  Manage channels in{' '}
+                  <span className="font-medium text-fg/80">Settings → Integrations</span>.
+                </p>
+              </>
+            ) : (
+              <>
+                <p className="text-[11px] text-muted">
+                  No integrations connected — enter a Slack webhook below, or connect a
+                  channel in <span className="font-medium text-fg/80">Settings → Integrations</span>.
+                </p>
+                <div>
+                  <label className={LABEL_CLS}>Webhook URL</label>
+                  <input
+                    type="text"
+                    value={draft.slackWebhook}
+                    onChange={e => set({ slackWebhook: e.target.value })}
+                    placeholder="https://hooks.slack.com/services/…"
+                    className={[FIELD_CLS, 'font-mono text-xs'].join(' ')}
+                  />
+                </div>
+                <div>
+                  <label className={LABEL_CLS}>Channel</label>
+                  <input
+                    type="text"
+                    value={draft.slackChannel}
+                    onChange={e => set({ slackChannel: e.target.value })}
+                    placeholder="#alerts"
+                    className={FIELD_CLS}
+                  />
+                </div>
+                <p className="text-[11px] text-muted">
+                  Leave blank to evaluate without notifying (test mode).
+                </p>
+              </>
+            )}
           </div>
 
           {/* Enabled toggle */}
@@ -686,6 +728,7 @@ export default function WatchesPage() {
 
   const [watches, setWatches] = useState([])
   const [metrics, setMetrics] = useState([])
+  const [integrations, setIntegrations] = useState([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState(null)
 
@@ -702,9 +745,10 @@ export default function WatchesPage() {
   const load = useCallback(async () => {
     setLoading(true)
     setError(null)
-    const [w, m] = await Promise.all([listWatches(), listMetrics()])
+    const [w, m, ints] = await Promise.all([listWatches(), listMetrics(), listIntegrations()])
     setWatches(Array.isArray(w) ? w : [])
     setMetrics(Array.isArray(m) ? m : [])
+    setIntegrations(Array.isArray(ints) ? ints : [])
     setLoading(false)
   }, [])
 
@@ -830,6 +874,7 @@ export default function WatchesPage() {
         open={modalOpen}
         initial={editing}
         metrics={metrics}
+        integrations={integrations}
         onClose={() => setModalOpen(false)}
         onSaved={handleSaved}
       />

@@ -31,6 +31,7 @@ import {
   CreditCard,
   FolderGit2,
   ArrowUpRight,
+  Plug,
 } from 'lucide-react'
 import { useOrg } from '../../../contexts/OrgContext.jsx'
 import { useProject } from '../../../contexts/ProjectContext.jsx'
@@ -125,6 +126,7 @@ export default function SettingsLayout() {
           <NavGroup label="Organization" context={activeOrg?.name}>
             <SettingsNavItem to="/settings/organization" label="General" Icon={Building2} />
             <SettingsNavItem to="/settings/members" label="Members" Icon={Users} />
+            <SettingsNavItem to="/settings/integrations" label="Integrations" Icon={Plug} />
             <SettingsNavItem to="/settings/security" label="Security" Icon={ShieldCheck} />
             {billingEnabled && (
               <SettingsNavItem to="/billing" label="Billing" Icon={CreditCard} external />

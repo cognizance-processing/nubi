@@ -24,7 +24,8 @@ import { AppSidebarDesktop, AppSidebarMobile } from '../components/app/AppSideba
 import AppTopbar from '../components/app/AppTopbar.jsx'
 import AppRightRail from '../components/app/AppRightRail.jsx'
 import { ChatPanel } from '../chat/ChatPanel.jsx'
-import { GitBranch, MessageSquare } from 'lucide-react'
+import NotificationCenter from '../components/app/NotificationCenter.jsx'
+import { GitBranch, MessageSquare, Bell } from 'lucide-react'
 
 // Lazy-load GitSyncPanel — a sibling agent creates this; it may not exist yet
 // in the OSS build, so we degrade silently if the import fails.
@@ -104,6 +105,8 @@ function ChatPanelWrapper() {
 export default function AppShell() {
   const [mobileNavOpen, setMobileNavOpen] = useState(false)
   const [gitOpen, setGitOpen] = useState(false)
+  const [notifOpen, setNotifOpen] = useState(false)
+  const [unreadCount, setUnreadCount] = useState(0)
 
   // Shell-level RHS panels are surfaced through the persistent right-edge rail.
   const { chatOpen, toggleChat, pageOwnsChat } = useUi()
@@ -117,6 +120,14 @@ export default function AppShell() {
   // page (desktop) — Git/Versions is the primary entry; Chat joins it unless a
   // page owns chat itself (e.g. the dashboard editor mounts its own chat UI).
   const railItems = [
+    {
+      id: 'notifications',
+      Icon: Bell,
+      label: 'Notifications',
+      active: notifOpen,
+      onToggle: () => setNotifOpen(v => !v),
+      badge: unreadCount,
+    },
     {
       id: 'git',
       Icon: GitBranch,
@@ -169,9 +180,18 @@ export default function AppShell() {
             onClose={() => setGitOpen(false)}
           />
 
+          {/* Notification center — feed slide-over + unread-count polling.
+              Mounted once; reports its unread count up to the rail badge and
+              keeps polling (paused while hidden) even when the panel is shut. */}
+          <NotificationCenter
+            open={notifOpen}
+            onClose={() => setNotifOpen(false)}
+            onCount={setUnreadCount}
+          />
+
           {/* Persistent right-edge switcher — always reachable on every authed
               page (desktop). The single, consistent entry point for the
-              shell-level RHS panels (Git/Versions + Chat). */}
+              shell-level RHS panels (Notifications + Git/Versions + Chat). */}
           <AppRightRail items={railItems} />
         </div>
       </div>

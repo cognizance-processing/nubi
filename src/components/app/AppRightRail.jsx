@@ -16,7 +16,9 @@
  * slide in as siblings of the page content, never replacing those panels.
  *
  * Props:
- *   items {Array<{ id, Icon, label, active, onToggle, hidden? }>} — the toggles.
+ *   items {Array<{ id, Icon, label, active, onToggle, hidden?, badge? }>}
+ *     — the toggles. `badge` (a number) renders an unread-count pill on the
+ *       icon (used by the notifications bell); 0/undefined hides it.
  */
 
 export default function AppRightRail({ items }) {
@@ -31,17 +33,21 @@ export default function AppRightRail({ items }) {
       aria-label="Panels"
       data-testid="app-right-rail"
     >
-      {visible.map(({ id, Icon, label, active, onToggle }) => (
+      {visible.map(({ id, Icon, label, active, onToggle, badge }) => (
         <button
           key={id}
           type="button"
           onClick={onToggle}
-          aria-label={active ? `Close ${label}` : `Open ${label}`}
+          aria-label={
+            badge
+              ? `${active ? 'Close' : 'Open'} ${label} (${badge} unread)`
+              : `${active ? 'Close' : 'Open'} ${label}`
+          }
           aria-pressed={active}
           title={label}
           data-testid={`rail-toggle-${id}`}
           className={[
-            'w-9 h-9 flex items-center justify-center rounded-lg border transition-colors duration-150',
+            'relative w-9 h-9 flex items-center justify-center rounded-lg border transition-colors duration-150',
             'focus:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1',
             active
               ? 'bg-primary text-primary-fg border-primary shadow-sm'
@@ -49,6 +55,14 @@ export default function AppRightRail({ items }) {
           ].join(' ')}
         >
           <Icon size={16} strokeWidth={2} />
+          {badge > 0 && (
+            <span
+              className="absolute -top-1 -right-1 min-w-[16px] h-4 px-1 flex items-center justify-center rounded-full bg-red-500 text-white text-[10px] font-bold leading-none shadow"
+              aria-hidden="true"
+            >
+              {badge > 99 ? '99+' : badge}
+            </span>
+          )}
         </button>
       ))}
     </div>

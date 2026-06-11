@@ -98,6 +98,7 @@ const OrgSettings = lazy(() => import('./pages/app/settings/OrgSettings.jsx'))
 const MembersSettings = lazy(() => import('./pages/app/settings/MembersSettings.jsx'))
 const ProjectSettings = lazy(() => import('./pages/app/settings/ProjectSettings.jsx'))
 const SecuritySettings = lazy(() => import('./pages/app/settings/SecuritySettings.jsx'))
+const IntegrationsSettings = lazy(() => import('./pages/app/settings/IntegrationsSettings.jsx'))
 const SecretsPage = lazy(() => import('./pages/app/SecretsPage.jsx'))
 const DataExplorerPage = lazy(() => import('./pages/app/DataExplorerPage.jsx'))
 
@@ -295,6 +296,7 @@ export default function App() {
             <Route path="profile" element={<ProfileSettings />} />
             <Route path="organization" element={<OrgSettings />} />
             <Route path="members" element={<MembersSettings />} />
+            <Route path="integrations" element={<IntegrationsSettings />} />
             <Route path="project" element={<ProjectSettings />} />
             <Route path="security" element={<SecuritySettings />} />
           </Route>
