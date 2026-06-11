@@ -198,6 +198,13 @@ import app.routes.metrics  # noqa: F401, E402
 # lands ahead of the generic /{resource} catch-all in resources.py.
 import app.routes.watches  # noqa: F401, E402
 
+# Import cache-admin route (/cache/stats, /cache/invalidate) BEFORE resources so
+# its /cache prefix routes are registered ahead of the generic /{resource}
+# catch-all in resources.py.
+from app.routes.cache import router as cache_router  # noqa: E402
+
+api_router.include_router(cache_router)
+
 # Import resources route so it registers itself on api_router at import time.
 import app.routes.resources  # noqa: F401, E402
 

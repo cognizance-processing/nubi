@@ -1126,7 +1126,11 @@ async def query(
             _pool_resp = await _forward_heavy_query(request, body)
             if _pool_resp is not None:
                 if _pool_resp.status_code == 200:
-                    cache.put(physical_plan.cache_key, _pool_resp.content)
+                    cache.put(
+                        physical_plan.cache_key,
+                        _pool_resp.content,
+                        tags=[f"org:{org_id}", f"datastore:{effective_datastore_id}"],
+                    )
                     return StreamingResponse(
                         ipc_stream_from_bytes(_pool_resp.content),
                         media_type=_ARROW_STREAM_MEDIA_TYPE,
@@ -1477,7 +1481,13 @@ async def query(
         pass
 
     # ── 6. Cache the result ───────────────────────────────────────────────────
-    cache.put(physical_plan.cache_key, full_bytes)
+    # Tag the entry so the explicit /cache/invalidate endpoint can flush a
+    # tenant's (and a datastore's) cached results. ``effective_datastore_id`` is
+    # None on the demo path, so the datastore tag is added only when present.
+    _cache_tags = [f"org:{org_id}"]
+    if effective_datastore_id is not None:
+        _cache_tags.append(f"datastore:{effective_datastore_id}")
+    cache.put(physical_plan.cache_key, full_bytes, tags=_cache_tags)
 
     # ── 6b. Log the query for pre-agg mining (best-effort; never breaks query) ─
     try:

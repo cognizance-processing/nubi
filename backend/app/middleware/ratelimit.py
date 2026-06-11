@@ -1,26 +1,61 @@
-"""In-process rate limiting middleware (token-bucket, no external deps).
+"""Rate limiting middleware (token-bucket) — Redis-backed when available.
 
 Design notes
 ------------
-This is a BEST-EFFORT, PER-PROCESS *application-level* limiter — a convenience
-soft guard for runaway clients and misconfigured scripts.  It is explicitly
-NOT the authoritative rate limit.
+This is an *application-level* limiter — a soft guard for runaway clients and
+misconfigured scripts.  It is NOT a replacement for the edge limiter.
 
-    !!! The authoritative limit MUST be enforced at the edge (Fly.io's TCP
-        proxy rate-limit / Cloudflare / Nginx).  This module does NOT replace
-        that and cannot give a hard global ceiling — see "Per-process caveat".
+    !!! The authoritative limit SHOULD still be enforced at the edge (Fly.io's
+        TCP proxy rate-limit / Cloudflare / Nginx).  This module complements it.
 
-Per-process caveat (do not rely on this for a global ceiling)
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-The ``_buckets`` store lives in one OS process.  The app runs
-``uvicorn --workers 2`` (see Dockerfile / fly.toml) and Fly scales to multiple
-machines, so the true ceiling is ``workers × machines × rpm`` and is
-non-deterministic (load-balancing decides which worker/machine sees a request).
-To partially compensate we divide the configured rpm by an *estimate* of the
-local worker count (``WEB_CONCURRENCY`` / ``UVICORN_WORKERS`` env var, default
-1 if unset) so each worker's cap approximates ``rpm / workers``.  This only
-accounts for workers in THIS machine — cross-machine multiplication remains and
-is intentionally left to the edge limiter.
+Store selection (Redis when available, in-process otherwise)
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+The limit is enforced against ONE of two token-bucket stores, chosen per
+request:
+
+  * **Shared Redis store** — when ``app.cache.redis_client.redis_available()``
+    (i.e. ``REDIS_URL`` is set and the ``redis`` client connects).  The bucket
+    state (``tokens``, ``last_ts``) lives in a Redis hash and is mutated by an
+    ATOMIC Lua script (``_LUA_TOKEN_BUCKET``), so the cap is enforced GLOBALLY
+    across every worker and every Fly machine.  This is the production path and
+    it closes the multi-machine / multi-worker gap below.
+
+  * **In-process ``_buckets`` dict** — the fallback used when no shared Redis
+    store is configured (the default in CI and local dev).  This path is
+    byte-for-byte the original best-effort per-process limiter and carries the
+    caveat below.
+
+The two stores implement the SAME token-bucket math (capacity =
+``burst_factor × rpm``, refill = ``rpm / 60`` tokens/s) keyed on the same
+``(identity, route_class)`` pair, so the Redis path is the same limit the
+in-process path approximates — only now global rather than per-process.
+
+Redis-outage degradation (never 500)
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+A Redis exception mid-request must NEVER crash the request.  When the Lua
+evaluation raises (connection dropped, server gone, etc.) we catch it and fall
+back to the in-process bucket for THAT request, so a Redis outage degrades to
+the per-process best-effort guard rather than returning HTTP 500.
+
+Per-process caveat (applies ONLY to the no-Redis fallback)
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+When no shared Redis store is configured, the ``_buckets`` store lives in one
+OS process.  The app runs ``uvicorn --workers 2`` (see Dockerfile / fly.toml)
+and Fly scales to multiple machines, so the true ceiling of the FALLBACK path
+is ``workers × machines × rpm`` and is non-deterministic (load-balancing
+decides which worker/machine sees a request).  To partially compensate we
+divide the configured rpm by an *estimate* of the local worker count
+(``WEB_CONCURRENCY`` / ``UVICORN_WORKERS`` env var, default 1 if unset) so each
+worker's cap approximates ``rpm / workers``.  This only accounts for workers in
+THIS machine — cross-machine multiplication remains and is intentionally left
+to the edge limiter.  With ``REDIS_URL`` set, this caveat does NOT apply: the
+cap is enforced globally.
+
+    NOTE: the rpm/worker division is applied to the fallback's config too.  On
+    the Redis path the global cap is therefore ``rpm / workers`` enforced
+    globally — consistent with the fallback so behaviour does not jump when
+    Redis flaps.  Set WEB_CONCURRENCY=1 if you want the Redis cap to equal the
+    raw configured rpm.
 
 Architecture
 ~~~~~~~~~~~~
@@ -99,6 +134,8 @@ from fastapi import FastAPI, Request, Response
 from fastapi.responses import JSONResponse
 from starlette.middleware.base import BaseHTTPMiddleware, RequestResponseEndpoint
 from starlette.types import ASGIApp
+
+from app.cache.redis_client import get_redis
 
 logger = logging.getLogger(__name__)
 
@@ -267,6 +304,98 @@ def _get_or_create_bucket(key: tuple[str, str], rpm: int) -> _Bucket:
     return b
 
 
+# ── Redis-backed token bucket (global, atomic) ───────────────────────────────────
+
+# Key namespace for the distributed limiter.  Each (identity, route_class) pair
+# maps to a Redis HASH holding {tokens, ts}.
+_REDIS_KEY_PREFIX = "nubi:rl:"
+
+# Idle buckets self-expire after this many seconds (mirrors the in-process
+# cleanup: a bucket sitting full longer than this is indistinguishable from a
+# freshly-created full one, so we can safely let Redis evict it).
+_REDIS_TTL_S = 600
+
+# Atomic token-bucket in a single Lua script (server-side, so the read-refill-
+# decrement sequence is a single atomic step across ALL clients).  This is the
+# SAME math as `_Bucket.consume`:
+#
+#   KEYS[1] = bucket hash key
+#   ARGV[1] = capacity         (burst_factor * rpm)
+#   ARGV[2] = refill_rate      (rpm / 60, tokens per second)
+#   ARGV[3] = now              (unix time, seconds, fractional)
+#   ARGV[4] = ttl              (seconds; the key auto-expires when idle)
+#
+# Returns {allowed, retry_after}:
+#   allowed     = 1 when a token was consumed, else 0
+#   retry_after = 0 when allowed; ceil((1-tokens)/refill_rate) (>=1) when denied
+#
+# A missing/expired hash is treated as a full bucket (tokens = capacity), which
+# matches `_get_or_create_bucket` starting new buckets full.
+_LUA_TOKEN_BUCKET = """
+local capacity = tonumber(ARGV[1])
+local refill = tonumber(ARGV[2])
+local now = tonumber(ARGV[3])
+local ttl = tonumber(ARGV[4])
+
+local data = redis.call('HMGET', KEYS[1], 'tokens', 'ts')
+local tokens = tonumber(data[1])
+local last = tonumber(data[2])
+if tokens == nil then
+  tokens = capacity
+  last = now
+end
+
+local elapsed = now - last
+if elapsed < 0 then elapsed = 0 end
+tokens = math.min(capacity, tokens + elapsed * refill)
+
+local allowed = 0
+local retry_after = 0
+if tokens >= 1.0 then
+  tokens = tokens - 1.0
+  allowed = 1
+else
+  retry_after = math.ceil((1.0 - tokens) / refill)
+  if retry_after < 1 then retry_after = 1 end
+end
+
+redis.call('HSET', KEYS[1], 'tokens', tokens, 'ts', now)
+redis.call('EXPIRE', KEYS[1], ttl)
+return {allowed, retry_after}
+"""
+
+
+def _redis_consume(
+    client, key: tuple[str, str], rpm: int, now: float
+) -> tuple[bool, int]:
+    """Consume one token from the GLOBAL (Redis) bucket for *key*.
+
+    Mirrors ``_Bucket.consume`` but the state lives in Redis and the
+    read-refill-decrement is executed atomically by ``_LUA_TOKEN_BUCKET``, so
+    the cap is enforced across every process and machine sharing the store.
+
+    Raises whatever the redis client raises on a connection/eval error — the
+    caller (``dispatch``) catches it and degrades to the in-process bucket.
+    """
+    identity, route_class = key
+    redis_key = f"{_REDIS_KEY_PREFIX}{identity}:{route_class}"
+    capacity = max(1.0, _cfg.burst_factor * rpm)
+    refill_rate = rpm / 60.0
+    result = client.eval(
+        _LUA_TOKEN_BUCKET,
+        1,
+        redis_key,
+        capacity,
+        refill_rate,
+        now,
+        _REDIS_TTL_S,
+    )
+    # redis returns a list of (possibly bytes/str) integers.
+    allowed = int(result[0]) == 1
+    retry_after = int(result[1])
+    return allowed, retry_after
+
+
 # ── Route classification ───────────────────────────────────────────────────────
 
 # Paths that are always skipped (health checks, static assets, internal ticks).
@@ -387,6 +516,39 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
     callers never need a conditional.
     """
 
+    def _consume(self, bucket_key: tuple[str, str], rpm: int) -> tuple[bool, int]:
+        """Consume one token for *bucket_key*, picking the store per request.
+
+        Store selection (see module docstring):
+          * shared Redis store available → enforce GLOBALLY via the atomic Lua
+            token-bucket (``_redis_consume``).  On ANY Redis exception we
+            degrade to the in-process bucket for this request — never 500.
+          * otherwise → the original in-process ``_buckets`` path (byte-for-byte
+            preserved so the no-Redis tests pass unchanged).
+
+        Returns ``(allowed, retry_after)``.
+        """
+        # Cheap once-resolved check: get_redis() returns the cached client (or
+        # cached None) after the first call, so this is effectively a boolean.
+        client = get_redis()
+        if client is not None:
+            try:
+                # Wall-clock seconds: shared across machines (monotonic clocks
+                # are per-host and meaningless as a cross-process reference).
+                return _redis_consume(client, bucket_key, rpm, time.time())
+            except Exception as exc:  # noqa: BLE001 — degrade, never crash the request
+                logger.warning(
+                    "ratelimit: redis limiter error (%s); "
+                    "falling back to in-process bucket for this request",
+                    exc,
+                )
+                # fall through to the in-process path below
+
+        now = time.monotonic()
+        _maybe_cleanup(now)
+        bucket = _get_or_create_bucket(bucket_key, rpm)
+        return bucket.consume(now)
+
     async def dispatch(
         self, request: Request, call_next: RequestResponseEndpoint
     ) -> Response:
@@ -406,12 +568,8 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
         # caller can't be identified they share a single conservative bucket
         # (identity == _UNKNOWN_IDENTITY) so anonymous floods stay bounded.
 
-        now = time.monotonic()
-        _maybe_cleanup(now)
-
         bucket_key = (identity, route_class)
-        bucket = _get_or_create_bucket(bucket_key, rpm)
-        allowed, retry_after = bucket.consume(now)
+        allowed, retry_after = self._consume(bucket_key, rpm)
 
         if allowed:
             return await call_next(request)

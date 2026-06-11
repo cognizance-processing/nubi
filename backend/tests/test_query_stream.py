@@ -87,7 +87,11 @@ class TestCacheStats:
     def test_stats_initial(self):
         c = self._fresh_cache()
         s = c.stats()
-        assert s == {"entries": 0, "hits": 0, "misses": 0, "hit_rate": 0.0}
+        # Subset assert: stats() also carries a `tags` count (Redis/invalidation
+        # support); the core counters must still read zero on a fresh cache.
+        assert {k: s[k] for k in ("entries", "hits", "misses", "hit_rate")} == {
+            "entries": 0, "hits": 0, "misses": 0, "hit_rate": 0.0
+        }
 
     def test_stats_after_miss(self):
         c = self._fresh_cache()
@@ -124,7 +128,11 @@ class TestCacheStats:
         c.get("k99")
         c.clear()
         s = c.stats()
-        assert s == {"entries": 0, "hits": 0, "misses": 0, "hit_rate": 0.0}
+        # Subset assert: clear() resets the core counters (a `tags` count may also
+        # be present for invalidation support).
+        assert {k: s[k] for k in ("entries", "hits", "misses", "hit_rate")} == {
+            "entries": 0, "hits": 0, "misses": 0, "hit_rate": 0.0
+        }
 
     def test_expired_entry_counts_as_miss(self):
         c = self._fresh_cache(ttl=0.05)

@@ -21,12 +21,16 @@ Baseline at audit: commit `16f31d0` (Wave C). Waves A/B/C done. Verify commands:
 - [x] **Wave D3 — watch** (`app/ai/watch.py`, `routes/watches.py`, `0009_watches.sql`):
   metric threshold → AI explanation (deterministic under NullProvider) → notify channel;
   CRUD + `/evaluate` + `/tick`. ✅ `47e5556` (backend 3405 / mcp 67 / build green).
-- [ ] **Wave E1 — Redis cache + invalidation** (`app/connectors/cache.py`): pluggable
-  shared backend (Redis) behind the current in-process cache, TTL-per-query, explicit
-  invalidation endpoint. **Also back the rate-limiter buckets with the same store** to close
-  the multi-machine gap. Keep in-process as a fallback when no REDIS_URL. *Biggest ops debt.*
-- [ ] **Wave E4 — headless preview** (`GET /boards/{id}/preview.png?env=dev`): server-side
-  Playwright render; also unlocks PNG/PDF export + vision-agent self-check.
+- [~] **Wave E1 — Redis cache + invalidation** (`app/connectors/cache.py`, `app/cache/redis_client.py`,
+  `routes/cache.py`, `ratelimit.py`): pluggable Redis backend behind the in-process cache with
+  tag-based invalidation + `GET /cache/stats` + `POST /cache/invalidate`; rate-limiter buckets now
+  use an atomic Redis token-bucket when REDIS_URL is set (fixes the multi-machine gap), in-process
+  fallback otherwise. **Implemented; full-suite verification in progress, then commit.**
+- [ ] **Wave E4 — headless preview** (`GET /boards/{id}/preview.png?env=dev`): ⚠️ BLOCKED on an
+  infra decision — Playwright is NOT installed (only system Chrome present), and a *proper* render
+  needs (a) a browser binary in the prod image, (b) serving the built frontend so charts (echarts/JS)
+  actually paint, (c) a short-lived internal embed token to auth the render. Don't ship a layout-only
+  stub. Needs a infra/dependency call before implementing — deferred past widget-binding.
 
 ## P1 — high value
 
