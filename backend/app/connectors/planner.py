@@ -44,6 +44,7 @@ from app.connectors.cache_key import compute_cache_key
 from app.connectors.optimize import prune_projection, push_limit, push_predicates
 from app.connectors.plan import PhysicalPlan
 from app.connectors.query_log import compute_groupby_sig
+from app.connectors.sql_parse import parse_sql_cached
 from app.connectors.template import render_sql_template
 from app.errors import AppError
 
@@ -264,7 +265,7 @@ def plan(
 
     # ── 1. Parse ────────────────────────────────────────────────────────────
     try:
-        tree = sqlglot.parse_one(sql, dialect=dialect)
+        tree = parse_sql_cached(sql, dialect=dialect)
     except sqlglot.errors.SqlglotError as exc:
         raise AppError("INVALID_SQL", f"Failed to parse SQL: {exc}", status=400) from exc
 
@@ -387,7 +388,7 @@ def route_to_rollup(plan: PhysicalPlan, registry: Any) -> PhysicalPlan:
 
     # ── Rewrite the FROM clause via sqlglot AST ──────────────────────────────
     try:
-        tree = sqlglot.parse_one(plan.sql, dialect=plan.dialect)
+        tree = parse_sql_cached(plan.sql, dialect=plan.dialect)
     except Exception:
         return plan  # Parse failure — return original plan unchanged.
 
@@ -632,7 +633,7 @@ def _rewrite_to_rollup(plan: PhysicalPlan, rollup: Any) -> str | None:
     performed safely (caller then leaves the plan untouched).
     """
     try:
-        tree = sqlglot.parse_one(plan.sql, dialect=plan.dialect)
+        tree = parse_sql_cached(plan.sql, dialect=plan.dialect)
     except Exception:
         return None
     if not isinstance(tree, exp.Select):

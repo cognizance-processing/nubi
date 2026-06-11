@@ -41,6 +41,8 @@ from typing import Any
 import sqlglot
 import sqlglot.expressions as exp
 
+from app.connectors.sql_parse import parse_sql_cached
+
 # ---------------------------------------------------------------------------
 # Shared normalisation helper
 # ---------------------------------------------------------------------------
@@ -119,7 +121,7 @@ def compute_groupby_sig(sql: str, dialect: str = "postgres") -> str | None:
         The normalised sig, or ``None`` if the query has no GROUP BY.
     """
     try:
-        tree = sqlglot.parse_one(sql, dialect=dialect)
+        tree = parse_sql_cached(sql, dialect=dialect)
     except Exception:
         return None
 
@@ -272,7 +274,7 @@ def extract_shape(sql: str, dialect: str = "postgres") -> QueryShape | None:
     miner can still surface it as a (non-routable) candidate.
     """
     try:
-        tree = sqlglot.parse_one(sql, dialect=dialect)
+        tree = parse_sql_cached(sql, dialect=dialect)
     except Exception:
         return None
     if not isinstance(tree, exp.Select):
