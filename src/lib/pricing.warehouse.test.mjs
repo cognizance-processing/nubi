@@ -13,6 +13,7 @@ import {
   recommendNubi,
   FALLBACK_COMPETITORS_WAREHOUSE,
   WAREHOUSE_CU_MULTIPLIER,
+  BIGQUERY_REFERENCE,
 } from './pricing.js'
 
 test('estimateWarehouseCu bills scan-seconds at the warehouse multiplier', () => {
@@ -56,19 +57,21 @@ test('every warehouse competitor returns a finite positive USD estimate', () => 
   }
 })
 
-test('BigQuery on-demand gives the first scanned TB and 10 GB storage free', () => {
-  const bq = FALLBACK_COMPETITORS_WAREHOUSE.find((c) => c.id === 'bigquery_ondemand')
-  // 512 queries × 1 GB = 0.5 TB scanned → only storage beyond 10 GB is billed
-  const usd = bq.model({ data_gb: 100, queries_per_month: 512, avg_gb_scanned: 1 })
-  assert.ok(Math.abs(usd - (100 - 10) * 0.02) < 1e-9, `expected storage-only cost, got ${usd}`)
+// NOTE: the head-to-head WAREHOUSE competitor models (bigquery_ondemand /
+// clickhouse_cloud with a `.model()` cost function) were intentionally removed in
+// the pricing reframe — FALLBACK_COMPETITORS_WAREHOUSE is now empty and the
+// lakehouse is no longer positioned as a warehouse competitor (connect your own
+// BigQuery/Snowflake instead). BigQuery is kept only as a REFERENCE object for the
+// "~20% cheaper on scan" copy; assert those reference rates instead.
+
+test('BIGQUERY_REFERENCE keeps the pay-per-scan reference rates (Nubi undercuts on scan)', () => {
+  assert.equal(BIGQUERY_REFERENCE.id, 'bigquery_ondemand')
+  assert.equal(BIGQUERY_REFERENCE.scan_usd_per_tib, 6.25) // Nubi: $5/TiB → ~20% cheaper
+  assert.equal(BIGQUERY_REFERENCE.storage_usd_per_gb, 0.02)
+  assert.equal(BIGQUERY_REFERENCE.free_scan_tib, 1)
+  assert.equal(BIGQUERY_REFERENCE.free_storage_gb, 10)
 })
 
-test('ClickHouse model is idle-aware (fair): free when idle, always-on under steady traffic', () => {
-  const ch = FALLBACK_COMPETITORS_WAREHOUSE.find((c) => c.id === 'clickhouse_cloud')
-  // Zero queries → service idles; only storage is billed.
-  assert.equal(ch.model({ data_gb: 0, queries_per_month: 0, avg_gb_scanned: 0 }), 0)
-  // Steady traffic (5000 q/mo, ~15-min idle window each) keeps it awake
-  // around the clock → ~730 h × $0.40 ≈ $292 + storage.
-  const busy = ch.model({ data_gb: 100, queries_per_month: 5000, avg_gb_scanned: 2 })
-  assert.ok(busy > 290 && busy < 300, `expected ~$292+storage, got ${busy}`)
+test('the warehouse head-to-head competitor list is empty (reframe: not a warehouse competitor)', () => {
+  assert.deepEqual(FALLBACK_COMPETITORS_WAREHOUSE, [])
 })
