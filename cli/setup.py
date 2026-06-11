@@ -18,6 +18,10 @@ setup(
         # PyNaCl is only needed to seal GitHub Actions secrets; the CLI degrades
         # with a clear error when it is absent (doc C).
         "secrets": ["pynacl>=1.5.0"],
+        # The bridge agent dials out over WebSocket (design §7). websockets is
+        # imported lazily inside `nubi bridge start`, so the core CLI install
+        # stays lean — `pip install nubi[bridge]` pulls it for agent hosts.
+        "bridge": ["websockets>=12.0"],
     },
     entry_points={
         "console_scripts": [

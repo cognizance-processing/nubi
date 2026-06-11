@@ -100,6 +100,13 @@ auth_app = typer.Typer(
 )
 app.add_typer(auth_app, name="auth")
 
+bridge_app = typer.Typer(
+    name="bridge",
+    help="Run the customer-side bridge agent (connect out to the control plane).",
+    no_args_is_help=True,
+)
+app.add_typer(bridge_app, name="bridge")
+
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -1844,6 +1851,113 @@ def auth_revoke_key(
         err_console.print(f"Could not revoke API key: {exc.message}")
         raise typer.Exit(code=1)
     console.print(f"[green]Revoked[/green] API key {key_id!r}.")
+
+
+# ---------------------------------------------------------------------------
+# bridge start / status / configure (Bridge v2 agent, design §7)
+# ---------------------------------------------------------------------------
+
+
+@bridge_app.command("configure")
+def bridge_configure(
+    token: Optional[str] = typer.Option(
+        None, "--token", help="Bridge token (nubi_br_…). Stored in ~/.nubi/bridge.json."
+    ),
+    bridge_id: Optional[str] = typer.Option(
+        None, "--bridge-id", help="Bridge id this agent serves."
+    ),
+    control_plane_url: Optional[str] = typer.Option(
+        None, "--control-plane-url", help="WebSocket base, e.g. wss://api.nubi.dev/api/v1."
+    ),
+) -> None:
+    """Persist bridge token / id / control-plane URL to ~/.nubi/bridge.json.
+
+    Lets you run `nubi bridge start` without the token on the command line.
+    The token is stored owner-only and never logged.
+    """
+    from . import bridge_config as _bc
+
+    if not any((token, bridge_id, control_plane_url)):
+        err_console.print("Nothing to configure — pass --token, --bridge-id, or --control-plane-url.")
+        raise typer.Exit(code=1)
+    _bc.save_bridge_config(
+        bridge_id=bridge_id, control_plane_url=control_plane_url, token=token
+    )
+    console.print(f"[green]Saved[/green] bridge config to {_bc.config_path()}.")
+    if token:
+        console.print("[dim]Token stored (owner-only). It is never shown again here.[/dim]")
+
+
+@bridge_app.command("status")
+def bridge_status() -> None:
+    """Show the resolved bridge identity (token presence only — never the value)."""
+    from . import bridge_config as _bc
+
+    token = _bc.resolve_token()
+    bridge_id = _bc.resolve_bridge_id()
+    url = _bc.resolve_control_plane_url()
+
+    tbl = Table("Field", "Value", title="Bridge agent")
+    tbl.add_row("config file", str(_bc.config_path()))
+    tbl.add_row("bridge id", bridge_id or "[red]<unset>[/red]")
+    tbl.add_row("control plane", url)
+    tbl.add_row("token", "[green]present[/green]" if token else "[red]<unset>[/red]")
+    console.print(tbl)
+    if not token or not bridge_id:
+        console.print(
+            "[yellow]Not ready.[/yellow] Set a token + bridge id via "
+            "`nubi bridge configure --token … --bridge-id …` or env vars."
+        )
+
+
+@bridge_app.command("start")
+def bridge_start(
+    token: Optional[str] = typer.Option(
+        None, "--token", help="Bridge token (nubi_br_…). Overrides env / config file."
+    ),
+    bridge_id: Optional[str] = typer.Option(
+        None, "--bridge-id", help="Bridge id to serve. Overrides env / config file."
+    ),
+    control_plane_url: Optional[str] = typer.Option(
+        None, "--control-plane-url", help="WebSocket base. Overrides env / config file."
+    ),
+) -> None:
+    """Start the bridge agent: connect OUT to the control plane and serve tasks.
+
+    The agent presents the bridge token on the handshake (and every heartbeat),
+    claims `file_ingest` tasks over the authenticated channel, and streams local
+    source files into a short-TTL staging grant held in memory only. On a
+    "bridge revoked" / auth-reject it exits cleanly (code 2).
+
+    Token resolution: --token > NUBI_BRIDGE_TOKEN env > ~/.nubi/bridge.json.
+    """
+    import asyncio
+
+    from . import bridge_agent as _ba
+    from . import bridge_config as _bc
+    from .bridge_sources import LocalFileSourceOpener, PresignedStagingUploader
+
+    try:
+        identity = _bc.resolve_identity(
+            token=token, bridge_id=bridge_id, control_plane_url=control_plane_url
+        )
+    except _bc.BridgeConfigError as exc:
+        err_console.print(str(exc))
+        raise typer.Exit(code=1)
+
+    console.print(
+        f"[green]Starting[/green] bridge agent {identity.bridge_id} → "
+        f"{identity.control_plane_url} (connecting out; no inbound ports)."
+    )
+    opener = LocalFileSourceOpener()
+    uploader = PresignedStagingUploader()
+    try:
+        asyncio.run(_ba.serve(identity, opener, uploader))
+    except _ba.BridgeRevoked as exc:
+        err_console.print(f"Bridge revoked / token rejected: {exc}")
+        raise typer.Exit(code=2)
+    except KeyboardInterrupt:
+        console.print("\n[dim]Bridge agent stopped.[/dim]")
 
 
 # ---------------------------------------------------------------------------

@@ -109,6 +109,45 @@ Valid resource types: `datastores`, `boards`, `widgets`, `queries`.
 
 ---
 
+## Bridge agent (Bridge v2)
+
+The bridge agent ships inside the CLI. It runs on a customer machine, dials
+**out** to the Nubi control plane over the existing WebSocket reverse tunnel
+(no inbound firewall holes), and runs ingestion tasks for sources reachable
+only inside the customer network (SFTP/FTP/bucket).
+
+```bash
+pip install nubi[bridge]                 # core CLI + the websockets dep
+nubi bridge start --token nubi_br_…      # token via flag…
+# …or store it once and start without the flag:
+nubi bridge configure --token nubi_br_… --bridge-id <id> \
+                      --control-plane-url wss://api.nubi.dev/api/v1
+nubi bridge start
+nubi bridge status                       # show identity (token presence only)
+```
+
+**Token resolution** (highest wins): `--token` flag > `NUBI_BRIDGE_TOKEN` env >
+`~/.nubi/bridge.json`. The token authenticates the **control channel only** —
+it lets the agent claim this bridge's tasks but reads no org data and no
+connector secrets. It is presented on the handshake and every heartbeat; on a
+*bridge revoked* / auth-reject the agent exits cleanly (code 2).
+
+**How a task runs (memory-only credentials):** the agent claims a `file_ingest`
+task, receives an ephemeral **write-only, prefix-pinned, short-TTL staging
+grant** (presigned PUT URLs / STS token) over the tunnel — held in memory only,
+never written to disk — streams the local source to staging in bounded chunks,
+and reports the manifest `{files:[{path,size,sha256}], row_counts}`. The central
+worker verifies + promotes/loads; the agent never receives a stored connector
+secret.
+
+| Source | Variable | File |
+|--------|----------|------|
+| Bridge token | `NUBI_BRIDGE_TOKEN` | `~/.nubi/bridge.json` (`token`) |
+| Bridge id | `NUBI_BRIDGE_ID` | `~/.nubi/bridge.json` (`bridge_id`) |
+| Control plane URL | `NUBI_CONTROL_PLANE_URL` | `~/.nubi/bridge.json` (`control_plane_url`) |
+
+---
+
 ## Running Tests
 
 ```bash
@@ -125,11 +164,15 @@ python -m pytest tests -q
 cli/
 ├── nubi_cli/
 │   ├── __init__.py     # package version
-│   ├── config.py       # URL + token helpers (env / ~/.nubi/credentials)
-│   ├── client.py       # thin httpx wrapper with CLIError
-│   └── main.py         # typer app: login / deploy / run / diff / pull
+│   ├── config.py        # URL + token helpers (env / ~/.nubi/credentials)
+│   ├── client.py        # thin httpx wrapper with CLIError
+│   ├── bridge_config.py # bridge token/id resolution (~/.nubi/bridge.json)
+│   ├── bridge_agent.py  # bridge control channel + agent-side ingest (§7)
+│   ├── bridge_sources.py# local file-source opener + presigned staging uploader
+│   └── main.py          # typer app: login / deploy / run / diff / pull / bridge
 ├── tests/
-│   └── test_cli.py     # CliRunner tests (no real HTTP)
+│   ├── test_cli.py        # CliRunner tests (no real HTTP)
+│   └── test_cli_bridge.py # bridge agent: handshake/revoke/ingest/manifest
 ├── requirements.txt
 ├── setup.py
 └── README.md
