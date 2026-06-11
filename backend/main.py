@@ -224,6 +224,12 @@ from app.routes.ops import router as ops_router  # noqa: E402
 
 api_router.include_router(ops_router)
 
+# Import usage route (/usage, /usage/series — open-core usage metering view)
+# BEFORE resources so its /usage prefix routes are registered ahead of the
+# generic /{resource} catch-all in resources.py. Reads the core usage_events
+# table; billing stays in EE. Self-registers on api_router at import time.
+import app.routes.usage  # noqa: F401, E402
+
 # Import resources route so it registers itself on api_router at import time.
 import app.routes.resources  # noqa: F401, E402
 

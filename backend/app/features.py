@@ -64,6 +64,21 @@ QuotaChecker = Callable[[str, str, float], "tuple[bool, str] | Awaitable[tuple[b
 
 _QUOTA_CHECKER: QuotaChecker | None = None
 
+# Usage-limits provider — the read-only sibling of the quota checker, consumed
+# by the OSS-core *usage* surface (``app.usage``) to show "used / limit / %" per
+# metric.  EE billing registers a provider that maps the org's subscription tier
+# to its per-metric limits; when no provider is registered (OSS build, or EE
+# absent) every limit is ``None`` (unlimited) — core surfaces usage without ever
+# implying a hard billing cap.
+#
+# Signature: provider(org_id: str) -> dict[str, float | None]
+#   keys are usage-metric ids (see app.usage.aggregate.METRICS), values are the
+#   numeric limit for the org's tier or ``None`` for unlimited.  May be
+#   sync or async.
+UsageLimitsProvider = Callable[[str], "dict[str, float | None] | Awaitable[dict[str, float | None]]"]
+
+_USAGE_LIMITS_PROVIDER: UsageLimitsProvider | None = None
+
 
 # ---------------------------------------------------------------------------
 # Public API
@@ -206,6 +221,55 @@ async def enforce_quota(org_id: str | None, dimension: str, amount: float = 1.0)
         )
 
 
+# ---------------------------------------------------------------------------
+# Usage-limits provider hook (read-only; consumed by app.usage)
+# ---------------------------------------------------------------------------
+
+
+def register_usage_limits_provider(provider: UsageLimitsProvider | None) -> None:
+    """Register *provider* as the per-org usage-limits source (EE billing only).
+
+    The provider is invoked by :func:`get_usage_limits` to surface each usage
+    metric's configured limit ("used / limit / %") in the core usage view.  It
+    receives the ``org_id`` and returns a ``{metric_id: limit_or_None}`` mapping;
+    it may be sync or async.
+
+    Pass ``None`` to remove the registered provider (OSS default: all unlimited).
+
+    Raises
+    ------
+    TypeError
+        When *provider* is neither callable nor ``None``.
+    """
+    if provider is not None and not callable(provider):
+        raise TypeError(
+            f"register_usage_limits_provider: provider must be callable or None, "
+            f"got {type(provider)!r}"
+        )
+    global _USAGE_LIMITS_PROVIDER  # noqa: PLW0603
+    _USAGE_LIMITS_PROVIDER = provider
+
+
+async def get_usage_limits(org_id: str | None) -> dict[str, float | None]:
+    """Return the per-metric usage limits for *org_id* (``{}`` when unlimited).
+
+    Returns an empty mapping when:
+    - No provider is registered (OSS build — limits are an EE concern).
+    - ``org_id`` is ``None``.
+    - The registered provider raises (fail-open: a broken provider must never
+      take down the usage view; the caller treats missing keys as unlimited).
+    """
+    if _USAGE_LIMITS_PROVIDER is None or org_id is None:
+        return {}
+    try:
+        result: Any = _USAGE_LIMITS_PROVIDER(org_id)
+        if inspect.isawaitable(result):
+            result = await result
+        return dict(result or {})
+    except Exception:
+        return {}
+
+
 def reset_for_tests() -> None:
     """Clear all registered checkers and restore original commercial set.
 
@@ -217,3 +281,5 @@ def reset_for_tests() -> None:
     _COMMERCIAL = frozenset({"billing", "paid_tiers"})
     global _QUOTA_CHECKER  # noqa: PLW0603
     _QUOTA_CHECKER = None
+    global _USAGE_LIMITS_PROVIDER  # noqa: PLW0603
+    _USAGE_LIMITS_PROVIDER = None

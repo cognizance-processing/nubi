@@ -158,3 +158,58 @@ def register_quota_checker() -> None:
 
     _register(billing_quota_checker)
     logger.debug("EE billing: usage-quota checker registered")
+
+
+# ---------------------------------------------------------------------------
+# Usage-limits provider (read-only) — feeds the OSS-core usage view's soft
+# quotas.  This is the visibility sibling of the quota CHECKER above: the
+# checker decides allow/deny on the hot path; the provider just exposes the
+# numeric limits so ``app.usage`` can render "used / limit / %".
+# ---------------------------------------------------------------------------
+
+# Core usage-metric id (app.usage.aggregate.METRICS) → TierLimits attr.
+# Metrics with no tier limit (e.g. bytes_scanned uses a global TiB allowance,
+# not a per-tier cap) are simply omitted → core treats them as unlimited.
+_USAGE_METRIC_TO_TIER_ATTR: dict[str, str] = {
+    "compute_units": "max_compute_units_per_month",
+    "ai_tokens": "max_ai_calls_per_month",
+    "embedded_sessions": "max_embedded_sessions_per_month",
+    "flow_runs": "max_agent_runs_per_month",
+    "storage_gb": "max_storage_gb",
+}
+
+
+async def usage_limits_provider(org_id: str) -> dict[str, float | None]:
+    """Return per-metric usage limits for *org_id* from its subscription tier.
+
+    Maps the core usage-metric ids to the resolved :class:`TierLimits` values.
+    Limits only bind on a paid deployment (mirrors the quota checker); on an
+    unlicensed OSS-with-ee build every limit is omitted (unlimited).  Never
+    raises — the core hook is fail-open (a failure yields ``{}`` = unlimited).
+    """
+    try:
+        from app.ee.licensing.license import get_license  # noqa: PLC0415
+
+        if not get_license().is_paid:
+            return {}
+        tier = await _resolve_tier(org_id)
+        limits: TierLimits = get_tier_limits(tier)
+        out: dict[str, float | None] = {}
+        for metric_id, attr in _USAGE_METRIC_TO_TIER_ATTR.items():
+            value = getattr(limits, attr, None)
+            out[metric_id] = (float(value) if value is not None else None)
+        return out
+    except Exception as exc:  # noqa: BLE001 — provider must never break the usage view
+        logger.warning("Billing usage-limits provider failed org=%s: %s", org_id, exc)
+        return {}
+
+
+def register_usage_limits_provider() -> None:
+    """Register :func:`usage_limits_provider` into the core usage-limits hook.
+
+    Called from :func:`app.ee.billing.setup` at EE load time.  Idempotent.
+    """
+    from app.features import register_usage_limits_provider as _register  # noqa: PLC0415
+
+    _register(usage_limits_provider)
+    logger.debug("EE billing: usage-limits provider registered")

@@ -1013,3 +1013,58 @@ class TestQuotaChecker:
                 org_id=str(uuid.uuid4()), dimension="ai_calls", amount=1.0
             )
         assert allowed is True
+
+    # ── Usage-limits provider (read-only; feeds the OSS core usage view) ──────
+
+    @pytest.mark.asyncio
+    async def test_usage_limits_provider_maps_tier_to_metric_limits(self) -> None:
+        """The provider maps a paid org's tier limits onto core usage-metric ids."""
+        from app.ee.billing.quota import usage_limits_provider
+
+        org_id = str(uuid.uuid4())
+        await self._seed_subscription(org_id, "starter")
+        limits = await usage_limits_provider(org_id)
+        # STARTER: 2,000 CU/month, 5 AI calls, 1,000 embed sessions, 5 GB storage,
+        # 0 agent runs (flow_runs).
+        assert limits["compute_units"] == 2_000.0
+        assert limits["ai_tokens"] == 5.0
+        assert limits["embedded_sessions"] == 1_000.0
+        assert limits["storage_gb"] == 5.0
+        assert limits["flow_runs"] == 0.0
+
+    @pytest.mark.asyncio
+    async def test_usage_limits_provider_unlimited_maps_to_none(self) -> None:
+        """ENTERPRISE unlimited embed sessions → None (core treats as unlimited)."""
+        from app.ee.billing.quota import usage_limits_provider
+
+        org_id = str(uuid.uuid4())
+        await self._seed_subscription(org_id, "enterprise")
+        limits = await usage_limits_provider(org_id)
+        assert limits["embedded_sessions"] is None  # unlimited on Enterprise
+
+    @pytest.mark.asyncio
+    async def test_usage_limits_provider_empty_without_paid_license(self) -> None:
+        """No paid license → no limits surfaced (OSS/self-hosted = unlimited view)."""
+        os.environ["NUBI_LICENSE_KEY"] = _FREE_LICENSE_KEY
+        from app.ee.licensing.license import reset_license_cache
+
+        reset_license_cache()
+
+        from app.ee.billing.quota import usage_limits_provider
+
+        assert await usage_limits_provider(str(uuid.uuid4())) == {}
+
+    @pytest.mark.asyncio
+    async def test_setup_registers_usage_limits_provider(self) -> None:
+        """billing.setup() wires the provider into app.features.get_usage_limits."""
+        from app.ee.billing import setup
+
+        setup(app=None)
+
+        org_id = str(uuid.uuid4())
+        await self._seed_subscription(org_id, "team")
+        from app.features import get_usage_limits
+
+        limits = await get_usage_limits(org_id)
+        # TEAM: 6,000 CU/month.
+        assert limits.get("compute_units") == 6_000.0

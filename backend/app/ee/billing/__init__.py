@@ -101,10 +101,17 @@ def _register_quota_checker() -> None:
     without one (e.g. everything on FREE) hard-stop at the tier quota.
     """
     try:
-        from app.ee.billing.quota import register_quota_checker  # noqa: PLC0415
+        from app.ee.billing.quota import (  # noqa: PLC0415
+            register_quota_checker,
+            register_usage_limits_provider,
+        )
 
         register_quota_checker()
-        logger.debug("EE billing: quota checker registered")
+        # Also feed the OSS-core usage view's soft quotas (read-only — limits
+        # only, no enforcement).  Decoupled from the checker so the usage page
+        # can show "used / limit / %" without the hot-path quota gate.
+        register_usage_limits_provider()
+        logger.debug("EE billing: quota checker + usage-limits provider registered")
     except Exception as exc:  # noqa: BLE001
         logger.warning("EE billing: could not register quota checker — %s", exc)
 

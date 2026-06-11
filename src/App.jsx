@@ -92,6 +92,7 @@ const FlowsPage = lazy(() => import('./pages/app/FlowsPage.jsx'))
 const MetricsPage = lazy(() => import('./pages/app/MetricsPage.jsx'))
 const WatchesPage = lazy(() => import('./pages/app/WatchesPage.jsx'))
 const AutomationsPage = lazy(() => import('./pages/app/AutomationsPage.jsx'))
+const UsagePage = lazy(() => import('./pages/app/UsagePage.jsx'))
 const SettingsLayout = lazy(() => import('./pages/app/settings/SettingsLayout.jsx'))
 const ProfileSettings = lazy(() => import('./pages/app/settings/ProfileSettings.jsx'))
 const OrgSettings = lazy(() => import('./pages/app/settings/OrgSettings.jsx'))
@@ -285,6 +286,7 @@ export default function App() {
           <Route path="metrics/:id" element={<MetricsPage />} />
           <Route path="watches" element={<WatchesPage />} />
           <Route path="automations" element={<AutomationsPage />} />
+          <Route path="usage" element={<UsagePage />} />
           <Route path="editor" element={<EditorPage />} />
           <Route path="editor/:id" element={<EditorPage />} />
           {/* Playground merged into Queries — keep route as a redirect so old links work */}

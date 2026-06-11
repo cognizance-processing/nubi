@@ -29,6 +29,7 @@ import {
   Sigma,
   BellRing,
   CalendarClock,
+  Gauge,
   Table2,
   ChevronLeft,
   ChevronRight,
@@ -478,6 +479,7 @@ const NAV_ITEMS = [
   { label: 'Metrics',     to: '/metrics',     Icon: Sigma },
   { label: 'Watches',     to: '/watches',     Icon: BellRing },
   { label: 'Automations', to: '/automations', Icon: CalendarClock },
+  { label: 'Usage',       to: '/usage',       Icon: Gauge },
   // Secrets are flow-scoped (referenced by flow tasks via {{ secrets.NAME }}),
   // so they live inside the Flows workspace (/flows/secrets), not the global nav.
 ]
