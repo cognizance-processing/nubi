@@ -49,10 +49,19 @@ Baseline at audit: commit `16f31d0` (Wave C). Waves A/B/C done. Verify commands:
 - [ ] **Landing-page glow-up** (`src/pages/LandingPage.jsx`, `src/components/illustrations/*`):
   bolder/less-bland copy, real product screenshots replacing weak SVG illustrations. Use the
   **nubi-illustrations** skill's render→screenshot→critique loop (orchestrator-driven, both modes).
-- [ ] **Security medium/low residue**: B2 stale-snapshot — re-validate owner policies at tick
-  time vs current membership (`flows/runtime.py` ~1859); narrow remaining hot-path SQL re-parse
-  (`planner.py`/`query_log.py` — partly done via registry short-circuit); document estimate
-  quota consumption.
+- [x] **Estimate quota footgun** — `/query/estimate` charged a FULL compute unit (== a real
+  query) while its docstring claimed "a small dry-run budget"; an auto-refreshing estimate UI
+  could drain the execution quota. Now charges `0.05` units. ✅ (pending verify+commit).
+- [⊘] **B2 stale-snapshot** — DEFERRED (needs an architecture decision, not a blind edit on
+  just-B2-fixed runtime code). Policies live ONLY in the JWT (`claims["policies"]`), so there's
+  no server-side per-user policy source to re-derive at tick time. The only server-detectable
+  sub-case is owner-membership revocation, but the flows execution/test path has no reliable
+  membership signal (fail-closed-on-`None` would break flow tests that don't seed `org_members`).
+  A proper fix = a server-side per-user RLS-policy store (re-derive at tick) OR a flow "service
+  identity" model. Tracked for a deliberate design pass.
+- [ ] **Hot-path SQL re-parse** (P1, partial): `planner.py` registry short-circuit already added;
+  remaining: thread the parsed AST from `planner.plan` into `route_to_rollup_shape`/query-log so
+  a cache-MISS query parses once, not 2–3×.
 
 ## P2 — follow-ups
 

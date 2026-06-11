@@ -1564,7 +1564,13 @@ async def query_estimate(
 
     from app.features import enforce_quota as _enforce_quota
 
-    await _enforce_quota(org_id, "compute_units", amount=1.0)
+    # SECURITY/cost: an estimate is a dry-run (EXPLAIN), far cheaper than an
+    # execution, and the UI may auto-refresh it on every keystroke. Charge a
+    # SMALL fraction of a compute unit (not a full one) so estimates cannot be
+    # abused to exhaust the org's execution quota — and so the charge matches
+    # this route's "consumes a small dry-run budget" contract above.
+    _ESTIMATE_QUOTA_UNITS = 0.05
+    await _enforce_quota(org_id, "compute_units", amount=_ESTIMATE_QUOTA_UNITS)
 
     # ── Build the connector (same secret/network/RLS-gate path as /query) ────
     # Reuses _build_connector_for_plan so the capability-gated RLS refusal
