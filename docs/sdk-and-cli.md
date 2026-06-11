@@ -187,7 +187,9 @@ npm test        # node --test src/index.test.mjs
 
 ## CLI — `nubi`
 
-A Python CLI for dashboards-as-code workflows, flow management, and secrets. Python 3.11+ required.
+A Python CLI for the **everything-as-code** workflow: pull your whole Nubi project to a git repo, edit dashboards / queries / flows / connectors as files, keep secrets out of git, and push or deploy back to the cloud. Python 3.11+ required.
+
+The CLI is the local companion to the in-app VS Code-style code view. The on-disk project format, the secret model, and the CI/CD design are specified in full in [Files-as-Code](/docs/files-as-code) — this page is the user-facing reference for the commands themselves.
 
 ### Installation
 
@@ -202,7 +204,7 @@ Install the optional `pyarrow` extra for precise row counts in `nubi run`:
 pip install -e ".[arrow]"
 ```
 
-Core dependencies (from `setup.py`): `typer>=0.12.0`, `httpx>=0.27.0`, `rich>=13.0.0`, `pyyaml>=6.0`.
+Core dependencies (from `setup.py`): `typer>=0.12.0`, `httpx>=0.27.0`, `rich>=13.0.0`, `pyyaml>=6.0`. GitHub Actions secret sync additionally needs `PyNaCl` for libsodium sealing.
 
 ### Configuration
 
@@ -214,128 +216,129 @@ The CLI reads the API URL and Bearer token from environment variables or local f
 | Env var | `NUBI_TOKEN` | — |
 | File | `~/.nubi/credentials` | Written by `nubi login` |
 
-### Commands
-
-#### `nubi login`
-
-Authenticate and save the access token to `~/.nubi/credentials`.
+### Quickstart
 
 ```bash
-nubi login
-# Email: you@example.com
-# Password: ••••••
+nubi login                      # authenticate; token saved to ~/.nubi/credentials
+nubi init --project <id>        # scaffold nubi.yaml + .nubi/ + .gitignore here
+nubi pull                       # download all resources into the local file tree
+
+# …edit dashboards/, queries/, flows/, connectors/ as files; commit to git…
+
+nubi push                       # upload changed NON-SECRET manifests
+nubi deploy --env prod          # CI-style: materialize secrets + push manifests + secrets
 ```
 
-#### `nubi deploy <dir> [--dry-run]`
+`nubi init` writes a `.gitignore` that excludes `.nubi/secrets/` and `~/.nubi/credentials`, so credentials and secret values never enter git. Non-secret config (manifests) is committed; secrets stay in gitignored local `.env` files. See [the secret model](#secret-model) below.
 
-Push all `*.json` resource files in `<dir>` to the API. Each JSON file must have at minimum a `"resource"` field (one of `datastores`, `boards`, `widgets`, `queries`) and a `"name"` field — the CLI validates this before deploying, and files missing either field or naming an unknown resource type are skipped with an error. If an `"id"` is present the resource is updated (PUT); otherwise it is created (POST).
+### On-disk project layout
 
-```json
-{ "resource": "boards", "name": "My Dashboard", "config": {} }
+`nubi pull` writes a normal git repo:
+
 ```
+my-project/
+├─ nubi.yaml                 # project manifest (committed)
+├─ .gitignore                # generated; ignores .nubi/secrets/
+├─ .nubi/
+│  ├─ project.json           # local pointer: {project_id, org_id, api_url, default_env}
+│  └─ secrets/               # GITIGNORED — never committed
+│     ├─ connectors.env      # connector secrets, <SLUG>__<FIELD>=value
+│     └─ flow.env            # flow/org secrets ({{ secrets.NAME }} values)
+├─ connectors/<slug>.yaml    # NON-SECRET connector manifests (committed)
+├─ queries/<slug>.sql        # raw SQL + <slug>.meta.json (+ optional .schema.json)
+├─ dashboards/<slug>.json    # {id, name, config}
+└─ flows/<slug>__<id8>/      # flow.toml + cells/NN_<key>.{sql,py,md}
+```
+
+The resource UUID lives **inside** each file, so renames are safe and upserts key off the embedded id. See [Files-as-Code §A](/docs/files-as-code) for the authoritative format.
+
+### Top-level commands
+
+| Command | What it does |
+|---|---|
+| `nubi login` | Authenticate (`POST /auth/login`); save the token to `~/.nubi/credentials`. |
+| `nubi logout` | Clear the local token (best-effort `POST /auth/logout`). |
+| `nubi whoami` | Show the current user / org (`GET /auth/me`). |
+| `nubi init [--project <id>] [--name <n>] [--env <key>] [--ci github\|gitlab] [dir]` | Scaffold `nubi.yaml`, `.nubi/project.json`, and `.gitignore`. `--ci` also copies the matching pipeline template. |
+| `nubi pull [--env <key>] [--kinds <list>] [dir]` | Download ALL resources into the file tree. `--kinds` is a comma list of `dashboard,query,flow,connector`. Connectors write non-secret manifests only. |
+| `nubi push [--dry-run] [--env <key>] [--kinds <list>] [dir]` | Upload changed non-secret manifests (`POST /import`; connectors upsert via `/connectors`). Secrets are NEVER pushed here. |
+| `nubi sync --env-id <id> [--strategy take_branch\|take_env]` | Two-way reconcile local tree ↔ cloud via the project's git binding. |
+| `nubi deploy [--env <key>] [dir]` | CI deploy: materialize secrets → push connectors + secrets → import dashboards/queries/flows. Idempotent. |
+| `nubi diff <dir>` | Compare local resource files vs the server (read-only). Resources without an `id` are marked NEW. |
+| `nubi run <query_id>` | Execute a registered query; print the row count (needs `pyarrow` for a precise count). |
+| `nubi status [dir]` | Show the project binding, env, and last-sync commit graph. |
+
+> **Legacy commands.** `nubi deploy-files <dir>` and `nubi pull-raw <resource> <dir>` are the older flat-JSON workflows (resource types: `datastores`, `boards`, `widgets`, `queries`). They are retained but superseded by `nubi push` / `nubi pull` on the canonical file tree.
 
 ```bash
-nubi deploy ./dashboards --dry-run   # preview plan; no API calls
-nubi deploy ./dashboards             # live deploy
+# A typical edit/ship loop
+nubi pull
+$EDITOR dashboards/revenue.json
+nubi push --dry-run        # preview the plan; no API calls
+nubi push
 ```
 
-#### `nubi run <query_id>`
+### `nubi flows ...`
 
-Execute a registered query and print the row count. Requires `pyarrow` for a precise count; without it the raw byte length of the Arrow IPC response is reported.
-
-```bash
-nubi run 3fa85f64-5717-4562-b3fc-2c963f66afa6
-# Query '3fa85f64-...' returned 1,234 row(s).
-```
-
-#### `nubi diff <dir>`
-
-Compare local resource files against the server state. Read-only — no writes are made. Resources without an `"id"` are reported as NEW.
-
-```bash
-nubi diff ./dashboards
-# board.json (id=board-123)
-#   - name: 'Old Name'
-#   + name: 'New Name'
-```
-
-#### `nubi pull <resource> <dir>`
-
-Download all server resources of a given type to local JSON files, one file per resource named `<id>.json`. Valid resource types: `datastores`, `boards`, `widgets`, `queries`.
-
-```bash
-nubi pull boards ./downloaded/boards
-# Wrote ./downloaded/boards/board-123.json
-# Pulled 3 boards.
-```
-
----
-
-### Flows sub-commands
-
-#### `nubi flows run <file> [--param key=value ...]`
-
-Execute a flow locally end-to-end using an in-memory store and `file://` storage. Resolves parameters from `--param` flags and the local secrets file (`~/.nubi/secrets`), then drives the flows runtime to completion — same executor and registry as the cloud. Prints each task's state and result when done.
-
-The backend package must be importable. Run from a nubi checkout with `backend/` present at the repo root.
+| Command | What it does |
+|---|---|
+| `nubi flows run <file> [--param k=v ...]` | Execute a flow LOCALLY end-to-end (in-memory store, `file://` storage). Same executor and registry as the cloud. |
+| `nubi flows push [files ...] [--dry-run]` | Create / update flows in the cloud from YAML/JSON files (matched by name). Defaults to all `*.yaml`/`*.yml`/`*.json` in the cwd. |
+| `nubi flows pull [--dir <dir>]` | Download flows as YAML files (falls back to JSON without PyYAML). Defaults to `flows/`. |
 
 ```bash
 nubi flows run flows/my_flow.yaml --param region=us --param date=2024-01-01
 ```
 
-Secrets can also be supplied as `NUBI_SECRET_<NAME>` environment variables; they override the local secrets file.
+`nubi flows run` resolves `{{ secrets.NAME }}` from the project's `.nubi/secrets/flow.env`, the legacy `~/.nubi/secrets`, and `NUBI_SECRET_<NAME>` env vars (env vars win). The backend package must be importable — run from a nubi checkout with `backend/` at the repo root.
 
-#### `nubi flows push [file ...] [--dry-run]`
+### `nubi dashboards ... / queries ... / connectors ...`
 
-Create or update flows in the cloud from local YAML or JSON files. Matches by flow name: if a flow with the same name already exists it is updated (PUT); otherwise it is created (POST). If no files are specified, all `*.yaml`/`*.yml`/`*.json` files in the current directory are used.
+Per-kind convenience wrappers over pull/push. Each takes `--dir/-d` (default: cwd).
 
-```bash
-nubi flows push flows/my_flow.yaml flows/other_flow.yaml
-nubi flows push --dry-run
-```
+| Command | What it does |
+|---|---|
+| `nubi dashboards pull` / `push` | Sync just dashboards (`GET /boards` + `/export/dashboard/{id}`; `POST /import`). |
+| `nubi queries pull` / `push` | Sync just queries in the 3-file form (`.sql` + `.meta.json` + optional `.schema.json`). |
+| `nubi connectors pull` | Write non-secret `connectors/<slug>.yaml` (`GET /connectors`). |
+| `nubi connectors push` | Upsert connector non-secret config **plus** secrets read from `.nubi/secrets/connectors.env`. |
+| `nubi connectors test <id>` | Validate config + secret resolvability (`POST /connectors/{id}/test`). |
 
-Requires an active login (`nubi login` or `NUBI_TOKEN`).
+### `nubi git ...`
 
-#### `nubi flows pull [--dir <dir>]`
+| Command | What it does |
+|---|---|
+| `nubi git connect --provider github\|gitlab --repo-url <url> --token <pat> [--branch] [--base-path] [dir]` | Bind the project to a remote (`POST /git/connect`). The PAT is stored server-side; `nubi.yaml` records only the non-secret `provider`/`repo_url`. |
+| `nubi git graph [dir]` | Print the env-branch commit graph (`GET /projects/{id}/git/graph`). |
 
-Fetch all flows from the API and write them as YAML files (falls back to JSON if PyYAML is not installed). Defaults to the `flows/` directory.
+<a id="secret-model"></a>
 
-```bash
-nubi flows pull --dir flows/
-# Wrote flows/my_flow.yaml
-# Pulled 2 flow(s) to flows/.
-```
+### `nubi secrets ...` — the secret model
 
-Requires an active login.
+Two stores, mirrored locally as gitignored `.env` files and never committed:
 
----
+- **Flow / org secrets** → `.nubi/secrets/flow.env`, resolve as `{{ secrets.NAME }}` (cloud: `POST /secrets`).
+- **Connector secrets** → `.nubi/secrets/connectors.env`, keyed `<CONNECTOR_SLUG>__<FIELD>` (e.g. `PROD_POSTGRES__PASSWORD`).
 
-### Secrets sub-commands
-
-#### `nubi secrets set <name> <value> [--local-only]`
-
-Store a secret in `~/.nubi/secrets` and, when logged in, also via the cloud API (`POST /secrets`). Use `--local-only` to write only to the local file. Local secrets are available to `nubi flows run` as `TaskContext.secrets` and via `{{ secrets.NAME }}` template interpolation in flow configs.
-
-```bash
-nubi secrets set MY_API_KEY secret123
-nubi secrets set MY_API_KEY secret123 --local-only
-```
-
-Secrets can also be provided as `NUBI_SECRET_<NAME>` environment variables for `nubi flows run`.
-
-#### `nubi secrets list [--local-only]`
-
-List secret names from both local storage and the API. Values are never shown. Use `--local-only` to skip the API call.
+| Command | What it does |
+|---|---|
+| `nubi secrets set <name> <value> [--local-only] [--connector <slug>]` | Set a flow secret (also `POST /secrets` when logged in) or, with `--connector`, a connector secret field written to `connectors.env`. `--local-only` skips the API. |
+| `nubi secrets list [--local-only]` | List secret names locally and from the API. Values are NEVER shown. |
+| `nubi secrets pull [--dir]` | Scaffold empty `.env` keys from the cloud secret NAMES (values stay remote; existing values are never overwritten). |
+| `nubi secrets push --target github\|gitlab [--token] [--env-scope]` | Seal local secrets into the repo's GitHub Actions / GitLab CI secret store. Keys are prefixed `NUBI_SECRET__*` / `NUBI_CONNECTOR__*`. GitHub values are libsodium-sealed (PyNaCl); GitLab are masked CI variables. Token falls back to `GITHUB_TOKEN`/`GITLAB_TOKEN`. |
+| `nubi secrets materialize [--dir]` | Pipeline use (no API call): expand `NUBI_SECRET__*` / `NUBI_CONNECTOR__*` env vars back into the `.env` files. |
+| `nubi secrets delete <name> [--dir]` | Delete a cloud flow/org secret (`DELETE /secrets/{name}`). |
 
 ```bash
-nubi secrets list
-# ┌──────────────┬────────────────┬──────┐
-# │ Name         │ Stored locally │ API? │
-# │ MY_API_KEY   │ yes            │ yes  │
-# └──────────────┴────────────────┴──────┘
+# Seed the repo's CI secret store once, then deploy on every push (see below)
+nubi secrets set STRIPE_API_KEY sk_live_...
+nubi secrets set PROD_POSTGRES password s3cr3t --connector "Prod Postgres"
+nubi secrets push --target github
 ```
 
----
+### Deploying from CI/CD
+
+`nubi init --ci github` (or `gitlab`) scaffolds a pipeline that, on every push to `main`, materializes the repo's secrets and runs `nubi deploy --env prod` — shipping your local edits to the cloud. The pipeline templates live in `cli/templates/{github,gitlab}/`. The full design (secret prefixes, `nubi deploy` ordering) is in [Files-as-Code §C/§E](/docs/files-as-code); a short operator walkthrough is in [Git Sync → Deploy from local / CI](/docs/git-sync#deploy-from-local--ci).
 
 ### Running CLI tests
 

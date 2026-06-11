@@ -380,23 +380,31 @@ For deployments that want an org-level automated push (not project-scoped), conf
 
 ---
 
-## CLI — `nubi diff` and `nubi deploy`
+## Deploy from local / CI
 
-The CLI provides a local diff and deploy workflow that complements the git sync API. These operate on local JSON files, not git envelopes.
+The git-sync API above (Push / Pull in the in-app Git panel) keeps the database canonical and git as the mirror. The complementary **everything-as-code** path inverts that: you `nubi pull` the whole project to a real git repo, edit dashboards / queries / flows / connectors as files, and ship them back to the cloud — either by hand or from a CI pipeline on every push.
 
 ```bash
-# Compare local board JSON files against the server
-nubi diff ./dashboards
-
-# Deploy (UPDATE if "id" is present, CREATE otherwise)
-nubi deploy ./dashboards
-nubi deploy ./dashboards --dry-run   # preview without making API calls
-
-# Download server resources to local JSON files
-nubi pull boards ./dashboards
-nubi pull queries ./queries
+nubi login
+nubi init --project <id>      # scaffold nubi.yaml + .nubi/ + .gitignore
+nubi pull                     # download the full file tree
+# …edit files, commit to git…
+nubi push                     # upload changed NON-SECRET manifests
 ```
 
-Accepted resource types for `nubi pull`: `datastores`, `boards`, `widgets`, `queries`.
+### CI deploy on push
 
-See [SDK & CLI](/docs/sdk-and-cli) for the full CLI reference.
+`nubi init --ci github` (or `--ci gitlab`) copies a ready-made pipeline from `cli/templates/{github,gitlab}/` into your repo:
+
+- **GitHub** → `.github/workflows/nubi-deploy.yml`
+- **GitLab** → `.gitlab-ci.yml`
+
+Seed the repo's CI secret store once with `nubi secrets push --target github|gitlab` (flow secrets upload as `NUBI_SECRET__*`, connector secrets as `NUBI_CONNECTOR__<SLUG>__<FIELD>`). On every push to `main` the pipeline then:
+
+1. installs the CLI and authenticates with the `NUBI_TOKEN` repo secret;
+2. runs `nubi secrets materialize` to expand the injected CI secrets back into the gitignored `.nubi/secrets/*.env` files;
+3. runs `nubi deploy --env prod`, which pushes non-secret manifests **and** secrets to the target environment (idempotent ordering: secrets → connectors → flow secrets → import dashboards/queries/flows).
+
+Plaintext secret values are never committed to git — only sealed/masked into the CI secret store. See [SDK & CLI](/docs/sdk-and-cli) for the full command tree and [Files-as-Code §C/§E](/docs/files-as-code) for the secret-sync and pipeline design.
+
+> **Legacy.** `nubi deploy-files <dir>` and `nubi pull-raw <resource> <dir>` are the older flat-JSON workflows (resource types `datastores`, `boards`, `widgets`, `queries`); they are retained but superseded by `nubi push` / `nubi pull` on the canonical file tree.

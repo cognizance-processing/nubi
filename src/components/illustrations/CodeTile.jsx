@@ -17,6 +17,17 @@ const KEYWORDS = {
 
 // Ordered token matchers. First match at the current scan position wins.
 function matchers(lang) {
+  if (lang === 'shell') {
+    return [
+      ['comment', /^#.*/],
+      ['string', /^("[^"]*"|'[^']*')/],
+      ['fn', /^\bnubi\b/],              // the CLI binary reads as the "function"
+      ['decorator', /^--?[\w-]+/],      // flags: --env, -d, etc.
+      ['space', /^\s+/],
+      ['word', /^[\w./@:=]+/],
+      ['other', /^[^\s]/],
+    ]
+  }
   if (lang === 'html') {
     return [
       ['comment', /^<!--.*?-->/],
@@ -176,4 +187,18 @@ const LLM_DASHBOARD = `<!-- authored by an agent via author_dashboard -->
 
 export function LlmDashboardCode({ className }) {
   return <CodeTile filename="dashboards/revenue.html" lang="html" code={LLM_DASHBOARD} className={className} />
+}
+
+const FILES_AS_CODE_CLI = `nubi login            # auth, token in ~/.nubi
+nubi pull             # dashboards, queries,
+                      # flows + connectors → files
+
+# edit anything as files, commit to git
+git add . && git commit -m "tweak rollup"
+
+nubi push             # non-secret manifests → cloud
+nubi deploy --env prod  # CI: secrets + manifests`
+
+export function FilesAsCodeCli({ className }) {
+  return <CodeTile filename="~/projects/analytics" lang="shell" code={FILES_AS_CODE_CLI} className={className} />
 }

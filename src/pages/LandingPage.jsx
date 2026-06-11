@@ -18,6 +18,7 @@
  *  #features     — Differentiators ("Why Nubi" / six decisions)
  *  #embedding    — Auth-as-code embedding diff row
  *  #connectors   — SQL-first connector SDK diff row
+ *  #as-code      — Everything-as-code (in-app code view, local files, CLI, CI)
  *  #how-it-works — How it works
  *  #pricing      — Closing CTA / pricing callout
  *  #compare      — Comparison table section
@@ -57,6 +58,9 @@ import {
   CheckCircle2,
   XCircle,
   Wallet,
+  GitBranch,
+  Terminal,
+  FolderGit2,
 } from 'lucide-react'
 import {
   TIERS,
@@ -82,7 +86,7 @@ import ConnectorSdk from '../components/illustrations/ConnectorSdk.jsx'
 import EmbedAuth from '../components/illustrations/EmbedAuth.jsx'
 import LakehouseFlow from '../components/illustrations/LakehouseFlow.jsx'
 // Dev-centric features read better as real code than abstract art.
-import { ConnectorSdkCode, FlowCode, EmbedAuthCode, LlmDashboardCode } from '../components/illustrations/CodeTile.jsx'
+import { ConnectorSdkCode, FlowCode, EmbedAuthCode, LlmDashboardCode, FilesAsCodeCli } from '../components/illustrations/CodeTile.jsx'
 
 /* ─────────────────────────────────────────────────────────────────────────── */
 /*  Scoped animations — only on .nubi-lp so they don't bleed to other pages   */
@@ -1543,10 +1547,72 @@ export default function LandingPage() {
         </section>
 
         {/* ════════════════════════════════════════════════════════════════════
+            §3.25  EVERYTHING-AS-CODE — power-user / files / CLI / CI story
+            id="as-code" — in-app code view + local files + CLI + CI deploy
+        ════════════════════════════════════════════════════════════════════ */}
+        <section id="as-code" className="py-14 sm:py-20 lg:py-24 bg-surface-2 border-y border-border scroll-mt-14">
+          <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+
+            {/* Section header */}
+            <div className="text-center mb-12 sm:mb-16 lg:mb-20 max-w-2xl mx-auto">
+              <p className="text-xs font-semibold tracking-widest uppercase mb-4 text-brand-teal">
+                Everything-as-code
+              </p>
+              <h2 className="font-display text-3xl sm:text-4xl lg:text-5xl font-bold leading-tight mb-4 sm:mb-5 text-fg">
+                Click to build. Then{' '}
+                <span className="text-brand-gradient">own it as code.</span>
+              </h2>
+              <p className="text-sm sm:text-base leading-relaxed text-muted">
+                Every dashboard, query, flow, and connector is{' '}
+                <strong className="text-fg font-semibold">a file you can edit, review, and version</strong> —
+                in a VS Code-style editor right in the app, or pulled to your own git repo and
+                shipped with the <code className="font-mono text-xs px-1 py-0.5 rounded bg-surface border border-border text-fg">nubi</code> CLI.
+                No lock-in, no copy-paste between a vendor UI and your stack.
+              </p>
+            </div>
+
+            {/* Alternating rows */}
+            <div className="flex flex-col gap-12 sm:gap-16 lg:gap-20">
+              <DiffRow
+                id="code-view"
+                icon={Code2}
+                title="A code view for everything"
+                badge="In-app editor"
+                desc="Flip any dashboard, query, or flow into a VS Code-style file view — the same resource, edited as files instead of forms. A persistent git/versions rail lets you switch refs, diff, and roll back without leaving the page. Power users get a text editor; everyone else keeps the visual builder. Same source, two views."
+                Illustration={LlmDashboardCode}
+                reverse={false}
+              />
+
+              <DiffRow
+                id="local-files"
+                icon={FolderGit2}
+                title="Pull your project to git"
+                badge="Local files-as-code"
+                desc="nubi pull writes your whole project as a normal git repo: dashboards, queries (raw .sql + metadata), flows (one folder per flow, one file per cell), and non-secret connector manifests. Commit it, branch it, PR it. Secrets stay in gitignored local .env files — non-secret config is committed, credentials never are."
+                Illustration={FilesAsCodeCli}
+                reverse={true}
+              />
+
+              <DiffRow
+                id="ci-deploy"
+                icon={GitBranch}
+                title="Ship local → cloud on push"
+                badge="CLI & CI/CD"
+                desc="One CLI to pull, push, sync, and deploy. nubi secrets push seals your secrets into GitHub Actions or GitLab CI; the scaffolded pipeline materializes them and runs nubi deploy on every push to main — manifests and secrets land in the right environment. Edit locally, open a PR, merge, deployed."
+                Illustration={FlowCode}
+                reverse={false}
+              />
+            </div>
+
+            <SectionCta sub="Browse the on-disk project format, the full CLI command tree, and the CI templates in the docs." />
+          </div>
+        </section>
+
+        {/* ════════════════════════════════════════════════════════════════════
             §3.5  CONNECTORS — brand logo wall
             id="sources" — "connect to your whole stack"
         ════════════════════════════════════════════════════════════════════ */}
-        <section id="sources" className="py-14 sm:py-20 lg:py-24 bg-surface-2 border-y border-border scroll-mt-14">
+        <section id="sources" className="py-14 sm:py-20 lg:py-24 bg-bg scroll-mt-14">
           <div className="max-w-6xl mx-auto px-4 sm:px-6 lg:px-8">
             <div className="text-center mb-10 sm:mb-14 max-w-2xl mx-auto">
               <p className="text-xs font-semibold tracking-widest uppercase mb-4 text-brand-teal">
