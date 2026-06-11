@@ -896,15 +896,21 @@ class PinSource(BaseModel):
     ``query_id``
         A registered query id (the widget binds directly to it).
     ``metric_id``
-        A governed metric id.  Dashboard widgets bind to a ``query_id`` only —
-        the canonical ``DashboardSpec`` has no native metric binding — so pinning
-        a metric directly returns a clear 400 (``metric_pin_unsupported``).  We do
-        not fabricate a binding the spec cannot honour: expose the metric as a
-        registered query and pin that ``query_id`` instead.
+        A governed metric id.  The widget binds to it via the canonical
+        ``DashboardSpec``'s native :class:`~app.dashboards.spec.MetricBinding`
+        (``widget.metric``): the embed renderer drives it through
+        ``POST /metrics/{id}/query``.  The optional ``dimensions`` / ``time_grain``
+        / ``filters`` shape the bound :class:`MetricQuery` (subset of the metric's
+        allowed dims/grains; filters as ``[{field, op, value}]``).
     """
 
     query_id: str | None = None
     metric_id: str | None = None
+    # Governed-metric query shaping (only meaningful when ``metric_id`` is set).
+    dimensions: list[str] | None = None
+    time_grain: str | None = None
+    filters: list[dict[str, Any]] | None = None
+    limit: int | None = None
 
 
 class PinViz(BaseModel):
@@ -959,9 +965,11 @@ def _build_pin_widget(
 ) -> dict[str, Any]:
     """Build a Widget dict from the pin request's source + viz.
 
-    The widget binds directly to ``source.query_id`` (the only binding the
-    canonical spec supports), carries the chosen viz ``encoding``/``chart_type``,
-    and folds in any bound ``params`` for the source query.
+    The widget binds EITHER directly to ``source.query_id`` OR — when
+    ``source.metric_id`` is given — via the canonical spec's native
+    :class:`~app.dashboards.spec.MetricBinding` (``widget.metric``), carrying the
+    metric's dimensions / time_grain / filters from the request. The chosen viz
+    ``encoding``/``chart_type`` (and any bound ``params``) apply to both paths.
     """
     widget: dict[str, Any] = {
         "id": widget_id,
@@ -971,6 +979,19 @@ def _build_pin_widget(
         "props": {},
         "pos": pos,
     }
+    if body.source.metric_id:
+        # Native metric binding (MetricBinding shape). `metric` takes precedence
+        # over query_id, which stays empty for a metric pin.
+        metric: dict[str, Any] = {"metric_id": body.source.metric_id}
+        if body.source.dimensions:
+            metric["dimensions"] = list(body.source.dimensions)
+        if body.source.time_grain is not None:
+            metric["time_grain"] = body.source.time_grain
+        if body.source.filters:
+            metric["filters"] = list(body.source.filters)
+        if body.source.limit is not None:
+            metric["limit"] = body.source.limit
+        widget["metric"] = metric
     if body.viz.chart_type is not None:
         widget["chart_type"] = body.viz.chart_type
     if body.params:
@@ -995,9 +1016,9 @@ async def pin_answer(
     1. Resolve the caller's org/project (same helpers the resources routes use)
        and require a first-party authenticated user.
     2. Resolve the source binding — EXACTLY ONE of ``source.query_id`` /
-       ``source.metric_id``.  A bare ``metric_id`` is honestly rejected
-       (``metric_pin_unsupported``): the spec binds widgets to queries, not
-       metrics — expose the metric as a query and pin that query_id.
+       ``source.metric_id``.  A ``metric_id`` binds the widget via the spec's
+       native ``MetricBinding`` (``widget.metric``); a ``query_id`` binds it
+       directly.  Both being set (or neither) is an ``invalid_pin_source`` 400.
     3. Build a Widget dict from source + viz with a stable id + default pos.
     4. Compose the target spec: append to ``board_id``'s spec, or start a new
        single-widget ``DashboardSpec``.
@@ -1010,8 +1031,9 @@ async def pin_answer(
     Parameters
     ----------
     body:
-        ``{title, source:{query_id?|metric_id?}, viz:{type, chart_type?,
-        encoding?}, board_id?, params?}``.
+        ``{title, source:{query_id?|metric_id?, dimensions?, time_grain?,
+        filters?, limit?}, viz:{type, chart_type?, encoding?}, board_id?,
+        params?}``.
     request:
         Used for org/project resolution (honours ``X-Org-Id`` / ``?project_id``).
     user:
@@ -1030,8 +1052,6 @@ async def pin_answer(
         No valid Bearer token.
     AppError("invalid_pin_source", 400)
         Neither or both of ``query_id`` / ``metric_id`` supplied.
-    AppError("metric_pin_unsupported", 400)
-        A ``metric_id`` source — there is no native metric binding in the spec.
     AppError("not_found", 404)
         ``board_id`` given but no such board for the caller's org.
     AppError("invalid_pin_spec", 400)
@@ -1050,12 +1070,11 @@ async def pin_answer(
 
     # ── Step 2: validate the source binding (EXACTLY ONE id) ──────────────────
     # The source names the governed answer being pinned. A query_id binds the
-    # widget directly. A metric_id is GOVERNED but the canonical DashboardSpec
-    # has NO native metric binding — so a bare metric pin is honestly rejected
-    # (metric_pin_unsupported) rather than faking a binding the spec can't honour.
-    # To pin a metric, expose it as a registered query and pin that query_id; the
-    # caller may stamp the originating metric on the widget via ``params`` /
-    # ``viz`` props if they want provenance.
+    # widget directly; a metric_id binds it via the spec's native MetricBinding
+    # (``widget.metric``) — both are first-class. We require EXACTLY ONE: neither
+    # set, or both set, is an ambiguous source. The composed spec is validated by
+    # the SAME validate_spec path below (an unknown metric_id surfaces there as a
+    # soft warning, mirroring the query_id forward-ref rule).
     has_query = bool(body.source.query_id)
     has_metric = bool(body.source.metric_id)
     if has_query == has_metric:
@@ -1063,22 +1082,6 @@ async def pin_answer(
         raise AppError(
             "invalid_pin_source",
             "source must set EXACTLY ONE of 'query_id' or 'metric_id'.",
-            400,
-        )
-    if has_metric:
-        # Honest limitation: no native metric binding in the spec.  We verify the
-        # metric exists (so the error names the real reason) and return a clear
-        # 400 pointing the caller at the supported query-backed path.
-        registry = _get_metric_registry()
-        known = registry is not None and registry.get(body.source.metric_id) is not None
-        detail = "" if known else " (note: that metric id is also not registered)"
-        raise AppError(
-            "metric_pin_unsupported",
-            (
-                "Pinning a metric directly is not supported: a dashboard widget "
-                "binds to a 'query_id', not a 'metric_id'. Expose the metric as a "
-                "registered query and pin that query_id instead." + detail
-            ),
             400,
         )
 

@@ -27,6 +27,7 @@
 
 import { useState, useEffect, useMemo, useCallback } from 'react'
 import { runArrowQueryById } from '../../lib/wasmRuntime.js'
+import { runMetricQuery } from '../../lib/metricRuntime.js'
 import { evalRules, formatValue } from './conditionalFormat.js'
 import { useResolvedParams } from '../VariableStore.jsx'
 import DataGrid from '../../components/DataGrid.jsx'
@@ -74,6 +75,7 @@ export default function TableWidget({ widget }) {
     formattingRules,
     columnFormats,
     params: widgetParams,
+    metric,
   } = widget
 
   const limit = wProps.limit ?? 50
@@ -102,18 +104,23 @@ export default function TableWidget({ widget }) {
   const [error, setError] = useState(null)
 
   useEffect(() => {
-    if (!query_id) return
+    // A widget binds to either a governed `metric` or a registered `query_id`.
+    if (!metric && !query_id) return
     let cancelled = false
 
     async function fetchData() {
       setLoading(true)
       setError(null)
       try {
+        // Governed metric path: server-side compile + RLS injection.
+        // Otherwise the existing query_id path is used EXACTLY as before.
         const hasParams = Object.keys(resolvedParams).length > 0
-        const { table, cacheStatus } = await runArrowQueryById(
-          query_id,
-          hasParams ? { namedParams: resolvedParams } : undefined,
-        )
+        const { table, cacheStatus } = metric
+          ? await runMetricQuery(metric)
+          : await runArrowQueryById(
+              query_id,
+              hasParams ? { namedParams: resolvedParams } : undefined,
+            )
         if (!cancelled) {
           setData(tableToGrid(table, columns, limit))
           if (cacheStatus === 'SAMPLE') setError('Using sample data.')
@@ -127,7 +134,7 @@ export default function TableWidget({ widget }) {
 
     fetchData()
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [query_id, limit, columnsRaw, JSON.stringify(resolvedParams)])
+  }, [query_id, JSON.stringify(metric), limit, columnsRaw, JSON.stringify(resolvedParams)])
 
   // ── Column descriptors with columnFormats applied via renderCell ──────────
   const gridColumns = useMemo(() => {

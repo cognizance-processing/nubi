@@ -37,6 +37,7 @@
 
 import { useState, useEffect, useMemo, useCallback } from 'react'
 import { runArrowQueryById } from '../../lib/wasmRuntime.js'
+import { runMetricQuery } from '../../lib/metricRuntime.js'
 import { buildChartOption } from '../../viz/chartOption.js'
 import EChart from '../../viz/EChart.jsx'
 import { useResolvedParams, useSetVariable } from '../VariableStore.jsx'
@@ -49,6 +50,7 @@ export default function ChartWidget({ widget }) {
     props: wProps = {},
     params: widgetParams,
     drilldown,
+    metric,
   } = widget
 
   // Resolve x / y / color from encoding (backward-compatible)
@@ -66,20 +68,23 @@ export default function ChartWidget({ widget }) {
   const [error, setError] = useState(null)
 
   useEffect(() => {
-    if (!query_id) return
+    // A widget binds to either a governed `metric` or a registered `query_id`.
+    if (!metric && !query_id) return
     let cancelled = false
 
     async function fetchData() {
       setLoading(true)
       setError(null)
       try {
-        // Pass resolved params as { namedParams } — M13-B wires this signature.
-        // Empty resolvedParams → passes undefined so existing call path is used.
+        // Governed metric path: server-side compile + RLS injection.
+        // Otherwise the existing query_id path is used EXACTLY as before.
         const hasParams = Object.keys(resolvedParams).length > 0
-        const { table: t, cacheStatus } = await runArrowQueryById(
-          query_id,
-          hasParams ? { namedParams: resolvedParams } : undefined,
-        )
+        const { table: t, cacheStatus } = metric
+          ? await runMetricQuery(metric)
+          : await runArrowQueryById(
+              query_id,
+              hasParams ? { namedParams: resolvedParams } : undefined,
+            )
         if (!cancelled) {
           setTable(t)
           if (cacheStatus === 'SAMPLE') {
@@ -95,10 +100,10 @@ export default function ChartWidget({ widget }) {
 
     fetchData()
     return () => { cancelled = true }
-  // resolvedParams is a new object each render; JSON.stringify gives a stable dep
-  // so the effect only re-fires when actual param values change.
+  // resolvedParams + metric are new objects each render; JSON.stringify gives a
+  // stable dep so the effect only re-fires when actual values change.
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [query_id, JSON.stringify(resolvedParams)])
+  }, [query_id, JSON.stringify(metric), JSON.stringify(resolvedParams)])
 
   const height = wProps.height ?? 260
 

@@ -125,6 +125,52 @@ class Tab(BaseModel):
     )
 
 
+class MetricBinding(BaseModel):
+    """A governed-metric binding for a data widget (alternative to ``query_id``).
+
+    Where ``query_id`` binds a widget to a registered SQL query, a
+    ``MetricBinding`` binds it to a GOVERNED metric definition (see
+    ``app/metrics/models.py``): the embed renderer executes it via
+    ``POST /metrics/{metric_id}/query`` with a ``MetricQuery`` body, so the same
+    governance (allowed dimensions / grains / filters) the metric routes enforce
+    applies to the widget. The fields mirror :class:`app.metrics.models.MetricQuery`.
+
+    Attributes
+    ----------
+    metric_id:
+        The governed metric id to bind (checked against the live metric registry
+        — a miss is a soft WARNING, mirroring the ``query_id`` forward-ref rule).
+    dimensions:
+        Dimensions to group by — a SUBSET of the metric's allowed ``dimensions``.
+    time_grain:
+        Optional time bucket — one of the metric's allowed ``time_grains``.
+    filters:
+        User filters as ``[{field, op, value}]`` dicts (mirror
+        :class:`app.metrics.models.MetricFilter`; kept as dicts and validated
+        lightly here — the metric routes are the authoritative governance gate).
+    limit:
+        Optional row cap forwarded to the metric query.
+    """
+
+    metric_id: str = Field(min_length=1, description="Governed metric id to bind.")
+    dimensions: list[str] = Field(
+        default_factory=list,
+        description="Dimensions to group by (subset of the metric's allowed dims).",
+    )
+    time_grain: str | None = Field(
+        default=None,
+        description="Optional time bucket (one of the metric's allowed grains).",
+    )
+    filters: list[dict] = Field(
+        default_factory=list,
+        description="User filters as [{field, op, value}] dicts (MetricFilter shape).",
+    )
+    limit: int | None = Field(
+        default=None,
+        description="Optional row cap forwarded to the metric query.",
+    )
+
+
 class Widget(BaseModel):
     """A single dashboard widget.
 
@@ -143,8 +189,15 @@ class Widget(BaseModel):
         or ``'text'``.
     query_id:
         Registered query id that backs this widget (must exist in the
-        registry).  Required for ``kpi``, ``table``, ``chart``; optional for
-        ``filter`` (when it uses ``options_query_id`` instead) and ``text``.
+        registry).  Required for ``kpi``, ``table``, ``chart`` — UNLESS the
+        widget carries a ``metric`` binding instead.  Optional for ``filter``
+        (when it uses ``options_query_id`` instead) and ``text``.
+    metric:
+        Optional governed-metric binding (:class:`MetricBinding`).  A data widget
+        (``kpi``/``table``/``chart``/``metric``/``pivot``) must carry EITHER a
+        non-empty ``query_id`` OR a ``metric`` binding.  Both may be set, but
+        ``metric`` takes precedence (the embed renderer reads the metric
+        attributes and ignores ``query-id`` when a metric binding is present).
     chart_type:
         Chart variant — required when ``type == 'chart'``.  One of
         ``'line'``, ``'bar'``, ``'hbar'``, ``'scatter'``, ``'area'``,
@@ -190,6 +243,13 @@ class Widget(BaseModel):
         ),
     )
     query_id: str = Field(default="", description="Backing query id (empty for text widgets).")
+    metric: MetricBinding | None = Field(
+        default=None,
+        description=(
+            "Optional governed-metric binding. When set, it takes precedence over "
+            "query_id for rendering (the embed renderer reads the metric-* attrs)."
+        ),
+    )
     chart_type: (
         Literal["line", "bar", "hbar", "scatter", "area", "pie", "donut", "heatmap", "gauge"]
         | None
@@ -302,6 +362,13 @@ def validate_spec(data: Any) -> tuple[DashboardSpec | None, list[str]]:
        exempt; ``tab_id`` None implicitly maps to the first tab).
     7. Each ``query_id`` is checked against the live query registry.
        Unknown ids produce a warning (not a hard failure — forward compat).
+    8. Data widgets (``kpi``/``table``/``chart``/``metric``/``pivot``) must carry
+       EITHER a non-empty ``query_id`` OR a ``metric`` binding (not neither — a
+       hard error). When both are set, ``metric`` takes precedence (allowed).
+    9. When a widget has a ``metric`` binding, its ``metric.metric_id`` is checked
+       against the live metric registry. Unknown ids produce a WARNING (not a hard
+       failure — mirrors the soft ``query_id`` rule so specs validate before the
+       metric is registered).
 
     Parameters
     ----------
@@ -447,6 +514,40 @@ def validate_spec(data: Any) -> tuple[DashboardSpec | None, list[str]]:
     except Exception:  # noqa: BLE001 — registry unavailable; skip silently
         pass
 
+    # ── Step 8: data widget must have a query_id OR a metric binding ──────────
+    # A data widget (kpi/table/chart/metric/pivot) needs a data source: either a
+    # non-empty query_id OR a metric binding. Neither is a HARD error (mirrors the
+    # severity of a missing chart encoding). Both is ALLOWED — `metric` takes
+    # precedence (documented on Widget.metric / spec_to_html).
+    _DATA_WIDGET_TYPES = {"kpi", "table", "chart", "metric", "pivot"}
+    for widget in spec.widgets:
+        if widget.type not in _DATA_WIDGET_TYPES:
+            continue
+        if not widget.query_id and widget.metric is None:
+            issues.append(
+                f"Widget {widget.id!r} ({widget.type}): a data widget must have "
+                "either a non-empty 'query_id' or a 'metric' binding."
+            )
+
+    # ── Step 9: metric binding registry check (soft warning) ─────────────────
+    # Mirror the soft query_id rule: an unknown metric_id is a WARNING (not a hard
+    # error) so a spec authored before its metric is registered still validates.
+    try:
+        from app.metrics.registry import get_metric_registry  # noqa: PLC0415
+
+        metric_registry = get_metric_registry()
+        for widget in spec.widgets:
+            if widget.metric is None:
+                continue
+            mid = widget.metric.metric_id
+            if mid and metric_registry.get(mid) is None:
+                issues.append(
+                    f"[warn] Widget {widget.id!r}: metric_id {mid!r} is not in the "
+                    "registered metric registry (may be a forward reference)."
+                )
+    except Exception:  # noqa: BLE001 — metric registry unavailable; skip silently
+        pass
+
     return spec, issues
 
 
@@ -474,9 +575,44 @@ def _esc(value: Any) -> str:
     return html.escape(str(value), quote=True)
 
 
+def _metric_attrs(widget: Widget) -> str:
+    """Additive metric-binding attributes for a custom element, or ``""``.
+
+    When ``widget.metric`` is set we emit ``metric-id``, ``metric-dimensions``
+    (comma-joined), ``metric-time-grain`` and ``metric-filters`` (JSON) so the
+    embed renderer can drive ``POST /metrics/{id}/query`` instead of the query
+    path. ``query-id`` is OMITTED for metric widgets (the metric binding takes
+    precedence — see ``Widget.metric``). All values flow through ``_esc``.
+
+    NOTE: the embed web-component that CONSUMES these attributes (reads them and
+    calls the metric query endpoint) is a frontend follow-up — this only emits
+    them. When ``widget.metric is None`` this returns ``""`` so the query_id path
+    stays byte-identical to before.
+    """
+    mb = widget.metric
+    if mb is None:
+        return ""
+    import json as _json  # noqa: PLC0415
+
+    parts = [f' metric-id="{_esc(mb.metric_id)}"']
+    if mb.dimensions:
+        parts.append(f' metric-dimensions="{_esc(",".join(mb.dimensions))}"')
+    if mb.time_grain:
+        parts.append(f' metric-time-grain="{_esc(mb.time_grain)}"')
+    if mb.filters:
+        parts.append(f' metric-filters="{_esc(_json.dumps(mb.filters))}"')
+    if mb.limit is not None:
+        parts.append(f' metric-limit="{_esc(mb.limit)}"')
+    return "".join(parts)
+
+
 def _kpi_tag(widget: Widget) -> str:
-    """Render a ``<nubi-kpi>`` element from a KPI widget."""
-    query_id = _esc(widget.query_id)
+    """Render a ``<nubi-kpi>`` element from a KPI widget.
+
+    When ``widget.metric`` is set, emit the metric-binding attributes and OMIT
+    ``query-id`` (the metric binding takes precedence); otherwise the query_id
+    path is byte-identical to before.
+    """
     # value-col: from encoding['value'] or encoding['y'] or props['value_col']
     value_col = (
         widget.encoding.get("value")
@@ -487,7 +623,11 @@ def _kpi_tag(widget: Widget) -> str:
     label = widget.props.get("label", value_col.replace("_", " ").title())
     fmt = widget.props.get("format", "")
 
-    parts = [f'<nubi-kpi query-id="{query_id}"']
+    if widget.metric is not None:
+        parts = [f"<nubi-kpi{_metric_attrs(widget)}"]
+    else:
+        query_id = _esc(widget.query_id)
+        parts = [f'<nubi-kpi query-id="{query_id}"']
     if value_col:
         parts.append(f' value-col="{_esc(value_col)}"')
     if label:
@@ -499,12 +639,19 @@ def _kpi_tag(widget: Widget) -> str:
 
 
 def _table_tag(widget: Widget) -> str:
-    """Render a ``<nubi-table>`` element from a table widget."""
-    query_id = _esc(widget.query_id)
+    """Render a ``<nubi-table>`` element from a table widget.
+
+    When ``widget.metric`` is set, emit the metric-binding attributes and OMIT
+    ``query-id``; otherwise the query_id path is byte-identical to before.
+    """
     limit = widget.props.get("limit", 50)
     columns = widget.props.get("columns", "")
 
-    parts = [f'<nubi-table query-id="{query_id}" limit="{_esc(limit)}"']
+    if widget.metric is not None:
+        parts = [f'<nubi-table{_metric_attrs(widget)} limit="{_esc(limit)}"']
+    else:
+        query_id = _esc(widget.query_id)
+        parts = [f'<nubi-table query-id="{query_id}" limit="{_esc(limit)}"']
     if columns:
         if isinstance(columns, list):
             columns = ",".join(str(c) for c in columns)
@@ -514,8 +661,13 @@ def _table_tag(widget: Widget) -> str:
 
 
 def _chart_tag(widget: Widget) -> str:
-    """Render a ``<nubi-chart>`` element from a chart widget."""
-    query_id = _esc(widget.query_id)
+    """Render a ``<nubi-chart>`` element from a chart widget.
+
+    When ``widget.metric`` is set, emit the metric-binding attributes and OMIT
+    ``query-id`` (the metric binding takes precedence); otherwise the query_id
+    path is byte-identical to before. Chart encoding (x/y/color) is emitted in
+    both cases — a metric-bound chart still needs encoding.
+    """
     chart_type = widget.chart_type or "scatter"
     # Normalize to the subset supported by nubi-chart.js (scatter|line|bar).
     # Richer types degrade gracefully: area→line; pie/donut/heatmap/gauge→bar;
@@ -534,12 +686,21 @@ def _chart_tag(widget: Widget) -> str:
     y_col = _esc(widget.encoding.get("y", "y"))
     color_col = widget.encoding.get("color", "")
 
-    parts = [
-        f'<nubi-chart query-id="{query_id}"'
-        f' type="{_esc(embed_type)}"'
-        f' x="{x_col}"'
-        f' y="{y_col}"'
-    ]
+    if widget.metric is not None:
+        parts = [
+            f"<nubi-chart{_metric_attrs(widget)}"
+            f' type="{_esc(embed_type)}"'
+            f' x="{x_col}"'
+            f' y="{y_col}"'
+        ]
+    else:
+        query_id = _esc(widget.query_id)
+        parts = [
+            f'<nubi-chart query-id="{query_id}"'
+            f' type="{_esc(embed_type)}"'
+            f' x="{x_col}"'
+            f' y="{y_col}"'
+        ]
     if color_col:
         parts.append(f' color="{_esc(color_col)}"')
     parts.append("></nubi-chart>")
@@ -601,7 +762,10 @@ def spec_to_html(spec: DashboardSpec) -> str:
     - Only attributes from the sanitizer's allowlist (``query-id``,
       ``value-col``, ``label``, ``format``, ``limit``, ``columns``, ``type``,
       ``x``, ``y``, ``color``, ``subtype``, ``target-var``,
-      ``options-query-id``, ``style``, ``class``).
+      ``options-query-id``, ``style``, ``class``) plus the additive
+      metric-binding attributes (``metric-id``, ``metric-dimensions``,
+      ``metric-time-grain``, ``metric-filters``, ``metric-limit``) emitted in
+      place of ``query-id`` for metric-bound data widgets.
 
     Grid layout is expressed via inline ``style`` attributes containing only
     numeric values and CSS grid shorthand — safe per the sanitizer config.

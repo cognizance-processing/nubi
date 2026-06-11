@@ -13,7 +13,8 @@ Coverage
 4. Source binding errors → 400:
    - neither query_id nor metric_id  → invalid_pin_source
    - both query_id and metric_id      → invalid_pin_source (mutual exclusivity)
-   - metric_id with no backing query  → metric_pin_unsupported
+   - metric_id (registered)           → metric-bound widget (widget→metric binding)
+   - metric_id (unregistered)         → still pins, with a soft warning
 5. Auth gate: no token → 401.
 
 Strategy mirrors test_resources.py (InMemoryRepo via set_repo + seeded org) and
@@ -306,7 +307,8 @@ class TestPinSourceBinding:
         assert resp.json()["error"]["code"] == "invalid_pin_source"
 
     @pytest.mark.asyncio
-    async def test_metric_only_unsupported_400(self, pin_client):
+    async def test_metric_pin_creates_metric_widget(self, pin_client):
+        """A registered metric pins to a metric-bound widget (widget→metric binding)."""
         ac, user_id, _org, _repo = pin_client
         body = {
             "title": "Metric only",
@@ -316,13 +318,15 @@ class TestPinSourceBinding:
         resp = await ac.post(
             "/api/v1/ai/pin", json=body, headers=_auth_headers(user_id)
         )
-        assert resp.status_code == 400
-        assert resp.json()["error"]["code"] == "metric_pin_unsupported"
+        assert resp.status_code == 200, resp.text
+        widget = resp.json()["spec"]["widgets"][0]
+        assert widget["metric"]["metric_id"] == "demo_revenue"
+        assert not widget.get("query_id")  # metric-bound, no backing query
 
     @pytest.mark.asyncio
-    async def test_unknown_metric_only_still_unsupported(self, pin_client):
-        """A metric_id that isn't even registered → still metric_pin_unsupported
-        (the honest limitation is the spec binding, not metric existence)."""
+    async def test_unknown_metric_pins_with_warning(self, pin_client):
+        """An unregistered metric_id is a soft warning (not a hard error), so the
+        pin still succeeds with the binding — mirrors the query_id soft rule."""
         ac, user_id, _org, _repo = pin_client
         body = {
             "title": "Phantom metric",
@@ -332,5 +336,5 @@ class TestPinSourceBinding:
         resp = await ac.post(
             "/api/v1/ai/pin", json=body, headers=_auth_headers(user_id)
         )
-        assert resp.status_code == 400
-        assert resp.json()["error"]["code"] == "metric_pin_unsupported"
+        assert resp.status_code == 200, resp.text
+        assert resp.json()["spec"]["widgets"][0]["metric"]["metric_id"] == "no_such_metric"

@@ -36,6 +36,7 @@
 
 import { useState, useEffect, useMemo } from 'react'
 import { runArrowQueryById } from '../../lib/wasmRuntime.js'
+import { runMetricQuery } from '../../lib/metricRuntime.js'
 import { useResolvedParams } from '../VariableStore.jsx'
 import EChart from '../../viz/EChart.jsx'
 
@@ -119,7 +120,7 @@ function sparkOption(values) {
 }
 
 export default function KpiWidget({ widget }) {
-  const { query_id, encoding = {}, props: wProps = {}, params: widgetParams } = widget
+  const { query_id, encoding = {}, props: wProps = {}, params: widgetParams, metric } = widget
   const valueCol = encoding.value || encoding.y || encoding.x || ''
   const compareCol = encoding.compare || ''
   const sparkCol = encoding.spark || ''
@@ -138,21 +139,24 @@ export default function KpiWidget({ widget }) {
   const [error, setError] = useState(null)
 
   useEffect(() => {
-    if (!query_id) return
+    // A widget binds to either a governed `metric` or a registered `query_id`.
+    if (!metric && !query_id) return
     let cancelled = false
 
     async function fetchData() {
       setLoading(true)
       setError(null)
       try {
-        // Pass resolved params as { namedParams } — M13-B wires this signature
-        // into wasmRuntime. When resolvedParams is empty ({}) the behaviour is
-        // identical to the pre-M14-C call (regression-safe).
+        // Governed metric path: server-side compile + RLS injection.
+        // Otherwise the existing query_id path is used EXACTLY as before
+        // (resolved params threaded as { namedParams }; empty {} is a no-op).
         const hasParams = Object.keys(resolvedParams).length > 0
-        const { table, cacheStatus } = await runArrowQueryById(
-          query_id,
-          hasParams ? { namedParams: resolvedParams } : undefined,
-        )
+        const { table, cacheStatus } = metric
+          ? await runMetricQuery(metric)
+          : await runArrowQueryById(
+              query_id,
+              hasParams ? { namedParams: resolvedParams } : undefined,
+            )
         if (!cancelled) {
           if (table && table.numRows > 0 && valueCol) {
             const col = table.getChild(valueCol)
@@ -204,7 +208,7 @@ export default function KpiWidget({ widget }) {
   // resolvedParams is a new object each render when vars change; JSON.stringify gives
   // a stable dependency so the effect only re-fires when the actual values differ.
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [query_id, valueCol, compareCol, sparkCol, JSON.stringify(resolvedParams)])
+  }, [query_id, JSON.stringify(metric), valueCol, compareCol, sparkCol, JSON.stringify(resolvedParams)])
 
   const delta = useMemo(
     () => (compareCol ? computeDelta(value, compareValue, deltaFormat) : null),
