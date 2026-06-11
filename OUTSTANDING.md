@@ -46,9 +46,13 @@ Baseline at audit: commit `16f31d0` (Wave C). Waves A/B/C done. Verify commands:
   + filters) in `dashboards/spec.py`; `runMetricQuery` + Chart/Table/Kpi widgets fetch from
   `/metrics/{id}/query`; `/ai/pin` metric path. ✅ `7f4434a` (backend 3442, build green).
   *Follow-up:* embed web-component (`<nubi-chart metric-id=…>`) consumption of the emitted attrs.
-- [ ] **Landing-page glow-up** (`src/pages/LandingPage.jsx`, `src/components/illustrations/*`):
-  bolder/less-bland copy, real product screenshots replacing weak SVG illustrations. Use the
-  **nubi-illustrations** skill's render→screenshot→critique loop (orchestrator-driven, both modes).
+- [~] **Landing-page glow-up** (`src/pages/LandingPage.jsx`, `src/components/illustrations/*`):
+  orchestrator-driven visual loop (render→screenshot→critique). Baseline captured; page is already
+  fairly polished from prior illustration work. DONE: hero copy tightened + scannable bold (`43404db`).
+  NEXT (per fire): (1) tighten the remaining long body paragraphs across sections + add bold key
+  phrases (same treatment as the hero); (2) replace the generic SVG dashboard mockups in the
+  "One workspace / in action" section with REAL app screenshots (needs login to the demo workspace
+  + navigate + headless-Chrome capture); (3) re-verify both light + dark via the gallery loop.
 - [x] **Estimate quota footgun** — `/query/estimate` charged a FULL compute unit (== a real
   query) while its docstring claimed "a small dry-run budget"; an auto-refreshing estimate UI
   could drain the execution quota. Now charges `0.05` units. ✅ (pending verify+commit).
