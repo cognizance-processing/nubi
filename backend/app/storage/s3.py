@@ -214,3 +214,45 @@ class S3StorageClient(StorageClient):
             if code in ("NoSuchKey", "404", "403"):
                 return False
             raise
+
+    def stat(self, key: str):
+        """Return size/mtime/etag for ``s3://<bucket>/<key>`` via ``head_object``.
+
+        ``mtime`` is the object's ``LastModified`` (UTC); ``etag`` is the S3
+        ETag (quotes stripped).  Returns ``None`` if the object is absent.
+        """
+        try:
+            import botocore.exceptions  # noqa: PLC0415
+        except ImportError:
+            raise RuntimeError(
+                "boto3/botocore is required for S3 storage but is not installed. "
+                "Install it with: pip install boto3"
+            ) from None
+
+        from datetime import timezone  # noqa: PLC0415
+
+        from app.storage.base import ObjectStat  # noqa: PLC0415
+
+        try:
+            resp = self._client().head_object(Bucket=self._bucket, Key=key.lstrip("/"))
+        except botocore.exceptions.ClientError as exc:
+            code = exc.response.get("Error", {}).get("Code", "")
+            if code in ("NoSuchKey", "404", "403"):
+                return None
+            raise
+
+        last_modified = resp.get("LastModified")
+        if last_modified is not None and last_modified.tzinfo is None:
+            last_modified = last_modified.replace(tzinfo=timezone.utc)
+        etag = resp.get("ETag")
+        if isinstance(etag, str):
+            etag = etag.strip('"')
+        return ObjectStat(
+            size=int(resp.get("ContentLength", 0)),
+            mtime=last_modified,
+            etag=etag,
+        )
+
+    def delete(self, key: str) -> None:
+        """Delete ``s3://<bucket>/<key>`` (no-op if it does not exist)."""
+        self._client().delete_object(Bucket=self._bucket, Key=key.lstrip("/"))

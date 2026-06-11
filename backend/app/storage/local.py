@@ -163,3 +163,32 @@ class LocalStorageClient(StorageClient):
     def exists(self, key: str) -> bool:
         """Return ``True`` if ``<root>/<key>`` exists as a file."""
         return os.path.isfile(self._abs(key))
+
+    def stat(self, key: str):
+        """Return size/mtime/etag for ``<root>/<key>``, or ``None`` if absent.
+
+        ``mtime`` is the filesystem modification time (UTC); ``etag`` is a
+        cheap ``"<size>:<mtime_ns>"`` surrogate since local files have no real
+        content tag.
+        """
+        from datetime import datetime, timezone  # noqa: PLC0415
+
+        from app.storage.base import ObjectStat  # noqa: PLC0415
+
+        path = self._abs(key)
+        if not os.path.isfile(path):
+            return None
+        st = os.stat(path)
+        return ObjectStat(
+            size=int(st.st_size),
+            mtime=datetime.fromtimestamp(st.st_mtime, tz=timezone.utc),
+            etag=f"{st.st_size}:{st.st_mtime_ns}",
+        )
+
+    def delete(self, key: str) -> None:
+        """Delete ``<root>/<key>`` (no-op if it does not exist)."""
+        path = self._abs(key)
+        try:
+            os.remove(path)
+        except FileNotFoundError:
+            pass

@@ -156,6 +156,86 @@ def org_lake_uri(central: CentralStorage, org_id: str) -> str:
 
 
 # ---------------------------------------------------------------------------
+# Staging (ingestion design §5) — per-run, prefix-isolated transient store
+# ---------------------------------------------------------------------------
+#
+# Layout: ``<staging-store>/orgs/<org_id>/staging/<run_id>/…``
+#
+# Two postures, ONE code path (config-selected):
+#   * Managed cloud — a DEDICATED staging bucket (separate blast radius from the
+#     lakehouse bucket), pointed at by ``NUBI_STAGING_BUCKET_URI`` /
+#     ``NUBI_STAGING_DIR``.  Lifecycle expiry + write-only grants live on that
+#     bucket (infra, not this module).
+#   * Self-host/dev — a ``staging/`` PREFIX of the single existing bucket when no
+#     dedicated staging store is configured.  Weaker posture, documented.
+#
+# The org/run segments are SERVER-PINNED (derived from trusted ids), never user
+# input — identical to ``org_lake_prefix``.
+
+
+def resolve_staging_storage() -> CentralStorage | None:
+    """Return the configured staging store, or ``None`` if unconfigured.
+
+    Resolution order:
+      1. **Dedicated staging bucket** (managed-cloud posture) — when
+         ``NUBI_STAGING_BUCKET_URI`` (``s3://bucket``) is set with central S3
+         creds, or ``NUBI_STAGING_DIR`` (absolute dir) is set for local dev.
+      2. **Same-bucket fallback** (self-host posture) — the central lakehouse
+         storage itself; staging lands under a ``staging/`` prefix of it.
+      3. ``None`` when no central storage at all (degrade).
+
+    The returned :class:`CentralStorage` is the *store root*; the per-org/run
+    ``staging/`` prefixing is applied by :func:`org_staging_prefix`.
+    """
+    # 1a. Dedicated staging bucket (S3) — needs central creds.
+    bucket_uri = os.getenv("NUBI_STAGING_BUCKET_URI", "")
+    if bucket_uri.startswith("s3://"):
+        bucket = bucket_uri[len("s3://"):].split("/")[0]
+        if bucket:
+            return CentralStorage(scheme="s3", bucket=bucket, creds=_s3_creds_from_env())
+
+    # 1b. Dedicated staging dir (local dev).
+    staging_dir = os.getenv("NUBI_STAGING_DIR")
+    if staging_dir:
+        return CentralStorage(scheme="file", bucket=os.path.abspath(staging_dir), creds={})
+
+    # 2. Same-bucket fallback: reuse the central lakehouse storage.
+    return resolve_central_storage()
+
+
+def org_staging_prefix(org_id: str, run_id: str) -> str:
+    """Server-pinned per-run staging key prefix for *org_id* / *run_id*.
+
+    The ONLY definition of the staging prefix — derived purely from trusted ids
+    so a producer can never escape its own run's prefix (design §5).  A
+    ``staging/`` component sits under the org segment so that, in the self-host
+    same-bucket posture, staging never collides with ``lake/`` data.
+    """
+    safe_run = str(run_id).strip().strip("/") or "_run"
+    return f"orgs/{org_id}/staging/{safe_run}/"
+
+
+def org_staging_uri(staging: CentralStorage, org_id: str, run_id: str) -> str:
+    """Full storage URI for *org_id* / *run_id*'s staging prefix under *staging*."""
+    return f"{staging.base_uri()}/{org_staging_prefix(org_id, run_id)}"
+
+
+def get_staging_area(org_id: str, run_id: str) -> "StagingArea | None":
+    """Return a :class:`StagingArea` for *org_id* / *run_id*, or ``None``.
+
+    ``None`` when no staging store is configured (degrade path — a caller may
+    then fall back to a local temp dir for dev).  The org/run prefix is pinned
+    here from trusted ids; callers pass only *relative* sub-paths.
+    """
+    staging = resolve_staging_storage()
+    if staging is None:
+        return None
+    from app.lakehouse.staging import StagingArea  # noqa: PLC0415
+
+    return StagingArea(central=staging, org_id=org_id, run_id=run_id)
+
+
+# ---------------------------------------------------------------------------
 # Status value object
 # ---------------------------------------------------------------------------
 

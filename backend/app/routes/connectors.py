@@ -55,6 +55,8 @@ ConnectorType = Literal[
     "athena", "trino", "presto",
     # Lakehouse & files
     "duckdb", "duckdb_storage",
+    # File-only ingestion sources (design §2 — FileConnectorMixin, not queryable)
+    "sftp", "ftp",
     # APIs & custom
     "http_json", "jdbc",
     # Built-in demo dataset (virtual — re-adds the demo connector after removal)

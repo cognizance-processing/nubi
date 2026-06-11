@@ -260,6 +260,18 @@ def _bootstrap(registry: ConnectorRegistry) -> None:
     registry.register("trino", lambda config: TrinoConnector(config))
     registry.register("presto", lambda config: TrinoConnector(config))
 
+    # File-only ingestion sources (design §2).  These implement the FILE
+    # interface (FileConnectorMixin), not the SQL query interface, and import
+    # their drivers lazily (paramiko for sftp; ftplib is stdlib) so the registry
+    # imports cleanly without paramiko installed.  Secrets (password /
+    # private_key) are merged into the config dict by query.py's generic
+    # secret-fallback path, exactly like the warehouse connectors.
+    from app.connectors.ftp import FTPConnector
+    from app.connectors.sftp import SFTPConnector
+
+    registry.register("sftp", lambda config: SFTPConnector(config))
+    registry.register("ftp", lambda config: FTPConnector(config))
+
 
 def _pg_dsn_from_config(config: dict[str, Any]) -> str:
     """Assemble a ``postgresql://`` DSN from a datastore config dict.

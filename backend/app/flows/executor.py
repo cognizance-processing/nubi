@@ -150,6 +150,12 @@ class TaskContext:
     env: str = field(default="prod")
     watermark: str | None = field(default=None)
     flow: dict[str, Any] | None = field(default=None)
+    # ── Ingestion (file_ingest) — additive, defaulted ───────────────────────
+    # run_id: the flow_run id, used to server-pin the per-run staging prefix
+    #         (``orgs/<org>/staging/<run_id>/``) so a producer cannot escape it.
+    #         Populated by the runtime from flow_run["id"]; None in unit tests
+    #         (the handler then synthesises a uuid).
+    run_id: str | None = field(default=None)
 
 
 # ---------------------------------------------------------------------------

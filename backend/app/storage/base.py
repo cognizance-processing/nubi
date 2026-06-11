@@ -79,7 +79,23 @@ from __future__ import annotations
 
 import os
 from abc import ABC, abstractmethod
+from dataclasses import dataclass
+from datetime import datetime
 from typing import BinaryIO
+
+
+@dataclass(frozen=True)
+class ObjectStat:
+    """Lightweight metadata for one stored object (``size``/``mtime``/``etag``).
+
+    Returned by :meth:`StorageClient.stat`.  Feeds the file-connector
+    ``FileStat`` (which the ingestion watermark consumes).  ``mtime`` is a
+    timezone-aware UTC ``datetime`` when the backend exposes one, else ``None``.
+    """
+
+    size: int
+    mtime: datetime | None = None
+    etag: str | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -286,6 +302,31 @@ class StorageClient(ABC):
     @abstractmethod
     def exists(self, key: str) -> bool:
         """Return ``True`` if an object with *key* exists, ``False`` otherwise."""
+
+    # ------------------------------------------------------------------
+    # Optional metadata / mutation (used by the file-connector interface)
+    # ------------------------------------------------------------------
+
+    def stat(self, key: str) -> "ObjectStat | None":
+        """Return size/mtime/etag for *key*, or ``None`` if unknown/absent.
+
+        Default implementation returns ``None`` (metadata unavailable) so
+        backends that cannot cheaply stat still work — the file connector then
+        emits a ``FileStat`` with ``size=0`` / ``mtime=None`` for that object,
+        which simply means the ``mtime`` watermark never skips it.  Backends
+        override this to supply real metadata.
+        """
+        return None
+
+    def delete(self, key: str) -> None:
+        """Delete the object at *key* (no-op if absent).
+
+        Default raises ``NotImplementedError``; backends that support deletion
+        override it.  Used by the file-connector ``post_action: delete``.
+        """
+        raise NotImplementedError(
+            f"{type(self).__name__} does not support delete()."
+        )
 
 
 # ---------------------------------------------------------------------------

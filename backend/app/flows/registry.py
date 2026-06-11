@@ -850,6 +850,26 @@ def _handle_preagg_refresh(
     return handle(config, ctx, claims)
 
 
+def _handle_file_ingest(
+    config: dict[str, Any],
+    ctx: "TaskContext",
+    claims: dict[str, Any],
+) -> dict[str, Any]:
+    """Ingest files from a file connector into a target connector (design §3).
+
+    Delegates to ``app.flows.handlers.file_ingest.handle``.  Symmetric to
+    ``bucket_load`` but in the INGEST direction: lists files from the source
+    connector's file interface (sftp/ftp/bucket), stages each as Parquet,
+    verifies the manifest, and loads into the target via the loader layer.
+
+    Returns ``{files_ingested, rows_ingested, strategy, manifest, new_watermark,
+    post_action, ...}``.  See ``app.flows.handlers.file_ingest`` for the schema.
+    """
+    from app.flows.handlers.file_ingest import handle  # noqa: PLC0415
+
+    return handle(config, ctx, claims)
+
+
 # ---------------------------------------------------------------------------
 # Module-level singleton / provider
 # ---------------------------------------------------------------------------
@@ -890,6 +910,7 @@ def _bootstrap(registry: TaskKindRegistry) -> None:
     registry.register("materialize", _handle_materialize)
     registry.register("noop", _handle_noop)
     registry.register("bucket_load", _handle_bucket_load)
+    registry.register("file_ingest", _handle_file_ingest)
     registry.register("preagg_refresh", _handle_preagg_refresh)
 
     from app.flows.handlers.map import handle_map  # noqa: PLC0415

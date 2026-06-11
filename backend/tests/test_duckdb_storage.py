@@ -444,15 +444,22 @@ class TestFromConfigInMemory:
         assert connector._is_cloud is False
 
     def test_capabilities_complete(self):
-        """capabilities() returns all 7 required keys with bool values."""
+        """capabilities() includes all 7 query keys (bool) + the additive
+        ingestion file/loader extension keys (design §2/§4)."""
         connector = DuckDBStorageConnector.for_memory()
         caps = connector.capabilities()
         required = {
             "native_arrow", "predicate_pushdown", "projection_pushdown",
             "partition_pushdown", "predicate_rls", "column_masking", "streaming_cdc",
         }
-        assert required == set(caps.keys())
-        assert all(isinstance(v, bool) for v in caps.values())
+        # The strict 7-flag query contract is present and bool-valued.
+        assert required <= set(caps.keys())
+        assert all(isinstance(caps[k], bool) for k in required)
+        # Additive ingestion extension (file_interface/stream_load bool;
+        # bulk_load_from list) — present alongside, never replacing.
+        assert isinstance(caps["file_interface"], bool)
+        assert isinstance(caps["stream_load"], bool)
+        assert isinstance(caps["bulk_load_from"], list)
 
 
 # ---------------------------------------------------------------------------

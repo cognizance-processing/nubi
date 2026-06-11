@@ -48,6 +48,8 @@ Supported task kinds
 - ``materialize``   — merge upstream results into a DuckDB materialization.
 - ``noop``          — no-operation (useful as a join/synchronisation point).
 - ``bucket_load``   — upload upstream task result to a storage bucket.
+- ``file_ingest``   — ingest files from a file connector (sftp/ftp/bucket) into
+                      any target connector via staging + the loader layer.
 - ``preagg_refresh``— refresh a pre-aggregated rollup for an org.
 - ``map``           — fan-out over an iterable; body is a nested sub-DAG.
 - ``branch``        — conditional routing; evaluates conditions and activates
@@ -211,6 +213,13 @@ class TaskSpec(BaseModel):
           Optional: ``format`` (``'csv'``|``'json'``|``'ndjson'``|``'parquet'``,
           default ``'csv'``), ``mode`` (``'overwrite'``|``'append'``, default
           ``'overwrite'``), ``secret``.
+        - ``file_ingest`` → ``source`` (required — ``{connector_id, path}``) AND
+          ``target`` (required — ``{connector_id, object}``).  Optional:
+          ``format`` (``csv``|``json``|``ndjson``|``parquet``|``zip``|``auto``,
+          default ``auto``), ``inner_format`` (zip entry format, default
+          ``csv``), ``mode`` (``append``|``overwrite``|``merge``, default
+          ``append``), ``incremental`` (``{strategy: mtime|filename|none}``),
+          ``post_action`` (``none``|``move:<dir>``|``delete``).
         - ``map``         → ``item_expr`` (required — template expression
           resolving to an iterable at runtime) AND ``body`` (required — non-empty
           list of TaskSpec dicts forming the per-item sub-DAG).  Optional:
@@ -245,6 +254,7 @@ class TaskSpec(BaseModel):
         "materialize",
         "noop",
         "bucket_load",
+        "file_ingest",  # ingest files from a file connector into any target
         "preagg_refresh",
         "map",          # fan-out; config.body is a sub-DAG of TaskSpec dicts
         "branch",       # conditional routing; config.conditions list
@@ -578,6 +588,24 @@ def validate_flow_spec(data: Any) -> tuple[FlowSpec | None, list[str]]:
             if not cfg.get("source"):
                 issues.append(
                     f"Task {task.key!r} (bucket_load): config must include 'source'."
+                )
+        elif task.kind == "file_ingest":
+            src = cfg.get("source")
+            if not isinstance(src, dict) or not src.get("connector_id"):
+                issues.append(
+                    f"Task {task.key!r} (file_ingest): config must include "
+                    "'source.connector_id'."
+                )
+            tgt = cfg.get("target")
+            if not isinstance(tgt, dict) or not tgt.get("connector_id"):
+                issues.append(
+                    f"Task {task.key!r} (file_ingest): config must include "
+                    "'target.connector_id'."
+                )
+            elif not tgt.get("object"):
+                issues.append(
+                    f"Task {task.key!r} (file_ingest): config must include "
+                    "'target.object'."
                 )
         elif task.kind == "preagg_refresh":
             if not cfg.get("org_id"):

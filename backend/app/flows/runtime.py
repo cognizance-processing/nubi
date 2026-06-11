@@ -1125,6 +1125,7 @@ async def run_one_ready_task(
         env=env,
         flow=flow_dict,
         watermark=watermark,
+        run_id=flow_run_id,
     )
 
     # ── Execute ────────────────────────────────────────────────────────────────
@@ -1727,7 +1728,7 @@ async def _resolve_run_env_context(
     env = str(env or "prod")
 
     watermark: str | None = None
-    if _is_incremental_materialize(task_spec) and flow_id:
+    if _uses_watermark(task_spec) and flow_id:
         getter = getattr(store, "get_watermark", None)
         if getter is not None:
             try:
@@ -1736,6 +1737,25 @@ async def _resolve_run_env_context(
                 watermark = None
 
     return env, flow_dict, watermark
+
+
+def _is_incremental_file_ingest(task_spec: dict[str, Any]) -> bool:
+    """Return ``True`` for a ``file_ingest`` task with an incremental strategy.
+
+    ``file_ingest`` reuses ``flow_watermarks`` exactly like incremental
+    materialize: the runtime READS the stored mark into ``ctx.watermark`` before
+    the handler runs and WRITES the handler's ``new_watermark`` only on success.
+    Strategy ``none`` (or absent) does not watermark.
+    """
+    if task_spec.get("kind") != "file_ingest":
+        return False
+    incr = (task_spec.get("config") or {}).get("incremental") or {}
+    return str(incr.get("strategy") or "none").lower() in ("mtime", "filename")
+
+
+def _uses_watermark(task_spec: dict[str, Any]) -> bool:
+    """Tasks whose stored ``flow_watermarks`` mark is read before / written after."""
+    return _is_incremental_materialize(task_spec) or _is_incremental_file_ingest(task_spec)
 
 
 async def _persist_watermark(
@@ -1750,7 +1770,7 @@ async def _persist_watermark(
     No-op unless the task is a persisted materialize and the handler returned a
     ``new_watermark`` in its result.
     """
-    if not _is_incremental_materialize(task_spec):
+    if not _uses_watermark(task_spec):
         return
     if not isinstance(result, dict):
         return
@@ -2001,6 +2021,7 @@ async def _execute_claimed_task_run(
         env=env,
         flow=flow_dict,
         watermark=watermark,
+        run_id=flow_run_id,
     )
 
     # Merge task_run fields with task_spec so execute_task sees kind/config/timeout.

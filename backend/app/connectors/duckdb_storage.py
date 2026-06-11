@@ -79,15 +79,17 @@ Usage
 from __future__ import annotations
 
 import os
-from typing import TYPE_CHECKING, Iterator
+from datetime import datetime
+from typing import TYPE_CHECKING, BinaryIO, Iterator
 
 if TYPE_CHECKING:
     import duckdb as _duckdb_t
     import pyarrow as pa
 
-from app.connectors.base import Connector
+from app.connectors.base import Connector, FileConnectorMixin, FileStat, file_capabilities
 from app.connectors.duckdb_conn import DuckDBConnector
 from app.connectors.plan import PhysicalPlan
+from app.connectors.storage_files import StorageFileSupport
 from app.errors import AppError
 
 # Schemes that require httpfs + secret registration before any query.
@@ -267,7 +269,38 @@ def _register_s3_secret(
     conn.execute(sql)
 
 
-class DuckDBStorageConnector(Connector):
+def _storage_file_uri(config: dict) -> str | None:
+    """Derive the object-storage URI the FILE interface operates over.
+
+    Precedence: an explicit ``storage_uri`` / ``files_uri`` (where ingest files
+    live, distinct from the ``database`` DuckDB file), else the bucket root of
+    the ``database`` URI for cloud paths, else a local directory.
+
+    Returns ``None`` when no file root can be determined (in-memory connectors).
+    """
+    explicit = config.get("storage_uri") or config.get("files_uri")
+    if explicit:
+        return str(explicit)
+
+    db_path = config.get("database") or config.get("path") or ""
+    if not db_path or db_path.strip() == ":memory:":
+        return None
+    db_path = db_path.strip()
+
+    if "://" in db_path:
+        # Cloud URI — operate over the bucket root (scheme://bucket).
+        scheme, rest = db_path.split("://", 1)
+        bucket = rest.split("/", 1)[0]
+        return f"{scheme}://{bucket}"
+
+    # Local DuckDB file → file interface over its containing directory.
+    if db_path.startswith("file://"):
+        db_path = db_path[len("file://"):]
+    parent = os.path.dirname(os.path.abspath(db_path))
+    return f"file://{parent}"
+
+
+class DuckDBStorageConnector(Connector, FileConnectorMixin):
     """DuckDB connector with dual local-file / S3 object-storage support.
 
     Do not instantiate directly — use :meth:`from_config` to build an
@@ -292,9 +325,13 @@ class DuckDBStorageConnector(Connector):
         inner: DuckDBConnector,
         *,
         is_cloud: bool = False,
+        config: dict | None = None,
     ) -> None:
         self._inner = inner
         self._is_cloud = is_cloud
+        # Retained so the FILE interface can build a storage client lazily.
+        self._config: dict = dict(config or {})
+        self._file_support: StorageFileSupport | None = None
         # No validate_capabilities() here — delegated to the inner connector.
 
     # ------------------------------------------------------------------
@@ -410,35 +447,62 @@ class DuckDBStorageConnector(Connector):
 
         if scheme in _S3_SCHEMES:
             creds = _get_creds(config)
-            return cls.for_s3(db_path, creds)
-
-        if scheme in _CLOUD_SCHEMES:
+            inst = cls.for_s3(db_path, creds)
+        elif scheme in _CLOUD_SCHEMES:
             # GCS / Azure — not fully implemented yet; fall back to httpfs
             # with the S3-compat credentials structure and let DuckDB handle it.
             # Callers are expected to use specialised connectors for gs:// / az://.
             creds = _get_creds(config)
-            return cls.for_s3(db_path, creds)
-
-        # Local file or in-memory.
-        if db_path and db_path.strip() not in (":memory:", ""):
+            inst = cls.for_s3(db_path, creds)
+        elif db_path and db_path.strip() not in (":memory:", ""):
+            # Local file.
             path = db_path.strip()
             if path.startswith("file://"):
                 path = path[len("file://"):]
-            return cls.for_local_path(path)
+            inst = cls.for_local_path(path)
+        else:
+            inst = cls.for_memory()
 
-        return cls.for_memory()
+        # Retain the config so the (additive) file interface can build a storage
+        # client lazily; query behaviour is unchanged.
+        inst._config = dict(config)
+        return inst
 
     # ------------------------------------------------------------------
     # Connector interface (delegated to inner DuckDBConnector)
     # ------------------------------------------------------------------
 
     def capabilities(self) -> dict[str, bool]:
-        """Return DuckDB connector capability flags.
+        """Return DuckDB connector capability flags + the ingestion extension.
 
-        Delegates to the inner :class:`DuckDBConnector`; capabilities are
-        the same regardless of whether the data lives locally or in S3.
+        The 7 query flags delegate to the inner :class:`DuckDBConnector`.  The
+        ingestion extension marks this connector as BOTH file-capable
+        (``file_interface``) AND a viable object-storage target: it can be the
+        ``promote`` destination for a matching staging scheme (``bulk_load_from``)
+        and the worker can stream batches into it (``stream_load``).  A
+        purely in-memory connector (no resolvable file root) advertises no file
+        interface so it is never mistaken for an ingest source/target.
         """
-        return self._inner.capabilities()
+        caps = dict(self._inner.capabilities())
+        file_uri = _storage_file_uri(self._config)
+        has_files = file_uri is not None
+        scheme = (file_uri.split("://", 1)[0] if has_files else "")
+        # Map a storage scheme to the loader's staging-scheme vocabulary.
+        bulk_from: list[str] = []
+        if scheme in ("s3", "s3a"):
+            bulk_from = ["s3"]
+        elif scheme == "gs":
+            bulk_from = ["gcs"]
+        elif scheme == "az":
+            bulk_from = ["az"]
+        caps.update(
+            file_capabilities(
+                file_interface=has_files,
+                bulk_load_from=bulk_from,
+                stream_load=has_files,
+            )
+        )
+        return caps
 
     def execute(self, plan: PhysicalPlan) -> "pa.Table":
         """Execute *plan* and return the full result as a PyArrow Table.
@@ -584,3 +648,92 @@ class DuckDBStorageConnector(Connector):
                 f"DuckDB read_parquet('{uri}') failed: {exc}",
                 status=500,
             ) from exc
+
+    # ------------------------------------------------------------------
+    # File interface (FileConnectorMixin) — reuses app.storage clients
+    # ------------------------------------------------------------------
+
+    def _files(self) -> StorageFileSupport:
+        """Lazily build the ``StorageFileSupport`` over the resolved file root.
+
+        Reuses the existing ``app.storage`` client for the connector's scheme
+        (S3/GCS/Azure/local) — no new storage client is written here.  Raises
+        ``AppError("file_interface_unavailable", 400)`` for in-memory connectors
+        that have no file root.
+        """
+        if self._file_support is not None:
+            return self._file_support
+
+        file_uri = _storage_file_uri(self._config)
+        if file_uri is None:
+            raise AppError(
+                "file_interface_unavailable",
+                "This duckdb_storage connector has no object-storage root "
+                "(in-memory or path-less); the file interface is unavailable. "
+                "Set 'storage_uri' or a cloud/local 'database' path.",
+                status=400,
+            )
+        # Object-storage creds reuse the connector's S3-style config (and the
+        # secret-store-merged aws_secret_access_key), mirroring the httpfs path.
+        creds = _storage_creds_for(self._config)
+        client = _build_storage_client(file_uri, creds)
+        # The base prefix is any key portion under the bucket the caller scoped
+        # the file interface to (config['files_prefix']); empty by default.
+        prefix = str(self._config.get("files_prefix") or "").strip("/")
+        self._file_support = StorageFileSupport(client, base_prefix=prefix)
+        return self._file_support
+
+    def list_files(self, pattern: str, since: "datetime | None" = None) -> list[FileStat]:
+        """List ingest files matching *pattern* (newer than *since*)."""
+        return self._files().list_files(pattern, since)
+
+    def open(self, path: str) -> BinaryIO:
+        """Open an object at *path* for streaming read."""
+        return self._files().open(path)
+
+    def move(self, src: str, dst: str) -> None:
+        """Move *src* to *dst* in object storage (post_action archive)."""
+        self._files().move(src, dst)
+
+    def delete(self, path: str) -> None:
+        """Delete the object at *path* (post_action delete)."""
+        self._files().delete(path)
+
+
+def _build_storage_client(file_uri: str, creds: dict):
+    """Return a ``StorageClient`` for *file_uri*, reusing the app.storage backends.
+
+    For ``file://`` URIs the ENTIRE path after the scheme is the root directory
+    (so the connector's keys are relative to that directory) — this bypasses
+    ``parse_uri``'s "first two path components are the bucket" convention, which
+    is wrong for a deep local ingest root.  Cloud schemes delegate to
+    ``get_storage_client`` (bucket = first path segment, as usual).
+    """
+    if file_uri.startswith("file://"):
+        from app.storage.local import LocalStorageClient  # noqa: PLC0415
+
+        return LocalStorageClient(root=file_uri[len("file://"):])
+
+    from app.storage.base import get_storage_client  # noqa: PLC0415
+
+    return get_storage_client(file_uri, creds=creds)
+
+
+def _storage_creds_for(config: dict) -> dict:
+    """Build an ``app.storage`` creds dict from a duckdb_storage config.
+
+    Maps the connector's S3-style config keys onto the
+    :func:`app.storage.base.get_storage_client` credential shape so the file
+    interface authenticates the same way the httpfs query path does.
+    """
+    creds = _get_creds(config)
+    out: dict[str, str] = {}
+    if creds.get("key_id"):
+        out["aws_access_key_id"] = creds["key_id"]
+    if creds.get("secret"):
+        out["aws_secret_access_key"] = creds["secret"]
+    if creds.get("region"):
+        out["region_name"] = creds["region"]
+    if creds.get("endpoint"):
+        out["endpoint_url"] = creds["endpoint"]
+    return out

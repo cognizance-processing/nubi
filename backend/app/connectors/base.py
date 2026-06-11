@@ -26,12 +26,48 @@ Adding a new connector
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from typing import TYPE_CHECKING, Any, Iterator
+from dataclasses import dataclass
+from datetime import datetime
+from typing import TYPE_CHECKING, Any, BinaryIO, Iterator
 
 if TYPE_CHECKING:
     import pyarrow as pa
 
 from app.connectors.plan import PhysicalPlan, QueryEstimate
+
+# Ingestion capability-extension keys (design §2 + §4).  These are ADDITIVE to
+# the strict 7-flag query contract and are exempt from the bool-only validation
+# in ``validate_capabilities`` (``bulk_load_from`` is a list).  The loader agent
+# reads them off ``capabilities()`` to choose a target strategy.
+#
+#   file_interface : bool        — connector exposes ``FileConnectorMixin``
+#   bulk_load_from : list[str]   — staging schemes the target can bulk-load from
+#                                  (subset of ["s3", "gcs", "az"]); [] = none
+#   stream_load    : bool        — worker can stream staged batches into target
+_CAPABILITY_EXTENSION_KEYS: frozenset[str] = frozenset(
+    {"file_interface", "bulk_load_from", "stream_load"}
+)
+
+
+def file_capabilities(
+    *,
+    file_interface: bool = False,
+    bulk_load_from: "list[str] | None" = None,
+    stream_load: bool = False,
+) -> dict[str, Any]:
+    """Return the ingestion capability-extension fragment with safe defaults.
+
+    Connectors merge the result into their ``capabilities()`` dict so the
+    loader/ingestion layer can read ``file_interface`` / ``bulk_load_from`` /
+    ``stream_load`` uniformly.  Defaults are intentionally conservative
+    (no file interface, no bulk load, no streaming) so a connector that does
+    not opt in is never mistaken for a usable ingestion target.
+    """
+    return {
+        "file_interface": bool(file_interface),
+        "bulk_load_from": list(bulk_load_from or []),
+        "stream_load": bool(stream_load),
+    }
 
 
 class Connector(ABC):
@@ -204,8 +240,124 @@ class Connector(ABC):
             raise ValueError(
                 f"{type(self).__name__}.capabilities() is missing keys: {sorted(missing)}"
             )
-        non_bool = {k: v for k, v in caps.items() if not isinstance(v, bool)}
+        # The ingestion file/loader extension (``file_interface``,
+        # ``stream_load`` — bool; ``bulk_load_from`` — list[str]) is additive and
+        # NOT part of the strict 7-flag query contract; exempt those keys from
+        # the bool check so file-capable connectors stay backward-compatible.
+        non_bool = {
+            k: v
+            for k, v in caps.items()
+            if k not in _CAPABILITY_EXTENSION_KEYS and not isinstance(v, bool)
+        }
         if non_bool:
             raise ValueError(
                 f"{type(self).__name__}.capabilities() has non-bool values: {non_bool}"
             )
+
+
+# ---------------------------------------------------------------------------
+# File interface (ingestion §2) — additive, parallel to the query interface
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class FileStat:
+    """A single file/object listing entry returned by ``list_files``.
+
+    Fields
+    ------
+    path:
+        The connector-relative path/key of the file (e.g.
+        ``"outbound/orders-2024.csv"``).  This is the identifier passed back to
+        :meth:`FileConnectorMixin.open` / ``move`` / ``delete``.  Together with
+        *mtime* it feeds the ingestion watermark: the ``filename`` incremental
+        strategy orders files lexicographically by *path*; the ``mtime``
+        strategy ingests files whose *mtime* is newer than the stored mark.
+    size:
+        Size in bytes.  ``0`` when the backend cannot report a size cheaply.
+    mtime:
+        Last-modified timestamp (timezone-aware UTC where the backend supplies
+        one), or ``None`` when unknown.  Feeds the ``mtime`` watermark strategy.
+    etag:
+        Optional opaque content tag (S3/GCS/Azure ETag, or a local
+        ``size:mtime`` surrogate).  Used for change detection / dedupe; absent
+        on backends that do not expose one.
+
+    Notes
+    -----
+    The shape mirrors the ingestion design contract
+    (``FileStat = {path, size, mtime, etag?}``).  Producers MUST set *path* and
+    *size*; *mtime* and *etag* are best-effort.
+    """
+
+    path: str
+    size: int
+    mtime: datetime | None = None
+    etag: str | None = None
+
+
+class FileConnectorMixin:
+    """File-interface contract for connectors that expose objects/files.
+
+    A connector that mixes this in advertises ``file_interface: True`` from
+    ``capabilities()`` and is usable as an ingestion *source* (and, for
+    object-storage targets, a *promote* destination).  It is orthogonal to the
+    SQL query interface: a connector may implement the query interface only,
+    the file interface only (``sftp`` / ``ftp``), or both (``duckdb_storage``).
+
+    Only :meth:`list_files` and :meth:`open` are required.  :meth:`move` and
+    :meth:`delete` are optional (used by ``post_action`` archive/cleanup); the
+    defaults raise ``NotImplementedError`` so a handler can feature-detect with
+    ``hasattr`` is unnecessary — callers should instead check
+    ``capabilities()["file_interface"]`` and handle the optional ops by trying
+    them.
+
+    All methods are synchronous; the caller is expected to run them inside a
+    thread executor when invoked from async code (consistent with the
+    ``StorageClient`` abstraction).
+    """
+
+    def list_files(self, pattern: str, since: datetime | None = None) -> list["FileStat"]:
+        """List files matching *pattern*, optionally only those newer than *since*.
+
+        Parameters
+        ----------
+        pattern:
+            A glob-style pattern relative to the connector's root
+            (e.g. ``"outbound/*.csv"``).  ``"*"`` / ``""`` lists everything.
+        since:
+            When given, only files with ``mtime > since`` are returned (the
+            ``mtime`` watermark strategy).  Files with an unknown ``mtime``
+            (``None``) are always included so they are not silently skipped.
+
+        Returns
+        -------
+        list[FileStat]
+            Matching entries, sorted by ``path`` for stable lexicographic
+            (``filename`` watermark) ordering.
+        """
+        raise NotImplementedError
+
+    def open(self, path: str) -> BinaryIO:
+        """Open *path* for streaming binary read.
+
+        The caller owns the returned handle and must close it (use as a
+        context manager where possible).
+        """
+        raise NotImplementedError
+
+    def move(self, src: str, dst: str) -> None:  # optional — archive-after-ingest
+        """Move/rename *src* to *dst* (``post_action: move:<dir>``).
+
+        Optional.  Backends that cannot rename in place raise
+        ``NotImplementedError``.
+        """
+        raise NotImplementedError
+
+    def delete(self, path: str) -> None:  # optional
+        """Delete *path* (``post_action: delete``).
+
+        Optional.  Backends that do not allow deletion raise
+        ``NotImplementedError``.
+        """
+        raise NotImplementedError
