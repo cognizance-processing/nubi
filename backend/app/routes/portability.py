@@ -27,7 +27,11 @@ requires a first-party Bearer token (``current_user``); the effective org is
 resolved via ``resolve_org_id`` (honours ``X-Org-Id`` with membership check).
 Cross-org rows return 404, never 403, so no information leaks.
 
-Connectors are explicitly out of scope — there is no ``connector`` kind.
+Connectors are a portable kind, but STRICTLY limited to NON-SECRET config: the
+``connector`` envelope carries only ``datastores.config`` minus the connector
+secret allow-list (``routes/connectors.py::_SECRET_KEYS``). Export never reads
+the connector secret store; import upserts only the non-secret ``datastores``
+row and never creates/modifies a ``connector_secrets`` blob.
 """
 
 from __future__ import annotations
@@ -55,6 +59,28 @@ from app.routes import api_router
 from app.routes._org import resolve_org_id
 
 router = APIRouter(tags=["portability"])
+
+
+def _is_connector_row(row: dict[str, Any]) -> bool:
+    """Return True if a ``datastores`` row is a real, user-facing connector.
+
+    Connectors live in the same table as internal bookkeeping rows (the
+    per-org demo-hidden marker and seeded ``system`` rows). A row is a real
+    connector iff its config carries a ``connector_type`` that is neither the
+    hidden-marker sentinel nor a ``system`` row — matching the same predicate
+    ``routes/connectors.py::list_connectors`` uses.
+    """
+    from app.routes.connectors import _DEMO_HIDDEN_MARKER  # noqa: PLC0415
+
+    config = row.get("config")
+    if not isinstance(config, dict):
+        return False
+    connector_type = config.get("connector_type")
+    if not connector_type or connector_type == _DEMO_HIDDEN_MARKER:
+        return False
+    if config.get("system"):
+        return False
+    return True
 
 
 _CONTENT_TYPES = {
@@ -104,13 +130,20 @@ async def export_resource(
     AppError("validation_error", 400)
         Unsupported ``format``.
     """
-    handler = get_handler(kind)  # 404 for unknown / connector kinds
+    handler = get_handler(kind)  # 404 for unknown kinds
     fmt = _normalise_format(format)
 
     org_id = await resolve_org_id(str(user["id"]), repo, request)
     row = await repo.get(handler.resource, org_id, id)
     if row is None:
         raise AppError("not_found", f"{kind.capitalize()} not found.", 404)
+
+    # Connectors share the ``datastores`` table with internal bookkeeping rows
+    # (demo-hidden markers, system rows). Only export rows that are actually
+    # connectors — i.e. carry a ``connector_type`` — so neither markers nor
+    # unrelated datastore rows are exportable, and never any secret material.
+    if kind == "connector" and not _is_connector_row(row):
+        raise AppError("not_found", "Connector not found.", 404)
 
     env = to_envelope(kind, row)
     body = dump_envelope(env, format=fmt)
@@ -217,6 +250,13 @@ async def import_resource(
     existing_id = meta.get("id")
     if existing_id:
         existing = await repo.get(handler.resource, org_id, str(existing_id))
+        # Connectors share ``datastores`` with internal bookkeeping rows; only
+        # treat the target as updatable when it is an actual connector. A
+        # cross-tenant / non-connector / marker row is invisible to this org →
+        # fall through to CREATE a fresh connector in the caller's org (never
+        # mutate a row that isn't a real, owned connector).
+        if kind == "connector" and existing is not None and not _is_connector_row(existing):
+            existing = None
         if existing is not None:
             # Owned by caller's org → update in place (round-trip no-op).
             updated = await repo.update(

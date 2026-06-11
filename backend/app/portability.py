@@ -19,9 +19,14 @@ a JSON superset)::
       project: <slug?>        # optional project hint (informational)
     spec: { ... }             # the resource's existing spec, unchanged
 
-Connectors are deliberately EXCLUDED from portability (product decision: they
-carry credentials / network topology and are not git-friendly). There is no
-``connector`` kind.
+Connectors are a portable kind, but STRICTLY limited to NON-SECRET config
+(``datastores.config`` minus the ``routes/connectors.py::_SECRET_KEYS`` allow
+list). No secret material (passwords, tokens, service-account JSON, …) ever
+enters the envelope — the connector secret store (``connector_secrets``) is
+never read on export nor written on import. This is an intentional, scoped
+expansion: only the git-friendly, non-credential parts of a connector
+round-trip (connector_type, host, port, database, user, sslmode, network_mode,
+bridge_id, and any other non-secret extras).
 
 Kind registry
 -------------
@@ -301,6 +306,86 @@ def _flow_validate(spec: dict[str, Any]) -> list[str]:
     return issues
 
 
+# ── Connector handler ──────────────────────────────────────────────────────
+# Connectors are portable ONLY as NON-SECRET config. The single source of truth
+# for the secret/non-secret split is ``routes/connectors.py``: secret keys live
+# in ``_SECRET_KEYS`` and are stored in a separate encrypted blob, never in
+# ``datastores.config``. We reuse that allow-list here so it is structurally
+# impossible to leak a secret into the envelope.
+
+
+def _connector_non_secret_config(config: dict[str, Any]) -> dict[str, Any]:
+    """Return *config* with every secret key stripped.
+
+    Mirrors ``routes/connectors.py::_sanitise``'s config scrubbing (same
+    ``_SECRET_KEYS`` allow-list) so the envelope can never carry credential
+    material even if a secret key somehow leaked into ``datastores.config``.
+    """
+    from app.routes.connectors import _SECRET_KEYS  # noqa: PLC0415
+
+    if not isinstance(config, dict):
+        return {}
+    return {k: v for k, v in config.items() if k not in _SECRET_KEYS}
+
+
+def _connector_spec_from_row(row: dict[str, Any]) -> dict[str, Any]:
+    """Return the portable connector spec — NON-SECRET config only.
+
+    The spec is the ``datastores.config`` dict (which already carries
+    ``connector_type`` plus host/port/database/user/sslmode/network_mode/
+    bridge_id/… non-secret fields) with all secret keys scrubbed.
+    """
+    return _connector_non_secret_config(row.get("config") or {})
+
+
+def _connector_row_fields(env: dict[str, Any]) -> dict[str, Any]:
+    """Build the ``{name, config}`` connector payload from an envelope.
+
+    The config is the NON-SECRET ``datastores.config`` shape (scrubbed again,
+    belt-and-suspenders, so an envelope that someone hand-edited a secret into
+    still cannot write it). ``connector_type`` is carried through inside the
+    config exactly as the connectors create/update path stores it.
+    """
+    spec = env.get("spec") or {}
+    meta = env.get("metadata") or {}
+    config = _connector_non_secret_config(spec if isinstance(spec, dict) else {})
+    name = meta.get("name") or "Untitled connector"
+    return {"name": name, "config": config}
+
+
+def _connector_validate(spec: dict[str, Any]) -> list[str]:
+    """Validate a connector spec — non-secret config only.
+
+    Enforces a known ``connector_type`` and rejects any secret key appearing in
+    the spec (those belong in the connector secret store, never the envelope).
+    """
+    from app.routes.connectors import ConnectorType, _SECRET_KEYS  # noqa: PLC0415
+
+    issues: list[str] = []
+    if not isinstance(spec, dict):
+        return ["Connector spec must be a mapping."]
+
+    connector_type = spec.get("connector_type")
+    if not isinstance(connector_type, str) or not connector_type.strip():
+        issues.append("Field 'connector_type': required non-empty string.")
+    else:
+        valid_types = set(getattr(ConnectorType, "__args__", ()))
+        if valid_types and connector_type not in valid_types:
+            issues.append(
+                f"Field 'connector_type': {connector_type!r} is not a known "
+                f"connector type."
+            )
+
+    leaked = _SECRET_KEYS & set(spec.keys())
+    if leaked:
+        issues.append(
+            f"Secret fields must not appear in a connector envelope: "
+            f"{sorted(leaked)!r}. They belong in the connector secret store."
+        )
+
+    return issues
+
+
 KIND_REGISTRY: dict[str, KindHandler] = {
     "dashboard": KindHandler(
         kind="dashboard",
@@ -326,14 +411,21 @@ KIND_REGISTRY: dict[str, KindHandler] = {
         row_fields=_flow_row_fields,
         validate=_flow_validate,
     ),
+    "connector": KindHandler(
+        kind="connector",
+        resource="datastores",
+        folder="connectors",
+        spec_from_row=_connector_spec_from_row,
+        row_fields=_connector_row_fields,
+        validate=_connector_validate,
+    ),
 }
 
 
 def get_handler(kind: str) -> KindHandler:
     """Return the :class:`KindHandler` for *kind*, or raise AppError 404.
 
-    Unknown kinds (including the deliberately-excluded ``connector``) return a
-    404 so no information leaks about unsupported kinds.
+    Unknown kinds return a 404 so no information leaks about unsupported kinds.
     """
     handler = KIND_REGISTRY.get(kind)
     if handler is None:
