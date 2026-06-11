@@ -319,6 +319,125 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
         await close_db()
 
 
+# ---------------------------------------------------------------------------
+# OpenAPI metadata (agent-readable docs)
+# ---------------------------------------------------------------------------
+# These two constants enrich the generated ``/openapi.json`` so external AI
+# agents (and humans) can understand the Nubi authoring loop without reading
+# source.  They are pure metadata — they do NOT affect routing, auth, or
+# middleware.  See also ``public/llms.txt`` and
+# ``docs/dashboard-spec-reference.md`` for the deeper, pasteable references.
+
+NUBI_OPENAPI_DESCRIPTION = """\
+Nubi is an embedded-analytics platform: register SQL queries against a
+datastore, compose them into governed dashboards (the canonical
+**DashboardSpec**), and embed those dashboards into host apps with per-tenant
+row-level security (RLS).
+
+## Authoring loop (build a dashboard as an agent)
+
+1. **Discover** — `GET /ai/context` returns every registered query with its
+   real `params` and `output_schema`, plus a `conventions` block. Bind only to
+   names that appear here; never invent query ids or column names.
+2. **Author** — emit a `DashboardSpec` (schema at `GET /ai/dashboard/schema`),
+   or let `POST /ai/dashboard` generate one from a natural-language prompt
+   (with an internal validate→repair loop).
+3. **Validate** — `POST /dashboards/validate` returns structured,
+   repair-oriented issues (`{valid, errors, warnings}`) with JSON `path`,
+   machine `code`, and `valid_options`. It never persists. Repair and re-submit
+   until `valid: true`.
+4. **Estimate** — `POST /query/estimate` is a BigQuery-style dry-run: same
+   auth/scope/allowlist/RLS gates as `POST /query` but never executes, caches,
+   or meters. Use it to preview scan cost before running.
+5. **Embed** — publish the spec onto a board and serve it read-only via
+   `GET /embed/config/{dashboard_id}` using a host-signed (RS256/ES256) embed
+   JWT.
+
+## Governance model
+
+- **Dev-authoring → human promote.** Agents author in a `dev` environment;
+  promotion to higher environments is a human-gated, writer-scoped action
+  (`POST /environments/promote`).
+- **RLS everywhere.** Row-level policies come EXCLUSIVELY from the verified
+  token (`identity.policies`) — never from the request body — and are injected
+  into the SQL AST by the planner. Per-tenant policies yield per-tenant cache
+  isolation.
+- **Raw-SQL allowlist for embeds.** Embed-kind tokens CANNOT run arbitrary SQL;
+  they must reference a server-registered `query_id` (registry SQL is used
+  verbatim; `body.sql` is ignored). First-party tokens keep raw-SQL access.
+
+See `GET /ai/dashboard/schema` for the machine-readable DashboardSpec schema.
+"""
+
+NUBI_OPENAPI_TAGS = [
+    {
+        "name": "ai",
+        "description": (
+            "Agent grounding + authoring. `GET /ai/context` (discover queries, "
+            "params, output schemas, conventions), `GET /ai/dashboard/schema` "
+            "(DashboardSpec JSON Schema), `POST /ai/dashboard` (generate a spec "
+            "with a validate→repair loop), plus `POST /ai/ask`, `POST /ai/sql`, "
+            "and the agentic `POST /ai/chat`."
+        ),
+    },
+    {
+        "name": "dashboards",
+        "description": (
+            "DashboardSpec operations. `POST /dashboards/validate` is the "
+            "validation oracle: structured `{valid, errors, warnings}` with JSON "
+            "path, machine code, and valid_options. It never persists a spec."
+        ),
+    },
+    {
+        "name": "query",
+        "description": (
+            "Query execution + planning. `POST /query` runs a registered query "
+            "or (first-party only) raw SELECT, returning Arrow IPC with RLS "
+            "applied. `POST /query/estimate` is a dry-run cost/scan estimate "
+            "(same gates, no execution). `GET|POST /query/registry` manage "
+            "registered queries."
+        ),
+    },
+    {
+        "name": "flows",
+        "description": (
+            "Data flows / notebooks — scheduled queries, blends, and cell-based "
+            "pipelines. Authoring/mutation routes are writer-scoped."
+        ),
+    },
+    {
+        "name": "environments",
+        "description": (
+            "Environment + version governance. Checkpoint/promote resources "
+            "across environments (`POST /environments/promote`, writer-scoped) "
+            "with git-backed merges. The dev-authoring → human-promote boundary."
+        ),
+    },
+    {
+        "name": "auth",
+        "description": (
+            "Authentication. First-party HS256 access tokens carry `scope` and "
+            "RLS `policies`; embed dashboards use host-signed RS256/ES256 JWTs."
+        ),
+    },
+    {
+        "name": "billing",
+        "description": (
+            "EE billing + metered usage (AI calls, compute units, quotas). "
+            "Prices anchored in USD, charged in ZAR. Absent in OSS builds."
+        ),
+    },
+    {
+        "name": "embed",
+        "description": (
+            "Read-only embedding. `GET /embed/config/{dashboard_id}` returns a "
+            "board descriptor (spec/html/widgets) for host pages. Embed tokens "
+            "are restricted to the registered-query allowlist with per-tenant RLS."
+        ),
+    },
+]
+
+
 def create_app() -> FastAPI:
     """Construct and configure the FastAPI application.
 
@@ -332,6 +451,8 @@ def create_app() -> FastAPI:
     application = FastAPI(
         title="Nubi API",
         version="0.1.0",
+        description=NUBI_OPENAPI_DESCRIPTION,
+        openapi_tags=NUBI_OPENAPI_TAGS,
         docs_url="/docs" if settings.ENV != "production" else None,
         redoc_url="/redoc" if settings.ENV != "production" else None,
         lifespan=lifespan,
