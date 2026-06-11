@@ -65,7 +65,38 @@ async def current_user(
     if credentials is None:
         raise AppError("unauthorized", "Authentication required.", 401)
 
-    claims = decode_access_token(credentials.credentials)
+    # ── API-key bearer path (CLI / CI long-lived tokens) ────────────────────
+    # An opaque ``nubi_ak_…`` credential is NOT a JWT; resolve it against the
+    # api_keys store instead of decoding. A resolved key authenticates exactly
+    # like an access token but additionally PINS the request to the org the key
+    # was minted for (carried as ``_api_key_org_id`` so resolve_org_id/
+    # get_user_org honour it and reject any cross-org X-Org-Id).
+    from app.auth.api_keys import get_api_key_store, looks_like_api_key
+
+    raw_credential: str = credentials.credentials
+    if looks_like_api_key(raw_credential):
+        key_row = await get_api_key_store().resolve(raw_credential)
+        if key_row is None:
+            raise AppError("unauthorized", "Authentication required.", 401)
+        user_row = await fetchrow(
+            """
+            SELECT id, email, name, avatar_url, email_verified, created_at
+            FROM users
+            WHERE id = $1::uuid
+            """,
+            str(key_row["user_id"]),
+        )
+        if user_row is None:
+            raise AppError("unauthorized", "Authentication required.", 401)
+        user = dict(user_row)
+        user["_api_key_org_id"] = str(key_row["org_id"])
+        # Pin org resolution for the rest of this request to the key's org.
+        from app.routes._org import api_key_org_pin
+
+        api_key_org_pin.set(str(key_row["org_id"]))
+        return user
+
+    claims = decode_access_token(raw_credential)
     user_id: str = claims["sub"]
 
     # Denylist check: reject tokens that have been explicitly revoked (e.g.

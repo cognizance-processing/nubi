@@ -18,11 +18,23 @@ importing it can never perturb route ordering.
 
 from __future__ import annotations
 
+import contextvars
+
 from fastapi import Request
 
 from app.db import fetchrow
 from app.errors import AppError
 from app.repos.provider import Repo
+
+# When the caller authenticated with a long-lived API key, the key is bound to
+# the org it was minted for. ``current_user`` records that org id here so the
+# org-resolution helpers below can PIN the request to it — an API key must never
+# be usable against any other org, even one the underlying user also belongs to.
+# A contextvar keeps the binding request-scoped without threading it through
+# every call site (the helpers already take only user_id/repo/request).
+api_key_org_pin: contextvars.ContextVar[str | None] = contextvars.ContextVar(
+    "api_key_org_pin", default=None
+)
 
 
 # ── Org resolution helpers ────────────────────────────────────────────────────
@@ -52,6 +64,11 @@ async def get_user_org(user_id: str, repo: Repo) -> str:
     AppError("org_not_found", 404)
         If the user has no org membership.
     """
+    # API-key requests are pinned to the org the key was minted for.
+    pinned = api_key_org_pin.get()
+    if pinned:
+        return pinned
+
     # InMemoryRepo exposes get_org_for_user(); use it when available.
     if hasattr(repo, "get_org_for_user"):
         org_id = repo.get_org_for_user(user_id)  # type: ignore[attr-defined]
@@ -128,6 +145,20 @@ async def resolve_org_id(user_id: str, repo: Repo, request: Request) -> str:
     AppError("org_not_found", 404)
         If the user has no org membership at all (no header case).
     """
+    # API-key requests are pinned to the minting org. A mismatching X-Org-Id is
+    # rejected (403) so a key can never be redirected to another org the user
+    # also belongs to; an absent/matching header resolves to the pinned org.
+    pinned = api_key_org_pin.get()
+    if pinned:
+        requested = request.headers.get("x-org-id", "").strip()
+        if requested and requested != pinned:
+            raise AppError(
+                "forbidden",
+                "This API key is scoped to a different organisation.",
+                403,
+            )
+        return pinned
+
     requested_org_id = request.headers.get("x-org-id", "").strip()
 
     if not requested_org_id:

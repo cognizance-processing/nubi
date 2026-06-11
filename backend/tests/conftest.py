@@ -445,6 +445,18 @@ def _reset_state():
         except Exception:
             pass
 
+        # ── API-key store (F-6) ───────────────────────────────────────────────
+        # Reset to a fresh in-memory store so minted CLI/CI keys never leak
+        # across tests (the default Pg store can't run against the fake DB).
+        try:
+            from app.auth.api_keys import (
+                InMemoryApiKeyStore,
+                set_api_key_store_for_tests,
+            )
+            set_api_key_store_for_tests(InMemoryApiKeyStore())
+        except Exception:
+            pass
+
         # ── Datasets catalog ──────────────────────────────────────────────────
         try:
             from app.datasets import set_catalog

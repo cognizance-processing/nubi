@@ -229,11 +229,46 @@ async def import_resource(
     text = await _read_document(request)
     env = parse_document(text)  # validates envelope shape; 404 unknown kind
 
+    org_id = await resolve_org_id(str(user["id"]), repo, request)
+    row, _action = await upsert_envelope(
+        env, org_id=org_id, user=user, repo=repo, project_id=None
+    )
+    return row
+
+
+async def upsert_envelope(
+    env: dict[str, Any],
+    *,
+    org_id: str,
+    user: dict[str, Any],
+    repo: Repo,
+    project_id: str | None = None,
+) -> tuple[dict[str, Any], str]:
+    """Validate + upsert one portability envelope; return ``(row, action)``.
+
+    Shared by ``POST /import`` (single) and the project-bundle import (bulk) so
+    both apply IDENTICAL per-kind validation + upsert semantics:
+
+    - ``metadata.id`` present AND owned by the caller's org → UPDATE in place
+      (``action = "updated"``).
+    - otherwise → CREATE in the caller's org / *project_id* (``action =
+      "created"``).
+
+    Flows are stored via the flow store (not the generic ``Repo``); every other
+    kind goes through ``repo``. Connectors never touch the connector secret
+    store (the envelope is non-secret config only).
+
+    Raises
+    ------
+    AppError("validation_error", 400)
+        Spec validation failure.
+    AppError("not_found", 404)
+        Unknown kind.
+    """
     kind = env["kind"]
     handler = get_handler(kind)
     spec = env.get("spec") or {}
 
-    # ── Reuse the kind's existing validator ────────────────────────────────
     issues = validate_spec_for_kind(kind, spec)
     if issues:
         raise AppError(
@@ -242,39 +277,63 @@ async def import_resource(
             400,
         )
 
-    org_id = await resolve_org_id(str(user["id"]), repo, request)
     fields = row_fields_for_kind(kind, env)
-
-    # ── UPSERT ─────────────────────────────────────────────────────────────
     meta = env.get("metadata") or {}
     existing_id = meta.get("id")
+
+    # ── Flows — flow store, org-scoped ─────────────────────────────────────
+    if kind == "flow":
+        from app.flows.store import get_flow_store  # noqa: PLC0415
+
+        flow_store = get_flow_store()
+        existing = await flow_store.get_flow(str(existing_id)) if existing_id else None
+        # Tenant guard: only update a flow that belongs to the caller's org.
+        if existing is not None and str(existing.get("org_id")) != str(org_id):
+            existing = None
+        if existing is not None:
+            updated = await flow_store.update_flow(
+                str(existing_id), {"name": fields["name"], "spec": fields["spec"]}
+            )
+            if updated is not None:
+                return dict(updated), "updated"
+        created = await flow_store.create_flow(
+            org_id,
+            str(user["id"]),
+            fields["name"],
+            fields["spec"],
+            project_id=project_id,
+        )
+        return dict(created), "created"
+
+    # ── Repo-backed kinds (dashboard / query / connector) ──────────────────
     if existing_id:
         existing = await repo.get(handler.resource, org_id, str(existing_id))
         # Connectors share ``datastores`` with internal bookkeeping rows; only
         # treat the target as updatable when it is an actual connector. A
         # cross-tenant / non-connector / marker row is invisible to this org →
-        # fall through to CREATE a fresh connector in the caller's org (never
-        # mutate a row that isn't a real, owned connector).
+        # fall through to CREATE a fresh connector in the caller's org.
         if kind == "connector" and existing is not None and not _is_connector_row(existing):
             existing = None
         if existing is not None:
-            # Owned by caller's org → update in place (round-trip no-op).
             updated = await repo.update(
                 handler.resource,
                 org_id,
                 str(existing_id),
                 {"name": fields["name"], "config": fields["config"]},
             )
-            if updated is None:
-                # Lost a race (deleted between get and update) — treat as create.
-                return await _create(repo, handler.resource, org_id, user, fields)
-            return updated
-        # id provided but NOT owned by this org (or doesn't exist) → create new.
-        # We intentionally do NOT update a cross-org row (404-equivalent: it is
-        # invisible to this org), and we do not error — import creates a fresh
-        # copy in the caller's org.
+            if updated is not None:
+                return updated, "updated"
+            # Lost a race (deleted between get and update) — fall through to create.
 
-    return await _create(repo, handler.resource, org_id, user, fields)
+    created = await repo.create(
+        resource=handler.resource,
+        org_id=org_id,
+        created_by=str(user["id"]),
+        name=fields["name"],
+        config=fields["config"],
+        project_id=project_id,
+    )
+    return created, "created"
 
 
 async def _create(

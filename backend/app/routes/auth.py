@@ -26,6 +26,7 @@ from fastapi import APIRouter, Cookie, Depends, Request, Response
 from fastapi.responses import RedirectResponse
 from pydantic import BaseModel, EmailStr, field_validator
 
+from app.auth.api_keys import get_api_key_store
 from app.auth.cookies import (
     REFRESH_COOKIE_NAME,
     clear_refresh_cookie,
@@ -46,7 +47,9 @@ from app.config import get_settings
 from app.db import execute, fetch, fetchrow
 from app.errors import AppError
 from app.repos import projects as projects_repo
+from app.repos.provider import Repo, get_repo
 from app.routes import api_router
+from app.routes._org import get_user_org
 
 # A pre-computed argon2id hash of an arbitrary dummy string.  Used so that
 # the login path always performs an argon2 verification regardless of whether
@@ -92,6 +95,12 @@ class LoginIn(BaseModel):
 
     email: EmailStr
     password: str
+
+
+class ApiKeyCreateIn(BaseModel):
+    """Request body for POST /auth/api-keys."""
+
+    name: str | None = None
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -502,6 +511,76 @@ async def my_invites(
             }
         )
     return {"invites": invites}
+
+
+# ── API keys (long-lived CLI / CI tokens — files-as-code F-6) ────────────────
+#
+# An API key is an opaque, non-expiring bearer credential a user mints for the
+# CLI or CI. It authenticates Bearer requests exactly like a login access token
+# (resolved in app/auth/deps.py::current_user) but is scoped to the org it was
+# minted for and is independently listable + revocable. Only the SHA-256 digest
+# is stored; the raw key is returned EXACTLY ONCE at mint time.
+
+
+@router.post("/api-keys", status_code=201)
+async def create_api_key(
+    body: ApiKeyCreateIn,
+    user: dict[str, Any] = Depends(current_user),
+    repo: Repo = Depends(get_repo),
+) -> dict[str, Any]:
+    """Mint a long-lived API key scoped to the caller's (default) org.
+
+    The raw key is returned ONCE in ``key`` — it is never retrievable again.
+    Store it as ``NUBI_TOKEN`` for the CLI / CI.
+
+    Returns
+    -------
+    201 {key, api_key: {id, name, last_four, created_at, ...}}
+    """
+    user_id = str(user["id"])
+    org_id = await get_user_org(user_id, repo)
+
+    raw, row = await get_api_key_store().create(
+        user_id, org_id, (body.name or "CLI token")
+    )
+    from app.auth.api_keys import _public_row  # noqa: PLC0415
+
+    return {"key": raw, "api_key": _public_row(row)}
+
+
+@router.get("/api-keys")
+async def list_api_keys(
+    user: dict[str, Any] = Depends(current_user),
+    repo: Repo = Depends(get_repo),
+) -> dict[str, Any]:
+    """List the caller's API keys in their (default) org — never any secret.
+
+    Returns
+    -------
+    200 {api_keys: [{id, name, last_four, created_at, last_used_at, revoked_at}]}
+    """
+    user_id = str(user["id"])
+    org_id = await get_user_org(user_id, repo)
+    keys = await get_api_key_store().list_for_org(user_id, org_id)
+    return {"api_keys": keys}
+
+
+@router.delete("/api-keys/{key_id}", status_code=204)
+async def revoke_api_key(
+    key_id: str,
+    user: dict[str, Any] = Depends(current_user),
+    repo: Repo = Depends(get_repo),
+) -> None:
+    """Revoke one of the caller's API keys (idempotent-ish: 404 if not found).
+
+    Cross-user / cross-org keys are invisible (404, never 403) so no key's
+    existence leaks across tenants.
+    """
+    user_id = str(user["id"])
+    org_id = await get_user_org(user_id, repo)
+    revoked = await get_api_key_store().revoke(key_id, user_id, org_id)
+    if not revoked:
+        raise AppError("not_found", "API key not found.", 404)
 
 
 @router.get("/google/start")
