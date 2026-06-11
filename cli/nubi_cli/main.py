@@ -1,34 +1,31 @@
-"""Nubi CLI — entry point.
+"""Nubi CLI — files-as-code entry point (see docs/files-as-code.md).
 
-Commands
+Top-level commands
+------------------
+login / logout / whoami   Auth: save / clear token, show identity.
+init [--project --ci]     Scaffold nubi.yaml + .nubi/ + .gitignore (+ CI template).
+pull [--kinds]            Download ALL resources into the canonical file tree (A).
+push [--dry-run]          Upload changed non-secret manifests (POST /import).
+sync --env-id [--strategy] Two-way reconcile via the project's git binding.
+deploy [--env]            CI deploy: materialize secrets, push manifests + secrets.
+diff                      Compare local resource files vs server (read-only).
+run <query-id>            Execute a registered query and report rows.
+status                    Show project binding, env, last-sync commit graph.
+deploy-files / pull-raw   Legacy flat-JSON workflows (superseded by push/pull).
+
+Sub-apps
 --------
-login           Authenticate and save an access token.
-deploy          Push dashboards-as-code (*.json) to the server.
-run             Execute a registered query and report results.
-diff            Compare local resource files against the server (read-only).
-pull            Download server resources to local JSON files (bonus).
-flows run       Execute a flow locally end-to-end (file:// storage, in-memory store).
-flows push      Create/update flows in the cloud from local files.
-flows pull      Download flows from the API and write them as YAML files.
-secrets set     Set a secret locally (and via API when logged in).
-secrets list    List secrets locally and/or from the API.
+flows run|push|pull
+dashboards pull|push       queries pull|push       connectors pull|push|test
+secrets set|list|pull|push|materialize|delete
+git connect|graph
 
-Usage (after `pip install -e .` or via console_scripts):
-    nubi --help
-    nubi login
-    nubi deploy ./dashboards
-    nubi deploy ./dashboards --dry-run
-    nubi run <query-id>
-    nubi diff ./dashboards
-    nubi pull datastores ./out/
-    nubi flows run my_flow.yaml --param region=us --param date=2024-01-01
-    nubi flows push flows/my_flow.yaml flows/other_flow.yaml
-    nubi flows pull --dir flows/
-    nubi secrets set MY_KEY my_value
-    nubi secrets list
+Secrets live in the gitignored .nubi/secrets/{connectors,flow}.env tree;
+`secrets push --target github|gitlab` syncs them to the CI secret store, and
+`secrets materialize` expands NUBI_SECRET__* / NUBI_CONNECTOR__* env vars back
+into the .env files for pipeline use.
 
-Alternatively run as a module:
-    python -m nubi_cli.main --help
+Run as a module: python -m nubi_cli.main --help
 """
 
 from __future__ import annotations
@@ -44,8 +41,11 @@ from rich.console import Console
 from rich.table import Table
 
 from . import client as _client
+from . import project as _project
+from . import secrets_files as _secrets_files
+from . import vcs_secrets as _vcs
 from .client import CLIError
-from .config import load_token, save_token
+from .config import clear_token, load_token, save_token
 from .flows_files import FlowFileError, dump_flow, load_flow_file
 
 app = typer.Typer(
@@ -74,12 +74,86 @@ secrets_app = typer.Typer(
 )
 app.add_typer(secrets_app, name="secrets")
 
+dashboards_app = typer.Typer(
+    name="dashboards", help="Sync dashboards as files.", no_args_is_help=True
+)
+app.add_typer(dashboards_app, name="dashboards")
+
+queries_app = typer.Typer(
+    name="queries", help="Sync queries as files (3-file form).", no_args_is_help=True
+)
+app.add_typer(queries_app, name="queries")
+
+connectors_app = typer.Typer(
+    name="connectors", help="Sync connectors (non-secret manifests + secrets).", no_args_is_help=True
+)
+app.add_typer(connectors_app, name="connectors")
+
+git_app = typer.Typer(
+    name="git", help="Bind the project to a remote and inspect its commit graph.", no_args_is_help=True
+)
+app.add_typer(git_app, name="git")
+
 
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
 
 _RESOURCE_TYPES = ("datastores", "boards", "widgets", "queries")
+
+#: list endpoint + export envelope kind per portable kind (doc D tables).
+_KIND_LIST_ENDPOINT = {
+    "dashboard": "boards",
+    "query": "queries",
+    "flow": "flows",
+    "connector": "connectors",
+}
+
+
+def _require_login() -> None:
+    """Exit with an actionable error when no token is available."""
+    if not load_token():
+        err_console.print("Not logged in.  Run 'nubi login' first, or set NUBI_TOKEN.")
+        raise typer.Exit(code=1)
+
+
+def _project_root() -> Path:
+    """Return the project root (cwd) — where nubi.yaml / .nubi live."""
+    return Path(".")
+
+
+def _resolve_project_id(root: Path) -> str | None:
+    """Resolve the bound project_id from .nubi/project.json (then nubi.yaml)."""
+    pointer = _project.read_project_json(root)
+    pid = pointer.get("project_id")
+    if pid:
+        return str(pid)
+    manifest = _project.read_nubi_yaml(root)
+    meta = manifest.get("metadata") or {}
+    return str(meta["id"]) if meta.get("id") else None
+
+
+def _project_headers(root: Path) -> dict[str, str]:
+    """Build the X-Project-Id header when the project is bound (scopes the API)."""
+    pid = _resolve_project_id(root)
+    return {"X-Project-Id": pid} if pid else {}
+
+
+def _list_resources(endpoint: str, headers: dict[str, str] | None = None) -> list[dict]:
+    """GET a list endpoint, tolerating list-or-wrapped-list responses."""
+    resp = _client.get(endpoint, headers=headers or {})
+    items = resp.json()
+    if isinstance(items, dict):
+        items = items.get(endpoint, items.get("items", []))
+    return items if isinstance(items, list) else []
+
+
+def _export_envelope(kind: str, resource_id: str, headers: dict[str, str] | None = None) -> dict:
+    """GET /export/{kind}/{id}?format=json → parsed envelope dict."""
+    resp = _client.get(
+        f"export/{kind}/{resource_id}", params={"format": "json"}, headers=headers or {}
+    )
+    return resp.json()
 
 
 def _load_resource_files(directory: Path) -> list[tuple[Path, dict]]:
@@ -139,8 +213,8 @@ def login(
 # ---------------------------------------------------------------------------
 
 
-@app.command()
-def deploy(
+@app.command("deploy-files")
+def deploy_files(
     directory: Path = typer.Argument(
         ..., exists=True, file_okay=False, help="Directory containing *.json resource files"
     ),
@@ -148,13 +222,11 @@ def deploy(
         False, "--dry-run", help="Print planned actions without making any API calls"
     ),
 ) -> None:
-    """Deploy dashboards-as-code from *directory* to the Nubi API.
+    """Legacy: deploy raw dashboards-as-code *.json from *directory* (resource/name).
 
-    Each JSON file must have at minimum a ``resource`` and ``name`` field.
-    If an ``id`` is present the resource will be updated (PUT); otherwise it
-    will be created (POST).
-
-    With ``--dry-run`` no HTTP calls are made.
+    Superseded by ``nubi push`` for the canonical file tree; retained for the
+    flat-JSON workflow. If an ``id`` is present the resource is updated (PUT);
+    otherwise created (POST). ``--dry-run`` makes no HTTP calls.
     """
     resources = _load_resource_files(directory)
     if not resources:
@@ -329,12 +401,12 @@ def diff(
 
 
 # ---------------------------------------------------------------------------
-# pull (bonus)
+# pull-raw (legacy single-resource dump)
 # ---------------------------------------------------------------------------
 
 
-@app.command()
-def pull(
+@app.command("pull-raw")
+def pull_raw(
     resource: str = typer.Argument(
         ..., help=f"Resource type to pull: {', '.join(_RESOURCE_TYPES)}"
     ),
@@ -342,9 +414,9 @@ def pull(
         ..., help="Destination directory (created if absent)"
     ),
 ) -> None:
-    """Download all server resources of *resource* type to local JSON files.
+    """Legacy: download all server rows of *resource* type to ``<id>.json`` files.
 
-    Writes one file per resource, named ``<id>.json``.
+    Superseded by ``nubi pull`` (canonical file tree). Retained for raw dumps.
     """
     if resource not in _RESOURCE_TYPES:
         err_console.print(
@@ -471,13 +543,12 @@ def flows_run(
         )
         raise typer.Exit(code=1)
 
-    # ── Local secrets from ~/.nubi/secrets + env vars ────────────────────────
+    # ── Local secrets: project .nubi/secrets/flow.env > ~/.nubi/secrets > env ──
+    # Per doc B.207 the project's flow.env is the source of truth for a local
+    # run; the legacy global ~/.nubi/secrets still seeds (lower precedence) and
+    # NUBI_SECRET_<NAME> env vars override both.
     local_secrets = _read_local_secrets()
-    # Env vars override the file (NUBI_SECRET_<NAME> → <NAME>).
-    for key, val in os.environ.items():
-        if key.startswith("NUBI_SECRET_"):
-            secret_name = key[len("NUBI_SECRET_"):]
-            local_secrets[secret_name] = val
+    local_secrets.update(_secrets_files.load_flow_secrets(_project_root(), dict(os.environ)))
 
     # ── Stub out app.secrets.store so the runtime can call resolve_all ────────
     # The secrets store seam lives in app.secrets.store; if it is not yet
@@ -765,25 +836,46 @@ def secrets_set(
     local_only: bool = typer.Option(
         False, "--local-only", help="Write only to the local secrets file; skip the API."
     ),
+    connector: Optional[str] = typer.Option(
+        None, "--connector", help="Connector slug — write a connector secret field instead."
+    ),
 ) -> None:
-    """Set a secret locally (in ~/.nubi/secrets) and via the API when logged in.
+    """Set a flow or connector secret locally (and via API when logged in).
 
-    Local secrets are used by 'nubi flows run' to populate TaskContext.secrets
-    and to resolve {{ secrets.NAME }} templates in flow configs.
-
-    If a Bearer token is present the secret is also persisted via the cloud
-    API (POST /secrets).  Use --local-only to skip the API call.
+    Without --connector this is a flow/org secret: written to the project's
+    .nubi/secrets/flow.env (and ~/.nubi/secrets for the local flow runtime) and
+    POST /secrets when logged in. With --connector <slug> it is a connector
+    secret FIELD (e.g. ``password``): written to .nubi/secrets/connectors.env as
+    ``<SLUG>__<FIELD>`` and rotated via PUT /connectors/{id} on next push.
     """
-    # ── Local write ──────────────────────────────────────────────────────────
+    root = _project_root()
+
+    # ── Connector secret field ────────────────────────────────────────────────
+    if connector:
+        key = _secrets_files.connector_key(connector, name)
+        _secrets_files.upsert_dotenv(
+            _secrets_files.connectors_env_path(root), key, value,
+            header="Nubi connector secrets — never commit",
+        )
+        console.print(f"[green]Set[/green] connector secret {key!r} locally.")
+        return
+
+    # ── Flow/org secret ────────────────────────────────────────────────────────
+    # Project-scoped flow.env (when a project tree exists) + the legacy global
+    # ~/.nubi/secrets so existing `flows run` keeps working.
+    if (root / ".nubi").exists() or (root / "nubi.yaml").exists():
+        _secrets_files.upsert_dotenv(
+            _secrets_files.flow_env_path(root), name, value,
+            header="Nubi flow/org secrets — never commit",
+        )
     secrets = _read_local_secrets()
     secrets[name] = value
     _write_local_secrets(secrets)
     console.print(f"[green]Set[/green] secret {name!r} locally.")
 
-    # ── API write (if logged in and not local-only) ───────────────────────────
     if not local_only and load_token():
         try:
-            _client.post("secrets", json={"name": name, "value": value})
+            _client.post("secrets", json={"name": name, "value": value}, headers=_project_headers(root))
             console.print(f"[green]Set[/green] secret {name!r} via API.")
         except CLIError as exc:
             err_console.print(
@@ -840,6 +932,714 @@ def secrets_list(
         tbl.add_row(n, local_mark, api_mark)
 
     console.print(tbl)
+
+
+# ---------------------------------------------------------------------------
+# secrets pull / push / materialize / delete
+# ---------------------------------------------------------------------------
+
+
+@secrets_app.command("pull")
+def secrets_pull(
+    directory: Path = typer.Option(Path("."), "--dir", "-d", help="Project root."),
+) -> None:
+    """Scaffold empty .env keys from the cloud secret NAMES (values stay remote).
+
+    Lists flow secrets (GET /secrets) and connector secrets (GET /connectors)
+    and writes blank placeholders into .nubi/secrets/*.env so a user knows which
+    keys to fill in. Existing values are never overwritten. (doc D)
+    """
+    _require_login()
+    root = directory
+    headers = _project_headers(root)
+
+    # Flow secret names.
+    flow = _secrets_files.read_dotenv(_secrets_files.flow_env_path(root))
+    try:
+        for s in _list_resources("secrets", headers):
+            flow.setdefault(s.get("name", ""), "")
+    except CLIError as exc:
+        err_console.print(f"Could not list flow secrets: {exc.message}")
+    flow.pop("", None)
+    _secrets_files.write_dotenv(
+        _secrets_files.flow_env_path(root), flow, header="Nubi flow/org secrets — fill in values"
+    )
+
+    # Connector secret keys (from declared `secrets:` lists in manifests).
+    conn = _secrets_files.read_dotenv(_secrets_files.connectors_env_path(root))
+    for envlp in _project.read_all(root, ["connector"]).get("connector", []):
+        name = (envlp.get("metadata") or {}).get("name") or ""
+        slug = _project.slugify(name)
+        for field in (envlp.get("spec") or {}).get("secrets", []) or []:
+            conn.setdefault(_secrets_files.connector_key(slug, field), "")
+    _secrets_files.write_dotenv(
+        _secrets_files.connectors_env_path(root),
+        conn,
+        header="Nubi connector secrets — fill in values",
+    )
+    console.print(
+        f"[green]Scaffolded[/green] {len(flow)} flow + {len(conn)} connector secret key(s)."
+    )
+
+
+@secrets_app.command("push")
+def secrets_push(
+    target: str = typer.Option(..., "--target", help="github | gitlab."),
+    token: Optional[str] = typer.Option(None, "--token", help="Admin PAT (else GITHUB_TOKEN/GITLAB_TOKEN env)."),
+    env_scope: str = typer.Option("*", "--env-scope", help="GitLab environment_scope."),
+    directory: Path = typer.Option(Path("."), "--dir", "-d", help="Project root."),
+) -> None:
+    """Write local secrets into the repo's GH Actions / GitLab CI store (doc C).
+
+    Reads .nubi/secrets/*.env, prefixes the keys (NUBI_SECRET__/NUBI_CONNECTOR__),
+    and uploads them — GitHub values are libsodium-sealed (PyNaCl), GitLab as
+    masked CI variables. The repo_url/provider come from nubi.yaml spec.git.
+    """
+    root = directory
+    flow = _secrets_files.read_dotenv(_secrets_files.flow_env_path(root))
+    conn = _secrets_files.read_dotenv(_secrets_files.connectors_env_path(root))
+    secrets = _vcs.prefixed_names(flow, conn)
+    if not secrets:
+        console.print("[yellow]No local secrets to push.[/yellow]")
+        raise typer.Exit(code=0)
+
+    manifest = _project.read_nubi_yaml(root)
+    git_info = (manifest.get("spec") or {}).get("git") or {}
+    repo_url = git_info.get("repo_url")
+    if not repo_url:
+        err_console.print("No git.repo_url in nubi.yaml; run 'nubi git connect' first.")
+        raise typer.Exit(code=1)
+
+    target = target.lower()
+    tok = token or (
+        os.environ.get("GITHUB_TOKEN") if target == "github" else os.environ.get("GITLAB_TOKEN")
+    )
+    if not tok:
+        err_console.print(f"No token; pass --token or set {target.upper()}_TOKEN.")
+        raise typer.Exit(code=1)
+
+    try:
+        if target == "github":
+            written = _vcs.push_github(repo_url, tok, secrets)
+        elif target == "gitlab":
+            written = _vcs.push_gitlab(repo_url, tok, secrets, environment_scope=env_scope)
+        else:
+            err_console.print(f"Unknown --target {target!r}. Use github or gitlab.")
+            raise typer.Exit(code=1)
+    except _vcs.VcsSecretError as exc:
+        err_console.print(str(exc))
+        raise typer.Exit(code=1)
+    console.print(f"[green]Pushed[/green] {len(written)} secret(s) to {target}.")
+
+
+@secrets_app.command("materialize")
+def secrets_materialize(
+    directory: Path = typer.Option(Path("."), "--dir", "-d", help="Project root."),
+) -> None:
+    """Expand NUBI_SECRET__* / NUBI_CONNECTOR__* env vars into .env files (doc C).
+
+    Pipeline use: no backend call. Each NUBI_SECRET__<NAME> becomes a flow.env
+    line; each NUBI_CONNECTOR__<SLUG>__<FIELD> becomes a connectors.env line.
+    """
+    counts = _secrets_files.materialize(directory, dict(os.environ))
+    console.print(
+        f"[green]Materialized[/green] {counts['flow']} flow + "
+        f"{counts['connector']} connector secret(s)."
+    )
+
+
+@secrets_app.command("delete")
+def secrets_delete(
+    name: str = typer.Argument(..., help="Cloud secret name to delete."),
+    directory: Path = typer.Option(Path("."), "--dir", "-d", help="Project root."),
+) -> None:
+    """Delete a cloud flow/org secret (DELETE /secrets/{name})."""
+    _require_login()
+    try:
+        _client.delete(f"secrets/{name}", headers=_project_headers(directory))
+    except CLIError as exc:
+        err_console.print(f"Delete failed: {exc.message}")
+        raise typer.Exit(code=1)
+    console.print(f"[green]Deleted[/green] cloud secret {name!r}.")
+
+
+# ---------------------------------------------------------------------------
+# logout / whoami
+# ---------------------------------------------------------------------------
+
+
+@app.command()
+def logout() -> None:
+    """Clear the locally stored access token (doc D: POST /auth/logout)."""
+    # Best-effort server-side revoke; the local token clear is authoritative.
+    if load_token():
+        try:
+            _client.post("auth/logout")
+        except CLIError:
+            pass
+    cleared = clear_token()
+    if cleared:
+        console.print("[green]Logged out — local token cleared.[/green]")
+    else:
+        console.print("[dim]No local token was stored.[/dim]")
+
+
+@app.command()
+def whoami() -> None:
+    """Show the current user/org (GET /auth/me)."""
+    _require_login()
+    try:
+        resp = _client.get("auth/me")
+    except CLIError as exc:
+        err_console.print(f"Could not fetch identity: {exc.message}")
+        raise typer.Exit(code=1)
+    body = resp.json()
+    user = body.get("user", body)
+    console.print(
+        f"[green]{user.get('email', '?')}[/green] "
+        f"(id={user.get('id', '?')}, org={user.get('org_id', user.get('default_org_id', '?'))})"
+    )
+
+
+# ---------------------------------------------------------------------------
+# init
+# ---------------------------------------------------------------------------
+
+
+@app.command()
+def init(
+    project: Optional[str] = typer.Option(None, "--project", help="Bind to an existing project id."),
+    name: Optional[str] = typer.Option(None, "--name", help="Project display name for nubi.yaml."),
+    default_env: str = typer.Option("dev", "--env", help="Default environment key."),
+    ci: Optional[str] = typer.Option(None, "--ci", help="Scaffold a CI pipeline: github | gitlab."),
+    directory: Path = typer.Argument(Path("."), help="Project directory (default: cwd)."),
+) -> None:
+    """Scaffold a local project: nubi.yaml, .nubi/project.json, .gitignore (doc A/D).
+
+    When ``--project`` is given the manifest is bound to that id; otherwise it is
+    scaffolded unbound (pull/push resolve the id later). ``--ci github|gitlab``
+    also copies the matching pipeline template (doc E).
+    """
+    root = directory
+    root.mkdir(parents=True, exist_ok=True)
+
+    org_id: str | None = None
+    proj_name = name or root.resolve().name
+    # When logged in + a project id given, fetch its real name/org.
+    if project and load_token():
+        try:
+            resp = _client.get(f"projects/{project}")
+            row = resp.json()
+            proj_name = name or row.get("name") or proj_name
+            org_id = row.get("org_id")
+        except CLIError:
+            pass
+
+    manifest = _project.build_manifest(
+        proj_name, project, org_id, default_env=default_env, environments=[default_env]
+    )
+    _project.write_nubi_yaml(root, manifest)
+    _project.write_project_json(
+        root,
+        {
+            "project_id": project,
+            "org_id": org_id,
+            "api_url": _client.get_api_url() if hasattr(_client, "get_api_url") else None,
+            "default_env": default_env,
+        },
+    )
+    appended = _project.write_gitignore(root)
+
+    console.print(f"[green]Initialized[/green] Nubi project at {root}/")
+    console.print("  wrote nubi.yaml, .nubi/project.json")
+    console.print(f"  {'wrote' if appended else 'kept'} .gitignore (secrets ignored)")
+
+    if ci:
+        written = _scaffold_ci(root, ci)
+        if written:
+            console.print(f"  scaffolded CI: {written}")
+
+
+def _scaffold_ci(root: Path, target: str) -> str | None:
+    """Copy a CI template (doc E) into the project; return the written path."""
+    templates = Path(__file__).parent.parent / "templates"
+    target = target.lower()
+    if target == "github":
+        src = templates / "github" / "nubi-deploy.yml"
+        dest = root / ".github" / "workflows" / "nubi-deploy.yml"
+    elif target == "gitlab":
+        src = templates / "gitlab" / ".gitlab-ci.yml"
+        dest = root / ".gitlab-ci.yml"
+    else:
+        err_console.print(f"Unknown --ci target {target!r}. Use 'github' or 'gitlab'.")
+        return None
+    if not src.exists():
+        err_console.print(f"CI template not found: {src}")
+        return None
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    dest.write_text(src.read_text(encoding="utf-8"), encoding="utf-8")
+    return str(dest)
+
+
+# ---------------------------------------------------------------------------
+# pull / push (the full file tree, doc A + D)
+# ---------------------------------------------------------------------------
+
+_ALL_KINDS = ("dashboard", "query", "flow", "connector")
+
+
+def _connector_envelope_from_row(row: dict) -> dict:
+    """Build a connector envelope from a sanitised GET /connectors row.
+
+    The list response is already scrubbed (no secret material). ``connector_type``
+    lives inside ``config``; we surface it plus the remaining non-secret fields.
+    """
+    config = dict(row.get("config") or {})
+    spec: dict[str, Any] = {}
+    if config.get("connector_type"):
+        spec["connector_type"] = config.pop("connector_type")
+    spec.update({k: v for k, v in config.items() if k != "system"})
+    meta = {"name": row.get("name") or ""}
+    if row.get("id"):
+        meta["id"] = str(row["id"])
+    return {"kind": "connector", "apiVersion": _project.API_VERSION, "metadata": meta, "spec": spec}
+
+
+def _pull_kind(root: Path, kind: str, headers: dict[str, str]) -> int:
+    """Pull all resources of *kind* into the file tree; return the count."""
+    endpoint = _KIND_LIST_ENDPOINT[kind]
+    rows = _list_resources(endpoint, headers)
+    count = 0
+    for row in rows:
+        rid = row.get("id")
+        if not rid:
+            continue
+        try:
+            if kind == "connector":
+                # Prefer the NEW /export/connector/{id}; fall back to the list row.
+                try:
+                    env = _export_envelope("connector", rid, headers)
+                except CLIError:
+                    env = _connector_envelope_from_row(row)
+            else:
+                env = _export_envelope(kind, rid, headers)
+            items = _project.envelope_to_files(env)
+            _project.write_files(root, items)
+            count += 1
+        except CLIError as exc:
+            err_console.print(f"Skipping {kind} {rid}: {exc.message}")
+    return count
+
+
+@app.command()
+def pull(  # noqa: F811 — replaces the legacy single-resource pull
+    env: Optional[str] = typer.Option(None, "--env", help="Environment key (informational)."),
+    kinds: Optional[str] = typer.Option(
+        None, "--kinds", help="Comma-separated kinds: dashboard,query,flow,connector."
+    ),
+    directory: Path = typer.Argument(Path("."), help="Project root (default: cwd)."),
+) -> None:
+    """Download ALL project resources into the local file tree (doc A + D).
+
+    Writes dashboards/queries/flows/connectors using the canonical on-disk
+    layout. Connectors write NON-SECRET manifests only — secrets stay in the
+    gitignored .nubi/secrets/ tree.
+    """
+    _require_login()
+    root = directory
+    wanted = [k.strip() for k in kinds.split(",")] if kinds else list(_ALL_KINDS)
+    headers = _project_headers(root)
+
+    total = 0
+    for kind in wanted:
+        if kind not in _KIND_LIST_ENDPOINT:
+            err_console.print(f"Unknown kind {kind!r}; skipping.")
+            continue
+        try:
+            n = _pull_kind(root, kind, headers)
+            total += n
+            console.print(f"[green]Pulled[/green] {n} {kind}(s).")
+        except CLIError as exc:
+            err_console.print(f"Failed to list {kind}: {exc.message}")
+    # Keep the secrets gitignore present after a pull.
+    _project.write_gitignore(root)
+    console.print(f"Pulled {total} resource(s) into {root}/.")
+
+
+def _import_envelope(env: dict, headers: dict[str, str], dry_run: bool, root: Path | None = None) -> str:
+    """POST /import a single envelope (or connector upsert); return an action label."""
+    kind = env.get("kind")
+    meta = env.get("metadata") or {}
+    has_id = bool(meta.get("id"))
+    label = ("UPDATE" if has_id else "CREATE") + f" {kind} '{meta.get('name', '?')}'"
+    if dry_run:
+        return label
+    if kind == "connector":
+        _push_connector(env, headers, root)
+    else:
+        # POST /import accepts the YAML/JSON envelope as the request body.
+        _client.post(
+            "import",
+            json=env,
+            headers={**headers, **{}},
+        )
+    return label
+
+
+@app.command()
+def push(
+    dry_run: bool = typer.Option(False, "--dry-run", help="Print the plan; make no API calls."),
+    env: Optional[str] = typer.Option(None, "--env", help="Environment key (informational)."),
+    kinds: Optional[str] = typer.Option(None, "--kinds", help="Comma-separated kinds to push."),
+    directory: Path = typer.Argument(Path("."), help="Project root (default: cwd)."),
+) -> None:
+    """Upload changed non-secret manifests to the cloud (doc D).
+
+    Dashboards/queries/flows go through POST /import (upsert by embedded id);
+    connectors upsert via POST/PUT /connectors. Secrets are NEVER pushed here —
+    use ``nubi deploy`` or ``nubi secrets push`` for that.
+    """
+    _require_login()
+    root = directory
+    wanted = [k.strip() for k in kinds.split(",")] if kinds else list(_ALL_KINDS)
+    headers = _project_headers(root)
+    tree = _project.read_all(root, wanted)
+
+    tbl = Table("Kind", "Name", "Action", title="Push plan")
+    plan: list[dict] = []
+    for kind in wanted:
+        for envlp in tree.get(kind, []):
+            meta = envlp.get("metadata") or {}
+            tbl.add_row(kind, str(meta.get("name", "?")), "UPDATE" if meta.get("id") else "CREATE")
+            plan.append(envlp)
+    if not plan:
+        console.print("[yellow]No manifests found to push.[/yellow]")
+        raise typer.Exit(code=0)
+    console.print(tbl)
+
+    if dry_run:
+        console.print("[yellow]Dry run — no API calls made.[/yellow]")
+        return
+
+    for envlp in plan:
+        try:
+            label = _import_envelope(envlp, headers, dry_run=False, root=root)
+            console.print(f"[green]{label}[/green]")
+        except CLIError as exc:
+            err_console.print(f"Failed to push {envlp.get('kind')}: {exc.message}")
+
+
+# ---------------------------------------------------------------------------
+# sync / status
+# ---------------------------------------------------------------------------
+
+
+@app.command()
+def sync(
+    env_id: str = typer.Option(..., "--env-id", help="Environment id to reconcile."),
+    strategy: Optional[str] = typer.Option(
+        None, "--strategy", help="Conflict strategy: take_branch | take_env."
+    ),
+) -> None:
+    """Two-way reconcile local tree ↔ cloud via the project's git binding (doc D).
+
+    Pushes then pulls the env-bound branch using the existing git-env routes.
+    """
+    _require_login()
+    push_body = {}
+    pull_body = {"strategy": strategy} if strategy else {}
+    try:
+        presp = _client.post(f"environments/{env_id}/git/push", json=push_body)
+        console.print(f"[green]push[/green]: {json.dumps(presp.json())[:200]}")
+        qresp = _client.post(f"environments/{env_id}/git/pull", json=pull_body)
+        console.print(f"[green]pull[/green]: {json.dumps(qresp.json())[:200]}")
+    except CLIError as exc:
+        err_console.print(f"Sync failed: {exc.message}")
+        raise typer.Exit(code=1)
+
+
+@app.command()
+def status(
+    directory: Path = typer.Argument(Path("."), help="Project root (default: cwd)."),
+) -> None:
+    """Show the project binding, env, and last-sync commit graph (doc D).
+
+    Reads the local pointer + nubi.yaml; queries GET /projects/{id}/git/graph
+    for branch heads when logged in.
+    """
+    root = directory
+    pointer = _project.read_project_json(root)
+    manifest = _project.read_nubi_yaml(root)
+    pid = _resolve_project_id(root)
+
+    tbl = Table("Field", "Value", title="Nubi project status")
+    tbl.add_row("project_id", str(pid or "(unbound)"))
+    tbl.add_row("org_id", str(pointer.get("org_id") or "-"))
+    tbl.add_row("default_env", str(pointer.get("default_env") or (manifest.get("spec") or {}).get("default_env") or "-"))
+    tbl.add_row("api_url", _client.get_api_url())
+    console.print(tbl)
+
+    if pid and load_token():
+        try:
+            resp = _client.get(f"projects/{pid}/git/graph")
+            graph = resp.json()
+            for branch in graph.get("branches", []):
+                head = (branch.get("head_sha") or "")[:8] or "(empty)"
+                console.print(
+                    f"  branch [cyan]{branch.get('branch')}[/cyan] "
+                    f"(env={branch.get('env_key')}) @ {head}"
+                )
+        except CLIError as exc:
+            err_console.print(f"Could not fetch git graph: {exc.message}")
+
+
+# ---------------------------------------------------------------------------
+# deploy (CI-oriented full pipeline, doc E ordering)
+# ---------------------------------------------------------------------------
+
+
+@app.command(name="deploy")
+def deploy_project(  # noqa: F811 — name="deploy" keeps the CLI verb; new behaviour
+    env: Optional[str] = typer.Option(None, "--env", help="Target environment key (e.g. prod)."),
+    directory: Path = typer.Argument(Path("."), help="Project root (default: cwd)."),
+) -> None:
+    """CI deploy: materialize secrets, push manifests + secrets to the cloud (doc E).
+
+    Ordering (idempotent): (1) secrets materialize; (2) connector manifests +
+    secrets; (3) flow/org secrets; (4) import dashboards/queries/flows. The
+    optional checkpoint/promote steps are skipped when the project is unbound.
+    """
+    _require_login()
+    root = directory
+    headers = _project_headers(root)
+
+    # (1) Materialize secrets from CI env vars (no backend call).
+    counts = _secrets_files.materialize(root, dict(os.environ))
+    console.print(f"materialized {counts['flow']} flow + {counts['connector']} connector secret(s)")
+
+    # (2) Connector manifests + secrets.
+    tree = _project.read_all(root, ["connector"])
+    for envlp in tree.get("connector", []):
+        try:
+            _push_connector(envlp, headers, root)
+            console.print(f"[green]connector[/green] {envlp.get('metadata', {}).get('name')}")
+        except CLIError as exc:
+            err_console.print(f"Connector push failed: {exc.message}")
+
+    # (3) Flow/org secrets → POST /secrets.
+    flow_secrets = _secrets_files.read_dotenv(_secrets_files.flow_env_path(root))
+    for name, value in flow_secrets.items():
+        try:
+            _client.post("secrets", json={"name": name, "value": value}, headers=headers)
+        except CLIError as exc:
+            err_console.print(f"Secret {name!r} push failed: {exc.message}")
+    if flow_secrets:
+        console.print(f"[green]pushed[/green] {len(flow_secrets)} flow secret(s)")
+
+    # (4) Import dashboards/queries/flows.
+    tree = _project.read_all(root, ["dashboard", "query", "flow"])
+    for kind in ("dashboard", "query", "flow"):
+        for envlp in tree.get(kind, []):
+            try:
+                _client.post("import", json=envlp, headers=headers)
+                console.print(f"[green]imported[/green] {kind} {envlp.get('metadata', {}).get('name')}")
+            except CLIError as exc:
+                err_console.print(f"Import {kind} failed: {exc.message}")
+
+    console.print(f"[green]Deploy complete[/green] (env={env or 'default'}).")
+
+
+# ---------------------------------------------------------------------------
+# Per-kind wrappers: dashboards / queries / connectors
+# ---------------------------------------------------------------------------
+
+
+@dashboards_app.command("pull")
+def dashboards_pull(directory: Path = typer.Option(Path("."), "--dir", "-d")) -> None:
+    """Pull just dashboards (GET /boards + /export/dashboard/{id})."""
+    _require_login()
+    n = _pull_kind(directory, "dashboard", _project_headers(directory))
+    console.print(f"[green]Pulled[/green] {n} dashboard(s).")
+
+
+@dashboards_app.command("push")
+def dashboards_push(directory: Path = typer.Option(Path("."), "--dir", "-d")) -> None:
+    """Push just dashboards (POST /import)."""
+    _require_login()
+    _push_kind(directory, "dashboard")
+
+
+@queries_app.command("pull")
+def queries_pull(directory: Path = typer.Option(Path("."), "--dir", "-d")) -> None:
+    """Pull just queries in the 3-file form (GET /queries + /export/query/{id})."""
+    _require_login()
+    n = _pull_kind(directory, "query", _project_headers(directory))
+    console.print(f"[green]Pulled[/green] {n} query(ies).")
+
+
+@queries_app.command("push")
+def queries_push(directory: Path = typer.Option(Path("."), "--dir", "-d")) -> None:
+    """Push just queries (POST /import)."""
+    _require_login()
+    _push_kind(directory, "query")
+
+
+def _push_kind(root: Path, kind: str) -> None:
+    """Shared push for a single kind via POST /import."""
+    headers = _project_headers(root)
+    tree = _project.read_all(root, [kind])
+    for envlp in tree.get(kind, []):
+        try:
+            label = _import_envelope(envlp, headers, dry_run=False, root=root)
+            console.print(f"[green]{label}[/green]")
+        except CLIError as exc:
+            err_console.print(f"Failed to push {kind}: {exc.message}")
+
+
+@connectors_app.command("pull")
+def connectors_pull(directory: Path = typer.Option(Path("."), "--dir", "-d")) -> None:
+    """Write non-secret connectors/<slug>.yaml (GET /connectors)."""
+    _require_login()
+    n = _pull_kind(directory, "connector", _project_headers(directory))
+    console.print(f"[green]Pulled[/green] {n} connector(s) (non-secret).")
+
+
+@connectors_app.command("push")
+def connectors_push(directory: Path = typer.Option(Path("."), "--dir", "-d")) -> None:
+    """Upsert connector non-secret config + secrets from connectors.env."""
+    _require_login()
+    root = directory
+    headers = _project_headers(root)
+    tree = _project.read_all(root, ["connector"])
+    for envlp in tree.get("connector", []):
+        try:
+            _push_connector(envlp, headers, root)
+            console.print(f"[green]pushed[/green] connector {envlp.get('metadata', {}).get('name')}")
+        except CLIError as exc:
+            err_console.print(f"Connector push failed: {exc.message}")
+
+
+@connectors_app.command("test")
+def connectors_test(connector_id: str = typer.Argument(..., help="Connector id to test.")) -> None:
+    """Validate config + secret resolvability (POST /connectors/{id}/test)."""
+    _require_login()
+    try:
+        resp = _client.post(f"connectors/{connector_id}/test")
+        body = resp.json()
+        ok = body.get("ok", body.get("success"))
+        if ok is False:
+            err_console.print(f"Connector test FAILED: {json.dumps(body)[:300]}")
+            raise typer.Exit(code=1)
+        console.print(f"[green]Connector OK[/green]: {json.dumps(body)[:200]}")
+    except CLIError as exc:
+        err_console.print(f"Connector test failed: {exc.message}")
+        raise typer.Exit(code=1)
+
+
+def _push_connector(env: dict, headers: dict[str, str], root: Path | None = None) -> None:
+    """Upsert a connector: non-secret config (+ secrets from connectors.env).
+
+    Tries POST /import (kind: connector, NEW endpoint) first for upsert-by-id;
+    falls back to POST/PUT /connectors when the import path rejects connectors.
+    Secret fields are pulled from ``<root>/.nubi/secrets/connectors.env`` keyed
+    ``<SLUG>__<FIELD>`` and sent via the connector ``secret`` blob.
+    """
+    meta = env.get("metadata") or {}
+    spec = dict(env.get("spec") or {})
+    name = meta.get("name") or "Connector"
+    rid = meta.get("id")
+    connector_type = spec.pop("connector_type", None)
+    declared = spec.pop("secrets", []) or []
+
+    # Resolve secret fields from connectors.env (in the active project tree).
+    root = root or _project_root()
+    env_file = _secrets_files.read_dotenv(_secrets_files.connectors_env_path(root))
+    slug = _project.slugify(name)
+    secret: dict[str, str] = {}
+    for field in declared:
+        key = _secrets_files.connector_key(slug, field)
+        if key in env_file:
+            secret[field] = env_file[key]
+
+    # Try the uniform NEW import path first (upsert by embedded id).
+    try:
+        _client.post("import", json=env, headers=headers)
+        # The import path never touches the secret store; rotate secrets after.
+        if secret and rid:
+            _client.put(f"connectors/{rid}", json={"secret": secret}, headers=headers)
+        return
+    except CLIError as exc:
+        if exc.status not in (400, 404, 422):
+            raise
+
+    # Fallback: POST/PUT /connectors with the legacy shape.
+    payload = {"name": name, "type": connector_type, "config": spec, "secret": secret}
+    if rid:
+        _client.put(f"connectors/{rid}", json=payload, headers=headers)
+    else:
+        _client.post("connectors", json=payload, headers=headers)
+
+
+# ---------------------------------------------------------------------------
+# git connect / graph
+# ---------------------------------------------------------------------------
+
+
+@git_app.command("connect")
+def git_connect(
+    provider: str = typer.Option(..., "--provider", help="github | gitlab."),
+    repo_url: str = typer.Option(..., "--repo-url", help="Remote repo URL."),
+    token: str = typer.Option(..., "--token", help="PAT bound to the project (stored server-side)."),
+    branch: str = typer.Option("main", "--branch", help="Default branch."),
+    base_path: str = typer.Option("", "--base-path", help="Subdir within the repo."),
+    directory: Path = typer.Argument(Path("."), help="Project root (default: cwd)."),
+) -> None:
+    """Bind the project to a remote (POST /git/connect)."""
+    _require_login()
+    pid = _resolve_project_id(directory)
+    if not pid:
+        err_console.print("No project bound; run 'nubi init --project <id>' first.")
+        raise typer.Exit(code=1)
+    body = {
+        "project_id": pid,
+        "provider": provider,
+        "repo_url": repo_url,
+        "branch": branch,
+        "base_path": base_path,
+        "token": token,
+    }
+    try:
+        _client.post("git/connect", json=body)
+    except CLIError as exc:
+        err_console.print(f"git connect failed: {exc.message}")
+        raise typer.Exit(code=1)
+    console.print(f"[green]Connected[/green] {provider} → {repo_url} ({branch}).")
+
+    # Mirror the (non-secret) binding into nubi.yaml spec.git.
+    manifest = _project.read_nubi_yaml(directory)
+    spec = manifest.setdefault("spec", {})
+    spec["git"] = {"provider": provider, "repo_url": repo_url}
+    if manifest:
+        _project.write_nubi_yaml(directory, manifest)
+
+
+@git_app.command("graph")
+def git_graph(directory: Path = typer.Argument(Path("."), help="Project root (default: cwd).")) -> None:
+    """Print the env-branch commit graph (GET /projects/{id}/git/graph)."""
+    _require_login()
+    pid = _resolve_project_id(directory)
+    if not pid:
+        err_console.print("No project bound.")
+        raise typer.Exit(code=1)
+    try:
+        resp = _client.get(f"projects/{pid}/git/graph")
+    except CLIError as exc:
+        err_console.print(f"Could not fetch graph: {exc.message}")
+        raise typer.Exit(code=1)
+    for branch in resp.json().get("branches", []):
+        console.print(f"[cyan]{branch.get('branch')}[/cyan] (env={branch.get('env_key')})")
+        for c in branch.get("commits", [])[:10]:
+            console.print(f"  {c.get('sha', '')[:8]}  {c.get('message', '')}")
 
 
 # ---------------------------------------------------------------------------

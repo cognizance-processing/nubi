@@ -1,0 +1,15 @@
+stages: [deploy]
+deploy_nubi:
+  stage: deploy
+  image: python:3.11-slim
+  rules:
+    - if: '$CI_COMMIT_BRANCH == "main"'
+  variables:
+    NUBI_API_URL: $NUBI_API_URL          # CI/CD variable
+  script:
+    - pip install nubi-cli
+    # Reads NUBI_SECRET__* / NUBI_CONNECTOR__* CI variables (pre-seed once with
+    # `nubi secrets push --target gitlab`) and writes .nubi/secrets/*.env.
+    - nubi secrets materialize
+    # Uses $NUBI_TOKEN (masked CI variable) to push manifests + secrets to prod.
+    - nubi deploy --env prod

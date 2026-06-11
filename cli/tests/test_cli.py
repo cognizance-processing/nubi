@@ -76,7 +76,7 @@ class TestDeployDryRun:
         monkeypatch.setattr("nubi_cli.client.post", mock_post)
         monkeypatch.setattr("nubi_cli.client.put", mock_put)
 
-        result = runner.invoke(app, ["deploy", str(tmp_path), "--dry-run"])
+        result = runner.invoke(app, ["deploy-files", str(tmp_path), "--dry-run"])
 
         assert result.exit_code == 0, result.output
         assert "CREATE" in result.output
@@ -103,7 +103,7 @@ class TestDeployDryRun:
         monkeypatch.setattr("nubi_cli.client.post", mock_post)
         monkeypatch.setattr("nubi_cli.client.put", mock_put)
 
-        result = runner.invoke(app, ["deploy", str(tmp_path), "--dry-run"])
+        result = runner.invoke(app, ["deploy-files", str(tmp_path), "--dry-run"])
 
         assert result.exit_code == 0, result.output
         assert "UPDATE" in result.output
@@ -125,7 +125,7 @@ class TestDeployDryRun:
         monkeypatch.setattr("nubi_cli.client.post", mock_post)
         monkeypatch.setattr("nubi_cli.client.put", mock_put)
 
-        result = runner.invoke(app, ["deploy", str(tmp_path), "--dry-run"])
+        result = runner.invoke(app, ["deploy-files", str(tmp_path), "--dry-run"])
 
         assert result.exit_code == 0, result.output
         assert "CREATE" in result.output
@@ -165,7 +165,7 @@ class TestDeployValidation:
         )
         mock_post, mock_put = self._patch_no_http(monkeypatch)
 
-        result = runner.invoke(app, ["deploy", str(tmp_path)])
+        result = runner.invoke(app, ["deploy-files", str(tmp_path)])
 
         output = self._all_output(result)
         assert result.exit_code == 1, output
@@ -181,7 +181,7 @@ class TestDeployValidation:
         )
         mock_post, mock_put = self._patch_no_http(monkeypatch)
 
-        result = runner.invoke(app, ["deploy", str(tmp_path)])
+        result = runner.invoke(app, ["deploy-files", str(tmp_path)])
 
         output = self._all_output(result)
         assert result.exit_code == 1, output
@@ -197,7 +197,7 @@ class TestDeployValidation:
         )
         mock_post, mock_put = self._patch_no_http(monkeypatch)
 
-        result = runner.invoke(app, ["deploy", str(tmp_path)])
+        result = runner.invoke(app, ["deploy-files", str(tmp_path)])
 
         output = self._all_output(result)
         assert result.exit_code == 1, output
@@ -216,7 +216,7 @@ class TestDeployValidation:
         )
         mock_post, mock_put = self._patch_no_http(monkeypatch)
 
-        result = runner.invoke(app, ["deploy", str(tmp_path), "--dry-run"])
+        result = runner.invoke(app, ["deploy-files", str(tmp_path), "--dry-run"])
 
         output = self._all_output(result)
         assert result.exit_code == 0, output
@@ -238,7 +238,7 @@ class TestDeployValidation:
         monkeypatch.setattr("nubi_cli.client.post", mock_post)
         monkeypatch.setattr("nubi_cli.client.put", mock_put)
 
-        result = runner.invoke(app, ["deploy", str(tmp_path)])
+        result = runner.invoke(app, ["deploy-files", str(tmp_path)])
 
         output = self._all_output(result)
         assert result.exit_code == 0, output

@@ -49,3 +49,17 @@ def save_token(token: str) -> None:
     creds = _read_credentials()
     creds["access_token"] = token
     _CREDENTIALS_PATH.write_text(json.dumps(creds, indent=2))
+
+
+def clear_token() -> bool:
+    """Remove the stored access token from ~/.nubi/credentials.
+
+    Returns True when a token was present and removed, False otherwise.  The
+    NUBI_TOKEN env var (if any) is NOT touched — it is the caller's environment.
+    """
+    creds = _read_credentials()
+    had = "access_token" in creds
+    creds.pop("access_token", None)
+    if _CREDENTIALS_PATH.exists():
+        _CREDENTIALS_PATH.write_text(json.dumps(creds, indent=2))
+    return had

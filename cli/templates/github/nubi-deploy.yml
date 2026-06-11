@@ -1,0 +1,28 @@
+name: Deploy to Nubi
+on:
+  push:
+    branches: [main]
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment: prod
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install Nubi CLI
+        run: pip install nubi-cli   # or: pip install -e ./cli (monorepo)
+      - name: Materialize secrets from repo secrets
+        env:
+          # Pre-seed these once with: nubi secrets push --target github
+          # Flow secrets are NUBI_SECRET__<NAME>; connector secrets are
+          # NUBI_CONNECTOR__<SLUG>__<FIELD>. Add one line per secret.
+          NUBI_SECRET__STRIPE_API_KEY: ${{ secrets.NUBI_SECRET__STRIPE_API_KEY }}
+          NUBI_CONNECTOR__PROD_POSTGRES__PASSWORD: ${{ secrets.NUBI_CONNECTOR__PROD_POSTGRES__PASSWORD }}
+        run: nubi secrets materialize
+      - name: Deploy
+        env:
+          NUBI_API_URL: ${{ vars.NUBI_API_URL }}
+          NUBI_TOKEN: ${{ secrets.NUBI_TOKEN }}
+        run: nubi deploy --env prod

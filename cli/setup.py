@@ -11,9 +11,13 @@ setup(
         "httpx>=0.27.0",
         "rich>=13.0.0",
         "pyyaml>=6.0",
+        "toml>=0.10.2",
     ],
     extras_require={
         "arrow": ["pyarrow>=14.0.0"],
+        # PyNaCl is only needed to seal GitHub Actions secrets; the CLI degrades
+        # with a clear error when it is absent (doc C).
+        "secrets": ["pynacl>=1.5.0"],
     },
     entry_points={
         "console_scripts": [
