@@ -322,10 +322,23 @@ export async function postStream(path, body, { onEvent, signal } = {}, _isRetry 
 /**
  * POST /auth/refresh — uses the HttpOnly cookie; returns { access_token }.
  * Throws on failure. Called internally; consumers use the auth helpers below.
+ *
+ * Single-flight: concurrent callers share ONE in-flight refresh. Every
+ * refresh ROTATES the HttpOnly cookie, and presenting the pre-rotation
+ * cookie again trips the backend's family-reuse detection, which revokes
+ * the entire session family — so parallel refreshes (e.g. several
+ * components 401ing together at app boot) don't just waste requests, they
+ * log the user out.
  */
+let _refreshInFlight = null
 function _doRefresh() {
-  // bypass the interceptor loop: pass _isRetry = true
-  return request('/auth/refresh', { method: 'POST' }, true)
+  if (!_refreshInFlight) {
+    // bypass the interceptor loop: pass _isRetry = true
+    _refreshInFlight = request('/auth/refresh', { method: 'POST' }, true).finally(() => {
+      _refreshInFlight = null
+    })
+  }
+  return _refreshInFlight
 }
 
 // ---------------------------------------------------------------------------
@@ -354,11 +367,13 @@ export function login(body) {
 
 /**
  * Silently exchange the HttpOnly refresh cookie for a new access token.
- * Also rotates the refresh cookie.
+ * Also rotates the refresh cookie. Shares the 401 interceptor's
+ * single-flight so a boot-time refresh and interceptor refreshes can never
+ * race each other (see _doRefresh).
  * @returns {Promise<{ access_token: string }>}
  */
 export function refresh() {
-  return post('/auth/refresh')
+  return _doRefresh()
 }
 
 /**

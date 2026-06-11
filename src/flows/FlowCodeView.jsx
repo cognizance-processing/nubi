@@ -162,7 +162,6 @@ export default function FlowCodeView({ flow, spec, onSpecChange }) {
 
   useEffect(() => {
     if (!loadKey || loadKey === lastLoadKeyRef.current) return
-    lastLoadKeyRef.current = loadKey
     let cancelled = false
     const run = async () => {
       setPyState({ loading: true, source: null, error: null, unavailable: false, invalidSpec: false })
@@ -171,6 +170,11 @@ export default function FlowCodeView({ flow, spec, onSpecChange }) {
       setApplySuccess(false)
       const result = await fetchCodegen(flowId, spec)
       if (cancelled) return
+      // Mark the key as loaded only on a completed (non-cancelled) fetch.
+      // Setting it eagerly deadlocks the spinner: a re-render with an equal
+      // spec (new identity) — or StrictMode's double-effect — cancels the
+      // in-flight fetch, and the early-return above then blocks the refetch.
+      lastLoadKeyRef.current = loadKey
       const src = result.source ?? null
       setPyState({
         loading: false,
