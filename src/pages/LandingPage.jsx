@@ -1387,9 +1387,11 @@ export default function LandingPage() {
                 <span className="text-brand-teal">embedded dashboard</span>.
               </h2>
               <p className="text-sm sm:text-base leading-relaxed mt-4 text-muted max-w-2xl mx-auto">
-                Write a query, see results the instant you hit Run, then drag the
-                charts into a dashboard your customers can open — no separate tools,
-                no cold-start kernel, no per-viewer bill.
+                Write a query, see results{' '}
+                <strong className="text-fg font-semibold">the instant you hit Run</strong>, then
+                drag the charts into a dashboard your customers can open —{' '}
+                <strong className="text-fg font-semibold">no separate tools, no cold-start
+                kernel, no per-viewer bill.</strong>
               </p>
             </div>
 
@@ -1449,9 +1451,11 @@ export default function LandingPage() {
                 <span className="text-brand-gradient">everything cheaper.</span>
               </h2>
               <p className="text-sm sm:text-base leading-relaxed text-muted">
-                Each feature flows from one structural bet: push compute to the browser and
-                fall through to a server only when you must. The result is near-zero marginal
-                cost per dashboard view — regardless of how many viewers you have.
+                Each feature flows from one structural bet:{' '}
+                <strong className="text-fg font-semibold">push compute to the browser</strong>,
+                fall through to a server only when you must. The result:{' '}
+                <strong className="text-fg font-semibold">near-zero marginal cost per dashboard
+                view</strong> — regardless of how many viewers you have.
               </p>
             </div>
 
@@ -1553,9 +1557,11 @@ export default function LandingPage() {
                 <span className="text-brand-gradient">whole stack.</span>
               </h2>
               <p className="text-sm sm:text-base leading-relaxed text-muted">
-                Point Nubi at the warehouses, databases, and lakes you already run — no proprietary
-                semantic model to start. Relational, cloud-managed, warehouse, query-engine, and
-                object-storage sources are first-class, all enforcing the same security floor.
+                Point Nubi at the warehouses, databases, and lakes you already run —{' '}
+                <strong className="text-fg font-semibold">no proprietary semantic model to
+                start.</strong> Relational, cloud-managed, warehouse, query-engine, and
+                object-storage sources are first-class, all enforcing{' '}
+                <strong className="text-fg font-semibold">the same security floor.</strong>
               </p>
             </div>
 
@@ -1930,8 +1936,9 @@ export default function LandingPage() {
             </h2>
             <p className="text-sm sm:text-base leading-relaxed text-muted mb-6">
               The analytics kernel runs in the user&rsquo;s browser by default. That single decision
-              makes the marginal cost of a dashboard view ≈ $0 — not a marketing claim, a
-              consequence of where compute runs. Hex runs a Python kernel per session in their
+              makes the marginal cost of a dashboard view{' '}
+              <strong className="text-fg font-semibold">≈ $0 — not a marketing claim, a
+              consequence of where compute runs.</strong> Hex runs a Python kernel per session in their
               cloud. Cube runs the data plane in their cloud. Nubi pushes compute to the browser
               and only falls through to a metered server kernel for the workloads that need it.
             </p>
