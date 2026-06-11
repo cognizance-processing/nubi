@@ -63,6 +63,7 @@ from typing import Any, Iterator
 
 from app.ai.provider import LLMProvider, NullProvider
 from app.ai.tools import execute_tool, tool_schemas
+from app.errors import AppError
 
 
 # ---------------------------------------------------------------------------
@@ -248,6 +249,7 @@ def _run_real_provider_loop(
     provider: LLMProvider,
     claims: dict[str, Any],
     max_steps: int,
+    model: str | None = None,
 ) -> dict[str, Any]:
     """Drive the real-provider tool-use loop. Returns ``{reply, actions}``.
 
@@ -266,7 +268,16 @@ def _run_real_provider_loop(
     while steps <= max_steps:
         prompt = _render_conversation(messages, transcript)
         try:
-            reply_text = provider.complete(prompt, system=system)
+            # Only pass ``model`` when explicitly requested so existing
+            # ``complete(prompt, system=...)``-only providers keep working.
+            reply_text = (
+                provider.complete(prompt, system=system, model=model)
+                if model
+                else provider.complete(prompt, system=system)
+            )
+        except AppError:
+            # e.g. model_not_allowed — surface to the caller, don't swallow.
+            raise
         except Exception:  # noqa: BLE001 — provider failure → terminate gracefully.
             break
 
@@ -452,6 +463,7 @@ def run_agent(
     claims: dict[str, Any],
     *,
     max_steps: int = 8,
+    model: str | None = None,
 ) -> dict[str, Any]:
     """Run the AI agent loop and return ``{reply, actions}``.
 
@@ -470,6 +482,12 @@ def run_agent(
     max_steps:
         Maximum number of tool-call iterations before a forced final reply.
         Defaults to 8.
+    model:
+        Optional per-request model id threaded to every ``provider.complete``
+        call.  ``None`` (the default) uses the provider's default model and is
+        backward-compatible.  With a real provider, an id outside the
+        provider's allowlist raises ``AppError("model_not_allowed", 400)``.
+        Ignored on the NullProvider scripted path.
 
     Returns
     -------
@@ -505,7 +523,7 @@ def run_agent(
     # text-based tool-call protocol (see module docstring): the model emits a
     # JSON {"tool", "arguments"} object to call a tool, or plain text to finish.
     # Every tool execution threads ``claims`` for RLS; bounded by max_steps.
-    return _run_real_provider_loop(messages, provider, claims, max_steps)
+    return _run_real_provider_loop(messages, provider, claims, max_steps, model=model)
 
 
 # ---------------------------------------------------------------------------
@@ -576,6 +594,7 @@ def _final_reply_text(
     question: str,
     intent: str,
     actions: list[dict[str, Any]],
+    model: str | None = None,
 ) -> str:
     """Compose the assistant's final natural-language reply.
 
@@ -613,12 +632,21 @@ def _final_reply_text(
             f"{a['tool']} → {_summarise_result(a['tool'], a.get('result', {}))}"
             for a in actions
         )
-        out = provider.complete(
+        summary_prompt = (
             f"User asked: {question}\n\nTools run: {context}\n\n"
-            "Write a concise, friendly reply (markdown) summarising what was done.",
-            system="You are Nubi's analytics assistant. Be concise and helpful.",
+            "Write a concise, friendly reply (markdown) summarising what was done."
+        )
+        summary_system = "You are Nubi's analytics assistant. Be concise and helpful."
+        # Only pass ``model`` when explicitly requested (backward-compat).
+        out = (
+            provider.complete(summary_prompt, system=summary_system, model=model)
+            if model
+            else provider.complete(summary_prompt, system=summary_system)
         )
         return out.strip() or _scripted()
+    except AppError:
+        # e.g. model_not_allowed — surface to the caller, don't swallow.
+        raise
     except Exception:  # noqa: BLE001
         return _scripted()
 
@@ -630,6 +658,7 @@ def _stream_real_provider_loop(
     *,
     max_steps: int,
     pace: float,
+    model: str | None = None,
 ) -> Iterator[dict[str, Any]]:
     """Stream the real-provider tool-use loop as live events.
 
@@ -646,7 +675,15 @@ def _stream_real_provider_loop(
     while steps <= max_steps:
         prompt = _render_conversation(messages, transcript)
         try:
-            reply_text = provider.complete(prompt, system=system)
+            # Only pass ``model`` when explicitly requested (backward-compat).
+            reply_text = (
+                provider.complete(prompt, system=system, model=model)
+                if model
+                else provider.complete(prompt, system=system)
+            )
+        except AppError:
+            # e.g. model_not_allowed — surface to the caller, don't swallow.
+            raise
         except Exception:  # noqa: BLE001 — provider failure → terminate.
             break
 
@@ -694,8 +731,16 @@ def run_agent_stream(
     *,
     max_steps: int = 8,
     pace: float = 0.012,
+    model: str | None = None,
 ) -> Iterator[dict[str, Any]]:
-    """Run the agent loop, yielding live events. See block comment above for shapes."""
+    """Run the agent loop, yielding live events. See block comment above for shapes.
+
+    *model* threads an optional per-request model id to every real-provider
+    ``provider.complete`` call (backward-compatible default ``None`` → the
+    provider's default model; ignored on the NullProvider scripted path).  A
+    model outside the provider's allowlist raises
+    ``AppError("model_not_allowed", 400)``.
+    """
     question = _extract_question(messages)
     last_user_text = _last_user_message(messages)
     intent = _build_intent(last_user_text)
@@ -705,7 +750,7 @@ def run_agent_stream(
     # ── Real provider — iterative tool-use loop, streamed live ──────────────
     if not isinstance(provider, NullProvider):
         yield from _stream_real_provider_loop(
-            messages, provider, claims, max_steps=max_steps, pace=pace
+            messages, provider, claims, max_steps=max_steps, pace=pace, model=model
         )
         return
 
@@ -770,7 +815,7 @@ def run_agent_stream(
 
     # Final reply, streamed token-by-token.
     yield {"type": "status", "text": "Writing response…"}
-    reply = _final_reply_text(provider, question, intent, actions)
+    reply = _final_reply_text(provider, question, intent, actions, model=model)
     for chunk in _tokenise_for_stream(reply):
         yield {"type": "text", "delta": chunk}
         time.sleep(pace)

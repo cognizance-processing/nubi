@@ -136,6 +136,12 @@ class AskRequest(BaseModel):
     """Request body for POST /ai/ask."""
 
     question: str
+    model: str | None = None
+    """Optional model id routed to the provider's ``complete`` call.
+
+    ``None`` uses the provider's default model.  A model outside the provider's
+    allowlist surfaces as ``AppError("model_not_allowed", 400)``.
+    """
 
 
 class AskResponse(BaseModel):
@@ -150,6 +156,12 @@ class DashboardRequest(BaseModel):
     """Request body for POST /ai/dashboard."""
 
     question: str
+    model: str | None = None
+    """Optional model id routed to ``generate_dashboard_spec``.
+
+    ``None`` uses the provider's default model.  A model outside the provider's
+    allowlist surfaces as ``AppError("model_not_allowed", 400)``.
+    """
 
 
 class DashboardResponse(BaseModel):
@@ -205,6 +217,9 @@ async def ask(
     AppError("llm_not_configured", 503)
         If ``LLM_PROVIDER`` is explicitly set but the corresponding API key is
         absent.
+    AppError("model_not_allowed", 400)
+        If ``body.model`` is supplied but is not in the resolved provider's
+        allowlist (raised by ``provider.complete`` and propagated here).
     """
     org_id = await _enforce_ai_quota(_user)
 
@@ -212,7 +227,13 @@ async def ask(
     grounding = ground(body.question, catalog)
     provider = get_provider()
     system_prompt, user_prompt = build_prompt(body.question, grounding)
-    suggestion = provider.complete(user_prompt, system=system_prompt)
+    # Only pass ``model`` when explicitly requested (backward-compatible — keeps
+    # existing ``complete(prompt, system=...)`` behaviour byte-identical).
+    suggestion = (
+        provider.complete(user_prompt, system=system_prompt, model=body.model)
+        if body.model
+        else provider.complete(user_prompt, system=system_prompt)
+    )
 
     await _record_ai_call(_user, org_id, endpoint="ai_ask")
 
@@ -263,6 +284,10 @@ async def create_dashboard(
     ------
     AppError("unauthorized", 401)
         If no valid Bearer token is provided.
+    AppError("model_not_allowed", 400)
+        If ``body.model`` is supplied but is not in the resolved provider's
+        allowlist (raised by ``generate_dashboard_spec`` → ``provider.complete``
+        and propagated here).
     """
     from app.ai.dashboard import generate_dashboard_spec, validate_dashboard_html  # noqa: PLC0415
     from app.dashboards.spec import spec_to_html  # noqa: PLC0415
@@ -271,7 +296,7 @@ async def create_dashboard(
 
     catalog = build_catalog()
     provider = get_provider()
-    spec = generate_dashboard_spec(body.question, catalog, provider)
+    spec = generate_dashboard_spec(body.question, catalog, provider, model=body.model)
     html_output = spec_to_html(spec)
     ok, issues = validate_dashboard_html(html_output)
 
@@ -602,13 +627,11 @@ class ChatRequest(BaseModel):
     model: str | None = None
     """Optional model identifier to route the request to a specific LLM model.
 
-    When provided this value is echoed back in the response as ``model`` so
-    the frontend can confirm which model was used.  Provider-level model
-    routing is deferred to a future milestone.
-
-    TODO: thread ``model`` through to the provider/agent once providers
-    expose per-request model selection (e.g. AnthropicProvider.complete
-    accepts a ``model`` kwarg).
+    Threaded through ``run_agent`` to every ``provider.complete`` call.  ``None``
+    uses the provider's default model.  A model outside the resolved provider's
+    allowlist surfaces as ``AppError("model_not_allowed", 400)``.  The value is
+    also echoed back in the response as ``model`` so the frontend can confirm
+    which model was requested.
     """
 
 
@@ -626,11 +649,9 @@ class ChatResponse(BaseModel):
     reply: str
     actions: list[dict[str, Any]]
     model: str | None = None
-    """The model that was used (or requested).  Echoes ``ChatRequest.model``
-    when supplied; ``None`` when the caller did not specify a model.
-
-    TODO: once provider-level model routing is wired in, this field will
-    reflect the model that actually processed the request.
+    """The model that was requested.  Echoes ``ChatRequest.model`` when supplied
+    (and now actually routed to the provider via ``run_agent``); ``None`` when
+    the caller did not specify a model (the provider's default was used).
     """
 
 
@@ -645,9 +666,12 @@ async def ai_chat(
     --------
     1. Resolve the LLM provider (default NullProvider when no API key is set).
     2. Build caller claims from the authenticated user (first-party scope).
-    3. Call ``run_agent(messages, provider, claims, max_steps=8)``.
-       - With NullProvider the agent follows a deterministic scripted path.
-       - With a real provider the agent calls the tool registry in a loop.
+    3. Call ``run_agent(messages, provider, claims, max_steps=8,
+       model=body.model)``.
+       - With NullProvider the agent follows a deterministic scripted path
+         (``body.model`` is ignored — no network call).
+       - With a real provider the agent calls the tool registry in a loop,
+         threading ``body.model`` into every ``provider.complete`` call.
     4. Return ``{reply, actions}`` where ``actions`` records every tool call.
 
     Parameters
@@ -666,6 +690,10 @@ async def ai_chat(
     ------
     AppError("unauthorized", 401)
         If no valid Bearer token is provided.
+    AppError("model_not_allowed", 400)
+        If ``body.model`` is supplied but is not in the resolved provider's
+        allowlist.  Raised by ``provider.complete`` inside ``run_agent`` (real
+        providers only) and propagated through the standard AppError handler.
     """
     from app.ai.agent import run_agent  # noqa: PLC0415
 
@@ -685,7 +713,7 @@ async def ai_chat(
     # Convert Pydantic ChatMessage objects to plain dicts for the agent.
     messages = [{"role": m.role, "content": m.content} for m in body.messages]
 
-    result = run_agent(messages, provider, claims, max_steps=8)
+    result = run_agent(messages, provider, claims, max_steps=8, model=body.model)
 
     await _record_ai_call(_user, org_id, endpoint="ai_chat")
 
@@ -693,8 +721,6 @@ async def ai_chat(
         reply=result["reply"],
         actions=result["actions"],
         # Echo the requested model back so the frontend can confirm it.
-        # TODO: once providers support per-request model selection, pass
-        # body.model into run_agent/provider instead of only echoing it.
         model=body.model,
     )
 
@@ -736,7 +762,7 @@ async def ai_chat_stream(
 
     def _sync_events():
         try:
-            for ev in run_agent_stream(messages, provider, claims, max_steps=8):
+            for ev in run_agent_stream(messages, provider, claims, max_steps=8, model=body.model):
                 yield "data: " + _json.dumps(ev) + "\n\n"
         except Exception as exc:  # noqa: BLE001
             yield "data: " + _json.dumps({"type": "error", "message": str(exc)}) + "\n\n"

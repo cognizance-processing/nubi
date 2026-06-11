@@ -421,6 +421,7 @@ def generate_dashboard_spec(
     question: str,
     catalog: dict[str, Any],
     provider: LLMProvider,
+    model: str | None = None,
 ) -> "DashboardSpec":
     """Generate a canonical DashboardSpec for *question*.
 
@@ -438,6 +439,12 @@ def generate_dashboard_spec(
         An ``LLMProvider`` instance.  With ``NullProvider`` (the default when
         no API key is set) the output is a deterministic template spec.  With a
         real provider the LLM generates JSON that is parsed and validated.
+    model:
+        Optional per-request model id threaded to every ``provider.complete``
+        call.  ``None`` (the default) uses the provider's default model and is
+        backward-compatible.  With a real provider, an id outside the
+        provider's allowlist raises ``AppError("model_not_allowed", 400)``.
+        Ignored on the deterministic NullProvider template path.
 
     Returns
     -------
@@ -515,7 +522,13 @@ def generate_dashboard_spec(
     last_issues: list[str] = []
 
     for attempt in range(MAX_DASHBOARD_REPAIR_ROUNDS):
-        raw_response = provider.complete(user, system=system)
+        # Only pass ``model`` when explicitly requested so existing
+        # ``complete(prompt, system=...)``-only providers keep working.
+        raw_response = (
+            provider.complete(user, system=system, model=model)
+            if model
+            else provider.complete(user, system=system)
+        )
 
         spec: "DashboardSpec | None"
         try:
@@ -580,6 +593,7 @@ def generate_dashboard_html(
     question: str,
     catalog: dict[str, Any],
     provider: LLMProvider,
+    model: str | None = None,
 ) -> str:
     """Generate a dashboard HTML document for *question*.
 
@@ -605,7 +619,7 @@ def generate_dashboard_html(
     """
     from app.dashboards.spec import spec_to_html  # noqa: PLC0415
 
-    spec = generate_dashboard_spec(question, catalog, provider)
+    spec = generate_dashboard_spec(question, catalog, provider, model=model)
     return spec_to_html(spec)
 
 

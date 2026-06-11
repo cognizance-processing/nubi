@@ -28,6 +28,83 @@ import os
 from abc import ABC, abstractmethod
 
 
+# ---------------------------------------------------------------------------
+# Per-provider model allowlists + resolver
+# ---------------------------------------------------------------------------
+#
+# Per-request model selection is gated by a STRICT per-provider allowlist.  A
+# client may ask for a specific model id via the ``model`` argument to
+# ``complete()``, but only ids that appear in the provider's allowlist are
+# honoured — anything else raises ``AppError("model_not_allowed", ..., 400)``.
+# This prevents a caller from steering the request onto an arbitrary,
+# unexpectedly expensive, or otherwise unintended model (cost + safety).
+#
+# The first id in each list is the provider's DEFAULT (used when no model is
+# requested), matching the model the provider hardcoded before per-request
+# routing existed.
+
+#: Default + allowed model ids per provider.  Exposed for introspection.
+ALLOWED_MODELS: dict[str, list[str]] = {
+    "anthropic": [
+        "claude-opus-4-8",      # default — most capable Opus
+        "claude-sonnet-4-6",    # balanced speed/intelligence
+        "claude-haiku-4-5",     # fastest / cheapest
+    ],
+    "openai": [
+        "gpt-4o",               # default
+        "gpt-4o-mini",          # smaller / cheaper
+    ],
+    "gemini": [
+        "gemini-1.5-flash",     # default
+        "gemini-1.5-pro",       # higher quality
+    ],
+}
+
+
+def resolve_model(
+    requested: str | None,
+    default: str,
+    allowed: list[str] | set[str],
+) -> str:
+    """Resolve the effective model id, gating against an allowlist.
+
+    Parameters
+    ----------
+    requested:
+        The model id the caller asked for, or ``None``/empty when unspecified.
+    default:
+        The provider's default model id (used when *requested* is falsy).
+    allowed:
+        The set/list of model ids this provider permits.
+
+    Returns
+    -------
+    str
+        *requested* when it is non-empty and present in *allowed*; otherwise
+        *default* (when *requested* is falsy).
+
+    Raises
+    ------
+    AppError("model_not_allowed", 400)
+        When *requested* is non-empty but not in *allowed*.  The message lists
+        the permitted ids so the caller can correct the request.
+    """
+    if not requested:
+        return default
+    if requested in allowed:
+        return requested
+    from app.errors import AppError  # noqa: PLC0415 — avoid circular import at module top
+
+    raise AppError(
+        "model_not_allowed",
+        (
+            f"Model {requested!r} is not allowed. "
+            f"Allowed models: {', '.join(allowed)}."
+        ),
+        400,
+    )
+
+
 class LLMProvider(ABC):
     """Abstract base for LLM completion providers.
 
@@ -39,7 +116,12 @@ class LLMProvider(ABC):
     name: str = "unknown"
 
     @abstractmethod
-    def complete(self, prompt: str, system: str | None = None) -> str:
+    def complete(
+        self,
+        prompt: str,
+        system: str | None = None,
+        model: str | None = None,
+    ) -> str:
         """Return a completion string for the given *prompt*.
 
         Parameters
@@ -48,6 +130,12 @@ class LLMProvider(ABC):
             The user-facing prompt to complete.
         system:
             Optional system/instruction message (provider-specific semantics).
+        model:
+            Optional per-request model id.  ``None`` (the default) uses the
+            provider's default model — backward-compatible with existing
+            ``complete(prompt, system)`` calls.  When supplied, real providers
+            gate it against their allowlist (see ``resolve_model``) and may
+            raise ``AppError("model_not_allowed", 400)``.
 
         Returns
         -------
@@ -73,7 +161,12 @@ class NullProvider(LLMProvider):
 
     name = "null"
 
-    def complete(self, prompt: str, system: str | None = None) -> str:
+    def complete(
+        self,
+        prompt: str,
+        system: str | None = None,
+        model: str | None = None,
+    ) -> str:
         """Return a deterministic templated SQL suggestion.
 
         The output format is::
@@ -88,6 +181,9 @@ class NullProvider(LLMProvider):
             ``build_prompt``).
         system:
             Ignored by NullProvider.
+        model:
+            Ignored by NullProvider — there is no network call, so there is no
+            model to route to.  Accepted for signature compatibility.
 
         Returns
         -------
@@ -143,11 +239,18 @@ class AnthropicProvider(LLMProvider):
         # Store key — do NOT import anthropic or open any connection here.
         self._api_key = api_key
 
-    def complete(self, prompt: str, system: str | None = None) -> str:
+    def complete(
+        self,
+        prompt: str,
+        system: str | None = None,
+        model: str | None = None,
+    ) -> str:
         """Call Anthropic Claude and return the completion text.
 
         The ``anthropic`` SDK is imported here (lazy) so the module is safe to
-        import without the package installed.
+        import without the package installed.  When *model* is supplied it is
+        gated against the Anthropic allowlist; an unlisted id raises
+        ``AppError("model_not_allowed", 400)``.
         """
         try:
             import anthropic  # noqa: PLC0415
@@ -157,10 +260,13 @@ class AnthropicProvider(LLMProvider):
                 "Install it with: pip install anthropic"
             ) from exc
 
+        allowed = ALLOWED_MODELS["anthropic"]
+        effective_model = resolve_model(model, allowed[0], allowed)
+
         client = anthropic.Anthropic(api_key=self._api_key)
         messages = [{"role": "user", "content": prompt}]
         kwargs: dict = {
-            "model": "claude-3-5-sonnet-latest",
+            "model": effective_model,
             "max_tokens": 1024,
             "messages": messages,
         }
@@ -190,8 +296,17 @@ class OpenAIProvider(LLMProvider):
     def __init__(self, api_key: str) -> None:
         self._api_key = api_key
 
-    def complete(self, prompt: str, system: str | None = None) -> str:
-        """Call OpenAI ChatGPT and return the completion text."""
+    def complete(
+        self,
+        prompt: str,
+        system: str | None = None,
+        model: str | None = None,
+    ) -> str:
+        """Call OpenAI ChatGPT and return the completion text.
+
+        When *model* is supplied it is gated against the OpenAI allowlist; an
+        unlisted id raises ``AppError("model_not_allowed", 400)``.
+        """
         try:
             from openai import OpenAI  # noqa: PLC0415
         except ImportError as exc:
@@ -200,6 +315,9 @@ class OpenAIProvider(LLMProvider):
                 "Install it with: pip install openai"
             ) from exc
 
+        allowed = ALLOWED_MODELS["openai"]
+        effective_model = resolve_model(model, allowed[0], allowed)
+
         client = OpenAI(api_key=self._api_key)
         messages = []
         if system:
@@ -207,7 +325,7 @@ class OpenAIProvider(LLMProvider):
         messages.append({"role": "user", "content": prompt})
 
         response = client.chat.completions.create(
-            model="gpt-4o",
+            model=effective_model,
             messages=messages,
             max_tokens=1024,
         )
@@ -233,8 +351,17 @@ class GeminiProvider(LLMProvider):
     def __init__(self, api_key: str) -> None:
         self._api_key = api_key
 
-    def complete(self, prompt: str, system: str | None = None) -> str:
-        """Call Google Gemini and return the completion text."""
+    def complete(
+        self,
+        prompt: str,
+        system: str | None = None,
+        model: str | None = None,
+    ) -> str:
+        """Call Google Gemini and return the completion text.
+
+        When *model* is supplied it is gated against the Gemini allowlist; an
+        unlisted id raises ``AppError("model_not_allowed", 400)``.
+        """
         try:
             import google.generativeai as genai  # noqa: PLC0415
         except ImportError as exc:
@@ -243,14 +370,17 @@ class GeminiProvider(LLMProvider):
                 "Install it with: pip install google-generativeai"
             ) from exc
 
+        allowed = ALLOWED_MODELS["gemini"]
+        effective_model = resolve_model(model, allowed[0], allowed)
+
         genai.configure(api_key=self._api_key)
-        model = genai.GenerativeModel("gemini-1.5-flash")
+        gen_model = genai.GenerativeModel(effective_model)
 
         full_prompt = prompt
         if system:
             full_prompt = f"{system}\n\n{prompt}"
 
-        response = model.generate_content(full_prompt)
+        response = gen_model.generate_content(full_prompt)
         return response.text
 
 
