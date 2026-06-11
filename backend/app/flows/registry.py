@@ -522,6 +522,17 @@ def _handle_python(
     - ``dataframes`` — dict mapping each upstream key whose result has
       ``rows``+``columns`` to a ``pandas.DataFrame`` (empty when pandas is
       unavailable; ``inputs`` is unaffected).
+    - ``watermark``  — the stored incremental ISO mark (``None`` on first run);
+      a cell advances it by returning ``{"watermark": "<iso>"}`` (design §6.1).
+    - ``staging``    — a pinned Parquet writer (design §6.2):
+      ``staging.write(df_or_batches, "orders/", format="parquet") -> manifest``.
+      It SPOOLS Parquet locally; the parent re-stages each object under the
+      server-pinned ``orgs/<org>/staging/<run>/`` prefix (user code can never
+      escape it), verifies it, and — if ``config['target']`` is declared
+      (``{connector_id, object}``, same shape as file_ingest) — loads it via the
+      loader layer.  Large pulls land as Parquet manifests in staging, NOT rows
+      serialised through the task result.  The returned manifest is the §5
+      ``{files:[{path,size,sha256}], row_counts}`` shape.
 
     This handler runs the code in a fresh subprocess using the same Python
     interpreter as the parent (``sys.executable``), without using
@@ -558,6 +569,16 @@ def _handle_python(
 
     timeout_s: int = int(config.get("timeout_s", 60) or 60)
 
+    # ── Staging spool dir (design §6.2) ────────────────────────────────────────
+    # ``ctx.staging.write(...)`` cannot hand a live StagingArea (storage clients)
+    # across the subprocess boundary, so the subprocess writes Parquet into this
+    # local SPOOL dir and emits a manifest of relative paths; the PARENT then
+    # re-stages each spooled object under the server-pinned
+    # ``orgs/<org>/staging/<run>/`` prefix and verifies it (the §5 producer/
+    # verifier split — a producer can only name relative paths; the server pins
+    # the prefix).  The spool dir is private to this run and cleaned up after.
+    spool_dir = tempfile.mkdtemp(prefix="nubi-pystage-")
+
     # Serialise context for injection.
     try:
         inputs_json = json.dumps(ctx.inputs)
@@ -568,6 +589,10 @@ def _handle_python(
         # Org secrets, resolved server-side by the runtime.  Injected via the
         # wrapper's JSON context (never via env vars — env stays scrubbed).
         secrets_json = json.dumps({str(k): str(v) for k, v in (ctx.secrets or {}).items()})
+        # Incremental watermark (design §6.1): the stored ISO mark the runtime
+        # read before this task ran; the cell may advance it via its return.
+        watermark_json = json.dumps(ctx.watermark)
+        spool_dir_json = json.dumps(spool_dir)
     except (TypeError, ValueError) as exc:
         raise AppError("invalid_task_context", f"Context not JSON-serialisable: {exc}", 400)
 
@@ -582,6 +607,84 @@ def _handle_python(
         params = _json.loads({params_json!r})
         vars = _json.loads({vars_json!r})
         secrets = _json.loads({secrets_json!r})
+        # Incremental watermark (design §6.1) — read-only in the cell; advance it
+        # by returning {{"watermark": "<iso>"}} (runtime persists on success only).
+        watermark = _json.loads({watermark_json!r})
+
+        # ── ctx.staging writer (design §6.2) ─────────────────────────────────
+        # `staging.write(df_or_batches, "orders/", format="parquet") -> manifest`
+        # In-subprocess shim: encodes a pandas DataFrame OR an iterable of
+        # pyarrow RecordBatches to Parquet and SPOOLS it to a local dir; the
+        # parent re-stages it under the server-pinned run prefix and verifies it.
+        # User code names only RELATIVE sub-paths — it cannot escape the prefix.
+        import hashlib as _hashlib
+        import os as _os
+        _STAGE_SPOOL_DIR = _json.loads({spool_dir_json!r})
+        _staged_manifest = {{"files": [], "row_counts": {{}}}}
+
+        def _sanitise_rel(rel):
+            # Strip any ``..`` / absolute components; mirrors StagingArea._key so
+            # the parent and child agree on the pinned, escape-proof key shape.
+            rel = str(rel).strip().lstrip("/")
+            parts = [p for p in rel.split("/") if p not in ("", ".", "..")]
+            return "/".join(parts)
+
+        class _StagingWriter:
+            _seq = 0
+            def write(self, df_or_batches, dest="", format="parquet"):
+                import pyarrow as _pa
+                import pyarrow.parquet as _pq
+                import io as _io
+                fmt = str(format or "parquet").lower()
+                if fmt != "parquet":
+                    raise ValueError("ctx.staging.write only supports format='parquet'")
+                # Accept a pandas DataFrame OR an iterable of pyarrow RecordBatches.
+                if _pd is not None and isinstance(df_or_batches, _pd.DataFrame):
+                    table = _pa.Table.from_pandas(df_or_batches, preserve_index=False)
+                elif isinstance(df_or_batches, _pa.Table):
+                    table = df_or_batches
+                elif isinstance(df_or_batches, _pa.RecordBatch):
+                    table = _pa.Table.from_batches([df_or_batches])
+                elif isinstance(df_or_batches, (list, tuple)) and df_or_batches and \\
+                        all(isinstance(b, _pa.RecordBatch) for b in df_or_batches):
+                    table = _pa.Table.from_batches(list(df_or_batches))
+                elif isinstance(df_or_batches, (list, tuple)):
+                    # A list of row dicts (the templates' default) → table.
+                    table = _pa.Table.from_pylist(list(df_or_batches))
+                else:
+                    # Any other iterable of RecordBatches.
+                    table = _pa.Table.from_batches(list(df_or_batches))
+                _buf = _io.BytesIO()
+                _pq.write_table(table, _buf)
+                data = _buf.getvalue()
+                # Build a stable relative path under the requested dest folder.
+                dest_rel = _sanitise_rel(dest)
+                _StagingWriter._seq += 1
+                leaf = "part-%05d.parquet" % _StagingWriter._seq
+                rel = (dest_rel + "/" + leaf) if dest_rel else leaf
+                # Spool to a local file (parent re-stages it under the run prefix).
+                local_path = _os.path.join(_STAGE_SPOOL_DIR, "spool-%05d.parquet" % _StagingWriter._seq)
+                with open(local_path, "wb") as _fh:
+                    _fh.write(data)
+                entry = {{
+                    "path": rel,
+                    "size": len(data),
+                    "sha256": _hashlib.sha256(data).hexdigest(),
+                    "_spool": local_path,
+                }}
+                nrows = int(table.num_rows)
+                _staged_manifest["files"].append(entry)
+                _staged_manifest["row_counts"][rel] = nrows
+                # The manifest handed back to user code mirrors the §5 shape
+                # ({{files:[{{path,size,sha256}}], row_counts}}) WITHOUT the
+                # private _spool field, so it is identical to what the server
+                # records after verification.
+                return {{
+                    "files": [{{"path": rel, "size": entry["size"], "sha256": entry["sha256"]}}],
+                    "row_counts": {{rel: nrows}},
+                }}
+
+        staging = _StagingWriter()
 
         # set_var (A5): a python cell can publish a variable for LATER cells in
         # the same run. Collected into `_set_vars`, emitted under the reserved
@@ -643,6 +746,13 @@ def _handle_python(
         if _set_vars and isinstance(_out, dict):
             _out["__set_vars__"] = _set_vars
 
+        # Emit the staging manifest (incl. private _spool local paths) on a
+        # separate sentinel line so the PARENT can re-stage + verify the spooled
+        # Parquet under the server-pinned run prefix (design §5/§6.2).  Never put
+        # the _spool paths into the user-visible result.
+        if _staged_manifest["files"]:
+            print("__STAGING_MANIFEST__:" + _json.dumps(_staged_manifest, default=str))
+
         print("__FLOW_RESULT__:" + _json.dumps(_out, default=str))
     """)
 
@@ -694,20 +804,27 @@ def _handle_python(
         # Preserve the pre-hardening timeout semantics: subprocess.run raised
         # TimeoutExpired, which propagated to the executor's broad except and
         # marked the task failed.  The process GROUP has already been killed.
+        _cleanup_spool(spool_dir)
         raise subprocess.TimeoutExpired(argv, timeout_s)
 
     stdout_text = run.stdout.decode("utf-8", errors="replace")
     stderr_text = run.stderr.decode("utf-8", errors="replace")
 
-    # Collect stdout lines (excluding the tagged result sentinel).
+    # Collect stdout lines (excluding the tagged result + staging sentinels).
     stdout_lines: list[str] = []
     task_result: dict[str, Any] = {}
+    staged_manifest_raw: dict[str, Any] | None = None
     for line in stdout_text.splitlines():
         if line.startswith("__FLOW_RESULT__:"):
             try:
                 task_result = json.loads(line[len("__FLOW_RESULT__:"):])
             except Exception:  # noqa: BLE001
                 task_result = {"raw": line}
+        elif line.startswith("__STAGING_MANIFEST__:"):
+            try:
+                staged_manifest_raw = json.loads(line[len("__STAGING_MANIFEST__:"):])
+            except Exception:  # noqa: BLE001
+                staged_manifest_raw = None
         else:
             # Every other stdout line is a user log line (the truncation
             # marker, when present, surfaces here as a log line too).
@@ -719,11 +836,125 @@ def _handle_python(
         if stderr:
             for ln in stderr.splitlines():
                 stdout_lines.append(ln)
+        _cleanup_spool(spool_dir)
         raise RuntimeError(f"Python task failed (exit {run.returncode}): {stderr[:500]}")
+
+    # ── Promote spooled Parquet into the server-pinned staging prefix ──────────
+    # The subprocess wrote Parquet into the private spool dir and reported a
+    # manifest of relative paths.  The PARENT re-stages each spooled object under
+    # ``orgs/<org>/staging/<run>/`` (pinned from trusted ids — user code can never
+    # escape it), verifies size + sha256, and (optionally) loads it into a
+    # declared target via the loader layer.  This is the §5 producer/verifier
+    # split applied to the python task kind.
+    try:
+        if staged_manifest_raw and staged_manifest_raw.get("files"):
+            staging_result = _promote_python_staging(
+                staged_manifest_raw, ctx, config, claims
+            )
+            if staging_result is not None:
+                task_result["staging"] = staging_result
+    finally:
+        _cleanup_spool(spool_dir)
 
     # Attach captured stdout lines as metadata so the executor can extract them.
     task_result["_stdout_lines"] = stdout_lines
     return task_result
+
+
+def _cleanup_spool(spool_dir: str) -> None:
+    """Best-effort delete of the python-task staging spool dir."""
+    import shutil  # noqa: PLC0415
+
+    try:
+        shutil.rmtree(spool_dir, ignore_errors=True)
+    except Exception:  # noqa: BLE001
+        pass
+
+
+def _promote_python_staging(
+    staged_manifest_raw: dict[str, Any],
+    ctx: "TaskContext",
+    config: dict[str, Any],
+    claims: dict[str, Any],
+) -> dict[str, Any] | None:
+    """Re-stage spooled Parquet under the pinned prefix, verify, optional load.
+
+    Implements the parent half of ``ctx.staging`` (design §6.2): the subprocess
+    spooled Parquet to a local dir and reported ``staged_manifest_raw`` (each
+    file carrying a private ``_spool`` local path).  Here we:
+
+    1. Resolve the server-pinned :class:`StagingArea` for ``(org, run)`` — the
+       prefix comes from trusted ids, so a producer can never escape it.
+    2. Write each spooled object into staging via its RELATIVE path and build the
+       manifest from the bytes the server actually wrote (not the producer's
+       claimed sizes/hashes), then verify (the §5 trust gate).
+    3. If the python task config declares a ``target`` (same shape as
+       file_ingest's ``target``: ``{connector_id, object}``), run the loader to
+       promote/load the staged manifest into that connector.
+
+    Returns a dict ``{prefix, files, row_counts, total_rows, load?}`` describing
+    the SERVER-recorded staging, or ``None`` when no staging store is configured
+    (degrade — the spooled bytes are simply dropped, same as file_ingest).
+    """
+    import uuid  # noqa: PLC0415
+
+    from app.lakehouse.managed import get_staging_area  # noqa: PLC0415
+
+    org_id = ctx.org_id or (claims or {}).get("org_id") or ""
+    run_id = getattr(ctx, "run_id", None) or str(uuid.uuid4())
+    if not org_id:
+        # No org context → cannot pin a prefix; skip staging (back-compat).
+        return None
+
+    staging = get_staging_area(org_id, run_id)
+    if staging is None:
+        return None
+
+    entries = []
+    row_counts_in: dict[str, int] = dict(staged_manifest_raw.get("row_counts") or {})
+    row_counts: dict[str, int] = {}
+    for f in staged_manifest_raw.get("files") or []:
+        rel = str(f.get("path") or "").strip()
+        spool = f.get("_spool")
+        if not rel or not spool:
+            continue
+        with open(spool, "rb") as fh:
+            data = fh.read()
+        # The server pins the prefix + re-computes size/sha256 from the bytes IT
+        # wrote (write_bytes returns the authoritative ManifestEntry); we never
+        # trust the producer's claimed digest.
+        entry = staging.write_bytes(data, rel)
+        entries.append(entry)
+        row_counts[entry.path] = int(row_counts_in.get(rel, 0))
+
+    if not entries:
+        return None
+
+    manifest = staging.build_manifest(entries, row_counts)
+    # Verify against the just-written bytes (the §5 gate — defends downstream
+    # loads even though the parent wrote them, keeping one code path).
+    staging.verify(manifest)
+
+    out: dict[str, Any] = {
+        "prefix": staging.prefix,
+        "files": [e.to_dict() for e in entries],
+        "row_counts": row_counts,
+        "total_rows": manifest.total_rows,
+    }
+
+    # ── Optional target: auto-promote/load via the Phase-1 loader layer ───────
+    target = config.get("target")
+    if isinstance(target, dict) and target.get("connector_id") and target.get("object"):
+        from app.flows.handlers.file_ingest import _bind_promote, _resolve_target  # noqa: PLC0415
+        from app.flows.loaders import load_staged  # noqa: PLC0415
+
+        load_target = _resolve_target(
+            str(target["connector_id"]), str(target["object"]), org_id
+        )
+        _bind_promote(load_target, staging)
+        out["load"] = load_staged(staging, manifest, load_target, verify=False)
+
+    return out
 
 
 def _handle_agent(

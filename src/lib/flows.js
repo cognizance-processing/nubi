@@ -190,6 +190,24 @@ export async function codegenFlow(id) {
 }
 
 /**
+ * List the Python-cell ingest starter templates (GET /flows/ingest-templates).
+ * Selectable snippets for a python cell: offset-/cursor-paginated REST, OAuth
+ * token refresh, since-timestamp incremental. Each reads creds from
+ * `secrets[...]`, stages via `ctx.staging.write(...)`, and returns
+ * `{ rows, watermark }`.
+ * @returns {Promise<Array<{ id: string, title: string, description: string, code: string }>>}
+ */
+export async function listIngestTemplates() {
+  try {
+    const data = await get(`${BASE}/ingest-templates`)
+    return data?.templates || []
+  } catch (err) {
+    console.warn('[flows] listIngestTemplates failed:', err.message)
+    return []
+  }
+}
+
+/**
  * Generate nubi.flows SDK code from an inline spec (POST /flows/codegen).
  * @param {object} spec
  * @returns {Promise<{ source: string }|null>}

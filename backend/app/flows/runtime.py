@@ -1753,9 +1753,29 @@ def _is_incremental_file_ingest(task_spec: dict[str, Any]) -> bool:
     return str(incr.get("strategy") or "none").lower() in ("mtime", "filename")
 
 
+def _is_incremental_python(task_spec: dict[str, Any]) -> bool:
+    """Return ``True`` for a ``python`` task that participates in watermarking.
+
+    A python ingest cell may read ``ctx.watermark`` (the stored mark) and advance
+    it by returning ``{"watermark": "<iso>"}`` (design §6.1) — exactly the
+    file_ingest contract, but the new mark is a free-form ISO string the cell
+    computed (e.g. ``max(updated_at)``).  Unlike file_ingest we cannot tell at
+    config time whether a given cell uses the watermark, so EVERY python task is
+    watermark-eligible: the stored mark is READ into ``ctx.watermark`` (harmless
+    when the cell ignores it) and the runtime persists a returned ``watermark``
+    ONLY on success and ONLY when the return actually carries the key (so a cell
+    that omits it never clobbers the stored mark — see ``_persist_watermark``).
+    """
+    return task_spec.get("kind") == "python"
+
+
 def _uses_watermark(task_spec: dict[str, Any]) -> bool:
     """Tasks whose stored ``flow_watermarks`` mark is read before / written after."""
-    return _is_incremental_materialize(task_spec) or _is_incremental_file_ingest(task_spec)
+    return (
+        _is_incremental_materialize(task_spec)
+        or _is_incremental_file_ingest(task_spec)
+        or _is_incremental_python(task_spec)
+    )
 
 
 async def _persist_watermark(
@@ -1774,7 +1794,12 @@ async def _persist_watermark(
         return
     if not isinstance(result, dict):
         return
+    # materialize / file_ingest report ``new_watermark``; a python ingest cell
+    # reports ``watermark`` (design §6.1).  Either advances the stored mark; a
+    # return that OMITS both leaves the stored mark untouched (no clobber).
     new_wm = result.get("new_watermark")
+    if new_wm is None and task_spec.get("kind") == "python":
+        new_wm = result.get("watermark")
     if new_wm is None:
         return
     setter = getattr(store, "set_watermark", None)

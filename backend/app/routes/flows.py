@@ -480,6 +480,23 @@ async def validate_flow(
     return {"valid": valid, "issues": issues}
 
 
+@router.get("/ingest-templates", status_code=200)
+async def list_ingest_templates_route(
+    _user: dict[str, Any] = Depends(current_user),
+) -> dict[str, Any]:
+    """Return the Python-cell ingest starter templates (design §6.4).
+
+    Selectable snippets for the python cell builder: offset-/cursor-paginated
+    REST, OAuth token refresh, and since-timestamp incremental.  Each reads
+    creds from ``secrets[...]``, stages via ``ctx.staging.write(...)``, and
+    returns ``{"rows": …, "watermark": …}``.  Served read-only so the frontend
+    presents them without baking copy into ``src/``.
+    """
+    from app.flows.ingest_templates import list_ingest_templates  # noqa: PLC0415
+
+    return {"templates": list_ingest_templates()}
+
+
 @router.post("/scheduled-query", status_code=201, dependencies=[Depends(require_writer_default)])
 async def create_scheduled_query(
     body: ScheduledQueryIn,
