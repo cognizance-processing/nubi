@@ -57,7 +57,7 @@ from app.flows.loaders import LoadTarget, load_staged
 if TYPE_CHECKING:
     from app.connectors.base import FileConnectorMixin, FileStat
     from app.flows.executor import TaskContext
-    from app.lakehouse.staging import ManifestEntry, StagingArea
+    from app.lakehouse.staging import ManifestEntry, StagingArea, StagingManifest
 
 
 _VALID_FORMATS = {"csv", "json", "ndjson", "parquet", "zip", "auto"}
@@ -280,6 +280,23 @@ def _resolve_target(connector_id: str, object_name: str, org_id: str) -> LoadTar
     if scheme in _OBJECT_STORAGE_SCHEMES:
         return _object_storage_target(connector_id, object_name, org_id, cfg, database)
 
+    # Bulk-capable warehouse (BigQuery / Snowflake / Redshift / ClickHouse) →
+    # advertise bulk_load_from so choose_strategy can pick the native bulk path
+    # when the staging scheme matches (else it falls back to stream).  Secrets
+    # are merged centrally (same path as query resolution) so the bulk loader's
+    # COPY/load job has the creds it needs.
+    ctype = str(cfg.get("connector_type") or cfg.get("type") or "").lower()
+    from app.flows.bulk_loaders import resolve_bulk_target  # noqa: PLC0415
+
+    bulk_cfg = _merge_target_secrets(connector_id, org_id, cfg)
+    bulk_target = resolve_bulk_target(object_name, ctype, bulk_cfg)
+    if bulk_target is not None:
+        # A bulk-capable warehouse can ALSO stream (the universal fallback) when
+        # the staging scheme does not match its bulk_load_from — wire that in so
+        # choose_strategy's cross-cloud fallback has a callable to land on.
+        bulk_target.stream = _stream_target(connector_id, object_name, org_id).stream
+        return bulk_target
+
     # Everything else → stream (the universal fallback).
     return _stream_target(connector_id, object_name, org_id)
 
@@ -367,6 +384,25 @@ def _target_creds(connector_id: str, org_id: str) -> dict[str, Any] | None:
         return asyncio.run(get_secret_store().get(connector_id, org_id))
     except Exception:  # noqa: BLE001
         return None
+
+
+def _merge_target_secrets(
+    connector_id: str, org_id: str, cfg: dict[str, Any]
+) -> dict[str, Any]:
+    """Return *cfg* with the connector's decrypted secrets merged in.
+
+    The bulk loaders need the warehouse's resolved credentials (service-account
+    JSON, password, S3 keys, IAM role) to build their load job / COPY statement.
+    Secrets are resolved CENTRALLY here and only ever held in worker memory —
+    never shipped to an agent.  Config-supplied values win over secrets (config
+    is the explicit override); falls back to the raw cfg when no secret store.
+    """
+    merged = dict(cfg)
+    secret = _target_creds(connector_id, org_id)
+    if secret:
+        for k, v in secret.items():
+            merged.setdefault(k, v)
+    return merged
 
 
 def _stream_into_db(
@@ -508,8 +544,9 @@ def handle(
 
     manifest = staging.build_manifest(entries, row_counts)
 
-    # ── Bind the promote callable now that staging exists ──────────────────
-    _bind_promote(load_target, staging)
+    # ── Bind the staging-bound loader callables now that staging + manifest
+    #    exist (promote for object stores, bulk for warehouses) ──────────────
+    _bind_promote(load_target, staging, manifest)
 
     # ── Verify + load (verify gates promote/load — design §5) ──────────────
     result = load_staged(staging, manifest, load_target)
@@ -600,18 +637,33 @@ def _staged_rel(source_path: str, member: str | None = None) -> str:
     return f"{stem}.parquet"
 
 
-def _bind_promote(target: LoadTarget, staging: "StagingArea") -> None:
-    """Finish wiring the promote callable with the staging reader (object store)."""
+def _bind_promote(
+    target: LoadTarget,
+    staging: "StagingArea",
+    manifest: "StagingManifest | None" = None,
+) -> None:
+    """Finish wiring the staging-bound loader callables (promote + bulk).
+
+    Object-storage targets need the staging reader bound into ``promote``;
+    bulk-capable warehouse targets need the staged location bound into ``bulk``
+    (which the warehouse reads directly).  Both are no-ops when the target is
+    not of that class, so the caller binds unconditionally.  ``manifest`` is
+    required for the bulk path (the load job needs the exact staged URIs); when
+    absent only ``promote`` is wired (back-compat with phase-1 call sites).
+    """
     client = getattr(target, "_promote_client", None)
     final_key = getattr(target, "_final_key", None)
-    if client is None or final_key is None:
-        return
+    if client is not None and final_key is not None:
+        def _promote(staged_rel: str, _object_name: str) -> str:
+            data = staging.read_bytes(staged_rel)
+            return client.upload_bytes(data, final_key(staged_rel))
 
-    def _promote(staged_rel: str, _object_name: str) -> str:
-        data = staging.read_bytes(staged_rel)
-        return client.upload_bytes(data, final_key(staged_rel))
+        target.promote = _promote
 
-    target.promote = _promote
+    if manifest is not None and getattr(target, "_bulk_ctype", None) is not None:
+        from app.flows.bulk_loaders import bind_bulk  # noqa: PLC0415
+
+        bind_bulk(target, staging, manifest)
 
 
 def _matches_glob(path: str, pattern: str) -> bool:

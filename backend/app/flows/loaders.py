@@ -42,10 +42,12 @@ if TYPE_CHECKING:
 
 
 # Phase-4 seam: per-warehouse bulk loads (BigQuery load jobs, Snowflake COPY
-# INTO, Redshift COPY, ClickHouse s3()) are NOT built in phase 1.  Flipping this
-# to True (plus implementing ``_bulk_load``) is the only change needed to light
-# them up; until then ``choose_strategy`` never returns ``"bulk"``.
-_BULK_LOAD_ENABLED = False
+# INTO, Redshift COPY, ClickHouse s3()) — LIT UP in phase 4.  When ``True``,
+# ``choose_strategy`` returns ``"bulk"`` for a target whose ``bulk_load_from``
+# intersects the staging scheme, and ``_bulk_load`` dispatches to the target's
+# ``bulk`` callable (built by :mod:`app.flows.bulk_loaders`).  Cross-cloud
+# mismatch still falls back to ``stream`` (the scheme intersection fails).
+_BULK_LOAD_ENABLED = True
 
 # Staging schemes the loader can produce from.  The bulk path (phase 4) requires
 # the target's ``bulk_load_from`` to intersect this set; otherwise we stream.
@@ -78,12 +80,20 @@ class LoadTarget:
         ``stream(record_batches, object_name) -> int`` — read staged batches and
         load them into the target (Postgres ``COPY FROM STDIN`` / batched
         INSERT), returning the row count.  The UNIVERSAL fallback.
+    bulk:
+        ``bulk(object_name) -> int`` — native per-warehouse bulk load (BigQuery
+        load job, Snowflake ``COPY INTO``, Redshift ``COPY``, ClickHouse
+        ``s3()``) that reads the staged objects directly from the staging store,
+        returning the row count.  Built by :mod:`app.flows.bulk_loaders`; bound
+        once the staging area exists (the warehouse pulls the bytes itself, so —
+        unlike ``stream`` — the worker passes no batches).
     """
 
     object_name: str
     capabilities: dict[str, Any] = field(default_factory=dict)
     promote: "Callable[[str, str], str] | None" = None
     stream: "Callable[[Iterator[Any], str], int] | None" = None
+    bulk: "Callable[[str], int] | None" = None
 
 
 # ---------------------------------------------------------------------------
@@ -176,7 +186,7 @@ def load_staged(
 
     if strategy == "promote":
         return _promote(staging, manifest, target)
-    if strategy == "bulk":  # pragma: no cover — phase 4 seam, never selected yet
+    if strategy == "bulk":
         return _bulk_load(staging, manifest, target)
     return _stream(staging, manifest, target, batch_rows=batch_rows)
 
@@ -236,15 +246,26 @@ def _stream(
     }
 
 
-def _bulk_load(  # pragma: no cover — phase 4
+def _bulk_load(
     staging: "StagingArea", manifest: "StagingManifest", target: LoadTarget
 ) -> dict[str, Any]:
     """Per-warehouse bulk load (BigQuery load job, Snowflake COPY INTO, …).
 
-    PHASE 4 SEAM — not implemented in phase 1.  ``choose_strategy`` never
-    returns ``"bulk"`` while ``_BULK_LOAD_ENABLED`` is ``False``.
+    Dispatches to ``target.bulk`` (built by :mod:`app.flows.bulk_loaders`), which
+    points the warehouse at the staged objects and runs its native load
+    primitive.  The warehouse reads the bytes itself — the worker only issues
+    the load job / COPY / ``s3()`` statement, so this path passes no batches.
     """
-    raise NotImplementedError(
-        "bulk_load is a phase-4 feature; set loaders._BULK_LOAD_ENABLED and "
-        "implement per-warehouse load jobs to enable it."
-    )
+    if target.bulk is None:
+        raise RuntimeError(
+            "bulk strategy selected but target has no bulk() callable "
+            "(bulk-capable warehouse targets must supply one — see "
+            "app.flows.bulk_loaders.bind_bulk)."
+        )
+    rows = target.bulk(target.object_name)
+    return {
+        "strategy": "bulk",
+        "rows_loaded": int(rows),
+        "files_loaded": len(manifest.files),
+        "final_uris": [],
+    }

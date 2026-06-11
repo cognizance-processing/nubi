@@ -951,7 +951,7 @@ def _promote_python_staging(
         load_target = _resolve_target(
             str(target["connector_id"]), str(target["object"]), org_id
         )
-        _bind_promote(load_target, staging)
+        _bind_promote(load_target, staging, manifest)
         out["load"] = load_staged(staging, manifest, load_target, verify=False)
 
     return out
@@ -1101,6 +1101,26 @@ def _handle_file_ingest(
     return handle(config, ctx, claims)
 
 
+def _handle_connector_write(
+    config: dict[str, Any],
+    ctx: "TaskContext",
+    claims: dict[str, Any],
+) -> dict[str, Any]:
+    """Write an upstream flow result into any target connector (design §4).
+
+    Delegates to ``app.flows.handlers.connector_write.handle``.  The write-side
+    sibling of ``file_ingest``/``bucket_load``: stages the upstream task result
+    as Parquet, verifies the manifest, and loads it into the target connector via
+    the SAME loader layer (promote / bulk / stream).
+
+    Returns ``{rows_written, strategy, mode, target_object, manifest,
+    final_uris}``.  See ``app.flows.handlers.connector_write`` for the schema.
+    """
+    from app.flows.handlers.connector_write import handle  # noqa: PLC0415
+
+    return handle(config, ctx, claims)
+
+
 # ---------------------------------------------------------------------------
 # Module-level singleton / provider
 # ---------------------------------------------------------------------------
@@ -1142,6 +1162,7 @@ def _bootstrap(registry: TaskKindRegistry) -> None:
     registry.register("noop", _handle_noop)
     registry.register("bucket_load", _handle_bucket_load)
     registry.register("file_ingest", _handle_file_ingest)
+    registry.register("connector_write", _handle_connector_write)
     registry.register("preagg_refresh", _handle_preagg_refresh)
 
     from app.flows.handlers.map import handle_map  # noqa: PLC0415

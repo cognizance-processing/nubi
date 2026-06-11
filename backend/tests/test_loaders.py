@@ -67,10 +67,18 @@ def test_choose_strategy_stream_for_stream_load():
     assert choose_strategy(caps, "file") == "stream"
 
 
-def test_choose_strategy_bulk_seam_off_falls_back_to_stream():
-    # A bulk-capable target still STREAMS in phase 1 (bulk seam disabled).
-    assert _BULK_LOAD_ENABLED is False
+def test_choose_strategy_bulk_when_scheme_matches():
+    # Phase 4: the bulk seam is ON; a bulk-capable target whose bulk_load_from
+    # intersects the staging scheme picks the native bulk path.
+    assert _BULK_LOAD_ENABLED is True
     caps = {"file_interface": False, "bulk_load_from": ["s3"], "stream_load": True}
+    assert choose_strategy(caps, "s3") == "bulk"
+
+
+def test_choose_strategy_bulk_falls_back_to_stream_cross_cloud():
+    # Cross-cloud mismatch (staging on s3, target only bulk-loads from gcs) →
+    # stream fallback (no multi-cloud staging in v1).
+    caps = {"file_interface": False, "bulk_load_from": ["gcs"], "stream_load": True}
     assert choose_strategy(caps, "s3") == "stream"
 
 
