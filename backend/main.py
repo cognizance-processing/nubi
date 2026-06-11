@@ -70,6 +70,7 @@ from starlette.responses import FileResponse
 from app.config import get_settings
 from app.db import close_db, fetchrow, init_db
 from app.errors import register_handlers
+from app.middleware.latency import register_latency
 from app.middleware.ratelimit import register_ratelimit
 from app.routes import api_router
 
@@ -204,6 +205,13 @@ import app.routes.watches  # noqa: F401, E402
 from app.routes.cache import router as cache_router  # noqa: E402
 
 api_router.include_router(cache_router)
+
+# Import ops route (/ops/stats, /ops/health — in-process observability) BEFORE
+# resources so its /ops prefix routes are registered ahead of the generic
+# /{resource} catch-all in resources.py. Distinct from /metrics (semantic layer).
+from app.routes.ops import router as ops_router  # noqa: E402
+
+api_router.include_router(ops_router)
 
 # Import resources route so it registers itself on api_router at import time.
 import app.routes.resources  # noqa: F401, E402
@@ -509,6 +517,13 @@ def create_app() -> FastAPI:
     #   rewriting here so the real peer is used as-is; the authoritative limit is
     #   enforced at the edge (Fly/Cloudflare) regardless.
     register_ratelimit(application)
+
+    # ── Request-latency observability ───────────────────────────────────────────
+    # Times every (non-health/static/docs) request and records the elapsed ms
+    # into the in-process latency recorder, bucketed by route class. Surfaced via
+    # GET /ops/stats. Per-worker only (mirrors the rate-limiter/cache story); see
+    # docs/observability.md. Best-effort — it never breaks a request.
+    register_latency(application)
 
     # ── Error handlers ────────────────────────────────────────────────────────
     register_handlers(application)
