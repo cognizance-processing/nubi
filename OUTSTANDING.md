@@ -21,11 +21,10 @@ Baseline at audit: commit `16f31d0` (Wave C). Waves A/B/C done. Verify commands:
 - [x] **Wave D3 — watch** (`app/ai/watch.py`, `routes/watches.py`, `0009_watches.sql`):
   metric threshold → AI explanation (deterministic under NullProvider) → notify channel;
   CRUD + `/evaluate` + `/tick`. ✅ `47e5556` (backend 3405 / mcp 67 / build green).
-- [~] **Wave E1 — Redis cache + invalidation** (`app/connectors/cache.py`, `app/cache/redis_client.py`,
-  `routes/cache.py`, `ratelimit.py`): pluggable Redis backend behind the in-process cache with
-  tag-based invalidation + `GET /cache/stats` + `POST /cache/invalidate`; rate-limiter buckets now
-  use an atomic Redis token-bucket when REDIS_URL is set (fixes the multi-machine gap), in-process
-  fallback otherwise. **Implemented; full-suite verification in progress, then commit.**
+- [x] **Wave E1 — Redis cache + invalidation** (`app/connectors/cache.py`, `app/cache/redis_client.py`,
+  `routes/cache.py`, `ratelimit.py`): pluggable Redis backend + tag invalidation + `/cache/stats` +
+  `/cache/invalidate`; rate-limiter uses an atomic Redis token-bucket when REDIS_URL is set (fixes the
+  multi-machine gap), in-process fallback otherwise. ✅ `04d2ce1` (backend 3428 passed).
 - [ ] **Wave E4 — headless preview** (`GET /boards/{id}/preview.png?env=dev`): ⚠️ BLOCKED on an
   infra decision — Playwright is NOT installed (only system Chrome present), and a *proper* render
   needs (a) a browser binary in the prod image, (b) serving the built frontend so charts (echarts/JS)
