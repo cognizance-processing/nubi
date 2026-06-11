@@ -6,6 +6,7 @@ GET    /orgs              — list the orgs the current user belongs to.
 GET    /orgs/{id}         — fetch a single org the user is a member of (404 otherwise).
 POST   /orgs              — create a new org with the current user as owner.
 POST   /orgs/{id}/demo-project — idempotently create + seed the deletable "Demo" project.
+POST   /orgs/{id}/demo-project/relocate — move any mis-placed demo bundle into the Demo project.
 PATCH  /orgs/{id}         — rename an org and/or set its avatar_url.
 GET    /orgs/{id}/deletion-impact — describe what would be deleted (can_delete, blockers, deletes).
 DELETE /orgs/{id}         — delete an org (409 if projects exist; requires confirm_name).
@@ -517,6 +518,43 @@ async def create_demo_project(
     result = await ensure_demo_project(org_id, user_id, repo=repo)
     response.status_code = 201 if result["created"] else 200
     return result
+
+
+@router.post("/{org_id}/demo-project/relocate")
+async def relocate_demo_project(
+    org_id: str,
+    user: dict[str, Any] = Depends(current_user),
+    repo: Repo = Depends(get_repo),
+) -> dict[str, Any]:
+    """Move any mis-placed demo bundle into the org's "Demo" project.
+
+    Remediation for environments where the demo bundle was previously seeded
+    into the user's Default/working project: this finds the sample-tagged rows
+    sitting outside the Demo project, removes that mis-placed bundle, and
+    re-seeds it cleanly into the Demo project (creating it if needed). See
+    ``app.onboarding.relocate_demo_to_demo_project``.
+
+    Role enforcement: owner/admin only — this rewrites org-wide demo content.
+    Idempotent: a no-op (``relocated=false``) once everything is in place.
+
+    Returns
+    -------
+    200 {relocated, removed, demo}
+    """
+    user_id = str(user["id"])
+    role = await get_org_role(user_id, org_id, repo)
+    if role is None:
+        raise AppError("not_found", "Org not found.", 404)
+    if role not in ("owner", "admin"):
+        raise AppError(
+            "forbidden",
+            "Only owners and admins can relocate the demo project.",
+            403,
+        )
+
+    from app.onboarding import relocate_demo_to_demo_project  # noqa: PLC0415
+
+    return await relocate_demo_to_demo_project(org_id, user_id, repo=repo)
 
 
 @router.patch("/{org_id}", response_model=OrgDetailResponse)

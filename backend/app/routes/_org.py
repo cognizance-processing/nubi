@@ -233,8 +233,10 @@ async def resolve_project_filter(org_id: str, request: Request) -> str | None:
     ``?project_id=`` when present and valid for *org_id*, else fall back to the
     org's default project. Lists are therefore scoped to one project (the active
     one, or the default) instead of returning *every* project's resources —
-    otherwise the onboarding demo bundle, which lives in the default project,
-    leaks into every other project's queries/dashboards/connectors lists.
+    otherwise content from other projects (e.g. the demo bundle, which lives in
+    the dedicated "Demo" project) would leak into the active project's
+    queries/dashboards/connectors lists. This scoping does NOT depend on where
+    the demo bundle lives: each project only ever lists its own resources.
 
     Returns ``None`` only when no default project can be resolved (e.g. test
     doubles without a projects table), in which case the list is unfiltered.

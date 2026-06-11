@@ -147,3 +147,103 @@ async def ensure_demo_project(
             pass
 
     return {"project": project, "created": created, "seed": seed}
+
+
+async def relocate_demo_to_demo_project(
+    org_id: str,
+    created_by: str | None = None,
+    repo: Repo | None = None,
+) -> dict[str, Any]:
+    """Move any mis-placed demo bundle into the org's "Demo" project (idempotent).
+
+    Remediates environments where the demo bundle was seeded into a NON-Demo
+    project (e.g. the user's Default/working project under an older code path).
+    Finds ``config.sample = true`` rows sitting outside the Demo project,
+    removes that mis-placed bundle, and (re-)seeds a clean bundle into the Demo
+    project — creating the Demo project if necessary.
+
+    Re-seeding (rather than moving rows + parquet across project prefixes) is
+    deliberate: the demo datasets are exported per-project to
+    ``s3://<bucket>/projects/<project_id>/demo/...`` keyed by project id, so the
+    cleanest, least error-prone fix is to drop the misplaced rows and let
+    ``ensure_demo_project`` re-export the parquet under the Demo project's id.
+    The stale parquet under the old project prefix is harmless (no row points at
+    it) and is left in place — best-effort, never blocking.
+
+    Idempotent: when nothing is mis-placed (demo already lives in the Demo
+    project, or there is no demo at all) it only ensures the Demo project's
+    bundle is present and reports ``relocated=False``.
+
+    Parameters
+    ----------
+    org_id:
+        The org to remediate (tenant-scoped — only this org's rows are touched).
+    created_by:
+        User id recorded as the creator when (re-)seeding. Falls back to the
+        ``created_by`` of a mis-placed row, then a synthetic system id.
+    repo:
+        Optional Repo override; ``None`` resolves the active repo.
+
+    Returns
+    -------
+    dict
+        ``{"relocated": bool, "removed": {table: n}, "demo": <ensure result>}``
+    """
+    from app.repos.provider import get_repo  # noqa: PLC0415
+    from app.sample import _SAMPLE_TABLES, remove_sample_bundle  # noqa: PLC0415
+
+    repo = repo or get_repo()
+
+    demo = await find_demo_project(org_id)
+    demo_id = str(demo["id"]) if demo is not None else None
+
+    # Scan every sample-bearing table for rows tagged sample=true that sit
+    # OUTSIDE the Demo project (project_id != demo_id, including a NULL
+    # project_id). Collect the distinct offending project ids; NULL-project rows
+    # are tracked separately (no per-project remove can target them precisely
+    # except the no-Demo-yet case below).
+    misplaced_project_ids: set[str] = set()
+    has_null_misplaced = False
+    fallback_creator: str | None = None
+    for table in _SAMPLE_TABLES:
+        for row in await repo.list(table, org_id):
+            cfg = row.get("config") or {}
+            if cfg.get("sample") is not True:
+                continue
+            pid = row.get("project_id")
+            pid_str = str(pid) if pid is not None else None
+            if pid_str != demo_id:
+                if pid_str is None:
+                    has_null_misplaced = True
+                else:
+                    misplaced_project_ids.add(pid_str)
+                fallback_creator = fallback_creator or row.get("created_by")
+
+    creator = str(created_by or fallback_creator or "00000000-0000-0000-0000-000000000000")
+
+    removed: dict[str, int] = {}
+    relocated = False
+
+    def _tally(counts: dict[str, int]) -> None:
+        nonlocal relocated
+        for table, n in counts.items():
+            removed[table] = removed.get(table, 0) + n
+            if n:
+                relocated = True
+
+    if demo_id is None and has_null_misplaced:
+        # No Demo project exists yet and the bundle has NULL project_id rows
+        # (older orgless seed). There is nothing legitimately sample-tagged to
+        # preserve, so a single org-wide remove clears the misplaced bundle
+        # (this also covers any non-null misplaced ids).
+        _tally(await remove_sample_bundle(org_id, None, repo))
+    else:
+        # Demo project present (or only non-null misplaced ids): remove the
+        # bundle from each offending project precisely, never touching Demo.
+        for pid in sorted(misplaced_project_ids):
+            _tally(await remove_sample_bundle(org_id, pid, repo))
+
+    # (Re-)seed a clean bundle into the Demo project (creates it if needed).
+    demo_result = await ensure_demo_project(org_id, creator, repo=repo)
+
+    return {"relocated": relocated, "removed": removed, "demo": demo_result}

@@ -89,7 +89,17 @@ async def _seed_demo_project(user_id: str) -> None:
     assert org_row is not None, "Superuser has no org membership."
     org_id = str(org_row["org_id"])
 
-    from app.onboarding import ensure_demo_project  # noqa: PLC0415
+    from app.onboarding import (  # noqa: PLC0415
+        ensure_demo_project,
+        relocate_demo_to_demo_project,
+    )
+
+    # Self-heal: move any demo bundle previously seeded into the Default/working
+    # project (older code paths) into the dedicated Demo project. Idempotent and
+    # best-effort — a no-op once everything already lives in the Demo project.
+    reloc = await relocate_demo_to_demo_project(org_id, user_id)
+    if reloc.get("relocated"):
+        print(f"  demo relocate  [MOVED   ]  removed misplaced bundle: {reloc.get('removed')!r}")
 
     result = await ensure_demo_project(org_id, user_id)
     project = result["project"]

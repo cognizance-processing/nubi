@@ -391,16 +391,20 @@ async def remove_sample(
     user: dict[str, Any] = Depends(current_user),
     repo: Repo = Depends(get_repo),
 ) -> dict[str, Any]:
-    """Bulk-remove every ``sample=true`` resource for the active org/project.
+    """Bulk-remove every ``sample=true`` resource from the org's Demo project.
 
-    Scoped to the requested project (``X-Project-Id`` / ``?project_id=``) when
-    present, otherwise the org's default project. Idempotent.
+    Demo content lives ONLY in the dedicated "Demo" project (slug ``demo``), so
+    remove is scoped there — never the user's working/Default project. If the
+    org has no Demo project, this is a no-op (all-zero counts). Idempotent.
     """
-    from app.routes.resources import resolve_project_filter  # noqa: PLC0415
+    from app.onboarding import find_demo_project  # noqa: PLC0415
     from app.sample import remove_sample_bundle  # noqa: PLC0415
 
     org_id = await _resolve_org_id(str(user["id"]), repo, request)
-    project_id = await resolve_project_filter(org_id, request)
+    demo = await find_demo_project(org_id)
+    if demo is None:
+        return {"removed": {}, "project_id": None}
+    project_id = str(demo["id"])
     counts = await remove_sample_bundle(org_id, project_id, repo)
     return {"removed": counts, "project_id": project_id}
 
@@ -411,23 +415,17 @@ async def restore_sample(
     user: dict[str, Any] = Depends(current_user),
     repo: Repo = Depends(get_repo),
 ) -> dict[str, Any]:
-    """Re-seed the onboarding sample bundle for the active org/project.
+    """Re-seed the onboarding sample bundle into the org's Demo project.
 
-    Idempotent — re-running when the bundle still exists is a no-op (existing
-    rows are reused, nothing duplicated).
+    Demo content lives ONLY in the dedicated "Demo" project (slug ``demo``);
+    restore therefore (re-)creates that project and seeds the bundle there —
+    never the user's working/Default project. Idempotent — re-running when the
+    bundle still exists is a no-op (existing rows reused, nothing duplicated).
     """
-    from app.routes.resources import resolve_project_id_for_create  # noqa: PLC0415
-    from app.sample import seed_sample_bundle  # noqa: PLC0415
+    from app.onboarding import ensure_demo_project  # noqa: PLC0415
 
     org_id = await _resolve_org_id(str(user["id"]), repo, request)
-    project_id = await resolve_project_id_for_create(org_id, request)
-    summary = await seed_sample_bundle(
-        org_id=org_id,
-        project_id=project_id,
-        created_by=str(user["id"]),
-        repo=repo,
-    )
-    return summary
+    return await ensure_demo_project(org_id, str(user["id"]), repo=repo)
 
 
 # ── Register on the shared api_router ─────────────────────────────────────────
