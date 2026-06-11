@@ -35,10 +35,13 @@ Baseline at audit: commit `16f31d0` (Wave C). Waves A/B/C done. Verify commands:
 
 - [x] **usage_events(org_id, created_at) index** — ✅ already exists (`0006_platform.sql:53`);
   audit false-positive. No action.
-- [ ] **Wave E2 — SLOs/observability**: latency percentiles + a status surface + documented
-  rate limits (instrument query path; expose a metrics endpoint).
-- [ ] **Wave E3 — compliance posture**: `docs/compliance.md` (SOC 2 / POPIA / GDPR checklist,
-  data-handling, RLS audit-trail) — hard gate for embedded sales.
+- [x] **Wave E2 — SLOs/observability**: in-process latency percentiles (`app/observability/`),
+  `LatencyMiddleware`, `GET /ops/stats`, `docs/observability.md` with published SLO targets +
+  documented rate limits. ✅ `df41c15` (backend 3455). *Follow-up:* cross-process aggregation.
+- [x] **Wave E3 — compliance posture**: `docs/compliance.md` — honest SOC 2 / POPIA / GDPR
+  posture mapping real controls (planner RLS, AES-256-GCM/Fernet at rest, HttpOnly cookies,
+  CASCADE erasure) + an explicit gap list (DPA, sub-processor list, IR runbook, pen-test) +
+  sub-processors. Not a certification claim. ✅ (docs-only).
 - [x] **Widget→metric binding** (Wave C "later"): `Widget.metric` binding (metric_id + dims/grain
   + filters) in `dashboards/spec.py`; `runMetricQuery` + Chart/Table/Kpi widgets fetch from
   `/metrics/{id}/query`; `/ai/pin` metric path. ✅ `7f4434a` (backend 3442, build green).
