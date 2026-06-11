@@ -38,6 +38,18 @@ verifies (`npm run build` + `npm run test:dash`), commits green.
 Orchestrator (central, after agents): add `/metrics` + `/watches` routes (App.jsx)
 and Metrics/Watches nav links (AppSidebar.jsx); verify; commit.
 
+## Wave G — DONE ✅ `686d06c` (frontend-only, build green, dash 336/336)
+- G1 git/versions persistent in the shell across all pages + flows env-selector de-dup.
+- G2 metrics UI (lib + MetricsPage + MetricPicker + editor binding).
+- G3 watches UI (lib + WatchesPage with evaluate + AI explanation).
+- G4 chat model picker (allowlisted, persisted) + ask→pin button.
+- G5 flow variables UI in NodeInspector (+ insert {{vars.NAME}}).
+- Central: /metrics + /watches routes + sidebar nav.
+
+**Open question for the user:** G1 made git a PERSISTENT top-right button opening the
+RHS slide-in panel. If you want a dedicated **right-edge rail** (vertical icon strip
+with git/versions toggles) rather than a single button, that's a Wave-H follow-up.
+
 ## Wave H (next pass)
 Pre-run estimate chip in the query editor (`POST /query/estimate`); expandable
 run/task detail + logs in `FlowRunView.jsx`; cache/ops admin surface; embed
