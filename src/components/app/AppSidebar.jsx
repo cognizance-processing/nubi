@@ -589,9 +589,10 @@ function SidebarContent({ collapsed, showToggle = true }) {
         <SidebarEnvSelector collapsed={collapsed} />
       </div>
 
-      {/* Nav items */}
+      {/* Nav items — scroll internally so a long list never clips the pinned
+          Settings/Docs nav below (selectors stay pinned above). */}
       <nav
-        className={`flex flex-col gap-0.5 flex-1 ${collapsed ? 'items-center px-1' : 'px-2'}`}
+        className={`flex flex-col gap-0.5 flex-1 min-h-0 overflow-y-auto ${collapsed ? 'items-center px-1' : 'px-2'}`}
         aria-label="App navigation"
       >
         {NAV_ITEMS.map(({ label, to, Icon }) => (
