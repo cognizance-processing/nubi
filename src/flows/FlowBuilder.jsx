@@ -50,6 +50,7 @@ import {
 
 import { specToGraph, graphToSpec } from './specGraph.js'
 import NotebookView from './NotebookView.jsx'
+import FlowCodeView from './FlowCodeView.jsx'
 import TaskNode from './nodes/TaskNode.jsx'
 import MapGroupNode from './nodes/MapGroupNode.jsx'
 import BranchNode from './nodes/BranchNode.jsx'
@@ -494,6 +495,17 @@ const FlowBuilder = forwardRef(function FlowBuilder({ flow, spec, onSpecChange, 
             lineageOpen={lineageOpen}
             onLineageClose={onLineageClose}
           />
+        </div>
+      </div>
+    )
+  }
+
+  // ── Code / Files view — delegate to the VS Code-style projection ──────────
+  if (viewMode === 'code') {
+    return (
+      <div className="flex flex-col h-full overflow-hidden">
+        <div className="flex-1 min-h-0 overflow-hidden">
+          <FlowCodeView flow={flow} spec={spec} onSpecChange={onSpecChange} />
         </div>
       </div>
     )

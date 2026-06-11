@@ -65,6 +65,7 @@ import {
   CalendarClock,
   History,
   GitCommitHorizontal,
+  FileCode2,
 } from 'lucide-react'
 
 import { useUi } from '../../contexts/UiContext.jsx'
@@ -1000,6 +1001,7 @@ export default function FlowsPage() {
           {[
             { id: 'canvas', Icon: Share2, title: 'Canvas / DAG view' },
             { id: 'notebook', Icon: LayoutList, title: 'Notebook / cell view' },
+            { id: 'code', Icon: FileCode2, title: 'Code / Files view' },
           ].map((v, i) => (
             <button
               key={v.id}
@@ -1121,17 +1123,9 @@ export default function FlowsPage() {
                 <span className="hidden lg:inline">Lineage</span>
               </button>
             )}
-            {/* Code panel only exists in the canvas view (FlowBuilder renders it there) */}
-            {flowView === 'canvas' && (
-              <button onClick={() => setCodeOpen(v => !v)} title={codeOpen ? 'Hide code editor' : 'Edit flow as Python code'}
-                className={[
-                  'flex items-center gap-1.5 px-2 sm:px-2.5 h-8 text-xs font-medium rounded-lg border transition-colors',
-                  codeOpen ? 'border-violet-400/60 bg-violet-500/10 text-violet-600 dark:text-violet-400' : 'border-border bg-surface text-fg hover:bg-surface-2',
-                ].join(' ')}>
-                <Code2 size={13} />
-                <span className="hidden lg:inline">Code</span>
-              </button>
-            )}
+            {/* Editing the flow as code now lives in the dedicated "Code" view
+                (the third view-switcher option) — the old canvas-side code
+                panel is subsumed by it, so no separate toggle here. */}
           </>
         )}
 
@@ -1144,7 +1138,7 @@ export default function FlowsPage() {
             { id: 'flows',     Icon: List,              title: 'Flows' },
             { id: 'add',       Icon: Plus,              title: 'Add task' },
             { id: 'inspector', Icon: SlidersHorizontal, title: 'Inspector' },
-          ].filter(p => !(activeTab === 'builder' && flowView === 'notebook' && p.id !== 'flows')).map(p => {
+          ].filter(p => !(activeTab === 'builder' && (flowView === 'notebook' || flowView === 'code') && p.id !== 'flows')).map(p => {
             const active = rightPanel === p.id && !rightCollapsed
             return (
               <button key={p.id} onClick={() => togglePanel(p.id)} title={p.title} aria-label={p.title} aria-pressed={active}
