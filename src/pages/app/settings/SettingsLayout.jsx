@@ -12,6 +12,7 @@
  *     /settings/organization   → OrgSettings        (general)
  *     /settings/members        → MembersSettings
  *     /settings/security       → SecuritySettings   (org-level: embed JWT trust)
+ *     /settings/usage          → UsageSettings      (open-core usage metering)
  *     /billing                 → EE billing page (link-out; only when the
  *                                 billing feature is enabled)
  *
@@ -32,6 +33,7 @@ import {
   FolderGit2,
   ArrowUpRight,
   Plug,
+  Gauge,
 } from 'lucide-react'
 import { useOrg } from '../../../contexts/OrgContext.jsx'
 import { useProject } from '../../../contexts/ProjectContext.jsx'
@@ -128,6 +130,7 @@ export default function SettingsLayout() {
             <SettingsNavItem to="/settings/members" label="Members" Icon={Users} />
             <SettingsNavItem to="/settings/integrations" label="Integrations" Icon={Plug} />
             <SettingsNavItem to="/settings/security" label="Security" Icon={ShieldCheck} />
+            <SettingsNavItem to="/settings/usage" label="Usage" Icon={Gauge} />
             {billingEnabled && (
               <SettingsNavItem to="/billing" label="Billing" Icon={CreditCard} external />
             )}

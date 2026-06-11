@@ -1,7 +1,7 @@
 /**
- * UsagePage — open-core USAGE metering view.
+ * UsageSettings — open-core USAGE metering, hosted inside the Settings area.
  *
- * Route:  /usage
+ * Route:  /settings/usage  (Organization › Usage)
  *
  * Read-only visibility into what the active org has consumed this period:
  *  - one card per usage metric (queries, compute units, bytes scanned, flow
@@ -17,14 +17,12 @@
  * implies a hard cap. Numbers are aggregated server-side from the core
  * usage_events table (populated off the hot path), surfaced via lib/usage.js.
  *
- * Styling mirrors WatchesPage: the page toolbar is portaled into the single
- * AppShell topbar (useUi().topbarSlot); Tailwind design tokens (bg-surface,
- * border-border, text-fg/text-muted, bg-primary) throughout. Hooks follow the
- * repo's react-hooks/set-state-in-effect rule (initial load is deferred).
+ * Anatomy mirrors the other settings sections (SettingsPageHeader + cards);
+ * the period selector sits in the header. Hooks follow the repo's
+ * react-hooks/set-state-in-effect rule (initial load is deferred).
  */
 
 import { useEffect, useState, useCallback, useMemo } from 'react'
-import { createPortal } from 'react-dom'
 import {
   Gauge,
   RefreshCw,
@@ -40,10 +38,10 @@ import {
   Infinity as InfinityIcon,
 } from 'lucide-react'
 
-import { useUi } from '../../contexts/UiContext.jsx'
-import { useOrg } from '../../contexts/OrgContext.jsx'
-import { usageSummary, usageSeries, formatUsage } from '../../lib/usage.js'
-import EChart from '../../viz/EChart.jsx'
+import { useOrg } from '../../../contexts/OrgContext.jsx'
+import { usageSummary, usageSeries, formatUsage } from '../../../lib/usage.js'
+import EChart from '../../../viz/EChart.jsx'
+import { SettingsPageHeader } from './SettingsUI.jsx'
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -209,11 +207,47 @@ function SeriesChart({ series, loading }) {
 }
 
 // ---------------------------------------------------------------------------
-// UsagePage
+// Period selector (lives in the section header)
 // ---------------------------------------------------------------------------
 
-export default function UsagePage() {
-  const { topbarSlot } = useUi()
+function PeriodSelector({ period, onChange, loading, onRefresh }) {
+  return (
+    <div className="flex items-center gap-2">
+      <div className="inline-flex items-center rounded-lg border border-border bg-surface p-0.5 shrink-0">
+        {PERIODS.map((p) => (
+          <button
+            key={p.id}
+            type="button"
+            onClick={() => onChange(p.id)}
+            className={`px-2.5 h-7 rounded-md text-xs font-medium transition-colors ${
+              period === p.id
+                ? 'bg-primary text-primary-fg'
+                : 'text-muted hover:text-fg'
+            }`}
+          >
+            {p.label}
+          </button>
+        ))}
+      </div>
+      <button
+        type="button"
+        onClick={onRefresh}
+        disabled={loading}
+        title="Refresh"
+        aria-label="Refresh usage"
+        className="flex items-center justify-center w-8 h-8 rounded-lg shrink-0 border border-border text-muted hover:text-fg hover:bg-surface-2 disabled:opacity-40 transition-colors focus:outline-none focus:ring-2 focus:ring-ring"
+      >
+        <RefreshCw size={14} className={loading ? 'animate-spin' : ''} strokeWidth={2} />
+      </button>
+    </div>
+  )
+}
+
+// ---------------------------------------------------------------------------
+// UsageSettings
+// ---------------------------------------------------------------------------
+
+export default function UsageSettings() {
   const { activeOrg } = useOrg()
 
   const [period, setPeriod] = useState('month')
@@ -273,96 +307,68 @@ export default function UsagePage() {
   )
 
   return (
-    <div className="flex flex-col min-h-full bg-bg">
-      {/* Page toolbar — portaled into the single AppShell topbar */}
-      {topbarSlot && createPortal(
-        <div className="flex items-center gap-2 w-full min-w-0">
-          <Gauge size={15} className="text-muted shrink-0 hidden sm:block" strokeWidth={2.2} />
-          <span className="text-sm font-semibold font-display text-fg truncate">Usage</span>
-          <div className="flex-1" />
-          {/* Period selector */}
-          <div className="inline-flex items-center rounded-lg border border-border bg-surface p-0.5 shrink-0">
-            {PERIODS.map((p) => (
-              <button
-                key={p.id}
-                onClick={() => setPeriod(p.id)}
-                className={`px-2.5 h-7 rounded-md text-xs font-medium transition-colors ${
-                  period === p.id
-                    ? 'bg-primary text-primary-fg'
-                    : 'text-muted hover:text-fg'
-                }`}
-              >
-                {p.label}
-              </button>
-            ))}
-          </div>
-          <button
-            onClick={loadSummary}
-            disabled={loading}
-            title="Refresh"
-            aria-label="Refresh usage"
-            className="flex items-center justify-center w-8 h-8 rounded-lg shrink-0 border border-border text-muted hover:text-fg hover:bg-surface-2 disabled:opacity-40 transition-colors focus:outline-none focus:ring-2 focus:ring-ring"
-          >
-            <RefreshCw size={14} className={loading ? 'animate-spin' : ''} strokeWidth={2} />
-          </button>
-        </div>,
-        topbarSlot,
+    <div className="space-y-6">
+      <SettingsPageHeader
+        title="Usage"
+        description={
+          `What this organisation has consumed for ${periodLabel}. ` +
+          'Metrics with a plan limit show usage as a percentage; everything else ' +
+          'is unlimited. Select a metric to chart it over time.'
+        }
+      >
+        <PeriodSelector
+          period={period}
+          onChange={setPeriod}
+          loading={loading}
+          onRefresh={loadSummary}
+        />
+      </SettingsPageHeader>
+
+      {loading && (
+        <div className="flex items-center gap-2 text-sm text-muted py-12 justify-center">
+          <Loader2 size={16} className="animate-spin" /> Loading usage…
+        </div>
       )}
 
-      {/* Content */}
-      <div className="flex-1 px-4 sm:px-6 py-4 max-w-5xl w-full mx-auto">
-        <p className="text-xs text-muted mb-4 max-w-2xl leading-relaxed">
-          What this organisation has consumed for <span className="font-medium text-fg/80">{periodLabel}</span>.
-          Metrics with a plan limit show usage as a percentage; everything else is unlimited.
-          Select a metric to chart it over time.
-        </p>
+      {!loading && error && (
+        <div className="flex flex-col items-center justify-center py-12 gap-3 rounded-xl border border-dashed border-red-200 dark:border-red-900/40">
+          <AlertTriangle size={20} className="text-red-500" />
+          <p className="text-sm text-red-600 dark:text-red-400">{error}</p>
+          <button onClick={loadSummary} className="text-xs text-muted hover:text-fg underline">Retry</button>
+        </div>
+      )}
 
-        {loading && (
-          <div className="flex items-center gap-2 text-sm text-muted py-12 justify-center">
-            <Loader2 size={16} className="animate-spin" /> Loading usage…
+      {!loading && !error && metrics.length === 0 && (
+        <div className="flex flex-col items-center justify-center py-14 px-6 text-center rounded-xl border border-dashed border-border">
+          <div className="flex items-center justify-center w-16 h-16 rounded-2xl bg-brand-gradient shadow-lg mb-5">
+            <Gauge size={28} className="text-white" />
           </div>
-        )}
+          <h3 className="font-display font-semibold text-xl text-fg mb-2">No usage yet</h3>
+          <p className="text-sm text-muted max-w-sm leading-relaxed">
+            Once you run queries, flows, or AI generations, your consumption for
+            the period will appear here.
+          </p>
+        </div>
+      )}
 
-        {!loading && error && (
-          <div className="flex flex-col items-center justify-center py-12 gap-3 rounded-xl border border-dashed border-red-200 dark:border-red-900/40">
-            <AlertTriangle size={20} className="text-red-500" />
-            <p className="text-sm text-red-600 dark:text-red-400">{error}</p>
-            <button onClick={loadSummary} className="text-xs text-muted hover:text-fg underline">Retry</button>
+      {!loading && !error && metrics.length > 0 && (
+        <div className="space-y-5">
+          {/* Metric cards */}
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
+            {metrics.map((m) => (
+              <UsageCard
+                key={m.id}
+                metric={m}
+                selected={m.id === selected}
+                onSelect={setSelected}
+              />
+            ))}
           </div>
-        )}
 
-        {!loading && !error && metrics.length === 0 && (
-          <div className="flex flex-col items-center justify-center py-14 px-6 text-center rounded-xl border border-dashed border-border">
-            <div className="flex items-center justify-center w-16 h-16 rounded-2xl bg-brand-gradient shadow-lg mb-5">
-              <Gauge size={28} className="text-white" />
-            </div>
-            <h3 className="font-display font-semibold text-xl text-fg mb-2">No usage yet</h3>
-            <p className="text-sm text-muted max-w-sm leading-relaxed">
-              Once you run queries, flows, or AI generations, your consumption for
-              the period will appear here.
-            </p>
-          </div>
-        )}
-
-        {!loading && !error && metrics.length > 0 && (
-          <div className="space-y-5">
-            {/* Metric cards */}
-            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
-              {metrics.map((m) => (
-                <UsageCard
-                  key={m.id}
-                  metric={m}
-                  selected={m.id === selected}
-                  onSelect={setSelected}
-                />
-              ))}
-            </div>
-
-            {/* Series chart for the selected metric */}
-            <SeriesChart series={series} loading={seriesLoading} />
-          </div>
-        )}
-      </div>
+          {/* Series chart for the selected metric */}
+          <SeriesChart series={series} loading={seriesLoading} />
+        </div>
+      )}
     </div>
   )
 }

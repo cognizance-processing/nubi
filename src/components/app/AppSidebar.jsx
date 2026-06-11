@@ -23,14 +23,12 @@ import { Link, NavLink, useMatch } from 'react-router-dom'
 import {
   Home,
   Plug,
-  Warehouse,
   FileCode2,
   LayoutDashboard,
   Workflow,
   Sigma,
   BellRing,
   CalendarClock,
-  Gauge,
   Table2,
   ChevronLeft,
   ChevronRight,
@@ -473,7 +471,6 @@ function SidebarEnvSelector({ collapsed }) {
 const NAV_ITEMS = [
   { label: 'Home',        to: '/home',        Icon: Home },
   { label: 'Connectors',  to: '/connectors',  Icon: Plug },
-  { label: 'Lakehouse',   to: '/lakehouse',   Icon: Warehouse },
   { label: 'Data',        to: '/data',        Icon: Table2 },
   { label: 'Queries',     to: '/queries',     Icon: FileCode2 },
   { label: 'Dashboards',  to: '/dashboards',  Icon: LayoutDashboard },
@@ -481,7 +478,6 @@ const NAV_ITEMS = [
   { label: 'Metrics',     to: '/metrics',     Icon: Sigma },
   { label: 'Watches',     to: '/watches',     Icon: BellRing },
   { label: 'Automations', to: '/automations', Icon: CalendarClock },
-  { label: 'Usage',       to: '/usage',       Icon: Gauge },
   // Secrets are flow-scoped (referenced by flow tasks via {{ secrets.NAME }}),
   // so they live inside the Flows workspace (/flows/secrets), not the global nav.
 ]

@@ -27,6 +27,7 @@
  *   /settings/organization → OrgSettings    (Organization › General)
  *   /settings/members   → MembersSettings   (Organization › Members)
  *   /settings/security  → SecuritySettings  (Organization › Security — JWT issuers / JWKS)
+ *   /settings/usage     → UsageSettings     (Organization › Usage — metering)
  *   /settings/project   → ProjectSettings   (Project › General)
  *   /secrets            → SecretsPage
  *   /billing            → EE-only; rendered only when billing feature is enabled
@@ -84,7 +85,6 @@ const EditorPage = lazy(() => import('./pages/EditorPage.jsx'))
 const HomePage = lazy(() => import('./pages/app/HomePage.jsx'))
 const InviteAcceptPage = lazy(() => import('./pages/app/InviteAcceptPage.jsx'))
 const ConnectorsPage = lazy(() => import('./pages/app/ConnectorsPage.jsx'))
-const LakehousePage = lazy(() => import('./pages/app/LakehousePage.jsx'))
 const DataBrowser = lazy(() => import('./pages/app/DataBrowser.jsx'))
 const QueriesPage = lazy(() => import('./pages/app/QueriesPage.jsx'))
 const BlendBuilder = lazy(() => import('./pages/app/BlendBuilder.jsx'))
@@ -93,7 +93,6 @@ const FlowsPage = lazy(() => import('./pages/app/FlowsPage.jsx'))
 const MetricsPage = lazy(() => import('./pages/app/MetricsPage.jsx'))
 const WatchesPage = lazy(() => import('./pages/app/WatchesPage.jsx'))
 const AutomationsPage = lazy(() => import('./pages/app/AutomationsPage.jsx'))
-const UsagePage = lazy(() => import('./pages/app/UsagePage.jsx'))
 const SettingsLayout = lazy(() => import('./pages/app/settings/SettingsLayout.jsx'))
 const ProfileSettings = lazy(() => import('./pages/app/settings/ProfileSettings.jsx'))
 const OrgSettings = lazy(() => import('./pages/app/settings/OrgSettings.jsx'))
@@ -101,6 +100,7 @@ const MembersSettings = lazy(() => import('./pages/app/settings/MembersSettings.
 const ProjectSettings = lazy(() => import('./pages/app/settings/ProjectSettings.jsx'))
 const SecuritySettings = lazy(() => import('./pages/app/settings/SecuritySettings.jsx'))
 const IntegrationsSettings = lazy(() => import('./pages/app/settings/IntegrationsSettings.jsx'))
+const UsageSettings = lazy(() => import('./pages/app/settings/UsageSettings.jsx'))
 const SecretsPage = lazy(() => import('./pages/app/SecretsPage.jsx'))
 const DataExplorerPage = lazy(() => import('./pages/app/DataExplorerPage.jsx'))
 
@@ -276,7 +276,6 @@ export default function App() {
           <Route path="invite/:token" element={<InviteAcceptPage />} />
           <Route path="connectors" element={<ConnectorsPage />} />
           <Route path="connectors/:id/data" element={<DataBrowser />} />
-          <Route path="lakehouse" element={<LakehousePage />} />
           <Route path="data" element={<DataExplorerPage />} />
           <Route path="queries" element={<QueriesPage />} />
           <Route path="queries/:id" element={<QueriesPage />} />
@@ -288,7 +287,8 @@ export default function App() {
           <Route path="metrics/:id" element={<MetricsPage />} />
           <Route path="watches" element={<WatchesPage />} />
           <Route path="automations" element={<AutomationsPage />} />
-          <Route path="usage" element={<UsagePage />} />
+          {/* Usage moved into Settings — keep the old route as a redirect. */}
+          <Route path="usage" element={<Navigate to="/settings/usage" replace />} />
           <Route path="editor" element={<EditorPage />} />
           <Route path="editor/:id" element={<EditorPage />} />
           {/* Playground merged into Queries — keep route as a redirect so old links work */}
@@ -301,6 +301,7 @@ export default function App() {
             <Route path="organization" element={<OrgSettings />} />
             <Route path="members" element={<MembersSettings />} />
             <Route path="integrations" element={<IntegrationsSettings />} />
+            <Route path="usage" element={<UsageSettings />} />
             <Route path="project" element={<ProjectSettings />} />
             <Route path="security" element={<SecuritySettings />} />
           </Route>
