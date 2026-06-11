@@ -63,9 +63,9 @@ Baseline at audit: commit `16f31d0` (Wave C). Waves A/B/C done. Verify commands:
   membership signal (fail-closed-on-`None` would break flow tests that don't seed `org_members`).
   A proper fix = a server-side per-user RLS-policy store (re-derive at tick) OR a flow "service
   identity" model. Tracked for a deliberate design pass.
-- [ ] **Hot-path SQL re-parse** (P1, partial): `planner.py` registry short-circuit already added;
-  remaining: thread the parsed AST from `planner.plan` into `route_to_rollup_shape`/query-log so
-  a cache-MISS query parses once, not 2–3×.
+- [x] **Hot-path SQL re-parse** (P1): bounded copy-on-return parse cache (`sql_parse.py`) —
+  each unique (sql,dialect) parses once, callers get a fresh `.copy()`; collapses the two
+  plan.sql re-parses + reuses across repeated queries. ✅ `07e46ff` (backend 3461, byte-identical).
 
 ## P2 — follow-ups
 
