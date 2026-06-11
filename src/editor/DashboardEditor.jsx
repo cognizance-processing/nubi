@@ -45,7 +45,7 @@ import {
   BarChart3, LineChart, AreaChart, ScatterChart, PieChart, Gauge, Grid3x3,
   BarChartHorizontal, Table2, Hash, Filter as FilterIcon, Type, Heading,
   Monitor, Tablet, Smartphone, ChevronDown, Settings, LayoutGrid, MessageSquare,
-  ZoomIn, ZoomOut, Maximize2, Menu, ChevronUp,
+  ZoomIn, ZoomOut, Maximize2, Menu, ChevronUp, Sigma,
 } from 'lucide-react'
 
 // Device viewport presets for the editor's responsive preview/edit switcher.
@@ -82,6 +82,8 @@ import FilterWidget from '../dashboards/widgets/FilterWidget.jsx'
 import TextWidget from '../dashboards/widgets/TextWidget.jsx'
 import HtmlWidget from '../dashboards/widgets/HtmlWidget.jsx'
 import MetricWidget from '../dashboards/widgets/MetricWidget.jsx'
+import MetricPicker from '../components/app/MetricPicker.jsx'
+import { listMetrics } from '../lib/metrics.js'
 import PivotWidget from '../dashboards/widgets/PivotWidget.jsx'
 import SectionWidget from '../dashboards/widgets/SectionWidget.jsx'
 import ExportShareMenu from '../components/ExportShareMenu.jsx'
@@ -430,6 +432,54 @@ function QueryPicker({ value, onChange, extraIds = [] }) {
           value={freeText || value}
           onChange={e => { setFreeText(e.target.value); onChange(e.target.value) }}
         />
+      )}
+    </div>
+  )
+}
+
+// ---------------------------------------------------------------------------
+// useMetricsList — load the org's governed metrics once for the inspector's
+// metric-binding picker. Degrades to [] on any failure (listMetrics is safe).
+// ---------------------------------------------------------------------------
+
+function useMetricsList() {
+  const [metrics, setMetrics] = useState([])
+  useEffect(() => {
+    let cancelled = false
+    listMetrics().then(rows => { if (!cancelled) setMetrics(rows) })
+    return () => { cancelled = true }
+  }, [])
+  return metrics
+}
+
+// ---------------------------------------------------------------------------
+// MetricBindingSection — bind a data widget to a GOVERNED metric (alternative
+// to query_id). Sets/clears `widget.metric` = { metric_id, dimensions,
+// time_grain, filters }. query_id stays intact; metric binding is additive and
+// takes precedence in the runtime (runMetricQuery) when present.
+// ---------------------------------------------------------------------------
+
+function MetricBindingSection({ widget, onChange }) {
+  const metrics = useMetricsList()
+  const binding = widget.metric ?? null
+
+  const setBinding = (next) => {
+    if (next && next.metric_id) {
+      onChange({ ...widget, metric: next })
+    } else {
+      // Clearing the metric → drop the binding so query_id takes over again.
+      const { metric, ...rest } = widget // eslint-disable-line no-unused-vars
+      onChange(rest)
+    }
+  }
+
+  return (
+    <div className="space-y-2">
+      <MetricPicker metrics={metrics} value={binding} onChange={setBinding} />
+      {binding?.metric_id && (
+        <p className="text-[10px] text-muted/70 leading-snug">
+          Bound to a governed metric — this takes precedence over the query above.
+        </p>
       )}
     </div>
   )
@@ -1547,6 +1597,12 @@ function ConfigPanel({ widget, onChange, onRemove, extraQueryIds, spec, activeBr
           <FieldLabel className="flex items-center gap-1.5"><Database size={12} /> Query</FieldLabel>
           <QueryPicker value={widget.query_id} onChange={setQueryId} extraIds={extraQueryIds} />
         </div>
+      )}
+
+      {isDataWidget && (
+        <Section title="Metric binding" defaultOpen={Boolean(widget.metric?.metric_id)} icon={Sigma}>
+          <MetricBindingSection widget={widget} onChange={onChange} />
+        </Section>
       )}
 
       {widget.type === 'chart' && <ChartConfig widget={widget} onChange={onChange} />}

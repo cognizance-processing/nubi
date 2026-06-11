@@ -67,3 +67,25 @@ export async function streamChatMessage({ messages, model, board_id, onEvent, si
   if (board_id) body.board_id = board_id
   return postStream('/ai/chat/stream', body, { onEvent, signal })
 }
+
+/**
+ * Pin a chat answer (a query result or generated spec) to a dashboard.
+ *
+ * POST /api/v1/ai/pin
+ *
+ * Reuses the shared `post()` helper (Bearer token + X-Org-Id + silent 401
+ * refresh). On a 400 the thrown error carries `.status === 400` and
+ * `.payload` (structured validation errors) so the caller can surface them
+ * inline.
+ *
+ * @param {{
+ *   title: string,
+ *   source: { query_id?: string, metric_id?: string },
+ *   viz: { type: 'kpi' | 'table' | 'chart', chart_type?: string, encoding?: object },
+ *   board_id?: string,
+ * }} body
+ * @returns {Promise<{ board_id: string, widget_id: string, spec: object, valid: boolean }>}
+ */
+export async function pinAnswer(body) {
+  return post('/ai/pin', body)
+}

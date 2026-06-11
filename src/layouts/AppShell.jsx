@@ -33,26 +33,36 @@ const GitSyncPanel = lazy(() =>
 )
 
 // ---------------------------------------------------------------------------
-// Git button — portalled into the topbar slot so it lives in the header bar
-// without modifying AppTopbar.jsx.  We portal into the slot div that UiContext
-// exposes; when the slot node is not yet mounted (first render) nothing renders.
+// Git / Versions control — PERSISTENT shell chrome.
+//
+// The git surface must be reachable identically on every authenticated page
+// (dashboards, queries, flows, the editor), so this control is owned by the
+// AppShell itself and never depends on a page setting `topbarSlot`.
+//
+// Placement strategy (without editing AppTopbar.jsx):
+//   - When a page HAS mounted the center topbar slot, we portal the control
+//     INTO that slot so it sits inline in the header toolbar (no stacked bar).
+//   - When no slot is mounted (e.g. dashboards), we render a fixed fallback
+//     pinned to the top-right of the viewport, layered above the sticky topbar,
+//     so the button is NEVER missing.
+// Exactly one instance renders at a time, so pages that set the slot never get
+// a duplicate button.
 // ---------------------------------------------------------------------------
 
-function GitTopbarButton({ open, onToggle }) {
-  const { topbarSlot } = useUi()
-  if (!topbarSlot) return null
-
-  return createPortal(
+function GitControlButton({ open, onToggle, fixed = false }) {
+  return (
     <button
       onClick={onToggle}
-      aria-label={open ? 'Close Git sync panel' : 'Open Git sync panel'}
+      aria-label={open ? 'Close Git / Versions panel' : 'Open Git / Versions panel'}
       aria-pressed={open}
+      title="Git / Versions — push, pull, branch graph and version history"
       data-testid="global-git-btn"
       className={`
-        flex items-center justify-center w-9 h-9 rounded-lg
-        border border-border
+        flex items-center justify-center gap-1.5 h-9 px-2.5 rounded-lg
+        border border-border text-xs font-medium
         transition-colors duration-150
         focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-1
+        ${fixed ? 'fixed top-2.5 right-[7.5rem] z-40 bg-surface/95 backdrop-blur-sm shadow-sm' : ''}
         ${open
           ? 'bg-primary text-primary-fg border-primary'
           : 'text-muted hover:text-fg hover:bg-surface-2'
@@ -60,9 +70,24 @@ function GitTopbarButton({ open, onToggle }) {
       `}
     >
       <GitBranch size={15} strokeWidth={2} />
-    </button>,
-    topbarSlot,
+      <span className="hidden sm:inline">Git</span>
+    </button>
   )
+}
+
+function GitPersistentControl({ open, onToggle }) {
+  const { topbarSlot } = useUi()
+
+  // Inline in the page's topbar toolbar when one is mounted…
+  if (topbarSlot) {
+    return createPortal(
+      <GitControlButton open={open} onToggle={onToggle} />,
+      topbarSlot,
+    )
+  }
+
+  // …otherwise a fixed fallback so the control is always visible.
+  return <GitControlButton open={open} onToggle={onToggle} fixed />
 }
 
 // ---------------------------------------------------------------------------
@@ -181,8 +206,9 @@ export default function AppShell() {
       <div className="flex flex-col flex-1 min-w-0 overflow-hidden">
         <AppTopbar onMobileMenuOpen={() => setMobileNavOpen(true)} />
 
-        {/* Git branch button portalled into the topbar's center slot */}
-        <GitTopbarButton open={gitOpen} onToggle={() => setGitOpen(v => !v)} />
+        {/* Persistent Git / Versions control — always reachable on every authed
+            page (portalled into the topbar slot when present, fixed otherwise). */}
+        <GitPersistentControl open={gitOpen} onToggle={() => setGitOpen(v => !v)} />
 
         {/* Content area + chat panel + git panel side-by-side */}
         <div className="flex flex-1 min-h-0 overflow-hidden">

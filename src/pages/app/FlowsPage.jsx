@@ -51,7 +51,6 @@ import {
   List,
   KeyRound,
   X,
-  ChevronDown,
   SlidersHorizontal,
   PanelRightClose,
   ShieldCheck,
@@ -70,7 +69,7 @@ import {
 
 import { useUi } from '../../contexts/UiContext.jsx'
 import { useCanWrite } from '../../contexts/OrgContext.jsx'
-import { useEnv, envDotClass } from '../../contexts/EnvContext.jsx'
+import { useEnv } from '../../contexts/EnvContext.jsx'
 import { checkpoint, restoreVersion } from '../../lib/versions.js'
 import VersionHistoryDialog from '../../components/app/VersionHistoryDialog.jsx'
 import {
@@ -414,220 +413,6 @@ function RunsTab({ flow, currentRunId, onSelectRun }) {
 }
 
 // ---------------------------------------------------------------------------
-// EnvSelector — active run environment (dev / prod / custom)
-// ---------------------------------------------------------------------------
-
-// prod leads (the default + production target); dev second. Custom envs the
-// user adds are appended and persisted in localStorage.
-// (Per-env accent dot styling is shared with the sidebar selector — see
-// envDotClass in contexts/EnvContext.jsx.)
-const DEFAULT_ENVS = ['prod', 'dev']
-const ENVS_STORAGE_KEY = 'nubi.flow.customEnvs'
-
-function loadCustomEnvs() {
-  try {
-    const raw = localStorage.getItem(ENVS_STORAGE_KEY)
-    const arr = raw ? JSON.parse(raw) : []
-    return Array.isArray(arr) ? arr.filter(e => typeof e === 'string' && e) : []
-  } catch {
-    return []
-  }
-}
-
-/**
- * Top-bar environment selector. Sets the env a run is triggered against; the
- * backend namespaces materialized/incremental targets under <env>/ so dev and
- * prod never clobber each other. Defaults to prod.
- *
- * Env list + selection source: the global EnvContext (FlowsPage passes
- * `environments`/`value` from useEnv()), so this selector stays in sync with
- * the sidebar environment selector. When the API is unavailable
- * (`environments` is null) we fall back to the legacy localStorage
- * custom-env list so the selector keeps working offline. "Add environment"
- * calls `onAddEnv` (EnvContext addEnv) in API mode.
- *
- * @param {{
- *   value: string,
- *   onChange: (env: string) => void,
- *   disabled?: boolean,
- *   environments?: Array<{id:string,key:string,is_default?:boolean,protected?:boolean}>|null,
- *   onAddEnv?: (key: string) => Promise<any>,
- *   onRemoveEnv?: (env: {id:string,key:string}) => Promise<any>,
- * }} props
- */
-function EnvSelector({ value, onChange, disabled = false, environments = null, onAddEnv, onRemoveEnv }) {
-  const [open, setOpen] = useState(false)
-  const [adding, setAdding] = useState(false)
-  const [draft, setDraft] = useState('')
-  const [customEnvs, setCustomEnvs] = useState(loadCustomEnvs)
-  const ref = useRef(null)
-  const inputRef = useRef(null)
-
-  // API mode when the project's environments were loaded; otherwise fall back
-  // to defaults + persisted localStorage customs.
-  const apiMode = Array.isArray(environments)
-  // All selectable envs (+ the active value if it is itself a one-off custom),
-  // de-duplicated.
-  const envs = apiMode
-    ? Array.from(new Set([...environments.map(e => e.key), ...(value ? [value] : [])]))
-    : Array.from(new Set([...DEFAULT_ENVS, ...customEnvs, ...(value ? [value] : [])]))
-  const active = value || 'prod'
-
-  useEffect(() => {
-    if (!open) return
-    const onDown = (e) => { if (ref.current && !ref.current.contains(e.target)) { setOpen(false); setAdding(false) } }
-    const onKey = (e) => { if (e.key === 'Escape') { setOpen(false); setAdding(false) } }
-    window.addEventListener('mousedown', onDown)
-    window.addEventListener('keydown', onKey)
-    return () => { window.removeEventListener('mousedown', onDown); window.removeEventListener('keydown', onKey) }
-  }, [open])
-
-  useEffect(() => { if (adding) inputRef.current?.focus() }, [adding])
-
-  const select = (env) => { onChange(env); setOpen(false); setAdding(false) }
-
-  const commitNew = async () => {
-    const name = draft.trim().toLowerCase().replace(/[^a-z0-9_-]/g, '')
-    if (!name) return
-    if (apiMode && onAddEnv) {
-      // Persist in the project's environments via the API.
-      if (!envs.includes(name)) {
-        try {
-          await onAddEnv(name)
-        } catch (cause) {
-          window.alert(cause?.message || 'Could not create environment.')
-          return
-        }
-      }
-    } else if (!customEnvs.includes(name) && !DEFAULT_ENVS.includes(name)) {
-      // Offline fallback: persist in localStorage.
-      const next = [...customEnvs, name]
-      setCustomEnvs(next)
-      try { localStorage.setItem(ENVS_STORAGE_KEY, JSON.stringify(next)) } catch { /* ignore */ }
-    }
-    setDraft('')
-    setAdding(false)
-    select(name)
-  }
-
-  const removeEnv = async (env, e) => {
-    e.stopPropagation()
-    if (apiMode) {
-      const row = environments.find(x => x.key === env)
-      if (!row || !onRemoveEnv) return
-      if (!window.confirm(`Delete environment "${env}" from this project?`)) return
-      try {
-        await onRemoveEnv(row)
-      } catch (cause) {
-        window.alert(cause?.message || 'Could not delete environment.')
-        return
-      }
-    } else {
-      const next = customEnvs.filter(x => x !== env)
-      setCustomEnvs(next)
-      try { localStorage.setItem(ENVS_STORAGE_KEY, JSON.stringify(next)) } catch { /* ignore */ }
-    }
-    if (active === env) onChange('prod')
-  }
-
-  return (
-    <div className="relative shrink-0" ref={ref}>
-      <button
-        type="button"
-        disabled={disabled}
-        onClick={() => setOpen(o => !o)}
-        title="Run environment — targets are namespaced under this env"
-        aria-label="Run environment"
-        aria-haspopup="listbox"
-        aria-expanded={open}
-        className={[
-          'h-8 flex items-center gap-1.5 pl-2 pr-2 rounded-lg border text-xs font-medium transition-colors',
-          'disabled:opacity-50 disabled:cursor-not-allowed',
-          open ? 'border-primary bg-surface-2 text-fg' : 'border-border bg-surface text-fg hover:border-border/80 hover:bg-surface-2',
-        ].join(' ')}
-      >
-        <span className={['w-2 h-2 rounded-full shrink-0', envDotClass(active)].join(' ')} />
-        <span className="font-mono">{active}</span>
-        <ChevronDown size={13} className={['text-muted shrink-0 transition-transform', open ? 'rotate-180' : ''].join(' ')} />
-      </button>
-
-      {open && (
-        <div className="absolute right-0 top-full mt-1.5 z-50 w-52 rounded-xl border border-border bg-surface shadow-xl shadow-black/10 overflow-hidden">
-          <p className="px-3 pt-2.5 pb-1.5 text-[10px] font-semibold uppercase tracking-widest text-muted/70">
-            Run environment
-          </p>
-          <ul role="listbox" className="px-1 pb-1 max-h-60 overflow-y-auto">
-            {envs.map(env => {
-              // Removable: custom localStorage envs, or API envs that are
-              // neither the default nor protected.
-              const row = apiMode ? environments.find(x => x.key === env) : null
-              const isCustom = apiMode
-                ? Boolean(row && !row.is_default && !row.protected)
-                : !DEFAULT_ENVS.includes(env)
-              return (
-                <li key={env}>
-                  <button
-                    role="option"
-                    aria-selected={env === active}
-                    onClick={() => select(env)}
-                    className="group w-full flex items-center gap-2 px-2 py-1.5 rounded-lg text-sm text-fg hover:bg-surface-2 transition-colors"
-                  >
-                    <span className={['w-2 h-2 rounded-full shrink-0', envDotClass(env)].join(' ')} />
-                    <span className="flex-1 text-left font-mono text-xs">{env}</span>
-                    {isCustom && (
-                      <span
-                        role="button"
-                        tabIndex={0}
-                        onClick={(e) => removeEnv(env, e)}
-                        title="Remove environment"
-                        className="opacity-0 group-hover:opacity-100 w-5 h-5 flex items-center justify-center rounded text-muted/60 hover:text-red-500 transition-colors"
-                      >
-                        <X size={12} />
-                      </span>
-                    )}
-                    {env === active && <Check size={14} className="text-primary shrink-0" />}
-                  </button>
-                </li>
-              )
-            })}
-          </ul>
-
-          <div className="border-t border-border p-1">
-            {adding ? (
-              <div className="flex items-center gap-1 px-1 py-0.5">
-                <input
-                  ref={inputRef}
-                  type="text"
-                  value={draft}
-                  placeholder="staging"
-                  className="h-7 flex-1 min-w-0 text-xs font-mono border border-border rounded-md px-2 bg-surface text-fg placeholder:text-muted/50 focus:outline-none focus:ring-2 focus:ring-ring/60"
-                  onChange={e => setDraft(e.target.value)}
-                  onKeyDown={e => { if (e.key === 'Enter') commitNew(); if (e.key === 'Escape') { setAdding(false); setDraft('') } }}
-                />
-                <button
-                  onClick={commitNew}
-                  className="h-7 px-2 rounded-md text-xs font-medium bg-primary text-primary-fg hover:opacity-90 transition-opacity"
-                >
-                  Add
-                </button>
-              </div>
-            ) : (
-              <button
-                onClick={() => setAdding(true)}
-                className="w-full flex items-center gap-2 px-2 py-1.5 rounded-lg text-xs font-medium text-muted hover:text-fg hover:bg-surface-2 transition-colors"
-              >
-                <Plus size={13} className="shrink-0" />
-                Add environment
-              </button>
-            )}
-          </div>
-        </div>
-      )}
-    </div>
-  )
-}
-
-// ---------------------------------------------------------------------------
 // Schedule control — set a flow to run on a cron/interval (toolbar popover)
 // ---------------------------------------------------------------------------
 
@@ -824,18 +609,15 @@ export default function FlowsPage() {
   // Current builder view ('canvas' | 'notebook'), reported up from FlowBuilder
   // so the top-bar switcher reflects + drives it.
   const [flowView, setFlowView] = useState('canvas')
-  // Active run environment (dev/prod/custom) — global app state shared with
-  // the sidebar environment selector (EnvContext, persisted per project).
+  // Active run environment (dev/prod/custom) — global app state owned by the
+  // sidebar environment selector (EnvContext, persisted per project). Runs read
+  // the selected env (runEnv) from here; there is no flows-local selector.
   // Drives the env passed to runFlow; backend resolution order is:
   // explicit override → spec.env → 'prod'. projectEnvs is the project's env
-  // list from the API (null until loaded / when the API is unavailable —
-  // EnvSelector then falls back to localStorage).
+  // list from the API (null until loaded / when the API is unavailable).
   const {
     environments: projectEnvs,
     activeEnv: runEnv,
-    setActiveEnv: setRunEnv,
-    addEnv: handleAddEnv,
-    removeEnv: handleRemoveEnv,
   } = useEnv()
   // Version-history dialog visibility (kind='flow', the active flow).
   const [historyOpen, setHistoryOpen] = useState(false)
@@ -1288,14 +1070,9 @@ export default function FlowsPage() {
         {/* Builder-only actions */}
         {activeTab === 'builder' && (
           <>
-            <EnvSelector
-              value={runEnv}
-              onChange={setRunEnv}
-              disabled={!canWrite}
-              environments={projectEnvs}
-              onAddEnv={handleAddEnv}
-              onRemoveEnv={handleRemoveEnv}
-            />
+            {/* Environment is selected globally in the sidebar (SidebarEnvSelector,
+                shared via EnvContext). Runs target the EnvContext-selected env
+                (runEnv) — no second selector is rendered here. */}
             {/* Unsaved / autosave status — sits next to the Save button */}
             <SaveStatusBadge dirty={dirty} saving={saving} autosaveStatus={autosaveStatus} className="hidden sm:flex px-1" />
             <button onClick={triggerValidate} disabled={validating} title="Validate flow"

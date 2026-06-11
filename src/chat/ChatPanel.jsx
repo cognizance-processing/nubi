@@ -18,19 +18,38 @@ import { useState, useRef, useEffect, useCallback } from 'react'
 import {
   X, Sparkles, Send, Square, ChevronDown, ChevronRight, AlertCircle,
   Wrench, BarChart3, Database, Search, Code2, Table2, Check, Loader2, Bot,
+  Pin, ExternalLink,
 } from 'lucide-react'
 import MarkdownRenderer from '../components/MarkdownRenderer.jsx'
-import { streamChatMessage } from './chatApi.js'
+import { streamChatMessage, pinAnswer } from './chatApi.js'
 
 // ---------------------------------------------------------------------------
 // Constants
 // ---------------------------------------------------------------------------
 
+// Model ids MUST match the backend allowlist (POST /api/v1/ai/chat → `model`).
+// An unknown id returns 400 model_not_allowed, surfaced in the chat error UI.
 const MODELS = [
-  { id: 'default', label: 'Nubi Default' },
-  { id: 'claude',  label: 'Claude'       },
-  { id: 'gpt-4o',  label: 'GPT-4o'       },
+  { id: 'default',           label: 'Nubi Default'    },
+  { id: 'claude-opus-4-8',   label: 'Claude Opus 4.8' },
+  { id: 'claude-sonnet-4-6', label: 'Claude Sonnet 4.6' },
+  { id: 'claude-haiku-4-5',  label: 'Claude Haiku 4.5' },
+  { id: 'gpt-4o',            label: 'GPT-4o'          },
+  { id: 'gpt-4o-mini',       label: 'GPT-4o mini'     },
+  { id: 'gemini-1.5-pro',    label: 'Gemini 1.5 Pro'  },
+  { id: 'gemini-1.5-flash',  label: 'Gemini 1.5 Flash' },
 ]
+
+// Persist the model choice like other UI prefs (e.g. nubi-theme, nubi-sidebar-*).
+const MODEL_STORAGE_KEY = 'nubi-chat-model'
+
+function loadStoredModel() {
+  try {
+    const stored = localStorage.getItem(MODEL_STORAGE_KEY)
+    if (stored && MODELS.some(m => m.id === stored)) return stored
+  } catch { /* localStorage unavailable (private mode / SSR) — ignore */ }
+  return MODELS[0].id
+}
 
 const SUGGESTIONS = [
   'Build a sales dashboard',
@@ -173,6 +192,105 @@ function summaryLine(tool, result) {
 }
 
 // ---------------------------------------------------------------------------
+// Ask → Pin: detect a pinnable tool result and build the /ai/pin payload
+// ---------------------------------------------------------------------------
+
+// A result is pinnable when it carries a query_id (a runnable query) or a
+// generated spec/widget that the dashboard can render. Plain text turns and
+// errored results are never pinnable.
+function isPinnable(tool, result) {
+  if (!result || typeof result !== 'object' || result.error) return false
+  return Boolean(
+    result.query_id || result.metric_id ||
+    result.spec || result.widget_id ||
+    (tool === 'run_query' && result.query_id),
+  )
+}
+
+// Map a result's chart type → a viz descriptor for /ai/pin.
+function vizFromResult(result) {
+  const chart = result.chart_type || result.viz?.chart_type || result.spec?.chart_type
+  if (chart) {
+    return { type: 'chart', chart_type: chart, ...(result.encoding ? { encoding: result.encoding } : {}) }
+  }
+  // A single-value/metric result reads best as a KPI; otherwise a table.
+  if (result.metric_id && !result.query_id) return { type: 'kpi' }
+  return { type: 'table' }
+}
+
+// Build the POST /ai/pin body from a (pinnable) tool result.
+function buildPinPayload(tool, result) {
+  const source = result.query_id
+    ? { query_id: result.query_id }
+    : result.metric_id
+      ? { metric_id: result.metric_id }
+      : {}
+  const title =
+    result.title || result.name ||
+    (tool === 'run_query' ? 'Query result' : toolLabel(tool))
+  return { title, source, viz: vizFromResult(result) }
+}
+
+function PinButton({ tool, result }) {
+  const [state, setState]   = useState('idle') // idle | pinning | pinned | error
+  const [boardId, setBoard] = useState(null)
+  const [error, setError]   = useState(null)
+
+  const onPin = useCallback(async () => {
+    setState('pinning'); setError(null)
+    try {
+      const res = await pinAnswer(buildPinPayload(tool, result))
+      setBoard(res?.board_id ?? null)
+      setState('pinned')
+    } catch (err) {
+      // Surface a structured 400 (validation errors) inline.
+      const detail =
+        err?.payload?.error?.message ??
+        (Array.isArray(err?.payload?.detail)
+          ? err.payload.detail.map(d => d?.msg ?? String(d)).join(', ')
+          : err?.payload?.detail) ??
+        err?.message ?? 'Could not pin.'
+      setError(detail)
+      setState('error')
+    }
+  }, [tool, result])
+
+  if (state === 'pinned') {
+    const href = boardId ? `/d/${boardId}` : '/dashboards'
+    return (
+      <a
+        href={href}
+        className="inline-flex items-center gap-1.5 text-[11px] font-medium text-brand-teal hover:underline focus:outline-none focus:ring-2 focus:ring-ring rounded-md px-1.5 py-1"
+      >
+        <Check size={12} className="shrink-0" />
+        Pinned — open dashboard
+        <ExternalLink size={11} className="shrink-0 opacity-70" />
+      </a>
+    )
+  }
+
+  return (
+    <div className="space-y-1">
+      <button
+        onClick={onPin}
+        disabled={state === 'pinning'}
+        className="inline-flex items-center gap-1.5 text-[11px] font-medium text-primary bg-primary/10 hover:bg-primary/15 border border-primary/20 rounded-lg px-2 py-1 disabled:opacity-50 disabled:cursor-not-allowed transition-colors focus:outline-none focus:ring-2 focus:ring-ring"
+      >
+        {state === 'pinning'
+          ? <Loader2 size={12} className="animate-spin shrink-0" />
+          : <Pin size={12} className="shrink-0" />}
+        {state === 'pinning' ? 'Pinning…' : 'Pin to dashboard'}
+      </button>
+      {state === 'error' && error && (
+        <p className="text-[10px] text-red-500 flex items-start gap-1">
+          <AlertCircle size={11} className="shrink-0 mt-0.5" />{error}
+        </p>
+      )}
+    </div>
+  )
+}
+
+// ---------------------------------------------------------------------------
 // ToolBlock — one tool call, animates running → result
 // ---------------------------------------------------------------------------
 
@@ -230,6 +348,11 @@ function ToolBlock({ action }) {
             <div>
               <p className="text-muted uppercase tracking-wider mb-1 text-[10px] font-semibold">Result</p>
               <ResultBody tool={action.tool} result={action.result} />
+              {isPinnable(action.tool, action.result) && (
+                <div className="mt-2">
+                  <PinButton tool={action.tool} result={action.result} />
+                </div>
+              )}
             </div>
           )}
           {running && <p className="text-[11px] text-muted italic">Executing…</p>}
@@ -324,7 +447,7 @@ export function ChatPanel({ onClose }) {
   const [messages, setMessages]   = useState([])
   const [draft, setDraft]         = useState('')
   const [loading, setLoading]     = useState(false)
-  const [selectedModel, setModel] = useState(MODELS[0].id)
+  const [selectedModel, setModel] = useState(loadStoredModel)
 
   const listRef     = useRef(null)
   const textareaRef = useRef(null)
@@ -339,6 +462,12 @@ export function ChatPanel({ onClose }) {
   useEffect(() => { textareaRef.current?.focus() }, [])
   // Abort any in-flight stream on unmount
   useEffect(() => () => abortRef.current?.abort(), [])
+
+  // Persist the model choice so it survives panel re-opens / reloads.
+  useEffect(() => {
+    try { localStorage.setItem(MODEL_STORAGE_KEY, selectedModel) }
+    catch { /* localStorage unavailable — ignore */ }
+  }, [selectedModel])
 
   // Update the most recent assistant message immutably.
   const updateLast = useCallback((fn) => {
