@@ -1,10 +1,43 @@
 # Billing, plans & usage wallet
 
-This is the practical guide to paying for Nubi: the five plans, what we meter (and the long list of things we never charge for), how the prepaid **usage wallet** covers overages, how monthly invoices and VAT work, and exactly where to find all of it in your **organization settings → Billing** page.
+This is the practical guide to paying for Nubi: the five plans, what we meter (and the long list of things we never charge for), how the prepaid **usage wallet** covers overages, how monthly invoices and VAT work, and where to find all of it.
 
-Everything here is managed from one screen: **Billing** (`/billing`). It is org-scoped, so each organization has its own plan, wallet, and invoices.
+There are two surfaces, and the split matters:
+
+- **Usage** (`/settings/usage`, **Settings → Organization → Usage**) — read-only metering: what your org consumed this period. This is **open-core** and present in every Nubi deployment. The old standalone `/usage` page redirects here.
+- **Billing** (`/billing`) — plans, wallet, top-ups, invoices. This is **EE / Nubi Cloud only**; when billing is enabled, a **Billing** link-out appears in the Settings sidebar under Organization.
+
+Both are org-scoped, so each organization has its own usage, plan, wallet, and invoices.
 
 > **One principle.** Nubi only meters things that cost us money to run for you. Dashboard *views*, *editors*, and *viewers* are free at every tier — you are never charged per seat. See [What we meter (and never meter)](#what-we-meter-and-never-meter).
+
+---
+
+## The Usage page (open-core)
+
+**Settings → Organization → Usage** shows what your org has consumed for a selectable period — **Today** (hourly buckets), **7 days**, or **Month** (calendar-month-to-date, daily buckets). A refresh button re-fetches on demand.
+
+![Settings — Usage: metric cards with used / limit / % and a time-series chart for the selected metric](/docs/screenshots/settings-usage.png)
+
+It shows one card per metric:
+
+| Metric | Unit | What it counts |
+|--------|------|----------------|
+| **Queries run** | count | One per server-side query / kernel run |
+| **Compute units** | CU | Summed compute units of those runs |
+| **Bytes scanned** | bytes | Bytes scanned by cache-miss queries (cached reads record nothing) |
+| **Flow runs** | count | Remote-kernel / agent flow runs |
+| **AI usage** | tokens | AI generate/chat calls (tokens where recorded) |
+| **Embedded sessions** | count | Embedded dashboard view sessions |
+| **Storage** | GB | Period **peak** from periodic storage snapshots (the managed lakehouse emits these) |
+
+Click a card to chart that metric over time below the grid.
+
+Each card shows **used / limit** with a progress bar (amber from 70%, red from 90%) — but only when a **soft limit** is configured by your EE plan tier. On a core deployment with no EE tier, every metric shows as **unlimited**, and that's accurate: the Usage page is *visibility only* and never enforces a cap or charges anything.
+
+Under the hood, the numbers are aggregated server-side from the core `usage_events` table, which is populated off the hot path by a fire-and-forget metering sink — metering adds no latency to your queries. The page is backed by two open API endpoints: `GET /api/v1/usage?period=` (summary) and `GET /api/v1/usage/series?metric=&period=` (chart series).
+
+Everything below this point — plans, the wallet, invoices — is the **EE / Cloud billing** layer that turns these counters into money.
 
 ---
 
@@ -209,6 +242,8 @@ At the bottom it shows **Projected overage this cycle** (in ZAR) and a reminder:
 
 > Overages draw from your usage wallet first; anything beyond that is added to your next monthly invoice.
 
+For the raw consumption numbers — per-metric cards and time-series charts, with no money attached — use the open-core [Usage page](#the-usage-page-open-core) at **Settings → Usage**.
+
 ---
 
 ## Monthly invoices, PDFs & VAT
@@ -251,6 +286,7 @@ Yes. Free includes unlimited editors and viewers and the in-browser kernel, with
 
 ## Related
 
+- [Organization & settings](/docs/organization-settings) — the Settings area, including the Usage section.
 - [Embedding](/docs/embedding) — embedded sessions, the main driver of plan selection.
 - [Flows](/docs/flows) — compute units and agent/kernel runs come from flow execution.
 - [AI, Chat & MCP](/docs/ai-and-mcp) — what counts as an AI call.

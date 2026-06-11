@@ -10,6 +10,7 @@ PyJWT==2.10.1
 httpx==0.28.1
 python-multipart==0.0.22
 PyYAML>=6.0  # portability: YAML-primary export/import envelope (app/portability.py)
+toml>=0.10  # files-as-code flow.toml serialization (app/git/flow_files.py, non-lazy import)
 
 # Connector / query pipeline (M1)
 jinja2>=3.1  # SQL templating in app/connectors/planner.py (non-lazy import)

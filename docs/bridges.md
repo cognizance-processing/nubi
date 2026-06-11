@@ -25,11 +25,13 @@ Connector (Postgres / MySQL / …)
 
 If the bridge agent is not connected when a query is made, `open_tcp_proxy` raises `AppError("bridge_not_connected", 503)` and the request fails immediately rather than timing out silently.
 
+**What bridges route today:** raw TCP for database connectors whose `network_mode` is `"bridge"` — nothing else. The tunnel carries the connector's own wire protocol (Postgres, MySQL, …) byte-for-byte; the agent does not parse, ingest, or transform any data.
+
 ---
 
 ## REST endpoints
 
-All CRUD endpoints require a valid first-party Bearer token. Operations are org-scoped — users can only see and manage bridges that belong to their org.
+All CRUD endpoints require a valid first-party Bearer token; creating and deleting a bridge additionally require writer or admin permission. Operations are org-scoped — users can only see and manage bridges that belong to their org.
 
 | Method | Path | Status | Notes |
 |--------|------|--------|-------|
@@ -56,9 +58,11 @@ All CRUD endpoints require a valid first-party Bearer token. Operations are org-
 }
 ```
 
-`status` is `"offline"` at creation. It transitions to `"online"` when the agent connects via WebSocket or sends a heartbeat. On disconnect, `status` is left unchanged (heartbeat TTL monitoring handles the offline transition in production).
+### Status lifecycle
 
-> **Current milestone:** bridges are stored in an in-process in-memory store (backed by a Python dict, not the database). The interface is designed for a mechanical swap to the already-deployed DB `bridges` table (migration 0009); the swap is a pending code change in `backend/app/routes/bridges.py`.
+The `bridges` table defines three statuses — `pending`, `online`, and `offline` (`pending` is the DB schema's default for a freshly inserted row). With the current in-memory store, a bridge is created with `status="offline"`. It transitions to `"online"` when the agent connects via WebSocket or sends a heartbeat (`POST /bridges/{id}/heartbeat`, which the agent should call on a regular interval — e.g. every 30 seconds). On disconnect, `status` is left unchanged (heartbeat TTL monitoring handles the offline transition in production).
+
+> **Current milestone:** bridges are stored in an in-process in-memory store (backed by a Python dict, not the database). The interface is designed for a mechanical swap to the already-deployed DB `bridges` table (migration `0003_resources.sql`); the swap is a pending code change in `backend/app/routes/bridges.py`.
 
 ---
 

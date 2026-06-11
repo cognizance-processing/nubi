@@ -12,11 +12,11 @@ This page walks through the authenticated Nubi app so the shape of the product c
 
 Every authenticated screen shares the same frame. Three regions are always visible; a fourth slides in on demand.
 
-![The app shell: sidebar with org and project switchers on the left, per-page top bar, and the page content — here Home's setup spine](/docs/screenshots/home.png)
+![The app shell: sidebar with org, project, and environment switchers on the left, per-page top bar, and the page content — here Home's setup spine](/docs/screenshots/home.png)
 
 | Region | What it's for |
 |--------|---------------|
-| **Left sidebar** | Navigation, organisation switcher, project switcher. Full-height; collapses to icons. |
+| **Left sidebar** | Navigation plus the organisation, project, and environment switchers. Full-height; collapses to icons. |
 | **Top bar** | Per-page toolbar slot (centre-left) and the chat toggle + account menu (right). |
 | **Page content** | The route you navigated to. |
 | **AI chat panel** | Slides in from the right edge; hidden until you open it. |
@@ -41,7 +41,11 @@ The **project selector** (folder icon) sits directly below the org selector and 
 
 To create a new project: open the dropdown and click **New project**, then type a name in the prompt that appears.
 
-The hierarchy is **org → project → resources**. Switching either selector refreshes the page content to reflect the new scope.
+### Environment switcher
+
+Below the project selector sits the **environment selector** — a pill with a coloured dot and the active environment name (`prod` by default). Environments namespace materialised targets and flow run artefacts so `dev` and `prod` runs never overwrite each other. It's covered in detail in [The environment selector](#the-environment-selector) below.
+
+The hierarchy is **org → project → environment → resources**. Switching any selector refreshes the page content to reflect the new scope.
 
 > Viewers (the `viewer` role) can browse everything but won't see create, edit, or run controls.
 
@@ -53,11 +57,14 @@ Below the selectors is the main nav. The active item shows a tinted background a
 |------|-------|----------------------|
 | **Home** | `/home` | Setup progress, stat cards, quick-access grid, and recent dashboards and flows. |
 | **Connectors** | `/connectors` | Add and manage data sources (Postgres, BigQuery, HTTP/JSON, and more). |
-| **Data** | `/data` | Browse and explore tables and columns across your connectors. |
+| **Data** | `/data` | Browse and explore your connectors' data: pick a connector, search its tables, then flip between **Data** (rows) and **Schema** (columns) tabs. |
 | **Queries** | `/queries` | Author SQL in a Monaco editor, run queries, and save registered queries. |
 | **Dashboards** | `/dashboards` | View, search, and open live dashboards. |
 | **Flows** | `/flows` | Build multi-step pipelines — cells arranged as a canvas or notebook. |
+| **Watches** | `/watches` | Proactive metric alerts: a watch monitors a governed metric against a threshold or change-over-time rule, and on breach sends an AI explanation to a notify channel. |
 | **Automations** | `/automations` | Schedule flows and jobs to run on a cron schedule. |
+
+![The Data explorer: connector and table rail on the left, row grid and schema tabs on the right](/docs/screenshots/data-explorer.png)
 
 ### Secondary navigation
 
@@ -76,7 +83,7 @@ The top bar spans the full width of the content area and has two zones.
 
 ### Centre-left — the page toolbar slot
 
-Each page mounts its own controls here. Simple pages leave it empty; editor-style pages fill it with context-relevant buttons. On the **Flows** page, for example, you'll see the environment selector, Save, Validate, and Run buttons here. Because the slot belongs to the current page, the controls change as you navigate.
+Each page mounts its own controls here. Simple pages leave it empty; editor-style pages fill it with context-relevant buttons. On the **Flows** page, for example, you'll see the save status, Validate, Save, and Run buttons here. Because the slot belongs to the current page, the controls change as you navigate.
 
 ### Right — chat toggle and account menu
 
@@ -133,22 +140,24 @@ An **Ask AI to build it for you** button in the header opens the chat panel from
 
 ## The environment selector
 
-Some workspaces — most prominently **Flows** — show an **environment selector** in the top-bar toolbar slot: a small pill with the active environment name and a coloured dot.
+The **environment selector** lives in the sidebar, directly beneath the project switcher: a pill with the active environment name and a coloured dot. The selection is global app state — pages that run things (most prominently **Flows**) target whichever environment is active here, so there's no second selector inside those pages.
 
-Environments namespace materialised targets and flow run artefacts so `dev` and `prod` runs never overwrite each other.
+Environments namespace materialised targets and flow run artefacts so `dev` and `prod` runs never overwrite each other. They're per-project, and your choice is remembered per project.
 
 | Environment | Dot colour | Notes |
 |-------------|------------|-------|
-| **prod** | green | Default. The production target. |
+| **prod** | green | The project default. The production target. |
 | **dev** | blue | For development runs. |
 | *custom* | violet | Any environment you add (e.g. `staging`). |
 
+Environments also integrate with version control: an environment can be bound to a git branch (shown under its name in the dropdown), and the branch-graph button (top-right of the dropdown) opens the project's commit graph. Protected environments show a lock icon and can't be deleted.
+
 To switch or create an environment:
 
-1. Click the environment pill.
+1. Click the environment pill in the sidebar.
 2. Pick an environment from the dropdown — the active one shows a checkmark.
-3. To add one, click **Add environment**, type a name (lowercase, numbers, `-` and `_` only), and press **Enter** or **Add**. It's saved and selected immediately.
-4. To remove a custom environment, hover it and click the **×**. Removing the active one falls back to `prod`.
+3. To add one, click **Add environment**, type a name (lowercase letters, numbers, `-` and `_` only), optionally seed it from an existing git branch, and press **Enter** or **Add**. It's saved and selected immediately.
+4. To remove a custom environment, hover it and click the **×**. Removing the active one falls back to the project default.
 
 ---
 
@@ -163,7 +172,9 @@ Navigate to **Settings** (sidebar bottom or account menu) to open the unified se
 | **Account** | Profile | `/settings/profile` | Display name, avatar (URL or upload), email (read-only). |
 | **Organization** *(active org name shown)* | General | `/settings/organization` | Org name and other org-level settings. |
 | | Members | `/settings/members` | Invite members, view roles, remove members. |
+| | Integrations | `/settings/integrations` | Connect notify channels — Slack, WhatsApp, Google Chat, Teams, Email. One connected integration powers both inbound chat and outbound alerts (watches, flow runs, shares). |
 | | Security | `/settings/security` | JWT issuers — register the public keys or JWKS endpoints your backend uses to sign embed tokens. |
+| | Usage | `/settings/usage` | Read-only usage metering for the org — queries, compute, bytes scanned, flow runs, AI usage and more, with a period selector. Soft limits appear only when an EE plan sets them. |
 | | Billing | `/billing` | Cloud/EE only; visible only when the billing feature is enabled. |
 | **Project** *(active project name shown)* | General | `/settings/project` | Project name and Git sync configuration. |
 
@@ -181,9 +192,11 @@ Navigate there via **Flows → Secrets** (a link inside the Flows page) or direc
 
 ## Dashboard full-screen view (`/d/:id`)
 
-![A live dashboard rendered full-width — KPIs, charts, and a data table](/docs/screenshots/dashboard-view.png)
+![The Dashboards list — search and open any live dashboard](/docs/screenshots/dashboards.png)
 
 Opening a dashboard from the Dashboards list or from a Recent card on Home navigates to `/d/<id>` — a clean full-viewport view with no app-shell chrome. This mode is ideal for presenting or embedding via the `<iframe>` embed pattern. Use your browser's back button or the close control to return to the shell.
+
+![A live dashboard rendered full-width — KPIs, charts, and a data table](/docs/screenshots/dashboard-view.png)
 
 ---
 
@@ -194,7 +207,8 @@ Opening a dashboard from the Dashboards list or from a Recent card on Home navig
 3. Open **Queries**, write a SQL query, run it, and save it as a registered query.
 4. Open **Dashboards** and create a new dashboard (`/editor`), pulling in your registered query.
 5. Open **Flows** to chain steps into a pipeline, then **Automations** to run it on a schedule.
-6. Open the **AI chat panel** whenever you'd rather describe what you want than build it by hand.
+6. Open **Watches** to get alerted — with an AI explanation — when a metric crosses a threshold.
+7. Open the **AI chat panel** whenever you'd rather describe what you want than build it by hand.
 
 That's the whole shell. The rest of these docs are deeper dives into each area:
 [Connectors](/docs/connectors) · [Queries & Parameters](/docs/queries-and-params) · [Dashboards](/docs/dashboards) · [Flows](/docs/flows) · [AI, Chat & MCP](/docs/ai-and-mcp) · [Embedding](/docs/embedding)

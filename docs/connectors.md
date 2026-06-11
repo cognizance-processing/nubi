@@ -15,8 +15,9 @@ Connectors live on the **Connectors** page (`/connectors` in the app sidebar). C
 Open **Connectors** from the sidebar. The page shows:
 
 - A header with a **Refresh** button and an **Add connector** button (visible to writers and admins only).
+- A **Managed lakehouse** panel at the top — the Nubi-managed datastore is managed here, not on a separate page (see [Managed lakehouse](#managed-lakehouse)).
 - A list of connector cards — one per data source you have added.
-- A built-in **Demo data** card at the top of the list when you are in the default project (see [Demo data connector](#demo-data-connector)).
+- A built-in **Demo data** card at the top of the list when you are in the org's demo/default project (see [Demo data connector](#demo-data-connector)).
 
 Each connector card shows:
 
@@ -32,6 +33,31 @@ Each connector card shows:
 The card's action buttons are **View data**, **Test**, **Edit** (pencil), and **Delete** (trash). Edit and Delete require write permission; the Demo data connector has no Edit button because it has no configurable fields.
 
 If you have no connectors yet, an empty state invites you to *Add your first connector*. Read-only members see a message to ask an admin.
+
+---
+
+## Managed lakehouse
+
+The **Managed lakehouse** is a Nubi-managed datastore: isolated, secure storage Nubi runs for you — no bucket to provision, no credentials to wire up. It is managed from the top of the **Connectors** page (there is no standalone Lakehouse page), and the **Add connector** picker opens with the same choice: *Use Nubi managed lakehouse* (recommended) or *bring your own bucket / source* via the connector types below it.
+
+The panel has three states:
+
+- **Not available** — the deployment has no central storage configured (e.g. a local / self-hosted build). A subtle note explains that the managed lakehouse needs central storage configured by your administrator; bring-your-own connectors still work. (The API degrades the same way: `GET /lakehouse` returns `configured: false`, and provision attempts return `409 managed_lake_unconfigured`.)
+- **Not provisioned** — a **Provision managed lakehouse** button (writers and admins only), with a *Seed demo data so I can explore right away* checkbox.
+- **Provisioned** — the card shows **Storage used** (billed by usage; also visible under **Settings › Usage**), the **Demo data** seed status with a *Seed / Re-seed demo data* action, a **Browse lakehouse data** link that opens the managed datastore in the Data Browser, and a destructive **Disconnect** action with a confirm dialog (*Delete managed lakehouse?* — the storage and all data in it are permanently deleted).
+
+Under the hood, each org's lake is an isolated prefix (`orgs/<org_id>/lake/`) in the central bucket, and the storage path is **server-pinned**: the managed datastore's config cannot be edited via the connectors API (`PUT /connectors/{id}` returns `409 managed_lake_immutable`), so it can never be repointed at another org's prefix or an arbitrary URL.
+
+The REST surface is:
+
+| Method | Path | Notes |
+|--------|------|-------|
+| `GET` | `/api/v1/lakehouse` | Status: `configured`, `provisioned`, `prefix`, `datastore_id`, `demo_seeded`, `usage_bytes` / `usage_gb`. |
+| `POST` | `/api/v1/lakehouse/provision` | Idempotent; add `?seed_demo=true` to also seed the demo datasets. |
+| `POST` | `/api/v1/lakehouse/demo` | Seed (or re-seed) the demo datasets into the lake. |
+| `DELETE` | `/api/v1/lakehouse` | Deprovision — deletes the org's objects and the managed datastore row. |
+
+For the broader lakehouse data plane (uploads, datasets, materialisation), see [Lakehouse](/docs/lakehouse).
 
 ---
 
@@ -80,7 +106,7 @@ The **Add connector** picker groups types into six categories.
 
 | Type | Notes |
 |------|-------|
-| **Object storage (Parquet / DuckDB)** | Query a Parquet or DuckDB file by `s3://`, `gs://`, or `https://` URL. |
+| **Object storage (Parquet / DuckDB)** | Query a Parquet or DuckDB file by `s3://`, `gs://`, or `https://` URL — AWS S3, GCS, or MinIO. Submitted as type `duckdb_storage`, the object-storage-aware DuckDB connector. |
 | **Demo data** | Built-in sample dataset (no setup); see below. |
 
 ### APIs & custom
@@ -98,7 +124,7 @@ The **Add connector** picker groups types into six categories.
 
 You need writer or admin permission in the org.
 
-1. On the **Connectors** page, click **Add connector**. A slide-over panel opens from the right.
+1. On the **Connectors** page, click **Add connector**. A slide-over panel opens from the right, asking *Where should your data live?* — choosing **Use Nubi managed lakehouse** closes the panel and takes you to the [Managed lakehouse](#managed-lakehouse) card; the connector type list below it is the bring-your-own path.
 2. **Pick a type.** The picker shows all types grouped by category. Use the **search box** to filter by name or description (e.g. type `post` to find PostgreSQL). Click a type tile to continue.
 3. **Name the connector.** Give it a clear name such as `prod-postgres` or `analytics-bigquery`. This name appears on the card and in the connector picker when you write queries.
 4. **Fill in the connection details.** The form is generated from the type you chose — only the relevant fields appear. Required fields are marked; optional ones say *(optional)*. Sensible defaults (ports, SSL mode, etc.) are pre-filled.
@@ -121,7 +147,7 @@ A **PostgreSQL** connector asks for:
 
 A **BigQuery** connector asks for a **GCP Project ID** and a **Service account JSON** key (upload a `.json` file or paste it). Leave the key blank to use Application Default Credentials.
 
-An **Object storage** connector asks for a single **File URL** (`s3://…`, `gs://…`, or `https://…` pointing at a Parquet or DuckDB file), plus optional endpoint / region and access keys for private buckets.
+An **Object storage** connector asks for a single **File URL** (`s3://…`, `gs://…`, or `https://…` pointing at a Parquet or DuckDB file), plus optional endpoint / region and access keys for private buckets. The custom **Endpoint** field is how you point it at a MinIO host instead of AWS S3. Behind the scenes this is the `duckdb_storage` connector type: a DuckDB engine that auto-detects the scheme from the file URL and bootstraps `httpfs` + S3 secrets for `s3://` URIs — the same type that backs [managed lakehouse](#managed-lakehouse) datastores.
 
 ---
 
@@ -145,6 +171,8 @@ Secret-bearing fields by connector type:
 | `aws_secret_access_key` | Amazon Athena, Object storage |
 
 For the HTTP / JSON connector put auth tokens in the **Bearer token** field — not in *Extra headers*, which is for non-secret headers only.
+
+The API's secret-key allowlist also accepts `api_key` and `private_key` (Snowflake key-pair auth) under the `secret` key, even though the form UI does not currently expose fields for them. Submitting any of these keys inside `config` is rejected with a validation error — they belong in `secret` only.
 
 > **BigQuery tip.** The *Service account JSON* control lets you upload a `.json` key file or paste the JSON directly. Either way it is stored as an encrypted secret.
 
@@ -269,12 +297,19 @@ If you remove it, you can re-add it from **Add connector** → *Demo data* in th
 
 ## Private networks & bridges
 
-If your database lives inside a private network (a VPC with no public ingress), most connectors expose a **Network mode** field:
+If your database lives inside a private network (a VPC with no public ingress), most connectors expose a **Network mode** field. The datastore schema recognises five modes:
 
-- **direct** (default) — Nubi connects straight to the host you entered.
-- **bridge** — traffic routes through a Nubi bridge agent running inside your network. The connector card then shows a `bridge` badge.
+| Mode | Status | Description |
+|------|--------|-------------|
+| `direct` | Available (default) | Nubi connects straight to the host you entered. |
+| `bridge` | Available | Traffic routes through a Nubi bridge agent running inside your network. The connector card then shows a `bridge` badge. |
+| `ssh_tunnel` | Planned | SSH tunnel transport — returns `501 network_mode_unavailable`. |
+| `psc` | Planned | GCP Private Service Connect — returns `501 network_mode_unavailable`. |
+| `cloudsql_proxy` | Planned | Cloud SQL Auth Proxy — returns `501 network_mode_unavailable`. |
 
-To use bridge mode, deploy a bridge agent and link it to the connector. See [Bridges](/docs/bridges) for the full setup guide.
+The form's **Network mode** dropdown offers `direct` and `bridge`; the three planned modes are accepted by the schema but not yet routable.
+
+To use bridge mode, deploy a bridge agent, then set `network_mode: "bridge"` and `bridge_id` on the connector. See [Bridges](/docs/bridges) for the full setup guide.
 
 ---
 

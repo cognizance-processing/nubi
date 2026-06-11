@@ -364,11 +364,17 @@ The backend conformance suite (`backend/tests/conformance/`) asserts the planner
 
 ## 🤝 Contributing
 
-PRs are welcome. The fastest path:
+PRs are welcome. Start with the contributor guides — they cover the dev stack, seeding, every test suite, and the docs/screenshot pipeline:
+
+- [Developing Nubi](docs/development.md) — environment setup, running, testing, conventions
+- [Docs & screenshots](docs/docs-and-screenshots.md) — authoring docs and regenerating product screenshots
+
+The fastest path:
 
 1. Fork, create a feature branch.
-2. Run the test suite (`cd backend && pytest`).
-3. Open a PR — describe the problem and solution; reference any relevant milestone or doc.
+2. Run the test suite (`cd backend && python -m pytest tests/`).
+3. If your change touches the UI or anything described in `docs/`, update the docs and run `npm run screenshots` in the same PR.
+4. Open a PR — describe the problem and solution; reference any relevant milestone or doc.
 
 Please keep commits small and focused. The conformance suite must stay green; any new connector or planner change needs a corresponding test vector.
 

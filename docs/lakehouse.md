@@ -4,6 +4,11 @@
 
 Nubi's lakehouse layer stores data as **Parquet files** in object storage (S3/MinIO, GCS, Azure Blob, or local filesystem) and queries them using **DuckDB's httpfs extension** — no separate data warehouse, no ETL pipeline, no extra drivers. Every dataset is immediately queryable through the same planner that powers dashboards and flows.
 
+There are two ways to get a lake:
+
+- **Bring your own bucket (BYO)** — wire up a DuckDB-over-S3 connector with your own bucket and credentials. Everything in this doc applies.
+- **[Managed lakehouse](#managed-lakehouse)** — a Nubi-operated, per-org isolated storage area you provision with one click from the **Connectors** page. No bucket to create, no keys to rotate.
+
 ---
 
 ## How it fits together
@@ -18,6 +23,73 @@ Every dataset gets two catalog entries:
 
 - A **datasets row** — stores metadata (name, `storage_uri`, `schema_json`, `source`, timestamps).
 - A **datastores row** — a DuckDB connector whose `view_sql` is `CREATE VIEW dataset AS SELECT * FROM read_parquet('<parquet-path>')`. This makes the dataset immediately queryable through the normal connector path, including RLS enforcement.
+
+---
+
+## Managed lakehouse
+
+![Connectors page, where the managed lakehouse is provisioned and managed](/docs/screenshots/connectors.png)
+
+The managed lakehouse is a Nubi-operated, per-org **isolated storage area**: you provision it, use it, and delete it without ever touching buckets or credentials yourself. You choose to provision it explicitly, and usage feeds the metering surface — you pay only for the bytes you store.
+
+It is managed from the **Connectors** page, where it appears as a card above the connectors list (it's a managed data source, not a separate page). The **Add connector** flow also offers **Use Nubi managed lakehouse** (recommended) as a storage choice alongside bringing your own bucket.
+
+### Provisioning
+
+On the Connectors page, click **Provision managed lakehouse**. An optional **"Seed demo data so I can explore right away"** checkbox exports the demo datasets into the lake as Parquet so you have something to query immediately. Provisioning requires write access in the org — read-only members see a note to ask an admin.
+
+Provisioning is idempotent and does two things:
+
+1. Creates a datastore named **Managed lakehouse** (`connector_type=duckdb`) whose storage path is **server-pinned** to your org's isolated prefix.
+2. Stores the central storage credentials **encrypted** in the connector secret store, keyed by the managed datastore — they are never written to the datastore config and never returned by any API.
+
+Once provisioned, the card shows **storage used**, **demo data** status (with a seed / re-seed action), and a **Browse lakehouse data** link that opens the data browser for the managed datastore.
+
+### Deleting
+
+**Disconnect** on the card (behind a confirm dialog) deprovisions the lake: every object under your org's prefix is deleted, then the managed datastore row and its stored credentials are removed. **This cannot be undone.**
+
+The normal connector edit and delete routes refuse managed rows — the managed lakehouse can only be re-pointed or removed through its own endpoints, never by editing the connector config.
+
+### API
+
+All routes live under `/api/v1`; provisioning, seeding, and deleting require write access.
+
+| Route | Description |
+|---|---|
+| `GET /lakehouse` | Status: `configured`, `provisioned`, `prefix`, `uri`, `datastore_id`, `demo_seeded`, `usage_bytes` / `usage_gb` (computed on demand). |
+| `POST /lakehouse/provision` | Idempotently provision the managed lake. `?seed_demo=true` also seeds demo Parquet. |
+| `POST /lakehouse/demo` | Seed (or re-seed) demo Parquet into the managed lake. Idempotent — existing tables are skipped. |
+| `DELETE /lakehouse` | Deprovision: delete the org's objects and the managed datastore. Idempotent (204 even when nothing was provisioned). |
+
+### Isolation and security model
+
+Each org's managed lake is an **isolated key prefix** inside a central bucket:
+
+```
+s3://<central-bucket>/orgs/<org_id>/lake/
+```
+
+- **Server-pinned path** — the prefix is derived purely from the server-trusted org id, never from user input, and the datastore's config is re-pinned on every (idempotent) provision call. A user can never edit the config to point at another org's prefix or an arbitrary URL.
+- **Credentials never exposed** — the central credentials live only in the connector secret store (encrypted at rest, scoped by org). They are never placed in `datastores.config` and never appear in any response.
+- **Org-scoped everywhere** — all operations resolve the caller's own org; another org's managed lake is simply not found (deprovision across orgs is a no-op).
+- Demo data lands under `orgs/<org_id>/lake/demo/<dataset>/<table>.parquet`.
+
+### Querying the managed lake
+
+The managed datastore is served by the same DuckDB-over-S3 connector (`duckdb_storage`) as a BYO lake, so it works in queries, dashboards, and flows like any other connector. Reference its Parquet directly:
+
+```sql
+SELECT *
+FROM read_parquet('s3://<central-bucket>/orgs/<org_id>/lake/demo/ecommerce/orders.parquet')
+LIMIT 100;
+```
+
+### When it's unavailable
+
+The managed lakehouse needs **central storage** configured on the deployment (S3/MinIO credentials plus `NUBI_BUCKET_URI` / `NUBI_BUCKET_NAME`). When it isn't, `GET /lakehouse` returns `configured: false`, provision/demo return 409, and the Connectors card shows a subtle note — BYO connectors keep working regardless.
+
+For OSS / local development you can point the managed lake at a local directory instead by setting `NUBI_MANAGED_LAKE_DIR` to an absolute path — no cloud bucket needed.
 
 ---
 
@@ -148,6 +220,7 @@ All three statements are idempotent (`CREATE OR REPLACE SECRET`). The secret is 
 | `NUBI_BUCKET_URI` | *(none)* | Full bucket URI, e.g. `s3://nubi`. When set, uploads go to this bucket instead of local filesystem. |
 | `NUBI_BUCKET_ROOT` | `/tmp/nubi-datasets` | Local filesystem root for the `file://` fallback. |
 | `NUBI_BUCKET_NAME` | `nubi` | Bucket name used when S3/MinIO env vars are present but `NUBI_BUCKET_URI` is not set. |
+| `NUBI_MANAGED_LAKE_DIR` | *(none)* | Absolute local directory for the managed lakehouse on OSS / local dev — lets the managed lake work without any cloud bucket. Also read as `NUBI_LOCAL_LAKE_DIR`. |
 | `AWS_ACCESS_KEY_ID` | *(none)* | S3 / MinIO access key ID. Also read as `S3_ACCESS_KEY`. |
 | `AWS_SECRET_ACCESS_KEY` | *(none)* | S3 / MinIO secret access key. Also read as `S3_SECRET_KEY`. |
 | `S3_ENDPOINT_URL` | *(none)* | Custom endpoint for MinIO or S3-compatible stores, e.g. `http://localhost:9000`. Also read as `AWS_ENDPOINT_URL`. |
@@ -232,6 +305,21 @@ Or use the materialise API to register the result as a named dataset (see above)
 
 ---
 
+## Browsing data: the Data explorer
+
+![Data explorer browsing a connector's tables](/docs/screenshots/data-explorer.png)
+
+The **Data explorer** (route `/data`) is a Supabase-style browser over your connectors — the quickest way to eyeball lake data without writing SQL:
+
+- **Left rail** — a connector picker (your org's connectors plus the built-in **Demo** entry) and a searchable table list. On mobile the rail collapses into a dropdown.
+- **Data tab** — a paginated grid of the first 500 rows, fetched as Arrow IPC, with a row count in the header and an export action.
+- **Schema tab** — column name, type, nullable, and a primary-key badge per column.
+- **Refresh** — re-fetches both rows and schema for the selected table.
+
+The managed lakehouse's datastore is a system row, so it doesn't appear in the raw connector list; browse it via **Connectors → Browse lakehouse data**, which opens the data browser for the managed datastore.
+
+---
+
 ## RLS and security
 
 Datasets are org-scoped. The `datasets` catalog enforces `org_id` on every read, list, and write. The `datastores` row created for each dataset is also org-scoped.
@@ -266,11 +354,18 @@ Note: blocking the local filesystem also disables disk spill on that connection,
 
 ---
 
-## Storage metering (Cloud/EE)
+## Storage usage metering
 
-After each upload or materialise operation the server takes a best-effort snapshot of the org's total dataset storage in GB and records it as a `kind="storage"` usage event. Billing aggregation uses the **peak GB** over the billing period. This metering is best-effort — a metering failure never blocks an upload.
+![Storage usage under Settings → Usage](/docs/screenshots/settings-usage.png)
 
-Storage metering is a Cloud/EE feature. See [Billing and Usage](/docs/billing-and-usage) for details.
+Nubi meters lakehouse storage as `kind="storage"` usage events (units = GB):
+
+- **Datasets** — after each upload or materialise operation the server takes a best-effort snapshot of the org's total dataset storage.
+- **Managed lakehouse** — `GET /lakehouse` (and provision / seed) sums the bytes under the org's prefix on demand and records a snapshot, so usage reflects the managed lake without walking the bucket on every request.
+
+Aggregation takes the **peak (max) GB** over the period. Metering is best-effort — a metering failure never blocks an upload or a status read. Storage usage is visible under **Settings → Usage**.
+
+Usage metering itself is open-core. **Billing** on top of it (plans, invoices, payments) is EE/Cloud — see [Billing and Usage](/docs/billing-and-usage).
 
 ---
 
@@ -290,3 +385,4 @@ Storage metering is a Cloud/EE feature. See [Billing and Usage](/docs/billing-an
 - [Flows](/docs/flows) — automating materialise operations
 - [Secrets](/docs/secrets) — storing S3 credentials securely
 - [Self-host](/docs/self-host) — deploying Nubi with Postgres and object storage
+- [Billing and Usage](/docs/billing-and-usage) — how metered storage feeds plans and billing (EE/Cloud)

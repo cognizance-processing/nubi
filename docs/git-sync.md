@@ -1,25 +1,26 @@
 # Git Sync
 
-Git sync version-controls your Nubi resources — queries, dashboards, flows, and automations — as committed files in a GitHub or GitLab repository. The Nubi database stays canonical; git is the mirror.
+Git sync version-controls your Nubi resources — queries, dashboards, and flows (scheduled automations live inside flows) — as committed files in a GitHub or GitLab repository. The Nubi database stays canonical; git is the mirror.
 
-Connectors and their secrets are never serialized, by product design.
+Connectors and their secrets are never serialized on push, by product design.
 
 ---
 
-## Two sync scopes
+## Three sync scopes
 
 | Scope | What it does | Remote push? |
 |---|---|---|
 | **Org-level snapshot** (`POST /git/sync`) | Commits all registered queries and boards for the caller's org to a local workspace repo | No — local only |
 | **Project-level sync** (`POST /git/push`) | Serializes all project resources as portability-envelope YAML, commits, and pushes to a connected GitHub or GitLab remote | Yes |
+| **Environment ⇄ branch sync** (`POST /environments/{env_id}/git/push` / `pull`) | Pins one resource *version* per environment branch — checkpoints, promotes, and explicit env push/pull | Yes, when the project has a remote connected |
 
-The org-level snapshot is useful for audit trails and rollback without a remote. The project-level sync is the dashboards-as-code workflow.
+The org-level snapshot is useful for audit trails and rollback without a remote. The project-level sync is the dashboards-as-code workflow. The environment sync is what the in-app **Git / Versions** panel drives — see [Environment ⇄ branch sync](#environment-branch-sync).
 
 ---
 
 ## Setting up project sync
 
-Open **Settings → Project** (in-app route `/settings/project`). The Git panel is embedded in the project settings page and is visible to users with write access.
+Open **Settings → Project › General** (in-app route `/settings/project`). The Git panel is embedded in the project settings page and is visible to users with write access. It hosts the connect form below plus the project-level **Push** / **Pull** actions; day-to-day environment push/pull lives in the [Git / Versions panel](#environment-branch-sync) instead.
 
 Fields:
 
@@ -41,17 +42,43 @@ The token is encrypted and stored server-side. It is never returned by the API a
 
 ---
 
-## Push and pull
+## Push and pull (project-level)
 
-Once connected, the Git panel shows two actions:
+Once connected, the Git panel in project settings shows two actions:
 
 **Push** — serializes the project's resources, commits any changes, and pushes the branch to the remote. If the working tree is already up to date, nothing is committed and nothing is pushed.
 
-**Pull** — clones or fetches the remote branch and imports/upserts all YAML envelopes found under `base_path` into Nubi. Dashboards and queries are upserted by their `metadata.id`. Flows are not imported via pull (only push is supported for flows).
+**Pull** — clones or fetches the remote branch and imports/upserts all YAML envelopes found under `base_path` into Nubi. Resources are upserted by their `metadata.id`. Flows are imported too, gated by hard validation: an envelope that fails flow-spec validation is skipped, so a hand-edited or corrupt file can never register a broken flow (soft `[warn]` issues are allowed through). A `connectors/` folder of envelopes — written by the CLI files-as-code path, never by the in-app push — is also imported; connector envelopes are spec-only by design, secrets are never serialized into envelopes.
 
 ### Pull/merge request creation
 
 When `open_pr: true` is set in the API request and the configured branch differs from the repository's default branch, Nubi automatically opens a pull request (GitHub) or merge request (GitLab) after a successful push.
+
+---
+
+## Environment ⇄ branch sync
+
+Every environment in a project is bound to a branch (`git_branch`) in the project's workspace repo. The creation default maps `prod` → `main` and every other environment to its own key (`dev` → `dev`, `staging` → `staging`, …). The whole layer is best-effort: a missing `git` binary, an absent workspace repo, or a merge/push failure degrades to a `warning` / `git_warning` field in the response — it never blocks the data operation and never returns a 5xx.
+
+- **Checkpoint** — saving a new resource version commits that version's files to the active environment's branch and stamps `resource_versions.git_commit_sha`.
+- **Promote** — promoting env A to env B also merges branch A into branch B (fast-forward preferred). A merge conflict is reported as `git_conflict: {files, from_sha, to_sha}` but the version-pointer copies are **not** rolled back.
+- **Push** (`POST /environments/{env_id}/git/push`) — serializes every resource pinned in the environment to its branch as one commit, updates `last_synced_sha`, and pushes to the project's remote when one is connected.
+- **Pull** (`POST /environments/{env_id}/git/pull`) — syncs the environment from its branch. If the branch head equals `last_synced_sha`, the result is `{pulled: false, up_to_date: true}`. If the branch fast-forwards from the last sync, changed files become new pinned versions (parent = current pin) and `last_synced_sha` advances. If the two sides diverged, the call returns **409** `{diverged: true, files, env_sha, branch_sha}` until you retry with a `strategy`:
+
+| Strategy | Effect |
+|---|---|
+| `take_branch` | Import the branch state into the environment |
+| `take_env` | Overwrite the branch from the environment's pinned state (force-with-lease) |
+
+- **Branch graph** (`GET /projects/{project_id}/git/graph`) — `{branches: [...]}`, one commit log per env-bound branch.
+
+### The Git / Versions panel
+
+The right-edge rail on every authenticated page has a **Git / Versions** button that opens a slide-in panel — the app-wide git surface:
+
+- **Sync tab** — the connected repo / branch / last-sync status, plus **Push** and **Pull** for the *active environment's* branch. A diverged pull surfaces an inline resolver with **Use branch** / **Use environment** buttons (the two strategies above).
+- **Branch graph** — opens the per-environment commit graph.
+- **Files tab** — a read-only browser of the synced files at a ref (backed by the `GET /projects/{project_id}/git/files` endpoints below).
 
 ---
 
@@ -65,11 +92,12 @@ Resources are written as YAML portability envelopes:
 <base_path>/dashboards/<slug>.yaml
 <base_path>/queries/<slug>.yaml
 <base_path>/flows/<slug>.yaml
-<base_path>/automations/<slug>.yaml
 <base_path>/nubi.yaml          # manifest with project identity and resource counts
 ```
 
 `base_path` is stripped of leading/trailing slashes and defaults to the repo root when not configured.
+
+There is no separate `automations/` folder — scheduled automations are flow-native, so they travel inside `flows/<slug>.yaml`. The manifest still records an `automations` count.
 
 The `nubi.yaml` manifest records the project name, id, slug, and per-kind resource counts:
 
@@ -108,17 +136,16 @@ The workspace root is set by `NUBI_GIT_WORKSPACE` (default: `<system-temp>/nubi_
 
 ---
 
-## Three on-disk layouts (and which path uses which)
+## Two on-disk layouts (and which path uses which)
 
-Nubi currently has **three** serializers that write resources to a branch. They are not interchangeable — each belongs to a different sync path. This is an honest snapshot of the current state, not an aspiration:
+Nubi has **two** serialization formats that write resources to a branch. They are not interchangeable — each belongs to a different sync path:
 
 | Format | Written by | Used by | Status |
 |---|---|---|---|
 | **`.yaml`** portability envelopes | `git/sync.py` `serialize_envelope` | Project-level `POST /git/push` (and `POST /git/pull` imports them back) | **Live** — the dashboards-as-code path. One file per resource: `dashboards/<slug>.yaml`, `queries/<slug>.yaml`, `flows/<slug>.yaml`. |
-| **`.json`** (+ `.sql` / `.meta.json` for queries) | `git/env_sync.py` `serialize_version_files` | Environment ⇄ branch sync (checkpoint / promote / env push & pull) — pins one resource *version* per branch | **Live** — the env-sync path. `queries/<id>.sql` + `queries/<id>.meta.json`, `dashboards/<id>.json`, `flows/<id>.json`. File stems are resource uuids. |
-| **`.toml`** + per-cell sidecars | `git/flow_files.py` `serialize_flow_files` | *(none yet)* | **Planned / experimental.** Pure functions exist and round-trip, but are **not wired into any sync path** today. See [Flows on disk](#flows-on-disk). |
+| **Version files** (`.sql` / `.meta.json` / `.json` + the flows-as-files tree) | `git/env_sync.py` `serialize_version_files` (+ `git/flow_files.py` for flows) | Environment ⇄ branch sync (checkpoint / promote / env push & pull) — pins one resource *version* per branch | **Live** — the env-sync path. `queries/<id>.sql` + `queries/<id>.meta.json` (plus an optional `queries/<id>.json` output-schema sidecar when the query declares one), `dashboards/<id>.json`, and a per-cell `flows/<slug>__<id8>/` directory per flow. Query/dashboard file stems are resource uuids. |
 
-The two live formats differ deliberately: the `.yaml` envelope path keys files by **slug** (human-readable, one current version per resource), while the env-sync `.json` path keys files by **uuid** and pins a specific **version** per environment branch. The `.toml` per-cell layout is a third projection aimed at reviewable flow diffs and is documented below so callers know it exists, but nothing imports or exports it automatically yet.
+The two formats differ deliberately: the `.yaml` envelope path keys files by **slug** (human-readable, one current version per resource), while the env-sync path keys files by **uuid** and pins a specific **version** per environment branch. Within the env-sync path, flows are the one resource that gets a directory instead of a single file — the per-cell tree below is their canonical on-disk form. Legacy single-blob `flows/<id>.json` files are still *readable* on pull for back-compat, but are never written anymore.
 
 ### Flows on disk
 
@@ -137,7 +164,7 @@ flows/<slug>__<id8>/
 - **Stable order.** Cells are written in spec order with a zero-padded `NN` prefix; the `[[cells]]` array in `flow.toml` is the authoritative load order.
 - **Only three cell kinds get a sidecar file** — SQL (`.sql` from `config.sql`), Python (`.py` from `config.code`), and Markdown (`.md` from `config.markdown`). Every other kind (map, branch, materialize, bucket_load, agent, plain noop) has no single "source" to extract, so its whole config stays inline in `flow.toml`.
 
-This layout is pure (no I/O) and **not yet wired into push/pull** — it is the planned/experimental third format from the table above.
+This layout is pure (no I/O) and is the **canonical on-disk form for flows in the env-sync path**: environment checkpoints, promotes, and env push/pull all read and write it. The flow's real uuid lives in `flow.toml`'s `[flow].id` (the directory's `<id8>` is only a disambiguator), so a pull resolves the resource id from the manifest, not from the path.
 
 ---
 
@@ -331,7 +358,7 @@ When `open_pr` is `true` and `branch` differs from the repository default, a pul
 
 ### `POST /api/v1/git/pull`
 
-Fetch the project's remote branch and import/upsert all resource envelopes (dashboards and queries) into Nubi. The database stays canonical; git hydrates it.
+Fetch the project's remote branch and import/upsert all resource envelopes (dashboards, queries, flows, and connector envelopes) into Nubi. The database stays canonical; git hydrates it. Flow envelopes that fail hard validation are skipped.
 
 Request body:
 
@@ -343,10 +370,52 @@ Response:
 
 ```json
 {
-  "imported": 8,
-  "kinds":    { "dashboard": 5, "query": 3, "flow": 0 }
+  "imported": 9,
+  "kinds":    { "dashboard": 5, "query": 3, "flow": 1, "connector": 0 }
 }
 ```
+
+---
+
+### `POST /api/v1/environments/{env_id}/git/push`
+
+Serialize every resource pinned in the environment to its bound branch as one commit, update `last_synced_sha`, and push to the project's remote when one is connected. Best-effort: an absent git layer returns `{committed: false, warnings: [...]}`, never a 5xx.
+
+Request body (optional): `{ "message": "..." }`
+
+Response:
+
+```json
+{
+  "branch":          "dev",
+  "sha":             "a1b2c3d4...",
+  "committed":       true,
+  "files":           12,
+  "pushed":          true,
+  "last_synced_sha": "a1b2c3d4...",
+  "warnings":        []
+}
+```
+
+---
+
+### `POST /api/v1/environments/{env_id}/git/pull`
+
+Sync the environment from its bound branch (fetching the remote when one is connected). Returns `{pulled: false, up_to_date: true, sha}` when nothing changed, `{pulled: true, sha, updated: {kind: n}}` on a fast-forward, and **409** `{diverged: true, files, env_sha, branch_sha}` on divergence.
+
+Request body (optional):
+
+```json
+{ "strategy": "take_branch" }
+```
+
+`strategy` must be `"take_branch"` (import the branch state into the env) or `"take_env"` (overwrite the branch from the env's pinned state, force-with-lease); any other value is a 400 `invalid_strategy`.
+
+---
+
+### `GET /api/v1/projects/{project_id}/git/graph`
+
+Return the project's commit graph: `{branches: [...]}` with one entry per env-bound branch — `{branch, env_key, head_sha, commits: [{sha, parents, message, author, date}]}`. Read-only; powers the in-app branch graph.
 
 ---
 

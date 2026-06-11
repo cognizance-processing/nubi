@@ -1,0 +1,28 @@
+{
+  "version": "0.0.0",
+  "commit": "deea7fb",
+  "generatedAt": "2026-06-11T22:25:31.080Z",
+  "files": [
+    "automations.png",
+    "connectors.png",
+    "dashboard-editor.png",
+    "dashboard-view.png",
+    "dashboards.png",
+    "data-browser.png",
+    "data-explorer.png",
+    "flows-canvas.png",
+    "flows-code.png",
+    "flows-notebook.png",
+    "hero-dark.png",
+    "hero-light.png",
+    "home.png",
+    "onboarding.png",
+    "queries-editor.png",
+    "register.png",
+    "secrets.png",
+    "settings-integrations.png",
+    "settings-members.png",
+    "settings-organization.png",
+    "settings-usage.png"
+  ]
+}

@@ -12,9 +12,13 @@ Under the hood every dashboard is a single JSON document — a `DashboardSpec`. 
 
 Open **Dashboards** from the sidebar to see all boards in the active project.
 
+![The dashboards page — a responsive card grid with search, sort, and per-board actions](/docs/screenshots/dashboards.png)
+
+- Boards render as a responsive **card grid** — one column on phones, two on small screens, three on desktop. Each card shows the board name plus a meta line: the widget count, or **HTML board** for legacy HTML boards.
 - **New dashboard** (top-right) opens a blank editor.
 - **Search** filters boards by name; **Sort** toggles between *Recent* and *Name*.
-- Each card shows **Open** (view the live dashboard at `/d/:id`) and **Edit** (open it in the editor). The three-dot menu adds **Duplicate** and **Delete**.
+- Each card shows **Open** (view the live dashboard at `/d/:id`) and **Edit** (open it in the editor). The three-dot menu adds **Checkpoint** (snapshot the saved config as a new version), **History** (view, restore, or promote past versions), **Promote** (pin a version to another environment — promoting a board also moves its referenced queries), and **Delete** (with a confirm dialog).
+- When the active environment is **protected**, a board with no version pinned there gets a **not in &lt;env&gt;** chip — promote a version to make it visible in that environment.
 - The empty state offers **New dashboard** and **Ask AI to build one**, which opens the chat panel.
 
 If you have read-only access to the organisation, create/edit/delete actions are hidden and a **Read-only** badge is shown — viewing still works.
@@ -31,9 +35,10 @@ The editor is a single full-height workspace. Its toolbar lives in the app's top
 - **Undo / Redo** — full edit history (`⌘Z` / `Ctrl+Z`, `⇧⌘Z` / `Ctrl+Y`).
 - **Device switcher** — Desktop / Tablet / Mobile (see [Responsive layout](#responsive-layout)).
 - **Zoom controls** — zoom out / *Fit* / zoom in, plus **Reset view**. Pinch or `Ctrl`/`⌘`+scroll on the canvas, and one-finger drag to pan.
-- **Panel toggles** — open one of four right-hand panels: **Add** (widget palette), **Configure** (selected widget), **Layout** (dashboard-level settings), **Chat** (AI assistant).
+- **Panel toggles** — open one of five right-hand panels: **Add** (widget palette), **Configure** (selected widget), **Layout** (dashboard-level settings, grid & variables), **Tabs** (tab bar & per-tab style), **Chat** (AI assistant).
+- **View switcher** — flip between the **Canvas / grid view** and a full-pane **Code / Files view** that edits the spec as a `dashboard.json` file (see [Code / Files view](#code-files-view)).
 - **Preview / Edit** — flip between the editable canvas and a live render in the current device frame.
-- **Code** — open the spec as YAML or JSON (see [Code panel](#code-panel)).
+- **Code** — open the spec as YAML or JSON in a slide-over (see [Code panel](#code-panel)).
 - **Export / Share** — PNG, PDF, CSV, and an embed link.
 - **Save / Create** — persists the board. An **Unsaved** badge appears while you have pending changes.
 
@@ -257,6 +262,21 @@ A dashboard variable carries an optional `mode` of `'scan'` or `'slice'` (per `C
 
 ---
 
+## The live view — `/d/:id`
+
+Every saved board renders as a full page at `/d/:id` — no editor chrome, just the dashboard. This is the URL you share with viewers.
+
+![A published dashboard rendered at /d/:id](/docs/screenshots/dashboard-view.png)
+
+- Members who can write see an **Edit in editor →** link above the board; viewers get a clean read-only render.
+- Spec boards render through the same engine as the editor's Preview; older HTML boards still render via the legacy HTML path.
+- `/d/sample` renders a built-in sample dashboard without a backend request — and if a board can't be loaded (404, no backend), the page shows a notice and falls back to that same sample.
+- On a tabbed dashboard, the active tab syncs to a `_tab` URL parameter (shallow replace), so a link can land on a specific tab.
+
+In short, there are three ways to look at a dashboard: the **editor** (drag, configure, edit the spec), the editor's **Preview** toggle (a live render inside the editor, in the current device frame), and the **`/d/:id` live view** (the standalone page viewers use).
+
+---
+
 ## Shareable views — route params
 
 URL-bound variables sync to and from the `/d/:id` query string. When a filter changes a variable, the new value is written back to the URL (shallow replace, no extra history entry), so the exact filtered view is shareable and refresh-safe:
@@ -265,7 +285,7 @@ URL-bound variables sync to and from the `/d/:id` query string. When a filter ch
 /d/abc123?region=US-West&year=2024
 ```
 
-Precedence, highest to lowest: **embed-token-locked params** → **URL params** → **`spec.variables` defaults**.
+Precedence, highest to lowest: **embed-token-locked params** → **URL params** → **`spec.variables` defaults**. On tabbed dashboards the reserved `_tab` parameter (underscore-prefixed to avoid colliding with variable names) carries the active tab.
 
 ---
 
@@ -299,6 +319,12 @@ The footer buttons in edit mode:
 | **Save to server** / **Create on server** | Validate client-side, then upsert directly to the backend (server re-validates). |
 
 Press `Escape` to close the panel.
+
+### Code / Files view
+
+The toolbar's view switcher also offers a full-pane **Code / Files view** (the file icon next to the canvas icon) — a VS Code-style pane that replaces the canvas entirely with a `dashboard.json` file: the same `config.spec` the CLI writes to `dashboards/<slug>.json` on `nubi pull`, so the in-app view matches the on-disk files-as-code format.
+
+Edits are parsed on every keystroke: **valid JSON applies to the spec immediately** (the same path the canvas and Code panel use), while invalid JSON surfaces an inline parse-error banner and leaves the spec untouched — a half-typed document never corrupts your dashboard. Use the main **Save** button to persist, as usual.
 
 ---
 

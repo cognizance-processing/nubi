@@ -18,20 +18,32 @@ Open Nubi and you'll land on the welcome screen.
 
 1. Go to **Create account** (`/register`).
 2. Choose a sign-up method:
-   - **Continue with Google** — the full OAuth handshake happens server-side; Nubi never sees your Google password.
+   - **Continue with Google** — the full OAuth handshake happens server-side; Nubi never sees your Google password. You finish workspace setup on the onboarding screen (next section).
    - **Email + password** — enter your **Full name**, **Email address**, and a **Password**.
-3. Email sign-up shows two optional fields:
-   - **Organization name** — defaults to *"Your first name's Org"* if left blank.
-   - **First project name** — defaults to *"Default"*.
+3. Email sign-up also asks for your workspace details:
+   - **Organization name** — required; the placeholder suggests *"Your first name's Org"*.
+   - **First project name** — required; pre-filled with *"Default"*.
+   - **Add demo data** — checked by default; seeds the project with sample dashboards and data you can remove anytime.
 4. Click **Create account**. You land on your Home screen.
 
-Both fields can be renamed later. Don't overthink them now.
+Both names can be changed later. Don't overthink them now.
 
 ### Sign in
 
 1. Go to **Sign in** (`/login`).
 2. Use **Continue with Google**, or enter the email and password you registered with.
 3. Click **Sign in**.
+
+### Finish setup — the onboarding screen
+
+![The onboarding screen — accept a pending invite or create your first organization](/docs/screenshots/onboarding.png)
+
+If you're signed in but don't belong to any organization yet — typical right after **Continue with Google** — Nubi shows a full-screen onboarding step with two ways forward:
+
+- **Join an existing organization** — pending invitations sent to your email are listed; click **Accept** to join with the role you were invited as.
+- **Create a new organization** — enter an **Organization name** and a **First project name** (pre-filled *"Default"*), optionally tick **Add demo data**, and click **Create organization**.
+
+Either path drops you on your Home screen with a ready-to-use workspace.
 
 ---
 
@@ -62,10 +74,14 @@ The left sidebar is your primary navigation:
 | **Queries** | The SQL editor and query library. |
 | **Dashboards** | Saved boards and the dashboard editor. |
 | **Flows** | Cell-based pipelines — SQL, Python, and Note cells in notebook or canvas view. |
+| **Watches** | Monitor a metric and get alerted when a threshold or change condition breaches. |
 | **Automations** | Scheduled runs of queries and flows. |
-| **Settings** | Profile, organization, project settings, and Git sync. |
+| **Docs** | This documentation, rendered in-app. |
+| **Settings** | Profile, organization, members, integrations, usage, and project settings (including the Git connection). |
 
 The **Home** page tracks a three-step spine to your first live board:
+
+![The Home screen — setup checklist and quick-access tiles](/docs/screenshots/home.png)
 
 1. Connect a data source
 2. Run your first query
@@ -98,7 +114,7 @@ Each connector card has four actions:
 | **Edit** | Update the connector's config or credentials. |
 | **Delete** | Remove the connector and destroy its encrypted credentials. |
 
-> **No data source yet?** Every workspace includes a built-in **Demo data** connector. It needs no configuration — adding it is a single click from the type picker. It powers all the demo queries used throughout the product.
+> **No data source yet?** Every workspace includes a built-in **Demo data** connector. It needs no configuration — adding it is a single click from the type picker. It powers all the demo queries used throughout the product. If you ticked **Add demo data** at sign-up, it's already there along with sample queries and dashboards.
 
 ---
 
@@ -240,7 +256,7 @@ cd nubi
 make up          # docker compose up -d --build
 ```
 
-The compose stack starts four services:
+The compose stack starts four long-running services (plus a one-shot `minio-init` job that creates the storage bucket):
 
 | Service | Exposed port | Role |
 |---|---|---|
@@ -249,12 +265,7 @@ The compose stack starts four services:
 | `backend` (FastAPI) | internal (nginx proxies `/api`) | API + migrations |
 | `frontend` (nginx + SPA) | **8080** | Serves the Vite SPA; proxies `/api` to backend |
 
-Open `http://localhost:8080` once `make up` finishes. To seed a test user:
-
-```bash
-docker compose exec backend python /app/backend/seed.py
-# → test@nubi.dev / nubitest123
-```
+Open `http://localhost:8080` once `make up` finishes and create your first account at `/register`. (The OSS image does not ship the seed script — on the dev path you can seed a superuser instead; see below.)
 
 Migrations run automatically on startup via `docker-entrypoint.sh`. To apply them without restarting:
 
@@ -287,11 +298,18 @@ The compose file injects `DATABASE_URL` pointing at the bundled Postgres contain
 ```bash
 # Backend
 python3.11 -m venv .venv && source .venv/bin/activate
-pip install -r backend/requirements.txt
+pip install -r requirements.txt   # Python deps live at the repo root
 cp .env.example .env          # edit DATABASE_URL, JWT_SECRET, etc.
 python database/migrate.py
 cd backend && uvicorn main:app --reload
 # API: http://localhost:8000   Swagger: http://localhost:8000/docs (dev only)
+```
+
+To seed a superuser (optional, venv active, `DATABASE_URL` set):
+
+```bash
+cd backend && python seed.py
+# → admin@nubi.dev / nubi-admin-2026 (override with SUPERUSER_EMAIL / SUPERUSER_PASSWORD)
 ```
 
 ```bash
@@ -341,4 +359,6 @@ You've done the three core things: connected a source, run a query, and built a 
 - **[Flows](/docs/flows)** — cell-based pipelines with SQL, Python, and Note cells; notebook and canvas views.
 - **[Exports & Scheduled Reports](/docs/exports-and-jobs)** — email a query or board on a schedule.
 - **[Embedding](/docs/embedding)** — put a live, row-level-secured dashboard inside your own app.
+- **[Git sync](/docs/git-sync)** — version-control your queries, dashboards, and flows in GitHub or GitLab.
+- **[Lakehouse](/docs/lakehouse)** — query files on object storage through DuckDB, or provision the one-click managed lakehouse.
 - **[Self-host](/docs/self-host)** — detailed deployment guide, SSL, managed Postgres, and production hardening.

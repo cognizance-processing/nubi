@@ -192,19 +192,26 @@ wait_for_http() {
 wait_for_http "${BACKEND_URL}/health" "backend" 60
 wait_for_http "${FRONTEND_URL:-http://localhost:${_FRONTEND_PORT}}/" "frontend" 60
 
-# ── 8. Run Playwright ─────────────────────────────────────────────────────────
+# ── 8. Run Playwright (or an override command, e.g. screenshot capture) ──────
 export E2E_BASE_URL="${E2E_BASE_URL:-http://localhost:${_FRONTEND_PORT}}"
-info "Running Playwright tests against ${E2E_BASE_URL}..."
-info "  Playwright args: ${PLAYWRIGHT_ARGS:-<none>}"
-
-# shellcheck disable=SC2086
-npx playwright test ${PLAYWRIGHT_ARGS:-}
-PW_EXIT=$?
+if [ -n "${E2E_RUN_CMD:-}" ]; then
+  # scripts/screenshots.sh sets this to reuse the boot/seed/teardown logic
+  # while running the screenshot capture instead of the test suite.
+  info "Running override command against ${E2E_BASE_URL}: ${E2E_RUN_CMD}"
+  bash -c "${E2E_RUN_CMD}"
+  PW_EXIT=$?
+else
+  info "Running Playwright tests against ${E2E_BASE_URL}..."
+  info "  Playwright args: ${PLAYWRIGHT_ARGS:-<none>}"
+  # shellcheck disable=SC2086
+  npx playwright test ${PLAYWRIGHT_ARGS:-}
+  PW_EXIT=$?
+fi
 
 if [ "${PW_EXIT}" -eq 0 ]; then
-  info "All e2e tests PASSED."
+  info "Run PASSED."
 else
-  error "Playwright exited with code ${PW_EXIT}."
+  error "Run exited with code ${PW_EXIT}."
 fi
 
 # Cleanup is handled by the EXIT trap.

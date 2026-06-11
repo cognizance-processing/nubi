@@ -29,6 +29,7 @@ const mdFiles = import.meta.glob(
     '/docs/ai-and-mcp.md',
     '/docs/embedding.md',
     '/docs/organization-settings.md',
+    '/docs/notifications-and-integrations.md',
     // Nubi Cloud
     '/docs/cloud.md',
     '/docs/billing-and-usage.md',
@@ -42,9 +43,12 @@ const mdFiles = import.meta.glob(
     '/docs/conformance.md',
     '/docs/secrets.md',
     '/docs/sdk-and-cli.md',
+    '/docs/files-as-code.md',
     '/docs/git-sync.md',
     '/docs/bridges.md',
     '/docs/lakehouse.md',
+    '/docs/development.md',
+    '/docs/docs-and-screenshots.md',
   ],
   { query: '?raw', import: 'default', eager: true }
 )
@@ -58,13 +62,14 @@ const LAYOUT = [
   { section: 'Using Nubi',          group: 'Get started',       slugs: ['getting-started', 'ui-tour'] },
   { section: 'Using Nubi',          group: 'Work with data',    slugs: ['connectors', 'queries-and-params', 'pre-aggregations', 'dashboards', 'exports-and-jobs'] },
   { section: 'Using Nubi',          group: 'Automate & build',  slugs: ['flows', 'ai-and-mcp', 'embedding'] },
-  { section: 'Using Nubi',          group: 'Your account',      slugs: ['organization-settings'] },
+  { section: 'Using Nubi',          group: 'Your account',      slugs: ['organization-settings', 'notifications-and-integrations'] },
 
   { section: 'Nubi Cloud',          group: 'Cloud & billing',   slugs: ['cloud', 'billing-and-usage'] },
 
   { section: 'Open-source project', group: 'Self-host',         slugs: ['self-host', 'open-core', 'architecture-open-core'] },
   { section: 'Open-source project', group: 'Security & internals', slugs: ['connector-security', 'kernel-security', 'cache-key-spec', 'conformance', 'secrets'] },
-  { section: 'Open-source project', group: 'Build on Nubi',     slugs: ['sdk-and-cli', 'git-sync', 'bridges', 'lakehouse'] },
+  { section: 'Open-source project', group: 'Build on Nubi',     slugs: ['sdk-and-cli', 'files-as-code', 'git-sync', 'bridges', 'lakehouse'] },
+  { section: 'Open-source project', group: 'Contributing',      slugs: ['development', 'docs-and-screenshots'] },
 ]
 
 // ── Helpers ───────────────────────────────────────────────────────────────────

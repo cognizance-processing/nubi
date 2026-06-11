@@ -4,7 +4,7 @@
 
 Flows is Nubi's built-in workflow orchestrator. A flow is a set of **cells** — SQL queries, Python scripts, or Markdown notes — wired into a directed acyclic graph. Nubi runs them in dependency order, retrying failures, caching results, and keeping durable run history.
 
-You build a flow two ways: as a **notebook** (a top-to-bottom list of cells) or as a **canvas** (a visual DAG). They are two views of the same flow — flip between them at any time without losing anything.
+You work on a flow in **three views**: as a **notebook** (a top-to-bottom list of cells), as a **canvas** (a visual DAG), or as **code** (a file tree — `flow.py` plus one file per cell). They are three windows onto the same flow — flip between them at any time without losing anything.
 
 > Flow compute is metered. Cell previews and durable runs consume **compute units** drawn from your org's usage wallet. Designing in the notebook with small previews is cheap; large durable runs and materializations cost more. See [Billing and usage](/docs/billing-and-usage).
 
@@ -15,8 +15,10 @@ You build a flow two ways: as a **notebook** (a top-to-bottom list of cells) or 
 Go to **Flows** (`/flows`) in the app. The workspace has three regions:
 
 - A **flow list** — your org's saved flows and any unsaved drafts. On desktop it lives in the collapsible right-hand sidebar; on mobile, tap the list icon in the top bar to open it as a bottom sheet.
-- A **top bar** with the flow name, the **Builder / Runs** switcher, the **Canvas / Notebook** view toggle, the **environment selector**, and the **Validate · Save · Schedule · Run · Code / Lineage** actions.
+- A **top bar** with the **Builder / Runs** switcher, the three-way **Canvas / Notebook / Code** view switcher, the flow name, and the **Validate · Save · Checkpoint · History · Schedule · Run** actions (plus **Lineage** in notebook view).
 - The **main pane**, which shows either the builder (Builder tab) or run history and the live run view (Runs tab).
+
+The run **environment** is *not* selected here — it is global app state, chosen with the environment selector in the left sidebar (beneath the project selector). See [Environments](#environments).
 
 To start a new flow, click **New flow**. This seeds an empty draft and drops you into the Builder tab. To open an existing one, click it in the list.
 
@@ -28,23 +30,19 @@ The right-hand sidebar (desktop) has three modes, switched by the toggle buttons
 | **Add task** | Plus | Cell palette — canvas view only. |
 | **Inspector** | Sliders | Config for the selected cell — canvas view only. |
 
-Click the active toggle again to collapse the sidebar entirely; re-open it with any of the three buttons. In notebook view only the Flows panel toggle is shown — cells are added with the **+ SQL / + Python / + Note** buttons in the top bar.
+Click the active toggle again to collapse the sidebar entirely; re-open it with any of the three buttons. In the notebook and code views only the Flows panel toggle is shown — notebook cells are added with the **+ SQL / + Python / + Note** buttons in the top bar, and the code view has its own file explorer.
 
 ---
 
-## Two views of one flow
+## Three views of one flow
 
-The **Canvas / Notebook** toggle (Builder tab, top bar) switches how you see and edit the flow. Both edit the same underlying spec.
+A flow is canonically a single `FlowSpec` — its cells, edges, params, and settings. The **Canvas / Notebook / Code** switcher (Builder tab, top bar) projects that one spec onto three surfaces, each round-tripping losslessly back to the spec:
 
-### One flow, three views
+- **Notebook** — the spec's cells rendered as an ordered, top-to-bottom list. The fast authoring surface (the analyst iterating cell by cell).
+- **Canvas** — the same cells and edges rendered as a visual DAG, with node positions persisted. The structure surface (the engineer shaping a branching pipeline).
+- **Code** — the spec projected as an editable file tree: `flow.py` plus one file per cell. The files-as-code surface (the power user authoring the whole flow as files).
 
-A flow is canonically a single `FlowSpec` — its cells, edges, params, and settings. That one spec is *projected* onto three surfaces, each round-tripping losslessly back to the spec:
-
-- **Notebook** — the spec's cells rendered as an ordered, top-to-bottom list. The fast authoring surface (one persona: the analyst iterating cell by cell).
-- **Canvas** — the same cells and edges rendered as a react-flow DAG, with node positions persisted. The structure surface (the engineer shaping a branching pipeline).
-- **File** — the spec serialized to a folder of reviewable files (`flow.toml` + `cells/*`; see [Flows on disk](/docs/git-sync#flows-on-disk)). The diff/review surface (the reviewer reading a pull request).
-
-There is no "primary" view and no separate copy: notebook, canvas, and file are three windows onto one `FlowSpec`. Editing in any view edits the same spec, and the projection is reversible — switching views, or loading the files back, reconstructs the spec exactly. This is the three-persona story: author, structure, review, over one source of truth.
+There is no "primary" view and no separate copy: editing in any view edits the same spec, and switching views reconstructs it exactly. (The same spec also serializes to a reviewable folder for git sync — see [Flows on disk](/docs/git-sync#flows-on-disk).)
 
 ### Notebook view
 
@@ -57,11 +55,11 @@ What you can do in notebook view:
 - **Add cells** with the **+ SQL**, **+ Python**, or **+ Note** buttons in the top bar, or with the dashed "add cell" bar that appears between existing cells so you can insert anywhere.
 - **Reorder** cells with the move-up / move-down arrows on each cell.
 - **Delete** a cell with its delete button.
-- **Run a cell** to preview its output. The result grid, row count, and elapsed time appear below the cell. Previews are capped at 500 rows and run without persisting a flow run.
-- **Run all** to launch a full durable run of the whole flow.
+- **Run a cell** to preview its output. The result grid, row count, and elapsed time appear below the cell. Previews are capped at 500 rows and run without persisting a flow run. The backend re-executes the upstream cells in the dependency chain first, so cross-cell references always resolve.
+- **Run all** to launch a full durable run of the whole flow (behind the [plan gate](#full-durable-run)).
 - **Lineage** toggle to see how cells feed each other across the flow.
 
-Cells share data. A downstream cell can reference an upstream cell's result by its **key**: in SQL write `SELECT * FROM cell_key`; in Python read `inputs["cell_key"]`. When you preview a cell, Nubi first runs the upstream cells it needs, so cross-cell references always resolve.
+Cells share data. A downstream cell can reference an upstream cell's result by its **key**: in SQL write `SELECT * FROM cell_key`; in Python read `inputs["cell_key"]`.
 
 ### Canvas view
 
@@ -77,7 +75,35 @@ The canvas renders the flow as a visual graph. Each cell is a node; arrows show 
 
 During a live run, the canvas turns read-only and colours each node by its current state (see [Watching a run](#watching-a-run)).
 
-The **Code** button in the top bar (canvas view only) opens an editable Python view of the flow spec. Edit the generated scaffold and apply it to sync the builder, or read it to understand the structure.
+### Inferred SQL dependencies
+
+You usually do not need to draw edges into SQL cells at all. When a SQL cell's query mentions a sibling cell's key in a `FROM` or `JOIN` clause, the canvas draws a **dashed grey edge** from that cell automatically — the dependency is *inferred from the SQL itself*, SQLMesh-style.
+
+Inferred edges are render-time only: they are re-derived from the SQL on every view switch and are never written into the cell's explicit `needs` list, so deleting the SQL reference removes the edge again. The backend runs its own canonical SQL parse (sqlglot) to order execution, so the engine honours the same dependencies the canvas shows.
+
+### Code / Files view
+
+![Code view — file explorer with flow.py and one file per cell, edited in Monaco](/docs/screenshots/flows-code.png)
+
+The code view is a VS Code-style projection of the flow as an editable file tree:
+
+```
+flow.py                  # generated nubi.flows Python SDK source
+cells/
+  01_pull_orders.sql     # SQL cell        → its query
+  02_readme.md           # Note cell       → its markdown
+  03_enrich.py           # Python cell     → its code
+  04_route.json          # advanced kinds  → read-only config dump
+```
+
+Each cell becomes a file named `NN_key.ext` — the zero-padded position plus the cell key, with the extension matching the cell type (`.sql`, `.py`, `.md`). Cells with no single source string (advanced kinds like `branch`, `map`, `materialize`, `agent`) appear as read-only `.json` config dumps.
+
+Two editing modes, matching the two kinds of file:
+
+- **Cell files** (`cells/*.sql|.py|.md`) write straight back to the spec as you type — exactly like editing the cell in the notebook. Switch to the canvas or notebook and the change is already there.
+- **`flow.py`** is the whole flow as generated Python (the `nubi.flows` SDK). It is editable, but Python must be compiled before it becomes a spec — edit it, then click **Apply** to compile it on the backend and sync the result back to the canvas and notebook. **Reset** discards your edits and regenerates; **Copy** copies the active file.
+
+While the flow is half-built (say, an empty SQL cell), `flow.py` shows a gentle "isn't ready yet" hint instead of generated code — finish the cells and it appears. A small amber dot on `flow.py` marks unapplied edits.
 
 ---
 
@@ -131,7 +157,7 @@ result = {
 }
 ```
 
-The Inspector's Python editor includes an **Insert example...** picker with ready-made snippets — API calls, DataFrame transforms, and more.
+The Inspector's Python editor includes an **Insert example...** picker with ready-made snippets — API calls, DataFrame transforms, and more. Both SQL and Python cells also have a **Secrets** dropdown in the notebook that lists your org's secret names and inserts a reference at the cursor (`{{ secrets.NAME }}` in SQL, `secrets["NAME"]` in Python) — values never leave the server.
 
 Downstream SQL cells can reference the Python cell's result as a table. For example, if the cell key is `enrich`, a subsequent SQL cell can write `SELECT * FROM enrich`.
 
@@ -143,7 +169,7 @@ A Note cell is plain Markdown. Click the body to edit, blur or click **Done** to
 
 ## Advanced cell settings
 
-The patterns that used to be separate node types — materialize a table, fan out over a list, gate a step on a condition — are now **settings on a SQL or Python cell**, configured in the Inspector under the **Cell behaviour** section. Each active setting appears as a small badge on the cell in the notebook view.
+The patterns that used to be separate node types — materialize a table, fan out over a list, gate a step on a condition — are now **settings on a SQL or Python cell**, configured in the Inspector under the **Cell behaviour** section. Each active setting appears as a small badge on the cell in the notebook and canvas views.
 
 ### Materialization (SQL cells)
 
@@ -190,6 +216,26 @@ A blank condition always runs. A false condition marks the cell **skipped** (and
 
 ---
 
+## Task kinds under the hood
+
+The palette surfaces three cell types, but the `FlowSpec` itself supports a wider set of task **kinds**. Existing specs that use them keep running, you'll meet them as read-only `.json` files in the code view, and you can author them directly in `flow.py`:
+
+| Kind | Required config | What it does |
+|------|-----------------|--------------|
+| `query` | `sql` or `query_id` | Run a SQL query — the SQL cell. |
+| `python` | `code` | Run a Python snippet — the Python cell. |
+| `agent` | `prompt` | Run an LLM-agent step. |
+| `materialize` | `combine_sql` | Merge upstream task results in DuckDB and write them to a materialized dataset. |
+| `bucket_load` | `uri`, `source` | Upload an upstream task's result to a storage bucket. Optional `format` (`csv`/`json`/`ndjson`/`parquet`), `mode` (`overwrite`/`append`), `secret`. |
+| `noop` | — | No-operation — a Note cell, or a join/synchronisation point. |
+| `map` | `item_expr`, `body` | Fan out over an iterable; `body` is a nested sub-DAG run once per item. Optional `item_var`, `max_concurrency`, `collect_key`. |
+| `branch` | `conditions` | Conditional routing — an ordered list of `{when, next}` pairs; the first matching condition activates its downstream tasks. Optional `default`. |
+| `map_collect` | — | Collector for `map` fan-in; returns `{items: [...], item_count: N}`. |
+
+For new flows, prefer the cell-level settings above — **Materialization** instead of a `materialize` task, **For each** instead of `map`, **Run when** instead of `branch` — and keep the spec-level kinds for pipelines that genuinely need nested sub-DAGs or routing.
+
+---
+
 ## The task Inspector
 
 Click a cell on the canvas (or open the **Inspector** sidebar) to configure it in full. The Inspector is grouped into sections.
@@ -198,7 +244,7 @@ Click a cell on the canvas (or open the **Inspector** sidebar) to configure it i
 
 - **Key** — the cell's unique slug (lowercase letters, digits, underscores; must start with a letter). This is the name other cells use to reference its result.
 - **Kind** — the execution kind. The palette creates `query` (SQL), `python`, and `noop` (Note) cells.
-- **Needs** — upstream cells this cell depends on. This is read-only in the Inspector; change it by connecting or disconnecting edges on the canvas.
+- **Needs** — upstream cells this cell depends on. This is read-only in the Inspector; change it by connecting or disconnecting edges on the canvas (or just reference the upstream cell in SQL and let the dependency be inferred).
 
 ### Config
 
@@ -240,27 +286,47 @@ In SQL you can also reference an upstream cell directly as a table by its key (`
 
 ## Environments
 
-Every run targets an **environment**. The environment selector sits in the top bar and shows the active env with a coloured dot.
+Every run targets an **environment**. Environments belong to the **project**: the backend seeds `dev` and `prod` for each project, and you can add more. Pick the active environment with the **environment selector in the left sidebar** (beneath the project selector) — the selection is global app state, persists per project in your browser, and is shared by Flows, Queries, and Dashboards.
 
 | Env | Dot | Notes |
 |-----|-----|-------|
-| `prod` | Emerald | Default. |
-| `dev` | Sky | Provided out of the box. |
-| Custom | Violet | Click **Add environment** in the selector to add one (e.g. `staging`). Saved in your browser. |
+| `prod` | Emerald | The project default. |
+| `dev` | Sky | Seeded out of the box. |
+| Custom | Violet | Click **Add environment** in the sidebar selector to create one (e.g. `staging`), optionally seeded from a git branch. |
 
-Materialized targets are namespaced under the active env (`<env>/<target>`), so a run in `dev` never overwrites a `prod` table. Pick the environment **before** clicking Run — it is stamped on the run and shown in the run banner.
+How the environment affects flows:
+
+- **Runs are stamped with it.** Triggering a run passes the active env (resolution order: explicit override → the flow's project default), and the run banner shows which env a run targeted.
+- **Materialized targets are namespaced** under it (`<env>/<target>`), so a run in `dev` never overwrites a `prod` table.
+- **Protected environments gate visibility.** An environment can be marked *protected* (`prod` typically is). When the active env is protected, flows with no version pinned to it show a `not in <env>` badge in the flow list — promote a version there to make it available (see below).
+
+Pick the environment **before** clicking Run.
 
 ---
 
-## Saving, validating, and the code panel
+## Versions — checkpoint, history, promote
+
+Saved flows are versioned. Three top-bar actions drive it:
+
+- **Checkpoint** — snapshot the current saved draft as a new immutable version, with an optional message. Unsaved edits are flushed first; if nothing changed since the last version, the existing version is reused instead of creating a duplicate.
+- **History** — open the version timeline (newest first). Rows pinned to an environment carry an env chip. Per version you can:
+  - **View** — load that version read-only. The builder shows it under a banner with **Restore** and **Back to draft** actions; your draft stays untouched until you restore.
+  - **Restore** — write that version's spec back into the current draft (overwriting unsaved draft changes, after confirmation).
+  - **Promote** — move a pinned version from one environment to another.
+- **Promote** (from the History dialog) is how a flow reaches a protected environment: pin a version in `dev`, test it, then promote it to `prod`. For flows, promoting also best-effort copies incremental materialization watermarks so the promoted version doesn't reprocess history from scratch.
+
+The pinned-version model means `prod` can keep serving a known-good version while you iterate on the draft and run it in `dev`.
+
+---
+
+## Saving and validating
 
 The top bar (Builder tab) has the core actions:
 
 1. **Validate** — checks the flow for problems (cycles, missing dependencies, missing required config) without running it. Results appear in a banner: green "Flow spec is valid." or a list of issues.
-2. **Save** — creates or updates the flow. You must save before you can run a durable run or attach a schedule.
-3. **Code** (canvas view only) — opens an editable Python scaffold of the flow spec. Edit it and apply to sync the builder. The canvas and the code panel are views of the same flow.
+2. **Save** — creates or updates the flow. You must save before you can run a durable run, create a checkpoint, or attach a schedule.
 
-Existing saved flows **autosave** about 2 seconds after your last edit — a subtle "saved" badge confirms it. Draft flows (never saved) require a manual Save.
+Existing saved flows **autosave** about 2 seconds after your last edit — a subtle "saved" badge confirms it. Draft flows (never saved) require a manual Save. Editing the flow as code lives in the dedicated **Code** view (the third view-switcher option) — see [Code / Files view](#code-files-view).
 
 ---
 
@@ -298,16 +364,16 @@ There are two execution modes with different cost and durability.
 
 ### Preview a single cell (notebook)
 
-In the notebook, click a cell's **Run** button. This runs a fast, row-capped (500 rows) in-process preview and shows the result inline. Upstream cells run first so cross-cell references resolve. No flow run is persisted — previews are the cheap, iterative path while you build.
+In the notebook, click a cell's **Run** button. This runs a fast, row-capped (500 rows) preview and shows the result inline. Upstream cells run first so cross-cell references resolve. No flow run is persisted — previews are the cheap, iterative path while you build.
 
 ### Full durable run
 
 To run the whole flow durably:
 
 1. **Save** the flow (durable runs require a saved flow).
-2. Pick the target **environment** in the top bar.
-3. Click **Run** in the top bar, or click **Run all** from the notebook toolbar.
-4. In notebook view, a **plan gate** dialog previews which cells will run and highlights recently changed ones. Confirm to launch.
+2. Pick the target **environment** in the sidebar selector.
+3. Click **Run** in the top bar, or click **Run all** from the notebook.
+4. In notebook view, a **Run Plan** gate dialog previews which cells will run and highlights the downstream impact of recently changed ones. Confirm to launch.
 
 A durable run executes through the work pool with full retries, caching, timeouts, and persisted state. Once started, the workspace switches to the **Runs** tab and shows the live run. Durable runs run every cell to completion, not a capped sample — keep heavy materializations on a schedule rather than re-running them by hand.
 
@@ -350,11 +416,13 @@ Click any node in the run view to open the **task result** panel. It shows:
 
 ## Tips
 
-- **Build in the notebook, review on the canvas.** Iterate with cheap cell previews, then switch to the canvas to see and refine the dependency structure.
-- **Keep keys meaningful.** Cell keys are how other cells reference results (`FROM orders`, `inputs["orders"]`), and they appear throughout the run inspector and lineage view.
+- **Build in the notebook, review on the canvas, diff in code.** Iterate with cheap cell previews, switch to the canvas to refine the dependency structure, and use the code view when you want to read or edit the whole flow as files.
+- **Keep keys meaningful.** Cell keys are how other cells reference results (`FROM orders`, `inputs["orders"]`), they name the files in the code view, and they appear throughout the run inspector and lineage view.
+- **Let SQL declare its own dependencies.** Reference an upstream cell in `FROM`/`JOIN` and the edge is inferred — no manual wiring needed.
+- **Checkpoint before big changes, promote when ready.** Versions are cheap snapshots; pinning and promoting them between `dev` and `prod` is how a flow ships safely.
 - **Materialize once, read many.** Turn an expensive multi-source SQL cell into a materialized table on a schedule, then point dashboards at the cheap result instead of recomputing on every view.
 - **Use Run when to skip work.** Gate expensive cells on a condition so they only run when the data warrants it.
 - **Use the schedule, not manual runs.** Once a pipeline is working, attach a schedule and let it run automatically rather than triggering it by hand each time.
 - **Mind the wallet.** Previews are cheap; full durable runs and large materializations cost more compute units.
 
-See also: [Secrets](/docs/secrets) for `{{ secrets.NAME }}`, [Connectors](/docs/connectors) for Run against targets, [Dashboards](/docs/dashboards) for consuming materialized outputs, and [Billing and usage](/docs/billing-and-usage) for how compute units are metered.
+See also: [Secrets](/docs/secrets) for `{{ secrets.NAME }}`, [Connectors](/docs/connectors) for Run against targets, [Dashboards](/docs/dashboards) for consuming materialized outputs, [Git sync](/docs/git-sync) for flows on disk, and [Billing and usage](/docs/billing-and-usage) for how compute units are metered.

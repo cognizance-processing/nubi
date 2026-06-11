@@ -15,7 +15,12 @@ Open it from the sidebar (route `/queries`).
 On a desktop screen the page has two parts:
 
 - **Query workspace** (main area) — a notebook-style editor. The top **primary query** cell is your query of record; below it you can add session-only scratch cells.
-- **Queries panel** (right sidebar, toggled from the toolbar) — search, a **New query** button, a **Blend sources** link, and the list of queries (drafts on top, the saved **Registry** below). A view toggle in the toolbar switches the main area between **Editor** and **Rollups** (pre-aggregation candidates).
+- **Queries panel** (right sidebar, toggled from the toolbar) — search, a **New query** button, a **Blend sources** link, and the list of queries (drafts on top, the saved **Registry** below).
+
+Two view switchers live in the toolbar:
+
+- An icon pair on the workspace itself flips between the **Notebook / editor view** and the **Code / Files view** — a VS Code-style projection of the query as `.sql` + `.meta.json` files (see [Code / Files view](#code-files-view)).
+- A page-level **Editor / Rollups** toggle swaps the whole main area for the auto-rollups panel (pre-aggregation candidates mined from the query log — see [Rollups](#rollups-suggested-pre-aggregations)).
 
 On smaller screens the Queries panel collapses into a **dropdown** at the top, and the editor and results stack vertically.
 
@@ -97,7 +102,7 @@ As soon as the editor sees `{{region}}` and `{{year}}`, a **Parameters** panel a
 
 ### Parameter types
 
-Each parameter has a **type** that controls the input field and how the value is coerced before the query runs:
+Each parameter has a **type** that controls the input field and how the value is coerced before the query runs. The type dropdown in the Parameters panel offers:
 
 | Type | Input rendered | Notes |
 |------|---------------|-------|
@@ -105,11 +110,10 @@ Each parameter has a **type** that controls the input field and how the value is
 | `number` | Number field | Coerced to a numeric value at run time. |
 | `boolean` | Text field | `"true"` / `"false"` → bound as a boolean. |
 | `date` | Date picker | ISO date string. |
-| `daterange` | Date picker | Start/end pair. |
-| `select` | Text field (or driven by `options_query_id`) | One value from a fixed list. |
+| `select` | Text field | One value from a fixed list — dashboard filter widgets can drive it from an options query. |
 | `multiselect` | Text field | Multiple values; use the `inclause` filter in Jinja templates. |
 
-> The `boolean` type is supported by the planner but the UI currently renders it as a text field — type `true` or `false`.
+> The `boolean` type is supported by the planner but the UI currently renders it as a text field — type `true` or `false`. Date *ranges* are handled at the dashboard level: a `daterange` dashboard variable drives a pair of `date` parameters (see the example below).
 
 Set the type by clicking the type label in the Parameters panel row. You can also mark a parameter **required** (red `*`) — submitting the query without that parameter returns an HTTP 400 error instead of silently passing a null.
 
@@ -243,6 +247,24 @@ Every saved query gets a stable **id** (shown in small monospace type under the 
 
 The **SpecIO** control in the toolbar lets you view the query as a portable spec (SQL + params + connector slug) and apply an imported spec back into the editor — handy for copying a query between environments or version control. See [Git Sync](/docs/git-sync).
 
+### Code / Files view
+
+The icon switcher at the left of the toolbar flips the workspace from the **Notebook / editor view** into a **Code / Files view** — a VS Code-style pane that projects the query as files matching the on-disk files-as-code shape:
+
+- **`<slug>.sql`** — the raw SQL, fully editable. Edits write straight back to the query, exactly as if you had typed in the notebook editor.
+- **`<slug>.meta.json`** — a read-only sidecar with the query's `id`, `name`, `datastore_id`, and `params` (plus `output_schema` when known). Params are derived from `{{placeholders}}` in the SQL, and the name/connector are edited via the toolbar, so the sidecar is always a faithful projection.
+
+### Checkpoint & history
+
+Once a query is saved, two toolbar buttons version it:
+
+- **Checkpoint** — snapshot the current draft as a new version (with an optional message). If nothing changed since the last version, the existing one is reused.
+- **History** — open the version list to view, restore, or promote past versions. Viewing a version shows its SQL and params read-only with a *Viewing vN (read-only)* banner — **Restore** copies it back into the draft, **Back to draft** leaves it untouched.
+
+### Expose as metric
+
+Below the primary cell, the collapsible **Expose as metric** panel can declare the saved query as a governed metric: a stable **slug**, the owning aggregation, the **dimensions** it can group by, and time **grains**. Enable it to make the query consumable as a metric by dashboards, watches, and AI; leave it off and nothing extra is saved with the query.
+
 ---
 
 ## Scheduling a query
@@ -272,7 +294,7 @@ Because the id is stable, editing and re-saving a query updates every dashboard 
 
 ## Blending multiple sources
 
-Need to join two to four different connectors into one dataset? Click **Blend sources** in the Queries panel (route `/queries/blend`) to open the **Blend Builder**. Pick source queries, write the SQL that merges them, declare any row-level-security key columns that must survive the merge, and optionally set a refresh schedule. Nubi materializes the combined result into a single, cheap-to-read dataset and gives you a query id to bind widgets to.
+Need to join two to four different connectors into one dataset? Click **Blend sources** in the Queries panel (route `/queries/blend`) to open the **Blend Builder**. Pick each source — a saved query or inline SQL against a connector — write the combine SQL that merges them, declare any row-level-security key columns that must survive the merge, and optionally set a refresh schedule (interval or cron). Nubi materializes the combined result into a single, cheap-to-read dataset and gives you a query id to bind widgets to.
 
 Blends materialize on a schedule rather than joining live on every view — the same "pay once, read cheap" pattern as [materialized SQL cells in Flows](/docs/flows).
 
@@ -280,7 +302,7 @@ Blends materialize on a schedule rather than joining live on every view — the 
 
 ## Rollups (suggested pre-aggregations)
 
-Switch the toolbar toggle from **Editor** to **Rollups** to see pre-aggregation candidates Nubi mined from your query log, ranked by how often they would help. Build one in a click to accelerate frequently-run aggregate queries. See [Pre-Aggregations](/docs/pre-aggregations) for how mining, building, and transparent routing work.
+Switch the toolbar toggle from **Editor** to **Rollups** to see auto rollups — pre-aggregation candidates Nubi mined from your query log, ranked by how often they would help. Build one in a click to accelerate frequently-run aggregate queries. See [Pre-Aggregations](/docs/pre-aggregations) for how mining, building, and transparent routing work.
 
 ---
 
@@ -291,4 +313,4 @@ Switch the toolbar toggle from **Editor** to **Rollups** to see pre-aggregation 
 - Use scratch cells to prototype joins and transforms, then fold the final SQL into the primary cell and Save.
 - Watch the **HIT** badge — it means viewers downstream get the same near-instant, near-zero-cost result without re-running the query.
 - Use the search box in the Queries panel to find a query by name or id once your registry grows.
-- A `select` or `multiselect` parameter can set `options_query_id` to another saved query — its results populate the option list automatically.
+- A `select` or `multiselect` parameter can carry an `options_query_id` pointing at another saved query — dashboard filter widgets use it to populate their option lists.

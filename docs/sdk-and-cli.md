@@ -189,7 +189,7 @@ npm test        # node --test src/index.test.mjs
 
 A Python CLI for the **everything-as-code** workflow: pull your whole Nubi project to a git repo, edit dashboards / queries / flows / connectors as files, keep secrets out of git, and push or deploy back to the cloud. Python 3.11+ required.
 
-The CLI is the local companion to the in-app VS Code-style code view. The on-disk project format, the secret model, and the CI/CD design are specified in full in [Files-as-Code](/docs/files-as-code) — this page is the user-facing reference for the commands themselves.
+The CLI is the local companion to the in-app VS Code-style code views — the flow editor's Code view (`flow.py` + per-cell files, round-tripped through `POST /flows/codegen` and `POST /flows/compile`) and the query workspace's Code / Files view (`<slug>.sql` + `<slug>.meta.json`). The on-disk project format, the code views, the secret model, and the CI/CD design are specified in full in [Files-as-Code](/docs/files-as-code) — this page is the user-facing reference for the commands themselves.
 
 ### Installation
 
@@ -215,6 +215,8 @@ The CLI reads the API URL and Bearer token from environment variables or local f
 | Env var | `NUBI_API_URL` | `http://localhost:8000/api/v1` |
 | Env var | `NUBI_TOKEN` | — |
 | File | `~/.nubi/credentials` | Written by `nubi login` |
+
+`NUBI_TOKEN` accepts either a short-lived JWT (what `nubi login` saves) or a long-lived API key minted with `nubi auth create-key` — the recommended option for CI. See [API keys](#api-keys) below.
 
 ### Quickstart
 
@@ -260,8 +262,8 @@ The resource UUID lives **inside** each file, so renames are safe and upserts ke
 | `nubi logout` | Clear the local token (best-effort `POST /auth/logout`). |
 | `nubi whoami` | Show the current user / org (`GET /auth/me`). |
 | `nubi init [--project <id>] [--name <n>] [--env <key>] [--ci github\|gitlab] [dir]` | Scaffold `nubi.yaml`, `.nubi/project.json`, and `.gitignore`. `--ci` also copies the matching pipeline template. |
-| `nubi pull [--env <key>] [--kinds <list>] [dir]` | Download ALL resources into the file tree. `--kinds` is a comma list of `dashboard,query,flow,connector`. Connectors write non-secret manifests only. |
-| `nubi push [--dry-run] [--env <key>] [--kinds <list>] [dir]` | Upload changed non-secret manifests (`POST /import`; connectors upsert via `/connectors`). Secrets are NEVER pushed here. |
+| `nubi pull [--env <key>] [--kinds <list>] [dir]` | Download ALL resources into the file tree. `--kinds` is a comma list of `dashboard,query,flow,connector`. Connectors write non-secret manifests only. When the project is bound this is one round-trip (`GET /projects/{id}/export`), falling back to per-resource exports on older backends. |
+| `nubi push [--dry-run] [--env <key>] [--kinds <list>] [dir]` | Upload changed non-secret manifests — bulk `POST /projects/{id}/import` with a per-resource results table when bound, falling back to per-resource `POST /import` (connectors upsert via `/connectors`). Secrets are NEVER pushed here. |
 | `nubi sync --env-id <id> [--strategy take_branch\|take_env]` | Two-way reconcile local tree ↔ cloud via the project's git binding. |
 | `nubi deploy [--env <key>] [dir]` | CI deploy: materialize secrets → push connectors + secrets → import dashboards/queries/flows. Idempotent. |
 | `nubi diff <dir>` | Compare local resource files vs the server (read-only). Resources without an `id` are marked NEW. |
@@ -291,6 +293,10 @@ nubi flows run flows/my_flow.yaml --param region=us --param date=2024-01-01
 ```
 
 `nubi flows run` resolves `{{ secrets.NAME }}` from the project's `.nubi/secrets/flow.env`, the legacy `~/.nubi/secrets`, and `NUBI_SECRET_<NAME>` env vars (env vars win). The backend package must be importable — run from a nubi checkout with `backend/` at the repo root.
+
+Flows are also editable as **Python**: the flow editor's Code view generates a `flow.py` from the spec (`POST /flows/codegen`) and compiles your edits back into a FlowSpec (`POST /flows/compile`, sandboxed subprocess). The committed on-disk format written by `nubi pull` stays `flows/<slug>__<id8>/flow.toml + cells/*` — `flow.py` is a generated projection. See [Files-as-Code](/docs/files-as-code) for the round-trip details.
+
+![Flow code view — flow.py and per-cell files](/docs/screenshots/flows-code.png)
 
 ### `nubi dashboards ... / queries ... / connectors ...`
 
@@ -332,13 +338,30 @@ Two stores, mirrored locally as gitignored `.env` files and never committed:
 ```bash
 # Seed the repo's CI secret store once, then deploy on every push (see below)
 nubi secrets set STRIPE_API_KEY sk_live_...
-nubi secrets set PROD_POSTGRES password s3cr3t --connector "Prod Postgres"
+nubi secrets set password s3cr3t --connector prod-postgres   # → PROD_POSTGRES__PASSWORD
 nubi secrets push --target github
+```
+
+<a id="api-keys"></a>
+
+### `nubi auth ...` — API keys
+
+Long-lived API keys are the right way to authenticate the CLI in CI — no password, no short-lived JWT refresh. The raw key looks like `nubi_ak_…` (256 bits of entropy); the prefix lets the backend tell an API key from a JWT, and the key works anywhere a Bearer token does.
+
+| Command | What it does |
+|---|---|
+| `nubi auth create-key [--name <label>]` | Mint a key (`POST /auth/api-keys`) and print it **once**. It is never retrievable again — only a hash and the last four characters are stored. Save it as the `NUBI_TOKEN` secret in your CI. |
+| `nubi auth list-keys` | List your keys (`GET /auth/api-keys`): id, name, last 4, created / last-used / revoked. Key material is never shown. |
+| `nubi auth revoke-key <id>` | Revoke a key (`DELETE /auth/api-keys/{id}`). |
+
+```bash
+nubi auth create-key --name "GitHub Actions"
+# → prints nubi_ak_…  (shown once — store it as the NUBI_TOKEN repo secret)
 ```
 
 ### Deploying from CI/CD
 
-`nubi init --ci github` (or `gitlab`) scaffolds a pipeline that, on every push to `main`, materializes the repo's secrets and runs `nubi deploy --env prod` — shipping your local edits to the cloud. The pipeline templates live in `cli/templates/{github,gitlab}/`. The full design (secret prefixes, `nubi deploy` ordering) is in [Files-as-Code §C/§E](/docs/files-as-code); a short operator walkthrough is in [Git Sync → Deploy from local / CI](/docs/git-sync#deploy-from-local--ci).
+`nubi init --ci github` (or `gitlab`) scaffolds a pipeline that, on every push to `main`, materializes the repo's secrets and runs `nubi deploy --env prod` — shipping your local edits to the cloud. The pipeline templates live in `cli/templates/{github,gitlab}/`. Authenticate the pipeline with an [API key](#api-keys) stored as the `NUBI_TOKEN` secret. The full design (secret prefixes, `nubi deploy` ordering) is in [Files-as-Code §C/§E](/docs/files-as-code); a short operator walkthrough is in [Git Sync → Deploy from local / CI](/docs/git-sync#deploy-from-local--ci).
 
 ### Running CLI tests
 
@@ -352,7 +375,7 @@ cd cli && python -m pytest tests -q
 
 All Nubi REST endpoints are served under `/api/v1/` from the FastAPI backend.
 
-- Every endpoint requires a valid Bearer token — either a first-party token minted by the backend, or an RS256/ES256 embed token from a registered issuer. See [Embedding](/docs/embedding) for embed token details.
+- Every endpoint requires a valid Bearer token — a first-party JWT minted by the backend, a long-lived `nubi_ak_…` [API key](#api-keys), or an RS256/ES256 embed token from a registered issuer. See [Embedding](/docs/embedding) for embed token details.
 - Resources are org-scoped; cross-org access returns 404 (not 403) to avoid information leakage.
 - Query endpoints return `Content-Type: application/vnd.apache.arrow.stream`; all other endpoints return JSON.
 - In development, FastAPI's interactive Swagger UI is available at `http://localhost:8000/docs` (disabled in `ENV=production`).

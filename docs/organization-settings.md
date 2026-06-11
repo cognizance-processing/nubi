@@ -11,14 +11,16 @@ Settings use a two-column layout: a sticky sidebar on the left, grouped by scope
 | **Account** | Profile | `/settings/profile` | Your display name and avatar |
 | **Organization** | General | `/settings/organization` | Org name, avatar, deletion |
 | **Organization** | Members | `/settings/members` | Invites, roles, removals |
+| **Organization** | Integrations | `/settings/integrations` | Slack / WhatsApp / Google Chat / Teams / Email channels |
 | **Organization** | Security | `/settings/security` | Embed JWT issuers (host-signed token trust) |
-| **Organization** | Billing *(Cloud/EE only)* | `/billing` | Plan, usage, invoices |
+| **Organization** | Usage | `/settings/usage` | Read-only usage metering for the org |
+| **Organization** | Billing *(Cloud/EE only)* | `/billing` | Plan, wallet, invoices — link-out, shown only when billing is enabled |
 | **Project** | General | `/settings/project` | Project name, Git sync, deletion |
 
-Two things live outside Settings:
+Two notes on what lives where:
 
 - **Secrets** are managed under **Flows → Secrets**, not here.
-- **Billing** is a separate top-level page (`/billing`) and only appears on Nubi Cloud / EE builds. See [Billing & Usage](/docs/billing-and-usage).
+- **Billing** is a separate top-level page (`/billing`) and only appears on Nubi Cloud / EE builds — the sidebar shows it as a link-out when the billing feature is enabled. **Usage**, by contrast, is open-core and lives right here in Settings; the old standalone `/usage` page redirects to `/settings/usage`. See [Billing & Usage](/docs/billing-and-usage).
 
 ---
 
@@ -70,6 +72,8 @@ This cannot be undone.
 
 **Settings → Members** is a dedicated page for managing who's in the org. Owners and admins see two cards: the invite form at the top and the member list below. Members and viewers see the list but no edit controls ("View only — ask an owner or admin to manage members").
 
+![Settings — Members: invite form, pending invites, and the member list with role dropdowns](/docs/screenshots/settings-members.png)
+
 ### Roles
 
 Nubi has four org roles in descending order of privilege:
@@ -105,6 +109,48 @@ Constraints: the **last remaining owner cannot be demoted or removed** (controls
 ### Remove a member
 
 Click the trash icon on the member's row. The last-owner protection applies here too.
+
+---
+
+## Organization — Integrations
+
+**Settings → Integrations** connects the org's notification channels. One connected integration powers **both** inbound chat and outbound alerts (watches, flow runs, shares), so you configure each channel once.
+
+![Settings — Integrations: connected channels with Test / Enable / Edit / Delete controls, and the connect-a-channel picker](/docs/screenshots/settings-integrations.png)
+
+Five channel kinds are available:
+
+| Channel | How it sends | Fields |
+|---|---|---|
+| **Slack** | Incoming webhook | Channel, webhook URL *(secret)* |
+| **WhatsApp** | WhatsApp Business Cloud API | Phone number ID, recipient number, access token *(secret)* |
+| **Google Chat** | Incoming webhook | Space label, webhook URL *(secret)* |
+| **Microsoft Teams** | Incoming webhook connector | Connector name, webhook URL *(secret)* |
+| **Email** | App SMTP | Recipients (comma- or newline-separated) |
+
+### Connect a channel
+
+1. In the **Connect a channel** card, pick a kind — the form opens with the right fields for it.
+2. Give it a **Name**, fill in the fields, and click **Connect**. New integrations are enabled immediately.
+
+### Secrets are write-only
+
+Webhook URLs and access tokens are stored encrypted and **never shown again after saving** — not even when editing. When you edit a configured integration, the secret field shows `•••••••• (leave blank to keep)`: leave it empty to keep the stored secret, or type a new value to replace it.
+
+### Manage a connected integration
+
+Each connected integration is a row with:
+
+- **Test** — sends a test message and shows the result inline (success or the error). Available to everyone, including viewers.
+- **Enable / Disable** — pause a channel without deleting its configuration.
+- **Edit** (pencil) — change the name or any field.
+- **Delete** (trash) — asks for an inline **Confirm** before removing.
+
+A **Not configured** badge appears on integrations whose secret hasn't been set yet.
+
+Connecting, editing, enabling/disabling, and deleting require **write access** (owner, admin, or member). Viewers see the list and can send tests, but the edit controls are hidden.
+
+See [Notifications & Integrations](/docs/notifications-and-integrations) for how alerts use these channels.
 
 ---
 
@@ -175,6 +221,20 @@ For the full embedding workflow — minting tokens, row-level security, and moun
 
 ---
 
+## Organization — Usage
+
+**Settings → Usage** is read-only visibility into what the active org has consumed this period. It used to be a standalone page; the old `/usage` route now redirects here.
+
+![Settings — Usage: per-metric cards with used / limit and a time-series chart for the selected metric](/docs/screenshots/settings-usage.png)
+
+Usage metering is **open-core** — every Nubi deployment has this page. It shows one card per metric (queries run, compute units, bytes scanned, flow runs, AI usage, embedded sessions, storage), a period selector (**Today / 7 days / Month**), and a time-series chart for whichever metric card you select.
+
+This page is deliberately **billing-free**: it never charges, blocks, or implies a hard cap. Soft plan limits (the "used / limit / %" progress bars) only appear when an EE tier configures them; in core everything shows as *unlimited*. Plans, the wallet, and invoices live on the EE-only **Billing** page.
+
+The full metric-by-metric breakdown is in [Billing & Usage](/docs/billing-and-usage).
+
+---
+
 ## Project — General
 
 **Settings → Project → General** configures the **currently active project**. If you have multiple projects, a project picker in the page header lets you switch which project you're editing without leaving settings.
@@ -212,6 +272,9 @@ The danger zone shows a precise impact breakdown (e.g. "3 dashboards, 12 queries
 | Delete the organization | ✓ | ✓ | — | — |
 | Rename project / configure Git / delete project | ✓ | ✓ | ✓ | — |
 | Manage embed JWT issuers (Security) | ✓ | ✓ | ✓ | — |
+| Connect / edit / delete integrations | ✓ | ✓ | ✓ | — |
+| Send a test message on an integration | ✓ | ✓ | ✓ | ✓ |
+| View usage metrics | ✓ | ✓ | ✓ | ✓ |
 | Add / delete secrets | ✓ | ✓ | ✓ | — |
 | View dashboards, queries, flows | ✓ | ✓ | ✓ | ✓ |
 
@@ -222,6 +285,7 @@ The last owner of an organization can never be demoted or removed — promote so
 ## Related
 
 - [Embedding](/docs/embedding) — full embed flow: minting JWTs, RLS policies, SDK
+- [Notifications & Integrations](/docs/notifications-and-integrations) — what the connected channels deliver
 - [Secrets](/docs/secrets) — encrypted credentials for flow tasks
 - [Git Sync](/docs/git-sync) — version dashboards and queries as code
-- [Billing & Usage](/docs/billing-and-usage) — Cloud/EE only
+- [Billing & Usage](/docs/billing-and-usage) — usage metering (open-core) and billing (Cloud/EE)
