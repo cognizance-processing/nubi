@@ -18,6 +18,7 @@ Sub-apps
 flows run|push|pull
 dashboards pull|push       queries pull|push       connectors pull|push|test
 secrets set|list|pull|push|materialize|delete
+auth create-key|list-keys|revoke-key
 git connect|graph
 
 Secrets live in the gitignored .nubi/secrets/{connectors,flow}.env tree;
@@ -93,6 +94,11 @@ git_app = typer.Typer(
     name="git", help="Bind the project to a remote and inspect its commit graph.", no_args_is_help=True
 )
 app.add_typer(git_app, name="git")
+
+auth_app = typer.Typer(
+    name="auth", help="Manage API keys for CLI / CI authentication.", no_args_is_help=True
+)
+app.add_typer(auth_app, name="auth")
 
 
 # ---------------------------------------------------------------------------
@@ -1231,6 +1237,35 @@ def _pull_kind(root: Path, kind: str, headers: dict[str, str]) -> int:
     return count
 
 
+def _pull_bundle(root: Path, project_id: str, wanted: list[str], headers: dict[str, str]) -> int:
+    """Pull the whole project in one round-trip via GET /projects/{id}/export.
+
+    Writes the same on-disk file tree as the per-resource loop. Raises
+    ``CLIError`` (typically 404/405 on older backends) so the caller can fall
+    back to the per-resource path transparently.
+    """
+    resp = _client.get(f"projects/{project_id}/export", headers=headers)
+    bundle = resp.json()
+    resources = bundle.get("resources") if isinstance(bundle, dict) else None
+    if not isinstance(resources, list):
+        resources = []
+    wanted_set = set(wanted)
+    count = 0
+    for env in resources:
+        if not isinstance(env, dict):
+            continue
+        if env.get("kind") not in wanted_set:
+            continue
+        try:
+            items = _project.envelope_to_files(env)
+            _project.write_files(root, items)
+            count += 1
+        except (ValueError, KeyError) as exc:
+            meta = env.get("metadata") or {}
+            err_console.print(f"Skipping {env.get('kind')} {meta.get('id', '?')}: {exc}")
+    return count
+
+
 @app.command()
 def pull(  # noqa: F811 — replaces the legacy single-resource pull
     env: Optional[str] = typer.Option(None, "--env", help="Environment key (informational)."),
@@ -1244,11 +1279,29 @@ def pull(  # noqa: F811 — replaces the legacy single-resource pull
     Writes dashboards/queries/flows/connectors using the canonical on-disk
     layout. Connectors write NON-SECRET manifests only — secrets stay in the
     gitignored .nubi/secrets/ tree.
+
+    When the project is bound this uses the one-shot bundle endpoint
+    (GET /projects/{id}/export), falling back transparently to the per-resource
+    /export/{kind}/{id} loop on a 404/405 (older backend).
     """
     _require_login()
     root = directory
     wanted = [k.strip() for k in kinds.split(",")] if kinds else list(_ALL_KINDS)
     headers = _project_headers(root)
+    pid = _resolve_project_id(root)
+
+    # ── Fast path: one round-trip via the project bundle endpoint ────────────
+    if pid:
+        try:
+            total = _pull_bundle(root, pid, wanted, headers)
+            _project.write_gitignore(root)
+            console.print(f"Pulled {total} resource(s) into {root}/ (bundle).")
+            return
+        except CLIError as exc:
+            if exc.status not in (404, 405):
+                err_console.print(f"Bundle export failed: {exc.message}")
+                raise typer.Exit(code=1)
+            # Older backend without the bundle endpoint — fall back below.
 
     total = 0
     for kind in wanted:
@@ -1286,6 +1339,48 @@ def _import_envelope(env: dict, headers: dict[str, str], dry_run: bool, root: Pa
     return label
 
 
+def _render_import_results(payload: dict) -> None:
+    """Render the per-resource results table from a bundle-import response."""
+    results = payload.get("results") or []
+    tbl = Table("Kind", "Name", "Action", "Error", title="Import results")
+    for r in results:
+        action = str(r.get("action", "?"))
+        colour = (
+            "green" if action in ("created", "updated")
+            else "red" if action in ("skipped", "failed")
+            else "yellow"
+        )
+        tbl.add_row(
+            str(r.get("kind", "?")),
+            str(r.get("name", "?")),
+            f"[{colour}]{action}[/{colour}]",
+            str(r.get("error") or ""),
+        )
+    console.print(tbl)
+    console.print(
+        f"[green]created {payload.get('created', 0)}[/green], "
+        f"updated {payload.get('updated', 0)}, "
+        f"[red]failed {payload.get('failed', 0)}[/red] "
+        f"(of {payload.get('total', len(results))})."
+    )
+
+
+def _push_bundle(plan: list[dict], project_id: str, headers: dict[str, str]) -> dict:
+    """Bulk-upsert envelopes via POST /projects/{id}/import in one round-trip.
+
+    Raises ``CLIError`` (typically 404/405 on older backends) so the caller can
+    fall back to the per-resource POST /import loop transparently. Secret fields
+    are NOT carried by the import path — connector secret rotation still happens
+    via the per-resource ``_push_connector`` path (deploy / connectors push).
+    """
+    resp = _client.post(
+        f"projects/{project_id}/import",
+        json={"apiVersion": _project.API_VERSION, "kind": "project", "resources": plan},
+        headers=headers,
+    )
+    return resp.json()
+
+
 @app.command()
 def push(
     dry_run: bool = typer.Option(False, "--dry-run", help="Print the plan; make no API calls."),
@@ -1295,15 +1390,19 @@ def push(
 ) -> None:
     """Upload changed non-secret manifests to the cloud (doc D).
 
-    Dashboards/queries/flows go through POST /import (upsert by embedded id);
-    connectors upsert via POST/PUT /connectors. Secrets are NEVER pushed here —
-    use ``nubi deploy`` or ``nubi secrets push`` for that.
+    When the project is bound this uses the one-shot bulk endpoint
+    (POST /projects/{id}/import) and surfaces a per-resource results table,
+    falling back transparently to the per-resource POST /import loop on a
+    404/405 (older backend). Connectors upsert via POST/PUT /connectors on the
+    fallback path. Secrets are NEVER pushed here — use ``nubi deploy`` or
+    ``nubi secrets push`` for that.
     """
     _require_login()
     root = directory
     wanted = [k.strip() for k in kinds.split(",")] if kinds else list(_ALL_KINDS)
     headers = _project_headers(root)
     tree = _project.read_all(root, wanted)
+    pid = _resolve_project_id(root)
 
     tbl = Table("Kind", "Name", "Action", title="Push plan")
     plan: list[dict] = []
@@ -1320,6 +1419,18 @@ def push(
     if dry_run:
         console.print("[yellow]Dry run — no API calls made.[/yellow]")
         return
+
+    # ── Fast path: bulk upsert via the project import endpoint ───────────────
+    if pid:
+        try:
+            payload = _push_bundle(plan, pid, headers)
+            _render_import_results(payload)
+            return
+        except CLIError as exc:
+            if exc.status not in (404, 405):
+                err_console.print(f"Bundle import failed: {exc.message}")
+                raise typer.Exit(code=1)
+            # Older backend without the bundle endpoint — fall back below.
 
     for envlp in plan:
         try:
@@ -1436,15 +1547,31 @@ def deploy_project(  # noqa: F811 — name="deploy" keeps the CLI verb; new beha
     if flow_secrets:
         console.print(f"[green]pushed[/green] {len(flow_secrets)} flow secret(s)")
 
-    # (4) Import dashboards/queries/flows.
+    # (4) Import dashboards/queries/flows — bulk via the project endpoint when
+    #     bound, falling back transparently to per-resource POST /import.
     tree = _project.read_all(root, ["dashboard", "query", "flow"])
-    for kind in ("dashboard", "query", "flow"):
-        for envlp in tree.get(kind, []):
-            try:
-                _client.post("import", json=envlp, headers=headers)
-                console.print(f"[green]imported[/green] {kind} {envlp.get('metadata', {}).get('name')}")
-            except CLIError as exc:
-                err_console.print(f"Import {kind} failed: {exc.message}")
+    plan = [envlp for kind in ("dashboard", "query", "flow") for envlp in tree.get(kind, [])]
+    pid = _resolve_project_id(root)
+    bulk_done = False
+    if pid and plan:
+        try:
+            payload = _push_bundle(plan, pid, headers)
+            _render_import_results(payload)
+            bulk_done = True
+        except CLIError as exc:
+            if exc.status not in (404, 405):
+                err_console.print(f"Bundle import failed: {exc.message}")
+                raise typer.Exit(code=1)
+            # Older backend — fall back to the per-resource loop below.
+
+    if not bulk_done:
+        for kind in ("dashboard", "query", "flow"):
+            for envlp in tree.get(kind, []):
+                try:
+                    _client.post("import", json=envlp, headers=headers)
+                    console.print(f"[green]imported[/green] {kind} {envlp.get('metadata', {}).get('name')}")
+                except CLIError as exc:
+                    err_console.print(f"Import {kind} failed: {exc.message}")
 
     console.print(f"[green]Deploy complete[/green] (env={env or 'default'}).")
 
@@ -1640,6 +1767,83 @@ def git_graph(directory: Path = typer.Argument(Path("."), help="Project root (de
         console.print(f"[cyan]{branch.get('branch')}[/cyan] (env={branch.get('env_key')})")
         for c in branch.get("commits", [])[:10]:
             console.print(f"  {c.get('sha', '')[:8]}  {c.get('message', '')}")
+
+
+# ---------------------------------------------------------------------------
+# auth create-key / list-keys / revoke-key (long-lived API keys, doc D)
+# ---------------------------------------------------------------------------
+
+
+@auth_app.command("create-key")
+def auth_create_key(
+    name: str = typer.Option("CLI token", "--name", help="Human label for the key."),
+) -> None:
+    """Mint a long-lived API key (POST /auth/api-keys) and print it ONCE.
+
+    The raw key authenticates as a normal Bearer token. It is never retrievable
+    again — store it in CI as the ``NUBI_TOKEN`` secret.
+    """
+    _require_login()
+    try:
+        resp = _client.post("auth/api-keys", json={"name": name})
+    except CLIError as exc:
+        err_console.print(f"Could not create API key: {exc.message}")
+        raise typer.Exit(code=1)
+    body = resp.json()
+    raw = body.get("key")
+    info = body.get("api_key") or {}
+    if not raw:
+        err_console.print("Server did not return a key.")
+        raise typer.Exit(code=1)
+    console.print(f"[green]Created[/green] API key {info.get('name', name)!r} (id={info.get('id', '?')}).")
+    console.print(f"\n  [bold]{raw}[/bold]\n")
+    console.print(
+        "[yellow]This is the only time the key is shown.[/yellow] "
+        "Store it now — e.g. set it as the [bold]NUBI_TOKEN[/bold] secret in your CI."
+    )
+
+
+@auth_app.command("list-keys")
+def auth_list_keys() -> None:
+    """List your API keys (GET /auth/api-keys) — secrets are never shown."""
+    _require_login()
+    try:
+        resp = _client.get("auth/api-keys")
+    except CLIError as exc:
+        err_console.print(f"Could not list API keys: {exc.message}")
+        raise typer.Exit(code=1)
+    body = resp.json()
+    keys = body.get("api_keys", body) if isinstance(body, dict) else body
+    if not isinstance(keys, list):
+        keys = []
+    if not keys:
+        console.print("[dim]No API keys.[/dim]")
+        return
+    tbl = Table("ID", "Name", "Last 4", "Created", "Last used", "Revoked", title="API keys")
+    for k in keys:
+        tbl.add_row(
+            str(k.get("id", "?")),
+            str(k.get("name", "?")),
+            str(k.get("last_four") or "-"),
+            str(k.get("created_at") or "-"),
+            str(k.get("last_used_at") or "-"),
+            str(k.get("revoked_at") or "-"),
+        )
+    console.print(tbl)
+
+
+@auth_app.command("revoke-key")
+def auth_revoke_key(
+    key_id: str = typer.Argument(..., help="API key id to revoke."),
+) -> None:
+    """Revoke an API key (DELETE /auth/api-keys/{id})."""
+    _require_login()
+    try:
+        _client.delete(f"auth/api-keys/{key_id}")
+    except CLIError as exc:
+        err_console.print(f"Could not revoke API key: {exc.message}")
+        raise typer.Exit(code=1)
+    console.print(f"[green]Revoked[/green] API key {key_id!r}.")
 
 
 # ---------------------------------------------------------------------------

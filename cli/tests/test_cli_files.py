@@ -398,6 +398,153 @@ class TestPull:
         assert out[0]["spec"]["sql"] == "SELECT 1"
 
 
+def _bind_project(root: Path, pid: str = "proj-1") -> None:
+    """Write a bound project pointer so the bundle fast-path engages."""
+    _project.write_project_json(root, {"project_id": pid})
+
+
+class TestPullBundle:
+    """pull uses GET /projects/{id}/export when bound, with 404 fallback."""
+
+    def test_pull_bundle_success(self, tmp_path: Path, monkeypatch, logged_in):
+        _bind_project(tmp_path)
+        bundle = {
+            "apiVersion": "nubi/v1",
+            "kind": "project",
+            "metadata": {"id": "proj-1", "name": "P"},
+            "resources": [
+                {
+                    "kind": "query",
+                    "apiVersion": "nubi/v1",
+                    "metadata": {"name": "Q One", "id": "q1"},
+                    "spec": {"name": "Q One", "sql": "SELECT 1", "params": [], "datastore_id": "d"},
+                },
+                {
+                    "kind": "dashboard",
+                    "apiVersion": "nubi/v1",
+                    "metadata": {"name": "Dash", "id": "d1"},
+                    "spec": {"title": "Dash"},
+                },
+            ],
+        }
+
+        calls: list[str] = []
+
+        def fake_get(path, **kwargs):
+            calls.append(path)
+            if path == "projects/proj-1/export":
+                return _resp(bundle)
+            raise AssertionError(f"unexpected GET {path}")
+
+        monkeypatch.setattr("nubi_cli.client.get", fake_get)
+        result = runner.invoke(app, ["pull", "--kinds", "query,dashboard", str(tmp_path)])
+        assert result.exit_code == 0, result.output
+        # ONE round-trip — the bundle endpoint, no per-resource calls.
+        assert calls == ["projects/proj-1/export"]
+        assert "bundle" in result.output
+        q = _project.read_all(tmp_path, ["query"])["query"]
+        d = _project.read_all(tmp_path, ["dashboard"])["dashboard"]
+        assert q[0]["spec"]["sql"] == "SELECT 1"
+        assert d[0]["spec"]["title"] == "Dash"
+
+    def test_pull_bundle_404_falls_back_to_per_resource(self, tmp_path: Path, monkeypatch, logged_in):
+        from nubi_cli.client import CLIError as _CLIError
+
+        _bind_project(tmp_path)
+        calls: list[str] = []
+
+        def fake_get(path, **kwargs):
+            calls.append(path)
+            if path == "projects/proj-1/export":
+                raise _CLIError("not_found", "no bundle", status=404)
+            if path == "queries":
+                return _resp([{"id": "q1", "name": "Q One"}])
+            if path == "export/query/q1":
+                return _resp(
+                    {
+                        "kind": "query",
+                        "apiVersion": "nubi/v1",
+                        "metadata": {"name": "Q One", "id": "q1"},
+                        "spec": {"name": "Q One", "sql": "SELECT 9", "params": [], "datastore_id": "d"},
+                    }
+                )
+            return _resp([])
+
+        monkeypatch.setattr("nubi_cli.client.get", fake_get)
+        result = runner.invoke(app, ["pull", "--kinds", "query", str(tmp_path)])
+        assert result.exit_code == 0, result.output
+        # Tried the bundle, then fell back to the per-resource loop.
+        assert calls[0] == "projects/proj-1/export"
+        assert "queries" in calls and "export/query/q1" in calls
+        out = _project.read_all(tmp_path, ["query"])["query"]
+        assert out[0]["spec"]["sql"] == "SELECT 9"
+
+
+class TestPushBundle:
+    """push uses POST /projects/{id}/import when bound, with 404 fallback."""
+
+    def test_push_bundle_success_renders_results(self, tmp_path: Path, monkeypatch, logged_in):
+        _bind_project(tmp_path)
+        env = {
+            "kind": "dashboard",
+            "apiVersion": "nubi/v1",
+            "metadata": {"name": "Dash", "id": "d1"},
+            "spec": {"title": "Dash"},
+        }
+        _project.write_files(tmp_path, _project.envelope_to_files(env))
+
+        def fake_post(path, **kwargs):
+            assert path == "projects/proj-1/import"
+            body = kwargs["json"]
+            assert body["kind"] == "project"
+            assert isinstance(body["resources"], list) and len(body["resources"]) == 1
+            return _resp(
+                {
+                    "results": [{"kind": "dashboard", "id": "d1", "name": "Dash", "action": "updated"}],
+                    "created": 0,
+                    "updated": 1,
+                    "failed": 0,
+                    "total": 1,
+                }
+            )
+
+        mock_post = MagicMock(side_effect=fake_post)
+        monkeypatch.setattr("nubi_cli.client.post", mock_post)
+        result = runner.invoke(app, ["push", "--kinds", "dashboard", str(tmp_path)])
+        assert result.exit_code == 0, result.output
+        mock_post.assert_called_once()
+        assert "updated" in result.output
+        assert "Import results" in result.output
+
+    def test_push_bundle_405_falls_back_to_per_resource(self, tmp_path: Path, monkeypatch, logged_in):
+        from nubi_cli.client import CLIError as _CLIError
+
+        _bind_project(tmp_path)
+        env = {
+            "kind": "dashboard",
+            "apiVersion": "nubi/v1",
+            "metadata": {"name": "Dash", "id": "d1"},
+            "spec": {"title": "Dash"},
+        }
+        _project.write_files(tmp_path, _project.envelope_to_files(env))
+
+        calls: list[str] = []
+
+        def fake_post(path, **kwargs):
+            calls.append(path)
+            if path == "projects/proj-1/import":
+                raise _CLIError("method_not_allowed", "old", status=405)
+            if path == "import":
+                return _resp({"id": "d1"})
+            raise AssertionError(f"unexpected POST {path}")
+
+        monkeypatch.setattr("nubi_cli.client.post", MagicMock(side_effect=fake_post))
+        result = runner.invoke(app, ["push", "--kinds", "dashboard", str(tmp_path)])
+        assert result.exit_code == 0, result.output
+        assert calls[0] == "projects/proj-1/import"
+        assert "import" in calls  # per-resource fallback fired
+
+
 class TestPush:
     def test_push_dry_run_makes_no_calls(self, tmp_path: Path, monkeypatch, logged_in):
         env = {
@@ -502,3 +649,82 @@ class TestGitConnect:
         # nubi.yaml now mirrors the (non-secret) binding.
         manifest = _project.read_nubi_yaml(tmp_path)
         assert manifest["spec"]["git"]["provider"] == "github"
+
+
+# ---------------------------------------------------------------------------
+# auth create-key / list-keys / revoke-key
+# ---------------------------------------------------------------------------
+
+
+class TestAuthApiKeys:
+    def test_create_key_prints_raw_once(self, monkeypatch, logged_in):
+        mock_post = MagicMock(
+            return_value=_resp(
+                {
+                    "key": "nubi_ak_supersecret",
+                    "api_key": {"id": "k1", "name": "CI", "last_four": "cret"},
+                },
+                status_code=201,
+            )
+        )
+        monkeypatch.setattr("nubi_cli.client.post", mock_post)
+        result = runner.invoke(app, ["auth", "create-key", "--name", "CI"])
+        assert result.exit_code == 0, result.output
+        assert mock_post.call_args[0][0] == "auth/api-keys"
+        assert mock_post.call_args[1]["json"] == {"name": "CI"}
+        assert "nubi_ak_supersecret" in result.output
+        assert "NUBI_TOKEN" in result.output
+
+    def test_create_key_default_name(self, monkeypatch, logged_in):
+        mock_post = MagicMock(
+            return_value=_resp({"key": "nubi_ak_x", "api_key": {"id": "k2"}}, status_code=201)
+        )
+        monkeypatch.setattr("nubi_cli.client.post", mock_post)
+        result = runner.invoke(app, ["auth", "create-key"])
+        assert result.exit_code == 0, result.output
+        assert mock_post.call_args[1]["json"] == {"name": "CLI token"}
+
+    def test_list_keys_renders_table(self, monkeypatch, logged_in):
+        monkeypatch.setattr(
+            "nubi_cli.client.get",
+            MagicMock(
+                return_value=_resp(
+                    {
+                        "api_keys": [
+                            {"id": "k1", "name": "CI", "last_four": "abcd",
+                             "created_at": "2026-01-01", "last_used_at": None, "revoked_at": None},
+                        ]
+                    }
+                )
+            ),
+        )
+        result = runner.invoke(app, ["auth", "list-keys"])
+        assert result.exit_code == 0, result.output
+        assert "k1" in result.output
+        assert "CI" in result.output
+
+    def test_list_keys_empty(self, monkeypatch, logged_in):
+        monkeypatch.setattr(
+            "nubi_cli.client.get", MagicMock(return_value=_resp({"api_keys": []}))
+        )
+        result = runner.invoke(app, ["auth", "list-keys"])
+        assert result.exit_code == 0, result.output
+        assert "No API keys" in result.output
+
+    def test_revoke_key_calls_delete(self, monkeypatch, logged_in):
+        mock_del = MagicMock(return_value=_resp({}, status_code=204))
+        monkeypatch.setattr("nubi_cli.client.delete", mock_del)
+        result = runner.invoke(app, ["auth", "revoke-key", "k1"])
+        assert result.exit_code == 0, result.output
+        assert mock_del.call_args[0][0] == "auth/api-keys/k1"
+        assert "Revoked" in result.output
+
+    def test_revoke_key_404(self, monkeypatch, logged_in):
+        from nubi_cli.client import CLIError as _CLIError
+
+        monkeypatch.setattr(
+            "nubi_cli.client.delete",
+            MagicMock(side_effect=_CLIError("not_found", "API key not found.", status=404)),
+        )
+        result = runner.invoke(app, ["auth", "revoke-key", "missing"])
+        assert result.exit_code != 0
