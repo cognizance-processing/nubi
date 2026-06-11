@@ -39,8 +39,10 @@ Baseline at audit: commit `16f31d0` (Wave C). Waves A/B/C done. Verify commands:
   rate limits (instrument query path; expose a metrics endpoint).
 - [ ] **Wave E3 — compliance posture**: `docs/compliance.md` (SOC 2 / POPIA / GDPR checklist,
   data-handling, RLS audit-trail) — hard gate for embedded sales.
-- [ ] **Widget→metric binding** (Wave C "later"): let a `Widget` bind `metric_id` + dims/grain
-  (not just `query_id`) in `dashboards/spec.py` + `SpecRenderer.jsx`; wire `/ai/pin` metric path.
+- [x] **Widget→metric binding** (Wave C "later"): `Widget.metric` binding (metric_id + dims/grain
+  + filters) in `dashboards/spec.py`; `runMetricQuery` + Chart/Table/Kpi widgets fetch from
+  `/metrics/{id}/query`; `/ai/pin` metric path. ✅ `7f4434a` (backend 3442, build green).
+  *Follow-up:* embed web-component (`<nubi-chart metric-id=…>`) consumption of the emitted attrs.
 - [ ] **Landing-page glow-up** (`src/pages/LandingPage.jsx`, `src/components/illustrations/*`):
   bolder/less-bland copy, real product screenshots replacing weak SVG illustrations. Use the
   **nubi-illustrations** skill's render→screenshot→critique loop (orchestrator-driven, both modes).
