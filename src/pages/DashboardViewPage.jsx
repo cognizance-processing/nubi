@@ -39,6 +39,7 @@ import { useParams, Link, useSearchParams } from 'react-router-dom'
 import { get } from '../lib/api.js'
 import DashboardView from '../dashboards/DashboardView.jsx'
 import SpecRenderer from '../dashboards/SpecRenderer.jsx'
+import { extractVarsFromURL, applyVarToSearchParams } from '../dashboards/urlSync.js'
 import { useCanWrite } from '../contexts/OrgContext.jsx'
 
 // ---------------------------------------------------------------------------
@@ -98,30 +99,9 @@ export const SAMPLE_DASHBOARD_HTML = `
 `
 
 // ---------------------------------------------------------------------------
-// URL ↔ variable store sync helpers
-// ---------------------------------------------------------------------------
-
-/**
- * Extract variable values from URLSearchParams.
- * All URL param values are strings; callers should cast if needed.
- *
- * @param {URLSearchParams} searchParams
- * @param {string[]} knownVarNames — variable names declared in spec.variables.
- *   Only these names are extracted to avoid polluting the store with unrelated
- *   query params (e.g. ?utm_source=…).
- * @returns {Record<string, string>}
- */
-function extractVarsFromURL(searchParams, knownVarNames) {
-  const values = {}
-  for (const name of knownVarNames) {
-    const val = searchParams.get(name)
-    if (val !== null) {
-      values[name] = val
-    }
-  }
-  return values
-}
-
+// URL ↔ variable store sync helpers live in the pure, unit-tested
+// ./../dashboards/urlSync.js module (extractVarsFromURL / applyVarToSearchParams),
+// imported above.
 // ---------------------------------------------------------------------------
 // DashboardViewPage
 // ---------------------------------------------------------------------------
@@ -269,37 +249,23 @@ export default function DashboardViewPage() {
   }, [setSearchParams])
 
   /**
-   * Called by filter widgets (via the VariableStore) when a variable changes.
-   * Writes the new value back to the URL as a search param (shallow replace).
-   *
-   * NOTE: VariableProvider handles internal state; this callback propagates
-   * changes to the URL so the state survives a page refresh / is shareable.
-   * The VariableProvider itself is the source of truth while the page is mounted;
-   * the URL is the persistence layer.
-   *
-   * This callback is not yet plumbed to the VariableProvider directly — that
-   * wiring belongs in a future URLSyncVariableProvider wrapper.  For M14-C we
-   * seed the store from the URL on mount; full two-way sync (filter → URL) is
-   * the next step and is left as a clearly-marked hook here.
-   *
-   * TODO(M14-C-sync): wrap VariableProvider in a URLSyncProvider that intercepts
-   *   setVariable calls and also calls setSearchParams for non-locked names.
+   * Two-way URL sync (M14-C, WIRED): this callback is passed as
+   * `onVariableChange` → SpecRenderer → VariableProvider, which fires it on every
+   * `setVariable`. So a filter change propagates to the URL (shallow replace) and
+   * the state is shareable / survives a refresh. The read direction is seeded from
+   * the URL on mount via `extractVarsFromURL` (initialVariables, above). The
+   * VariableProvider is the source of truth while mounted; the URL is the
+   * persistence layer. Embed-locked params are never written back (the token wins),
+   * and only declared variable names sync — both enforced in applyVarToSearchParams.
    */
   const handleVariableChange = useCallback((name, value) => {
-    // Do not write embed-locked params back to the URL
-    if (Object.prototype.hasOwnProperty.call(embedLockedParams, name)) return
-    // Only sync URL-bound variables (see knownVarNames opt-in logic).
-    if (!knownVarNames.includes(name)) return
-
-    setSearchParams(prev => {
-      const next = new URLSearchParams(prev)
-      if (value === undefined || value === null || value === '') {
-        next.delete(name)
-      } else {
-        next.set(name, String(value))
-      }
-      return next
-    }, { replace: true })
+    setSearchParams(
+      prev => applyVarToSearchParams(prev, name, value, {
+        knownVarNames,
+        lockedParams: embedLockedParams,
+      }),
+      { replace: true },
+    )
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [setSearchParams, JSON.stringify(embedLockedParams), knownVarNames])
 
