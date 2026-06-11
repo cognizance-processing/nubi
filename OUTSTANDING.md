@@ -83,7 +83,26 @@ Baseline at audit: commit `16f31d0` (Wave C). Waves A/B/C done. Verify commands:
 - [x] **Provider model routing** (`routes/ai.py` TODO): `model` threaded through complete() /
   run_agent / generate_dashboard_spec with a strict per-provider allowlist (unknown → 400
   model_not_allowed). ✅ `b82f3a9` (backend 3485). *Note:* `/ai/sql` has no model field yet.
-- [ ] **Dashboard variable URL sync** (`DashboardViewPage.jsx` TODO M14-C-sync): URLSyncProvider.
+- [x] **Dashboard variable URL sync** (M14-C): two-way sync was already wired; extracted the pure
+  helpers to `src/dashboards/urlSync.js` (read `extractVarsFromURL` + write `applyVarToSearchParams`),
+  added 10 node:test cases, corrected the stale TODO. ✅ `c236dcd` (dash 336/336, build green).
+  Also fixed 2 pre-existing stale warehouse-pricing tests found en route (`5cee36e`).
+
+---
+
+## ⛔ Remaining — ALL decision/infra-gated (loop paused here; need your call)
+
+- [ ] **Wave E4 — headless preview**: needs an INFRA decision — add Playwright + a browser binary
+  to the prod image (note: playwright IS a frontend devDep, so e2e capture is possible; the open
+  question is the server-side render path + auth). *Decide: ship Playwright-in-image, or skip.*
+- [ ] **Real scanned-bytes counters**: replace the Arrow-IPC-length proxy with DuckDB post-pruning
+  byte counters (parquet_metadata/httpfs). Needs real connector work + a scan benchmark to confirm
+  the `$5/TiB` public price. *Decide: prioritize, and confirm the benchmark target.*
+- [ ] **FlyMachineExecutor wake/sleep**: real Fly Machines API wake/sleep. *Needs Fly API creds/infra.*
+- [ ] **Lakehouse optimizer deeper bits**: write rollups to R2 Parquet (not local DuckDB), auto
+  incremental refresh, HLL/t-digest sketches. *Large storage-infra effort; needs R2 wiring decision.*
+- [ ] **Real-remote git push/pull verification**: needs a LIVE remote — cannot be automated here.
+  *Manual test (documented).*
 
 ---
 
