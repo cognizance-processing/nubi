@@ -18,6 +18,7 @@ import { useCanWrite } from '../../../contexts/OrgContext.jsx'
 import GitPanel from '../../../components/app/GitPanel.jsx'
 import DangerDeleteDialog from '../../../components/app/DangerDeleteDialog.jsx'
 import { updateProjectSettings, deleteProjectSettings, getProjectDeletionImpact } from '../../../lib/settings.js'
+import { isUnchangedName } from '../../../shell/shellLogic.js'
 import {
   SettingsPageHeader,
   SettingsCard,
@@ -161,7 +162,11 @@ export default function ProjectSettings() {
           description="Shown in the sidebar project picker and across the app."
           footer={
             <>
-              <PrimaryButton type="submit" busy={saving} disabled={saving || !canWrite}>
+              <PrimaryButton
+                type="submit"
+                busy={saving}
+                disabled={saving || !canWrite || isUnchangedName(projectName, activeProject?.name ?? '')}
+              >
                 Save changes
               </PrimaryButton>
               <SavedBadge show={saved} />

@@ -32,6 +32,7 @@ import {
   inviteLink,
 } from '../../../lib/members.js'
 import { SettingsPageHeader, SettingsCard, PrimaryButton, inputCls } from './SettingsUI.jsx'
+import { isValidEmail } from '../../../shell/shellLogic.js'
 
 const MANAGE_ROLES = ['owner', 'admin']
 
@@ -186,7 +187,7 @@ export default function MembersSettings() {
                 <option key={r} value={r}>{r}</option>
               ))}
             </select>
-            <PrimaryButton type="submit" busy={inviting} disabled={inviting || !inviteEmail.trim()} className="shrink-0">
+            <PrimaryButton type="submit" busy={inviting} disabled={inviting || !isValidEmail(inviteEmail)} className="shrink-0">
               {!inviting && <UserPlus size={14} />}
               Invite
             </PrimaryButton>

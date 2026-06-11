@@ -21,8 +21,14 @@
  *       icon (used by the notifications bell); 0/undefined hides it.
  */
 
+import {
+  visibleRailItems,
+  railItemAriaLabel,
+  formatBadgeCount,
+} from '../../shell/shellLogic.js'
+
 export default function AppRightRail({ items }) {
-  const visible = items.filter(it => !it.hidden)
+  const visible = visibleRailItems(items)
   if (visible.length === 0) return null
 
   return (
@@ -38,11 +44,7 @@ export default function AppRightRail({ items }) {
           key={id}
           type="button"
           onClick={onToggle}
-          aria-label={
-            badge
-              ? `${active ? 'Close' : 'Open'} ${label} (${badge} unread)`
-              : `${active ? 'Close' : 'Open'} ${label}`
-          }
+          aria-label={railItemAriaLabel({ active, label, badge })}
           aria-pressed={active}
           title={label}
           data-testid={`rail-toggle-${id}`}
@@ -60,7 +62,7 @@ export default function AppRightRail({ items }) {
               className="absolute -top-1 -right-1 min-w-[16px] h-4 px-1 flex items-center justify-center rounded-full bg-red-500 text-white text-[10px] font-bold leading-none shadow"
               aria-hidden="true"
             >
-              {badge > 99 ? '99+' : badge}
+              {formatBadgeCount(badge)}
             </span>
           )}
         </button>

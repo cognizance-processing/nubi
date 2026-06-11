@@ -45,17 +45,18 @@ import {
   deleteEnvironment,
 } from '../lib/versions.js'
 import { useProject } from './ProjectContext.jsx'
+import {
+  envDotClass as envDotClassImpl,
+  defaultEnvKey,
+  resolveActiveEnv,
+} from '../shell/shellLogic.js'
 
 // ---------------------------------------------------------------------------
 // Shared UI helper — per-env accent dot
 // ---------------------------------------------------------------------------
 
 /** prod = emerald (live), dev = sky, anything else (custom) = violet. */
-export function envDotClass(envKey) {
-  if (envKey === 'prod') return 'bg-emerald-500'
-  if (envKey === 'dev') return 'bg-sky-500'
-  return 'bg-violet-500'
-}
+export const envDotClass = envDotClassImpl
 
 // ---------------------------------------------------------------------------
 // Context
@@ -82,11 +83,6 @@ function saveEnv(projectId, key) {
   } catch {
     // Ignore (private mode etc.)
   }
-}
-
-/** The project's default env key — is_default row, falling back to 'prod'. */
-function defaultEnvKey(list) {
-  return (Array.isArray(list) && list.find(e => e.is_default)?.key) || 'prod'
 }
 
 export function EnvProvider({ children }) {
@@ -120,8 +116,7 @@ export function EnvProvider({ children }) {
       // project's is_default env (prod). When the API list is unavailable we
       // trust the saved key so offline selection survives reloads.
       const saved = getSavedEnv(projectId)
-      const savedIsValid = saved && (!list || list.some(e => e.key === saved))
-      setActiveEnvState(savedIsValid ? saved : defaultEnvKey(list))
+      setActiveEnvState(resolveActiveEnv(saved, list))
       setLoading(false)
     }
 

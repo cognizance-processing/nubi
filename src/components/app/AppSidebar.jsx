@@ -50,6 +50,7 @@ import { useUi } from '../../contexts/UiContext.jsx'
 import { useOrg } from '../../contexts/OrgContext.jsx'
 import { useProject } from '../../contexts/ProjectContext.jsx'
 import { useEnv, envDotClass } from '../../contexts/EnvContext.jsx'
+import { buildEnvRows, isCustomEnv, normalizeEnvKey } from '../../shell/shellLogic.js'
 import { getGitGraph } from '../../lib/gitenv.js'
 import GitGraphDialog from './GitGraphDialog.jsx'
 import Logo from '../Logo.jsx'
@@ -269,16 +270,9 @@ function SidebarEnvSelector({ collapsed }) {
     : null
 
   // API mode once the project's environments loaded; before that (or when the
-  // API is unavailable) list the standard pair so the control stays usable.
-  const apiMode = Array.isArray(environments)
-  const envs = apiMode
-    ? environments
-    : ['prod', 'dev'].map(key => ({ id: key, key, is_default: key === 'prod', protected: true }))
-  // Include a one-off active key (e.g. legacy localStorage custom env) so the
-  // current selection is always visible in the list.
-  const rows = envs.some(e => e.key === activeEnv)
-    ? envs
-    : [...envs, { id: activeEnv, key: activeEnv, is_default: false, protected: false, _ghost: true }]
+  // API is unavailable) the helper lists the standard pair so the control stays
+  // usable, and always surfaces the active key (even a legacy localStorage one).
+  const { apiMode, rows } = buildEnvRows(environments, activeEnv)
 
   function select(key) {
     setActiveEnv(key)
@@ -287,7 +281,7 @@ function SidebarEnvSelector({ collapsed }) {
   }
 
   async function commitNew() {
-    const key = draft.trim().toLowerCase().replace(/[^a-z0-9_-]/g, '')
+    const key = normalizeEnvKey(draft)
     if (!key) return
     if (!rows.some(e => e.key === key)) {
       try {
@@ -365,7 +359,7 @@ function SidebarEnvSelector({ collapsed }) {
           </div>
           <ul role="listbox" className="max-h-60 overflow-y-auto">
             {rows.map(env => {
-              const isCustom = apiMode && !env.is_default && !env.protected && !env._ghost
+              const isCustom = isCustomEnv(env, apiMode)
               return (
                 <li key={env.key}>
                   <button

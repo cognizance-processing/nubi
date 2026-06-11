@@ -43,16 +43,13 @@ import {
 import * as api from '../../lib/api.js'
 import { pushEnvironment, pullEnvironment, divergedPayload } from '../../lib/gitenv.js'
 import { useEnv, envDotClass } from '../../contexts/EnvContext.jsx'
+import { shortSha, formatPushNotice, formatPullNotice } from '../../shell/shellLogic.js'
 import GitGraphDialog from './GitGraphDialog.jsx'
 import GitFilesPanel from './GitFilesPanel.jsx'
 
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
-
-function shortSha(sha) {
-  return (sha || '').slice(0, 7)
-}
 
 /**
  * Read the active environment from EnvContext when available, degrading to a
@@ -280,15 +277,7 @@ export default function GitSyncPanel({ projectId, open, onClose, envId }) {
     setNotice(null)
     try {
       const res = await pushEnvironment(env.id)
-      const warn = res?.warnings?.length ? ` (${res.warnings.join('; ')})` : ''
-      setNotice({
-        kind: 'ok',
-        text: res?.committed
-          ? `Committed ${res.files} file${res.files === 1 ? '' : 's'} @ ${shortSha(res.sha)}${
-              res.pushed ? ', pushed to remote' : ''
-            }${warn}`
-          : `Nothing to commit${warn}`,
-      })
+      setNotice({ kind: 'ok', text: formatPushNotice(res) })
       await Promise.all([loadStatus(), refreshEnvs()])
     } catch (cause) {
       setNotice({ kind: 'error', text: cause?.message || 'Push failed.' })
@@ -304,18 +293,7 @@ export default function GitSyncPanel({ projectId, open, onClose, envId }) {
     try {
       const res = await pullEnvironment(env.id, strategy ? { strategy } : {})
       setDiverged(null)
-      if (res?.up_to_date) {
-        setNotice({ kind: 'ok', text: 'Already up to date.' })
-      } else if (res?.strategy === 'take_env') {
-        setNotice({ kind: 'ok', text: `Branch overwritten from environment @ ${shortSha(res.sha)}` })
-      } else if (res?.pulled) {
-        const counts = Object.entries(res.updated ?? {})
-          .map(([kind, n]) => `${n} ${kind}${n === 1 ? '' : 's'}`)
-          .join(', ')
-        setNotice({ kind: 'ok', text: `Pulled ${counts || 'changes'} @ ${shortSha(res.sha)}` })
-      } else {
-        setNotice({ kind: 'ok', text: res?.warning || 'Nothing to pull.' })
-      }
+      setNotice({ kind: 'ok', text: formatPullNotice(res) })
       await Promise.all([loadStatus(), refreshEnvs()])
     } catch (cause) {
       const payload = divergedPayload(cause)
