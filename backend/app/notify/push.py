@@ -149,8 +149,13 @@ class PushStore:
         """Return all subscriptions in *org_id* for the given *user_ids*."""
         raise NotImplementedError
 
-    async def delete(self, endpoint: str) -> bool:
-        """Delete the subscription with *endpoint*. Return True if removed."""
+    async def delete(self, endpoint: str, user_id: str) -> bool:
+        """Delete *endpoint* IFF it belongs to *user_id*. Return True if removed.
+
+        Scoping the delete to the owning user closes an IDOR: a push endpoint is
+        a low-entropy, guessable/leakable URL, so an unscoped delete would let any
+        authenticated user prune another user's subscription.
+        """
         raise NotImplementedError
 
 
@@ -173,18 +178,23 @@ class PgPushStore(PushStore):
     ) -> dict[str, Any]:
         from app.db import fetchrow  # local import to avoid circular load
 
+        # ON CONFLICT updates only when the existing row already belongs to the
+        # SAME user — so a caller cannot hijack an endpoint another user has
+        # registered (which would silently redirect that user's pushes). The
+        # WHERE guard makes the upsert a no-op for a foreign-owned endpoint;
+        # we then surface that as a 409-equivalent (empty row) to the caller.
         row = await fetchrow(
             """
             INSERT INTO push_subscriptions
                 (id, user_id, org_id, endpoint, p256dh, auth, user_agent, last_used_at)
             VALUES ($1::uuid, $2::uuid, $3::uuid, $4, $5, $6, $7, now())
             ON CONFLICT (endpoint) DO UPDATE
-                SET user_id      = EXCLUDED.user_id,
-                    org_id       = EXCLUDED.org_id,
+                SET org_id       = EXCLUDED.org_id,
                     p256dh       = EXCLUDED.p256dh,
                     auth         = EXCLUDED.auth,
                     user_agent   = EXCLUDED.user_agent,
                     last_used_at = now()
+                WHERE push_subscriptions.user_id = EXCLUDED.user_id
             RETURNING id, user_id, org_id, endpoint, p256dh, auth, user_agent
             """,
             str(uuid.uuid4()),
@@ -215,12 +225,13 @@ class PgPushStore(PushStore):
         )
         return [_public_sub(dict(r)) for r in rows]
 
-    async def delete(self, endpoint: str) -> bool:
+    async def delete(self, endpoint: str, user_id: str) -> bool:
         from app.db import execute  # local import
 
         status = await execute(
-            "DELETE FROM push_subscriptions WHERE endpoint = $1",
+            "DELETE FROM push_subscriptions WHERE endpoint = $1 AND user_id = $2::uuid",
             endpoint,
+            user_id,
         )
         try:
             return int(status.split()[-1]) > 0
@@ -252,6 +263,9 @@ class InMemoryPushStore(PushStore):
         user_agent: str | None = None,
     ) -> dict[str, Any]:
         existing = self._store.get(endpoint)
+        # Refuse to hijack an endpoint already registered to a DIFFERENT user.
+        if existing is not None and str(existing["user_id"]) != str(user_id):
+            return {}
         row = {
             "id": existing["id"] if existing else str(uuid.uuid4()),
             "user_id": str(user_id),
@@ -275,8 +289,12 @@ class InMemoryPushStore(PushStore):
             if r["org_id"] == str(org_id) and r["user_id"] in wanted
         ]
 
-    async def delete(self, endpoint: str) -> bool:
-        return self._store.pop(endpoint, None) is not None
+    async def delete(self, endpoint: str, user_id: str) -> bool:
+        row = self._store.get(endpoint)
+        if row is None or str(row["user_id"]) != str(user_id):
+            return False
+        del self._store[endpoint]
+        return True
 
 
 # ---------------------------------------------------------------------------

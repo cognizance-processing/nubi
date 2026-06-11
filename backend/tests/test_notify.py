@@ -681,3 +681,56 @@ class TestGatewayContextExtraction:
             assert captured_claims[0].get("board_id") == "exec-review"
         finally:
             _sig_override.pop("slack", None)
+
+
+# ---------------------------------------------------------------------------
+# SSRF guard on user-supplied webhook URLs (regression for the security audit)
+# ---------------------------------------------------------------------------
+
+
+class TestWebhookSSRF:
+    """User-supplied webhook_url channels must refuse internal/metadata targets."""
+
+    def test_slack_webhook_blocks_metadata_ip(self):
+        from app.errors import AppError
+        from app.notify.channels import SlackChannel
+
+        ch = SlackChannel(webhook_url="http://169.254.169.254/latest/meta-data/")
+        with patch("httpx.post") as mock_post:
+            with pytest.raises(AppError) as exc:
+                ch.send("hi")
+        assert exc.value.code == "ssrf_blocked"
+        mock_post.assert_not_called()  # blocked BEFORE any network call
+
+    def test_google_chat_webhook_blocks_loopback(self):
+        from app.errors import AppError
+        from app.notify.channels import GoogleChatChannel
+
+        ch = GoogleChatChannel(webhook_url="http://127.0.0.1:8080/internal")
+        with patch("httpx.post") as mock_post:
+            with pytest.raises(AppError) as exc:
+                ch.send("hi")
+        assert exc.value.code == "ssrf_blocked"
+        mock_post.assert_not_called()
+
+    def test_teams_webhook_blocks_metadata_ip(self):
+        from app.errors import AppError
+        from app.notify.channels import TeamsChannel
+
+        ch = TeamsChannel(webhook_url="http://169.254.169.254/")
+        with patch("httpx.post") as mock_post:
+            with pytest.raises(AppError) as exc:
+                ch.send("hi")
+        assert exc.value.code == "ssrf_blocked"
+        mock_post.assert_not_called()
+
+    def test_public_webhook_still_allowed(self):
+        """A normal public webhook URL passes the guard and posts."""
+        from app.notify.channels import GoogleChatChannel
+
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        ch = GoogleChatChannel(webhook_url="https://chat.googleapis.com/v1/spaces/x")
+        with patch("httpx.post", return_value=mock_resp) as mock_post:
+            ch.send("hi")
+        mock_post.assert_called_once()

@@ -144,9 +144,28 @@ async def test_push_upsert_list_delete():
     other = await store.list_for_users(str(uuid.uuid4()), [ALICE, BOB])
     assert other == []
 
-    assert await store.delete("https://push/ep1") is True
-    assert await store.delete("https://push/ep1") is False  # already gone
+    # IDOR: Bob cannot delete Alice's subscription (delete is user-scoped).
+    assert await store.delete("https://push/ep1", BOB) is False
+    assert len(await store.list_for_users(ORG, [ALICE])) == 1
+
+    # Owner can delete; second delete is a no-op (already gone).
+    assert await store.delete("https://push/ep1", ALICE) is True
+    assert await store.delete("https://push/ep1", ALICE) is False
     assert len(await store.list_for_users(ORG, [ALICE])) == 0
+
+
+@pytest.mark.asyncio
+async def test_push_upsert_cannot_hijack_foreign_endpoint():
+    """A user cannot rebind an endpoint already owned by another user."""
+    store = InMemoryPushStore()
+    await store.upsert(ALICE, ORG, "https://push/shared", "pa", "aa", "UA")
+
+    # Bob tries to take over Alice's endpoint → refused (empty row), Alice keeps it.
+    hijack = await store.upsert(BOB, ORG, "https://push/shared", "pb", "ab", "UB")
+    assert hijack == {}
+    alice_subs = await store.list_for_users(ORG, [ALICE])
+    assert len(alice_subs) == 1 and alice_subs[0]["p256dh"] == "pa"
+    assert await store.list_for_users(ORG, [BOB]) == []
 
 
 @pytest.mark.asyncio
@@ -353,3 +372,46 @@ async def test_push_routes_subscribe_unsubscribe(feed_client):
     )
     assert resp.status_code == 200 and resp.json()["removed"] is True
     assert len(await pstore.list_for_users(org_id, [user_id])) == 0
+
+
+@pytest.mark.asyncio
+async def test_push_unsubscribe_idor_blocked(feed_client, fake_db):
+    """A second user cannot unsubscribe (or hijack) the first user's endpoint."""
+    client, alice_id, org_id, _, pstore = feed_client
+
+    # Seed a second authenticated user (Bob) in the same org.
+    bob_id = str(uuid.uuid4())
+    fake_db.users[bob_id] = {
+        "id": bob_id,
+        "email": "bob@example.com",
+        "name": "Bob",
+        "avatar_url": None,
+        "email_verified": True,
+        "created_at": "2024-01-01T00:00:00+00:00",
+    }
+    from app.repos.provider import get_repo
+
+    get_repo().seed_org_member(org_id=org_id, user_id=bob_id)
+
+    endpoint = "https://push/ep-idor"
+    sub = {"endpoint": endpoint, "keys": {"p256dh": "pk", "auth": "ak"}}
+    resp = await client.post(
+        "/api/v1/push/subscribe", json=sub, headers=_auth(alice_id)
+    )
+    assert resp.status_code == 200, resp.text
+
+    # Bob tries to unsubscribe Alice's endpoint → reports removed=False, Alice keeps it.
+    resp = await client.post(
+        "/api/v1/push/unsubscribe", json={"endpoint": endpoint}, headers=_auth(bob_id)
+    )
+    assert resp.status_code == 200 and resp.json()["removed"] is False
+    assert len(await pstore.list_for_users(org_id, [alice_id])) == 1
+
+    # Bob tries to hijack (re-subscribe) Alice's endpoint → 409 conflict.
+    resp = await client.post(
+        "/api/v1/push/subscribe", json=sub, headers=_auth(bob_id)
+    )
+    assert resp.status_code == 409, resp.text
+    # Alice's subscription is untouched; Bob got nothing.
+    assert len(await pstore.list_for_users(org_id, [alice_id])) == 1
+    assert len(await pstore.list_for_users(org_id, [bob_id])) == 0

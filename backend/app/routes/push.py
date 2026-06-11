@@ -79,6 +79,14 @@ async def subscribe(
     row = await store.upsert(
         str(user["id"]), org_id, endpoint, p256dh, auth, user_agent
     )
+    if not row:
+        # The endpoint is already registered to a different user; refuse to
+        # rebind it (would silently redirect that user's pushes to this caller).
+        raise AppError(
+            "conflict",
+            "This push endpoint is already registered to another user.",
+            409,
+        )
     return {"subscription": row}
 
 
@@ -96,7 +104,10 @@ async def unsubscribe(
     if not endpoint:
         raise AppError("validation_error", "endpoint is required.", 400)
     store = get_push_store()
-    removed = await store.delete(endpoint)
+    # Scope the delete to the calling user — a push endpoint is a guessable URL,
+    # so an unscoped delete-by-endpoint is an IDOR (any user could prune another
+    # user's subscription).
+    removed = await store.delete(endpoint, str(user["id"]))
     return {"ok": True, "removed": removed}
 
 

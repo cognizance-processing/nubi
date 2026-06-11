@@ -134,6 +134,9 @@ class SlackChannel:
         """POST a simple text message to the Incoming Webhook URL."""
         import httpx  # lazy — no network at import time
 
+        from app.connectors.ssrf import guard_url  # noqa: PLC0415
+
+        guard_url(self.webhook_url)  # SSRF: webhook_url is user-supplied.
         payload = {"text": text}
         resp = httpx.post(self.webhook_url, json=payload, timeout=10)
         if resp.status_code != 200:
@@ -292,6 +295,9 @@ class GoogleChatChannel:
 
         import httpx  # lazy — no network at import time
 
+        from app.connectors.ssrf import guard_url  # noqa: PLC0415
+
+        guard_url(self.webhook_url)  # SSRF: webhook_url is user-supplied.
         payload = {"text": text}
         resp = httpx.post(self.webhook_url, json=payload, timeout=10)
         if resp.status_code not in (200, 201):
@@ -334,6 +340,9 @@ class TeamsChannel:
 
         import httpx  # lazy
 
+        from app.connectors.ssrf import guard_url  # noqa: PLC0415
+
+        guard_url(self.webhook_url)  # SSRF: webhook_url is user-supplied.
         payload = {
             "@type": "MessageCard",
             "@context": "https://schema.org/extensions",

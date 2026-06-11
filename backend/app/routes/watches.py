@@ -112,6 +112,13 @@ def _slugify(value: str) -> str:
     return slug.strip("_") or "watch"
 
 
+async def _caller_org(identity: VerifiedIdentity) -> str:
+    """Resolve the caller's org id (used to tenant-scope every watch operation)."""
+    from app.routes._org import get_user_org  # noqa: PLC0415
+
+    return await get_user_org(identity.user_id, get_repo())
+
+
 # ---------------------------------------------------------------------------
 # Persistence (best-effort, mirrors _persist_metric)
 # ---------------------------------------------------------------------------
@@ -133,6 +140,9 @@ async def _persist_watch(
         repo = get_repo()
         org_id = await get_user_org(identity.user_id, repo)
         project_id = await resolve_project_id_for_create(org_id, request)
+        # Stamp the resolved org onto the in-process record so every later
+        # registry read/write can be tenant-scoped (closes a cross-org IDOR).
+        record["org_id"] = str(org_id)
 
         row = await fetchrow(
             """
@@ -163,15 +173,28 @@ async def _persist_watch(
     return record["id"]
 
 
-async def _hydrate_watch(watch_id: str) -> dict[str, Any] | None:
-    """Lazily load one watch from the DB on a registry miss (best-effort)."""
+async def _hydrate_watch(watch_id: str, org_id: str | None = None) -> dict[str, Any] | None:
+    """Lazily load one watch from the DB on a registry miss (best-effort).
+
+    When *org_id* is given the lookup is tenant-scoped — a watch belonging to
+    another org is invisible (returns ``None``), preventing a cross-org IDOR via
+    a guessed/leaked watch id.
+    """
     try:
         from app.db import fetchrow
 
-        row = await fetchrow(
-            "SELECT id, name, metric_id, config FROM watches WHERE id = $1::uuid",
-            watch_id,
-        )
+        if org_id is not None:
+            row = await fetchrow(
+                "SELECT id, org_id, name, metric_id, config FROM watches "
+                "WHERE id = $1::uuid AND org_id = $2::uuid",
+                watch_id,
+                org_id,
+            )
+        else:
+            row = await fetchrow(
+                "SELECT id, org_id, name, metric_id, config FROM watches WHERE id = $1::uuid",
+                watch_id,
+            )
     except Exception:  # noqa: BLE001
         return None
     if row is None:
@@ -186,6 +209,7 @@ async def _hydrate_watch(watch_id: str) -> dict[str, Any] | None:
             config = {}
     record = {
         "id": str(row["id"]),
+        "org_id": str(row["org_id"]) if row.get("org_id") is not None else None,
         "name": row["name"],
         "metric_id": row["metric_id"],
         "config": config or {},
@@ -193,8 +217,22 @@ async def _hydrate_watch(watch_id: str) -> dict[str, Any] | None:
     return _registry_put(record)
 
 
-async def _resolve_watch(watch_id: str) -> dict[str, Any]:
-    record = _registry_get(watch_id) or await _hydrate_watch(watch_id)
+async def _resolve_watch(watch_id: str, org_id: str | None = None) -> dict[str, Any]:
+    """Resolve one watch, tenant-scoped to *org_id* when provided.
+
+    A registry hit whose stamped ``org_id`` does not match (or a DB row from
+    another org) is treated as not-found (404, no info leak) — this closes the
+    cross-org IDOR on the by-id watch routes.
+    """
+    record = _registry_get(watch_id)
+    if record is not None and org_id is not None:
+        rec_org = record.get("org_id")
+        # Only enforce when the record carries an org stamp; legacy/unstamped
+        # records fall through to a tenant-scoped DB hydrate below.
+        if rec_org is not None and str(rec_org) != str(org_id):
+            record = None
+    if record is None or (org_id is not None and record.get("org_id") is None):
+        record = await _hydrate_watch(watch_id, org_id)
     if record is None:
         raise AppError("watch_not_found", f"No watch found for id={watch_id!r}.", 404)
     return record
@@ -289,9 +327,18 @@ def _record_view(record: dict[str, Any]) -> dict[str, Any]:
 async def list_watches(
     identity: VerifiedIdentity = Depends(verified_identity),
 ) -> dict:
-    """List watches in the in-process registry (auth mirrors GET /metrics)."""
+    """List the caller's org watches (auth mirrors GET /metrics).
+
+    Tenant-scoped: only watches whose stamped ``org_id`` matches the caller's
+    org are returned, so the shared in-process registry never leaks another
+    org's watches.
+    """
     _require_read_scope(identity)
-    return {"watches": [_record_view(r) for r in _registry_all()]}
+    org_id = await _caller_org(identity)
+    visible = [
+        r for r in _registry_all() if str(r.get("org_id")) == str(org_id)
+    ]
+    return {"watches": [_record_view(r) for r in visible]}
 
 
 # ---------------------------------------------------------------------------
@@ -304,9 +351,10 @@ async def get_watch(
     watch_id: str,
     identity: VerifiedIdentity = Depends(verified_identity),
 ) -> dict:
-    """Return a single watch's full record."""
+    """Return a single watch's full record (tenant-scoped → 404 cross-org)."""
     _require_read_scope(identity)
-    record = await _resolve_watch(watch_id)
+    org_id = await _caller_org(identity)
+    record = await _resolve_watch(watch_id, org_id)
     return _record_view(record)
 
 
@@ -323,10 +371,14 @@ async def create_watch(
 ) -> dict:
     """Create + register a watch. First-party only."""
     _require_first_party_write(identity)
+    org_id = await _caller_org(identity)
 
     data = body.model_dump()
     provisional_id = _slugify(str(data.get("name") or ""))
     record = _build_record(data, watch_id=provisional_id)
+    # Stamp the org up-front so the record is tenant-scoped even if the
+    # best-effort DB persist below is a no-op (e.g. test doubles).
+    record["org_id"] = str(org_id)
 
     canonical_id = await _persist_watch(record, identity, request)
     if canonical_id != record["id"]:
@@ -348,12 +400,24 @@ async def update_watch(
     request: Request,
     identity: VerifiedIdentity = Depends(verified_identity),
 ) -> dict:
-    """Update a watch: re-validate, re-register, re-persist."""
+    """Update a watch: re-validate, re-register, re-persist (tenant-scoped)."""
     _require_first_party_write(identity)
+    org_id = await _caller_org(identity)
+
+    # Tenant guard: if a watch with this id exists for ANOTHER org, it is
+    # invisible to this caller → 404 (never silently overwrite a foreign watch).
+    # A genuinely-new id (no existing row anywhere) is a create-via-PUT.
+    foreign = _registry_get(watch_id) or await _hydrate_watch(watch_id)
+    if (
+        foreign is not None
+        and foreign.get("org_id") is not None
+        and str(foreign.get("org_id")) != str(org_id)
+    ):
+        raise AppError("watch_not_found", f"No watch found for id={watch_id!r}.", 404)
+    existing = foreign if (foreign and str(foreign.get("org_id")) == str(org_id)) else None
 
     data = body.model_dump()
     # Carry existing name/metric forward when the body omits them.
-    existing = _registry_get(watch_id) or await _hydrate_watch(watch_id)
     if existing is not None:
         if not str(data.get("name") or "").strip():
             data["name"] = existing.get("name")
@@ -361,6 +425,7 @@ async def update_watch(
             data["metric_id"] = existing.get("metric_id")
 
     record = _build_record(data, watch_id=watch_id)
+    record["org_id"] = str(org_id)
     await _persist_watch(record, identity, request)
     _registry_put(record)
     return _record_view(record)
@@ -376,14 +441,22 @@ async def delete_watch(
     watch_id: str,
     identity: VerifiedIdentity = Depends(verified_identity),
 ) -> dict:
-    """Unregister the watch and delete its persisted row (best-effort)."""
+    """Unregister the watch and delete its persisted row (tenant-scoped)."""
     _require_first_party_write(identity)
+    org_id = await _caller_org(identity)
+
+    # Tenant guard: 404 if the watch belongs to another org (no cross-org delete).
+    await _resolve_watch(watch_id, org_id)
 
     _registry_del(watch_id)
     try:
         from app.db import execute
 
-        await execute("DELETE FROM watches WHERE id = $1::uuid", watch_id)
+        await execute(
+            "DELETE FROM watches WHERE id = $1::uuid AND org_id = $2::uuid",
+            watch_id,
+            org_id,
+        )
     except Exception:  # noqa: BLE001 — row deletion is best-effort.
         pass
     return {"id": watch_id, "deleted": True}
@@ -461,7 +534,8 @@ async def evaluate_watch_now(
     alert. Returns ``{breached, value, state, explanation?, sent, result}``.
     """
     _require_read_scope(identity)
-    record = await _resolve_watch(watch_id)
+    org_id = await _caller_org(identity)
+    record = await _resolve_watch(watch_id, org_id)
     watch = _watch_from_record(record)
     metric = await _resolve_metric_for_watch(watch.metric_id)
 
