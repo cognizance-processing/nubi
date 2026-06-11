@@ -16,11 +16,12 @@
 
 import { useState, useRef, useEffect, useCallback } from 'react'
 import {
-  X, Sparkles, Send, Square, ChevronDown, ChevronRight, AlertCircle,
-  Wrench, BarChart3, Database, Search, Code2, Table2, Check, Loader2, Bot,
-  Pin, ExternalLink,
+  X, Sparkles, Send, Square, ChevronDown, AlertCircle,
+  Check, Loader2, Bot, Pin, ExternalLink,
 } from 'lucide-react'
 import MarkdownRenderer from '../components/MarkdownRenderer.jsx'
+import ToolCard from './ToolCard.jsx'
+import { toolLabel } from './toolMeta.js'
 import { streamChatMessage, pinAnswer } from './chatApi.js'
 
 // ---------------------------------------------------------------------------
@@ -57,139 +58,6 @@ const SUGGESTIONS = [
   'Which queries run slowest?',
   'Summarise connected data sources',
 ]
-
-// tool name → icon + human label + accent
-const TOOL_META = {
-  generate_sql:     { icon: Code2,     label: 'Generate SQL',    color: 'text-brand-blue', bg: 'bg-brand-blue/10' },
-  run_query:        { icon: Database,  label: 'Run query',       color: 'text-brand-teal', bg: 'bg-brand-teal/10' },
-  create_dashboard: { icon: BarChart3, label: 'Create dashboard',color: 'text-brand-blue', bg: 'bg-brand-blue/10' },
-  edit_dashboard:   { icon: BarChart3, label: 'Edit dashboard',  color: 'text-brand-blue', bg: 'bg-brand-blue/10' },
-  get_schema:       { icon: Table2,    label: 'Get schema',      color: 'text-accent',     bg: 'bg-accent/10' },
-  list_queries:     { icon: Search,    label: 'List queries',    color: 'text-accent',     bg: 'bg-accent/10' },
-  default:          { icon: Wrench,    label: null,              color: 'text-muted',      bg: 'bg-surface-2' },
-}
-const getToolMeta = (name) => TOOL_META[name] ?? TOOL_META.default
-const toolLabel = (name) => getToolMeta(name).label ?? (name ? name.replace(/_/g, ' ') : 'tool')
-
-const truncate = (s, n = 64) => (s && s.length > n ? s.slice(0, n) + '…' : s || '')
-
-// ---------------------------------------------------------------------------
-// Tool result renderers
-// ---------------------------------------------------------------------------
-
-function MiniTable({ columns = [], rows = [] }) {
-  const cols = columns.length ? columns : (rows[0] ? Object.keys(rows[0]) : [])
-  if (!cols.length) return <p className="text-[11px] text-muted">No columns.</p>
-  return (
-    <div className="overflow-x-auto rounded-lg border border-border">
-      <table className="w-full text-[11px] font-mono border-collapse">
-        <thead>
-          <tr className="bg-surface-2">
-            {cols.map(c => (
-              <th key={c} className="text-left font-semibold text-muted px-2 py-1 border-b border-border whitespace-nowrap">
-                {c}
-              </th>
-            ))}
-          </tr>
-        </thead>
-        <tbody>
-          {rows.slice(0, 8).map((r, i) => (
-            <tr key={i} className="even:bg-surface-2/40">
-              {cols.map(c => (
-                <td key={c} className="px-2 py-1 text-fg whitespace-nowrap max-w-[160px] truncate border-b border-border/50">
-                  {String(r?.[c] ?? '')}
-                </td>
-              ))}
-            </tr>
-          ))}
-        </tbody>
-      </table>
-    </div>
-  )
-}
-
-function ResultBody({ tool, result }) {
-  if (!result || typeof result !== 'object') {
-    return <pre className="text-[11px] text-fg whitespace-pre-wrap break-all">{String(result ?? '')}</pre>
-  }
-  if (result.error) {
-    return (
-      <p className="text-[11px] text-red-500 flex items-start gap-1.5">
-        <AlertCircle size={12} className="shrink-0 mt-0.5" />{result.error}
-      </p>
-    )
-  }
-
-  if (tool === 'generate_sql') {
-    return (
-      <div className="space-y-1.5">
-        <pre className="text-[11px] leading-relaxed font-mono text-fg bg-surface-2 rounded-lg px-2.5 py-2 overflow-x-auto whitespace-pre-wrap break-words">
-          {result.sql || '—'}
-        </pre>
-        <div className="flex items-center gap-1.5 flex-wrap">
-          <span className={`text-[10px] px-1.5 py-0.5 rounded-md font-medium ${result.valid ? 'bg-brand-teal/15 text-brand-teal' : 'bg-amber-500/15 text-amber-600'}`}>
-            {result.valid ? 'valid' : 'needs review'}
-          </span>
-          {(result.tables || []).slice(0, 4).map(t => (
-            <span key={t} className="text-[10px] px-1.5 py-0.5 rounded-md bg-surface-2 text-muted font-mono">{t}</span>
-          ))}
-        </div>
-        {(result.issues || []).length > 0 && (
-          <ul className="text-[10px] text-amber-600 list-disc ml-4">
-            {result.issues.slice(0, 3).map((iss, i) => <li key={i}>{iss}</li>)}
-          </ul>
-        )}
-      </div>
-    )
-  }
-
-  if (tool === 'run_query') {
-    return (
-      <div className="space-y-1.5">
-        <p className="text-[11px] text-muted">
-          <span className="font-semibold text-fg">{result.row_count ?? 0}</span> rows ·{' '}
-          <span className="font-semibold text-fg">{(result.columns || []).length}</span> cols
-        </p>
-        {(result.rows || []).length > 0 && (
-          <MiniTable columns={result.columns} rows={result.rows} />
-        )}
-      </div>
-    )
-  }
-
-  if (tool === 'create_dashboard') {
-    return (
-      <div className="space-y-1.5">
-        <p className="text-[11px] text-fg font-medium">{result.title || 'Dashboard'}</p>
-        <div className="flex flex-wrap gap-1">
-          {(result.widgets || []).map((w, i) => (
-            <span key={i} className="text-[10px] px-1.5 py-0.5 rounded-md bg-brand-blue/10 text-brand-blue font-mono">
-              {w.type}{w.title ? ` · ${truncate(w.title, 18)}` : ''}
-            </span>
-          ))}
-          {!result.widgets?.length && (
-            <span className="text-[10px] text-muted">{result.widget_count ?? 0} widget(s)</span>
-          )}
-        </div>
-      </div>
-    )
-  }
-
-  return (
-    <pre className="text-[11px] text-fg whitespace-pre-wrap break-all leading-relaxed">
-      {JSON.stringify(result, null, 2)}
-    </pre>
-  )
-}
-
-function summaryLine(tool, result) {
-  if (!result) return ''
-  if (result.error) return result.error
-  if (tool === 'generate_sql') return truncate(result.sql, 56)
-  if (tool === 'run_query') return `${result.row_count ?? 0} rows · ${(result.columns || []).length} cols`
-  if (tool === 'create_dashboard') return `${result.widget_count ?? 0} widgets`
-  return ''
-}
 
 // ---------------------------------------------------------------------------
 // Ask → Pin: detect a pinnable tool result and build the /ai/pin payload
@@ -291,74 +159,27 @@ function PinButton({ tool, result }) {
 }
 
 // ---------------------------------------------------------------------------
-// ToolBlock — one tool call, animates running → result
+// ToolBlock — adapts the global panel's action shape to the shared ToolCard,
+// adding a Pin-to-dashboard footer for pinnable results.
 // ---------------------------------------------------------------------------
 
 function ToolBlock({ action }) {
-  const [open, setOpen] = useState(false)
-  const { icon: Icon, color, bg } = getToolMeta(action.tool)
-  const running = action.status === 'running'
-  const errored = action.status === 'error'
-
+  const pinnable = isPinnable(action.tool, action.result)
   return (
-    <div className={`rounded-xl border overflow-hidden ${errored ? 'border-red-500/30' : 'border-border'} ${open ? 'shadow-sm' : ''}`}>
-      <button
-        onClick={() => setOpen(v => !v)}
-        className="w-full flex items-center gap-2.5 px-2.5 py-2 bg-surface-2 hover:bg-surface-2/70 text-left transition-colors focus:outline-none focus:ring-2 focus:ring-ring focus:ring-inset"
-        aria-expanded={open}
-      >
-        <span className={`flex items-center justify-center w-6 h-6 rounded-lg ${bg} shrink-0`}>
-          <Icon size={13} className={color} />
-        </span>
-        <span className="flex-1 min-w-0">
-          <span className="block font-mono text-[11px] font-semibold text-fg leading-tight">
-            {toolLabel(action.tool)}
-          </span>
-          {!running && summaryLine(action.tool, action.result) && (
-            <span className="block text-[10px] text-muted font-mono truncate">
-              {summaryLine(action.tool, action.result)}
-            </span>
-          )}
-          {running && (
-            <span className="block text-[10px] text-brand-teal font-mono">running…</span>
-          )}
-        </span>
-        {/* status indicator */}
-        <span className="shrink-0 flex items-center">
-          {running && <Loader2 size={14} className="text-brand-teal animate-spin" />}
-          {action.status === 'done' && <Check size={14} className="text-brand-teal" />}
-          {errored && <AlertCircle size={14} className="text-red-500" />}
-        </span>
-        <span className="text-muted shrink-0">
-          {open ? <ChevronDown size={13} /> : <ChevronRight size={13} />}
-        </span>
-      </button>
-
-      {open && (
-        <div className="px-2.5 py-2.5 bg-surface border-t border-border space-y-2">
-          {action.arguments && Object.keys(action.arguments).length > 0 && (
-            <div>
-              <p className="text-muted uppercase tracking-wider mb-1 text-[10px] font-semibold">Arguments</p>
-              <pre className="text-[11px] text-fg font-mono whitespace-pre-wrap break-all bg-surface-2 rounded-lg px-2 py-1.5">
-                {JSON.stringify(action.arguments, null, 2)}
-              </pre>
-            </div>
-          )}
-          {action.result != null && (
-            <div>
-              <p className="text-muted uppercase tracking-wider mb-1 text-[10px] font-semibold">Result</p>
-              <ResultBody tool={action.tool} result={action.result} />
-              {isPinnable(action.tool, action.result) && (
-                <div className="mt-2">
-                  <PinButton tool={action.tool} result={action.result} />
-                </div>
-              )}
-            </div>
-          )}
-          {running && <p className="text-[11px] text-muted italic">Executing…</p>}
+    <ToolCard
+      action={{
+        id: action.id,
+        tool: action.tool,
+        args: action.arguments,
+        result: action.result,
+        status: action.status,
+      }}
+      footer={pinnable ? (
+        <div className="mt-2">
+          <PinButton tool={action.tool} result={action.result} />
         </div>
-      )}
-    </div>
+      ) : null}
+    />
   )
 }
 
@@ -569,20 +390,6 @@ export function ChatPanel({ onClose }) {
   const isEmpty = messages.length === 0
 
   return (
-    <>
-      <style>{`
-        @keyframes nubiChatPulse { 0%,100%{opacity:0.35;transform:scale(0.85)} 50%{opacity:1;transform:scale(1.1)} }
-        @keyframes nubiChatCaret { 0%,100%{opacity:1} 50%{opacity:0} }
-        .prose-chat .my-4 { margin-top: 0.5rem; margin-bottom: 0.5rem; }
-        .prose-chat .mt-10, .prose-chat .mt-8, .prose-chat .mt-6 { margin-top: 0.75rem; }
-        .prose-chat .mb-4, .prose-chat .mb-3, .prose-chat .mb-6 { margin-bottom: 0.5rem; }
-        .prose-chat p:first-child { margin-top: 0; }
-        .prose-chat p:last-child { margin-bottom: 0; }
-        .prose-chat h1, .prose-chat h2, .prose-chat h3, .prose-chat h4 { font-size: 0.875rem; margin-top: 0.5rem; margin-bottom: 0.25rem; }
-        .prose-chat ul, .prose-chat ol { margin-top: 0.25rem; margin-bottom: 0.25rem; }
-        .prose-chat pre { font-size: 0.75rem; }
-      `}</style>
-
       <div className="flex flex-col h-full bg-surface overflow-hidden">
         {/* Header */}
         <div className="flex items-center justify-between px-3 py-2.5 border-b border-border shrink-0">
@@ -679,7 +486,6 @@ export function ChatPanel({ onClose }) {
           </p>
         </div>
       </div>
-    </>
   )
 }
 

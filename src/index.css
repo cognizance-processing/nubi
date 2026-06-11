@@ -160,3 +160,28 @@
 /* Reorder mode (mobile single-axis stack): widgets indicate they're grabbable. */
 .grid-reorder .grid-item { cursor: grab; }
 .grid-reorder .grid-item-active { cursor: grabbing; }
+
+/* ── Chat panels (global rail + dashboard editor) ──────────────────────────
+   Shared animations + a compact override for MarkdownRenderer's doc-scale
+   typography, so assistant replies read like chat — not like a doc page. */
+@keyframes nubiChatPulse { 0%,100% { opacity:.35; transform:scale(.85) } 50% { opacity:1; transform:scale(1.1) } }
+@keyframes nubiChatCaret { 0%,100% { opacity:1 } 50% { opacity:0 } }
+
+.prose-chat { font-size: 13px; line-height: 1.6; }
+.prose-chat > article > :first-child { margin-top: 0 !important; }
+.prose-chat > article > :last-child { margin-bottom: 0 !important; }
+.prose-chat p { margin: 0.5rem 0; line-height: 1.6; }
+.prose-chat h1, .prose-chat h2, .prose-chat h3, .prose-chat h4 {
+  font-size: 0.9375rem; line-height: 1.35; margin: 0.75rem 0 0.35rem;
+  border-bottom: 0; padding-bottom: 0;
+}
+.prose-chat h1 { font-size: 1rem; }
+.prose-chat h2 > a > span, .prose-chat h3 > a > span { display: none; }
+.prose-chat ul, .prose-chat ol { margin: 0.35rem 0; padding-left: 1.25rem; }
+.prose-chat li { line-height: 1.55; }
+.prose-chat blockquote { margin: 0.6rem 0; padding: 0.4rem 0.75rem; }
+.prose-chat hr { margin: 0.85rem 0; }
+.prose-chat pre { font-size: 0.75rem; }
+.prose-chat .my-5, .prose-chat .my-6 { margin: 0.6rem 0; }
+.prose-chat table { font-size: 0.75rem; }
+.prose-chat th, .prose-chat td { padding: 0.4rem 0.6rem; }

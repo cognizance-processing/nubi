@@ -15,16 +15,28 @@
  *
  * Layout
  * ------
- * Fits a fixed-width (w-80) right sidebar that does NOT scroll itself. The
- * MESSAGE LIST is the only internal scroller; the model picker + history
- * controls (top) and the composer (bottom) stay pinned.
+ * Fits a fixed-width right sidebar that does NOT scroll itself. The MESSAGE
+ * LIST is the only internal scroller; the header (top) and the composer
+ * (bottom) stay pinned.
  *
- * Features: streamed assistant text, inline tool_use/tool_result blocks,
- * model picker (remembered per session), Stop (AbortController), conversation
- * history + New chat, and an "Applied to dashboard" affordance on spec apply.
+ * Features: streamed assistant text rendered as markdown, rich collapsible
+ * tool cards (shared with the global chat panel), gradient assistant avatar,
+ * a model picker (remembered per session), Stop (AbortController), conversation
+ * history + New chat, example-prompt empty state, and an "Applied to dashboard"
+ * affordance on spec apply.
+ *
+ * Presentation reuses the app design tokens (bg-surface / bg-surface-2 /
+ * border-border / text-fg / text-muted / primary / brand-gradient), the shared
+ * MarkdownRenderer (`prose-chat` compact overrides live in index.css) and the
+ * shared <ToolCard>. The streaming/data flow is unchanged from the prior version.
  */
 
 import { useState, useEffect, useRef, useCallback, useMemo } from 'react'
+import {
+  Sparkles, History, Plus, Send, Square, ChevronDown, Check, AlertCircle,
+} from 'lucide-react'
+import MarkdownRenderer from '../components/MarkdownRenderer.jsx'
+import ToolCard from '../chat/ToolCard.jsx'
 import {
   streamChat,
   listChatModels,
@@ -34,6 +46,13 @@ import {
 
 const MODEL_STORAGE_KEY = 'nubi.chat.model'
 const PROPOSE_SPEC_TOOL = 'propose_dashboard_spec'
+
+const SUGGESTIONS = [
+  'Add a revenue-by-month bar chart',
+  'Summarise what this dashboard shows',
+  'Add a KPI for total orders',
+  'Make the layout two columns',
+]
 
 // ---------------------------------------------------------------------------
 // Spec extraction — find a DashboardSpec inside a tool result / message
@@ -61,58 +80,24 @@ function extractSpec(output) {
 }
 
 // ---------------------------------------------------------------------------
-// ToolBlock — collapsible tool_use / tool_result display
+// AssistantAvatar — the brand gradient mark used on every assistant turn
 // ---------------------------------------------------------------------------
 
-function pretty(value) {
-  if (value == null) return ''
-  if (typeof value === 'string') {
-    try { return JSON.stringify(JSON.parse(value), null, 2) } catch { return value }
-  }
-  try { return JSON.stringify(value, null, 2) } catch { return String(value) }
+function AssistantAvatar() {
+  return (
+    <div className="flex items-center justify-center w-6 h-6 rounded-full shrink-0 mt-0.5 bg-brand-gradient">
+      <Sparkles size={12} className="text-white" />
+    </div>
+  )
 }
 
-function ToolBlock({ tool }) {
-  const [open, setOpen] = useState(false)
-  const hasResult = tool.output !== undefined
+function TypingDots() {
   return (
-    <div className="rounded-lg border border-border bg-surface-2/60 text-xs overflow-hidden">
-      <button
-        type="button"
-        onClick={() => setOpen(o => !o)}
-        className="w-full flex items-center gap-1.5 px-2.5 py-1.5 text-left hover:bg-surface-2 transition-colors"
-      >
-        <svg
-          className={`w-3 h-3 text-muted transition-transform ${open ? 'rotate-90' : ''}`}
-          viewBox="0 0 12 12" fill="none" stroke="currentColor" strokeWidth="1.5"
-        >
-          <path d="M4.5 3l3 3-3 3" strokeLinecap="round" strokeLinejoin="round" />
-        </svg>
-        <span aria-hidden>🔧</span>
-        <span className="font-mono font-medium text-fg truncate flex-1">{tool.name}</span>
-        <span className={`text-[10px] font-medium ${hasResult ? 'text-emerald-500' : 'text-muted animate-pulse'}`}>
-          {hasResult ? 'done' : 'running…'}
-        </span>
-      </button>
-      {open && (
-        <div className="px-2.5 pb-2 pt-0.5 space-y-2 border-t border-border">
-          <div>
-            <p className="text-[10px] font-semibold text-muted uppercase tracking-wider mb-0.5">Input</p>
-            <pre className="whitespace-pre-wrap break-words font-mono text-[11px] text-fg/90 bg-surface rounded p-2 max-h-48 overflow-auto">
-              {pretty(tool.input) || '—'}
-            </pre>
-          </div>
-          {hasResult && (
-            <div>
-              <p className="text-[10px] font-semibold text-muted uppercase tracking-wider mb-0.5">Result</p>
-              <pre className="whitespace-pre-wrap break-words font-mono text-[11px] text-fg/90 bg-surface rounded p-2 max-h-48 overflow-auto">
-                {pretty(tool.output) || '—'}
-              </pre>
-            </div>
-          )}
-        </div>
-      )}
-    </div>
+    <span className="inline-flex gap-1 items-center">
+      <span className="w-1.5 h-1.5 rounded-full bg-muted/70 animate-bounce" style={{ animationDelay: '0ms' }} />
+      <span className="w-1.5 h-1.5 rounded-full bg-muted/70 animate-bounce" style={{ animationDelay: '120ms' }} />
+      <span className="w-1.5 h-1.5 rounded-full bg-muted/70 animate-bounce" style={{ animationDelay: '240ms' }} />
+    </span>
   )
 }
 
@@ -121,11 +106,10 @@ function ToolBlock({ tool }) {
 // ---------------------------------------------------------------------------
 
 function MessageBubble({ message }) {
-  const isUser = message.role === 'user'
-  if (isUser) {
+  if (message.role === 'user') {
     return (
       <div className="flex justify-end">
-        <div className="max-w-[85%] rounded-lg rounded-br-sm bg-primary text-primary-fg px-3 py-2 text-sm whitespace-pre-wrap break-words">
+        <div className="max-w-[85%] rounded-2xl rounded-br-sm bg-primary text-primary-fg px-3.5 py-2.5 text-[13px] leading-relaxed shadow-sm whitespace-pre-wrap break-words">
           {message.content}
         </div>
       </div>
@@ -134,30 +118,49 @@ function MessageBubble({ message }) {
 
   const tools = message.tools ?? []
   const empty = !message.content && tools.length === 0
+
   return (
-    <div className="flex justify-start">
-      <div className="max-w-[92%] w-full space-y-2">
+    <div className="flex items-start gap-2.5 max-w-full">
+      <AssistantAvatar />
+      <div className="flex-1 min-w-0 space-y-2">
+        {tools.length > 0 && (
+          <div className="space-y-1.5">
+            {tools.map(t => (
+              <ToolCard
+                key={t.id}
+                action={{
+                  id: t.id,
+                  tool: t.name,
+                  args: t.input,
+                  result: t.output,
+                  status: t.output === undefined ? 'running' : 'done',
+                }}
+              />
+            ))}
+          </div>
+        )}
+
         {message.content && (
-          <div className="rounded-lg rounded-bl-sm bg-surface-2 text-fg px-3 py-2 text-sm whitespace-pre-wrap break-words border border-border">
-            {message.content}
-            {message.streaming && <span className="inline-block w-1.5 h-3.5 ml-0.5 align-middle bg-primary animate-pulse" />}
+          <div className="prose-chat text-[13px] leading-relaxed text-fg bg-surface-2 border border-border px-3.5 py-2.5 rounded-2xl rounded-bl-sm overflow-hidden">
+            <MarkdownRenderer content={message.content} />
+            {message.streaming && (
+              <span
+                className="inline-block w-[7px] h-[14px] -mb-0.5 ml-0.5 bg-brand-teal rounded-[1px] align-middle"
+                style={{ animation: 'nubiChatCaret 1s step-end infinite' }}
+              />
+            )}
           </div>
         )}
-        {tools.map(t => <ToolBlock key={t.id} tool={t} />)}
+
         {empty && message.streaming && (
-          <div className="rounded-lg rounded-bl-sm bg-surface-2 border border-border px-3 py-2 text-sm text-muted">
-            <span className="inline-flex gap-1">
-              <span className="w-1.5 h-1.5 rounded-full bg-muted/60 animate-bounce" style={{ animationDelay: '0ms' }} />
-              <span className="w-1.5 h-1.5 rounded-full bg-muted/60 animate-bounce" style={{ animationDelay: '120ms' }} />
-              <span className="w-1.5 h-1.5 rounded-full bg-muted/60 animate-bounce" style={{ animationDelay: '240ms' }} />
-            </span>
+          <div className="rounded-2xl rounded-bl-sm bg-surface-2 border border-border px-3.5 py-3">
+            <TypingDots />
           </div>
         )}
+
         {message.applied && (
-          <div className="flex items-center gap-1.5 text-[11px] font-medium text-emerald-500 px-1">
-            <svg className="w-3.5 h-3.5" viewBox="0 0 20 20" fill="currentColor">
-              <path fillRule="evenodd" d="M16.7 5.3a1 1 0 010 1.4l-8 8a1 1 0 01-1.4 0l-4-4a1 1 0 011.4-1.4l3.3 3.29 7.3-7.3a1 1 0 011.4 0z" clipRule="evenodd" />
-            </svg>
+          <div className="inline-flex items-center gap-1.5 text-[11px] font-medium text-brand-teal bg-brand-teal/10 border border-brand-teal/20 rounded-lg px-2 py-1">
+            <Check size={12} className="shrink-0" />
             Applied to dashboard
           </div>
         )}
@@ -172,7 +175,7 @@ function MessageBubble({ message }) {
 
 function HistoryDropdown({ conversations, activeChatId, onSelect, onClose, loading }) {
   return (
-    <div className="absolute right-0 top-9 z-20 w-64 max-h-72 overflow-y-auto rounded-lg border border-border bg-surface shadow-lg py-1">
+    <div className="absolute right-0 top-10 z-20 w-64 max-h-72 overflow-y-auto rounded-xl border border-border bg-surface shadow-lg py-1">
       {loading && <p className="px-3 py-2 text-xs text-muted">Loading…</p>}
       {!loading && conversations.length === 0 && (
         <p className="px-3 py-2 text-xs text-muted">No past conversations.</p>
@@ -192,6 +195,19 @@ function HistoryDropdown({ conversations, activeChatId, onSelect, onClose, loadi
         </button>
       ))}
     </div>
+  )
+}
+
+function SuggestionChip({ text, onClick, disabled }) {
+  return (
+    <button
+      type="button"
+      onClick={() => onClick(text)}
+      disabled={disabled}
+      className="px-3 py-1.5 rounded-full border border-border bg-surface-2 text-[12px] text-muted hover:border-primary hover:text-primary hover:bg-primary/5 disabled:opacity-40 disabled:cursor-not-allowed transition-all focus:outline-none focus:ring-2 focus:ring-ring text-left"
+    >
+      {text}
+    </button>
   )
 }
 
@@ -220,6 +236,7 @@ export default function ChatPanel({ boardId = null, spec = null, onApplySpec }) 
 
   const abortRef = useRef(null)
   const scrollRef = useRef(null)
+  const textareaRef = useRef(null)
   const specRef = useRef(spec)
   useEffect(() => { specRef.current = spec }, [spec])
 
@@ -254,10 +271,10 @@ export default function ChatPanel({ boardId = null, spec = null, onApplySpec }) 
 
   useEffect(() => { refreshConversations() }, [refreshConversations])
 
-  // --- auto-scroll to newest ---------------------------------------------
+  // --- auto-scroll to newest (DOM only — no setState in effect) ----------
   useEffect(() => {
     const el = scrollRef.current
-    if (el) el.scrollTop = el.scrollHeight
+    if (el) requestAnimationFrame(() => { el.scrollTop = el.scrollHeight })
   }, [messages])
 
   // --- helpers to mutate the in-flight assistant message -----------------
@@ -266,9 +283,9 @@ export default function ChatPanel({ boardId = null, spec = null, onApplySpec }) 
   }, [])
 
   // --- send a message -----------------------------------------------------
-  const send = useCallback(async () => {
-    const text = input.trim()
-    if (!text || streaming) return
+  const send = useCallback(async (override) => {
+    const text = (override ?? input).trim()
+    if (!text || streaming || !model) return
 
     setError(null)
     setInput('')
@@ -371,7 +388,7 @@ export default function ChatPanel({ boardId = null, spec = null, onApplySpec }) 
     if (streaming) abortRef.current?.abort()
     setError(null)
     setChatId(id)
-    setMessages([{ id: 'loading', role: 'assistant', content: 'Loading conversation…', tools: [], streaming: true }])
+    setMessages([{ id: 'loading', role: 'assistant', content: '', tools: [], streaming: true }])
     try {
       const conv = await getConversation(id)
       const loaded = (conv.messages ?? []).map((m, i) => ({
@@ -403,28 +420,31 @@ export default function ChatPanel({ boardId = null, spec = null, onApplySpec }) 
   )
 
   return (
-    <div className="flex flex-col h-full w-full bg-surface">
+    <div className="flex flex-col h-full w-full bg-surface overflow-hidden">
       {/* ── Header: title + history + new chat ── */}
       <div className="relative shrink-0 flex items-center gap-2 px-3 py-2.5 border-b border-border">
-        <span className="text-sm font-semibold text-fg flex items-center gap-1.5">
-          <span aria-hidden>✨</span> Chat
-        </span>
+        <div className="flex items-center justify-center w-7 h-7 rounded-lg shrink-0 bg-brand-gradient">
+          <Sparkles size={13} className="text-white" />
+        </div>
+        <span className="font-display font-semibold text-sm text-fg leading-none">Nubi AI</span>
         <div className="flex-1" />
         <button
           type="button"
           onClick={() => { if (!historyOpen) refreshConversations(); setHistoryOpen(o => !o) }}
           title="Conversation history"
-          className="text-xs px-2 py-1 rounded-lg border border-border text-muted hover:text-fg hover:border-border/80 transition-colors"
+          aria-label="Conversation history"
+          className="flex items-center justify-center w-7 h-7 rounded-lg text-muted hover:text-fg hover:bg-surface-2 transition-colors focus:outline-none focus:ring-2 focus:ring-ring"
         >
-          History
+          <History size={15} />
         </button>
         <button
           type="button"
           onClick={newChat}
           title="New chat"
-          className="text-xs px-2 py-1 rounded-lg border border-border text-muted hover:text-fg hover:border-border/80 transition-colors"
+          aria-label="New chat"
+          className="flex items-center justify-center w-7 h-7 rounded-lg text-muted hover:text-fg hover:bg-surface-2 transition-colors focus:outline-none focus:ring-2 focus:ring-ring"
         >
-          + New
+          <Plus size={16} />
         </button>
         {historyOpen && (
           <HistoryDropdown
@@ -438,76 +458,110 @@ export default function ChatPanel({ boardId = null, spec = null, onApplySpec }) 
       </div>
 
       {/* ── Message list (the ONLY internal scroller) ── */}
-      <div ref={scrollRef} className="flex-1 min-h-0 overflow-y-auto px-3 py-3 space-y-3">
+      <div
+        ref={scrollRef}
+        className="flex-1 min-h-0 overflow-y-auto px-3 py-3 space-y-3 scroll-smooth"
+        role="log"
+        aria-live="polite"
+        aria-label="Chat messages"
+      >
         {isEmpty && (
-          <div className="h-full flex flex-col items-center justify-center text-center text-muted px-2">
-            <span className="text-2xl mb-2" aria-hidden>💬</span>
-            <p className="text-sm font-medium text-fg">Ask the assistant</p>
-            <p className="text-xs mt-1 leading-snug">
-              Describe changes to your dashboard. The assistant can inspect data
-              and propose a spec you can apply.
-            </p>
+          <div className="h-full flex flex-col items-center justify-center text-center gap-5 px-4 pb-4">
+            <div className="flex items-center justify-center w-14 h-14 rounded-2xl shadow-lg bg-brand-gradient">
+              <Sparkles size={24} className="text-white" />
+            </div>
+            <div>
+              <p className="font-display font-semibold text-fg text-[14px] mb-1">Build with Nubi AI</p>
+              <p className="text-[12px] text-muted leading-relaxed max-w-[230px]">
+                Describe a change and I&apos;ll inspect your data, propose a dashboard spec, and apply it — watch each tool run live.
+              </p>
+            </div>
+            <div className="flex flex-wrap gap-2 justify-center">
+              {SUGGESTIONS.map(s => (
+                <SuggestionChip key={s} text={s} onClick={send} disabled={streaming || !model} />
+              ))}
+            </div>
           </div>
         )}
         {messages.map(m => <MessageBubble key={m.id} message={m} />)}
       </div>
 
-      {/* ── Error banner ── */}
+      {/* ── Error banner with retry ── */}
       {error && (
-        <div className="shrink-0 mx-3 mb-2 text-xs rounded-lg px-3 py-2 border"
-          style={{ background: 'color-mix(in srgb, #ef4444 8%, transparent)', color: '#ef4444', borderColor: 'color-mix(in srgb, #ef4444 25%, transparent)' }}>
-          {error}
+        <div className="shrink-0 mx-3 mb-2 flex items-start gap-2 text-[12px] rounded-xl px-3 py-2 border border-red-500/30 bg-red-500/10 text-red-500">
+          <AlertCircle size={14} className="shrink-0 mt-0.5" />
+          <span className="flex-1 leading-relaxed">{error}</span>
+          <button
+            type="button"
+            onClick={() => setError(null)}
+            className="shrink-0 font-medium hover:underline focus:outline-none"
+          >
+            Dismiss
+          </button>
         </div>
       )}
 
-      {/* ── Footer: model picker + composer (pinned) ── */}
-      <div className="shrink-0 border-t border-border p-3 space-y-2 bg-surface">
-        <div className="flex items-center gap-2">
-          <label className="text-[11px] font-medium text-muted shrink-0">Model</label>
-          <select
-            value={model}
-            onChange={e => setModel(e.target.value)}
-            disabled={streaming}
-            className="flex-1 h-8 text-xs border border-border rounded-lg pl-2.5 pr-7 bg-surface text-fg appearance-none cursor-pointer focus:outline-none focus:ring-2 focus:ring-ring/60 disabled:opacity-50 transition-colors"
-          >
-            {modelOptions.length === 0 && <option value="">No models</option>}
-            {modelOptions.map(m => (
-              <option key={m.id} value={m.id}>{m.label ?? m.id}</option>
-            ))}
-          </select>
-        </div>
-
-        <div className="relative">
+      {/* ── Footer: composer + model picker (pinned) ── */}
+      <div className="shrink-0 px-3 py-3 border-t border-border bg-surface">
+        <div
+          className={`flex items-end gap-2 bg-surface-2 border rounded-xl px-3 py-2 transition-colors ${
+            streaming ? 'border-border' : 'border-border focus-within:border-primary focus-within:ring-1 focus-within:ring-ring'
+          }`}
+        >
           <textarea
-            rows={3}
+            ref={textareaRef}
+            rows={1}
             value={input}
             onChange={e => setInput(e.target.value)}
             onKeyDown={onKeyDown}
-            disabled={streaming}
-            placeholder={streaming ? 'Streaming…' : 'Message the assistant…  (Enter to send)'}
-            className="w-full text-sm border border-border rounded-lg px-3 py-2 pr-3 resize-none bg-surface text-fg placeholder:text-muted/60 focus:outline-none focus:ring-2 focus:ring-ring/60 disabled:opacity-60 transition-colors"
+            onInput={e => { e.target.style.height = 'auto'; e.target.style.height = Math.min(e.target.scrollHeight, 128) + 'px' }}
+            placeholder={streaming ? 'Streaming…' : 'Ask Nubi to change this dashboard…'}
+            aria-label="Chat input"
+            className="flex-1 resize-none bg-transparent text-[13px] text-fg leading-relaxed placeholder:text-muted focus:outline-none min-h-[22px] max-h-32 py-0.5"
+            style={{ overflowY: input.split('\n').length > 4 ? 'auto' : 'hidden' }}
           />
+          {streaming ? (
+            <button
+              type="button"
+              onClick={stop}
+              aria-label="Stop"
+              className="flex items-center justify-center w-7 h-7 rounded-lg shrink-0 bg-surface border border-border text-fg hover:bg-surface-2 active:scale-95 transition-all focus:outline-none focus:ring-2 focus:ring-ring"
+            >
+              <Square size={12} className="fill-current" />
+            </button>
+          ) : (
+            <button
+              type="button"
+              onClick={() => send()}
+              disabled={!input.trim() || !model}
+              aria-label="Send message"
+              className="flex items-center justify-center w-7 h-7 rounded-lg shrink-0 bg-primary text-primary-fg hover:opacity-90 active:scale-95 disabled:opacity-35 disabled:cursor-not-allowed transition-all focus:outline-none focus:ring-2 focus:ring-ring"
+            >
+              <Send size={13} />
+            </button>
+          )}
         </div>
 
-        {streaming ? (
-          <button
-            type="button"
-            onClick={stop}
-            className="w-full flex items-center justify-center gap-2 px-4 py-2 text-sm font-medium rounded-lg border border-border bg-surface text-fg hover:bg-surface-2 transition-colors"
-          >
-            <span className="w-2.5 h-2.5 rounded-[2px] bg-current" aria-hidden />
-            Stop
-          </button>
-        ) : (
-          <button
-            type="button"
-            onClick={send}
-            disabled={!input.trim() || !model}
-            className="w-full flex items-center justify-center gap-2 px-4 py-2 text-sm font-medium rounded-lg bg-primary text-primary-fg hover:opacity-90 disabled:opacity-50 disabled:cursor-not-allowed transition-opacity"
-          >
-            Send
-          </button>
-        )}
+        <div className="flex items-center justify-between mt-1.5">
+          <div className="relative">
+            <select
+              value={model}
+              onChange={e => setModel(e.target.value)}
+              disabled={streaming}
+              aria-label="Select AI model"
+              className="appearance-none pl-2 pr-5 py-0.5 text-[10px] font-medium text-muted bg-transparent border border-transparent rounded-md hover:text-fg disabled:opacity-50 disabled:cursor-not-allowed cursor-pointer focus:outline-none focus:ring-2 focus:ring-ring transition-colors"
+            >
+              {modelOptions.length === 0 && <option value="">No models</option>}
+              {modelOptions.map(m => (
+                <option key={m.id} value={m.id}>{m.label ?? m.id}</option>
+              ))}
+            </select>
+            <ChevronDown size={10} className="absolute right-1 top-1/2 -translate-y-1/2 text-muted pointer-events-none" />
+          </div>
+          <p className="text-[10px] text-muted/60 leading-none">
+            {streaming ? 'Streaming…' : 'Shift+Enter for newline'}
+          </p>
+        </div>
       </div>
     </div>
   )
