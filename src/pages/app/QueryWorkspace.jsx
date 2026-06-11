@@ -67,6 +67,8 @@ import {
 
 import SqlEditor from '../../components/SqlEditor.jsx'
 import SpecIO from '../../components/SpecIO.jsx'
+import MetricExposePanel from '../../components/app/MetricExposePanel.jsx'
+import { metricToDraft, draftToMetricBlock } from './metricBlock.logic.js'
 import QueryCodeView from './QueryCodeView.jsx'
 import DataTable from '../../components/DataTable.jsx'
 import PythonCell from '../../components/PythonCell.jsx'
@@ -1120,6 +1122,12 @@ export default function QueryWorkspace({ query, onQueryChange, onSaved, isNew, t
     return init
   })
 
+  // ── "Expose as metric" panel draft (config.metric block) ─────────────────
+  const [metricDraft, setMetricDraft] = useState(() =>
+    metricToDraft(query?.metric, query?.name),
+  )
+  const [metricCollapsed, setMetricCollapsed] = useState(true)
+
   // Sync the primary cell when the selected query changes.
   useEffect(() => {
     setSql(query?.sql ?? '')
@@ -1129,6 +1137,11 @@ export default function QueryWorkspace({ query, onQueryChange, onSaved, isNew, t
       if (p.default != null) init[p.name] = String(p.default)
     })
     setParamValues(init)
+    // Re-parse the query's config.metric block into the panel draft; expand the
+    // panel for queries that already expose a metric so it's discoverable.
+    const draft = metricToDraft(query?.metric, query?.name)
+    setMetricDraft(draft)
+    setMetricCollapsed(!draft.enabled)
   }, [query?.id]) // eslint-disable-line react-hooks/exhaustive-deps
 
   // Auto-sync params list from SQL {{placeholders}}.
@@ -1409,6 +1422,10 @@ export default function QueryWorkspace({ query, onQueryChange, onSaved, isNew, t
       if (datastoreId) {
         payload.datastore_id = datastoreId
       }
+      // "Expose as metric" — write (or clear) the config.metric block. Sending
+      // `metric: null` when disabled clears any previously-exposed metric.
+      const metricBlock = draftToMetricBlock(metricDraft)
+      payload.metric = metricBlock
 
       const saved = await registerQuery(payload)
 
@@ -1420,6 +1437,7 @@ export default function QueryWorkspace({ query, onQueryChange, onSaved, isNew, t
         sql: saved.sql ?? sql,
         params: saved.params ?? params,
         datastore_id: saved.datastore_id ?? (datastoreId || null),
+        metric: saved.metric ?? metricBlock ?? null,
         isNew: false,
       })
       setShowSaveDialog(false)
@@ -1433,7 +1451,7 @@ export default function QueryWorkspace({ query, onQueryChange, onSaved, isNew, t
     } finally {
       setSaving(false)
     }
-  }, [sql, params, query, isNew, onSaved, datastoreId])
+  }, [sql, params, query, isNew, onSaved, datastoreId, metricDraft])
 
   // ── Checkpoint — snapshot the saved draft as a new version ───────────────
   const handleCheckpoint = useCallback(async () => {
@@ -1474,14 +1492,20 @@ export default function QueryWorkspace({ query, onQueryChange, onSaved, isNew, t
       const init = {}
       nextParams.forEach(p => { if (p.default != null) init[p.name] = String(p.default) })
       setParamValues(init)
+      // Re-parse the restored config.metric block into the panel draft.
+      const restoredMetric = metricToDraft(cfg.metric, cfg.name ?? row?.name ?? query.name)
+      setMetricDraft(restoredMetric)
+      setMetricCollapsed(!restoredMetric.enabled)
       // Sync the runtime registry so POST /query by id runs the restored SQL.
       if (nextSql.trim()) {
+        const restoredBlock = draftToMetricBlock(restoredMetric)
         const saved = await registerQuery({
           id: query.id,
           name: cfg.name ?? row?.name ?? query.name,
           sql: nextSql,
           params: nextParams,
           ...(nextDs ? { datastore_id: nextDs } : {}),
+          metric: restoredBlock,
         })
         onSaved?.({
           ...query,
@@ -1490,6 +1514,7 @@ export default function QueryWorkspace({ query, onQueryChange, onSaved, isNew, t
           sql: saved.sql ?? nextSql,
           params: saved.params ?? nextParams,
           datastore_id: saved.datastore_id ?? (nextDs || null),
+          metric: saved.metric ?? restoredBlock ?? null,
           isNew: false,
         })
       }
@@ -1995,6 +2020,19 @@ export default function QueryWorkspace({ query, onQueryChange, onSaved, isNew, t
             </div>
           </div>
         </div>
+
+        {/* ════ EXPOSE AS METRIC — optional config.metric block ════════════ */}
+        {!viewing && (
+          <div className="px-3 pt-3">
+            <MetricExposePanel
+              draft={metricDraft}
+              onChange={setMetricDraft}
+              collapsed={metricCollapsed}
+              onToggleCollapsed={() => setMetricCollapsed(c => !c)}
+              canWrite={canWrite}
+            />
+          </div>
+        )}
 
         {/* ════ SCRATCH CELLS with add-cell dividers ════════════════════════ */}
         <div className="px-3">

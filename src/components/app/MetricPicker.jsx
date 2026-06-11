@@ -103,6 +103,7 @@ export default function MetricPicker({ metrics = [], value, onChange, allowClear
       {/* ── Metric select ── */}
       <div>
         <Label>Metric</Label>
+        <p className="text-[10px] text-muted/70 -mt-0.5 mb-1">Queries exposed as metrics</p>
         <select
           className={selectCls}
           value={metricId}

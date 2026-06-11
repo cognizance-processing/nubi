@@ -90,7 +90,6 @@ const QueriesPage = lazy(() => import('./pages/app/QueriesPage.jsx'))
 const BlendBuilder = lazy(() => import('./pages/app/BlendBuilder.jsx'))
 const DashboardsPage = lazy(() => import('./pages/app/DashboardsPage.jsx'))
 const FlowsPage = lazy(() => import('./pages/app/FlowsPage.jsx'))
-const MetricsPage = lazy(() => import('./pages/app/MetricsPage.jsx'))
 const WatchesPage = lazy(() => import('./pages/app/WatchesPage.jsx'))
 const AutomationsPage = lazy(() => import('./pages/app/AutomationsPage.jsx'))
 const SettingsLayout = lazy(() => import('./pages/app/settings/SettingsLayout.jsx'))
@@ -283,8 +282,10 @@ export default function App() {
           <Route path="dashboards" element={<DashboardsPage />} />
           <Route path="flows" element={<FlowsPage />} />
           <Route path="flows/:id" element={<FlowsPage />} />
-          <Route path="metrics" element={<MetricsPage />} />
-          <Route path="metrics/:id" element={<MetricsPage />} />
+          {/* Metrics are now authored on the query (config.metric); the
+              standalone Metrics page is gone. Redirect old links to Queries. */}
+          <Route path="metrics" element={<Navigate to="/queries" replace />} />
+          <Route path="metrics/:id" element={<Navigate to="/queries" replace />} />
           <Route path="watches" element={<WatchesPage />} />
           <Route path="automations" element={<AutomationsPage />} />
           {/* Usage moved into Settings — keep the old route as a redirect. */}
