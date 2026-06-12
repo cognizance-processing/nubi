@@ -1,17 +1,23 @@
-"""Managed lakehouse provisioning — Nubi-managed, per-org isolated storage.
+"""Managed lakehouse provisioning — Nubi-managed, per-datastore isolated storage.
 
 BYO-bucket already works (a DuckDB-over-S3 connector a user wires up with their
 own credentials). This module adds the *managed* alternative: a Nubi-operated,
-per-org **isolated storage area** that users provision / use / delete WITHOUT
-ever touching buckets or credentials themselves. "You choose, and you're billed
+**isolated storage area** that users provision / use / delete WITHOUT ever
+touching buckets or credentials themselves. "You choose, and you're billed
 accordingly" — provisioning is explicit, usage feeds the metering surface.
+
+A managed lakehouse is just a **normal connector**: its existence == provisioned,
+its deletion (``DELETE /connectors/{id}``) == deprovisioned. Multiple managed
+lakehouses may coexist per org; each is its own connector row, surfaced in the
+normal ``GET /connectors`` list with a ``managed_lake: true`` marker + usage so
+the UI can render it as a distinct card.
 
 Isolation model (judgement call)
 ---------------------------------
-Each org's managed lake is an **isolated key prefix** inside the central
-bucket::
+Each managed lake is an **isolated key prefix** inside the central bucket, keyed
+by the datastore's OWN id (so multiple per org never collide)::
 
-    s3://<central-bucket>/orgs/<org_id>/lake/
+    s3://<central-bucket>/orgs/<org_id>/lake/<datastore_id>/
 
 This is the model implemented today because it works with the existing central
 credentials + infra (the same ``NUBI_BUCKET_*`` / ``S3_*`` env the demo bundle
@@ -24,23 +30,24 @@ A future ``DedicatedBucketProvider`` can implement the same contract.
 
 Security
 --------
-* The managed datastore's storage path is **server-pinned** to
-  ``orgs/<org_id>/lake/`` and re-pinned on every status/usage read — a user can
-  never edit ``config.database`` to point at another org's prefix or an
-  arbitrary URL. ``managed: True`` + ``managed_prefix`` mark the row; the
-  connectors PUT route refuses managed rows (see ``routes/connectors.py``).
+* Each managed datastore's storage path is **server-pinned** to
+  ``orgs/<org_id>/lake/<datastore_id>/`` — derived purely from the trusted org id
+  and the row's OWN id, never user input — so a user can never edit
+  ``config.database`` to point at another org's prefix or an arbitrary URL.
+  ``managed_lake: True`` + ``managed_prefix`` mark the row; the connectors PUT
+  route refuses storage-path edits on managed rows but allows renaming.
 * Central credentials live ONLY in the connector secret store (encrypted at
   rest, scoped by org) — never returned in any response, never written to
   ``datastores.config``.
 * All operations are org-scoped; another org's managed lake is simply not found
-  (cross-org access → the caller's own empty status, deprovision is a no-op).
+  (cross-org access → 404 / a no-op).
 
 Usage tie-in
 ------------
-:meth:`usage_bytes` sums object sizes under the org's prefix via the storage
+:meth:`usage_bytes` sums object sizes under a datastore's prefix via the storage
 client. :func:`emit_storage_usage` records a ``storage`` metering event (units =
 GB) so ``GET /usage`` reflects managed-lake storage — kept off the hot path and
-computed on demand (GET /lakehouse), not on every request.
+computed on demand, not on every request.
 """
 
 from __future__ import annotations
@@ -149,26 +156,46 @@ def resolve_central_storage() -> CentralStorage | None:
 # ---------------------------------------------------------------------------
 
 
-def org_lake_prefix(org_id: str) -> str:
-    """Return the server-pinned key prefix for *org_id*'s managed lake.
+def usage_fields(used_bytes: int) -> dict[str, Any]:
+    """Shape ``{usage_bytes, usage_gb}`` for a managed-lake response row."""
+    return {
+        "usage_bytes": int(used_bytes),
+        "usage_gb": round(int(used_bytes) / _BYTES_PER_GB, 6),
+    }
 
-    This is the ONLY place the prefix is defined. It is derived purely from the
-    server-trusted org id — never from user input — which is what makes the
-    isolation tamper-proof.
+
+def org_lake_root_prefix(org_id: str) -> str:
+    """Return the org's managed-lake root prefix (parent of all datastores).
+
+    Per-datastore lakes live UNDER this at ``orgs/<org>/lake/<datastore_id>/``.
+    This root is never used as a storage target itself; it exists only so usage
+    rollups / listings can be scoped to an org. Derived purely from the trusted
+    org id — never user input.
     """
     return f"orgs/{org_id}/lake/"
 
 
-def org_lake_uri(central: CentralStorage, org_id: str) -> str:
-    """Full storage URI for *org_id*'s managed lake under *central*."""
-    return f"{central.base_uri()}/{org_lake_prefix(org_id)}"
+def lake_prefix(org_id: str, datastore_id: str) -> str:
+    """Return the server-pinned key prefix for one managed datastore.
+
+    This is the ONLY place the per-datastore prefix is defined. It is derived
+    purely from the server-trusted org id + the datastore's OWN id — never from
+    user input — which is what makes the isolation tamper-proof and lets multiple
+    managed lakes coexist per org without colliding.
+    """
+    return f"orgs/{org_id}/lake/{datastore_id}/"
+
+
+def lake_uri(central: CentralStorage, org_id: str, datastore_id: str) -> str:
+    """Full storage URI for one managed datastore under *central*."""
+    return f"{central.base_uri()}/{lake_prefix(org_id, datastore_id)}"
 
 
 def project_demo_prefix(org_id: str, project_id: str | None) -> str:
     """Server-pinned key prefix for a project's editable demo parquet files.
 
     Layout: ``orgs/<org>/projects/<project>/demo/`` (or ``.../projects/org/...``
-    when project-less).  Like :func:`org_lake_prefix`, this is the ONLY place the
+    when project-less).  Like :func:`lake_prefix`, this is the ONLY place the
     prefix is defined and is derived purely from server-trusted ids — never user
     input — so one project can never point its connector / rewrite at another
     project's (or org's) files.
@@ -197,7 +224,7 @@ def project_demo_uri(central: CentralStorage, org_id: str, project_id: str | Non
 #     dedicated staging store is configured.  Weaker posture, documented.
 #
 # The org/run segments are SERVER-PINNED (derived from trusted ids), never user
-# input — identical to ``org_lake_prefix``.
+# input — identical to ``lake_prefix``.
 
 
 def resolve_staging_storage() -> CentralStorage | None:
@@ -263,33 +290,8 @@ def get_staging_area(org_id: str, run_id: str) -> "StagingArea | None":
 
 
 # ---------------------------------------------------------------------------
-# Status value object
+# Errors
 # ---------------------------------------------------------------------------
-
-
-@dataclass(frozen=True)
-class ManagedLakeStatus:
-    """Snapshot of an org's managed lake. ``usage_bytes`` may be lazily filled."""
-
-    configured: bool
-    provisioned: bool
-    datastore_id: str | None
-    prefix: str | None
-    uri: str | None
-    demo_seeded: bool
-    usage_bytes: int
-
-    def to_dict(self) -> dict[str, Any]:
-        return {
-            "configured": self.configured,
-            "provisioned": self.provisioned,
-            "datastore_id": self.datastore_id,
-            "prefix": self.prefix,
-            "uri": self.uri,
-            "demo_seeded": self.demo_seeded,
-            "usage_bytes": self.usage_bytes,
-            "usage_gb": round(self.usage_bytes / _BYTES_PER_GB, 6),
-        }
 
 
 class ManagedLakehouseError(Exception):
@@ -317,24 +319,28 @@ class ManagedLakehouseProvider(ABC):
     """
 
     @abstractmethod
-    async def provision(self, org_id: str, project_id: str | None, user_id: str) -> dict[str, Any]:
-        """Idempotently create + register the managed datastore for *org_id*."""
+    async def provision(
+        self, org_id: str, project_id: str | None, user_id: str, name: str | None = None
+    ) -> dict[str, Any]:
+        """Create + register a NEW managed datastore for *org_id* (multi-instance)."""
 
     @abstractmethod
-    async def status(self, org_id: str) -> ManagedLakeStatus:
-        """Return the org's managed-lake status (without walking storage)."""
+    async def list_managed(self, org_id: str) -> list[dict[str, Any]]:
+        """Return all managed datastore rows for *org_id*."""
 
     @abstractmethod
-    async def usage_bytes(self, org_id: str) -> int:
-        """Return total bytes stored under the org's prefix."""
+    async def usage_bytes(self, org_id: str, datastore_id: str) -> int:
+        """Return total bytes stored under one managed datastore's prefix."""
 
     @abstractmethod
-    async def seed_demo(self, org_id: str, project_id: str | None, user_id: str) -> dict[str, Any]:
-        """Export demo parquet into the org's managed lake (idempotent)."""
+    async def seed_demo(
+        self, org_id: str, datastore_id: str, project_id: str | None, user_id: str
+    ) -> dict[str, Any]:
+        """Export demo parquet into one managed lake (idempotent)."""
 
     @abstractmethod
-    async def deprovision(self, org_id: str) -> bool:
-        """Delete the prefix's objects + the managed datastore row."""
+    async def deprovision(self, org_id: str, datastore_id: str) -> bool:
+        """Delete one datastore's prefix objects + its row + its secret."""
 
 
 # ---------------------------------------------------------------------------
@@ -369,32 +375,49 @@ class PrefixIsolatedProvider(ManagedLakehouseProvider):
 
     # -- managed-row lookup -------------------------------------------------
 
-    async def _find_managed_row(self, org_id: str) -> dict[str, Any] | None:
-        """Return the org's managed datastore row, or ``None``."""
+    async def list_managed(self, org_id: str) -> list[dict[str, Any]]:
+        """Return all managed datastore rows for *org_id* (multi-instance)."""
         rows = await self._repo.list("datastores", org_id)
-        for row in rows:
-            cfg = row.get("config")
-            if isinstance(cfg, dict) and cfg.get(MANAGED_MARKER) is True:
-                return row
-        return None
+        return [
+            row
+            for row in rows
+            if isinstance(row.get("config"), dict)
+            and row["config"].get(MANAGED_MARKER) is True
+        ]
 
-    def _managed_config(self, org_id: str) -> dict[str, Any]:
-        """Build the SERVER-PINNED config for the managed datastore.
+    async def _get_managed_row(self, org_id: str, datastore_id: str) -> dict[str, Any] | None:
+        """Return one org-scoped managed datastore row, or ``None``.
 
-        ``database`` is pinned to the org's prefix URI; no credentials are placed
-        here (they live in the secret store). ``connector_type`` is ``duckdb`` so
-        the existing DuckDB-over-S3 connector serves it like any BYO lake.
+        ``None`` for a non-existent id, a cross-org id, or a non-managed row —
+        the route maps that to a 404 (no cross-org information leak).
+        """
+        row = await self._repo.get("datastores", org_id, str(datastore_id))
+        if row is None:
+            return None
+        cfg = row.get("config")
+        if not isinstance(cfg, dict) or cfg.get(MANAGED_MARKER) is not True:
+            return None
+        return row
+
+    def _managed_config(self, org_id: str, datastore_id: str) -> dict[str, Any]:
+        """Build the SERVER-PINNED config for one managed datastore.
+
+        ``database`` is pinned to the datastore's OWN prefix URI
+        (``orgs/<org>/lake/<datastore_id>/``); no credentials are placed here
+        (they live in the secret store). ``connector_type`` is ``duckdb`` so the
+        existing DuckDB-over-S3 connector serves it like any BYO lake.
+
+        NOTE: this row is deliberately NOT ``system: True`` — a managed lake is a
+        normal connector that surfaces in ``GET /connectors`` (distinguished by
+        the ``managed_lake`` marker so the UI renders it as its own card).
         """
         return {
             "connector_type": "duckdb",
-            "database": org_lake_uri(self._central, org_id),
+            "database": lake_uri(self._central, org_id, datastore_id),
             MANAGED_MARKER: True,
-            "managed_prefix": org_lake_prefix(org_id),
+            "managed_prefix": lake_prefix(org_id, datastore_id),
             "managed_scheme": self._central.scheme,
             "description": "Nubi-managed lakehouse (isolated, provisioned for you).",
-            # System rows are hidden from the raw connectors list; managed lake
-            # surfaces through GET /lakehouse instead of a duplicate card.
-            "system": True,
         }
 
     def _central_secret(self) -> dict[str, Any]:
@@ -412,25 +435,26 @@ class PrefixIsolatedProvider(ManagedLakehouseProvider):
 
     # -- provision ---------------------------------------------------------
 
-    async def provision(self, org_id: str, project_id: str | None, user_id: str) -> dict[str, Any]:
-        existing = await self._find_managed_row(org_id)
-        if existing is not None:
-            # Idempotent: re-pin the config (defends against any drift) and return.
-            pinned = self._managed_config(org_id)
-            if existing.get("config") != pinned:
-                await self._repo.update(
-                    "datastores", org_id, str(existing["id"]), {"config": pinned}
-                )
-                existing = await self._repo.get("datastores", org_id, str(existing["id"]))
-            return dict(existing)  # type: ignore[arg-type]
+    async def provision(
+        self, org_id: str, project_id: str | None, user_id: str, name: str | None = None
+    ) -> dict[str, Any]:
+        """Create a NEW managed lakehouse connector (multi-instance).
 
+        Every call provisions a fresh datastore: we mint its id first so the
+        storage prefix can be pinned to that id (``orgs/<org>/lake/<id>/``),
+        derived from trusted ids only — never user input.
+        """
+        import uuid as _uuid  # noqa: PLC0415
+
+        datastore_id = str(_uuid.uuid4())
         row = await self._repo.create(
             resource="datastores",
             org_id=org_id,
             created_by=user_id,
-            name="Managed lakehouse",
-            config=self._managed_config(org_id),
+            name=(name or "").strip() or "Managed lakehouse",
+            config=self._managed_config(org_id, datastore_id),
             project_id=project_id,
+            id=datastore_id,
         )
         # Store central creds (encrypted) keyed by the managed datastore id.
         secret = self._central_secret()
@@ -442,77 +466,46 @@ class PrefixIsolatedProvider(ManagedLakehouseProvider):
             logger.warning("managed-lake: could not persist central secret", exc_info=True)
         return row
 
-    # -- status ------------------------------------------------------------
-
-    async def status(self, org_id: str) -> ManagedLakeStatus:
-        row = await self._find_managed_row(org_id)
-        if row is None:
-            return ManagedLakeStatus(
-                configured=True,
-                provisioned=False,
-                datastore_id=None,
-                prefix=org_lake_prefix(org_id),
-                uri=org_lake_uri(self._central, org_id),
-                demo_seeded=False,
-                usage_bytes=0,
-            )
-        prefix = org_lake_prefix(org_id)
-        demo_seeded = self._has_demo(org_id)
-        return ManagedLakeStatus(
-            configured=True,
-            provisioned=True,
-            datastore_id=str(row["id"]),
-            prefix=prefix,
-            uri=org_lake_uri(self._central, org_id),
-            demo_seeded=demo_seeded,
-            usage_bytes=0,  # filled lazily by the route via usage_bytes()
-        )
-
-    def _has_demo(self, org_id: str) -> bool:
-        """True if any demo parquet exists under the org's prefix."""
-        try:
-            keys = self._storage().list(f"{org_lake_prefix(org_id)}demo/")
-            return any(k.endswith(".parquet") for k in keys)
-        except Exception:  # noqa: BLE001
-            return False
-
     # -- usage -------------------------------------------------------------
 
-    async def usage_bytes(self, org_id: str) -> int:
-        """Sum object sizes under the org's prefix via the storage client.
+    async def usage_bytes(self, org_id: str, datastore_id: str) -> int:
+        """Sum object sizes under one managed datastore's prefix.
 
         Implemented with a size-aware listing for both backends; falls back to
         downloading-and-measuring only when the client exposes no size hook
         (it always does for s3/local), so this stays cheap.
         """
-        prefix = org_lake_prefix(org_id)
+        prefix = lake_prefix(org_id, datastore_id)
         client = self._storage()
         total = 0
         try:
             for key in client.list(prefix):
                 total += _object_size(client, key)
-        except Exception:  # noqa: BLE001 — never break the status read
+        except Exception:  # noqa: BLE001 — never break the list read
             logger.debug("managed-lake: usage_bytes listing failed", exc_info=True)
             return 0
         return total
 
     # -- demo seeding ------------------------------------------------------
 
-    async def seed_demo(self, org_id: str, project_id: str | None, user_id: str) -> dict[str, Any]:
-        # Ensure the lake is provisioned first (idempotent).
-        row = await self._find_managed_row(org_id)
+    async def seed_demo(
+        self, org_id: str, datastore_id: str, project_id: str | None, user_id: str
+    ) -> dict[str, Any]:
+        row = await self._get_managed_row(org_id, datastore_id)
         if row is None:
-            row = await self.provision(org_id, project_id, user_id)
+            raise ManagedLakehouseError(
+                "managed_lake_not_found", "Managed lakehouse not found.", 404
+            )
 
-        written = self._export_demo(org_id)
+        written = self._export_demo(org_id, datastore_id)
         return {
             "datastore_id": str(row["id"]),
             "tables_written": sorted(written.keys()),
             "count": len(written),
         }
 
-    def _export_demo(self, org_id: str) -> dict[str, str]:
-        """Write demo parquet under ``orgs/<org_id>/lake/demo/...``.
+    def _export_demo(self, org_id: str, datastore_id: str) -> dict[str, str]:
+        """Write demo parquet under ``orgs/<org>/lake/<datastore_id>/demo/...``.
 
         Reuses ``demo_bundle``'s dataset generators + the storage client so it
         works identically for s3 and local backends. Idempotent — skips tables
@@ -523,7 +516,7 @@ class PrefixIsolatedProvider(ManagedLakehouseProvider):
         from seed_data.generators import DATASET_TABLES, build_dataset  # noqa: PLC0415
 
         client = self._storage()
-        prefix = org_lake_prefix(org_id)
+        prefix = lake_prefix(org_id, datastore_id)
         written: dict[str, str] = {}
         for dataset, tables in DATASET_TABLES.items():
             built = None
@@ -543,34 +536,34 @@ class PrefixIsolatedProvider(ManagedLakehouseProvider):
 
     # -- deprovision -------------------------------------------------------
 
-    async def deprovision(self, org_id: str) -> bool:
-        row = await self._find_managed_row(org_id)
+    async def deprovision(self, org_id: str, datastore_id: str) -> bool:
+        """Deprovision one managed datastore: objects + row + secret.
+
+        Org-scoped: a cross-org / non-managed / missing id returns ``False``
+        (no objects touched), which the route maps to a 404.
+        """
+        row = await self._get_managed_row(org_id, datastore_id)
         if row is None:
             return False
 
-        # 1. Delete every object under the org's prefix (best-effort, bounded).
-        self._delete_prefix(org_id)
+        # 1. Delete every object under THIS datastore's prefix (best-effort).
+        self._delete_prefix(org_id, datastore_id)
 
         # 2. Remove the managed datastore row.
-        datastore_id = str(row["id"])
-        await self._repo.delete("datastores", org_id, datastore_id)
+        await self._repo.delete("datastores", org_id, str(datastore_id))
 
         # 3. Remove the encrypted central-creds secret.
         try:
             from app.connectors.secret_store import get_secret_store  # noqa: PLC0415
 
-            await get_secret_store().delete(datastore_id, org_id)
+            await get_secret_store().delete(str(datastore_id), org_id)
         except Exception:  # noqa: BLE001
             pass
         return True
 
-    def _delete_prefix(self, org_id: str) -> None:
-        """Delete all objects under the org's prefix.
-
-        Uses a backend-specific bulk delete when available (s3 batch / local
-        rmtree); else falls back to per-key deletes via the storage client.
-        """
-        prefix = org_lake_prefix(org_id)
+    def _delete_prefix(self, org_id: str, datastore_id: str) -> None:
+        """Delete all objects under one managed datastore's prefix."""
+        prefix = lake_prefix(org_id, datastore_id)
         client = self._storage()
         try:
             keys = client.list(prefix)

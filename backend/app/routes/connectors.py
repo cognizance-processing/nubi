@@ -140,9 +140,16 @@ def _is_editable_demo_row(row: dict[str, Any]) -> bool:
     )
 
 
-async def _has_editable_demo(org_id: str, repo: Repo) -> bool:
-    """Return ``True`` if the org has a user-owned editable demo connector."""
-    for row in await repo.list("datastores", org_id):
+async def _has_editable_demo(
+    org_id: str, repo: Repo, project_id: str | None = None
+) -> bool:
+    """Return ``True`` if the org has a user-owned editable demo connector.
+
+    When *project_id* is given the check is scoped to that project — each
+    project owns its own demo bundle, so only the active project's editable
+    demo should suppress the virtual "Demo data" card there.
+    """
+    for row in await repo.list("datastores", org_id, project_id):
         if _is_editable_demo_row(row):
             return True
     return False
@@ -346,6 +353,33 @@ def _key_is_not_a_value(key: str, row: dict[str, Any]) -> bool:
     return True  # post-sanitise we trust the explicit scrubbing above
 
 
+# ── Managed-lakehouse row shaping (usage) ─────────────────────────────────────
+
+
+async def _shape_row(row: dict[str, Any], org_id: str, repo: Repo) -> dict[str, Any]:
+    """Sanitise *row* and, for a managed-lakehouse row, attach usage_bytes/gb.
+
+    A managed lakehouse is a normal connector (``config.managed_lake: true``);
+    the frontend renders it as a distinct card and shows its storage usage. We
+    compute usage on demand (cheap size-aware listing over the row's OWN prefix)
+    only for managed rows so the list stays inexpensive for everything else.
+    """
+    safe = _sanitise(row)
+    config = safe.get("config")
+    if isinstance(config, dict) and config.get("managed_lake") is True:
+        from app.lakehouse.managed import get_provider, usage_fields  # noqa: PLC0415
+
+        used = 0
+        provider = get_provider(repo)
+        if provider is not None:
+            try:
+                used = await provider.usage_bytes(org_id, str(row["id"]))
+            except Exception:  # noqa: BLE001 — usage must never break the list
+                used = 0
+        safe.update(usage_fields(used))
+    return safe
+
+
 # ── Connector-type label for datastores.config ───────────────────────────────
 
 
@@ -424,6 +458,9 @@ async def list_connectors(
     org_id = await _get_user_org(str(user["id"]), repo)
 
     all_datastores = await repo.list("datastores", org_id)
+    # The active project (X-Project-Id else the org default) scopes the
+    # per-project demo rows below; real connectors stay org-wide.
+    active_project = await _active_project_id(org_id, request)
     # Filter to rows where config identifies them as a connector.  The
     # ``__demo_hidden__`` marker row is excluded — it is internal bookkeeping,
     # not a real connector.
@@ -436,22 +473,41 @@ async def list_connectors(
         # dashboards by id) are internal — the branded virtual "Demo data"
         # connector is surfaced instead, so they never render as a raw card.
         and not row["config"].get("system")
+        # Sample-bundle rows (e.g. the per-project "Demo Lakehouse" connector)
+        # belong to exactly ONE project — only surface them in that project so
+        # demo-seeding a second project never duplicates cards elsewhere.
+        and not (
+            row["config"].get("sample") is True
+            and active_project is not None
+            and row.get("project_id")
+            and str(row["project_id"]) != str(active_project)
+        )
     ]
-    result = [_sanitise(row) for row in connectors]
+    result = [await _shape_row(row, org_id, repo) for row in connectors]
 
     # Inject the virtual (read-only) demo connector ONLY in the org's
-    # demo/default project, unless the org removed it OR already owns an
-    # EDITABLE demo-lakehouse connector (which renders as its own card — we
-    # don't want two demo connectors). Other projects start empty so the user
-    # connects their own data — there is no demo connector to fall back on.
+    # demo/default project, unless the org removed it OR the active project
+    # already owns an EDITABLE demo-lakehouse connector (which renders as its
+    # own card — we don't want two demo connectors). Other projects start empty
+    # so the user connects their own data — there is no demo connector to fall
+    # back on.
     if (
         await _in_demo_project(org_id, request)
         and not await _demo_is_hidden(org_id, repo)
-        and not await _has_editable_demo(org_id, repo)
+        and not await _has_editable_demo(org_id, repo, active_project)
     ):
         result.insert(0, _sanitise(_demo_connector_row(org_id)))
 
     return result
+
+
+async def _active_project_id(org_id: str, request: Request) -> str | None:
+    """Resolve the active project id for the request (``X-Project-Id`` else the
+    org's default project), or ``None`` when no project can be resolved."""
+    from app.routes._org import resolve_project_filter  # noqa: PLC0415
+
+    pid = await resolve_project_filter(org_id, request)
+    return str(pid) if pid is not None else None
 
 
 async def _in_demo_project(org_id: str, request: Request) -> bool:
@@ -495,7 +551,7 @@ async def get_connector(
         raise AppError("not_found", "Connector not found.", 404)
     if not isinstance(row.get("config"), dict) or "connector_type" not in row["config"]:
         raise AppError("not_found", "Connector not found.", 404)
-    return _sanitise(row)
+    return await _shape_row(row, org_id, repo)
 
 
 @router.put("/{connector_id}", dependencies=[Depends(require_writer_default)])
@@ -520,16 +576,17 @@ async def update_connector(
     if not isinstance(existing.get("config"), dict) or "connector_type" not in existing["config"]:
         raise AppError("not_found", "Connector not found.", 404)
 
-    # SECURITY: the managed-lakehouse datastore's storage path is server-pinned
-    # to the org's isolated prefix (orgs/<org_id>/lake/). It must NOT be editable
-    # via this route — otherwise a user could repoint `database` at another org's
-    # prefix or an arbitrary URL. Managed lakes are provisioned/managed through
-    # /lakehouse only.
-    if existing["config"].get("managed_lake") is True:
+    # SECURITY: a managed-lakehouse datastore's storage path is server-pinned to
+    # its isolated prefix (orgs/<org_id>/lake/<datastore_id>/). RENAMING is fine
+    # (it's a normal connector), but its storage path must NOT be editable here —
+    # otherwise a user could repoint `database`/`managed_prefix` at another org's
+    # prefix or an arbitrary URL. Reject config edits to managed rows; allow name.
+    is_managed = existing["config"].get("managed_lake") is True
+    if is_managed and (body.config is not None or (body.secret is not None and not body.secret.is_empty())):
         raise AppError(
             "managed_lake_immutable",
-            "This is a Nubi-managed lakehouse — its storage path is server-pinned "
-            "and cannot be edited here. Manage it via /lakehouse.",
+            "This is a Nubi-managed lakehouse — its storage path and credentials "
+            "are server-managed and cannot be edited. You may rename it (name only).",
             409,
         )
 
@@ -596,15 +653,22 @@ async def delete_connector(
     if not isinstance(existing.get("config"), dict) or "connector_type" not in existing["config"]:
         raise AppError("not_found", "Connector not found.", 404)
 
-    # SECURITY: managed lakehouses must be deprovisioned through DELETE /lakehouse
-    # (which also deletes the org's prefix objects). Deleting just the row here
-    # would orphan stored data and leave it billable. Refuse.
+    # A managed lakehouse is a normal connector: DELETE == DEPROVISION. Route the
+    # delete through the provider so it also removes the org's prefix objects
+    # (orgs/<org>/lake/<id>/) + the encrypted central-creds secret — not just the
+    # row (which would orphan billable storage). Org-scoped; cross-org already
+    # 404'd above via repo.get.
     if existing["config"].get("managed_lake") is True:
-        raise AppError(
-            "managed_lake_immutable",
-            "This is a Nubi-managed lakehouse — deprovision it via DELETE /lakehouse.",
-            409,
-        )
+        from app.lakehouse.managed import get_provider  # noqa: PLC0415
+
+        provider = get_provider(repo)
+        if provider is not None:
+            await provider.deprovision(org_id, connector_id)
+        else:
+            # Central storage unconfigured (degrade): no objects/secret to clean
+            # up — just remove the row so the stale managed card disappears.
+            await repo.delete("datastores", org_id, connector_id)
+        return Response(status_code=204)
 
     deleted = await repo.delete("datastores", org_id, connector_id)
     if not deleted:

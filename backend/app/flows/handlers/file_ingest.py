@@ -364,21 +364,21 @@ def _object_storage_target(
 ) -> LoadTarget:
     """Promote-strategy target: server-side copy staging → final storage path."""
     from app.connectors.base import file_capabilities  # noqa: PLC0415
-    from app.lakehouse.managed import (  # noqa: PLC0415
-        org_lake_uri,
-        resolve_central_storage,
-    )
+    from app.lakehouse.managed import resolve_central_storage  # noqa: PLC0415
     from app.storage.base import get_storage_client, parse_uri  # noqa: PLC0415
 
     # Resolve a storage client + base URI for the destination.  For a MANAGED
-    # lake row the base is server-pinned to the org's lake prefix (never the
-    # user-editable config) so a target can't be repointed cross-org.
+    # lake row the base is the server-pinned per-datastore prefix the provider
+    # wrote into ``config.database`` at provision time
+    # (``orgs/<org>/lake/<datastore_id>/``). That value is server-pinned and the
+    # connectors PUT route refuses storage-path edits, so it can't be repointed
+    # cross-org. We still source creds from the central store (never config).
     managed = cfg.get("managed_lake") is True
     if managed:
         central = resolve_central_storage()
         if central is None:
             raise ValueError("Managed lakehouse target requires central storage.")
-        base_uri = org_lake_uri(central, org_id).rstrip("/")
+        base_uri = database.rstrip("/")
         creds = central.creds or None
     else:
         base_uri = database.rstrip("/")

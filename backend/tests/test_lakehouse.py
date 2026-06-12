@@ -1,13 +1,17 @@
-"""Tests for the managed-lakehouse provisioning layer.
+"""Tests for the managed-lakehouse layer (multi-instance, normal-connector model).
 
-Covers (per the build spec):
-  - provision idempotency
-  - status shape
-  - usage_bytes accounting
-  - demo seeding
-  - deprovision cleanup (objects + row + secret)
-  - tenant isolation (org A cannot see / deprovision org B)
-  - path-pinning (the managed datastore cannot be repointed cross-org via PUT)
+A managed lakehouse is now just a normal connector: existence == provisioned,
+``DELETE /connectors/{id}`` == deprovisioned, multiple coexist per org, each with
+its OWN prefix ``orgs/<org>/lake/<datastore_id>/``.
+
+Covers:
+  - provision creates a NEW connector each call (multiple coexist, distinct prefixes)
+  - managed rows appear in the NORMAL connectors list with usage_bytes/usage_gb
+  - GET /lakehouse returns the list of managed lakehouses (with usage)
+  - demo seeding into a specific managed lake + usage accounting
+  - DELETE /connectors/{id} deprovisions (objects + row + secret gone), tenant-scoped
+  - PUT still pins the storage path but ALLOWS renaming
+  - cross-org isolation (org B cannot see / delete org A's lake)
   - the not-configured degrade path
 
 Strategy mirrors ``test_connectors_route``:
@@ -59,6 +63,13 @@ def _auth(user_id: str) -> dict[str, str]:
     return {"Authorization": f"Bearer {mint_access_token(user_id)}"}
 
 
+def _lake_files(lake_dir: str, org: str) -> list[str]:
+    root = os.path.join(lake_dir, "orgs", org, "lake")
+    if not os.path.isdir(root):
+        return []
+    return [f for _dp, _dn, fns in os.walk(root) for f in fns]
+
+
 # ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------
@@ -66,19 +77,10 @@ def _auth(user_id: str) -> dict[str, str]:
 
 @pytest.fixture(autouse=True)
 def _small_demo(monkeypatch):
-    """Shrink the demo dataset to a single small dataset for fast tests.
-
-    The full demo bundle generates 17 tables across 4 datasets; regenerating it
-    in every seeding test makes the suite minutes-long. We patch DATASET_TABLES
-    down to one tiny dataset — the export/list/size/delete code path is identical
-    (still real parquet, real storage client), only the volume shrinks.
-    """
+    """Shrink the demo dataset to a single small dataset for fast tests."""
     import seed_data.generators as gens
 
     full = gens.DATASET_TABLES
-    # Keep only the dataset with the FEWEST tables (build_dataset validates the
-    # full per-dataset inventory, so we cannot slice a dataset's tables — we drop
-    # whole datasets instead). The export/list/size/delete path is unchanged.
     smallest = min(full, key=lambda k: len(full[k]))
     monkeypatch.setattr(gens, "DATASET_TABLES", {smallest: full[smallest]})
     yield
@@ -90,7 +92,6 @@ async def lake_dir(tmp_path, monkeypatch):
     d = tmp_path / "managed-lake"
     d.mkdir()
     monkeypatch.setenv("NUBI_MANAGED_LAKE_DIR", str(d))
-    # Ensure no S3 creds leak in and flip resolution to s3.
     for var in ("S3_ACCESS_KEY", "AWS_ACCESS_KEY_ID"):
         monkeypatch.delenv(var, raising=False)
     yield str(d)
@@ -98,11 +99,7 @@ async def lake_dir(tmp_path, monkeypatch):
 
 @pytest_asyncio.fixture
 async def lake_app(app, lake_dir, monkeypatch):
-    """App with InMemoryRepo + InMemorySecretStore + local central storage.
-
-    The InMemorySecretStore performs REAL AES-256-GCM (same as production), so a
-    crypto key must be configured for the central-creds secret put/get path.
-    """
+    """App with InMemoryRepo + InMemorySecretStore + local central storage."""
     from app.security.crypto import reset_keys_for_tests
 
     monkeypatch.setenv(
@@ -159,7 +156,7 @@ class TestNotConfigured:
                 assert resp.status_code == 200, resp.text
                 body = resp.json()
                 assert body["configured"] is False
-                assert body["provisioned"] is False
+                assert body["lakehouses"] == []
                 assert "detail" in body
 
                 # Provision must 409 when unconfigured.
@@ -171,60 +168,92 @@ class TestNotConfigured:
 
 
 # ---------------------------------------------------------------------------
-# Status / provision idempotency
+# Provision — multi-instance
 # ---------------------------------------------------------------------------
 
 
 class TestProvision:
     @pytest.mark.asyncio
-    async def test_status_before_provision(self, client_org_a):
+    async def test_list_before_provision_is_empty(self, client_org_a):
         c, uid, org, repo, store, _ = client_org_a
         resp = await c.get("/api/v1/lakehouse", headers=_auth(uid))
         assert resp.status_code == 200, resp.text
         body = resp.json()
         assert body["configured"] is True
-        assert body["provisioned"] is False
-        assert body["datastore_id"] is None
-        assert body["prefix"] == f"orgs/{org}/lake/"
-        assert body["usage_bytes"] == 0
+        assert body["lakehouses"] == []
 
     @pytest.mark.asyncio
-    async def test_provision_then_status(self, client_org_a):
+    async def test_provision_creates_pinned_managed_connector(self, client_org_a):
         c, uid, org, repo, store, _ = client_org_a
-        resp = await c.post("/api/v1/lakehouse/provision", headers=_auth(uid))
+        resp = await c.post(
+            "/api/v1/lakehouse/provision", json={"name": "Analytics lake"},
+            headers=_auth(uid),
+        )
         assert resp.status_code == 200, resp.text
         body = resp.json()
-        assert body["provisioned"] is True
-        ds_id = body["datastore_id"]
+        ds_id = body["id"]
         assert ds_id
+        assert body["name"] == "Analytics lake"
+        assert body["config"]["managed_lake"] is True
+        # Prefix pinned to THIS datastore's own id.
+        assert body["config"]["database"].endswith(f"orgs/{org}/lake/{ds_id}/")
+        assert "usage_bytes" in body and "usage_gb" in body
 
-        # The datastore row is server-pinned + marked managed; secret stored.
+        # The row is server-pinned + a secret is stored.
         row = await repo.get("datastores", org, ds_id)
         assert row["config"]["managed_lake"] is True
-        assert row["config"]["database"].endswith(f"orgs/{org}/lake/")
-        # GET reflects it.
-        resp2 = await c.get("/api/v1/lakehouse", headers=_auth(uid))
-        assert resp2.json()["datastore_id"] == ds_id
+        assert row["config"]["managed_prefix"] == f"orgs/{org}/lake/{ds_id}/"
 
     @pytest.mark.asyncio
-    async def test_provision_is_idempotent(self, client_org_a):
+    async def test_provision_creates_a_new_connector_each_call(self, client_org_a):
         c, uid, org, repo, store, _ = client_org_a
         r1 = await c.post("/api/v1/lakehouse/provision", headers=_auth(uid))
         r2 = await c.post("/api/v1/lakehouse/provision", headers=_auth(uid))
-        assert r1.json()["datastore_id"] == r2.json()["datastore_id"]
-        # Exactly one managed datastore row exists.
+        id1, id2 = r1.json()["id"], r2.json()["id"]
+        assert id1 != id2  # NOT a singleton — each call is a fresh connector.
+
+        # Two managed rows coexist with DISTINCT prefixes.
         rows = await repo.list("datastores", org)
         managed = [r for r in rows if r["config"].get("managed_lake")]
-        assert len(managed) == 1
+        assert len(managed) == 2
+        prefixes = {r["config"]["managed_prefix"] for r in managed}
+        assert prefixes == {
+            f"orgs/{org}/lake/{id1}/", f"orgs/{org}/lake/{id2}/"
+        }
+
+        # GET /lakehouse lists both.
+        listed = (await c.get("/api/v1/lakehouse", headers=_auth(uid))).json()
+        assert {lh["id"] for lh in listed["lakehouses"]} == {id1, id2}
 
     @pytest.mark.asyncio
-    async def test_managed_row_hidden_from_connectors_list(self, client_org_a):
+    async def test_managed_rows_appear_in_connectors_list_with_usage(self, client_org_a):
         c, uid, org, repo, store, _ = client_org_a
-        await c.post("/api/v1/lakehouse/provision", headers=_auth(uid))
+        prov = (await c.post("/api/v1/lakehouse/provision?seed_demo=true",
+                             headers=_auth(uid))).json()
+        ds_id = prov["id"]
+
         resp = await c.get("/api/v1/connectors", headers=_auth(uid))
-        # system rows (managed lake) are filtered out of the connectors list.
-        types = [r["config"].get("connector_type") for r in resp.json()]
-        assert all(not r["config"].get("managed_lake") for r in resp.json())
+        assert resp.status_code == 200, resp.text
+        rows = resp.json()
+        managed = [r for r in rows if r["config"].get("managed_lake") is True]
+        assert len(managed) == 1
+        row = managed[0]
+        assert row["id"] == ds_id
+        # Surfaces usage on the card.
+        assert "usage_bytes" in row and "usage_gb" in row
+        assert row["usage_bytes"] > 0
+        # No secret material leaks into the list response.
+        assert "aws_secret_access_key" not in row["config"]
+
+    @pytest.mark.asyncio
+    async def test_get_connector_includes_usage_for_managed_row(self, client_org_a):
+        c, uid, org, repo, store, _ = client_org_a
+        prov = (await c.post("/api/v1/lakehouse/provision?seed_demo=true",
+                             headers=_auth(uid))).json()
+        ds_id = prov["id"]
+        row = (await c.get(f"/api/v1/connectors/{ds_id}", headers=_auth(uid))).json()
+        assert row["config"]["managed_lake"] is True
+        assert row["usage_bytes"] > 0
 
 
 # ---------------------------------------------------------------------------
@@ -234,48 +263,20 @@ class TestProvision:
 
 class TestDemoAndUsage:
     @pytest.mark.asyncio
-    async def test_seed_demo_writes_parquet_and_accounts_usage(self, client_org_a):
+    async def test_provision_with_seed_demo_writes_parquet_and_usage(self, client_org_a):
         c, uid, org, repo, store, lake_dir = client_org_a
-        await c.post("/api/v1/lakehouse/provision", headers=_auth(uid))
+        prov = (await c.post("/api/v1/lakehouse/provision?seed_demo=true",
+                             headers=_auth(uid))).json()
+        ds_id = prov["id"]
+        assert prov["usage_bytes"] > 0
 
-        resp = await c.post("/api/v1/lakehouse/demo", headers=_auth(uid))
-        assert resp.status_code == 200, resp.text
-        body = resp.json()
-        assert body["count"] > 0
-        assert body["usage_bytes"] > 0
-
-        # Files exist on disk under the org prefix.
-        demo_root = os.path.join(lake_dir, "orgs", org, "lake", "demo")
+        # Files exist on disk under THIS datastore's prefix.
+        demo_root = os.path.join(lake_dir, "orgs", org, "lake", ds_id, "demo")
         assert os.path.isdir(demo_root)
         parquet = [
             f for _dp, _dn, fns in os.walk(demo_root) for f in fns if f.endswith(".parquet")
         ]
-        assert len(parquet) == body["count"]
-
-        # GET reports demo_seeded + non-zero usage.
-        status = (await c.get("/api/v1/lakehouse", headers=_auth(uid))).json()
-        assert status["demo_seeded"] is True
-        assert status["usage_bytes"] > 0
-        assert status["usage_gb"] >= 0
-
-    @pytest.mark.asyncio
-    async def test_seed_demo_is_idempotent(self, client_org_a):
-        c, uid, org, repo, store, lake_dir = client_org_a
-        await c.post("/api/v1/lakehouse/provision", headers=_auth(uid))
-        first = (await c.post("/api/v1/lakehouse/demo", headers=_auth(uid))).json()
-        # Second seed writes nothing new (all tables already present).
-        second = (await c.post("/api/v1/lakehouse/demo", headers=_auth(uid))).json()
-        assert first["count"] > 0
-        assert second["count"] == 0
-
-    @pytest.mark.asyncio
-    async def test_provision_with_seed_demo_query_param(self, client_org_a):
-        c, uid, org, repo, store, lake_dir = client_org_a
-        resp = await c.post(
-            "/api/v1/lakehouse/provision?seed_demo=true", headers=_auth(uid)
-        )
-        assert resp.status_code == 200, resp.text
-        assert resp.json()["usage_bytes"] > 0
+        assert parquet
 
     @pytest.mark.asyncio
     async def test_storage_usage_feeds_usage_endpoint(self, client_org_a):
@@ -284,57 +285,69 @@ class TestDemoAndUsage:
 
         metering.set_sink(metering.InMemorySink())
         await c.post("/api/v1/lakehouse/provision?seed_demo=true", headers=_auth(uid))
-        # Hitting GET /lakehouse emits a storage snapshot synchronously enough
-        # for the in-memory sink to record it.
+        # Hitting GET /lakehouse emits a storage snapshot.
         await c.get("/api/v1/lakehouse", headers=_auth(uid))
 
         usage = (await c.get("/api/v1/usage", headers=_auth(uid))).json()
         storage = next(m for m in usage["metrics"] if m["id"] == "storage_gb")
-        assert storage["used"] >= 0  # storage metric is surfaced (max of snapshots)
-        # At least one storage event recorded for this org.
+        assert storage["used"] >= 0
         events = [e for e in metering.get_usage()
                   if str(e.get("org_id")) == org and e.get("kind") == "storage"]
         assert events, "expected a storage usage event for the managed lake"
 
 
 # ---------------------------------------------------------------------------
-# Deprovision cleanup
+# Delete == deprovision (via DELETE /connectors/{id})
 # ---------------------------------------------------------------------------
 
 
 class TestDeprovision:
     @pytest.mark.asyncio
-    async def test_deprovision_removes_objects_row_and_secret(self, client_org_a):
+    async def test_delete_connector_deprovisions_objects_row_and_secret(self, client_org_a):
         c, uid, org, repo, store, lake_dir = client_org_a
         prov = (await c.post("/api/v1/lakehouse/provision?seed_demo=true",
                              headers=_auth(uid))).json()
-        ds_id = prov["datastore_id"]
-        assert await store.get(ds_id, org) is not None or True  # secret may be empty
+        ds_id = prov["id"]
+        # Objects + secret present.
+        assert _lake_files(lake_dir, org)
+        assert await store.get(ds_id, org) is not None
 
-        resp = await c.delete("/api/v1/lakehouse", headers=_auth(uid))
+        resp = await c.delete(f"/api/v1/connectors/{ds_id}", headers=_auth(uid))
         assert resp.status_code == 204, resp.text
 
         # Row gone.
         assert await repo.get("datastores", org, ds_id) is None
         # Objects gone.
-        demo_root = os.path.join(lake_dir, "orgs", org, "lake")
-        remaining = []
-        if os.path.isdir(demo_root):
-            remaining = [
-                f for _dp, _dn, fns in os.walk(demo_root) for f in fns
-            ]
-        assert remaining == []
+        assert _lake_files(lake_dir, org) == []
         # Secret gone.
         assert await store.get(ds_id, org) is None
-        # Status returns to not-provisioned.
-        status = (await c.get("/api/v1/lakehouse", headers=_auth(uid))).json()
-        assert status["provisioned"] is False
+        # No longer listed.
+        listed = (await c.get("/api/v1/lakehouse", headers=_auth(uid))).json()
+        assert listed["lakehouses"] == []
 
     @pytest.mark.asyncio
-    async def test_deprovision_unprovisioned_is_noop_204(self, client_org_a):
-        c, uid, org, repo, store, _ = client_org_a
-        resp = await c.delete("/api/v1/lakehouse", headers=_auth(uid))
+    async def test_delete_one_lake_leaves_the_other(self, client_org_a):
+        c, uid, org, repo, store, lake_dir = client_org_a
+        a = (await c.post("/api/v1/lakehouse/provision?seed_demo=true",
+                          headers=_auth(uid))).json()["id"]
+        b = (await c.post("/api/v1/lakehouse/provision?seed_demo=true",
+                          headers=_auth(uid))).json()["id"]
+
+        resp = await c.delete(f"/api/v1/connectors/{a}", headers=_auth(uid))
         assert resp.status_code == 204
+
+        def _files_under(ds_id: str) -> list[str]:
+            root = os.path.join(lake_dir, "orgs", org, "lake", ds_id)
+            if not os.path.isdir(root):
+                return []
+            return [f for _dp, _dn, fns in os.walk(root) for f in fns]
+
+        # a's objects gone, b's survive (the empty dir may linger on the file
+        # backend — assert on actual files, not the directory).
+        assert _files_under(a) == []
+        assert _files_under(b)
+        assert await repo.get("datastores", org, a) is None
+        assert await repo.get("datastores", org, b) is not None
 
 
 # ---------------------------------------------------------------------------
@@ -344,12 +357,11 @@ class TestDeprovision:
 
 class TestTenantIsolation:
     @pytest.mark.asyncio
-    async def test_org_b_cannot_see_or_deprovision_org_a(self, client_org_a, fake_db):
+    async def test_org_b_cannot_see_or_delete_org_a(self, client_org_a, fake_db):
         c, uid_a, org_a, repo, store, lake_dir = client_org_a
-        # Provision A's lake.
         prov_a = (await c.post("/api/v1/lakehouse/provision?seed_demo=true",
                                headers=_auth(uid_a))).json()
-        a_ds = prov_a["datastore_id"]
+        a_ds = prov_a["id"]
 
         # Second user/org B.
         uid_b = str(uuid.uuid4())
@@ -357,35 +369,31 @@ class TestTenantIsolation:
         fake_db.users[uid_b] = _make_user(uid_b, email="bob@example.com")
         repo.seed_org_member(org_id=org_b, user_id=uid_b, role="owner")
 
-        # B's status shows a DIFFERENT prefix and not-provisioned.
-        b_status = (await c.get("/api/v1/lakehouse", headers=_auth(uid_b))).json()
-        assert b_status["provisioned"] is False
-        assert b_status["prefix"] == f"orgs/{org_b}/lake/"
-        assert b_status["prefix"] != f"orgs/{org_a}/lake/"
+        # B's list is empty (does not see A's lake).
+        b_listed = (await c.get("/api/v1/lakehouse", headers=_auth(uid_b))).json()
+        assert b_listed["lakehouses"] == []
+        # B cannot see A's managed connector.
+        assert (await c.get(f"/api/v1/connectors/{a_ds}", headers=_auth(uid_b))).status_code == 404
 
-        # B's deprovision is a no-op — A's lake survives.
-        await c.delete("/api/v1/lakehouse", headers=_auth(uid_b))
+        # B's delete of A's connector is a 404 — A's lake survives.
+        resp = await c.delete(f"/api/v1/connectors/{a_ds}", headers=_auth(uid_b))
+        assert resp.status_code == 404, resp.text
         assert await repo.get("datastores", org_a, a_ds) is not None
-        a_files = [
-            f for _dp, _dn, fns in os.walk(os.path.join(lake_dir, "orgs", org_a))
-            for f in fns
-        ]
-        assert a_files, "org A's data must survive org B's deprovision"
+        assert _lake_files(lake_dir, org_a), "org A's data must survive org B's delete"
 
 
 # ---------------------------------------------------------------------------
-# Path-pinning: managed datastore cannot be repointed cross-org via /connectors
+# Path-pinning + rename: managed datastore cannot be repointed via /connectors
 # ---------------------------------------------------------------------------
 
 
-class TestPathPinning:
+class TestPathPinningAndRename:
     @pytest.mark.asyncio
     async def test_cannot_repoint_managed_datastore_via_connectors_put(self, client_org_a):
         c, uid, org, repo, store, _ = client_org_a
         prov = (await c.post("/api/v1/lakehouse/provision", headers=_auth(uid))).json()
-        ds_id = prov["datastore_id"]
+        ds_id = prov["id"]
 
-        # Attempt to repoint the managed lake at another org's prefix.
         evil = "s3://nubi/orgs/some-other-org/lake/"
         resp = await c.put(
             f"/api/v1/connectors/{ds_id}",
@@ -394,16 +402,23 @@ class TestPathPinning:
         )
         assert resp.status_code == 409, resp.text
 
-        # The row's database is unchanged (still pinned to this org's prefix).
+        # The row's database is unchanged (still pinned to its own prefix).
         row = await repo.get("datastores", org, ds_id)
-        assert row["config"]["database"].endswith(f"orgs/{org}/lake/")
+        assert row["config"]["database"].endswith(f"orgs/{org}/lake/{ds_id}/")
 
     @pytest.mark.asyncio
-    async def test_cannot_delete_managed_datastore_via_connectors(self, client_org_a):
+    async def test_can_rename_managed_datastore_via_connectors_put(self, client_org_a):
         c, uid, org, repo, store, _ = client_org_a
         prov = (await c.post("/api/v1/lakehouse/provision", headers=_auth(uid))).json()
-        ds_id = prov["datastore_id"]
-        resp = await c.delete(f"/api/v1/connectors/{ds_id}", headers=_auth(uid))
-        assert resp.status_code == 409, resp.text
-        # Still present.
-        assert await repo.get("datastores", org, ds_id) is not None
+        ds_id = prov["id"]
+
+        resp = await c.put(
+            f"/api/v1/connectors/{ds_id}",
+            json={"name": "Renamed lake"},
+            headers=_auth(uid),
+        )
+        assert resp.status_code == 200, resp.text
+        assert resp.json()["name"] == "Renamed lake"
+        # Storage path untouched.
+        row = await repo.get("datastores", org, ds_id)
+        assert row["config"]["database"].endswith(f"orgs/{org}/lake/{ds_id}/")
