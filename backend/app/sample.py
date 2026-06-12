@@ -56,6 +56,11 @@ from app.demo_bundle import (
     resolve_placeholders,
     s3_datastore_config,
 )
+from app.demo_lakehouse import (
+    editable_demo_datastore_config,
+    editable_demo_supported,
+    materialize_demo_duckdb,
+)
 from app.repos.provider import Repo, get_repo
 
 # ── Stable sample identifiers (stored in config.sample_id) ────────────────────
@@ -130,10 +135,44 @@ async def seed_sample_bundle(
     repo = repo or get_repo()
 
     # ── 1. Build / resolve the datastore config ────────────────────────────────
+    #
+    # Three paths, decided purely from the server storage config (never user
+    # input):
+    #
+    #   A. EDITABLE on-disk DuckDB (self-host / local lake root configured) —
+    #      the demo data becomes the user's OWN, native, WRITABLE tables (the
+    #      Supabase-style grid can edit cells).  Preferred whenever a local
+    #      lakehouse root exists.
+    #   B. S3 read-only views (managed cloud) — a native .duckdb file cannot be
+    #      opened read-write over httpfs, so we fall back to the existing
+    #      read-only parquet-view demo.  (FLAGGED: cloud editable-demo is a
+    #      follow-up.)
+    #   C. Local read-only views (no S3, no local lake root) — the existing
+    #      offline parquet-view demo.
     ds_config: dict[str, Any]
+    name = "Sample"
 
-    if project_id is not None and _s3_is_configured():
-        # S3 path: export per-project parquet files, then point the datastore at them.
+    if editable_demo_supported():
+        # A. Editable on-disk DuckDB connector — the user's owned, writable copy.
+        try:
+            db_path = materialize_demo_duckdb(org_id, project_id)
+            if db_path is None:  # storage vanished between check and use
+                raise RuntimeError("no local lake root resolved")
+            ds_config = editable_demo_datastore_config(db_path)
+            name = "Demo Lakehouse"
+        except Exception as exc:  # noqa: BLE001 — fall back to the view-based demo
+            try:
+                export_demo_parquet_local()
+                ds_config = local_parquet_datastore_config()
+            except Exception as exc2:  # noqa: BLE001
+                return {
+                    "skipped": (
+                        f"editable demo failed: {exc}; local view fallback also "
+                        f"failed: {exc2}"
+                    )
+                }
+    elif project_id is not None and _s3_is_configured():
+        # B. S3 read-only path: export per-project parquet, point the datastore at it.
         try:
             export_demo_to_s3(project_id)
             ds_config = s3_datastore_config(project_id)
@@ -145,7 +184,7 @@ async def seed_sample_bundle(
             except Exception as exc2:  # noqa: BLE001
                 return {"skipped": f"demo export failed: {exc}; local fallback also failed: {exc2}"}
     else:
-        # Local parquet path (no S3 configured or no project_id).
+        # C. Local read-only view path (no S3 configured, no local lake root).
         try:
             export_demo_parquet_local()
             ds_config = local_parquet_datastore_config()
@@ -156,7 +195,7 @@ async def seed_sample_bundle(
 
     # ── 2. Sample datastore ────────────────────────────────────────────────────
     ds, ds_created = await _upsert(
-        repo, "datastores", org_id, created_by, "Sample",
+        repo, "datastores", org_id, created_by, name,
         ds_config, SAMPLE_DS, project_id,
     )
     if ds_created:

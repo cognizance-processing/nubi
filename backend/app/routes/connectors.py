@@ -119,6 +119,36 @@ async def _demo_is_hidden(org_id: str, repo: Repo) -> bool:
     """Return ``True`` if this org has removed the demo connector."""
     return (await _find_demo_hidden_row(org_id, repo)) is not None
 
+
+def _is_editable_demo_row(row: dict[str, Any]) -> bool:
+    """True for the user-owned EDITABLE demo-lakehouse datastore.
+
+    The editable demo (``app.demo_lakehouse``) is a real on-disk DuckDB
+    connector tagged ``sample=true`` and NOT marked ``system`` — so it already
+    renders as a normal card. When present, the virtual read-only "Demo data"
+    card is suppressed to avoid showing two demo connectors.
+    """
+    cfg = row.get("config")
+    if not isinstance(cfg, dict):
+        return False
+    db = cfg.get("database") or cfg.get("path") or ""
+    return (
+        cfg.get("sample") is True
+        and not cfg.get("system")
+        and cfg.get("connector_type") == "duckdb"
+        and isinstance(db, str)
+        and db not in ("", ":memory:")
+        and not db.startswith("s3://")
+    )
+
+
+async def _has_editable_demo(org_id: str, repo: Repo) -> bool:
+    """Return ``True`` if the org has a user-owned editable demo connector."""
+    for row in await repo.list("datastores", org_id):
+        if _is_editable_demo_row(row):
+            return True
+    return False
+
 # ── Secret-key allowlist per connector type ───────────────────────────────────
 # These are the ONLY keys that belong in the secret blob; everything else goes
 # into config.  This list is used for validation, not filtering — callers may
@@ -411,10 +441,16 @@ async def list_connectors(
     ]
     result = [_sanitise(row) for row in connectors]
 
-    # Inject the virtual demo connector ONLY in the org's demo/default project
-    # (and unless the org removed it). Other projects start empty so the user
+    # Inject the virtual (read-only) demo connector ONLY in the org's
+    # demo/default project, unless the org removed it OR already owns an
+    # EDITABLE demo-lakehouse connector (which renders as its own card — we
+    # don't want two demo connectors). Other projects start empty so the user
     # connects their own data — there is no demo connector to fall back on.
-    if await _in_demo_project(org_id, request) and not await _demo_is_hidden(org_id, repo):
+    if (
+        await _in_demo_project(org_id, request)
+        and not await _demo_is_hidden(org_id, repo)
+        and not await _has_editable_demo(org_id, repo)
+    ):
         result.insert(0, _sanitise(_demo_connector_row(org_id)))
 
     return result

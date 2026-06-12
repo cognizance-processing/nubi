@@ -46,13 +46,19 @@ from app.sample import remove_sample_bundle, seed_sample_bundle
 # tests so the local-parquet path is exercised deterministically.
 _S3_ENV_VARS = ("S3_ACCESS_KEY", "AWS_ACCESS_KEY_ID")
 
+# Env vars that would flip seed_sample_bundle into the EDITABLE on-disk DuckDB
+# mode — cleared here so these tests deterministically exercise the read-only
+# parquet-view (cloud/offline) fallback documented above.  The editable path is
+# covered by test_demo_lakehouse.py.
+_LAKE_DIR_ENV_VARS = ("NUBI_MANAGED_LAKE_DIR", "NUBI_LOCAL_LAKE_DIR", "NUBI_DEMO_LAKE_DIR")
+
 
 def _ids() -> tuple[str, str, str]:
     return str(uuid.uuid4()), str(uuid.uuid4()), str(uuid.uuid4())
 
 
 def _clear_s3_env(monkeypatch: pytest.MonkeyPatch) -> None:
-    for var in _S3_ENV_VARS:
+    for var in (*_S3_ENV_VARS, *_LAKE_DIR_ENV_VARS):
         monkeypatch.delenv(var, raising=False)
 
 
