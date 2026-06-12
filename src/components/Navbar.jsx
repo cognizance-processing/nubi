@@ -194,10 +194,13 @@ export default function Navbar() {
   const location = useLocation()
   const navigate = useNavigate()
 
-  // Close mobile menu on route change
-  useEffect(() => {
+  // Close mobile menu on route change — "adjust state during render" pattern
+  // (no effect, no cascading re-render).
+  const [lastPath, setLastPath] = useState(location.pathname)
+  if (lastPath !== location.pathname) {
+    setLastPath(location.pathname)
     setMobileOpen(false)
-  }, [location.pathname])
+  }
 
   // Filter links based on auth
   const visibleLinks = NAV_LINKS.filter(l => !l.authOnly || user)
@@ -213,12 +216,15 @@ export default function Navbar() {
   }
 
   return (
-    <header className="
-      sticky top-0 z-50
-      bg-surface
-      border-b border-border
-      shadow-sm
-    ">
+    <header
+      className="
+        sticky top-0 z-50
+        backdrop-blur-md
+        border-b border-border
+        shadow-sm
+      "
+      style={{ background: 'color-mix(in srgb, var(--surface) 82%, transparent)' }}
+    >
       <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 h-14 flex items-center justify-between gap-3">
 
         {/* ── Left: Logo ────────────────────────────────────────────────── */}

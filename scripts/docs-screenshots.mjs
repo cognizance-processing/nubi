@@ -13,6 +13,9 @@
  * Output:
  *   - public/docs/screenshots/<name>.png — referenced from docs markdown as
  *     /docs/screenshots/<name>.png. Viewport 1440x900 @2x, light theme.
+ *   - public/docs/screenshots/<name>-dark.png — the same capture in dark
+ *     theme. Docs markdown references the base name only; the in-app
+ *     MarkdownRenderer swaps in the -dark variant when the app theme is dark.
  *   - docs/assets/hero-{light,dark}.png — the README hero (full-viewport
  *     dashboard view), one per color scheme.
  *   - public/docs/screenshots/manifest.json — version + commit + file list
@@ -285,6 +288,163 @@ async function goAndShoot(page, url, name, opts = {}) {
   await shoot(page, name, opts)
 }
 
+// ── Capture suites ───────────────────────────────────────────────────────────
+// Force the theme before any app code runs (consistent docs look). Every shot
+// is captured once per theme: the light pass writes `<name>.png` (the names
+// docs markdown references) and the dark pass writes `<name>-dark.png`
+// alongside; the in-app MarkdownRenderer picks the variant for the live theme.
+async function newThemedContext(browser, theme, { width = 1440, height = 900, deviceScaleFactor = 2 } = {}) {
+  const ctx = await browser.newContext({
+    viewport: { width, height },
+    deviceScaleFactor,
+    colorScheme: theme,
+  })
+  await ctx.addInitScript((t) => localStorage.setItem('nubi-theme', t), theme)
+  return ctx
+}
+
+// Logged-out register shot. The register form is vertically centered and
+// taller than 900px, so it gets a taller viewport of its own.
+async function captureRegister(browser, theme, sfx) {
+  // dpr 1: the full-bleed gradient artwork makes a 2x capture ~2.7 MB; the
+  // docs render this at ~800px wide so 1x stays crisp and 10x smaller.
+  const regCtx = await newThemedContext(browser, theme, { height: 1080, deviceScaleFactor: 1 })
+  const regPage = await regCtx.newPage()
+  await regPage.goto(`${APP}/register`, { waitUntil: 'networkidle', timeout: 45_000 })
+  await shoot(regPage, `register${sfx}`, { settle: 800 })
+  await regCtx.close()
+}
+
+// Onboarding — only renders for accounts that have not finished setup, so it
+// is captured with a dedicated throwaway user (idempotent fixed email).
+async function captureOnboarding(browser, theme, sfx) {
+  const obEmail = 'docs-screenshots@nubi.dev'
+  const obPassword = 'docs-shots-2026!'
+  await fetch(`${API}/api/v1/auth/register`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ email: obEmail, password: obPassword, name: 'Docs Screenshots' }),
+  }).catch(() => {}) // 409 (already exists) is fine
+  const obCtx = await newThemedContext(browser, theme)
+  const obPage = await obCtx.newPage()
+  await uiLogin(obPage, obEmail, obPassword)
+  await obPage.goto(`${APP}/onboarding`, { waitUntil: 'networkidle' })
+  await shoot(obPage, `onboarding${sfx}`, { settle: 2000 })
+  await obCtx.close()
+}
+
+// The full product tour for one theme. Per-shot interactions are identical
+// between the light and dark passes; only the filenames differ.
+async function captureProductTour(browser, ids, theme) {
+  const sfx = theme === 'dark' ? '-dark' : ''
+  // Fresh context per pass — reset the cross-shot navigation state that
+  // ensureApp/recoverLogin rely on.
+  needsReload = true
+  desiredProject = null
+  desiredEnv = null
+
+  const ctx = await newThemedContext(browser, theme)
+  const page = await ctx.newPage()
+
+  // Logged-out shots first.
+  await captureRegister(browser, theme, sfx)
+
+  // Log in, then activate the seeded Demo project.
+  orgId = ids.org.id
+  desiredProject = ids.demo.id
+  await uiLogin(page)
+  await setProject(page, ids.org.id, ids.demo.id)
+  await goAndShoot(page, '/home', `home${sfx}`, { settle: 2000 })
+
+  await captureOnboarding(browser, theme, sfx)
+
+  // Connectors — the demo connector lives in the Default project.
+  desiredProject = ids.dflt.id
+  await setProject(page, ids.org.id, ids.dflt.id)
+  await goAndShoot(page, '/connectors', `connectors${sfx}`, { settle: 1500 })
+
+  // Data browser for the demo connector (rich seeded tables).
+  await goAndShoot(page, '/connectors/__demo__/data', `data-browser${sfx}`, { settle: 2500 })
+
+  // Back to the Demo project for everything else.
+  desiredProject = ids.demo.id
+  await setProject(page, ids.org.id, ids.demo.id)
+
+  // Queries editor — open a seeded query via deep link, run it, wait for the
+  // results grid. One reload recovers the transient editor state that a
+  // mid-run re-login can leave behind.
+  await ensureApp(page, `/queries/${ids.query.id}`)
+  const runBtn = page.locator('button[title^="Run query"]').first()
+  try {
+    await runBtn.waitFor({ timeout: 15_000 })
+  } catch {
+    await ensureApp(page, `/queries/${ids.query.id}`)
+    await runBtn.waitFor({ timeout: 30_000 })
+  }
+  await runBtn.click()
+  // Results render as a data table; give the kernel time on first run.
+  await page
+    .waitForSelector('table tbody tr, [class*="dataTable"] tr', { timeout: 60_000 })
+    .catch(() => {})
+  await shoot(page, `queries-editor${sfx}`, { settle: 2500 })
+
+  // Dashboard editor on Retail Sales Overview, then its Preview mode for a
+  // clean rendered view. (The standalone /d/:id route is captured via Preview
+  // because it renders chrome-free inside the editor.)
+  await goAndShoot(page, `/editor/${ids.board.id}`, `dashboard-editor${sfx}`, { settle: 4500 })
+  const previewBtn = page.getByRole('button', { name: 'Preview', exact: true }).first()
+  if (await previewBtn.count()) {
+    await previewBtn.click()
+    await shoot(page, `dashboard-view${sfx}`, { settle: 3000 })
+  }
+
+  // Flows — canvas (default view), then notebook and code views. Drafts live in
+  // the dev environment until promoted, so pin env=dev for these captures.
+  desiredEnv = 'dev'
+  await setEnv(page, ids.demo.id, 'dev')
+  await ensureApp(page, `/flows/${ids.flow.id}`)
+  await shoot(page, `flows-canvas${sfx}`, { settle: 2500 })
+  const notebookToggle = page.locator('button[title="Notebook / cell view"]').first()
+  if (await notebookToggle.count()) {
+    await notebookToggle.click()
+    await shoot(page, `flows-notebook${sfx}`, { settle: 2000 })
+  }
+
+  // Flows — code view (files-as-code Python SDK projection of the same flow).
+  const codeToggle = page.locator('button[title="Code / Files view"]').first()
+  if (await codeToggle.count()) {
+    await codeToggle.click()
+    // Codegen is async — wait for the spinner to clear and Monaco to render.
+    await page
+      .waitForSelector('text=Generating code', { state: 'detached', timeout: 30_000 })
+      .catch(() => {})
+    await page.waitForSelector('.monaco-editor', { timeout: 30_000 }).catch(() => {})
+    await shoot(page, `flows-code${sfx}`, { settle: 2500 })
+  }
+  desiredEnv = null
+  await setEnv(page, ids.demo.id, 'prod')
+
+  // Automations (schedules).
+  await goAndShoot(page, '/automations', `automations${sfx}`)
+
+  // Secrets (flow-scoped).
+  await goAndShoot(page, '/flows/secrets', `secrets${sfx}`)
+
+  // Dashboards list.
+  await goAndShoot(page, '/dashboards', `dashboards${sfx}`, { settle: 1500 })
+
+  // Lakehouse / data explorer.
+  await goAndShoot(page, '/data', `data-explorer${sfx}`, { settle: 2500 })
+
+  // Settings — organization, members, integrations, usage.
+  await goAndShoot(page, '/settings/organization', `settings-organization${sfx}`)
+  await goAndShoot(page, '/settings/members', `settings-members${sfx}`)
+  await goAndShoot(page, '/settings/integrations', `settings-integrations${sfx}`)
+  await goAndShoot(page, '/settings/usage', `settings-usage${sfx}`)
+
+  await ctx.close()
+}
+
 // ── Main ─────────────────────────────────────────────────────────────────────
 const ids = await discover()
 console.log('Discovered:', {
@@ -295,147 +455,11 @@ console.log('Discovered:', {
 })
 
 const browser = await chromium.launch()
-const ctx = await browser.newContext({
-  viewport: { width: 1440, height: 900 },
-  deviceScaleFactor: 2,
-  colorScheme: 'light',
-})
-// Force light theme before any app code runs (consistent docs look).
-await ctx.addInitScript(() => {
-  localStorage.setItem('nubi-theme', 'light')
-})
-const page = await ctx.newPage()
 
-// Logged-out shots first. The register form is vertically centered and taller
-// than 900px, so it gets a taller viewport of its own.
-{
-  // dpr 1: the full-bleed gradient artwork makes a 2x capture ~2.7 MB; the
-  // docs render this at ~800px wide so 1x stays crisp and 10x smaller.
-  const regCtx = await browser.newContext({
-    viewport: { width: 1440, height: 1080 },
-    deviceScaleFactor: 1,
-    colorScheme: 'light',
-  })
-  await regCtx.addInitScript(() => localStorage.setItem('nubi-theme', 'light'))
-  const regPage = await regCtx.newPage()
-  await regPage.goto(`${APP}/register`, { waitUntil: 'networkidle', timeout: 45_000 })
-  await shoot(regPage, 'register', { settle: 800 })
-  await regCtx.close()
+for (const theme of ['light', 'dark']) {
+  console.log(`\n── Product tour — ${theme} theme ──`)
+  await captureProductTour(browser, ids, theme)
 }
-
-// Log in, then activate the seeded Demo project.
-orgId = ids.org.id
-desiredProject = ids.demo.id
-await uiLogin(page)
-await setProject(page, ids.org.id, ids.demo.id)
-await goAndShoot(page, '/home', 'home', { settle: 2000 })
-
-// Onboarding — only renders for accounts that have not finished setup, so it
-// is captured with a dedicated throwaway user (idempotent fixed email).
-{
-  const obEmail = 'docs-screenshots@nubi.dev'
-  const obPassword = 'docs-shots-2026!'
-  await fetch(`${API}/api/v1/auth/register`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ email: obEmail, password: obPassword, name: 'Docs Screenshots' }),
-  }).catch(() => {}) // 409 (already exists) is fine
-  const obCtx = await browser.newContext({
-    viewport: { width: 1440, height: 900 },
-    deviceScaleFactor: 2,
-    colorScheme: 'light',
-  })
-  await obCtx.addInitScript(() => localStorage.setItem('nubi-theme', 'light'))
-  const obPage = await obCtx.newPage()
-  await uiLogin(obPage, obEmail, obPassword)
-  await obPage.goto(`${APP}/onboarding`, { waitUntil: 'networkidle' })
-  await shoot(obPage, 'onboarding', { settle: 2000 })
-  await obCtx.close()
-}
-
-// Connectors — the demo connector lives in the Default project.
-desiredProject = ids.dflt.id
-await setProject(page, ids.org.id, ids.dflt.id)
-await goAndShoot(page, '/connectors', 'connectors', { settle: 1500 })
-
-// Data browser for the demo connector (rich seeded tables).
-await goAndShoot(page, '/connectors/__demo__/data', 'data-browser', { settle: 2500 })
-
-// Back to the Demo project for everything else.
-desiredProject = ids.demo.id
-await setProject(page, ids.org.id, ids.demo.id)
-
-// Queries editor — open a seeded query via deep link, run it, wait for the
-// results grid. One reload recovers the transient editor state that a
-// mid-run re-login can leave behind.
-await ensureApp(page, `/queries/${ids.query.id}`)
-const runBtn = page.locator('button[title^="Run query"]').first()
-try {
-  await runBtn.waitFor({ timeout: 15_000 })
-} catch {
-  await ensureApp(page, `/queries/${ids.query.id}`)
-  await runBtn.waitFor({ timeout: 30_000 })
-}
-await runBtn.click()
-// Results render as a data table; give the kernel time on first run.
-await page
-  .waitForSelector('table tbody tr, [class*="dataTable"] tr', { timeout: 60_000 })
-  .catch(() => {})
-await shoot(page, 'queries-editor', { settle: 2500 })
-
-// Dashboard editor on Retail Sales Overview, then its Preview mode for a
-// clean rendered view. (The standalone /d/:id route is captured via Preview
-// because it renders chrome-free inside the editor.)
-await goAndShoot(page, `/editor/${ids.board.id}`, 'dashboard-editor', { settle: 4500 })
-const previewBtn = page.getByRole('button', { name: 'Preview', exact: true }).first()
-if (await previewBtn.count()) {
-  await previewBtn.click()
-  await shoot(page, 'dashboard-view', { settle: 3000 })
-}
-
-// Flows — canvas (default view), then notebook and code views. Drafts live in
-// the dev environment until promoted, so pin env=dev for these captures.
-desiredEnv = 'dev'
-await setEnv(page, ids.demo.id, 'dev')
-await ensureApp(page, `/flows/${ids.flow.id}`)
-await shoot(page, 'flows-canvas', { settle: 2500 })
-const notebookToggle = page.locator('button[title="Notebook / cell view"]').first()
-if (await notebookToggle.count()) {
-  await notebookToggle.click()
-  await shoot(page, 'flows-notebook', { settle: 2000 })
-}
-
-// Flows — code view (files-as-code Python SDK projection of the same flow).
-const codeToggle = page.locator('button[title="Code / Files view"]').first()
-if (await codeToggle.count()) {
-  await codeToggle.click()
-  // Codegen is async — wait for the spinner to clear and Monaco to render.
-  await page
-    .waitForSelector('text=Generating code', { state: 'detached', timeout: 30_000 })
-    .catch(() => {})
-  await page.waitForSelector('.monaco-editor', { timeout: 30_000 }).catch(() => {})
-  await shoot(page, 'flows-code', { settle: 2500 })
-}
-desiredEnv = null
-await setEnv(page, ids.demo.id, 'prod')
-
-// Automations (schedules).
-await goAndShoot(page, '/automations', 'automations')
-
-// Secrets (flow-scoped).
-await goAndShoot(page, '/flows/secrets', 'secrets')
-
-// Dashboards list.
-await goAndShoot(page, '/dashboards', 'dashboards', { settle: 1500 })
-
-// Lakehouse / data explorer.
-await goAndShoot(page, '/data', 'data-explorer', { settle: 2500 })
-
-// Settings — organization, members, integrations, usage.
-await goAndShoot(page, '/settings/organization', 'settings-organization')
-await goAndShoot(page, '/settings/members', 'settings-members')
-await goAndShoot(page, '/settings/integrations', 'settings-integrations')
-await goAndShoot(page, '/settings/usage', 'settings-usage')
 
 // ── README hero — full-viewport dashboard (/d/:id), light + dark ─────────────
 // dpr 1.5: README renders at ~900px wide; 1.5x keeps it crisp on retina
@@ -508,9 +532,21 @@ for (const f of mdFiles) {
 }
 refs.delete('logo.png') // static brand asset, not a product capture
 const missing = [...refs].filter((n) => !captured.includes(n.replace(/\.png$/, '')))
-if (missing.length) {
-  console.error(`\n✗ Referenced in README/docs but NOT captured this run: ${missing.join(', ')}`)
-  console.error('  Add captures for these (or remove the stale references).')
+// Docs reference base (light) names only; the in-app renderer derives the
+// `-dark` sibling, so every base capture must also have one. (hero-{light,dark}
+// are already a theme pair by name.)
+const missingDark = captured
+  .filter((n) => !n.endsWith('-dark') && !n.startsWith('hero-'))
+  .filter((n) => !captured.includes(`${n}-dark`))
+if (missing.length || missingDark.length) {
+  if (missing.length) {
+    console.error(`\n✗ Referenced in README/docs but NOT captured this run: ${missing.join(', ')}`)
+    console.error('  Add captures for these (or remove the stale references).')
+  }
+  if (missingDark.length) {
+    console.error(`\n✗ Captured without a -dark sibling: ${missingDark.join(', ')}`)
+    console.error('  The dark-theme pass must capture every shot the light pass does.')
+  }
   process.exitCode = 1
 } else {
   console.log(`\nDone. ${captured.length} screenshots; all ${refs.size} doc-referenced images regenerated.`)

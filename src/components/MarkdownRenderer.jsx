@@ -2,8 +2,10 @@ import ReactMarkdown, { defaultUrlTransform } from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter'
 import { oneDark } from 'react-syntax-highlighter/dist/esm/styles/prism'
+import { useMemo } from 'react'
 import { Link } from 'react-router-dom'
 import { resolveDocIllustration } from './illustrations/docMap.js'
+import { useTheme } from '../contexts/ThemeContext.jsx'
 
 /**
  * Anchored heading helper — creates an id from text content
@@ -19,6 +21,33 @@ function headingId(children) {
     .replace(/[^\w\s-]/g, '')
     .trim()
     .replace(/\s+/g, '-')
+}
+
+/**
+ * Docs screenshots are captured in both themes by scripts/docs-screenshots.mjs:
+ * `<name>.png` (light) and `<name>-dark.png` (dark). Markdown always references
+ * the base (light) name; in dark mode we rewrite the src to the `-dark`
+ * sibling. Other images (logos, docs/assets refs, `illustration:` scheme) are
+ * left untouched.
+ */
+// NOTE: no regex lookbehind here — Tailwind's content scanner tokenizes raw
+// JSX source, and a literal lookbehind for "-dark" crashes its candidate
+// parser (the "!-…" token reads as a malformed important-modifier).
+// Plain suffix check instead.
+const SCREENSHOT_SRC = /^\/docs\/screenshots\/([\w][\w.-]*)\.png$/
+
+function ThemedDocImage({ src, alt }) {
+  const { theme } = useTheme()
+  const resolved = useMemo(() => {
+    if (theme !== 'dark' || typeof src !== 'string') return src
+    const m = SCREENSHOT_SRC.exec(src)
+    if (!m || m[1].endsWith('-dark')) return src
+    return `/docs/screenshots/${m[1]}-dark.png`
+  }, [theme, src])
+  return (
+    <img src={resolved} alt={alt || ''} loading="lazy"
+      className="my-6 rounded-xl border border-border max-w-full h-auto" />
+  )
 }
 
 const components = {
@@ -176,7 +205,8 @@ const components = {
     return <>{children}</>
   },
 
-  // ── Images — `illustration:Name` renders a brand SVG; else a plain image ──
+  // ── Images — `illustration:Name` renders a brand SVG; product screenshots
+  // are theme-aware (see ThemedDocImage); else a plain image ─────────────────
   img({ src, alt }) {
     const Illo = resolveDocIllustration(src)
     if (Illo) {
@@ -191,10 +221,7 @@ const components = {
         </figure>
       )
     }
-    return (
-      <img src={src} alt={alt || ''} loading="lazy"
-        className="my-6 rounded-xl border border-border max-w-full h-auto" />
-    )
+    return <ThemedDocImage src={src} alt={alt} />
   },
 
   // ── Tables (GFM) ─────────────────────────────────────────────────────────

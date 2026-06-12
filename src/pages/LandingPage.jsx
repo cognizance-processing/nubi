@@ -25,7 +25,7 @@
  *  #about        — Footer brand tagline (re-used for about anchor)
  */
 
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import { Link } from 'react-router-dom'
 import {
   ArrowRight,
@@ -76,9 +76,7 @@ import {
   fetchPricingData, recommendNubi, estimateWarehouseCu,
   FALLBACK_COMPETITORS_WAREHOUSE, WAREHOUSE_CU_MULTIPLIER,
 } from '../lib/pricing.js'
-import HeroIllustration from '../components/illustrations/HeroIllustration.jsx'
 import QueryWorkspace from '../components/illustrations/QueryWorkspace.jsx'
-import DashboardCanvas from '../components/illustrations/DashboardCanvas.jsx'
 import KernelInBrowser from '../components/illustrations/KernelInBrowser.jsx'
 import EdgeCache from '../components/illustrations/EdgeCache.jsx'
 import WebGLPerf from '../components/illustrations/WebGLPerf.jsx'
@@ -93,12 +91,98 @@ import { ConnectorSdkCode, FlowCode, EmbedAuthCode, LlmDashboardCode, FilesAsCod
 /* ─────────────────────────────────────────────────────────────────────────── */
 const ScopedStyles = () => (
   <style>{`
-    /* ── Hero illustration gentle float ── */
+    /* ── Hero float (product frame + chips, staggered) ── */
     @keyframes lp-float {
       0%, 100% { transform: translateY(0px); }
       50%       { transform: translateY(-8px); }
     }
-    .lp-hero-illo { animation: lp-float 7s ease-in-out infinite; }
+    .lp-float-1 { animation: lp-float 7s ease-in-out infinite; }
+    .lp-float-2 { animation: lp-float 8.5s ease-in-out infinite; animation-delay: 0.9s; }
+    .lp-float-3 { animation: lp-float 9.5s ease-in-out infinite; animation-delay: 1.7s; }
+
+    /* ── Scroll reveal (decision rows) ── */
+    .lp-reveal {
+      opacity: 0;
+      transform: translateY(26px);
+      transition: opacity 0.7s ease, transform 0.7s cubic-bezier(0.22, 1, 0.36, 1);
+    }
+    .lp-reveal.lp-in { opacity: 1; transform: none; }
+    @media (prefers-reduced-motion: reduce) {
+      .lp-reveal { transition: none; opacity: 1; transform: none; }
+      .lp-float-1, .lp-float-2, .lp-float-3, .lp-mesh-a, .lp-mesh-b { animation: none; }
+    }
+
+    /* ── Observatory hero panel — light by day, dark by night ── */
+    .lp-hero-panel {
+      background:
+        radial-gradient(ellipse 60% 55% at 18% 8%,  rgba(36, 86, 166, 0.13) 0%, transparent 62%),
+        radial-gradient(ellipse 55% 60% at 88% 36%, rgba(23, 179, 163, 0.11) 0%, transparent 60%),
+        linear-gradient(180deg, #f6f9ff 0%, #e9effb 100%);
+      transition: background 0.45s ease, border-color 0.45s ease;
+    }
+    .dark .lp-hero-panel {
+      background:
+        radial-gradient(ellipse 60% 55% at 18% 8%,  rgba(46, 96, 186, 0.34) 0%, transparent 62%),
+        radial-gradient(ellipse 55% 60% at 88% 36%, rgba(20, 160, 146, 0.20) 0%, transparent 60%),
+        radial-gradient(ellipse 70% 60% at 50% 115%, rgba(27, 35, 99, 0.55) 0%, transparent 70%),
+        #070b21;
+    }
+    .lp-mesh-blob { opacity: 0.45; }
+    .dark .lp-mesh-blob { opacity: 1; }
+    .lp-hero-grid { opacity: 0.22; }
+    .dark .lp-hero-grid { opacity: 0.14; }
+    /* drifting mesh blobs — slow, barely-there life */
+    @keyframes lp-mesh-a {
+      0%, 100% { transform: translate(0, 0) scale(1); }
+      50%       { transform: translate(3%, -4%) scale(1.07); }
+    }
+    @keyframes lp-mesh-b {
+      0%, 100% { transform: translate(0, 0) scale(1); }
+      50%       { transform: translate(-4%, 3%) scale(1.1); }
+    }
+    .lp-mesh-a { animation: lp-mesh-a 17s ease-in-out infinite; will-change: transform; }
+    .lp-mesh-b { animation: lp-mesh-b 21s ease-in-out infinite; will-change: transform; }
+    /* film grain on the dark panel */
+    .lp-noise {
+      background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='160' height='160'><filter id='n'><feTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='2' stitchTiles='stitch'/></filter><rect width='100%25' height='100%25' filter='url(%23n)'/></svg>");
+      opacity: 0.025;
+      mix-blend-mode: overlay;
+    }
+    .dark .lp-noise { opacity: 0.05; }
+    /* gradient display text — brand stops on light, lifted stops on dark */
+    .lp-hero-gradient-text {
+      background: linear-gradient(105deg, #1b2363 0%, #2456a6 45%, #17b3a3 100%);
+      -webkit-background-clip: text;
+      background-clip: text;
+      -webkit-text-fill-color: transparent;
+      color: transparent;
+    }
+    .dark .lp-hero-gradient-text {
+      background: linear-gradient(105deg, #8db4f5 0%, #5fd6c8 60%, #2dd4bf 100%);
+      -webkit-background-clip: text;
+      background-clip: text;
+      -webkit-text-fill-color: transparent;
+    }
+    /* primary CTA glow */
+    .lp-cta-glow {
+      box-shadow: 0 12px 44px -10px rgba(23, 179, 163, 0.55), 0 4px 16px rgba(36, 86, 166, 0.45);
+    }
+    .lp-cta-glow:hover {
+      box-shadow: 0 16px 56px -10px rgba(23, 179, 163, 0.7), 0 6px 20px rgba(36, 86, 166, 0.55);
+    }
+    /* glassy floating stat chips over the product frame */
+    .lp-hero-chip {
+      backdrop-filter: blur(10px);
+      -webkit-backdrop-filter: blur(10px);
+      background: rgba(255, 255, 255, 0.78);
+      border: 1px solid rgba(27, 35, 99, 0.12);
+      box-shadow: 0 12px 32px -12px rgba(27, 35, 99, 0.35), inset 0 1px 0 rgba(255, 255, 255, 0.6);
+    }
+    .dark .lp-hero-chip {
+      background: rgba(13, 20, 48, 0.72);
+      border: 1px solid rgba(255, 255, 255, 0.14);
+      box-shadow: 0 12px 32px -10px rgba(0, 0, 0, 0.6), inset 0 1px 0 rgba(255, 255, 255, 0.08);
+    }
 
     /* ── CTA button pulse ── */
     @keyframes lp-pulse-primary {
@@ -255,24 +339,159 @@ const ScopedStyles = () => (
 /*  Sub-components (all use tokens)                                            */
 /* ─────────────────────────────────────────────────────────────────────────── */
 
-function EyebrowBadge({ children }) {
-  return (
-    <div className="inline-flex items-center gap-2 text-xs font-semibold tracking-widest uppercase px-3 py-1.5 rounded-full mb-5 sm:mb-6 bg-surface-2 border border-border text-muted">
-      <span className="w-1.5 h-1.5 rounded-full bg-accent inline-block" />
-      {children}
-    </div>
-  )
-}
+/* ── Product tour — tabbed REAL screenshots (regenerated by
+      `npm run screenshots`, so they always match the shipping UI) ─────────── */
+const TOUR_TABS = [
+  {
+    id: 'queries',
+    label: 'Queries',
+    icon: SearchCode,
+    url: 'app.nubi.dev/queries',
+    img: '/docs/screenshots/queries-editor.png',
+    alt: 'The Nubi query workspace — SQL editor cells with a results grid streamed from the in-browser DuckDB kernel',
+    title: 'Write SQL. Results stream back instantly.',
+    body: 'The DuckDB-WASM kernel runs in the tab — no cold start, no per-session cloud cost. Named {{params}}, AI text-to-SQL grounded on your real schema, and results that arrive as Arrow IPC.',
+    chips: ['DuckDB-WASM', 'Named params', 'AI text-to-SQL'],
+  },
+  {
+    id: 'dashboards',
+    label: 'Dashboards',
+    icon: Layers,
+    url: 'app.nubi.dev/editor',
+    img: '/docs/screenshots/dashboard-editor.png',
+    alt: 'The Nubi dashboard editor — KPIs, charts, and tables composed on a drag-and-drop grid',
+    title: 'Compose it. Embed it anywhere.',
+    body: 'Drag KPIs, charts, and tables onto a grid, then drop the <nubi-dashboard> web component into your app. Per-viewer row-level security travels in a signed JWT — and viewers are free on every plan.',
+    chips: ['Drag & drop', 'Embed anywhere', 'Viewers free'],
+  },
+  {
+    id: 'flows',
+    label: 'Flows',
+    icon: Workflow,
+    url: 'app.nubi.dev/flows',
+    img: '/docs/screenshots/flows-canvas.png',
+    alt: 'The Nubi flows canvas — a SQL and Python pipeline drawn as a DAG with query, python, materialize, and export tasks',
+    title: 'Orchestrate SQL + Python. Canvas, notebook, or code.',
+    body: 'A built-in workflow orchestrator: wire query, Python, and export tasks into a DAG, schedule it, and watch runs live. The same flow is editable as a canvas, a notebook, or generated Python files.',
+    chips: ['DAG canvas', 'Notebook cells', 'Files-as-code'],
+  },
+  {
+    id: 'lakehouse',
+    label: 'Lakehouse',
+    icon: Warehouse,
+    url: 'app.nubi.dev/data',
+    img: '/docs/screenshots/data-explorer.png',
+    alt: 'The Nubi data explorer browsing lakehouse datasets stored on object storage',
+    title: 'A managed lakehouse, one click away.',
+    body: 'Provision a per-org lakehouse on object storage and query it through DuckDB — Parquet in, dashboards out. Land flow outputs there, or bring your own bucket.',
+    chips: ['Object storage', 'DuckDB over Parquet', 'Per-org isolation'],
+  },
+]
 
-function StatBadge({ value, label }) {
+function ProductTour() {
+  const [active, setActive] = useState(TOUR_TABS[0].id)
+  const tab = TOUR_TABS.find(t => t.id === active)
   return (
-    <div className="flex flex-col items-center px-4 py-5 sm:px-6 text-white">
-      <span className="font-display text-3xl sm:text-4xl lg:text-5xl font-bold leading-none mb-1.5 text-white">
-        {value}
-      </span>
-      <span className="text-xs font-medium tracking-wide uppercase text-white/60 text-center max-w-[9rem]">
-        {label}
-      </span>
+    <div>
+      {/* tab bar */}
+      <div className="flex justify-center mb-7 sm:mb-9">
+        <div className="inline-flex flex-wrap justify-center gap-1 p-1 rounded-2xl bg-surface-2 border border-border" role="tablist" aria-label="Product tour">
+          {TOUR_TABS.map(t => {
+            const ActiveIcon = t.icon
+            const selected = t.id === active
+            return (
+              <button
+                key={t.id}
+                role="tab"
+                aria-selected={selected}
+                onClick={() => setActive(t.id)}
+                className={[
+                  'inline-flex items-center gap-2 px-4 sm:px-5 py-2.5 rounded-xl text-sm font-semibold transition-all',
+                  selected
+                    ? 'bg-brand-gradient text-white shadow-md'
+                    : 'text-muted hover:text-fg',
+                ].join(' ')}
+              >
+                <ActiveIcon size={15} strokeWidth={2.2} />
+                {t.label}
+              </button>
+            )
+          })}
+        </div>
+      </div>
+
+      {/* framed screenshot */}
+      <div className="relative max-w-5xl mx-auto">
+        {/* glow bed */}
+        <div
+          className="pointer-events-none absolute -inset-6 sm:-inset-10 rounded-[2.5rem] blur-2xl opacity-50"
+          style={{
+            background:
+              'radial-gradient(ellipse 65% 60% at 50% 45%, rgba(36,86,166,0.18) 0%, rgba(23,179,163,0.12) 55%, transparent 78%)',
+          }}
+          aria-hidden="true"
+        />
+        <div className="relative rounded-2xl overflow-hidden border border-border bg-surface shadow-[0_30px_70px_-28px_rgba(27,35,99,0.45)]">
+          {/* browser chrome */}
+          <div className="flex items-center gap-3 px-4 py-2.5 border-b border-border bg-surface-2">
+            <span className="flex gap-1.5" aria-hidden="true">
+              <span className="w-2.5 h-2.5 rounded-full bg-[#f4726f]/70" />
+              <span className="w-2.5 h-2.5 rounded-full bg-[#f5bd4f]/70" />
+              <span className="w-2.5 h-2.5 rounded-full bg-[#61c554]/70" />
+            </span>
+            <span className="flex-1 max-w-xs mx-auto flex items-center justify-center gap-1.5 font-mono text-[10.5px] text-muted bg-bg border border-border rounded-md px-3 py-1">
+              <Lock size={9} className="text-brand-teal" />
+              {tab.url}
+            </span>
+            <span className="hidden sm:inline w-12" aria-hidden="true" />
+          </div>
+          {/* stacked images so switching never flashes a loading gap */}
+          <div className="relative" style={{ aspectRatio: '1440 / 900' }}>
+            {TOUR_TABS.map(t => (
+              <div
+                key={t.id}
+                className={[
+                  'absolute inset-0 transition-opacity duration-300',
+                  t.id === active ? 'opacity-100' : 'opacity-0',
+                ].join(' ')}
+              >
+                {/* light + dark captures from the screenshot pipeline; CSS picks
+                    the one matching the site theme */}
+                <img
+                  src={t.img}
+                  alt={t.alt}
+                  width="2880"
+                  height="1800"
+                  loading="lazy"
+                  className="absolute inset-0 w-full h-full object-cover object-top dark:hidden"
+                />
+                <img
+                  src={t.img.replace('.png', '-dark.png')}
+                  alt=""
+                  aria-hidden="true"
+                  width="2880"
+                  height="1800"
+                  loading="lazy"
+                  className="hidden dark:block absolute inset-0 w-full h-full object-cover object-top"
+                />
+              </div>
+            ))}
+          </div>
+        </div>
+      </div>
+
+      {/* caption */}
+      <div className="max-w-2xl mx-auto text-center mt-8 sm:mt-10">
+        <h3 className="font-display text-xl sm:text-2xl font-bold text-fg">{tab.title}</h3>
+        <p className="text-sm leading-relaxed text-muted mt-2.5">{tab.body}</p>
+        <div className="flex flex-wrap justify-center gap-2 mt-4">
+          {tab.chips.map(chip => (
+            <span key={chip} className="font-mono text-[11px] font-medium px-2.5 py-1 rounded-full bg-brand-teal/10 text-brand-teal border border-brand-teal/20">
+              {chip}
+            </span>
+          ))}
+        </div>
+      </div>
     </div>
   )
 }
@@ -503,26 +722,69 @@ function HowItWorksStep({ num, icon: Icon, title, color, tagline, bullets, code,
  * On mobile/tablet: always stacks (illustration on top, copy below).
  * On desktop (lg+): alternates left/right based on `reverse` prop.
  */
-function DiffRow({ icon: Icon, title, desc, Illustration, reverse = false, badge, id }) {
+function DiffRow({ icon: Icon, index, title, hook, desc, outcome, Illustration, reverse = false, badge, id }) {
+  // Scroll reveal: each row fades/slides in once, the first time it enters the
+  // viewport. Falls back to always-visible when IntersectionObserver is absent.
+  const revealRef = useRef(null)
+  // Visible from the start when IntersectionObserver is unavailable (SSR/old
+  // browsers) — the reveal is purely progressive enhancement.
+  const [seen, setSeen] = useState(() => typeof IntersectionObserver === 'undefined')
+  useEffect(() => {
+    const el = revealRef.current
+    if (!el || typeof IntersectionObserver === 'undefined') return
+    const obs = new IntersectionObserver(
+      ([entry]) => {
+        if (entry.isIntersecting) {
+          setSeen(true)
+          obs.disconnect()
+        }
+      },
+      { threshold: 0.18 }
+    )
+    obs.observe(el)
+    return () => obs.disconnect()
+  }, [])
+
   const IllustrationBlock = (
-    <div className="w-full min-h-[220px] sm:min-h-[280px] lg:min-h-[320px] flex items-center justify-center px-4 py-6 sm:px-8 sm:py-8">
+    <div className="relative w-full min-h-[220px] sm:min-h-[280px] lg:min-h-[320px] flex items-center justify-center px-4 py-6 sm:px-8 sm:py-8">
+      {index && (
+        <span
+          aria-hidden="true"
+          className="pointer-events-none select-none absolute -top-1 right-5 font-display font-bold text-[5rem] sm:text-[6.5rem] leading-none text-transparent"
+          style={{ WebkitTextStroke: '1.5px rgba(36,86,166,0.16)' }}
+        >
+          {index}
+        </span>
+      )}
       <Illustration className="w-full h-auto max-w-[480px]" />
     </div>
   )
   const CopyBlock = (
     <div className={`flex flex-col gap-4 sm:gap-5 ${reverse ? 'lg:pr-8' : 'lg:pl-8'}`}>
-      {badge && (
-        <span className="inline-flex items-center self-start gap-1.5 text-xs font-semibold px-2.5 py-1 rounded-full bg-surface-2 border border-border text-muted tracking-widest uppercase">
-          {badge}
-        </span>
-      )}
-      <div className="flex items-center gap-3">
-        <span className="shrink-0 inline-flex items-center justify-center w-10 h-10 rounded-xl bg-surface-2 border border-border text-accent">
+      <div className="flex items-center gap-2.5">
+        {index && <span className="font-mono text-xs font-bold text-brand-teal">/{index}</span>}
+        {badge && (
+          <span className="inline-flex items-center gap-1.5 font-mono text-[10px] font-semibold px-2.5 py-1 rounded-full bg-surface-2 border border-border text-muted tracking-[0.14em] uppercase">
+            {badge}
+          </span>
+        )}
+      </div>
+      <div className="flex items-center gap-3.5">
+        <span className="shrink-0 inline-flex items-center justify-center w-11 h-11 rounded-xl bg-brand-gradient text-white shadow-[0_8px_20px_-6px_rgba(36,86,166,0.5)]">
           <Icon size={20} strokeWidth={1.75} />
         </span>
-        <h3 className="font-display font-bold text-xl sm:text-2xl lg:text-3xl text-fg leading-tight">{title}</h3>
+        <h3 className="font-display font-bold text-2xl sm:text-3xl text-fg leading-tight tracking-tight">{title}</h3>
       </div>
-      <p className="text-sm sm:text-base lg:text-lg leading-relaxed text-muted">{desc}</p>
+      <p className="text-sm sm:text-base lg:text-lg leading-relaxed text-muted">
+        {hook && <strong className="text-fg font-semibold">{hook}{' '}</strong>}
+        {desc}
+      </p>
+      {outcome && (
+        <p className="flex items-start gap-2 font-mono text-[12px] sm:text-[13px] font-medium text-brand-teal border-l-2 border-brand-teal/50 pl-3 leading-relaxed">
+          <ArrowRight size={13} strokeWidth={2.5} className="mt-0.5 shrink-0" />
+          {outcome}
+        </p>
+      )}
     </div>
   )
 
@@ -532,8 +794,9 @@ function DiffRow({ icon: Icon, title, desc, Illustration, reverse = false, badge
   // copy, so the visible copy's gradient fills vanish. Single-render avoids it.
   return (
     <div
+      ref={revealRef}
       id={id}
-      className={`grid grid-cols-1 lg:grid-cols-2 gap-8 sm:gap-10 lg:gap-16 items-center ${id ? 'scroll-mt-20' : ''}`}
+      className={`lp-reveal ${seen ? 'lp-in' : ''} grid grid-cols-1 lg:grid-cols-2 gap-8 sm:gap-10 lg:gap-16 items-center ${id ? 'scroll-mt-20' : ''}`}
     >
       {/* Mobile: illustration always first. Desktop: side depends on `reverse`. */}
       <div className={`lp-illo-card order-1 rounded-2xl border border-border overflow-hidden ${reverse ? 'lg:order-2' : 'lg:order-1'}`}>
@@ -1010,7 +1273,7 @@ function LpPricingSection() {
           <rect width="100%" height="100%" fill="url(#lp-pricing-dots)" className="text-primary" />
         </svg>
         <div className="relative max-w-3xl mx-auto px-4 sm:px-6 text-center">
-          <p className="text-xs font-semibold tracking-widest uppercase mb-4 text-brand-teal">Pricing</p>
+          <p className="font-mono text-[11px] font-semibold tracking-[0.18em] uppercase mb-4 text-brand-teal">Pricing</p>
           <h2 className="font-display text-3xl sm:text-5xl lg:text-6xl font-bold leading-tight mb-5 text-fg">
             Pricing that doesn&rsquo;t{' '}
             <span className="text-brand-gradient">tax your viewers.</span>
@@ -1141,7 +1404,7 @@ function LpPricingSection() {
       <div className="pb-14 sm:pb-20 bg-bg">
         <div className="max-w-4xl mx-auto px-4 sm:px-6 lg:px-8">
           <div className="text-center mb-8">
-            <p className="text-xs font-semibold tracking-widest uppercase mb-4 text-brand-teal inline-flex items-center gap-1.5">
+            <p className="font-mono text-[11px] font-semibold tracking-[0.18em] uppercase mb-4 text-brand-teal inline-flex items-center gap-1.5">
               <SlidersHorizontal size={12} /> Estimate your cost
             </p>
             <h3 className="font-display text-3xl sm:text-4xl font-bold text-fg mb-3">
@@ -1244,134 +1507,207 @@ export default function LandingPage() {
       <div className="nubi-lp overflow-x-hidden bg-bg text-fg font-sans">
 
         {/* ════════════════════════════════════════════════════════════════════
-            §1  HERO — two-column: copy | large illustration
+            §1  HERO — dark observatory panel: copy | real product frame,
+            with the proof stats fused into the panel's lower band
         ════════════════════════════════════════════════════════════════════ */}
-        <section id="hero" className="relative flex items-center bg-bg scroll-mt-14">
-          {/* Subtle brand gradient wash behind illustration */}
-          <div
-            className="pointer-events-none absolute inset-0"
-            style={{
-              background:
-                'radial-gradient(ellipse 55% 60% at 75% 50%, rgba(36,86,166,0.07) 0%, transparent 70%), ' +
-                'radial-gradient(ellipse 35% 40% at 20% 70%, rgba(23,179,163,0.05) 0%, transparent 60%)',
-            }}
-          />
+        <section id="hero" className="relative scroll-mt-14 bg-bg px-3 sm:px-5 pt-3 sm:pt-5">
+          <div className="lp-hero-panel relative max-w-[1440px] mx-auto rounded-[1.5rem] sm:rounded-[2rem] overflow-hidden border border-border dark:border-white/[0.06]">
 
-          <div className="relative max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-14 sm:py-20 lg:py-28 w-full">
-            <div className="grid grid-cols-1 lg:grid-cols-[1fr_1.25fr] gap-10 lg:gap-20 items-center">
+            {/* drifting mesh blobs */}
+            <div
+              className="lp-mesh-a lp-mesh-blob pointer-events-none absolute -top-40 -left-40 w-[42rem] h-[42rem] rounded-full"
+              style={{ background: 'radial-gradient(circle, rgba(72,124,214,0.28) 0%, transparent 65%)' }}
+              aria-hidden="true"
+            />
+            <div
+              className="lp-mesh-b lp-mesh-blob pointer-events-none absolute top-1/4 -right-48 w-[38rem] h-[38rem] rounded-full"
+              style={{ background: 'radial-gradient(circle, rgba(45,212,191,0.16) 0%, transparent 65%)' }}
+              aria-hidden="true"
+            />
 
-              {/* ── Left: copy ── */}
-              <div>
-                <EyebrowBadge>Open beta · real free tier</EyebrowBadge>
+            {/* perspective data-grid floor */}
+            <svg
+              className="lp-hero-grid pointer-events-none absolute inset-x-0 bottom-0 h-[55%] w-full"
+              preserveAspectRatio="none"
+              viewBox="0 0 1200 400"
+              aria-hidden="true"
+            >
+              <defs>
+                <linearGradient id="lp-gridfade" x1="0" y1="0" x2="0" y2="1">
+                  <stop offset="0" stopColor="#8db4f5" stopOpacity="0" />
+                  <stop offset="1" stopColor="#8db4f5" stopOpacity="0.8" />
+                </linearGradient>
+              </defs>
+              {Array.from({ length: 13 }, (_, i) => (
+                <line key={`v${i}`} x1={600 + (i - 6) * 100} y1="0" x2={600 + (i - 6) * 260} y2="400" stroke="url(#lp-gridfade)" strokeWidth="1" />
+              ))}
+              {Array.from({ length: 7 }, (_, i) => (
+                <line key={`h${i}`} x1="0" y1={60 + i * 56 + i * i * 2} x2="1200" y2={60 + i * 56 + i * i * 2} stroke="url(#lp-gridfade)" strokeWidth="1" />
+              ))}
+            </svg>
 
-                <h1 className="font-display text-4xl sm:text-5xl lg:text-[4.25rem] xl:text-7xl font-bold leading-[1.06] tracking-tight mb-5 sm:mb-6 text-fg">
-                  BI that runs{' '}
-                  <span className="text-brand-gradient">
-                    in your browser.
-                  </span>
-                  <br />
-                  <span className="text-brand-teal">Viewers are free.</span>{' '}
-                  Every plan.
-                </h1>
+            {/* film grain */}
+            <div className="lp-noise pointer-events-none absolute inset-0" aria-hidden="true" />
 
-                <p className="text-base sm:text-lg lg:text-xl leading-relaxed mb-8 sm:mb-10 max-w-lg text-muted">
-                  A DuckDB-WASM kernel runs{' '}
-                  <strong className="text-fg font-semibold">inside the browser tab</strong>{' '}
-                  — no cloud kernel, no cold starts. So an extra viewer costs{' '}
-                  <strong className="text-fg font-semibold">≈ $0</strong>, and we never
-                  charge for one:{' '}
-                  <strong className="text-fg font-semibold">unlimited seats on every plan.</strong>{' '}
-                  Flows orchestration built in, open-core, self-hostable — embed it in
-                  your SaaS for a{' '}
-                  <strong className="text-fg font-semibold">fraction of per-seat BI.</strong>
-                </p>
+            <div className="relative px-5 sm:px-10 lg:px-14 pt-12 sm:pt-16 lg:pt-20">
+              <div className="grid grid-cols-1 lg:grid-cols-[1fr_1.18fr] gap-12 lg:gap-14 items-center">
 
-                {/* CTAs */}
-                <div className="flex flex-col sm:flex-row flex-wrap gap-3 mb-8 sm:mb-10">
-                  <Link
-                    to="/register"
-                    className="lp-cta-pulse inline-flex items-center justify-center gap-2 px-6 py-3.5 rounded-xl text-base font-semibold transition-all bg-brand-gradient text-white hover:opacity-90 hover:-translate-y-0.5 min-h-[48px]"
-                  >
-                    Start free
-                    <ArrowRight size={16} strokeWidth={2.5} />
-                  </Link>
-                  <Link
-                    to="/docs"
-                    className="inline-flex items-center justify-center gap-2 px-6 py-3.5 rounded-xl text-base font-semibold transition-all bg-surface-2 border border-border text-fg hover:border-brand-blue hover:text-primary min-h-[48px]"
-                  >
-                    View docs
-                  </Link>
-                  <Link
-                    to="/compare"
-                    className="inline-flex items-center justify-center gap-1.5 px-4 py-3.5 rounded-xl text-sm font-medium transition-all text-muted hover:text-fg min-h-[48px]"
-                  >
-                    Compare vs Hex &amp; Cube <ChevronRight size={13} />
-                  </Link>
+                {/* ── Left: copy ── */}
+                <div>
+                  {/* terminal-flavoured eyebrow */}
+                  <p className="inline-flex items-center gap-2 font-mono text-[11px] sm:text-xs font-medium tracking-wide text-brand-teal dark:text-teal-300/90 border border-border dark:border-white/10 bg-white/60 dark:bg-white/[0.04] rounded-full px-3.5 py-1.5 mb-6 sm:mb-8">
+                    <span className="relative flex h-1.5 w-1.5">
+                      <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-teal-400 opacity-60" />
+                      <span className="relative inline-flex rounded-full h-1.5 w-1.5 bg-teal-300" />
+                    </span>
+                    open source · apache-2.0 · real free tier
+                  </p>
+
+                  <h1 className="font-display text-4xl sm:text-5xl lg:text-[3.9rem] xl:text-[4.4rem] font-bold leading-[1.04] tracking-tight mb-5 sm:mb-7 text-fg">
+                    BI that runs in
+                    <br />
+                    <span className="lp-hero-gradient-text">your browser.</span>
+                    <br />
+                    Viewers are free.
+                  </h1>
+
+                  <p className="text-base sm:text-lg leading-relaxed mb-8 sm:mb-9 max-w-lg text-muted dark:text-slate-300/90">
+                    A DuckDB-WASM kernel runs{' '}
+                    <strong className="text-fg font-semibold">inside the tab</strong> — zero
+                    cold starts, and an extra viewer costs{' '}
+                    <strong className="text-fg font-semibold">≈ $0</strong>. So every plan has{' '}
+                    <strong className="text-fg font-semibold">unlimited seats</strong>. Flows
+                    orchestration built in. Embed it in your SaaS for a fraction of per-seat BI.
+                  </p>
+
+                  {/* CTAs */}
+                  <div className="flex flex-col sm:flex-row flex-wrap gap-3 mb-8 sm:mb-10">
+                    <Link
+                      to="/register"
+                      className="lp-cta-glow inline-flex items-center justify-center gap-2 px-7 py-3.5 rounded-xl text-base font-semibold transition-all bg-brand-gradient text-white hover:-translate-y-0.5 min-h-[48px]"
+                    >
+                      Start free
+                      <ArrowRight size={16} strokeWidth={2.5} />
+                    </Link>
+                    <Link
+                      to="/docs"
+                      className="inline-flex items-center justify-center gap-2 px-6 py-3.5 rounded-xl text-base font-semibold transition-all bg-surface border border-border text-fg hover:border-brand-blue dark:bg-white/[0.06] dark:border-white/15 dark:text-white dark:hover:bg-white/[0.12] dark:hover:border-white/25 min-h-[48px]"
+                    >
+                      View docs
+                    </Link>
+                    <Link
+                      to="/compare"
+                      className="inline-flex items-center justify-center gap-1.5 px-4 py-3.5 rounded-xl text-sm font-medium transition-all text-muted hover:text-fg min-h-[48px]"
+                    >
+                      Compare vs Hex &amp; Cube <ChevronRight size={13} />
+                    </Link>
+                  </div>
+
+                  {/* trust strip — mono, data-tool flavour */}
+                  <div className="flex flex-wrap gap-x-5 gap-y-2 font-mono text-[11px] font-medium text-muted">
+                    {[
+                      'unlimited seats & viewers',
+                      'no credit card',
+                      'apache-2.0 open core',
+                      'arrow ipc → echarts',
+                    ].map(f => (
+                      <span key={f} className="flex items-center gap-1.5">
+                        <Check size={11} strokeWidth={2.5} className="text-teal-400" />
+                        {f}
+                      </span>
+                    ))}
+                  </div>
                 </div>
 
-                {/* Trust strip */}
-                <div className="flex flex-wrap gap-x-5 gap-y-2 text-xs font-medium text-muted">
-                  {[
-                    'Unlimited seats & viewers',
-                    'No credit card to start',
-                    'Apache-2.0 open core',
-                    'Arrow IPC + ECharts rendering',
-                  ].map(f => (
-                    <span key={f} className="flex items-center gap-1.5">
-                      <Check size={11} strokeWidth={2.5} className="text-accent" />
-                      {f}
+                {/* ── Right: the real product, in a glass browser frame ── */}
+                <div className="relative mt-4 lg:mt-0 lg:-mr-2">
+                  {/* glow bed under the frame */}
+                  <div
+                    className="pointer-events-none absolute -inset-8 rounded-[2.5rem] blur-2xl opacity-60"
+                    style={{
+                      background:
+                        'radial-gradient(ellipse 70% 60% at 50% 55%, rgba(45,140,220,0.35) 0%, rgba(45,212,191,0.18) 50%, transparent 75%)',
+                    }}
+                    aria-hidden="true"
+                  />
+
+                  <div className="lp-float-1 relative rounded-2xl overflow-hidden border border-border dark:border-white/[0.13] bg-surface dark:bg-[#0c1230]/80 shadow-[0_30px_70px_-26px_rgba(27,35,99,0.4)] dark:shadow-[0_40px_80px_-24px_rgba(0,0,0,0.7)]">
+                    {/* browser chrome */}
+                    <div className="flex items-center gap-3 px-4 py-2.5 border-b border-border dark:border-white/[0.08] bg-surface-2 dark:bg-white/[0.03]">
+                      <span className="flex gap-1.5" aria-hidden="true">
+                        <span className="w-2.5 h-2.5 rounded-full bg-[#f4726f]/80" />
+                        <span className="w-2.5 h-2.5 rounded-full bg-[#f5bd4f]/80" />
+                        <span className="w-2.5 h-2.5 rounded-full bg-[#61c554]/80" />
+                      </span>
+                      <span className="flex-1 max-w-xs mx-auto flex items-center justify-center gap-1.5 font-mono text-[10.5px] text-muted bg-bg dark:bg-white/[0.05] border border-border dark:border-white/[0.07] rounded-md px-3 py-1">
+                        <Lock size={9} className="text-teal-400/80" />
+                        app.nubi.dev/d/retail-sales
+                      </span>
+                      <span className="hidden sm:inline-flex font-mono text-[9.5px] text-brand-teal dark:text-teal-300/80 border border-brand-teal/25 dark:border-teal-400/20 bg-brand-teal/[0.07] dark:bg-teal-400/[0.07] rounded px-1.5 py-0.5">
+                        arrow ipc
+                      </span>
+                    </div>
+                    <img
+                      src="/landing/hero-light.png"
+                      alt="A live Nubi dashboard — retail sales KPIs, trend line, and category breakdowns rendered in the browser"
+                      width="2400"
+                      height="1500"
+                      fetchPriority="high"
+                      className="block w-full h-auto dark:hidden"
+                    />
+                    <img
+                      src="/landing/hero-dark.png"
+                      alt=""
+                      aria-hidden="true"
+                      width="2400"
+                      height="1500"
+                      loading="lazy"
+                      className="hidden w-full h-auto dark:block"
+                    />
+                  </div>
+
+                  {/* floating stat chips */}
+                  <div className="lp-float-2 lp-hero-chip absolute -left-3 sm:-left-6 top-20 hidden md:flex items-center gap-2.5 rounded-xl px-3.5 py-2.5">
+                    <Zap size={15} className="text-teal-300" />
+                    <span className="font-mono text-[11px] leading-tight text-fg dark:text-white">
+                      0 s cold start
+                      <span className="block text-[9.5px] text-muted">kernel lives in the tab</span>
                     </span>
+                  </div>
+                  <div className="lp-float-3 lp-hero-chip absolute -right-2 sm:-right-5 -bottom-5 hidden md:flex items-center gap-2.5 rounded-xl px-3.5 py-2.5">
+                    <Users size={15} className="text-sky-300" />
+                    <span className="font-mono text-[11px] leading-tight text-fg dark:text-white">
+                      ≈ $0 / dashboard view
+                      <span className="block text-[9.5px] text-muted">so viewers are never billed</span>
+                    </span>
+                  </div>
+                </div>
+              </div>
+
+              {/* ── Proof stats — fused into the panel ── */}
+              <div className="relative mt-12 sm:mt-16 lg:mt-20 border-t border-border dark:border-white/10 py-8 sm:py-10">
+                <div className="grid grid-cols-2 lg:grid-cols-4 gap-y-8 divide-x divide-border dark:divide-white/[0.07]">
+                  {[
+                    { v: '≈ $0', l: 'marginal cost per dashboard view' },
+                    { v: '∞', l: 'users & viewers — no per-seat pricing' },
+                    { v: '10–50×', l: 'cost reduction vs naive warehouse use¹' },
+                    { v: '0 s', l: 'cold start — kernel runs in the tab' },
+                  ].map(s => (
+                    <div key={s.l} className="px-4 sm:px-8 text-center">
+                      <div className="lp-hero-gradient-text font-display text-3xl sm:text-4xl lg:text-[2.6rem] font-bold tracking-tight">
+                        {s.v}
+                      </div>
+                      <div className="mt-1.5 font-mono text-[10.5px] sm:text-[11px] leading-snug text-muted">
+                        {s.l}
+                      </div>
+                    </div>
                   ))}
                 </div>
-              </div>
-
-              {/* ── Right: LARGE hero illustration ── */}
-              <div className="lp-hero-illo relative mt-6 lg:mt-0">
-                {/* Glow halo behind illustration */}
-                <div
-                  className="absolute inset-0 -m-6 rounded-3xl pointer-events-none"
-                  style={{
-                    background:
-                      'radial-gradient(ellipse 80% 70% at 50% 50%, rgba(36,86,166,0.1) 0%, transparent 70%)',
-                  }}
-                />
-                <div className="relative bg-surface rounded-2xl border border-border overflow-hidden p-1 shadow-2xl">
-                  <HeroIllustration className="w-full h-auto" style={{ minHeight: 280 }} />
-                </div>
+                <p className="text-center font-mono text-[10px] mt-7 text-muted opacity-70">
+                  ¹ real at high cache-hit / pre-aggregation rates — 500 viewers of one dashboard collapse to 1 warehouse hit
+                </p>
               </div>
             </div>
-          </div>
-        </section>
-
-        {/* ════════════════════════════════════════════════════════════════════
-            §2  PROOF BAND — key metrics
-        ════════════════════════════════════════════════════════════════════ */}
-        <section className="relative py-12 sm:py-16 lg:py-20 bg-brand-gradient overflow-hidden">
-          {/* Subtle pattern */}
-          <svg className="absolute inset-0 w-full h-full opacity-5 pointer-events-none" aria-hidden="true">
-            <defs>
-              <pattern id="lp-dots" x="0" y="0" width="28" height="28" patternUnits="userSpaceOnUse">
-                <circle cx="1" cy="1" r="1" fill="white" />
-              </pattern>
-            </defs>
-            <rect width="100%" height="100%" fill="url(#lp-dots)" />
-          </svg>
-
-          <div className="relative max-w-6xl mx-auto px-4 sm:px-6 lg:px-8">
-            <p className="text-center text-xs font-semibold tracking-widest uppercase mb-8 sm:mb-10 text-white/60">
-              The structural advantage — what kernel-in-the-browser actually means
-            </p>
-
-            <div className="grid grid-cols-2 sm:grid-cols-4 divide-x divide-y sm:divide-y-0 divide-white/10">
-              <StatBadge value="≈ $0" label="marginal cost per dashboard view" />
-              <StatBadge value="∞" label="users & viewers — no per-seat pricing" />
-              <StatBadge value="10–50×" label="cost reduction vs naive warehouse usage¹" />
-              <StatBadge value="0 s" label="cold-start — kernel runs in the tab" />
-            </div>
-
-            <p className="text-center text-xs mt-8 text-white/30">
-              ¹ Real at high cache-hit / pre-aggregation rates — e.g. 500 viewers of the same dashboard collapsing to 1 warehouse hit.
-            </p>
           </div>
         </section>
 
@@ -1382,7 +1718,7 @@ export default function LandingPage() {
         <section id="product" className="py-14 sm:py-20 lg:py-24 bg-bg scroll-mt-14">
           <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
             <div className="text-center mb-12 sm:mb-16">
-              <p className="text-xs font-semibold tracking-widest uppercase mb-4 text-brand-teal">
+              <p className="font-mono text-[11px] font-semibold tracking-[0.18em] uppercase mb-4 text-brand-teal">
                 See it in action
               </p>
               <h2 className="font-display text-3xl sm:text-4xl lg:text-5xl font-bold text-fg">
@@ -1399,42 +1735,7 @@ export default function LandingPage() {
               </p>
             </div>
 
-            <div className="grid md:grid-cols-2 gap-5 lg:gap-7">
-              {[
-                {
-                  Illustration: QueryWorkspace,
-                  tag: 'Query workspace',
-                  title: 'Write SQL. See results instantly.',
-                  body: 'The DuckDB-WASM kernel runs in the tab, so queries return with no cold start and no per-session cloud cost. Named {{params}}, AI text-to-SQL grounded on your real schema, and results that stream as Arrow IPC.',
-                  chips: ['DuckDB-WASM', 'Named params', 'AI text-to-SQL'],
-                },
-                {
-                  Illustration: DashboardCanvas,
-                  tag: 'Dashboard builder',
-                  title: 'Compose it. Embed it anywhere.',
-                  body: 'Drag KPIs, charts, and tables onto a grid, then drop the <nubi-dashboard> web component into your app. Per-viewer row-level security travels in a signed JWT — and viewers are free at every plan.',
-                  chips: ['Drag & drop', 'Embed anywhere', 'Viewers free'],
-                },
-              ].map((c) => (
-                <div key={c.tag} className="flex flex-col bg-surface rounded-2xl border border-border overflow-hidden shadow-sm">
-                  <div className="p-5 sm:p-7 bg-surface-2 border-b border-border">
-                    <c.Illustration className="w-full h-auto" />
-                  </div>
-                  <div className="p-5 sm:p-7 flex flex-col gap-3">
-                    <p className="text-xs font-semibold tracking-widest uppercase text-brand-teal">{c.tag}</p>
-                    <h3 className="font-display text-xl sm:text-2xl font-bold text-fg">{c.title}</h3>
-                    <p className="text-sm leading-relaxed text-muted">{c.body}</p>
-                    <div className="flex flex-wrap gap-2 mt-1">
-                      {c.chips.map((chip) => (
-                        <span key={chip} className="text-xs font-medium px-2.5 py-1 rounded-full bg-brand-teal/10 text-brand-teal border border-brand-teal/20">
-                          {chip}
-                        </span>
-                      ))}
-                    </div>
-                  </div>
-                </div>
-              ))}
-            </div>
+            <ProductTour />
           </div>
         </section>
 
@@ -1447,19 +1748,20 @@ export default function LandingPage() {
 
             {/* Section header */}
             <div className="text-center mb-12 sm:mb-16 lg:mb-20 max-w-2xl mx-auto">
-              <p className="text-xs font-semibold tracking-widest uppercase mb-4 text-brand-teal">
-                Why Nubi
+              <p className="font-mono text-[11px] font-semibold tracking-[0.18em] uppercase mb-4 text-brand-teal">
+                why nubi · one bet, compounded
               </p>
-              <h2 className="font-display text-3xl sm:text-4xl lg:text-5xl font-bold leading-tight mb-4 sm:mb-5 text-fg">
+              <h2 className="font-display text-3xl sm:text-4xl lg:text-[3.4rem] font-bold leading-[1.08] tracking-tight mb-4 sm:mb-6 text-fg">
                 Eight decisions that make{' '}
                 <span className="text-brand-gradient">everything cheaper.</span>
               </h2>
-              <p className="text-sm sm:text-base leading-relaxed text-muted">
-                Each feature flows from one structural bet:{' '}
-                <strong className="text-fg font-semibold">push compute to the browser</strong>,
-                fall through to a server only when you must. The result:{' '}
-                <strong className="text-fg font-semibold">near-zero marginal cost per dashboard
-                view</strong> — regardless of how many viewers you have.
+              <p className="text-sm sm:text-base lg:text-lg leading-relaxed text-muted">
+                Most BI rents you compute — by the seat, by the session, by the query.
+                Nubi makes one structural bet instead:{' '}
+                <strong className="text-fg font-semibold">ship the kernel to the browser</strong>{' '}
+                and fall through to a server only when you must. Every decision below
+                compounds that bet into{' '}
+                <strong className="text-fg font-semibold">≈ $0 per dashboard view.</strong>
               </p>
             </div>
 
@@ -1467,78 +1769,102 @@ export default function LandingPage() {
             <div className="flex flex-col gap-12 sm:gap-16 lg:gap-20">
               <DiffRow
                 id="kernel"
+                index="01"
                 icon={Zap}
                 title="Kernel in the browser"
                 badge="Core architecture"
-                desc="A DuckDB-WASM analytics kernel runs inside the user's tab. Zero cold starts, zero per-session cloud cost. Python cells route to a metered, scale-to-zero server kernel — the escape hatch, not the default path. Marginal cost per dashboard view ≈ $0."
+                hook="The kernel ships to the user's tab."
+                desc="A DuckDB-WASM engine does the analytics where your viewers already are — zero cold starts, zero per-session cloud cost. Python falls through to a metered, scale-to-zero server kernel: the escape hatch, never the default."
+                outcome="marginal cost per dashboard view ≈ $0"
                 Illustration={KernelInBrowser}
                 reverse={false}
               />
 
               <DiffRow
+                index="02"
                 icon={Globe}
                 title="Fast charts on Arrow buffers"
                 badge="Rendering"
-                desc="Query results arrive as columnar Arrow buffers and feed straight into Apache ECharts — no JSON serialisation round-trip. The <nubi-chart> element renders every chart type on canvas, staying fast and responsive even on large result sets."
+                hook="Charts read columns, not JSON."
+                desc="Results stream as columnar Arrow IPC straight into Apache ECharts on canvas — no serialisation round-trip, no DOM-bound SVG. Cross-filter a six-figure result set and it just moves."
+                outcome="fluid charts at 100k+ rows"
                 Illustration={WebGLPerf}
                 reverse={true}
               />
 
               <DiffRow
                 id="cache"
+                index="03"
                 icon={Database}
                 title="Edge cache + auto pre-agg"
                 badge="Cost architecture"
-                desc="Content-hashed edge cache keyed on (plan + JWT claims): 500 viewers of the same dashboard collapse to 1 warehouse hit. A rollup suggester mines hot GROUP BY shapes from your query log — materialize the winners in one click, no hand-written cubes."
+                hook="500 viewers. One warehouse hit."
+                desc="A content-hashed edge cache keyed on (plan + JWT claims) collapses identical dashboard traffic, while a rollup suggester mines hot GROUP BY shapes from your query log — materialize the winners in one click, no hand-written cubes."
+                outcome="10–50× fewer warehouse scans"
                 Illustration={EdgeCache}
                 reverse={false}
               />
 
               <DiffRow
                 id="embedding"
+                index="04"
                 icon={Shield}
                 title="Auth-as-code embedding"
                 badge="Security"
-                desc="One JWT primitive powers users, groups, and embedding. RLS policies are claims in a token your backend signs — auth logic lives in your repo, not a vendor UI. Predicate injection is AST-based (never string concat). Mount <nubi-dashboard get-token> and you're done."
+                hook="Row-level security lives in your repo."
+                desc="One JWT primitive powers users, groups, and embeds. RLS policies are claims in a token your backend signs — and predicates are injected into the SQL AST, never string-concatenated. Auth logic stays in code review, not a vendor UI."
+                outcome="<nubi-dashboard get-token> — that's the whole integration"
                 Illustration={EmbedAuthCode}
                 reverse={true}
               />
 
               <DiffRow
+                index="05"
                 icon={Bot}
                 title="LLM-authorable dashboards"
                 badge="AI-native"
-                desc="A dashboard is sanitized HTML/CSS with declarative <nubi-*> custom elements. LLMs author HTML natively. Six MCP tools — author_dashboard, create_dashboard, run_query, list_dashboards, list_lineage, propose_materialized_view — let agents build and iterate dashboards end-to-end."
+                hook="Agents speak fluent dashboard."
+                desc="A dashboard is sanitized HTML with declarative <nubi-*> elements — a format LLMs author natively, grounded on your real schema. Six MCP tools let agents query, build, and iterate end-to-end."
+                outcome="author_dashboard · run_query · 4 more MCP tools"
                 Illustration={LlmDashboardCode}
                 reverse={false}
               />
 
               <DiffRow
                 id="connectors"
+                index="06"
                 icon={Code2}
                 title="SQL-first connector SDK"
                 badge="Extensibility"
-                desc="Point at a warehouse and go — no hand-written semantic model to start. A Python connector SDK lets you wrap any Arrow-returning function as a first-class source. The capability gate enforces the security floor: predicate_rls=False → 501."
+                hook="Point at a warehouse and go."
+                desc="No semantic model to build first. 25+ connectors out of the box, plus a Python SDK that wraps any Arrow-returning function as a first-class source — behind a capability gate that enforces the security floor."
+                outcome="predicate_rls=False → 501 — sources fail closed"
                 Illustration={ConnectorSdkCode}
                 reverse={true}
               />
 
               <DiffRow
                 id="warehouse"
+                index="07"
                 icon={Warehouse}
-                title="The lakehouse: a warehouse you don't run"
+                title="A lakehouse you don't operate"
                 badge="Pro & Enterprise"
-                desc="What it is: your datasets stored as open Parquet in object storage, queried by DuckDB — no proprietary format, no cluster to operate. What it's for: BI-scale analytics — uploads, flow outputs, and fact tables into the hundreds of millions of rows, with big sorts and joins running on dedicated 8 GB+ warehouse machines billed as ordinary compute units at 4×. What it isn't: a Snowflake replacement — each query runs on one machine, so multi-terabyte scans and huge ad-hoc joins belong in a dedicated warehouse. When you outgrow it, nothing migrates: connect your BigQuery or ClickHouse as a datastore and Nubi pushes queries down, while dashboards, RLS, caching, and rollups stay exactly where they are."
+                hook="Big-table analytics without the warehouse tax."
+                desc="Datasets live as open Parquet in object storage, queried by DuckDB on dedicated machines billed as ordinary compute at 4× — no per-TB scan fees, no cluster to babysit. Outgrow it and nothing migrates: connect BigQuery or ClickHouse and your dashboards, RLS, caching, and rollups stay exactly where they are."
+                outcome="open formats — leaving is a connection string"
                 Illustration={LakehouseFlow}
                 reverse={false}
               />
 
               <DiffRow
                 id="flows"
+                index="08"
                 icon={Workflow}
-                title="Flows · LLM-native orchestration"
+                title="Flows: orchestration included"
                 badge="Workflows"
-                desc="A lightweight Prefect alternative built in. Three cell types — SQL, Python, and notes — wired into a DAG you edit as a notebook or a visual canvas. Materialization, fan-out, and conditional gates are cell settings, and it all runs on Postgres alone — no Redis, no Celery. Retries, timeouts, and result caching per task. AI tools let agents author and run flows in natural language."
+                hook="The orchestrator bill, deleted."
+                desc="SQL and Python cells wired into a DAG you edit as a canvas, a notebook, or files. Schedules, retries, timeouts, caching, fan-out, and conditional gates — running on Postgres alone. No Redis, no Celery, no separate Airflow to feed."
+                outcome="one platform, zero extra orchestrator"
                 Illustration={FlowCode}
                 reverse={true}
               />
@@ -1555,7 +1881,7 @@ export default function LandingPage() {
 
             {/* Section header */}
             <div className="text-center mb-12 sm:mb-16 lg:mb-20 max-w-2xl mx-auto">
-              <p className="text-xs font-semibold tracking-widest uppercase mb-4 text-brand-teal">
+              <p className="font-mono text-[11px] font-semibold tracking-[0.18em] uppercase mb-4 text-brand-teal">
                 Everything-as-code
               </p>
               <h2 className="font-display text-3xl sm:text-4xl lg:text-5xl font-bold leading-tight mb-4 sm:mb-5 text-fg">
@@ -1615,7 +1941,7 @@ export default function LandingPage() {
         <section id="sources" className="py-14 sm:py-20 lg:py-24 bg-bg scroll-mt-14">
           <div className="max-w-6xl mx-auto px-4 sm:px-6 lg:px-8">
             <div className="text-center mb-10 sm:mb-14 max-w-2xl mx-auto">
-              <p className="text-xs font-semibold tracking-widest uppercase mb-4 text-brand-teal">
+              <p className="font-mono text-[11px] font-semibold tracking-[0.18em] uppercase mb-4 text-brand-teal">
                 Connectors
               </p>
               <h2 className="font-display text-3xl sm:text-4xl lg:text-5xl font-bold leading-tight mb-4 sm:mb-5 text-fg">
@@ -1673,7 +1999,7 @@ export default function LandingPage() {
         <section id="how-it-works" className="py-14 sm:py-20 lg:py-24 bg-surface-2 scroll-mt-14">
           <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
             <div className="text-center mb-12 sm:mb-16">
-              <p className="text-xs font-semibold tracking-widest uppercase mb-4 text-brand-teal">
+              <p className="font-mono text-[11px] font-semibold tracking-[0.18em] uppercase mb-4 text-brand-teal">
                 How it works
               </p>
               <h2 className="font-display text-3xl sm:text-4xl lg:text-5xl font-bold text-fg">
@@ -1810,7 +2136,7 @@ export default function LandingPage() {
         <section id="compare" className="py-14 sm:py-20 lg:py-24 bg-bg scroll-mt-14">
           <div className="max-w-5xl mx-auto px-4 sm:px-6 lg:px-8">
             <div className="text-center mb-10 sm:mb-14">
-              <p className="text-xs font-semibold tracking-widest uppercase mb-4 text-brand-teal">
+              <p className="font-mono text-[11px] font-semibold tracking-[0.18em] uppercase mb-4 text-brand-teal">
                 Honest comparison
               </p>
               <h2 className="font-display text-3xl sm:text-4xl lg:text-5xl font-bold mb-4 text-fg">
@@ -1996,7 +2322,7 @@ export default function LandingPage() {
         ════════════════════════════════════════════════════════════════════ */}
         <section id="about" className="py-14 sm:py-16 bg-bg scroll-mt-14">
           <div className="max-w-3xl mx-auto px-4 sm:px-6 text-center">
-            <p className="text-xs font-semibold tracking-widest uppercase mb-4 text-brand-teal">About Nubi</p>
+            <p className="font-mono text-[11px] font-semibold tracking-[0.18em] uppercase mb-4 text-brand-teal">About Nubi</p>
             <h2 className="font-display text-2xl sm:text-3xl lg:text-4xl font-bold mb-4 sm:mb-5 text-fg">
               Built on one structural bet.
             </h2>

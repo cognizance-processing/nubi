@@ -87,7 +87,8 @@ In `scripts/docs-screenshots.mjs`:
 1. Add a `goAndShoot(page, '/route', 'my-name', { settle: 1500 })` call (or a
    custom interaction block — see the flows section for view-toggling
    examples).
-2. Reference it from a doc as `/docs/screenshots/my-name.png`.
+2. Reference it from a doc as `/docs/screenshots/<my-name>.png` (base name —
+   the dark variant is picked automatically in dark mode).
 3. Run `npm run screenshots` and eyeball the PNG before committing.
 
 Navigation guidance for new captures: the script navigates **client-side**
