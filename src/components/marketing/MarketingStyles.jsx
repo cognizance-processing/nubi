@@ -170,9 +170,12 @@ const MarketingStyles = () => (
        scroll restoration on every route change (visible jank at the top bar).
        Anchor links smooth-scroll programmatically instead. */
 
-    /* ── Compare table — mobile horizontal scroll ── */
+    /* ── Compare table — mobile horizontal scroll ──
+       overflow-y clipped so a classic horizontal scrollbar can't spawn a
+       phantom vertical one (its ~15px of height overflows the wrap). */
     .lp-compare-table-wrap {
       overflow-x: auto;
+      overflow-y: clip;
       -webkit-overflow-scrolling: touch;
     }
     .lp-compare-table-inner {

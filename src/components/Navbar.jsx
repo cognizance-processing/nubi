@@ -227,7 +227,9 @@ export default function Navbar() {
       <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 h-14 flex items-center justify-between gap-3">
 
         {/* ── Left: Logo ────────────────────────────────────────────────── */}
-        <Link to="/" aria-label="Nubi home" className="shrink-0">
+        {/* flex (not inline) so the logo doesn't sit on a text baseline —
+            the line-box descender space pushed it ~3px above center */}
+        <Link to="/" aria-label="Nubi home" className="shrink-0 flex items-center">
           <Logo size={30} showName={true} />
         </Link>
 

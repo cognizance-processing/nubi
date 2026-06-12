@@ -1593,7 +1593,11 @@ export default function LandingPage() {
     <>
       <MarketingStyles />
 
-      <div className="nubi-lp overflow-x-hidden bg-bg text-fg font-sans">
+      {/* overflow-x-clip (not -hidden): hidden makes this div a scroll
+          container (overflow-y computes to auto), so stray scrollIntoView /
+          focus scrolling can silently scroll the page INSIDE it; clip just
+          clips. */}
+      <div className="nubi-lp overflow-x-clip bg-bg text-fg font-sans">
 
         {/* ════════════════════════════════════════════════════════════════════
             §1  HERO — dark observatory panel: copy | real product frame,

@@ -15,20 +15,14 @@ export default function Logo({ size = 32, showName = true, className = '' }) {
         alt="Nubi logo"
         width={size}
         height={size}
+        className="nubi-logo-mark"
         style={{ width: size, height: size, objectFit: 'contain' }}
         draggable={false}
       />
       {showName && (
         <span
-          className="font-display font-semibold tracking-tight select-none"
-          style={{
-            fontSize: size * 0.65,
-            lineHeight: 1,
-            background: 'linear-gradient(135deg, #1b2363, #2456a6, #17b3a3)',
-            WebkitBackgroundClip: 'text',
-            WebkitTextFillColor: 'transparent',
-            backgroundClip: 'text',
-          }}
+          className="nubi-logo-word font-display font-semibold tracking-tight select-none"
+          style={{ fontSize: size * 0.65, lineHeight: 1 }}
         >
           Nubi
         </span>

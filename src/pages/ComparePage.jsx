@@ -130,9 +130,14 @@ const ScopedStyles = () => (
     .cp-matrix-row:nth-child(even) .cp-dim-cell { background-color: var(--surface-2); }
     .cp-row:hover .cp-dim-cell { background-color: var(--surface-2); }
 
-    /* Table shell — soft elevation + clipped corners */
+    /* Table shell — soft elevation + clipped corners.
+       overflow-y is clipped: with overflow-x:auto alone, a classic
+       (space-taking) horizontal scrollbar eats ~15px of height, which
+       overflows the shell vertically and spawns a phantom vertical
+       scrollbar that jiggles the sticky header row. */
     .cp-table-shell {
       box-shadow: 0 1px 2px rgba(27,35,99,0.05), 0 24px 56px -32px rgba(27,35,99,0.28);
+      overflow-y: clip;
     }
     .dark .cp-table-shell {
       box-shadow: 0 24px 56px -28px rgba(0,0,0,0.55);

@@ -107,6 +107,28 @@
   }
 }
 
+/* ── Logo (src/components/Logo.jsx) ───────────────────────────────────────────
+   Wordmark gradient per theme: the light gradient opens on brand navy, which
+   disappears against dark surfaces — dark mode uses lifted stops instead
+   (same pairing as .lp-hero-gradient-text). */
+.nubi-logo-word {
+  background: linear-gradient(135deg, #1b2363, #2456a6, #17b3a3);
+  -webkit-background-clip: text;
+  background-clip: text;
+  -webkit-text-fill-color: transparent;
+  color: transparent;
+}
+.dark .nubi-logo-word {
+  background: linear-gradient(135deg, #8db4f5, #5fd6c8, #2dd4bf);
+  -webkit-background-clip: text;
+  background-clip: text;
+  -webkit-text-fill-color: transparent;
+}
+/* The mark's navy strokes sink into dark surfaces — lift them slightly. */
+.dark .nubi-logo-mark {
+  filter: brightness(1.22) saturate(1.05);
+}
+
 /* ── Headless grid engine (dnd-kit + CSS Grid) ─────────────────────────────────
    Owned by src/dashboards/grid/GridCanvas.jsx. These DO NOT depend on any RGL or
    react-resizable CSS; the migration moves consumers onto these classes. Kept

@@ -112,7 +112,7 @@ export function CodeTile({ filename, lang, code, className = '' }) {
           <span className="ml-1 text-[11px] font-mono text-slate-400">{filename}</span>
         </div>
         {/* Code */}
-        <pre className="overflow-x-auto px-4 py-3.5 text-[12.5px] leading-[1.65] font-mono">
+        <pre className="overflow-x-auto overflow-y-clip px-4 py-3.5 text-[12.5px] leading-[1.65] font-mono">
           <code className="grid">
             {lines.map((line, i) => (
               <span key={i} className="grid grid-cols-[1.6rem_1fr] gap-3">

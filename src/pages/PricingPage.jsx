@@ -197,7 +197,7 @@ function TierCard({ tier, idx }) {
 
 function ComparisonTable({ rows, columns }) {
   return (
-    <div className="overflow-x-auto overscroll-x-contain rounded-2xl border border-border bg-surface shadow-[0_18px_44px_-26px_rgba(27,35,99,0.4)]">
+    <div className="overflow-x-auto overflow-y-clip overscroll-x-contain rounded-2xl border border-border bg-surface shadow-[0_18px_44px_-26px_rgba(27,35,99,0.4)]">
       <table className="border-collapse w-full" style={{ minWidth: 720 }}>
         <thead className="sticky top-0 z-10">
           <tr>
@@ -598,7 +598,7 @@ function LakehouseCalculator() {
         <p className="font-mono text-[10.5px] font-semibold uppercase tracking-[0.14em] text-muted mb-3">
           Comparable: Google BigQuery on-demand
         </p>
-        <div className="rounded-xl border border-border overflow-x-auto">
+        <div className="rounded-xl border border-border overflow-x-auto overflow-y-clip">
           <table className="w-full text-sm" style={{ minWidth: 480 }}>
             <thead>
               <tr className="border-b border-border bg-surface-2">
