@@ -70,6 +70,21 @@ from app.errors import AppError
 
 SOURCE_TYPE = "clickhouse"
 
+
+def _as_bool(value: object, *, default: bool) -> bool:
+    """Coerce a config flag to bool. The UI's native <select> emits "true"/
+    "false" strings, and Python's ``bool("false")`` is ``True`` — so without
+    this, selecting an insecure connection would silently stay secure.
+    """
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        return value.strip().lower() not in ("false", "0", "no", "off", "")
+    return bool(value)
+
+
 # Matches $1, $2, ... positional placeholders emitted by the planner's postgres
 # dialect.  Captures the 1-based index.
 _PG_PLACEHOLDER_RE = re.compile(r"\$(\d+)")
@@ -198,7 +213,7 @@ class ClickHouseConnector(Connector):
                 database=self._config.get("database", "default"),
                 username=self._config.get("user", "default"),
                 password=self._config.get("password", ""),
-                secure=self._config.get("secure", True),
+                secure=_as_bool(self._config.get("secure"), default=True),
             )
         except AppError:
             raise
