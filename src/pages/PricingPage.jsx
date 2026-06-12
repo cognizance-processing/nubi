@@ -233,6 +233,203 @@ function ComparisonTable({ rows, columns }) {
 }
 
 
+/* ─────────────────────────────────────────────────────────────────────────── */
+/*  "What 500 viewers cost" — always-dark observatory panel.                    */
+/*  The viewer tax drawn TO SCALE: a wall of competitor cost bars vs Nubi's     */
+/*  glowing $0 sliver, headed by the 500-dots → 1-cached-query motif.           */
+/* ─────────────────────────────────────────────────────────────────────────── */
+
+/** 500 literal dots — one per viewer — in a deterministic shimmer. */
+function ViewerDotField() {
+  const dots = []
+  for (let row = 0; row < 10; row++) {
+    for (let col = 0; col < 50; col++) {
+      const i = row * 50 + col
+      dots.push(
+        <circle
+          key={i}
+          cx={col * 10 + 5}
+          cy={row * 9 + 5}
+          r="1.9"
+          fill={i % 11 === 0 ? '#5fd6c8' : '#8db4f5'}
+          opacity={0.22 + ((i * 37) % 55) / 100}
+        />,
+      )
+    }
+  }
+  return (
+    <svg viewBox="0 0 500 95" className="w-full h-auto" aria-hidden="true">
+      {dots}
+    </svg>
+  )
+}
+
+const VTAX_MAX_ANNUAL = 260000 // Looker's high end — the chart's full scale
+
+function ViewerTaxPanel() {
+  const [ref, seen] = useReveal()
+
+  const priced = BI_COMPARISON
+    .filter(p => !p.isNubi && p.annual_hi != null)
+    .sort((a, b) => b.annual_hi - a.annual_hi)
+  const unpriced = BI_COMPARISON.filter(p => !p.isNubi && p.annual_hi == null)
+  const nubi = BI_COMPARISON.find(p => p.isNubi)
+  const pct = (n) => `${Math.max(2, (n / VTAX_MAX_ANNUAL) * 100)}%`
+
+  // fixed light-on-dark gradient text — the panel is dark in BOTH themes
+  const gradientText = {
+    background: 'linear-gradient(105deg, #8db4f5 0%, #5fd6c8 60%, #2dd4bf 100%)',
+    WebkitBackgroundClip: 'text',
+    backgroundClip: 'text',
+    WebkitTextFillColor: 'transparent',
+    color: 'transparent',
+  }
+
+  return (
+    <div
+      ref={ref}
+      className="relative rounded-[1.5rem] sm:rounded-[2rem] overflow-hidden border border-white/[0.08] shadow-[0_44px_90px_-32px_rgba(7,11,33,0.75)]"
+      style={{
+        background:
+          'radial-gradient(ellipse 60% 50% at 12% 0%, rgba(46,96,186,0.32) 0%, transparent 62%),' +
+          'radial-gradient(ellipse 50% 55% at 95% 100%, rgba(20,160,146,0.16) 0%, transparent 60%),' +
+          '#070b21',
+      }}
+    >
+      <div className="lp-noise pointer-events-none absolute inset-0" aria-hidden="true" />
+
+      {/* ── 500 viewers → 1 cached query ── */}
+      <div className="relative px-6 sm:px-10 pt-7 sm:pt-9">
+        <div className="flex items-center gap-4 sm:gap-7">
+          <div className="flex-1 min-w-0">
+            <ViewerDotField />
+            <p className="mt-2 font-mono text-[10px] uppercase tracking-[0.16em] text-slate-400">
+              500 viewers, one dashboard
+            </p>
+          </div>
+          <ArrowRight size={18} className="shrink-0 text-teal-300/70" aria-hidden="true" />
+          <div className="shrink-0 text-center">
+            <div className="inline-flex flex-col items-center gap-1.5 rounded-2xl border border-teal-400/25 bg-teal-400/[0.07] px-4 sm:px-6 py-3.5">
+              <span className="font-display text-2xl sm:text-3xl font-bold leading-none text-teal-300">1</span>
+              <span className="font-mono text-[9.5px] uppercase tracking-[0.16em] text-teal-300/80 whitespace-nowrap">
+                cached query
+              </span>
+            </div>
+            <p className="mt-2 font-mono text-[10px] uppercase tracking-[0.16em] text-slate-400 whitespace-nowrap">
+              ≈ $0 compute
+            </p>
+          </div>
+        </div>
+      </div>
+
+      {/* ── chart header ── */}
+      <div className="relative flex flex-wrap items-baseline justify-between gap-2 px-6 sm:px-10 mt-8 pb-3 border-b border-white/[0.07]">
+        <span className="font-mono text-[10px] font-semibold uppercase tracking-[0.16em] text-teal-300/90">
+          annual cost · ~500 dashboard viewers
+        </span>
+        <span className="font-mono text-[10px] text-slate-400">
+          bars drawn to scale · max ≈ $260k/yr
+        </span>
+      </div>
+
+      {/* ── cost bars ── */}
+      <div className="relative px-6 sm:px-10 py-7 flex flex-col gap-5">
+        {priced.map((p, i) => (
+          <div key={p.name} className="group">
+            <div className="flex items-baseline justify-between gap-3 mb-1.5">
+              <a
+                href={p.sourceUrl}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="text-sm font-semibold text-slate-100 hover:text-teal-300 transition-colors"
+              >
+                {p.name}{p.estimate ? <sup className="text-slate-400">†</sup> : null}
+              </a>
+              <span className="font-mono text-[12px] font-bold text-slate-200 tabular-nums whitespace-nowrap">
+                {p.cost500}
+              </span>
+            </div>
+            <div className="relative h-5 rounded-md bg-white/[0.05] group-hover:bg-white/[0.08] overflow-hidden transition-colors">
+              {/* "up to" range extension */}
+              {p.annual_hi > p.annual_lo && (
+                <div
+                  className="absolute inset-y-0 left-0 rounded-md bg-gradient-to-r from-[#3d62c4]/35 to-[#7e9fe8]/25 transition-[width,filter] duration-1000 ease-out motion-reduce:transition-none group-hover:brightness-125"
+                  style={{ width: seen ? pct(p.annual_hi) : '0%', transitionDelay: `${i * 110}ms` }}
+                />
+              )}
+              <div
+                className="absolute inset-y-0 left-0 rounded-md bg-gradient-to-r from-[#3d62c4] to-[#7e9fe8] transition-[width,filter] duration-1000 ease-out motion-reduce:transition-none group-hover:brightness-125"
+                style={{ width: seen ? pct(p.annual_lo) : '0%', transitionDelay: `${i * 110}ms` }}
+              />
+            </div>
+            <p className="mt-1.5 font-mono text-[10px] text-slate-400/90 truncate">
+              {p.model} · {p.computeExtra}
+            </p>
+          </div>
+        ))}
+
+        {unpriced.map((p, i) => (
+          <div key={p.name}>
+            <div className="flex items-baseline justify-between gap-3 mb-1.5">
+              <a
+                href={p.sourceUrl}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="text-sm font-semibold text-slate-100 hover:text-teal-300 transition-colors"
+              >
+                {p.name}{p.estimate ? <sup className="text-slate-400">†</sup> : null}
+              </a>
+              <span className="font-mono text-[12px] font-bold text-slate-300 whitespace-nowrap">{p.cost500}</span>
+            </div>
+            <div className="relative h-5 rounded-md bg-white/[0.05] overflow-hidden">
+              <div
+                className="absolute inset-y-0 left-0 rounded-md border border-white/10 transition-[width] duration-1000 ease-out motion-reduce:transition-none"
+                style={{
+                  width: seen ? '38%' : '0%',
+                  transitionDelay: `${(priced.length + i) * 110}ms`,
+                  background:
+                    'repeating-linear-gradient(45deg, rgba(255,255,255,0.10) 0 6px, transparent 6px 12px)',
+                }}
+              />
+              <span className="absolute left-3 top-1/2 -translate-y-1/2 font-mono text-[9.5px] uppercase tracking-[0.12em] text-slate-400">
+                {p.barNote}
+              </span>
+            </div>
+            <p className="mt-1.5 font-mono text-[10px] text-slate-400/90 truncate">
+              {p.model} · {p.computeExtra}
+            </p>
+          </div>
+        ))}
+
+        {/* ── Nubi — the punchline ── */}
+        <div className="mt-1 pt-6 border-t border-white/[0.08]">
+          <div className="flex items-baseline justify-between gap-3 mb-1.5">
+            <span className="inline-flex items-center gap-1.5 text-sm font-bold text-white">
+              <Star size={13} className="text-teal-300" strokeWidth={2.5} />
+              {nubi.name}
+            </span>
+            <span className="font-display text-xl sm:text-2xl font-bold tabular-nums" style={gradientText}>
+              {nubi.cost500}
+            </span>
+          </div>
+          <div className="relative h-5 rounded-md bg-white/[0.05] overflow-hidden">
+            <div
+              className="absolute inset-y-0 left-0 w-[3px] rounded bg-teal-300 shadow-[0_0_14px_3px_rgba(45,212,191,0.75)] transition-opacity duration-700 motion-reduce:transition-none"
+              style={{ opacity: seen ? 1 : 0, transitionDelay: `${(priced.length + unpriced.length) * 110}ms` }}
+            />
+            <span className="absolute left-4 top-1/2 -translate-y-1/2 font-mono text-[10px] text-slate-400/80">
+              ← the whole bar, drawn to scale
+            </span>
+          </div>
+          <p className="mt-1.5 font-mono text-[10px] text-teal-300/80 truncate">
+            {nubi.model} · {nubi.computeExtra}
+          </p>
+        </div>
+      </div>
+    </div>
+  )
+}
+
 /* Competitor-vs-Nubi result bar row */
 function ResultBar({ r, max, nameColsClass }) {
   return (
@@ -516,18 +713,6 @@ export default function PricingPage() {
 
   const displayTiers = liveTiers ? mergeLiveTiers(liveTiers, TIERS) : TIERS
 
-  const biRows = BI_COMPARISON.map(p => ({
-    isNubi: p.isNubi,
-    cells: [
-      <span className="inline-flex items-center gap-1.5">
-        {p.isNubi && <Star size={13} className="text-brand-teal" strokeWidth={2.5} />}
-        {p.name}{p.estimate ? <sup className="text-muted">†</sup> : null}
-      </span>,
-      p.model,
-      p.cost500,
-      p.computeExtra,
-    ],
-  }))
   const orchRows = ORCH_COMPARISON.map(p => ({
     isNubi: p.isNubi,
     cells: [
@@ -850,10 +1035,7 @@ export default function PricingPage() {
               </p>
             </Reveal>
             <Reveal delay={80}>
-              <ComparisonTable
-                rows={biRows}
-                columns={['Product', 'Viewer / embed model', '~500 viewers', 'Compute on top?']}
-              />
+              <ViewerTaxPanel />
             </Reveal>
             <p className="mt-4 font-mono text-[10.5px] text-muted opacity-70">
               † Looker and Sigma are quote-only; figures reconstructed from reseller/analyst data and shown as estimates.
