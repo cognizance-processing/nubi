@@ -733,12 +733,16 @@ async def test_connector(
             "layers": {"config": False, "secret": False},
         }
 
-    # Verify the secret is retrievable (it will be decrypted — proves the key works)
+    # Verify the secret layer resolves. ``get`` returns the decrypted dict when a
+    # secret exists (proves the key works), or ``None`` when the connector simply
+    # has no secret — both are valid. A secret-less connector includes the
+    # local-file-backend managed lakehouse (no cloud creds) and any connector
+    # created without secret material. Only a genuine decryption error (raised)
+    # is a real failure.
     secret_ok = False
     try:
         secret = await _secret_store().get(connector_id, org_id)
-        # Secret may be an empty dict for secret-less connectors — that is fine
-        secret_ok = isinstance(secret, dict)
+        secret_ok = secret is None or isinstance(secret, dict)
     except Exception:
         secret_ok = False
 
