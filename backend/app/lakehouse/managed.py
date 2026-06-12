@@ -117,18 +117,27 @@ def resolve_central_storage() -> CentralStorage | None:
          managed lakehouse works without any cloud bucket.
       3. Otherwise ``None`` (degrade: ``GET /lakehouse`` → ``configured: false``).
     """
-    # 1. S3 / MinIO (central creds present).
+    local_dir = os.getenv("NUBI_MANAGED_LAKE_DIR") or os.getenv("NUBI_LOCAL_LAKE_DIR")
+    bucket_uri = os.getenv("NUBI_BUCKET_URI", "")
+
+    # 1. Explicit local lake root wins over a *default* S3 key. The dev image
+    #    ships a default ``S3_ACCESS_KEY=minioadmin``, so without this an
+    #    explicitly-configured local dir would be ignored (and managed-lakehouse
+    #    / editable-demo would silently try a MinIO that isn't running). A REAL
+    #    S3 bucket (``NUBI_BUCKET_URI`` set) still takes precedence below.
+    if local_dir and not bucket_uri:
+        return CentralStorage(scheme="file", bucket=os.path.abspath(local_dir), creds={})
+
+    # 2. S3 / MinIO (central creds + a real bucket present). Production path.
     access_key = os.getenv("S3_ACCESS_KEY") or os.getenv("AWS_ACCESS_KEY_ID") or ""
     if access_key:
-        bucket_uri = os.getenv("NUBI_BUCKET_URI", "")
         if bucket_uri.startswith("s3://"):
             bucket = bucket_uri[len("s3://"):].split("/")[0] or "nubi"
         else:
             bucket = os.getenv("NUBI_BUCKET_NAME", "nubi")
         return CentralStorage(scheme="s3", bucket=bucket, creds=_s3_creds_from_env())
 
-    # 2. Local managed-lake root (OSS / local dev).
-    local_dir = os.getenv("NUBI_MANAGED_LAKE_DIR") or os.getenv("NUBI_LOCAL_LAKE_DIR")
+    # 3. Local lake root as a fallback even if a (default) S3 key was present.
     if local_dir:
         return CentralStorage(scheme="file", bucket=os.path.abspath(local_dir), creds={})
 
