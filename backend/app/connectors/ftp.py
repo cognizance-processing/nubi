@@ -48,6 +48,21 @@ SOURCE_TYPE = "ftp"
 _DEFAULT_PORT = 21
 
 
+def _as_bool(value: Any, *, default: bool) -> bool:
+    """Coerce a config flag to bool, treating the string "false"/"0"/"no"/"off"
+    as False. Native <select> inputs in the UI emit "true"/"false" strings, and
+    Python's ``bool("false")`` is ``True`` — so plain FTP / active mode would
+    silently never take effect without this coercion.
+    """
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        return value.strip().lower() not in ("false", "0", "no", "off", "")
+    return bool(value)
+
+
 class FTPConnector(Connector, FileConnectorMixin):
     """File connector for an FTP / FTPS server.
 
@@ -86,7 +101,7 @@ class FTPConnector(Connector, FileConnectorMixin):
     @property
     def tls_enabled(self) -> bool:
         """Whether the connector uses FTPS (the UI warns when this is False)."""
-        return bool(self._config.get("tls", True))
+        return _as_bool(self._config.get("tls"), default=True)
 
     # ------------------------------------------------------------------
     # Query interface — unsupported
@@ -146,7 +161,7 @@ class FTPConnector(Connector, FileConnectorMixin):
             if self.tls_enabled and isinstance(ftp, ftplib.FTP_TLS):
                 # Encrypt the data channel too (PROT P), not just the control channel.
                 ftp.prot_p()
-            ftp.set_pasv(bool(self._config.get("passive", True)))
+            ftp.set_pasv(_as_bool(self._config.get("passive"), default=True))
         except AppError:
             raise
         except Exception as exc:
