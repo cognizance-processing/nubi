@@ -1,23 +1,24 @@
-"""Tests for the EDITABLE demo lakehouse (``app.demo_lakehouse`` + ``app.sample``).
+"""Tests for the EDITABLE per-project demo lakehouse.
 
-The product goal: when a user opts into demo data, it should be their OWN,
-OWNED, EDITABLE copy in the lakehouse — a real connector backed by native
-DuckDB BASE TABLEs (so the data grid can edit cells), not the shared read-only
-``read_parquet`` views.
+Product directive: when a user gets demo data it must be their OWN, per-PROJECT
+isolated FILES in the managed lakehouse object storage (S3 in cloud, the
+local-file backend in dev) — NOT a server-local ``.duckdb`` file — and the cells
+must still be EDITABLE via rewrite-on-edit.
 
 Coverage
 --------
-1.  ``materialize_demo_duckdb`` writes all 17 demo datasets as native BASE
-    TABLEs with a synthetic ``_row_id`` PRIMARY KEY, idempotently.
-2.  ``_writable_meta_duckdb`` reports those tables writable with the ``_row_id``
-    identity.
-3.  ``seed_sample_bundle`` (local lake root configured) provisions the editable
-    connector — ``config.database`` is the abs ``.duckdb`` path (not ``:memory:``,
-    no ``view_sql``) and it is NOT marked managed/system.
-4.  A demo query runs against the editable connector via POST /api/v1/query.
-5.  Editing a cell via the data-browser PATCH path persists on a demo table.
-6.  The cloud/read-only fallback (no local lake root) still produces the
-    view-based ``:memory:`` demo.
+1.  ``provision_demo_parquet`` writes one parquet per demo table under the
+    per-project prefix ``orgs/<org>/projects/<project>/demo/...`` (NOT a local
+    ``.duckdb``), each carrying a synthetic ``_row_id``; idempotent.
+2.  ``seed_sample_bundle`` (local-file lake root) provisions the editable
+    connector — ``s3_views``/parquet, ``editable_parquet=true``, NOT
+    managed/system, name "Demo Lakehouse".
+3.  Columns endpoint reports the demo table writable with the ``_row_id``
+    identity; a PATCH edits a cell and the change PERSISTS (re-read shows it).
+4.  INSERT and DELETE rewrite correctly + persist.
+5.  A demo query runs against the editable connector via POST /api/v1/query.
+6.  Cross-project / cross-org prefixes are isolated.
+7.  The no-storage fallback still produces the view-based read-only demo.
 """
 
 from __future__ import annotations
@@ -26,7 +27,6 @@ import os
 import uuid
 from io import BytesIO
 
-import duckdb
 import pyarrow.ipc as pa_ipc
 import pytest
 import pytest_asyncio
@@ -35,15 +35,17 @@ from httpx import ASGITransport, AsyncClient
 from app.auth.jwt import mint_access_token
 from app.demo_lakehouse import (
     ROW_ID_COL,
+    demo_table_uris,
     editable_demo_datastore_config,
     editable_demo_supported,
-    materialize_demo_duckdb,
+    provision_demo_parquet,
 )
+from app.lakehouse.managed import project_demo_prefix
 from app.repos.memory import InMemoryRepo
 from app.repos.provider import set_repo
 from app.routes.data_browser import (
     _build_writable_duckdb_connector,
-    _writable_meta_duckdb,
+    _parquet_writable_meta,
 )
 from app.sample import seed_sample_bundle
 from seed_data.generators import ALL_TABLES
@@ -57,74 +59,99 @@ def _ids() -> tuple[str, str, str]:
 
 
 def _local_lake_env(monkeypatch: pytest.MonkeyPatch, lake_dir) -> None:
-    """Configure a LOCAL lake root (editable mode), with no S3 creds."""
+    """Configure a LOCAL-FILE lake root (editable mode), with no S3 creds."""
     for var in _S3_ENV_VARS:
         monkeypatch.delenv(var, raising=False)
     for var in _LAKE_DIR_ENV_VARS:
         monkeypatch.delenv(var, raising=False)
-    monkeypatch.setenv("NUBI_DEMO_LAKE_DIR", str(lake_dir))
+    monkeypatch.delenv("NUBI_BUCKET_URI", raising=False)
+    monkeypatch.setenv("NUBI_MANAGED_LAKE_DIR", str(lake_dir))
 
 
 def _no_storage_env(monkeypatch: pytest.MonkeyPatch) -> None:
     """No S3, no local lake root → read-only view fallback."""
     for var in (*_S3_ENV_VARS, *_LAKE_DIR_ENV_VARS):
         monkeypatch.delenv(var, raising=False)
+    monkeypatch.delenv("NUBI_BUCKET_URI", raising=False)
 
 
 # ---------------------------------------------------------------------------
-# 1+2. Materialisation → native, writable BASE TABLEs
+# 1. Per-project parquet provisioning (NOT a local .duckdb)
 # ---------------------------------------------------------------------------
 
 
-def test_materialize_writes_native_writable_tables(monkeypatch, tmp_path) -> None:
+def test_provision_writes_per_project_parquet_with_row_id(monkeypatch, tmp_path) -> None:
+    import pyarrow.parquet as pq  # noqa: PLC0415
+
     _local_lake_env(monkeypatch, tmp_path)
     org, project, _ = _ids()
 
-    path = materialize_demo_duckdb(org, project)
-    assert path is not None
-    assert os.path.isabs(path) and path.endswith(".duckdb")
-    # Tenant-scoped, server-pinned layout.
-    assert f"orgs{os.sep}{org}{os.sep}demo{os.sep}" in path
+    uris = provision_demo_parquet(org, project)
+    assert uris is not None
+    assert set(uris) >= set(ALL_TABLES)
 
-    con = duckdb.connect(path, read_only=True)
-    try:
-        rows = con.execute(
-            "SELECT table_name, table_type FROM information_schema.tables "
-            "WHERE table_schema NOT IN ('information_schema', 'pg_catalog')"
-        ).fetchall()
-    finally:
-        con.close()
-    by_name = {r[0]: r[1] for r in rows}
-    for table in ALL_TABLES:
-        assert by_name.get(table) == "BASE TABLE", f"{table} is not a native BASE TABLE"
+    # No on-disk .duckdb anywhere under the lake root.
+    for dirpath, _dirs, files in os.walk(tmp_path):
+        for f in files:
+            assert not f.endswith(".duckdb"), f"unexpected .duckdb file {f}"
 
-    # Each table is writable via the data-browser introspection with _row_id PK.
-    cfg = editable_demo_datastore_config(path)
+    # Per-project, server-pinned layout: every parquet lives under the prefix.
+    prefix = project_demo_prefix(org, project)
+    for table, uri in uris.items():
+        assert prefix.rstrip("/") in uri, f"{table} uri {uri} not under {prefix}"
+        assert uri.endswith(".parquet")
+        # The file exists on disk (local-file backend) and has _row_id.
+        assert os.path.isfile(uri), uri
+        cols = pq.read_table(uri).column_names
+        assert ROW_ID_COL in cols, f"{table} missing {ROW_ID_COL}"
+
+
+def test_provision_is_idempotent(monkeypatch, tmp_path) -> None:
+    _local_lake_env(monkeypatch, tmp_path)
+    org, project, _ = _ids()
+
+    uris = provision_demo_parquet(org, project)
+    one = uris["budget"]
+    mtime = os.path.getmtime(one)
+    uris2 = provision_demo_parquet(org, project)
+    assert uris2["budget"] == one
+    assert os.path.getmtime(one) == mtime  # not rewritten
+
+
+def test_parquet_meta_reports_writable_row_id(monkeypatch, tmp_path) -> None:
+    _local_lake_env(monkeypatch, tmp_path)
+    org, project, _ = _ids()
+    uris = provision_demo_parquet(org, project)
+    cfg = editable_demo_datastore_config(uris)
     conn = _build_writable_duckdb_connector(cfg)
     for table in ALL_TABLES:
-        writable, pk = _writable_meta_duckdb(conn, table)
+        writable, pk = _parquet_writable_meta(conn, table)
         assert writable is True, f"{table} not writable"
         assert pk == [ROW_ID_COL], f"{table} pk = {pk}"
 
 
-def test_materialize_is_idempotent(monkeypatch, tmp_path) -> None:
+def test_cross_project_and_cross_org_prefixes_isolated(monkeypatch, tmp_path) -> None:
     _local_lake_env(monkeypatch, tmp_path)
-    org, project, _ = _ids()
+    org_a, proj_a, _ = _ids()
+    org_b, proj_b, _ = _ids()
 
-    path = materialize_demo_duckdb(org, project)
-    mtime = os.path.getmtime(path)
-    path2 = materialize_demo_duckdb(org, project)
-    assert path2 == path
-    assert os.path.getmtime(path2) == mtime  # not rebuilt
+    a = demo_table_uris(org_a, proj_a)
+    b_same_org = demo_table_uris(org_a, proj_b)
+    b_other_org = demo_table_uris(org_b, proj_a)
+
+    assert a["budget"] != b_same_org["budget"]   # per-project isolation
+    assert a["budget"] != b_other_org["budget"]  # per-org isolation
+    assert project_demo_prefix(org_a, proj_a) in a["budget"]
+    assert project_demo_prefix(org_b, proj_a) in b_other_org["budget"]
 
 
 # ---------------------------------------------------------------------------
-# 3. seed_sample_bundle provisions the editable connector
+# 2. seed_sample_bundle provisions the editable per-project connector
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
-async def test_seed_provisions_editable_connector(monkeypatch, tmp_path) -> None:
+async def test_seed_provisions_editable_parquet_connector(monkeypatch, tmp_path) -> None:
     _local_lake_env(monkeypatch, tmp_path)
     repo = InMemoryRepo()
     org, project, user = _ids()
@@ -135,19 +162,18 @@ async def test_seed_provisions_editable_connector(monkeypatch, tmp_path) -> None
     ds = (await repo.list("datastores", org))[0]
     cfg = ds["config"]
     assert cfg["connector_type"] == "duckdb"
-    assert cfg["database"].endswith(".duckdb")
-    assert cfg["database"] != ":memory:"
-    assert "view_sql" not in cfg  # native tables, not views
+    assert cfg["database"] == ":memory:"
+    assert cfg.get("editable_parquet") is True
+    assert isinstance(cfg.get("s3_views"), dict) and cfg["s3_views"]
     # User OWNS it: not hidden/managed/system.
     assert cfg.get("system") is not True
     assert cfg.get("managed_lake") is not True
-    # Still tagged sample so remove/restore works.
     assert cfg.get("sample") is True
     assert ds["name"] == "Demo Lakehouse"
 
 
 # ---------------------------------------------------------------------------
-# 4+5. Query + edit a cell through the HTTP surface
+# 3-5. Query + edit cells through the HTTP surface (rewrite-on-edit)
 # ---------------------------------------------------------------------------
 
 
@@ -206,7 +232,6 @@ async def test_columns_report_writable_and_edit_cell_persists(_editable_client) 
     client, user_id, datastore_id = _editable_client
     auth = {"Authorization": f"Bearer {mint_access_token(user_id)}"}
 
-    # columns endpoint reports the demo table writable with the _row_id identity.
     resp = await client.get(
         f"/api/v1/data/{datastore_id}/tables/budget/columns", headers=auth
     )
@@ -214,8 +239,10 @@ async def test_columns_report_writable_and_edit_cell_persists(_editable_client) 
     body = resp.json()
     assert body["writable"] is True
     assert body["primary_key"] == [ROW_ID_COL]
+    # _row_id surfaced as non-editable / hidden.
+    rid = next(c for c in body["columns"] if c["name"] == ROW_ID_COL)
+    assert rid["editable"] is False
 
-    # Read a row's current value via DML PK = 1.
     patch = await client.patch(
         f"/api/v1/data/{datastore_id}/tables/budget/rows",
         headers=auth,
@@ -227,9 +254,92 @@ async def test_columns_report_writable_and_edit_cell_persists(_editable_client) 
     assert out["row"][ROW_ID_COL] == 1
     assert float(out["row"]["budget_nsv"]) == 123456.78
 
+    # Persisted: a fresh read of the rows reflects the new value.
+    rows = await client.get(
+        f"/api/v1/data/{datastore_id}/tables/budget/rows?limit=5000", headers=auth
+    )
+    assert rows.status_code == 200, rows.text
+    tbl = pa_ipc.open_stream(BytesIO(rows.content)).read_all().to_pylist()
+    edited = next(r for r in tbl if r[ROW_ID_COL] == 1)
+    assert float(edited["budget_nsv"]) == 123456.78
+
+
+@pytest.mark.asyncio
+async def test_insert_and_delete_rewrite_persist(_editable_client) -> None:
+    client, user_id, datastore_id = _editable_client
+    auth = {"Authorization": f"Bearer {mint_access_token(user_id)}"}
+
+    # Baseline row count.
+    base = await client.get(
+        f"/api/v1/data/{datastore_id}/tables/budget/rows?limit=5000", headers=auth
+    )
+    base_rows = pa_ipc.open_stream(BytesIO(base.content)).read_all().to_pylist()
+    base_n = len(base_rows)
+    sample_cols = {k for k in base_rows[0] if k != ROW_ID_COL}
+
+    # INSERT a row (without supplying _row_id — server assigns it).
+    values = {c: base_rows[0][c] for c in sample_cols}
+    ins = await client.post(
+        f"/api/v1/data/{datastore_id}/tables/budget/rows",
+        headers=auth,
+        json={"values": values},
+    )
+    assert ins.status_code == 201, ins.text
+    new_rid = ins.json()["row"][ROW_ID_COL]
+    assert new_rid == base_n + 1  # max+1
+
+    after_ins = await client.get(
+        f"/api/v1/data/{datastore_id}/tables/budget/rows?limit=5000", headers=auth
+    )
+    after_ins_rows = pa_ipc.open_stream(BytesIO(after_ins.content)).read_all().to_pylist()
+    assert len(after_ins_rows) == base_n + 1
+
+    # DELETE the inserted row.
+    dele = await client.request(
+        "DELETE",
+        f"/api/v1/data/{datastore_id}/tables/budget/rows",
+        headers=auth,
+        json={"pk": {ROW_ID_COL: new_rid}},
+    )
+    assert dele.status_code == 200, dele.text
+    assert dele.json() == {"deleted": 1}
+
+    after_del = await client.get(
+        f"/api/v1/data/{datastore_id}/tables/budget/rows?limit=5000", headers=auth
+    )
+    after_del_rows = pa_ipc.open_stream(BytesIO(after_del.content)).read_all().to_pylist()
+    assert len(after_del_rows) == base_n
+    assert all(r[ROW_ID_COL] != new_rid for r in after_del_rows)
+
+
+@pytest.mark.asyncio
+async def test_injection_in_cell_value_is_inert(_editable_client) -> None:
+    client, user_id, datastore_id = _editable_client
+    auth = {"Authorization": f"Bearer {mint_access_token(user_id)}"}
+
+    # Injection in a CELL VALUE must be stored literally (bound param), inert.
+    payload = "x'); DROP TABLE t; --"
+    patch = await client.patch(
+        f"/api/v1/data/{datastore_id}/tables/dim_customers/rows",
+        headers=auth,
+        json={"pk": {ROW_ID_COL: 1}, "set": {"customer": payload}},
+    )
+    assert patch.status_code == 200, patch.text
+    assert patch.json()["row"]["customer"] == payload
+
+    # Table still intact + payload stored literally on re-read.
+    rows = await client.get(
+        f"/api/v1/data/{datastore_id}/tables/dim_customers/rows?limit=5000",
+        headers=auth,
+    )
+    assert rows.status_code == 200, rows.text
+    tbl = pa_ipc.open_stream(BytesIO(rows.content)).read_all().to_pylist()
+    edited = next(r for r in tbl if r[ROW_ID_COL] == 1)
+    assert edited["customer"] == payload
+
 
 # ---------------------------------------------------------------------------
-# 6. Cloud / read-only fallback still produces the view-based demo
+# 7. No-storage fallback still produces the view-based read-only demo
 # ---------------------------------------------------------------------------
 
 
@@ -245,7 +355,7 @@ async def test_no_storage_falls_back_to_view_demo(monkeypatch) -> None:
 
     ds = (await repo.list("datastores", org))[0]
     cfg = ds["config"]
-    # Read-only view demo: :memory: + read_parquet views, no on-disk .duckdb file.
     assert cfg["database"] == ":memory:"
     assert "read_parquet(" in cfg["view_sql"]
+    assert cfg.get("editable_parquet") is not True
     assert ds["name"] == "Sample"

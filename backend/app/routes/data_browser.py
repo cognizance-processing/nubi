@@ -434,6 +434,80 @@ def _writable_meta_duckdb(
 
 
 # ---------------------------------------------------------------------------
+# Parquet-backed editable tables — writability + URI resolution
+# ---------------------------------------------------------------------------
+#
+# The editable per-project demo (app.demo_lakehouse) is a duckdb connector whose
+# tables are read_parquet(...) VIEWS over per-project parquet files (each with a
+# synthetic _row_id identity column).  Views are not DML-capable, so these tables
+# would report writable=False under the native-BASE-TABLE rule above.  We treat
+# them as writable via REWRITE-ON-EDIT: load the parquet into a temp relation,
+# apply the parameterised mutation (identity = _row_id, bound params), then COPY
+# the whole relation back over the file.  The _row_id column is the row identity
+# rewrite needs.
+
+# Synthetic row-identity column written into every editable-demo parquet table.
+_PARQUET_ROW_ID = "_row_id"
+
+
+def _parquet_table_uris(cfg: dict[str, Any]) -> dict[str, str]:
+    """Return ``{table_name: parquet_uri}`` backing a parquet-view connector.
+
+    Resolves each table's backing parquet from the SERVER-stored connector
+    config — ``s3_views`` (the canonical multi-table shape) first, else parsed
+    out of the ``CREATE VIEW … read_parquet('<uri>')`` statements in
+    ``view_sql``.  The URI never comes from the request — only from this row's
+    config — so a caller cannot redirect a rewrite at another file.
+    """
+    s3_views = cfg.get("s3_views")
+    if isinstance(s3_views, dict) and s3_views:
+        return {str(k): str(v) for k, v in s3_views.items() if isinstance(v, str)}
+
+    uris: dict[str, str] = {}
+    view_sql = cfg.get("view_sql") or ""
+    if isinstance(view_sql, str) and view_sql:
+        # Match: CREATE [OR REPLACE] VIEW <name> AS SELECT * FROM read_parquet('<uri>')
+        pattern = re.compile(
+            r"CREATE\s+(?:OR\s+REPLACE\s+)?VIEW\s+([A-Za-z_][A-Za-z0-9_.\"]*)\s+AS\b"
+            r".*?read_parquet\(\s*'([^']+)'",
+            re.IGNORECASE | re.DOTALL,
+        )
+        for stmt in view_sql.split(";"):
+            m = pattern.search(stmt)
+            if m:
+                name = m.group(1).strip().strip('"')
+                uris[name] = m.group(2).strip()
+    return uris
+
+
+def _is_editable_parquet_cfg(cfg: dict[str, Any]) -> bool:
+    """True when *cfg* is a parquet-backed connector eligible for rewrite-on-edit.
+
+    Either an explicit ``editable_parquet`` marker, or any read_parquet-backed
+    view set (``s3_views`` / a ``read_parquet`` ``view_sql``).  The per-table
+    ``_row_id`` check (the actual editability gate) happens at write time.
+    """
+    if cfg.get("editable_parquet") is True:
+        return True
+    return bool(_parquet_table_uris(cfg))
+
+
+def _parquet_writable_meta(
+    connector: DuckDBConnector, table_name: str
+) -> tuple[bool, list[str]]:
+    """Return ``(writable, primary_key)`` for a parquet-backed *table_name*.
+
+    Writable when the table exposes the synthetic ``_row_id`` identity column
+    (the rewrite-on-edit key).  ``primary_key`` is ``["_row_id"]`` then, else
+    ``[]``.
+    """
+    cols = {c["name"] for c in _introspect_columns_duckdb(connector, table_name)}
+    if _PARQUET_ROW_ID in cols:
+        return True, [_PARQUET_ROW_ID]
+    return False, []
+
+
+# ---------------------------------------------------------------------------
 # Shared helpers that pick connector + verify table existence
 # ---------------------------------------------------------------------------
 
@@ -545,13 +619,25 @@ async def list_columns(
     if not _safe_identifier(table):
         raise AppError("invalid_identifier", f"Table name {table!r} is not a valid identifier.", 400)
     columns = _introspect_columns_duckdb(connector, table)
-    # Writability: only the real (non-demo) connector path can host native
-    # tables.  Demo / parquet-view tables report writable=False.
+    # Writability: native BASE TABLEs (on-disk file connectors) OR parquet-backed
+    # tables that carry a _row_id identity (the editable per-project demo).  The
+    # virtual demo connector and plain read_parquet views stay read-only.
     writable = False
     primary_key: list[str] = []
     from app.routes.connectors import DEMO_CONNECTOR_ID as _DEMO_CONNECTOR_ID
     if datastore_id != _DEMO_CONNECTOR_ID:
         writable, primary_key = _writable_meta_duckdb(connector, table)
+        if not writable:
+            cfg = await _datastore_cfg(datastore_id, user, repo)
+            if cfg is not None and _is_editable_parquet_cfg(cfg):
+                writable, primary_key = _parquet_writable_meta(connector, table)
+    # Mark the synthetic _row_id column as non-editable so the grid hides /
+    # locks it (it is server-managed row identity, not user data).
+    if _PARQUET_ROW_ID in primary_key:
+        for col in columns:
+            if col["name"] == _PARQUET_ROW_ID:
+                col["editable"] = False
+                col["hidden"] = True
     return {
         "table": table,
         "columns": columns,
@@ -654,21 +740,72 @@ def _quote_ident(name: str) -> str:
     return '"' + name.replace('"', '""') + '"'
 
 
+async def _datastore_cfg(
+    datastore_id: str,
+    user: dict[str, Any],
+    repo: Repo,
+) -> dict[str, Any] | None:
+    """Return the org-scoped config dict for *datastore_id*, or ``None``.
+
+    ``None`` for the virtual demo connector, a cross-org / missing datastore, or
+    a row with no config.  Tenant isolation is enforced (the row is fetched by
+    the caller's org), so this never leaks another org's config.
+    """
+    from app.routes.connectors import DEMO_CONNECTOR_ID as _DEMO_CONNECTOR_ID
+
+    if datastore_id is None or datastore_id == _DEMO_CONNECTOR_ID:
+        return None
+    org_id = await _get_user_org(str(user["id"]), repo)
+    ds = await repo.get("datastores", org_id, datastore_id)
+    if ds is None:
+        return None
+    cfg = ds.get("config")
+    return dict(cfg) if isinstance(cfg, dict) else None
+
+
+class _WriteTarget:
+    """Resolved write target for a row mutation.
+
+    Two strategies, both org-scoped + writable-gated:
+
+    - ``connector`` set → NATIVE DML: a read-write on-disk DuckDB BASE TABLE; the
+      endpoint runs UPDATE/INSERT/DELETE directly on ``connector``.
+    - ``parquet_uri`` set → REWRITE-ON-EDIT: a per-project parquet-backed table;
+      the endpoint applies the mutation via :func:`_parquet_rewrite`.
+    """
+
+    __slots__ = ("connector", "primary_key", "parquet_uri", "cfg")
+
+    def __init__(
+        self,
+        connector: DuckDBConnector,
+        primary_key: list[str],
+        parquet_uri: str | None = None,
+        cfg: dict[str, Any] | None = None,
+    ) -> None:
+        self.connector = connector
+        self.primary_key = primary_key
+        self.parquet_uri = parquet_uri
+        self.cfg = cfg or {}
+
+
 async def _resolve_writable_connector(
     datastore_id: str,
     table: str,
     user: dict[str, Any],
     repo: Repo,
-) -> tuple[DuckDBConnector, list[str]]:
-    """Resolve an org-scoped, write-capable connector for *table*.
+) -> _WriteTarget:
+    """Resolve an org-scoped, write-capable target for *table*.
 
-    Returns ``(connector, primary_key)``.  Raises:
+    Returns a :class:`_WriteTarget` (native-DML connector OR parquet
+    rewrite-on-edit).  Raises:
     - 404 if the datastore is missing / cross-org, or the table is unknown.
     - 400 for a non-duckdb connector or an unsafe table identifier.
-    - 409 if the table is not writable (view / no row identity / demo).
+    - 409 if the table is not writable (view without _row_id / no row identity).
 
-    Unlike the read path, on-disk DuckDB files are opened READ-WRITE here so
-    DML can be executed; the demo connector is rejected outright.
+    On-disk DuckDB files are opened READ-WRITE for native DML; parquet-backed
+    editable tables (the per-project demo) take the rewrite-on-edit path; the
+    demo connector is rejected outright.
     """
     from app.routes.connectors import DEMO_CONNECTOR_ID as _DEMO_CONNECTOR_ID
 
@@ -715,15 +852,87 @@ async def _resolve_writable_connector(
             400,
         )
 
+    # 1. Native BASE TABLE (on-disk file) → direct DML.
     writable, primary_key = _writable_meta_duckdb(connector, table)
-    if not writable:
-        raise AppError(
-            "not_writable",
-            f"Table {table!r} is not writable: it is a view or has no primary "
-            f"key / unique row identity.",
-            409,
-        )
-    return connector, primary_key
+    if writable:
+        return _WriteTarget(connector, primary_key)
+
+    # 2. Parquet-backed editable table (per-project demo) → rewrite-on-edit.
+    #    The backing parquet URI comes ONLY from the SERVER-stored config — never
+    #    the request — so a caller cannot redirect the rewrite at another file.
+    if _is_editable_parquet_cfg(cfg):
+        p_writable, p_pk = _parquet_writable_meta(connector, table)
+        if p_writable:
+            uris = _parquet_table_uris(cfg)
+            uri = uris.get(table)
+            if uri:
+                return _WriteTarget(connector, p_pk, parquet_uri=uri, cfg=cfg)
+
+    raise AppError(
+        "not_writable",
+        f"Table {table!r} is not writable: it is a view or has no primary "
+        f"key / unique row identity.",
+        409,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Rewrite-on-edit — apply a mutation to a parquet-backed table by overwriting it
+# ---------------------------------------------------------------------------
+#
+# CONCURRENCY CAVEAT (flagged): the rewrite reads the whole parquet, mutates a
+# temp relation, and COPYs the entire table back over the file.  It is
+# all-or-nothing PER FILE, but two concurrent edits to the SAME table race
+# (last writer wins / lost update) because there is no file lock or MVCC.  This
+# is acceptable for the demo / single-writer editing it backs; a future
+# lock (or Iceberg/Delta table format) is the proper fix for multi-writer.
+
+
+def _parquet_rewrite_conn(uri: str, cfg: dict[str, Any]):
+    """Open an in-memory DuckDB conn loaded with the parquet as a temp table ``t``.
+
+    Configures httpfs/S3 first when the URI is an ``s3://`` reference (creds from
+    the connector cfg or env, via the shared ``setup_s3_httpfs``).  The temp
+    table ``t`` is a real, mutable relation (the read_parquet view is not), so
+    DML can run against it before the COPY-back.
+    """
+    import duckdb as _duckdb  # noqa: PLC0415
+
+    conn = _duckdb.connect(database=":memory:")
+    if isinstance(uri, str) and uri.startswith("s3://"):
+        try:
+            setup_s3_httpfs(conn, cfg)
+        except Exception:
+            pass  # best-effort; the read_parquet below surfaces a clear error
+    # Load the file into a mutable temp table.  ``uri`` is server-pinned (from the
+    # stored config), single-quoted; not user input.
+    safe_uri = uri.replace("'", "''")
+    conn.execute(
+        f"CREATE TEMP TABLE t AS SELECT * FROM read_parquet('{safe_uri}')"
+    )
+    return conn
+
+
+def _parquet_copy_back(conn, uri: str) -> None:
+    """Atomically(ish) overwrite the parquet *uri* from the temp table ``t``.
+
+    Rows are ordered by ``_row_id`` for stable output.  Uses ``OVERWRITE_OR_IGNORE``
+    so a single file is replaced in place (DuckDB writes a single parquet for a
+    non-partitioned COPY).  All-or-nothing per file; see the concurrency caveat
+    above.
+    """
+    safe_uri = uri.replace("'", "''")
+    conn.execute(
+        f"COPY (SELECT * FROM t ORDER BY {_quote_ident(_PARQUET_ROW_ID)}) "
+        f"TO '{safe_uri}' (FORMAT PARQUET, OVERWRITE_OR_IGNORE)"
+    )
+
+
+def _parquet_exec(conn, sql: str, params: list[Any]):
+    """Run *sql* with bound *params* on the rewrite conn; return a pyarrow Table."""
+    rel = conn.execute(sql, params)
+    result = rel.arrow()
+    return result.read_all() if hasattr(result, "read_all") else result
 
 
 def _build_writable_duckdb_connector(cfg: dict[str, Any]) -> DuckDBConnector:
@@ -800,9 +1009,8 @@ async def update_row(
 
     Body ``{"pk": {col: val, ...}, "set": {col: val, ...}}``.
     """
-    connector, primary_key = await _resolve_writable_connector(
-        datastore_id, table, user, repo
-    )
+    target = await _resolve_writable_connector(datastore_id, table, user, repo)
+    connector, primary_key = target.connector, target.primary_key
     pk = body.get("pk")
     set_vals = body.get("set")
     if not isinstance(pk, dict) or not pk:
@@ -827,6 +1035,30 @@ async def update_row(
     set_clause = ", ".join(
         f"{_quote_ident(c)} = ${i + 1}" for i, c in enumerate(set_cols)
     )
+
+    if target.parquet_uri is not None:
+        # Rewrite-on-edit: mutate the temp table, then COPY back over the file.
+        where_clause = " AND ".join(
+            f"{_quote_ident(c)} = ${len(set_cols) + i + 1}" for i, c in enumerate(pk_cols)
+        )
+        conn = _parquet_rewrite_conn(target.parquet_uri, target.cfg)
+        try:
+            res = _parquet_exec(
+                conn,
+                f"UPDATE t SET {set_clause} WHERE {where_clause} RETURNING *",
+                params,
+            )
+            n = res.num_rows
+            if n == 0:
+                raise AppError("not_found", "No row matched the supplied primary key.", 404)
+            if n > 1:
+                raise AppError("ambiguous_pk", "More than one row matched the primary key.", 409)
+            _parquet_copy_back(conn, target.parquet_uri)
+            rows = res.to_pylist()
+        finally:
+            conn.close()
+        return {"row": rows[0], "updated": 1}
+
     where_clause = " AND ".join(
         f"{_quote_ident(c)} = ${len(set_cols) + i + 1}" for i, c in enumerate(pk_cols)
     )
@@ -857,9 +1089,8 @@ async def insert_row(
     repo: Repo = Depends(get_repo),
 ) -> dict[str, Any]:
     """Insert one row.  Body ``{"values": {col: val, ...}}``; returns the new row."""
-    connector, _primary_key = await _resolve_writable_connector(
-        datastore_id, table, user, repo
-    )
+    target = await _resolve_writable_connector(datastore_id, table, user, repo)
+    connector = target.connector
     values = body.get("values")
     if not isinstance(values, dict) or not values:
         raise AppError("bad_request", "Body must include a non-empty 'values' object.", 400)
@@ -869,6 +1100,39 @@ async def insert_row(
     params: list[Any] = [values[c] for c in cols]
     col_clause = ", ".join(_quote_ident(c) for c in cols)
     placeholders = ", ".join(f"${i + 1}" for i in range(len(cols)))
+
+    if target.parquet_uri is not None:
+        # Rewrite-on-edit INSERT.  ``_row_id`` is SERVER-managed: ignore any
+        # client-supplied value and assign ``COALESCE(max(_row_id),0)+1`` so the
+        # new row gets a fresh, collision-free identity, then COPY back.
+        if _PARQUET_ROW_ID in cols:
+            idx = cols.index(_PARQUET_ROW_ID)
+            cols.pop(idx)
+            params.pop(idx)
+            col_clause = ", ".join(_quote_ident(c) for c in cols)
+            placeholders = ", ".join(f"${i + 1}" for i in range(len(cols)))
+        rid = _quote_ident(_PARQUET_ROW_ID)
+        if cols:
+            insert_sql = (
+                f"INSERT INTO t ({rid}, {col_clause}) "
+                f"SELECT (SELECT COALESCE(MAX({rid}), 0) + 1 FROM t), {placeholders} "
+                f"RETURNING *"
+            )
+        else:
+            insert_sql = (
+                f"INSERT INTO t ({rid}) "
+                f"SELECT (SELECT COALESCE(MAX({rid}), 0) + 1 FROM t) "
+                f"RETURNING *"
+            )
+        conn = _parquet_rewrite_conn(target.parquet_uri, target.cfg)
+        try:
+            res = _parquet_exec(conn, insert_sql, params)
+            _parquet_copy_back(conn, target.parquet_uri)
+            rows = res.to_pylist()
+        finally:
+            conn.close()
+        return {"row": rows[0] if rows else None, "inserted": res.num_rows}
+
     sql = (
         f"INSERT INTO {_quote_ident(table)} ({col_clause}) "
         f"VALUES ({placeholders}) RETURNING *"
@@ -893,9 +1157,8 @@ async def delete_row(
 
     Body ``{"pk": {col: val, ...}}``; returns ``{"deleted": 1}``.
     """
-    connector, primary_key = await _resolve_writable_connector(
-        datastore_id, table, user, repo
-    )
+    target = await _resolve_writable_connector(datastore_id, table, user, repo)
+    connector, primary_key = target.connector, target.primary_key
     pk = body.get("pk")
     if not isinstance(pk, dict) or not pk:
         raise AppError("bad_request", "Body must include a non-empty 'pk' object.", 400)
@@ -908,6 +1171,24 @@ async def delete_row(
     where_clause = " AND ".join(
         f"{_quote_ident(c)} = ${i + 1}" for i, c in enumerate(pk_cols)
     )
+
+    if target.parquet_uri is not None:
+        # Rewrite-on-edit DELETE.
+        conn = _parquet_rewrite_conn(target.parquet_uri, target.cfg)
+        try:
+            res = _parquet_exec(
+                conn, f"DELETE FROM t WHERE {where_clause} RETURNING *", params
+            )
+            n = res.num_rows
+            if n == 0:
+                raise AppError("not_found", "No row matched the supplied primary key.", 404)
+            if n > 1:
+                raise AppError("ambiguous_pk", "More than one row matched the primary key.", 409)
+            _parquet_copy_back(conn, target.parquet_uri)
+        finally:
+            conn.close()
+        return {"deleted": 1}
+
     sql = (
         f"DELETE FROM {_quote_ident(table)} WHERE {where_clause} RETURNING *"
     )

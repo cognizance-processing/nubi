@@ -349,6 +349,26 @@ def _is_uuid_str(value: object) -> bool:
     return True
 
 
+def _cfg_uses_s3_only(cfg: dict) -> bool:
+    """True when a parquet-view connector reads object storage EXCLUSIVELY.
+
+    Used to decide whether to block the local filesystem during hardening. An
+    ``s3_views`` dict / ``view_sql`` may carry s3:// URIs (managed cloud) OR
+    LOCAL parquet paths (the local-file lakehouse backend) — only block local FS
+    when every referenced URI is ``s3://``.  Returns False when there are no
+    parquet-view references at all.
+    """
+    s3_views = cfg.get("s3_views")
+    if isinstance(s3_views, dict) and s3_views:
+        return all(
+            isinstance(v, str) and v.startswith("s3://") for v in s3_views.values()
+        )
+    view_sql = cfg.get("view_sql")
+    if isinstance(view_sql, str) and "read_parquet(" in view_sql:
+        return "s3://" in view_sql
+    return False
+
+
 async def _apply_embed_env_pin(
     registered: RegisteredQuery,
     query_id: str,
@@ -922,7 +942,11 @@ async def _build_connector_for_plan(
             from app.connectors.duckdb_conn import harden_connection as _harden
 
             _parquet_ref = str(cfg.get("parquet_path") or "")
-            _s3_only = bool(cfg.get("s3_views")) or _parquet_ref.startswith("s3://")
+            # Only block the LocalFileSystem when the views actually read s3://
+            # URIs. An s3_views dict (or view_sql) may instead hold LOCAL parquet
+            # paths (the local-file lakehouse backend) — blocking local FS there
+            # would break every read_parquet view.
+            _s3_only = _cfg_uses_s3_only(cfg) or _parquet_ref.startswith("s3://")
             _harden(_mem_conn, block_local_fs=_s3_only)
             connector = factory(_mem_conn)
     elif ctype == "postgres":
@@ -1309,7 +1333,7 @@ async def query(
                 from app.connectors.duckdb_conn import harden_connection as _harden
 
                 _parquet_ref = str(cfg.get("parquet_path") or "")
-                _s3_only = bool(cfg.get("s3_views")) or _parquet_ref.startswith("s3://")
+                _s3_only = _cfg_uses_s3_only(cfg) or _parquet_ref.startswith("s3://")
                 _harden(_mem_conn, block_local_fs=_s3_only)
                 connector = factory(_mem_conn)
         elif ctype == "postgres":

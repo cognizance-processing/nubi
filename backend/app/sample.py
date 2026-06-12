@@ -9,17 +9,19 @@ and all 10 dashboards — pointing at a single REAL ``duckdb`` datastore that
 behaves exactly like a user-created connector (parquet + ``read_parquet`` views,
 no demo special-casing in the query pipeline):
 
-- **S3 configured** (``S3_ACCESS_KEY`` / ``AWS_ACCESS_KEY_ID`` env vars present):
-  every dataset is exported per-project to
-  ``s3://<bucket>/projects/<project_id>/demo/<dataset>/<table>.parquet`` and the
-  datastore config exposes all 17 tables as DuckDB views over those S3 parquet
-  files.  Each new project gets its own isolated file set (idempotent re-seeds
-  are safe — files are written only once per project).
+- **Managed lakehouse configured** (S3 in cloud OR the local-file backend in
+  dev — ``NUBI_BUCKET_URI``/``S3_*`` or ``NUBI_MANAGED_LAKE_DIR``): every dataset
+  is provisioned per-PROJECT to
+  ``<lake>/orgs/<org>/projects/<project>/demo/<dataset>/<table>.parquet`` (each
+  table carrying a synthetic ``_row_id`` identity), and the datastore exposes all
+  17 tables as ``read_parquet`` views.  These tables are EDITABLE via
+  rewrite-on-edit in ``routes/data_browser.py`` (``app/demo_lakehouse.py``).  Each
+  project gets its own isolated file set; idempotent re-seeds are safe.
 
-- **No S3** (offline dev / CI without MinIO): the same parquet files are written
-  once to the deterministic local directory
+- **No managed lakehouse** (offline dev / CI with nothing configured): the
+  parquet files are written once to the shared local directory
   ``backend/seed_data/parquet/<dataset>/<table>.parquet`` and the datastore views
-  read those local files — local mode ALSO goes through parquet.
+  read those — the legacy READ-ONLY view demo (no ``_row_id``, not editable).
 
 Every row created here is tagged ``config.sample = true`` (plus a stable
 ``config.sample_id`` for idempotency) so the whole bundle can be bulk-removed —
@@ -46,20 +48,17 @@ from __future__ import annotations
 from typing import Any
 
 from app.demo_bundle import (
-    _s3_is_configured,
     export_demo_parquet_local,
-    export_demo_to_s3,
     load_boards,
     load_queries,
     local_parquet_datastore_config,
     referenced_query_keys,
     resolve_placeholders,
-    s3_datastore_config,
 )
 from app.demo_lakehouse import (
     editable_demo_datastore_config,
     editable_demo_supported,
-    materialize_demo_duckdb,
+    provision_demo_parquet,
 )
 from app.repos.provider import Repo, get_repo
 
@@ -136,29 +135,26 @@ async def seed_sample_bundle(
 
     # ── 1. Build / resolve the datastore config ────────────────────────────────
     #
-    # Three paths, decided purely from the server storage config (never user
+    # Two paths, decided purely from the server storage config (never user
     # input):
     #
-    #   A. EDITABLE on-disk DuckDB (self-host / local lake root configured) —
-    #      the demo data becomes the user's OWN, native, WRITABLE tables (the
-    #      Supabase-style grid can edit cells).  Preferred whenever a local
-    #      lakehouse root exists.
-    #   B. S3 read-only views (managed cloud) — a native .duckdb file cannot be
-    #      opened read-write over httpfs, so we fall back to the existing
-    #      read-only parquet-view demo.  (FLAGGED: cloud editable-demo is a
-    #      follow-up.)
-    #   C. Local read-only views (no S3, no local lake root) — the existing
-    #      offline parquet-view demo.
+    #   A. EDITABLE per-project parquet (managed lakehouse configured — S3 in
+    #      cloud OR the local-file backend in dev) — the demo data becomes the
+    #      user's OWN, per-project, EDITABLE files; the Supabase-style grid edits
+    #      cells via rewrite-on-edit (load → mutate → COPY back).  Preferred
+    #      whenever a central lakehouse storage exists (the product directive).
+    #   B. Local read-only views (no managed lakehouse configured at all) — the
+    #      legacy offline parquet-view demo (shared seed_data/parquet dir).
     ds_config: dict[str, Any]
     name = "Sample"
 
     if editable_demo_supported():
-        # A. Editable on-disk DuckDB connector — the user's owned, writable copy.
+        # A. Editable per-project parquet connector — the user's owned, writable copy.
         try:
-            db_path = materialize_demo_duckdb(org_id, project_id)
-            if db_path is None:  # storage vanished between check and use
-                raise RuntimeError("no local lake root resolved")
-            ds_config = editable_demo_datastore_config(db_path)
+            uris = provision_demo_parquet(org_id, project_id)
+            if not uris:  # storage vanished between check and use
+                raise RuntimeError("no central lakehouse storage resolved")
+            ds_config = editable_demo_datastore_config(uris)
             name = "Demo Lakehouse"
         except Exception as exc:  # noqa: BLE001 — fall back to the view-based demo
             try:
@@ -171,20 +167,8 @@ async def seed_sample_bundle(
                         f"failed: {exc2}"
                     )
                 }
-    elif project_id is not None and _s3_is_configured():
-        # B. S3 read-only path: export per-project parquet, point the datastore at it.
-        try:
-            export_demo_to_s3(project_id)
-            ds_config = s3_datastore_config(project_id)
-        except Exception as exc:  # noqa: BLE001 — fall back gracefully
-            # S3 export failed; fall back to local parquet files.
-            try:
-                export_demo_parquet_local()
-                ds_config = local_parquet_datastore_config()
-            except Exception as exc2:  # noqa: BLE001
-                return {"skipped": f"demo export failed: {exc}; local fallback also failed: {exc2}"}
     else:
-        # C. Local read-only view path (no S3 configured, no local lake root).
+        # B. Local read-only view path (no managed lakehouse configured).
         try:
             export_demo_parquet_local()
             ds_config = local_parquet_datastore_config()

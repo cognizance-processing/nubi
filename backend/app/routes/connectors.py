@@ -123,22 +123,20 @@ async def _demo_is_hidden(org_id: str, repo: Repo) -> bool:
 def _is_editable_demo_row(row: dict[str, Any]) -> bool:
     """True for the user-owned EDITABLE demo-lakehouse datastore.
 
-    The editable demo (``app.demo_lakehouse``) is a real on-disk DuckDB
-    connector tagged ``sample=true`` and NOT marked ``system`` — so it already
-    renders as a normal card. When present, the virtual read-only "Demo data"
-    card is suppressed to avoid showing two demo connectors.
+    The editable demo (``app.demo_lakehouse``) is a per-project parquet-backed
+    ``duckdb`` connector tagged ``sample=true``/``editable_parquet=true`` and NOT
+    marked ``system`` — so it already renders as a normal card. When present, the
+    virtual read-only "Demo data" card is suppressed to avoid showing two demo
+    connectors.
     """
     cfg = row.get("config")
     if not isinstance(cfg, dict):
         return False
-    db = cfg.get("database") or cfg.get("path") or ""
     return (
         cfg.get("sample") is True
         and not cfg.get("system")
         and cfg.get("connector_type") == "duckdb"
-        and isinstance(db, str)
-        and db not in ("", ":memory:")
-        and not db.startswith("s3://")
+        and cfg.get("editable_parquet") is True
     )
 
 

@@ -164,6 +164,24 @@ def org_lake_uri(central: CentralStorage, org_id: str) -> str:
     return f"{central.base_uri()}/{org_lake_prefix(org_id)}"
 
 
+def project_demo_prefix(org_id: str, project_id: str | None) -> str:
+    """Server-pinned key prefix for a project's editable demo parquet files.
+
+    Layout: ``orgs/<org>/projects/<project>/demo/`` (or ``.../projects/org/...``
+    when project-less).  Like :func:`org_lake_prefix`, this is the ONLY place the
+    prefix is defined and is derived purely from server-trusted ids — never user
+    input — so one project can never point its connector / rewrite at another
+    project's (or org's) files.
+    """
+    scope = str(project_id) if project_id else "org"
+    return f"orgs/{org_id}/projects/{scope}/demo/"
+
+
+def project_demo_uri(central: CentralStorage, org_id: str, project_id: str | None) -> str:
+    """Full storage URI for a project's editable demo prefix under *central*."""
+    return f"{central.base_uri()}/{project_demo_prefix(org_id, project_id)}"
+
+
 # ---------------------------------------------------------------------------
 # Staging (ingestion design §5) — per-run, prefix-isolated transient store
 # ---------------------------------------------------------------------------
