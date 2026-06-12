@@ -39,7 +39,7 @@ from app.auth.bridge_tokens import (
     hash_bridge_token,
 )
 from app.auth.jwt import mint_access_token
-from app.bridges.broker import BridgeBroker, reset_broker
+from app.bridges.broker import BridgeBroker, get_broker, reset_broker
 from app.bridges.agent import BridgeAgent
 from app.errors import AppError
 from app.repos.memory import InMemoryRepo
@@ -158,6 +158,23 @@ async def test_cross_org_and_cross_bridge_isolation():
 
 
 @pytest.mark.asyncio
+async def test_has_any_for_bridge_is_scoped():
+    """``has_any_for_bridge`` gates the legacy plaintext fallback — must be scoped."""
+    store = InMemoryBridgeTokenStore()
+    assert await store.has_any_for_bridge(ORG_A, BRIDGE_1) is False
+    await store.mint(ORG_A, BRIDGE_1, "x")
+    assert await store.has_any_for_bridge(ORG_A, BRIDGE_1) is True
+    # A token on a different bridge / org does NOT count for (ORG_A, BRIDGE_1).
+    assert await store.has_any_for_bridge(ORG_A, BRIDGE_2) is False
+    assert await store.has_any_for_bridge(ORG_B, BRIDGE_1) is False
+    # Even a revoked token still counts — adoption of v2 closes the legacy path
+    # permanently, so a revoked bridge cannot be revived via plaintext.
+    _, row = await store.mint(ORG_A, BRIDGE_2, "y")
+    await store.revoke(row["id"], ORG_A, BRIDGE_2)
+    assert await store.has_any_for_bridge(ORG_A, BRIDGE_2) is True
+
+
+@pytest.mark.asyncio
 async def test_list_for_bridge_is_scoped_and_carries_no_secret():
     store = InMemoryBridgeTokenStore()
     await store.mint(ORG_A, BRIDGE_1, "one")
@@ -217,6 +234,120 @@ async def test_broker_drop_disconnects_and_pinned_connectors_fail_fast():
             await agent_task
         except (asyncio.CancelledError, Exception):
             pass
+
+
+# ---------------------------------------------------------------------------
+# WS-handshake level: legacy plaintext downgrade hole + mid-session revoke drop
+# ---------------------------------------------------------------------------
+
+import asyncio as _asyncio  # noqa: E402
+
+
+class _FakeWebSocket:
+    """Minimal WebSocket double for driving ``bridge_connect`` directly.
+
+    Records the close code; ``receive_bytes`` blocks on an event so the endpoint
+    stays "connected" until the test releases it (simulating a live agent).
+    """
+
+    def __init__(self, headers: dict[str, str], query: dict[str, str]) -> None:
+        self.headers = {k.lower(): v for k, v in headers.items()}
+        self.query_params = dict(query)
+        self.accepted = False
+        self.close_code: int | None = None
+        self._release = _asyncio.Event()
+
+    async def accept(self) -> None:
+        self.accepted = True
+
+    async def close(self, code: int = 1000) -> None:
+        if self.close_code is None:
+            self.close_code = code
+        self._release.set()
+
+    async def receive_bytes(self) -> bytes:
+        await self._release.wait()
+        from fastapi import WebSocketDisconnect
+
+        raise WebSocketDisconnect(code=1000)
+
+    def release(self) -> None:
+        self._release.set()
+
+
+@pytest.mark.asyncio
+async def test_ws_legacy_plaintext_token_is_closed_once_v2_token_minted():
+    """A bridge with a v2 token must REJECT its old plaintext config token (§7).
+
+    The legacy ``config["token"]`` fallback is a downgrade hole: it has no
+    revocation. Once any hashed v2 token is minted for the bridge, the plaintext
+    path must be closed so a revoked bridge cannot be kept alive through it.
+    """
+    from app.routes.bridges import bridge_connect, get_bridge_store, get_bridge_token_store
+
+    reset_bridge_store()
+    get_bridge_token_store().reset()
+    store = get_bridge_store()
+    org_id = str(uuid.uuid4())
+    bridge = await store.create(org_id, "u", "B", {"token": "plaintext-legacy"})
+    bridge_id = bridge["id"]
+
+    # Before any v2 token exists, the legacy plaintext token still authenticates.
+    ws = _FakeWebSocket({"x-bridge-token": "plaintext-legacy"}, {})
+    task = _asyncio.ensure_future(bridge_connect(bridge_id, ws))
+    await _asyncio.sleep(0.05)
+    assert ws.accepted is True and ws.close_code is None
+    ws.release()
+    await task
+    await get_broker().unregister(bridge_id)
+
+    # Mint a v2 token → the plaintext path is now CLOSED.
+    await get_bridge_token_store().mint(org_id, bridge_id, "v2")
+    ws2 = _FakeWebSocket({"x-bridge-token": "plaintext-legacy"}, {})
+    await bridge_connect(bridge_id, ws2)
+    assert ws2.accepted is False
+    assert ws2.close_code == 4401
+
+
+@pytest.mark.asyncio
+async def test_ws_revoked_token_drops_live_tunnel_via_revalidation(monkeypatch):
+    """A token revoked mid-session drops the live tunnel on the next re-check (§7)."""
+    import app.routes.bridges as br
+    from app.routes.bridges import bridge_connect, get_bridge_store, get_bridge_token_store
+
+    reset_broker()
+    reset_bridge_store()
+    get_bridge_token_store().reset()
+    # Make the re-validation loop tick almost immediately.
+    monkeypatch.setattr(br, "_BRIDGE_TOKEN_REVALIDATE_SECONDS", 0.02)
+
+    store = get_bridge_store()
+    org_id = str(uuid.uuid4())
+    bridge = await store.create(org_id, "u", "B", {})
+    bridge_id = bridge["id"]
+    raw, row = await get_bridge_token_store().mint(org_id, bridge_id, "v2")
+
+    ws = _FakeWebSocket({"x-bridge-token": raw}, {})
+    task = _asyncio.ensure_future(bridge_connect(bridge_id, ws))
+    await _asyncio.sleep(0.05)
+    assert ws.accepted is True
+    assert get_broker().is_connected(bridge_id) is True
+
+    # Revoke out-of-band (no explicit broker.drop call) → the re-validation loop
+    # must notice and tear the tunnel down on its own.
+    await get_bridge_token_store().revoke(row["id"], org_id, bridge_id)
+    for _ in range(50):
+        if not get_broker().is_connected(bridge_id):
+            break
+        await _asyncio.sleep(0.02)
+    assert get_broker().is_connected(bridge_id) is False
+    assert ws.close_code == 4401
+
+    ws.release()
+    try:
+        await _asyncio.wait_for(task, timeout=1.0)
+    except (_asyncio.TimeoutError, Exception):
+        task.cancel()
 
 
 # ---------------------------------------------------------------------------

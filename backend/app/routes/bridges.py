@@ -36,10 +36,16 @@ this file), so ``main.py`` only needs::
 
 from __future__ import annotations
 
+import asyncio
+import secrets
 import uuid
 from copy import deepcopy
 from datetime import datetime, timezone
 from typing import Any
+
+#: How often the live tunnel re-validates its bridge token so a mid-session
+#: revoke / lapsed rotation grace drops the tunnel promptly (§7).
+_BRIDGE_TOKEN_REVALIDATE_SECONDS = 30.0
 
 from fastapi import APIRouter, Depends, Response, WebSocket, WebSocketDisconnect
 from pydantic import BaseModel
@@ -505,16 +511,24 @@ async def bridge_connect(
     # one past its rotation grace window) fails here, so the handshake is
     # rejected before accept(). ADDITIVE: fall back to the legacy plaintext
     # ``config["token"]`` so existing bridges keep working unchanged.
+    token_store = get_bridge_token_store()
     authed = False
-    binding = await get_bridge_token_store().validate(supplied_token)
+    binding = await token_store.validate(supplied_token)
     if binding is not None:
         token_org_id, token_bridge_id = binding
         if token_bridge_id == bridge_id and token_org_id == str(row.get("org_id")):
             authed = True
     if not authed:
-        legacy_token: str = str(row.get("config", {}).get("token") or "")
-        if legacy_token and supplied_token == legacy_token:
-            authed = True
+        # Legacy plaintext-token fallback (ADDITIVE) — only honoured while the
+        # bridge has NOT yet adopted any hashed v2 token. Once a v2 token is
+        # minted, this downgrade path is CLOSED so a revoked/rotated bridge can
+        # never be kept alive through the un-revocable plaintext config token
+        # (§7: "the legacy plaintext-token fallback isn't a downgrade hole").
+        # Compared with secrets.compare_digest to avoid a timing side channel.
+        if not await token_store.has_any_for_bridge(str(row.get("org_id")), bridge_id):
+            legacy_token: str = str(row.get("config", {}).get("token") or "")
+            if legacy_token and secrets.compare_digest(supplied_token, legacy_token):
+                authed = True
     if not authed:
         await websocket.close(code=4401)
         return
@@ -530,6 +544,40 @@ async def bridge_connect(
     broker = get_broker()
     await broker.register(bridge_id, websocket)
 
+    # Server-side re-validation: the token is checked on connect, but a token can
+    # be revoked (or its rotation grace window can lapse) mid-tunnel. The explicit
+    # broker.drop() on the revoke route only fires in the worker that holds the
+    # live socket; to make revocation robust across workers / direct-DB revokes we
+    # also re-validate the token on an interval here and drop the tunnel ourselves
+    # the moment it stops validating (§7: "broker rejects next handshake/heartbeat
+    # and drops the live tunnel"). The legacy plaintext path is intentionally NOT
+    # re-validated (no revocation semantics) — but the moment a v2 token is minted
+    # for the bridge the connect-time check already closed that path.
+    revalidate_every_s = _BRIDGE_TOKEN_REVALIDATE_SECONDS
+    using_v2_token = binding is not None
+
+    async def _revalidate_loop() -> None:
+        if not using_v2_token:
+            return
+        while True:
+            await asyncio.sleep(revalidate_every_s)
+            still = await token_store.validate(supplied_token)
+            ok = (
+                still is not None
+                and still[1] == bridge_id
+                and still[0] == str(row.get("org_id"))
+            )
+            if not ok:
+                await broker.drop(bridge_id)
+                row["status"] = "offline"
+                row["updated_at"] = _now_iso()
+                try:
+                    await websocket.close(code=4401)
+                except Exception:  # noqa: BLE001
+                    pass
+                return
+
+    revalidator = asyncio.ensure_future(_revalidate_loop())
     try:
         # Keep the connection alive by waiting for messages.
         # The broker's reader loop runs in the background; here we just wait
@@ -542,6 +590,11 @@ async def bridge_connect(
             except Exception:
                 break
     finally:
+        revalidator.cancel()
+        try:
+            await revalidator
+        except (asyncio.CancelledError, Exception):  # noqa: BLE001
+            pass
         await broker.unregister(bridge_id)
 
 

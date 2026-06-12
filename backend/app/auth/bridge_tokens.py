@@ -104,6 +104,16 @@ class BridgeTokenStore:
         """Return the (listing-safe) tokens for ``(org_id, bridge_id)``."""
         raise NotImplementedError
 
+    async def has_any_for_bridge(self, org_id: str, bridge_id: str) -> bool:
+        """True if ANY bridge_tokens row exists for ``(org_id, bridge_id)``.
+
+        Gate for the legacy plaintext-token fallback: once a bridge has adopted a
+        hashed/rotatable v2 token, the plaintext ``config["token"]`` path is
+        closed so it cannot be used to keep a revoked bridge reachable (§7
+        "the legacy plaintext-token fallback isn't a downgrade hole").
+        """
+        raise NotImplementedError
+
     async def rotate(
         self,
         token_id: str,
@@ -227,6 +237,21 @@ class PgBridgeTokenStore(BridgeTokenStore):
         )
         return [_public_row(dict(r)) for r in rows]
 
+    async def has_any_for_bridge(self, org_id: str, bridge_id: str) -> bool:
+        from app.db import fetchrow  # local import
+
+        row = await fetchrow(
+            """
+            SELECT 1
+            FROM bridge_tokens
+            WHERE org_id = $1::uuid AND bridge_id = $2::uuid
+            LIMIT 1
+            """,
+            org_id,
+            bridge_id,
+        )
+        return row is not None
+
     async def rotate(
         self,
         token_id: str,
@@ -332,6 +357,12 @@ class InMemoryBridgeTokenStore(BridgeTokenStore):
         ]
         rows.sort(key=lambda r: r["created_at"], reverse=True)
         return [_public_row(r) for r in rows]
+
+    async def has_any_for_bridge(self, org_id: str, bridge_id: str) -> bool:
+        return any(
+            str(r["org_id"]) == str(org_id) and str(r["bridge_id"]) == str(bridge_id)
+            for r in self._store.values()
+        )
 
     async def rotate(
         self,

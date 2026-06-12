@@ -78,6 +78,10 @@ def save_bridge_config(
     Merges into any existing config so callers can update one field at a time.
     """
     _BRIDGE_CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
+    try:  # owner-only on the directory too (no group/other traversal)
+        _BRIDGE_CONFIG_PATH.parent.chmod(0o700)
+    except OSError:
+        pass
     cfg = _read_config()
     if bridge_id is not None:
         cfg["bridge_id"] = bridge_id
@@ -85,8 +89,21 @@ def save_bridge_config(
         cfg["control_plane_url"] = control_plane_url
     if token is not None:
         cfg["token"] = token
-    _BRIDGE_CONFIG_PATH.write_text(json.dumps(cfg, indent=2))
-    try:  # best-effort: tighten to owner-only like a credentials file
+    payload = json.dumps(cfg, indent=2)
+    # Write through a 0600 file descriptor so the token is NEVER world-readable
+    # on disk, not even for the window between write_text() and a follow-up
+    # chmod() (that race would briefly expose the token under a 0644 umask).
+    # O_NOFOLLOW refuses to write through a symlink an attacker may have planted.
+    fd = os.open(
+        _BRIDGE_CONFIG_PATH,
+        os.O_WRONLY | os.O_CREAT | os.O_TRUNC | getattr(os, "O_NOFOLLOW", 0),
+        0o600,
+    )
+    try:
+        os.write(fd, payload.encode("utf-8"))
+    finally:
+        os.close(fd)
+    try:  # tighten in case the file pre-existed with looser perms
         _BRIDGE_CONFIG_PATH.chmod(0o600)
     except OSError:
         pass

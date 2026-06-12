@@ -397,6 +397,34 @@ class TestBridgeConfig:
         assert "nubi_br_X" not in repr(ident)
         assert "<redacted>" in repr(ident)
 
+    def test_config_file_is_owner_only_from_creation(self, tmp_path: Path, monkeypatch) -> None:
+        """The token must NEVER be world-readable on disk, not even momentarily.
+
+        Regression for the write_text()-then-chmod() race: a brand-new config
+        file under a 0644 umask was briefly world-readable before the chmod ran.
+        It must be created 0600 from the first byte.
+        """
+        import os
+        import stat
+
+        home = tmp_path / "home"
+        home.mkdir()
+        cfg = home / ".nubi" / "bridge.json"
+        monkeypatch.setattr(bc, "_BRIDGE_CONFIG_PATH", cfg)
+        # A permissive umask would have exposed the old write_text() path.
+        old_umask = os.umask(0o022)
+        try:
+            bc.save_bridge_config(token="nubi_br_SECRET", bridge_id="b1")
+        finally:
+            os.umask(old_umask)
+
+        mode = stat.S_IMODE(cfg.stat().st_mode)
+        assert mode == 0o600, oct(mode)
+        # Group/other have no access at all.
+        assert mode & (stat.S_IRWXG | stat.S_IRWXO) == 0
+        # Round-trips.
+        assert json.loads(cfg.read_text())["token"] == "nubi_br_SECRET"
+
     def test_resolve_identity_missing_token_raises(self, tmp_path: Path, monkeypatch) -> None:
         cfg = tmp_path / "bridge.json"
         monkeypatch.setattr(bc, "_BRIDGE_CONFIG_PATH", cfg)
