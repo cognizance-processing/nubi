@@ -4,8 +4,62 @@
     <meta charset="UTF-8" />
     <link rel="icon" type="image/png" href="/nubi.png" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <meta name="description" content="Simple yet powerful LLM-first BI tool. Query data with natural language, Python, or SQL." />
-    <title>Nubi - LLM-First Business Intelligence</title>
+
+    <!-- ── SEO ─────────────────────────────────────────────────────────────── -->
+    <title>Nubi — Open-source BI that runs in your browser · Unlimited free viewers</title>
+    <meta
+      name="description"
+      content="Nubi is open-source business intelligence with a DuckDB-WASM kernel in the browser: zero cold starts, ≈$0 per dashboard view, unlimited viewers on every plan. SQL + Python flows, embedded analytics, 25+ connectors, self-hostable."
+    />
+    <link rel="canonical" href="https://nubi.fly.dev/" />
+    <meta name="robots" content="index, follow" />
+    <meta name="theme-color" content="#f8fafc" media="(prefers-color-scheme: light)" />
+    <meta name="theme-color" content="#070b21" media="(prefers-color-scheme: dark)" />
+
+    <!-- Open Graph -->
+    <meta property="og:type" content="website" />
+    <meta property="og:site_name" content="Nubi" />
+    <meta property="og:title" content="Nubi — open-source BI that runs in your browser" />
+    <meta
+      property="og:description"
+      content="DuckDB-WASM kernel in the tab: zero cold starts, ≈$0 marginal cost per view, unlimited viewers on every plan. Dashboards, SQL + Python flows, embedded analytics — Apache-2.0 open core."
+    />
+    <meta property="og:url" content="https://nubi.fly.dev/" />
+    <meta property="og:image" content="https://nubi.fly.dev/landing/hero-dark.png" />
+    <meta property="og:image:width" content="2400" />
+    <meta property="og:image:height" content="1500" />
+    <meta property="og:image:alt" content="A Nubi dashboard — retail sales overview with KPIs, trend chart, and breakdowns" />
+
+    <!-- Twitter -->
+    <meta name="twitter:card" content="summary_large_image" />
+    <meta name="twitter:title" content="Nubi — open-source BI that runs in your browser" />
+    <meta
+      name="twitter:description"
+      content="Zero cold starts, ≈$0 per dashboard view, unlimited free viewers. Open-source BI with flows, embedding, and 25+ connectors."
+    />
+    <meta name="twitter:image" content="https://nubi.fly.dev/landing/hero-dark.png" />
+
+    <!-- Structured data -->
+    <script type="application/ld+json">
+      {
+        "@context": "https://schema.org",
+        "@type": "SoftwareApplication",
+        "name": "Nubi",
+        "applicationCategory": "BusinessApplication",
+        "applicationSubCategory": "Business Intelligence",
+        "operatingSystem": "Web",
+        "url": "https://nubi.fly.dev/",
+        "description": "Open-source business intelligence with a DuckDB-WASM kernel that runs in the browser. Unlimited viewers on every plan, SQL + Python flow orchestration, embedded analytics, and 25+ data connectors.",
+        "offers": {
+          "@type": "Offer",
+          "price": "0",
+          "priceCurrency": "USD",
+          "description": "Free tier with unlimited seats and viewers"
+        },
+        "softwareHelp": "https://nubi.fly.dev/docs",
+        "license": "https://www.apache.org/licenses/LICENSE-2.0"
+      }
+    </script>
 
     <!-- ── No-FOUC theme script ─────────────────────────────────────────────
          Runs synchronously before any paint. Reads localStorage then
@@ -31,11 +85,11 @@
       })();
     </script>
 
-    <!-- ── Google Fonts: Space Grotesk (display) + Inter (body) ───────────── -->
+    <!-- ── Google Fonts: Space Grotesk (display) + Inter (body) + JetBrains Mono (data accents) ── -->
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link
-      href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=Space+Grotesk:wght@300;400;500;600;700&display=swap"
+      href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=Space+Grotesk:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500;600;700&display=swap"
       rel="stylesheet"
     />
   </head>

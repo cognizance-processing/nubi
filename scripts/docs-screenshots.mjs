@@ -24,7 +24,7 @@
  * discovered by name via the API on every run, so reseeding does not break it.
  */
 import { chromium } from '@playwright/test'
-import { mkdirSync, readFileSync, readdirSync, writeFileSync } from 'node:fs'
+import { copyFileSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from 'node:fs'
 import { execSync } from 'node:child_process'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -37,8 +37,10 @@ const PASSWORD = process.env.NUBI_ADMIN_PASSWORD ?? 'nubi-admin-2026'
 const ROOT = path.join(path.dirname(fileURLToPath(import.meta.url)), '..')
 const OUT_DIR = path.join(ROOT, 'public', 'docs', 'screenshots')
 const ASSETS_DIR = path.join(ROOT, 'docs', 'assets')
+const LANDING_DIR = path.join(ROOT, 'public', 'landing')
 mkdirSync(OUT_DIR, { recursive: true })
 mkdirSync(ASSETS_DIR, { recursive: true })
+mkdirSync(LANDING_DIR, { recursive: true })
 
 // Every name captured this run — written to manifest.json and checked against
 // the images the docs actually reference.
@@ -457,6 +459,11 @@ for (const theme of ['light', 'dark']) {
     await setProject(heroPage, ids.org.id, ids.demo.id)
   }
   await shoot(heroPage, `hero-${theme}`, { settle: 4500, dir: ASSETS_DIR })
+  // Same image also serves the landing page hero + og:image (public/ is served).
+  copyFileSync(
+    path.join(ASSETS_DIR, `hero-${theme}.png`),
+    path.join(LANDING_DIR, `hero-${theme}.png`)
+  )
   await heroCtx.close()
 }
 
