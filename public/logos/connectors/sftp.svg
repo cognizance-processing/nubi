@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg width="256" height="256" viewBox="0 0 256 256" version="1.1" xmlns="http://www.w3.org/2000/svg">
+  <title>SFTP — secure file transfer</title>
+  <rect x="0" y="0" width="256" height="256" rx="48" fill="#3B6E8F"/>
+  <path d="M64 84a16 16 0 0 1 16-16h36l16 20h60a16 16 0 0 1 16 16v60a16 16 0 0 1-16 16H80a16 16 0 0 1-16-16V84Z" fill="#FFFFFF" opacity="0.92"/>
+  <path d="M128 116v40m0 0-16-16m16 16 16-16" stroke="#3B6E8F" stroke-width="10" stroke-linecap="round" stroke-linejoin="round" fill="none"/>
+  <g transform="translate(150 150)">
+    <rect x="0" y="14" width="48" height="34" rx="6" fill="#1F4459"/>
+    <path d="M9 14v-9a15 15 0 0 1 30 0v9" stroke="#1F4459" stroke-width="8" fill="none"/>
+    <circle cx="24" cy="30" r="6" fill="#FFFFFF"/>
+  </g>
+</svg>

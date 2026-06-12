@@ -397,6 +397,52 @@ export const CONNECTOR_TYPES = [
     ],
     summary: (cfg) => cfg.database || '',
   },
+  // ── File-only ingestion sources (design §2 — FileConnectorMixin) ───────────
+  // sftp/ftp are NOT queryable: they only expose a file interface, consumed by
+  // the `file_ingest` flow task (or a Python ingest cell). They land in the
+  // catalog so the "Add connector" picker can create them; the backend
+  // ConnectorType literal lists both (backend/app/routes/connectors.py).
+  {
+    id: 'sftp',
+    label: 'SFTP',
+    description: 'Pull files over SSH (SFTP). Ingest into a queryable target.',
+    category: 'lake',
+    logo: logo('sftp.svg'),
+    color: '#3B6E8F',
+    fields: [
+      { key: 'host', label: 'Host', type: 'text', placeholder: 'sftp.example.com', required: true, width: 'half' },
+      { key: 'port', label: 'Port', type: 'number', default: 22, width: 'half' },
+      { key: 'user', label: 'User', type: 'text', optional: true, width: 'half' },
+      { key: 'root', label: 'Base path', type: 'text', optional: true, placeholder: '/uploads', width: 'half', help: 'Files are resolved relative to this directory.' },
+      { key: 'password', label: 'Password', type: 'password', group: 'secret', optional: true, width: 'full', help: 'Supply a password OR a private key below.' },
+      { key: 'private_key', label: 'Private key (PEM)', type: 'textarea', group: 'secret', optional: true, rows: 5, width: 'full', placeholder: '-----BEGIN OPENSSH PRIVATE KEY-----\n...' },
+      { key: 'private_key_password', label: 'Key passphrase', type: 'password', group: 'secret', optional: true, width: 'full' },
+      { key: 'host_key', label: 'Pinned host key', type: 'text', optional: true, width: 'full', placeholder: 'ssh-ed25519 AAAA...', help: 'Optional. Leave blank to trust-on-first-use; set to pin a known host key.' },
+    ],
+    summary: (cfg) => [cfg.host && cfg.host + (cfg.port ? `:${cfg.port}` : ''), cfg.user].filter(Boolean).join(' · '),
+  },
+  {
+    id: 'ftp',
+    label: 'FTP / FTPS',
+    description: 'Pull files over FTP (FTPS by default). Ingest into a queryable target.',
+    category: 'lake',
+    logo: logo('ftp.svg'),
+    color: '#6B7280',
+    fields: [
+      { key: 'host', label: 'Host', type: 'text', placeholder: 'ftp.example.com', required: true, width: 'half' },
+      { key: 'port', label: 'Port', type: 'number', default: 21, width: 'half' },
+      { key: 'user', label: 'User', type: 'text', optional: true, width: 'half', help: 'Leave blank for anonymous access.' },
+      { key: 'root', label: 'Base path', type: 'text', optional: true, placeholder: '/uploads', width: 'half' },
+      { key: 'password', label: 'Password', type: 'password', group: 'secret', optional: true, width: 'full' },
+      {
+        key: 'tls', label: 'Encryption', type: 'select', default: 'true', width: 'half',
+        options: [{ value: 'true', label: 'FTPS (TLS)' }, { value: 'false', label: 'Plain FTP (insecure)' }],
+        help: 'Plain FTP sends credentials and data unencrypted — use FTPS unless the server cannot.',
+      },
+      { key: 'passive', label: 'Passive mode', type: 'select', default: 'true', width: 'half', options: [{ value: 'true', label: 'Passive' }, { value: 'false', label: 'Active' }] },
+    ],
+    summary: (cfg) => [cfg.host && cfg.host + (cfg.port ? `:${cfg.port}` : ''), cfg.user || 'anonymous'].filter(Boolean).join(' · '),
+  },
   // Legacy local/in-memory ``duckdb`` connector. No longer offered in the picker
   // (``hidden: true``) because a local path / in-memory DB is meaningless on
   // stateless Cloud-Run containers — but the type stays in the catalog so any

@@ -20,7 +20,7 @@
  *                                    returns { rows, columns, row_count, elapsed_ms, error? }
  */
 
-import { useState, useCallback, useRef } from 'react'
+import { useState, useCallback, useRef, useEffect } from 'react'
 import Editor from '@monaco-editor/react'
 import { ChevronDown, ChevronRight, AlertCircle, CheckCircle2, Clock, ChevronDown as SnippetIcon } from 'lucide-react'
 import CellToolbar from './CellToolbar.jsx'
@@ -28,6 +28,22 @@ import CellConfigAnnotations from './CellConfigAnnotations.jsx'
 import SecretsMenu from './SecretsMenu.jsx'
 import DataTable from '../../components/DataTable.jsx'
 import { PYTHON_EXAMPLES } from '../pythonExamples.js'
+import { listIngestTemplates } from '../../lib/flows.js'
+
+// Backend ingest starter templates (GET /flows/ingest-templates) are fetched
+// once and cached for the lifetime of the module so every Python cell shares
+// the same list without re-hitting the API. Resolves to [{label, code}].
+let _ingestTemplatesCache = null
+function loadIngestTemplates() {
+  if (!_ingestTemplatesCache) {
+    _ingestTemplatesCache = listIngestTemplates()
+      .then((tpls) =>
+        (tpls || []).map((t) => ({ label: t.title || t.id, code: t.code || '' })),
+      )
+      .catch(() => [])
+  }
+  return _ingestTemplatesCache
+}
 
 // Monaco Python editor options
 const MONACO_PY_OPTS = {
@@ -65,7 +81,19 @@ export default function PythonCell({
   const [runError, setRunError] = useState(null)
   const [resultsOpen, setResultsOpen] = useState(true)
   const [snippetOpen, setSnippetOpen] = useState(false)
+  const [ingestTemplates, setIngestTemplates] = useState([])
   const monacoRef = useRef(null)
+
+  // Fetch the backend ingest starter templates once (cached at module level).
+  // setState lives inside the async callback, not the effect body, to satisfy
+  // react-hooks/set-state-in-effect.
+  useEffect(() => {
+    let cancelled = false
+    loadIngestTemplates().then((tpls) => {
+      if (!cancelled) setIngestTemplates(tpls)
+    })
+    return () => { cancelled = true }
+  }, [])
 
   const code = cell?.config?.code ?? '# Write your Python code here\nresult = {}'
 
@@ -158,7 +186,7 @@ export default function PythonCell({
             Examples
           </button>
           {snippetOpen && (
-            <div className="absolute z-20 top-full right-0 mt-1 min-w-[200px] py-1.5 rounded-xl bg-surface border border-border shadow-lg shadow-black/10">
+            <div className="absolute z-20 top-full right-0 mt-1 min-w-[220px] max-h-80 overflow-auto py-1.5 rounded-xl bg-surface border border-border shadow-lg shadow-black/10">
               {PYTHON_EXAMPLES.map(ex => (
                 <button
                   key={ex.label}
@@ -168,6 +196,22 @@ export default function PythonCell({
                   {ex.label}
                 </button>
               ))}
+              {ingestTemplates.length > 0 && (
+                <>
+                  <div className="px-3 pt-2 pb-1 mt-1 border-t border-border text-[10px] font-semibold uppercase tracking-wide text-muted/70">
+                    Ingest starters
+                  </div>
+                  {ingestTemplates.map(ex => (
+                    <button
+                      key={ex.label}
+                      onClick={() => insertSnippet(ex.code)}
+                      className="w-full text-left px-3 py-2 text-xs text-fg hover:bg-surface-2 transition-colors"
+                    >
+                      {ex.label}
+                    </button>
+                  ))}
+                </>
+              )}
             </div>
           )}
         </div>
