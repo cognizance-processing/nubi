@@ -73,10 +73,17 @@ _SAMPLE_TABLES = ("boards", "queries", "datastores")
 # ── Idempotency helpers ─────────────────────────────────────────────────────────
 
 async def _find_sample(
-    repo: Repo, table: str, org_id: str, sample_id: str
+    repo: Repo, table: str, org_id: str, sample_id: str, project_id: str | None
 ) -> dict[str, Any] | None:
-    """Return the existing bundle row for *sample_id* in *org_id*, or ``None``."""
-    for row in await repo.list(table, org_id):
+    """Return the existing bundle row for *sample_id* in the TARGET project, or ``None``.
+
+    Idempotency is scoped per (org, project): every project owns its own copy of
+    the demo bundle, so seeding a NEW project creates a fresh bundle there —
+    including its own per-project demo-lakehouse connector — instead of silently
+    reusing rows that live in another project.  ``project_id=None`` keeps the
+    legacy org-wide match (project-less callers / test doubles).
+    """
+    for row in await repo.list(table, org_id, project_id):
         cfg = row.get("config") or {}
         if cfg.get("sample") is True and cfg.get("sample_id") == sample_id:
             return row
@@ -94,7 +101,7 @@ async def _upsert(
     project_id: str | None,
 ) -> tuple[dict[str, Any], bool]:
     """Create the row (tagged sample) if absent; return ``(row, created)``."""
-    existing = await _find_sample(repo, table, org_id, sample_id)
+    existing = await _find_sample(repo, table, org_id, sample_id, project_id)
     if existing is not None:
         return existing, False
     full_config = {**config, "sample": True, "sample_id": sample_id}
