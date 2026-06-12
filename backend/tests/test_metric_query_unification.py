@@ -331,3 +331,178 @@ async def test_create_plain_query_unaffected(m_client):
         "/api/v1/queries", json=body, headers=_auth_headers(user_id)
     )
     assert resp.status_code == 201, resp.text
+
+
+# ===========================================================================
+# TENANT ISOLATION (SEC) — a metric slug is org-scoped END TO END.
+#
+# The metric registry is a process-GLOBAL singleton and slugs are only UNIQUE
+# per (org, slug). Before the fix, ``ensure_persisted_metric(slug)`` resolved a
+# query-with-metric by slug with NO org filter, so org A could read / compile /
+# execute org B's metric (base_sql + datastore + dimension disclosure, plus
+# cross-tenant execution) by knowing B's slug. These tests prove the fix.
+# ===========================================================================
+
+
+@pytest.mark.asyncio
+async def test_ensure_persisted_metric_is_org_filtered(monkeypatch):
+    """The slug→query DB lookup MUST carry an org filter when org_id is given."""
+    from app.metrics import registry as reg
+
+    reg.reset_for_tests()
+    captured: dict[str, object] = {}
+    org_b = str(uuid.uuid4())
+    row = _query_row("secret_rev")
+    row["org_id"] = org_b
+
+    async def _fake_fetchrow(query, *args):
+        captured["query"] = query
+        captured["args"] = args
+        # Simulate the DB applying the org filter: only org_b owns the slug.
+        if "org_id = $2::uuid" in query and args[1] == org_b:
+            return row
+        return None
+
+    monkeypatch.setattr("app.db.fetchrow", _fake_fetchrow)
+
+    # Org B (the owner) resolves it.
+    owner = await reg.ensure_persisted_metric("secret_rev", org_b)
+    assert owner is not None
+    assert "org_id = $2::uuid" in captured["query"], "lookup is NOT org-scoped"
+    assert captured["args"] == ("secret_rev", org_b)
+
+    # Org A (a different org) does NOT — the org filter excludes B's row.
+    reg.reset_for_tests()
+    org_a = str(uuid.uuid4())
+    foreign = await reg.ensure_persisted_metric("secret_rev", org_a)
+    assert foreign is None, "org A resolved org B's metric by slug — CROSS-TENANT LEAK"
+    reg.reset_for_tests()
+
+
+@pytest.mark.asyncio
+async def test_metric_belongs_to_org(monkeypatch):
+    """Ownership gate: seeds always pass; foreign-org slugs do not."""
+    from app.metrics import registry as reg
+
+    org_b = str(uuid.uuid4())
+    org_a = str(uuid.uuid4())
+
+    async def _fake_fetchrow(query, *args):
+        # Only org_b owns 'secret_rev'.
+        if args[0] == "secret_rev" and args[1] == org_b:
+            return {"ok": 1}
+        return None
+
+    monkeypatch.setattr("app.db.fetchrow", _fake_fetchrow)
+
+    # In-code seeds belong to no tenant → always allowed (no DB hit needed).
+    assert await reg.metric_belongs_to_org("demo_revenue", org_a) is True
+    # The owning org passes; a foreign org fails (fail-closed).
+    assert await reg.metric_belongs_to_org("secret_rev", org_b) is True
+    assert await reg.metric_belongs_to_org("secret_rev", org_a) is False
+
+
+@pytest.mark.asyncio
+async def test_shared_registry_hit_rejected_for_foreign_org(monkeypatch):
+    """A process-global registry HIT for org B's slug is invisible to org A.
+
+    The registry is shared across the process: org B's metric may already be
+    loaded in-memory from an earlier request. ``_resolve_metric`` MUST still
+    verify org ownership of a ``registry.get()`` hit, else org A reads it for
+    free without even a DB round-trip.
+    """
+    from app.metrics import registry as reg
+    from app.routes.metrics import _resolve_metric
+
+    reg.reset_for_tests()
+    # Org B's metric is ALREADY in the shared in-memory registry.
+    org_b_row = _query_row("secret_rev")
+    reg.get_metric_registry().register(reg._definition_from_query_row(org_b_row))
+    assert reg.get_metric_registry().get("secret_rev") is not None
+
+    org_a = str(uuid.uuid4())
+
+    # Org A does not own the slug: ownership check returns False AND the
+    # org-filtered DB fallback finds nothing → 404 (no cross-org leak).
+    async def _fake_fetchrow(query, *args):
+        return None  # org A owns nothing
+
+    monkeypatch.setattr("app.db.fetchrow", _fake_fetchrow)
+
+    import pytest as _pytest
+    from app.errors import AppError
+
+    with _pytest.raises(AppError) as ei:
+        await _resolve_metric("secret_rev", org_a)
+    assert ei.value.status == 404
+    assert ei.value.code == "metric_not_found"
+
+    # Sanity: the legitimate owner (org_b) still resolves the registry hit.
+    async def _fake_fetchrow_owner(query, *args):
+        if args[0] == "secret_rev":
+            return {"ok": 1} if "SELECT 1" in query else org_b_row
+        return None
+
+    monkeypatch.setattr("app.db.fetchrow", _fake_fetchrow_owner)
+    owner_metric = await _resolve_metric("secret_rev", org_b_row["org_id"])
+    assert owner_metric is not None and owner_metric.id == "secret_rev"
+    reg.reset_for_tests()
+
+
+@pytest.mark.asyncio
+async def test_get_metric_route_blocks_cross_tenant_slug(m_client, monkeypatch):
+    """End-to-end: GET /metrics/{slug} for ANOTHER org's slug → 404.
+
+    org A's authenticated user requests a slug that only org B owns. The route
+    must not leak org B's MetricDefinition (base_sql / datastore binding).
+    """
+    from app.metrics import registry as reg
+
+    reg.reset_for_tests()
+    # Org B's metric sits in the shared registry (loaded by an earlier request).
+    org_b_row = _query_row("secret_rev")
+    reg.get_metric_registry().register(reg._definition_from_query_row(org_b_row))
+
+    client, user_id = m_client  # this user belongs to org A (seeded by fixture)
+
+    # The org-scoped ownership / fallback DB lookups find nothing for org A.
+    async def _fake_fetchrow(query, *args):
+        return None
+
+    monkeypatch.setattr("app.db.fetchrow", _fake_fetchrow)
+
+    resp = await client.get(
+        "/api/v1/metrics/secret_rev", headers=_auth_headers(user_id)
+    )
+    assert resp.status_code == 404, resp.text
+    # And the body never carries org B's base_sql.
+    assert "order_date" not in resp.text
+    reg.reset_for_tests()
+
+
+@pytest.mark.asyncio
+async def test_query_metric_route_blocks_cross_tenant_slug(m_client, monkeypatch):
+    """End-to-end: POST /metrics/{slug}/query for another org's slug → 404.
+
+    Proves org A cannot EXECUTE org B's metric (base_sql against B's binding).
+    """
+    from app.metrics import registry as reg
+
+    reg.reset_for_tests()
+    org_b_row = _query_row("secret_rev")
+    reg.get_metric_registry().register(reg._definition_from_query_row(org_b_row))
+
+    client, user_id = m_client  # org A user
+
+    async def _fake_fetchrow(query, *args):
+        return None
+
+    monkeypatch.setattr("app.db.fetchrow", _fake_fetchrow)
+
+    resp = await client.post(
+        "/api/v1/metrics/secret_rev/query",
+        json={"dimensions": ["region"]},
+        headers=_auth_headers(user_id),
+    )
+    assert resp.status_code == 404, resp.text
+    reg.reset_for_tests()

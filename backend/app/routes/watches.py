@@ -510,9 +510,26 @@ async def _feed_breach(
         logger.warning("watch %s: feed dispatch failed: %s", watch.id, exc)
 
 
-async def _resolve_metric_for_watch(metric_id: str):
+async def _resolve_metric_for_watch(metric_id: str, org_id: str | None = None):
+    """Resolve the metric a watch monitors, tenant-scoped to *org_id*.
+
+    TENANT ISOLATION (SEC): the metric registry is process-global and metric
+    slugs are only unique per org, so a watch's ``metric_id`` MUST resolve within
+    the watch-owner's org — otherwise a watch could reference (and evaluate)
+    another org's metric by slug. When *org_id* is supplied a registry hit is
+    accepted only if the org actually exposes that slug (seeds excepted), and the
+    DB fallback is org-filtered. ``org_id=None`` (the system tick) keeps the
+    legacy unscoped resolution.
+    """
     registry = get_metric_registry()
-    metric = registry.get(metric_id) or await ensure_persisted_metric(metric_id)
+    metric = registry.get(metric_id)
+    if metric is not None and org_id is not None:
+        from app.metrics.registry import metric_belongs_to_org  # noqa: PLC0415
+
+        if not await metric_belongs_to_org(metric_id, org_id):
+            metric = None
+    if metric is None:
+        metric = await ensure_persisted_metric(metric_id, org_id)
     if metric is None:
         raise AppError(
             "metric_not_found",
@@ -537,7 +554,7 @@ async def evaluate_watch_now(
     org_id = await _caller_org(identity)
     record = await _resolve_watch(watch_id, org_id)
     watch = _watch_from_record(record)
-    metric = await _resolve_metric_for_watch(watch.metric_id)
+    metric = await _resolve_metric_for_watch(watch.metric_id, org_id)
 
     claims = {"policies": identity.policies}
     summary = await run_watch(watch, metric, claims)

@@ -703,9 +703,12 @@ async def ai_chat(
 
     # Build first-party claims from the authenticated user.
     # For first-party callers, policies are empty (no RLS restrictions).
+    # SECURITY: carry the resolved org so metric tools can tenant-scope a
+    # slug resolution against the shared (process-global) metric registry.
     claims: dict[str, Any] = {
         "kind": "access",
         "sub": str(_user.get("id", "")),
+        "org": org_id,
         "policies": {},
         "scope": ["read:*", "write:*"],
     }
@@ -755,6 +758,7 @@ async def ai_chat_stream(
     claims: dict[str, Any] = {
         "kind": "access",
         "sub": str(_user.get("id", "")),
+        "org": org_id,
         "policies": {},
         "scope": ["read:*", "write:*"],
     }

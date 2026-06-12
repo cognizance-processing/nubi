@@ -100,13 +100,60 @@ def _require_first_party_write(identity: VerifiedIdentity) -> None:
     _require_read_scope(identity)
 
 
-async def _resolve_metric(metric_id: str) -> MetricDefinition:
+async def _caller_org(identity: VerifiedIdentity, request: Request) -> str | None:
+    """Resolve the caller's org id for tenant-scoping a metric resolution.
+
+    Embed tokens carry the org in the token claim; first-party tokens require a
+    membership lookup (``resolve_org_id`` honours ``X-Org-Id`` with a membership
+    check). Returns ``None`` only when no org is resolvable (e.g. an org-less
+    demo token) — callers treat a ``None`` org as "no tenant scoping available"
+    and fall back to the seed-only / unscoped path. SECURITY: every request-
+    facing metric resolution passes this through so a slug only resolves within
+    the caller's tenant.
+    """
+    if identity.kind == "embed":
+        return identity.org
+    try:
+        from app.routes._org import resolve_org_id  # noqa: PLC0415
+
+        return await resolve_org_id(identity.user_id, get_repo(), request)
+    except Exception:  # noqa: BLE001 — no org resolvable → unscoped/seed-only.
+        return None
+
+
+async def _resolve_metric(
+    metric_id: str, org_id: str | None = None
+) -> MetricDefinition:
     """Resolve a metric by id from the registry, falling back to the DB.
 
-    Raises AppError 404 when the metric is unknown.
+    TENANT ISOLATION (SEC): the metric registry is a process-GLOBAL singleton and
+    slugs are only UNIQUE per (org, slug). When *org_id* is supplied (every
+    request-facing caller MUST supply it) resolution is tenant-scoped two ways:
+
+      1. the DB fallback (``ensure_persisted_metric``) is org-filtered, so a slug
+         that exists only in ANOTHER org never loads; and
+      2. a registry HIT (which may have been hydrated by another org on this
+         shared process) is accepted only after ``metric_belongs_to_org``
+         confirms the caller's org actually exposes that slug (in-code seeds such
+         as ``demo_revenue`` belong to no tenant and are always allowed).
+
+    Without this an org could read/compile/execute another org's metric by its
+    slug (base_sql + datastore disclosure + cross-tenant execution). ``org_id``
+    omitted preserves the legacy unscoped behaviour for trusted internal callers.
+
+    Raises AppError 404 when the metric is unknown OR not owned by *org_id*
+    (same 404 either way — no cross-org existence leak).
     """
     registry = get_metric_registry()
-    metric = registry.get(metric_id) or await ensure_persisted_metric(metric_id)
+    metric = registry.get(metric_id)
+    if metric is not None and org_id is not None:
+        from app.metrics.registry import metric_belongs_to_org  # noqa: PLC0415
+
+        if not await metric_belongs_to_org(metric_id, org_id):
+            # Shared-registry hit owned by a different org → treat as not-found.
+            metric = None
+    if metric is None:
+        metric = await ensure_persisted_metric(metric_id, org_id)
     if metric is None:
         raise AppError(
             "metric_not_found", f"No metric found for id={metric_id!r}.", 404
@@ -471,11 +518,18 @@ def _is_uuid_str(value: object) -> bool:
 @api_router.get("/metrics/{metric_id}")
 async def get_metric(
     metric_id: str,
+    request: Request,
     identity: VerifiedIdentity = Depends(verified_identity),
 ) -> dict:
-    """Return a single metric's full serialized definition."""
+    """Return a single metric's full serialized definition.
+
+    TENANT ISOLATION (SEC): resolution is org-scoped — a slug only resolves
+    within the caller's org (or an in-code seed), so org A cannot read org B's
+    metric definition (base_sql / datastore binding) by its slug.
+    """
     _require_read_scope(identity)
-    metric = await _resolve_metric(metric_id)
+    org_id = await _caller_org(identity, request)
+    metric = await _resolve_metric(metric_id, org_id)
     return metric.to_dict()
 
 
@@ -534,11 +588,20 @@ async def update_metric(
     _require_first_party_write(identity)
 
     data = body.model_dump()
-    # Carry the existing name forward when the update body omits it.
+    # Carry the existing name forward when the update body omits it. SECURITY:
+    # org-scope the lookup so the carried-forward name cannot leak from another
+    # org's metric with the same slug (the write itself is already org-scoped via
+    # _persist_metric's get_user_org → INSERT/UPDATE on this org's rows).
     if not str(data.get("name") or "").strip():
-        existing = get_metric_registry().get(metric_id) or await ensure_persisted_metric(
-            metric_id
-        )
+        org_id = await _caller_org(identity, request)
+        existing = get_metric_registry().get(metric_id)
+        if existing is not None and org_id is not None:
+            from app.metrics.registry import metric_belongs_to_org  # noqa: PLC0415
+
+            if not await metric_belongs_to_org(metric_id, org_id):
+                existing = None
+        if existing is None:
+            existing = await ensure_persisted_metric(metric_id, org_id)
         if existing is not None:
             data["name"] = existing.name
 
@@ -595,15 +658,20 @@ async def delete_metric(
 async def compile_metric_dry(
     metric_id: str,
     body: dict,
+    request: Request,
     identity: VerifiedIdentity = Depends(verified_identity),
 ) -> dict:
     """Compile a MetricQuery to ``{sql, params}`` WITHOUT executing it.
 
     For agent/debug introspection. Governance violations (unknown dimension,
     bad grain/filter) → structured 400 via the ``MetricError`` map.
+
+    TENANT ISOLATION (SEC): org-scoped resolution — a slug only compiles within
+    the caller's org, so org A cannot dump org B's metric base_sql.
     """
     _require_read_scope(identity)
-    metric = await _resolve_metric(metric_id)
+    org_id = await _caller_org(identity, request)
+    metric = await _resolve_metric(metric_id, org_id)
 
     payload = dict(body or {})
     payload["metric_id"] = metric_id
@@ -640,9 +708,15 @@ async def query_metric(
     Embed-safe: raw SQL is never accepted — only the governed metric + dims +
     filters. RLS is threaded EXACTLY like /query: claims come exclusively from
     the verified token.
+
+    TENANT ISOLATION (SEC): org-scoped resolution — a slug only resolves +
+    executes within the caller's org. Without this, org A could execute org B's
+    base_sql (and bind it to B's datastore id). Combined with token-only RLS this
+    closes both definition disclosure and cross-tenant execution.
     """
     _require_read_scope(identity)
-    metric = await _resolve_metric(metric_id)
+    org_id = await _caller_org(identity, request)
+    metric = await _resolve_metric(metric_id, org_id)
 
     payload = dict(body or {})
     payload["metric_id"] = metric_id

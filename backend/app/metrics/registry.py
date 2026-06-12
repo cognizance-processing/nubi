@@ -332,7 +332,9 @@ async def load_metrics_from_queries() -> int:
     return loaded
 
 
-async def ensure_persisted_metric(metric_id: str) -> MetricDefinition | None:
+async def ensure_persisted_metric(
+    metric_id: str, org_id: str | None = None
+) -> MetricDefinition | None:
     """Lazily load a single metric on a registry miss, by its slug.
 
     The metric id IS the ``config.metric.slug`` of the backing query. The runtime
@@ -340,16 +342,33 @@ async def ensure_persisted_metric(metric_id: str) -> MetricDefinition | None:
     invisible until restart — the routes call this on a ``registry.get()`` miss
     to load just that query-with-metric from the DB. Best-effort: returns the
     metric if found+loaded, else ``None``.
+
+    TENANT ISOLATION (SEC): the slug→query lookup MUST be org-scoped. Slugs are
+    only UNIQUE per (org_id, slug); without an org filter a caller could resolve
+    ANOTHER org's metric by guessing/knowing its slug, leaking that org's
+    base_sql / datastore binding / dimensions and (via /metrics/{slug}/query)
+    executing it. When *org_id* is supplied the ``WHERE`` clause is restricted to
+    that org so a slug only resolves within the caller's tenant. ``org_id=None``
+    preserves the unscoped lookup for trusted internal callers (e.g. startup
+    loaders / system ticks) only.
     """
     registry = get_metric_registry()
     try:
         from app.db import fetchrow
 
-        row = await fetchrow(
-            "SELECT id, org_id, project_id, name, config FROM queries "
-            "WHERE config->'metric'->>'slug' = $1 LIMIT 1",
-            metric_id,
-        )
+        if org_id is not None:
+            row = await fetchrow(
+                "SELECT id, org_id, project_id, name, config FROM queries "
+                "WHERE config->'metric'->>'slug' = $1 AND org_id = $2::uuid LIMIT 1",
+                metric_id,
+                org_id,
+            )
+        else:
+            row = await fetchrow(
+                "SELECT id, org_id, project_id, name, config FROM queries "
+                "WHERE config->'metric'->>'slug' = $1 LIMIT 1",
+                metric_id,
+            )
     except Exception as exc:  # noqa: BLE001 — best-effort; never crash the request.
         logger.warning("ensure_persisted_metric(%s): DB read failed: %s", metric_id, exc)
         return None
@@ -364,3 +383,34 @@ async def ensure_persisted_metric(metric_id: str) -> MetricDefinition | None:
         logger.warning("ensure_persisted_metric(%s): register failed: %s", metric_id, exc)
         return None
     return registry.get(metric.id)
+
+
+async def metric_belongs_to_org(metric_id: str, org_id: str) -> bool:
+    """Return True when *metric_id* (slug) is backed by a query in *org_id*.
+
+    TENANT ISOLATION (SEC): the metric registry is a process-GLOBAL singleton, so
+    a ``registry.get(slug)`` hit may belong to a DIFFERENT org (it was loaded by
+    that org's startup/request on this same process). Before a route hands back a
+    metric resolved from the shared registry, it MUST confirm the slug is exposed
+    by a query OWNED by the caller's org. In-code seeds (``SEED_METRIC_IDS``,
+    e.g. ``demo_revenue``) belong to no tenant and are always allowed. Best-effort
+    on DB error → False (fail closed: a metric we cannot prove the caller owns is
+    treated as not theirs).
+    """
+    if metric_id in SEED_METRIC_IDS:
+        return True
+    try:
+        from app.db import fetchrow
+
+        row = await fetchrow(
+            "SELECT 1 AS ok FROM queries "
+            "WHERE config->'metric'->>'slug' = $1 AND org_id = $2::uuid LIMIT 1",
+            metric_id,
+            org_id,
+        )
+    except Exception as exc:  # noqa: BLE001 — fail closed on a scoping read error.
+        logger.warning(
+            "metric_belongs_to_org(%s, %s): DB read failed: %s", metric_id, org_id, exc
+        )
+        return False
+    return row is not None
