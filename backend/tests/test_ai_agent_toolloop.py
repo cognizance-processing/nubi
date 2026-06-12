@@ -350,3 +350,112 @@ class TestQueryMetricTool:
                 _empty_claims(),
             )
         assert exc_info.value.status == 400
+
+
+# ---------------------------------------------------------------------------
+# 5. Tool: query_metric — TENANT ISOLATION (SEC)
+# ---------------------------------------------------------------------------
+#
+# The metric registry is a process-GLOBAL singleton, so org B's metric can
+# already be loaded in-memory (a registry HIT) by the time org A's agent runs.
+# The query_metric tool MUST verify org ownership of that hit — otherwise org A
+# reads org B's MetricDefinition (base_sql / dimensions / datastore) and runs it.
+
+
+import uuid
+
+from app.metrics.models import Dimension, Measure, MetricDefinition
+from app.metrics import registry as _reg
+
+
+def _claims_for_org(org_id: str | None) -> dict[str, Any]:
+    return {
+        "kind": "access",
+        "sub": "test-user",
+        "org": org_id,
+        "policies": {},
+        "scope": ["read:*"],
+    }
+
+
+def _register_org_metric(slug: str) -> None:
+    """Register a NON-seed metric directly into the shared registry (a HIT)."""
+    _reg.get_metric_registry().register(
+        MetricDefinition(
+            id=slug,
+            name="Org B secret revenue",
+            measure=Measure(name="revenue", agg="sum", expr="value", type="additive"),
+            base_table="demo",
+            dimensions=(Dimension(name="name", type="text"),),
+            time_dimension=None,
+            description="A metric that belongs to org B only.",
+        )
+    )
+
+
+class TestQueryMetricTenantIsolation:
+    def test_foreign_org_cannot_resolve_registry_hit(self, monkeypatch):
+        """Org A's query_metric call cannot resolve org B's metric slug.
+
+        The slug is a live registry HIT (loaded by org B), yet the ownership
+        gate fails-closed for org A → clean ``metric_not_found`` with NO leak of
+        org B's definition or data.
+        """
+        org_a = str(uuid.uuid4())
+        org_b = str(uuid.uuid4())
+        slug = "secret_rev"
+        _register_org_metric(slug)
+
+        async def _fake_fetchrow(query, *args):
+            # Only org_b owns 'secret_rev'.
+            if args[0] == slug and args[1] == org_b:
+                return {"ok": 1}
+            return None
+
+        monkeypatch.setattr("app.db.fetchrow", _fake_fetchrow)
+
+        # Org A is denied — structured not-found, never org B's rows/definition.
+        denied = execute_tool(
+            "query_metric",
+            {"metric_id": slug, "dimensions": ["name"]},
+            _claims_for_org(org_a),
+        )
+        assert "error" in denied
+        assert denied["error"]["code"] == "metric_not_found"
+        assert "rows" not in denied and "columns" not in denied
+
+        # The OWNING org (org B) still resolves + runs it.
+        allowed = execute_tool(
+            "query_metric",
+            {"metric_id": slug, "dimensions": ["name"]},
+            _claims_for_org(org_b),
+        )
+        assert "error" not in allowed
+        assert allowed["row_count"] > 0
+
+    def test_missing_org_denies_non_seed_metric(self, monkeypatch):
+        """No org in claims → a non-seed slug cannot be proven owned → denied."""
+        slug = "secret_rev"
+        _register_org_metric(slug)
+
+        async def _fake_fetchrow(query, *args):
+            return None  # ownership can never be proven
+
+        monkeypatch.setattr("app.db.fetchrow", _fake_fetchrow)
+
+        result = execute_tool(
+            "query_metric",
+            {"metric_id": slug, "dimensions": ["name"]},
+            _claims_for_org(None),
+        )
+        assert result["error"]["code"] == "metric_not_found"
+
+    def test_seed_metric_resolves_for_any_org(self):
+        """Seed metrics belong to no tenant → resolve for everyone, no DB hit."""
+        result = execute_tool(
+            "query_metric",
+            {"metric_id": "demo_revenue", "dimensions": ["name"]},
+            _claims_for_org(str(uuid.uuid4())),
+        )
+        assert "error" not in result
+        assert result["row_count"] > 0

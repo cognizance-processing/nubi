@@ -27,10 +27,43 @@ execute_tool(name, arguments, claims) -> dict
 
 from __future__ import annotations
 
+import asyncio
 import copy
 import json
 from dataclasses import dataclass, field
-from typing import Any, Callable
+from typing import Any, Awaitable, Callable, TypeVar
+
+_T = TypeVar("_T")
+
+
+# ---------------------------------------------------------------------------
+# Sync→async bridge (mirror of app/ai/flow_tools._run_sync)
+# ---------------------------------------------------------------------------
+#
+# The AI agent loop (app/ai/agent.py → app/ai/tools.execute_tool) is fully
+# SYNCHRONOUS, but some governance checks (e.g. the org-ownership gate on a
+# metric slug) are ``async def``.  ``_run_sync`` runs such a coroutine to
+# completion from sync code:
+#  - If no event loop is running in this thread → use ``asyncio.run``.
+#  - If a loop IS already running (the tool was invoked inside FastAPI's loop),
+#    run the coroutine in a fresh loop on a worker thread so we never nest loops.
+
+
+def _run_sync(coro: Awaitable[_T]) -> _T:
+    """Run *coro* to completion from synchronous code and return its result."""
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        loop = None
+
+    if loop is not None and loop.is_running():
+        import concurrent.futures  # noqa: PLC0415
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+            future = pool.submit(asyncio.run, coro)  # type: ignore[arg-type]
+            return future.result()
+
+    return asyncio.run(coro)  # type: ignore[arg-type]
 
 
 # ---------------------------------------------------------------------------
@@ -343,7 +376,11 @@ def _tool_query_metric(
     from app.connectors.planner import plan, resolve_named_params  # noqa: PLC0415
     from app.metrics.compile import compile_metric  # noqa: PLC0415
     from app.metrics.models import MetricError, MetricQuery  # noqa: PLC0415
-    from app.metrics.registry import get_metric_registry  # noqa: PLC0415
+    from app.metrics.registry import (  # noqa: PLC0415
+        SEED_METRIC_IDS,
+        get_metric_registry,
+        metric_belongs_to_org,
+    )
 
     # ── Resolve the governed metric definition (unknown → structured error) ──
     registry = get_metric_registry()
@@ -355,6 +392,24 @@ def _tool_query_metric(
                 "message": f"No metric found for id={metric_id!r}.",
             }
         }
+
+    # ── TENANT ISOLATION (SEC): the metric registry is a process-GLOBAL ──────
+    #    singleton, so a ``registry.get(slug)`` hit may be a metric loaded by a
+    #    DIFFERENT org on this same process. Before handing back its definition
+    #    (or running it), confirm the slug is owned by the CALLER's org. In-code
+    #    seeds (``SEED_METRIC_IDS``) belong to no tenant and resolve for everyone.
+    #    Fail closed: a metric we can't prove the caller owns → metric_not_found
+    #    (NOT another org's definition / data). RLS on claims["policies"] still
+    #    narrows rows below; this is an ADDITIONAL gate on the definition itself.
+    org_id = claims.get("org")
+    if metric_id not in SEED_METRIC_IDS:
+        if not org_id or not _run_sync(metric_belongs_to_org(metric_id, str(org_id))):
+            return {
+                "error": {
+                    "code": "metric_not_found",
+                    "message": f"No metric found for id={metric_id!r}.",
+                }
+            }
 
     # ── Build the MetricQuery + compile to (sql, params) — governance here ──
     try:
