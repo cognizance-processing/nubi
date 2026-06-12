@@ -11,6 +11,7 @@ import assert from 'node:assert/strict'
 
 import {
   classifyType,
+  baseKind,
   editorKind,
   normalizeColumnMeta,
   columnIsEditable,
@@ -23,13 +24,33 @@ import {
   sortComparator,
   sortRows,
   searchRows,
+  matchFilter,
+  filterRows,
+  baseColumnWidth,
+  distributeColumnWidths,
+  moveSelection,
+  copyCellText,
 } from './editableGridUtils.js'
 
 // ---------------------------------------------------------------------------
 describe('classifyType', () => {
-  test('numbers', () => {
-    for (const t of ['INTEGER', 'BIGINT', 'int4', 'DECIMAL(10,2)', 'double', 'real', 'HUGEINT', 'serial'])
-      assert.equal(classifyType(t), 'number')
+  test('integers', () => {
+    for (const t of ['INTEGER', 'BIGINT', 'int4', 'HUGEINT', 'serial'])
+      assert.equal(classifyType(t), 'int')
+  })
+  test('floats', () => {
+    for (const t of ['DECIMAL(10,2)', 'double', 'real', 'numeric', 'float8'])
+      assert.equal(classifyType(t), 'float')
+  })
+  test('uuid', () => {
+    assert.equal(classifyType('uuid'), 'uuid')
+    assert.equal(classifyType('GUID'), 'uuid')
+  })
+  test('int/float collapse to number behaviour', () => {
+    assert.equal(baseKind('int'), 'number')
+    assert.equal(baseKind('float'), 'number')
+    assert.equal(baseKind('uuid'), 'string')
+    assert.equal(baseKind('bool'), 'bool')
   })
   test('bool', () => {
     assert.equal(classifyType('BOOLEAN'), 'bool')
@@ -242,4 +263,118 @@ describe('sortComparator direct', () => {
   test('bool ordering', () => {
     assert.ok(sortComparator({ a: false }, { a: true }, 'a', 'asc') < 0)
   })
+})
+
+// ---------------------------------------------------------------------------
+describe('matchFilter / filterRows', () => {
+  test('null operators', () => {
+    assert.equal(matchFilter(null, { op: 'is_null' }), true)
+    assert.equal(matchFilter(5, { op: 'is_null' }), false)
+    assert.equal(matchFilter(null, { op: 'not_null' }), false)
+    assert.equal(matchFilter(5, { op: 'not_null' }), true)
+  })
+  test('numeric comparisons', () => {
+    assert.equal(matchFilter(10, { op: 'gt', value: '5' }), true)
+    assert.equal(matchFilter(10, { op: 'lte', value: '10' }), true)
+    assert.equal(matchFilter(10, { op: 'eq', value: '10' }), true)
+    assert.equal(matchFilter(10, { op: 'neq', value: '10' }), false)
+  })
+  test('string contains / falls back when non-numeric', () => {
+    assert.equal(matchFilter('Gauteng', { op: 'contains', value: 'aut' }), true)
+    assert.equal(matchFilter('Gauteng', { op: 'eq', value: 'gauteng' }), true)
+    assert.equal(matchFilter('Gauteng', { op: 'contains', value: 'xyz' }), false)
+  })
+  test('null cell with value op fails', () => {
+    assert.equal(matchFilter(null, { op: 'eq', value: '5' }), false)
+  })
+  test('filterRows AND semantics + ignores incomplete filters', () => {
+    const rows = [
+      { region: 'Gauteng', amount: 100 },
+      { region: 'Western Cape', amount: 50 },
+      { region: 'Gauteng', amount: 20 },
+    ]
+    const out = filterRows(rows, [
+      { column: 'region', op: 'eq', value: 'Gauteng' },
+      { column: 'amount', op: 'gt', value: '30' },
+      { column: '', op: 'eq', value: 'x' }, // ignored (no column)
+      { column: 'amount', op: 'gt', value: '' }, // ignored (empty value)
+    ])
+    assert.equal(out.length, 1)
+    assert.equal(out[0].amount, 100)
+  })
+  test('empty filters returns input ref', () => {
+    const rows = [{ a: 1 }]
+    assert.equal(filterRows(rows, []), rows)
+  })
+})
+
+// ---------------------------------------------------------------------------
+describe('baseColumnWidth / distributeColumnWidths', () => {
+  test('kinds get sensible base widths', () => {
+    assert.ok(baseColumnWidth({ name: 'ok', kind: 'bool' }) <= 100)
+    assert.ok(baseColumnWidth({ name: 'created_at', kind: 'date' }) >= 170)
+    assert.ok(baseColumnWidth({ name: 'id', kind: 'uuid' }) >= 240)
+  })
+  test('long names widen the column', () => {
+    const a = baseColumnWidth({ name: 'x', kind: 'string' })
+    const b = baseColumnWidth({ name: 'a_very_long_column_name_here', kind: 'string' })
+    assert.ok(b > a)
+  })
+  test('distributes slack to fill available width', () => {
+    const cols = [
+      { name: 'a', kind: 'string' },
+      { name: 'b', kind: 'string' },
+    ]
+    const w = distributeColumnWidths(cols, {}, 1000, 80)
+    const sum = w.a + w.b
+    assert.equal(sum, 1000) // fills exactly
+  })
+  test('explicit widths are preserved; slack goes to flexible only', () => {
+    const cols = [
+      { name: 'a', kind: 'string' },
+      { name: 'b', kind: 'string' },
+    ]
+    const w = distributeColumnWidths(cols, { a: 300 }, 1000, 80)
+    assert.equal(w.a, 300) // untouched
+    assert.equal(w.b, 700) // absorbs all slack
+  })
+  test('no shrink below content when available is small', () => {
+    const cols = [{ name: 'a', kind: 'string' }]
+    const w = distributeColumnWidths(cols, {}, 10, 80)
+    assert.ok(w.a >= 80) // never below min, no negative slack applied
+  })
+  test('respects min width on explicit', () => {
+    const cols = [{ name: 'a', kind: 'string' }]
+    const w = distributeColumnWidths(cols, { a: 20 }, 0, 80)
+    assert.equal(w.a, 80)
+  })
+})
+
+// ---------------------------------------------------------------------------
+describe('moveSelection', () => {
+  test('arrows clamp at edges', () => {
+    assert.deepEqual(moveSelection({ row: 0, col: 0 }, 'up', 3, 3), { row: 0, col: 0 })
+    assert.deepEqual(moveSelection({ row: 0, col: 0 }, 'down', 3, 3), { row: 1, col: 0 })
+    assert.deepEqual(moveSelection({ row: 2, col: 2 }, 'down', 3, 3), { row: 2, col: 2 })
+    assert.deepEqual(moveSelection({ row: 1, col: 0 }, 'left', 3, 3), { row: 1, col: 0 })
+    assert.deepEqual(moveSelection({ row: 1, col: 1 }, 'right', 3, 3), { row: 1, col: 2 })
+  })
+  test('tab wraps to next row at right edge', () => {
+    assert.deepEqual(moveSelection({ row: 0, col: 2 }, 'tab', 3, 3), { row: 1, col: 0 })
+    assert.deepEqual(moveSelection({ row: 0, col: 0 }, 'tab', 3, 3), { row: 0, col: 1 })
+  })
+  test('shiftTab wraps to prev row at left edge', () => {
+    assert.deepEqual(moveSelection({ row: 1, col: 0 }, 'shiftTab', 3, 3), { row: 0, col: 2 })
+    assert.deepEqual(moveSelection({ row: 1, col: 2 }, 'shiftTab', 3, 3), { row: 1, col: 1 })
+  })
+  test('empty grid returns input', () => {
+    assert.deepEqual(moveSelection({ row: 0, col: 0 }, 'down', 0, 0), { row: 0, col: 0 })
+  })
+})
+
+describe('copyCellText', () => {
+  test('null → empty string', () => assert.equal(copyCellText(null, 'string'), ''))
+  test('json object stringified compact', () => assert.equal(copyCellText({ a: 1 }, 'json'), '{"a":1}'))
+  test('number → plain', () => assert.equal(copyCellText(1234.5, 'float'), '1234.5'))
+  test('uuid passes through as string', () => assert.equal(copyCellText('abc-123', 'uuid'), 'abc-123'))
 })

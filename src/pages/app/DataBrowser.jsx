@@ -59,7 +59,13 @@ function TableList({ tables, loading, error, selected, onSelect, onRetry }) {
 
   return (
     <div className="flex flex-col h-full border-r border-border bg-surface">
-      <div className="px-3 py-3 border-b border-border">
+      <div className="px-3 pt-3 pb-2.5 border-b border-border space-y-2.5">
+        <div className="flex items-center justify-between">
+          <span className="text-[10px] font-semibold uppercase tracking-wider text-muted">Tables</span>
+          {!loading && !error && (
+            <span className="text-[10px] text-muted/70 tabular-nums">{tables.length}</span>
+          )}
+        </div>
         <div className="relative">
           <Search size={13} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-muted pointer-events-none" />
           <input
@@ -112,15 +118,21 @@ function TableList({ tables, loading, error, selected, onSelect, onRetry }) {
                 key={`${t.schema ?? ''}.${t.name}`}
                 onClick={() => onSelect(t.name)}
                 className={[
-                  'w-full flex items-center gap-2 px-2.5 py-2 rounded-lg text-left transition-colors mb-0.5',
+                  'group relative w-full flex items-center gap-2 pl-3 pr-2.5 py-2 rounded-lg text-left transition-colors mb-0.5',
                   active ? 'bg-primary/10 text-primary' : 'text-fg hover:bg-surface-2',
                 ].join(' ')}
                 title={t.schema ? `${t.schema}.${t.name}` : t.name}
               >
-                <Table2 size={14} className={active ? 'text-primary shrink-0' : 'text-muted shrink-0'} />
+                {active && (
+                  <span className="absolute left-0 top-1.5 bottom-1.5 w-0.5 rounded-full bg-primary" />
+                )}
+                <Table2 size={14} className={active ? 'text-primary shrink-0' : 'text-muted group-hover:text-fg shrink-0'} />
                 <span className="flex-1 min-w-0 truncate text-xs font-medium font-mono">{t.name}</span>
                 {t.rows != null && (
-                  <span className="shrink-0 text-[10px] font-mono text-muted tabular-nums">
+                  <span className={[
+                    'shrink-0 text-[10px] font-mono tabular-nums',
+                    active ? 'text-primary/70' : 'text-muted',
+                  ].join(' ')}>
                     {t.rows.toLocaleString()}
                   </span>
                 )}
