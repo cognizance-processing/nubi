@@ -28,10 +28,11 @@ import re
 from typing import Any
 
 import pyarrow as pa
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Body, Depends, Query
 from fastapi.responses import StreamingResponse
 
 from app.auth.deps import current_user
+from app.auth.roles import require_writer_default
 from app.connectors.arrow_io import ipc_stream_from_bytes, table_to_ipc_bytes
 from app.connectors.duckdb_conn import DuckDBConnector, setup_s3_httpfs
 from app.connectors.plan import PhysicalPlan
@@ -301,7 +302,15 @@ def _introspect_tables_duckdb(connector: DuckDBConnector) -> list[dict[str, Any]
 def _introspect_columns_duckdb(
     connector: DuckDBConnector, table_name: str, schema: str = "main"
 ) -> list[dict[str, Any]]:
-    """Return [{name, type, nullable, pk}] for columns in *table_name*."""
+    """Return [{name, type, nullable, pk, editable}] for columns in *table_name*.
+
+    ``pk`` flags columns that form the table's primary key (or, absent a PK, a
+    single-column UNIQUE constraint usable as a row identity).  ``editable`` is
+    True for every real column — the write endpoints decide per-request which
+    columns a given operation may touch (PK columns are not updatable via the
+    ``set`` clause, but they are settable on INSERT).
+    """
+    pk_cols = _detect_row_identity_duckdb(connector, table_name)
     # Quote schema and table safely (already validated via allowlist before call)
     plan = _make_plan(
         f"SELECT column_name, data_type, is_nullable "
@@ -320,7 +329,8 @@ def _introspect_columns_duckdb(
                 "name": n,
                 "type": t,
                 "nullable": str(null).upper() in ("YES", "TRUE", "1"),
-                "pk": False,
+                "pk": n in pk_cols,
+                "editable": True,
             }
             for n, t, null in zip(names_col, types_col, nullable_col)
         ]
@@ -338,12 +348,89 @@ def _introspect_columns_duckdb(
                     "name": n,
                     "type": t,
                     "nullable": str(null).upper() in ("YES", "TRUE", "1"),
-                    "pk": False,
+                    "pk": n in pk_cols,
+                    "editable": True,
                 }
                 for n, t, null in zip(col_names, col_types, nullables)
             ]
         except Exception:
             return []
+
+
+# ---------------------------------------------------------------------------
+# Write-support introspection: row identity (PK / UNIQUE) + writability
+# ---------------------------------------------------------------------------
+
+
+def _table_type_duckdb(connector: DuckDBConnector, table_name: str) -> str | None:
+    """Return the information_schema ``table_type`` for *table_name*.
+
+    ``'BASE TABLE'`` for a native table (DML-capable), ``'VIEW'`` for a
+    read_parquet / object-store-backed view, ``None`` if not found.
+    """
+    plan = _make_plan(
+        f"SELECT table_type FROM information_schema.tables "
+        f"WHERE table_name = '{table_name}' LIMIT 1"
+    )
+    try:
+        d = connector.execute(plan).to_pydict()
+        types = d.get("table_type", [])
+        return str(types[0]).upper() if types else None
+    except Exception:
+        return None
+
+
+def _detect_row_identity_duckdb(
+    connector: DuckDBConnector, table_name: str
+) -> list[str]:
+    """Return the column list that uniquely identifies a row in *table_name*.
+
+    Preference order:
+    1. PRIMARY KEY columns (any arity).
+    2. A single-column UNIQUE constraint (usable as a stable row identity).
+
+    Returns ``[]`` when no usable identity exists — the table is then
+    non-writable (editing without a row identity is unsafe).  Only real
+    catalog constraints are consulted (``duckdb_constraints()``); a plain
+    table with no PK/UNIQUE returns ``[]`` even if every row happens to differ.
+    """
+    plan = _make_plan(
+        f"SELECT constraint_type, constraint_column_names "
+        f"FROM duckdb_constraints() WHERE table_name = '{table_name}'"
+    )
+    try:
+        d = connector.execute(plan).to_pydict()
+    except Exception:
+        return []
+    ctypes = d.get("constraint_type", [])
+    ccols = d.get("constraint_column_names", [])
+    pk: list[str] = []
+    unique_single: list[str] = []
+    for ctype, cols in zip(ctypes, ccols):
+        col_list = list(cols) if cols is not None else []
+        if str(ctype).upper() == "PRIMARY KEY" and col_list:
+            pk = col_list
+        elif str(ctype).upper() == "UNIQUE" and len(col_list) == 1 and not unique_single:
+            unique_single = col_list
+    if pk:
+        return pk
+    return unique_single
+
+
+def _writable_meta_duckdb(
+    connector: DuckDBConnector, table_name: str
+) -> tuple[bool, list[str]]:
+    """Return ``(writable, primary_key)`` for *table_name* on a DuckDB connector.
+
+    A table is writable ONLY when it is a native ``BASE TABLE`` (not a VIEW —
+    read_parquet / object-store views report VIEW) AND a row identity (PK or
+    single-column UNIQUE) can be determined.  ``primary_key`` is the identity
+    column list (empty when not writable).
+    """
+    if _table_type_duckdb(connector, table_name) != "BASE TABLE":
+        return False, []
+    identity = _detect_row_identity_duckdb(connector, table_name)
+    return (bool(identity), identity)
 
 
 # ---------------------------------------------------------------------------
@@ -433,7 +520,14 @@ async def list_demo_columns(
     if table not in known:
         raise AppError("not_found", f"Table {table!r} not found.", 404)
     columns = _introspect_columns_duckdb(connector, table)
-    return {"table": table, "columns": columns, "datastore_id": None}
+    # Demo connector is an in-memory parquet/Arrow view set — never writable.
+    return {
+        "table": table,
+        "columns": columns,
+        "datastore_id": None,
+        "writable": False,
+        "primary_key": [],
+    }
 
 
 @router.get("/data/{datastore_id}/tables/{table}/columns")
@@ -451,7 +545,20 @@ async def list_columns(
     if not _safe_identifier(table):
         raise AppError("invalid_identifier", f"Table name {table!r} is not a valid identifier.", 400)
     columns = _introspect_columns_duckdb(connector, table)
-    return {"table": table, "columns": columns, "datastore_id": datastore_id}
+    # Writability: only the real (non-demo) connector path can host native
+    # tables.  Demo / parquet-view tables report writable=False.
+    writable = False
+    primary_key: list[str] = []
+    from app.routes.connectors import DEMO_CONNECTOR_ID as _DEMO_CONNECTOR_ID
+    if datastore_id != _DEMO_CONNECTOR_ID:
+        writable, primary_key = _writable_meta_duckdb(connector, table)
+    return {
+        "table": table,
+        "columns": columns,
+        "datastore_id": datastore_id,
+        "writable": writable,
+        "primary_key": primary_key,
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -505,6 +612,312 @@ async def get_rows(
         ipc_stream_from_bytes(full_bytes),
         media_type=_ARROW_STREAM_MEDIA_TYPE,
     )
+
+
+# ---------------------------------------------------------------------------
+# WRITE support — PATCH / POST / DELETE rows (org-scoped, writable-gated)
+# ---------------------------------------------------------------------------
+#
+# Request / response contract (the frontend grid implements this EXACTLY):
+#
+#   PATCH  /data/{datastore_id}/tables/{table}/rows
+#       body:  {"pk": {col: val, ...}, "set": {col: val, ...}}
+#       200 →  {"row": {col: val, ...}, "updated": 1}
+#
+#   POST   /data/{datastore_id}/tables/{table}/rows
+#       body:  {"values": {col: val, ...}}
+#       201 →  {"row": {col: val, ...}, "inserted": 1}
+#
+#   DELETE /data/{datastore_id}/tables/{table}/rows
+#       body:  {"pk": {col: val, ...}}
+#       200 →  {"deleted": 1}
+#
+# Security gates (all three):
+#   - tenant: datastore must belong to caller's org (404 otherwise, no leak)
+#   - role:   require_writer_default (viewers → 403)
+#   - writable gate: non-writable table/connector → 409
+#   - identifiers (table + every column key): _safe_identifier allowlist AND
+#     membership in the table's introspected columns; PK keys must equal the
+#     table's actual row-identity columns → no raw identifier interpolation
+#   - values: bound parameters only ($N) — never string-interpolated
+#   - affected-row sanity: UPDATE/DELETE require the FULL PK; RETURNING / count
+#     must affect exactly 1 row (0 → 404, >1 → 409)
+
+
+def _quote_ident(name: str) -> str:
+    """Quote a SQL identifier for DuckDB after allowlist validation.
+
+    Callers MUST have already validated *name* via :func:`_safe_identifier`
+    AND confirmed it is a real introspected column/table; this only adds the
+    double-quoting that lets reserved words / mixed case round-trip safely.
+    """
+    return '"' + name.replace('"', '""') + '"'
+
+
+async def _resolve_writable_connector(
+    datastore_id: str,
+    table: str,
+    user: dict[str, Any],
+    repo: Repo,
+) -> tuple[DuckDBConnector, list[str]]:
+    """Resolve an org-scoped, write-capable connector for *table*.
+
+    Returns ``(connector, primary_key)``.  Raises:
+    - 404 if the datastore is missing / cross-org, or the table is unknown.
+    - 400 for a non-duckdb connector or an unsafe table identifier.
+    - 409 if the table is not writable (view / no row identity / demo).
+
+    Unlike the read path, on-disk DuckDB files are opened READ-WRITE here so
+    DML can be executed; the demo connector is rejected outright.
+    """
+    from app.routes.connectors import DEMO_CONNECTOR_ID as _DEMO_CONNECTOR_ID
+
+    if datastore_id == _DEMO_CONNECTOR_ID:
+        raise AppError(
+            "not_writable",
+            "The demo dataset is read-only and cannot be edited.",
+            409,
+        )
+
+    org_id = await _get_user_org(str(user["id"]), repo)
+    ds = await repo.get("datastores", org_id, datastore_id)
+    if ds is None:
+        raise AppError("not_found", f"Datastore {datastore_id!r} not found.", 404)
+
+    cfg: dict = dict(ds.get("config") or {})
+    ctype = cfg.get("connector_type") or cfg.get("type") or "duckdb"
+    if ctype != "duckdb":
+        raise AppError(
+            "not_supported",
+            f"Writes currently support duckdb connectors; got {ctype!r}.",
+            400,
+        )
+    if cfg.get("read_only"):
+        raise AppError(
+            "not_writable",
+            "This connector is configured read-only.",
+            409,
+        )
+
+    connector = _build_writable_duckdb_connector(cfg)
+    tables = _introspect_tables_duckdb(connector)
+    known = {t["name"] for t in tables}
+    if table not in known:
+        raise AppError(
+            "not_found",
+            f"Table {table!r} not found in datastore {datastore_id!r}.",
+            404,
+        )
+    if not _safe_identifier(table):
+        raise AppError(
+            "invalid_identifier",
+            f"Table name {table!r} is not a valid identifier.",
+            400,
+        )
+
+    writable, primary_key = _writable_meta_duckdb(connector, table)
+    if not writable:
+        raise AppError(
+            "not_writable",
+            f"Table {table!r} is not writable: it is a view or has no primary "
+            f"key / unique row identity.",
+            409,
+        )
+    return connector, primary_key
+
+
+def _build_writable_duckdb_connector(cfg: dict[str, Any]) -> DuckDBConnector:
+    """Build a DuckDB connector opened READ-WRITE for DML.
+
+    Only an on-disk DuckDB file (``database`` / ``path`` that is a real local
+    path, not ``:memory:`` / ``s3://``) yields a write-capable connector.  An
+    in-memory / view-only config produces a connector with no native tables,
+    so the writability gate downstream rejects every table on it.
+    """
+    db_path = cfg.get("database") or cfg.get("path")
+    if db_path and db_path != ":memory:" and not str(db_path).startswith("s3://"):
+        import duckdb as _duckdb
+
+        conn = _duckdb.connect(database=db_path, read_only=False)
+        return DuckDBConnector(conn)
+    # No writable local store: fall back to the standard (view) builder so the
+    # table list resolves; the writability gate will then reject the table.
+    return _build_duckdb_connector(cfg)
+
+
+def _validate_columns(
+    connector: DuckDBConnector,
+    table: str,
+    cols: list[str],
+) -> set[str]:
+    """Validate *cols* against the table's introspected columns.
+
+    Every name must pass :func:`_safe_identifier` AND be a real column.  Returns
+    the set of all real column names (so callers can do further checks).  Raises
+    400 on an unsafe or unknown identifier — no raw identifier ever reaches SQL
+    without surviving this allowlist.
+    """
+    real = {c["name"] for c in _introspect_columns_duckdb(connector, table)}
+    for c in cols:
+        if not isinstance(c, str) or not _safe_identifier(c):
+            raise AppError(
+                "invalid_identifier",
+                f"Column name {c!r} is not a valid identifier.",
+                400,
+            )
+        if c not in real:
+            raise AppError(
+                "unknown_column",
+                f"Column {c!r} is not a column of table {table!r}.",
+                400,
+            )
+    return real
+
+
+def _require_full_pk(provided: dict[str, Any], primary_key: list[str], table: str) -> None:
+    """Ensure *provided* PK dict supplies exactly the table's row-identity cols."""
+    if set(provided.keys()) != set(primary_key):
+        raise AppError(
+            "incomplete_pk",
+            f"The 'pk' must specify exactly the primary key columns "
+            f"{primary_key} for table {table!r}.",
+            400,
+        )
+
+
+@router.patch(
+    "/data/{datastore_id}/tables/{table}/rows",
+    dependencies=[Depends(require_writer_default)],
+)
+async def update_row(
+    datastore_id: str,
+    table: str,
+    body: dict[str, Any] = Body(...),
+    user: dict[str, Any] = Depends(current_user),
+    repo: Repo = Depends(get_repo),
+) -> dict[str, Any]:
+    """Update exactly one row identified by its full primary key.
+
+    Body ``{"pk": {col: val, ...}, "set": {col: val, ...}}``.
+    """
+    connector, primary_key = await _resolve_writable_connector(
+        datastore_id, table, user, repo
+    )
+    pk = body.get("pk")
+    set_vals = body.get("set")
+    if not isinstance(pk, dict) or not pk:
+        raise AppError("bad_request", "Body must include a non-empty 'pk' object.", 400)
+    if not isinstance(set_vals, dict) or not set_vals:
+        raise AppError("bad_request", "Body must include a non-empty 'set' object.", 400)
+
+    _validate_columns(connector, table, list(pk.keys()) + list(set_vals.keys()))
+    _require_full_pk(pk, primary_key, table)
+    # Disallow mutating a PK column via SET (row identity must stay stable).
+    pk_overlap = set(set_vals.keys()) & set(primary_key)
+    if pk_overlap:
+        raise AppError(
+            "pk_immutable",
+            f"Primary key columns {sorted(pk_overlap)} cannot be changed via 'set'.",
+            400,
+        )
+
+    set_cols = list(set_vals.keys())
+    pk_cols = list(pk.keys())
+    params: list[Any] = [set_vals[c] for c in set_cols] + [pk[c] for c in pk_cols]
+    set_clause = ", ".join(
+        f"{_quote_ident(c)} = ${i + 1}" for i, c in enumerate(set_cols)
+    )
+    where_clause = " AND ".join(
+        f"{_quote_ident(c)} = ${len(set_cols) + i + 1}" for i, c in enumerate(pk_cols)
+    )
+    sql = (
+        f"UPDATE {_quote_ident(table)} SET {set_clause} "
+        f"WHERE {where_clause} RETURNING *"
+    )
+    result = connector.execute(PhysicalPlan(sql=sql, params=params, cache_key="", rls_claims={}))
+    n = result.num_rows
+    if n == 0:
+        raise AppError("not_found", "No row matched the supplied primary key.", 404)
+    if n > 1:
+        raise AppError("ambiguous_pk", "More than one row matched the primary key.", 409)
+    rows = result.to_pylist()
+    return {"row": rows[0], "updated": 1}
+
+
+@router.post(
+    "/data/{datastore_id}/tables/{table}/rows",
+    status_code=201,
+    dependencies=[Depends(require_writer_default)],
+)
+async def insert_row(
+    datastore_id: str,
+    table: str,
+    body: dict[str, Any] = Body(...),
+    user: dict[str, Any] = Depends(current_user),
+    repo: Repo = Depends(get_repo),
+) -> dict[str, Any]:
+    """Insert one row.  Body ``{"values": {col: val, ...}}``; returns the new row."""
+    connector, _primary_key = await _resolve_writable_connector(
+        datastore_id, table, user, repo
+    )
+    values = body.get("values")
+    if not isinstance(values, dict) or not values:
+        raise AppError("bad_request", "Body must include a non-empty 'values' object.", 400)
+
+    _validate_columns(connector, table, list(values.keys()))
+    cols = list(values.keys())
+    params: list[Any] = [values[c] for c in cols]
+    col_clause = ", ".join(_quote_ident(c) for c in cols)
+    placeholders = ", ".join(f"${i + 1}" for i in range(len(cols)))
+    sql = (
+        f"INSERT INTO {_quote_ident(table)} ({col_clause}) "
+        f"VALUES ({placeholders}) RETURNING *"
+    )
+    result = connector.execute(PhysicalPlan(sql=sql, params=params, cache_key="", rls_claims={}))
+    rows = result.to_pylist()
+    return {"row": rows[0] if rows else None, "inserted": result.num_rows}
+
+
+@router.delete(
+    "/data/{datastore_id}/tables/{table}/rows",
+    dependencies=[Depends(require_writer_default)],
+)
+async def delete_row(
+    datastore_id: str,
+    table: str,
+    body: dict[str, Any] = Body(...),
+    user: dict[str, Any] = Depends(current_user),
+    repo: Repo = Depends(get_repo),
+) -> dict[str, Any]:
+    """Delete exactly one row identified by its full primary key.
+
+    Body ``{"pk": {col: val, ...}}``; returns ``{"deleted": 1}``.
+    """
+    connector, primary_key = await _resolve_writable_connector(
+        datastore_id, table, user, repo
+    )
+    pk = body.get("pk")
+    if not isinstance(pk, dict) or not pk:
+        raise AppError("bad_request", "Body must include a non-empty 'pk' object.", 400)
+
+    _validate_columns(connector, table, list(pk.keys()))
+    _require_full_pk(pk, primary_key, table)
+
+    pk_cols = list(pk.keys())
+    params: list[Any] = [pk[c] for c in pk_cols]
+    where_clause = " AND ".join(
+        f"{_quote_ident(c)} = ${i + 1}" for i, c in enumerate(pk_cols)
+    )
+    sql = (
+        f"DELETE FROM {_quote_ident(table)} WHERE {where_clause} RETURNING *"
+    )
+    result = connector.execute(PhysicalPlan(sql=sql, params=params, cache_key="", rls_claims={}))
+    n = result.num_rows
+    if n == 0:
+        raise AppError("not_found", "No row matched the supplied primary key.", 404)
+    if n > 1:
+        raise AppError("ambiguous_pk", "More than one row matched the primary key.", 409)
+    return {"deleted": 1}
 
 
 # ---------------------------------------------------------------------------
