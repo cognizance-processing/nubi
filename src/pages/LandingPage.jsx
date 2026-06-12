@@ -74,10 +74,8 @@ import {
   OVERAGE_NOTE,
 } from '../data/pricing.js'
 import { CONNECTOR_TYPES } from '../data/connectors.js'
-import {
-  fetchPricingData, recommendNubi, estimateWarehouseCu,
-  FALLBACK_COMPETITORS_WAREHOUSE, WAREHOUSE_CU_MULTIPLIER,
-} from '../lib/pricing.js'
+import { fetchPricingData } from '../lib/pricing.js'
+import LakehouseCalculator from '../components/marketing/LakehouseCalculator.jsx'
 import KernelInBrowser from '../components/illustrations/KernelInBrowser.jsx'
 import EdgeCache from '../components/illustrations/EdgeCache.jsx'
 import WebGLPerf from '../components/illustrations/WebGLPerf.jsx'
@@ -1179,138 +1177,6 @@ function LpOrchCalculator() {
   )
 }
 
-/** Landing-page warehouse cost calculator — hosted lakehouse vs standalone warehouses */
-function LpWarehouseCalculator() {
-  const [dataGb, setDataGb] = useState(100)
-  const [queries, setQueries] = useState(5000)
-  const [scanGb, setScanGb] = useState(2)
-
-  const whUsage = { data_gb: dataGb, queries_per_month: queries, avg_gb_scanned: scanGb }
-  const warehouseCu = estimateWarehouseCu(whUsage)
-  const rec = recommendNubi(
-    {
-      storage_gb: dataGb, compute_units: warehouseCu, embedded_sessions: 0,
-      agent_runs: 0, connectors: 1, flow_runs_per_month: 0,
-    },
-    null,
-    { minTierId: 'pro' },
-  )
-  const nubiCost = Math.round(rec.tier.usd_monthly + rec.overage_zar / 16.26)
-
-  const results = [
-    {
-      name: `Nubi ${rec.tier.name}`,
-      note: `Full BI platform included · warehouse scans at ${WAREHOUSE_CU_MULTIPLIER}× CU`,
-      isNubi: true,
-      cost: nubiCost,
-    },
-    ...FALLBACK_COMPETITORS_WAREHOUSE.map(c => ({
-      name: c.name,
-      note: c.note,
-      isNubi: false,
-      estimate: true,
-      cost: Math.round(c.model(whUsage)),
-    })),
-  ].sort((a, b) => a.cost - b.cost)
-  const max = Math.max(...results.map(r => r.cost), 1)
-  const outOfEnvelope = dataGb > 1000 || scanGb > 20
-
-  return (
-    <div>
-      {/* Inputs */}
-      <div className="grid md:grid-cols-3 gap-6 p-6 sm:p-8 border-b border-border bg-surface-2">
-        <div>
-          <div className="flex items-baseline justify-between mb-3">
-            <label htmlFor="lp-wh-data" className="text-sm font-semibold text-fg">Dataset (GB)</label>
-            <span className="font-display text-xl font-bold text-primary">{fmtNum(dataGb)}</span>
-          </div>
-          <input
-            id="lp-wh-data" type="range" min="10" max="2000" step="10" value={dataGb}
-            onChange={e => setDataGb(Number(e.target.value))}
-            className="lp-range w-full" aria-label="Dataset size in GB"
-          />
-          <div className="flex justify-between text-[11px] text-muted mt-1.5"><span>10 GB</span><span>2 TB</span></div>
-        </div>
-        <div>
-          <div className="flex items-baseline justify-between mb-3">
-            <label htmlFor="lp-wh-queries" className="text-sm font-semibold text-fg">Big queries / mo</label>
-            <span className="font-display text-xl font-bold text-primary">{fmtNum(queries)}</span>
-          </div>
-          <input
-            id="lp-wh-queries" type="range" min="100" max="50000" step="100" value={queries}
-            onChange={e => setQueries(Number(e.target.value))}
-            className="lp-range w-full" aria-label="Warehouse queries per month"
-          />
-          <div className="flex justify-between text-[11px] text-muted mt-1.5"><span>100</span><span>50k</span></div>
-        </div>
-        <div>
-          <div className="flex items-baseline justify-between mb-3">
-            <label htmlFor="lp-wh-scan" className="text-sm font-semibold text-fg">Scanned / query (GB)</label>
-            <span className="font-display text-xl font-bold text-primary">{scanGb}</span>
-          </div>
-          <input
-            id="lp-wh-scan" type="range" min="0.5" max="50" step="0.5" value={scanGb}
-            onChange={e => setScanGb(Number(e.target.value))}
-            className="lp-range w-full" aria-label="Average GB scanned per query"
-          />
-          <div className="flex justify-between text-[11px] text-muted mt-1.5"><span>0.5</span><span>50</span></div>
-        </div>
-      </div>
-
-      {/* Headline — monthly (warehouse vendors quote monthly) */}
-      <div className="flex flex-wrap items-center justify-center gap-2 px-6 py-4 text-center bg-brand-teal/[0.06] border-b border-border">
-        <TrendingDown size={18} className="text-brand-teal" />
-        <span className="text-sm sm:text-base text-fg">
-          Hosted warehouse ≈ <strong className="text-brand-teal font-bold">{fmtUSD(nubiCost)}/mo</strong>
-          {' '}— and that price includes the whole BI platform, not just the engine.
-        </span>
-      </div>
-
-      {/* Honest out-of-envelope note */}
-      {outOfEnvelope && (
-        <div className="px-6 py-3 text-xs sm:text-sm bg-amber-50 dark:bg-amber-900/20 border-b border-amber-200 dark:border-amber-800 text-amber-800 dark:text-amber-200">
-          <strong>Honest note:</strong> at this scale a dedicated warehouse is the better tool — Nubi
-          runs each query on one machine. Connect your own BigQuery or ClickHouse as a datastore and
-          Nubi pushes queries down to it.
-        </div>
-      )}
-
-      {/* Bars */}
-      <div className="p-6 sm:p-8 flex flex-col gap-3">
-        {results.map(r => (
-          <div key={r.name} className="grid grid-cols-[120px_1fr_auto] sm:grid-cols-[180px_1fr_auto] items-center gap-3">
-            <div className="min-w-0">
-              <div className={`text-sm font-semibold truncate ${r.isNubi ? 'text-brand-teal' : 'text-fg'}`}>
-                {r.isNubi && <Star size={12} className="inline mr-1 -mt-0.5 text-brand-teal" strokeWidth={2.5} />}
-                {r.name}{r.estimate ? <sup className="text-muted">†</sup> : null}
-              </div>
-              <div className="text-[11px] text-muted truncate hidden sm:block">{r.note}</div>
-            </div>
-            <div className="h-7 rounded-md bg-surface-2 overflow-hidden">
-              <div
-                className={`h-full rounded-md ${r.isNubi ? '' : 'bg-brand-blue/25'}`}
-                style={{
-                  width: `${Math.max(2, (r.cost / max) * 100)}%`,
-                  background: r.isNubi ? 'linear-gradient(90deg, #2456a6, #17b3a3)' : undefined,
-                }}
-              />
-            </div>
-            <div className={`text-sm font-bold tabular-nums text-right w-16 ${r.isNubi ? 'text-brand-teal' : 'text-fg'}`}>
-              {fmtUSD(r.cost)}
-            </div>
-          </div>
-        ))}
-      </div>
-      <p className="px-6 sm:px-8 pb-6 text-xs text-muted opacity-70 leading-relaxed">
-        Monthly estimates. † Vendor figures assume well-tuned auto-idle / auto-suspend (defaults cost
-        more) and include free tiers; they are warehouse-only — no dashboards, embedding, or flows —
-        but genuinely outperform Nubi&rsquo;s single-machine pool on multi-TB scans. Directional, not
-        quotes — verify with the vendor.
-      </p>
-    </div>
-  )
-}
-
 /**
  * LpPricingSection — full pricing section for the landing page.
  *
@@ -1524,16 +1390,15 @@ function LpPricingSection() {
             </CalcShell>
           </div>
 
-          {/* Calculator 3 — warehouse */}
+          {/* Calculator 3 — lakehouse data cost (shared with /pricing) */}
           <div className="mt-10">
             <p className="text-sm text-muted max-w-2xl mb-4">
-              The lakehouse (Pro+) runs big-table queries on dedicated machines, billed as ordinary
-              compute units at {WAREHOUSE_CU_MULTIPLIER}× — no per-TB scan fees, no always-on cluster.
-              Compare against running a standalone warehouse for the same workload.
+              The lakehouse stores your data as open Parquet on object storage and bills{' '}
+              <strong className="text-fg font-semibold">$5/TiB scanned</strong> (first 1 TiB/month
+              free) plus <strong className="text-fg font-semibold">$0.02/GB/month</strong> storage —
+              no always-on cluster, and dashboard views scan zero bytes.
             </p>
-            <CalcShell index="03" slug="warehouse-cost">
-              <LpWarehouseCalculator />
-            </CalcShell>
+            <LakehouseCalculator />
           </div>
         </div>
       </div>
