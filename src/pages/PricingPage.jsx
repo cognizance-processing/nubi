@@ -33,6 +33,7 @@ import {
 } from '../lib/pricing.js'
 import MarketingStyles from '../components/marketing/MarketingStyles.jsx'
 import useReveal from '../components/marketing/useReveal.js'
+import CalcShell from '../components/marketing/CalcShell.jsx'
 
 const fmtUSD = (n) => {
   if (!n) return '$0'
@@ -153,8 +154,8 @@ function TierCard({ tier, idx }) {
     </div>
   )
 
-  // 6-col bento at lg (3 cards up top, 2 centered below); 5-up only at 2xl.
-  const gridPlace = `lg:col-span-2 2xl:col-span-1 ${idx === 3 ? 'lg:col-start-2 2xl:col-start-auto' : ''}`
+  // Equal column per tier — the highlighted card pops via translate, not size.
+  const gridPlace = ''
 
   if (hi) {
     return (
@@ -234,33 +235,6 @@ function ComparisonTable({ rows, columns }) {
   )
 }
 
-/* ─────────────────────────────────────────────────────────────────────────── */
-/*  Calculator shell — terminal-framed card shared by all three calculators    */
-/* ─────────────────────────────────────────────────────────────────────────── */
-
-function CalcShell({ index, slug, children }) {
-  return (
-    <div className="rounded-2xl sm:rounded-3xl border border-border bg-surface shadow-[0_30px_70px_-32px_rgba(27,35,99,0.45)] overflow-hidden">
-      {/* always-dark terminal strip */}
-      <div className="flex items-center justify-between gap-3 px-4 sm:px-7 py-2.5 bg-[#0d1430] border-b border-black/40">
-        <span className="flex items-center gap-3 min-w-0">
-          <span className="flex gap-1.5 shrink-0" aria-hidden="true">
-            <span className="w-2.5 h-2.5 rounded-full bg-[#f4726f]/80" />
-            <span className="w-2.5 h-2.5 rounded-full bg-[#f5bd4f]/80" />
-            <span className="w-2.5 h-2.5 rounded-full bg-[#61c554]/80" />
-          </span>
-          <span className="font-mono text-[11px] text-slate-300 truncate">
-            calc/{index} · {slug}
-          </span>
-        </span>
-        <span className="hidden sm:inline font-mono text-[9.5px] text-teal-300/90 border border-teal-400/25 bg-teal-400/[0.08] rounded px-1.5 py-0.5 whitespace-nowrap">
-          live estimate
-        </span>
-      </div>
-      {children}
-    </div>
-  )
-}
 
 /* Slider input row — mono value chip + lp-range slider */
 function SliderField({ id, label, display, min, max, step, value, onChange, lo, hi, ariaLabel }) {
@@ -907,9 +881,9 @@ export default function PricingPage() {
                 governance. Never for people.
               </p>
             </Reveal>
-            {/* 3-col on laptops (lg–xl); only go 5-col at 2xl WITH a widened container,
-                so cards never get narrower as the screen grows (D responsive fix). */}
-            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-6 2xl:grid-cols-5 gap-5 items-start pt-6 lg:pt-8">
+            {/* One equal-width row from xl up (popular tier pops above the line);
+                2-up on tablets, stacked on mobile. */}
+            <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-5 gap-5 items-stretch pt-6 lg:pt-8">
               {displayTiers.map((t, i) => <TierCard key={t.id} tier={t} idx={i} />)}
             </div>
             <p className="mt-10 mx-auto max-w-3xl text-center text-sm text-muted leading-relaxed">

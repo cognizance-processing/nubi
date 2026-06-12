@@ -500,10 +500,10 @@ const ALL_COL_HEADERS = [
   { label: 'Platform', width: 150 },
   { label: 'Pricing Model', width: 160 },
   { label: 'Entry Price', width: 170 },
-  { label: 'Seat / Viewer Model', width: 200 },
+  { label: 'Seat / Viewer Model', width: 195 },
   { label: 'Embedding', width: 200 },
   { label: 'Self-Host', width: 140 },
-  { label: 'Where this tool is genuinely stronger', width: 200 },
+  { label: 'Where this tool is genuinely stronger', width: 195 },
 ]
 
 /** Category divider row inside the all-competitors table. */
@@ -595,7 +595,7 @@ function AllCompetitorsTable() {
 
   return (
     <div className="cp-table-shell overflow-x-auto overscroll-x-contain rounded-2xl border border-border">
-      <table className="border-collapse" style={{ minWidth: 1220, width: '100%' }}>
+      <table className="border-collapse" style={{ minWidth: 1100, width: '100%' }}>
         <thead className="sticky top-0 z-20">
           <tr>
             {ALL_COL_HEADERS.map((col, i) => (
@@ -758,7 +758,14 @@ function FullMatrix() {
   const cols = MATRIX_COLUMNS
 
   return (
-    <div className="cp-table-shell overflow-x-auto overscroll-x-contain rounded-2xl border border-border">
+    <div>
+      {/* The matrix is intentionally wider than any viewport (14 tools, sticky
+          first column) — say so, so the scrollbar reads as designed. */}
+      <p className="flex items-center justify-end gap-1.5 font-mono text-[10px] uppercase tracking-[0.14em] text-muted mb-2">
+        {cols.length} tools · scroll horizontally
+        <ArrowRight size={11} strokeWidth={2.5} aria-hidden="true" />
+      </p>
+      <div className="cp-table-shell overflow-x-auto overscroll-x-contain rounded-2xl border border-border">
       <table className="border-collapse" style={{ minWidth: 1400, width: '100%' }}>
         <thead className="sticky top-0 z-20">
           <tr>
@@ -836,6 +843,7 @@ function FullMatrix() {
           ))}
         </tbody>
       </table>
+      </div>
     </div>
   )
 }

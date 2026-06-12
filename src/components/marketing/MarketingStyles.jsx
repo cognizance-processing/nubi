@@ -166,8 +166,9 @@ const MarketingStyles = () => (
     .lp-compare-row:nth-child(even) { background: rgba(36, 86, 166, 0.04); }
     .lp-compare-row:hover           { background: rgba(36, 86, 166, 0.08); }
 
-    /* ── Smooth scroll for the whole page ── */
-    html { scroll-behavior: smooth; }
+    /* NOTE: no global html smooth-scroll rule — it animates the browser's
+       scroll restoration on every route change (visible jank at the top bar).
+       Anchor links smooth-scroll programmatically instead. */
 
     /* ── Compare table — mobile horizontal scroll ── */
     .lp-compare-table-wrap {

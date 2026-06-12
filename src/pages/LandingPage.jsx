@@ -28,6 +28,7 @@
 import { useState, useEffect, useRef } from 'react'
 import MarketingStyles from '../components/marketing/MarketingStyles.jsx'
 import useReveal from '../components/marketing/useReveal.js'
+import CalcShell from '../components/marketing/CalcShell.jsx'
 import { Link } from 'react-router-dom'
 import {
   ArrowRight,
@@ -993,7 +994,7 @@ function LpCostCalculator() {
   const multiple = nubi && nubi.cost > 0 ? cheapestComp / nubi.cost : null
 
   return (
-    <div className="rounded-2xl border border-border bg-surface shadow-sm overflow-hidden">
+    <div>
       {/* Inputs */}
       <div className="grid md:grid-cols-2 gap-6 p-6 sm:p-8 border-b border-border bg-surface-2">
         <div>
@@ -1100,7 +1101,7 @@ function LpOrchCalculator() {
   const savings = Math.max(0, cheapestComp - (nubi?.cost ?? 0))
 
   return (
-    <div className="rounded-2xl border border-border bg-surface shadow-sm overflow-hidden">
+    <div>
       {/* Inputs */}
       <div className="grid md:grid-cols-2 gap-6 p-6 sm:p-8 border-b border-border bg-surface-2">
         <div>
@@ -1215,7 +1216,7 @@ function LpWarehouseCalculator() {
   const outOfEnvelope = dataGb > 1000 || scanGb > 20
 
   return (
-    <div className="rounded-2xl border border-border bg-surface shadow-sm overflow-hidden">
+    <div>
       {/* Inputs */}
       <div className="grid md:grid-cols-3 gap-6 p-6 sm:p-8 border-b border-border bg-surface-2">
         <div>
@@ -1508,34 +1509,31 @@ function LpPricingSection() {
           </div>
 
           {/* Calculator 1 — BI viewer tax */}
-          <p className="text-[11px] font-semibold tracking-widest uppercase text-muted mb-2">
-            Calculator 1 · BI viewer cost
-          </p>
-          <LpCostCalculator />
+          <CalcShell index="01" slug="bi-viewer-cost">
+            <LpCostCalculator />
+          </CalcShell>
 
           {/* Calculator 2 — orchestration */}
           <div className="mt-10">
-            <p className="text-[11px] font-semibold tracking-widest uppercase text-muted mb-2">
-              Calculator 2 · Orchestration cost
-            </p>
             <p className="text-sm text-muted max-w-2xl mb-4">
               Flows is built in. A standalone orchestrator (Prefect, Microsoft Fabric, MWAA,
               self-host Airflow) is pure added cost — and most bill per environment.
             </p>
-            <LpOrchCalculator />
+            <CalcShell index="02" slug="orchestration-cost">
+              <LpOrchCalculator />
+            </CalcShell>
           </div>
 
           {/* Calculator 3 — warehouse */}
           <div className="mt-10">
-            <p className="text-[11px] font-semibold tracking-widest uppercase text-muted mb-2">
-              Calculator 3 · Warehouse cost
-            </p>
             <p className="text-sm text-muted max-w-2xl mb-4">
               The lakehouse (Pro+) runs big-table queries on dedicated machines, billed as ordinary
               compute units at {WAREHOUSE_CU_MULTIPLIER}× — no per-TB scan fees, no always-on cluster.
               Compare against running a standalone warehouse for the same workload.
             </p>
-            <LpWarehouseCalculator />
+            <CalcShell index="03" slug="warehouse-cost">
+              <LpWarehouseCalculator />
+            </CalcShell>
           </div>
         </div>
       </div>

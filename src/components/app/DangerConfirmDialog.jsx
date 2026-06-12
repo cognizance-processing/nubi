@@ -14,6 +14,7 @@
  *                                (first few are listed, the rest summarised)
  *   count        {number}        total number of items (defaults to items.length)
  *   itemNoun     {string}        e.g. 'dashboard' — used in the summary line
+ *   itemNounPlural {string}      irregular plural (default: itemNoun + 's')
  *   confirmLabel {string}        label for the red button (default 'Delete')
  *   loading      {boolean}       true while the deletes are in flight
  *   error        {string|null}   error text shown above the footer
@@ -51,6 +52,7 @@ export default function DangerConfirmDialog({
   items = [],
   count,
   itemNoun = 'item',
+  itemNounPlural,
   confirmLabel = 'Delete',
   loading = false,
   error = null,
@@ -140,7 +142,8 @@ export default function DangerConfirmDialog({
             <div className="rounded-xl border border-red-200 dark:border-red-900/50 bg-red-50 dark:bg-red-900/10 px-4 py-3 space-y-2">
               <p className="text-sm font-medium text-red-700 dark:text-red-400">
                 This will permanently delete{' '}
-                <strong>{total}</strong> {itemNoun}{total === 1 ? '' : 's'}:
+                <strong>{total}</strong>{' '}
+                {total === 1 ? itemNoun : (itemNounPlural ?? `${itemNoun}s`)}:
               </p>
               <ul className="space-y-1">
                 {listed.map((name, i) => (

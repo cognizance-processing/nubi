@@ -34,9 +34,12 @@ import {
   Plus,
   Search,
   RefreshCw,
+  CheckCircle2,
+  CheckSquare,
   ChevronDown,
   ChevronRight,
   Tag,
+  ListChecks,
   Loader2,
   AlertCircle,
   Database,
@@ -45,10 +48,13 @@ import {
   Boxes,
   PanelRightClose,
   History,
+  Square,
+  Trash2,
 } from 'lucide-react'
 
-import { get, listRegisteredQueries, registerQuery } from '../../lib/api.js'
+import { del, get, listRegisteredQueries, registerQuery } from '../../lib/api.js'
 import VersionHistoryDialog from '../../components/app/VersionHistoryDialog.jsx'
+import DangerConfirmDialog from '../../components/app/DangerConfirmDialog.jsx'
 import { useEnv } from '../../contexts/EnvContext.jsx'
 import { useProject } from '../../contexts/ProjectContext.jsx'
 import { useCanWrite } from '../../contexts/OrgContext.jsx'
@@ -75,23 +81,41 @@ function newAdHocQuery() {
 // QueryListItem — single entry in the left rail
 // ---------------------------------------------------------------------------
 
-function QueryListItem({ query, isActive, onClick, onHistory, strictEnv }) {
+function QueryListItem({ query, isActive, onClick, onHistory, strictEnv, manageMode = false, checked = false, onToggleCheck }) {
   const hasParams = Array.isArray(query.params) && query.params.length > 0
   const isSaved = Boolean(query.id) && !query.isNew
+
+  // In manage (multi-select) mode the whole row toggles its checkbox instead
+  // of opening the query, and the leading icon becomes the checkbox.
+  const CheckIcon = checked ? CheckSquare : Square
 
   return (
     <div className="relative group">
       <button
-        onClick={() => onClick(query)}
+        onClick={() => (manageMode ? onToggleCheck?.(query) : onClick(query))}
+        data-testid={manageMode ? 'query-manage-row' : undefined}
+        data-query-id={query.id ?? undefined}
+        aria-pressed={manageMode ? checked : undefined}
         className={[
           'w-full text-left px-3 py-2.5 rounded-lg transition-all',
-          isSaved && onHistory ? 'pr-9' : '',
-          isActive
+          isSaved && onHistory && !manageMode ? 'pr-9' : '',
+          manageMode && checked
+            ? 'bg-red-500/5 border border-red-500/30 text-fg'
+            : isActive && !manageMode
             ? 'bg-primary/10 border border-primary/20 text-fg'
             : 'hover:bg-surface-2 border border-transparent text-fg/80 hover:text-fg',
         ].join(' ')}
       >
         <div className="flex items-start gap-2 min-w-0">
+          {manageMode ? (
+            <CheckIcon
+              size={13}
+              className={[
+                'shrink-0 mt-0.5',
+                checked ? 'text-red-500' : 'text-muted group-hover:text-fg/60',
+              ].join(' ')}
+            />
+          ) : (
           <FileCode2
             size={13}
             className={[
@@ -99,6 +123,7 @@ function QueryListItem({ query, isActive, onClick, onHistory, strictEnv }) {
               isActive ? 'text-primary' : 'text-muted group-hover:text-fg/60',
             ].join(' ')}
           />
+          )}
           <div className="min-w-0 flex-1">
             <p className="text-xs font-medium truncate leading-tight">
               {query.name ?? query.id}
@@ -146,7 +171,7 @@ function QueryListItem({ query, isActive, onClick, onHistory, strictEnv }) {
       </button>
 
       {/* Version history — saved (registered) queries only */}
-      {isSaved && onHistory && (
+      {isSaved && onHistory && !manageMode && (
         <button
           onClick={(e) => { e.stopPropagation(); onHistory(query) }}
           title="Version history"
@@ -165,7 +190,14 @@ function QueryListItem({ query, isActive, onClick, onHistory, strictEnv }) {
 // blend, drafts + registry list). Header/collapse chrome lives in the page.
 // ---------------------------------------------------------------------------
 
-function QueriesPanel({ queries, localQueries, activeId, loading, onSelect, onNewQuery, onRefresh, searchQuery, onSearchChange, canWrite, onHistory, strictEnv }) {
+function QueriesPanel({
+  queries, localQueries, activeId, loading, onSelect, onNewQuery, onRefresh,
+  searchQuery, onSearchChange, canWrite, onHistory, strictEnv,
+  // Manage (multi-select bulk delete) mode
+  manageMode = false, onToggleManage,
+  selectedIds, onToggleSelect, onSelectAll, onClearSelection,
+  onDeleteSelected, onDeleteAll, bulkNotice,
+}) {
   const allItems = [
     ...localQueries,
     ...queries,
@@ -228,7 +260,84 @@ function QueriesPanel({ queries, localQueries, activeId, loading, onSelect, onNe
         >
           <RefreshCw size={12} className={loading ? 'animate-spin' : ''} />
         </button>
+        {/* Manage (multi-select) toggle — writers only */}
+        {canWrite && onToggleManage && (
+          <button
+            onClick={onToggleManage}
+            data-testid="queries-manage-toggle"
+            aria-pressed={manageMode}
+            title={manageMode ? 'Exit manage mode' : 'Manage queries (multi-select)'}
+            className={[
+              'h-7 w-7 shrink-0 flex items-center justify-center rounded-lg border transition-colors',
+              manageMode
+                ? 'bg-primary text-primary-fg border-primary'
+                : 'border-border bg-surface text-muted hover:text-fg hover:bg-surface-2',
+            ].join(' ')}
+          >
+            <ListChecks size={12} />
+          </button>
+        )}
       </div>
+
+      {/* Bulk-delete success notice */}
+      {bulkNotice && (
+        <div
+          data-testid="queries-bulk-notice"
+          role="status"
+          className="shrink-0 mx-2 mb-2 flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg border border-emerald-500/30 bg-emerald-500/10 text-[11px] text-emerald-700 dark:text-emerald-400"
+        >
+          <CheckCircle2 size={12} className="shrink-0" />
+          <span className="min-w-0 truncate">{bulkNotice}</span>
+        </div>
+      )}
+
+      {/* Selection action bar — manage mode only */}
+      {manageMode && canWrite && (
+        <div
+          data-testid="queries-selection-bar"
+          className="shrink-0 mx-2 mb-2 px-2.5 py-2 rounded-lg border border-primary/30 bg-primary/5 space-y-1.5"
+        >
+          <div className="flex items-center gap-2 text-[11px]">
+            <span className="font-medium text-fg">{selectedIds?.size ?? 0} selected</span>
+            <button
+              onClick={() => onSelectAll?.(registeredFiltered.map(q => q.id))}
+              disabled={registeredFiltered.length === 0}
+              className="text-primary hover:underline disabled:opacity-40 disabled:no-underline"
+            >
+              Select all ({registeredFiltered.length})
+            </button>
+            {(selectedIds?.size ?? 0) > 0 && (
+              <button
+                onClick={onClearSelection}
+                className="text-muted hover:text-fg transition-colors"
+              >
+                Clear
+              </button>
+            )}
+          </div>
+          <div className="flex items-center gap-1.5">
+            <button
+              data-testid="queries-delete-selected"
+              onClick={onDeleteSelected}
+              disabled={(selectedIds?.size ?? 0) === 0}
+              className="flex-1 h-7 flex items-center justify-center gap-1 rounded-lg bg-red-600 text-white text-[11px] font-semibold hover:bg-red-700 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+            >
+              <Trash2 size={11} />
+              Delete {(selectedIds?.size ?? 0) > 0 ? selectedIds.size : ''}
+            </button>
+            <button
+              data-testid="queries-delete-all"
+              onClick={() => onDeleteAll?.(registeredFiltered)}
+              disabled={registeredFiltered.length === 0}
+              title={searchQuery ? 'Delete all queries matching the search' : 'Delete all registered queries'}
+              className="flex-1 h-7 flex items-center justify-center gap-1 rounded-lg border border-red-500/30 text-red-600 dark:text-red-400 text-[11px] font-medium hover:bg-red-500/10 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+            >
+              <Trash2 size={11} />
+              Delete all{searchQuery ? ' matching' : ''}
+            </button>
+          </div>
+        </div>
+      )}
 
       {/* Query list */}
       <div className="flex-1 overflow-y-auto px-2 pb-2 space-y-0.5">
@@ -275,6 +384,9 @@ function QueriesPanel({ queries, localQueries, activeId, loading, onSelect, onNe
                 onClick={() => onSelect(q)}
                 onHistory={onHistory}
                 strictEnv={strictEnv}
+                manageMode={manageMode}
+                checked={Boolean(selectedIds?.has(q.id))}
+                onToggleCheck={() => onToggleSelect?.(q.id)}
               />
             ))}
           </div>
@@ -531,6 +643,98 @@ export default function QueriesPage() {
     setActiveQuery(upgraded)
   }, [])
 
+  // ── Manage mode (multi-select bulk delete of registered queries) ────────
+  const [manageMode, setManageMode] = useState(false)
+  const [selectedIds, setSelectedIds] = useState(() => new Set())
+  const [bulkDialog, setBulkDialog] = useState(null) // { ids, names, all } | null
+  const [bulkBusy, setBulkBusy] = useState(false)
+  const [bulkError, setBulkError] = useState(null)
+  const [bulkNotice, setBulkNotice] = useState(null)
+  const noticeTimer = useRef(null)
+  useEffect(() => () => clearTimeout(noticeTimer.current), [])
+
+  const handleToggleManage = useCallback(() => {
+    setManageMode(prev => {
+      if (prev) setSelectedIds(new Set()) // leaving manage mode clears selection
+      return !prev
+    })
+  }, [])
+
+  const handleToggleSelect = useCallback((id) => {
+    setSelectedIds(prev => {
+      const next = new Set(prev)
+      if (next.has(id)) next.delete(id)
+      else next.add(id)
+      return next
+    })
+  }, [])
+
+  const handleSelectAll = useCallback((ids) => {
+    setSelectedIds(prev =>
+      prev.size === ids.length ? new Set() : new Set(ids)
+    )
+  }, [])
+
+  const handleClearSelection = useCallback(() => setSelectedIds(new Set()), [])
+
+  /** Open the confirm dialog for the current selection. */
+  const handleDeleteSelected = useCallback(() => {
+    const rows = registeredQueries.filter(q => selectedIds.has(q.id))
+    if (rows.length === 0) return
+    setBulkError(null)
+    setBulkDialog({
+      ids: rows.map(q => q.id),
+      names: rows.map(q => q.name ?? q.id),
+      all: false,
+    })
+  }, [registeredQueries, selectedIds])
+
+  /** Open the confirm dialog for ALL registered queries matching the search. */
+  const handleDeleteAll = useCallback((rows) => {
+    if (!Array.isArray(rows) || rows.length === 0) return
+    setBulkError(null)
+    setBulkDialog({
+      ids: rows.map(q => q.id),
+      names: rows.map(q => q.name ?? q.id),
+      all: true,
+    })
+  }, [])
+
+  /** Run the bulk delete — loops the per-query DELETE /queries/{id} endpoint. */
+  const handleBulkConfirm = useCallback(async () => {
+    if (!bulkDialog || bulkBusy) return
+    setBulkBusy(true)
+    setBulkError(null)
+    let failed = 0
+    for (const id of bulkDialog.ids) {
+      try {
+        await del(`/queries/${id}`)
+      } catch (err) {
+        console.error(`Delete failed for query ${id}:`, err)
+        failed++
+      }
+    }
+    const deleted = bulkDialog.ids.length - failed
+    setBulkBusy(false)
+    setSelectedIds(new Set())
+    // If the active query was just deleted, drop it so loadRegistry can
+    // auto-select the first remaining draft instead.
+    if (activeQuery?.id && bulkDialog.ids.includes(activeQuery.id)) {
+      setActiveQuery(null)
+    }
+    await loadRegistry()
+    if (failed > 0) {
+      setBulkError(
+        `Deleted ${deleted} of ${bulkDialog.ids.length} queries — ${failed} failed. The list has been refreshed.`
+      )
+    } else {
+      setBulkDialog(null)
+      clearTimeout(noticeTimer.current)
+      setBulkNotice(`Deleted ${deleted} quer${deleted === 1 ? 'y' : 'ies'}.`)
+      noticeTimer.current = setTimeout(() => setBulkNotice(null), 5000)
+    }
+  }, [bulkDialog, bulkBusy, activeQuery, loadRegistry])
+
   // ── Version history (kind='query') — opened from a list-row action ──────
   const [historyQuery, setHistoryQuery] = useState(null)
   // Bumped after a restore of the ACTIVE query so the workspace remounts and
@@ -786,9 +990,41 @@ export default function QueriesPage() {
               canWrite={canWrite}
               onHistory={setHistoryQuery}
               strictEnv={strictEnv}
+              manageMode={manageMode}
+              onToggleManage={handleToggleManage}
+              selectedIds={selectedIds}
+              onToggleSelect={handleToggleSelect}
+              onSelectAll={handleSelectAll}
+              onClearSelection={handleClearSelection}
+              onDeleteSelected={handleDeleteSelected}
+              onDeleteAll={handleDeleteAll}
+              bulkNotice={bulkNotice}
             />
           </div>
         </aside>
+      )}
+
+      {/* ── Bulk-delete confirmation — random-code gate ──────────────────── */}
+      {bulkDialog && (
+        <DangerConfirmDialog
+          title={bulkDialog.all
+            ? `Delete ALL ${bulkDialog.ids.length} quer${bulkDialog.ids.length === 1 ? 'y' : 'ies'}`
+            : `Delete ${bulkDialog.ids.length} quer${bulkDialog.ids.length === 1 ? 'y' : 'ies'}`}
+          description={bulkDialog.all
+            ? (railSearch
+              ? `You are about to wipe every registered query matching “${railSearch}”. Dashboards, embeds and flows that reference these queries will break.`
+              : 'You are about to wipe EVERY registered query in this project. Dashboards, embeds and flows that reference these queries will break.')
+            : 'The selected queries will be permanently removed from the registry. Dashboards, embeds and flows that reference them will break.'}
+          items={bulkDialog.names}
+          count={bulkDialog.ids.length}
+          itemNoun="query"
+          itemNounPlural="queries"
+          confirmLabel={`Delete ${bulkDialog.ids.length} quer${bulkDialog.ids.length === 1 ? 'y' : 'ies'}`}
+          loading={bulkBusy}
+          error={bulkError}
+          onCancel={() => { if (!bulkBusy) { setBulkDialog(null); setBulkError(null) } }}
+          onConfirm={handleBulkConfirm}
+        />
       )}
 
       {/* ── Version history (kind='query', opened from a list row) ───────── */}

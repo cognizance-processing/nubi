@@ -39,13 +39,16 @@ export default function NewProjectDialog({ open, onClose }) {
   const busy = phase !== null
 
   // Reset the form every time the dialog opens, then focus the name input.
+  // rAF keeps the setState calls out of the synchronous effect body.
   useEffect(() => {
     if (!open) return
-    setName('')
-    setSeedDemo(false)
-    setPhase(null)
-    setError(null)
-    const raf = requestAnimationFrame(() => inputRef.current?.focus())
+    const raf = requestAnimationFrame(() => {
+      setName('')
+      setSeedDemo(false)
+      setPhase(null)
+      setError(null)
+      inputRef.current?.focus()
+    })
     return () => cancelAnimationFrame(raf)
   }, [open])
 
