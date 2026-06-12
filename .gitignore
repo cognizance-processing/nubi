@@ -59,3 +59,6 @@ backend/seed_data/parquet/
 # Vite's dependency scan — also excluded in vite.config.js optimizeDeps.entries).
 playwright-report/
 test-results/
+
+# Local managed-lakehouse storage (demo .duckdb + parquet)
+.local-lake/
