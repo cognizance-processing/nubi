@@ -143,8 +143,22 @@ export function OrgProvider({ children }) {
     [orgs],
   )
 
+  /**
+   * Create a new org (current user becomes owner) and switch to it.
+   * POST /orgs {name} → {id, name, role}
+   */
+  const createOrg = useCallback(async (name) => {
+    const org = await api.post('/orgs', { name })
+    setOrgs(prev => [...prev, org])
+    setActiveOrgState(org)
+    _applyActiveOrg(org)
+    saveOrgId(org.id)
+    setHasNoOrgs(false)
+    return org
+  }, [])
+
   return (
-    <OrgContext.Provider value={{ orgs, activeOrg, setActiveOrg, loading, hasNoOrgs }}>
+    <OrgContext.Provider value={{ orgs, activeOrg, setActiveOrg, createOrg, loading, hasNoOrgs }}>
       {children}
     </OrgContext.Provider>
   )

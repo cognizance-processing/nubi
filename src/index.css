@@ -69,6 +69,16 @@
     -moz-osx-font-smoothing: grayscale;
   }
 
+  /* ── Horizontal-overflow guard ────────────────────────────────────────────
+     Phantom horizontal scroll appears on systems with classic (space-taking)
+     scrollbars when any element overhangs the viewport by a few px — and a
+     horizontally-dragged page slides the sticky top bar out of position.
+     `clip` clamps it at the root without creating a new scroll container. */
+  html,
+  body {
+    overflow-x: clip;
+  }
+
   /* ── Base body styles — use semantic tokens ──────────────────────────────── */
   body {
     background-color: var(--bg);

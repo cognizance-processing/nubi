@@ -5,8 +5,9 @@
  * loaded via src/compare/registry.js (import.meta.glob eager pattern,
  * mirroring src/docs/registry.js).
  *
- * Design: Editorial/data-forward. Matches LandingPage spacing rhythm,
- * typography, and design-system usage.
+ * Design: shares the landing page's marketing language — observatory
+ * lp-hero-panel sections, glass bento cards, mono eyebrows, gradient
+ * display text, scroll reveals (MarketingStyles + useReveal).
  *
  * Tokens: only bg-bg, bg-surface, bg-surface-2, text-fg, text-muted,
  * border-border, bg-primary, text-primary, text-primary-fg, bg-accent,
@@ -19,6 +20,8 @@
 
 import { useState } from 'react'
 import { Link } from 'react-router-dom'
+import MarketingStyles from '../components/marketing/MarketingStyles.jsx'
+import useReveal from '../components/marketing/useReveal.js'
 import {
   ExternalLink,
   ChevronDown,
@@ -35,7 +38,7 @@ import {
   Check,
   GitFork,
   Users,
-  DollarSign,
+  Lock,
 } from 'lucide-react'
 import {
   INTRO,
@@ -65,6 +68,14 @@ const ScopedStyles = () => (
       );
       box-shadow: inset 1.5px 0 0 rgba(23,179,163,0.30), inset -1.5px 0 0 rgba(23,179,163,0.30);
     }
+    .dark .cp-nubi-col {
+      background: linear-gradient(
+        160deg,
+        rgba(125,170,240,0.07) 0%,
+        rgba(72,124,214,0.08) 50%,
+        rgba(45,212,191,0.09) 100%
+      );
+    }
     .cp-nubi-header {
       background: linear-gradient(
         160deg,
@@ -76,6 +87,14 @@ const ScopedStyles = () => (
         inset 0 3px 0 #17b3a3,
         inset 1.5px 0 0 rgba(23,179,163,0.35),
         inset -1.5px 0 0 rgba(23,179,163,0.35);
+    }
+    .dark .cp-nubi-header {
+      background: linear-gradient(
+        160deg,
+        rgba(125,170,240,0.14) 0%,
+        rgba(72,124,214,0.13) 50%,
+        rgba(45,212,191,0.15) 100%
+      );
     }
 
     /* Row hover */
@@ -111,13 +130,45 @@ const ScopedStyles = () => (
     .cp-matrix-row:nth-child(even) .cp-dim-cell { background-color: var(--surface-2); }
     .cp-row:hover .cp-dim-cell { background-color: var(--surface-2); }
 
-    /* Card hover lift */
-    .cp-card {
-      transition: transform 0.22s cubic-bezier(0.34,1.56,0.64,1),
-                  box-shadow 0.22s ease,
-                  border-color 0.18s ease;
+    /* Table shell — soft elevation + clipped corners */
+    .cp-table-shell {
+      box-shadow: 0 1px 2px rgba(27,35,99,0.05), 0 24px 56px -32px rgba(27,35,99,0.28);
     }
-    .cp-card:hover { transform: translateY(-3px); }
+    .dark .cp-table-shell {
+      box-shadow: 0 24px 56px -28px rgba(0,0,0,0.55);
+    }
+
+    /* ── Glass bento card (matches the landing's bento deck) ── */
+    .cp-card {
+      position: relative;
+      border-radius: 1.25rem;
+      border: 1px solid rgba(27,35,99,0.10);
+      background: rgba(255,255,255,0.72);
+      backdrop-filter: blur(10px);
+      -webkit-backdrop-filter: blur(10px);
+      box-shadow: 0 1px 2px rgba(27,35,99,0.05), 0 18px 44px -28px rgba(27,35,99,0.30);
+      transition: transform 0.25s cubic-bezier(0.34,1.56,0.64,1),
+                  box-shadow 0.25s ease,
+                  border-color 0.2s ease;
+    }
+    .dark .cp-card {
+      border-color: rgba(255,255,255,0.09);
+      background: rgba(13,20,48,0.55);
+      box-shadow: 0 18px 48px -24px rgba(0,0,0,0.6);
+    }
+    .cp-card:hover {
+      transform: translateY(-3px);
+      border-color: color-mix(in srgb, var(--cp-accent, #17b3a3) 45%, transparent);
+      box-shadow: 0 24px 52px -22px color-mix(in srgb, var(--cp-accent, #17b3a3) 35%, transparent);
+    }
+
+    /* brand hairline along the top edge of a feature card */
+    .cp-hairline::before {
+      content: '';
+      position: absolute; left: 16px; right: 16px; top: 0; height: 2px;
+      background: linear-gradient(90deg, transparent, rgba(23,179,163,0.55), rgba(36,86,166,0.55), transparent);
+      border-radius: 2px;
+    }
 
     /* Expand animation */
     .cp-expand-enter { animation: cp-expand 0.18s ease forwards; }
@@ -125,14 +176,6 @@ const ScopedStyles = () => (
       from { opacity: 0; transform: translateY(-4px); }
       to   { opacity: 1; transform: translateY(0); }
     }
-
-    /* CTA pulse */
-    @keyframes cp-pulse-primary {
-      0%, 100% { box-shadow: 0 0 0 0 rgba(36, 86, 166, 0.4); }
-      50%       { box-shadow: 0 0 0 10px rgba(36, 86, 166, 0); }
-    }
-    .cp-cta-pulse { animation: cp-pulse-primary 3s ease-in-out infinite; }
-    .cp-cta-pulse:hover { animation: none; }
 
     /* Markdown prose inside compare sections */
     .cp-prose p { margin: 0.85rem 0; line-height: 1.7; color: var(--text-muted); font-size: 0.9rem; }
@@ -170,19 +213,60 @@ function isEstimate(val) {
     (val.toLowerCase().includes('unverified') || val.toLowerCase().includes('(est.)'))
 }
 
-function EyebrowBadge({ children }) {
+/** Bold helper — readable on light panels and the dark observatory panel. */
+const B = ({ children }) => (
+  <strong className="font-semibold text-fg dark:text-white">{children}</strong>
+)
+
+/** One-shot scroll reveal wrapper (lp-reveal / lp-in from MarketingStyles). */
+function Reveal({ children, className = '', delay = 0, id }) {
+  const [ref, seen] = useReveal()
   return (
-    <div className="inline-flex items-center gap-2 text-xs font-semibold tracking-widest uppercase
-      px-3 py-1.5 rounded-full mb-6 bg-surface-2 border border-border text-muted">
-      <span className="w-1.5 h-1.5 rounded-full bg-accent inline-block" />
+    <div
+      ref={ref}
+      id={id}
+      className={`lp-reveal ${seen ? 'lp-in' : ''} ${className}`}
+      style={delay ? { transitionDelay: `${delay}ms` } : undefined}
+    >
       {children}
     </div>
   )
 }
 
+/** Centered section header — mono eyebrow + display heading + body. */
+function SectionHead({ eyebrow, title, children, wide = false }) {
+  return (
+    <Reveal className={`text-center mb-10 sm:mb-14 ${wide ? 'max-w-3xl' : 'max-w-2xl'} mx-auto`}>
+      <p className="font-mono text-[11px] font-semibold tracking-[0.18em] uppercase mb-4 text-brand-teal">
+        {eyebrow}
+      </p>
+      <h2 className="font-display text-3xl sm:text-4xl lg:text-5xl font-bold leading-[1.08] tracking-tight text-fg mb-4">
+        {title}
+      </h2>
+      {children && (
+        <p className="text-sm sm:text-base leading-relaxed text-muted">{children}</p>
+      )}
+    </Reveal>
+  )
+}
+
+/** Style helper: render a string title with its last word in gradient text.
+ *  Non-string titles (already-styled JSX) pass through untouched. */
+function gradientLast(title, gradientClass = 'text-brand-gradient') {
+  if (typeof title !== 'string') return title
+  const words = title.trim().split(' ')
+  if (words.length < 2) return title
+  const last = words.pop()
+  return (
+    <>
+      {words.join(' ')} <span className={gradientClass}>{last}</span>
+    </>
+  )
+}
+
 function EstBadge() {
   return (
-    <span className="inline-flex items-center gap-0.5 text-[10px] font-medium px-1.5 py-0.5 rounded-full
+    <span className="inline-flex items-center gap-0.5 font-mono text-[10px] font-medium px-1.5 py-0.5 rounded-full
       bg-surface-2 text-muted border border-border ml-1 shrink-0 whitespace-nowrap">
       <Clock size={9} />
       est.
@@ -196,87 +280,6 @@ function Tooltip({ text, children }) {
       {children}
       <span className="cp-tooltip-box">{text}</span>
     </span>
-  )
-}
-
-/* ─────────────────────────────────────────────────────────────────────────── */
-/*  Hero Illustration (self-contained SVG — no external dep)                  */
-/* ─────────────────────────────────────────────────────────────────────────── */
-
-function CompareHeroIllustration() {
-  // Cost-per-view comparison: higher bar = MORE expensive. Competitors tower,
-  // Nubi is a tiny sliver at ≈ $0 / view. Lower is better → Nubi wins.
-  const baseY = 228
-  const bars = [
-    { x: 96, label: 'Hex', top: 70 },
-    { x: 182, label: 'Cube', top: 92 },
-    { x: 268, label: 'PowerBI', top: 78 },
-  ]
-  return (
-    <svg
-      viewBox="0 0 440 280"
-      fill="none"
-      xmlns="http://www.w3.org/2000/svg"
-      width="100%"
-      height="auto"
-      preserveAspectRatio="xMidYMid meet"
-      aria-hidden="true"
-    >
-      <defs>
-        <linearGradient id="chi-nubi-bar" x1="0" y1="1" x2="0" y2="0">
-          <stop offset="0%" stopColor="#2456a6" />
-          <stop offset="100%" stopColor="#2dd4bf" />
-        </linearGradient>
-        <linearGradient id="chi-border" x1="0" y1="1" x2="1" y2="0">
-          <stop offset="0%" stopColor="#1b2363" />
-          <stop offset="45%" stopColor="#2456a6" />
-          <stop offset="100%" stopColor="#17b3a3" />
-        </linearGradient>
-        <clipPath id="chi-clip">
-          <rect x="12" y="14" width="416" height="252" rx="18" />
-        </clipPath>
-      </defs>
-
-      {/* frame */}
-      <rect x="12" y="14" width="416" height="252" rx="18" fill="#2456a6" fillOpacity="0.03" />
-      <rect x="12" y="14" width="416" height="252" rx="18" stroke="url(#chi-border)" strokeWidth="2" />
-
-      <g clipPath="url(#chi-clip)">
-        {/* cost axis: vertical arrow, "$ / view" rising */}
-        <line x1="44" y1={baseY} x2="44" y2="48" stroke="#2456a6" strokeWidth="1.5" strokeOpacity="0.4" strokeLinecap="round" />
-        <path d="M 39 56 L 44 47 L 49 56" stroke="#2456a6" strokeWidth="1.5" strokeOpacity="0.5" strokeLinecap="round" strokeLinejoin="round" fill="none" />
-        <text x="52" y="44" fontSize="11" fontFamily="Space Grotesk, system-ui, sans-serif"
-          fontWeight="700" fill="#2456a6" fillOpacity="0.6">$ / view</text>
-        <line x1="44" y1={baseY} x2="404" y2={baseY} stroke="#2456a6" strokeWidth="1.5" strokeOpacity="0.28" />
-
-        {/* competitor bars (expensive, neutral) */}
-        {bars.map((b) => (
-          <g key={b.label}>
-            <rect x={b.x} y={b.top} width="52" height={baseY - b.top} rx="8"
-              fill="#2456a6" fillOpacity="0.09" stroke="#2456a6" strokeWidth="1.75" strokeOpacity="0.45" />
-            <text x={b.x + 26} y={baseY + 22} textAnchor="middle" fontSize="11.5"
-              fontFamily="Space Grotesk, system-ui, sans-serif" fontWeight="600"
-              fill="#2456a6" fillOpacity="0.7">{b.label}</text>
-          </g>
-        ))}
-
-        {/* Nubi — tiny sliver (≈ $0), brand gradient + check */}
-        <rect x="354" y={baseY - 16} width="52" height="16" rx="6" fill="url(#chi-nubi-bar)" />
-        <text x="380" y={baseY + 22} textAnchor="middle" fontSize="12.5"
-          fontFamily="Space Grotesk, system-ui, sans-serif" fontWeight="700" fill="#17b3a3">Nubi</text>
-
-        {/* "≈ $0 / view" callout pill above the Nubi sliver */}
-        <rect x="333" y={baseY - 54} width="94" height="24" rx="12" fill="#17b3a3" fillOpacity="0.1"
-          stroke="#17b3a3" strokeOpacity="0.5" strokeWidth="1.25" />
-        <path d={`M 345 ${baseY - 42} l 3.5 3.5 l 6 -7`}
-          stroke="#17b3a3" strokeWidth="2.25" strokeLinecap="round" strokeLinejoin="round" fill="none" />
-        <text x="388" y={baseY - 38} textAnchor="middle" fontSize="11.5"
-          fontFamily="Space Grotesk, system-ui, sans-serif" fontWeight="700" fill="#17b3a3">≈ $0 / view</text>
-
-        {/* connector from pill down to the sliver */}
-        <line x1="380" y1={baseY - 30} x2="380" y2={baseY - 18} stroke="#17b3a3" strokeWidth="1.5" strokeOpacity="0.5" strokeDasharray="2 3" />
-      </g>
-    </svg>
   )
 }
 
@@ -493,6 +496,30 @@ const ALL_COMPETITORS = [
   },
 ]
 
+const ALL_COL_HEADERS = [
+  { label: 'Platform', width: 150 },
+  { label: 'Pricing Model', width: 160 },
+  { label: 'Entry Price', width: 170 },
+  { label: 'Seat / Viewer Model', width: 200 },
+  { label: 'Embedding', width: 200 },
+  { label: 'Self-Host', width: 140 },
+  { label: 'Where this tool is genuinely stronger', width: 200 },
+]
+
+/** Category divider row inside the all-competitors table. */
+function CategoryRow({ label }) {
+  return (
+    <tr>
+      <td colSpan={ALL_COL_HEADERS.length}
+        className="bg-surface-2 px-4 py-2.5 border-b border-border">
+        <span className="font-mono text-[10px] font-semibold uppercase tracking-[0.18em] text-brand-teal">
+          ── {label}
+        </span>
+      </td>
+    </tr>
+  )
+}
+
 /**
  * AllCompetitorsTable — the scrupulously fair comparison.
  * Categories: General BI, Embedded Specialists.
@@ -521,7 +548,7 @@ function AllCompetitorsTable() {
           <span className={`text-xs font-semibold ${c.isNubi ? 'text-brand-teal' : 'text-fg'}`}>
             {c.isNubi && '★ '}{c.name}
           </span>
-          <p className="text-[10px] text-muted mt-0.5 leading-snug">{c.category}</p>
+          <p className="font-mono text-[10px] text-muted mt-0.5 leading-snug">{c.category}</p>
         </td>
         {/* Pricing model */}
         <td className={['cp-row-cell px-4 py-3.5 text-xs align-top border-b border-r border-border leading-relaxed transition-colors',
@@ -566,40 +593,17 @@ function AllCompetitorsTable() {
     )
   }
 
-  const colHeaders = [
-    { label: 'Platform', width: 150 },
-    { label: 'Pricing Model', width: 160 },
-    { label: 'Entry Price', width: 170 },
-    { label: 'Seat / Viewer Model', width: 200 },
-    { label: 'Embedding', width: 200 },
-    { label: 'Self-Host', width: 140 },
-    { label: 'Where this tool is genuinely stronger', width: 200 },
-  ]
-
-  function SectionHeader({ label }) {
-    return (
-      <tr>
-        <td colSpan={colHeaders.length}
-          className="bg-surface-2 px-4 py-2.5 border-b border-border">
-          <span className="text-[10px] font-semibold uppercase tracking-widest text-brand-teal">
-            {label}
-          </span>
-        </td>
-      </tr>
-    )
-  }
-
   return (
-    <div className="overflow-x-auto rounded-2xl border border-border shadow-sm">
+    <div className="cp-table-shell overflow-x-auto overscroll-x-contain rounded-2xl border border-border">
       <table className="border-collapse" style={{ minWidth: 1220, width: '100%' }}>
         <thead className="sticky top-0 z-20">
           <tr>
-            {colHeaders.map((col, i) => (
+            {ALL_COL_HEADERS.map((col, i) => (
               i === 0 ? (
                 <th key={col.label}
                   className="sticky left-0 z-30 px-4 py-4 text-left bg-surface-2 border-b border-r border-border"
                   style={{ minWidth: col.width, width: col.width }}>
-                  <span className="text-[10px] font-semibold uppercase tracking-widest text-muted">
+                  <span className="font-mono text-[10px] font-semibold uppercase tracking-[0.14em] text-muted">
                     {col.label}
                   </span>
                 </th>
@@ -607,7 +611,7 @@ function AllCompetitorsTable() {
                 <th key={col.label}
                   className="px-4 py-4 text-left bg-surface-2 border-b border-r border-border last:border-r-0"
                   style={{ minWidth: col.width }}>
-                  <span className="text-[10px] font-semibold uppercase tracking-widest text-muted">
+                  <span className="font-mono text-[10px] font-semibold uppercase tracking-[0.14em] text-muted">
                     {col.label}
                   </span>
                 </th>
@@ -620,11 +624,11 @@ function AllCompetitorsTable() {
           {ALL_COMPETITORS.filter(c => c.isNubi).map(renderRow)}
 
           {/* General BI section */}
-          <SectionHeader label="General BI tools" />
+          <CategoryRow label="General BI tools" />
           {generalBI.map(renderRow)}
 
           {/* Embedded analytics section */}
-          <SectionHeader label="Embedded analytics specialists" />
+          <CategoryRow label="Embedded analytics specialists" />
           {embedded.map(renderRow)}
         </tbody>
       </table>
@@ -689,34 +693,34 @@ const PRIMARY_ROWS = [
 
 function PrimaryTable() {
   return (
-    <div className="overflow-x-auto overscroll-x-contain rounded-2xl border border-border shadow-sm">
+    <div className="cp-table-shell overflow-x-auto overscroll-x-contain rounded-2xl border border-border">
       <table className="border-collapse w-full" style={{ minWidth: 640 }}>
         <thead>
           <tr>
-            <th className="px-5 py-4 text-left bg-surface border-b border-r border-border"
+            <th className="px-5 py-4 text-left bg-surface-2 border-b border-r border-border"
               style={{ minWidth: 140, width: 140 }}>
-              <span className="text-[10px] font-semibold uppercase tracking-widest text-muted">Dimension</span>
+              <span className="font-mono text-[10px] font-semibold uppercase tracking-[0.14em] text-muted">Dimension</span>
             </th>
-            <th className="px-5 py-4 text-left bg-surface border-b border-r border-border"
+            <th className="px-5 py-4 text-left bg-surface-2 border-b border-r border-border"
               style={{ minWidth: 200 }}>
-              <span className="text-[10px] font-semibold uppercase tracking-widest text-muted">Hex</span>
-              <p className="text-[10px] text-muted mt-0.5 font-normal normal-case tracking-normal opacity-70">
+              <span className="font-mono text-[10px] font-semibold uppercase tracking-[0.14em] text-muted">Hex</span>
+              <p className="font-mono text-[10px] text-muted mt-0.5 font-normal normal-case tracking-normal opacity-70">
                 Notebook + apps
               </p>
             </th>
-            <th className="px-5 py-4 text-left bg-surface border-b border-r border-border"
+            <th className="px-5 py-4 text-left bg-surface-2 border-b border-r border-border"
               style={{ minWidth: 200 }}>
-              <span className="text-[10px] font-semibold uppercase tracking-widest text-muted">Cube</span>
-              <p className="text-[10px] text-muted mt-0.5 font-normal normal-case tracking-normal opacity-70">
+              <span className="font-mono text-[10px] font-semibold uppercase tracking-[0.14em] text-muted">Cube</span>
+              <p className="font-mono text-[10px] text-muted mt-0.5 font-normal normal-case tracking-normal opacity-70">
                 Headless semantic layer
               </p>
             </th>
             <th className="cp-nubi-header px-5 py-4 text-left border-b border-r border-border last:border-r-0"
               style={{ minWidth: 200 }}>
-              <span className="text-[10px] font-semibold uppercase tracking-widest text-brand-teal">
+              <span className="font-mono text-[10px] font-semibold uppercase tracking-[0.14em] text-brand-teal">
                 ★ Nubi
               </span>
-              <p className="text-[10px] text-brand-teal mt-0.5 font-normal normal-case tracking-normal opacity-80">
+              <p className="font-mono text-[10px] text-brand-teal mt-0.5 font-normal normal-case tracking-normal opacity-80">
                 Batteries-included BI + embed
               </p>
             </th>
@@ -724,8 +728,8 @@ function PrimaryTable() {
         </thead>
         <tbody>
           {PRIMARY_ROWS.map((row) => (
-            <tr key={row.label} className="cp-row border-b border-border last:border-0 transition-colors">
-              <td className="cp-row-cell px-5 py-4 text-xs font-semibold text-muted align-top bg-surface border-r border-border transition-colors">
+            <tr key={row.label} className="cp-row cp-matrix-row border-b border-border last:border-0 transition-colors">
+              <td className="cp-row-cell px-5 py-4 text-xs font-semibold text-fg align-top bg-surface border-r border-border transition-colors">
                 {row.label}
               </td>
               <td className="cp-row-cell px-5 py-4 text-xs text-muted align-top bg-surface border-r border-border transition-colors leading-relaxed">
@@ -754,7 +758,7 @@ function FullMatrix() {
   const cols = MATRIX_COLUMNS
 
   return (
-    <div className="overflow-x-auto overscroll-x-contain rounded-2xl border border-border shadow-sm">
+    <div className="cp-table-shell overflow-x-auto overscroll-x-contain rounded-2xl border border-border">
       <table className="border-collapse" style={{ minWidth: 1400, width: '100%' }}>
         <thead className="sticky top-0 z-20">
           <tr>
@@ -763,7 +767,7 @@ function FullMatrix() {
               className="sticky left-0 z-30 px-5 py-4 text-left bg-surface-2 border-b border-r border-border"
               style={{ minWidth: 160, width: 160 }}
             >
-              <span className="text-[10px] font-semibold uppercase tracking-widest text-muted">
+              <span className="font-mono text-[10px] font-semibold uppercase tracking-[0.14em] text-muted">
                 Dimension
               </span>
             </th>
@@ -772,10 +776,10 @@ function FullMatrix() {
                 <th key={col.key}
                   className="cp-nubi-header px-4 py-4 text-left border-b border-r border-border"
                   style={{ minWidth: 200 }}>
-                  <span className="text-[10px] font-semibold uppercase tracking-widest text-brand-teal">
+                  <span className="font-mono text-[10px] font-semibold uppercase tracking-[0.14em] text-brand-teal">
                     ★ {col.label}
                   </span>
-                  <p className="text-[10px] text-brand-teal mt-0.5 font-normal normal-case tracking-normal opacity-80">
+                  <p className="font-mono text-[10px] text-brand-teal mt-0.5 font-normal normal-case tracking-normal opacity-80">
                     {col.subtitle}
                   </p>
                 </th>
@@ -783,10 +787,10 @@ function FullMatrix() {
                 <th key={col.key}
                   className="px-4 py-4 text-left bg-surface-2 border-b border-r border-border last:border-r-0"
                   style={{ minWidth: 160 }}>
-                  <span className="text-[10px] font-semibold uppercase tracking-widest text-muted">
+                  <span className="font-mono text-[10px] font-semibold uppercase tracking-[0.14em] text-muted">
                     {col.label}
                   </span>
-                  <p className="text-[10px] text-muted mt-0.5 font-normal normal-case tracking-normal opacity-60">
+                  <p className="font-mono text-[10px] text-muted mt-0.5 font-normal normal-case tracking-normal opacity-60">
                     {col.subtitle}
                   </p>
                 </th>
@@ -870,7 +874,7 @@ function parseCompetitorSections(content) {
   return sections
 }
 
-function CompetitorCard({ competitor }) {
+function CompetitorCard({ competitor, delay = 0 }) {
   const [expanded, setExpanded] = useState(false)
   const chips = getPricingChips(competitor.pricing)
   const selfHostYes = /^Yes/i.test(competitor.selfHost)
@@ -878,134 +882,202 @@ function CompetitorCard({ competitor }) {
   const sections = parseCompetitorSections(competitor.content)
 
   return (
-    <article className="cp-card bg-surface border border-border rounded-2xl overflow-hidden flex flex-col">
-      {/* Header */}
-      <div className="px-5 pt-5 pb-4 border-b border-border">
-        <div className="flex items-start justify-between gap-2 mb-2">
-          <div className="flex-1 min-w-0">
-            <h3 className="font-display font-semibold text-base text-fg leading-tight truncate">
-              {competitor.name}
-            </h3>
-            <p className="text-[11px] text-muted mt-0.5 leading-snug line-clamp-2">
-              {competitor.tagline}
-            </p>
+    <Reveal delay={delay} className="h-full">
+      <article className="cp-card h-full overflow-hidden flex flex-col">
+        {/* Header */}
+        <div className="px-5 pt-5 pb-4 border-b border-border dark:border-white/[0.07]">
+          <div className="flex items-start justify-between gap-2 mb-2">
+            <div className="flex-1 min-w-0">
+              <h3 className="font-display font-semibold text-base text-fg leading-tight truncate">
+                {competitor.name}
+              </h3>
+              <p className="text-[11px] text-muted mt-0.5 leading-snug line-clamp-2">
+                {competitor.tagline}
+              </p>
+            </div>
+            <div className="shrink-0">
+              {selfHostYes && (
+                <span className="inline-flex items-center gap-1 font-mono text-[10px] font-semibold text-brand-teal bg-brand-teal/10 px-2 py-0.5 rounded-full">
+                  <CheckCircle2 size={10} strokeWidth={2.5} />
+                  Self-host
+                </span>
+              )}
+              {selfHostNo && (
+                <span className="inline-flex items-center gap-1 font-mono text-[10px] font-medium text-muted bg-surface-2 px-2 py-0.5 rounded-full border border-border">
+                  <XCircle size={10} strokeWidth={2} />
+                  Cloud-only
+                </span>
+              )}
+            </div>
           </div>
-          <div className="shrink-0">
-            {selfHostYes && (
-              <span className="inline-flex items-center gap-1 text-[10px] font-semibold text-brand-teal bg-brand-teal/10 px-2 py-0.5 rounded-full">
-                <CheckCircle2 size={10} strokeWidth={2.5} />
-                Self-host
+          <div className="flex flex-wrap gap-1.5 mt-2">
+            {chips.map(c => (
+              <span key={c.label} className={[
+                'inline-flex items-center font-mono text-[10px] font-medium px-2 py-0.5 rounded-full border',
+                c.good
+                  ? 'text-brand-teal border-brand-teal/30 bg-brand-teal/10'
+                  : 'text-muted border-border bg-surface-2',
+              ].join(' ')}>
+                {c.label}
               </span>
-            )}
-            {selfHostNo && (
-              <span className="inline-flex items-center gap-1 text-[10px] font-medium text-muted bg-surface-2 px-2 py-0.5 rounded-full border border-border">
-                <XCircle size={10} strokeWidth={2} />
-                Cloud-only
-              </span>
-            )}
+            ))}
           </div>
         </div>
-        <div className="flex flex-wrap gap-1.5 mt-2">
-          {chips.map(c => (
-            <span key={c.label} className={[
-              'inline-flex items-center text-[10px] font-medium px-2 py-0.5 rounded-full border',
-              c.good
-                ? 'text-brand-teal border-brand-teal/30 bg-brand-teal/10'
-                : 'text-muted border-border bg-surface-2',
-            ].join(' ')}>
-              {c.label}
-            </span>
-          ))}
-        </div>
-      </div>
 
-      {/* Strength / Limitation from MD */}
-      <div className="px-5 py-4 flex-1 grid gap-3">
-        {sections.strength && (
-          <div>
-            <p className="text-[10px] font-semibold uppercase tracking-widest text-brand-teal mb-1">
-              Strength
-            </p>
-            <p className="text-xs text-fg leading-relaxed">{sections.strength}</p>
-          </div>
-        )}
-        {sections.limitation && (
-          <div>
-            <p className="text-[10px] font-semibold uppercase tracking-widest text-muted mb-1">
-              Limitation
-            </p>
-            <p className="text-xs text-muted leading-relaxed">{sections.limitation}</p>
-          </div>
-        )}
-      </div>
-
-      {/* Expandable pricing detail */}
-      {expanded && (
-        <div className="cp-expand-enter px-5 pb-4 border-t border-border pt-4 bg-surface-2/40">
-          <p className="text-[10px] font-semibold uppercase tracking-widest text-muted mb-1.5">
-            Pricing detail
-          </p>
-          <p className="text-xs text-muted leading-relaxed">{competitor.pricing}</p>
-          {competitor.pricingUnverified && (
-            <p className="text-[10px] text-muted/60 mt-2 flex items-center gap-1">
-              <Clock size={9} />
-              Some pricing data is estimated — re-verify before publishing.
-            </p>
+        {/* Strength / Limitation from MD */}
+        <div className="px-5 py-4 flex-1 grid gap-3 content-start">
+          {sections.strength && (
+            <div>
+              <p className="font-mono text-[10px] font-semibold uppercase tracking-[0.16em] text-brand-teal mb-1">
+                Strength
+              </p>
+              <p className="text-xs text-fg leading-relaxed">{sections.strength}</p>
+            </div>
+          )}
+          {sections.limitation && (
+            <div>
+              <p className="font-mono text-[10px] font-semibold uppercase tracking-[0.16em] text-muted mb-1">
+                Limitation
+              </p>
+              <p className="text-xs text-muted leading-relaxed">{sections.limitation}</p>
+            </div>
           )}
         </div>
-      )}
 
-      {/* Footer */}
-      <div className="px-5 py-3 border-t border-border bg-surface-2/60 flex items-center justify-between gap-2">
-        <button
-          onClick={() => setExpanded(e => !e)}
-          className="inline-flex items-center gap-1 text-[11px] font-medium text-brand-teal hover:text-brand-teal/80
-            focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring rounded transition-colors"
-        >
-          {expanded
-            ? <><ChevronUp size={11} /> Less</>
-            : <><ChevronDown size={11} /> Pricing detail</>}
-        </button>
-        {competitor.sourceUrls?.length > 0 && (
-          <div className="flex items-center gap-2 flex-wrap justify-end">
-            {competitor.sourceUrls.slice(0, 2).map((url, i) => {
-              let label
-              try { label = new URL(url).hostname.replace('www.', '') }
-              catch { label = `Source ${i + 1}` }
-              return (
-                <a key={url} href={url} target="_blank" rel="noopener noreferrer"
-                  className="inline-flex items-center gap-0.5 text-[10px] text-muted hover:text-brand-teal transition-colors">
-                  <ExternalLink size={9} />
-                  {label}
-                </a>
-              )
-            })}
+        {/* Expandable pricing detail */}
+        {expanded && (
+          <div className="cp-expand-enter px-5 pb-4 border-t border-border dark:border-white/[0.07] pt-4">
+            <p className="font-mono text-[10px] font-semibold uppercase tracking-[0.16em] text-muted mb-1.5">
+              Pricing detail
+            </p>
+            <p className="text-xs text-muted leading-relaxed">{competitor.pricing}</p>
+            {competitor.pricingUnverified && (
+              <p className="text-[10px] text-muted/60 mt-2 flex items-center gap-1">
+                <Clock size={9} />
+                Some pricing data is estimated — re-verify before publishing.
+              </p>
+            )}
           </div>
         )}
-      </div>
-    </article>
+
+        {/* Footer */}
+        <div className="px-5 py-3 border-t border-border dark:border-white/[0.07] flex items-center justify-between gap-2">
+          <button
+            onClick={() => setExpanded(e => !e)}
+            className="inline-flex items-center gap-1 font-mono text-[11px] font-medium text-brand-teal hover:text-brand-teal/80
+              focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring rounded transition-colors"
+          >
+            {expanded
+              ? <><ChevronUp size={11} /> Less</>
+              : <><ChevronDown size={11} /> Pricing detail</>}
+          </button>
+          {competitor.sourceUrls?.length > 0 && (
+            <div className="flex items-center gap-2 flex-wrap justify-end">
+              {competitor.sourceUrls.slice(0, 2).map((url, i) => {
+                let label
+                try { label = new URL(url).hostname.replace('www.', '') }
+                catch { label = `Source ${i + 1}` }
+                return (
+                  <a key={url} href={url} target="_blank" rel="noopener noreferrer"
+                    className="inline-flex items-center gap-0.5 font-mono text-[10px] text-muted hover:text-brand-teal transition-colors">
+                    <ExternalLink size={9} />
+                    {label}
+                  </a>
+                )
+              })}
+            </div>
+          )}
+        </div>
+      </article>
+    </Reveal>
   )
 }
 
 /* ─────────────────────────────────────────────────────────────────────────── */
-/*  "Why Nubi" feature cards                                                   */
+/*  "Why Nubi" bento cards — glass deck on the observatory panel               */
 /* ─────────────────────────────────────────────────────────────────────────── */
 
-function WhyCard({ icon, title, body }) {
-  const WhyIcon = icon
+const WHY_CARDS = [
+  {
+    index: '01', tag: 'cost architecture', icon: Zap, accent: '#17b3a3',
+    title: 'Near-zero marginal cost',
+    body: (
+      <>
+        Compute runs in the viewer&apos;s browser (<B>DuckDB-WASM, SQL</B>). 500 concurrent
+        embedded viewers sharing the same dashboard <B>collapse to 1 warehouse hit</B> — the
+        advantage is real at high cache-hit rates and extends to diverse workloads via
+        automatic pre-aggregations.
+      </>
+    ),
+    chip: '500 viewers → 1 warehouse query',
+  },
+  {
+    index: '02', tag: 'rendering', icon: Layers, accent: '#38bdf8',
+    title: 'Arrow IPC end-to-end',
+    body: (
+      <>
+        Results move as <B>columnar Arrow buffers over WebSocket</B>. The viz layer reads
+        them directly — no JSON serialisation round-trip. <B>&lt;nubi-chart&gt; renders on
+        canvas via Apache ECharts</B>, so charts stay fast and responsive even on large
+        result sets.
+      </>
+    ),
+    chip: 'arrow ipc → echarts canvas',
+  },
+  {
+    index: '03', tag: 'security', icon: Shield, accent: '#2456a6',
+    title: 'Auth as code',
+    body: (
+      <>
+        Publish your JWKS, implement getToken(), mount &lt;nubi-dashboard&gt;.{' '}
+        <B>JWT claims drive row-level security</B> — enforced server-side in the connector
+        before any buffer reaches the browser. No separate embed SDK.{' '}
+        <B>Policies are TypeScript/SQL in your repo, diffable in PRs.</B>
+      </>
+    ),
+    chip: 'policies reviewed in pull requests',
+  },
+]
+
+function WhyBentoCard({ card, idx }) {
+  const [ref, seen] = useReveal()
+  const Icon = card.icon
   return (
-    <div className="cp-card bg-surface border border-border rounded-2xl p-6 flex flex-col gap-4">
-      <div className="w-10 h-10 rounded-xl bg-accent/10 text-accent flex items-center justify-center shrink-0">
-        <WhyIcon size={20} strokeWidth={1.75} />
+    <div
+      ref={ref}
+      style={{ '--cp-accent': card.accent, transitionDelay: `${(idx % 3) * 90}ms` }}
+      className={`lp-reveal ${seen ? 'lp-in' : ''} cp-card flex flex-col p-6 sm:p-7`}
+    >
+      <div className="flex items-center justify-between mb-4">
+        <span
+          className="inline-flex items-center justify-center w-10 h-10 rounded-xl text-white shadow-md"
+          style={{ background: `linear-gradient(135deg, ${card.accent}, ${card.accent}cc)` }}
+        >
+          <Icon size={18} strokeWidth={1.9} />
+        </span>
+        <span className="font-mono text-[11px] font-bold" style={{ color: card.accent }}>
+          /{card.index}
+        </span>
       </div>
-      <div>
-        <h3 className="font-display font-semibold text-base text-fg mb-2">{title}</h3>
-        <p className="text-sm text-muted leading-relaxed">{body}</p>
-      </div>
+      <p className="font-mono text-[10px] font-semibold uppercase tracking-[0.16em] text-muted mb-1.5">
+        {card.tag}
+      </p>
+      <h3 className="font-display text-lg sm:text-[1.35rem] font-bold text-fg dark:text-white leading-snug mb-2">
+        {card.title}
+      </h3>
+      <p className="text-[13.5px] sm:text-sm leading-relaxed text-muted dark:text-slate-300/85 flex-1">
+        {card.body}
+      </p>
+      <p
+        className="mt-4 inline-flex items-center gap-1.5 self-start font-mono text-[11px] font-semibold px-2.5 py-1.5 rounded-lg border"
+        style={{ color: card.accent, borderColor: `${card.accent}45`, background: `${card.accent}0f` }}
+      >
+        <ArrowRight size={11} strokeWidth={2.5} className="shrink-0" />
+        {card.chip}
+      </p>
     </div>
   )
 }
-
 
 /* ─────────────────────────────────────────────────────────────────────────── */
 /*  Main page                                                                  */
@@ -1016,569 +1088,680 @@ export default function ComparePage() {
 
   return (
     <>
+      <MarketingStyles />
       <ScopedStyles />
 
-      <div className="min-h-screen bg-bg text-fg font-sans overflow-x-hidden">
+      <div className="nubi-lp min-h-screen bg-bg text-fg font-sans overflow-x-hidden">
 
         {/* ══════════════════════════════════════════════════════════
-            §1  HERO — copy from intro.md frontmatter
+            §1  HERO — observatory panel: copy | real product frame,
+            with the structural numbers fused into the panel's lower band
         ══════════════════════════════════════════════════════════ */}
-        <section className="relative bg-bg">
-          <div
-            className="pointer-events-none absolute inset-0"
-            style={{
-              background:
-                'radial-gradient(ellipse 55% 60% at 75% 50%, rgba(36,86,166,0.07) 0%, transparent 70%), ' +
-                'radial-gradient(ellipse 40% 40% at 15% 70%, rgba(23,179,163,0.05) 0%, transparent 60%)',
-            }}
-          />
+        <section className="relative bg-bg px-3 sm:px-5 pt-3 sm:pt-5">
+          <div className="lp-hero-panel relative max-w-[1440px] mx-auto rounded-[1.5rem] sm:rounded-[2rem] overflow-hidden border border-border dark:border-white/[0.06]">
 
-          <div className="relative max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-20 sm:py-28">
-            <div className="grid lg:grid-cols-[1fr_1fr] gap-12 lg:gap-20 items-center">
+            {/* drifting mesh blobs */}
+            <div
+              className="lp-mesh-a lp-mesh-blob pointer-events-none absolute -top-40 -left-40 w-[42rem] h-[42rem] rounded-full"
+              style={{ background: 'radial-gradient(circle, rgba(72,124,214,0.28) 0%, transparent 65%)' }}
+              aria-hidden="true"
+            />
+            <div
+              className="lp-mesh-b lp-mesh-blob pointer-events-none absolute top-1/4 -right-48 w-[38rem] h-[38rem] rounded-full"
+              style={{ background: 'radial-gradient(circle, rgba(45,212,191,0.16) 0%, transparent 65%)' }}
+              aria-hidden="true"
+            />
 
-              {/* Left: copy */}
-              <div>
-                <EyebrowBadge>
-                  {introData?.eyebrow ?? 'Competitive overview · 2026'}
-                </EyebrowBadge>
+            {/* perspective data-grid floor */}
+            <svg
+              className="lp-hero-grid pointer-events-none absolute inset-x-0 bottom-0 h-[55%] w-full"
+              preserveAspectRatio="none"
+              viewBox="0 0 1200 400"
+              aria-hidden="true"
+            >
+              <defs>
+                <linearGradient id="cp-gridfade" x1="0" y1="0" x2="0" y2="1">
+                  <stop offset="0" stopColor="#8db4f5" stopOpacity="0" />
+                  <stop offset="1" stopColor="#8db4f5" stopOpacity="0.8" />
+                </linearGradient>
+              </defs>
+              {Array.from({ length: 13 }, (_, i) => (
+                <line key={`v${i}`} x1={600 + (i - 6) * 100} y1="0" x2={600 + (i - 6) * 260} y2="400" stroke="url(#cp-gridfade)" strokeWidth="1" />
+              ))}
+              {Array.from({ length: 7 }, (_, i) => (
+                <line key={`h${i}`} x1="0" y1={60 + i * 56 + i * i * 2} x2="1200" y2={60 + i * 56 + i * i * 2} stroke="url(#cp-gridfade)" strokeWidth="1" />
+              ))}
+            </svg>
 
-                <h1 className="font-display font-bold text-5xl sm:text-6xl lg:text-[4rem] xl:text-[4.5rem]
-                  leading-[1.04] tracking-tight mb-6 text-fg">
-                  How Nubi{' '}
-                  <span className="text-brand-gradient">compares.</span>
-                </h1>
+            {/* film grain */}
+            <div className="lp-noise pointer-events-none absolute inset-0" aria-hidden="true" />
 
-                <p className="text-lg sm:text-xl leading-relaxed text-muted mb-6 max-w-lg">
-                  {introData?.subtitle ?? 'An honest comparison against 14 platforms — Metabase, Hex, Cube, Holistics, Embeddable, Luzmo, Omni, GoodData, Looker, Sigma, Tableau, Power BI, Preset, and Count.'}
-                </p>
+            <div className="relative px-5 sm:px-10 lg:px-14 pt-12 sm:pt-16 lg:pt-20">
+              <div className="grid grid-cols-1 lg:grid-cols-[1fr_1.12fr] gap-12 lg:gap-14 items-center">
 
-                <blockquote className="border-l-2 border-brand-teal pl-4 mb-8">
-                  <p className="text-sm text-muted leading-relaxed">
-                    <strong className="text-fg font-semibold">Nubi's structural edges:</strong>{' '}
-                    Analytics compute runs in the user's browser by default — marginal cost per embed view ≈&nbsp;$0 at high cache-hit rates.
-                    Unlimited users and viewers at every tier — no per-seat penalty.
-                    ZAR-native billing via Paystack — no competitor prices in ZAR.
-                    Arrow IPC + ECharts canvas rendering keeps large result sets fast in the browser.
-                  </p>
-                </blockquote>
-
-                <div className="flex flex-wrap gap-2.5">
-                  {[
-                    { icon: <Zap size={12} strokeWidth={2.5} />, text: '≈ $0 marginal cost / embed view' },
-                    { icon: <Layers size={12} strokeWidth={2.5} />, text: 'Arrow IPC — zero-copy to charts' },
-                    { icon: <Shield size={12} strokeWidth={2.5} />, text: 'JWKS-native auth — no SDK bolt-on' },
-                    { icon: <Users size={12} strokeWidth={2.5} />, text: 'Unlimited users at every tier' },
-                    { icon: <DollarSign size={12} strokeWidth={2.5} />, text: 'ZAR billing via Paystack — no competitor does this' },
-                  ].map(({ icon, text }) => (
-                    <span key={text}
-                      className="inline-flex items-center gap-1.5 text-xs font-medium px-3 py-1.5
-                        bg-surface border border-border rounded-full text-fg shadow-sm">
-                      <span className="text-brand-teal">{icon}</span>
-                      {text}
+                {/* ── Left: copy ── */}
+                <div>
+                  {/* terminal-flavoured eyebrow */}
+                  <p className="inline-flex items-center gap-2 font-mono text-[11px] sm:text-xs font-medium tracking-wide text-brand-teal dark:text-teal-300/90 border border-border dark:border-white/10 bg-white/60 dark:bg-white/[0.04] rounded-full px-3.5 py-1.5 mb-6 sm:mb-8">
+                    <span className="relative flex h-1.5 w-1.5">
+                      <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-teal-400 opacity-60" />
+                      <span className="relative inline-flex rounded-full h-1.5 w-1.5 bg-teal-300" />
                     </span>
+                    {introData?.eyebrow ?? 'competitive overview · 2026'}
+                  </p>
+
+                  <h1 className="font-display text-4xl sm:text-5xl lg:text-[3.9rem] xl:text-[4.3rem] font-bold leading-[1.04] tracking-tight mb-5 sm:mb-7 text-fg">
+                    How Nubi
+                    <br />
+                    <span className="lp-hero-gradient-text">compares.</span>
+                  </h1>
+
+                  <p className="text-base sm:text-lg leading-relaxed mb-7 max-w-lg text-muted dark:text-slate-300/90">
+                    {introData?.subtitle ?? 'An honest comparison against 14 platforms — Metabase, Hex, Cube, Holistics, Embeddable, Luzmo, Omni, GoodData, Looker, Sigma, Tableau, Power BI, Preset, and Count.'}
+                  </p>
+
+                  {/* structural edges — checked claims */}
+                  <ul className="grid gap-2.5 mb-8 max-w-lg">
+                    {[
+                      <><B>Analytics compute runs in the user&apos;s browser</B> by default — marginal cost per embed view ≈&nbsp;$0 at high cache-hit rates.</>,
+                      <><B>Unlimited users and viewers at every tier</B> — no per-seat penalty.</>,
+                      <><B>ZAR-native billing via Paystack</B> — no competitor prices in ZAR.</>,
+                      <><B>Arrow IPC + ECharts canvas rendering</B> keeps large result sets fast in the browser.</>,
+                    ].map((line, i) => (
+                      <li key={i} className="flex items-start gap-2.5 text-[13.5px] sm:text-sm leading-relaxed text-muted dark:text-slate-300/90">
+                        <span className="shrink-0 mt-0.5 inline-flex items-center justify-center w-5 h-5 rounded-full bg-brand-teal/10 border border-brand-teal/30">
+                          <Check size={11} strokeWidth={3} className="text-brand-teal dark:text-teal-300" />
+                        </span>
+                        <span>{line}</span>
+                      </li>
+                    ))}
+                  </ul>
+
+                  {/* CTAs */}
+                  <div className="flex flex-col sm:flex-row flex-wrap gap-3 mb-8 sm:mb-9">
+                    <Link
+                      to="/register"
+                      className="lp-cta-glow inline-flex items-center justify-center gap-2 px-7 py-3.5 rounded-xl text-base font-semibold transition-all bg-brand-gradient text-white hover:-translate-y-0.5 min-h-[48px]"
+                    >
+                      Start free
+                      <ArrowRight size={16} strokeWidth={2.5} />
+                    </Link>
+                    <a
+                      href="#matrix"
+                      className="inline-flex items-center justify-center gap-2 px-6 py-3.5 rounded-xl text-base font-semibold transition-all bg-surface border border-border text-fg hover:border-brand-blue dark:bg-white/[0.06] dark:border-white/15 dark:text-white dark:hover:bg-white/[0.12] dark:hover:border-white/25 min-h-[48px]"
+                    >
+                      Jump to the matrix
+                    </a>
+                  </div>
+
+                  {/* trust strip — mono, data-tool flavour */}
+                  <div className="flex flex-wrap gap-x-5 gap-y-2 font-mono text-[11px] font-medium text-muted">
+                    {[
+                      '≈ $0 marginal cost / embed view',
+                      'arrow ipc — zero-copy to charts',
+                      'jwks-native auth — no SDK bolt-on',
+                      'zar billing via paystack',
+                    ].map(f => (
+                      <span key={f} className="flex items-center gap-1.5">
+                        <Check size={11} strokeWidth={2.5} className="text-teal-400" />
+                        {f}
+                      </span>
+                    ))}
+                  </div>
+                </div>
+
+                {/* ── Right: the real product, in a glass browser frame ── */}
+                <div className="relative mt-4 lg:mt-0 lg:-mr-2">
+                  {/* glow bed under the frame */}
+                  <div
+                    className="pointer-events-none absolute -inset-8 rounded-[2.5rem] blur-2xl opacity-60"
+                    style={{
+                      background:
+                        'radial-gradient(ellipse 70% 60% at 50% 55%, rgba(45,140,220,0.35) 0%, rgba(45,212,191,0.18) 50%, transparent 75%)',
+                    }}
+                    aria-hidden="true"
+                  />
+
+                  <div className="lp-float-1 relative rounded-2xl overflow-hidden border border-border dark:border-white/[0.13] bg-surface dark:bg-[#0c1230]/80 shadow-[0_30px_70px_-26px_rgba(27,35,99,0.4)] dark:shadow-[0_40px_80px_-24px_rgba(0,0,0,0.7)]">
+                    {/* browser chrome */}
+                    <div className="flex items-center gap-3 px-4 py-2.5 border-b border-border dark:border-white/[0.08] bg-surface-2 dark:bg-white/[0.03]">
+                      <span className="flex gap-1.5" aria-hidden="true">
+                        <span className="w-2.5 h-2.5 rounded-full bg-[#f4726f]/80" />
+                        <span className="w-2.5 h-2.5 rounded-full bg-[#f5bd4f]/80" />
+                        <span className="w-2.5 h-2.5 rounded-full bg-[#61c554]/80" />
+                      </span>
+                      <span className="flex-1 max-w-xs mx-auto flex items-center justify-center gap-1.5 font-mono text-[10.5px] text-muted bg-bg dark:bg-white/[0.05] border border-border dark:border-white/[0.07] rounded-md px-3 py-1">
+                        <Lock size={9} className="text-teal-400/80" />
+                        app.nubi.dev/dashboards/view
+                      </span>
+                      <span className="hidden sm:inline-flex font-mono text-[9.5px] text-brand-teal dark:text-teal-300/80 border border-brand-teal/25 dark:border-teal-400/20 bg-brand-teal/[0.07] dark:bg-teal-400/[0.07] rounded px-1.5 py-0.5">
+                        viewers free
+                      </span>
+                    </div>
+                    <img
+                      src="/docs/screenshots/dashboard-view.png"
+                      alt="A live Nubi dashboard — KPIs, trend lines, and breakdowns rendered by the in-browser kernel"
+                      width="2880"
+                      height="1800"
+                      fetchPriority="high"
+                      className="block w-full h-auto dark:hidden"
+                    />
+                    <img
+                      src="/docs/screenshots/dashboard-view-dark.png"
+                      alt=""
+                      aria-hidden="true"
+                      width="2880"
+                      height="1800"
+                      loading="lazy"
+                      className="hidden w-full h-auto dark:block"
+                    />
+                  </div>
+
+                  {/* floating stat chips */}
+                  <div className="lp-float-2 lp-hero-chip absolute -left-3 sm:-left-6 top-20 hidden md:flex items-center gap-2.5 rounded-xl px-3.5 py-2.5">
+                    <Zap size={15} className="text-teal-300" />
+                    <span className="font-mono text-[11px] leading-tight text-fg dark:text-white">
+                      ≈ $0 / embed view
+                      <span className="block text-[9.5px] text-muted">kernel runs in the tab</span>
+                    </span>
+                  </div>
+                  <div className="lp-float-3 lp-hero-chip absolute -right-2 sm:-right-5 -bottom-5 hidden md:flex items-center gap-2.5 rounded-xl px-3.5 py-2.5">
+                    <Users size={15} className="text-sky-300" />
+                    <span className="font-mono text-[11px] leading-tight text-fg dark:text-white">
+                      unlimited viewers
+                      <span className="block text-[9.5px] text-muted">no per-seat pricing, any tier</span>
+                    </span>
+                  </div>
+                </div>
+              </div>
+
+              {/* ── Structural numbers — fused into the panel ── */}
+              <div className="relative mt-12 sm:mt-16 lg:mt-20 border-t border-border dark:border-white/10 py-8 sm:py-10">
+                <p className="text-center font-mono text-[10.5px] font-semibold tracking-[0.18em] uppercase mb-8 text-muted">
+                  The structural numbers — what kernel-in-the-browser actually means
+                </p>
+                <div className="grid grid-cols-2 lg:grid-cols-4 gap-y-8 divide-x divide-border dark:divide-white/[0.07]">
+                  {[
+                    { v: '≈ $0', l: 'marginal cost per dashboard view' },
+                    { v: '0 s', l: 'cold-start — kernel runs in the tab' },
+                    { v: '∞', l: 'users & viewers — no per-seat pricing' },
+                    { v: '$0', l: 'competitor prices in ZAR (only Nubi does)' },
+                  ].map(s => (
+                    <div key={s.l} className="px-4 sm:px-8 text-center">
+                      <div className="lp-hero-gradient-text font-display text-3xl sm:text-4xl lg:text-[2.6rem] font-bold tracking-tight">
+                        {s.v}
+                      </div>
+                      <div className="mt-1.5 font-mono text-[10.5px] sm:text-[11px] leading-snug text-muted">
+                        {s.l}
+                      </div>
+                    </div>
                   ))}
                 </div>
-              </div>
-
-              {/* Right: illustration */}
-              <div className="relative">
-                <div
-                  className="absolute inset-0 -m-6 rounded-3xl pointer-events-none"
-                  style={{
-                    background:
-                      'radial-gradient(ellipse 80% 70% at 50% 50%, rgba(36,86,166,0.09) 0%, transparent 70%)',
-                  }}
-                />
-                <div className="relative bg-surface rounded-2xl border border-border overflow-hidden p-4 shadow-xl">
-                  <CompareHeroIllustration />
-                </div>
+                <p className="text-center font-mono text-[10px] mt-7 text-muted opacity-70 max-w-2xl mx-auto leading-relaxed">
+                  browser compute advantage is real at high cache-hit / pre-aggregation rates · ZAR conversion uses a daily live rate via Paystack · no competitor publishes ZAR pricing as of June 2026
+                </p>
               </div>
             </div>
           </div>
         </section>
 
         {/* ══════════════════════════════════════════════════════════
-            §2  PROOF BAND
+            §2  TRANSPARENCY NOTICE + FAIRNESS COMMITMENT
         ══════════════════════════════════════════════════════════ */}
-        <section className="relative py-14 sm:py-16 bg-brand-gradient overflow-hidden">
-          <svg className="absolute inset-0 w-full h-full opacity-5 pointer-events-none" aria-hidden="true">
-            <defs>
-              <pattern id="cp-dots" x="0" y="0" width="28" height="28" patternUnits="userSpaceOnUse">
-                <circle cx="1" cy="1" r="1" fill="white" />
-              </pattern>
-            </defs>
-            <rect width="100%" height="100%" fill="url(#cp-dots)" />
-          </svg>
-
-          <div className="relative max-w-6xl mx-auto px-4 sm:px-6 lg:px-8">
-            <p className="text-center text-xs font-semibold tracking-widest uppercase mb-10 text-white/50">
-              The structural numbers — what kernel-in-the-browser actually means
-            </p>
-            <div className="grid grid-cols-2 sm:grid-cols-4 divide-x divide-y sm:divide-y-0 divide-white/10">
-              {[
-                { value: '≈ $0', label: 'marginal cost per dashboard view' },
-                { value: '0 s', label: 'cold-start — kernel runs in the tab' },
-                { value: '∞', label: 'users & viewers — no per-seat pricing' },
-                { value: '$0', label: 'competitor prices in ZAR (only Nubi does)' },
-              ].map(({ value, label }) => (
-                <div key={value} className="flex flex-col items-center px-6 py-5">
-                  <span className="font-display text-4xl sm:text-5xl font-bold leading-none mb-1.5 text-white">
-                    {value}
-                  </span>
-                  <span className="text-xs sm:text-sm font-medium tracking-wide uppercase text-white/60 text-center max-w-[10rem]">
-                    {label}
-                  </span>
-                </div>
-              ))}
-            </div>
-            <p className="text-center text-xs mt-8 text-white/30">
-              Browser compute advantage is real at high cache-hit / pre-aggregation rates. ZAR conversion uses a daily live rate via Paystack. No competitor publishes ZAR pricing as of June 2026.
-            </p>
-          </div>
-        </section>
-
-        {/* ══════════════════════════════════════════════════════════
-            §3  TRANSPARENCY NOTICE + FAIRNESS COMMITMENT
-        ══════════════════════════════════════════════════════════ */}
-        <section className="bg-surface border-b border-border">
-          <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-6">
+        <section className="bg-bg py-10 sm:py-14">
+          <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
             {/* Fairness commitment note */}
-            <div className="mb-4">
+            <Reveal className="mb-5">
               <FairnessNote asOf="June 2026" />
-            </div>
+            </Reveal>
 
-            <div className="flex flex-col sm:flex-row gap-4 sm:gap-8">
-              <div className="flex items-start gap-2.5 text-xs text-muted flex-1">
-                <Info size={14} className="shrink-0 mt-0.5 text-brand-teal" />
-                <p>
-                  <span className="font-semibold text-fg">Data transparency: </span>
-                  Competitor data researched June 2026 from public pricing pages and independent analysts.
-                  Fields marked <EstBadge /> contain estimates. Sources linked on each card below.
-                </p>
-              </div>
-              <div className="flex items-start gap-2.5 text-xs text-muted flex-1">
-                <AlertTriangle size={14} className="shrink-0 mt-0.5 text-brand-teal" />
-                <p>
-                  <span className="font-semibold text-fg">Cost claim scope: </span>
-                  The 10–50× advantage is real only at <em>high cache-hit rates</em> — e.g.,
-                  500 viewers of the same dashboard. For 500 analysts each slicing differently,
-                  cache hit rate craters. Auto pre-aggregations extend the advantage to diverse workloads.
-                </p>
-              </div>
+            <div className="grid sm:grid-cols-2 gap-4 sm:gap-5">
+              <Reveal>
+                <div className="cp-card h-full p-5 flex items-start gap-3" style={{ '--cp-accent': '#17b3a3' }}>
+                  <span className="shrink-0 mt-0.5 inline-flex items-center justify-center w-8 h-8 rounded-lg bg-brand-teal/10 border border-brand-teal/25">
+                    <Info size={14} className="text-brand-teal" />
+                  </span>
+                  <div>
+                    <p className="font-mono text-[10px] font-semibold uppercase tracking-[0.16em] text-brand-teal mb-1.5">
+                      Data transparency
+                    </p>
+                    <p className="text-xs text-muted leading-relaxed">
+                      Competitor data researched June 2026 from{' '}
+                      <strong className="text-fg font-semibold">public pricing pages and independent analysts</strong>.
+                      Fields marked <EstBadge /> contain estimates. Sources linked on each card below.
+                    </p>
+                  </div>
+                </div>
+              </Reveal>
+              <Reveal delay={90}>
+                <div className="cp-card h-full p-5 flex items-start gap-3" style={{ '--cp-accent': '#2456a6' }}>
+                  <span className="shrink-0 mt-0.5 inline-flex items-center justify-center w-8 h-8 rounded-lg bg-brand-blue/10 border border-brand-blue/25">
+                    <AlertTriangle size={14} className="text-brand-blue" />
+                  </span>
+                  <div>
+                    <p className="font-mono text-[10px] font-semibold uppercase tracking-[0.16em] text-brand-blue mb-1.5">
+                      Cost claim scope
+                    </p>
+                    <p className="text-xs text-muted leading-relaxed">
+                      The 10–50× advantage is real only at{' '}
+                      <strong className="text-fg font-semibold">high cache-hit rates</strong> — e.g.,
+                      500 viewers of the same dashboard. For 500 analysts each slicing differently,
+                      cache hit rate craters. Auto pre-aggregations extend the advantage to diverse workloads.
+                    </p>
+                  </div>
+                </div>
+              </Reveal>
             </div>
           </div>
         </section>
 
         {/* ══════════════════════════════════════════════════════════
-            §4  PRIMARY TABLE — Nubi vs Hex vs Cube
+            §3  PRIMARY TABLE — Nubi vs Hex vs Cube
         ══════════════════════════════════════════════════════════ */}
-        <section className="py-20 sm:py-24 bg-bg">
+        <section className="py-16 sm:py-24 bg-bg">
           <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
 
-            <div className="text-center mb-12 max-w-2xl mx-auto">
-              <p className="text-xs font-semibold tracking-widest uppercase mb-4 text-brand-teal">
-                Primary positioning
-              </p>
-              <h2 className="font-display font-bold text-4xl sm:text-5xl text-fg mb-4">
-                Nubi vs Hex vs Cube
-              </h2>
-              <p className="text-base text-muted leading-relaxed">
-                Hex and Cube bracket the space: Hex is the best collaborative notebook; Cube is the
-                gold-standard headless semantic layer. Nubi is batteries-included BI built for embedding.
-              </p>
-            </div>
+            <SectionHead
+              eyebrow="Primary positioning"
+              title={<>Nubi vs <span className="text-brand-gradient">Hex vs Cube.</span></>}
+            >
+              Hex and Cube bracket the space: <strong className="text-fg font-semibold">Hex is the best
+              collaborative notebook</strong>; <strong className="text-fg font-semibold">Cube is the
+              gold-standard headless semantic layer</strong>. Nubi is batteries-included BI built for embedding.
+            </SectionHead>
 
-            <PrimaryTable />
+            <Reveal>
+              <PrimaryTable />
+            </Reveal>
           </div>
         </section>
 
         {/* ══════════════════════════════════════════════════════════
-            §4b  ALL-COMPETITORS TABLE — 14 platforms, scrupulously fair
+            §3b  ALL-COMPETITORS TABLE — 14 platforms, scrupulously fair
             Covers all platforms from the June 2026 research:
             Metabase, Hex, Cube, Looker, Sigma, Tableau, Power BI,
             Superset/Preset, Count, Embeddable, Holistics, Luzmo,
             Omni, GoodData (+ Nubi)
         ══════════════════════════════════════════════════════════ */}
-        <section className="py-20 sm:py-24 bg-surface-2/50 border-t border-border">
+        <section className="py-16 sm:py-24 bg-surface-2 border-y border-border">
           <div className="max-w-[96rem] mx-auto px-4 sm:px-6 lg:px-8">
 
-            <div className="text-center mb-10 max-w-3xl mx-auto">
-              <p className="text-xs font-semibold tracking-widest uppercase mb-4 text-brand-teal">
-                All 14 platforms compared
-              </p>
-              <h2 className="font-display font-bold text-4xl sm:text-5xl text-fg mb-4">
-                The full picture — no cherry-picking
-              </h2>
-              <p className="text-base text-muted leading-relaxed mb-6">
-                Every platform covered in the June 2026 research. Pricing from public pages or
-                third-party analysts (estimated figures marked <EstBadge />). The last column
-                honestly acknowledges where each competitor is genuinely stronger than Nubi.
-              </p>
+            <SectionHead
+              wide
+              eyebrow="All 14 platforms compared"
+              title={<>The full picture — <span className="text-brand-gradient">no cherry-picking.</span></>}
+            >
+              Every platform covered in the June 2026 research. Pricing from{' '}
+              <strong className="text-fg font-semibold">public pages or third-party analysts</strong>{' '}
+              (estimated figures marked <EstBadge />). The last column honestly acknowledges{' '}
+              <strong className="text-fg font-semibold">where each competitor is genuinely stronger than Nubi</strong>.
+            </SectionHead>
 
-              {/* No per-seat callout */}
-              <div className="inline-flex items-center gap-2.5 px-4 py-3 rounded-xl
-                bg-surface border border-brand-teal/30 text-sm text-fg">
-                <Users size={15} className="text-brand-teal shrink-0" />
-                <span>
-                  <strong className="font-semibold">Nubi's headline differentiator:</strong>{' '}
+            {/* No per-seat callout */}
+            <Reveal className="flex justify-center mb-10">
+              <div className="cp-card inline-flex items-start sm:items-center gap-3 px-5 py-4 max-w-2xl text-left">
+                <span className="shrink-0 inline-flex items-center justify-center w-9 h-9 rounded-xl text-white shadow-md"
+                  style={{ background: 'linear-gradient(135deg, #2456a6, #17b3a3)' }}>
+                  <Users size={16} strokeWidth={2} />
+                </span>
+                <span className="text-sm text-muted leading-relaxed">
+                  <strong className="font-semibold text-fg">Nubi&apos;s headline differentiator:</strong>{' '}
                   unlimited users and viewers at every tier — no per-seat charge.
-                  You pay for compute, storage, AI calls, and embed sessions, never for headcount.
+                  You pay for compute, storage, AI calls, and embed sessions,{' '}
+                  <strong className="font-semibold text-fg">never for headcount</strong>.
                 </span>
               </div>
-            </div>
+            </Reveal>
 
-            <AllCompetitorsTable />
+            <Reveal>
+              <AllCompetitorsTable />
+            </Reveal>
 
-            <p className="mt-4 text-xs text-muted text-right">
-              Data as of June 2026 · Prices change frequently — verify at each platform's pricing page before making a decision.
+            <p className="mt-4 font-mono text-[10.5px] text-muted text-right">
+              data as of June 2026 · prices change frequently — verify at each platform&apos;s pricing page before making a decision
             </p>
           </div>
         </section>
 
         {/* ══════════════════════════════════════════════════════════
-            §5  WHY NUBI — three structural differentiators
+            §4  WHY NUBI — bento deck on an observatory panel
         ══════════════════════════════════════════════════════════ */}
-        <section className="py-20 sm:py-24 bg-surface-2/50 border-t border-border">
-          <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+        <section className="relative bg-bg px-3 sm:px-5 py-8 sm:py-12">
+          <div className="lp-hero-panel relative max-w-[1440px] mx-auto rounded-[1.5rem] sm:rounded-[2rem] overflow-hidden border border-border dark:border-white/[0.06]">
+            <div className="lp-noise pointer-events-none absolute inset-0" aria-hidden="true" />
+            <div
+              className="lp-mesh-blob pointer-events-none absolute -top-32 -right-40 w-[36rem] h-[36rem] rounded-full"
+              style={{ background: 'radial-gradient(circle, rgba(45,212,191,0.14) 0%, transparent 65%)' }}
+              aria-hidden="true"
+            />
 
-            <div className="text-center mb-12 max-w-2xl mx-auto">
-              <p className="text-xs font-semibold tracking-widest uppercase mb-4 text-brand-teal">
-                Why Nubi
-              </p>
-              <h2 className="font-display font-bold text-4xl sm:text-5xl text-fg mb-4">
-                {WHY_NUBI.data?.title ?? 'The structural difference'}
-              </h2>
-              <p className="text-base text-muted leading-relaxed">
-                {WHY_NUBI.data?.tagline ?? 'Three architectural bets that change what\'s possible — and what it costs.'}
-              </p>
-            </div>
+            <div className="relative px-5 sm:px-10 lg:px-14 py-12 sm:py-16 lg:py-20">
+              <div className="text-center mb-10 sm:mb-14 max-w-2xl mx-auto">
+                <p className="font-mono text-[11px] font-semibold tracking-[0.18em] uppercase mb-4 text-brand-teal">
+                  Why Nubi
+                </p>
+                <h2 className="font-display text-3xl sm:text-4xl lg:text-[3.2rem] font-bold leading-[1.08] tracking-tight mb-4 text-fg">
+                  {WHY_NUBI.data?.title
+                    ? gradientLast(WHY_NUBI.data.title, 'lp-hero-gradient-text')
+                    : <>The <span className="lp-hero-gradient-text">structural</span> difference.</>}
+                </h2>
+                <p className="text-sm sm:text-base lg:text-lg leading-relaxed text-muted dark:text-slate-300/90">
+                  {WHY_NUBI.data?.tagline ?? 'Three architectural bets that change what\'s possible — and what it costs.'}
+                </p>
+              </div>
 
-            <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-5 mb-6">
-              <WhyCard
-                icon={Zap}
-                title="Near-zero marginal cost"
-                body="Compute runs in the viewer's browser (DuckDB-WASM, SQL). 500 concurrent embedded viewers sharing the same dashboard collapse to 1 warehouse hit — the advantage is real at high cache-hit rates and extends to diverse workloads via automatic pre-aggregations."
-              />
-              <WhyCard
-                icon={Layers}
-                title="Arrow IPC end-to-end"
-                body="Results move as columnar Arrow buffers over WebSocket. The viz layer reads them directly — no JSON serialisation round-trip. <nubi-chart> renders on canvas via Apache ECharts, so charts stay fast and responsive even on large result sets."
-              />
-              <WhyCard
-                icon={Shield}
-                title="Auth as code"
-                body="Publish your JWKS, implement getToken(), mount <nubi-dashboard>. JWT claims drive row-level security — enforced server-side in the connector before any buffer reaches the browser. No separate embed SDK. Policies are TypeScript/SQL in your repo, diffable in PRs."
-              />
-            </div>
+              <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-4 sm:gap-5 mb-5">
+                {WHY_CARDS.map((card, i) => (
+                  <WhyBentoCard key={card.index} card={card} idx={i} />
+                ))}
+              </div>
 
-            {/* Honest limitations from why-nubi.md — section after --- */}
-            <div className="max-w-4xl mx-auto bg-surface border border-border rounded-2xl p-6">
-              <p className="text-[10px] font-semibold uppercase tracking-widest text-muted mb-3 flex items-center gap-1.5">
-                <AlertTriangle size={11} className="text-brand-teal" />
-                Honest limitations
-              </p>
-              <p className="text-sm text-muted leading-relaxed">
-                The cost advantage is real <strong className="text-fg">only at high cache-hit / pre-aggregation rates</strong> — 500 analysts each slicing differently reverts to warehouse scans. Browser memory cap (~4 GB) requires aggressive pushdown. The browser only runs SQL (DuckDB-WASM), so Python and native-wheel workloads route to the on-demand server kernel — a launch requirement for those, not optional. NoSQL deliberately out of scope. M10 self-host stack not yet shipped.
-              </p>
+              {/* Honest limitations from why-nubi.md — section after --- */}
+              <Reveal className="max-w-4xl mx-auto">
+                <div className="cp-card cp-hairline p-6" style={{ '--cp-accent': '#e8a35c' }}>
+                  <p className="font-mono text-[10px] font-semibold uppercase tracking-[0.16em] text-muted mb-3 flex items-center gap-1.5">
+                    <AlertTriangle size={11} className="text-brand-teal" />
+                    Honest limitations
+                  </p>
+                  <p className="text-sm text-muted dark:text-slate-300/85 leading-relaxed">
+                    The cost advantage is real <B>only at high cache-hit / pre-aggregation rates</B> — 500 analysts each slicing differently reverts to warehouse scans. Browser memory cap (~4 GB) requires aggressive pushdown. The browser only runs SQL (DuckDB-WASM), so Python and native-wheel workloads route to the on-demand server kernel — a launch requirement for those, not optional. NoSQL deliberately out of scope. M10 self-host stack not yet shipped.
+                  </p>
+                </div>
+              </Reveal>
             </div>
           </div>
         </section>
 
         {/* ══════════════════════════════════════════════════════════
-            §6  FULL FEATURE MATRIX — from matrix.md frontmatter
+            §5  FULL FEATURE MATRIX — from matrix.md frontmatter
         ══════════════════════════════════════════════════════════ */}
-        <section className="py-20 sm:py-24 bg-bg border-t border-border">
+        <section id="matrix" className="py-16 sm:py-24 bg-bg scroll-mt-20">
           <div className="max-w-[96rem] mx-auto px-4 sm:px-6 lg:px-8">
 
-            <div className="text-center mb-12 max-w-2xl mx-auto">
-              <p className="text-xs font-semibold tracking-widest uppercase mb-4 text-brand-teal">
-                Full feature matrix
-              </p>
-              <h2 className="font-display font-bold text-4xl sm:text-5xl text-fg mb-4">
-                {MATRIX_META?.data?.title ?? 'All tools, side by side'}
-              </h2>
-              <p className="text-base text-muted leading-relaxed">
-                {MATRIX_META?.data?.subtitle ?? 'Scroll horizontally to compare all tools across every dimension. Hover row labels for context. Nubi column is highlighted.'}
-              </p>
-            </div>
+            <SectionHead
+              eyebrow="Full feature matrix"
+              title={MATRIX_META?.data?.title
+                ? gradientLast(MATRIX_META.data.title)
+                : <>All tools, <span className="text-brand-gradient">side by side.</span></>}
+            >
+              {MATRIX_META?.data?.subtitle ?? 'Scroll horizontally to compare all tools across every dimension. Hover row labels for context. Nubi column is highlighted.'}
+            </SectionHead>
 
-            <FullMatrix />
+            <Reveal>
+              <FullMatrix />
+            </Reveal>
 
-            <p className="mt-4 text-xs text-muted text-right">
-              Researched June 2026 · Features and pricing change frequently — verify before publishing.
+            <p className="mt-4 font-mono text-[10.5px] text-muted text-right">
+              researched June 2026 · features and pricing change frequently — verify before publishing
             </p>
           </div>
         </section>
 
         {/* ══════════════════════════════════════════════════════════
-            §7  COMPETITOR CARDS — from competitors/*.md
+            §6  COMPETITOR CARDS — from competitors/*.md
         ══════════════════════════════════════════════════════════ */}
-        <section className="py-20 sm:py-24 bg-surface-2/50 border-t border-border">
+        <section className="py-16 sm:py-24 bg-surface-2 border-y border-border">
           <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
 
-            <div className="text-center mb-12 max-w-2xl mx-auto">
-              <p className="text-xs font-semibold tracking-widest uppercase mb-4 text-brand-teal">
-                Competitor profiles
-              </p>
-              <h2 className="font-display font-bold text-4xl sm:text-5xl text-fg mb-4">
-                Know the field
-              </h2>
-              <p className="text-base text-muted leading-relaxed">
-                Strengths, limitations, pricing model, and source links for each tool.
-                Expand a card for full pricing detail.
-              </p>
-            </div>
+            <SectionHead
+              eyebrow="Competitor profiles"
+              title={<>Know <span className="text-brand-gradient">the field.</span></>}
+            >
+              <strong className="text-fg font-semibold">Strengths, limitations, pricing model, and source links</strong>{' '}
+              for each tool. Expand a card for full pricing detail.
+            </SectionHead>
 
-            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-5">
-              {COMPETITORS.map(c => (
-                <CompetitorCard key={c.name} competitor={c} />
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4 sm:gap-5">
+              {COMPETITORS.map((c, i) => (
+                <CompetitorCard key={c.name} competitor={c} delay={(i % 4) * 70} />
               ))}
             </div>
           </div>
         </section>
 
         {/* ══════════════════════════════════════════════════════════
-            §8  WORKFLOW ORCHESTRATION — Nubi Flows vs Prefect/Airflow/Dagster/n8n
+            §7  WORKFLOW ORCHESTRATION — Nubi Flows vs Prefect/Airflow/Dagster/n8n
             This is a distinct product category from the BI tools above.
         ══════════════════════════════════════════════════════════ */}
-        <section className="py-20 sm:py-24 bg-bg border-t-4 border-brand-teal/30">
+        <section className="py-16 sm:py-24 bg-bg">
           <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
 
             {/* Category separator — visually signals a new dimension */}
-            <div className="flex items-center gap-4 mb-10">
+            <Reveal className="flex items-center gap-4 mb-10">
               <div className="flex-1 h-px bg-gradient-to-r from-transparent via-border to-transparent" />
-              <div className="inline-flex items-center gap-2 px-4 py-1.5 rounded-full bg-surface border border-border text-[11px] font-semibold tracking-widest uppercase text-muted">
+              <div className="inline-flex items-center gap-2 px-4 py-1.5 rounded-full bg-surface border border-border font-mono text-[10.5px] font-semibold tracking-[0.16em] uppercase text-muted">
                 <GitFork size={12} className="text-brand-teal" />
                 Different category — workflow orchestration
               </div>
               <div className="flex-1 h-px bg-gradient-to-r from-transparent via-border to-transparent" />
-            </div>
+            </Reveal>
 
-            <div className="text-center mb-12 max-w-2xl mx-auto">
-              <p className="text-xs font-semibold tracking-widest uppercase mb-4 text-brand-teal">
-                Nubi Flows
-              </p>
-              <h2 className="font-display font-bold text-4xl sm:text-5xl text-fg mb-4">
-                Workflow orchestration
-              </h2>
-              <p className="text-base text-muted leading-relaxed">
-                Nubi Flows is a lightweight, LLM-native orchestrator built into the Nubi stack — a Prefect alternative
-                for analytics workflows that need per-user RLS, agent steps, and zero extra infra.
-                This is a <strong className="text-fg">separate category</strong> from the BI tools above;
-                the tools below are orchestrators, not dashboarding products.
-              </p>
-            </div>
+            <SectionHead
+              eyebrow="Nubi Flows"
+              title={<>Workflow <span className="text-brand-gradient">orchestration.</span></>}
+            >
+              Nubi Flows is a <strong className="text-fg font-semibold">lightweight, LLM-native orchestrator built into the Nubi stack</strong> — a Prefect alternative
+              for analytics workflows that need per-user RLS, agent steps, and zero extra infra.
+              This is a <strong className="text-fg font-semibold">separate category</strong> from the BI tools above;
+              the tools below are orchestrators, not dashboarding products.
+            </SectionHead>
 
             {/* Nubi Flows highlight card */}
-            <div className="mb-10 rounded-2xl border border-brand-teal/30 bg-surface overflow-hidden"
-              style={{ background: 'linear-gradient(160deg, rgba(27,35,99,0.05) 0%, rgba(23,179,163,0.06) 100%)' }}>
-              <div className="px-6 py-5 border-b border-brand-teal/20 flex flex-col sm:flex-row sm:items-center gap-4">
-                <div className="flex-1">
-                  <div className="flex items-center gap-2 mb-1">
-                    <span className="text-[10px] font-semibold uppercase tracking-widest text-brand-teal">
-                      ★ Nubi Flows
-                    </span>
-                    <span className="inline-flex items-center text-[10px] font-medium px-2 py-0.5 rounded-full border border-brand-teal/30 bg-brand-teal/10 text-brand-teal">
-                      Included in Nubi
-                    </span>
+            <Reveal className="mb-10">
+              <div className="cp-card cp-hairline overflow-hidden" style={{ '--cp-accent': '#17b3a3' }}>
+                <div className="px-6 py-5 border-b border-border dark:border-white/[0.07] flex flex-col sm:flex-row sm:items-center gap-4">
+                  <div className="flex-1">
+                    <div className="flex items-center gap-2 mb-1">
+                      <span className="font-mono text-[10px] font-semibold uppercase tracking-[0.16em] text-brand-teal">
+                        ★ Nubi Flows
+                      </span>
+                      <span className="inline-flex items-center font-mono text-[10px] font-medium px-2 py-0.5 rounded-full border border-brand-teal/30 bg-brand-teal/10 text-brand-teal">
+                        Included in Nubi
+                      </span>
+                    </div>
+                    <h3 className="font-display font-semibold text-base sm:text-lg text-fg">
+                      Lightweight, LLM-native workflow orchestrator — no Redis, no Celery
+                    </h3>
                   </div>
-                  <h3 className="font-display font-semibold text-base text-fg">
-                    Lightweight, LLM-native workflow orchestrator — no Redis, no Celery
-                  </h3>
+                  <div className="flex flex-wrap gap-2 shrink-0">
+                    {[
+                      'Postgres-backed (SKIP LOCKED)',
+                      'RLS-aware',
+                      'Agent task kind',
+                      'React Flow DAG builder',
+                    ].map(tag => (
+                      <span key={tag} className="inline-flex items-center font-mono text-[10px] font-medium px-2 py-0.5 rounded-full border border-brand-teal/30 bg-brand-teal/10 text-brand-teal">
+                        {tag}
+                      </span>
+                    ))}
+                  </div>
                 </div>
-                <div className="flex flex-wrap gap-2 shrink-0">
+                <div className="grid sm:grid-cols-2 lg:grid-cols-4 gap-0 divide-y sm:divide-y-0 sm:divide-x divide-border dark:divide-white/[0.07]">
                   {[
-                    'Postgres-backed (SKIP LOCKED)',
-                    'RLS-aware',
-                    'Agent task kind',
-                    'React Flow DAG builder',
-                  ].map(tag => (
-                    <span key={tag} className="inline-flex items-center text-[10px] font-medium px-2 py-0.5 rounded-full border border-brand-teal/30 bg-brand-teal/10 text-brand-teal">
-                      {tag}
-                    </span>
+                    { label: 'DAG definition', value: 'Declarative JSON FlowSpec + visual React Flow canvas; LLM can author flows in natural language' },
+                    { label: 'Execution infra', value: 'Postgres SKIP LOCKED claim worker — no Redis, no Celery, no K8s required' },
+                    { label: 'RLS & multi-tenant', value: 'JWT claims flow through to every query/agent task; org-scoped; cross-org returns 404' },
+                    { label: 'LLM integration', value: 'Agent task kind natively; AI tools create/run/generate flows; NullProvider keeps tests deterministic' },
+                  ].map(({ label, value }) => (
+                    <div key={label} className="px-5 py-4">
+                      <p className="font-mono text-[10px] font-semibold uppercase tracking-[0.16em] text-brand-teal mb-1.5">{label}</p>
+                      <p className="text-xs text-fg dark:text-slate-200 leading-relaxed">{value}</p>
+                    </div>
                   ))}
                 </div>
               </div>
-              <div className="grid sm:grid-cols-2 lg:grid-cols-4 gap-0 divide-y sm:divide-y-0 sm:divide-x divide-brand-teal/10">
-                {[
-                  { label: 'DAG definition', value: 'Declarative JSON FlowSpec + visual React Flow canvas; LLM can author flows in natural language' },
-                  { label: 'Execution infra', value: 'Postgres SKIP LOCKED claim worker — no Redis, no Celery, no K8s required' },
-                  { label: 'RLS & multi-tenant', value: 'JWT claims flow through to every query/agent task; org-scoped; cross-org returns 404' },
-                  { label: 'LLM integration', value: 'Agent task kind natively; AI tools create/run/generate flows; NullProvider keeps tests deterministic' },
-                ].map(({ label, value }) => (
-                  <div key={label} className="px-5 py-4">
-                    <p className="text-[10px] font-semibold uppercase tracking-widest text-brand-teal mb-1.5">{label}</p>
-                    <p className="text-xs text-fg leading-relaxed">{value}</p>
-                  </div>
-                ))}
-              </div>
-            </div>
+            </Reveal>
 
             {/* Orchestrator comparison table */}
-            <div className="overflow-x-auto overscroll-x-contain rounded-2xl border border-border shadow-sm mb-10">
-              <table className="border-collapse w-full" style={{ minWidth: 700 }}>
-                <thead>
-                  <tr>
-                    <th className="px-5 py-4 text-left bg-surface border-b border-r border-border" style={{ minWidth: 140, width: 140 }}>
-                      <span className="text-[10px] font-semibold uppercase tracking-widest text-muted">Dimension</span>
-                    </th>
-                    <th className="cp-nubi-header px-5 py-4 text-left border-b border-r border-border" style={{ minWidth: 180 }}>
-                      <span className="text-[10px] font-semibold uppercase tracking-widest text-brand-teal">★ Nubi Flows</span>
-                      <p className="text-[10px] text-brand-teal mt-0.5 font-normal normal-case tracking-normal opacity-80">embedded in Nubi</p>
-                    </th>
-                    {[
-                      { key: 'Prefect', subtitle: 'Python decorators' },
-                      { key: 'Apache Airflow', subtitle: 'DAG operators' },
-                      { key: 'Dagster', subtitle: 'asset-centric' },
-                      { key: 'n8n', subtitle: 'visual automation' },
-                    ].map(col => (
-                      <th key={col.key} className="px-5 py-4 text-left bg-surface border-b border-r border-border last:border-r-0" style={{ minWidth: 160 }}>
-                        <span className="text-[10px] font-semibold uppercase tracking-widest text-muted">{col.key}</span>
-                        <p className="text-[10px] text-muted mt-0.5 font-normal normal-case tracking-normal opacity-60">{col.subtitle}</p>
+            <Reveal className="mb-10">
+              <div className="cp-table-shell overflow-x-auto overscroll-x-contain rounded-2xl border border-border">
+                <table className="border-collapse w-full" style={{ minWidth: 700 }}>
+                  <thead>
+                    <tr>
+                      <th className="px-5 py-4 text-left bg-surface-2 border-b border-r border-border" style={{ minWidth: 140, width: 140 }}>
+                        <span className="font-mono text-[10px] font-semibold uppercase tracking-[0.14em] text-muted">Dimension</span>
                       </th>
-                    ))}
-                  </tr>
-                </thead>
-                <tbody>
-                  {[
-                    {
-                      label: 'DAG definition',
-                      nubi: 'Declarative JSON FlowSpec; visual React Flow canvas; LLM can author flows in NL',
-                      Prefect: '@flow/@task Python decorators; code-only; no visual builder',
-                      'Apache Airflow': 'Python DAG files with Operators; global-scope instantiation; no visual builder',
-                      Dagster: '@asset + @job Python; Software-Defined Assets; Dagit UI (read-only graph)',
-                      n8n: 'Visual drag-and-drop node canvas; 400+ pre-built integration nodes',
-                    },
-                    {
-                      label: 'Execution infra',
-                      nubi: 'Postgres SKIP LOCKED — no Redis, no Celery, no K8s required',
-                      Prefect: 'Postgres metadata DB + customer-managed workers (Docker, K8s, cloud VMs)',
-                      'Apache Airflow': 'Postgres + Redis/RabbitMQ (Celery) or Kubernetes; significant DevOps overhead',
-                      Dagster: 'Postgres + dagster-daemon + Dagit; no Redis; Dagster+ Serverless $0.01/min',
-                      n8n: 'Node.js + Postgres or SQLite; no broker; execution capped by cloud plan tier',
-                    },
-                    {
-                      label: 'RLS / multi-tenant',
-                      nubi: 'JWT claims flow to every query/agent task; org-scoped execution; cross-org 404',
-                      Prefect: 'None — flows run as a service account; no per-user data isolation',
-                      'Apache Airflow': 'None — single execution context; UI RBAC only',
-                      Dagster: 'None natively; Dagster+ RBAC per deployment; no JWT-scoped task execution',
-                      n8n: 'None — single service credential; Projects for workspace separation only',
-                    },
-                    {
-                      label: 'LLM / agent tasks',
-                      nubi: 'Native agent task kind; AI tools create/run/generate flows in NL; MCP-compatible',
-                      Prefect: 'No native kind; PythonTask can call any LLM API; no built-in MCP',
-                      'Apache Airflow': 'No native kind; PythonOperator + community LLM providers; no built-in MCP',
-                      Dagster: 'No native kind; @asset can call LLM APIs; community OpenAI/Anthropic resources',
-                      n8n: 'First-class AI Agent + LLM Chain nodes; 12+ LLM providers; AI Workflow Builder',
-                    },
-                    {
-                      label: 'Self-host infra',
-                      nubi: 'Runs inside Nubi (uses existing Postgres); no additional broker',
-                      Prefect: 'Prefect Server: Postgres only (Apache 2.0). Workers: customer-managed.',
-                      'Apache Airflow': 'Postgres + Redis (Celery) or Kubernetes; managed options from ~$300–$1,400/month',
-                      Dagster: 'Postgres + dagster-daemon + Dagit (no Redis); Dagster+ cloud available',
-                      n8n: 'Docker + Postgres/SQLite; fair-code license; Business license needed for SSO/Git',
-                    },
-                    {
-                      label: 'Pricing',
-                      nubi: 'Included in Nubi usage-based pricing; no separate orchestration SKU',
-                      Prefect: 'Hobby free; paid from ~$75–$100/month (seat-based); compute separate',
-                      'Apache Airflow': 'OSS free; managed from ~$100/month (Astronomer) to $1,400/month (MWAA large)',
-                      Dagster: 'OSS free; Dagster+ Solo $10/month + $0.040/credit; Starter $100/month + $0.035/credit',
-                      n8n: 'Community free (self-host); Cloud Starter €20/month (2,500 exec); Pro €50/month (10k exec)',
-                    },
-                  ].map(row => (
-                    <tr key={row.label} className="cp-row border-b border-border last:border-0 transition-colors">
-                      <td className="cp-row-cell px-5 py-4 text-xs font-semibold text-muted align-top bg-surface border-r border-border transition-colors">
-                        {row.label}
-                      </td>
-                      <td className="cp-nubi-col px-5 py-4 text-xs text-fg font-medium align-top leading-relaxed">
-                        {row.nubi}
-                      </td>
-                      {['Prefect', 'Apache Airflow', 'Dagster', 'n8n'].map(tool => (
-                        <td key={tool} className="cp-row-cell px-5 py-4 text-xs text-muted align-top bg-surface border-r border-border last:border-r-0 transition-colors leading-relaxed">
-                          {row[tool]}
-                        </td>
+                      <th className="cp-nubi-header px-5 py-4 text-left border-b border-r border-border" style={{ minWidth: 180 }}>
+                        <span className="font-mono text-[10px] font-semibold uppercase tracking-[0.14em] text-brand-teal">★ Nubi Flows</span>
+                        <p className="font-mono text-[10px] text-brand-teal mt-0.5 font-normal normal-case tracking-normal opacity-80">embedded in Nubi</p>
+                      </th>
+                      {[
+                        { key: 'Prefect', subtitle: 'Python decorators' },
+                        { key: 'Apache Airflow', subtitle: 'DAG operators' },
+                        { key: 'Dagster', subtitle: 'asset-centric' },
+                        { key: 'n8n', subtitle: 'visual automation' },
+                      ].map(col => (
+                        <th key={col.key} className="px-5 py-4 text-left bg-surface-2 border-b border-r border-border last:border-r-0" style={{ minWidth: 160 }}>
+                          <span className="font-mono text-[10px] font-semibold uppercase tracking-[0.14em] text-muted">{col.key}</span>
+                          <p className="font-mono text-[10px] text-muted mt-0.5 font-normal normal-case tracking-normal opacity-60">{col.subtitle}</p>
+                        </th>
                       ))}
                     </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
+                  </thead>
+                  <tbody>
+                    {[
+                      {
+                        label: 'DAG definition',
+                        nubi: 'Declarative JSON FlowSpec; visual React Flow canvas; LLM can author flows in NL',
+                        Prefect: '@flow/@task Python decorators; code-only; no visual builder',
+                        'Apache Airflow': 'Python DAG files with Operators; global-scope instantiation; no visual builder',
+                        Dagster: '@asset + @job Python; Software-Defined Assets; Dagit UI (read-only graph)',
+                        n8n: 'Visual drag-and-drop node canvas; 400+ pre-built integration nodes',
+                      },
+                      {
+                        label: 'Execution infra',
+                        nubi: 'Postgres SKIP LOCKED — no Redis, no Celery, no K8s required',
+                        Prefect: 'Postgres metadata DB + customer-managed workers (Docker, K8s, cloud VMs)',
+                        'Apache Airflow': 'Postgres + Redis/RabbitMQ (Celery) or Kubernetes; significant DevOps overhead',
+                        Dagster: 'Postgres + dagster-daemon + Dagit; no Redis; Dagster+ Serverless $0.01/min',
+                        n8n: 'Node.js + Postgres or SQLite; no broker; execution capped by cloud plan tier',
+                      },
+                      {
+                        label: 'RLS / multi-tenant',
+                        nubi: 'JWT claims flow to every query/agent task; org-scoped execution; cross-org 404',
+                        Prefect: 'None — flows run as a service account; no per-user data isolation',
+                        'Apache Airflow': 'None — single execution context; UI RBAC only',
+                        Dagster: 'None natively; Dagster+ RBAC per deployment; no JWT-scoped task execution',
+                        n8n: 'None — single service credential; Projects for workspace separation only',
+                      },
+                      {
+                        label: 'LLM / agent tasks',
+                        nubi: 'Native agent task kind; AI tools create/run/generate flows in NL; MCP-compatible',
+                        Prefect: 'No native kind; PythonTask can call any LLM API; no built-in MCP',
+                        'Apache Airflow': 'No native kind; PythonOperator + community LLM providers; no built-in MCP',
+                        Dagster: 'No native kind; @asset can call LLM APIs; community OpenAI/Anthropic resources',
+                        n8n: 'First-class AI Agent + LLM Chain nodes; 12+ LLM providers; AI Workflow Builder',
+                      },
+                      {
+                        label: 'Self-host infra',
+                        nubi: 'Runs inside Nubi (uses existing Postgres); no additional broker',
+                        Prefect: 'Prefect Server: Postgres only (Apache 2.0). Workers: customer-managed.',
+                        'Apache Airflow': 'Postgres + Redis (Celery) or Kubernetes; managed options from ~$300–$1,400/month',
+                        Dagster: 'Postgres + dagster-daemon + Dagit (no Redis); Dagster+ cloud available',
+                        n8n: 'Docker + Postgres/SQLite; fair-code license; Business license needed for SSO/Git',
+                      },
+                      {
+                        label: 'Pricing',
+                        nubi: 'Included in Nubi usage-based pricing; no separate orchestration SKU',
+                        Prefect: 'Hobby free; paid from ~$75–$100/month (seat-based); compute separate',
+                        'Apache Airflow': 'OSS free; managed from ~$100/month (Astronomer) to $1,400/month (MWAA large)',
+                        Dagster: 'OSS free; Dagster+ Solo $10/month + $0.040/credit; Starter $100/month + $0.035/credit',
+                        n8n: 'Community free (self-host); Cloud Starter €20/month (2,500 exec); Pro €50/month (10k exec)',
+                      },
+                    ].map(row => (
+                      <tr key={row.label} className="cp-row cp-matrix-row border-b border-border last:border-0 transition-colors">
+                        <td className="cp-row-cell px-5 py-4 text-xs font-semibold text-fg align-top bg-surface border-r border-border transition-colors">
+                          {row.label}
+                        </td>
+                        <td className="cp-nubi-col px-5 py-4 text-xs text-fg font-medium align-top leading-relaxed">
+                          {row.nubi}
+                        </td>
+                        {['Prefect', 'Apache Airflow', 'Dagster', 'n8n'].map(tool => (
+                          <td key={tool} className="cp-row-cell px-5 py-4 text-xs text-muted align-top bg-surface border-r border-border last:border-r-0 transition-colors leading-relaxed">
+                            {row[tool]}
+                          </td>
+                        ))}
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </Reveal>
 
             {/* Orchestrator cards */}
-            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-5">
-              {ORCHESTRATORS.map(o => (
-                <CompetitorCard key={o.name} competitor={o} />
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 sm:gap-5">
+              {ORCHESTRATORS.map((o, i) => (
+                <CompetitorCard key={o.name} competitor={o} delay={(i % 4) * 70} />
               ))}
             </div>
 
-            <p className="mt-6 text-xs text-muted text-right">
-              Researched June 2026 · Orchestration tooling evolves quickly — verify pricing and features before publishing.
+            <p className="mt-6 font-mono text-[10.5px] text-muted text-right">
+              researched June 2026 · orchestration tooling evolves quickly — verify pricing and features before publishing
             </p>
           </div>
         </section>
 
         {/* ══════════════════════════════════════════════════════════
-            §9  CTA BAND
+            §8  CLOSING CTA — observatory-panel bookend
         ══════════════════════════════════════════════════════════ */}
-        <section className="relative py-28 sm:py-36 overflow-hidden bg-surface-2 border-t border-border">
-          <div className="absolute top-0 left-0 right-0 h-1 bg-brand-gradient" />
+        <section className="relative bg-bg px-3 sm:px-5 py-8 sm:py-12">
+          <div className="lp-hero-panel relative max-w-[1440px] mx-auto rounded-[1.5rem] sm:rounded-[2rem] overflow-hidden border border-border dark:border-white/[0.06]">
+            <div className="lp-noise pointer-events-none absolute inset-0" aria-hidden="true" />
+            <div
+              className="lp-mesh-blob pointer-events-none absolute -bottom-40 -left-32 w-[38rem] h-[38rem] rounded-full"
+              style={{ background: 'radial-gradient(circle, rgba(72,124,214,0.22) 0%, transparent 65%)' }}
+              aria-hidden="true"
+            />
+            <div
+              className="lp-mesh-blob pointer-events-none absolute -top-32 -right-40 w-[34rem] h-[34rem] rounded-full"
+              style={{ background: 'radial-gradient(circle, rgba(45,212,191,0.14) 0%, transparent 65%)' }}
+              aria-hidden="true"
+            />
 
-          <svg className="absolute inset-0 w-full h-full opacity-[0.035] pointer-events-none" aria-hidden="true">
-            <defs>
-              <pattern id="cp-cta-dots" x="0" y="0" width="32" height="32" patternUnits="userSpaceOnUse">
-                <circle cx="1" cy="1" r="1.2" fill="currentColor" />
-              </pattern>
-            </defs>
-            <rect width="100%" height="100%" fill="url(#cp-cta-dots)" className="text-brand-blue" />
-          </svg>
+            <div className="relative max-w-3xl mx-auto px-5 sm:px-10 py-14 sm:py-20 text-center">
+              <p className="font-mono text-[11px] font-semibold tracking-[0.18em] uppercase mb-4 text-brand-teal">
+                Ready to try it?
+              </p>
+              <h2 className="font-display text-3xl sm:text-4xl lg:text-[3.4rem] font-bold leading-[1.08] tracking-tight mb-4 sm:mb-6 text-fg">
+                Embed live dashboards
+                <br />
+                <span className="lp-hero-gradient-text">at near-zero cost.</span>
+              </h2>
+              <p className="text-sm sm:text-base lg:text-lg leading-relaxed mb-8 sm:mb-10 text-muted dark:text-slate-300/90 max-w-xl mx-auto">
+                Connect your warehouse, <B>embed a dashboard in minutes</B>.
+                Generous free tier. <B>No credit card required to start.</B>
+              </p>
 
-          <div className="relative max-w-3xl mx-auto px-4 sm:px-6 text-center">
-            <p className="text-xs font-semibold tracking-widest uppercase mb-6 text-brand-teal">
-              Ready to try it?
-            </p>
-            <h2 className="font-display font-bold text-4xl sm:text-6xl leading-tight mb-6 text-fg">
-              Embed live dashboards
-              <br />
-              <span className="text-brand-gradient">at near-zero cost.</span>
-            </h2>
-            <p className="text-base sm:text-lg leading-relaxed mb-10 text-muted max-w-xl mx-auto">
-              Connect your warehouse, embed a dashboard in minutes.
-              Generous free tier. No credit card required to start.
-            </p>
+              <div className="flex flex-col sm:flex-row gap-3 justify-center mb-9">
+                <Link
+                  to="/register"
+                  className="lp-cta-glow inline-flex items-center justify-center gap-2 px-7 py-3.5 rounded-xl text-base font-semibold transition-all bg-brand-gradient text-white hover:-translate-y-0.5 min-h-[48px]"
+                >
+                  Get started free
+                  <ArrowRight size={16} strokeWidth={2.5} />
+                </Link>
+                <Link
+                  to="/docs"
+                  className="inline-flex items-center justify-center gap-2 px-6 py-3.5 rounded-xl text-base font-semibold transition-all bg-surface border border-border text-fg hover:border-brand-blue dark:bg-white/[0.06] dark:border-white/15 dark:text-white dark:hover:bg-white/[0.12] dark:hover:border-white/25 min-h-[48px]"
+                >
+                  Read the docs
+                </Link>
+              </div>
 
-            <div className="flex flex-col sm:flex-row gap-4 justify-center mb-10">
-              <Link
-                to="/register"
-                className="cp-cta-pulse inline-flex items-center justify-center gap-2 px-8 py-4 rounded-xl text-base font-semibold transition-all bg-brand-gradient text-white hover:opacity-90 hover:-translate-y-0.5"
-              >
-                Get started free
-                <ArrowRight size={16} strokeWidth={2.5} />
-              </Link>
-              <Link
-                to="/docs"
-                className="inline-flex items-center justify-center gap-2 px-8 py-4 rounded-xl text-base font-semibold transition-all bg-surface border border-border text-fg hover:border-brand-blue hover:text-brand-blue"
-              >
-                Read the docs
-              </Link>
-            </div>
-
-            <div className="flex flex-wrap justify-center gap-x-8 gap-y-2 text-xs font-medium text-muted">
-              {[
-                'No credit card required',
-                'Unlimited users at every tier',
-                'ZAR billing via Paystack',
-                'Self-host connector option',
-                'Check primary sources before switching',
-              ].map(f => (
-                <span key={f} className="flex items-center gap-1.5">
-                  <Check size={10} strokeWidth={3} className="text-brand-teal" />
-                  {f}
-                </span>
-              ))}
+              <div className="flex flex-wrap justify-center gap-x-6 gap-y-2 font-mono text-[11px] font-medium text-muted">
+                {[
+                  'no credit card required',
+                  'unlimited users at every tier',
+                  'zar billing via paystack',
+                  'self-host connector option',
+                  'check primary sources before switching',
+                ].map(f => (
+                  <span key={f} className="flex items-center gap-1.5">
+                    <Check size={11} strokeWidth={2.5} className="text-teal-400" />
+                    {f}
+                  </span>
+                ))}
+              </div>
             </div>
           </div>
         </section>

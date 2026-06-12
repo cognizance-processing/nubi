@@ -25,7 +25,8 @@
  * (useOrg / useProject / useEnv) so behaviour is unchanged.
  */
 
-import { useState, useEffect, useRef } from 'react'
+import { useState, useEffect, useRef, useCallback } from 'react'
+import { createPortal } from 'react-dom'
 import {
   ChevronsUpDown,
   ChevronDown,
@@ -44,6 +45,58 @@ import { useEnv, envDotClass } from '../../contexts/EnvContext.jsx'
 import { buildEnvRows, isCustomEnv, normalizeEnvKey } from '../../shell/shellLogic.js'
 import { getGitGraph } from '../../lib/gitenv.js'
 import GitGraphDialog from './GitGraphDialog.jsx'
+import NewProjectDialog from './NewProjectDialog.jsx'
+
+// ---------------------------------------------------------------------------
+// Portaled panel shell — popovers render into document.body with a fixed
+// position derived from the trigger rect, so the sidebar (or any scroll /
+// overflow ancestor) can never clip them, and they get a real width instead
+// of being squeezed to the 220px rail.
+// ---------------------------------------------------------------------------
+
+function usePanelPosition(anchorRef, collapsed, open) {
+  const [pos, setPos] = useState(null)
+  const recompute = useCallback(() => {
+    const el = anchorRef.current
+    if (!el) return
+    const r = el.getBoundingClientRect()
+    setPos(
+      collapsed
+        ? { left: r.right + 10, top: Math.max(8, r.top) }
+        : { left: r.left + 4, top: r.bottom + 6 }
+    )
+  }, [anchorRef, collapsed])
+  useEffect(() => {
+    if (!open) return
+    // rAF for the initial measure: layout must settle first, and it keeps the
+    // setState out of the synchronous effect body.
+    const raf = requestAnimationFrame(recompute)
+    window.addEventListener('resize', recompute)
+    window.addEventListener('scroll', recompute, true)
+    return () => {
+      cancelAnimationFrame(raf)
+      window.removeEventListener('resize', recompute)
+      window.removeEventListener('scroll', recompute, true)
+    }
+  }, [open, recompute])
+  return pos
+}
+
+function PanelShell({ pos, width, label, children }) {
+  if (!pos) return null
+  return createPortal(
+    <div
+      data-ws-panel
+      role="dialog"
+      aria-label={label}
+      style={{ position: 'fixed', left: pos.left, top: pos.top, width, maxHeight: 'calc(100vh - 24px)' }}
+      className="z-50 overflow-y-auto rounded-2xl bg-surface border border-border shadow-2xl shadow-black/20"
+    >
+      {children}
+    </div>,
+    document.body
+  )
+}
 
 // ---------------------------------------------------------------------------
 // Section header used inside the popovers
@@ -62,41 +115,47 @@ function SectionLabel({ children, action }) {
 // Org › Project popover — the rich, single workspace panel
 // ---------------------------------------------------------------------------
 
-function WorkspacePanel({ collapsed, onClose }) {
-  const { orgs, activeOrg, setActiveOrg } = useOrg()
-  const { projects, activeProject, setActiveProject, createProject } = useProject()
-  const [creating, setCreating] = useState(false)
+function WorkspacePanel({ pos, onClose, onNewProject }) {
+  const { orgs, activeOrg, setActiveOrg, createOrg } = useOrg()
+  const { projects, activeProject, setActiveProject } = useProject()
 
-  async function handleNewProject() {
+  function handleNewProject() {
     onClose()
-    const name = window.prompt('New project name')
+    onNewProject()
+  }
+
+  async function handleNewOrg() {
+    onClose()
+    const name = window.prompt('New organization name')
     if (!name || !name.trim()) return
-    setCreating(true)
     try {
-      await createProject(name.trim())
+      await createOrg(name.trim())
     } catch (err) {
-      console.error('Failed to create project:', err)
-      window.alert(err?.message ?? 'Failed to create project')
-    } finally {
-      setCreating(false)
+      console.error('Failed to create organization:', err)
+      window.alert(err?.message ?? 'Failed to create organization')
     }
   }
 
   return (
-    <div
-      className={`
-        absolute z-50 mt-1.5 w-[252px] overflow-hidden rounded-2xl
-        bg-surface border border-border shadow-xl shadow-black/10
-        ${collapsed ? 'left-full top-0 ml-2.5' : 'left-2 right-2'}
-      `}
-      role="dialog"
-      aria-label="Switch workspace"
-    >
-      {/* Organisations */}
-      {orgs.length > 1 && (
-        <>
-          <SectionLabel>Organisation</SectionLabel>
-          <ul className="px-1.5 pb-1">
+    <PanelShell pos={pos} width={288} label="Switch workspace">
+      {/* Organisations — always visible (single-org users still see where they
+          are and can create another org from here) */}
+      <SectionLabel
+        action={
+          <button
+            type="button"
+            onClick={handleNewOrg}
+            title="New organization"
+            aria-label="Create a new organization"
+            className="w-6 h-6 flex items-center justify-center rounded-md text-muted/70 hover:text-fg hover:bg-surface-2 transition-colors shrink-0"
+          >
+            <Plus size={12} />
+          </button>
+        }
+      >
+        Organization
+      </SectionLabel>
+      <ul className="px-1.5 pb-1 max-h-44 overflow-y-auto">
             {orgs.map(org => {
               const active = org.id === activeOrg?.id
               return (
@@ -118,10 +177,8 @@ function WorkspacePanel({ collapsed, onClose }) {
                 </li>
               )
             })}
-          </ul>
-          <div className="mx-3 border-t border-border" />
-        </>
-      )}
+      </ul>
+      <div className="mx-3 border-t border-border" />
 
       {/* Projects (for the active org) */}
       <SectionLabel>
@@ -163,8 +220,7 @@ function WorkspacePanel({ collapsed, onClose }) {
       <div className="p-1.5">
         <button
           onClick={handleNewProject}
-          disabled={creating}
-          className="flex items-center gap-2.5 w-full px-2 py-1.5 rounded-lg text-left min-h-[36px] text-sm font-medium text-muted hover:text-fg hover:bg-surface-2 transition-colors disabled:opacity-50"
+          className="flex items-center gap-2.5 w-full px-2 py-1.5 rounded-lg text-left min-h-[36px] text-sm font-medium text-muted hover:text-fg hover:bg-surface-2 transition-colors"
         >
           <span className="flex items-center justify-center w-6 h-6 rounded-md border border-dashed border-border text-muted shrink-0">
             <Plus size={13} />
@@ -172,7 +228,7 @@ function WorkspacePanel({ collapsed, onClose }) {
           <span className="flex-1 truncate">New project</span>
         </button>
       </div>
-    </div>
+    </PanelShell>
   )
 }
 
@@ -180,7 +236,7 @@ function WorkspacePanel({ collapsed, onClose }) {
 // Environment popover — secondary axis, carries the richer env affordances
 // ---------------------------------------------------------------------------
 
-function EnvPanel({ collapsed, onClose, onOpenGraph }) {
+function EnvPanel({ pos, onClose, onOpenGraph }) {
   const { environments, activeEnv, setActiveEnv, addEnv } = useEnv()
   const { activeProject } = useProject()
   const [adding, setAdding] = useState(false)
@@ -248,15 +304,7 @@ function EnvPanel({ collapsed, onClose, onOpenGraph }) {
   }
 
   return (
-    <div
-      className={`
-        absolute z-50 mt-1.5 w-[228px] overflow-hidden rounded-2xl
-        bg-surface border border-border shadow-xl shadow-black/10
-        ${collapsed ? 'left-full top-0 ml-2.5' : 'left-2 right-2'}
-      `}
-      role="dialog"
-      aria-label="Switch environment"
-    >
+    <PanelShell pos={pos} width={264} label="Switch environment">
       <SectionLabel
         action={
           <button
@@ -377,7 +425,7 @@ function EnvPanel({ collapsed, onClose, onOpenGraph }) {
           )}
         </>
       )}
-    </div>
+    </PanelShell>
   )
 }
 
@@ -393,11 +441,18 @@ export default function WorkspaceSwitcher({ collapsed }) {
   // Only one popover open at a time: 'workspace' | 'env' | null
   const [openPanel, setOpenPanel] = useState(null)
   const [graphOpen, setGraphOpen] = useState(false)
+  const [newProjectOpen, setNewProjectOpen] = useState(false)
   const ref = useRef(null)
+  const panelPos = usePanelPosition(ref, collapsed, openPanel !== null)
 
   useEffect(() => {
     if (!openPanel) return
-    function onDown(e) { if (ref.current && !ref.current.contains(e.target)) setOpenPanel(null) }
+    function onDown(e) {
+      // The panels render in a portal, so a plain contains() check would treat
+      // clicks inside them as "outside" and close the panel mid-interaction.
+      if (e.target.closest('[data-ws-panel]')) return
+      if (ref.current && !ref.current.contains(e.target)) setOpenPanel(null)
+    }
     function onKey(e) { if (e.key === 'Escape') setOpenPanel(null) }
     document.addEventListener('mousedown', onDown)
     document.addEventListener('keydown', onKey)
@@ -408,6 +463,8 @@ export default function WorkspaceSwitcher({ collapsed }) {
   }, [openPanel])
 
   if (!activeOrg) return null
+
+  const orgInitial = (activeOrg.name || '?').trim()[0]?.toUpperCase() ?? '?'
 
   const projectLabel = activeProject?.name ?? (projects.length ? 'Select project' : 'No project')
   const close = () => setOpenPanel(null)
@@ -453,11 +510,14 @@ export default function WorkspaceSwitcher({ collapsed }) {
           </button>
         </div>
 
-        {openPanel === 'workspace' && <WorkspacePanel collapsed onClose={close} />}
+        {openPanel === 'workspace' && (
+          <WorkspacePanel pos={panelPos} onClose={close} onNewProject={() => setNewProjectOpen(true)} />
+        )}
         {openPanel === 'env' && (
-          <EnvPanel collapsed onClose={close} onOpenGraph={() => setGraphOpen(true)} />
+          <EnvPanel pos={panelPos} onClose={close} onOpenGraph={() => setGraphOpen(true)} />
         )}
         <GitGraphDialog open={graphOpen} onClose={() => setGraphOpen(false)} />
+        <NewProjectDialog open={newProjectOpen} onClose={() => setNewProjectOpen(false)} />
       </div>
     )
   }
@@ -482,15 +542,16 @@ export default function WorkspaceSwitcher({ collapsed }) {
             ${openPanel === 'workspace' ? 'bg-primary/5' : 'bg-surface-2 hover:bg-surface'}
           `}
         >
-          <span className="flex items-center justify-center w-8 h-8 rounded-lg bg-primary/10 text-primary shrink-0">
-            <FolderGit2 size={16} />
+          <span
+            className="flex items-center justify-center w-8 h-8 rounded-lg text-white text-[13px] font-bold shrink-0 shadow-sm"
+            style={{ background: 'linear-gradient(135deg, #1b2363, #2456a6, #17b3a3)' }}
+            aria-hidden="true"
+          >
+            {orgInitial}
           </span>
-          <span className="flex flex-col min-w-0 flex-1 leading-tight">
-            <span className="flex items-center gap-1 text-[10px] font-medium text-muted truncate">
-              <Building2 size={10} className="shrink-0" />
-              <span className="truncate">{activeOrg.name}</span>
-            </span>
-            <span className="truncate text-[13px] font-semibold text-fg">{projectLabel}</span>
+          <span className="flex flex-col min-w-0 flex-1 leading-tight" title={`${activeOrg.name} · ${projectLabel}`}>
+            <span className="truncate text-[11px] font-medium text-muted">{activeOrg.name}</span>
+            <span className="truncate text-[13.5px] font-semibold text-fg">{projectLabel}</span>
           </span>
           <ChevronsUpDown size={14} className="text-muted shrink-0" />
         </button>
@@ -521,11 +582,14 @@ export default function WorkspaceSwitcher({ collapsed }) {
         </button>
       </div>
 
-      {openPanel === 'workspace' && <WorkspacePanel collapsed={false} onClose={close} />}
+      {openPanel === 'workspace' && (
+        <WorkspacePanel pos={panelPos} onClose={close} onNewProject={() => setNewProjectOpen(true)} />
+      )}
       {openPanel === 'env' && (
-        <EnvPanel collapsed={false} onClose={close} onOpenGraph={() => setGraphOpen(true)} />
+        <EnvPanel pos={panelPos} onClose={close} onOpenGraph={() => setGraphOpen(true)} />
       )}
       <GitGraphDialog open={graphOpen} onClose={() => setGraphOpen(false)} />
+      <NewProjectDialog open={newProjectOpen} onClose={() => setNewProjectOpen(false)} />
     </div>
   )
 }
