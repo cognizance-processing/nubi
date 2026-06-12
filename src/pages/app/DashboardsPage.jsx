@@ -7,6 +7,9 @@
  * Features:
  *   - Header with "New dashboard" CTA → /editor
  *   - Search by name + sort (recent / name)
+ *   - Grid ↔ List view toggle. List mode adds multi-select checkboxes with a
+ *     selection action bar (bulk delete) and a "Delete all" affordance — both
+ *     gated by DangerConfirmDialog (type a random code to confirm).
  *   - Responsive grid: 1 col → sm:2 → lg:3
  *   - Per-card actions: Open, Edit, Delete (confirm dialog), plus versioning
  *     via the overflow menu: Checkpoint / History / Promote
@@ -18,12 +21,15 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
 import {
   BarChart2,
+  CheckCircle2,
   ChevronDown,
   Code2,
   ExternalLink,
   GitCommitHorizontal,
   History,
   LayoutDashboard,
+  LayoutGrid,
+  List,
   Loader2,
   MoreVertical,
   Pencil,
@@ -38,6 +44,7 @@ import * as api from '../../lib/api.js'
 import { checkpoint, listEnvironments } from '../../lib/versions.js'
 import VersionHistoryDialog from '../../components/app/VersionHistoryDialog.jsx'
 import PromoteDialog from '../../components/app/PromoteDialog.jsx'
+import DangerConfirmDialog from '../../components/app/DangerConfirmDialog.jsx'
 import { useUi } from '../../contexts/UiContext.jsx'
 import { useEnv } from '../../contexts/EnvContext.jsx'
 import { useProject } from '../../contexts/ProjectContext.jsx'
@@ -521,6 +528,132 @@ function SortMenu({ sort, onChange }) {
   )
 }
 
+/** Grid ↔ List view switcher (flows view-switcher icon pattern). */
+function ViewToggle({ view, onChange }) {
+  return (
+    <div className="flex h-10 rounded-lg border border-border overflow-hidden shrink-0">
+      {[
+        { id: 'grid', Icon: LayoutGrid, title: 'Grid view' },
+        { id: 'list', Icon: List, title: 'List view' },
+      ].map((v, i) => (
+        <button
+          key={v.id}
+          onClick={() => onChange(v.id)}
+          title={v.title}
+          aria-label={v.title}
+          aria-pressed={view === v.id}
+          data-testid={`boards-view-${v.id}`}
+          className={[
+            'flex items-center justify-center w-10 transition-colors',
+            i > 0 ? 'border-l border-border' : '',
+            view === v.id
+              ? 'bg-primary text-primary-fg'
+              : 'bg-surface text-muted hover:text-fg hover:bg-surface-2',
+          ].join(' ')}
+        >
+          <v.Icon size={15} />
+        </button>
+      ))}
+    </div>
+  )
+}
+
+/** Compact list-mode row: checkbox, name, badges, updated-at, quick actions. */
+function BoardListRow({ board, canWrite, selected, onToggle, strictEnv }) {
+  const updated = board.updated_at ?? board.created_at
+  let updatedLabel = null
+  if (updated) {
+    const d = new Date(updated)
+    if (!Number.isNaN(d.getTime())) {
+      updatedLabel = d.toLocaleDateString(undefined, {
+        year: 'numeric', month: 'short', day: 'numeric',
+      })
+    }
+  }
+
+  return (
+    <li
+      data-testid="board-list-row"
+      className={[
+        'flex items-center gap-3 px-3 sm:px-4 py-2.5 transition-colors',
+        selected ? 'bg-primary/5' : 'hover:bg-surface-2/60',
+      ].join(' ')}
+    >
+      {canWrite && (
+        <input
+          type="checkbox"
+          checked={selected}
+          onChange={onToggle}
+          aria-label={`Select ${board.name || 'Untitled dashboard'}`}
+          className="w-4 h-4 shrink-0 rounded border-border accent-primary cursor-pointer"
+        />
+      )}
+
+      {/* Mini thumbnail */}
+      <span
+        className="hidden sm:flex items-center justify-center w-8 h-8 rounded-lg shrink-0"
+        style={{ background: cardGradient(board.id) }}
+        aria-hidden="true"
+      >
+        {board.config?.html
+          ? <Code2 size={14} className="text-white" />
+          : <BarChart2 size={14} className="text-white" />}
+      </span>
+
+      {/* Name + meta */}
+      <div className="flex-1 min-w-0">
+        <Link
+          to={`/d/${board.id}`}
+          className="block text-sm font-medium text-fg hover:text-primary transition-colors truncate"
+        >
+          {board.name || 'Untitled dashboard'}
+        </Link>
+        <p className="text-xs text-muted truncate flex items-center gap-1.5">
+          {boardMeta(board.config)}
+          {strictEnv && Array.isArray(board.pinned_envs)
+            && !board.pinned_envs.includes(strictEnv) && (
+            <span
+              title={`No version is pinned to ${strictEnv} — promote one to make it visible there.`}
+              className="inline-flex items-center px-1.5 py-0.5 text-[10px] font-medium rounded bg-rose-500/10 text-rose-600 dark:text-rose-400 border border-rose-500/20"
+            >
+              not in {strictEnv}
+            </span>
+          )}
+        </p>
+      </div>
+
+      {/* Updated at */}
+      {updatedLabel && (
+        <span className="hidden md:block text-xs text-muted shrink-0 tabular-nums">
+          {updatedLabel}
+        </span>
+      )}
+
+      {/* Quick actions */}
+      <div className="flex items-center gap-1 shrink-0">
+        <Link
+          to={`/d/${board.id}`}
+          title="Open"
+          aria-label={`Open ${board.name || 'Untitled dashboard'}`}
+          className="flex items-center justify-center w-8 h-8 rounded-lg text-muted hover:text-fg hover:bg-surface-2 transition-colors"
+        >
+          <ExternalLink size={14} />
+        </Link>
+        {canWrite && (
+          <Link
+            to={`/editor/${board.id}`}
+            title="Edit"
+            aria-label={`Edit ${board.name || 'Untitled dashboard'}`}
+            className="flex items-center justify-center w-8 h-8 rounded-lg text-muted hover:text-fg hover:bg-surface-2 transition-colors"
+          >
+            <Pencil size={14} />
+          </Link>
+        )}
+      </div>
+    </li>
+  )
+}
+
 // ---------------------------------------------------------------------------
 // Main page
 // ---------------------------------------------------------------------------
@@ -531,6 +664,28 @@ export default function DashboardsPage() {
   const [error, setError] = useState(null)
   const [search, setSearch] = useState('')
   const [sort, setSort] = useState('recent') // 'recent' | 'name'
+
+  // Grid ↔ List view (persisted so the choice survives reloads).
+  const [viewMode, setViewMode] = useState(() => {
+    try {
+      return localStorage.getItem('nubi-dashboards-view') === 'list' ? 'list' : 'grid'
+    } catch {
+      return 'grid'
+    }
+  })
+  const changeViewMode = useCallback((v) => {
+    setViewMode(v)
+    try { localStorage.setItem('nubi-dashboards-view', v) } catch { /* private mode */ }
+  }, [])
+
+  // List-mode multi-select + bulk delete (gated by DangerConfirmDialog).
+  const [selected, setSelected] = useState(() => new Set())
+  const [bulkDialog, setBulkDialog] = useState(null) // { ids, names, all } | null
+  const [bulkBusy, setBulkBusy] = useState(false)
+  const [bulkError, setBulkError] = useState(null)
+  const [notice, setNotice] = useState(null)
+  const noticeTimer = useRef(null)
+  useEffect(() => () => clearTimeout(noticeTimer.current), [])
 
   // Re-scope the list whenever the active project changes (api.js sends X-Project-Id).
   const { activeProject } = useProject()
@@ -593,6 +748,12 @@ export default function DashboardsPage() {
   // Delete handler — remove from local list immediately
   const handleDeleted = useCallback((id) => {
     setBoards(prev => prev.filter(b => b.id !== id))
+    setSelected(prev => {
+      if (!prev.has(id)) return prev
+      const next = new Set(prev)
+      next.delete(id)
+      return next
+    })
   }, [])
 
   // Filter + sort
@@ -603,6 +764,89 @@ export default function DashboardsPage() {
       // 'recent' — keep API order (assume descending created_at)
       return 0
     })
+
+  // ── List-mode selection helpers ─────────────────────────────────────────
+  // Only boards that still exist count as selected (stale ids are ignored).
+  const selectedBoards = boards.filter(b => selected.has(b.id))
+  const allVisibleSelected =
+    filtered.length > 0 && filtered.every(b => selected.has(b.id))
+
+  const toggleSelected = useCallback((id) => {
+    setSelected(prev => {
+      const next = new Set(prev)
+      if (next.has(id)) next.delete(id)
+      else next.add(id)
+      return next
+    })
+  }, [])
+
+  const toggleSelectAllVisible = useCallback(() => {
+    setSelected(prev => {
+      const next = new Set(prev)
+      const allIn = filtered.length > 0 && filtered.every(b => next.has(b.id))
+      if (allIn) filtered.forEach(b => next.delete(b.id))
+      else filtered.forEach(b => next.add(b.id))
+      return next
+    })
+  }, [filtered])
+
+  const clearSelection = useCallback(() => setSelected(new Set()), [])
+
+  function showNotice(text) {
+    clearTimeout(noticeTimer.current)
+    setNotice(text)
+    noticeTimer.current = setTimeout(() => setNotice(null), 5000)
+  }
+
+  /** Open the confirm dialog for the current selection. */
+  function openBulkDeleteSelected() {
+    if (selectedBoards.length === 0) return
+    setBulkError(null)
+    setBulkDialog({
+      ids: selectedBoards.map(b => b.id),
+      names: selectedBoards.map(b => b.name || 'Untitled dashboard'),
+      all: false,
+    })
+  }
+
+  /** Open the confirm dialog for ALL boards matching the current filter. */
+  function openBulkDeleteAll() {
+    if (filtered.length === 0) return
+    setBulkError(null)
+    setBulkDialog({
+      ids: filtered.map(b => b.id),
+      names: filtered.map(b => b.name || 'Untitled dashboard'),
+      all: true,
+    })
+  }
+
+  /** Run the bulk delete — loops the existing per-board DELETE endpoint. */
+  async function handleBulkConfirm() {
+    if (!bulkDialog || bulkBusy) return
+    setBulkBusy(true)
+    setBulkError(null)
+    let failed = 0
+    for (const id of bulkDialog.ids) {
+      try {
+        await api.del(`/boards/${id}`)
+      } catch (err) {
+        console.error(`Delete failed for board ${id}:`, err)
+        failed++
+      }
+    }
+    const deleted = bulkDialog.ids.length - failed
+    setBulkBusy(false)
+    clearSelection()
+    await fetchBoards()
+    if (failed > 0) {
+      setBulkError(
+        `Deleted ${deleted} of ${bulkDialog.ids.length} dashboards — ${failed} failed. The list has been refreshed.`
+      )
+    } else {
+      setBulkDialog(null)
+      showNotice(`Deleted ${deleted} dashboard${deleted === 1 ? '' : 's'}.`)
+    }
+  }
 
   // Ask AI handler
   function handleAskAI() {
@@ -672,6 +916,62 @@ export default function DashboardsPage() {
 
           {/* Sort */}
           <SortMenu sort={sort} onChange={setSort} />
+
+          {/* Grid ↔ List */}
+          <ViewToggle view={viewMode} onChange={changeViewMode} />
+        </div>
+      )}
+
+      {/* ── Bulk-delete success notice ───────────────────── */}
+      {notice && (
+        <div
+          data-testid="boards-bulk-notice"
+          className="flex items-center gap-2 mb-4 px-4 py-2.5 rounded-xl border border-emerald-500/30 bg-emerald-500/10 text-sm text-emerald-700 dark:text-emerald-400"
+          role="status"
+        >
+          <CheckCircle2 size={15} className="shrink-0" />
+          <span className="flex-1">{notice}</span>
+          <button
+            onClick={() => setNotice(null)}
+            aria-label="Dismiss"
+            className="shrink-0 p-1 rounded-md hover:bg-emerald-500/10 transition-colors"
+          >
+            <X size={13} />
+          </button>
+        </div>
+      )}
+
+      {/* ── Selection action bar (list mode) ─────────────── */}
+      {viewMode === 'list' && canWrite && !loading && !error && selectedBoards.length > 0 && (
+        <div
+          data-testid="boards-selection-bar"
+          className="flex flex-wrap items-center gap-3 mb-4 px-4 py-2.5 rounded-xl border border-primary/30 bg-primary/5"
+        >
+          <span className="text-sm font-medium text-fg">
+            {selectedBoards.length} selected
+          </span>
+          <span className="text-muted">·</span>
+          <button
+            onClick={toggleSelectAllVisible}
+            className="text-sm font-medium text-primary hover:underline"
+          >
+            {allVisibleSelected ? 'Deselect all' : `Select all (${filtered.length})`}
+          </button>
+          <button
+            onClick={clearSelection}
+            className="text-sm font-medium text-muted hover:text-fg transition-colors"
+          >
+            Clear
+          </button>
+          <div className="flex-1" />
+          <button
+            data-testid="boards-delete-selected"
+            onClick={openBulkDeleteSelected}
+            className="inline-flex items-center gap-1.5 h-8 px-3 rounded-lg bg-red-600 text-white text-xs font-semibold hover:bg-red-700 transition-colors"
+          >
+            <Trash2 size={13} />
+            Delete {selectedBoards.length}
+          </button>
         </div>
       )}
 
@@ -716,7 +1016,7 @@ export default function DashboardsPage() {
       )}
 
       {/* Board grid */}
-      {!loading && !error && filtered.length > 0 && (
+      {!loading && !error && filtered.length > 0 && viewMode === 'grid' && (
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
           {filtered.map(board => (
             <BoardCard
@@ -730,6 +1030,74 @@ export default function DashboardsPage() {
             />
           ))}
         </div>
+      )}
+
+      {/* Board list */}
+      {!loading && !error && filtered.length > 0 && viewMode === 'list' && (
+        <div className="rounded-xl border border-border bg-surface overflow-hidden">
+          {/* List header: select-all-visible + delete-all affordance */}
+          <div className="flex items-center gap-3 px-3 sm:px-4 py-2 border-b border-border bg-surface-2/40">
+            {canWrite && (
+              <input
+                type="checkbox"
+                checked={allVisibleSelected}
+                onChange={toggleSelectAllVisible}
+                aria-label="Select all visible dashboards"
+                data-testid="boards-select-all"
+                className="w-4 h-4 shrink-0 rounded border-border accent-primary cursor-pointer"
+              />
+            )}
+            <span className="flex-1 text-xs font-semibold uppercase tracking-wider text-muted">
+              {filtered.length} dashboard{filtered.length === 1 ? '' : 's'}
+              {search && ' (filtered)'}
+            </span>
+            {canWrite && (
+              <button
+                data-testid="boards-delete-all"
+                onClick={openBulkDeleteAll}
+                className="inline-flex items-center gap-1.5 h-7 px-2.5 rounded-lg border border-red-500/30 text-red-600 dark:text-red-400 text-xs font-medium hover:bg-red-500/10 transition-colors"
+              >
+                <Trash2 size={12} />
+                Delete all{search ? ' matching' : ''}
+              </button>
+            )}
+          </div>
+
+          <ul className="divide-y divide-border">
+            {filtered.map(board => (
+              <BoardListRow
+                key={board.id}
+                board={board}
+                canWrite={canWrite}
+                selected={selected.has(board.id)}
+                onToggle={() => toggleSelected(board.id)}
+                strictEnv={strictEnv}
+              />
+            ))}
+          </ul>
+        </div>
+      )}
+
+      {/* Bulk-delete confirmation — random-code gate */}
+      {bulkDialog && (
+        <DangerConfirmDialog
+          title={bulkDialog.all
+            ? `Delete ALL ${bulkDialog.ids.length} dashboard${bulkDialog.ids.length === 1 ? '' : 's'}`
+            : `Delete ${bulkDialog.ids.length} dashboard${bulkDialog.ids.length === 1 ? '' : 's'}`}
+          description={bulkDialog.all
+            ? (search
+              ? `You are about to wipe every dashboard matching “${search}” in this project. Every widget, layout and share link on these boards will be destroyed.`
+              : 'You are about to wipe EVERY dashboard in this project. Every widget, layout and share link on these boards will be destroyed.')
+            : 'The selected dashboards — including their widgets, layouts and share links — will be permanently deleted.'}
+          items={bulkDialog.names}
+          count={bulkDialog.ids.length}
+          itemNoun="dashboard"
+          confirmLabel={`Delete ${bulkDialog.ids.length} dashboard${bulkDialog.ids.length === 1 ? '' : 's'}`}
+          loading={bulkBusy}
+          error={bulkError}
+          onCancel={() => { if (!bulkBusy) { setBulkDialog(null); setBulkError(null) } }}
+          onConfirm={handleBulkConfirm}
+        />
       )}
     </div>
   )

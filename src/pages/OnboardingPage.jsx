@@ -330,7 +330,7 @@ export default function OnboardingPage() {
                     <span>
                       <span className="block text-sm font-medium text-fg">Add demo data</span>
                       <span className="block mt-0.5 text-xs text-muted">
-                        Seed your project with sample dashboards &amp; data — you can remove it anytime.
+                        Seed your project with sample dashboards, queries and a demo lakehouse connector — you can remove it anytime.
                       </span>
                     </span>
                   </label>

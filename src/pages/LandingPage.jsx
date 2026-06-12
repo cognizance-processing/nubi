@@ -26,6 +26,8 @@
  */
 
 import { useState, useEffect, useRef } from 'react'
+import MarketingStyles from '../components/marketing/MarketingStyles.jsx'
+import useReveal from '../components/marketing/useReveal.js'
 import { Link } from 'react-router-dom'
 import {
   ArrowRight,
@@ -48,7 +50,6 @@ import {
   KeyRound,
   Filter,
   Sparkles,
-  ArrowRightCircle,
   Star,
   Headset,
   Users,
@@ -76,264 +77,16 @@ import {
   fetchPricingData, recommendNubi, estimateWarehouseCu,
   FALLBACK_COMPETITORS_WAREHOUSE, WAREHOUSE_CU_MULTIPLIER,
 } from '../lib/pricing.js'
-import QueryWorkspace from '../components/illustrations/QueryWorkspace.jsx'
 import KernelInBrowser from '../components/illustrations/KernelInBrowser.jsx'
 import EdgeCache from '../components/illustrations/EdgeCache.jsx'
 import WebGLPerf from '../components/illustrations/WebGLPerf.jsx'
-import ConnectorSdk from '../components/illustrations/ConnectorSdk.jsx'
-import EmbedAuth from '../components/illustrations/EmbedAuth.jsx'
 import LakehouseFlow from '../components/illustrations/LakehouseFlow.jsx'
 // Dev-centric features read better as real code than abstract art.
-import { ConnectorSdkCode, FlowCode, EmbedAuthCode, LlmDashboardCode, FilesAsCodeCli } from '../components/illustrations/CodeTile.jsx'
+import { FlowCode, LlmDashboardCode, FilesAsCodeCli } from '../components/illustrations/CodeTile.jsx'
 
 /* ─────────────────────────────────────────────────────────────────────────── */
 /*  Scoped animations — only on .nubi-lp so they don't bleed to other pages   */
 /* ─────────────────────────────────────────────────────────────────────────── */
-const ScopedStyles = () => (
-  <style>{`
-    /* ── Hero float (product frame + chips, staggered) ── */
-    @keyframes lp-float {
-      0%, 100% { transform: translateY(0px); }
-      50%       { transform: translateY(-8px); }
-    }
-    .lp-float-1 { animation: lp-float 7s ease-in-out infinite; }
-    .lp-float-2 { animation: lp-float 8.5s ease-in-out infinite; animation-delay: 0.9s; }
-    .lp-float-3 { animation: lp-float 9.5s ease-in-out infinite; animation-delay: 1.7s; }
-
-    /* ── Scroll reveal (decision rows) ── */
-    .lp-reveal {
-      opacity: 0;
-      transform: translateY(26px);
-      transition: opacity 0.7s ease, transform 0.7s cubic-bezier(0.22, 1, 0.36, 1);
-    }
-    .lp-reveal.lp-in { opacity: 1; transform: none; }
-    @media (prefers-reduced-motion: reduce) {
-      .lp-reveal { transition: none; opacity: 1; transform: none; }
-      .lp-float-1, .lp-float-2, .lp-float-3, .lp-mesh-a, .lp-mesh-b { animation: none; }
-    }
-
-    /* ── Observatory hero panel — light by day, dark by night ── */
-    .lp-hero-panel {
-      background:
-        radial-gradient(ellipse 60% 55% at 18% 8%,  rgba(36, 86, 166, 0.13) 0%, transparent 62%),
-        radial-gradient(ellipse 55% 60% at 88% 36%, rgba(23, 179, 163, 0.11) 0%, transparent 60%),
-        linear-gradient(180deg, #f6f9ff 0%, #e9effb 100%);
-      transition: background 0.45s ease, border-color 0.45s ease;
-    }
-    .dark .lp-hero-panel {
-      background:
-        radial-gradient(ellipse 60% 55% at 18% 8%,  rgba(46, 96, 186, 0.34) 0%, transparent 62%),
-        radial-gradient(ellipse 55% 60% at 88% 36%, rgba(20, 160, 146, 0.20) 0%, transparent 60%),
-        radial-gradient(ellipse 70% 60% at 50% 115%, rgba(27, 35, 99, 0.55) 0%, transparent 70%),
-        #070b21;
-    }
-    .lp-mesh-blob { opacity: 0.45; }
-    .dark .lp-mesh-blob { opacity: 1; }
-    .lp-hero-grid { opacity: 0.22; }
-    .dark .lp-hero-grid { opacity: 0.14; }
-    /* drifting mesh blobs — slow, barely-there life */
-    @keyframes lp-mesh-a {
-      0%, 100% { transform: translate(0, 0) scale(1); }
-      50%       { transform: translate(3%, -4%) scale(1.07); }
-    }
-    @keyframes lp-mesh-b {
-      0%, 100% { transform: translate(0, 0) scale(1); }
-      50%       { transform: translate(-4%, 3%) scale(1.1); }
-    }
-    .lp-mesh-a { animation: lp-mesh-a 17s ease-in-out infinite; will-change: transform; }
-    .lp-mesh-b { animation: lp-mesh-b 21s ease-in-out infinite; will-change: transform; }
-    /* film grain on the dark panel */
-    .lp-noise {
-      background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='160' height='160'><filter id='n'><feTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='2' stitchTiles='stitch'/></filter><rect width='100%25' height='100%25' filter='url(%23n)'/></svg>");
-      opacity: 0.025;
-      mix-blend-mode: overlay;
-    }
-    .dark .lp-noise { opacity: 0.05; }
-    /* gradient display text — brand stops on light, lifted stops on dark */
-    .lp-hero-gradient-text {
-      background: linear-gradient(105deg, #1b2363 0%, #2456a6 45%, #17b3a3 100%);
-      -webkit-background-clip: text;
-      background-clip: text;
-      -webkit-text-fill-color: transparent;
-      color: transparent;
-    }
-    .dark .lp-hero-gradient-text {
-      background: linear-gradient(105deg, #8db4f5 0%, #5fd6c8 60%, #2dd4bf 100%);
-      -webkit-background-clip: text;
-      background-clip: text;
-      -webkit-text-fill-color: transparent;
-    }
-    /* primary CTA glow */
-    .lp-cta-glow {
-      box-shadow: 0 12px 44px -10px rgba(23, 179, 163, 0.55), 0 4px 16px rgba(36, 86, 166, 0.45);
-    }
-    .lp-cta-glow:hover {
-      box-shadow: 0 16px 56px -10px rgba(23, 179, 163, 0.7), 0 6px 20px rgba(36, 86, 166, 0.55);
-    }
-    /* glassy floating stat chips over the product frame */
-    .lp-hero-chip {
-      backdrop-filter: blur(10px);
-      -webkit-backdrop-filter: blur(10px);
-      background: rgba(255, 255, 255, 0.78);
-      border: 1px solid rgba(27, 35, 99, 0.12);
-      box-shadow: 0 12px 32px -12px rgba(27, 35, 99, 0.35), inset 0 1px 0 rgba(255, 255, 255, 0.6);
-    }
-    .dark .lp-hero-chip {
-      background: rgba(13, 20, 48, 0.72);
-      border: 1px solid rgba(255, 255, 255, 0.14);
-      box-shadow: 0 12px 32px -10px rgba(0, 0, 0, 0.6), inset 0 1px 0 rgba(255, 255, 255, 0.08);
-    }
-
-    /* ── CTA button pulse ── */
-    @keyframes lp-pulse-primary {
-      0%, 100% { box-shadow: 0 0 0 0 rgba(36, 86, 166, 0.4); }
-      50%       { box-shadow: 0 0 0 10px rgba(36, 86, 166, 0); }
-    }
-    .lp-cta-pulse { animation: lp-pulse-primary 3s ease-in-out infinite; }
-    .lp-cta-pulse:hover { animation: none; }
-
-    /* ── Diff card hover lift ── */
-    .lp-diff-card {
-      transition: transform 0.24s cubic-bezier(0.34, 1.56, 0.64, 1),
-                  box-shadow 0.24s ease;
-    }
-    .lp-diff-card:hover {
-      transform: translateY(-3px);
-    }
-
-    /* ── Illustration canvas — dotted gradient panel so illustrations sit on an
-          intentional surface (Stripe/Vercel-style) instead of empty whitespace ── */
-    .lp-illo-card {
-      position: relative;
-      background:
-        radial-gradient(circle at 1px 1px, rgba(36,86,166,0.07) 1px, transparent 1.6px) 0 0 / 22px 22px,
-        linear-gradient(155deg, var(--surface-2) 0%, var(--surface) 60%);
-      box-shadow:
-        inset 0 1px 0 rgba(255,255,255,0.5),
-        0 1px 2px rgba(27,35,99,0.04),
-        0 18px 40px -18px rgba(27,35,99,0.22);
-      transition: transform 0.3s cubic-bezier(0.34,1.4,0.64,1), box-shadow 0.3s ease;
-    }
-    .lp-illo-card:hover {
-      transform: translateY(-4px);
-      box-shadow:
-        inset 0 1px 0 rgba(255,255,255,0.5),
-        0 24px 50px -16px rgba(27,35,99,0.28);
-    }
-    /* brand hairline at the top edge of the canvas */
-    .lp-illo-card::before {
-      content: '';
-      position: absolute; left: 16px; right: 16px; top: 0; height: 2px;
-      background: linear-gradient(90deg, transparent, rgba(23,179,163,0.5), rgba(36,86,166,0.5), transparent);
-      border-radius: 2px;
-    }
-
-    /* ── Step connector line ── */
-    .lp-connector {
-      background: linear-gradient(90deg, #1b2363 0%, #2456a6 50%, #17b3a3 100%);
-    }
-
-    /* ── Compare table row striping ── */
-    .lp-compare-row:nth-child(even) { background: rgba(36, 86, 166, 0.04); }
-    .lp-compare-row:hover           { background: rgba(36, 86, 166, 0.08); }
-
-    /* ── Smooth scroll for the whole page ── */
-    html { scroll-behavior: smooth; }
-
-    /* ── Compare table — mobile horizontal scroll ── */
-    .lp-compare-table-wrap {
-      overflow-x: auto;
-      -webkit-overflow-scrolling: touch;
-    }
-    .lp-compare-table-inner {
-      min-width: 620px;
-    }
-
-    /* ── Compare table — Nubi column highlight ── */
-    .lp-nubi-col {
-      background: linear-gradient(180deg,
-        rgba(23,179,163,0.07) 0%,
-        rgba(36,86,166,0.05) 100%);
-      border-left: 1.5px solid rgba(23,179,163,0.25);
-      border-right: 1.5px solid rgba(23,179,163,0.25);
-    }
-    .lp-nubi-col-header {
-      background: linear-gradient(180deg,
-        rgba(23,179,163,0.15) 0%,
-        rgba(36,86,166,0.10) 100%);
-      border-left: 1.5px solid rgba(23,179,163,0.35);
-      border-right: 1.5px solid rgba(23,179,163,0.35);
-      border-top: 2px solid #17b3a3;
-    }
-
-    /* ── How-it-works step card ── */
-    .lp-step-card {
-      transition: box-shadow 0.2s ease, transform 0.2s ease;
-    }
-    .lp-step-card:hover {
-      transform: translateY(-2px);
-    }
-
-    /* ── Step connector arrow ── */
-    .lp-step-arrow {
-      color: #17b3a3;
-      opacity: 0.5;
-    }
-
-    /* ── Chip badges ── */
-    .lp-chip {
-      display: inline-flex;
-      align-items: center;
-      gap: 4px;
-      font-size: 0.7rem;
-      font-weight: 600;
-      padding: 3px 9px;
-      border-radius: 999px;
-      border: 1px solid;
-      line-height: 1.4;
-      white-space: nowrap;
-    }
-
-    /* ── Cost-calculator range input ── */
-    .lp-range {
-      -webkit-appearance: none; appearance: none;
-      height: 6px; border-radius: 999px; cursor: pointer;
-      background: linear-gradient(90deg, #2456a6, #17b3a3);
-    }
-    .lp-range::-webkit-slider-thumb {
-      -webkit-appearance: none; appearance: none;
-      width: 20px; height: 20px; border-radius: 50%;
-      background: #fff; border: 3px solid #17b3a3;
-      box-shadow: 0 1px 4px rgba(27,35,99,0.25);
-    }
-    .lp-range::-moz-range-thumb {
-      width: 20px; height: 20px; border-radius: 50%;
-      background: #fff; border: 3px solid #17b3a3;
-      box-shadow: 0 1px 4px rgba(27,35,99,0.25);
-    }
-
-    /* ── Code-highlighter token colors — explicit light/dark pairs so every
-          token keeps readable contrast on the code surface in BOTH themes ── */
-    .nubi-lp {
-      --lp-hl-kw:    #2456a6; /* keyword (blue) */
-      --lp-hl-fn:    #0f766e; /* function / tag / command (teal) */
-      --lp-hl-str:   #9a5b16; /* string (amber) */
-      --lp-hl-num:   #0f766e;
-      --lp-hl-param: #6d3fd4; /* {{param}} (violet) */
-      --lp-hl-punc:  #64748b;
-      --lp-hl-cm:    #6b7a90; /* comment */
-    }
-    .dark .nubi-lp {
-      --lp-hl-kw:    #7eaaf0;
-      --lp-hl-fn:    #2dd4bf;
-      --lp-hl-str:   #e8a35c;
-      --lp-hl-num:   #2dd4bf;
-      --lp-hl-param: #b39df5;
-      --lp-hl-punc:  #93a3b8;
-      --lp-hl-cm:    #7a8aa0;
-    }
-  `}</style>
-)
 
 /* ─────────────────────────────────────────────────────────────────────────── */
 /*  Sub-components (all use tokens)                                            */
@@ -496,6 +249,408 @@ function ProductTour() {
   )
 }
 
+/* ── "Eight decisions" — bento deck on an observatory panel ─────────────────
+   Replaces the alternating illustration rows. Each card: glass surface,
+   accent glow on hover, bolded key phrases, mono outcome chip. Two wide
+   "wedge" cards carry small CSS visualisations instead of stock art. ── */
+
+const B = ({ children }) => (
+  <strong className="font-semibold text-fg dark:text-white">{children}</strong>
+)
+
+function KernelVisual() {
+  return (
+    <div className="rounded-xl border border-border dark:border-white/10 bg-bg/70 dark:bg-black/25 p-3 font-mono text-[10px] leading-relaxed">
+      <div className="flex items-center gap-1.5 pb-2 mb-2.5 border-b border-border dark:border-white/10">
+        <span className="w-2 h-2 rounded-full bg-[#f4726f]/70" />
+        <span className="w-2 h-2 rounded-full bg-[#f5bd4f]/70" />
+        <span className="w-2 h-2 rounded-full bg-[#61c554]/70" />
+        <span className="ml-2 text-muted">the user&apos;s browser tab</span>
+      </div>
+      <div className="flex flex-wrap items-center gap-2">
+        <span
+          className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-md text-white font-semibold"
+          style={{ background: 'linear-gradient(135deg, #2456a6, #17b3a3)' }}
+        >
+          <span className="relative flex h-1.5 w-1.5">
+            <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-white opacity-60" />
+            <span className="relative inline-flex h-1.5 w-1.5 rounded-full bg-white" />
+          </span>
+          duckdb-wasm kernel
+        </span>
+        <span className="text-muted">cold start 0 ms · cost / view $0.000</span>
+      </div>
+      <div className="mt-2 flex flex-wrap items-center gap-2 opacity-70">
+        <span className="px-2.5 py-1.5 rounded-md border border-dashed border-border dark:border-white/25 text-muted">
+          server kernel
+        </span>
+        <span className="text-muted">fallback only · metered · scale-to-zero</span>
+      </div>
+    </div>
+  )
+}
+
+function CacheVisual() {
+  return (
+    <div className="rounded-xl border border-border dark:border-white/10 bg-bg/70 dark:bg-black/25 p-3 font-mono text-[10px] flex items-center justify-between gap-3">
+      <div className="flex flex-col gap-1.5 min-w-0">
+        <span className="text-muted">dashboard viewers</span>
+        <div className="flex flex-wrap gap-1 max-w-[7.5rem]">
+          {Array.from({ length: 24 }, (_, i) => (
+            <span
+              key={i}
+              className="w-1.5 h-1.5 rounded-full"
+              style={{ background: '#2456a6', opacity: 0.35 + ((i * 37) % 55) / 100 }}
+            />
+          ))}
+        </div>
+        <span className="font-bold text-fg dark:text-white">500 views</span>
+      </div>
+      <ArrowRight size={14} className="text-muted shrink-0" />
+      <div className="flex flex-col items-center gap-1.5">
+        <span className="px-2.5 py-1.5 rounded-md text-white font-semibold" style={{ background: '#17b3a3' }}>
+          edge cache
+        </span>
+        <span className="text-muted">content-hashed</span>
+      </div>
+      <ArrowRight size={14} className="text-muted shrink-0" />
+      <div className="flex flex-col items-end gap-1.5">
+        <span className="text-muted">warehouse</span>
+        <span className="font-display text-xl font-bold text-fg dark:text-white leading-none">1</span>
+        <span className="text-muted">query</span>
+      </div>
+    </div>
+  )
+}
+
+const DECISIONS = [
+  {
+    id: 'kernel', index: '01', tag: 'core architecture', icon: Zap, accent: '#17b3a3', wide: true,
+    hook: 'Ship the kernel, not the bill.',
+    body: (
+      <>
+        A <B>DuckDB-WASM engine runs inside the user&apos;s tab</B> — zero cold starts, zero
+        per-session cloud cost. Python falls through to a <B>metered, scale-to-zero server
+        kernel</B> only when a workload truly needs one.
+      </>
+    ),
+    chip: '≈ $0 marginal cost per dashboard view',
+    visual: <KernelVisual />,
+  },
+  {
+    index: '02', tag: 'rendering', icon: Globe, accent: '#38bdf8',
+    hook: 'Charts read columns, not JSON.',
+    body: (
+      <>
+        Results stream as <B>columnar Arrow IPC straight into ECharts on canvas</B> — no
+        serialisation round-trip, no DOM-bound SVG. Cross-filter a big result set and it
+        just moves.
+      </>
+    ),
+    chip: 'fluid charts at 100k+ rows',
+  },
+  {
+    id: 'cache', index: '03', tag: 'cost architecture', icon: Database, accent: '#2dd4bf', wide: true,
+    hook: '500 viewers. One warehouse hit.',
+    body: (
+      <>
+        A <B>content-hashed edge cache</B> keyed on plan + JWT claims collapses identical
+        dashboard traffic, while a <B>rollup suggester mines hot GROUP BYs</B> from your
+        query log — materialize the winners in one click.
+      </>
+    ),
+    chip: '10–50× fewer warehouse scans',
+    visual: <CacheVisual />,
+  },
+  {
+    id: 'embedding', index: '04', tag: 'security', icon: Shield, accent: '#2456a6',
+    hook: 'RLS lives in your repo.',
+    body: (
+      <>
+        <B>Policies are claims in a JWT your backend signs</B> — auth logic gets code
+        review, not a vendor UI. Predicates are <B>injected into the SQL AST</B>, never
+        string-concatenated.
+      </>
+    ),
+    chip: '<nubi-dashboard get-token> — the whole integration',
+  },
+  {
+    index: '05', tag: 'ai-native', icon: Bot, accent: '#8b5cf6',
+    hook: 'Agents speak fluent dashboard.',
+    body: (
+      <>
+        A dashboard is <B>sanitized HTML with declarative &lt;nubi-*&gt; elements</B> — a
+        format LLMs author natively, grounded on your real schema. <B>Six MCP tools</B>{' '}
+        build and iterate end-to-end.
+      </>
+    ),
+    chip: 'author_dashboard · run_query · 4 more',
+  },
+  {
+    id: 'connectors', index: '06', tag: 'extensibility', icon: Code2, accent: '#0ea5e9',
+    hook: 'Point at a warehouse and go.',
+    body: (
+      <>
+        <B>No semantic model to build first.</B> 25+ connectors out of the box, plus a
+        Python SDK that wraps <B>any Arrow-returning function</B> as a first-class,
+        fail-closed source.
+      </>
+    ),
+    chip: 'predicate_rls=False → 501',
+  },
+  {
+    id: 'warehouse', index: '07', tag: 'pro & enterprise', icon: Warehouse, accent: '#6366f1',
+    hook: 'Big tables, no warehouse tax.',
+    body: (
+      <>
+        <B>Open Parquet on object storage</B>, queried by DuckDB on dedicated machines at
+        plain compute rates — no per-TB scan fees. <B>Outgrow it and nothing migrates</B>:
+        leaving is a connection string.
+      </>
+    ),
+    chip: 'open formats · zero lock-in',
+  },
+  {
+    id: 'flows', index: '08', tag: 'workflows', icon: Workflow, accent: '#14b8a6',
+    hook: 'The orchestrator bill, deleted.',
+    body: (
+      <>
+        <B>SQL + Python DAGs</B> you edit as a canvas, a notebook, or files — schedules,
+        retries, caching, fan-out, conditional gates. <B>Runs on Postgres alone.</B> No
+        Redis, no Celery, no Airflow to feed.
+      </>
+    ),
+    chip: 'orchestration included in every plan',
+  },
+]
+
+function DecisionCard({ d, idx }) {
+  const [ref, seen] = useReveal()
+  return (
+    <div
+      ref={ref}
+      id={d.id}
+      style={{ '--lp-card-accent': d.accent, transitionDelay: `${(idx % 3) * 90}ms` }}
+      className={[
+        'lp-card lp-reveal',
+        seen ? 'lp-in' : '',
+        'flex flex-col p-6 sm:p-7',
+        d.wide ? 'md:col-span-2' : '',
+        d.id ? 'scroll-mt-20' : '',
+      ].join(' ')}
+    >
+      <div className="flex items-center justify-between mb-4">
+        <span
+          className="inline-flex items-center justify-center w-10 h-10 rounded-xl text-white shadow-md"
+          style={{ background: `linear-gradient(135deg, ${d.accent}, ${d.accent}cc)` }}
+        >
+          <d.icon size={18} strokeWidth={1.9} />
+        </span>
+        <span className="font-mono text-[11px] font-bold" style={{ color: d.accent }}>
+          /{d.index}
+        </span>
+      </div>
+      <p className="font-mono text-[10px] font-semibold uppercase tracking-[0.16em] text-muted mb-1.5">
+        {d.tag}
+      </p>
+      <h3 className="font-display text-lg sm:text-[1.35rem] font-bold text-fg dark:text-white leading-snug mb-2">
+        {d.hook}
+      </h3>
+      <p className="text-[13.5px] sm:text-sm leading-relaxed text-muted dark:text-slate-300/85 flex-1">
+        {d.body}
+      </p>
+      {d.visual && <div className="mt-4">{d.visual}</div>}
+      <p
+        className="mt-4 inline-flex items-center gap-1.5 self-start font-mono text-[11px] font-semibold px-2.5 py-1.5 rounded-lg border"
+        style={{ color: d.accent, borderColor: `${d.accent}45`, background: `${d.accent}0f` }}
+      >
+        <ArrowRight size={11} strokeWidth={2.5} className="shrink-0" />
+        {d.chip}
+      </p>
+    </div>
+  )
+}
+
+function DecisionCtaCard() {
+  const [ref, seen] = useReveal()
+  return (
+    <div
+      ref={ref}
+      className={`lp-reveal ${seen ? 'lp-in' : ''} md:col-span-2 rounded-[1.25rem] p-6 sm:p-7 flex flex-col justify-between text-white bg-brand-gradient shadow-[0_24px_50px_-20px_rgba(23,179,163,0.55)]`}
+      style={{ transitionDelay: '90ms' }}
+    >
+      <div>
+        <p className="font-mono text-[10px] font-semibold uppercase tracking-[0.16em] text-white/70 mb-1.5">
+          the wedge
+        </p>
+        <h3 className="font-display text-xl sm:text-2xl font-bold leading-snug">
+          Stop paying for viewers. Start tonight.
+        </h3>
+        <p className="text-sm leading-relaxed text-white/85 mt-2 max-w-md">
+          Free tier, <strong className="font-semibold text-white">unlimited seats</strong> —
+          connect a warehouse and ship your first dashboard before anything else even
+          finishes provisioning.
+        </p>
+      </div>
+      <div className="flex flex-wrap items-center gap-4 mt-5">
+        <Link
+          to="/register"
+          className="inline-flex items-center gap-2 px-5 py-2.5 rounded-xl bg-white text-brand-navy font-semibold text-sm hover:-translate-y-0.5 transition-all shadow-md"
+        >
+          Start free <ArrowRight size={14} strokeWidth={2.5} />
+        </Link>
+        <Link to="/pricing" className="font-mono text-[11px] text-white/75 hover:text-white transition-colors">
+          see the pricing math →
+        </Link>
+      </div>
+    </div>
+  )
+}
+
+function DecisionGrid() {
+  return (
+    <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4 sm:gap-5">
+      {DECISIONS.map((d, i) => (
+        <DecisionCard key={d.index} d={d} idx={i} />
+      ))}
+      <DecisionCtaCard />
+    </div>
+  )
+}
+
+/* ── How it works — vertical journey timeline ──────────────────────────────── */
+
+const HIW_STEPS = [
+  {
+    num: '01', title: 'Connect', icon: PlugZap,
+    color: 'linear-gradient(135deg, #1b2363, #2456a6)', dot: '#2456a6',
+    tagline: 'Bring your warehouse. Secrets stay in your network.',
+    bullets: [
+      { icon: Database, text: 'BigQuery, Snowflake, Redshift, Postgres, ClickHouse — point and go, no semantic model required.' },
+      { icon: Lock, text: 'Warehouse credentials never leave the connector. Self-host in your VPC or use Nubi-managed regional connectors near your data.' },
+      { icon: Code2, text: 'Python connector SDK: any Arrow-returning function is a first-class source. Wrap a proprietary store, a dataframe job, or a REST feed.' },
+      { icon: Shield, text: 'Capability contract enforces a security floor — connectors without predicate-RLS support are refused (501), not silently trusted.' },
+    ],
+    chips: [
+      { label: 'BigQuery' }, { label: 'Snowflake' }, { label: 'Postgres' },
+      { label: 'Python SDK', accent: true }, { label: 'Private VPC bridge', accent: true },
+    ],
+    code: 'nubi deploy ./resources --dry-run', lang: 'shell', file: 'terminal',
+  },
+  {
+    num: '02', title: 'Query', icon: SearchCode,
+    color: 'linear-gradient(135deg, #2456a6, #17b3a3)', dot: '#17b3a3',
+    tagline: 'SQL, named params, and AI text-to-SQL — all in the browser.',
+    bullets: [
+      { icon: Database, text: "DuckDB-WASM kernel runs in the user's tab — zero cold starts, zero per-session cloud cost. Results stream as Arrow IPC." },
+      { icon: Sparkles, text: 'AI text-to-SQL grounded on your actual catalog and lineage graph — not hallucinated schemas. Six MCP tools for agent authoring.' },
+      { icon: SearchCode, text: 'Named-parameter registered queries keep your SQL versioned and reusable. The planner pushes predicates and projections to the warehouse.' },
+      { icon: Globe, text: 'Content-hashed edge cache: 500 viewers of the same dashboard collapse to 1 warehouse hit. Auto pre-aggregation mines query logs for rollups.' },
+    ],
+    chips: [
+      { label: 'DuckDB-WASM', accent: true }, { label: 'Arrow IPC', accent: true },
+      { label: 'AI text-to-SQL' }, { label: 'Named params' }, { label: 'Edge cache' },
+    ],
+    code: 'SELECT month, SUM(revenue) FROM events\nWHERE tenant_id = {{tenant_id}} GROUP BY 1', lang: 'sql', file: 'revenue.sql',
+  },
+  {
+    num: '03', title: 'Embed', icon: Layers,
+    color: 'linear-gradient(135deg, #17b3a3, #2dd4bf)', dot: '#2dd4bf',
+    tagline: 'One JWT primitive. Per-viewer RLS. Cross-filtering dashboards.',
+    bullets: [
+      { icon: KeyRound, text: 'Signed JWT carries per-viewer claims. Predicate injection is AST-based — never string concat. Policies live as code in your repo, PR-reviewable.' },
+      { icon: Filter, text: 'Token-locked params prevent viewers escaping their data scope. Column masking and row-level security enforced before data leaves the connector.' },
+      { icon: Globe, text: 'Cross-filtering dashboards rendered with ECharts on Arrow buffers — canvas rendering that stays smooth on large result sets.' },
+      { icon: Code2, text: 'Drop the <nubi-dashboard> web component into your host app — UMD or ES module. Theme attribute, short-lived JWTs that refresh before expiry.' },
+    ],
+    chips: [
+      { label: 'JWT RLS', accent: true }, { label: 'AST predicate inject', accent: true },
+      { label: 'Token-locked params' }, { label: 'Cross-filter dashboards' }, { label: 'Web component' },
+    ],
+    code: '<nubi-dashboard query="SELECT * FROM sales"\n  get-token="getEmbedToken">', lang: 'html', file: 'app.html',
+  },
+]
+
+function HiwStep({ s, last }) {
+  const [ref, seen] = useReveal()
+  const Icon = s.icon
+  return (
+    <div ref={ref} className={`lp-reveal ${seen ? 'lp-in' : ''} relative flex gap-5 sm:gap-8`}>
+      {/* spine + node */}
+      <div className="relative flex flex-col items-center shrink-0 w-12">
+        <span
+          className="z-10 flex items-center justify-center w-12 h-12 rounded-2xl text-white font-mono text-sm font-bold shadow-lg"
+          style={{ background: s.color }}
+        >
+          {s.num}
+        </span>
+        {!last && <span className="lp-connector w-px flex-1 mt-2 opacity-30" aria-hidden="true" />}
+      </div>
+
+      {/* content */}
+      <div className={`flex-1 min-w-0 ${last ? '' : 'pb-12 sm:pb-16'}`}>
+        <div className="flex flex-wrap items-center gap-3 mb-1.5">
+          <span
+            className="inline-flex items-center justify-center w-8 h-8 rounded-lg text-white shadow-sm"
+            style={{ background: s.color }}
+          >
+            <Icon size={15} strokeWidth={2} />
+          </span>
+          <h3 className="font-display text-2xl sm:text-3xl font-bold text-fg tracking-tight">{s.title}</h3>
+        </div>
+        <p className="text-sm sm:text-base text-muted mb-5">{s.tagline}</p>
+
+        <div className="grid lg:grid-cols-[1.15fr_1fr] gap-5 lg:gap-7 items-start">
+          {/* bullets */}
+          <div className="grid sm:grid-cols-2 gap-3">
+            {s.bullets.map(({ icon: BIcon, text }) => (
+              <div key={text} className="flex items-start gap-2.5 rounded-xl border border-border bg-surface p-3">
+                <span className="shrink-0 mt-0.5 w-5 h-5 rounded-md bg-surface-2 border border-border flex items-center justify-center">
+                  <BIcon size={11} strokeWidth={2.5} className="text-accent" />
+                </span>
+                <span className="text-xs leading-relaxed text-muted">{text}</span>
+              </div>
+            ))}
+          </div>
+
+          {/* terminal card + chips */}
+          <div>
+            <div className="lp-term rounded-xl overflow-hidden border border-white/10 bg-[#0c1230] shadow-[0_20px_44px_-22px_rgba(0,0,0,0.6)]">
+              <div className="flex items-center gap-2 px-3.5 py-2 border-b border-white/[0.08] bg-white/[0.03]">
+                <span className="flex gap-1.5" aria-hidden="true">
+                  <span className="w-2 h-2 rounded-full bg-[#f4726f]/80" />
+                  <span className="w-2 h-2 rounded-full bg-[#f5bd4f]/80" />
+                  <span className="w-2 h-2 rounded-full bg-[#61c554]/80" />
+                </span>
+                <span className="font-mono text-[10px] text-slate-400">{s.file}</span>
+                <span className="ml-auto font-mono text-[9px] uppercase tracking-wider px-1.5 py-0.5 rounded border border-white/10 text-slate-400">{s.lang}</span>
+              </div>
+              <pre className="px-4 py-3.5 font-mono text-[12px] leading-relaxed text-slate-200 whitespace-pre-wrap break-words">
+                {highlightCode(s.code, s.lang)}
+              </pre>
+            </div>
+            <div className="flex flex-wrap gap-1.5 mt-3">
+              {s.chips.map(c => (
+                <Chip key={c.label} accent={c.accent}>{c.label}</Chip>
+              ))}
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+function HowItWorksTimeline() {
+  return (
+    <div className="max-w-5xl mx-auto">
+      {HIW_STEPS.map((s, i) => (
+        <HiwStep key={s.num} s={s} last={i === HIW_STEPS.length - 1} />
+      ))}
+    </div>
+  )
+}
+
 function CompareCell({ value, isNubi = false }) {
   if (value === true) {
     // Nubi's wins get a strong filled gradient check; competitors a quiet tint.
@@ -651,70 +806,6 @@ function highlightCode(code, lang) {
   return out.map(([t, c], idx) => (
     <span key={idx} style={{ color: HL[c] || 'currentColor', fontWeight: c === 'kw' ? 600 : undefined }}>{t}</span>
   ))
-}
-
-function HowItWorksStep({ num, icon: Icon, title, color, tagline, bullets, code, lang, chips, Illo }) {
-  return (
-    <div className="lp-step-card flex flex-col bg-surface rounded-2xl border border-border overflow-hidden flex-1 min-w-0">
-      {/* Illustration header — guides the eye through each stage */}
-      {Illo && (
-        <div className="px-6 pt-6 pb-2 bg-surface-2 border-b border-border">
-          <Illo className="w-full h-auto max-h-28 mx-auto" />
-        </div>
-      )}
-      {/* Card header strip */}
-      <div
-        className="px-6 pt-6 pb-5"
-        style={{ borderBottom: '1px solid var(--border)' }}
-      >
-        <div className="flex items-center gap-3 mb-3">
-          <span
-            className="shrink-0 w-10 h-10 rounded-xl flex items-center justify-center text-white shadow"
-            style={{ background: color }}
-          >
-            <Icon size={19} strokeWidth={2} />
-          </span>
-          <span className="font-mono text-xs font-bold tracking-widest text-muted uppercase">
-            Step {num}
-          </span>
-        </div>
-        <h3 className="font-display font-bold text-xl sm:text-2xl text-fg mb-1">{title}</h3>
-        <p className="text-sm leading-relaxed text-muted">{tagline}</p>
-      </div>
-
-      {/* Bullets */}
-      <div className="px-6 py-5 flex flex-col gap-3 flex-1">
-        {bullets.map(({ icon: BIcon, text }) => (
-          <div key={text} className="flex items-start gap-2.5">
-            <span className="shrink-0 mt-0.5 w-5 h-5 rounded-md bg-surface-2 border border-border flex items-center justify-center">
-              <BIcon size={11} strokeWidth={2.5} className="text-accent" />
-            </span>
-            <span className="text-xs leading-relaxed text-muted">{text}</span>
-          </div>
-        ))}
-
-        {/* Chips */}
-        {chips && (
-          <div className="flex flex-wrap gap-1.5 mt-1">
-            {chips.map((c) => (
-              <Chip key={c.label} icon={c.icon} accent={c.accent}>
-                {c.label}
-              </Chip>
-            ))}
-          </div>
-        )}
-      </div>
-
-      {/* Code snippet */}
-      {code && (
-        <div className="px-6 pb-6">
-          <code className="block text-xs font-mono px-3 py-2.5 rounded-lg bg-surface-2 border border-border text-fg break-words leading-relaxed">
-            {lang ? highlightCode(code, lang) : code}
-          </code>
-        </div>
-      )}
-    </div>
-  )
 }
 
 /**
@@ -1502,7 +1593,7 @@ function LpPricingSection() {
 export default function LandingPage() {
   return (
     <>
-      <ScopedStyles />
+      <MarketingStyles />
 
       <div className="nubi-lp overflow-x-hidden bg-bg text-fg font-sans">
 
@@ -1740,134 +1831,38 @@ export default function LandingPage() {
         </section>
 
         {/* ════════════════════════════════════════════════════════════════════
-            §3  DIFFERENTIATORS — alternating left/right, LARGE illustrations
+            §3  EIGHT DECISIONS — bento deck on an observatory panel
             id="features" — scroll target for footer "Dashboards" link
         ════════════════════════════════════════════════════════════════════ */}
-        <section id="features" className="py-14 sm:py-20 lg:py-24 bg-bg scroll-mt-14">
-          <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+        <section id="features" className="relative scroll-mt-14 bg-bg px-3 sm:px-5 py-8 sm:py-12">
+          <div className="lp-hero-panel relative max-w-[1440px] mx-auto rounded-[1.5rem] sm:rounded-[2rem] overflow-hidden border border-border dark:border-white/[0.06]">
+            <div className="lp-noise pointer-events-none absolute inset-0" aria-hidden="true" />
+            <div
+              className="lp-mesh-blob pointer-events-none absolute -top-32 -right-40 w-[36rem] h-[36rem] rounded-full"
+              style={{ background: 'radial-gradient(circle, rgba(45,212,191,0.14) 0%, transparent 65%)' }}
+              aria-hidden="true"
+            />
 
-            {/* Section header */}
-            <div className="text-center mb-12 sm:mb-16 lg:mb-20 max-w-2xl mx-auto">
-              <p className="font-mono text-[11px] font-semibold tracking-[0.18em] uppercase mb-4 text-brand-teal">
-                why nubi · one bet, compounded
-              </p>
-              <h2 className="font-display text-3xl sm:text-4xl lg:text-[3.4rem] font-bold leading-[1.08] tracking-tight mb-4 sm:mb-6 text-fg">
-                Eight decisions that make{' '}
-                <span className="text-brand-gradient">everything cheaper.</span>
-              </h2>
-              <p className="text-sm sm:text-base lg:text-lg leading-relaxed text-muted">
-                Most BI rents you compute — by the seat, by the session, by the query.
-                Nubi makes one structural bet instead:{' '}
-                <strong className="text-fg font-semibold">ship the kernel to the browser</strong>{' '}
-                and fall through to a server only when you must. Every decision below
-                compounds that bet into{' '}
-                <strong className="text-fg font-semibold">≈ $0 per dashboard view.</strong>
-              </p>
-            </div>
+            <div className="relative px-5 sm:px-10 lg:px-14 py-12 sm:py-16 lg:py-20">
+              {/* Section header */}
+              <div className="text-center mb-10 sm:mb-14 max-w-3xl mx-auto">
+                <p className="font-mono text-[11px] font-semibold tracking-[0.18em] uppercase mb-4 text-brand-teal">
+                  why teams switch · the wedge
+                </p>
+                <h2 className="font-display text-3xl sm:text-4xl lg:text-[3.4rem] font-bold leading-[1.08] tracking-tight mb-4 sm:mb-6 text-fg">
+                  Eight decisions that make{' '}
+                  <span className="lp-hero-gradient-text">everything cheaper.</span>
+                </h2>
+                <p className="text-sm sm:text-base lg:text-lg leading-relaxed text-muted dark:text-slate-300/90">
+                  Most BI rents you compute —{' '}
+                  <B>by the seat, by the session, by the query.</B> Nubi makes one
+                  structural bet instead: <B>ship the kernel to the browser.</B> Every
+                  decision below compounds that bet, until the marginal dashboard view
+                  costs <B>≈ $0.</B>
+                </p>
+              </div>
 
-            {/* Alternating rows */}
-            <div className="flex flex-col gap-12 sm:gap-16 lg:gap-20">
-              <DiffRow
-                id="kernel"
-                index="01"
-                icon={Zap}
-                title="Kernel in the browser"
-                badge="Core architecture"
-                hook="The kernel ships to the user's tab."
-                desc="A DuckDB-WASM engine does the analytics where your viewers already are — zero cold starts, zero per-session cloud cost. Python falls through to a metered, scale-to-zero server kernel: the escape hatch, never the default."
-                outcome="marginal cost per dashboard view ≈ $0"
-                Illustration={KernelInBrowser}
-                reverse={false}
-              />
-
-              <DiffRow
-                index="02"
-                icon={Globe}
-                title="Fast charts on Arrow buffers"
-                badge="Rendering"
-                hook="Charts read columns, not JSON."
-                desc="Results stream as columnar Arrow IPC straight into Apache ECharts on canvas — no serialisation round-trip, no DOM-bound SVG. Cross-filter a six-figure result set and it just moves."
-                outcome="fluid charts at 100k+ rows"
-                Illustration={WebGLPerf}
-                reverse={true}
-              />
-
-              <DiffRow
-                id="cache"
-                index="03"
-                icon={Database}
-                title="Edge cache + auto pre-agg"
-                badge="Cost architecture"
-                hook="500 viewers. One warehouse hit."
-                desc="A content-hashed edge cache keyed on (plan + JWT claims) collapses identical dashboard traffic, while a rollup suggester mines hot GROUP BY shapes from your query log — materialize the winners in one click, no hand-written cubes."
-                outcome="10–50× fewer warehouse scans"
-                Illustration={EdgeCache}
-                reverse={false}
-              />
-
-              <DiffRow
-                id="embedding"
-                index="04"
-                icon={Shield}
-                title="Auth-as-code embedding"
-                badge="Security"
-                hook="Row-level security lives in your repo."
-                desc="One JWT primitive powers users, groups, and embeds. RLS policies are claims in a token your backend signs — and predicates are injected into the SQL AST, never string-concatenated. Auth logic stays in code review, not a vendor UI."
-                outcome="<nubi-dashboard get-token> — that's the whole integration"
-                Illustration={EmbedAuthCode}
-                reverse={true}
-              />
-
-              <DiffRow
-                index="05"
-                icon={Bot}
-                title="LLM-authorable dashboards"
-                badge="AI-native"
-                hook="Agents speak fluent dashboard."
-                desc="A dashboard is sanitized HTML with declarative <nubi-*> elements — a format LLMs author natively, grounded on your real schema. Six MCP tools let agents query, build, and iterate end-to-end."
-                outcome="author_dashboard · run_query · 4 more MCP tools"
-                Illustration={LlmDashboardCode}
-                reverse={false}
-              />
-
-              <DiffRow
-                id="connectors"
-                index="06"
-                icon={Code2}
-                title="SQL-first connector SDK"
-                badge="Extensibility"
-                hook="Point at a warehouse and go."
-                desc="No semantic model to build first. 25+ connectors out of the box, plus a Python SDK that wraps any Arrow-returning function as a first-class source — behind a capability gate that enforces the security floor."
-                outcome="predicate_rls=False → 501 — sources fail closed"
-                Illustration={ConnectorSdkCode}
-                reverse={true}
-              />
-
-              <DiffRow
-                id="warehouse"
-                index="07"
-                icon={Warehouse}
-                title="A lakehouse you don't operate"
-                badge="Pro & Enterprise"
-                hook="Big-table analytics without the warehouse tax."
-                desc="Datasets live as open Parquet in object storage, queried by DuckDB on dedicated machines billed as ordinary compute at 4× — no per-TB scan fees, no cluster to babysit. Outgrow it and nothing migrates: connect BigQuery or ClickHouse and your dashboards, RLS, caching, and rollups stay exactly where they are."
-                outcome="open formats — leaving is a connection string"
-                Illustration={LakehouseFlow}
-                reverse={false}
-              />
-
-              <DiffRow
-                id="flows"
-                index="08"
-                icon={Workflow}
-                title="Flows: orchestration included"
-                badge="Workflows"
-                hook="The orchestrator bill, deleted."
-                desc="SQL and Python cells wired into a DAG you edit as a canvas, a notebook, or files. Schedules, retries, timeouts, caching, fan-out, and conditional gates — running on Postgres alone. No Redis, no Celery, no separate Airflow to feed."
-                outcome="one platform, zero extra orchestrator"
-                Illustration={FlowCode}
-                reverse={true}
-              />
+              <DecisionGrid />
             </div>
           </div>
         </section>
@@ -2011,113 +2006,7 @@ export default function LandingPage() {
               </p>
             </div>
 
-            {/* Three step cards with connector arrows */}
-            <div className="flex flex-col lg:flex-row items-stretch gap-4 lg:gap-3 xl:gap-5">
-
-              <HowItWorksStep
-                num={1}
-                icon={PlugZap}
-                Illo={ConnectorSdk}
-                color="linear-gradient(135deg, #1b2363, #2456a6)"
-                title="Connect"
-                tagline="Bring your warehouse. Secrets stay in your network."
-                bullets={[
-                  { icon: Database, text: 'BigQuery, Snowflake, Redshift, Postgres, ClickHouse — point and go, no semantic model required.' },
-                  { icon: Lock, text: 'Warehouse credentials never leave the connector. Self-host in your VPC or use Nubi-managed regional connectors near your data.' },
-                  { icon: Code2, text: 'Python connector SDK: any Arrow-returning function is a first-class source. Wrap a proprietary store, a dataframe job, or a REST feed.' },
-                  { icon: Shield, text: 'Capability contract enforces a security floor — connectors without predicate-RLS support are refused (501), not silently trusted.' },
-                ]}
-                chips={[
-                  { label: 'BigQuery', accent: false },
-                  { label: 'Snowflake', accent: false },
-                  { label: 'Postgres', accent: false },
-                  { label: 'Python SDK', accent: true },
-                  { label: 'Private VPC bridge', accent: true },
-                ]}
-                code="nubi deploy ./resources --dry-run"
-                lang="shell"
-              />
-
-              {/* Arrow connector */}
-              <div className="flex lg:flex-col items-center justify-center shrink-0 py-1 lg:py-0 px-0 lg:px-1">
-                {/* desktop: cards in a row → arrow points right */}
-                <div className="hidden lg:flex items-center gap-2">
-                  <div className="h-px w-8 bg-gradient-to-r from-transparent via-border to-transparent" />
-                  <ArrowRightCircle size={22} strokeWidth={1.5} className="lp-step-arrow" />
-                  <div className="h-px w-8 bg-gradient-to-r from-transparent via-border to-transparent" />
-                </div>
-                {/* mobile: cards stacked → arrow points down */}
-                <div className="lg:hidden flex flex-col items-center gap-2">
-                  <div className="w-px h-8 bg-gradient-to-b from-transparent via-border to-transparent" />
-                  <ArrowRightCircle size={22} strokeWidth={1.5} className="lp-step-arrow rotate-90" />
-                  <div className="w-px h-8 bg-gradient-to-b from-transparent via-border to-transparent" />
-                </div>
-              </div>
-
-              <HowItWorksStep
-                num={2}
-                icon={SearchCode}
-                Illo={QueryWorkspace}
-                color="linear-gradient(135deg, #2456a6, #17b3a3)"
-                title="Query"
-                tagline="SQL, named params, and AI text-to-SQL — all in the browser."
-                bullets={[
-                  { icon: Database, text: 'DuckDB-WASM kernel runs in the user\'s tab — zero cold starts, zero per-session cloud cost. Results stream as Arrow IPC.' },
-                  { icon: Sparkles, text: 'AI text-to-SQL grounded on your actual catalog and lineage graph — not hallucinated schemas. Six MCP tools for agent authoring.' },
-                  { icon: SearchCode, text: 'Named-parameter registered queries keep your SQL versioned and reusable. The query planner pushes predicates and projections to the warehouse.' },
-                  { icon: Globe, text: 'Content-hashed edge cache: 500 viewers of the same dashboard collapse to 1 warehouse hit. Auto pre-aggregation mines query logs to build rollups automatically.' },
-                ]}
-                chips={[
-                  { label: 'DuckDB-WASM', accent: true },
-                  { label: 'Arrow IPC', accent: true },
-                  { label: 'AI text-to-SQL', accent: false },
-                  { label: 'Named params', accent: false },
-                  { label: 'Edge cache', accent: false },
-                ]}
-                code="SELECT month, SUM(revenue) FROM events WHERE tenant_id = {{tenant_id}} GROUP BY 1"
-                lang="sql"
-              />
-
-              {/* Arrow connector */}
-              <div className="flex lg:flex-col items-center justify-center shrink-0 py-1 lg:py-0 px-0 lg:px-1">
-                {/* desktop: cards in a row → arrow points right */}
-                <div className="hidden lg:flex items-center gap-2">
-                  <div className="h-px w-8 bg-gradient-to-r from-transparent via-border to-transparent" />
-                  <ArrowRightCircle size={22} strokeWidth={1.5} className="lp-step-arrow" />
-                  <div className="h-px w-8 bg-gradient-to-r from-transparent via-border to-transparent" />
-                </div>
-                {/* mobile: cards stacked → arrow points down */}
-                <div className="lg:hidden flex flex-col items-center gap-2">
-                  <div className="w-px h-8 bg-gradient-to-b from-transparent via-border to-transparent" />
-                  <ArrowRightCircle size={22} strokeWidth={1.5} className="lp-step-arrow rotate-90" />
-                  <div className="w-px h-8 bg-gradient-to-b from-transparent via-border to-transparent" />
-                </div>
-              </div>
-
-              <HowItWorksStep
-                num={3}
-                icon={Layers}
-                Illo={EmbedAuth}
-                color="linear-gradient(135deg, #17b3a3, #2dd4bf)"
-                title="Embed"
-                tagline="One JWT primitive. Per-viewer RLS. Cross-filtering dashboards."
-                bullets={[
-                  { icon: KeyRound, text: 'Signed JWT carries per-viewer claims. Predicate injection is AST-based — never string concat. Policies live as code in your repo, PR-reviewable.' },
-                  { icon: Filter, text: 'Token-locked params prevent viewers from escaping their data scope. Column masking and row-level security enforced server-side before any data leaves the connector.' },
-                  { icon: Globe, text: 'Cross-filtering dashboards rendered with ECharts on Arrow buffers — canvas rendering that stays smooth on large result sets.' },
-                  { icon: Code2, text: 'Drop the <nubi-dashboard> web component into your host app — UMD or ES module. Theme attribute, short-lived JWTs that refresh before expiry.' },
-                ]}
-                chips={[
-                  { label: 'JWT RLS', accent: true },
-                  { label: 'AST predicate inject', accent: true },
-                  { label: 'Token-locked params', accent: false },
-                  { label: 'Cross-filter dashboards', accent: false },
-                  { label: 'Web component', accent: false },
-                ]}
-                code={'<nubi-dashboard query="SELECT * FROM sales" get-token="getEmbedToken">'}
-                lang="html"
-              />
-            </div>
+            <HowItWorksTimeline />
 
             {/* Architecture note */}
             <div className="mt-10 sm:mt-12 mx-auto max-w-3xl rounded-2xl p-5 sm:p-6 text-sm leading-relaxed text-center bg-surface border border-border">
@@ -2320,30 +2209,46 @@ export default function LandingPage() {
         {/* ════════════════════════════════════════════════════════════════════
             §7  ABOUT — minimal "about" anchor for footer link
         ════════════════════════════════════════════════════════════════════ */}
-        <section id="about" className="py-14 sm:py-16 bg-bg scroll-mt-14">
-          <div className="max-w-3xl mx-auto px-4 sm:px-6 text-center">
-            <p className="font-mono text-[11px] font-semibold tracking-[0.18em] uppercase mb-4 text-brand-teal">About Nubi</p>
-            <h2 className="font-display text-2xl sm:text-3xl lg:text-4xl font-bold mb-4 sm:mb-5 text-fg">
-              Built on one structural bet.
-            </h2>
-            <p className="text-sm sm:text-base leading-relaxed text-muted mb-6">
-              The analytics kernel runs in the user&rsquo;s browser by default. That single decision
-              makes the marginal cost of a dashboard view{' '}
-              <strong className="text-fg font-semibold">≈ $0 — not a marketing claim, a
-              consequence of where compute runs.</strong> Hex runs a Python kernel per session in their
-              cloud. Cube runs the data plane in their cloud. Nubi pushes compute to the browser
-              and only falls through to a metered server kernel for the workloads that need it.
-            </p>
-            <p className="text-sm text-muted opacity-70 mb-8">
-              Apache-2.0 open core &middot; Real free tier &middot; Self-hostable connectors
-            </p>
-            <Link
-              to="/register"
-              className="inline-flex items-center justify-center gap-2 px-6 py-3.5 rounded-xl text-base font-semibold transition-all bg-brand-gradient text-white hover:opacity-90 hover:-translate-y-0.5 min-h-[48px]"
-            >
-              Start free
-              <ArrowRight size={16} strokeWidth={2.5} />
-            </Link>
+        <section id="about" className="relative scroll-mt-14 bg-bg px-3 sm:px-5 py-8 sm:py-12">
+          <div className="lp-hero-panel relative max-w-[1440px] mx-auto rounded-[1.5rem] sm:rounded-[2rem] overflow-hidden border border-border dark:border-white/[0.06]">
+            <div className="lp-noise pointer-events-none absolute inset-0" aria-hidden="true" />
+            <div
+              className="lp-mesh-blob pointer-events-none absolute -bottom-40 -left-32 w-[38rem] h-[38rem] rounded-full"
+              style={{ background: 'radial-gradient(circle, rgba(72,124,214,0.22) 0%, transparent 65%)' }}
+              aria-hidden="true"
+            />
+            <div className="relative max-w-3xl mx-auto px-5 sm:px-10 py-14 sm:py-20 text-center">
+              <p className="font-mono text-[11px] font-semibold tracking-[0.18em] uppercase mb-4 text-brand-teal">About Nubi</p>
+              <h2 className="font-display text-3xl sm:text-4xl lg:text-[3.2rem] font-bold leading-[1.08] tracking-tight mb-4 sm:mb-6 text-fg">
+                Built on <span className="lp-hero-gradient-text">one structural bet.</span>
+              </h2>
+              <p className="text-sm sm:text-base lg:text-lg leading-relaxed text-muted dark:text-slate-300/90 mb-6">
+                The analytics kernel runs in the user&rsquo;s browser by default. That single decision
+                makes the marginal cost of a dashboard view{' '}
+                <B>≈ $0 — not a marketing claim, a consequence of where compute runs.</B>{' '}
+                Hex runs a Python kernel per session in their cloud. Cube runs the data plane in
+                their cloud. Nubi pushes compute to the browser and only falls through to a
+                metered server kernel for the workloads that need it.
+              </p>
+              <p className="font-mono text-[11px] text-muted opacity-80 mb-8">
+                apache-2.0 open core · real free tier · self-hostable connectors
+              </p>
+              <div className="flex flex-wrap justify-center gap-3">
+                <Link
+                  to="/register"
+                  className="lp-cta-glow inline-flex items-center justify-center gap-2 px-7 py-3.5 rounded-xl text-base font-semibold transition-all bg-brand-gradient text-white hover:-translate-y-0.5 min-h-[48px]"
+                >
+                  Start free
+                  <ArrowRight size={16} strokeWidth={2.5} />
+                </Link>
+                <Link
+                  to="/docs/getting-started"
+                  className="inline-flex items-center justify-center gap-2 px-6 py-3.5 rounded-xl text-base font-semibold transition-all bg-surface border border-border text-fg hover:border-brand-blue dark:bg-white/[0.06] dark:border-white/15 dark:text-white dark:hover:bg-white/[0.12] min-h-[48px]"
+                >
+                  Read the docs
+                </Link>
+              </div>
+            </div>
           </div>
         </section>
 
