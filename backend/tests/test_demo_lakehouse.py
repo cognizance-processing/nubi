@@ -172,6 +172,49 @@ async def test_seed_provisions_editable_parquet_connector(monkeypatch, tmp_path)
     assert ds["name"] == "Demo Lakehouse"
 
 
+@pytest.mark.asyncio
+async def test_seed_attaches_demo_connector_per_project(monkeypatch, tmp_path) -> None:
+    """Each demo-seeded project gets its OWN lakehouse demo connector.
+
+    Seeding a SECOND project in the same org must attach a fresh, project-scoped
+    "Demo Lakehouse" connector (with that project's parquet URIs) instead of
+    silently reusing the first project's rows — and stay idempotent per project.
+    """
+    _local_lake_env(monkeypatch, tmp_path)
+    repo = InMemoryRepo()
+    org = str(uuid.uuid4())
+    user = str(uuid.uuid4())
+    proj_a = str(uuid.uuid4())
+    proj_b = str(uuid.uuid4())
+
+    sum_a = await seed_sample_bundle(org, proj_a, user, repo)
+    assert "skipped" not in sum_a, sum_a
+    sum_b = await seed_sample_bundle(org, proj_b, user, repo)
+    assert "skipped" not in sum_b, sum_b
+
+    # One demo connector PER project, each pointing at its own parquet prefix.
+    ds_by_project = {
+        str(row["project_id"]): row for row in await repo.list("datastores", org)
+    }
+    assert set(ds_by_project) == {proj_a, proj_b}
+    for pid, row in ds_by_project.items():
+        cfg = row["config"]
+        assert row["name"] == "Demo Lakehouse"
+        assert cfg.get("sample") is True
+        assert cfg.get("editable_parquet") is True
+        prefix = project_demo_prefix(org, pid)
+        for uri in cfg["s3_views"].values():
+            assert prefix.rstrip("/") in uri, f"{uri} not under {prefix}"
+
+    # Re-seeding project B creates nothing new (idempotent per project).
+    again = await seed_sample_bundle(org, proj_b, user, repo)
+    assert again["created"] == []
+    assert len(await repo.list("datastores", org)) == 2
+    assert len(await repo.list("boards", org, proj_b)) == len(
+        await repo.list("boards", org, proj_a)
+    )
+
+
 # ---------------------------------------------------------------------------
 # 3-5. Query + edit cells through the HTTP surface (rewrite-on-edit)
 # ---------------------------------------------------------------------------
