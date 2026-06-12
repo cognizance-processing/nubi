@@ -11,10 +11,12 @@
 
 import { useState, useEffect, useRef } from 'react'
 import { Link, NavLink, useLocation, useNavigate } from 'react-router-dom'
-import { Sun, Moon, Menu, X, LogOut, LayoutDashboard, ChevronDown } from 'lucide-react'
+import { Sun, Moon, Menu, X, LogOut, LayoutDashboard, ChevronDown, Github } from 'lucide-react'
 import { useTheme } from '../contexts/ThemeContext.jsx'
 import { useAuth } from '../contexts/AuthContext.jsx'
 import Logo from './Logo.jsx'
+
+const GITHUB_URL = 'https://github.com/nu-bi/nubi'
 
 // ── Nav link data ─────────────────────────────────────────────────────────────
 // scrollTo: if set, clicking the link smooth-scrolls to that section ID on the
@@ -242,6 +244,25 @@ export default function Navbar() {
 
         {/* ── Right: actions ────────────────────────────────────────────── */}
         <div className="flex items-center gap-2 shrink-0">
+          {/* GitHub — open core, wear it on the topbar */}
+          <a
+            href={GITHUB_URL}
+            target="_blank"
+            rel="noopener noreferrer"
+            aria-label="Nubi on GitHub"
+            title="Star Nubi on GitHub"
+            className="
+              flex items-center justify-center w-11 h-11 rounded-lg
+              text-muted hover:text-fg
+              bg-surface-2 hover:bg-surface
+              border border-border
+              transition-colors duration-150
+              focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-1
+            "
+          >
+            <Github size={16} strokeWidth={2} />
+          </a>
+
           <ThemeToggle />
 
           {/* Auth controls — desktop only */}

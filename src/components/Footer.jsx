@@ -2,17 +2,6 @@ import { Link } from 'react-router-dom'
 import { Github, Twitter, Linkedin } from 'lucide-react'
 import Logo from './Logo'
 
-/**
- * Smooth-scroll helper — scrolls to a section on the current page if possible,
- * otherwise navigates to "/" then attempts the scroll after a brief tick.
- */
-function scrollToId(id) {
-  const el = document.getElementById(id)
-  if (el) {
-    el.scrollIntoView({ behavior: 'smooth', block: 'start' })
-  }
-}
-
 // ─── Navigation columns ───────────────────────────────────────────────────────
 //
 // Link kinds:
@@ -21,7 +10,7 @@ function scrollToId(id) {
 //   external: true   → plain <a> with target="_blank"
 //   (none / #)       → removed or replaced
 //
-const GITHUB_URL = 'https://github.com/exo-explore/nubi'
+const GITHUB_URL = 'https://github.com/nu-bi/nubi'
 
 const NAV_COLUMNS = [
   {
@@ -70,7 +59,7 @@ const NAV_COLUMNS = [
 ]
 
 const SOCIAL = [
-  { Icon: Github,   href: 'https://github.com/exo-explore/nubi', label: 'GitHub' },
+  { Icon: Github,   href: 'https://github.com/nu-bi/nubi', label: 'GitHub' },
   { Icon: Twitter,  href: 'https://twitter.com/nubi_dev',         label: 'X (Twitter)' },
   { Icon: Linkedin, href: 'https://linkedin.com/company/nubi-dev', label: 'LinkedIn' },
 ]
