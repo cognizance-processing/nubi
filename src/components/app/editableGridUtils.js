@@ -1,6 +1,6 @@
 /**
  * editableGridUtils.js — Pure, side-effect-free helpers for the Supabase-style
- * editable table editor (EditableDataGrid + DataBrowser).
+ * editable table editor (EditableDataGrid on the Data page).
  *
  * No DOM, no React, no browser globals — fully testable under `node --test`.
  *

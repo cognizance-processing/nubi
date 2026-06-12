@@ -1,11 +1,11 @@
 /**
  * DataExplorerPage — Supabase-style connector data browser.
  *
- * Route: /data
+ * Route: /data   (optionally /data?connector=<datastore_id> to pre-select one)
  *
  * Layout
  * ------
- * Desktop: left rail (220px) + main panel with tabs.
+ * Desktop: left rail (220px) + main panel.
  * Mobile/tablet: left rail collapses to a dropdown; main stays full-width.
  *
  * Left rail
@@ -13,16 +13,21 @@
  *   - Connector picker: lists org datastores + a built-in "Demo" entry.
  *   - Table list (searchable) for the selected connector.
  *
- * Main panel — two tabs
- * ---------------------
- *   "Data"   — DataGrid showing rows fetched via GET /data/.../rows.
- *   "Schema" — clean column list (name, type, nullable, PK badge).
+ * Main panel
+ * ----------
+ *   EditableDataGrid — a sticky-header / sticky-selector grid with type-aware
+ *   rendering, click-to-sort, resizable columns, a row-detail panel, and INLINE
+ *   CELL EDITING + insert/delete (gated on the backend write contract). It
+ *   degrades to read-only when the table is not writable / has no primary key.
  *
- * Features: row count, refresh button, loading/error/empty states.
+ * The connector is reflected in the URL (?connector=<id>, shallow) so the page
+ * is deep-linkable from the Connectors page. Selecting the demo connector
+ * clears the param. All loads use the deferred async pattern (no setState in an
+ * effect body) per the repo's react-hooks rules.
  */
 
 import { useState, useEffect, useCallback, useRef } from 'react'
-import * as arrow from 'apache-arrow'
+import { useSearchParams } from 'react-router-dom'
 import {
   Database,
   Table2,
@@ -30,25 +35,18 @@ import {
   RefreshCw,
   ChevronDown,
   ChevronRight,
-  Loader2,
   AlertCircle,
-  Hash,
-  Type,
-  Calendar,
-  ToggleLeft,
-  Key,
-  Rows3,
   SlidersHorizontal,
 } from 'lucide-react'
-import DataGrid from '../../components/DataGrid.jsx'
-import { get, getAccessToken } from '../../lib/api.js'
+import EditableDataGrid from '../../components/app/EditableDataGrid.jsx'
+import { normalizeColumnMeta } from '../../components/app/editableGridUtils.js'
+import * as api from '../../lib/api.js'
 
 // ---------------------------------------------------------------------------
 // Constants
 // ---------------------------------------------------------------------------
 
-const BACKEND_URL = import.meta.env.VITE_BACKEND_URL ?? 'http://localhost:8000'
-const DEFAULT_LIMIT = 500
+const ROW_LIMIT = 200
 const DEMO_ENTRY = { id: null, name: 'Demo (built-in)', config: { connector_type: 'duckdb' } }
 
 // ---------------------------------------------------------------------------
@@ -58,103 +56,7 @@ const DEMO_ENTRY = { id: null, name: 'Demo (built-in)', config: { connector_type
 /** GET /data/tables or /data/{id}/tables */
 async function fetchTables(datastoreId) {
   const path = datastoreId ? `/data/${datastoreId}/tables` : '/data/tables'
-  return get(path)
-}
-
-/** GET /data/tables/{table}/columns or /data/{id}/tables/{table}/columns */
-async function fetchColumns(datastoreId, table) {
-  const path = datastoreId
-    ? `/data/${datastoreId}/tables/${encodeURIComponent(table)}/columns`
-    : `/data/tables/${encodeURIComponent(table)}/columns`
-  return get(path)
-}
-
-/**
- * GET rows as Arrow IPC — returns { table: arrow.Table, rowCount: number }.
- * Uses a direct fetch (not api.js request) to handle binary Arrow IPC.
- */
-async function fetchRows(datastoreId, table, limit = DEFAULT_LIMIT) {
-  const pathBase = datastoreId
-    ? `${BACKEND_URL}/api/v1/data/${datastoreId}/tables/${encodeURIComponent(table)}/rows`
-    : `${BACKEND_URL}/api/v1/data/tables/${encodeURIComponent(table)}/rows`
-  const url = `${pathBase}?limit=${limit}`
-
-  const headers = { Accept: 'application/vnd.apache.arrow.stream' }
-  const token = getAccessToken()
-  if (token) headers['Authorization'] = `Bearer ${token}`
-
-  const resp = await fetch(url, { headers, credentials: 'include' })
-  if (!resp.ok) {
-    const txt = await resp.text().catch(() => String(resp.status))
-    throw new Error(`Row fetch failed (${resp.status}): ${txt}`)
-  }
-  const buf = await resp.arrayBuffer()
-  // Buffer is already complete → synchronous IPC decode. (apache-arrow has no
-  // `fromByteStream`; `RecordBatchReader.from()` is the supported entry point.)
-  const arrowReader = arrow.RecordBatchReader.from(new Uint8Array(buf))
-  const tbl = new arrow.Table([...arrowReader])
-  return { table: tbl, rowCount: tbl.numRows }
-}
-
-// ---------------------------------------------------------------------------
-// Arrow table → DataGrid props conversion
-// ---------------------------------------------------------------------------
-
-function arrowTypeLabel(field) {
-  const t = field.type
-  if (arrow.DataType.isInt(t) || arrow.DataType.isFloat(t)) return 'number'
-  if (arrow.DataType.isBool(t)) return 'bool'
-  if (arrow.DataType.isDate(t) || arrow.DataType.isTimestamp(t)) return 'date'
-  return 'string'
-}
-
-function arrowTableToGrid(tbl) {
-  if (!tbl || tbl.numCols === 0) return { columns: [], rows: [] }
-  const columns = tbl.schema.fields.map((f) => ({
-    key: f.name,
-    label: f.name,
-    type: arrowTypeLabel(f),
-  }))
-  const rows = []
-  const colNames = columns.map((c) => c.key)
-  for (let i = 0; i < tbl.numRows; i++) {
-    const row = {}
-    for (const name of colNames) {
-      const v = tbl.getChild(name)?.get(i)
-      row[name] = v == null ? null : (typeof v === 'bigint' ? Number(v) : v)
-    }
-    rows.push(row)
-  }
-  return { columns, rows }
-}
-
-// ---------------------------------------------------------------------------
-// Column type icon
-// ---------------------------------------------------------------------------
-
-function TypeIcon({ type }) {
-  const cls = 'shrink-0 text-muted'
-  switch (type?.toLowerCase()) {
-    case 'integer':
-    case 'bigint':
-    case 'int':
-    case 'int32':
-    case 'int64':
-    case 'float':
-    case 'double':
-    case 'numeric':
-    case 'decimal':
-      return <Hash size={12} className={cls} />
-    case 'boolean':
-    case 'bool':
-      return <ToggleLeft size={12} className={cls} />
-    case 'date':
-    case 'timestamp':
-    case 'timestamptz':
-      return <Calendar size={12} className={cls} />
-    default:
-      return <Type size={12} className={cls} />
-  }
+  return api.get(path)
 }
 
 // ---------------------------------------------------------------------------
@@ -175,80 +77,6 @@ function TableItem({ name, active, onClick }) {
       <Table2 size={13} className={active ? 'text-primary' : 'text-muted'} />
       <span className="truncate">{name}</span>
     </button>
-  )
-}
-
-// ---------------------------------------------------------------------------
-// Schema tab
-// ---------------------------------------------------------------------------
-
-function SchemaTab({ columns, loading, error }) {
-  if (loading) {
-    return (
-      <div className="p-6 space-y-2">
-        {Array.from({ length: 5 }).map((_, i) => (
-          <div key={i} className="h-8 rounded-lg bg-border/40 animate-pulse" />
-        ))}
-      </div>
-    )
-  }
-  if (error) {
-    return (
-      <div className="flex flex-col items-center justify-center p-10 gap-3 text-center">
-        <AlertCircle size={20} className="text-rose-500" />
-        <p className="text-sm text-rose-500">{error}</p>
-      </div>
-    )
-  }
-  if (!columns || columns.length === 0) {
-    return (
-      <div className="flex flex-col items-center justify-center p-10 gap-3 text-center">
-        <Database size={24} className="text-muted/40" />
-        <p className="text-sm text-muted">Select a table to view its schema.</p>
-      </div>
-    )
-  }
-  return (
-    <div className="overflow-auto">
-      <table className="w-full text-sm">
-        <thead className="sticky top-0 z-10">
-          <tr className="bg-surface-2 border-b border-border text-xs text-muted font-semibold">
-            <th className="text-left px-4 py-2.5">Column</th>
-            <th className="text-left px-4 py-2.5">Type</th>
-            <th className="text-left px-4 py-2.5">Nullable</th>
-          </tr>
-        </thead>
-        <tbody>
-          {columns.map((col, i) => (
-            <tr
-              key={col.name}
-              className={[
-                'border-b border-border/30 hover:bg-primary/5 transition-colors',
-                i % 2 === 0 ? 'bg-surface' : 'bg-surface-2/30',
-              ].join(' ')}
-            >
-              <td className="px-4 py-2 font-mono text-xs text-fg flex items-center gap-2">
-                <TypeIcon type={col.type} />
-                {col.pk && (
-                  <Key size={11} className="text-amber-500 shrink-0" title="Primary key" />
-                )}
-                {col.name}
-              </td>
-              <td className="px-4 py-2 font-mono text-xs text-muted">{col.type}</td>
-              <td className="px-4 py-2 text-xs">
-                {col.nullable ? (
-                  <span className="text-muted/60">YES</span>
-                ) : (
-                  <span className="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-semibold bg-surface-2 border border-border text-muted">
-                    NOT NULL
-                  </span>
-                )}
-              </td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
-    </div>
   )
 }
 
@@ -308,9 +136,17 @@ function ConnectorDropdown({ connectors, selectedId, onSelect }) {
 // ---------------------------------------------------------------------------
 
 export default function DataExplorerPage() {
+  // ── URL state — ?connector=<datastore_id> pre-selects a connector ─────────
+  const [searchParams, setSearchParams] = useSearchParams()
+
+  // Seed the selected connector from the URL on first render (no setState in an
+  // effect). `null` = the built-in demo datastore.
+  const [selectedConnectorId, setSelectedConnectorId] = useState(
+    () => searchParams.get('connector') || null,
+  )
+
   // ── State ─────────────────────────────────────────────────────────────────
   const [connectors, setConnectors] = useState([DEMO_ENTRY])
-  const [selectedConnectorId, setSelectedConnectorId] = useState(null) // null = demo
 
   const [tables, setTables] = useState([])
   const [tablesLoading, setTablesLoading] = useState(false)
@@ -318,19 +154,13 @@ export default function DataExplorerPage() {
   const [tableSearch, setTableSearch] = useState('')
   const [selectedTable, setSelectedTable] = useState(null)
 
-  const [activeTab, setActiveTab] = useState('data') // 'data' | 'schema'
-
-  // Schema tab state
-  const [columns, setColumns] = useState([])
-  const [columnsLoading, setColumnsLoading] = useState(false)
-  const [columnsError, setColumnsError] = useState(null)
-
-  // Data tab state
-  const [gridData, setGridData] = useState({ columns: [], rows: [] })
-  const [rowsLoading, setRowsLoading] = useState(false)
-  const [rowsError, setRowsError] = useState(null)
-  const [totalRows, setTotalRows] = useState(null)
-  const [refreshKey, setRefreshKey] = useState(0)
+  // Per-table data + meta (loaded here, passed to EditableDataGrid).
+  const [meta, setMeta] = useState(null)
+  const [rows, setRows] = useState([])
+  const [total, setTotal] = useState(null)
+  const [dataLoading, setDataLoading] = useState(false)
+  const [dataError, setDataError] = useState(null)
+  const [reloadKey, setReloadKey] = useState(0)
 
   // Mobile rail open/close
   const [railOpen, setRailOpen] = useState(false)
@@ -340,7 +170,7 @@ export default function DataExplorerPage() {
     let cancelled = false
     ;(async () => {
       try {
-        const data = await get('/connectors')
+        const data = await api.get('/connectors')
         if (cancelled) return
         const list = Array.isArray(data) ? data : (data?.connectors ?? [])
         // The backend already injects the virtual "Demo data" connector into
@@ -358,9 +188,9 @@ export default function DataExplorerPage() {
   useEffect(() => {
     let cancelled = false
     setSelectedTable(null)
-    setColumns([])
-    setGridData({ columns: [], rows: [] })
-    setTotalRows(null)
+    setMeta(null)
+    setRows([])
+    setTotal(null)
     setTablesError(null)
     setTablesLoading(true)
 
@@ -368,7 +198,7 @@ export default function DataExplorerPage() {
       try {
         const data = await fetchTables(selectedConnectorId)
         if (cancelled) return
-        const list = (data?.tables ?? []).map((t) =>
+        const list = (data?.tables ?? data ?? []).map((t) =>
           typeof t === 'string' ? { name: t, schema: 'main' } : t
         )
         setTables(list)
@@ -382,64 +212,71 @@ export default function DataExplorerPage() {
     return () => { cancelled = true }
   }, [selectedConnectorId])
 
-  // ── Load columns + rows when table or refreshKey changes ─────────────────
+  // ── Load meta + rows for the selected table ───────────────────────────────
+  // A monotonically increasing token guards against out-of-order responses
+  // when the user clicks between tables quickly.
+  const loadToken = useRef(0)
+
   useEffect(() => {
-    if (!selectedTable) return
+    if (!selectedTable) {
+      setMeta(null)
+      setRows([])
+      setTotal(null)
+      return
+    }
+    const token = ++loadToken.current
+    setDataLoading(true)
+    setDataError(null)
 
-    let cancelled = false
-
-    // Columns
-    setColumnsLoading(true)
-    setColumnsError(null)
     ;(async () => {
       try {
-        const data = await fetchColumns(selectedConnectorId, selectedTable)
-        if (cancelled) return
-        setColumns(data?.columns ?? [])
-      } catch (e) {
-        if (!cancelled) setColumnsError(e.message)
+        const [rawMeta, rowData] = await Promise.all([
+          api.fetchDataColumns(selectedConnectorId, selectedTable).catch(() => ({})),
+          api.fetchDataRows(selectedConnectorId, selectedTable, { limit: ROW_LIMIT }),
+        ])
+        if (token !== loadToken.current) return
+        setMeta(normalizeColumnMeta(rawMeta))
+        setRows(rowData.rows)
+        setTotal(rowData.total)
+      } catch (err) {
+        if (token !== loadToken.current) return
+        setDataError(err.message ?? 'Failed to load table data')
+        setMeta(null)
+        setRows([])
+        setTotal(null)
       } finally {
-        if (!cancelled) setColumnsLoading(false)
+        if (token === loadToken.current) setDataLoading(false)
       }
     })()
-
-    // Rows
-    setRowsLoading(true)
-    setRowsError(null)
-    setGridData({ columns: [], rows: [] })
-    setTotalRows(null)
-    ;(async () => {
-      try {
-        const { table, rowCount } = await fetchRows(selectedConnectorId, selectedTable, DEFAULT_LIMIT)
-        if (cancelled) return
-        setGridData(arrowTableToGrid(table))
-        setTotalRows(rowCount)
-      } catch (e) {
-        if (!cancelled) setRowsError(e.message)
-      } finally {
-        if (!cancelled) setRowsLoading(false)
-      }
-    })()
-
-    return () => { cancelled = true }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [selectedTable, selectedConnectorId, refreshKey])
+  }, [selectedConnectorId, selectedTable, reloadKey])
 
   // ── Handlers ──────────────────────────────────────────────────────────────
   const handleSelectTable = useCallback((name) => {
     setSelectedTable(name)
-    setActiveTab('data')
     setRailOpen(false)
   }, [])
 
-  const handleRefresh = useCallback(() => {
-    setRefreshKey((k) => k + 1)
+  const refreshData = useCallback(() => setReloadKey((k) => k + 1), [])
+
+  const handleTotalChange = useCallback((delta) => {
+    setTotal((t) => (t == null ? t : Math.max(0, t + delta)))
   }, [])
 
+  // Switching connectors reflects shallowly into the URL (?connector=<id>);
+  // the demo connector (id === null) clears the param.
   const handleSelectConnector = useCallback((id) => {
     setSelectedConnectorId(id)
     setTableSearch('')
-  }, [])
+    setSearchParams(
+      (prev) => {
+        const next = new URLSearchParams(prev)
+        if (id) next.set('connector', id)
+        else next.delete('connector')
+        return next
+      },
+      { replace: true },
+    )
+  }, [setSearchParams])
 
   // ── Filtered tables ───────────────────────────────────────────────────────
   const filteredTables = tables.filter((t) =>
@@ -557,128 +394,50 @@ export default function DataExplorerPage() {
 
       {/* ── Main panel ──────────────────────────────────────────────────── */}
       <main className="flex flex-col flex-1 min-w-0 overflow-hidden md:pt-0 pt-[44px]">
-
-        {/* Header */}
-        <div className="shrink-0 flex items-center gap-3 px-4 py-3 border-b border-border bg-surface flex-wrap">
-          {selectedTable ? (
-            <>
-              <div className="flex items-center gap-2 min-w-0">
-                <Table2 size={16} className="text-primary shrink-0" />
-                <h1 className="text-base font-semibold font-mono text-fg truncate">
-                  {selectedTable}
-                </h1>
-              </div>
-              {totalRows != null && !rowsLoading && (
-                <span className="inline-flex items-center gap-1 text-xs text-muted border border-border rounded-full px-2 py-0.5">
-                  <Rows3 size={11} />
-                  {totalRows.toLocaleString()} row{totalRows !== 1 ? 's' : ''}
-                  {totalRows >= DEFAULT_LIMIT && ` (first ${DEFAULT_LIMIT})`}
-                </span>
-              )}
-              {rowsLoading && (
-                <span className="inline-flex items-center gap-1 text-xs text-muted">
-                  <Loader2 size={11} className="animate-spin" /> Loading…
-                </span>
-              )}
-            </>
-          ) : (
-            <div className="flex items-center gap-2 text-muted">
-              <Database size={16} />
-              <span className="text-sm">Select a table to browse data</span>
+        {!selectedTable ? (
+          /* Empty state — no table selected */
+          <div className="flex flex-col items-center justify-center h-full gap-4 p-8 text-center">
+            <div className="w-14 h-14 rounded-2xl bg-surface-2 border border-border flex items-center justify-center">
+              <Database size={24} className="text-muted/60" />
             </div>
-          )}
-
-          <div className="flex-1" />
-
-          {selectedTable && (
-            <button
-              onClick={handleRefresh}
-              disabled={rowsLoading || columnsLoading}
-              className="flex items-center gap-1.5 text-xs text-muted hover:text-fg border border-border rounded-lg px-2.5 py-1.5 bg-surface hover:bg-surface-2 transition-colors disabled:opacity-40"
-              title="Refresh"
-            >
-              <RefreshCw size={12} className={rowsLoading ? 'animate-spin' : ''} />
-              Refresh
-            </button>
-          )}
-        </div>
-
-        {/* Tabs */}
-        {selectedTable && (
-          <div className="shrink-0 flex gap-0 px-4 border-b border-border bg-surface">
-            {['data', 'schema'].map((tab) => (
-              <button
-                key={tab}
-                onClick={() => setActiveTab(tab)}
-                className={[
-                  'px-4 py-2.5 text-sm font-medium border-b-2 transition-colors capitalize',
-                  activeTab === tab
-                    ? 'border-primary text-primary'
-                    : 'border-transparent text-muted hover:text-fg',
-                ].join(' ')}
-              >
-                {tab}
-              </button>
-            ))}
+            <div>
+              <p className="text-base font-semibold text-fg mb-1">
+                Browse your connector data
+              </p>
+              <p className="text-sm text-muted max-w-xs">
+                Pick a connector and select a table from the left rail to view and edit its data.
+              </p>
+            </div>
+            {tables.length > 0 && (
+              <div className="flex flex-wrap gap-2 justify-center max-w-sm">
+                {tables.slice(0, 6).map((t) => (
+                  <button
+                    key={t.name}
+                    onClick={() => handleSelectTable(t.name)}
+                    className="px-3 py-1.5 text-xs font-mono rounded-lg border border-border bg-surface-2 hover:border-primary/40 hover:text-primary transition-colors text-muted"
+                  >
+                    {t.name}
+                  </button>
+                ))}
+              </div>
+            )}
           </div>
+        ) : (
+          <EditableDataGrid
+            key={`${selectedConnectorId ?? 'demo'}:${selectedTable}`}
+            datastoreId={selectedConnectorId}
+            table={selectedTable}
+            meta={meta}
+            rows={rows}
+            total={total}
+            loading={dataLoading}
+            error={dataError}
+            onRetry={refreshData}
+            onRefresh={refreshData}
+            onRowsChange={setRows}
+            onTotalChange={handleTotalChange}
+          />
         )}
-
-        {/* Tab content */}
-        <div className="flex-1 overflow-hidden">
-          {!selectedTable ? (
-            /* Empty state — no table selected */
-            <div className="flex flex-col items-center justify-center h-full gap-4 p-8 text-center">
-              <div className="w-14 h-14 rounded-2xl bg-surface-2 border border-border flex items-center justify-center">
-                <Database size={24} className="text-muted/60" />
-              </div>
-              <div>
-                <p className="text-base font-semibold text-fg mb-1">
-                  Browse your connector data
-                </p>
-                <p className="text-sm text-muted max-w-xs">
-                  Pick a connector and select a table from the left rail to view its data and schema.
-                </p>
-              </div>
-              {tables.length > 0 && (
-                <div className="flex flex-wrap gap-2 justify-center max-w-sm">
-                  {tables.slice(0, 6).map((t) => (
-                    <button
-                      key={t.name}
-                      onClick={() => handleSelectTable(t.name)}
-                      className="px-3 py-1.5 text-xs font-mono rounded-lg border border-border bg-surface-2 hover:border-primary/40 hover:text-primary transition-colors text-muted"
-                    >
-                      {t.name}
-                    </button>
-                  ))}
-                </div>
-              )}
-            </div>
-          ) : activeTab === 'schema' ? (
-            <SchemaTab
-              columns={columns}
-              loading={columnsLoading}
-              error={columnsError}
-            />
-          ) : (
-            /* Data tab — DataGrid */
-            <div className="flex flex-col h-full">
-              <DataGrid
-                columns={gridData.columns}
-                rows={gridData.rows}
-                loading={rowsLoading}
-                error={rowsError}
-                title={null}
-                toolbar={true}
-                pageSize={50}
-                paginate={true}
-                density="comfortable"
-                exportFileName={selectedTable}
-                emptyMessage="No rows returned."
-                className="border-0 rounded-none"
-              />
-            </div>
-          )}
-        </div>
       </main>
     </div>
   )

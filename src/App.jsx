@@ -51,7 +51,7 @@
  */
 
 import { Suspense, createElement, lazy } from 'react'
-import { Navigate, Routes, Route, useLocation } from 'react-router-dom'
+import { Navigate, Routes, Route, useLocation, useParams } from 'react-router-dom'
 import { AuthProvider } from './contexts/AuthContext.jsx'
 import { UiProvider } from './contexts/UiContext.jsx'
 import { OrgProvider, useOrg } from './contexts/OrgContext.jsx'
@@ -86,7 +86,6 @@ const EditorPage = lazy(() => import('./pages/EditorPage.jsx'))
 const HomePage = lazy(() => import('./pages/app/HomePage.jsx'))
 const InviteAcceptPage = lazy(() => import('./pages/app/InviteAcceptPage.jsx'))
 const ConnectorsPage = lazy(() => import('./pages/app/ConnectorsPage.jsx'))
-const DataBrowser = lazy(() => import('./pages/app/DataBrowser.jsx'))
 const QueriesPage = lazy(() => import('./pages/app/QueriesPage.jsx'))
 const BlendBuilder = lazy(() => import('./pages/app/BlendBuilder.jsx'))
 const DashboardsPage = lazy(() => import('./pages/app/DashboardsPage.jsx'))
@@ -239,6 +238,15 @@ function RouteFallback() {
   )
 }
 
+/**
+ * Redirect the legacy /connectors/:id/data route to the unified Data page,
+ * pre-selecting the connector via ?connector=<id>. Keeps old links working.
+ */
+function LegacyConnectorDataRedirect() {
+  const { id } = useParams()
+  return <Navigate to={`/data?connector=${id}`} replace />
+}
+
 export default function App() {
   return (
     <AuthProvider>
@@ -276,7 +284,8 @@ export default function App() {
           <Route path="home" element={<HomePage />} />
           <Route path="invite/:token" element={<InviteAcceptPage />} />
           <Route path="connectors" element={<ConnectorsPage />} />
-          <Route path="connectors/:id/data" element={<DataBrowser />} />
+          {/* Legacy connector data route → unified Data page (deep-linked). */}
+          <Route path="connectors/:id/data" element={<LegacyConnectorDataRedirect />} />
           <Route path="data" element={<DataExplorerPage />} />
           <Route path="queries" element={<QueriesPage />} />
           <Route path="queries/:id" element={<QueriesPage />} />

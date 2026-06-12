@@ -281,7 +281,7 @@ function ConnectorCard({ connector, testResult, testingId, onEdit, onDelete, onT
       {/* Actions */}
       <div className="mt-auto pt-3 border-t border-border/60 flex items-center gap-1.5 flex-wrap">
         <Link
-          to={`/connectors/${connector.id}/data`}
+          to={`/data?connector=${connector.id}`}
           title="View data"
           className="
             inline-flex items-center gap-1.5 h-8 px-2.5 rounded-lg
