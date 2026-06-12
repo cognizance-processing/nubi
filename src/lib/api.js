@@ -546,6 +546,130 @@ export function previewDatastoreTable(datastoreId, table, limit = 50) {
 }
 
 // ---------------------------------------------------------------------------
+// Data browser — table metadata + read/write (Supabase-style editor)
+//
+// These hit the project-scoped /data endpoints (the same surface the
+// DataExplorerPage uses). They carry the write contract: column meta includes
+// `writable`, `primary_key` and per-column `editable`; the rows endpoint
+// supports PATCH/POST/DELETE. The `datastoreId` is optional — null/undefined
+// targets the built-in demo datastore (`/data/...`).
+// ---------------------------------------------------------------------------
+
+/** Build the `/data[/{id}]/tables/{table}` base path. */
+function dataTablePath(datastoreId, table) {
+  const root = datastoreId ? `/data/${datastoreId}` : '/data'
+  return `${root}/tables/${encodeURIComponent(table)}`
+}
+
+/**
+ * Fetch a table's column metadata (with the write contract).
+ *
+ * GET /api/v1/data[/{id}]/tables/{table}/columns
+ *
+ * Returns the raw payload; callers normalize via editableGridUtils. Shape:
+ *   { writable: bool, primary_key: [col,...],
+ *     columns: [{ name, type, nullable, editable }] }
+ *
+ * @param {string|null} datastoreId
+ * @param {string} table
+ * @returns {Promise<object>}
+ */
+export function fetchDataColumns(datastoreId, table) {
+  return get(`${dataTablePath(datastoreId, table)}/columns`)
+}
+
+/**
+ * Fetch table rows as plain JSON (not Arrow) for the editable grid.
+ *
+ * GET /api/v1/data[/{id}]/tables/{table}/rows?limit=&offset=
+ *
+ * The backend may return either:
+ *   - an array of row objects, or
+ *   - { rows: [...], row_count?, total?, columns? }, or
+ *   - { columns:[{name}], rows:[[...]] }  (positional)
+ * This helper normalizes all three to `{ rows: [obj], total: number|null }`.
+ *
+ * @param {string|null} datastoreId
+ * @param {string} table
+ * @param {{limit?: number, offset?: number}} [opts]
+ * @returns {Promise<{ rows: Array<Record<string,*>>, total: number|null }>}
+ */
+export async function fetchDataRows(datastoreId, table, { limit = 100, offset = 0 } = {}) {
+  const qs = `?limit=${limit}&offset=${offset}`
+  const data = await get(`${dataTablePath(datastoreId, table)}/rows${qs}`)
+
+  // Array of objects.
+  if (Array.isArray(data)) return { rows: data, total: null }
+
+  const total = data?.row_count ?? data?.total ?? data?.count ?? null
+  const raw = data?.rows ?? []
+
+  // Positional rows + a columns array → zip into objects.
+  if (raw.length && Array.isArray(raw[0]) && Array.isArray(data?.columns)) {
+    const names = data.columns.map((c) => (typeof c === 'string' ? c : c.name))
+    const rows = raw.map((arr) => {
+      const o = {}
+      names.forEach((n, i) => { o[n] = arr[i] })
+      return o
+    })
+    return { rows, total }
+  }
+
+  return { rows: raw, total }
+}
+
+/**
+ * Update a single row by primary key.
+ *
+ * PATCH /api/v1/data[/{id}]/tables/{table}/rows
+ * body { pk: {col:val}, set: {col:val} } → updated row object
+ *
+ * @param {string|null} datastoreId
+ * @param {string} table
+ * @param {Record<string,*>} pk   primary-key column→value map
+ * @param {Record<string,*>} set  changed column→value map
+ * @returns {Promise<Record<string,*>>}
+ */
+export function updateDataRow(datastoreId, table, pk, set) {
+  return patch(`${dataTablePath(datastoreId, table)}/rows`, { pk, set })
+}
+
+/**
+ * Insert a new row.
+ *
+ * POST /api/v1/data[/{id}]/tables/{table}/rows
+ * body { values: {col:val} } → new row object
+ *
+ * @param {string|null} datastoreId
+ * @param {string} table
+ * @param {Record<string,*>} values
+ * @returns {Promise<Record<string,*>>}
+ */
+export function insertDataRow(datastoreId, table, values) {
+  return post(`${dataTablePath(datastoreId, table)}/rows`, { values })
+}
+
+/**
+ * Delete a row by primary key.
+ *
+ * DELETE /api/v1/data[/{id}]/tables/{table}/rows  body { pk: {col:val} }
+ *
+ * `del()` cannot carry a body, so this uses the raw request wrapper via patch's
+ * sibling — we issue a DELETE with a JSON body directly.
+ *
+ * @param {string|null} datastoreId
+ * @param {string} table
+ * @param {Record<string,*>} pk
+ * @returns {Promise<{deleted:number}>}
+ */
+export function deleteDataRow(datastoreId, table, pk) {
+  return request(`${dataTablePath(datastoreId, table)}/rows`, {
+    method: 'DELETE',
+    body: JSON.stringify({ pk }),
+  })
+}
+
+// ---------------------------------------------------------------------------
 // Orgs + onboarding
 // ---------------------------------------------------------------------------
 

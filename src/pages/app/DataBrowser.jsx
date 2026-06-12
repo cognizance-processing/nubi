@@ -1,53 +1,48 @@
 /**
- * DataBrowser — see a single connector's data (tables + preview rows).
+ * DataBrowser — Supabase-style table editor for a single connector.
  *
  * Route: /connectors/:id/data
  * Reached from: the Connectors page ("View data" on each connector card).
  *
  * Layout
  * ------
- *   Header  — back link to /connectors + connector name + refresh.
- *   Left    — table list/sidebar (name + row count, searchable).
- *   Right   — preview grid (reuses src/components/DataGrid.jsx) showing the
- *             selected table's columns + first N rows.
+ *   Header  — back link to /connectors + connector name.
+ *   Left    — polished table list/sidebar (name + row count, searchable).
+ *   Right   — EditableDataGrid: a sticky-header / sticky-selector grid with
+ *             type-aware rendering, click-to-sort, resizable columns and
+ *             INLINE CELL EDITING + insert/delete (gated on the write contract).
  *
- * Data
- * ----
- *   GET /datastores/{id}/tables                      → table list
- *   GET /datastores/{id}/tables/{table}/preview      → columns + rows
+ * Data + write contract
+ * ----------------------
+ *   GET    /data/{id}/tables                         → table list
+ *   GET    /data/{id}/tables/{t}/columns             → { writable, primary_key,
+ *                                                        columns:[{name,type,nullable,editable}] }
+ *   GET    /data/{id}/tables/{t}/rows                 → rows (JSON)
+ *   PATCH  /data/{id}/tables/{t}/rows {pk,set}        → edit cell
+ *   POST   /data/{id}/tables/{t}/rows {values}        → insert row
+ *   DELETE /data/{id}/tables/{t}/rows {pk}            → delete row
  *
- * The first table is auto-selected so opening the Sample connector immediately
- * shows its sales/customers/products data. Loading / empty / error states are
- * handled at both the table-list and preview levels.
+ * The grid degrades to read-only when the table is not `writable`, has no
+ * primary key, or the write endpoints 404. The first table auto-selects so the
+ * connector's data shows immediately. All loads use the deferred async pattern
+ * (no setState in an effect body) per the repo's react-hooks rules.
  */
 
-import { useState, useEffect, useCallback, useMemo } from 'react'
+import { useState, useEffect, useCallback, useMemo, useRef } from 'react'
 import { useParams, Link } from 'react-router-dom'
 import {
   ArrowLeft,
   Database,
   Table2,
   Search,
-  RefreshCw,
-  Loader2,
   AlertCircle,
+  RefreshCw,
 } from 'lucide-react'
-import DataGrid from '../../components/DataGrid.jsx'
+import EditableDataGrid from '../../components/app/EditableDataGrid.jsx'
+import { normalizeColumnMeta } from '../../components/app/editableGridUtils.js'
 import * as api from '../../lib/api.js'
 
-const PREVIEW_LIMIT = 50
-
-// ---------------------------------------------------------------------------
-// Map a backend (DuckDB / SQL) column type to a DataGrid descriptor type.
-// ---------------------------------------------------------------------------
-
-function gridType(rawType) {
-  const t = String(rawType || '').toLowerCase()
-  if (/(int|decimal|numeric|double|float|real|hugeint)/.test(t)) return 'number'
-  if (/(bool)/.test(t)) return 'bool'
-  if (/(date|time)/.test(t)) return 'date'
-  return 'string'
-}
+const ROW_LIMIT = 200
 
 // ---------------------------------------------------------------------------
 // Table list (left rail)
@@ -66,10 +61,7 @@ function TableList({ tables, loading, error, selected, onSelect, onRetry }) {
     <div className="flex flex-col h-full border-r border-border bg-surface">
       <div className="px-3 py-3 border-b border-border">
         <div className="relative">
-          <Search
-            size={13}
-            className="absolute left-2.5 top-1/2 -translate-y-1/2 text-muted pointer-events-none"
-          />
+          <Search size={13} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-muted pointer-events-none" />
           <input
             type="text"
             value={query}
@@ -121,14 +113,12 @@ function TableList({ tables, loading, error, selected, onSelect, onRetry }) {
                 onClick={() => onSelect(t.name)}
                 className={[
                   'w-full flex items-center gap-2 px-2.5 py-2 rounded-lg text-left transition-colors mb-0.5',
-                  active
-                    ? 'bg-primary/10 text-primary'
-                    : 'text-fg hover:bg-surface-2',
+                  active ? 'bg-primary/10 text-primary' : 'text-fg hover:bg-surface-2',
                 ].join(' ')}
                 title={t.schema ? `${t.schema}.${t.name}` : t.name}
               >
                 <Table2 size={14} className={active ? 'text-primary shrink-0' : 'text-muted shrink-0'} />
-                <span className="flex-1 min-w-0 truncate text-xs font-medium">{t.name}</span>
+                <span className="flex-1 min-w-0 truncate text-xs font-medium font-mono">{t.name}</span>
                 {t.rows != null && (
                   <span className="shrink-0 text-[10px] font-mono text-muted tabular-nums">
                     {t.rows.toLocaleString()}
@@ -137,75 +127,6 @@ function TableList({ tables, loading, error, selected, onSelect, onRetry }) {
               </button>
             )
           })}
-      </div>
-    </div>
-  )
-}
-
-// ---------------------------------------------------------------------------
-// Preview panel (right) — DataGrid of the selected table
-// ---------------------------------------------------------------------------
-
-function PreviewPanel({ table, preview, loading, error }) {
-  // Convert the {columns, rows: [[...]]} wire shape into DataGrid's
-  // {columns:[{key,label,type}], rows:[{key:value}]} shape.
-  const { columns, rows } = useMemo(() => {
-    if (!preview) return { columns: [], rows: [] }
-    const cols = (preview.columns || []).map((c) => ({
-      key: c.name,
-      label: c.name,
-      type: gridType(c.type),
-    }))
-    const objRows = (preview.rows || []).map((r) => {
-      const obj = {}
-      cols.forEach((c, i) => {
-        obj[c.key] = r[i]
-      })
-      return obj
-    })
-    return { columns: cols, rows: objRows }
-  }, [preview])
-
-  if (!table) {
-    return (
-      <div className="flex-1 flex flex-col items-center justify-center gap-3 text-center p-8">
-        <div className="w-12 h-12 rounded-2xl bg-surface-2 border border-border flex items-center justify-center">
-          <Table2 size={22} className="text-muted" />
-        </div>
-        <div>
-          <p className="text-sm font-medium text-fg">Select a table</p>
-          <p className="text-xs text-muted mt-1">Choose a table to preview its data.</p>
-        </div>
-      </div>
-    )
-  }
-
-  return (
-    <div className="flex-1 flex flex-col min-w-0 p-4">
-      <div className="flex items-center gap-2 mb-3">
-        <Table2 size={15} className="text-muted" />
-        <h2 className="text-sm font-semibold text-fg font-display">{table}</h2>
-        {preview && (
-          <span className="text-[11px] text-muted">
-            {preview.truncated
-              ? `showing first ${preview.rows.length} of ${preview.row_count.toLocaleString()} rows`
-              : `${preview.row_count.toLocaleString()} ${preview.row_count === 1 ? 'row' : 'rows'}`}
-          </span>
-        )}
-      </div>
-
-      <div className="flex-1 min-h-0">
-        <DataGrid
-          columns={columns}
-          rows={rows}
-          loading={loading}
-          error={error}
-          pageSize={PREVIEW_LIMIT}
-          density="compact"
-          exportFileName={table}
-          emptyMessage="This table has no rows."
-          className="h-full bg-surface"
-        />
       </div>
     </div>
   )
@@ -225,98 +146,102 @@ export default function DataBrowser() {
   const [tablesError, setTablesError] = useState(null)
 
   const [selected, setSelected] = useState(null)
-  const [preview, setPreview] = useState(null)
-  const [previewLoading, setPreviewLoading] = useState(false)
-  const [previewError, setPreviewError] = useState(null)
 
-  // Resolve the connector's display name (best-effort).
+  // Per-table data + meta.
+  const [meta, setMeta] = useState(null) // normalized column meta
+  const [rows, setRows] = useState([])
+  const [total, setTotal] = useState(null)
+  const [dataLoading, setDataLoading] = useState(false)
+  const [dataError, setDataError] = useState(null)
+  const [reloadKey, setReloadKey] = useState(0)
+
+  // ── Resolve the connector display name (best-effort) ──────────────────────
   useEffect(() => {
     let cancelled = false
     api
-      .listDatastores()
+      .listConnectors()
       .then((list) => {
         if (cancelled) return
         const found = list.find((c) => c.id === datastoreId)
         if (found) setConnectorName(found.name)
       })
       .catch(() => {})
-    return () => {
-      cancelled = true
-    }
+    return () => { cancelled = true }
   }, [datastoreId])
 
-  // Load the table list.
-  const loadTables = useCallback(async () => {
+  // ── Load the table list ────────────────────────────────────────────────────
+  const loadTables = useCallback(() => {
     setTablesLoading(true)
     setTablesError(null)
-    try {
-      const list = await api.listDatastoreTables(datastoreId)
-      setTables(list)
-      // Auto-select the first table so data shows immediately.
-      setSelected((prev) => {
-        if (prev && list.some((t) => t.name === prev)) return prev
-        return list.length ? list[0].name : null
-      })
-    } catch (err) {
-      setTablesError(err.message ?? 'Failed to load tables')
-      setTables([])
-    } finally {
-      setTablesLoading(false)
-    }
-  }, [datastoreId])
-
-  useEffect(() => {
-    loadTables()
-  }, [loadTables])
-
-  // Load the preview for the selected table.
-  useEffect(() => {
-    if (!selected) {
-      setPreview(null)
-      return
-    }
-    let cancelled = false
-    setPreviewLoading(true)
-    setPreviewError(null)
     api
-      .previewDatastoreTable(datastoreId, selected, PREVIEW_LIMIT)
+      .get(`/data/${datastoreId}/tables`)
       .then((data) => {
-        if (cancelled) return
-        setPreview(data)
+        const list = (data?.tables ?? data ?? []).map((t) =>
+          typeof t === 'string' ? { name: t } : t,
+        )
+        setTables(list)
+        setSelected((prev) => {
+          if (prev && list.some((t) => t.name === prev)) return prev
+          return list.length ? list[0].name : null
+        })
       })
       .catch((err) => {
-        if (cancelled) return
-        setPreview(null)
-        setPreviewError(err.message ?? 'Failed to load preview')
+        setTablesError(err.message ?? 'Failed to load tables')
+        setTables([])
       })
-      .finally(() => {
-        if (!cancelled) setPreviewLoading(false)
-      })
-    return () => {
-      cancelled = true
-    }
-  }, [datastoreId, selected])
+      .finally(() => setTablesLoading(false))
+  }, [datastoreId])
 
-  const refresh = useCallback(() => {
-    loadTables()
-    if (selected) {
-      setPreviewLoading(true)
-      setPreviewError(null)
-      api
-        .previewDatastoreTable(datastoreId, selected, PREVIEW_LIMIT)
-        .then(setPreview)
-        .catch((err) => {
-          setPreview(null)
-          setPreviewError(err.message ?? 'Failed to load preview')
-        })
-        .finally(() => setPreviewLoading(false))
+  useEffect(() => { loadTables() }, [loadTables])
+
+  // ── Load meta + rows for the selected table ───────────────────────────────
+  // A monotonically increasing token guards against out-of-order responses
+  // when the user clicks between tables quickly.
+  const loadToken = useRef(0)
+
+  useEffect(() => {
+    if (!selected) {
+      setMeta(null)
+      setRows([])
+      setTotal(null)
+      return
     }
-  }, [loadTables, datastoreId, selected])
+    const token = ++loadToken.current
+    setDataLoading(true)
+    setDataError(null)
+
+    ;(async () => {
+      try {
+        const [rawMeta, rowData] = await Promise.all([
+          api.fetchDataColumns(datastoreId, selected).catch(() => ({})),
+          api.fetchDataRows(datastoreId, selected, { limit: ROW_LIMIT }),
+        ])
+        if (token !== loadToken.current) return
+        setMeta(normalizeColumnMeta(rawMeta))
+        setRows(rowData.rows)
+        setTotal(rowData.total)
+      } catch (err) {
+        if (token !== loadToken.current) return
+        setDataError(err.message ?? 'Failed to load table data')
+        setMeta(null)
+        setRows([])
+        setTotal(null)
+      } finally {
+        if (token === loadToken.current) setDataLoading(false)
+      }
+    })()
+  }, [datastoreId, selected, reloadKey])
+
+  const refreshData = useCallback(() => setReloadKey((k) => k + 1), [])
+
+  const handleTotalChange = useCallback((delta) => {
+    setTotal((t) => (t == null ? t : Math.max(0, t + delta)))
+  }, [])
 
   return (
     <div className="flex flex-col h-full min-h-0">
       {/* Header */}
-      <div className="flex items-center gap-3 px-6 py-4 border-b border-border bg-surface shrink-0">
+      <div className="flex items-center gap-3 px-6 py-3.5 border-b border-border bg-surface shrink-0">
         <Link
           to="/connectors"
           className="flex items-center justify-center w-8 h-8 rounded-lg border border-border text-muted hover:text-fg hover:bg-surface-2 transition-colors"
@@ -331,22 +256,9 @@ export default function DataBrowser() {
             {connectorName ?? 'Connector data'}
           </h1>
         </div>
-        <div className="flex-1" />
-        <button
-          onClick={refresh}
-          disabled={tablesLoading}
-          title="Refresh"
-          className="flex items-center justify-center w-8 h-8 rounded-lg border border-border text-muted hover:text-fg hover:bg-surface-2 disabled:opacity-40 transition-colors"
-        >
-          {tablesLoading ? (
-            <Loader2 size={14} className="animate-spin" />
-          ) : (
-            <RefreshCw size={14} />
-          )}
-        </button>
       </div>
 
-      {/* Body: table list + preview */}
+      {/* Body: table list + editable grid */}
       <div className="flex-1 min-h-0 grid grid-cols-[240px_1fr]">
         <TableList
           tables={tables}
@@ -356,12 +268,35 @@ export default function DataBrowser() {
           onSelect={setSelected}
           onRetry={loadTables}
         />
-        <PreviewPanel
-          table={selected}
-          preview={preview}
-          loading={previewLoading}
-          error={previewError}
-        />
+
+        <div className="flex flex-col min-w-0 min-h-0">
+          {!selected ? (
+            <div className="flex-1 flex flex-col items-center justify-center gap-3 text-center p-8">
+              <div className="w-12 h-12 rounded-2xl bg-surface-2 border border-border flex items-center justify-center">
+                <Table2 size={22} className="text-muted" />
+              </div>
+              <div>
+                <p className="text-sm font-medium text-fg">Select a table</p>
+                <p className="text-xs text-muted mt-1">Choose a table to browse and edit its data.</p>
+              </div>
+            </div>
+          ) : (
+            <EditableDataGrid
+              key={`${datastoreId}:${selected}`}
+              datastoreId={datastoreId}
+              table={selected}
+              meta={meta}
+              rows={rows}
+              total={total}
+              loading={dataLoading}
+              error={dataError}
+              onRetry={refreshData}
+              onRefresh={refreshData}
+              onRowsChange={setRows}
+              onTotalChange={handleTotalChange}
+            />
+          )}
+        </div>
       </div>
     </div>
   )
