@@ -458,6 +458,49 @@ def test_ftp_tls_flag_exposed():
     assert FTPConnector({"host": "h", "tls": False}).tls_enabled is False
 
 
+def test_ftp_open_rejects_oversized_download(monkeypatch):
+    """A huge RETR is aborted at the configured cap rather than OOMing."""
+    import ftplib
+
+    from app.connectors.ftp import FTPConnector
+    from app.errors import AppError
+
+    class _BigFTP:
+        instances: list = []
+
+        def __init__(self, timeout=None):
+            _BigFTP.instances.append(self)
+
+        def connect(self, host=None, port=None):
+            pass
+
+        def login(self, user=None, passwd=None):
+            pass
+
+        def set_pasv(self, v):
+            pass
+
+        def retrbinary(self, cmd, callback):
+            # Stream chunks past the cap; the connector must raise mid-stream.
+            for _ in range(10):
+                callback(b"x" * 1024)
+
+        def quit(self):
+            pass
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(ftplib, "FTP", _BigFTP)
+    monkeypatch.setenv("NUBI_SSRF_ALLOW_PRIVATE", "1")
+    monkeypatch.setenv("NUBI_INGEST_MAX_SOURCE_FILE_BYTES", "2048")
+
+    conn = FTPConnector({"host": "ftp.local", "user": "u", "password": "p", "tls": False})
+    with pytest.raises(AppError) as ei:
+        conn.open("outbound/huge.bin")
+    assert ei.value.code == "file_too_large"
+
+
 # ---------------------------------------------------------------------------
 # 7. storage file interface over the local backend (duckdb_storage)
 # ---------------------------------------------------------------------------

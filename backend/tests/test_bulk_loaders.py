@@ -27,7 +27,9 @@ import tempfile
 
 import pyarrow as pa
 import pyarrow.parquet as pq
+import pytest
 
+from app.errors import AppError
 from app.flows import bulk_loaders as bl
 from app.flows.bulk_loaders import (
     WAREHOUSE_BULK_LOAD_FROM,
@@ -324,6 +326,56 @@ def test_bulk_target_load_staged_end_to_end():
         assert result["strategy"] == "bulk"
         assert result["rows_loaded"] == 3
         assert client._cur.executed  # COPY reached the client
+
+
+# ---------------------------------------------------------------------------
+# SECURITY: target-table identifier validation (SQL injection via target.object)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "evil",
+    [
+        "orders; DROP TABLE secrets; --",
+        "orders'; DELETE FROM users; --",
+        "raw.orders FROM 's3://attacker/'; --",
+        'raw."orders"; SELECT 1',
+        "raw.orders WHERE 1=1",
+        "a b",
+        "raw.orders) ; --",
+        "",
+        "x" * 600,
+    ],
+)
+def test_validate_table_identifier_rejects_injection(evil):
+    with pytest.raises(AppError) as ei:
+        bl.validate_table_identifier(evil)
+    assert ei.value.code == "invalid_identifier"
+
+
+@pytest.mark.parametrize(
+    "ok",
+    ["orders", "raw.orders", "db.raw.orders", "proj.ds.tbl", '"My Table"', 'raw."Order-Items"'],
+)
+def test_validate_table_identifier_accepts_clean(ok):
+    assert bl.validate_table_identifier(ok) == ok
+
+
+@pytest.mark.parametrize(
+    "builder",
+    [
+        lambda t: bl.snowflake_copy_statement(t, "s3://b/p/"),
+        lambda t: bl.redshift_copy_statement(t, "s3://b/p/", iam_role="arn:x"),
+        lambda t: bl.clickhouse_insert_statement(t, "s3://b/p/"),
+    ],
+)
+def test_statement_builders_reject_injected_table(builder):
+    # Every warehouse statement builder must refuse an injected table name —
+    # the table is the only user-controlled token that reaches the statement.
+    with pytest.raises(AppError):
+        builder("orders; DROP TABLE secrets; --")
+    # And produce a clean statement for a legitimate identifier.
+    assert "raw.orders" in builder("raw.orders")
 
 
 def test_bind_bulk_noop_for_non_bulk_target():

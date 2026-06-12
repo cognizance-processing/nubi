@@ -117,6 +117,17 @@ class FTPConnector(Connector, FileConnectorMixin):
             return posixpath.join(self._root, path)
         return path
 
+    @staticmethod
+    def _max_download_bytes() -> int:
+        """Cap (bytes) for a single in-memory FTP download; 0 disables."""
+        import os  # noqa: PLC0415
+
+        try:
+            v = int(os.getenv("NUBI_INGEST_MAX_SOURCE_FILE_BYTES", "") or 2 * 1024 * 1024 * 1024)
+            return v if v > 0 else 0
+        except ValueError:
+            return 2 * 1024 * 1024 * 1024
+
     def _connect(self) -> "ftplib.FTP":
         host = self._config.get("host")
         if not host:
@@ -244,8 +255,29 @@ class FTPConnector(Connector, FileConnectorMixin):
         """
         ftp = self._connect()
         buf = BytesIO()
+        # Bound the in-memory download: FTP RETR streams the whole object into
+        # the buffer, so an oversized (or maliciously huge) file would OOM the
+        # worker before any downstream ingest cap could apply.  Abort the
+        # transfer as soon as the cap is crossed.
+        max_bytes = self._max_download_bytes()
+        written = 0
+
+        def _sink(chunk: bytes) -> None:
+            nonlocal written
+            written += len(chunk)
+            if max_bytes and written > max_bytes:
+                raise AppError(
+                    "file_too_large",
+                    f"FTP file {path!r} exceeds the download size limit of "
+                    f"{max_bytes} bytes (NUBI_INGEST_MAX_SOURCE_FILE_BYTES).",
+                    status=413,
+                )
+            buf.write(chunk)
+
         try:
-            ftp.retrbinary(f"RETR {self._abs(path)}", buf.write)
+            ftp.retrbinary(f"RETR {self._abs(path)}", _sink)
+        except AppError:
+            raise
         except Exception as exc:
             raise AppError(
                 "file_open_error",

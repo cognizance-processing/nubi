@@ -393,3 +393,156 @@ def test_invalid_strategy_raises(patched):
     conn = FakeFileConnector({})
     with pytest.raises(ValueError, match="Invalid incremental.strategy"):
         patched(conn, _cfg(strategy="bogus"))
+
+
+# ---------------------------------------------------------------------------
+# SECURITY: decompression-DoS / zip-bomb + oversized source-file guards
+# ---------------------------------------------------------------------------
+
+
+def _zip_with_big_entry(uncompressed_bytes: int) -> bytes:
+    """A small archive whose single entry decompresses to *uncompressed_bytes*."""
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+        # Highly compressible payload (all zeros) → small archive, big expansion.
+        zf.writestr("bomb.csv", b"\x00" * uncompressed_bytes)
+    return buf.getvalue()
+
+
+def test_expand_zip_rejects_oversized_entry(monkeypatch):
+    monkeypatch.setattr(fi, "_MAX_ZIP_ENTRY_BYTES", 1024)
+    data = _zip_with_big_entry(50_000)  # expands well past the 1 KiB cap
+    with pytest.raises(fi.IngestLimitExceeded, match="per-entry limit"):
+        list(fi._expand_zip(data, "csv"))
+
+
+def test_expand_zip_rejects_too_many_entries(monkeypatch):
+    monkeypatch.setattr(fi, "_MAX_ZIP_ENTRIES", 2)
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as zf:
+        for i in range(5):
+            zf.writestr(f"f{i}.csv", b"id\n1\n")
+    with pytest.raises(fi.IngestLimitExceeded, match="entries"):
+        list(fi._expand_zip(buf.getvalue(), "csv"))
+
+
+def test_expand_zip_rejects_total_expansion(monkeypatch):
+    monkeypatch.setattr(fi, "_MAX_ZIP_ENTRY_BYTES", 10_000_000)
+    monkeypatch.setattr(fi, "_MAX_ZIP_TOTAL_BYTES", 4096)
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+        for i in range(4):
+            zf.writestr(f"f{i}.csv", b"\x00" * 4096)  # each under per-entry cap
+    with pytest.raises(fi.IngestLimitExceeded, match="total limit"):
+        list(fi._expand_zip(buf.getvalue(), "csv"))
+
+
+def test_expand_zip_allows_within_limits():
+    members = {"a.csv": _csv([{"id": "1"}]), "b.csv": _csv([{"id": "2"}])}
+    out = list(fi._expand_zip(_zip(members), "csv"))
+    assert {name for name, _b, _f in out} == {"a.csv", "b.csv"}
+
+
+def test_read_capped_rejects_oversized_source(monkeypatch):
+    monkeypatch.setattr(fi, "_MAX_SOURCE_FILE_BYTES", 1024)
+    conn = FakeFileConnector({"big.csv": (b"x" * 5000, None)})
+    with pytest.raises(fi.IngestLimitExceeded, match="size limit"):
+        fi._read_capped(conn, "big.csv")
+
+
+def test_read_capped_allows_within_limit():
+    conn = FakeFileConnector({"ok.csv": (b"hello", None)})
+    assert fi._read_capped(conn, "ok.csv") == b"hello"
+
+
+# ---------------------------------------------------------------------------
+# SECURITY: Postgres COPY statement — table + column injection
+# ---------------------------------------------------------------------------
+
+
+class _FakeCopy:
+    def __init__(self):
+        self.rows = []
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *a):
+        return False
+
+    def write_row(self, row):
+        self.rows.append(row)
+
+
+class _FakePgCursor:
+    def __init__(self):
+        self.copy_sql = None
+
+    def copy(self, sql):
+        self.copy_sql = sql
+        return _FakeCopy()
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *a):
+        return False
+
+
+class _FakePgConn:
+    def __init__(self):
+        self.cur = _FakePgCursor()
+
+    def cursor(self):
+        return self.cur
+
+    def commit(self):
+        pass
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *a):
+        return False
+
+
+def _patch_psycopg(monkeypatch, conn):
+    import sys
+    import types
+
+    mod = types.ModuleType("psycopg")
+    mod.connect = lambda dsn: conn  # noqa: ARG005
+    monkeypatch.setitem(sys.modules, "psycopg", mod)
+
+
+def test_pg_copy_rejects_injected_table(monkeypatch):
+    conn = _FakePgConn()
+    _patch_psycopg(monkeypatch, conn)
+
+    class _B:
+        def to_pylist(self):
+            return [{"id": 1}]
+
+    from app.errors import AppError
+
+    with pytest.raises(AppError) as ei:
+        fi._pg_copy("postgresql://x", "orders; DROP TABLE secrets; --", iter([_B()]))
+    assert ei.value.code == "invalid_identifier"
+
+
+def test_pg_copy_escapes_malicious_column_name(monkeypatch):
+    conn = _FakePgConn()
+    _patch_psycopg(monkeypatch, conn)
+
+    class _B:
+        def to_pylist(self):
+            # A column name coming from an untrusted source file that tries to
+            # break out of the quoted identifier.
+            return [{'id") FROM STDIN; DROP TABLE t; --': 1}]
+
+    fi._pg_copy("postgresql://x", "raw.orders", iter([_B()]))
+    sql = conn.cur.copy_sql
+    # The embedded double-quote must be doubled, not left to terminate the ident.
+    assert '""' in sql
+    assert "DROP TABLE t" in sql  # present, but safely inside a quoted identifier
+    assert sql.count('"') % 2 == 0  # balanced quotes → no break-out

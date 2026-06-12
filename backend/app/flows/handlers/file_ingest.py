@@ -47,6 +47,7 @@ import csv
 import fnmatch
 import io
 import json
+import os
 import uuid
 import zipfile
 from datetime import datetime, timezone
@@ -68,6 +69,30 @@ _VALID_STRATEGIES = {"mtime", "filename", "none"}
 # Object-storage / storage URI schemes → a target is "object-storage class"
 # (promote strategy) when its destination resolves to one of these.
 _OBJECT_STORAGE_SCHEMES = ("s3", "s3a", "gs", "gcs", "az", "file")
+
+
+# Decompression-DoS / zip-bomb guards (design §3 — "zip is a format").  A
+# malicious source can drop a tiny archive that expands to terabytes; without a
+# cap, ``zf.open(...).read()`` would OOM the worker.  Bound the per-entry size,
+# the total expanded size, and the entry count.  Overridable via env for the
+# rare legitimate large-archive case.
+def _env_int(name: str, default: int) -> int:
+    try:
+        v = int(os.getenv(name, "") or default)
+        return v if v > 0 else default
+    except ValueError:
+        return default
+
+
+_MAX_ZIP_ENTRY_BYTES = _env_int("NUBI_INGEST_MAX_ZIP_ENTRY_BYTES", 512 * 1024 * 1024)
+_MAX_ZIP_TOTAL_BYTES = _env_int("NUBI_INGEST_MAX_ZIP_TOTAL_BYTES", 2 * 1024 * 1024 * 1024)
+_MAX_ZIP_ENTRIES = _env_int("NUBI_INGEST_MAX_ZIP_ENTRIES", 10_000)
+# Cap a single source file's in-memory read too (FTP/SFTP have no length hint).
+_MAX_SOURCE_FILE_BYTES = _env_int("NUBI_INGEST_MAX_SOURCE_FILE_BYTES", 2 * 1024 * 1024 * 1024)
+
+
+class IngestLimitExceeded(ValueError):
+    """Raised when a source file / archive exceeds a configured ingest limit."""
 
 
 # ---------------------------------------------------------------------------
@@ -151,13 +176,42 @@ def _expand_zip(data: bytes, inner_format: str) -> Iterator[tuple[str, bytes, st
     bounds the working set to one member today.
     """
     with zipfile.ZipFile(io.BytesIO(data)) as zf:
-        for info in zf.infolist():
-            if info.is_dir():
-                continue
+        infos = [i for i in zf.infolist() if not i.is_dir()]
+        if len(infos) > _MAX_ZIP_ENTRIES:
+            raise IngestLimitExceeded(
+                f"zip archive has {len(infos)} entries, exceeding the limit of "
+                f"{_MAX_ZIP_ENTRIES} (NUBI_INGEST_MAX_ZIP_ENTRIES)."
+            )
+        total = 0
+        for info in infos:
             name = info.filename
             fmt = inner_format if inner_format != "auto" else _detect_format(name)
+            # Read the entry in bounded chunks; a zip bomb declares a small
+            # compressed size but expands without limit, so we cap on the
+            # DECOMPRESSED bytes actually read — never trusting info.file_size.
+            chunks: list[bytes] = []
+            read = 0
             with zf.open(info) as fh:
-                yield name, fh.read(), fmt
+                while True:
+                    chunk = fh.read(1024 * 1024)
+                    if not chunk:
+                        break
+                    read += len(chunk)
+                    total += len(chunk)
+                    if read > _MAX_ZIP_ENTRY_BYTES:
+                        raise IngestLimitExceeded(
+                            f"zip entry {name!r} exceeds the per-entry limit of "
+                            f"{_MAX_ZIP_ENTRY_BYTES} bytes "
+                            "(NUBI_INGEST_MAX_ZIP_ENTRY_BYTES)."
+                        )
+                    if total > _MAX_ZIP_TOTAL_BYTES:
+                        raise IngestLimitExceeded(
+                            f"zip archive expands beyond the total limit of "
+                            f"{_MAX_ZIP_TOTAL_BYTES} bytes "
+                            "(NUBI_INGEST_MAX_ZIP_TOTAL_BYTES)."
+                        )
+                    chunks.append(chunk)
+            yield name, b"".join(chunks), fmt
 
 
 # ---------------------------------------------------------------------------
@@ -432,6 +486,12 @@ def _pg_copy(dsn: str, table: str, batches: Iterator[Any]) -> int:
     """Load record-batches into *table* via Postgres ``COPY ... FROM STDIN``."""
     import psycopg  # noqa: PLC0415
 
+    from app.flows.bulk_loaders import validate_table_identifier  # noqa: PLC0415
+
+    # The target table is user-controlled (``target.object``) and is
+    # interpolated into ``COPY <table> (...)`` below; validate it as a strict
+    # dot-qualified identifier so it can never carry injected SQL.
+    table = validate_table_identifier(table)
     total = 0
     with psycopg.connect(dsn) as conn:  # type: ignore[attr-defined]
         with conn.cursor() as cur:
@@ -444,7 +504,11 @@ def _pg_copy(dsn: str, table: str, batches: Iterator[Any]) -> int:
                     continue
                 if first:
                     cols = list(rows[0].keys())
-                    collist = ", ".join(f'"{c}"' for c in cols)
+                    # Column names come from the SOURCE FILE (an untrusted
+                    # FTP/SFTP/bucket), so a name could contain a double-quote and
+                    # break out of the identifier. Escape embedded quotes (SQL
+                    # identifier doubling) so the column list can never inject.
+                    collist = ", ".join('"' + str(c).replace('"', '""') + '"' for c in cols)
                     copy_sql = f'COPY {table} ({collist}) FROM STDIN'
                     first = False
                 with cur.copy(copy_sql) as cp:
@@ -607,8 +671,7 @@ def _stage_one_file(
     object (multiple when *concrete_format* is ``zip`` and the archive holds
     several entries).
     """
-    with src.open(fstat.path) as fh:
-        raw = fh.read()
+    raw = _read_capped(src, fstat.path)
 
     out: list[tuple["ManifestEntry", int]] = []
     if concrete_format == "zip":
@@ -626,6 +689,31 @@ def _stage_one_file(
     entry = staging.write_bytes(pq_data, rel)
     out.append((entry, len(rows)))
     return out
+
+
+def _read_capped(src: "FileConnectorMixin", path: str) -> bytes:
+    """Read a source file into memory, bounded by ``_MAX_SOURCE_FILE_BYTES``.
+
+    FTP/SFTP report no reliable length up front, so we read in chunks and abort
+    as soon as the cap is crossed — a single oversized drop cannot OOM the
+    worker before the file has even reached staging.
+    """
+    chunks: list[bytes] = []
+    read = 0
+    with src.open(path) as fh:
+        while True:
+            chunk = fh.read(1024 * 1024)
+            if not chunk:
+                break
+            read += len(chunk)
+            if read > _MAX_SOURCE_FILE_BYTES:
+                raise IngestLimitExceeded(
+                    f"source file {path!r} exceeds the size limit of "
+                    f"{_MAX_SOURCE_FILE_BYTES} bytes "
+                    "(NUBI_INGEST_MAX_SOURCE_FILE_BYTES)."
+                )
+            chunks.append(chunk)
+    return b"".join(chunks)
 
 
 def _staged_rel(source_path: str, member: str | None = None) -> str:

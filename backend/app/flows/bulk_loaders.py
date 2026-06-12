@@ -46,11 +46,55 @@ URIs (``staging.uri(rel_path)``) rather than the bytes.
 
 from __future__ import annotations
 
+import re
 from typing import TYPE_CHECKING, Any, Callable
+
+from app.errors import AppError
 
 if TYPE_CHECKING:
     from app.flows.loaders import LoadTarget
     from app.lakehouse.staging import StagingArea, StagingManifest
+
+
+# ---------------------------------------------------------------------------
+# Identifier validation — the ONLY user-controlled value that reaches the
+# warehouse statement builders is the target TABLE name (``target.object``).
+# It is interpolated into ``COPY INTO <table>`` / ``COPY <table>`` /
+# ``INSERT INTO <table>``, so it MUST be a strict, dot-qualified SQL identifier
+# (optionally double-quoted parts) — never raw user text. A value like
+# ``orders; DROP TABLE secrets; --`` is rejected here, before it can reach any
+# warehouse, rather than concatenated into the statement.
+# ---------------------------------------------------------------------------
+#
+# Each dotted component is either:
+#   * a bare identifier:  [A-Za-z_][A-Za-z0-9_$]*
+#   * a double-quoted identifier: "..." with internal "" escaping and no other
+#     double-quotes (so the closing quote can't be smuggled).
+_BARE_IDENT = r"[A-Za-z_][A-Za-z0-9_$]*"
+_QUOTED_IDENT = r'"(?:[^"]|"")+"'
+_IDENT_PART = rf"(?:{_BARE_IDENT}|{_QUOTED_IDENT})"
+_TABLE_RE = re.compile(rf"^{_IDENT_PART}(?:\.{_IDENT_PART}){{0,3}}$")
+
+
+def validate_table_identifier(table: str) -> str:
+    """Return *table* if it is a safe dot-qualified SQL identifier, else raise.
+
+    The target table name is the single user-controlled token that lands in a
+    bulk-load statement (``COPY INTO``/``COPY``/``INSERT INTO``). Allowing only
+    ``db.schema.table`` style identifiers (bare or double-quoted parts, up to 4
+    components) blocks statement injection through ``target.object`` without
+    needing per-warehouse quoting.
+    """
+    name = (table or "").strip()
+    if not name or len(name) > 512 or not _TABLE_RE.match(name):
+        raise AppError(
+            "invalid_identifier",
+            f"Target object {table!r} is not a valid table identifier "
+            "(expected db.schema.table — letters, digits, underscores, or "
+            'double-quoted parts).',
+            status=400,
+        )
+    return name
 
 
 # ---------------------------------------------------------------------------
@@ -123,6 +167,7 @@ def snowflake_copy_statement(
     staging prefix's URL.  ``MATCH_BY_COLUMN_NAME`` lets Parquet columns map to
     table columns by name rather than position (robust to column re-ordering).
     """
+    table = validate_table_identifier(table)
     return (
         f"COPY INTO {table} FROM '{stage_uri}' "
         f"FILE_FORMAT = (TYPE = {file_format}) "
@@ -148,6 +193,7 @@ def redshift_copy_statement(
     connector's secret) and embedded only in the in-memory statement sent to
     Redshift — never logged, never shipped to an agent.
     """
+    table = validate_table_identifier(table)
     parts = [f"COPY {table}", f"FROM '{s3_uri}'"]
     if iam_role:
         parts.append(f"IAM_ROLE '{iam_role}'")
@@ -177,6 +223,7 @@ def clickhouse_insert_statement(
     (``s3(url, access_key, secret, format)``); otherwise the 2-arg form
     (``s3(url, format)``) relies on the server's configured access (IAM / env).
     """
+    table = validate_table_identifier(table)
     if access_key_id and secret_access_key:
         src = (
             f"s3('{s3_uri}', '{access_key_id}', '{secret_access_key}', "
