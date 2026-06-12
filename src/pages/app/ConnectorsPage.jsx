@@ -608,11 +608,20 @@ function ConnectorCard({ connector, testResult, testingId, onEdit, onDelete, onT
                 Built-in
               </span>
             )}
-            {networkMode && (
+            {networkMode === 'bridge' ? (
+              <Link
+                to="/settings/bridges"
+                onClick={(e) => e.stopPropagation()}
+                title="Manage bridges"
+                className="inline-flex items-center px-2 py-0.5 rounded-md text-[10px] font-medium bg-surface-2 text-muted border border-border/60 hover:text-primary hover:border-primary/40 transition-colors"
+              >
+                {networkMode}
+              </Link>
+            ) : networkMode ? (
               <span className="inline-flex items-center px-2 py-0.5 rounded-md text-[10px] font-medium bg-surface-2 text-muted border border-border/60">
                 {networkMode}
               </span>
-            )}
+            ) : null}
           </div>
 
           {/* Config summary */}

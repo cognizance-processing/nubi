@@ -27,6 +27,7 @@
  *   /settings/organization → OrgSettings    (Organization › General)
  *   /settings/members   → MembersSettings   (Organization › Members)
  *   /settings/security  → SecuritySettings  (Organization › Security — JWT issuers / JWKS)
+ *   /settings/bridges   → BridgesSettings   (Organization › Bridges — VPC agents)
  *   /settings/usage     → UsageSettings     (Organization › Usage — metering)
  *   /settings/project   → ProjectSettings   (Project › General)
  *   /secrets            → SecretsPage
@@ -99,6 +100,7 @@ const MembersSettings = lazy(() => import('./pages/app/settings/MembersSettings.
 const ProjectSettings = lazy(() => import('./pages/app/settings/ProjectSettings.jsx'))
 const SecuritySettings = lazy(() => import('./pages/app/settings/SecuritySettings.jsx'))
 const IntegrationsSettings = lazy(() => import('./pages/app/settings/IntegrationsSettings.jsx'))
+const BridgesSettings = lazy(() => import('./pages/app/settings/BridgesSettings.jsx'))
 const UsageSettings = lazy(() => import('./pages/app/settings/UsageSettings.jsx'))
 const SecretsPage = lazy(() => import('./pages/app/SecretsPage.jsx'))
 const DataExplorerPage = lazy(() => import('./pages/app/DataExplorerPage.jsx'))
@@ -302,6 +304,7 @@ export default function App() {
             <Route path="organization" element={<OrgSettings />} />
             <Route path="members" element={<MembersSettings />} />
             <Route path="integrations" element={<IntegrationsSettings />} />
+            <Route path="bridges" element={<BridgesSettings />} />
             <Route path="usage" element={<UsageSettings />} />
             <Route path="project" element={<ProjectSettings />} />
             <Route path="security" element={<SecuritySettings />} />
