@@ -43,10 +43,7 @@ import {
   Table2,
   Search,
   Lock,
-  Boxes,
   HardDrive,
-  ExternalLink,
-  Gauge,
 } from 'lucide-react'
 import * as api from '../../lib/api.js'
 import { useUi } from '../../contexts/UiContext.jsx'
@@ -57,13 +54,7 @@ import {
   getConnectorsByCategory,
   defaultsFor,
 } from '../../data/connectors.js'
-import {
-  lakehouseStatus,
-  provisionLakehouse,
-  seedDemoData,
-  deprovisionLakehouse,
-  formatBytes,
-} from '../../lib/lakehouse.js'
+import { provisionLakehouse, formatBytes } from '../../lib/lakehouse.js'
 import { DynamicForm } from './connectorForms.jsx'
 
 // ---------------------------------------------------------------------------
@@ -114,427 +105,28 @@ function TypeBadge({ type }) {
 }
 
 // ---------------------------------------------------------------------------
-// Managed Lakehouse section — the Nubi-managed datastore, surfaced at the top
-// of the connectors list (it's a managed data source, not a separate page).
+// Managed-lakehouse helpers
 //
-// Reuses lib/lakehouse.js and mirrors the states the old LakehousePage had:
-//   configured:false  → subtle note (needs central storage / admin / cloud)
-//   not provisioned   → provision CTA + seed-demo checkbox + value props
-//   provisioned       → storage used, demo status + seed action, browse link,
-//                        destructive disconnect (with a confirm step).
+// PRODUCT DIRECTIVE: the managed lakehouse is just a NORMAL connector. The
+// backend returns managed rows in the normal /connectors list, each carrying
+// `config.managed_lake === true` plus `usage_bytes` / `usage_gb`. They render
+// as ordinary cards in the list — visually distinct (a "Nubi lakehouse" badge,
+// a warehouse icon, storage usage on the card) but with the normal view /
+// delete flow. Adding one = provisioning; deleting the card = deprovisioning.
 // ---------------------------------------------------------------------------
 
-function LakehouseFeature({ Icon, title, children }) {
-  return (
-    <div className="flex items-start gap-2.5">
-      <span className="flex items-center justify-center w-8 h-8 rounded-xl bg-surface-2 border border-border/60 shrink-0">
-        <Icon size={15} className="text-primary" strokeWidth={2} />
-      </span>
-      <div className="min-w-0">
-        <p className="text-xs font-medium text-fg">{title}</p>
-        <p className="text-[11px] text-muted leading-relaxed mt-0.5">{children}</p>
-      </div>
-    </div>
-  )
+/** True for connector rows backed by the Nubi-managed lakehouse. */
+function isManagedLake(connector) {
+  return connector?.config?.managed_lake === true
 }
 
-function LakehouseInlineError({ message }) {
-  if (!message) return null
-  return (
-    <div className="flex items-start gap-2 px-3 py-2.5 rounded-xl bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 text-xs text-red-700 dark:text-red-300">
-      <AlertTriangle size={13} className="shrink-0 mt-0.5" strokeWidth={2} />
-      <span>{message}</span>
-    </div>
-  )
-}
-
-// configured:false — not an error; a subtle note that BYO is available below.
-function LakehouseNotConfigured() {
-  return (
-    <div className="rounded-2xl border border-dashed border-border bg-surface p-4 sm:p-5">
-      <div className="flex items-start gap-3">
-        <span className="flex items-center justify-center w-10 h-10 rounded-xl bg-surface-2 border border-border/60 shrink-0">
-          <Warehouse size={18} className="text-muted" strokeWidth={2} />
-        </span>
-        <div className="min-w-0">
-          <p className="text-sm font-medium text-fg">Managed lakehouse</p>
-          <p className="text-xs text-muted leading-relaxed mt-1 max-w-prose">
-            The Nubi-managed lakehouse stores your data in isolated, secure storage
-            we run for you — no bucket to provision. It needs central storage to be
-            configured by your administrator (available on Nubi Cloud; not set up on
-            local / self-hosted builds yet). You can bring your own bucket below.
-          </p>
-        </div>
-      </div>
-    </div>
-  )
-}
-
-// configured & not provisioned — provision CTA + seed-demo + compact value props.
-function LakehouseProvision({ canWrite, busy, error, onProvision }) {
-  const [seedDemo, setSeedDemo] = useState(true)
-
-  return (
-    <div className="rounded-2xl border border-primary/40 bg-primary/5 p-4 sm:p-5 space-y-4">
-      <div className="flex items-start gap-3">
-        <span className="flex items-center justify-center w-11 h-11 rounded-xl bg-brand-gradient shadow-sm shrink-0">
-          <Warehouse size={20} className="text-white" strokeWidth={2} />
-        </span>
-        <div className="min-w-0 flex-1">
-          <div className="flex flex-wrap items-center gap-1.5">
-            <h3 className="text-sm font-semibold text-fg">Managed lakehouse</h3>
-            <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[10px] font-medium bg-primary/15 text-primary border border-primary/20">
-              <Sparkles size={9} strokeWidth={2.4} /> Recommended
-            </span>
-          </div>
-          <p className="text-xs text-muted leading-relaxed mt-1 max-w-prose">
-            Spin up storage Nubi runs for you — no bucket to create, no keys to
-            rotate. Data lands in an isolated prefix scoped to this project and is
-            billed only for what you store.
-          </p>
-        </div>
-      </div>
-
-      <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
-        <LakehouseFeature Icon={ShieldCheck} title="Isolated & secure">
-          A dedicated storage prefix per project, encrypted at rest.
-        </LakehouseFeature>
-        <LakehouseFeature Icon={Boxes} title="Nothing to manage">
-          No bucket to provision, no credentials to wire up.
-        </LakehouseFeature>
-        <LakehouseFeature Icon={Gauge} title="Billed by usage">
-          Pay only for the bytes you store. See it under Settings › Usage.
-        </LakehouseFeature>
-      </div>
-
-      {canWrite ? (
-        <div className="space-y-3">
-          <label className="flex items-center gap-2.5 text-sm text-fg cursor-pointer select-none">
-            <input
-              type="checkbox"
-              checked={seedDemo}
-              onChange={(e) => setSeedDemo(e.target.checked)}
-              disabled={busy}
-              className="w-4 h-4 rounded border-border text-primary focus:ring-2 focus:ring-ring"
-            />
-            <span className="inline-flex items-center gap-1.5">
-              <Sparkles size={14} className="text-primary" />
-              Seed demo data so I can explore right away
-            </span>
-          </label>
-
-          <LakehouseInlineError message={error} />
-
-          <button
-            type="button"
-            onClick={() => onProvision({ seedDemo })}
-            disabled={busy}
-            className="inline-flex items-center gap-2 px-4 py-2.5 rounded-xl bg-primary text-primary-fg text-sm font-semibold hover:opacity-90 disabled:opacity-50 disabled:cursor-not-allowed transition-opacity focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2 shadow-md"
-          >
-            {busy ? <Loader2 size={16} className="animate-spin" /> : <Warehouse size={16} strokeWidth={2.4} />}
-            {busy ? 'Provisioning…' : 'Provision managed lakehouse'}
-          </button>
-        </div>
-      ) : (
-        <p className="text-xs text-muted">
-          Read-only — ask an organisation admin to provision the managed lakehouse.
-        </p>
-      )}
-    </div>
-  )
-}
-
-// provisioned — storage used, demo status + seed, browse link, disconnect.
-function LakehouseProvisioned({
-  status, canWrite, seeding, seedError, onSeed, onDisconnectClick,
-}) {
-  return (
-    <div className="rounded-2xl border border-border bg-surface p-4 sm:p-5 space-y-4">
-      <div className="flex items-start gap-3">
-        <span className="flex items-center justify-center w-11 h-11 rounded-xl bg-brand-gradient shadow-sm shrink-0">
-          <Warehouse size={20} className="text-white" strokeWidth={2} />
-        </span>
-        <div className="min-w-0 flex-1">
-          <div className="flex flex-wrap items-center gap-2">
-            <h3 className="text-sm font-semibold text-fg">Managed lakehouse</h3>
-            <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[11px] font-medium bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-300">
-              <CheckCircle size={11} strokeWidth={2.4} /> Provisioned
-            </span>
-          </div>
-          {status.prefix && (
-            <p className="text-[11px] text-muted font-mono truncate mt-1" title={status.prefix}>
-              {status.prefix}
-            </p>
-          )}
-        </div>
-        {canWrite && (
-          <button
-            type="button"
-            onClick={onDisconnectClick}
-            title="Disconnect & delete lakehouse"
-            className="shrink-0 inline-flex items-center gap-1.5 h-8 px-2.5 rounded-lg text-xs font-semibold text-red-600 dark:text-red-400 border border-red-300 dark:border-red-800 hover:bg-red-50 dark:hover:bg-red-900/30 transition-colors focus:outline-none focus:ring-2 focus:ring-red-500"
-          >
-            <Trash2 size={12} strokeWidth={2.2} />
-            <span className="hidden sm:inline">Disconnect</span>
-          </button>
-        )}
-      </div>
-
-      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-        {/* Storage used */}
-        <div className="rounded-xl border border-border bg-surface-2/40 p-3.5">
-          <div className="flex items-center gap-2 mb-2">
-            <HardDrive size={14} className="text-muted" strokeWidth={2} />
-            <span className="text-xs font-medium text-fg">Storage used</span>
-          </div>
-          <p className="text-xl font-display font-semibold text-fg tabular-nums">
-            {formatBytes(status.usage_bytes)}
-          </p>
-          <p className="text-[11px] text-muted mt-0.5">
-            Billed by usage —{' '}
-            <Link to="/settings/usage" className="underline underline-offset-2 hover:text-fg">view on Usage</Link>.
-          </p>
-        </div>
-
-        {/* Demo data */}
-        <div className="rounded-xl border border-border bg-surface-2/40 p-3.5">
-          <div className="flex items-center gap-2 mb-2">
-            <Sparkles size={14} className="text-muted" strokeWidth={2} />
-            <span className="text-xs font-medium text-fg">Demo data</span>
-          </div>
-          {status.demo_seeded ? (
-            <p className="inline-flex items-center gap-1.5 text-sm text-green-700 dark:text-green-400">
-              <CheckCircle size={14} strokeWidth={2.2} /> Seeded
-            </p>
-          ) : (
-            <p className="text-sm text-muted">Not seeded</p>
-          )}
-          {canWrite && (
-            <button
-              type="button"
-              onClick={onSeed}
-              disabled={seeding}
-              className="mt-2 inline-flex items-center gap-1.5 h-7 px-2.5 rounded-lg text-xs font-medium border border-border text-muted hover:text-fg hover:bg-surface-2 disabled:opacity-50 disabled:cursor-not-allowed transition-colors focus:outline-none focus:ring-2 focus:ring-ring"
-            >
-              {seeding ? <Loader2 size={12} className="animate-spin" /> : <Sparkles size={12} strokeWidth={2.2} />}
-              {seeding ? 'Seeding…' : status.demo_seeded ? 'Re-seed demo data' : 'Seed demo data'}
-            </button>
-          )}
-        </div>
-      </div>
-
-      <LakehouseInlineError message={seedError} />
-
-      {/* Browse data */}
-      {status.datastore_id && (
-        <Link
-          to={`/connectors/${status.datastore_id}/data`}
-          className="flex items-center gap-3 rounded-xl border border-border bg-surface-2/40 p-3 hover:border-primary/40 hover:bg-surface-2 transition-colors group focus:outline-none focus:ring-2 focus:ring-ring"
-        >
-          <span className="flex items-center justify-center w-8 h-8 rounded-lg bg-surface-2 border border-border/60 shrink-0">
-            <Boxes size={15} className="text-primary" strokeWidth={2} />
-          </span>
-          <div className="min-w-0 flex-1">
-            <p className="text-xs font-medium text-fg">Browse lakehouse data</p>
-            <p className="text-[11px] text-muted">Open the managed datastore to view its tables.</p>
-          </div>
-          <ExternalLink size={14} className="text-muted group-hover:text-primary shrink-0" />
-        </Link>
-      )}
-    </div>
-  )
-}
-
-// Disconnect confirm dialog (lakehouse).
-function LakehouseDisconnectDialog({ busy, error, onCancel, onConfirm }) {
-  return (
-    <div
-      className="fixed inset-0 z-50 bg-black/50 backdrop-blur-sm flex items-center justify-center p-4"
-      onClick={onCancel}
-    >
-      <div
-        className="bg-surface rounded-2xl border border-border shadow-2xl p-6 w-full max-w-sm"
-        onClick={(e) => e.stopPropagation()}
-        role="alertdialog"
-        aria-modal="true"
-      >
-        <div className="flex items-start gap-3 mb-4">
-          <div className="w-10 h-10 rounded-xl bg-red-100 dark:bg-red-900/30 flex items-center justify-center shrink-0">
-            <Trash2 size={18} className="text-red-600 dark:text-red-400" strokeWidth={2} />
-          </div>
-          <div>
-            <h3 className="font-semibold text-fg text-sm">Delete managed lakehouse?</h3>
-            <p className="text-xs text-muted mt-1 leading-relaxed">
-              The managed storage and <strong className="text-fg">all data in it</strong>{' '}
-              will be permanently deleted. This cannot be undone.
-            </p>
-          </div>
-        </div>
-
-        {error && (
-          <div className="mb-3 px-3 py-2 rounded-lg bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 text-xs text-red-700 dark:text-red-300">
-            {error}
-          </div>
-        )}
-
-        <div className="flex gap-2 justify-end">
-          <button
-            type="button"
-            onClick={onCancel}
-            disabled={busy}
-            className="px-4 py-2 rounded-xl text-sm font-medium text-muted border border-border hover:bg-surface-2 hover:text-fg disabled:opacity-50 transition-colors focus:outline-none focus:ring-2 focus:ring-ring"
-          >
-            Cancel
-          </button>
-          <button
-            type="button"
-            onClick={onConfirm}
-            disabled={busy}
-            className="inline-flex items-center gap-1.5 px-4 py-2 rounded-xl text-sm font-semibold text-white bg-red-600 hover:bg-red-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors focus:outline-none focus:ring-2 focus:ring-red-500 focus:ring-offset-2"
-          >
-            {busy && <Loader2 size={13} className="animate-spin" />}
-            Delete
-          </button>
-        </div>
-      </div>
-    </div>
-  )
-}
-
-// Container — owns the lakehouse state machine + actions. Exposes a ref-able
-// outer wrapper so the "Use managed lakehouse" picker choice can scroll to it.
-function ManagedLakehouseSection({ sectionRef, highlight, canWrite }) {
-  const { activeProject } = useProject()
-  const projectId = activeProject?.id
-
-  const [status, setStatus] = useState(null)
-  const [loading, setLoading] = useState(true)
-  const [error, setError] = useState(null)
-
-  const [provisioning, setProvisioning] = useState(false)
-  const [provisionError, setProvisionError] = useState(null)
-
-  const [seeding, setSeeding] = useState(false)
-  const [seedError, setSeedError] = useState(null)
-
-  const [confirmOpen, setConfirmOpen] = useState(false)
-  const [disconnecting, setDisconnecting] = useState(false)
-  const [disconnectError, setDisconnectError] = useState(null)
-
-  const load = useCallback(async () => {
-    setLoading(true)
-    setError(null)
-    try {
-      setStatus(await lakehouseStatus())
-    } catch (err) {
-      setError(err?.message ?? 'Failed to load lakehouse status.')
-    } finally {
-      setLoading(false)
-    }
-  }, [])
-
-  // Defer the initial/refresh load (react-hooks/set-state-in-effect); re-runs
-  // on project change.
-  useEffect(() => {
-    const t = setTimeout(load, 0)
-    return () => clearTimeout(t)
-  }, [load, projectId])
-
-  async function handleProvision({ seedDemo }) {
-    setProvisioning(true)
-    setProvisionError(null)
-    try {
-      setStatus(await provisionLakehouse({ seedDemo }))
-    } catch (err) {
-      setProvisionError(err?.message ?? 'Provisioning failed. Please try again.')
-    } finally {
-      setProvisioning(false)
-    }
-  }
-
-  async function handleSeed() {
-    setSeeding(true)
-    setSeedError(null)
-    try {
-      setStatus(await seedDemoData())
-    } catch (err) {
-      setSeedError(err?.message ?? 'Seeding failed. Please try again.')
-    } finally {
-      setSeeding(false)
-    }
-  }
-
-  async function handleDisconnect() {
-    setDisconnecting(true)
-    setDisconnectError(null)
-    try {
-      await deprovisionLakehouse()
-      setConfirmOpen(false)
-      await load()
-    } catch (err) {
-      setDisconnectError(err?.message ?? 'Disconnect failed. Please try again.')
-    } finally {
-      setDisconnecting(false)
-    }
-  }
-
-  return (
-    <section
-      ref={sectionRef}
-      aria-label="Managed lakehouse"
-      className={`mb-5 rounded-2xl transition-shadow duration-500 ${
-        highlight ? 'ring-2 ring-primary/50 ring-offset-2 ring-offset-bg' : ''
-      }`}
-    >
-      {loading && (
-        <div className="flex items-center gap-2 text-sm text-muted py-6 px-1">
-          <Loader2 size={15} className="animate-spin" /> Loading managed lakehouse…
-        </div>
-      )}
-
-      {!loading && error && (
-        <div className="flex items-center justify-between gap-3 rounded-2xl border border-dashed border-red-200 dark:border-red-900/40 p-4">
-          <p className="text-sm text-red-600 dark:text-red-400 inline-flex items-center gap-2">
-            <AlertTriangle size={15} /> {error}
-          </p>
-          <button onClick={load} className="text-xs text-muted hover:text-fg underline shrink-0">Retry</button>
-        </div>
-      )}
-
-      {!loading && !error && status && !status.configured && (
-        <LakehouseNotConfigured />
-      )}
-
-      {!loading && !error && status && status.configured && !status.provisioned && (
-        <LakehouseProvision
-          canWrite={canWrite}
-          busy={provisioning}
-          error={provisionError}
-          onProvision={handleProvision}
-        />
-      )}
-
-      {!loading && !error && status && status.configured && status.provisioned && (
-        <LakehouseProvisioned
-          status={status}
-          canWrite={canWrite}
-          seeding={seeding}
-          seedError={seedError}
-          onSeed={handleSeed}
-          onDisconnectClick={() => { setDisconnectError(null); setConfirmOpen(true) }}
-        />
-      )}
-
-      {confirmOpen && (
-        <LakehouseDisconnectDialog
-          busy={disconnecting}
-          error={disconnectError}
-          onCancel={() => setConfirmOpen(false)}
-          onConfirm={handleDisconnect}
-        />
-      )}
-    </section>
-  )
+/** Bytes stored by a managed-lake connector, or null if unknown. */
+function managedLakeBytes(connector) {
+  const cfg = connector?.config ?? {}
+  if (Number.isFinite(Number(connector?.usage_bytes))) return Number(connector.usage_bytes)
+  if (Number.isFinite(Number(cfg.usage_bytes))) return Number(cfg.usage_bytes)
+  if (Number.isFinite(Number(connector?.usage_gb))) return Number(connector.usage_gb) * 1024 ** 3
+  return null
 }
 
 // ---------------------------------------------------------------------------
@@ -576,39 +168,66 @@ function ConnectorCard({ connector, testResult, testingId, onEdit, onDelete, onT
   // System connectors (e.g. the built-in demo dataset) are not editable —
   // they have no configurable fields. They can still be removed and re-added.
   const isSystem = info.system === true
-  const summary = info.summary?.(cfg)
+  // Managed-lake rows render as normal cards but visually distinct: a "Nubi
+  // lakehouse" badge, a warehouse icon, a subtle accent, and storage usage on
+  // the card. They have no configurable fields, so editing is hidden.
+  const managed = isManagedLake(connector)
+  const usageBytes = managed ? managedLakeBytes(connector) : null
+  const summary = managed ? null : info.summary?.(cfg)
 
   return (
     <div
-      className="
+      className={`
         group relative overflow-hidden
-        bg-surface rounded-xl border border-border p-4
-        hover:shadow-lg hover:shadow-black/[0.03] hover:border-border/70
+        rounded-xl border p-4
+        hover:shadow-lg hover:shadow-black/[0.03]
         transition-all duration-200
         flex flex-col gap-3
-      "
+        ${managed
+          ? 'bg-primary/[0.04] border-primary/30 hover:border-primary/50'
+          : 'bg-surface border-border hover:border-border/70'}
+      `}
     >
-      {/* Brand accent rail — surfaces the connector's identity on hover */}
+      {/* Brand accent rail — surfaces the connector's identity on hover.
+          Managed-lake cards keep a permanent primary accent. */}
       <span
         aria-hidden="true"
-        className="absolute inset-y-0 left-0 w-1 opacity-0 group-hover:opacity-100 transition-opacity"
-        style={{ background: info.color }}
+        className={`absolute inset-y-0 left-0 w-1 transition-opacity ${
+          managed ? 'opacity-100' : 'opacity-0 group-hover:opacity-100'
+        }`}
+        style={{ background: managed ? undefined : info.color }}
       />
+      {managed && (
+        <span aria-hidden="true" className="absolute inset-y-0 left-0 w-1 bg-brand-gradient" />
+      )}
 
-      {/* Header: logo + name + badges */}
+      {/* Header: logo/icon + name + badges */}
       <div className="flex items-start gap-3 min-w-0">
-        <ConnectorLogo info={info} size={22} />
+        {managed ? (
+          <span className="inline-flex items-center justify-center w-10 h-10 rounded-xl bg-brand-gradient shadow-sm shrink-0">
+            <Warehouse size={20} className="text-white" strokeWidth={2} />
+          </span>
+        ) : (
+          <ConnectorLogo info={info} size={22} />
+        )}
         <div className="flex-1 min-w-0">
           <div className="flex flex-wrap items-center gap-1.5">
             <h3 className="font-semibold text-fg text-sm truncate max-w-full">{connector.name}</h3>
-            <TypeBadge type={cfg.connector_type} />
+            {managed ? (
+              <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[10px] font-medium bg-primary/15 text-primary border border-primary/20">
+                <Sparkles size={9} strokeWidth={2.4} />
+                Nubi lakehouse
+              </span>
+            ) : (
+              <TypeBadge type={cfg.connector_type} />
+            )}
             {isSystem && (
               <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[10px] font-medium bg-accent/10 text-accent border border-accent/20">
                 <Lock size={9} strokeWidth={2.4} />
                 Built-in
               </span>
             )}
-            {networkMode === 'bridge' ? (
+            {!managed && networkMode === 'bridge' ? (
               <Link
                 to="/settings/bridges"
                 onClick={(e) => e.stopPropagation()}
@@ -617,18 +236,31 @@ function ConnectorCard({ connector, testResult, testingId, onEdit, onDelete, onT
               >
                 {networkMode}
               </Link>
-            ) : networkMode ? (
+            ) : !managed && networkMode ? (
               <span className="inline-flex items-center px-2 py-0.5 rounded-md text-[10px] font-medium bg-surface-2 text-muted border border-border/60">
                 {networkMode}
               </span>
             ) : null}
           </div>
 
-          {/* Config summary */}
+          {/* Config summary (BYO connectors) */}
           {summary && (
             <p className="text-xs text-muted truncate mt-0.5">
               {summary}
             </p>
+          )}
+
+          {/* Storage usage (managed-lake cards). Omitted if usage is unknown. */}
+          {managed && (
+            usageBytes != null ? (
+              <p className="inline-flex items-center gap-1.5 text-xs text-muted mt-0.5">
+                <HardDrive size={12} strokeWidth={2} className="shrink-0" />
+                <span className="tabular-nums text-fg font-medium">{formatBytes(usageBytes)}</span>
+                used
+              </p>
+            ) : (
+              <p className="text-xs text-muted mt-0.5">Managed storage Nubi runs for you.</p>
+            )
           )}
         </div>
       </div>
@@ -683,7 +315,7 @@ function ConnectorCard({ connector, testResult, testingId, onEdit, onDelete, onT
 
         {canWrite && (
           <span className="ml-auto flex items-center gap-1.5">
-            {!isSystem && (
+            {!isSystem && !managed && (
               <button
                 onClick={() => onEdit(connector)}
                 title="Edit connector"
@@ -763,7 +395,7 @@ function EmptyState({ onAdd, canWrite }) {
 // Type picker step
 // ---------------------------------------------------------------------------
 
-function TypePicker({ onSelect, onChooseManaged }) {
+function TypePicker({ onSelect, onProvisionManaged, provisioning }) {
   const [query, setQuery] = useState('')
 
   const groups = useMemo(() => {
@@ -787,37 +419,43 @@ function TypePicker({ onSelect, onChooseManaged }) {
   return (
     <div className="flex flex-col gap-5">
       {/* Storage choice — managed lakehouse (recommended) vs bring your own.
-          The managed option closes the panel and scrolls to / focuses the
-          Managed Lakehouse card at the top of the page; the connector type list
-          below is the bring-your-own-bucket / external-source path. */}
+          The managed option PROVISIONS a new managed-lake connector in place
+          (POST /lakehouse/provision); the new card then appears in the list.
+          The connector type list below is the bring-your-own / external path. */}
       <div className="space-y-2.5">
         <span className="text-[11px] font-semibold uppercase tracking-wider text-muted">
           Where should your data live?
         </span>
         <button
           type="button"
-          onClick={onChooseManaged}
+          onClick={onProvisionManaged}
+          disabled={provisioning}
           className="
             relative w-full flex items-start gap-3 p-4 rounded-xl text-left
             border border-primary/40 bg-primary/5
             hover:border-primary/60 hover:bg-primary/10 hover:shadow-sm
+            disabled:opacity-60 disabled:cursor-not-allowed
             transition-all duration-150 group
             focus:outline-none focus:ring-2 focus:ring-ring
           "
         >
           <span className="flex items-center justify-center w-9 h-9 rounded-xl bg-brand-gradient shadow-sm shrink-0">
-            <Warehouse size={18} className="text-white" strokeWidth={2} />
+            {provisioning
+              ? <Loader2 size={18} className="text-white animate-spin" />
+              : <Warehouse size={18} className="text-white" strokeWidth={2} />}
           </span>
           <div className="flex-1 min-w-0">
             <div className="flex flex-wrap items-center gap-1.5">
-              <span className="text-sm font-semibold text-fg">Use Nubi managed lakehouse</span>
+              <span className="text-sm font-semibold text-fg">
+                {provisioning ? 'Provisioning…' : 'Use Nubi managed lakehouse'}
+              </span>
               <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[10px] font-medium bg-primary/15 text-primary border border-primary/20">
                 <Sparkles size={9} strokeWidth={2.4} /> Recommended
               </span>
             </div>
             <p className="text-[11px] text-muted mt-0.5 leading-snug">
               No bucket to manage — isolated, secure storage Nubi runs for you,
-              billed by usage. Demo data available.
+              billed by usage. Provisions instantly and appears in your list.
             </p>
           </div>
           <ChevronRight
@@ -1097,6 +735,7 @@ function SlideOver({ open, onClose, title, children }) {
 
 function DeleteDialog({ connector, loading, error, onCancel, onConfirm }) {
   const isSystem = getTypeInfo(connector?.config?.connector_type).system === true
+  const managed = isManagedLake(connector)
   return (
     <>
       {/* Backdrop */}
@@ -1116,10 +755,20 @@ function DeleteDialog({ connector, loading, error, onCancel, onConfirm }) {
             </div>
             <div>
               <h3 className="font-semibold text-fg text-sm">
-                {isSystem ? 'Remove connector?' : 'Delete connector?'}
+                {managed
+                  ? 'Delete managed lakehouse?'
+                  : isSystem
+                  ? 'Remove connector?'
+                  : 'Delete connector?'}
               </h3>
               <p className="text-xs text-muted mt-1 leading-relaxed">
-                {isSystem ? (
+                {managed ? (
+                  <>
+                    Deleting <strong className="text-fg">{connector?.name}</strong> deprovisions the
+                    managed storage and <strong className="text-fg">all data in it</strong>. This cannot
+                    be undone.
+                  </>
+                ) : isSystem ? (
                   <>
                     <strong className="text-fg">{connector?.name}</strong> will be removed from this
                     workspace. You can add it back anytime from “Add connector”.
@@ -1248,21 +897,9 @@ export default function ConnectorsPage() {
   // Toast
   const [toast, setToast] = useState(null) // { message, type }
 
-  // Managed lakehouse section — ref for scroll-into-view + a transient highlight
-  // when the user picks "Use Nubi managed lakehouse" from the Add flow.
-  const lakehouseRef = useRef(null)
-  const [lakehouseHighlight, setLakehouseHighlight] = useState(false)
-
-  const focusManagedLakehouse = useCallback(() => {
-    closeSlide()
-    // Wait for the slide-over close animation before scrolling, so the page
-    // isn't shifting under the user as it animates.
-    setTimeout(() => {
-      lakehouseRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' })
-      setLakehouseHighlight(true)
-      setTimeout(() => setLakehouseHighlight(false), 2000)
-    }, 340)
-  }, [])
+  // Managed-lakehouse provisioning (the "Use Nubi managed lakehouse" choice in
+  // the Add-connector picker). Provisions a new managed-lake connector in place.
+  const [provisioningLake, setProvisioningLake] = useState(false)
 
   const showToast = useCallback((message, type = 'success') => {
     setToast({ message, type })
@@ -1330,6 +967,29 @@ export default function ConnectorsPage() {
     }
     setSelectedType(typeId)
     setSlideStep('form')
+  }
+
+  // Provision a managed lakehouse = add a normal managed-lake connector. The
+  // backend returns the new connector; we drop it into the list (dedupe by id)
+  // and close the panel. Multiple are allowed.
+  async function handleProvisionManaged() {
+    setProvisioningLake(true)
+    try {
+      const created = await provisionLakehouse()
+      if (created?.id) {
+        setConnectors(prev => [...prev.filter(c => c.id !== created.id), created])
+      } else {
+        // Older contract returns only status — refetch to pick up the new row.
+        await fetchConnectors()
+      }
+      showToast('Managed lakehouse provisioned')
+      closeSlide()
+    } catch (err) {
+      // Surface via toast — the picker has no inline error slot of its own.
+      showToast(err?.message ?? 'Provisioning failed. Please try again.', 'error')
+    } finally {
+      setProvisioningLake(false)
+    }
   }
 
   // ---------------------------------------------------------------------------
@@ -1469,14 +1129,6 @@ export default function ConnectorsPage() {
 
       {/* Content */}
       <div className="flex-1 px-4 sm:px-6 py-4">
-        {/* Managed lakehouse — the Nubi-managed datastore, surfaced above the
-            BYO connectors. It owns its own load/state, independent of the list. */}
-        <ManagedLakehouseSection
-          sectionRef={lakehouseRef}
-          highlight={lakehouseHighlight}
-          canWrite={canWrite}
-        />
-
         {/* Loading skeleton */}
         {listLoading && (
           <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 gap-3">
@@ -1554,7 +1206,8 @@ export default function ConnectorsPage() {
         {slideStep === 'type' && !editTarget && (
           <TypePicker
             onSelect={handleTypePick}
-            onChooseManaged={focusManagedLakehouse}
+            onProvisionManaged={handleProvisionManaged}
+            provisioning={provisioningLake}
           />
         )}
 
