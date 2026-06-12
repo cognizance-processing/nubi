@@ -29,7 +29,8 @@ from typing import Any
 
 import pyarrow as pa
 from fastapi import APIRouter, Body, Depends, Query
-from fastapi.responses import StreamingResponse
+from fastapi.responses import JSONResponse, StreamingResponse
+from fastapi.encoders import jsonable_encoder
 
 from app.auth.deps import current_user
 from app.auth.roles import require_writer_default
@@ -653,13 +654,32 @@ async def list_columns(
 # ---------------------------------------------------------------------------
 
 
+def _rows_response(arrow_table: "pa.Table", fmt: str):
+    """Render rows as Arrow IPC (default, for the DuckDB-WASM explorer) OR as
+    plain JSON (``format=json``, for the editable data grid which edits row
+    objects).  JSON uses ``jsonable_encoder`` so dates/decimals/uuids serialize.
+    """
+    if (fmt or "").lower() == "json":
+        return JSONResponse(content=jsonable_encoder({
+            "rows": arrow_table.to_pylist(),
+            "columns": [{"name": f.name, "type": str(f.type)} for f in arrow_table.schema],
+            "row_count": arrow_table.num_rows,
+        }))
+    return StreamingResponse(
+        ipc_stream_from_bytes(table_to_ipc_bytes(arrow_table)),
+        media_type=_ARROW_STREAM_MEDIA_TYPE,
+    )
+
+
 @router.get("/data/tables/{table}/rows")
 async def get_demo_rows(
     table: str,
     limit: int = Query(default=500, ge=1, le=5000),
+    offset: int = Query(default=0, ge=0),
+    format: str = Query(default="arrow"),
     user: dict[str, Any] = Depends(current_user),
-) -> StreamingResponse:
-    """Fetch up to *limit* rows from a demo connector table as Arrow IPC."""
+):
+    """Fetch rows from a demo connector table (Arrow IPC, or JSON via format=json)."""
     connector = _get_demo_connector()
     tables = _introspect_tables_duckdb(connector)
     known = {t["name"] for t in tables}
@@ -667,13 +687,8 @@ async def get_demo_rows(
         raise AppError("not_found", f"Table {table!r} not found.", 404)
     if not _safe_identifier(table):
         raise AppError("invalid_identifier", f"Table name {table!r} is not a valid identifier.", 400)
-    plan = _make_plan(f"SELECT * FROM {table} LIMIT {int(limit)}")
-    arrow_table = connector.execute(plan)
-    full_bytes = table_to_ipc_bytes(arrow_table)
-    return StreamingResponse(
-        ipc_stream_from_bytes(full_bytes),
-        media_type=_ARROW_STREAM_MEDIA_TYPE,
-    )
+    plan = _make_plan(f"SELECT * FROM {table} LIMIT {int(limit)} OFFSET {int(offset)}")
+    return _rows_response(connector.execute(plan), format)
 
 
 @router.get("/data/{datastore_id}/tables/{table}/rows")
@@ -681,23 +696,20 @@ async def get_rows(
     datastore_id: str,
     table: str,
     limit: int = Query(default=500, ge=1, le=5000),
+    offset: int = Query(default=0, ge=0),
+    format: str = Query(default="arrow"),
     user: dict[str, Any] = Depends(current_user),
     repo: Repo = Depends(get_repo),
-) -> StreamingResponse:
-    """Fetch up to *limit* rows from a connector table as Arrow IPC."""
+):
+    """Fetch rows from a connector table (Arrow IPC, or JSON via format=json)."""
     connector, tables = await _resolve_connector_and_tables(datastore_id, user, repo)
     known = {t["name"] for t in tables}
     if table not in known:
         raise AppError("not_found", f"Table {table!r} not found in datastore {datastore_id!r}.", 404)
     if not _safe_identifier(table):
         raise AppError("invalid_identifier", f"Table name {table!r} is not a valid identifier.", 400)
-    plan = _make_plan(f"SELECT * FROM {table} LIMIT {int(limit)}")
-    arrow_table = connector.execute(plan)
-    full_bytes = table_to_ipc_bytes(arrow_table)
-    return StreamingResponse(
-        ipc_stream_from_bytes(full_bytes),
-        media_type=_ARROW_STREAM_MEDIA_TYPE,
-    )
+    plan = _make_plan(f"SELECT * FROM {table} LIMIT {int(limit)} OFFSET {int(offset)}")
+    return _rows_response(connector.execute(plan), format)
 
 
 # ---------------------------------------------------------------------------

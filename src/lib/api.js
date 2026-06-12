@@ -595,7 +595,7 @@ export function fetchDataColumns(datastoreId, table) {
  * @returns {Promise<{ rows: Array<Record<string,*>>, total: number|null }>}
  */
 export async function fetchDataRows(datastoreId, table, { limit = 100, offset = 0 } = {}) {
-  const qs = `?limit=${limit}&offset=${offset}`
+  const qs = `?limit=${limit}&offset=${offset}&format=json`
   const data = await get(`${dataTablePath(datastoreId, table)}/rows${qs}`)
 
   // Array of objects.
