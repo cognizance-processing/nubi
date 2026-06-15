@@ -3,11 +3,17 @@
  *
  * Structure (desktop):
  *
- *   ┌──────────────────────────────────────────────────────┐
- *   │  [sidebar]  │  [topbar]                              │
- *   │             ├────────────────────────────────────────┤
- *   │             │  <Outlet/> (main content)   │ [chat]  │
- *   └──────────────────────────────────────────────────────┘
+ *   ┌────────────────────────────────────────────────────────────┐
+ *   │  [sidebar]  │  [topbar … page toolbar …  🔔 ⑂ 💬 │ avatar] │
+ *   │             ├──────────────────────────────────────────────┤
+ *   │             │  <Outlet/> (main content)         │ [chat]   │
+ *   └────────────────────────────────────────────────────────────┘
+ *
+ * The global panel switcher (Notifications / Git / Chat) lives in the topbar's
+ * right zone (AppTopbar → TopbarActions) — one consistent home on every page,
+ * at every breakpoint. The panels it toggles slide in from the right edge:
+ * Chat as an in-flow 340px aside (full-screen overlay on mobile); Git and
+ * Notifications as fixed slide-overs (full-width on mobile, max-w-md desktop).
  *
  * Mobile:
  *   - Sidebar becomes an off-canvas drawer (hamburger in topbar)
@@ -22,7 +28,6 @@ import { useUi } from '../contexts/UiContext.jsx'
 import { useProject } from '../contexts/ProjectContext.jsx'
 import { AppSidebarDesktop, AppSidebarMobile } from '../components/app/AppSidebar.jsx'
 import AppTopbar from '../components/app/AppTopbar.jsx'
-import AppRightRail from '../components/app/AppRightRail.jsx'
 import { ChatPanel } from '../chat/ChatPanel.jsx'
 import NotificationCenter from '../components/app/NotificationCenter.jsx'
 import { GitBranch, MessageSquare, Bell } from 'lucide-react'
@@ -116,9 +121,10 @@ export default function AppShell() {
   const { activeProject } = useProject()
   const projectId = activeProject?.id ?? null
 
-  // The persistent right-edge switcher items. Always present on every authed
-  // page (desktop) — Git/Versions is the primary entry; Chat joins it unless a
-  // page owns chat itself (e.g. the dashboard editor mounts its own chat UI).
+  // The global panel switcher items, rendered in the topbar's right zone
+  // (AppTopbar → TopbarActions) on every authed page at every breakpoint.
+  // Chat is dropped when a page owns chat itself (e.g. the dashboard editor
+  // mounts its own chat UI) via the `hidden` flag.
   const railItems = [
     {
       id: 'notifications',
@@ -158,7 +164,10 @@ export default function AppShell() {
 
       {/* ── Main column: topbar + content ──────────────────── */}
       <div className="flex flex-col flex-1 min-w-0 overflow-hidden">
-        <AppTopbar onMobileMenuOpen={() => setMobileNavOpen(true)} />
+        <AppTopbar
+          onMobileMenuOpen={() => setMobileNavOpen(true)}
+          actions={railItems}
+        />
 
         {/* Content area + chat panel + git panel + persistent rail side-by-side */}
         <div className="flex flex-1 min-h-0 overflow-hidden">
@@ -188,11 +197,6 @@ export default function AppShell() {
             onClose={() => setNotifOpen(false)}
             onCount={setUnreadCount}
           />
-
-          {/* Persistent right-edge switcher — always reachable on every authed
-              page (desktop). The single, consistent entry point for the
-              shell-level RHS panels (Notifications + Git/Versions + Chat). */}
-          <AppRightRail items={railItems} />
         </div>
       </div>
     </div>

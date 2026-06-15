@@ -161,12 +161,14 @@ export default function ExportShareMenu({ board, spec }) {
     <div className="relative" ref={ref}>
       <button
         onClick={() => { setOpen(o => !o); if (!share && board) loadShare() }}
-        className={`px-3 py-1.5 text-sm font-medium rounded-lg border transition-all focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-1 flex items-center gap-1.5 ${
+        aria-label="Export & share dashboard"
+        aria-expanded={open}
+        className={`flex items-center justify-center w-8 h-8 rounded-lg border transition-all focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-1 ${
           open ? 'bg-surface-2 border-primary text-primary' : 'bg-surface text-fg border-border hover:bg-surface-2'
         }`}
         title="Export & share dashboard"
       >
-        <Share2 size={14} /> Export &amp; Share
+        <Share2 size={15} />
       </button>
 
       {open && (

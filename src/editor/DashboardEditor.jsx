@@ -46,6 +46,7 @@ import {
   BarChartHorizontal, Table2, Hash, Filter as FilterIcon, Type, Heading,
   Monitor, Tablet, Smartphone, ChevronDown, Settings, LayoutGrid, MessageSquare,
   ZoomIn, ZoomOut, Maximize2, Menu, ChevronUp, Sigma, FileCode2, LayoutDashboard,
+  Undo2, Redo2, Eye, Pencil, Save, Loader2,
 } from 'lucide-react'
 
 // Device viewport presets for the editor's responsive preview/edit switcher.
@@ -87,7 +88,6 @@ import { listMetrics } from '../lib/metrics.js'
 import PivotWidget from '../dashboards/widgets/PivotWidget.jsx'
 import SectionWidget from '../dashboards/widgets/SectionWidget.jsx'
 import ExportShareMenu from '../components/ExportShareMenu.jsx'
-import DashboardCodePanel from './DashboardCodePanel.jsx'
 import DashboardCodeView from './DashboardCodeView.jsx'
 import { VariableProvider } from '../dashboards/VariableStore.jsx'
 import SpecRenderer from '../dashboards/SpecRenderer.jsx'
@@ -2931,20 +2931,6 @@ export default function DashboardEditor({ boardId = null, onSaved }) {
     setPreview(false)
   }, [])
 
-  // Apply a full DashboardSpec (e.g. from SpecIO's view-as-code / import). This
-  // replaces the in-editor spec wholesale, normalising defaults like AI replace.
-  const applySpec = useCallback((nextSpec) => {
-    if (!nextSpec || typeof nextSpec !== 'object') return
-    setSpec({
-      ...DEFAULT_SPEC,
-      ...nextSpec,
-      layout: { cols: 12, row_height: 60, ...(nextSpec.layout ?? {}) },
-      widgets: Array.isArray(nextSpec.widgets) ? nextSpec.widgets : [],
-    })
-    setSelectedId(null)
-    setPreview(false)
-  }, [])
-
   // ── Right-panel body (shared by desktop sidebar + mobile sheet) ───────────
   const RIGHT_PANEL_TITLES = { add: 'Add widget', config: 'Configure', chat: 'Chat', board: 'Dashboard', tabs: 'Tabs' }
   const renderRightPanelBody = () => {
@@ -3108,10 +3094,10 @@ export default function DashboardEditor({ boardId = null, onSaved }) {
 
         {!preview && (
           <div className="flex items-center gap-1">
-            <button onClick={handleUndo} disabled={!canUndo(hist)} title="Undo (⌘Z / Ctrl+Z)"
-              className="w-8 h-8 flex items-center justify-center text-sm rounded-lg border border-border bg-surface text-fg hover:bg-surface-2 disabled:opacity-40 disabled:cursor-not-allowed transition-all">↩</button>
-            <button onClick={handleRedo} disabled={!canRedo(hist)} title="Redo (⇧⌘Z / Ctrl+Y)"
-              className="w-8 h-8 flex items-center justify-center text-sm rounded-lg border border-border bg-surface text-fg hover:bg-surface-2 disabled:opacity-40 disabled:cursor-not-allowed transition-all">↪</button>
+            <button onClick={handleUndo} disabled={!canUndo(hist)} title="Undo (⌘Z / Ctrl+Z)" aria-label="Undo"
+              className="w-8 h-8 flex items-center justify-center rounded-lg border border-border bg-surface text-fg hover:bg-surface-2 disabled:opacity-40 disabled:cursor-not-allowed transition-all"><Undo2 size={14} /></button>
+            <button onClick={handleRedo} disabled={!canRedo(hist)} title="Redo (⇧⌘Z / Ctrl+Y)" aria-label="Redo"
+              className="w-8 h-8 flex items-center justify-center rounded-lg border border-border bg-surface text-fg hover:bg-surface-2 disabled:opacity-40 disabled:cursor-not-allowed transition-all"><Redo2 size={14} /></button>
           </div>
         )}
 
@@ -3164,23 +3150,24 @@ export default function DashboardEditor({ boardId = null, onSaved }) {
 
         {!codeView && (
           <button onClick={() => setPreview(p => !p)}
-            className={`px-2.5 h-8 text-xs font-medium rounded-lg border transition-all focus:outline-none whitespace-nowrap ${
+            title={preview ? 'Back to editing' : 'Preview dashboard'}
+            aria-label={preview ? 'Back to editing' : 'Preview dashboard'}
+            aria-pressed={preview}
+            className={`w-8 h-8 flex items-center justify-center rounded-lg border transition-all focus:outline-none ${
               preview ? 'bg-primary text-primary-fg border-primary hover:opacity-90' : 'bg-surface text-fg border-border hover:bg-surface-2'
             }`}>
-            {preview ? 'Edit' : 'Preview'}
+            {preview ? <Pencil size={14} /> : <Eye size={14} />}
           </button>
         )}
-
-        <div className="hidden sm:block">
-          <DashboardCodePanel kind="dashboard" spec={spec} onApply={applySpec} board={savedBoardId} />
-        </div>
 
         <div className="hidden sm:block">
           <ExportShareMenu board={savedBoardId} spec={spec} />
         </div>
 
         <button onClick={handleSave} disabled={saving} data-testid="editor-save-btn"
-          className="px-3 h-8 text-xs font-medium bg-primary text-primary-fg rounded-lg hover:opacity-90 disabled:opacity-60 transition-opacity focus:outline-none whitespace-nowrap">
+          title={savedBoardId ? 'Save dashboard' : 'Create dashboard'}
+          className="px-3 h-8 inline-flex items-center gap-1.5 text-xs font-medium bg-primary text-primary-fg rounded-lg hover:opacity-90 disabled:opacity-60 transition-opacity focus:outline-none whitespace-nowrap">
+          {saving ? <Loader2 size={13} className="animate-spin" /> : <Save size={13} />}
           {saving ? 'Saving…' : savedBoardId ? 'Save' : 'Create'}
         </button>
       </div>

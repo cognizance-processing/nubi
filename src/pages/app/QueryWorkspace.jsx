@@ -66,7 +66,6 @@ import {
 } from 'lucide-react'
 
 import SqlEditor from '../../components/SqlEditor.jsx'
-import SpecIO from '../../components/SpecIO.jsx'
 import MetricExposePanel from '../../components/app/MetricExposePanel.jsx'
 import { metricToDraft, draftToMetricBlock } from './metricBlock.logic.js'
 import QueryCodeView from './QueryCodeView.jsx'
@@ -1582,27 +1581,6 @@ export default function QueryWorkspace({ query, onQueryChange, onSaved, isNew, t
     onQueryChange?.({ ...query, sql: generatedSql })
   }, [query, onQueryChange])
 
-  // ── Apply a spec from SpecIO (view-as-code / import) → primary cell ───────
-  const handleApplySpec = useCallback((nextSpec) => {
-    if (!nextSpec || typeof nextSpec !== 'object') return
-    const nextSql = typeof nextSpec.sql === 'string' ? nextSpec.sql : sql
-    const nextParams = Array.isArray(nextSpec.params) ? nextSpec.params : params
-    setSql(nextSql)
-    setParams(nextParams)
-    if (nextSpec.datastore_id !== undefined) {
-      setDatastoreId(nextSpec.datastore_id ?? '')
-    }
-    // Seed param values from any new defaults.
-    setParamValues(prev => {
-      const next = { ...prev }
-      nextParams.forEach(p => {
-        if (next[p.name] === undefined && p.default != null) next[p.name] = String(p.default)
-      })
-      return next
-    })
-    onQueryChange?.({ ...query, sql: nextSql, params: nextParams })
-  }, [sql, params, query, onQueryChange])
-
   // ── Param descriptor edits ──────────────────────────────────────────────
   const handleParamDescChange = useCallback((name, field, value) => {
     setParams(prev => prev.map(p => p.name === name ? { ...p, [field]: value } : p))
@@ -1739,13 +1717,6 @@ export default function QueryWorkspace({ query, onQueryChange, onSaved, isNew, t
           <span className="hidden sm:inline">History</span>
         </button>
 
-        {/* View as code / Import */}
-        <SpecIO
-          kind="query"
-          spec={{ sql, params, datastore_id: datastoreId || null }}
-          onApply={handleApplySpec}
-          query={query}
-        />
 
         {/* Save — mutating (registerQuery); writers only */}
         {canWrite ? (

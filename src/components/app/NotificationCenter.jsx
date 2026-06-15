@@ -4,7 +4,8 @@
  * Mounted once by AppShell. It owns TWO things:
  *
  *   1. The unread-count badge. The bell itself is a button in the persistent
- *      right-edge rail (AppRightRail); AppShell passes its toggle + count in.
+ *      topbar's global panel switcher (AppTopbar); AppShell passes its toggle
+ *      + count in.
  *      We poll GET /notifications/unread_count on a reasonable interval and
  *      PAUSE polling while the tab is hidden (visibilitychange) to be cheap.
  *

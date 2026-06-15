@@ -110,13 +110,13 @@ function ConnectorDropdown({ connectors, selectedId, onSelect }) {
         <ChevronDown size={13} className={`text-muted shrink-0 transition-transform ${open ? 'rotate-180' : ''}`} />
       </button>
       {open && (
-        <div className="absolute left-0 right-0 top-full mt-1 z-50 rounded-xl border border-border bg-surface shadow-xl shadow-black/10 py-1">
+        <div className="absolute left-0 right-0 top-full mt-1 z-50 rounded-xl border border-border bg-surface shadow-xl shadow-black/10 p-1">
           {connectors.map((c) => (
             <button
               key={c.id ?? 'demo'}
               onClick={() => { onSelect(c.id); setOpen(false) }}
               className={[
-                'w-full flex items-center gap-2 px-3 py-2 text-sm text-left transition-colors',
+                'w-full flex items-center gap-2 px-2.5 py-2 rounded-lg text-sm text-left transition-colors',
                 c.id === selectedId ? 'text-primary bg-primary/5' : 'text-fg hover:bg-surface-2',
               ].join(' ')}
             >

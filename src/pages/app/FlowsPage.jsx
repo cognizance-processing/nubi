@@ -52,6 +52,7 @@ import {
   KeyRound,
   X,
   SlidersHorizontal,
+  Variable,
   PanelRightClose,
   ShieldCheck,
   Save,
@@ -88,6 +89,7 @@ import { SaveStatusBadge } from '../../flows/NotebookView.jsx'
 import FlowRunView from '../../flows/FlowRunView.jsx'
 import { AddTaskPanel } from '../../flows/AddTaskPanel.jsx'
 import NodeInspector from '../../flows/NodeInspector.jsx'
+import VariablesPanel from '../../flows/VariablesPanel.jsx'
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -590,7 +592,7 @@ export default function FlowsPage() {
   // Inspector via the top toggle buttons. The Add + Inspector panels drive the
   // FlowBuilder via an imperative ref; selection is reported back up.
   const flowBuilderRef = useRef(null)
-  const [rightPanel, setRightPanel] = useState('flows')      // 'flows' | 'add' | 'inspector'
+  const [rightPanel, setRightPanel] = useState('flows')      // 'flows' | 'variables' | 'add' | 'inspector'
   const [rightCollapsed, setRightCollapsed] = useState(() => {
     try { return localStorage.getItem('nubi:flows:railCollapsed') === '1' } catch { return false }
   })
@@ -1136,9 +1138,10 @@ export default function FlowsPage() {
         <div className="hidden md:flex items-center gap-0.5 pl-1.5 ml-0.5 border-l border-border">
           {[
             { id: 'flows',     Icon: List,              title: 'Flows' },
+            { id: 'variables', Icon: Variable,          title: 'Variables' },
             { id: 'add',       Icon: Plus,              title: 'Add task' },
             { id: 'inspector', Icon: SlidersHorizontal, title: 'Inspector' },
-          ].filter(p => !(activeTab === 'builder' && (flowView === 'notebook' || flowView === 'code') && p.id !== 'flows')).map(p => {
+          ].filter(p => !(activeTab === 'builder' && (flowView === 'notebook' || flowView === 'code') && p.id !== 'flows' && p.id !== 'variables')).map(p => {
             const active = rightPanel === p.id && !rightCollapsed
             return (
               <button key={p.id} onClick={() => togglePanel(p.id)} title={p.title} aria-label={p.title} aria-pressed={active}
@@ -1324,7 +1327,7 @@ export default function FlowsPage() {
           <aside className="hidden md:flex shrink-0 w-64 lg:w-72 flex-col border-l border-border bg-surface">
             <div className="shrink-0 flex items-center justify-between px-3 h-9 border-b border-border">
               <span className="text-[11px] font-semibold uppercase tracking-wider text-muted truncate">
-                {rightPanel === 'flows' ? 'Flows' : rightPanel === 'add' ? 'Add task' : (
+                {rightPanel === 'flows' ? 'Flows' : rightPanel === 'variables' ? 'Variables' : rightPanel === 'add' ? 'Add task' : (
                   <>
                     Inspector
                     {selectedTask?.key && (
@@ -1370,6 +1373,11 @@ export default function FlowsPage() {
                   canWrite={canWrite}
                   strictEnv={strictEnv}
                 />
+              )}
+              {rightPanel === 'variables' && (
+                <div className="p-3">
+                  <VariablesPanel readOnly={!canWrite} />
+                </div>
               )}
               {rightPanel === 'add' && (
                 <AddTaskPanel

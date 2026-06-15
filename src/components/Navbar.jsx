@@ -118,23 +118,23 @@ function UserMenu({ user, logout }) {
           {/* Dropdown */}
           <div className="
             absolute right-0 top-full mt-1 z-40
-            w-48 py-1 rounded-xl
+            w-48 p-1 rounded-xl
             bg-surface border border-border shadow-lg
           ">
-            <div className="px-3 py-2 border-b border-border">
+            <div className="px-2 py-2 mb-0.5 border-b border-border">
               <p className="text-xs text-muted truncate">{user.email}</p>
             </div>
             <Link
               to="/home"
               onClick={() => setOpen(false)}
-              className="flex items-center gap-2 px-3 py-2.5 text-sm text-fg hover:bg-surface-2 transition-colors min-h-[44px]"
+              className="flex items-center gap-2 w-full px-2 py-2.5 rounded-lg text-sm text-fg hover:bg-surface-2 transition-colors min-h-[44px]"
             >
               <LayoutDashboard size={14} className="text-muted" />
               Portal
             </Link>
             <button
               onClick={handleLogout}
-              className="flex items-center gap-2 w-full px-3 py-2.5 text-sm text-fg hover:bg-surface-2 transition-colors text-left min-h-[44px]"
+              className="flex items-center gap-2 w-full px-2 py-2.5 rounded-lg text-sm text-fg hover:bg-surface-2 transition-colors text-left min-h-[44px]"
             >
               <LogOut size={14} className="text-muted" />
               Log out

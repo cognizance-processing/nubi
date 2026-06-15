@@ -1,12 +1,17 @@
 /**
  * AppTopbar — top navigation bar inside the authenticated AppShell.
  *
- * Left:   [mobile hamburger] + Logo (collapsed-mode or mobile only) + sidebar toggle
- * Right:  Org selector | Chat toggle | Theme toggle | User avatar menu
+ * Left:   [mobile hamburger] + Logo (mobile only)
+ * Center: per-page toolbar slot (pages portal their toolbar JSX here)
+ * Right:  Global panel switcher (Notifications / Git / Chat) | User avatar menu
+ *
+ * The global switcher (Notifications / Git / Chat) is the single, consistent
+ * home for the shell-level RHS panels — present on every authed page at every
+ * breakpoint. AppShell owns the panel open/close state and passes the toggle
+ * descriptors in via `actions`.
  *
  * Contracts:
- *   - Reads UiContext for sidebarCollapsed, toggleSidebar, toggleChat
- *   - Reads OrgContext for orgs, activeOrg, setActiveOrg
+ *   - Reads UiContext for setTopbarSlot (the center per-page toolbar portal)
  *   - Reads AuthContext for user, logout
  *   - Reads ThemeContext for theme, toggleTheme
  */
@@ -17,14 +22,72 @@ import {
   Menu,
   Sun,
   Moon,
-  MessageSquare,
   LogOut,
   Settings,
 } from 'lucide-react'
 import { useUi } from '../../contexts/UiContext.jsx'
 import { useAuth } from '../../contexts/AuthContext.jsx'
 import { useTheme } from '../../contexts/ThemeContext.jsx'
+import {
+  visibleRailItems,
+  railItemAriaLabel,
+  formatBadgeCount,
+} from '../../shell/shellLogic.js'
 import Logo from '../Logo.jsx'
+
+// ---------------------------------------------------------------------------
+// TopbarActions — the global panel switcher (Notifications / Git / Chat).
+//
+// A horizontal cluster of square icon toggles living in the topbar's right
+// zone, present on EVERY authed surface at ALL breakpoints — the single,
+// consistent home for the shell-level RHS panels. Replaces the former
+// full-height right-edge rail; the panels themselves still slide in from the
+// right (full-width on mobile, max-w-md on desktop). Items are filtered by
+// their `hidden` flag (e.g. Chat hides when a page owns its own chat UI).
+// ---------------------------------------------------------------------------
+
+function TopbarActions({ items }) {
+  const visible = visibleRailItems(items || [])
+  if (visible.length === 0) return null
+
+  return (
+    <div
+      className="flex items-center gap-1"
+      role="toolbar"
+      aria-label="Panels"
+      data-testid="app-right-rail"
+    >
+      {visible.map(({ id, Icon, label, active, onToggle, badge }) => (
+        <button
+          key={id}
+          type="button"
+          onClick={onToggle}
+          aria-label={railItemAriaLabel({ active, label, badge })}
+          aria-pressed={active}
+          title={label}
+          data-testid={`rail-toggle-${id}`}
+          className={[
+            'relative w-9 h-9 flex items-center justify-center rounded-lg border transition-colors duration-150',
+            'focus:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1',
+            active
+              ? 'bg-primary text-primary-fg border-primary shadow-sm'
+              : 'bg-surface text-muted border-border hover:text-fg hover:bg-surface-2',
+          ].join(' ')}
+        >
+          <Icon size={16} strokeWidth={2} />
+          {badge > 0 && (
+            <span
+              className="absolute -top-1 -right-1 min-w-[16px] h-4 px-1 flex items-center justify-center rounded-full bg-red-500 text-white text-[10px] font-bold leading-none shadow"
+              aria-hidden="true"
+            >
+              {formatBadgeCount(badge)}
+            </span>
+          )}
+        </button>
+      ))}
+    </div>
+  )
+}
 
 // ---------------------------------------------------------------------------
 // User avatar dropdown
@@ -92,11 +155,11 @@ function UserMenu() {
           />
           <div className="
             absolute right-0 top-full mt-1.5 z-40
-            w-52 py-1.5 rounded-xl
+            w-52 p-1.5 rounded-xl
             bg-surface border border-border shadow-lg shadow-black/10
           ">
             {/* User info */}
-            <div className="px-3 py-2 border-b border-border mb-1">
+            <div className="px-2 pt-1 pb-2 mb-1 border-b border-border">
               {user.name && (
                 <p className="text-sm font-semibold text-fg truncate">{user.name}</p>
               )}
@@ -107,7 +170,7 @@ function UserMenu() {
             <button
               onClick={toggleTheme}
               className="
-                flex items-center gap-2.5 w-full px-3 py-2.5 text-sm text-fg
+                flex items-center gap-2.5 w-full px-2 py-2.5 rounded-lg text-sm text-fg
                 hover:bg-surface-2 transition-colors text-left min-h-[40px]
               "
             >
@@ -122,7 +185,7 @@ function UserMenu() {
               to="/settings"
               onClick={() => setOpen(false)}
               className="
-                flex items-center gap-2.5 px-3 py-2.5 text-sm text-fg
+                flex items-center gap-2.5 w-full px-2 py-2.5 rounded-lg text-sm text-fg
                 hover:bg-surface-2 transition-colors min-h-[40px]
               "
             >
@@ -137,7 +200,7 @@ function UserMenu() {
             <button
               onClick={handleLogout}
               className="
-                flex items-center gap-2.5 w-full px-3 py-2.5 text-sm
+                flex items-center gap-2.5 w-full px-2 py-2.5 rounded-lg text-sm
                 text-red-500 dark:text-red-400
                 hover:bg-red-50 dark:hover:bg-red-950/30
                 transition-colors text-left min-h-[40px]
@@ -158,10 +221,13 @@ function UserMenu() {
 // ---------------------------------------------------------------------------
 
 /**
- * @param {{ onMobileMenuOpen: Function }} props
+ * @param {{ onMobileMenuOpen: Function, actions?: Array }} props
+ *   actions — the global panel toggle descriptors (Notifications / Git / Chat),
+ *   built and owned by AppShell. Item shape:
+ *   { id, Icon, label, active, onToggle, hidden?, badge? } — see TopbarActions.
  */
-export default function AppTopbar({ onMobileMenuOpen }) {
-  const { toggleChat, chatOpen, setTopbarSlot, pageOwnsChat } = useUi()
+export default function AppTopbar({ onMobileMenuOpen, actions = [] }) {
+  const { setTopbarSlot } = useUi()
 
   return (
     <header className="
@@ -199,31 +265,14 @@ export default function AppTopbar({ onMobileMenuOpen }) {
         className="flex items-center gap-2 flex-1 min-w-0 overflow-x-auto"
       />
 
-      {/* ── Right: AI chat toggle + user avatar (far right) ── */}
-      <div className="flex items-center gap-2 shrink-0">
-        {/* Mobile-only chat toggle. On desktop (md+) the chat toggle lives in the
-            persistent right-edge rail (AppRightRail) alongside Git/Versions, so
-            the rail is the single RHS switcher and we avoid a duplicate button. */}
-        {!pageOwnsChat && (
-          <button
-            onClick={toggleChat}
-            aria-label={chatOpen ? 'Close AI chat' : 'Open AI chat'}
-            aria-pressed={chatOpen}
-            data-testid="global-chat-btn"
-            className={`
-              md:hidden flex items-center justify-center w-9 h-9 rounded-lg
-              border border-border
-              transition-colors duration-150
-              focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-1
-              ${chatOpen
-                ? 'bg-primary text-primary-fg border-primary'
-                : 'text-muted hover:text-fg hover:bg-surface-2'
-              }
-            `}
-          >
-            <MessageSquare size={15} strokeWidth={2} />
-          </button>
-        )}
+      {/* ── Right: global panel switcher + user avatar (far right) ── */}
+      <div className="flex items-center gap-1 shrink-0">
+        {/* Notifications / Git / Chat — the single home for shell RHS panels,
+            on every page at every breakpoint. */}
+        <TopbarActions items={actions} />
+
+        {/* Divider between the panel switcher and the account menu. */}
+        <div className="w-px h-6 bg-border mx-1" aria-hidden="true" />
 
         <UserMenu />
       </div>

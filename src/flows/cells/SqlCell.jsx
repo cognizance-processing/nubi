@@ -161,12 +161,12 @@ export default function SqlCell({
             Snippets
           </button>
           {snippetOpen && (
-            <div className="absolute z-20 top-full right-0 mt-1 min-w-[240px] py-1.5 rounded-xl bg-surface border border-border shadow-lg shadow-black/10">
+            <div className="absolute z-20 top-full right-0 mt-1 min-w-[240px] p-1.5 rounded-xl bg-surface border border-border shadow-lg shadow-black/10">
               {SQL_EXAMPLES.map(ex => (
                 <button
                   key={ex.label}
                   onClick={() => insertSnippet(ex.sql)}
-                  className="w-full text-left px-3 py-2 text-xs text-fg hover:bg-surface-2 transition-colors"
+                  className="w-full text-left px-2.5 py-2 rounded-lg text-xs text-fg hover:bg-surface-2 transition-colors"
                 >
                   {ex.label}
                 </button>

@@ -48,7 +48,7 @@ export default function SecretsMenu({ onInsert }) {
       </button>
 
       {open && (
-        <div className="absolute z-20 top-full right-0 mt-1 min-w-[230px] py-1.5 rounded-xl bg-surface border border-border shadow-lg shadow-black/10">
+        <div className="absolute z-20 top-full right-0 mt-1 min-w-[230px] p-1.5 rounded-xl bg-surface border border-border shadow-lg shadow-black/10">
           {loading && (
             <p className="px-3 py-2 text-xs text-muted">Loading…</p>
           )}
@@ -68,7 +68,7 @@ export default function SecretsMenu({ onInsert }) {
               key={name}
               type="button"
               onClick={() => { onInsert?.(name); setOpen(false) }}
-              className="w-full text-left px-3 py-1.5 text-xs font-mono text-fg hover:bg-surface-2 transition-colors truncate"
+              className="w-full text-left px-2.5 py-1.5 rounded-lg text-xs font-mono text-fg hover:bg-surface-2 transition-colors truncate"
             >
               {name}
             </button>
