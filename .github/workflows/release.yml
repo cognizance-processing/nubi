@@ -1,0 +1,135 @@
+name: Release
+
+# Versioning is tag-driven: push an annotated semver tag (vX.Y.Z) and this
+# workflow stamps that version into the build, produces the release artifacts,
+# pushes a versioned Docker image to GHCR, and publishes a GitHub Release with
+# auto-generated notes.
+#
+#   git tag -a v0.1.0 -m "v0.1.0" && git push origin v0.1.0
+#
+# Pre-releases (v0.1.0-rc.1) are marked as such automatically.
+
+on:
+  push:
+    tags:
+      - 'v*.*.*'
+
+permissions:
+  contents: write   # create the GitHub Release
+  packages: write   # push the image to GHCR
+
+concurrency:
+  group: release-${{ github.ref_name }}
+  cancel-in-progress: false
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # Build the release artifacts (web + embed bundles, SDK, CLI) and publish the
+  # GitHub Release with generated notes + checksums.
+  # ---------------------------------------------------------------------------
+  artifacts:
+    name: Build artifacts & publish release
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0   # full history so release notes can diff from the last tag
+
+      - name: Resolve version from tag
+        id: ver
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          case "$VERSION" in *-*) echo "prerelease=true" ;; *) echo "prerelease=false" ;; esac >> "$GITHUB_OUTPUT"
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Install web deps
+        run: npm ci
+
+      - name: Stamp version (app)
+        run: npm version "${{ steps.ver.outputs.version }}" --no-git-tag-version --allow-same-version
+
+      - name: Build web app + embed + widgets
+        run: |
+          npm run build
+          npm run build:embed
+          npm run build:widgets
+
+      - name: Build & pack SDK
+        run: |
+          cd sdk
+          npm ci
+          npm version "${{ steps.ver.outputs.version }}" --no-git-tag-version --allow-same-version
+          npm run build
+          npm pack --pack-destination "${{ github.workspace }}/artifacts"
+
+      - name: Build CLI sdist + wheel
+        run: |
+          python -m pip install --upgrade build
+          cd cli && python -m build --outdir "${{ github.workspace }}/artifacts"
+
+      - name: Package web + embed bundles
+        run: |
+          mkdir -p artifacts
+          V="${{ steps.ver.outputs.version }}"
+          tar -czf "artifacts/nubi-web-${V}.tar.gz"   -C dist .
+          tar -czf "artifacts/nubi-embed-${V}.tar.gz" -C dist-embed .
+
+      - name: Checksums
+        run: cd artifacts && sha256sum * > SHA256SUMS.txt && cat SHA256SUMS.txt
+
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          name: ${{ github.ref_name }}
+          generate_release_notes: true
+          prerelease: ${{ steps.ver.outputs.prerelease }}
+          files: artifacts/*
+          fail_on_unmatched_files: true
+
+  # ---------------------------------------------------------------------------
+  # Build & push the combined image (root Dockerfile: Vite SPA + FastAPI) to
+  # GitHub Container Registry, tagged with the semver + latest.
+  # ---------------------------------------------------------------------------
+  docker:
+    name: Build & push Docker image (GHCR)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Image metadata (tags + labels)
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ghcr.io/${{ github.repository }}
+          tags: |
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=raw,value=latest,enable=${{ !contains(github.ref_name, '-') }}
+
+      - name: Build & push
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
