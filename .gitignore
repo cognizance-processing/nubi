@@ -17,6 +17,10 @@ dist-ssr
 !.vscode/extensions.json
 .idea
 .DS_Store
+
+# Claude Code workspace + local skills (kept locally, never tracked)
+.claude/
+skills/
 *.suo
 *.ntvs*
 *.njsproj
