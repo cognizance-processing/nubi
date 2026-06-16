@@ -244,6 +244,10 @@ def test_clickhouse_insert_statement_with_and_without_keys():
 
 
 def test_bigquery_dispatch_with_mock_client():
+    # google-cloud-bigquery is an optional driver (commented out in
+    # requirements.txt); the loader imports it for LoadJobConfig even on the
+    # mock-client path, so skip cleanly when it isn't installed.
+    pytest.importorskip("google.cloud.bigquery")
     with tempfile.TemporaryDirectory() as tmp:
         area, manifest = _staged(tmp)
         client = _FakeBQClient()
