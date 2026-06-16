@@ -1,0 +1,53 @@
+# Nubi
+
+> Nubi is an embedded-analytics platform. Register SQL queries against a
+> datastore, compose them into governed dashboards (the canonical
+> **DashboardSpec**), and embed those dashboards into host apps with per-tenant
+> row-level security (RLS). External AI agents can author dashboards end-to-end
+> by grounding on real query metadata, validating against a structured oracle,
+> and previewing cost before publishing.
+
+## Authoring loop (how an agent builds a dashboard)
+
+1. **Discover** — `GET /api/v1/ai/context` lists every registered query with its
+   real `params` and `output_schema`, plus a `conventions` block. Bind ONLY to
+   ids and column names that appear here — never invent them.
+2. **Author** — emit a `DashboardSpec` (schema at `GET /api/v1/ai/dashboard/schema`),
+   or let `POST /api/v1/ai/dashboard` generate one from a prompt.
+3. **Validate** — `POST /api/v1/dashboards/validate` returns
+   `{valid, errors, warnings}` with JSON `path`, machine `code`, and
+   `valid_options`. Repair and re-submit until `valid: true`. Never persists.
+4. **Estimate** — `POST /api/v1/query/estimate` dry-runs cost/scan (same gates as
+   `POST /query`, no execution, no metering).
+5. **Embed** — publish onto a board, serve read-only via
+   `GET /api/v1/embed/config/{dashboard_id}` with a host-signed embed JWT.
+
+## Key endpoints
+
+All paths are mounted under `/api/v1`.
+
+- `GET /ai/context` — every registered query (id, name, params, output_schema) + authoring conventions. Supports `?q=<intent>` (rank/filter) and `?compact=true`.
+- `GET /ai/dashboard/schema` — JSON Schema for the canonical DashboardSpec.
+- `POST /ai/dashboard` — generate a grounded DashboardSpec + HTML from `{question}` (internal validate→repair loop).
+- `POST /ai/ask` — grounded SQL suggestion for a natural-language `{question}`.
+- `POST /ai/sql` — text-to-SQL with catalog grounding; optional `save_as` registers the query.
+- `POST /ai/chat` — agentic chat over the tool registry; `POST /ai/chat/stream` for SSE.
+- `POST /dashboards/validate` — structured validation oracle for a spec; `{valid, errors, warnings}`. Never persists.
+- `POST /query` — run a registered `query_id` or (first-party only) raw SELECT → Arrow IPC, RLS applied.
+- `POST /query/estimate` — dry-run cost/scan estimate; same auth/scope/allowlist/RLS gates, no execution.
+- `GET /query/registry` / `POST /query/registry` — list / register queries.
+- `POST /environments/promote` — promote a resource (board/query/flow) from one environment to another. Writer-scoped, human-gated.
+- `GET /embed/config/{dashboard_id}` — read-only board descriptor (spec/html/widgets) for host pages.
+
+## Governance model
+
+- **Dev-authoring → human promote.** Agents author in `dev`; promotion to higher environments is a human-gated, writer-scoped action (`POST /environments/promote`), with git-backed merges.
+- **RLS is token-only.** Row-level policies come EXCLUSIVELY from the verified token (`identity.policies`), never the request body, and are injected into the SQL AST by the planner. Per-tenant policies → per-tenant cache isolation.
+- **Raw-SQL allowlist for embeds.** Embed-kind tokens CANNOT run arbitrary SQL — they must reference a server-registered `query_id` (registry SQL used verbatim; `body.sql` ignored). First-party (access) tokens keep raw-SQL access.
+- **Scopes.** First-party tokens default to `read:*`; embed tokens must carry a read scope (`read:query`, `read:*`, `read:dashboard:*`).
+
+## Reference
+
+- [DashboardSpec reference](/docs/dashboard-spec-reference.md) — single-file spec structure, authoring conventions, and complete valid example specs (one per widget type, cascading filters, tabs). Paste into context.
+- `GET /api/v1/ai/dashboard/schema` — authoritative machine-readable schema; always cross-check field names against it.
+- OpenAPI: `GET /openapi.json` (interactive `/docs`, `/redoc` outside production).

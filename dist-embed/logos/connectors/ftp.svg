@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg width="256" height="256" viewBox="0 0 256 256" version="1.1" xmlns="http://www.w3.org/2000/svg">
+  <title>FTP — file transfer</title>
+  <rect x="0" y="0" width="256" height="256" rx="48" fill="#6B7280"/>
+  <path d="M48 84a16 16 0 0 1 16-16h36l16 20h76a16 16 0 0 1 16 16v60a16 16 0 0 1-16 16H64a16 16 0 0 1-16-16V84Z" fill="#FFFFFF" opacity="0.92"/>
+  <path d="M96 128h64m0 0-22-22m22 22-22 22" stroke="#6B7280" stroke-width="11" stroke-linecap="round" stroke-linejoin="round" fill="none"/>
+</svg>
