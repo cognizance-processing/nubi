@@ -18,9 +18,10 @@
 </p>
 
 <p align="center">
-  <a href="docs/cache-key-spec.md">Docs</a> ·
+  <a href="docs/index.md">Docs</a> ·
   <a href="ROADMAP.md#2-positioning">Compare vs Hex/Cube</a> ·
   <a href="#-quickstart">Quickstart</a> ·
+  <a href="#-architecture">Architecture</a> ·
   <a href="ROADMAP.md">Roadmap</a>
 </p>
 
@@ -152,45 +153,54 @@ cd backend && DATABASE_URL=postgresql://user:pass@host/db python seed.py
 
 ## 🏗️ Architecture
 
-```
-                     ┌──────────────────────────────────────────────┐
-                     │               Browser / Host page            │
-                     │                                              │
-                     │  <nubi-dashboard>  ←──  getToken()           │
-                     │  <nubi-kpi> <nubi-table> <nubi-chart>        │
-                     │  DuckDB-WASM  ←── Arrow IPC (streaming)      │
-                     │  regl WebGL scatter (>20k rows auto-switch)  │
-                     └─────────────────┬────────────────────────────┘
-                                       │ HTTPS / JWT
-                     ┌─────────────────▼────────────────────────────┐
-                     │            FastAPI backend                   │
-                     │                                              │
-                     │  /auth/*     email+pw / Google OAuth / JWKS  │
-                     │  /query      planner → cache → executor      │
-                     │  /compute/run  kernel router                 │
-                     │  /ai/*       grounding + dashboard gen       │
-                     │  /lineage    SQL lineage graph               │
-                     │  /jobs       cron + interval scheduler       │
-                     │  REST CRUD   datastores/boards/queries/…     │
-                     └────┬──────────────────────┬──────────────────┘
-                          │                      │
-          ┌───────────────▼──────┐  ┌────────────▼───────────────────┐
-          │  Postgres / Neon     │  │  Connector registry            │
-          │  (asyncpg, SSL)      │  │  postgres  (ADBC, native Arrow)│
-          └──────────────────────┘  │  duckdb    (in-mem + file)     │
-                                    │  http_json (post-fetch RLS)    │
-                                    │  mysql · mariadb · jdbc (opt)  │
-                                    │  + VPC bridge transport        │
-                                    └────────────┬───────────────────┘
-                                                 │ Arrow IPC
-                          ┌──────────────────────▼────────────────┐
-                          │  Content-addressed cache (LRU + TTL)  │
-                          │  X-Nubi-Cache: HIT | MISS header      │
-                          └───────────────────────────────────────┘
+```mermaid
+flowchart TD
+    subgraph Browser["Browser / host page"]
+        direction TB
+        DASH["&lt;nubi-dashboard&gt; + widgets<br/>kpi · table · chart"]
+        WASM["DuckDB-WASM kernel<br/>regl WebGL above ~20k rows"]
+        DASH --- WASM
+    end
 
- Compute kernel (first-party only — embed tokens → 403):
-   LocalSubprocessRunner  (dev; KERNEL_LOCAL_ENABLED=true, ENV!=production)
-   E2BRunner / ModalRunner (prod; Firecracker microVM, no host network/secrets)
+    subgraph Backend["FastAPI backend · HTTPS / JWT"]
+        direction TB
+        AUTH["/auth — email+pw · Google OAuth · JWKS"]
+        QUERY["/query — planner → cache → executor"]
+        PLANNER["Query planner<br/>sqlglot AST → PhysicalPlan · RLS predicates"]
+        CACHE["Content-hashed cache · LRU + TTL<br/>X-Nubi-Cache: HIT | MISS"]
+        REG["Connector registry"]
+        EXTRA["/ai · /lineage · /jobs · REST CRUD"]
+        COMPUTE["/compute/run — kernel router"]
+        QUERY --> PLANNER --> CACHE --> REG
+    end
+
+    subgraph Sources["Data sources"]
+        direction TB
+        WH["Warehouses<br/>postgres (ADBC) · duckdb · http_json<br/>mysql · snowflake · bigquery"]
+        VPC["VPC bridge<br/>WebSocket tunnel"]
+        META["App metadata DB<br/>Postgres / Neon · asyncpg, SSL"]
+    end
+
+    subgraph Kernel["Compute kernel · first-party only · embed → 403"]
+        direction TB
+        LOCAL["LocalSubprocessRunner (dev)"]
+        PROD["E2BRunner / ModalRunner<br/>Firecracker microVM"]
+    end
+
+    DASH -- "getToken()" --> AUTH
+    DASH -- "HTTPS + JWT" --> QUERY
+    DASH -.-> EXTRA
+    QUERY -- "Arrow IPC" --> WASM
+    COMPUTE --> LOCAL
+    COMPUTE --> PROD
+    REG -- "Arrow IPC" --> WH
+    REG --> VPC --> WH
+    REG --> META
+
+    classDef browser fill:#eef6ff,stroke:#3b82f6,color:#0b3a82;
+    classDef secure fill:#fef3f2,stroke:#ef4444,color:#7a1d12;
+    class Browser browser;
+    class Kernel secure;
 ```
 
 ### Tech stack
@@ -355,10 +365,24 @@ The backend conformance suite (`backend/tests/conformance/`) asserts the planner
 
 ## 📖 Documentation
 
-- [`docs/cache-key-spec.md`](docs/cache-key-spec.md) — Frozen cache-key spec and test vectors (language-neutral)
-- [`docs/conformance.md`](docs/conformance.md) — Conformance suite documentation
-- [`docs/kernel-security.md`](docs/kernel-security.md) — Kernel security model: local vs remote
-- [`ROADMAP.md`](ROADMAP.md) — Full product strategy, positioning vs Hex/Cube, milestone sequence, Rust→WASM carve-out design
+Full documentation lives in [`docs/`](docs/index.md) — **start at the [documentation index](docs/index.md)**. Highlights:
+
+**Using Nubi**
+- [Getting started](docs/getting-started.md) · [UI tour](docs/ui-tour.md)
+- [Connectors](docs/connectors.md) · [Queries & parameters](docs/queries-and-params.md) · [Pre-aggregations](docs/pre-aggregations.md)
+- [Dashboards](docs/dashboards.md) · [Dashboard spec reference](docs/dashboard-spec-reference.md) · [Exports & scheduled reports](docs/exports-and-jobs.md)
+- [Flows](docs/flows.md) · [Notebooks](docs/notebooks.md) · [AI, chat & MCP](docs/ai-and-mcp.md)
+- [Embedding](docs/embedding.md) · [Organization & settings](docs/organization-settings.md)
+
+**Platform & security**
+- [Self-host](docs/self-host.md) · [Open core](docs/open-core.md) · [Open-core architecture](docs/architecture-open-core.md)
+- [Kernel security](docs/kernel-security.md) · [Connector security](docs/connector-security.md) · [Secrets](docs/secrets.md)
+- [Cache-key spec](docs/cache-key-spec.md) · [Conformance](docs/conformance.md) · [Bridges](docs/bridges.md) · [Lakehouse](docs/lakehouse.md)
+
+**Build & contribute**
+- [SDK & CLI](docs/sdk-and-cli.md) · [Files-as-code](docs/files-as-code.md) · [Git sync](docs/git-sync.md)
+- [Developing Nubi](docs/development.md) · [Docs & screenshots](docs/docs-and-screenshots.md)
+- [`ROADMAP.md`](ROADMAP.md) — product strategy, positioning vs Hex/Cube, milestone sequence, Rust→WASM carve-out
 
 ---
 
