@@ -11,6 +11,10 @@
       name="description"
       content="Nubi is open-source business intelligence with a DuckDB-WASM kernel in the browser: zero cold starts, ≈$0 per dashboard view, unlimited viewers on every plan. SQL + Python flows, embedded analytics, 25+ connectors, self-hostable."
     />
+    <meta
+      name="keywords"
+      content="open-source BI, business intelligence, DuckDB-WASM, in-browser analytics, embedded analytics, embedded dashboards, SQL dashboards, data visualization, self-hosted BI, Looker alternative, Metabase alternative, Tableau alternative, Power BI alternative, row-level security, JWT RLS, SQL and Python flows, data orchestration, data connectors, BigQuery, Snowflake, Redshift, Postgres, ClickHouse, Apache Arrow, AI text-to-SQL, unlimited viewers, Apache-2.0"
+    />
     <link rel="canonical" href="https://nubi.fly.dev/" />
     <meta name="robots" content="index, follow" />
     <meta name="theme-color" content="#f8fafc" media="(prefers-color-scheme: light)" />
@@ -58,6 +62,50 @@
         },
         "softwareHelp": "https://nubi.fly.dev/docs",
         "license": "https://www.apache.org/licenses/LICENSE-2.0"
+      }
+    </script>
+
+    <!-- FAQ structured data — eligible for rich results; answers stay honest
+         about how the product actually works (embedding uses registered
+         queries / saved dashboards, not arbitrary raw SQL). -->
+    <script type="application/ld+json">
+      {
+        "@context": "https://schema.org",
+        "@type": "FAQPage",
+        "mainEntity": [
+          {
+            "@type": "Question",
+            "name": "Is Nubi really free for unlimited dashboard viewers?",
+            "acceptedAnswer": {
+              "@type": "Answer",
+              "text": "Yes. Every plan, including the free tier, allows unlimited viewers and seats. The DuckDB-WASM kernel runs in each viewer's browser tab, so a dashboard view costs essentially nothing — there is no per-viewer or per-seat charge."
+            }
+          },
+          {
+            "@type": "Question",
+            "name": "How does embedded analytics work in Nubi?",
+            "acceptedAnswer": {
+              "@type": "Answer",
+              "text": "Drop the <nubi-dashboard> web component into your app and point it at a saved dashboard or a registered query. Your backend signs a short-lived JWT carrying per-viewer row-level-security claims; Nubi injects those predicates into the SQL AST before any data leaves the connector. Embedded tokens reference registered queries — arbitrary raw SQL is intentionally not permitted on the embed path for security."
+            }
+          },
+          {
+            "@type": "Question",
+            "name": "Can I self-host Nubi?",
+            "acceptedAnswer": {
+              "@type": "Answer",
+              "text": "Yes. Nubi's core is open source under Apache-2.0 and can be self-hosted, including running connectors inside your own VPC so warehouse credentials never leave your network."
+            }
+          },
+          {
+            "@type": "Question",
+            "name": "Which data sources does Nubi connect to?",
+            "acceptedAnswer": {
+              "@type": "Answer",
+              "text": "Nubi ships 25+ connectors out of the box — including BigQuery, Snowflake, Redshift, Postgres, and ClickHouse — plus a Python connector SDK that wraps any Arrow-returning function as a first-class, fail-closed source."
+            }
+          }
+        ]
       }
     </script>
 

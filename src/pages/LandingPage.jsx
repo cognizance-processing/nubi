@@ -379,11 +379,11 @@ const DECISIONS = [
     body: (
       <>
         A dashboard is <B>sanitized HTML with declarative &lt;nubi-*&gt; elements</B> — a
-        format LLMs author natively, grounded on your real schema. <B>Six MCP tools</B>{' '}
+        format LLMs author natively, grounded on your real schema. <B>Nine MCP tools</B>{' '}
         build and iterate end-to-end.
       </>
     ),
-    chip: 'author_dashboard · run_query · 4 more',
+    chip: 'run_query · create_dashboard · 7 more',
   },
   {
     id: 'connectors', index: '06', tag: 'extensibility', icon: Code2, accent: '#0ea5e9',
@@ -534,7 +534,7 @@ const HIW_STEPS = [
       { label: 'BigQuery' }, { label: 'Snowflake' }, { label: 'Postgres' },
       { label: 'Python SDK', accent: true }, { label: 'Private VPC bridge', accent: true },
     ],
-    code: 'nubi deploy ./resources --dry-run', lang: 'shell', file: 'terminal',
+    code: 'nubi push ./resources --dry-run', lang: 'shell', file: 'terminal',
   },
   {
     num: '02', title: 'Query', icon: SearchCode,
@@ -542,7 +542,7 @@ const HIW_STEPS = [
     tagline: 'SQL, named params, and AI text-to-SQL — all in the browser.',
     bullets: [
       { icon: Database, text: "DuckDB-WASM kernel runs in the user's tab — zero cold starts, zero per-session cloud cost. Results stream as Arrow IPC." },
-      { icon: Sparkles, text: 'AI text-to-SQL grounded on your actual catalog and lineage graph — not hallucinated schemas. Six MCP tools for agent authoring.' },
+      { icon: Sparkles, text: 'AI text-to-SQL grounded on your actual catalog and lineage graph — not hallucinated schemas. Nine MCP tools for agent authoring.' },
       { icon: SearchCode, text: 'Named-parameter registered queries keep your SQL versioned and reusable. The planner pushes predicates and projections to the warehouse.' },
       { icon: Globe, text: 'Content-hashed edge cache: 500 viewers of the same dashboard collapse to 1 warehouse hit. Auto pre-aggregation mines query logs for rollups.' },
     ],
@@ -566,7 +566,7 @@ const HIW_STEPS = [
       { label: 'JWT RLS', accent: true }, { label: 'AST predicate inject', accent: true },
       { label: 'Token-locked params' }, { label: 'Cross-filter dashboards' }, { label: 'Web component' },
     ],
-    code: '<nubi-dashboard query="SELECT * FROM sales"\n  get-token="getEmbedToken">', lang: 'html', file: 'app.html',
+    code: '<nubi-dashboard\n  dashboard-id="revenue-overview"\n  get-token="getEmbedToken"\n  backend="https://api.nubi.dev">', lang: 'html', file: 'app.html',
   },
 ]
 
@@ -2010,7 +2010,7 @@ export default function LandingPage() {
                     dim: 'LLM / MCP authoring',
                     hex: false,
                     cube: false,
-                    nubi: 'MCP server · 6 tools · LLM-authorable HTML dashboards',
+                    nubi: 'MCP server · 9 tools · LLM-authorable HTML dashboards',
                   },
                   {
                     dim: 'Real free tier',

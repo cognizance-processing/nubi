@@ -149,41 +149,46 @@ export function ConnectorSdkCode({ className }) {
 
 const FLOW_CODE = `from nubi.flows import flow, task
 
-@flow(schedule="0 6 * * *")     # daily 06:00
+@task(kind="query", sql="select * from orders")
+def orders(): pass
+
+@task(kind="python",
+      code="result = dedupe(inputs)")
+def clean(): pass
+
+@task(kind="materialize",
+      combine_sql="select * from clean")
+def save(): pass
+
+@flow   # deps inferred from the call graph
 def daily_rollup():
-    raw   = task.query("orders")
-    clean = task.python(dedupe, needs=[raw])
-    task.materialize(clean,
-                     table="orders_daily")`
+    save(clean(orders()))`
 
 export function FlowCode({ className }) {
   return <CodeTile filename="flows/daily_rollup.py" lang="python" code={FLOW_CODE} className={className} />
 }
 
-const EMBED_AUTH = `import { sign } from "@nubi/embed"
+const EMBED_AUTH = `// 1 — your backend mints a short-lived, per-viewer JWT.
+//     row-level-security policies ride in the claims.
+window.getEmbedToken = async () =>
+  fetch("/nubi/embed-token").then(r => r.text())
 
-// row-level security rides in the token
-const token = sign({
-  dashboard: "revenue",
-  claims: { org_id: user.orgId,
-            role: "viewer" },
-})
-// <iframe src={` + '`' + `.../e/\${token}` + '`' + `} />`
+// 2 — drop the web component in. it calls getEmbedToken
+//     before every query, refreshing before expiry:
+// <nubi-dashboard dashboard-id="revenue"
+//   get-token="getEmbedToken" backend="https://api..." />`
 
 export function EmbedAuthCode({ className }) {
   return <CodeTile filename="embed.ts" lang="js" code={EMBED_AUTH} className={className} />
 }
 
-const LLM_DASHBOARD = `<!-- authored by an agent via author_dashboard -->
-<nubi-dashboard title="Revenue">
-  <nubi-query id="rev" sql="
-    select month, sum(amount) as revenue
-    from orders group by 1" />
-
-  <nubi-kpi query="rev" value="revenue" />
-  <nubi-chart type="area" query="rev"
+const LLM_DASHBOARD = `<!-- agent-authored dashboard -->
+<section class="grid grid-cols-2 gap-4">
+  <nubi-kpi   query-id="rev" value-col="revenue"
+              label="Revenue" format="currency" />
+  <nubi-chart query-id="rev" type="area"
               x="month" y="revenue" />
-</nubi-dashboard>`
+</section>`
 
 export function LlmDashboardCode({ className }) {
   return <CodeTile filename="dashboards/revenue.html" lang="html" code={LLM_DASHBOARD} className={className} />

@@ -67,21 +67,36 @@ function SidebarNavItem({ to, label, Icon: IconComponent, collapsed }) {
   return (
     <NavLink
       to={to}
+      aria-current={isActive ? 'page' : undefined}
+      // `relative` anchors the active rail; the focus ring is INSET so the
+      // overflow-y-auto scroll parent (which also clips overflow-x) can never
+      // slice it — the cause of the old "cut-off lines" on the top/edge items.
       className={`
-        group flex items-center gap-3 px-3 rounded-xl
-        min-h-[44px] text-sm font-medium
-        transition-all duration-150
-        focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-1
-        ${collapsed ? 'justify-center w-11 mx-auto' : 'w-full'}
+        group relative flex items-center gap-3 px-3 rounded-lg
+        min-h-[40px] text-sm font-medium
+        outline-none transition-[color,background-color] duration-150
+        focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring
+        ${collapsed ? 'justify-center w-10 mx-auto' : 'w-full'}
         ${
           isActive
             ? 'bg-primary/10 text-primary dark:bg-primary/15'
-            : 'text-muted hover:text-fg hover:bg-surface-2'
+            : 'text-muted hover:text-fg hover:bg-surface-2/70'
         }
       `}
       title={collapsed ? label : undefined}
       aria-label={label}
     >
+      {/* Active rail — a vertical accent bar pinned inside the left edge. Sits
+          inside the rounded pill so nothing overhangs the clipping scroll area;
+          animates in/out so switching routes feels intentional, not jumpy. */}
+      <span
+        aria-hidden="true"
+        className={`
+          absolute left-[3px] top-1/2 -translate-y-1/2 w-[3px] rounded-full bg-primary
+          transition-all duration-200 ease-out
+          ${isActive && !collapsed ? 'h-5 opacity-100' : 'h-0 opacity-0'}
+        `}
+      />
       <NavItemIcon
         size={18}
         strokeWidth={isActive ? 2.2 : 1.8}
@@ -89,10 +104,6 @@ function SidebarNavItem({ to, label, Icon: IconComponent, collapsed }) {
       />
       {!collapsed && (
         <span className="truncate leading-none">{label}</span>
-      )}
-      {/* Active indicator bar */}
-      {isActive && !collapsed && (
-        <span className="ml-auto block w-1.5 h-1.5 rounded-full bg-primary shrink-0" />
       )}
     </NavLink>
   )
@@ -154,7 +165,7 @@ function SidebarContent({ collapsed, showToggle = true }) {
       {/* Nav items — scroll internally so a long list never clips the pinned
           Settings/Docs nav below (selectors stay pinned above). */}
       <nav
-        className={`flex flex-col gap-0.5 flex-1 min-h-0 overflow-y-auto ${collapsed ? 'items-center px-1' : 'px-2'}`}
+        className={`nubi-sidebar-scroll flex flex-col gap-1 flex-1 min-h-0 overflow-y-auto py-1 ${collapsed ? 'items-center px-1.5' : 'px-2'}`}
         aria-label="App navigation"
       >
         {NAV_ITEMS.map(({ label, to, Icon }) => (
@@ -179,7 +190,7 @@ function SidebarContent({ collapsed, showToggle = true }) {
 
       {/* Secondary nav — pinned below the primary nav */}
       <nav
-        className={`flex flex-col gap-0.5 mt-1 pt-2 border-t border-border ${collapsed ? 'items-center px-1' : 'px-2'}`}
+        className={`flex flex-col gap-1 mt-1 pt-2 border-t border-border ${collapsed ? 'items-center px-1.5' : 'px-2'}`}
         aria-label="Settings navigation"
       >
         {/* Docs — public documentation, available to every user */}

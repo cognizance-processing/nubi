@@ -107,6 +107,37 @@
   }
 }
 
+/* ── Sidebar scroll area (src/components/app/AppSidebar.jsx) ───────────────────
+   A quiet, thin scrollbar that only paints on hover, so the nav list scrolls
+   when the link set outgrows the rail without a chunky OS scrollbar cutting
+   into the rounded nav pills. Firefox + WebKit/Blink both covered. */
+.nubi-sidebar-scroll {
+  scrollbar-width: thin;
+  scrollbar-color: transparent transparent;
+  scrollbar-gutter: stable;
+}
+.nubi-sidebar-scroll:hover {
+  scrollbar-color: var(--border) transparent;
+}
+.nubi-sidebar-scroll::-webkit-scrollbar {
+  width: 8px;
+}
+.nubi-sidebar-scroll::-webkit-scrollbar-track {
+  background: transparent;
+}
+.nubi-sidebar-scroll::-webkit-scrollbar-thumb {
+  background-color: transparent;
+  border: 2px solid transparent;
+  border-radius: 9999px;
+  background-clip: content-box;
+}
+.nubi-sidebar-scroll:hover::-webkit-scrollbar-thumb {
+  background-color: var(--border);
+}
+.nubi-sidebar-scroll::-webkit-scrollbar-thumb:hover {
+  background-color: var(--text-muted);
+}
+
 /* ── Logo (src/components/Logo.jsx) ───────────────────────────────────────────
    Wordmark gradient per theme: the light gradient opens on brand navy, which
    disappears against dark surfaces — dark mode uses lifted stops instead

@@ -49,11 +49,11 @@ export const NUBI = {
   caching:
     "Content-hashed edge cache keyed on (serialised plan + RLS-affecting JWT claims) — N viewers of the same dashboard collapse to 1 warehouse hit. Automatic pre-aggregations mined from query log (rollup suggester + routing) extend the advantage to diverse-slice workloads.",
   embedding:
-    "Core product surface: read-only <nubi-dashboard> (iframe + web component, JWT-scoped, CSS-var theming) plus cell-level <nubi-kpi>/<nubi-table>/<nubi-chart> → scheduled PDF/CSV exports → bring-your-own-frontend (engine as library). Auth-as-code: host publishes JWKS, implements getToken(), mounts component. No separate embed SDK required.",
+    "Core product surface: read-only <nubi-dashboard> (web component, JWT-scoped, CSS-var theming) plus cell-level <nubi-kpi>/<nubi-table>/<nubi-chart> → scheduled PDF/CSV exports → bring-your-own-frontend (engine as library). Auth-as-code: host publishes JWKS, implements getToken(), mounts component. No separate embed SDK required.",
   modeling:
     "Low — point at a warehouse and go. No hand-written semantic model required to start. Auth policies live as TypeScript/SQL in the repo (diffable, PR-reviewable). SQL-first connector SDK; Python connector SDK for arbitrary Arrow-returning sources. NoSQL is deliberately out of scope.",
   ai:
-    "Lineage-indexed retrieval + LLM generation grounded on real catalog. POST /ai/ask. MCP server (6 tools): agents author dashboards via HTML/CSS + <nubi-*> custom elements. AI calls metered per-call ($0.30/call overage; quota included in each paid tier). LLM-authorable dashboard output is HTML/CSS sanitised by DOMPurify.",
+    "Lineage-indexed retrieval + LLM generation grounded on real catalog. POST /ai/ask. MCP server (9 tools): agents author dashboards via HTML/CSS + <nubi-*> custom elements. AI calls metered per-call ($0.30/call overage; quota included in each paid tier). LLM-authorable dashboard output is HTML/CSS sanitised by DOMPurify.",
   pricing:
     "Usage-based: connector throughput (bytes/queries) + embedded sessions (per 10,000) + AI calls (per-call) + on-demand kernel time (scale-to-zero) + flows/scheduled jobs included in plan (no separate SKU). Genuine free tier structurally viable — browser compute is free to Nubi, so Hex can't match it without bleeding kernel cost. Billed in ZAR via Paystack.",
   selfHost:

@@ -626,12 +626,19 @@ async def list_columns(
     writable = False
     primary_key: list[str] = []
     from app.routes.connectors import DEMO_CONNECTOR_ID as _DEMO_CONNECTOR_ID
-    if datastore_id != _DEMO_CONNECTOR_ID:
+    cfg = (
+        await _datastore_cfg(datastore_id, user, repo)
+        if datastore_id != _DEMO_CONNECTOR_ID
+        else None
+    )
+    # A user-set read-only connector is never editable in the data grid — report
+    # writable=False up front so no edit affordances show (the write path also
+    # gates on this, but the UI should reflect it before a write is attempted).
+    read_only = bool(cfg and cfg.get("read_only"))
+    if datastore_id != _DEMO_CONNECTOR_ID and not read_only:
         writable, primary_key = _writable_meta_duckdb(connector, table)
-        if not writable:
-            cfg = await _datastore_cfg(datastore_id, user, repo)
-            if cfg is not None and _is_editable_parquet_cfg(cfg):
-                writable, primary_key = _parquet_writable_meta(connector, table)
+        if not writable and cfg is not None and _is_editable_parquet_cfg(cfg):
+            writable, primary_key = _parquet_writable_meta(connector, table)
     # Mark the synthetic _row_id column as non-editable so the grid hides /
     # locks it (it is server-managed row identity, not user data).
     if _PARQUET_ROW_ID in primary_key:
