@@ -218,7 +218,7 @@ function StatusHeader({ loading, error, status, onRetry }) {
 // GitSyncPanel — main export
 // ---------------------------------------------------------------------------
 
-export default function GitSyncPanel({ projectId, open, onClose, envId }) {
+export default function GitSyncPanel({ projectId, open, onClose, envId, embedded = false }) {
   const { env, refreshEnvs } = useActiveEnv(envId)
 
   const [view, setView] = useState('sync') // 'sync' | 'files'
@@ -314,19 +314,23 @@ export default function GitSyncPanel({ projectId, open, onClose, envId }) {
 
   return (
     <>
-      {/* Backdrop */}
-      <div
-        className="fixed inset-0 z-[55] bg-black/40 backdrop-blur-[1px]"
-        onClick={busy ? undefined : onClose}
-        aria-hidden="true"
-      />
+      {/* Backdrop — overlay mode only (embedded lives inside the shared sidebar) */}
+      {!embedded && (
+        <div
+          className="fixed inset-0 z-[55] bg-black/40 backdrop-blur-[1px]"
+          onClick={busy ? undefined : onClose}
+          aria-hidden="true"
+        />
+      )}
 
-      {/* Slide-in panel */}
+      {/* Panel — embedded fills the shared RHS sidebar; otherwise a fixed slide-over */}
       <aside
         role="dialog"
-        aria-modal="true"
+        aria-modal={embedded ? undefined : 'true'}
         aria-labelledby="git-sync-panel-title"
-        className="fixed inset-y-0 right-0 z-[55] w-full max-w-md bg-surface border-l border-border shadow-2xl flex flex-col"
+        className={embedded
+          ? 'flex h-full w-full flex-col bg-surface'
+          : 'fixed inset-y-0 right-0 z-[55] w-full max-w-md bg-surface border-l border-border shadow-2xl flex flex-col'}
       >
         {/* Header */}
         <div className="flex items-center gap-3 px-5 py-4 border-b border-border shrink-0">

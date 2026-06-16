@@ -6,23 +6,27 @@
  *   ┌────────────────────────────────────────────────────────────┐
  *   │  [sidebar]  │  [topbar … page toolbar …  🔔 ⑂ 💬 │ avatar] │
  *   │             ├──────────────────────────────────────────────┤
- *   │             │  <Outlet/> (main content)         │ [chat]   │
+ *   │             │  <Outlet/> (main content)         │ [panel]  │
  *   └────────────────────────────────────────────────────────────┘
  *
  * The global panel switcher (Notifications / Git / Chat) lives in the topbar's
- * right zone (AppTopbar → TopbarActions) — one consistent home on every page,
- * at every breakpoint. The panels it toggles slide in from the right edge:
- * Chat as an in-flow 340px aside (full-screen overlay on mobile); Git and
- * Notifications as fixed slide-overs (full-width on mobile, max-w-md desktop).
+ * right zone (AppTopbar → TopbarActions). All three share ONE collapsible
+ * right-hand sidebar — a single slot, one panel open at a time, one consistent
+ * collapse system (the same in-flow aside Chat has always used, and the same
+ * pattern the dashboard editor / flows page use for their own RHS panels).
+ * Toggling the active panel collapses the sidebar; opening another switches it.
  *
- * Mobile:
- *   - Sidebar becomes an off-canvas drawer (hamburger in topbar)
- *   - Chat panel becomes a full-screen overlay
+ * Desktop: the sidebar is an in-flow aside that pushes content and collapses to
+ * zero width. Mobile: it becomes a full-screen overlay.
+ *
+ * NotificationCenter stays mounted whenever the shell is (even while collapsed)
+ * so it keeps polling the unread-count badge; it only renders its panel when it
+ * is the active panel.
  *
  * Wrapped by UiProvider + OrgProvider (injected in App.jsx routing tree).
  */
 
-import { useState, useEffect, lazy, Suspense } from 'react'
+import { useState, useEffect, useCallback, lazy, Suspense } from 'react'
 import { Outlet } from 'react-router-dom'
 import { useUi } from '../contexts/UiContext.jsx'
 import { useProject } from '../contexts/ProjectContext.jsx'
@@ -38,70 +42,10 @@ const GitSyncPanel = lazy(() =>
   import('../components/app/GitSyncPanel.jsx').catch(() => ({ default: () => null }))
 )
 
-// ---------------------------------------------------------------------------
-// GitSyncPanel wrapper — desktop slide-in aside (mirrors ChatPanelWrapper).
-// ---------------------------------------------------------------------------
-
-function GitPanelWrapper({ projectId, open, onClose }) {
-  // GitSyncPanel is a self-contained slide-over (its own fixed backdrop + aside,
-  // responsive for mobile and desktop), so we mount it once and let it own its
-  // own presentation — no extra wrapping aside/overlay here.
-  return (
-    <Suspense fallback={null}>
-      <GitSyncPanel projectId={projectId} open={open} onClose={onClose} />
-    </Suspense>
-  )
-}
-
-// ---------------------------------------------------------------------------
-// Chat panel wrapper — desktop slide-in OR mobile full-screen overlay
-// Suppressed entirely when a page (e.g. the dashboard editor) owns chat.
-// ---------------------------------------------------------------------------
-
-function ChatPanelWrapper() {
-  const { chatOpen, closeChat, pageOwnsChat } = useUi()
-
-  // Force-close the global chat if a page takes ownership.
-  useEffect(() => {
-    if (pageOwnsChat && chatOpen) {
-      closeChat()
-    }
-  }, [pageOwnsChat, chatOpen, closeChat])
-
-  // When the editor (or any page) owns chat, don't render the global panel at all.
-  if (pageOwnsChat) return null
-
-  return (
-    <>
-      {/* Mobile overlay */}
-      {chatOpen && (
-        <div className="
-          md:hidden fixed inset-0 z-50
-          bg-surface flex flex-col
-        ">
-          <ChatPanel onClose={closeChat} />
-        </div>
-      )}
-
-      {/* Desktop slide-in panel */}
-      <aside
-        className={`
-          hidden md:flex flex-col shrink-0
-          border-l border-border bg-surface
-          transition-all duration-250 ease-in-out overflow-hidden
-          ${chatOpen ? 'w-[340px]' : 'w-0'}
-        `}
-        aria-label="AI chat panel"
-        aria-hidden={!chatOpen}
-        inert={!chatOpen ? '' : undefined}
-      >
-        <div className="w-[340px] h-full flex flex-col">
-          <ChatPanel onClose={closeChat} />
-        </div>
-      </aside>
-    </>
-  )
-}
+// Width of the shared RHS sidebar (desktop) is a literal `md:w-[380px]` below —
+// Tailwind's JIT only generates classes it can see as complete strings, so the
+// width must not be interpolated. One value for every panel so switching
+// between Notifications / Git / Chat never resizes the sidebar.
 
 // ---------------------------------------------------------------------------
 // AppShell
@@ -113,40 +57,67 @@ export default function AppShell() {
   const [notifOpen, setNotifOpen] = useState(false)
   const [unreadCount, setUnreadCount] = useState(0)
 
-  // Shell-level RHS panels are surfaced through the persistent right-edge rail.
-  const { chatOpen, toggleChat, pageOwnsChat } = useUi()
+  const { chatOpen, openChat, closeChat, pageOwnsChat } = useUi()
 
   // Read the active project so we can pass its id to GitSyncPanel.
-  // useProject() is safe here because AppShell is mounted inside ProjectProvider.
   const { activeProject } = useProject()
   const projectId = activeProject?.id ?? null
 
-  // The global panel switcher items, rendered in the topbar's right zone
-  // (AppTopbar → TopbarActions) on every authed page at every breakpoint.
-  // Chat is dropped when a page owns chat itself (e.g. the dashboard editor
-  // mounts its own chat UI) via the `hidden` flag.
+  // The single active RHS panel (mutually exclusive). Chat is suppressed when a
+  // page owns its own chat UI (e.g. the dashboard editor).
+  const activePanel =
+    gitOpen ? 'git'
+    : notifOpen ? 'notifications'
+    : (chatOpen && !pageOwnsChat) ? 'chat'
+    : null
+
+  // If a page takes over chat while the global chat is open, close it.
+  useEffect(() => {
+    if (pageOwnsChat && chatOpen) closeChat()
+  }, [pageOwnsChat, chatOpen, closeChat])
+
+  const collapseAll = useCallback(() => {
+    setGitOpen(false)
+    setNotifOpen(false)
+    closeChat()
+  }, [closeChat])
+
+  // Open one panel exclusively, or collapse the sidebar if it's already active.
+  const togglePanel = useCallback((which) => {
+    const isActive =
+      (which === 'git' && gitOpen) ||
+      (which === 'notifications' && notifOpen) ||
+      (which === 'chat' && chatOpen)
+    setGitOpen(which === 'git' && !isActive)
+    setNotifOpen(which === 'notifications' && !isActive)
+    if (which === 'chat' && !isActive) openChat()
+    else closeChat()
+  }, [gitOpen, notifOpen, chatOpen, openChat, closeChat])
+
+  // Topbar switcher items — the single home for the shell RHS panels, on every
+  // authed page at every breakpoint. Chat hides when a page owns chat itself.
   const railItems = [
     {
       id: 'notifications',
       Icon: Bell,
       label: 'Notifications',
-      active: notifOpen,
-      onToggle: () => setNotifOpen(v => !v),
+      active: activePanel === 'notifications',
+      onToggle: () => togglePanel('notifications'),
       badge: unreadCount,
     },
     {
       id: 'git',
       Icon: GitBranch,
       label: 'Git / Versions',
-      active: gitOpen,
-      onToggle: () => setGitOpen(v => !v),
+      active: activePanel === 'git',
+      onToggle: () => togglePanel('git'),
     },
     {
       id: 'chat',
       Icon: MessageSquare,
       label: 'AI Chat',
-      active: chatOpen,
-      onToggle: toggleChat,
+      active: activePanel === 'chat',
+      onToggle: () => togglePanel('chat'),
       hidden: pageOwnsChat,
     },
   ]
@@ -169,7 +140,7 @@ export default function AppShell() {
           actions={railItems}
         />
 
-        {/* Content area + chat panel + git panel + persistent rail side-by-side */}
+        {/* Content + the shared RHS sidebar, side by side */}
         <div className="flex flex-1 min-h-0 overflow-hidden">
           {/* Page content */}
           <main
@@ -179,24 +150,42 @@ export default function AppShell() {
             <Outlet />
           </main>
 
-          {/* Chat panel */}
-          <ChatPanelWrapper />
+          {/* ── Shared RHS sidebar — Notifications / Git / Chat ──────────────
+              One slot, one panel at a time, one collapse system. Desktop: an
+              in-flow aside that pushes content and collapses to zero width.
+              Mobile: a full-screen overlay. NotificationCenter stays mounted
+              (it polls the unread badge); it only shows its panel when active. */}
+          <aside
+            aria-label="Side panel"
+            aria-hidden={!activePanel}
+            inert={!activePanel ? '' : undefined}
+            className={[
+              'flex flex-col bg-surface shrink-0',
+              'md:border-l md:border-border md:transition-[width] md:duration-[250ms] md:ease-in-out md:overflow-hidden',
+              activePanel
+                ? 'fixed inset-0 z-50 md:static md:z-auto md:w-[380px]'
+                : 'hidden md:flex md:w-0',
+            ].join(' ')}
+          >
+            <div className="w-full md:w-[380px] h-full flex flex-col">
+              {activePanel === 'chat' && <ChatPanel onClose={collapseAll} />}
 
-          {/* Git sync panel — project-scoped, available on all authed pages */}
-          <GitPanelWrapper
-            projectId={projectId}
-            open={gitOpen}
-            onClose={() => setGitOpen(false)}
-          />
+              {activePanel === 'git' && (
+                <Suspense fallback={null}>
+                  <GitSyncPanel embedded open projectId={projectId} onClose={collapseAll} />
+                </Suspense>
+              )}
 
-          {/* Notification center — feed slide-over + unread-count polling.
-              Mounted once; reports its unread count up to the rail badge and
-              keeps polling (paused while hidden) even when the panel is shut. */}
-          <NotificationCenter
-            open={notifOpen}
-            onClose={() => setNotifOpen(false)}
-            onCount={setUnreadCount}
-          />
+              {/* Always mounted: keeps polling the unread-count badge even while
+                  collapsed. Renders its panel only when it is the active panel. */}
+              <NotificationCenter
+                embedded
+                open={activePanel === 'notifications'}
+                onClose={collapseAll}
+                onCount={setUnreadCount}
+              />
+            </div>
+          </aside>
         </div>
       </div>
     </div>

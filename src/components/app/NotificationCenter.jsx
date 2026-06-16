@@ -249,7 +249,7 @@ function NotificationItem({ n, onMarkRead, onNavigate }) {
 // The slide-over panel
 // ---------------------------------------------------------------------------
 
-function NotificationPanel({ open, onClose, items, loading, onMarkRead, onMarkAll, onNavigate }) {
+function NotificationPanel({ open, onClose, items, loading, onMarkRead, onMarkAll, onNavigate, embedded = false }) {
   // ESC to close.
   useEffect(() => {
     if (!open) return undefined
@@ -266,16 +266,21 @@ function NotificationPanel({ open, onClose, items, loading, onMarkRead, onMarkAl
 
   return (
     <>
-      <div
-        className="fixed inset-0 z-[55] bg-black/40 backdrop-blur-[1px]"
-        onClick={onClose}
-        aria-hidden="true"
-      />
+      {/* Backdrop — overlay mode only (embedded lives inside the shared sidebar) */}
+      {!embedded && (
+        <div
+          className="fixed inset-0 z-[55] bg-black/40 backdrop-blur-[1px]"
+          onClick={onClose}
+          aria-hidden="true"
+        />
+      )}
       <aside
         role="dialog"
-        aria-modal="true"
+        aria-modal={embedded ? undefined : 'true'}
         aria-labelledby="notif-panel-title"
-        className="fixed inset-y-0 right-0 z-[55] w-full max-w-md bg-surface border-l border-border shadow-2xl flex flex-col"
+        className={embedded
+          ? 'flex h-full w-full flex-col bg-surface'
+          : 'fixed inset-y-0 right-0 z-[55] w-full max-w-md bg-surface border-l border-border shadow-2xl flex flex-col'}
       >
         {/* Header */}
         <div className="flex items-center gap-3 px-5 py-4 border-b border-border shrink-0">
@@ -347,7 +352,7 @@ function NotificationPanel({ open, onClose, items, loading, onMarkRead, onMarkAl
  *   onCount?: (n: number) => void,   // report unread count up to the rail badge
  * }} props
  */
-export default function NotificationCenter({ open, onClose, onCount }) {
+export default function NotificationCenter({ open, onClose, onCount, embedded = false }) {
   const navigate = useNavigate()
   const [items, setItems] = useState([])
   const [loading, setLoading] = useState(false)
@@ -473,6 +478,7 @@ export default function NotificationCenter({ open, onClose, onCount }) {
       onMarkRead={handleMarkRead}
       onMarkAll={handleMarkAll}
       onNavigate={handleNavigate}
+      embedded={embedded}
     />
   )
 }
