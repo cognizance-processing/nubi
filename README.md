@@ -14,7 +14,7 @@
   <img src="https://img.shields.io/badge/PRs-welcome-blueviolet?style=flat-square" alt="PRs welcome">
   <img src="https://img.shields.io/badge/backend-Python%203.11%20%7C%20FastAPI-informational?style=flat-square" alt="Python FastAPI">
   <img src="https://img.shields.io/badge/frontend-React%2019%20%7C%20Vite-61DAFB?style=flat-square&logo=react&logoColor=white" alt="React 19 Vite">
-  <img src="https://img.shields.io/github/stars/imranparuk/nubi?style=flat-square&label=stars" alt="Stars">
+  <img src="https://img.shields.io/github/stars/nu-bi/nubi?style=flat-square&label=stars" alt="Stars">
 </p>
 
 <p align="center">
@@ -29,9 +29,9 @@
 
 <p align="center">
   <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="docs/assets/hero-dark.png">
-    <source media="(prefers-color-scheme: light)" srcset="docs/assets/hero-light.png">
-    <img src="docs/assets/hero-light.png" alt="Nubi dashboard screenshot" width="100%">
+    <source media="(prefers-color-scheme: dark)" srcset="public/docs/screenshots/queries-editor-dark.png">
+    <source media="(prefers-color-scheme: light)" srcset="public/docs/screenshots/queries-editor.png">
+    <img src="public/docs/screenshots/queries-editor.png" alt="Nubi query editor — SQL workspace with live results, query library, and one-click expose-as-metric" width="100%">
   </picture>
 </p>
 
@@ -69,6 +69,35 @@ The data plane uses **Arrow IPC at every boundary**, so data moves between wareh
 
 ---
 
+## 📸 Screenshots
+
+The hero above is the **query editor**. A few more surfaces — see the [**UI tour**](docs/ui-tour.md) for the full guided walkthrough.
+
+<table>
+  <tr>
+    <td width="50%" valign="top">
+      <a href="docs/dashboards.md"><img src="public/docs/screenshots/dashboard-editor.png" alt="Dashboard editor"></a>
+      <sub><b>Dashboard editor</b> — drag-and-drop widgets, 9 chart types, live cross-filtering</sub>
+    </td>
+    <td width="50%" valign="top">
+      <a href="docs/flows.md"><img src="public/docs/screenshots/flows-notebook.png" alt="Flows"></a>
+      <sub><b>Flows</b> — cell-based SQL/Python orchestration (notebook + canvas views)</sub>
+    </td>
+  </tr>
+  <tr>
+    <td width="50%" valign="top">
+      <a href="docs/connectors.md"><img src="public/docs/screenshots/data-browser.png" alt="Data browser"></a>
+      <sub><b>Data browser</b> — explore any connected source, edit grid-style</sub>
+    </td>
+    <td width="50%" valign="top">
+      <a href="docs/embedding.md"><img src="public/docs/screenshots/dashboard-view.png" alt="Published dashboard"></a>
+      <sub><b>Published dashboard</b> — embeddable, RLS-enforced, near-zero cost per view</sub>
+    </td>
+  </tr>
+</table>
+
+---
+
 ## 🚀 Quickstart
 
 ### Docker Compose (fastest — one command)
@@ -79,7 +108,7 @@ the `/api/v1` API on a single origin at port 8000).
 
 ```bash
 # 1. Clone and start the stack
-git clone https://github.com/imranparuk/nubi.git
+git clone https://github.com/nu-bi/nubi.git
 cd nubi
 make up          # docker compose up -d --build
 
@@ -155,52 +184,52 @@ cd backend && DATABASE_URL=postgresql://user:pass@host/db python seed.py
 
 ```mermaid
 flowchart TD
-    subgraph Browser["Browser / host page"]
-        direction TB
-        DASH["&lt;nubi-dashboard&gt; + widgets<br/>kpi · table · chart"]
-        WASM["DuckDB-WASM kernel<br/>regl WebGL above ~20k rows"]
-        DASH --- WASM
-    end
+  subgraph client["Browser / host page"]
+    direction TB
+    DASH["&lt;nubi-dashboard&gt; + widget kit<br/>kpi · table · chart · filter"]
+    WASM["DuckDB-WASM kernel<br/>regl WebGL render above ~20k rows"]
+    DASH --- WASM
+  end
 
-    subgraph Backend["FastAPI backend · HTTPS / JWT"]
-        direction TB
-        AUTH["/auth — email+pw · Google OAuth · JWKS"]
-        QUERY["/query — planner → cache → executor"]
-        PLANNER["Query planner<br/>sqlglot AST → PhysicalPlan · RLS predicates"]
-        CACHE["Content-hashed cache · LRU + TTL<br/>X-Nubi-Cache: HIT | MISS"]
-        REG["Connector registry"]
-        EXTRA["/ai · /lineage · /jobs · REST CRUD"]
-        COMPUTE["/compute/run — kernel router"]
-        QUERY --> PLANNER --> CACHE --> REG
-    end
+  subgraph api["FastAPI backend"]
+    direction TB
+    AUTH["Auth · email+pw · Google OAuth · JWKS"]
+    QUERY["/query"]
+    PLAN["Planner — sqlglot AST → PhysicalPlan<br/>injects row-level-security predicates"]
+    CACHE["Content-hashed cache<br/>X-Nubi-Cache: HIT | MISS"]
+    REG["Connector registry"]
+    SVC["/ai · /lineage · /jobs · REST CRUD"]
+    KR["/compute/run · kernel router"]
+    QUERY --> PLAN --> CACHE --> REG
+  end
 
-    subgraph Sources["Data sources"]
-        direction TB
-        WH["Warehouses<br/>postgres (ADBC) · duckdb · http_json<br/>mysql · snowflake · bigquery"]
-        VPC["VPC bridge<br/>WebSocket tunnel"]
-        META["App metadata DB<br/>Postgres / Neon · asyncpg, SSL"]
-    end
+  subgraph data["Data sources — bring your own"]
+    direction TB
+    WH["Warehouses<br/>postgres · duckdb · http_json<br/>mysql · snowflake · bigquery"]
+    BRIDGE["VPC bridge · WebSocket tunnel"]
+    META["Metadata DB<br/>Postgres / Neon"]
+  end
 
-    subgraph Kernel["Compute kernel · first-party only · embed → 403"]
-        direction TB
-        LOCAL["LocalSubprocessRunner (dev)"]
-        PROD["E2BRunner / ModalRunner<br/>Firecracker microVM"]
-    end
+  subgraph compute["Compute kernel · first-party only · embed → 403"]
+    direction TB
+    LOCAL["LocalSubprocessRunner · dev"]
+    REMOTE["E2B / Modal · Firecracker microVM"]
+  end
 
-    DASH -- "getToken()" --> AUTH
-    DASH -- "HTTPS + JWT" --> QUERY
-    DASH -.-> EXTRA
-    QUERY -- "Arrow IPC" --> WASM
-    COMPUTE --> LOCAL
-    COMPUTE --> PROD
-    REG -- "Arrow IPC" --> WH
-    REG --> VPC --> WH
-    REG --> META
+  DASH -->|"getToken() → JWT"| AUTH
+  DASH -->|"HTTPS"| QUERY
+  DASH -.-> SVC
+  CACHE -->|"Arrow IPC stream"| WASM
+  REG -->|"Arrow IPC"| WH
+  REG --> BRIDGE --> WH
+  REG --> META
+  KR --> LOCAL
+  KR --> REMOTE
 
-    classDef browser fill:#eef6ff,stroke:#3b82f6,color:#0b3a82;
-    classDef secure fill:#fef3f2,stroke:#ef4444,color:#7a1d12;
-    class Browser browser;
-    class Kernel secure;
+  classDef client fill:#eff6ff,stroke:#3b82f6,color:#1e3a8a;
+  classDef secure fill:#fef2f2,stroke:#ef4444,color:#991b1b;
+  class client client;
+  class compute secure;
 ```
 
 ### Tech stack
