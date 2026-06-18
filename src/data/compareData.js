@@ -57,11 +57,11 @@ export const NUBI = {
   pricing:
     "Usage-based: connector throughput (bytes/queries) + embedded sessions (per 10,000) + AI calls (per-call) + on-demand kernel time (scale-to-zero) + flows/scheduled jobs included in plan (no separate SKU). Genuine free tier structurally viable — browser compute is free to Nubi, so Hex can't match it without bleeding kernel cost. Billed in ZAR via Paystack.",
   selfHost:
-    "Planned (M10 — Docker Compose stack, not yet shipped). Intermediate today: hosted control plane + self-hosted connector so warehouse credentials never leave the customer's network.",
+    "Yes — Docker Compose stack ships in the repo. Self-host the full stack (Postgres + MinIO + backend + frontend) or use hosted cloud with a self-hosted connector so warehouse credentials never leave the customer's network.",
   strength:
     "Near-zero marginal cost per embedded view at high cache-hit rates (compute is the user's browser). Arrow IPC + ECharts canvas rendering keeps large result sets fast in the browser. Auto pre-aggregations replicate Cube's core weapon without requiring a hand-written semantic model. Auth-as-code with JWT/JWKS is structurally simpler than bolt-on embed SDKs.",
   limitation:
-    "Cost advantage is real only at high cache-hit / pre-aggregation rates — 500 analysts each slicing differently reverts to warehouse scans. Browser memory cap (~4 GB) requires aggressive pushdown. The browser only runs SQL (DuckDB-WASM), so Python and native-wheel workloads route to the on-demand server kernel — a launch requirement for those, not optional. NoSQL deliberately out of scope. M10 self-host stack not yet shipped.",
+    "Cost advantage is real only at high cache-hit / pre-aggregation rates — 500 analysts each slicing differently reverts to warehouse scans. Browser memory cap (~4 GB) requires aggressive pushdown. The browser only runs SQL (DuckDB-WASM), so Python and native-wheel workloads route to the on-demand server kernel — a launch requirement for those, not optional. NoSQL deliberately out of scope.",
 };
 
 // ---------------------------------------------------------------------------
@@ -487,7 +487,7 @@ export const MATRIX = {
     "Preset / Superset": "Superset: free OSS; Preset: Starter free (5 users); Pro $20/user/month; embed viewers from $500/month/50",
   },
   selfHost: {
-    Nubi:    "Planned — M10 Docker Compose stack not yet shipped; intermediate: hosted control plane + self-hosted connector (warehouse creds never leave customer network)",
+    Nubi:    "Yes — Docker Compose stack ships in the repo (Postgres + MinIO + backend + frontend); self-hosted connector also available so warehouse creds never leave customer network",
     Hex:     "No — cloud-only SaaS",
     Cube:    "Yes — Cube Core open source (MIT); production requires Redis + Cube Store cluster",
     Metabase:"Yes — OSS free (AGPL v3); Pro self-hosted same license fee as cloud",

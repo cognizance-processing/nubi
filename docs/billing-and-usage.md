@@ -138,11 +138,11 @@ We meter only the five dimensions that map to a real cost we pay on your behalf:
 
 When you exceed a plan's included quota, the extra usage is an **overage**. Overages let you buy more of *one* thing — say more AI calls — without jumping a whole plan.
 
-Overage rates are **fixed in ZAR**: Storage R1.50/GB/mo, Compute R100/1,000 CU, AI R5/call, Embedded R50/10,000 sessions, Agent/kernel runs R2/run. Agent/kernel run overages are **not available on the Starter plan**.
+Overage rates are **fixed in ZAR**: Storage R0.33/GB/mo, Compute R100/1,000 CU, AI R5/call, Embedded R50/10,000 sessions, Agent/kernel runs R2/run. Agent/kernel run overages are **not available on the Starter plan**.
 
 | Dimension | Rate | Unit |
 |-----------|------|------|
-| Storage | R1.50 | / GB / mo (~$0.09 USD) |
+| Storage | R0.33 | / GB / mo (~$0.02 USD) |
 | Compute | R100 | / 1,000 CU |
 | AI calls | R5 | / call |
 | Embedded sessions | R50 | / 10,000 |

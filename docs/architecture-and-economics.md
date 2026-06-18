@@ -302,20 +302,23 @@ the duration of the plan. The customer-facing disclosure copy is defined in
 
 ---
 
-## What is not yet shipped (roadmap only)
+## What is shipped (Wave 1 + Wave 2)
 
-The following items appear in `docs/roadmap-embedding-reporting.md` but are
-**not yet implemented**:
+The following items from `docs/roadmap-embedding-reporting.md` are now shipped:
 
-- Unified Dashboard / Report / Presentation surfaces in a single editor UI
-  (the `board.surfaces.{grid,report,slides}` schema split is designed but not
-  deployed).
-- The T2 echarts-SSR pipeline is referenced in the design but the
-  `scripts/render/echarts-ssr.mjs` Node subprocess integration with the export
-  route is not fully wired end-to-end in production; `render_pdf.py` and
-  `render_pptx.py` exist and are exercised via `report_send.py`, but the
-  full T2→T3/T4 composed SVG path depends on the Node SSR script being present
-  in the deployment container.
+- **Unified Dashboard / Report / Presentation editor** — `src/editor/EditorShell.jsx`
+  wraps the existing dashboard grid with a top-level surface switch. The schema
+  split (`board.surfaces.{grid,report,slides}`) is live in `app/dashboards/spec.py`.
+  `src/editor/DocCanvas.jsx` (paginated A4/Letter report canvas) and
+  `src/editor/SlideCanvas.jsx` (16:9 slides + present mode) are full
+  implementations wired into `EditorPage`. The `/editor` route uses `EditorShell`.
+- **T2 echarts-SSR SVG render** — `app/dashboards/svg_render.py` + the
+  `scripts/render/echarts-ssr.mjs` Node subprocess compose per-widget SVGs into
+  full-page layouts for the export pipeline.
+- The `render_pdf.py` and `render_pptx.py` renderers are fully wired via the T2
+  SVG path and exercised by `report_send.py` and the download export endpoints
+  (`GET /boards/{id}/export.pdf`, `GET /boards/{id}/export.pptx`).
 
-Do not rely on this document as a feature-completeness guarantee for those
-items; refer to the roadmap doc and the test suite.
+Do not rely on this document as a feature-completeness guarantee for all
+roadmap items; refer to `docs/roadmap-embedding-reporting.md` and the test
+suite for the current Wave 2 + Wave 2.5 status.

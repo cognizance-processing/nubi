@@ -62,9 +62,9 @@ The data plane uses **Arrow IPC at every boundary**, so data moves between wareh
 - **Arrow-native data plane** — sqlglot planner → PhysicalPlan → executor → Arrow IPC stream, with a frozen cache-key spec and conformance suite so a future Rust executor can swap in without touching call sites.
 - **Content-hashed edge cache** — N viewers of the same dashboard collapse to one warehouse hit. Cache key: `sha256(canonical_json({sql, params, rls_claims}))`.
 - **Auth-as-code + server-side RLS** — JWT claims carry row/column policies; the planner injects them as AST-level predicates (never string-concat). Powers internal users, multi-tenant embedding, and Google OAuth from the same primitive.
-- **LLM-authorable dashboards + MCP** — a dashboard is a sanitized HTML/CSS document of declarative `<nubi-kpi>`, `<nubi-table>`, and `<nubi-chart>` custom elements. LLMs and MCP agents author layout and widget attributes; they never write WebGL or fetch code. Six MCP tools expose the full authoring surface to any agent.
+- **LLM-authorable dashboards + MCP** — a dashboard is a sanitized HTML/CSS document of declarative `<nubi-kpi>`, `<nubi-table>`, and `<nubi-chart>` custom elements. LLMs and MCP agents author layout and widget attributes; they never write WebGL or fetch code. Fifteen MCP tools expose the full authoring surface to any agent.
 - **Auto-WebGL rendering** — `<nubi-chart>` switches to a regl WebGL scatter path automatically above 20,000 rows; SVG/HTML below. Up to ~1M points at interactive framerates reading Arrow columns directly.
-- **SQL-first connector SDK** — any `fn(plan) -> pyarrow.Table` is a first-class connector with declared capabilities. The capability gate enforces the security floor: a connector with `predicate_rls=False` is refused (501) when policies are active. Built-in connectors: `postgres` (ADBC), `duckdb` (in-memory demo **and** read-only file-backed), `http_json`, `mysql`, `mariadb`, and `jdbc` (optional drivers). Private databases reachable via a `network_mode='bridge'` WebSocket tunnel.
+- **SQL-first connector SDK** — any `fn(plan) -> pyarrow.Table` is a first-class connector with declared capabilities. The capability gate enforces the security floor: a connector with `predicate_rls=False` is refused (501) when policies are active. Built-in connectors: `postgres` (ADBC), `duckdb` (in-memory + file-backed), `duckdb_storage` (S3/R2/MinIO httpfs), `http_json`, `mysql`, `mariadb`, `jdbc`, `snowflake`, `bigquery`, `clickhouse`, `databricks`, `athena`, `trino`/`presto`, `sqlserver`/`azuresql`/`azuresynapse`, `oracle`, `redshift`, `cockroachdb`, `cloudsql`, `sftp`, `ftp` (most via optional lazy-imported drivers). Private databases reachable via a `network_mode='bridge'` WebSocket tunnel.
 - **Real free tier** — compute is the user's browser; Hex can't match it without absorbing kernel cost.
 
 ---
@@ -174,8 +174,15 @@ cd backend && DATABASE_URL=postgresql://user:pass@host/db python seed.py
 | `FRONTEND_URL` | Backend | Where the backend redirects after Google OAuth |
 | `CORS_ORIGINS` | Backend | Comma-separated allowed origins |
 | `ENV` | Backend | `development` / `production` (disables `/docs` in prod) |
-| `KERNEL_LOCAL_ENABLED` | Backend | `true` to allow local subprocess kernel (dev only) |
+| `KERNEL_LOCAL_ENABLED` | Backend | `true` to allow local subprocess kernel (dev only, default `true`) |
+| `KERNEL_REMOTE_PROVIDER` | Backend | `e2b` or `modal` for Firecracker/Modal sandboxed kernels (prod) |
 | `LLM_PROVIDER` | Optional | `litellm` / `anthropic` / `openai` / `gemini`. `litellm` (one SDK, all providers + per-model cost tracking) reads `LITELLM_MODEL`; see [AI docs](docs/ai-and-mcp.md#configuring-the-llm-provider-operators). Unset ⇒ offline mode. |
+| `ALLOW_UNSAFE_PUBLIC_EXPORTS` | Optional | `true` to enable no-auth CDN static exports (Mode 3b). Requires org `public_exports` gate. Default `false`. |
+| `EMBED_DEV_TOKEN_ENABLED` | Dev only | `true` to enable the dev-only HS256 embed-token mint endpoint. **Never `true` in production.** |
+| `NUBI_COLLECT_ROW_CAP` | Optional | Row cap for snapshot/report data collection. Default `50000`. `0` = unlimited. |
+| `JOBS_SCHEDULER_ENABLED` | Optional | `true` to activate the background job scheduler tick. Default `false`. |
+| `FLOWS_TICK_SECRET` | Optional | Shared secret for `POST /flows/tick` (external cron schedulers). Leave empty to disable. |
+| `FX_EMERGENCY_RATE` | EE only | Emergency fallback USD→ZAR rate when no live rate is available. Default `16.26`. |
 </details>
 
 ---
@@ -242,13 +249,13 @@ flowchart TD
 | Data plane | sqlglot (AST planner + RLS injection + dialect validation), pyarrow, DuckDB (in-mem + file), adbc-driver-postgresql; mysql/mariadb/jdbc connectors (optional drivers); VPC bridge tunnel |
 | Cache | In-process LRU + TTL (`ContentAddressedCache`); interface is Redis-swappable |
 | Compute | subprocess (dev); e2b-code-interpreter / modal (prod, lazy optional deps) |
-| AI / LLM | NullProvider (default, zero network); lazy Anthropic / OpenAI / Gemini via env |
+| AI / LLM | NullProvider (default, zero network); LiteLLM in-process (recommended — one SDK, all providers + per-call cost tracking); lazy Anthropic / OpenAI / Gemini native SDKs via env |
 | Frontend | React 19, Vite 7, TailwindCSS, react-router-dom |
 | Viz | regl (WebGL scatter, ~1M pts), apache-arrow, @duckdb/duckdb-wasm, ECharts |
 | Embed | Custom elements (`<nubi-dashboard>`, `<nubi-kpi>`, `<nubi-table>`, `<nubi-chart>`), DOMPurify |
 | SDK | `@nubi/sdk` — framework-agnostic ESM, wraps auth + query + resource CRUD + embed |
 | CLI | Python typer (`nubi login / deploy / run / diff / pull`) |
-| MCP | Python `mcp` SDK, stdio transport, 6 tools |
+| MCP | Python `mcp` SDK, stdio transport, 15 tools |
 | Self-host | Docker Compose (`docker-compose.yml`); Makefile: `make up/down/migrate/smoke` |
 
 ### Monorepo layout
@@ -265,13 +272,13 @@ nubi/
 │   │   ├── jobs/     cron + interval scheduler, executor, store
 │   │   ├── repos/    asyncpg (prod) + in-memory (test) repository layer
 │   │   └── routes/   auth, query, compute, embed, ai, lineage, jobs, resources
-│   └── tests/        ~27 test modules + conformance suite (golden Arrow + cache keys)
-├── database/         Forward-only SQL migration runner + 6 migrations
+│   └── tests/        ~180 test modules + conformance suite (golden Arrow + cache keys) + security/ suite
+├── database/         Forward-only SQL migration runner + 13 OSS migrations + 4 EE migrations
 ├── src/              React 19 frontend (Vite + Tailwind) — pages, components, viz
 ├── embed/            Web components: <nubi-dashboard>, <nubi-kpi>, <nubi-table>, <nubi-chart>
 ├── sdk/              @nubi/sdk — createNubiClient ESM package
 ├── cli/              nubi CLI (typer): login / deploy / run / diff / pull
-├── mcp/              MCP stdio server — 6 tools for agent authoring
+├── mcp/              MCP stdio server — 15 tools for agent authoring
 ├── docs/             cache-key-spec.md, conformance.md, kernel-security.md, assets/
 ├── Dockerfile          combined image: Vite SPA build + FastAPI (single origin)
 ├── docker-compose.yml   db (postgres:16) + app (SPA + API on :8000)
@@ -294,17 +301,18 @@ nubi/
 | M4-REMOTE — E2B/Modal sandbox | ✅ Done | E2BRunner (Firecracker microVM), ModalRunner adapter |
 | M5 — WebGL viz | ✅ Done | regl GPU scatter on Arrow buffers, `<nubi-chart>` auto-WebGL above 20k rows |
 | M6 — REST API + SDK + CLI | ✅ Done | asyncpg repo layer, CRUD for datastores/boards/widgets/queries, `@nubi/sdk`, typer CLI |
-| M7 — Lineage + AI + MCP | ✅ Done | sqlglot lineage extractor, deterministic grounding, LLMProvider, MCP server (6 tools) |
+| M7 — Lineage + AI + MCP | ✅ Done | sqlglot lineage extractor, deterministic grounding, LLMProvider, MCP server (15 tools) |
 | M8 — LLM-authorable dashboards | ✅ Done | `<nubi-kpi>`, `<nubi-table>`, `<nubi-chart>` widget kit, DOMPurify renderer, `POST /ai/dashboard` |
 | M9 — Connector SDK + HTTP/JSON | ✅ Done | FunctionConnector, apply_rls_postfetch, HttpJsonConnector, NoSQL deliberately out of scope |
-| Connector breadth | ✅ Done | Registry ships 8 types: `postgres`, `duckdb` (in-mem + read-only file-backed), `http_json`, `mysql`, `mariadb`, `jdbc`, `snowflake`, `bigquery` (the last four via optional drivers, lazily imported) |
+| Connector breadth | ✅ Done | Registry ships 20+ types: `postgres`, `duckdb` (in-mem + file-backed), `duckdb_storage` (S3/R2/MinIO httpfs), `http_json`, `mysql`, `mariadb`, `jdbc`, `snowflake`, `bigquery`, `clickhouse`, `databricks`, `athena`, `trino`/`presto`, `sqlserver`/`azuresql`/`azuresynapse`, `oracle`, `redshift`, `cockroachdb`, `cloudsql`, `sftp`, `ftp` (most via optional lazy-imported drivers) |
 | VPC bridge | ✅ Done | `network_mode='bridge'` opens a WebSocket TCP tunnel via `BridgeBroker`, wired into the query path (`resolve_network_async`); other modes 501 |
 | Builder layer (M13–M22) | ✅ Done | Query workspace + typed params, filter/variable/route-param interactivity, TanStack table + conditional formatting, 9 chart types, exports, scheduled reports, AI-SQL, agentic chat, git sync |
+| Unified editor surfaces | ✅ Done | EditorShell: Dashboard / Report / Presentation surface switch; DocCanvas (A4/Letter paginated doc) + SlideCanvas (16:9 slides + present mode); `spec.surfaces.{grid,report,slides}` schema split live |
 | M10 — Docker self-host smoke test | 🔄 In progress | docker-compose.yml ships locally (db + combined app on :8000); live-infra CI smoke test is the remaining capstone |
 | M11 — Scheduled jobs | ✅ Done | cron + interval scheduler (deterministic `now`), `execute_job`, CRUD + run-now + run-history routes |
 | M12 — Capability-gated RLS | ✅ Done | connector resolution via `datastore.config.type`, 501 gate when `predicate_rls=False` + active policies |
 
-**Tests:** ~27 backend test modules + conformance suite (golden Arrow output + byte-identical cache keys), MCP tests, CLI tests, dashboard sanitizer (`node --test`), SDK tests.
+**Tests:** ~180 backend test modules (incl. security/ suite) + conformance suite (golden Arrow output + byte-identical cache keys), MCP tests, CLI tests, dashboard sanitizer (`node --test`), SDK tests.
 
 **Experimental / not production-hardened:** `LocalSubprocessRunner` (dev-grade isolation — same OS user, host network); Docker Compose stack not yet smoke-tested against live external infra (Neon SSL, E2B, real Google OAuth).
 
@@ -387,7 +395,7 @@ The backend conformance suite (`backend/tests/conformance/`) asserts the planner
 |---|---|---|
 | `@nubi/sdk` | [`sdk/`](sdk/README.md) | Framework-agnostic ESM — `.auth`, `.query()`, `.resources.*`, `.embed.mount()` |
 | `nubi` CLI | [`cli/`](cli/README.md) | `login / deploy / run / diff / pull` — with `--dry-run` |
-| MCP server | [`mcp/`](mcp/README.md) | stdio MCP — 6 tools for agent dashboard authoring |
+| MCP server | [`mcp/`](mcp/README.md) | stdio MCP — 15 tools for agent dashboard authoring |
 | Embed bundle | [`embed/`](embed/README.md) | `<nubi-dashboard>` + widget kit custom elements |
 
 ---

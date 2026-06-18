@@ -34,7 +34,7 @@ export const BILLING_MODEL = {
 // includes a monthly quota; usage beyond it draws from your prepaid wallet
 // first, then lands on your monthly invoice. No per-viewer / per-seat overage.
 export const OVERAGE_RATES = [
-  { label: 'Storage', rate: '$0.10', unit: '/ GB / mo', desc: 'Beyond your plan’s included storage.' },
+  { label: 'Storage', rate: '$0.02', unit: '/ GB / mo', desc: "Beyond your plan's included storage." },
   { label: 'Compute', rate: '$6', unit: '/ 1,000 CU', desc: 'Flow + query compute past your monthly units.' },
   { label: 'AI calls', rate: '$0.30', unit: '/ call', desc: 'Text-to-SQL, MCP tools, and agent steps.' },
   { label: 'Embedded sessions', rate: '$3', unit: '/ 10,000', desc: 'Embedded dashboard loads past your quota.' },

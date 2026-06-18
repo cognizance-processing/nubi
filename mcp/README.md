@@ -7,14 +7,25 @@ MCP-compatible client (Claude Desktop, Claude Code, etc.).
 
 ## Tools
 
+15 tools are registered. Core authoring tools:
+
 | Tool | Signature | Description |
 |------|-----------|-------------|
 | `list_dashboards` | `() → [{id, name}]` | List all registered dashboards/queries in the Nubi query registry. |
 | `run_query` | `(query_id, limit=100) → {columns, rows, row_count}` | Execute a registered query via DuckDB and return a compact JSON preview. |
-| `list_lineage` | `() → {available, graph|reason}` | Return the SQL lineage graph (M7-A), or `{available: false, reason: "…"}` when the module is not yet built. |
+| `list_lineage` | `() → {available, graph|reason}` | Return the SQL lineage graph, or `{available: false, reason: "…"}` when unavailable. |
 | `propose_materialized_view` | `() → [{base_table, dimensions, measures, hit_count, bytes_saved}]` | Analyse the query log and return pre-aggregation rollup suggestions. |
-| `create_dashboard` | `(name, html, org_id="mcp") → {id, name}` | Validate and store a dashboard HTML document as a Nubi boards resource. HTML must use only `<nubi-kpi>`, `<nubi-table>`, `<nubi-chart>` widgets — no `<script>` tags or inline event handlers. |
-| `author_dashboard` | `(question) → {id, html_preview}` | Ground a natural-language question and auto-generate a dashboard via the Nubi AI pipeline, then store it as a boards resource. Returns the board id and the first 200 characters of the generated HTML. |
+| `create_dashboard` | `(name, spec_or_html, org_id="mcp") → {id, name}` | Validate and store a dashboard (DashboardSpec dict or HTML). |
+| `author_dashboard` | `(question) → {id, html_preview}` | Generate a dashboard from a natural-language question and store it in one call. |
+| `get_context` | `(q?, compact?) → {schema, queries, ...}` | Return workspace context for grounding agent prompts. |
+| `get_spec_schema` | `() → {schema}` | Return the full DashboardSpec JSON schema. |
+| `validate_spec` | `(spec) → {valid, errors}` | Validate a DashboardSpec dict. |
+| `estimate_query` | `(query_id, ...) → {row_count, bytes_scanned}` | Dry-run a query to estimate cost. |
+| `preview_widget` | `(widget, ...) → {data, ...}` | Render a single widget's data for preview. |
+| `list_metrics` | `() → [{id, name, ...}]` | List all registered metrics. |
+| `query_metric` | `(metric_id, ...) → {value, ...}` | Execute a metric query and return the current value. |
+| `upsert_dashboard` | `(id?, name, spec, ...) → {id, name}` | Create or update a dashboard by id. |
+| `promote` | `(id, ...) → {id, ...}` | Promote a draft dashboard to the published slot. |
 
 ## Prerequisites
 
@@ -122,10 +133,11 @@ The MCP server (`nubi_mcp/server.py`) adds `nubi/backend/` to `sys.path` at
 import time so that `app.*` modules (query registry, DuckDB connector, preagg,
 lineage, AI pipeline) are importable without installing the backend as a package.
 
-Each tool's business logic lives in a plain Python function
-(`_list_dashboards`, `_run_query`, `_list_lineage`, `_propose_materialized_view`,
-`_create_dashboard`, `_author_dashboard`) that the `@server.tool(...)` decorator
-wraps. This separation makes the tool logic unit-testable without any MCP transport.
+Each tool's business logic lives in a plain Python function (e.g. `_list_dashboards`,
+`_run_query`, `_list_lineage`, `_propose_materialized_view`, `_create_dashboard`,
+`_author_dashboard`, `_get_context`, `_validate_spec`, and others) that the
+`@server.tool(...)` decorator wraps. This separation makes the tool logic unit-testable
+without any MCP transport.
 
 ### Lineage (M7-A dependency)
 

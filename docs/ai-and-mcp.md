@@ -10,7 +10,7 @@ This page covers:
 - **Grounded text-to-SQL** — turning a question into a validated query.
 - **Natural-language dashboard generation** — describing a dashboard and watching it build.
 - The **dashboard editor assistant** — conversational edits on a live board.
-- The **MCP server** — six tools that external agents use to author dashboards and run queries.
+- The **MCP server** — 15 tools that external agents use to author dashboards, run queries, validate specs, explore metrics, and promote builds.
 
 ---
 
@@ -133,7 +133,7 @@ This is the conversational counterpart to the drag-and-drop canvas: edit by hand
 
 Nubi ships a **Model Context Protocol (MCP)** server. Register it with an MCP client (Claude Desktop, Claude Code, etc.) and that agent can discover your queries, run them, explore SQL lineage, and author dashboards directly in your Nubi workspace — all over a local stdio connection.
 
-### The six tools
+### The tools
 
 | Tool | Signature | What it does |
 |---|---|---|
@@ -143,8 +143,17 @@ Nubi ships a **Model Context Protocol (MCP)** server. Register it with an MCP cl
 | `propose_materialized_view` | `() → [{base_table, dimensions, measures, hits, est_bytes_saved}]` | Analyse the query log and suggest pre-aggregation rollups for high-frequency GROUP BY patterns. |
 | `create_dashboard` | `(name, spec_or_html, org_id="mcp") → {id, name}` | Validate and store a dashboard. Accepts a DashboardSpec dict (preferred) or an HTML string. Non-conforming content is rejected. |
 | `author_dashboard` | `(question) → {id, html_preview}` | Generate a dashboard from a natural-language question and store it in one call. |
+| `get_context` | `(q?, compact?) → {schema, queries, ...}` | Return workspace context (schema, query registry, lineage) for grounding agent prompts. |
+| `get_spec_schema` | `() → {schema}` | Return the full DashboardSpec JSON schema so agents can construct valid specs. |
+| `validate_spec` | `(spec) → {valid, errors}` | Validate a DashboardSpec dict; returns per-field errors on failure. |
+| `estimate_query` | `(query_id, ...) → {row_count, bytes_scanned}` | Dry-run a query to estimate cost before execution. |
+| `preview_widget` | `(widget, ...) → {data, ...}` | Render a single widget's data for preview without creating a dashboard. |
+| `list_metrics` | `() → [{id, name, ...}]` | List all registered metrics in the workspace. |
+| `query_metric` | `(metric_id, ...) → {value, ...}` | Execute a metric query and return the current value. |
+| `upsert_dashboard` | `(id?, name, spec, ...) → {id, name}` | Create or update a dashboard by id. |
+| `promote` | `(id, ...) → {id, ...}` | Promote a draft dashboard to the published/production slot. |
 
-`create_dashboard` and `author_dashboard` both validate before storing: only Nubi's widget elements are allowed (`<nubi-kpi>`, `<nubi-table>`, `<nubi-chart>`, `<nubi-filter>`, `<nubi-text>`); `<script>` tags and inline event handlers are rejected.
+`create_dashboard`, `author_dashboard`, and `upsert_dashboard` all validate before storing: only Nubi's widget elements are allowed (`<nubi-kpi>`, `<nubi-table>`, `<nubi-chart>`, `<nubi-filter>`, `<nubi-text>`); `<script>` tags and inline event handlers are rejected.
 
 Dashboards an agent authors over MCP appear in your workspace alongside boards you build by hand or in chat.
 

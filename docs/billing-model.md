@@ -61,7 +61,7 @@ Nubi meters only the dimensions that map to real COGS lines:
 
 | Metric | COGS line | Overage rate (ZAR) |
 |--------|-----------|--------------------|
-| **Storage GB/month** | Object-storage (S3/R2) + Postgres WAL | R1.50/GB/mo |
+| **Storage GB/month** | Object-storage (S3/R2) + Postgres WAL | R0.33/GB/mo |
 | **Compute units/month** (flow runs + query compute) | Container-compute (ECS/k8s) + DuckDB CPU-time | R100/1,000 CU |
 | **Embedded sessions/10K** | Egress bandwidth + per-request compute (CDN) | R50/10K sessions |
 | **AI / agent calls** | Anthropic Claude API token cost | R5.00/call |

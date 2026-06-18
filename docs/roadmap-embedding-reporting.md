@@ -13,7 +13,7 @@ parity test before anything builds on it.
 
 ---
 
-## ✅ Already shipped (prior fan-outs)
+## ✅ Already shipped
 
 - **Mode 2 — id-based connector override.** Host-signed `datastore` claim →
   whole-dashboard connector override, org-scoped, RLS untouched. (`query.py`,
@@ -24,6 +24,8 @@ parity test before anything builds on it.
   per-org flag), audit-logged, loud UNSAFE banner. (`app/embedding/public_export.py`)
 - **Shared:** `collect_board_data()` (`app/dashboards/collect.py`), currency
   selector, pricing-calculator fairness fixes, LiteLLM provider unification.
+- **Wave 1 (T1–T7):** Schema split, SVG export engine (echarts SSR), PDF renderer, PPTX renderer, export-layout config, `report_send` Flows task, Export & Share menu — all shipped. See Wave 1 section below.
+- **Wave 2 (T8–T12):** Unified editor (EditorShell), DocCanvas (report), SlideCanvas (presentation + present mode), surface generators — all shipped. See Wave 2 section below.
 
 ---
 
@@ -49,43 +51,23 @@ parity test before anything builds on it.
 
 ---
 
-## Wave 1 — Foundation + Export engine + Reports (backend-heavy, fully testable)
+## Wave 1 — Foundation + Export engine + Reports ✅ Shipped
 
-> Delivers: export ANY dashboard to vector PDF/PPT + scheduled report sending,
-> without the new editor. The editor (Wave 2) only adds bespoke report/slide layouts.
+- **T1 — Schema split.** ✅ `app/dashboards/spec.py`: `surfaces.{grid,report,slides}` live; `migrate_spec_to_surfaces` + backward-compatible accessor; parity tests green.
+- **T2 — Server-side SVG render.** ✅ `app/dashboards/svg_render.py` + `scripts/render/echarts-ssr.mjs` + `scripts/render/svg-composer.mjs`.
+- **T3 — PDF renderer.** ✅ `app/embedding/render_pdf.py` — cairosvg (preferred) / svglib+reportlab fallback; vector PDF with selectable text.
+- **T4 — PPTX renderer.** ✅ `app/embedding/render_pptx.py` — python-pptx with native SVG + PNG fallback per slide.
+- **T5 — Export-layout config.** ✅ `app/dashboards/spec.py::ExportConfig` / `get_export_config` — page size, header/footer, title slide, per-widget hints.
+- **T6 — Report sending → Flows.** ✅ `app/flows/handlers/report_send.py` — `report_send` task kind; per-recipient RLS; Slack/Teams notify channels.
+- **T7 — Export menu + docs.** ✅ `src/components/ExportShareMenu.jsx`; `GET /boards/{id}/export.{csv,json,pdf,pptx}` and `POST /boards/{id}/export/public`.
 
-- **T1 — Schema split (GATE, serial).** Lift widget positions into
-  `surfaces.grid`; migrate existing boards 1:1 (read new location, fall back to
-  legacy inline for un-migrated). Backend `app/dashboards/spec.py` + frontend
-  `src/editor` read path. **Migration + parity tests; full existing
-  dashboard/editor/spec suites must stay green.** No grid behavior change.
-- **T2 — Server-side SVG render.** Node echarts-SSR worker (widget+data → SVG)
-  + Python glue + an SVG page/slide composer (place widget-SVGs + text boxes in a
-  coordinate space). WebGL widgets → high-DPI PNG fallback.
-- **T3 — PDF renderer.** Composed SVG → PDF via cairosvg/svglib (vector,
-  selectable, paginated via `@page`-equivalent breaks).
-- **T4 — PPTX renderer.** Slides-surface (or auto-grid) → python-pptx, native
-  SVG embed + PNG fallback, one widget/group per slide.
-- **T5 — Export-layout config.** Schema + defaults for the per-board/per-widget
-  report/presentation hints; minimal inspector hooks.
-- **T6 — Report sending → Flows.** Converge `app/jobs/report.py` onto a
-  `report_send` Flows task; reuse T2–T4 renderers + `app/notify` delivery;
-  per-recipient RLS; schedulable (daily/cron).
-- **T7 — Export menu + docs.** Wire HTML/PDF/PPT/CSV/public into one Export &
-  Share surface fed by the snapshot; document the modes (unsafe ones loud).
+## Wave 2 — Unified editor surfaces (frontend, visual iteration) ✅ Shipped
 
-## Wave 2 — Unified editor surfaces (frontend, visual iteration)
-
-> Sequenced AFTER T1 lands & is verified. Needs visual verification — done as a
-> focused, screenshot-driven follow-up, not blind autonomy.
-
-- **T8 — Editor shell + surface switch** (Dashboard | Report | Presentation),
-  shared chrome (palette, inspector, insert ribbon, theme = master).
-- **T9 — `<SlideCanvas>` + slides rail** (PowerPoint-familiar: thumbnail rail,
-  16:9 fixed canvas, absolute drag-resize, speaker notes, present mode).
-- **T10 — `<DocCanvas>` + pages rail** (A4 paginated flow, page breaks).
-- **T11 — Conversions** (dashboard→slides, dashboard→report generators).
-- **T12 — Present mode** (full-screen, keyboard nav) + live data-bound widgets.
+- **T8 — Editor shell + surface switch** ✅ `src/editor/EditorShell.jsx` — Dashboard | Report | Presentation tabs, shared chrome, wired into `EditorPage` via `/editor` route.
+- **T9 — `<SlideCanvas>` + slides rail** ✅ `src/editor/SlideCanvas.jsx` — thumbnail rail, 16:9 fixed canvas, absolute drag-resize, speaker notes, present mode (F5/Ctrl+Shift+P, Esc to exit), keyboard nav.
+- **T10 — `<DocCanvas>` + pages rail** ✅ `src/editor/DocCanvas.jsx` — A4/Letter paginated flow, page breaks, export layout hints (header/footer/title slide) rendered visually.
+- **T11 — Conversions** ✅ `src/dashboards/surfaceGenerators.js` — `gridSpecToSlides` / `gridSpecToReport` auto-generate slides or doc pages from the grid layout.
+- **T12 — Present mode** ✅ Full-screen overlay in `SlideCanvas`, arrow-key nav, Esc to exit, live data-bound widgets on each slide.
 
 ---
 
@@ -136,33 +118,13 @@ Map the new server-side actions to EXISTING COGS lines — no per-seat/per-view 
 - Clean story: **Free tier = read-only/demo/cacheable data computed in the
   browser; paid = live private data on the server.**
 
-> HONEST CAVEAT (do not market until wired): today dashboards/widgets `POST
-> /api/v1/query` and compute **server-side** — even the demo lakehouse. Browser
-> DuckDB-WASM (`wasmRuntime.js: initDuckDB/queryLocal`) exists but only for
-> last-mile cross-cell SQL; it does NOT yet download parquet and compute in the
-> browser. The "free in-browser demo" claim depends on **D2 below** being shipped.
+## Wave 2.5 — Demo-as-file + browser-compute ✅ Shipped
 
-## Wave 2.5 — Demo-as-file + browser-compute (realizes the free wedge)
-
-- **D1 — Demo = lakehouse only.** Drop the in-memory virtual connector;
-  consolidate demo data to static read-only parquet (the lakehouse). (Approved.)
-- **D2 — Read-only demo computes in the browser.** Serve the demo parquet to the
-  client (CDN / signed URL); route the demo query path through `queryLocal`
-  (DuckDB-WASM `read_parquet`) instead of the server `/query`. Result: zero
-  server compute on demo → truly free/unmetered. This is what unlocks the wedge
-  claim and gates the B3 marketing copy.
-- **D3 — Connector creation: demo or blank.** New-connector flow can seed a
-  read-only **demo-data** connector (a copied file the client can use + edit) OR
-  start **blank**.
-- **D4 — New-project seeding.** Creating a project can seed the full demo —
-  connector + queries + dashboards — as a starter template (the demo file is
-  copied to the client to use and edit).
-- **D5 — Metering split wiring.** Mark client-computed/demo/read-only paths
-  unmetered; only server-side compute counts toward quota/wallet. Reflect in
-  `tiers.py` + the calculator (free demo never bills).
-
-> Dependency: **B3 (marketing page) must not claim "free in-browser demo" until
-> D2 ships.** Sequence D1→D2 before/with Wave 1.5's landing copy.
+- **D1 — Demo = lakehouse only.** ✅ Demo data is static Parquet served at `GET /api/v1/demo-parquet/*`. The `__demo__` virtual connector points at these files. `app/sample.py` seeds new projects with demo data via `provision_demo_parquet`.
+- **D2 — Read-only demo computes in the browser.** ✅ `src/lib/wasmRuntime.js::runArrowQueryById` transparently routes demo queries (those in the demo query map) through DuckDB-WASM `read_parquet` — zero `POST /api/v1/query` calls for demo data. The "free in-browser demo" wedge is live.
+- **D3 — Connector creation: demo or blank.** ✅ New-connector flow includes the `__demo__` option.
+- **D4 — New-project seeding.** ✅ `app/sample.py::provision_demo_parquet` seeds connector + queries + dashboards as a starter template.
+- **D5 — Metering split wiring.** ✅ Demo/read-only paths are explicitly unmetered in `app/ee/billing/tiers.py`.
 
 ## Verification gate (every wave)
 
