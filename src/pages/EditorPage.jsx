@@ -38,7 +38,7 @@
 import { useState } from 'react'
 import { useParams, Link, useNavigate, Navigate } from 'react-router-dom'
 import { SlidersHorizontal, Sun, Moon } from 'lucide-react'
-import DashboardEditor from '../editor/DashboardEditor.jsx'
+import EditorShell from '../editor/EditorShell.jsx'
 import { useCanWrite } from '../contexts/OrgContext.jsx'
 import { useTheme } from '../contexts/ThemeContext.jsx'
 
@@ -133,7 +133,7 @@ export default function EditorPage() {
 
       <EditModeToolbar />
 
-      <DashboardEditor boardId={id ?? null} onSaved={handleSaved} />
+      <EditorShell boardId={id ?? null} onSaved={handleSaved} />
     </div>
   )
 }
