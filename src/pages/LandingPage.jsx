@@ -1718,6 +1718,45 @@ export default function LandingPage() {
         </section>
 
         {/* ════════════════════════════════════════════════════════════════════
+            §2.75  REPORTING TEASER — concise wedge callout → /reporting
+        ════════════════════════════════════════════════════════════════════ */}
+        <section className="py-10 sm:py-14 bg-surface-2 border-y border-border">
+          <div className="max-w-5xl mx-auto px-4 sm:px-6 lg:px-8">
+            <div className="rounded-2xl bg-brand-gradient p-px shadow-[0_16px_48px_-16px_rgba(23,179,163,0.5)]">
+              <div className="rounded-[calc(1rem-1px)] bg-surface dark:bg-[#070b21]/90 p-6 sm:p-8 flex flex-col md:flex-row md:items-center gap-6 md:gap-10">
+                <div className="flex-1 min-w-0">
+                  <p className="font-mono text-[11px] font-semibold tracking-[0.18em] uppercase mb-2 text-brand-teal">
+                    pay per refresh · not per viewer
+                  </p>
+                  <h3 className="font-display text-xl sm:text-2xl font-bold text-fg leading-snug mb-2">
+                    Unlimited viewers — flat cost as you scale.
+                  </h3>
+                  <p className="text-sm leading-relaxed text-muted max-w-xl">
+                    The DuckDB-WASM kernel runs inside each visitor&rsquo;s tab — extra viewers
+                    cost ≈ $0. Embed live, freeze to a CDN snapshot, export to PDF or deck.
+                    One dashboard drives every output via Flows.
+                  </p>
+                </div>
+                <div className="flex flex-col sm:flex-row md:flex-col gap-2.5 shrink-0">
+                  <Link
+                    to="/reporting"
+                    className="inline-flex items-center justify-center gap-2 px-5 py-2.5 rounded-xl text-sm font-semibold transition-all bg-brand-gradient text-white hover:opacity-90 hover:-translate-y-0.5 min-h-[44px] shadow-md"
+                  >
+                    How it works <ArrowRight size={14} strokeWidth={2.5} />
+                  </Link>
+                  <Link
+                    to="/pricing"
+                    className="inline-flex items-center justify-center gap-2 px-5 py-2.5 rounded-xl text-sm font-semibold transition-all bg-surface border border-border text-fg hover:border-brand-blue hover:text-primary min-h-[44px]"
+                  >
+                    See pricing
+                  </Link>
+                </div>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        {/* ════════════════════════════════════════════════════════════════════
             §3  EIGHT DECISIONS — bento deck on an observatory panel
             id="features" — scroll target for footer "Dashboards" link
         ════════════════════════════════════════════════════════════════════ */}

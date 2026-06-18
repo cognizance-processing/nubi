@@ -23,12 +23,13 @@ const GITHUB_URL = 'https://github.com/nu-bi/nubi'
 // scrollTo: if set, clicking the link smooth-scrolls to that section ID on the
 //           landing page (or navigates to /#id if not already on /).
 const NAV_LINKS = [
-  { label: 'Docs',    to: '/docs' },
-  { label: 'Compare', to: '/compare' },
-  { label: 'Pricing', to: '/pricing' },
+  { label: 'Docs',      to: '/docs' },
+  { label: 'Reporting', to: '/reporting' },
+  { label: 'Compare',   to: '/compare' },
+  { label: 'Pricing',   to: '/pricing' },
   // One entry into the authenticated app (Playground / Editor / Dashboard all
   // live inside it) — the /home hub.
-  { label: 'Portal',  to: '/home', authOnly: true },
+  { label: 'Portal',    to: '/home', authOnly: true },
 ]
 
 // ── Theme toggle button ───────────────────────────────────────────────────────

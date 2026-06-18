@@ -73,6 +73,7 @@ import OnboardingPage from './pages/OnboardingPage.jsx'
 import DocsPage from './pages/DocsPage.jsx'
 import ComparePage from './pages/ComparePage.jsx'
 import PricingPage from './pages/PricingPage.jsx'
+const ReportingPage = lazy(() => import('./pages/ReportingPage.jsx'))
 import LegalPage from './pages/LegalPage.jsx'
 import NotFound from './pages/NotFound.jsx'
 
@@ -262,6 +263,7 @@ export default function App() {
           <Route path="docs/:slug" element={<DocsPage />} />
           <Route path="compare" element={<ComparePage />} />
           <Route path="pricing" element={<PricingPage />} />
+          <Route path="reporting" element={<ReportingPage />} />
           <Route path="privacy" element={<LegalPage doc="privacy" />} />
           <Route path="terms" element={<LegalPage doc="terms" />} />
         </Route>

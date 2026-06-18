@@ -1759,6 +1759,12 @@ export default function ComparePage() {
                 >
                   Read the docs
                 </Link>
+                <Link
+                  to="/reporting"
+                  className="inline-flex items-center justify-center gap-2 px-6 py-3.5 rounded-xl text-base font-semibold transition-all bg-surface border border-border text-fg hover:border-brand-blue dark:bg-white/[0.06] dark:border-white/15 dark:text-white dark:hover:bg-white/[0.12] dark:hover:border-white/25 min-h-[48px]"
+                >
+                  How reporting works →
+                </Link>
               </div>
 
               <div className="flex flex-wrap justify-center gap-x-6 gap-y-2 font-mono text-[11px] font-medium text-muted">
