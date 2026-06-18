@@ -128,17 +128,27 @@ async def run_query_rows(
 
     physical_plan = planner_plan(sql=sql, claims={"policies": policies}, params=params)
 
-    connector = await _resolve_connector(registered, org_id, repo, physical_plan)
+    connector, connector_owned = await _resolve_connector(registered, org_id, repo, physical_plan)
 
-    arrow_table = connector.execute(physical_plan)
-    columns = list(arrow_table.schema.names)
-    rows: list[list[Any]] = []
-    for record in arrow_table.to_pylist():
-        rows.append([record.get(c) for c in columns])
-    return columns, rows
+    try:
+        arrow_table = connector.execute(physical_plan)
+        columns = list(arrow_table.schema.names)
+        rows: list[list[Any]] = []
+        for record in arrow_table.to_pylist():
+            rows.append([record.get(c) for c in columns])
+        return columns, rows
+    finally:
+        # Only close connectors that were freshly created for this query
+        # (connector_owned=True).  The demo connector is a module-level
+        # singleton and must NOT be closed — it would invalidate the shared
+        # in-memory DuckDB connection for all subsequent requests.
+        if connector_owned:
+            connector.close()
 
 
-async def _resolve_connector(registered: Any, org_id: str, repo: Repo, physical_plan: Any) -> Any:
+async def _resolve_connector(
+    registered: Any, org_id: str, repo: Repo, physical_plan: Any
+) -> tuple[Any, bool]:
     """Pick the connector for a registered query (datastore-bound or demo).
 
     Pragmatic subset of the ``POST /query`` connector path: it covers the demo
@@ -146,12 +156,21 @@ async def _resolve_connector(registered: Any, org_id: str, repo: Repo, physical_
     Secret injection and network bridges are intentionally out of scope here —
     if a datastore needs them, the connector construction will raise and the
     caller skips that widget (best-effort collection).
+
+    Returns
+    -------
+    tuple[connector, owned]
+        *connector* — the resolved connector instance.
+        *owned* — ``True`` when the connector was freshly created for this call
+        and the caller is responsible for closing it.  ``False`` when the
+        connector is a shared singleton (e.g. the demo connector) that must
+        NOT be closed by the caller.
     """
     datastore_id = getattr(registered, "datastore_id", None)
     if not datastore_id:
         from app.routes.query import _get_demo_connector
 
-        return _get_demo_connector()
+        return _get_demo_connector(), False  # singleton — caller must not close
 
     ds = await repo.get("datastores", org_id, datastore_id)
     if ds is None:
@@ -168,9 +187,12 @@ async def _resolve_connector(registered: Any, org_id: str, repo: Repo, physical_
         if db_path and db_path != ":memory:":
             import duckdb
 
+            from app.connectors.duckdb_conn import harden_connection as _harden
+
             conn = duckdb.connect(database=db_path, read_only=True)
-            return factory(conn)
-        return factory()
+            _harden(conn, disable_external_access=True)
+            return factory(conn), True  # owned: on-disk connection to close
+        return factory(), True
     if ctype == "postgres":
         dsn = cfg.get("dsn")
         if dsn is None:
@@ -180,7 +202,7 @@ async def _resolve_connector(registered: Any, org_id: str, repo: Repo, physical_
             user = cfg.get("user") or cfg.get("username") or "postgres"
             password = cfg.get("password", "")
             dsn = f"postgresql://{user}:{password}@{host}:{port}/{dbname}"
-        return factory(dsn)
+        return factory(dsn), True
 
     connector = factory(cfg)
 
@@ -193,7 +215,7 @@ async def _resolve_connector(registered: Any, org_id: str, repo: Repo, physical_
             "Source does not support Row-Level Security (predicate_rls=False).",
             501,
         )
-    return connector
+    return connector, True
 
 
 # ---------------------------------------------------------------------------
@@ -207,6 +229,8 @@ async def collect_board_data(
     claims: dict[str, Any],
     repo: Repo,
     only_query_id: str | None = None,
+    *,
+    board: dict[str, Any] | None = None,
 ) -> list[dict[str, Any]]:
     """Collect per-widget data for an org-scoped board.
 
@@ -236,6 +260,11 @@ async def collect_board_data(
         Active repository implementation.
     only_query_id:
         When given, restrict collection to widgets whose ``query_id`` matches.
+    board:
+        Optional pre-fetched board row.  When supplied, the repo lookup is
+        skipped — callers that already hold the row (e.g.
+        ``render_board_svg_from_data``) can pass it in to avoid a redundant
+        round-trip.
 
     Returns
     -------
@@ -248,7 +277,8 @@ async def collect_board_data(
     AppError("board_not_found", 404)
         When no board with *board_id* exists in *org_id*.
     """
-    board = await repo.get("boards", org_id, board_id)
+    if board is None:
+        board = await repo.get("boards", org_id, board_id)
     if board is None:
         raise AppError("board_not_found", f"Board {board_id!r} not found.", 404)
 

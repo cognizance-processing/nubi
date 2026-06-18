@@ -223,3 +223,62 @@ async def test_list_tables_non_duckdb_connector_returns_400(browser_client):
         headers=_auth_headers(user_id),
     )
     assert resp.status_code == 400, resp.text
+
+
+# ---------------------------------------------------------------------------
+# Unit tests: _build_view_sql_from_s3_views — SQL injection prevention
+# ---------------------------------------------------------------------------
+
+
+from app.routes.data_browser import _build_view_sql_from_s3_views  # noqa: E402
+
+
+def test_build_view_sql_valid():
+    """Well-formed s3_views dict produces correct CREATE VIEW SQL."""
+    sql = _build_view_sql_from_s3_views({"sales": "s3://bucket/sales.parquet"})
+    assert "CREATE OR REPLACE VIEW sales" in sql
+    assert "read_parquet('s3://bucket/sales.parquet')" in sql
+
+
+def test_build_view_sql_escapes_single_quote_in_uri():
+    """A single-quote in the URI path is doubled (SQL-escaped), not injected."""
+    sql = _build_view_sql_from_s3_views({"tbl": "s3://bucket/it's.parquet"})
+    assert "it''s.parquet" in sql
+    # Must NOT contain an unescaped literal single-quote after the opening one
+    # i.e. no pattern  '...it's...  with a naked apostrophe breaking the string
+    assert "it's" not in sql
+
+
+def test_build_view_sql_rejects_invalid_table_name():
+    """Table name containing SQL metacharacters raises ValueError."""
+    with pytest.raises(ValueError, match="Invalid s3_views table name"):
+        _build_view_sql_from_s3_views({"bad-name; DROP TABLE users--": "s3://b/f.parquet"})
+
+
+def test_build_view_sql_rejects_table_name_with_space():
+    with pytest.raises(ValueError, match="Invalid s3_views table name"):
+        _build_view_sql_from_s3_views({"bad name": "s3://b/f.parquet"})
+
+
+def test_build_view_sql_rejects_non_s3_non_local_uri():
+    """URIs that are neither s3:// nor local paths raise ValueError."""
+    with pytest.raises(ValueError, match="Invalid s3_views URI"):
+        _build_view_sql_from_s3_views({"tbl": "http://evil.example.com/x.parquet"})
+
+
+def test_build_view_sql_rejects_injection_via_uri():
+    """Injection attempt in URI is caught by prefix validation."""
+    with pytest.raises(ValueError, match="Invalid s3_views URI"):
+        _build_view_sql_from_s3_views(
+            {"tbl": "'); COPY (SELECT 1) TO '/tmp/pwned'; --"}
+        )
+
+
+def test_build_view_sql_multiple_tables():
+    """Multiple entries produce multiple semicolon-separated statements."""
+    sql = _build_view_sql_from_s3_views({
+        "orders": "s3://b/orders.parquet",
+        "items": "s3://b/items.parquet",
+    })
+    stmts = [s.strip() for s in sql.split(";") if s.strip()]
+    assert len(stmts) == 2

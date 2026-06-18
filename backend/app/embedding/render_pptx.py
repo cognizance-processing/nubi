@@ -492,13 +492,17 @@ def _ordered_widgets(
         if hints.get(w.id, {}).get("include_in_report", True)
     ]
 
+    # Pre-compute natural position map — O(n) once, avoids O(n²) list.index calls
+    # in the sort fallback path.
+    pos = {w.id: i for i, w in enumerate(spec.widgets)}
+
     def _sort_key(w: Any) -> tuple[int, int]:
         hint = hints.get(w.id, {})
         explicit_order = hint.get("order")
         if explicit_order is not None:
             return (0, int(explicit_order))
         # Fall back to the position in spec.widgets (natural order).
-        return (1, spec.widgets.index(w))
+        return (1, pos.get(w.id, len(spec.widgets)))
 
     return sorted(included, key=_sort_key)
 

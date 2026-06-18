@@ -275,6 +275,21 @@ async def get_frozen_view(
 
         org_id = await get_user_org(identity.user_id, repo)
 
+    # ── BILLING: frozen embed sessions are metered identically to live sessions ──
+    # Mirrors embed.py:353-364.  First-party tokens are not metered.
+    if identity.kind == "embed":
+        from app.compute.metering import record_usage  # noqa: PLC0415
+        from app.features import enforce_quota  # noqa: PLC0415
+
+        await enforce_quota(org_id, "embedded_sessions", amount=1.0)
+        await record_usage(
+            kind="embedded_session",
+            user_id=identity.user_id,
+            org_id=org_id,
+            units=1.0,
+            tier="embed_frozen",
+        )
+
     board = await repo.get("boards", org_id, dashboard_id)
     if board is None:
         raise AppError("dashboard_not_found", f"Dashboard {dashboard_id!r} not found.", 404)

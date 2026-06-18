@@ -308,6 +308,27 @@ def test_valid_first_party_access_token_verifies_as_access():
     assert identity.embed_origin is None
 
 
+def test_first_party_token_datastore_is_always_none():
+    """INVARIANT: first-party (kind='access') tokens must never carry a datastore value.
+
+    Even if a crafted token includes a 'datastore' claim in its payload, the
+    verifier must suppress it — preventing any future code path from acting on
+    a connector override sourced from a non-embed token.
+    """
+    from app.auth.jwt import mint_access_token
+    from app.auth.verify import verify_token
+
+    # mint_access_token accepts extra_claims; inject a rogue datastore value.
+    token = mint_access_token("user-xyz", extra_claims={"datastore": "evil-connector-override"})
+
+    identity = verify_token(token)
+
+    assert identity.kind == "access"
+    assert identity.datastore is None, (
+        "datastore must be None for first-party tokens regardless of token payload"
+    )
+
+
 # ---------------------------------------------------------------------------
 # Tests — scope helpers
 # ---------------------------------------------------------------------------

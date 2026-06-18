@@ -75,9 +75,11 @@ class VerifiedIdentity:
         The ``embed_origin`` claim from an embed token, or ``None``.
     datastore:
         Optional host-signed ``datastore`` claim — a datastore id string that
-        acts as a whole-dashboard connector override.  ``None`` when the token
-        does not carry it.  Plumbed through verification only; it is NOT yet
-        wired into query execution (that is Mode 2's job).
+        acts as a whole-dashboard connector override.  Only meaningful for
+        ``kind="embed"`` tokens; first-party (``kind="access"``) tokens always
+        have this set to ``None``.  The connector-override logic in
+        ``app/routes/query.py`` guards on ``identity.kind == "embed"`` before
+        reading this field.
     raw_claims:
         The full decoded payload dict (for downstream inspection).
     """
@@ -438,7 +440,10 @@ def _verify_first_party_token(token: str) -> VerifiedIdentity:
         policies=dict(claims.get("policies") or {}),
         scope=token_scopes,
         embed_origin=None,
-        datastore=claims.get("datastore"),
+        # First-party (HS256) tokens do not carry a datastore connector-override
+        # claim; that claim is only meaningful for embed tokens (kind="embed") and
+        # is enforced at query.py with an explicit `identity.kind == "embed"` guard.
+        datastore=None,
         raw_claims=claims,
     )
 

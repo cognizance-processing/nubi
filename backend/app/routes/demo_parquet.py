@@ -176,16 +176,25 @@ async def demo_query_map(
 
     # ── Find demo datastore IDs ────────────────────────────────────────────────
     # A connector is "demo" when its config has sample=True AND
-    # (system=True OR editable_parquet=True).
+    # (system=True OR editable_parquet=True) AND one of the server-pinned
+    # provenance markers is present: sample_id starts with "sample:" (set only
+    # by app/sample.py) OR demo_local_dir is set (set only by app/demo_bundle.py).
+    # The provenance check is a defence-in-depth guard: _RESERVED_CONFIG_KEYS in
+    # update_connector already prevents users from forging sample/system flags, but
+    # requiring a marker that only server provisioning code writes makes the combined
+    # predicate unforgeable without a direct DB write.
     demo_ds_ids: set[str] = set()
     try:
         for row in await repo.list("datastores", org_id, project_id):
             cfg = row.get("config") or {}
+            sample_id: str = cfg.get("sample_id") or ""
+            has_provenance = sample_id.startswith("sample:") or bool(cfg.get("demo_local_dir"))
             if (
                 cfg.get("sample") is True
                 and isinstance(cfg.get("connector_type"), str)
                 and cfg["connector_type"] == "duckdb"
                 and (cfg.get("system") is True or cfg.get("editable_parquet") is True)
+                and has_provenance
             ):
                 demo_ds_ids.add(str(row["id"]))
     except Exception as exc:  # noqa: BLE001

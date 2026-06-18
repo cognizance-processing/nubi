@@ -250,6 +250,65 @@ def test_render_widgets_svg_webgl_flagged():
 
 
 # ---------------------------------------------------------------------------
+# 4b. _run_node_script — TimeoutExpired partial output surfaced in error message
+# ---------------------------------------------------------------------------
+
+
+def test_run_node_script_timeout_includes_partial_output(monkeypatch):
+    """When Node renderer times out, partial stdout is included in the AppError message."""
+    import subprocess
+    from app.dashboards import svg_render
+    from app.errors import AppError
+
+    monkeypatch.setattr(svg_render, "_require_script", lambda path: path)
+
+    def _fake_run(*args, **kwargs):
+        exc = subprocess.TimeoutExpired(cmd=args[0], timeout=5)
+        exc.stdout = b"partial rendered chunk"
+        exc.stderr = b""
+        raise exc
+
+    monkeypatch.setattr(svg_render.subprocess, "run", _fake_run)
+
+    with pytest.raises(AppError) as exc_info:
+        svg_render._run_node_script("fake_script.mjs", {"key": "val"}, timeout=5)
+
+    assert "partial rendered chunk" in exc_info.value.message, (
+        f"Expected partial output in message, got: {exc_info.value.message!r}"
+    )
+    assert "timed out" in exc_info.value.message.lower(), (
+        f"Expected 'timed out' in message, got: {exc_info.value.message!r}"
+    )
+
+
+def test_run_node_script_timeout_no_partial_output(monkeypatch):
+    """When Node renderer times out with no stdout, error message has no 'Partial output' suffix."""
+    import subprocess
+    from app.dashboards import svg_render
+    from app.errors import AppError
+
+    monkeypatch.setattr(svg_render, "_require_script", lambda path: path)
+
+    def _fake_run(*args, **kwargs):
+        exc = subprocess.TimeoutExpired(cmd=args[0], timeout=5)
+        exc.stdout = None
+        exc.stderr = None
+        raise exc
+
+    monkeypatch.setattr(svg_render.subprocess, "run", _fake_run)
+
+    with pytest.raises(AppError) as exc_info:
+        svg_render._run_node_script("fake_script.mjs", {"key": "val"}, timeout=5)
+
+    assert "Partial output" not in exc_info.value.message, (
+        f"Unexpected 'Partial output' in message: {exc_info.value.message!r}"
+    )
+    assert "timed out" in exc_info.value.message.lower(), (
+        f"Expected 'timed out' in message, got: {exc_info.value.message!r}"
+    )
+
+
+# ---------------------------------------------------------------------------
 # 5. compose_page_svg — assembles widget SVGs into a full page
 # ---------------------------------------------------------------------------
 

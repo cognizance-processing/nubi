@@ -438,3 +438,13 @@ class DuckDBConnector(Connector):
         for name, table in tables.items():
             # DuckDB can register a PyArrow table directly as a named relation.
             self._conn.register(name, table)
+
+    def close(self) -> None:
+        """Close the underlying DuckDB connection.
+
+        Safe to call more than once — DuckDB's own ``close()`` is idempotent.
+        """
+        try:
+            self._conn.close()
+        except Exception:  # noqa: BLE001 — best-effort; never raise from close
+            pass

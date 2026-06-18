@@ -75,6 +75,7 @@ snapshot_artifact_uri(board_id, org_id, snapshot_id, *, base_uri=None) -> str
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 import os
@@ -278,16 +279,13 @@ def _write_sidecar(
     # Upload to cloud storage when the destination is not local.
     if not is_local:
         try:
-            with open(build_path, "rb") as fh:
-                payload = fh.read()
             from app.storage.base import get_storage_client, parse_uri  # noqa: PLC0415
 
-            # The storage client is constructed from the scheme/bucket; the
-            # object KEY (relative to the bucket) is supplied to upload_bytes —
-            # the same convention the rest of app.storage uses.
+            # Stream the file via SDK multipart upload — avoids reading the
+            # entire .duckdb artifact into process memory as a bytes object.
             _scheme, _bucket, key = parse_uri(artifact_uri)
             client = get_storage_client(artifact_uri)
-            client.upload_bytes(payload, key)
+            client.upload_file(build_path, key)
         finally:
             import shutil  # noqa: PLC0415
 
@@ -393,10 +391,11 @@ async def create_snapshot(
     artifact_uri = snapshot_artifact_uri(board_id, org_id, snapshot_id, base_uri=base_uri)
     created_at = _now_iso()
 
-    artifact = _write_sidecar(
+    artifact = await asyncio.to_thread(
+        _write_sidecar,
         artifact_uri,
         widgets,
-        meta={
+        {
             "snapshot_id": snapshot_id,
             "board_id": board_id,
             "datastore": datastore,
@@ -463,10 +462,11 @@ async def refresh_snapshot(
     artifact_uri = snapshot_artifact_uri(board_id, org_id, snapshot_id, base_uri=base_uri)
     refreshed_at = _now_iso()
 
-    artifact = _write_sidecar(
+    artifact = await asyncio.to_thread(
+        _write_sidecar,
         artifact_uri,
         widgets,
-        meta={
+        {
             "snapshot_id": snapshot_id,
             "board_id": board_id,
             "datastore": existing.get("datastore"),

@@ -76,6 +76,7 @@ Router wiring (for main.py owner)
 
 from __future__ import annotations
 
+import asyncio
 import csv
 import io
 from typing import Any
@@ -272,8 +273,11 @@ async def export_board_pdf(
     )
 
     # Render page SVG via T2 (Node.js echarts-SSR).
+    # Off-loaded to a thread so the blocking subprocess.run calls inside
+    # render_board_svg do not stall the asyncio event loop.
     page_w_px, page_h_px = svg_page_size_px(resolved_page_size)
-    page_svg = render_board_svg(
+    page_svg = await asyncio.to_thread(
+        render_board_svg,
         validated_spec,
         widget_data,
         page_width_px=page_w_px,
@@ -347,7 +351,10 @@ async def export_board_pptx(
         board_id, org_id, claims={"policies": {}}, repo=repo
     )
 
-    pptx_bytes = render_board_pptx_from_data(
+    # Off-loaded to a thread — render_board_pptx_from_data calls render_widgets_svg
+    # which blocks on subprocess.run; must not run on the event loop thread.
+    pptx_bytes = await asyncio.to_thread(
+        render_board_pptx_from_data,
         validated_spec,
         widget_data,
         page_size=page_size,

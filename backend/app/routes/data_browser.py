@@ -174,10 +174,17 @@ def _build_view_sql_from_s3_views(s3_views: dict[str, str]) -> str:
     semicolon-separated ``CREATE [OR REPLACE] VIEW`` statements — each will be
     executed in order so every view is registered on the in-memory connection.
     """
-    stmts = [
-        f"CREATE OR REPLACE VIEW {name} AS SELECT * FROM read_parquet('{uri}')"
-        for name, uri in s3_views.items()
-    ]
+    _SAFE_IDENT = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+    stmts = []
+    for name, uri in s3_views.items():
+        if not _SAFE_IDENT.match(name):
+            raise ValueError(f"Invalid s3_views table name: {name!r}")
+        if not isinstance(uri, str) or not (uri.startswith("s3://") or uri.startswith("/")):
+            raise ValueError(f"Invalid s3_views URI: {uri!r}")
+        safe_uri = uri.replace("'", "''")
+        stmts.append(
+            f"CREATE OR REPLACE VIEW {name} AS SELECT * FROM read_parquet('{safe_uri}')"
+        )
     return ";\n".join(stmts)
 
 

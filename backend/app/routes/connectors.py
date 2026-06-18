@@ -171,6 +171,21 @@ _SECRET_KEYS: frozenset[str] = frozenset(
     }
 )
 
+# ── Reserved config keys — server-only, never writable by users ───────────────
+# These flags are set exclusively by server-side provisioning code (app/sample.py,
+# app/demo_bundle.py) and must NOT be overridable via the update_connector API.
+# Allowing users to set them would let them forge the demo-query-map heuristic
+# in demo_parquet.py, causing wrong query results to be returned silently.
+_RESERVED_CONFIG_KEYS: frozenset[str] = frozenset(
+    {
+        "sample",
+        "sample_id",
+        "system",
+        "editable_parquet",
+        "seeded_demo_version",
+    }
+)
+
 # ── Pydantic schemas ──────────────────────────────────────────────────────────
 
 
@@ -688,6 +703,12 @@ async def update_connector(
             assert key not in new_non_secret, (
                 f"BUG: secret key {key!r} found in update config — programming error"
             )
+
+        # Strip reserved server-only flags so users cannot forge the demo heuristic
+        # (sample, system, editable_parquet, sample_id, seeded_demo_version are set
+        # exclusively by server-side provisioning code and must not be user-writable).
+        for key in _RESERVED_CONFIG_KEYS:
+            new_non_secret.pop(key, None)
 
         existing_config.update(new_non_secret)
         fields["config"] = existing_config

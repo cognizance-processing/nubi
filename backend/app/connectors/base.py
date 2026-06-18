@@ -191,6 +191,15 @@ class Connector(ABC):
     # Optional pre-run estimate
     # ------------------------------------------------------------------
 
+    def close(self) -> None:
+        """Release any resources held by this connector.
+
+        The default implementation is a no-op.  Connectors that open an
+        explicit connection (e.g. a DuckDB file connection) should override
+        this to close it.  The caller is responsible for calling ``close()``
+        when the connector is no longer needed.
+        """
+
     def estimate(self, plan: PhysicalPlan) -> "QueryEstimate | None":
         """Return a best-effort pre-run cost/scan estimate, or ``None``.
 

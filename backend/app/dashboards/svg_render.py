@@ -148,9 +148,11 @@ def _run_node_script(
             timeout=timeout,
         )
     except subprocess.TimeoutExpired as exc:
+        partial = (exc.stdout or b"").decode("utf-8", errors="replace")[:200]
         raise AppError(
             "renderer_timeout",
-            f"Node renderer timed out after {timeout}s: {script_path!r}.",
+            f"Node renderer timed out after {timeout}s: {script_path!r}."
+            + (f" Partial output: {partial}" if partial else ""),
             503,
         ) from exc
     except OSError as exc:
@@ -512,7 +514,7 @@ async def render_board_svg_from_data(
         # Unparseable spec — render a blank page.
         parsed_spec = DashboardSpec(title=board.get("name") or board_id, widgets=[])
 
-    widget_data = await collect_board_data(board_id, org_id, claims=claims, repo=repo)
+    widget_data = await collect_board_data(board_id, org_id, claims=claims, repo=repo, board=board)
 
     return render_board_svg(
         parsed_spec,

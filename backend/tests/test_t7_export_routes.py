@@ -22,6 +22,8 @@ Tests
 8. export.pptx — 404 for unknown board_id.
 9. export.pdf — ?page_size=Letter is accepted (no crash).
 10. export.pptx — ?page_size=16:9 is accepted (no crash).
+11. export.pdf — render_board_svg is invoked via asyncio.to_thread (non-blocking).
+12. export.pptx — render_board_pptx_from_data is invoked via asyncio.to_thread (non-blocking).
 """
 
 from __future__ import annotations
@@ -420,3 +422,91 @@ class TestExportPptx:
         body = resp.json()
         assert "error" in body
         assert body["error"]["code"] == "pptx_not_installed"
+
+
+# ---------------------------------------------------------------------------
+# Non-blocking (asyncio.to_thread) contract tests
+# ---------------------------------------------------------------------------
+
+
+class TestExportNonBlocking:
+    """Verify that the heavy render calls are dispatched via asyncio.to_thread.
+
+    The route handlers must NOT call render_board_svg or
+    render_board_pptx_from_data directly on the event-loop thread.  We assert
+    this by patching asyncio.to_thread and confirming it is called with the
+    expected sync callable — the route should never reach the real function
+    except through the thread executor.
+    """
+
+    @pytest.mark.asyncio
+    async def test_pdf_render_uses_to_thread(self, export_setup):
+        """export.pdf dispatches render_board_svg via asyncio.to_thread."""
+        import asyncio  # noqa: PLC0415
+
+        client, user_id, org_id, board_id, repo = export_setup
+
+        to_thread_calls: list[Any] = []
+
+        async def _fake_to_thread(func, *args, **kwargs):  # type: ignore[override]
+            to_thread_calls.append(func)
+            # Call the function synchronously so the route can finish.
+            return func(*args, **kwargs)
+
+        with patch(
+            "app.routes.export_share.asyncio.to_thread",
+            side_effect=_fake_to_thread,
+        ), patch(
+            "app.dashboards.svg_render.render_board_svg",
+            return_value=_STUB_SVG,
+        ), patch(
+            "app.dashboards.collect.collect_board_data",
+            return_value=[],
+        ), patch(
+            "app.embedding.render_pdf.render_board_pdf",
+            return_value=b"%PDF-1.4 stub",
+        ):
+            resp = await client.get(
+                f"/api/v1/boards/{board_id}/export.pdf",
+                headers=_auth_headers(user_id),
+            )
+
+        assert resp.status_code == 200, resp.text
+        # asyncio.to_thread must have been called at least once, proving the
+        # blocking SVG render was dispatched off the event-loop thread.
+        assert len(to_thread_calls) >= 1, (
+            "asyncio.to_thread was never called in export_board_pdf; "
+            "render_board_svg would block the event loop"
+        )
+
+    @pytest.mark.asyncio
+    async def test_pptx_render_uses_to_thread(self, export_setup):
+        """export.pptx dispatches render_board_pptx_from_data via asyncio.to_thread."""
+        client, user_id, org_id, board_id, repo = export_setup
+
+        to_thread_calls: list[Any] = []
+
+        async def _fake_to_thread(func, *args, **kwargs):  # type: ignore[override]
+            to_thread_calls.append(func)
+            return func(*args, **kwargs)
+
+        with patch(
+            "app.routes.export_share.asyncio.to_thread",
+            side_effect=_fake_to_thread,
+        ), patch(
+            "app.dashboards.collect.collect_board_data",
+            return_value=[],
+        ), patch(
+            "app.embedding.render_pptx.render_board_pptx_from_data",
+            return_value=b"PK\x03\x04stub",
+        ):
+            resp = await client.get(
+                f"/api/v1/boards/{board_id}/export.pptx",
+                headers=_auth_headers(user_id),
+            )
+
+        assert resp.status_code == 200, resp.text
+        assert len(to_thread_calls) >= 1, (
+            "asyncio.to_thread was never called in export_board_pptx; "
+            "render_board_pptx_from_data would block the event loop"
+        )

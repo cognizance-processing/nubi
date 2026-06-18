@@ -338,3 +338,47 @@ def test_render_board_pptx_webgl_placeholder():
     for i in [1, 2]:
         pics = _count_picture_shapes(prs.slides[i])
         assert pics >= 1, f"Expected picture on slide {i + 1}, got {pics}"
+
+
+# ---------------------------------------------------------------------------
+# 8. _ordered_widgets — O(1) pos map: explicit order overrides natural order
+# ---------------------------------------------------------------------------
+
+
+def test_ordered_widgets_explicit_order_overrides_natural_order():
+    """Explicit `order` hints place those widgets first (bucket 0), sorted by
+    their order value; remaining widgets follow in natural spec order (bucket 1).
+    This confirms the O(1) pos-map path produces the same result as the previous
+    O(n) list.index implementation."""
+    from app.embedding.render_pptx import _ordered_widgets  # type: ignore[attr-defined]
+
+    spec = _small_spec(
+        widget_hints={
+            # Give txt1 explicit order=0 and chart1 explicit order=1.
+            # kpi1 has no explicit order — falls through to the pos-map path.
+            "txt1": {"order": 0},
+            "chart1": {"order": 1},
+        }
+    )
+
+    ordered = _ordered_widgets(spec, spec.export.model_dump(exclude_none=True))
+    ids = [w.id for w in ordered]
+
+    # Explicit-order widgets (bucket 0) come first, sorted by their order value.
+    # kpi1 (no explicit order, bucket 1) follows in natural position.
+    assert ids == ["txt1", "chart1", "kpi1"], (
+        f"Expected ['txt1', 'chart1', 'kpi1'], got {ids}"
+    )
+
+
+def test_ordered_widgets_natural_order_no_hints():
+    """Without any order hints all widgets come back in their natural spec order."""
+    from app.embedding.render_pptx import _ordered_widgets  # type: ignore[attr-defined]
+
+    spec = _small_spec()
+    ordered = _ordered_widgets(spec, spec.export.model_dump(exclude_none=True))
+    ids = [w.id for w in ordered]
+
+    assert ids == ["chart1", "kpi1", "txt1"], (
+        f"Expected natural order ['chart1', 'kpi1', 'txt1'], got {ids}"
+    )

@@ -64,7 +64,7 @@ from typing import Any
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
-from app.auth.deps import verified_identity
+from app.auth.deps import current_user, verified_identity
 from app.auth.scopes import has_scope
 from app.auth.verify import VerifiedIdentity
 from app.errors import AppError
@@ -117,7 +117,10 @@ class _EmbedTokenIn(BaseModel):
 
 
 @router.post("/embed-token", status_code=200)
-async def mint_embed_dev_token(body: _EmbedTokenIn) -> dict[str, Any]:
+async def mint_embed_dev_token(
+    body: _EmbedTokenIn,
+    _user: dict = Depends(current_user),
+) -> dict[str, Any]:
     """Mint a backend-verified HS256 embed token for local development.
 
     This endpoint is **disabled by default** and must be explicitly enabled via
@@ -159,11 +162,31 @@ async def mint_embed_dev_token(body: _EmbedTokenIn) -> dict[str, Any]:
     from app.config import get_settings  # noqa: PLC0415
 
     settings = get_settings()
+
+    # Belt-and-suspenders ENV guard: refuse to mint dev tokens in production even
+    # when EMBED_DEV_TOKEN_ENABLED has been accidentally set to true.
+    if settings.ENV == "production":
+        raise HTTPException(
+            status_code=503,
+            detail="embed-token endpoint must not be used in production.",
+        )
+
     ttl = min(max(body.ttl_minutes, 1), 1440)  # clamp to [1, 1440] minutes
     now = datetime.now(tz=timezone.utc)
     exp = now + timedelta(minutes=ttl)
 
     scopes = body.scope if body.scope else ["read:*"]
+
+    # Scope allowlist: only read: prefixes are permitted on this dev helper.
+    # write:, edit:, admin:, delete: scopes would produce fully-valid first-party
+    # tokens accepted by verified_identity — disallow them unconditionally.
+    _FORBIDDEN_SCOPE_PREFIXES = ("write:", "edit:", "admin:", "delete:")
+    for s in scopes:
+        if any(s.startswith(p) for p in _FORBIDDEN_SCOPE_PREFIXES):
+            raise HTTPException(
+                status_code=400,
+                detail=f"Scope '{s}' is not permitted on the dev embed-token endpoint.",
+            )
 
     payload: dict[str, Any] = {
         "sub": body.sub,

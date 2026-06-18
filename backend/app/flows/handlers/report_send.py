@@ -202,7 +202,7 @@ def handle(
     # honours per-schedule RLS even without a live JWT.
     render_claims: dict[str, Any] = dict(claims or {})
     if policies:
-        render_claims.setdefault("policies", policies)
+        render_claims["policies"] = policies  # task config always takes precedence
 
     # ── 4. Render + deliver ───────────────────────────────────────────────────
     sender = get_default_sender()

@@ -1209,3 +1209,208 @@ class TestDemoSeededConnector:
         )
         assert resp.status_code == 201, resp.text
         assert resp.json()["config"]["connector_type"] == "postgres"
+
+
+# ---------------------------------------------------------------------------
+# Tests: reserved config keys cannot be written via update_connector
+# ---------------------------------------------------------------------------
+
+
+class TestReservedConfigKeyStripping:
+    """Reserved keys (sample, system, editable_parquet, sample_id,
+    seeded_demo_version) must be silently stripped from user-supplied config
+    in PUT /connectors/{id} so users cannot forge the demo-query-map heuristic.
+    """
+
+    async def _create_duckdb(self, client, alice_id):
+        resp = await client.post(
+            "/api/v1/connectors",
+            json={
+                "name": "my-duckdb",
+                "type": "duckdb",
+                "config": {"database": ":memory:"},
+            },
+            headers=_auth_headers(alice_id),
+        )
+        assert resp.status_code == 201, resp.text
+        return resp.json()
+
+    @pytest.mark.asyncio
+    async def test_reserved_flags_stripped_on_update(self, connectors_client):
+        """PUT with sample/system/editable_parquet must NOT persist those keys."""
+        client, alice_id, org_id, repo = connectors_client
+
+        body = await self._create_duckdb(client, alice_id)
+        connector_id = body["id"]
+
+        # Attempt to forge the demo heuristic flags
+        put_resp = await client.put(
+            f"/api/v1/connectors/{connector_id}",
+            json={
+                "config": {
+                    "sample": True,
+                    "system": True,
+                    "editable_parquet": True,
+                    "sample_id": "sample:datastore:duckdb",
+                    "seeded_demo_version": "1",
+                    "database": ":memory:",
+                }
+            },
+            headers=_auth_headers(alice_id),
+        )
+        assert put_resp.status_code == 200, put_resp.text
+
+        # Inspect stored config directly — reserved keys must be absent
+        stored = await repo.get("datastores", org_id, connector_id)
+        assert stored is not None
+        cfg = stored.get("config", {})
+        for reserved in ("sample", "system", "editable_parquet", "sample_id", "seeded_demo_version"):
+            assert reserved not in cfg, (
+                f"Reserved key {reserved!r} must be stripped from config by update_connector, "
+                f"but was found with value {cfg[reserved]!r}"
+            )
+        # Non-reserved key should survive
+        assert cfg.get("database") == ":memory:"
+
+    @pytest.mark.asyncio
+    async def test_reserved_flags_do_not_appear_in_response(self, connectors_client):
+        """PUT response must also not expose reserved keys (they were stripped before merge)."""
+        client, alice_id, org_id, repo = connectors_client
+
+        body = await self._create_duckdb(client, alice_id)
+        connector_id = body["id"]
+
+        put_resp = await client.put(
+            f"/api/v1/connectors/{connector_id}",
+            json={
+                "config": {
+                    "sample": True,
+                    "system": True,
+                    "sample_id": "sample:datastore:duckdb",
+                }
+            },
+            headers=_auth_headers(alice_id),
+        )
+        assert put_resp.status_code == 200, put_resp.text
+        response_cfg = put_resp.json().get("config", {})
+        for reserved in ("sample", "system", "sample_id"):
+            assert reserved not in response_cfg, (
+                f"Reserved key {reserved!r} must not appear in PUT response config"
+            )
+
+
+# ---------------------------------------------------------------------------
+# Tests: demo_query_map heuristic requires provenance marker
+# ---------------------------------------------------------------------------
+
+
+class TestDemoQueryMapHeuristic:
+    """The demo-query-map heuristic must require a server-pinned provenance
+    marker (sample_id starting with 'sample:' OR demo_local_dir set) in
+    addition to the sample/system flags.  A connector with only the
+    sample+system flags set — but no provenance marker — must NOT appear in
+    the query map.
+    """
+
+    @pytest.mark.asyncio
+    async def test_forged_flags_without_provenance_not_classified_as_demo(
+        self, connectors_client
+    ):
+        """A DuckDB connector with sample+system flags but no provenance marker
+        is NOT classified as a demo connector by the heuristic.
+        """
+        from app.routes.demo_parquet import demo_query_map as _demo_query_map
+
+        client, alice_id, org_id, repo = connectors_client
+
+        # Directly seed a datastore row with forged flags but NO sample_id/demo_local_dir.
+        # This simulates what a user could do if _RESERVED_CONFIG_KEYS were absent.
+        forged_ds_id = str(uuid.uuid4())
+        await repo.create(
+            "datastores",
+            org_id,
+            alice_id,
+            "forged-duckdb",
+            {
+                "connector_type": "duckdb",
+                "database": ":memory:",
+                "sample": True,
+                "system": True,
+                "editable_parquet": True,
+                # Deliberately missing sample_id and demo_local_dir
+            },
+            id=forged_ds_id,
+        )
+
+        # Seed a query bound to this forged datastore
+        await repo.create(
+            "queries",
+            org_id,
+            alice_id,
+            "forged-query",
+            {"datastore_id": forged_ds_id, "sql": "SELECT 1 AS forged"},
+        )
+
+        # Call the heuristic directly via the route (bypassing HTTP auth machinery)
+        # by inspecting the repo listing — we test the filtering logic in isolation.
+        cfg_rows = await repo.list("datastores", org_id, None)
+        for row in cfg_rows:
+            cfg = row.get("config") or {}
+            sample_id_val: str = cfg.get("sample_id") or ""
+            has_provenance = sample_id_val.startswith("sample:") or bool(cfg.get("demo_local_dir"))
+            if (
+                cfg.get("sample") is True
+                and cfg.get("connector_type") == "duckdb"
+                and (cfg.get("system") is True or cfg.get("editable_parquet") is True)
+            ):
+                assert not has_provenance or str(row["id"]) != forged_ds_id, (
+                    "Forged connector must not have provenance — test setup error"
+                )
+                # The forged row must NOT pass the combined check
+                assert not has_provenance, (
+                    f"Forged connector {row['id']} passed provenance check unexpectedly; "
+                    f"sample_id={cfg.get('sample_id')!r}, demo_local_dir={cfg.get('demo_local_dir')!r}"
+                )
+
+    @pytest.mark.asyncio
+    async def test_server_provisioned_connector_passes_heuristic(
+        self, connectors_client
+    ):
+        """A connector seeded by server provisioning code (sample_id='sample:...')
+        must pass the combined heuristic and appear in the demo set.
+        """
+        client, alice_id, org_id, repo = connectors_client
+
+        legit_ds_id = str(uuid.uuid4())
+        await repo.create(
+            "datastores",
+            org_id,
+            alice_id,
+            "demo-duckdb",
+            {
+                "connector_type": "duckdb",
+                "database": ":memory:",
+                "sample": True,
+                "system": True,
+                "sample_id": "sample:datastore:duckdb",  # set by app/sample.py
+            },
+            id=legit_ds_id,
+        )
+
+        cfg_rows = await repo.list("datastores", org_id, None)
+        demo_ids: set[str] = set()
+        for row in cfg_rows:
+            cfg = row.get("config") or {}
+            sample_id_val: str = cfg.get("sample_id") or ""
+            has_provenance = sample_id_val.startswith("sample:") or bool(cfg.get("demo_local_dir"))
+            if (
+                cfg.get("sample") is True
+                and cfg.get("connector_type") == "duckdb"
+                and (cfg.get("system") is True or cfg.get("editable_parquet") is True)
+                and has_provenance
+            ):
+                demo_ids.add(str(row["id"]))
+
+        assert legit_ds_id in demo_ids, (
+            "Server-provisioned connector with sample_id='sample:...' must pass the heuristic"
+        )

@@ -14,13 +14,20 @@ Coverage
    b. The handler re-runs the collector and rewrites the SAME artifact URI in
       place (file mtime/content changes; URI unchanged), bumping refreshed_at.
 
+3. Cloud-upload path: upload_file is used (not upload_bytes) so the full .duckdb
+   artifact is never read into memory, and _write_sidecar runs in a thread
+   (not on the event loop) via asyncio.to_thread.
+
 All storage is local-path; the demo DuckDB connector (no datastore) supplies
 rows so there is no network access.
 """
 
 from __future__ import annotations
 
+import asyncio
 import os
+import threading
+from unittest.mock import MagicMock, patch
 
 import duckdb
 import pytest
@@ -209,3 +216,266 @@ async def test_snapshot_refresh_rewrites_artifact_in_place(
     assert result["snapshot_id"] == snapshot_id
     assert result["artifact_uri"] == uri
     assert os.path.exists(local_path)
+
+
+# ---------------------------------------------------------------------------
+# Fix: upload_file instead of upload_bytes; _write_sidecar off the event loop
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_write_sidecar_uses_upload_file_not_upload_bytes(
+    repo: InMemoryRepo, tmp_path
+) -> None:
+    """Cloud upload path must call upload_file (streamed) not upload_bytes (full read).
+
+    We fake a cloud URI by patching get_storage_client so no real cloud SDK is
+    needed.  The mock storage client records which methods were called so we can
+    assert upload_bytes was never used and upload_file was called exactly once
+    with the correct key.
+    """
+    from app.embedding.snapshot import _write_sidecar
+    from app.storage.base import parse_uri
+
+    # Build a fake cloud URI — we use a fake "s3://" prefix but intercept the
+    # storage client entirely so no boto3 call is made.
+    artifact_uri = "s3://test-bucket/org-1/board-1/snap-1.duckdb"
+
+    mock_client = MagicMock()
+    # upload_file should succeed (default MagicMock return value is fine).
+
+    with patch("app.storage.base.get_storage_client", return_value=mock_client) as _gc, \
+         patch("app.storage.base.parse_uri", wraps=parse_uri) as _pu:
+        result = _write_sidecar(
+            artifact_uri,
+            [],   # no widgets — we only care about the upload branch
+            meta={
+                "snapshot_id": "snap-1",
+                "board_id": "board-1",
+                "datastore": None,
+                "policy_fingerprint": "none",
+                "created_at": "2026-01-01T00:00:00+00:00",
+            },
+        )
+
+    # upload_file called once; upload_bytes never called.
+    mock_client.upload_file.assert_called_once()
+    mock_client.upload_bytes.assert_not_called()
+
+    # The key argument to upload_file must be the object key (no scheme/bucket).
+    _scheme, _bucket, key = parse_uri(artifact_uri)
+    call_args = mock_client.upload_file.call_args
+    assert call_args[0][1] == key or call_args[1].get("key") == key, (
+        f"upload_file was called with wrong key: {call_args}"
+    )
+
+    # Return value is still the manifest dict.
+    assert "tables" in result
+
+
+@pytest.mark.asyncio
+async def test_write_sidecar_runs_in_thread_not_event_loop(
+    repo: InMemoryRepo, tmp_path
+) -> None:
+    """_write_sidecar must be dispatched via asyncio.to_thread so it never runs
+    on the event-loop thread.  We verify this by capturing the thread identity
+    inside _write_sidecar and comparing it to the event-loop thread.
+    """
+    import app.embedding.snapshot as snap_mod
+
+    event_loop_thread_id = threading.get_ident()
+    sidecar_thread_ids: list[int] = []
+
+    original_write = snap_mod._write_sidecar
+
+    def capturing_write(*args, **kwargs):
+        sidecar_thread_ids.append(threading.get_ident())
+        return original_write(*args, **kwargs)
+
+    base_uri = "file://" + str(tmp_path)
+    board_id = await _make_board(repo)
+
+    with patch.object(snap_mod, "_write_sidecar", side_effect=capturing_write):
+        await snap_mod.create_snapshot(
+            board_id,
+            _ORG,
+            claims={"policies": {}},
+            repo=repo,
+            created_by=_USER,
+            base_uri=base_uri,
+        )
+
+    assert len(sidecar_thread_ids) == 1, "Expected exactly one _write_sidecar call"
+    assert sidecar_thread_ids[0] != event_loop_thread_id, (
+        "_write_sidecar ran on the event-loop thread — asyncio.to_thread wrapper missing"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Fix: GET /embed/frozen/{id} meters embedded sessions for embed tokens
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_get_frozen_view_meters_embed_session(repo: InMemoryRepo, tmp_path) -> None:
+    """embed token hitting GET /embed/frozen/{id} must call enforce_quota +
+    record_usage exactly once (tier='embed_frozen'), mirroring embed.py:353-364.
+
+    First-party ('access') tokens must NOT trigger metering.
+    """
+    from unittest.mock import AsyncMock, call
+
+    from app.auth.verify import VerifiedIdentity
+    from app.routes.snapshot import get_frozen_view
+
+    # ── Seed a board + snapshot ───────────────────────────────────────────────
+    base_uri = "file://" + str(tmp_path)
+    board_id = await _make_board(repo)
+    descriptor = await create_snapshot(
+        board_id,
+        _ORG,
+        claims={"policies": {}},
+        repo=repo,
+        created_by=_USER,
+        base_uri=base_uri,
+    )
+    snapshot_id = descriptor["id"]
+
+    embed_identity = VerifiedIdentity(
+        kind="embed",
+        user_id="embed-user-frozen",
+        org=_ORG,
+        project=None,
+        roles=["viewer"],
+        policies={},
+        scope=["read:query"],
+        embed_origin="https://host.example",
+        datastore=None,
+        raw_claims={},
+    )
+
+    mock_enforce = AsyncMock(return_value=None)
+    mock_record = AsyncMock(return_value=None)
+
+    with patch("app.routes.snapshot.enforce_quota", mock_enforce, create=True), \
+         patch("app.routes.snapshot.record_usage", mock_record, create=True):
+        # The lazy imports inside the guard resolve the names at call time, so we
+        # patch via sys.modules instead.
+        import sys
+        import types
+
+        fake_features = types.ModuleType("app.features")
+        fake_features.enforce_quota = mock_enforce  # type: ignore[attr-defined]
+        fake_metering = types.ModuleType("app.compute.metering")
+        fake_metering.record_usage = mock_record  # type: ignore[attr-defined]
+
+        orig_features = sys.modules.get("app.features")
+        orig_metering = sys.modules.get("app.compute.metering")
+        sys.modules["app.features"] = fake_features
+        sys.modules["app.compute.metering"] = fake_metering
+
+        try:
+            result = await get_frozen_view(
+                dashboard_id=board_id,
+                snapshot_id=snapshot_id,
+                identity=embed_identity,
+                repo=repo,
+            )
+        finally:
+            if orig_features is None:
+                sys.modules.pop("app.features", None)
+            else:
+                sys.modules["app.features"] = orig_features
+            if orig_metering is None:
+                sys.modules.pop("app.compute.metering", None)
+            else:
+                sys.modules["app.compute.metering"] = orig_metering
+
+    # enforce_quota called once for embedded_sessions
+    mock_enforce.assert_awaited_once_with(_ORG, "embedded_sessions", amount=1.0)
+
+    # record_usage called once with the frozen tier
+    mock_record.assert_awaited_once_with(
+        kind="embedded_session",
+        user_id="embed-user-frozen",
+        org_id=_ORG,
+        units=1.0,
+        tier="embed_frozen",
+    )
+
+    # Response shape unchanged
+    assert result["frozen"] is True
+    assert result["snapshot_id"] == snapshot_id
+
+
+@pytest.mark.asyncio
+async def test_get_frozen_view_no_meter_for_first_party(repo: InMemoryRepo, tmp_path) -> None:
+    """First-party ('access') tokens must NOT trigger billing for frozen views."""
+    from unittest.mock import AsyncMock
+
+    from app.auth.verify import VerifiedIdentity
+    from app.repos.memory import InMemoryRepo
+    from app.routes.snapshot import get_frozen_view
+
+    base_uri = "file://" + str(tmp_path)
+    board_id = await _make_board(repo)
+    descriptor = await create_snapshot(
+        board_id,
+        _ORG,
+        claims={"policies": {}},
+        repo=repo,
+        created_by=_USER,
+        base_uri=base_uri,
+    )
+
+    access_identity = VerifiedIdentity(
+        kind="access",
+        user_id=_USER,
+        org=_ORG,
+        project=None,
+        roles=["editor"],
+        policies={},
+        scope=["read:query"],
+        embed_origin=None,
+        datastore=None,
+        raw_claims={},
+    )
+
+    mock_enforce = AsyncMock(return_value=None)
+    mock_record = AsyncMock(return_value=None)
+
+    import sys
+    import types
+
+    fake_features = types.ModuleType("app.features")
+    fake_features.enforce_quota = mock_enforce  # type: ignore[attr-defined]
+    fake_metering = types.ModuleType("app.compute.metering")
+    fake_metering.record_usage = mock_record  # type: ignore[attr-defined]
+
+    orig_features = sys.modules.get("app.features")
+    orig_metering = sys.modules.get("app.compute.metering")
+    sys.modules["app.features"] = fake_features
+    sys.modules["app.compute.metering"] = fake_metering
+
+    # For first-party path, get_user_org is called — short-circuit it.
+    with patch("app.routes.resources.get_user_org", AsyncMock(return_value=_ORG)):
+        try:
+            result = await get_frozen_view(
+                dashboard_id=board_id,
+                snapshot_id=descriptor["id"],
+                identity=access_identity,
+                repo=repo,
+            )
+        finally:
+            if orig_features is None:
+                sys.modules.pop("app.features", None)
+            else:
+                sys.modules["app.features"] = orig_features
+            if orig_metering is None:
+                sys.modules.pop("app.compute.metering", None)
+            else:
+                sys.modules["app.compute.metering"] = orig_metering
+
+    mock_enforce.assert_not_awaited()
+    mock_record.assert_not_awaited()
+    assert result["frozen"] is True
