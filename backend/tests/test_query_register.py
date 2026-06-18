@@ -46,8 +46,16 @@ def _parse_arrow(content: bytes):
 
 @pytest_asyncio.fixture
 async def reg_client(app, fake_db):
-    """HTTPX client with a seeded user for the register-query tests."""
+    """HTTPX client with a seeded user + org for the register-query tests.
+
+    An InMemoryRepo is injected so that org resolution succeeds — this means
+    GET /query/registry correctly scopes to the user's org (fail-closed fix).
+    """
+    from app.repos.memory import InMemoryRepo
+    from app.repos.provider import set_repo
+
     user_id = str(uuid.uuid4())
+    org_id = str(uuid.uuid4())
     fake_db.users[user_id] = {
         "id": user_id,
         "email": "reg_tester@example.com",
@@ -56,6 +64,10 @@ async def reg_client(app, fake_db):
         "email_verified": True,
         "created_at": "2024-01-01T00:00:00+00:00",
     }
+    repo = InMemoryRepo()
+    repo.seed_org_member(org_id=org_id, user_id=user_id)
+    set_repo(repo)
+
     transport = ASGITransport(app=app)
     async with AsyncClient(
         transport=transport,
@@ -63,6 +75,8 @@ async def reg_client(app, fake_db):
         follow_redirects=False,
     ) as ac:
         yield ac, user_id
+
+    set_repo(None)
 
 
 # ---------------------------------------------------------------------------
@@ -314,7 +328,10 @@ async def test_registered_query_appears_in_list(reg_client):
     client, user_id = reg_client
     headers = _auth_headers(user_id)
 
-    unique_id = f"test_list_visible_{uuid.uuid4().hex[:8]}"
+    # Use a UUID id so the query is persisted to the repo and org-scoped list
+    # picks it up.  Slug-only ids are registry-only (not persisted) and are
+    # intentionally excluded from first-party list responses.
+    unique_id = str(uuid.uuid4())
     await client.post(
         "/api/v1/query/registry",
         json={
@@ -395,3 +412,101 @@ async def test_embed_token_cannot_register(reg_client):
     # Embed tokens are rejected (403 forbidden OR 401 depending on verify_token).
     # The route itself raises 403 when it sees kind='embed'.
     assert resp.status_code in (401, 403), resp.text
+
+
+# ---------------------------------------------------------------------------
+# (11) Security: registry fallback NEVER returns cross-org SQL
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_registry_fallback_does_not_leak_cross_org_sql() -> None:
+    """GET /query/registry exception path must fail closed (empty list).
+
+    When org/project resolution raises (e.g. repo unavailable), the old code
+    set row_ids=None which skipped the filter and leaked all orgs' SQL.  The
+    fix sets row_ids=set() so the filter returns nothing.
+    """
+    from unittest.mock import AsyncMock, MagicMock
+
+    from fastapi import Request
+
+    from app.auth.verify import VerifiedIdentity
+    from app.queries.registry import get_query_registry, reset_for_tests
+    from app.repos.provider import set_repo
+    from app.routes.query import list_query_registry
+
+    # ── Seed two registry entries that would appear in an unfiltered list ──────
+    reset_for_tests()
+    registry = get_query_registry()
+    registry.register(
+        id="cross_org_secret_q",
+        sql="SELECT secret FROM other_org_table",
+        name="Other-org secret",
+    )
+    registry.register(
+        id="cross_org_secret_q2",
+        sql="SELECT classified FROM rival_org",
+        name="Rival org data",
+    )
+
+    # ── Repo whose list() raises to trigger the exception path ────────────────
+    bad_repo = MagicMock()
+    bad_repo.list = AsyncMock(side_effect=RuntimeError("db unavailable"))
+    set_repo(bad_repo)
+
+    # ── First-party identity (kind='access') — org resolution will call repo ──
+    identity = VerifiedIdentity(
+        kind="access",
+        user_id="user-cross-org-test",
+        org=None,
+        project=None,
+        roles=["editor"],
+        policies={},
+        scope=["read:query"],
+        embed_origin=None,
+        datastore=None,
+        raw_claims={},
+    )
+
+    # Build a minimal Request stub (only used for header inspection).
+    mock_request = MagicMock(spec=Request)
+    mock_request.headers = {}
+
+    # Patch the resolve_org_id helper so it raises (simulating unavailable repo).
+    import sys
+    import types
+
+    fake_org_mod = types.ModuleType("app.routes._org")
+
+    async def _failing_resolve_org_id(*_a, **_kw):
+        raise RuntimeError("org resolution failed")
+
+    async def _failing_resolve_project_filter(*_a, **_kw):
+        raise RuntimeError("project resolution failed")
+
+    fake_org_mod.resolve_org_id = _failing_resolve_org_id  # type: ignore[attr-defined]
+    fake_org_mod.resolve_project_filter = _failing_resolve_project_filter  # type: ignore[attr-defined]
+
+    orig = sys.modules.get("app.routes._org")
+    sys.modules["app.routes._org"] = fake_org_mod
+    try:
+        result = await list_query_registry(request=mock_request, identity=identity)
+    finally:
+        if orig is None:
+            sys.modules.pop("app.routes._org", None)
+        else:
+            sys.modules["app.routes._org"] = orig
+        reset_for_tests()
+
+    # The response must be empty — no cross-org SQL must leak.
+    returned_ids = [q["id"] for q in result["queries"]]
+    assert "cross_org_secret_q" not in returned_ids, (
+        "registry fallback leaked cross-org SQL (cross_org_secret_q)"
+    )
+    assert "cross_org_secret_q2" not in returned_ids, (
+        "registry fallback leaked cross-org SQL (cross_org_secret_q2)"
+    )
+    assert result["queries"] == [], (
+        f"registry fallback must return empty list on error, got: {returned_ids}"
+    )

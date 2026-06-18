@@ -29,11 +29,24 @@ Security model (unchanged from the exports)
 
 from __future__ import annotations
 
+import asyncio
+import logging
+import os
 from typing import Any
 
 from app.errors import AppError
 from app.queries.registry import ensure_persisted_query, get_query_registry
 from app.repos.provider import Repo
+
+logger = logging.getLogger(__name__)
+
+# Maximum rows materialised per widget into Python memory.
+# Override via NUBI_COLLECT_ROW_CAP env-var (integer).  0 = unlimited.
+_DEFAULT_ROW_CAP = 100_000
+_ROW_CAP: int = int(os.environ.get("NUBI_COLLECT_ROW_CAP", _DEFAULT_ROW_CAP))
+
+# Maximum concurrent widget queries per board collection run.
+_WIDGET_CONCURRENCY = 8
 
 
 # ---------------------------------------------------------------------------
@@ -133,9 +146,18 @@ async def run_query_rows(
     try:
         arrow_table = connector.execute(physical_plan)
         columns = list(arrow_table.schema.names)
-        rows: list[list[Any]] = []
-        for record in arrow_table.to_pylist():
-            rows.append([record.get(c) for c in columns])
+        raw_records = arrow_table.to_pylist()
+        cap = _ROW_CAP
+        if cap > 0 and len(raw_records) > cap:
+            logger.warning(
+                "collect: widget query_id=%r returned %d rows, truncating to %d "
+                "(set NUBI_COLLECT_ROW_CAP to raise limit)",
+                query_id,
+                len(raw_records),
+                cap,
+            )
+            raw_records = raw_records[:cap]
+        rows: list[list[Any]] = [[record.get(c) for c in columns] for record in raw_records]
         return columns, rows
     finally:
         # Only close connectors that were freshly created for this query
@@ -288,8 +310,7 @@ async def collect_board_data(
     # RLS comes from the verified token's policies claim only.
     policies: dict[str, Any] = dict((claims or {}).get("policies") or {})
 
-    out: list[dict[str, Any]] = []
-    for t in targets:
+    async def _fetch_one(t: dict[str, str]) -> dict[str, Any]:
         entry: dict[str, Any] = {"widget_id": t["widget_id"], "query_id": t["query_id"]}
         try:
             columns, rows = await run_query_rows(t["query_id"], org_id, repo, policies)
@@ -299,6 +320,18 @@ async def collect_board_data(
             entry["error"] = exc.code
         except Exception as exc:  # noqa: BLE001 — best-effort collection
             entry["error"] = f"export_failed: {exc.__class__.__name__}"
-        out.append(entry)
+        return entry
+
+    # Run widget queries concurrently (bounded by _WIDGET_CONCURRENCY) while
+    # preserving the original target order in the returned list.
+    semaphore = asyncio.Semaphore(_WIDGET_CONCURRENCY)
+
+    async def _fetch_guarded(t: dict[str, str]) -> dict[str, Any]:
+        async with semaphore:
+            return await _fetch_one(t)
+
+    out: list[dict[str, Any]] = list(
+        await asyncio.gather(*(_fetch_guarded(t) for t in targets))
+    )
 
     return out

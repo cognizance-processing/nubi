@@ -308,12 +308,20 @@ async def get_frozen_view(
             )
         descriptor = max(snaps, key=lambda s: s.get("refreshed_at") or s.get("created_at") or "")
 
+    # Redact the raw storage URI from the public response — the s3:// / file://
+    # path is an internal implementation detail.  Callers receive only the
+    # opaque fetch endpoint and the table manifest; the artifact is streamed via
+    # the /embed/artifact/{snapshot_id} endpoint (or the viewer fetches it
+    # through its own signed-URL flow), never exposed verbatim here.
+    raw_artifact = descriptor["artifact"]
+    safe_artifact = {k: v for k, v in raw_artifact.items() if k != "uri"}
+
     return {
         "dashboard_id": dashboard_id,
         "snapshot_id": descriptor["id"],
         "frozen": True,
         "spec": descriptor.get("spec"),
-        "artifact": descriptor["artifact"],
+        "artifact": safe_artifact,
         "refreshed_at": descriptor.get("refreshed_at"),
         "policy_fingerprint": descriptor.get("policy_fingerprint"),
     }

@@ -361,3 +361,69 @@ def test_compose_page_svg():
     # Page dimensions should be positive.
     assert result["page_width_px"] > 0
     assert result["page_height_px"] > 0
+
+
+# ---------------------------------------------------------------------------
+# 6. Concurrency limiter — no more than N Node processes run simultaneously
+# ---------------------------------------------------------------------------
+
+
+def test_node_semaphore_caps_concurrency(monkeypatch):
+    """_run_node_script never holds more than _NODE_SEMAPHORE.value concurrent
+    Node subprocesses.  We replace subprocess.run with a slow fake that records
+    the peak concurrency and verify it stays within the semaphore bound.
+    """
+    import threading
+    import time
+    from app.dashboards import svg_render
+    from app.errors import AppError
+
+    # Install a small test semaphore so the test runs quickly regardless of CPU count.
+    cap = 3
+    test_sem = threading.BoundedSemaphore(cap)
+    monkeypatch.setattr(svg_render, "_NODE_SEMAPHORE", test_sem)
+    monkeypatch.setattr(svg_render, "_require_script", lambda path: path)
+    monkeypatch.setattr(svg_render, "_require_node", lambda: "node")
+
+    peak_concurrency = 0
+    active_lock = threading.Lock()
+    active_count = 0
+
+    def _slow_run(*args, **kwargs):
+        nonlocal peak_concurrency, active_count
+        with active_lock:
+            active_count += 1
+            if active_count > peak_concurrency:
+                peak_concurrency = active_count
+        time.sleep(0.05)  # simulate slow Node startup
+        with active_lock:
+            active_count -= 1
+
+        class _Result:
+            returncode = 0
+            stdout = b'{"widgets": []}'
+            stderr = b""
+
+        return _Result()
+
+    monkeypatch.setattr(svg_render.subprocess, "run", _slow_run)
+
+    errors: list[Exception] = []
+
+    def _call():
+        try:
+            svg_render._run_node_script("fake.mjs", {"widgets": []})
+        except Exception as exc:  # noqa: BLE001
+            errors.append(exc)
+
+    # Launch more threads than the cap.
+    threads = [threading.Thread(target=_call) for _ in range(cap * 3)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+
+    assert not errors, f"Unexpected errors: {errors}"
+    assert peak_concurrency <= cap, (
+        f"Peak concurrency {peak_concurrency} exceeded semaphore cap {cap}"
+    )

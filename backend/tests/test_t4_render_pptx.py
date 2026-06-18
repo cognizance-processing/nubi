@@ -382,3 +382,78 @@ def test_ordered_widgets_natural_order_no_hints():
     assert ids == ["chart1", "kpi1", "txt1"], (
         f"Expected natural order ['chart1', 'kpi1', 'txt1'], got {ids}"
     )
+
+
+# ---------------------------------------------------------------------------
+# 9. render_board_pptx_from_data — real widget data produces non-empty slides
+# ---------------------------------------------------------------------------
+
+
+def test_render_board_pptx_from_data_uses_widget_data():
+    """render_board_pptx_from_data with real widget_data must NOT produce an
+    empty skeleton — it must forward the data to the SVG renderer so each slide
+    contains widget content.
+
+    We stub render_widgets_svg to return a minimal SVG per widget and assert:
+    1. The stub is called with a non-empty payloads list (data was wired in).
+    2. The resulting PPTX contains the expected number of slides.
+    3. Each slide has at least one picture shape (the SVG was embedded).
+
+    This regression-tests the bug where widget_data=[] was hardcoded, producing
+    a data-free skeleton PPTX.
+    """
+    from unittest.mock import patch
+
+    from app.embedding.render_pptx import render_board_pptx_from_data
+
+    spec = _small_spec()
+
+    # Minimal widget data (one entry per widget that has a query_id).
+    # chart1 and kpi1 have query_ids; txt1 does not.
+    fake_widget_data = [
+        {
+            "widget_id": "chart1",
+            "query_id": "q1",
+            "columns": ["region", "revenue"],
+            "rows": [["North", 100], ["South", 200]],
+        },
+        {
+            "widget_id": "kpi1",
+            "query_id": "q1",
+            "columns": ["revenue"],
+            "rows": [[300]],
+        },
+    ]
+
+    captured_payloads: list[list] = []
+
+    def _fake_render_widgets_svg(payloads, *, timeout=60.0):
+        # Record what was passed in, then return a stub SVG per widget.
+        captured_payloads.append(list(payloads))
+        return [
+            {"id": p["id"], "svg": _SIMPLE_SVG, "webgl": False}
+            for p in payloads
+        ]
+
+    with patch(
+        "app.dashboards.svg_render.render_widgets_svg",
+        side_effect=_fake_render_widgets_svg,
+    ):
+        raw = render_board_pptx_from_data(spec, widget_data=fake_widget_data)
+
+    assert isinstance(raw, bytes) and len(raw) > 0
+
+    # render_widgets_svg must have been called with non-empty payloads.
+    assert len(captured_payloads) == 1, "render_widgets_svg should be called once"
+    assert len(captured_payloads[0]) > 0, (
+        "render_widgets_svg was called with empty payloads — widget data was not wired in"
+    )
+
+    prs = _parse_pptx(raw)
+    # Spec has 3 widgets (chart1, kpi1, txt1) → 3 slides.
+    assert len(prs.slides) == 3, f"Expected 3 slides, got {len(prs.slides)}"
+
+    # Each slide should have a picture shape (SVG embedded from stub).
+    for i, slide in enumerate(prs.slides):
+        pics = _count_picture_shapes(slide)
+        assert pics >= 1, f"Slide {i + 1}: expected a picture shape (real SVG), got 0"

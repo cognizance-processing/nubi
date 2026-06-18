@@ -479,3 +479,97 @@ async def test_get_frozen_view_no_meter_for_first_party(repo: InMemoryRepo, tmp_
     mock_enforce.assert_not_awaited()
     mock_record.assert_not_awaited()
     assert result["frozen"] is True
+
+
+# ---------------------------------------------------------------------------
+# Security: GET /embed/frozen/{id} must NOT return the raw storage URI
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_frozen_response_redacts_storage_uri(repo: InMemoryRepo, tmp_path) -> None:
+    """GET /embed/frozen/{id} must never return the raw s3:// / file:// artifact URI.
+
+    The artifact dict in the response must omit the 'uri' key so that internal
+    bucket paths / filesystem locations are not exposed to embed callers.
+    The 'format' and 'tables' keys must still be present (viewer still needs them).
+    """
+    from app.auth.verify import VerifiedIdentity
+    from app.routes.snapshot import get_frozen_view
+
+    base_uri = "file://" + str(tmp_path)
+    board_id = await _make_board(repo)
+    descriptor = await create_snapshot(
+        board_id,
+        _ORG,
+        claims={"policies": {}},
+        repo=repo,
+        created_by=_USER,
+        base_uri=base_uri,
+    )
+    snapshot_id = descriptor["id"]
+
+    # Verify the descriptor itself DOES contain the uri (internal state is fine).
+    assert "uri" in descriptor["artifact"], "fixture sanity: descriptor must have uri"
+    raw_uri = descriptor["artifact"]["uri"]
+    assert raw_uri.startswith("file://"), "fixture sanity: uri must be a file:// path"
+
+    embed_identity = VerifiedIdentity(
+        kind="embed",
+        user_id="embed-user-uri-test",
+        org=_ORG,
+        project=None,
+        roles=["viewer"],
+        policies={},
+        scope=["read:query"],
+        embed_origin="https://host.example",
+        datastore=None,
+        raw_claims={},
+    )
+
+    import sys
+    import types
+    from unittest.mock import AsyncMock
+
+    fake_features = types.ModuleType("app.features")
+    fake_features.enforce_quota = AsyncMock(return_value=None)  # type: ignore[attr-defined]
+    fake_metering = types.ModuleType("app.compute.metering")
+    fake_metering.record_usage = AsyncMock(return_value=None)  # type: ignore[attr-defined]
+
+    orig_features = sys.modules.get("app.features")
+    orig_metering = sys.modules.get("app.compute.metering")
+    sys.modules["app.features"] = fake_features
+    sys.modules["app.compute.metering"] = fake_metering
+    try:
+        result = await get_frozen_view(
+            dashboard_id=board_id,
+            snapshot_id=snapshot_id,
+            identity=embed_identity,
+            repo=repo,
+        )
+    finally:
+        if orig_features is None:
+            sys.modules.pop("app.features", None)
+        else:
+            sys.modules["app.features"] = orig_features
+        if orig_metering is None:
+            sys.modules.pop("app.compute.metering", None)
+        else:
+            sys.modules["app.compute.metering"] = orig_metering
+
+    artifact = result["artifact"]
+
+    # The raw storage URI must NOT appear anywhere in the response artifact.
+    assert "uri" not in artifact, (
+        f"frozen response leaked raw storage URI in artifact['uri']: {artifact.get('uri')!r}"
+    )
+    # Ensure the raw path string itself isn't embedded under another key.
+    assert raw_uri not in str(artifact), (
+        f"frozen response leaked raw storage URI string inside artifact: {artifact!r}"
+    )
+
+    # Viewer-needed fields must still be present.
+    assert "format" in artifact, "artifact must retain 'format'"
+    assert "tables" in artifact, "artifact must retain 'tables'"
+    assert result["frozen"] is True
+    assert result["snapshot_id"] == snapshot_id

@@ -42,6 +42,7 @@ from __future__ import annotations
 import json
 import os
 import subprocess
+import threading
 from typing import Any
 
 from app.dashboards.spec import DashboardSpec, get_surface_layout
@@ -66,6 +67,20 @@ _DEFAULT_GAP_PX = 8
 # render_board_svg; these are per-widget fallbacks when no layout is known).
 _DEFAULT_WIDGET_WIDTH_PX = 800
 _DEFAULT_WIDGET_HEIGHT_PX = 400
+
+# ---------------------------------------------------------------------------
+# Concurrency limiter — cap concurrent Node subprocesses at ~2× CPU count.
+# Each export spawns up to two Node processes (SSR + composer); this semaphore
+# prevents unbounded forking under concurrent export requests.
+# ---------------------------------------------------------------------------
+
+def _make_node_semaphore() -> threading.BoundedSemaphore:
+    cpu = os.cpu_count() or 2
+    return threading.BoundedSemaphore(max(2, cpu * 2))
+
+
+# Module-level singleton; tests may replace this to verify the cap.
+_NODE_SEMAPHORE: threading.BoundedSemaphore = _make_node_semaphore()
 
 
 # ---------------------------------------------------------------------------
@@ -141,12 +156,13 @@ def _run_node_script(
 
     input_bytes = json.dumps(payload).encode("utf-8")
     try:
-        result = subprocess.run(
-            [node_bin, script_path],
-            input=input_bytes,
-            capture_output=True,
-            timeout=timeout,
-        )
+        with _NODE_SEMAPHORE:
+            result = subprocess.run(
+                [node_bin, script_path],
+                input=input_bytes,
+                capture_output=True,
+                timeout=timeout,
+            )
     except subprocess.TimeoutExpired as exc:
         partial = (exc.stdout or b"").decode("utf-8", errors="replace")[:200]
         raise AppError(

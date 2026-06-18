@@ -1801,8 +1801,8 @@ async def list_query_registry(
             _project_id = await _resolve_project_filter(_org_id, request)
             rows = await repo.list("queries", _org_id, _project_id)
             row_ids = {str(r["id"]) for r in rows}
-    except Exception:  # noqa: BLE001 — scoping unavailable → unfiltered list.
-        row_ids = None
+    except Exception:  # noqa: BLE001 — scoping unavailable → fail closed (empty).
+        row_ids = set()  # fail closed: never leak cross-org SQL on error
 
     if row_ids is not None:
         entries = [

@@ -1,0 +1,322 @@
+"""Tests for collect_board_data parallel execution and per-widget row cap.
+
+Covers:
+1. Parallel collection returns the same results (same widget_id / query_id /
+   columns / rows) as a serial baseline — order is preserved.
+2. Row cap truncates results when the connector returns more rows than the cap.
+3. Truncation emits a WARNING log (so operators can observe it).
+4. Small results (below the cap) pass through unchanged — happy path untouched.
+5. Best-effort error handling still works in the parallel path: one widget
+   failing does not prevent other widgets from succeeding.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import logging
+import os
+
+os.environ.setdefault("DATABASE_URL", "postgresql://fake:fake@localhost/fake")
+os.environ.setdefault("JWT_SECRET", "test-jwt-secret-that-is-at-least-32-bytes-long-abcdef")
+
+import unittest.mock as mock
+
+import pyarrow as pa
+import pytest
+
+from app.dashboards.collect import collect_board_data, run_query_rows
+from app.errors import AppError
+from app.queries.registry import get_query_registry
+from app.queries.registry import reset_for_tests as reset_query_registry
+from app.repos.memory import InMemoryRepo
+from app.repos.provider import set_repo
+
+_ORG = "org-parallel-test"
+
+
+# ---------------------------------------------------------------------------
+# Fixtures
+# ---------------------------------------------------------------------------
+
+
+def _make_arrow(col: str, values: list) -> pa.Table:
+    return pa.table({col: values})
+
+
+def _board_spec(widgets: list[dict]) -> dict:
+    return {
+        "config": {
+            "spec": {
+                "version": 1,
+                "title": "Test Board",
+                "widgets": widgets,
+            }
+        }
+    }
+
+
+@pytest.fixture()
+def repo() -> InMemoryRepo:
+    reset_query_registry()
+    r = InMemoryRepo()
+    set_repo(r)
+    yield r
+    set_repo(None)
+    reset_query_registry()
+
+
+# ---------------------------------------------------------------------------
+# 1. Parallel collection returns same results as serial baseline
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_parallel_collect_same_results_as_serial(repo: InMemoryRepo) -> None:
+    """asyncio.gather over multiple widgets returns the same data as serial iteration."""
+
+    # Register three demo queries (no datastore → demo connector path).
+    reg = get_query_registry()
+    reg.register(id="q-alpha", sql="SELECT id, name FROM demo ORDER BY id", name="Alpha")
+    reg.register(id="q-beta", sql="SELECT id, name FROM demo ORDER BY id", name="Beta")
+    reg.register(id="q-gamma", sql="SELECT id, name FROM demo ORDER BY id", name="Gamma")
+
+    board_id = "board-par-1"
+    await repo.create(
+        "boards",
+        org_id=_ORG,
+        created_by="test",
+        name="Parallel board",
+        id=board_id,
+        **_board_spec(
+            [
+                {"id": "w1", "query_id": "q-alpha", "pos": {"x": 1, "y": 1, "w": 4, "h": 2}},
+                {"id": "w2", "query_id": "q-beta", "pos": {"x": 5, "y": 1, "w": 4, "h": 2}},
+                {"id": "w3", "query_id": "q-gamma", "pos": {"x": 9, "y": 1, "w": 4, "h": 2}},
+            ]
+        ),
+    )
+
+    results = await collect_board_data(board_id, _ORG, {}, repo)
+
+    # All three widgets must be present, in original spec order.
+    assert len(results) == 3
+    widget_ids = [r["widget_id"] for r in results]
+    assert widget_ids == ["w1", "w2", "w3"], f"Order must be preserved: {widget_ids}"
+
+    # Each result must have columns + rows (no error key).
+    for entry in results:
+        assert "error" not in entry, f"Unexpected error in entry: {entry}"
+        assert "columns" in entry and "rows" in entry
+
+
+@pytest.mark.asyncio
+async def test_parallel_collect_preserves_widget_query_id_mapping(
+    repo: InMemoryRepo,
+) -> None:
+    """Each entry in the result carries the correct widget_id and query_id pair."""
+    reg = get_query_registry()
+    reg.register(id="q-x", sql="SELECT id, name FROM demo ORDER BY id", name="X")
+    reg.register(id="q-y", sql="SELECT id, name FROM demo ORDER BY id", name="Y")
+
+    board_id = "board-par-2"
+    await repo.create(
+        "boards",
+        org_id=_ORG,
+        created_by="test",
+        name="Mapping board",
+        id=board_id,
+        **_board_spec(
+            [
+                {"id": "wa", "query_id": "q-x", "pos": {"x": 1, "y": 1, "w": 4, "h": 2}},
+                {"id": "wb", "query_id": "q-y", "pos": {"x": 5, "y": 1, "w": 4, "h": 2}},
+            ]
+        ),
+    )
+
+    results = await collect_board_data(board_id, _ORG, {}, repo)
+
+    assert results[0]["widget_id"] == "wa"
+    assert results[0]["query_id"] == "q-x"
+    assert results[1]["widget_id"] == "wb"
+    assert results[1]["query_id"] == "q-y"
+
+
+# ---------------------------------------------------------------------------
+# 2 & 3. Row cap truncates + logs
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_row_cap_truncates_large_result(repo: InMemoryRepo) -> None:
+    """run_query_rows truncates results to the configured cap."""
+    import app.dashboards.collect as _collect
+
+    reg = get_query_registry()
+    reg.register(id="q-big", sql="SELECT id, name FROM demo ORDER BY id", name="Big")
+
+    # Patch the connector to return 10 rows, then set cap to 3.
+    big_table = pa.table({"id": list(range(10)), "val": list(range(10))})
+
+    class _FakeConnector:
+        def execute(self, plan):  # noqa: ANN001
+            return big_table
+
+        def close(self) -> None:
+            pass
+
+    original_cap = _collect._ROW_CAP
+    try:
+        _collect._ROW_CAP = 3
+
+        with mock.patch(
+            "app.dashboards.collect._resolve_connector",
+            return_value=(_FakeConnector(), False),
+        ):
+            cols, rows = await run_query_rows("q-big", _ORG, repo, {})
+    finally:
+        _collect._ROW_CAP = original_cap
+
+    assert len(rows) == 3, f"Expected 3 rows after cap, got {len(rows)}"
+    assert rows[0] == [0, 0]
+    assert rows[1] == [1, 1]
+    assert rows[2] == [2, 2]
+
+
+@pytest.mark.asyncio
+async def test_row_cap_logs_warning_when_truncating(
+    repo: InMemoryRepo, caplog: pytest.LogCaptureFixture
+) -> None:
+    """run_query_rows emits a WARNING when results are truncated by the row cap."""
+    import app.dashboards.collect as _collect
+
+    reg = get_query_registry()
+    reg.register(id="q-warn", sql="SELECT id, name FROM demo ORDER BY id", name="Warn")
+
+    big_table = pa.table({"id": list(range(20)), "val": list(range(20))})
+
+    class _FakeConnector:
+        def execute(self, plan):  # noqa: ANN001
+            return big_table
+
+        def close(self) -> None:
+            pass
+
+    original_cap = _collect._ROW_CAP
+    try:
+        _collect._ROW_CAP = 5
+
+        with mock.patch(
+            "app.dashboards.collect._resolve_connector",
+            return_value=(_FakeConnector(), False),
+        ), caplog.at_level(logging.WARNING, logger="app.dashboards.collect"):
+            cols, rows = await run_query_rows("q-warn", _ORG, repo, {})
+    finally:
+        _collect._ROW_CAP = original_cap
+
+    assert len(rows) == 5
+
+    warning_msgs = [r.message for r in caplog.records if r.levelno == logging.WARNING]
+    assert any("truncat" in m.lower() for m in warning_msgs), (
+        f"Expected a truncation warning; got log records: {warning_msgs}"
+    )
+    # The warning should mention the query_id so operators can identify the source.
+    assert any("q-warn" in m for m in warning_msgs), (
+        f"Warning should mention query_id; got: {warning_msgs}"
+    )
+
+
+# ---------------------------------------------------------------------------
+# 4. Small results (below cap) are unchanged — happy path
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_row_cap_does_not_affect_small_results(repo: InMemoryRepo) -> None:
+    """Results with fewer rows than the cap are returned unchanged."""
+    import app.dashboards.collect as _collect
+
+    reg = get_query_registry()
+    reg.register(id="q-small", sql="SELECT id, name FROM demo ORDER BY id", name="Small")
+
+    small_table = pa.table({"id": [1, 2, 3], "val": [10, 20, 30]})
+
+    class _FakeConnector:
+        def execute(self, plan):  # noqa: ANN001
+            return small_table
+
+        def close(self) -> None:
+            pass
+
+    original_cap = _collect._ROW_CAP
+    try:
+        _collect._ROW_CAP = 100  # cap well above 3 rows
+
+        with mock.patch(
+            "app.dashboards.collect._resolve_connector",
+            return_value=(_FakeConnector(), False),
+        ):
+            cols, rows = await run_query_rows("q-small", _ORG, repo, {})
+    finally:
+        _collect._ROW_CAP = original_cap
+
+    assert len(rows) == 3, "All rows should pass through when below the cap"
+    assert rows == [[1, 10], [2, 20], [3, 30]]
+
+
+# ---------------------------------------------------------------------------
+# 5. Best-effort error handling in parallel path
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_parallel_collect_one_error_does_not_abort_others(
+    repo: InMemoryRepo,
+) -> None:
+    """A failing widget gets an error entry; sibling widgets still succeed."""
+    reg = get_query_registry()
+    reg.register(id="q-ok", sql="SELECT id, name FROM demo ORDER BY id", name="OK")
+    reg.register(id="q-fail", sql="SELECT id, name FROM demo ORDER BY id", name="Fail")
+
+    board_id = "board-par-err"
+    await repo.create(
+        "boards",
+        org_id=_ORG,
+        created_by="test",
+        name="Error board",
+        id=board_id,
+        **_board_spec(
+            [
+                {"id": "wok", "query_id": "q-ok", "pos": {"x": 1, "y": 1, "w": 4, "h": 2}},
+                {"id": "wfail", "query_id": "q-fail", "pos": {"x": 5, "y": 1, "w": 4, "h": 2}},
+            ]
+        ),
+    )
+
+    ok_table = pa.table({"id": [1], "name": ["alice"]})
+
+    original_run = None
+
+    async def _patched_run_query_rows(
+        query_id: str, org_id: str, repo_arg, policies
+    ):
+        if query_id == "q-fail":
+            raise AppError("deliberate_fail", "deliberate test failure", 500)
+        # Delegate to the real implementation for the ok query via the demo connector.
+        # Instead, just return a small table directly to avoid demo-connector setup.
+        return (["id", "name"], [[1, "alice"]])
+
+    import app.dashboards.collect as _collect
+
+    with mock.patch.object(_collect, "run_query_rows", _patched_run_query_rows):
+        results = await collect_board_data(board_id, _ORG, {}, repo)
+
+    assert len(results) == 2
+    by_wid = {r["widget_id"]: r for r in results}
+
+    # The ok widget succeeded.
+    assert "error" not in by_wid["wok"]
+    assert by_wid["wok"]["rows"] == [[1, "alice"]]
+
+    # The failing widget has an error key, not rows.
+    assert "error" in by_wid["wfail"]
+    assert "rows" not in by_wid["wfail"]

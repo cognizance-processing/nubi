@@ -54,6 +54,7 @@ DuckDB-WASM browser usage
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from pathlib import Path
 
@@ -66,6 +67,19 @@ from app.auth.verify import VerifiedIdentity
 from app.routes import api_router
 
 logger = logging.getLogger("nubi.demo_parquet")
+
+# One-time cold-start generation lock: prevents multiple concurrent requests
+# from racing to regenerate parquet files simultaneously on first hit.
+_PARQUET_INIT_LOCK: asyncio.Lock | None = None
+
+
+def _get_parquet_init_lock() -> asyncio.Lock:
+    """Return (creating lazily) the per-event-loop parquet init lock."""
+    global _PARQUET_INIT_LOCK  # noqa: PLW0603
+    if _PARQUET_INIT_LOCK is None:
+        _PARQUET_INIT_LOCK = asyncio.Lock()
+    return _PARQUET_INIT_LOCK
+
 
 router = APIRouter(tags=["demo-parquet"])
 
@@ -247,8 +261,12 @@ async def serve_demo_parquet(dataset: str, table_name: str) -> FileResponse:
     if table not in _DATASET_TABLES[dataset]:
         raise HTTPException(status_code=404, detail="Not found")
 
-    # Ensure parquet files exist (idempotent; skips generation if all present)
-    _ensure_parquet()
+    # Ensure parquet files exist — run blocking generation in a thread and
+    # serialize concurrent cold-start attempts with a lock so only one
+    # regeneration runs at a time.
+    lock = _get_parquet_init_lock()
+    async with lock:
+        await asyncio.get_event_loop().run_in_executor(None, _ensure_parquet)
 
     parquet_path = _parquet_dir() / dataset / f"{table}.parquet"
     if not parquet_path.exists():

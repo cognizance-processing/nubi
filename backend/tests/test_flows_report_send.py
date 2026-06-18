@@ -59,7 +59,8 @@ def _make_board(
                         "query_id": widget_query_id,
                         "encoding": {},
                         "props": {},
-                        "pos": {"x": 0, "y": 0, "w": 12, "h": 4},
+                        # pos x/y must be >= 1 per DashboardSpec validation
+                        "pos": {"x": 1, "y": 1, "w": 12, "h": 4},
                     }
                 ],
             }
@@ -592,7 +593,7 @@ class TestPoliciesPrecedence:
 
         captured_claims: list[dict] = []
 
-        def _spy_render(board_obj, params, fmt):
+        def _spy_render(board_obj, params, fmt, *, org_id="", render_claims=None):
             # We cannot capture render_claims here directly, but we can validate
             # the handler completes without error and the policies key is
             # tracked via a side-channel set up with a mock on send_report.
@@ -620,3 +621,286 @@ class TestPoliciesPrecedence:
         # The handler must succeed and report one email sent.
         assert result["emails_sent"] == 1
         assert result["errors"] == []
+
+
+# ---------------------------------------------------------------------------
+# 10. PPTX render contains real widget data (not empty skeleton)
+# ---------------------------------------------------------------------------
+
+
+class TestPptxWidgetData:
+    """PPTX scheduled report must pass real collected widget data, not [].
+
+    Strategy: patch ``_collect_widget_data_sync`` and
+    ``render_board_pptx_from_data`` to verify the data flows through.
+    """
+
+    def test_pptx_render_receives_widget_data(self):
+        """_render_pptx must call render_board_pptx_from_data with collected data."""
+        from app.flows.handlers.report_send import _render_pptx
+
+        board = _make_board()
+        fake_widget_data = [
+            {"widget_id": "w1", "query_id": "demo_points_10k", "columns": ["x", "y"], "rows": [[1, 2]]}
+        ]
+
+        captured_data: list[list] = []
+
+        def _fake_collect(b, oid, claims):
+            return fake_widget_data
+
+        def _fake_render_from_data(spec, widget_data, **kw):
+            captured_data.append(list(widget_data))
+            return b"PPTX_BYTES"
+
+        with patch(
+            "app.flows.handlers.report_send._collect_widget_data_sync",
+            side_effect=_fake_collect,
+        ):
+            with patch(
+                "app.embedding.render_pptx.render_board_pptx_from_data",
+                side_effect=_fake_render_from_data,
+            ):
+                result = _render_pptx(board, {}, org_id="org-test", render_claims={})
+
+        assert result == b"PPTX_BYTES"
+        assert len(captured_data) == 1, "render_board_pptx_from_data should be called once"
+        assert captured_data[0] == fake_widget_data, (
+            f"Expected real widget data {fake_widget_data!r}, got {captured_data[0]!r}"
+        )
+
+    def test_pptx_render_via_handle_receives_widget_data(self):
+        """Full handle() path for format='pptx' passes widget data to PPTX renderer."""
+        board = _make_board()
+        sender = NullSender()
+
+        fake_widget_data = [
+            {"widget_id": "w1", "query_id": "demo_points_10k", "columns": ["x"], "rows": [[42]]}
+        ]
+        captured_data: list[list] = []
+
+        def _fake_collect(b, oid, claims):
+            return fake_widget_data
+
+        def _fake_render_from_data(spec, widget_data, **kw):
+            captured_data.append(list(widget_data))
+            return b"FAKE_PPTX"
+
+        config = {
+            "board_id": board["id"],
+            "org_id": board["org_id"],
+            "format": "pptx",
+            "recipients": ["a@x.com"],
+        }
+
+        with _patch_board(board):
+            with patch("app.jobs.report.get_default_sender", return_value=sender):
+                with patch(
+                    "app.flows.handlers.report_send._collect_widget_data_sync",
+                    side_effect=_fake_collect,
+                ):
+                    with patch(
+                        "app.embedding.render_pptx.render_board_pptx_from_data",
+                        side_effect=_fake_render_from_data,
+                    ):
+                        result = report_send_handle(config, _ctx(), claims={})
+
+        assert result["emails_sent"] == 1
+        assert result["errors"] == []
+        assert len(captured_data) == 1
+        assert captured_data[0] == fake_widget_data, (
+            "PPTX render did not receive real widget data — got empty list or wrong data"
+        )
+
+    def test_pptx_render_passes_render_claims_to_collector(self):
+        """_render_pptx forwards render_claims (with policies) to the collector."""
+        from app.flows.handlers.report_send import _render_pptx
+
+        board = _make_board()
+        task_policies = {"row_filter": "tenant = 'acme'"}
+        captured_claims: list[dict] = []
+
+        def _fake_collect(b, oid, claims):
+            captured_claims.append(dict(claims))
+            return []
+
+        def _fake_render_from_data(spec, widget_data, **kw):
+            return b"PPTX"
+
+        with patch(
+            "app.flows.handlers.report_send._collect_widget_data_sync",
+            side_effect=_fake_collect,
+        ):
+            with patch(
+                "app.embedding.render_pptx.render_board_pptx_from_data",
+                side_effect=_fake_render_from_data,
+            ):
+                _render_pptx(
+                    board, {}, org_id="org-test",
+                    render_claims={"policies": task_policies}
+                )
+
+        assert len(captured_claims) == 1
+        assert captured_claims[0].get("policies") == task_policies, (
+            f"Expected policies {task_policies!r} forwarded to collector, "
+            f"got {captured_claims[0].get('policies')!r}"
+        )
+
+
+# ---------------------------------------------------------------------------
+# 11. Shared-policy recipients: collect once, not O(recipients × widgets)
+# ---------------------------------------------------------------------------
+
+
+class TestSharedPolicyCollectOnce:
+    """When recipients share the same effective locked_params, collect ONCE.
+
+    Distinct locked_params must still trigger separate renders (per-recipient RLS).
+    """
+
+    def test_shared_policy_renders_once(self):
+        """Three recipients with the SAME locked_params → one render call."""
+        board = _make_board()
+        sender = NullSender()
+        render_call_count = [0]
+
+        def _counting_render(b, params, fmt, *, org_id="", render_claims=None):
+            render_call_count[0] += 1
+            return b"rendered"
+
+        config = {
+            "board_id": board["id"],
+            "org_id": board["org_id"],
+            "format": "csv",
+            "recipients": ["a@x.com", "b@x.com", "c@x.com"],
+            "apply_user_permissions": True,
+            "locked_params": {
+                # All three recipients get the same slice → one render.
+                "a@x.com": {"tenant_id": "acme"},
+                "b@x.com": {"tenant_id": "acme"},
+                "c@x.com": {"tenant_id": "acme"},
+            },
+        }
+
+        with _patch_board(board):
+            with patch("app.jobs.report.get_default_sender", return_value=sender):
+                with patch(
+                    "app.flows.handlers.report_send._render",
+                    side_effect=_counting_render,
+                ):
+                    result = report_send_handle(config, _ctx(), claims={})
+
+        assert result["emails_sent"] == 3
+        assert render_call_count[0] == 1, (
+            f"Expected 1 render for shared policy, got {render_call_count[0]}"
+        )
+
+    def test_distinct_policies_render_separately(self):
+        """Two recipients with DIFFERENT locked_params → two separate renders."""
+        board = _make_board()
+        sender = NullSender()
+        render_call_count = [0]
+
+        def _counting_render(b, params, fmt, *, org_id="", render_claims=None):
+            render_call_count[0] += 1
+            return b"rendered"
+
+        config = {
+            "board_id": board["id"],
+            "org_id": board["org_id"],
+            "format": "csv",
+            "recipients": ["alice@x.com", "bob@x.com"],
+            "apply_user_permissions": True,
+            "locked_params": {
+                "alice@x.com": {"tenant_id": "acme"},
+                "bob@x.com": {"tenant_id": "globex"},  # different
+            },
+        }
+
+        with _patch_board(board):
+            with patch("app.jobs.report.get_default_sender", return_value=sender):
+                with patch(
+                    "app.flows.handlers.report_send._render",
+                    side_effect=_counting_render,
+                ):
+                    result = report_send_handle(config, _ctx(), claims={})
+
+        assert result["emails_sent"] == 2
+        assert render_call_count[0] == 2, (
+            f"Expected 2 renders for distinct policies, got {render_call_count[0]}"
+        )
+
+    def test_mixed_policies_render_per_unique_slice(self):
+        """Four recipients: 2 share policy A, 2 share policy B → 2 renders."""
+        board = _make_board()
+        sender = NullSender()
+        render_call_count = [0]
+
+        def _counting_render(b, params, fmt, *, org_id="", render_claims=None):
+            render_call_count[0] += 1
+            return b"rendered"
+
+        config = {
+            "board_id": board["id"],
+            "org_id": board["org_id"],
+            "format": "csv",
+            "recipients": ["a@x.com", "b@x.com", "c@x.com", "d@x.com"],
+            "apply_user_permissions": True,
+            "locked_params": {
+                "a@x.com": {"tenant_id": "acme"},
+                "b@x.com": {"tenant_id": "acme"},   # same as a → reuse
+                "c@x.com": {"tenant_id": "globex"},
+                "d@x.com": {"tenant_id": "globex"},  # same as c → reuse
+            },
+        }
+
+        with _patch_board(board):
+            with patch("app.jobs.report.get_default_sender", return_value=sender):
+                with patch(
+                    "app.flows.handlers.report_send._render",
+                    side_effect=_counting_render,
+                ):
+                    result = report_send_handle(config, _ctx(), claims={})
+
+        assert result["emails_sent"] == 4
+        assert render_call_count[0] == 2, (
+            f"Expected 2 renders for 2 unique policies, got {render_call_count[0]}"
+        )
+
+    def test_rls_still_correct_per_recipient(self):
+        """Each recipient must receive the render produced with their own policy."""
+        board = _make_board()
+        sender = NullSender()
+
+        # Track which params each render was called with.
+        render_params_log: list[dict] = []
+
+        def _logging_render(b, params, fmt, *, org_id="", render_claims=None):
+            render_params_log.append(dict(params))
+            return f"data_for_{params.get('tenant_id', 'all')}".encode()
+
+        config = {
+            "board_id": board["id"],
+            "org_id": board["org_id"],
+            "format": "csv",
+            "recipients": ["alice@x.com", "bob@x.com"],
+            "apply_user_permissions": True,
+            "locked_params": {
+                "alice@x.com": {"tenant_id": "acme"},
+                "bob@x.com": {"tenant_id": "globex"},
+            },
+        }
+
+        with _patch_board(board):
+            with patch("app.jobs.report.get_default_sender", return_value=sender):
+                with patch(
+                    "app.flows.handlers.report_send._render",
+                    side_effect=_logging_render,
+                ):
+                    result = report_send_handle(config, _ctx(), claims={})
+
+        assert result["emails_sent"] == 2
+        # Each recipient gets the attachment rendered with their own params.
+        sent_by_to = {s["to"]: s["attachment_data"] for s in sender.sent}
+        assert sent_by_to["alice@x.com"] == b"data_for_acme"
+        assert sent_by_to["bob@x.com"] == b"data_for_globex"
