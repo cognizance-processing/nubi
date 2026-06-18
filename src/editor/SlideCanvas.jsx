@@ -770,6 +770,10 @@ export default function SlideCanvas({ spec, surfaceAPI, setSpec }) {
   const [presentMode, setPresentMode] = useState(false)
   const [_dragOverId, setDragOverId] = useState(null)
   const dragSourceIdRef = useRef(null)
+  // On narrow screens the slide rail defaults to collapsed to give the canvas space.
+  const [railCollapsed, setRailCollapsed] = useState(
+    () => typeof window !== 'undefined' && window.innerWidth < 768
+  )
 
   // Keep activeSlideId valid when slides change.
   // Derive the correction inline (during render) rather than inside an effect
@@ -914,7 +918,17 @@ export default function SlideCanvas({ spec, surfaceAPI, setSpec }) {
       )}
 
       {/* Toolbar */}
-      <div className="flex items-center gap-2 px-3 h-10 border-b border-border bg-surface shrink-0">
+      <div className="flex items-center gap-2 px-3 h-10 border-b border-border bg-surface shrink-0 overflow-x-auto">
+        {/* Rail collapse toggle */}
+        <button
+          onClick={() => setRailCollapsed(v => !v)}
+          title={railCollapsed ? 'Show slide rail' : 'Hide slide rail'}
+          aria-label={railCollapsed ? 'Show slide rail' : 'Hide slide rail'}
+          className="flex items-center justify-center h-7 w-7 rounded-lg border border-border bg-surface text-muted hover:text-fg hover:border-primary/60 transition-colors focus:outline-none focus:ring-2 focus:ring-ring/60 shrink-0"
+        >
+          <GripVertical size={13} />
+        </button>
+
         <button
           onClick={handleAddSlide}
           title="New slide (Ctrl+M)"
@@ -999,11 +1013,15 @@ export default function SlideCanvas({ spec, surfaceAPI, setSpec }) {
       {/* Body: rail + canvas + notes */}
       <div className="flex flex-1 min-h-0 overflow-hidden">
 
-        {/* Slide thumbnail rail */}
+        {/* Slide thumbnail rail — collapses on narrow viewports */}
         <div
-          className="flex flex-col gap-5 px-3 py-3 overflow-y-auto shrink-0 border-r border-border bg-surface"
-          style={{ width: 152, paddingTop: 24 }}
+          className={[
+            'flex flex-col gap-5 overflow-y-auto shrink-0 border-r border-border bg-surface transition-[width,padding] duration-200',
+            railCollapsed ? 'w-0 px-0 py-0 overflow-hidden' : 'px-3 py-3',
+          ].join(' ')}
+          style={railCollapsed ? undefined : { width: 152, paddingTop: 24 }}
           data-testid="slide-rail"
+          aria-hidden={railCollapsed}
         >
           {slides.map((slide, idx) => (
             <SlideThumbnail

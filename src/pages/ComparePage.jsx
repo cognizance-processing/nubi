@@ -1155,15 +1155,15 @@ export default function ComparePage() {
                 {/* ── Left: copy ── */}
                 <div>
                   {/* terminal-flavoured eyebrow */}
-                  <p className="inline-flex items-center gap-2 font-mono text-[11px] sm:text-xs font-medium tracking-wide text-brand-teal dark:text-teal-300/90 border border-border dark:border-white/10 bg-white/60 dark:bg-white/[0.04] rounded-full px-3.5 py-1.5 mb-6 sm:mb-8">
-                    <span className="relative flex h-1.5 w-1.5">
+                  <p className="inline-flex items-center gap-2 font-mono text-[10px] sm:text-xs font-medium tracking-wide text-brand-teal dark:text-teal-300/90 border border-border dark:border-white/10 bg-white/60 dark:bg-white/[0.04] rounded-full px-3 sm:px-3.5 py-1.5 mb-6 sm:mb-8 whitespace-nowrap">
+                    <span className="relative flex h-1.5 w-1.5 shrink-0">
                       <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-teal-400 opacity-60" />
                       <span className="relative inline-flex rounded-full h-1.5 w-1.5 bg-teal-300" />
                     </span>
                     {introData?.eyebrow ?? 'competitive overview · 2026'}
                   </p>
 
-                  <h1 className="font-display text-4xl sm:text-5xl lg:text-[3.9rem] xl:text-[4.3rem] font-bold leading-[1.04] tracking-tight mb-5 sm:mb-7 text-fg">
+                  <h1 className="font-display text-[2rem] sm:text-5xl lg:text-[3.9rem] xl:text-[4.3rem] font-bold leading-[1.04] tracking-tight mb-5 sm:mb-7 text-fg">
                     How Nubi
                     <br />
                     <span className="lp-hero-gradient-text">compares.</span>
@@ -1293,18 +1293,18 @@ export default function ComparePage() {
                 <p className="text-center font-mono text-[10.5px] font-semibold tracking-[0.18em] uppercase mb-8 text-muted">
                   The structural numbers — what kernel-in-the-browser actually means
                 </p>
-                <div className="grid grid-cols-2 lg:grid-cols-4 gap-y-8 divide-x divide-border dark:divide-white/[0.07]">
+                <div className="grid grid-cols-2 lg:grid-cols-4 gap-y-8 divide-x divide-y lg:divide-y-0 divide-border dark:divide-white/[0.07]">
                   {[
                     { v: '≈ $0', l: 'marginal cost per dashboard view' },
                     { v: '0 s', l: 'cold-start — kernel runs in the tab' },
                     { v: '∞', l: 'users & viewers — no per-seat pricing' },
                     { v: '$0', l: 'competitor prices in ZAR (only Nubi does)' },
                   ].map(s => (
-                    <div key={s.l} className="px-4 sm:px-8 text-center">
+                    <div key={s.l} className="px-4 sm:px-8 py-2 lg:py-0 text-center">
                       <div className="lp-hero-gradient-text font-display text-3xl sm:text-4xl lg:text-[2.6rem] font-bold tracking-tight">
                         {s.v}
                       </div>
-                      <div className="mt-1.5 font-mono text-[10.5px] sm:text-[11px] leading-snug text-muted">
+                      <div className="mt-1.5 font-mono text-[10px] sm:text-[11px] leading-snug text-muted">
                         {s.l}
                       </div>
                     </div>
@@ -1384,6 +1384,10 @@ export default function ComparePage() {
             </SectionHead>
 
             <Reveal>
+              <p className="flex items-center justify-end gap-1 font-mono text-[10px] uppercase tracking-[0.12em] text-muted mb-1.5 sm:hidden" aria-hidden="true">
+                scroll to compare
+                <ArrowRight size={10} strokeWidth={2.5} />
+              </p>
               <PrimaryTable />
             </Reveal>
           </div>
@@ -1427,6 +1431,10 @@ export default function ComparePage() {
             </Reveal>
 
             <Reveal>
+              <p className="flex items-center justify-end gap-1 font-mono text-[10px] uppercase tracking-[0.12em] text-muted mb-1.5 sm:hidden" aria-hidden="true">
+                scroll to compare
+                <ArrowRight size={10} strokeWidth={2.5} />
+              </p>
               <AllCompetitorsTable />
             </Reveal>
 

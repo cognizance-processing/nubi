@@ -154,8 +154,8 @@ function HeroSection() {
 
             {/* Copy */}
             <div>
-              <p className="inline-flex items-center gap-2 font-mono text-[11px] sm:text-xs font-medium tracking-wide text-brand-teal dark:text-teal-300/90 border border-border dark:border-white/10 bg-white/60 dark:bg-white/[0.04] rounded-full px-3.5 py-1.5 mb-6 sm:mb-8">
-                <span className="relative flex h-1.5 w-1.5">
+              <p className="inline-flex items-center gap-2 font-mono text-[10px] sm:text-xs font-medium tracking-wide text-brand-teal dark:text-teal-300/90 border border-border dark:border-white/10 bg-white/60 dark:bg-white/[0.04] rounded-full px-3 sm:px-3.5 py-1.5 mb-6 sm:mb-8 whitespace-nowrap">
+                <span className="relative flex h-1.5 w-1.5 shrink-0">
                   <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-teal-400 opacity-60" />
                   <span className="relative inline-flex rounded-full h-1.5 w-1.5 bg-teal-300" />
                 </span>
@@ -355,17 +355,17 @@ function ViewerFlatSection() {
           <div ref={ref} className={`lp-reveal ${seen ? 'lp-in' : ''}`}>
             <div className="rounded-2xl border border-border bg-surface overflow-hidden shadow-sm">
               {/* Header */}
-              <div className="px-6 py-4 border-b border-border bg-surface-2 flex items-center justify-between">
-                <span className="font-mono text-[11px] font-semibold uppercase tracking-wider text-muted">
+              <div className="px-4 sm:px-6 py-3 sm:py-4 border-b border-border bg-surface-2 flex flex-col sm:flex-row sm:items-center gap-2 sm:gap-0 sm:justify-between">
+                <span className="font-mono text-[10px] sm:text-[11px] font-semibold uppercase tracking-wider text-muted">
                   Cost vs viewer count (log scale)
                 </span>
-                <div className="flex items-center gap-4">
+                <div className="flex items-center gap-3 sm:gap-4">
                   <span className="flex items-center gap-1.5 font-mono text-[10px] text-brand-teal">
-                    <span className="w-3 h-2 rounded-sm rp-bar-nubi inline-block" />
+                    <span className="w-3 h-2 rounded-sm rp-bar-nubi inline-block shrink-0" />
                     Nubi
                   </span>
                   <span className="flex items-center gap-1.5 font-mono text-[10px] text-rose-500">
-                    <span className="w-3 h-2 rounded-sm rp-bar-other inline-block" />
+                    <span className="w-3 h-2 rounded-sm rp-bar-other inline-block shrink-0" />
                     Per-seat BI
                   </span>
                 </div>
@@ -387,7 +387,7 @@ function ViewerFlatSection() {
                               style={{ width: `${nubiPct}%` }}
                             />
                           </div>
-                          <span className="w-24 text-right font-mono text-[10.5px] font-semibold text-brand-teal whitespace-nowrap">{t.nubiLabel}</span>
+                          <span className="w-16 sm:w-24 text-right font-mono text-[10px] sm:text-[10.5px] font-semibold text-brand-teal whitespace-nowrap">{t.nubiLabel}</span>
                         </div>
                         {/* Competitor bar — grows on log scale */}
                         <div className="flex items-center gap-2">
@@ -397,7 +397,7 @@ function ViewerFlatSection() {
                               style={{ width: `${compPct}%` }}
                             />
                           </div>
-                          <span className="w-24 text-right font-mono text-[10.5px] font-semibold text-rose-500 whitespace-nowrap">
+                          <span className="w-16 sm:w-24 text-right font-mono text-[10px] sm:text-[10.5px] font-semibold text-rose-500 whitespace-nowrap">
                             {t.compLabel}
                           </span>
                         </div>
@@ -501,7 +501,7 @@ function EmbedModeCard({ mode, idx }) {
           </span>
           <span className="ml-1 font-mono text-[10px] text-slate-400">{mode.badge}</span>
         </div>
-        <pre className="px-4 py-3 font-mono text-[11px] leading-relaxed text-slate-300 whitespace-pre overflow-x-auto">
+        <pre className="px-4 py-3 font-mono text-[11px] leading-relaxed text-slate-300 whitespace-pre-wrap break-all overflow-x-auto">
           {mode.code}
         </pre>
       </div>

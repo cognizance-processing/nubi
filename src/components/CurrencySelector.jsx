@@ -46,7 +46,7 @@ export default function CurrencySelector() {
         aria-expanded={open}
         title={`Prices shown in ${active.name} — billed in ZAR`}
         className="
-          flex items-center gap-1.5 h-11 px-2.5 rounded-lg
+          flex items-center gap-1 sm:gap-1.5 h-11 px-2 sm:px-2.5 rounded-lg
           text-sm font-medium text-fg
           bg-surface-2 hover:bg-surface
           border border-border
@@ -55,7 +55,7 @@ export default function CurrencySelector() {
         "
       >
         <span className="text-base leading-none" aria-hidden="true">{active.flag}</span>
-        <span className="font-mono text-xs tracking-wide">{active.code}</span>
+        <span className="font-mono text-xs tracking-wide hidden sm:inline">{active.code}</span>
         <ChevronDown size={12} className="text-muted" />
       </button>
 

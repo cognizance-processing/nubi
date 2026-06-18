@@ -510,7 +510,9 @@ export default function QueriesPage() {
   // ~300–340px) they are MUTUALLY EXCLUSIVE — opening one closes the other, so
   // the user can flip between them like tabs without either destroying the
   // other's state (the query list lives in this page; toggling never resets it).
-  const [queriesPanelOpen, setQueriesPanelOpen] = useState(true)
+  const [queriesPanelOpen, setQueriesPanelOpen] = useState(
+    () => typeof window !== 'undefined' && window.innerWidth >= 1024
+  )
 
   // Queries panel only actually occupies the RHS when chat isn't open.
   const queriesPanelVisible = queriesPanelOpen && !chatOpen

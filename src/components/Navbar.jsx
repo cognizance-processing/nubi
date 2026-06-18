@@ -245,7 +245,7 @@ export default function Navbar() {
         </nav>
 
         {/* ── Right: actions ────────────────────────────────────────────── */}
-        <div className="flex items-center gap-2 shrink-0">
+        <div className="flex items-center gap-1.5 sm:gap-2 shrink-0">
           {/* GitHub — open core, wear it on the topbar */}
           <a
             href={GITHUB_URL}

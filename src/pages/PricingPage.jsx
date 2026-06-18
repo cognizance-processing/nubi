@@ -798,16 +798,16 @@ export default function PricingPage() {
 
             <div className="relative px-5 sm:px-10 lg:px-14 pt-14 sm:pt-20 text-center">
               {/* terminal-flavoured eyebrow */}
-              <p className="inline-flex items-center gap-2 font-mono text-[11px] sm:text-xs font-medium tracking-wide text-brand-teal dark:text-teal-300/90 border border-border dark:border-white/10 bg-white/60 dark:bg-white/[0.04] rounded-full px-3.5 py-1.5 mb-6 sm:mb-8">
-                <span className="relative flex h-1.5 w-1.5">
+              <p className="inline-flex items-center gap-2 font-mono text-[10px] sm:text-xs font-medium tracking-wide text-brand-teal dark:text-teal-300/90 border border-border dark:border-white/10 bg-white/60 dark:bg-white/[0.04] rounded-full px-3 sm:px-3.5 py-1.5 mb-6 sm:mb-8 whitespace-nowrap">
+                <span className="relative flex h-1.5 w-1.5 shrink-0">
                   <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-teal-400 opacity-60" />
                   <span className="relative inline-flex rounded-full h-1.5 w-1.5 bg-teal-300" />
                 </span>
                 pricing · unlimited seats on every plan
               </p>
 
-              <h1 className="font-display text-4xl sm:text-5xl lg:text-[4.2rem] font-bold leading-[1.06] tracking-tight text-fg">
-                Pricing that doesn’t
+              <h1 className="font-display text-[2rem] sm:text-5xl lg:text-[4.2rem] font-bold leading-[1.06] tracking-tight text-fg">
+                Pricing that doesn&rsquo;t
                 <br />
                 <span className="lp-hero-gradient-text">tax your viewers.</span>
               </h1>
@@ -837,7 +837,7 @@ export default function PricingPage() {
               </div>
 
               {/* trust strip — the "never charge for" wedge, mono */}
-              <div className="flex flex-wrap justify-center gap-x-5 gap-y-2 font-mono text-[11px] font-medium text-muted mt-8 sm:mt-9">
+              <div className="flex flex-wrap justify-center gap-x-4 sm:gap-x-5 gap-y-2 font-mono text-[10px] sm:text-[11px] font-medium text-muted mt-8 sm:mt-9">
                 {[
                   'dashboard views — free',
                   'no per-viewer seats',
@@ -853,18 +853,18 @@ export default function PricingPage() {
 
               {/* proof stats — fused into the panel */}
               <div className="relative mt-10 sm:mt-14 border-t border-border dark:border-white/10 py-8 sm:py-10">
-                <div className="grid grid-cols-2 lg:grid-cols-4 gap-y-8 divide-x divide-border dark:divide-white/[0.07]">
+                <div className="grid grid-cols-2 lg:grid-cols-4 gap-y-8 divide-x divide-y lg:divide-y-0 divide-border dark:divide-white/[0.07]">
                   {[
                     { v: '$0', l: 'marginal cost per dashboard view' },
                     { v: '∞', l: 'editors & viewers on every plan' },
                     { v: '$9', l: 'first paid tier — usd, billed in zar' },
                     { v: '1 TiB', l: 'free lakehouse scan, every month' },
                   ].map(s => (
-                    <div key={s.l} className="px-4 sm:px-8 text-center">
+                    <div key={s.l} className="px-4 sm:px-8 py-2 lg:py-0 text-center">
                       <div className="lp-hero-gradient-text font-display text-3xl sm:text-4xl lg:text-[2.6rem] font-bold tracking-tight">
                         {s.v}
                       </div>
-                      <div className="mt-1.5 font-mono text-[10.5px] sm:text-[11px] leading-snug text-muted">
+                      <div className="mt-1.5 font-mono text-[10px] sm:text-[11px] leading-snug text-muted">
                         {s.l}
                       </div>
                     </div>

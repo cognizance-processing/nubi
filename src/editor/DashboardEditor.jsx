@@ -2360,7 +2360,11 @@ export default function DashboardEditor({ boardId = null, onSaved, onSpecChange,
   const [savedBoardId, setSavedBoardId] = useState(boardId)
   // rightPanel ∈ {'add','config','chat','board'} — drives the single RHS panel.
   const [rightPanel, setRightPanel] = useState('add')
-  const [rightCollapsed, setRightCollapsed] = useState(false)
+  // Start collapsed on tablet (md) so the panel doesn't immediately overlay the
+  // canvas; on lg+ the panel is always in-flow so we default to open.
+  const [rightCollapsed, setRightCollapsed] = useState(
+    () => typeof window !== 'undefined' && window.innerWidth < 1024
+  )
   const [hoveredId, setHoveredId] = useState(null)
   // Mobile/tablet sheet state: which sheet is open (null = closed)
   // 'palette' | 'config' | 'chat' | 'board' | null

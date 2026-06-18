@@ -378,64 +378,83 @@ function PagesThumbnail({ page, pageIndex, active, onClick, onMoveUp, onMoveDown
 // PagesRail — left sidebar showing page thumbnails + controls
 // ---------------------------------------------------------------------------
 
-function PagesRail({ pages, activePageId, onSelect, onAdd, onRemove, onMoveUp, onMoveDown, onToggleBreak }) {
+function PagesRail({ pages, activePageId, onSelect, onAdd, onRemove, onMoveUp, onMoveDown, onToggleBreak, collapsed, onToggleCollapse }) {
   return (
     <aside
-      className="w-[108px] shrink-0 flex flex-col bg-surface border-r border-border overflow-y-auto"
+      className={[
+        'shrink-0 flex flex-col bg-surface border-r border-border overflow-y-auto transition-[width] duration-200',
+        collapsed ? 'w-9' : 'w-[108px]',
+      ].join(' ')}
       data-testid="report-pages-rail"
       aria-label="Report pages"
     >
       {/* Rail header */}
-      <div className="flex items-center justify-between px-2.5 h-9 border-b border-border shrink-0">
-        <span className="text-[10px] font-semibold text-muted/70 uppercase tracking-widest">Pages</span>
-        <button
-          onClick={onAdd}
-          title="Add page"
-          className="w-6 h-6 flex items-center justify-center rounded-lg text-muted hover:text-primary hover:bg-primary/10 transition-colors"
-          data-testid="report-add-page"
-        >
-          <Plus size={13} />
-        </button>
-      </div>
-
-      {/* Thumbnails list */}
-      <div className="flex flex-col gap-2 p-2 flex-1">
-        {pages.length === 0 && (
-          <div className="flex flex-col items-center justify-center py-6 gap-2">
-            <FileText size={20} className="text-muted/30" />
-            <p className="text-[10px] text-muted/50 text-center leading-snug">
-              No pages yet.
-            </p>
-          </div>
+      <div className="flex items-center justify-between px-2 h-9 border-b border-border shrink-0 gap-1">
+        {!collapsed && (
+          <span className="text-[10px] font-semibold text-muted/70 uppercase tracking-widest truncate">Pages</span>
         )}
-        {pages.map((page, idx) => (
-          <PagesThumbnail
-            key={page.id}
-            page={page}
-            pageIndex={idx}
-            active={page.id === activePageId}
-            onClick={() => onSelect(page.id)}
-            onMoveUp={() => onMoveUp(idx)}
-            onMoveDown={() => onMoveDown(idx)}
-            onDelete={() => onRemove(page.id)}
-            onToggleBreak={() => onToggleBreak(page.id)}
-            isFirst={idx === 0}
-            isLast={idx === pages.length - 1}
-          />
-        ))}
-      </div>
-
-      {/* Add page footer shortcut */}
-      {pages.length > 0 && (
-        <div className="px-2 pb-2 shrink-0">
+        {/* Collapse/expand toggle */}
+        <button
+          onClick={onToggleCollapse}
+          title={collapsed ? 'Show pages rail' : 'Hide pages rail'}
+          className="w-6 h-6 flex items-center justify-center rounded-lg text-muted hover:text-primary hover:bg-primary/10 transition-colors shrink-0"
+        >
+          <LayoutList size={12} />
+        </button>
+        {!collapsed && (
           <button
             onClick={onAdd}
-            className="w-full flex items-center justify-center gap-1 h-8 rounded-xl border border-dashed border-border text-muted/60 hover:border-primary hover:text-primary text-[10px] font-medium transition-colors"
+            title="Add page"
+            className="w-6 h-6 flex items-center justify-center rounded-lg text-muted hover:text-primary hover:bg-primary/10 transition-colors shrink-0"
+            data-testid="report-add-page"
           >
-            <Plus size={11} />
-            Add page
+            <Plus size={13} />
           </button>
-        </div>
+        )}
+      </div>
+
+      {/* Thumbnails list — hidden when rail is collapsed */}
+      {!collapsed && (
+        <>
+          <div className="flex flex-col gap-2 p-2 flex-1">
+            {pages.length === 0 && (
+              <div className="flex flex-col items-center justify-center py-6 gap-2">
+                <FileText size={20} className="text-muted/30" />
+                <p className="text-[10px] text-muted/50 text-center leading-snug">
+                  No pages yet.
+                </p>
+              </div>
+            )}
+            {pages.map((page, idx) => (
+              <PagesThumbnail
+                key={page.id}
+                page={page}
+                pageIndex={idx}
+                active={page.id === activePageId}
+                onClick={() => onSelect(page.id)}
+                onMoveUp={() => onMoveUp(idx)}
+                onMoveDown={() => onMoveDown(idx)}
+                onDelete={() => onRemove(page.id)}
+                onToggleBreak={() => onToggleBreak(page.id)}
+                isFirst={idx === 0}
+                isLast={idx === pages.length - 1}
+              />
+            ))}
+          </div>
+
+          {/* Add page footer shortcut */}
+          {pages.length > 0 && (
+            <div className="px-2 pb-2 shrink-0">
+              <button
+                onClick={onAdd}
+                className="w-full flex items-center justify-center gap-1 h-8 rounded-xl border border-dashed border-border text-muted/60 hover:border-primary hover:text-primary text-[10px] font-medium transition-colors"
+              >
+                <Plus size={11} />
+                Add page
+              </button>
+            </div>
+          )}
+        </>
       )}
     </aside>
   )
@@ -464,6 +483,10 @@ export default function DocCanvas({ spec, surfaceAPI, setSpec, selectedWidgetId 
 
   const pages = useMemo(() => reportSurface?.pages ?? [], [reportSurface])
   const [activePageId, setActivePageId] = useState(() => pages[0]?.id ?? null)
+  // Pages rail collapses on narrow screens to maximise the document canvas area.
+  const [railCollapsed, setRailCollapsed] = useState(
+    () => typeof window !== 'undefined' && window.innerWidth < 768
+  )
 
   // Keep activePageId valid when pages change
   const validActive = pages.find(p => p.id === activePageId)?.id ?? pages[0]?.id ?? null
@@ -540,6 +563,8 @@ export default function DocCanvas({ spec, surfaceAPI, setSpec, selectedWidgetId 
           onMoveUp={handleMoveUp}
           onMoveDown={handleMoveDown}
           onToggleBreak={handleToggleBreak}
+          collapsed={railCollapsed}
+          onToggleCollapse={() => setRailCollapsed(v => !v)}
         />
 
         {/* Empty state */}
@@ -593,6 +618,8 @@ export default function DocCanvas({ spec, surfaceAPI, setSpec, selectedWidgetId 
         onMoveUp={handleMoveUp}
         onMoveDown={handleMoveDown}
         onToggleBreak={handleToggleBreak}
+        collapsed={railCollapsed}
+        onToggleCollapse={() => setRailCollapsed(v => !v)}
       />
 
       {/* Center document canvas — scrollable A4-style column */}
