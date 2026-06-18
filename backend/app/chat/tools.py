@@ -449,6 +449,30 @@ def anthropic_tool_specs() -> list[dict[str, Any]]:
     ]
 
 
+def openai_tool_specs() -> list[dict[str, Any]]:
+    """Return the same tool definitions as :func:`anthropic_tool_specs` but in
+    OpenAI / LiteLLM function-tool format, i.e. the shape that
+    ``litellm.completion(tools=...)`` expects::
+
+        [{"type": "function", "function": {"name": ..., "description": ..., "parameters": ...}}, ...]
+
+    Derived from :func:`anthropic_tool_specs` (DRY) — ``input_schema`` is
+    remapped to ``parameters`` and nested under a ``"function"`` key with a
+    top-level ``"type": "function"``.
+    """
+    return [
+        {
+            "type": "function",
+            "function": {
+                "name": spec["name"],
+                "description": spec["description"],
+                "parameters": spec["input_schema"],
+            },
+        }
+        for spec in anthropic_tool_specs()
+    ]
+
+
 # ---------------------------------------------------------------------------
 # Tool implementations
 # ---------------------------------------------------------------------------
@@ -707,4 +731,4 @@ def execute_tool(name: str, arguments: dict[str, Any]) -> tuple[dict[str, Any], 
     return {"error": f"unknown tool {name!r}"}, {}
 
 
-__all__ = ["anthropic_tool_specs", "execute_tool"]
+__all__ = ["anthropic_tool_specs", "openai_tool_specs", "execute_tool"]

@@ -141,6 +141,16 @@ class Settings(BaseSettings):
             return None
         return value
 
+    # ── UNSAFE public/CDN static exports (Mode 3b) ───────────────────────────
+    # Deployment-wide kill switch for the UNSAFE public/CDN static export
+    # (POST /boards/{id}/export/public).  A public export produces a NO-AUTH,
+    # NO-EXPIRY static HTML artifact that anyone with the URL can open; the data
+    # is frozen with the exporter's RLS view and exposed to ANYONE.  OFF by
+    # default — must be explicitly enabled AND the org must additionally hold the
+    # ``public_exports`` feature gate (see app.features) for an export to run.
+    # This setting alone never enables exports; it is a global safety interlock.
+    ALLOW_UNSAFE_PUBLIC_EXPORTS: bool = False
+
     # ── Kernel security ──────────────────────────────────────────────────────
     # Allow the local subprocess kernel in non-production environments (dev/test).
     # In production, set KERNEL_LOCAL_ENABLED=false and configure a sandboxed

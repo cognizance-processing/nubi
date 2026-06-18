@@ -73,6 +73,21 @@ Pre-registered kinds
     ``'map'`` node (``config['source']``) and returns
     ``{"items": [...], "item_count": N}`` (Q3: dedicated collector).
     Delegates to ``app.flows.handlers.map_collect.handle_map_collect``.
+
+``'snapshot_refresh'``
+    Re-run a board's widget collector and rewrite its frozen DuckDB sidecar
+    artifact in place, so a daily/cron flow keeps an embed snapshot fresh.
+    Delegates to ``app.embedding.snapshot.snapshot_refresh_handler``.  The
+    captured RLS view is declared in ``config['policies']`` (a scheduled tick
+    has no user JWT) and is exposed to ALL artifact holders.
+
+``'report_send'``
+    Resolve a board, render it (CSV / PDF / PPTX) and deliver the result to
+    the configured recipients via email (+ optional Slack/Teams channels).
+    Supports per-recipient RLS via ``locked_params`` and is schedulable
+    (daily/cron) like ``snapshot_refresh`` — the captured RLS view comes
+    from ``config['policies']``, not a live JWT.
+    Delegates to ``app.flows.handlers.report_send.handle``.
 """
 
 from __future__ import annotations
@@ -1081,6 +1096,35 @@ def _handle_preagg_refresh(
     return handle(config, ctx, claims)
 
 
+async def _handle_snapshot_refresh(
+    config: dict[str, Any],
+    ctx: "TaskContext",
+    claims: dict[str, Any],
+) -> dict[str, Any]:
+    """Re-run the board collector and rewrite a frozen snapshot artifact in place.
+
+    Delegates to ``app.embedding.snapshot.snapshot_refresh_handler``.  A daily /
+    cron flow keeps a board's frozen DuckDB sidecar fresh by rewriting the SAME
+    artifact URI each tick.  The captured RLS view is declared in the task
+    ``config['policies']`` (a scheduled tick carries no user JWT) and is exposed
+    to ALL artifact holders — see ``app.embedding.snapshot`` for the security note.
+
+    Config keys
+    -----------
+    ``board_id`` (required), ``snapshot_id`` (required), ``org_id`` (optional —
+    falls back to ``ctx.org_id`` / ``claims['org_id']``), ``policies`` (optional
+    — the policy view to capture).
+
+    Returns
+    -------
+    dict
+        ``{board_id, snapshot_id, artifact_uri, refreshed_at, tables}``.
+    """
+    from app.embedding.snapshot import snapshot_refresh_handler  # noqa: PLC0415
+
+    return await snapshot_refresh_handler(config, ctx, claims)
+
+
 def _handle_file_ingest(
     config: dict[str, Any],
     ctx: "TaskContext",
@@ -1133,7 +1177,7 @@ def get_task_kind_registry() -> TaskKindRegistry:
 
     Pre-populates with built-in handlers: ``query``, ``python``, ``agent``,
     ``materialize``, ``noop``, ``bucket_load``, ``preagg_refresh``,
-    ``map``, ``branch``, ``map_collect``.
+    ``snapshot_refresh``, ``map``, ``branch``, ``map_collect``.
     """
     global _registry
     if _registry is None:
@@ -1164,11 +1208,14 @@ def _bootstrap(registry: TaskKindRegistry) -> None:
     registry.register("file_ingest", _handle_file_ingest)
     registry.register("connector_write", _handle_connector_write)
     registry.register("preagg_refresh", _handle_preagg_refresh)
+    registry.register("snapshot_refresh", _handle_snapshot_refresh)
 
     from app.flows.handlers.map import handle_map  # noqa: PLC0415
     from app.flows.handlers.branch import handle_branch  # noqa: PLC0415
     from app.flows.handlers.map_collect import handle_map_collect  # noqa: PLC0415
+    from app.flows.handlers.report_send import handle as _handle_report_send  # noqa: PLC0415
 
     registry.register("map", handle_map)
     registry.register("branch", handle_branch)
     registry.register("map_collect", handle_map_collect)
+    registry.register("report_send", _handle_report_send)

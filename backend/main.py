@@ -180,6 +180,10 @@ from app.routes.export_share import router as export_share_router  # noqa: E402
 api_router.include_router(query_tools_router)
 api_router.include_router(export_share_router)
 
+# Import snapshot route (frozen DuckDB sidecar create/refresh + frozen viewer).
+# Self-registers on api_router; before the /{resource} catch-all in resources.py.
+import app.routes.snapshot  # noqa: F401, E402
+
 # Import JWT issuers route (org-scoped CRUD for embed JWKS configs) BEFORE
 # resources so the /security prefix routes are registered ahead of the generic
 # /{resource} catch-all in resources.py.
@@ -236,6 +240,12 @@ import app.routes.usage  # noqa: F401, E402
 # Self-registers on api_router at import time. Distinct from the /lakehouse
 # OPTIMIZER package (app.lakehouse) — this is the provisioning surface.
 import app.routes.lakehouse  # noqa: F401, E402
+
+# Import demo-parquet serving route (D2: browser-side demo compute) BEFORE
+# resources so the /demo-parquet/* prefix routes register ahead of the generic
+# /{resource} and /{resource}/{id} catch-alls in resources.py.
+# No auth on the file/manifest endpoints; query-map endpoint requires read scope.
+import app.routes.demo_parquet  # noqa: F401, E402
 
 # Import resources route so it registers itself on api_router at import time.
 import app.routes.resources  # noqa: F401, E402

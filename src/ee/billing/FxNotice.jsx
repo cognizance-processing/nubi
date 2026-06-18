@@ -67,7 +67,9 @@ export default function FxNotice({
     "Nubi's subscription prices are set in US dollars (USD) and converted to South African rand (ZAR) " +
     'using a daily exchange rate. The ZAR amount shown at checkout and charged each billing cycle may ' +
     'vary slightly from cycle to cycle as the exchange rate changes. Your USD price remains fixed for the ' +
-    'duration of your plan. Exchange rate information is sourced from a tier-1 FX provider and refreshed daily.'
+    'duration of your plan. Exchange rate information is sourced from a tier-1 FX provider and refreshed daily. ' +
+    'All charges are processed in ZAR. If your card is not denominated in rand, your bank converts the ' +
+    'ZAR amount to your local currency at its own rate and may add a foreign-transaction fee.'
 
   if (compact) {
     return (

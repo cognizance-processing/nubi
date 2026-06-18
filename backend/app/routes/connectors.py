@@ -218,6 +218,11 @@ class CreateConnectorIn(BaseModel):
     type: ConnectorType
     config: ConnectorConfig = ConnectorConfig()
     secret: ConnectorSecret = ConnectorSecret()
+    # Optional seed: when "demo", the connector is seeded with a copy of the demo
+    # parquet lakehouse (the user's own editable or read-only copy, depending on
+    # whether managed lakehouse storage is configured).  "blank" (default) creates
+    # an empty connector with whatever config the caller supplies.
+    seed: Literal["demo", "blank"] | None = None
 
     @model_validator(mode="after")
     def assert_no_secret_in_config(self) -> "CreateConnectorIn":
@@ -388,12 +393,78 @@ def _build_config(connector_type: str, non_secret_config: dict[str, Any]) -> dic
     return {"connector_type": connector_type, **non_secret_config}
 
 
+# ── Demo-seeded connector config builder ─────────────────────────────────────
+
+
+async def _build_demo_seed_config(org_id: str, request: Request) -> dict[str, Any]:
+    """Build a ``duckdb`` connector config pre-loaded with demo parquet data.
+
+    Reuses the same two-path logic as ``app/sample.py``:
+
+    - **Managed lakehouse configured**: provisions per-project editable parquet
+      files under the caller's project prefix, returns an ``editable_parquet``
+      config with ``s3_views``.  Each created connector gets its own isolated
+      copy of the 17 demo tables.
+    - **No managed lakehouse** (offline / CI): exports once to the shared local
+      ``seed_data/parquet/`` directory and returns a read-only ``view_sql``
+      config.
+
+    The resulting config is tagged ``demo_seeded=True`` (non-secret, stored in
+    datastores.config) so callers can identify it without relying on the name.
+    The connector is NOT marked ``sample=True`` or ``system=True`` — the user
+    fully owns it and it appears as a normal connector card (editable on the
+    managed-lake path, read-only otherwise).
+
+    Raises :class:`AppError` (500) if neither path can produce data.
+    """
+    from app.demo_bundle import export_demo_parquet_local, local_parquet_datastore_config  # noqa: PLC0415
+    from app.demo_lakehouse import (  # noqa: PLC0415
+        editable_demo_datastore_config,
+        editable_demo_supported,
+        provision_demo_parquet,
+    )
+
+    # Resolve the active project id for this request (if any) — so per-project
+    # parquet files land under the right prefix.
+    active_project = await _active_project_id(org_id, request)
+
+    if editable_demo_supported():
+        try:
+            uris = provision_demo_parquet(org_id, active_project)
+            if uris:
+                cfg = editable_demo_datastore_config(uris)
+                cfg["demo_seeded"] = True
+                # User-owned copy: no sample/system flags — it renders as a normal
+                # connector and the user can delete it without touching the shared demo.
+                cfg.pop("sample", None)
+                return cfg
+        except Exception:  # noqa: BLE001 — fall through to local path
+            pass
+
+    # Local read-only parquet path (no managed lakehouse / fallback).
+    try:
+        export_demo_parquet_local()
+        cfg = local_parquet_datastore_config()
+        cfg["demo_seeded"] = True
+        # Remove system/sample so the connector is fully user-owned.
+        cfg.pop("sample", None)
+        cfg.pop("system", None)
+        return cfg
+    except Exception as exc:  # noqa: BLE001
+        raise AppError(
+            "demo_seed_unavailable",
+            f"Could not build demo data for this connector: {exc}",
+            500,
+        ) from exc
+
+
 # ── Endpoints ─────────────────────────────────────────────────────────────────
 
 
 @router.post("", status_code=201, dependencies=[Depends(require_writer_default)])
 async def create_connector(
     body: CreateConnectorIn,
+    request: Request,
     user: dict[str, Any] = Depends(current_user),
     repo: Repo = Depends(get_repo),
 ) -> dict[str, Any]:
@@ -416,8 +487,21 @@ async def create_connector(
             await repo.delete("datastores", org_id, str(hidden["id"]))
         return _sanitise(_demo_connector_row(org_id))
 
+    # ── Demo-seeded connector ─────────────────────────────────────────────────
+    # When seed="demo" the caller wants a real, user-owned duckdb connector
+    # pre-loaded with a copy of the demo parquet lakehouse (editable if managed
+    # lakehouse storage is configured, read-only via local parquet otherwise).
+    # We resolve the connector config from the demo seeding logic and ignore
+    # whatever config the caller supplied (name is kept as-is).
+    non_secret_config_override: dict[str, Any] | None = None
+    if body.seed == "demo":
+        non_secret_config_override = await _build_demo_seed_config(org_id, request)
+
     # Build the safe config — explicitly excludes all secret keys
-    safe_config = _build_config(body.type, body.config.to_safe_dict())
+    if non_secret_config_override is not None:
+        safe_config = non_secret_config_override
+    else:
+        safe_config = _build_config(body.type, body.config.to_safe_dict())
 
     # CRITICAL: assert the secret is not leaking into config
     for key in _SECRET_KEYS:

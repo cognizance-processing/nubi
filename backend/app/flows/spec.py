@@ -190,7 +190,8 @@ class TaskSpec(BaseModel):
     kind:
         Execution kind — ``'query'``, ``'python'``, ``'agent'``,
         ``'materialize'``, ``'noop'``, ``'bucket_load'``,
-        ``'preagg_refresh'``, ``'map'``, ``'branch'``, or ``'map_collect'``.
+        ``'preagg_refresh'``, ``'map'``, ``'branch'``, ``'map_collect'``,
+        or ``'report_send'``.
     needs:
         List of upstream task keys this task depends on.  An empty list
         means the task is a root (no dependencies).
@@ -238,6 +239,11 @@ class TaskSpec(BaseModel):
           no condition matches; empty list = no-op on unmatched path per Q1).
         - ``map_collect`` → no required fields (internal collector handler).
         - ``preagg_refresh`` → ``org_id`` (required).
+        - ``report_send`` → ``board_id`` (required) AND ``recipients``
+          (required — non-empty list of email addresses).  Optional:
+          ``org_id``, ``format`` (csv/pdf/pptx, default csv), ``params``,
+          ``subject``, ``body``, ``apply_user_permissions``, ``locked_params``,
+          ``notify_channels``, ``policies``.
         - ``noop``        → no required fields.
     retries:
         Number of retry attempts after the first failure (``0`` = no retry).
@@ -266,6 +272,7 @@ class TaskSpec(BaseModel):
         "map",          # fan-out; config.body is a sub-DAG of TaskSpec dicts
         "branch",       # conditional routing; config.conditions list
         "map_collect",  # collector for map fan-in (internal / handler use)
+        "report_send",  # render a board and deliver to recipients (email/Slack)
     ] = Field(description="Execution kind.")
     needs: list[str] = Field(
         default_factory=list,
@@ -635,6 +642,16 @@ def validate_flow_spec(data: Any) -> tuple[FlowSpec | None, list[str]]:
             if not cfg.get("org_id"):
                 issues.append(
                     f"Task {task.key!r} (preagg_refresh): config must include 'org_id'."
+                )
+        elif task.kind == "report_send":
+            if not cfg.get("board_id"):
+                issues.append(
+                    f"Task {task.key!r} (report_send): config must include 'board_id'."
+                )
+            if not cfg.get("recipients"):
+                issues.append(
+                    f"Task {task.key!r} (report_send): config must include 'recipients' "
+                    "(non-empty list of email addresses)."
                 )
         elif task.kind == "map":
             if not cfg.get("item_expr"):

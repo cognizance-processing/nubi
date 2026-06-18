@@ -406,6 +406,100 @@ class TestMeteredDimensions:
 
 
 # ============================================================================
+# 7b. COGS mapping — new actions + demo/client-computed unmetered guarantee
+# ============================================================================
+
+
+class TestCogsMapping:
+    """Verify the module-level docstring encodes the new action→COGS mappings
+    and the demo/browser-computed free guarantee.
+
+    These are documentation-level assertions — the docstring IS the contract
+    that the metering layer must implement.  Keeping it machine-checked means
+    a stray edit that strips the guarantee will fail CI immediately.
+    """
+
+    def _docstring(self) -> str:
+        import app.ee.billing.tiers as tiers_module
+        doc = tiers_module.__doc__ or ""
+        return doc
+
+    def test_snapshot_storage_maps_to_storage_cogs_line(self) -> None:
+        doc = self._docstring()
+        assert "storage_zar_per_gb_month" in doc, (
+            "Docstring must map snapshot storage to storage_zar_per_gb_month"
+        )
+        assert "snapshot" in doc.lower(), (
+            "Docstring must mention snapshot storage action"
+        )
+
+    def test_snapshot_query_maps_to_scan_cogs_line(self) -> None:
+        doc = self._docstring()
+        assert "scan_zar_per_tib" in doc, (
+            "Docstring must map snapshot/report queries to scan_zar_per_tib"
+        )
+
+    def test_export_render_maps_to_compute_cogs_line(self) -> None:
+        doc = self._docstring()
+        assert "compute_zar_per_1000_cu" in doc, (
+            "Docstring must map PDF/PPT renders to compute_zar_per_1000_cu"
+        )
+        # Both render actions mentioned
+        assert "pdf" in doc.lower() or "render_pdf" in doc.lower(), (
+            "Docstring must mention PDF export action"
+        )
+        assert "pptx" in doc.lower() or "ppt" in doc.lower(), (
+            "Docstring must mention PPT/PPTX export action"
+        )
+
+    def test_scheduled_report_maps_to_compute_cogs_line(self) -> None:
+        doc = self._docstring()
+        # Scheduled report send draws compute
+        assert "report" in doc.lower() and "compute_zar_per_1000_cu" in doc, (
+            "Docstring must map scheduled report sends to compute_zar_per_1000_cu"
+        )
+
+    def test_public_export_maps_to_storage_and_bandwidth_cogs(self) -> None:
+        doc = self._docstring()
+        assert "public" in doc.lower() or "cdn" in doc.lower(), (
+            "Docstring must mention public/CDN export"
+        )
+        # Public file uses both storage and embedded_session/CDN bandwidth lines
+        assert "embedded_session_zar_per_10k" in doc or "session" in doc.lower(), (
+            "Docstring must reference CDN/bandwidth line for public exports"
+        )
+
+    def test_demo_client_computed_documented_as_unmetered(self) -> None:
+        """The demo/browser DuckDB-WASM path must be documented as free/unmetered."""
+        doc = self._docstring()
+        # Must call out zero metering for browser-computed views
+        assert "wasm" in doc.lower() or "duckdb-wasm" in doc.lower(), (
+            "Docstring must mention browser DuckDB-WASM as the unmetered path"
+        )
+        # Must use language indicating it is never billed
+        assert any(
+            phrase in doc.lower()
+            for phrase in ("never metered", "zero marginal", "always free", "free forever", "zero server")
+        ), (
+            "Docstring must state demo/browser-computed views are never metered"
+        )
+
+    def test_viewers_documented_as_free(self) -> None:
+        """Viewer seats must be documented as free at all tiers (no server compute)."""
+        doc = self._docstring()
+        assert "viewer" in doc.lower(), (
+            "Docstring must mention viewers in the unmetered section"
+        )
+        # The viewer entry should appear in the NOT metered section
+        not_metered_idx = doc.lower().find("not metered")
+        viewer_idx = doc.lower().rfind("viewer")
+        assert not_metered_idx != -1, "Docstring must have a 'NOT metered' section"
+        assert viewer_idx > not_metered_idx, (
+            "Viewer free-forever guarantee must appear after 'NOT metered' heading"
+        )
+
+
+# ============================================================================
 # 8. Security-dial → tier mapping
 # ============================================================================
 
@@ -571,7 +665,7 @@ class TestOverageRates:
         assert ov.compute_zar_per_1000_cu is None
 
     def test_starter_storage_overage_maps_to_object_storage_cogs(self) -> None:
-        """R1.50/GB → ~84% margin: confirms COGS line is object-storage."""
+        """R0.33/GB → ~27% margin: confirms COGS line is object-storage (R2 parity)."""
         assert self._overages("starter").storage_zar_per_gb_month == Decimal("0.33")
 
     def test_starter_compute_overage_maps_to_container_compute_cogs(self) -> None:

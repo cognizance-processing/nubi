@@ -838,6 +838,15 @@ export default function PricingCalculator({
                   {fxRate != null
                     ? `1 USD = R ${fxRate.toFixed(2)}`
                     : '1 USD = R 16.26 (reference)'}.
+                  {' '}Think a comparison is unfair or out of date?{' '}
+                  <a
+                    href="https://github.com/nu-bi/nubi/issues/new?title=Pricing%20comparison%20feedback"
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="underline hover:text-fg transition-colors"
+                  >
+                    Open a GitHub issue
+                  </a>{' '}and we'll fix it.
                 </p>
               </div>
             </div>

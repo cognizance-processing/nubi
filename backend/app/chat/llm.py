@@ -1,22 +1,26 @@
-"""Streaming agent loop over the Anthropic Messages API (tool use + token deltas).
+"""Streaming agent loop via LiteLLM (tool use + token deltas).
 
 This module owns the actual model call for the chat backend.  It runs the
 agentic loop manually so it can stream token deltas AND surface tool_use /
 tool_result events live, Cursor-style.
 
-Reusing the existing LLM client + key
--------------------------------------
-The rest of the app talks to Claude through ``app.ai.provider.AnthropicProvider``,
-which (a) reads the API key from ``ANTHROPIC_API_KEY`` (settings or env, via
-``get_provider()``'s resolution) and (b) lazily imports the ``anthropic`` SDK.
-That provider only exposes a plain ``complete()`` with no streaming/tool-use, so
-here we reuse its *key resolution* and the *same anthropic SDK client*, and add
-the streaming tool-use loop on top.  We do NOT hardcode a key.
+LiteLLM (in-process, NOT the proxy server) normalises the streaming wire
+format to the OpenAI shape regardless of provider, which means this file
+works with Anthropic, OpenAI, and Gemini models without any provider-specific
+branching.  The heavy ``litellm`` import is deferred to the first real
+request so it doesn't slow startup and doesn't break tests that mock the
+provider.
 
-When no Anthropic key is configured (the default in dev/CI), ``stream_chat``
-falls back to a deterministic offline path that still emits the same event
-shapes (including a real ``propose_dashboard_spec`` tool call when the user asks
-for a dashboard) so the endpoint works without network access.
+Credential detection
+--------------------
+The loop checks for any of the well-known provider API-key environment
+variables.  If none are found it falls through to the offline path, which
+emits the same event shapes so the endpoint works in dev/CI without network
+access.
+
+The function ``_resolve_anthropic_key()`` is preserved by name because the
+test suite patches it to force the offline path.  It returns a non-None value
+when *any* LLM credential is configured.
 
 Event shapes yielded by ``stream_chat`` (all JSON-serialisable dicts)::
 
@@ -26,7 +30,7 @@ Event shapes yielded by ``stream_chat`` (all JSON-serialisable dicts)::
     {"type": "error",       "message": str}
 
 The final assistant turn (full text + tool calls + any proposed spec) is NOT
-emitted here — the route assembles it from ``collect_turn`` (below) so it can
+emitted here — the route assembles it from ``stream_chat`` (below) so it can
 persist it and send the terminal ``message`` event.
 """
 
@@ -35,7 +39,7 @@ from __future__ import annotations
 import json
 from typing import Any, Iterator
 
-from app.chat.tools import anthropic_tool_specs, execute_tool
+from app.chat.tools import openai_tool_specs, execute_tool
 
 # Hard cap on agentic iterations so a misbehaving model can't loop forever.
 _MAX_STEPS = 6
@@ -72,18 +76,30 @@ metric, the chart type) in one or two sentences. Use markdown.
 
 
 # ---------------------------------------------------------------------------
-# Anthropic key / client resolution (reuses app.ai provider config)
+# Credential resolution (reuses app.ai provider config, multi-provider)
 # ---------------------------------------------------------------------------
 
 
 def _resolve_anthropic_key() -> str | None:
-    """Return the Anthropic API key the rest of the app would use, or None.
+    """Return a credential string if any LLM provider is configured, else None.
 
-    Mirrors ``app.ai.provider.get_provider``'s resolution: settings field first,
-    then the ``ANTHROPIC_API_KEY`` environment variable.  Never raises.
+    The name ``_resolve_anthropic_key`` is preserved for backwards-compat with
+    tests that patch this function to force the offline path — returning None
+    from it still triggers the offline fallback.
+
+    Checks, in order: ANTHROPIC_API_KEY, OPENAI_API_KEY, GEMINI_API_KEY,
+    LITELLM_API_KEY (env vars), then falls back to app.config.get_settings()
+    for ANTHROPIC_API_KEY (same resolution order as the original).
     """
     import os  # noqa: PLC0415
 
+    # Check common provider env vars directly first (fastest path).
+    for var in ("ANTHROPIC_API_KEY", "OPENAI_API_KEY", "GEMINI_API_KEY", "LITELLM_API_KEY"):
+        val = os.environ.get(var)
+        if val:
+            return val
+
+    # Fall back to app settings for ANTHROPIC_API_KEY (mirrors original behaviour).
     try:
         from app.config import get_settings  # noqa: PLC0415
 
@@ -92,14 +108,19 @@ def _resolve_anthropic_key() -> str | None:
             return str(val)
     except Exception:  # noqa: BLE001
         pass
-    return os.environ.get("ANTHROPIC_API_KEY") or None
+
+    return None
 
 
-def _anthropic_client(api_key: str) -> Any:
-    """Build an Anthropic SDK client (lazy import, same SDK as AnthropicProvider)."""
-    import anthropic  # noqa: PLC0415
+def _resolve_model_string(model_id: str) -> str:
+    """Return the LiteLLM provider-prefixed model string for *model_id*.
 
-    return anthropic.Anthropic(api_key=api_key)
+    Delegates to :func:`app.chat.models.to_litellm_model` so the mapping
+    lives in a single place.
+    """
+    from app.chat.models import to_litellm_model  # noqa: PLC0415
+
+    return to_litellm_model(model_id)
 
 
 # ---------------------------------------------------------------------------
@@ -121,96 +142,139 @@ class _Turn:
 
 
 # ---------------------------------------------------------------------------
-# Real-provider streaming loop
+# Real-provider streaming loop (LiteLLM / OpenAI-normalised chunks)
 # ---------------------------------------------------------------------------
 
 
 def _stream_real(
-    client: Any,
     model: str,
     history: list[dict[str, Any]],
     turn: _Turn,
 ) -> Iterator[dict[str, Any]]:
-    """Run the manual tool-use loop against Anthropic, yielding live events."""
-    messages: list[dict[str, Any]] = list(history)
-    tools = anthropic_tool_specs()
+    """Run the manual tool-use loop via LiteLLM, yielding live events.
+
+    LiteLLM normalises all provider streaming to the OpenAI delta format:
+    - ``delta.content`` (str) → text token
+    - ``delta.tool_calls`` (list) → tool-call fragment (accumulated per index)
+
+    After the stream ends, ``litellm.stream_chunk_builder`` assembles the full
+    ModelResponse so we can read ``choices[0].message.tool_calls`` without
+    manually stitching argument fragments ourselves.
+
+    Messages follow the OpenAI convention: the system prompt is prepended as a
+    ``{"role": "system", ...}`` message; tool results go in
+    ``{"role": "tool", "tool_call_id": ..., "content": ...}`` messages.
+    """
+    import litellm  # noqa: PLC0415
+
+    litellm.drop_params = True
+
+    tools = openai_tool_specs()
+
+    # Prepend system message (OpenAI convention — system lives in messages).
+    messages: list[dict[str, Any]] = [
+        {"role": "system", "content": _SYSTEM_PROMPT},
+        *history,
+    ]
 
     for _step in range(_MAX_STEPS):
-        assistant_blocks: list[dict[str, Any]] = []
-        # Track in-progress tool_use blocks by content index.
-        tool_inputs: dict[int, str] = {}
-        tool_meta: dict[int, dict[str, Any]] = {}
+        chunks: list[Any] = []
 
-        with client.messages.stream(
+        response_iter = litellm.completion(
             model=model,
-            max_tokens=_MAX_TOKENS,
-            system=_SYSTEM_PROMPT,
-            tools=tools,
             messages=messages,
-        ) as stream:
-            for event in stream:
-                etype = getattr(event, "type", None)
-                if etype == "content_block_start":
-                    block = event.content_block
-                    if block.type == "tool_use":
-                        tool_meta[event.index] = {"id": block.id, "name": block.name}
-                        tool_inputs[event.index] = ""
-                elif etype == "content_block_delta":
-                    delta = event.delta
-                    if getattr(delta, "type", None) == "text_delta":
-                        turn.text_parts.append(delta.text)
-                        yield {"type": "token", "text": delta.text}
-                    elif getattr(delta, "type", None) == "input_json_delta":
-                        tool_inputs[event.index] += delta.partial_json
+            tools=tools,
+            stream=True,
+            max_tokens=_MAX_TOKENS,
+        )
 
-            final = stream.get_final_message()
+        for chunk in response_iter:
+            chunks.append(chunk)
+            try:
+                delta = chunk.choices[0].delta
+            except (AttributeError, IndexError):
+                continue
 
-        # Reconstruct assistant content blocks from the final message.
-        tool_use_blocks: list[Any] = []
-        for block in final.content:
-            if block.type == "text":
-                assistant_blocks.append({"type": "text", "text": block.text})
-            elif block.type == "tool_use":
-                assistant_blocks.append(
-                    {"type": "tool_use", "id": block.id, "name": block.name, "input": block.input}
-                )
-                tool_use_blocks.append(block)
+            # Stream text tokens live.
+            content = getattr(delta, "content", None)
+            if content:
+                turn.text_parts.append(content)
+                yield {"type": "token", "text": content}
 
-        messages.append({"role": "assistant", "content": assistant_blocks})
+            # Tool-call deltas are accumulated via stream_chunk_builder below;
+            # we do not need to manually stitch them here.
 
-        if final.stop_reason != "tool_use" or not tool_use_blocks:
+        # Re-assemble the full response from all collected chunks.
+        rebuilt = litellm.stream_chunk_builder(chunks, messages=messages)
+        try:
+            message = rebuilt.choices[0].message
+        except (AttributeError, IndexError):
             return
 
-        # Execute each tool call, emit events, and collect results.
-        tool_results: list[dict[str, Any]] = []
-        for block in tool_use_blocks:
-            tool_input = block.input if isinstance(block.input, dict) else {}
-            yield {"type": "tool_use", "id": block.id, "name": block.name, "input": tool_input}
+        finish_reason = rebuilt.choices[0].finish_reason
+        raw_tool_calls = getattr(message, "tool_calls", None) or []
+        wants_tools = finish_reason == "tool_calls" or bool(raw_tool_calls)
+
+        # Build the assistant turn for message history.
+        assistant_msg: dict[str, Any] = {
+            "role": "assistant",
+            "content": message.content or "",
+        }
+        if raw_tool_calls:
+            assistant_msg["tool_calls"] = [
+                {
+                    "id": tc.id,
+                    "type": "function",
+                    "function": {
+                        "name": tc.function.name,
+                        "arguments": tc.function.arguments or "{}",
+                    },
+                }
+                for tc in raw_tool_calls
+            ]
+        messages.append(assistant_msg)
+
+        if not wants_tools:
+            return
+
+        # Execute each tool call, emit events, collect results.
+        for tc in raw_tool_calls:
+            tool_id: str = tc.id
+            tool_name: str = tc.function.name
+            raw_args: str = tc.function.arguments or "{}"
             try:
-                output, extra = execute_tool(block.name, tool_input)
+                tool_input: dict[str, Any] = json.loads(raw_args)
+            except (json.JSONDecodeError, ValueError):
+                tool_input = {}
+
+            yield {"type": "tool_use", "id": tool_id, "name": tool_name, "input": tool_input}
+
+            try:
+                output, extra = execute_tool(tool_name, tool_input)
             except Exception as exc:  # noqa: BLE001
                 output, extra = {"error": str(exc)}, {}
+
             if extra.get("spec"):
                 turn.spec = extra["spec"]
+
             turn.tool_calls.append(
-                {"id": block.id, "name": block.name, "input": tool_input, "output": output}
+                {"id": tool_id, "name": tool_name, "input": tool_input, "output": output}
             )
-            yield {"type": "tool_result", "id": block.id, "output": output}
-            tool_results.append(
+            yield {"type": "tool_result", "id": tool_id, "output": output}
+
+            messages.append(
                 {
-                    "type": "tool_result",
-                    "tool_use_id": block.id,
+                    "role": "tool",
+                    "tool_call_id": tool_id,
                     "content": json.dumps(output),
                 }
             )
-
-        messages.append({"role": "user", "content": tool_results})
 
     # Exhausted steps without a natural stop — end the turn quietly.
 
 
 # ---------------------------------------------------------------------------
-# Offline fallback (no Anthropic key configured)
+# Offline fallback (no LLM credential configured)
 # ---------------------------------------------------------------------------
 
 
@@ -290,18 +354,21 @@ def stream_chat(
 ) -> Iterator[tuple[dict[str, Any], _Turn]]:
     """Stream the assistant's turn for *history*, yielding ``(event, turn)``.
 
-    *history* is the Anthropic-format message list (roles ``user`` / ``assistant``
-    with string or block content).  The same mutable ``_Turn`` is yielded with
-    every event; after iteration completes it holds the full assistant text, the
-    list of tool calls, and any proposed dashboard spec — the route uses it to
-    persist the turn and emit the terminal ``message`` event.
+    *history* is the OpenAI-format message list (roles ``user`` / ``assistant``
+    with string or block content).  The *model* id is mapped to a LiteLLM
+    provider-prefixed string via :func:`_resolve_model_string` before the call.
+
+    The same mutable ``_Turn`` is yielded with every event; after iteration
+    completes it holds the full assistant text, the list of tool calls, and any
+    proposed dashboard spec — the route uses it to persist the turn and emit
+    the terminal ``message`` event.
     """
     turn = _Turn()
     try:
-        api_key = _resolve_anthropic_key()
-        if api_key:
-            client = _anthropic_client(api_key)
-            for ev in _stream_real(client, model, history, turn):
+        credential = _resolve_anthropic_key()
+        if credential:
+            litellm_model = _resolve_model_string(model)
+            for ev in _stream_real(litellm_model, history, turn):
                 yield ev, turn
         else:
             for ev in _stream_offline(history, turn):

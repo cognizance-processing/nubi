@@ -1,29 +1,73 @@
 # Exports & Scheduled Reports
 
-Nubi has two ways to get data out: **one-click dashboard exports** via the toolbar, and **scheduled jobs** that render CSV or PDF reports and deliver them by email on a cron schedule.
+See also [Architecture & Economics](architecture-and-economics.md) for how
+each export action maps to a COGS line and why viewers are always free.
+
+Nubi has three ways to get data out:
+
+1. **Download exports** — CSV, JSON, high-fidelity PDF, and PowerPoint via the Export & Share toolbar.
+2. **Scheduled reports** — Flows tasks that render a board on a cron schedule and deliver it by email (or other notify channel).
+3. **Unsafe public exports** — frozen static HTML + DuckDB sidecar published to a CDN (opt-in, loud, auth-gated).
 
 ---
 
-## Dashboard Exports (UI)
+## Export & Share Endpoints
 
-Every dashboard has an **Export & Share** button in the top bar. The menu offers three export formats:
+All download endpoints are **org-scoped** and require a first-party Bearer token.
+The server-side paths are:
 
-| Format | How it works |
-|--------|--------------|
-| **PNG** | Client-side capture of the rendered dashboard DOM via `html2canvas`. |
-| **PDF** | Client-side capture via `html2canvas + jsPDF`. The browser renders the visual layout to PDF — this is distinct from the server-side report PDF described below. |
-| **CSV** | Per-widget data fetched from `GET /api/v1/boards/{id}/export.json`, then assembled into a multi-section CSV in the browser. Each widget produces one section labelled `# widget: <id>`. |
+| Endpoint | Returns | Notes |
+|----------|---------|-------|
+| `GET /api/v1/boards/{id}/export.csv` | `text/csv` | Multi-widget CSV; `?query_id=<id>` for a single widget. |
+| `GET /api/v1/boards/{id}/export.json` | `application/json` | Same data as CSV but JSON; handy for client-side SheetJS. |
+| `GET /api/v1/boards/{id}/export.pdf` | `application/pdf` | High-fidelity **vector** PDF via the T2→T3 pipeline (see below). |
+| `GET /api/v1/boards/{id}/export.pptx` | `application/vnd.openxmlformats-officedocument.presentationml.presentation` | Native-SVG PowerPoint via the T2→T4 pipeline (see below). |
+| `POST /api/v1/boards/{id}/share` | `application/json` | Embed descriptor + RLS model + mint instructions for a host-signed embed JWT. |
 
-The **Share** tab on the same menu gives you the embed URL and a `<nubi-dashboard>` snippet. See [Embedding](/docs/embedding) for the full embed and row-level security details.
+The **Share** endpoint gives you everything you need to embed the board — the embed URL, a copy-paste `<nubi-dashboard>` snippet, and the exact JWT claim shape the host must RS256/ES256-sign. Nubi never mints embed tokens itself. See [Embedding](/docs/embedding) for the full embed and RLS model.
 
-You can also request the raw data directly:
+### CSV and JSON exports
+
+`export.csv` and `export.json` resolve each widget's `query_id`, run the query server-side through the same planner path used for interactive queries (RLS predicates injected from `policies: {}` — editor view, no filtering), and stream the result. A widget whose query cannot run is emitted as an inline `# error:` comment (CSV) or an `error` key (JSON); the rest continues.
+
+Pass `?query_id=<id>` to export only that widget's data.
+
+### High-fidelity PDF export (`export.pdf`)
+
+The PDF pipeline:
+
+1. **T5 export config** — reads `spec.export` for `page_size` (A4 / Letter / 16:9), `header`, `footer`, `title_slide`, and per-widget `widget_hints`. Pass `?page_size=Letter` to override.
+2. **T2 SVG render** — collects widget data server-side and renders each widget to SVG via the Node.js echarts-SSR script (`scripts/render/echarts-ssr.mjs`). Widgets are composed into a full-page SVG by `scripts/render/svg-composer.mjs`.
+3. **T3 PDF render** — converts the composed SVG to a vector `%PDF-1.x` document with one page per composed SVG. Header/footer text and an optional title slide are added in pure PDF drawing operations (no rasterization, fully selectable text).
+
+Rendering backends (tried in order, lazy-imported):
+- `cairosvg` (preferred — requires the `libcairo` system library).
+- `svglib + reportlab` (pure-Python fallback; no system library needed).
+
+When neither is available the endpoint returns **503** with `{"error": {"code": "pdf_backend_missing", ...}}` and clear install instructions.
 
 ```
-GET /api/v1/boards/{id}/export.csv        # multi-widget CSV (server-side)
-GET /api/v1/boards/{id}/export.json       # same data as JSON
+GET /api/v1/boards/{id}/export.pdf
+GET /api/v1/boards/{id}/export.pdf?page_size=Letter
 ```
 
-Both endpoints are org-scoped and require a first-party Bearer token. Pass `?query_id=<id>` to limit the export to a single widget.
+### High-fidelity PPTX export (`export.pptx`)
+
+The PPTX pipeline:
+
+1. Same T5 export config and T2 SVG render as above.
+2. **T4 PPTX render** — builds a `.pptx` file with one slide per widget using `python-pptx`. Each slide embeds the SVG natively (PowerPoint 2016+ vector rendering) plus a PNG raster fallback (via `cairosvg`) for older clients. Per-widget captions, a title slide, header/footer text boxes, and explicit slide ordering all come from the T5 export config.
+
+Required Python packages (lazy-imported; absent → 503):
+- `python-pptx` — PPTX construction.
+- `cairosvg` — PNG raster fallback inside each slide.
+
+```
+GET /api/v1/boards/{id}/export.pptx
+GET /api/v1/boards/{id}/export.pptx?page_size=16:9
+```
+
+Both PDF and PPTX export use the **editor view** (no RLS filtering) — the same policy as `export.csv`. For per-viewer filtered exports, drive the export through a scheduled report flow with the appropriate `policies` claim.
 
 ---
 
@@ -137,6 +181,8 @@ The PDF attachment is returned as `report.pdf`. For the full dataset, use `forma
 
 Both formats follow the same widget-resolution path, so skipped widgets appear identically in both.
 
+> **High-fidelity export vs. report PDF** — the `report` job's PDF is a compact data table summary (stdlib-only). The `GET /boards/{id}/export.pdf` endpoint produces a full visual render of the board via the T2→T3 pipeline (echarts-SSR → cairosvg / svglib). Use the download endpoint when you need chart visuals; use the job PDF when you need a quick tabular data digest.
+
 ### Per-Recipient Locked Params
 
 When `apply_user_permissions=true`, the executor renders a separate report for each recipient with that recipient's locked params injected on top of the base `params`. This lets you send one job to a list of recipients where each person sees only their own data slice:
@@ -235,6 +281,60 @@ The scheduler tick runs every `JOBS_SCHEDULER_INTERVAL_S` seconds (default: 30).
 | `JOBS_SCHEDULER_INTERVAL_S` | `30` | Seconds between scheduler ticks. |
 
 A job is due if `enabled=true` and its `next_run_at` is at or before the current tick time (or is null). After each run the scheduler advances `next_run_at` to the next occurrence and updates `last_run_at`.
+
+---
+
+## Scheduled `report_send` Flow (Flows-based delivery)
+
+Flows (`app/flows/`) are a lower-level task graph that underlies the Jobs system. For advanced cases (custom notify channels, per-tenant reports, conditional delivery) you can compose a `report_send` flow directly instead of using a `report` job.
+
+The canonical task chain for a scheduled visual report is:
+
+```
+snapshot_refresh  →  render_board_svg  →  render_board_pdf  →  notify_email
+```
+
+Each step reuses the same building blocks as the download endpoints:
+
+| Step | Module | Description |
+|------|--------|-------------|
+| `snapshot_refresh` | `app.embedding.snapshot` | Collect board data and write a DuckDB sidecar artifact. |
+| `render_board_svg` | `app.dashboards.svg_render` | Render per-widget SVGs and compose a page SVG via Node.js echarts-SSR. |
+| `render_board_pdf` | `app.embedding.render_pdf` | Convert the composed SVG to a `%PDF` byte string via cairosvg / svglib. |
+| `notify_email` | `app.notify.*` | Deliver the PDF as an email attachment via the configured SMTP transport. |
+
+The flow is registered in `app/flows/registry.py` under the `report_send` kind and can be triggered manually (`POST /api/v1/flows`) or on a cron schedule via the Flows scheduler.
+
+The `policies` claim passed at flow trigger time determines the RLS view the snapshot captures. For multi-tenant delivery, trigger one flow run per tenant with that tenant's `policies` — each run produces a separate artifact and email for that tenant's data slice only.
+
+---
+
+## Unsafe Public Export (LOUD — read this before enabling)
+
+`POST /api/v1/boards/{id}/export/public` generates a **no-auth, publicly accessible** static HTML page backed by a frozen DuckDB sidecar artifact.
+
+**This is not a standard export path.** It is opt-in and disabled by default. Before you can use it:
+
+1. Set `ALLOW_UNSAFE_PUBLIC_EXPORTS=true` in the server environment.
+2. The org must hold the `public_exports` feature gate.
+
+Even with both conditions met, the endpoint writes a WARNING log entry and persists an audit record on the board (`config.public_export_audit`). Every export is traceable.
+
+**Security properties:**
+
+- Authentication is required to *create* the export (first-party Bearer token).
+- The resulting URL is public — **no auth, no expiry, no per-viewer filtering**.
+- The data is frozen under the exporter's RLS view (`policies` from the verified token at create time, never from a request body). Every viewer of the URL sees the same data.
+- Only export boards whose data is safe to make fully public.
+
+The endpoint reuses the Mode 3a snapshot artifact (`app.embedding.snapshot`). Pass `?snapshot_id=<id>` to publish an existing snapshot, or omit it to capture a fresh one.
+
+```
+POST /api/v1/boards/{id}/export/public
+Authorization: Bearer <first-party-jwt>
+```
+
+Response includes `unsafe: true` in the payload as a constant reminder.
 
 ---
 

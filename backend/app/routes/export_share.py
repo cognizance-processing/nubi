@@ -15,6 +15,27 @@ GET  /boards/{id}/export.json
     columns, rows}`` per widget as JSON — handy when the client wants to drive
     its own CSV / Excel writer (e.g. SheetJS) without re-running queries.
 
+GET  /boards/{id}/export.pdf
+    Render the board to a high-fidelity PDF via the T2 → T3 pipeline:
+      1. Collect the board's widget data (server-side, no RLS — editor view).
+      2. Render per-widget SVGs with the Node.js echarts-SSR script.
+      3. Compose a page SVG.
+      4. Render the page SVG to PDF via cairosvg (preferred) or svglib+reportlab.
+    Respects the T5 export config (page_size, header/footer, title_slide).
+    Returns ``application/pdf``.  Requires cairosvg or svglib+reportlab; returns
+    503 with a clear install message when neither is available.
+
+GET  /boards/{id}/export.pptx
+    Render the board to a PowerPoint file via the T2 → T4 pipeline:
+      1. Collect the board's widget data.
+      2. Render per-widget SVGs.
+      3. Build a .pptx with one slide per widget, embedding SVG natively +
+         PNG fallback via python-pptx.
+    Respects the T5 export config (page_size, title_slide, header/footer,
+    captions, include/exclude, order).
+    Returns ``application/vnd.openxmlformats-officedocument.presentationml.presentation``.
+    Requires python-pptx (+ cairosvg for PNG rasterization); returns 503 when absent.
+
 POST /boards/{id}/share
     Return everything the host needs to embed the board: the embed URL, a
     copy-paste ``<nubi-dashboard>`` snippet, the RLS / auth model summary, and
@@ -48,6 +69,8 @@ Router wiring (for main.py owner)
 
     GET  /api/v1/boards/{id}/export.csv
     GET  /api/v1/boards/{id}/export.json
+    GET  /api/v1/boards/{id}/export.pdf
+    GET  /api/v1/boards/{id}/export.pptx
     POST /api/v1/boards/{id}/share
 """
 
@@ -62,8 +85,13 @@ from fastapi.responses import StreamingResponse
 
 from app.auth.deps import current_user
 from app.config import get_settings
+from app.dashboards.collect import (
+    collect_board_data,
+    run_query_rows,
+    spec_from_board,
+    widget_query_targets,
+)
 from app.errors import AppError
-from app.queries.registry import ensure_persisted_query, get_query_registry
 from app.repos.provider import Repo, get_repo
 from app.routes._org import resolve_org_id
 
@@ -92,159 +120,6 @@ async def _load_board(board_id: str, user_id: str, repo: Repo, request: Request)
     return board
 
 
-def _spec_from_board(board: dict[str, Any]) -> dict[str, Any]:
-    """Return the dashboard spec dict from a board row (``config.spec``).
-
-    Returns an empty spec (no widgets) when the board has no structured spec.
-    """
-    config = board.get("config") or {}
-    spec = config.get("spec")
-    if isinstance(spec, dict):
-        return spec
-    return {"widgets": []}
-
-
-def _widget_query_targets(spec: dict[str, Any], only_query_id: str | None) -> list[dict[str, str]]:
-    """Collect ``{widget_id, query_id}`` data targets from a spec.
-
-    Only widgets with a non-empty ``query_id`` are returned (text / pure-filter
-    widgets carry no data).  When *only_query_id* is given, the list is filtered
-    to that query.  Duplicate (widget_id, query_id) pairs are de-duplicated.
-    """
-    widgets = spec.get("widgets")
-    if not isinstance(widgets, list):
-        return []
-
-    targets: list[dict[str, str]] = []
-    seen: set[tuple[str, str]] = set()
-    for w in widgets:
-        if not isinstance(w, dict):
-            continue
-        qid = w.get("query_id")
-        if not qid:
-            continue
-        if only_query_id and qid != only_query_id:
-            continue
-        wid = str(w.get("id") or qid)
-        key = (wid, str(qid))
-        if key in seen:
-            continue
-        seen.add(key)
-        targets.append({"widget_id": wid, "query_id": str(qid)})
-    return targets
-
-
-# ---------------------------------------------------------------------------
-# Server-side query execution (best-effort)
-# ---------------------------------------------------------------------------
-
-
-async def _run_query_rows(
-    query_id: str,
-    org_id: str,
-    repo: Repo,
-    policies: dict[str, Any],
-) -> tuple[list[str], list[list[Any]]]:
-    """Run a registered query and return ``(columns, rows)``.
-
-    Reuses the same primitives as ``POST /query``:
-      * the query registry resolves ``query_id`` → canonical SQL (the browser
-        never supplies SQL here — only the registered id is honoured);
-      * the planner injects RLS predicates from *policies* (AST-level, never
-        string-concatenated);
-      * a datastore-bound query executes against its datastore via the
-        connector registry, otherwise the built-in demo DuckDB connector runs.
-
-    Raises ``AppError`` with a descriptive code on any failure so the caller can
-    decide whether to skip the widget or surface the error.
-    """
-    registry = get_query_registry()
-    registered = registry.get(query_id) or await ensure_persisted_query(query_id)
-    if registered is None:
-        raise AppError("query_not_registered", f"No registered query for id={query_id!r}.", 404)
-
-    # Resolve declared named params to their defaults (export has no live
-    # filter state), turning {{name}} placeholders into positional $N binds.
-    sql = registered.sql
-    params: list[Any] = []
-    if registered.params:
-        from app.connectors.planner import resolve_named_params
-
-        resolved = {p.name: (p.default if p.default is not None else None) for p in registered.params}
-        sql, params = resolve_named_params(sql, resolved)
-
-    from app.connectors import plan as planner_plan
-
-    physical_plan = planner_plan(sql=sql, claims={"policies": policies}, params=params)
-
-    connector = await _resolve_connector(registered, org_id, repo, physical_plan)
-
-    arrow_table = connector.execute(physical_plan)
-    columns = list(arrow_table.schema.names)
-    rows: list[list[Any]] = []
-    for record in arrow_table.to_pylist():
-        rows.append([record.get(c) for c in columns])
-    return columns, rows
-
-
-async def _resolve_connector(registered: Any, org_id: str, repo: Repo, physical_plan: Any) -> Any:
-    """Pick the connector for a registered query (datastore-bound or demo).
-
-    Pragmatic subset of the ``POST /query`` connector path: it covers the demo
-    connector and a directly-configured duckdb/postgres/http_json datastore.
-    Secret injection and network bridges are intentionally out of scope here —
-    if a datastore needs them, the connector construction will raise and the
-    caller skips that widget (best-effort export).
-    """
-    datastore_id = getattr(registered, "datastore_id", None)
-    if not datastore_id:
-        from app.routes.query import _get_demo_connector
-
-        return _get_demo_connector()
-
-    ds = await repo.get("datastores", org_id, datastore_id)
-    if ds is None:
-        raise AppError("datastore_not_found", f"Datastore {datastore_id!r} not found.", 404)
-
-    from app.connectors.registry import get_connector_registry
-
-    cfg: dict[str, Any] = dict(ds.get("config") or {})
-    ctype = cfg.get("type")
-    factory = get_connector_registry().get(ctype)
-
-    if ctype == "duckdb":
-        db_path = cfg.get("database") or cfg.get("path")
-        if db_path and db_path != ":memory:":
-            import duckdb
-
-            conn = duckdb.connect(database=db_path, read_only=True)
-            return factory(conn)
-        return factory()
-    if ctype == "postgres":
-        dsn = cfg.get("dsn")
-        if dsn is None:
-            host = cfg.get("host", "localhost")
-            port = cfg.get("port", 5432)
-            dbname = cfg.get("dbname") or cfg.get("database") or "postgres"
-            user = cfg.get("user") or cfg.get("username") or "postgres"
-            password = cfg.get("password", "")
-            dsn = f"postgresql://{user}:{password}@{host}:{port}/{dbname}"
-        return factory(dsn)
-
-    connector = factory(cfg)
-
-    # Defence-in-depth: never run a policy-bearing query on a source that
-    # cannot enforce RLS server-side.
-    policies = (getattr(physical_plan, "rls_claims", None) or {}).get("policies") or {}
-    if policies and connector.capabilities().get("predicate_rls") is False:
-        raise AppError(
-            "source_unsupported_rls",
-            "Source does not support Row-Level Security (predicate_rls=False).",
-            501,
-        )
-    return connector
-
-
 # ---------------------------------------------------------------------------
 # GET /boards/{id}/export.json
 # ---------------------------------------------------------------------------
@@ -268,24 +143,12 @@ async def export_board_json(
     if board is None:
         raise AppError("board_not_found", f"Board {board_id!r} not found.", 404)
 
-    spec = _spec_from_board(board)
-    targets = _widget_query_targets(spec, query_id)
+    spec = spec_from_board(board)
 
     # First-party access tokens carry no RLS policies (full-access editor view).
-    policies: dict[str, Any] = {}
-
-    widgets_out: list[dict[str, Any]] = []
-    for t in targets:
-        entry: dict[str, Any] = {"widget_id": t["widget_id"], "query_id": t["query_id"]}
-        try:
-            columns, rows = await _run_query_rows(t["query_id"], org_id, repo, policies)
-            entry["columns"] = columns
-            entry["rows"] = rows
-        except AppError as exc:
-            entry["error"] = exc.code
-        except Exception as exc:  # noqa: BLE001 — best-effort export
-            entry["error"] = f"export_failed: {exc.__class__.__name__}"
-        widgets_out.append(entry)
+    widgets_out = await collect_board_data(
+        board_id, org_id, claims={"policies": {}}, repo=repo, only_query_id=query_id
+    )
 
     return {
         "board_id": board_id,
@@ -320,8 +183,8 @@ async def export_board_csv(
     if board is None:
         raise AppError("board_not_found", f"Board {board_id!r} not found.", 404)
 
-    spec = _spec_from_board(board)
-    targets = _widget_query_targets(spec, query_id)
+    spec = spec_from_board(board)
+    targets = widget_query_targets(spec, query_id)
     policies: dict[str, Any] = {}
 
     buf = io.StringIO()
@@ -335,7 +198,7 @@ async def export_board_csv(
             buf.write("\n")
         writer.writerow([f"# widget: {t['widget_id']} (query: {t['query_id']})"])
         try:
-            columns, rows = await _run_query_rows(t["query_id"], org_id, repo, policies)
+            columns, rows = await run_query_rows(t["query_id"], org_id, repo, policies)
             writer.writerow(columns)
             for row in rows:
                 writer.writerow(["" if v is None else v for v in row])
@@ -350,6 +213,152 @@ async def export_board_csv(
         content=buf.getvalue(),
         media_type="text/csv; charset=utf-8",
         headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
+# ---------------------------------------------------------------------------
+# GET /boards/{id}/export.pdf
+# ---------------------------------------------------------------------------
+
+
+@router.get("/{board_id}/export.pdf")
+async def export_board_pdf(
+    board_id: str,
+    request: Request,
+    page_size: str | None = None,
+    user: dict[str, Any] = Depends(current_user),
+    repo: Repo = Depends(get_repo),
+) -> Response:
+    """Render the board to a high-fidelity vector PDF.
+
+    Uses the T2 (echarts-SSR) → T3 (cairosvg / svglib+reportlab) pipeline.
+    The board's widget data is collected server-side with no RLS (editor view).
+    Export config (page_size, header/footer, title_slide) is read from the
+    board spec's T5 ``export`` block; ``?page_size=`` overrides it.
+
+    Returns
+    -------
+    Response
+        ``application/pdf`` with ``Content-Disposition: attachment``.
+
+    Raises
+    ------
+    AppError("board_not_found", 404)
+        When the board does not exist in this org.
+    AppError("pdf_backend_missing", 503)
+        When neither cairosvg nor svglib+reportlab are installed.
+    AppError("node_not_found", 503)
+        When Node.js is not available for SVG rendering.
+    """
+    from app.dashboards.spec import DashboardSpec, get_export_config, validate_spec  # noqa: PLC0415
+    from app.dashboards.svg_render import render_board_svg  # noqa: PLC0415
+    from app.embedding.render_pdf import render_board_pdf, svg_page_size_px  # noqa: PLC0415
+
+    board = await _load_board(board_id, str(user["id"]), repo, request)
+    spec_dict = spec_from_board(board)
+    validated_spec, _ = validate_spec(spec_dict)
+    if validated_spec is None:
+        validated_spec, _ = validate_spec({"widgets": []})
+
+    export_cfg = get_export_config(validated_spec)
+    resolved_page_size = page_size or export_cfg.get("page_size") or "A4"
+    export_cfg["page_size"] = resolved_page_size
+
+    # Collect widget data (first-party = no RLS, full editor view).
+    from app.routes._org import resolve_org_id as _resolve  # noqa: PLC0415
+    org_id = await _resolve(str(user["id"]), repo, request)
+    widget_data = await collect_board_data(
+        board_id, org_id, claims={"policies": {}}, repo=repo
+    )
+
+    # Render page SVG via T2 (Node.js echarts-SSR).
+    page_w_px, page_h_px = svg_page_size_px(resolved_page_size)
+    page_svg = render_board_svg(
+        validated_spec,
+        widget_data,
+        page_width_px=page_w_px,
+    )
+
+    board_title = (
+        spec_dict.get("title")
+        or board.get("name")
+        or f"Dashboard {board_id}"
+    )
+
+    pdf_bytes = render_board_pdf([page_svg], export_cfg, title=board_title)
+
+    safe_name = "".join(c for c in str(board_id) if c.isalnum() or c in "-_") or "board"
+    return Response(
+        content=pdf_bytes,
+        media_type="application/pdf",
+        headers={"Content-Disposition": f'attachment; filename="{safe_name}.pdf"'},
+    )
+
+
+# ---------------------------------------------------------------------------
+# GET /boards/{id}/export.pptx
+# ---------------------------------------------------------------------------
+
+
+@router.get("/{board_id}/export.pptx")
+async def export_board_pptx(
+    board_id: str,
+    request: Request,
+    page_size: str | None = None,
+    user: dict[str, Any] = Depends(current_user),
+    repo: Repo = Depends(get_repo),
+) -> Response:
+    """Render the board to a PowerPoint (.pptx) file.
+
+    Uses the T2 (echarts-SSR) → T4 (python-pptx) pipeline.  One slide per
+    widget.  An optional title slide, header/footer, and captions are driven
+    by the T5 export config embedded in the board spec's ``export`` block;
+    ``?page_size=`` overrides the slide canvas size.
+
+    Returns
+    -------
+    Response
+        ``application/vnd.openxmlformats-officedocument.presentationml.presentation``
+        with ``Content-Disposition: attachment``.
+
+    Raises
+    ------
+    AppError("board_not_found", 404)
+        When the board does not exist in this org.
+    AppError("pptx_not_installed", 503)
+        When python-pptx is not installed.
+    AppError("cairosvg_not_installed", 503)
+        When cairosvg is not installed (needed for PNG fallback inside the PPTX).
+    AppError("node_not_found", 503)
+        When Node.js is not available for SVG rendering.
+    """
+    from app.dashboards.spec import validate_spec  # noqa: PLC0415
+    from app.embedding.render_pptx import render_board_pptx_from_data  # noqa: PLC0415
+
+    board = await _load_board(board_id, str(user["id"]), repo, request)
+    spec_dict = spec_from_board(board)
+    validated_spec, _ = validate_spec(spec_dict)
+    if validated_spec is None:
+        validated_spec, _ = validate_spec({"widgets": []})
+
+    from app.routes._org import resolve_org_id as _resolve  # noqa: PLC0415
+    org_id = await _resolve(str(user["id"]), repo, request)
+    widget_data = await collect_board_data(
+        board_id, org_id, claims={"policies": {}}, repo=repo
+    )
+
+    pptx_bytes = render_board_pptx_from_data(
+        validated_spec,
+        widget_data,
+        page_size=page_size,
+    )
+
+    safe_name = "".join(c for c in str(board_id) if c.isalnum() or c in "-_") or "board"
+    mime = "application/vnd.openxmlformats-officedocument.presentationml.presentation"
+    return Response(
+        content=pptx_bytes,
+        media_type=mime,
+        headers={"Content-Disposition": f'attachment; filename="{safe_name}.pptx"'},
     )
 
 
@@ -373,7 +382,7 @@ async def share_board(
     the RLS policy summary those claims carry.
     """
     board = await _load_board(board_id, str(user["id"]), repo, request)
-    spec = _spec_from_board(board)
+    spec = spec_from_board(board)
     settings = get_settings()
 
     title = spec.get("title") or board.get("name") or f"Dashboard {board_id}"

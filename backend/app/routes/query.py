@@ -20,6 +20,15 @@ Pipeline
 7. On cache HIT: return ``StreamingResponse(ipc_stream_from_bytes(hit), ...)``
    with header ``X-Nubi-Cache: HIT``.
 8. On cache MISS: pick a connector and execute the plan (M12-A).
+   - CONNECTOR OVERRIDE (embed only): if the identity is kind='embed' AND the
+     verified token carries a ``datastore`` claim (``identity.datastore``),
+     that datastore id becomes the EFFECTIVE datastore for ALL queries in the
+     request — overriding both ``body.datastore_id`` and the registered query's
+     default binding. This is the id-based whole-dashboard connector-override
+     embedding capability (feature-equivalent to the legacy whole-dashboard
+     connector selection, but by id). The override id is resolved ORG-SCOPED
+     against ``identity.org``; a cross-org / unknown id → AppError. There is no
+     type-fallback path (id-only). First-party tokens are unaffected.
    - If ``datastore_id`` is given: resolve the datastore from the repo
      (org-scoped), read ``config.type``, build the connector via
      ``get_connector_registry().get(type)(config)``.  If the plan carries
@@ -65,11 +74,16 @@ Security (M3-B + M3-SEC)
   cached Arrow results are always isolated.  This is the embedded-analytics
   cache-isolation safety property: per-tenant RLS → per-tenant cache namespace.
 
-Demo dataset (DuckDB fallback)
-------------------------------
-When no ``DATABASE_URL`` / ``datastore_id`` is provided the endpoint runs
-against a tiny in-memory DuckDB database seeded with a ``demo`` table so that
-``SELECT * FROM demo`` works out of the box with no external dependencies.
+Demo dataset (local-parquet fallback)
+--------------------------------------
+When no ``datastore_id`` is provided (or the ``__demo__`` sentinel is given),
+the endpoint runs against the static local-parquet lakehouse — the same
+``seed_data/parquet/`` files used by the seeded demo connector in
+``app/sample.py`` (D1 consolidation: single source, no in-memory build).
+
+All 17 demo tables (retail sales, SaaS metrics, web analytics, finance ops)
+plus the legacy 5-row ``demo`` table are available so that existing fixtures
+keep working:
 
     demo(id INTEGER, name TEXT, value DOUBLE, active BOOLEAN)
 
@@ -450,10 +464,11 @@ _demo_connector: DuckDBConnector | None = None
 def _get_demo_connector() -> DuckDBConnector:
     """Return (or create) the module-level demo DuckDB connector.
 
-    Registers the full demo dataset (the 17 tables behind the demo dashboards/
-    queries — retail sales, SaaS metrics, web analytics, finance ops) plus the
-    tiny legacy ``demo`` table, so demo queries run and the Data browser lists
-    every table even on the built-in demo connector. Cached after first call.
+    D1 consolidation: backed by the static local-parquet lakehouse files
+    (``seed_data/parquet/``) — the same parquet source used by the seeded
+    demo connector in ``app/sample.py``.  The 17 demo-dataset tables plus the
+    legacy 5-row ``demo`` table are all available so existing fixtures keep
+    working.  Cached after first call.
     """
     global _demo_connector
     if _demo_connector is None:
@@ -462,25 +477,59 @@ def _get_demo_connector() -> DuckDBConnector:
 
 
 def _build_demo_connector() -> DuckDBConnector:
-    """Build a DuckDBConnector with all demo tables registered."""
-    from seed_data.generators import build_all_flat  # noqa: PLC0415
+    """Build a DuckDBConnector backed by the static local-parquet lakehouse.
 
-    conn = DuckDBConnector()  # fresh in-memory DB
-    tables = build_all_flat()  # the 17 demo-dataset tables
-    # Legacy 5-row ``demo`` table — kept for older fixtures/queries.
-    tables["demo"] = pa.table(
-        {
-            "id": pa.array([1, 2, 3, 4, 5], type=pa.int32()),
-            "name": pa.array(
-                ["alpha", "beta", "gamma", "delta", "epsilon"],
-                type=pa.string(),
-            ),
-            "value": pa.array([1.1, 2.2, 3.3, 4.4, 5.5], type=pa.float64()),
-            "active": pa.array([True, False, True, False, True], type=pa.bool_()),
-        }
+    D1 consolidation: the 17 demo tables are served from the pre-generated
+    parquet files under ``seed_data/parquet/`` — the same files that
+    ``local_parquet_datastore_config()`` and ``app/sample.py`` use — rather
+    than being built in-memory via ``build_all_flat()``.  This makes the
+    no-datastore fallback share the same single source as every seeded demo
+    connector.
+
+    The legacy 5-row ``demo`` table is still registered as a plain Arrow
+    table (backward-compatible — existing tests and fixtures rely on
+    ``SELECT * FROM demo`` returning 5 rows).
+    """
+    import duckdb  # noqa: PLC0415
+
+    from app.demo_bundle import (  # noqa: PLC0415
+        export_demo_parquet_local,
+        local_parquet_datastore_config,
     )
-    conn.register(tables)
-    return conn
+
+    # Ensure the parquet files exist (idempotent; fast on repeat calls).
+    export_demo_parquet_local()
+    cfg = local_parquet_datastore_config()
+
+    # Build a fresh :memory: DuckDB connection with the parquet-backed views.
+    mem_conn = duckdb.connect(database=":memory:")
+    view_sql: str = cfg.get("view_sql") or ""
+    for stmt in view_sql.split(";"):
+        stmt = stmt.strip()
+        if stmt:
+            try:
+                mem_conn.execute(stmt)
+            except Exception:  # noqa: BLE001 — skip malformed stmts
+                pass
+
+    # Legacy 5-row ``demo`` table — kept for backward compatibility with
+    # existing tests and fixtures that query ``SELECT * FROM demo``.
+    mem_conn.register(
+        "demo",
+        pa.table(
+            {
+                "id": pa.array([1, 2, 3, 4, 5], type=pa.int32()),
+                "name": pa.array(
+                    ["alpha", "beta", "gamma", "delta", "epsilon"],
+                    type=pa.string(),
+                ),
+                "value": pa.array([1.1, 2.2, 3.3, 4.4, 5.5], type=pa.float64()),
+                "active": pa.array([True, False, True, False, True], type=pa.bool_()),
+            }
+        ),
+    )
+
+    return DuckDBConnector(mem_conn)
 
 
 # ---------------------------------------------------------------------------
@@ -768,6 +817,45 @@ async def _resolve_request_plan(
     effective_datastore_id = body.datastore_id or (
         registered.datastore_id if registered is not None else None
     )
+
+    # ── EMBED CONNECTOR OVERRIDE (id-based, whole-dashboard) ─────────────────
+    # This is the "connector override" embedding capability: feature-equivalent
+    # to the legacy whole-dashboard connector selection, but selected BY ID.
+    # When an embed token carries a host-signed ``datastore`` claim
+    # (``identity.datastore``), that id becomes the EFFECTIVE datastore for ALL
+    # queries in the request — it overrides both ``body.datastore_id`` and the
+    # registered query's default binding. This lets a host point an embedded
+    # dashboard at a per-tenant datastore without re-registering its queries.
+    #
+    # SECURITY (org-scope): the claim can ONLY target a datastore that lives in
+    # the token's own org (``identity.org``). We resolve it org-scoped via the
+    # repo here; a missing row — which includes any cross-org id, since the repo
+    # lookup is scoped to ``identity.org`` — raises ``datastore_not_found`` (404)
+    # before planning continues. There is NO connector_type / type-fallback path:
+    # this is id-only. First-party (kind='access') tokens never carry this claim
+    # and are therefore unaffected. RLS still comes only from the token.
+    if identity.kind == "embed" and identity.datastore:
+        if not identity.org:
+            raise _AppError(
+                "datastore_not_found",
+                "Embed connector-override claim cannot be resolved without an "
+                "org in the token.",
+                404,
+            )
+        _override_id = str(identity.datastore)
+        _override_ds = await get_repo().get(
+            "datastores", identity.org, _override_id
+        )
+        if _override_ds is None:
+            # Org-scoped lookup miss → either truly absent OR cross-org. Either
+            # way the embed token may not route at this datastore.
+            raise _AppError(
+                "datastore_not_found",
+                f"Connector-override datastore {_override_id!r} not found in this org.",
+                404,
+            )
+        effective_datastore_id = _override_id
+
     from app.routes.connectors import DEMO_CONNECTOR_ID as _DEMO_CONNECTOR_ID
 
     if effective_datastore_id == _DEMO_CONNECTOR_ID:

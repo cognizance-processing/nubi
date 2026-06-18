@@ -136,3 +136,133 @@ def test_offline_stream_non_dashboard_request(monkeypatch):
     # No tool call for a plain greeting, but tokens still stream.
     assert "tool_use" not in types
     assert "token" in types
+
+
+# ---------------------------------------------------------------------------
+# Real (LiteLLM) streaming loop — driven by a fake `litellm` module
+# ---------------------------------------------------------------------------
+#
+# litellm is an optional dependency (not installed in CI), so we inject a fake
+# module that mimics the slice of the SDK `_stream_real` uses: a streaming
+# `completion()` yielding OpenAI-style chunks, and `stream_chunk_builder()`
+# re-assembling the final message (incl. tool_calls).  This proves the
+# OpenAI-normalised parse path: live token deltas, an assembled tool call,
+# tool execution, and the multi-step loop terminating on a plain-text turn.
+
+
+class _Delta:
+    def __init__(self, content=None):
+        self.content = content
+        self.tool_calls = None
+
+
+class _Fn:
+    def __init__(self, name, arguments):
+        self.name = name
+        self.arguments = arguments
+
+
+class _ToolCall:
+    def __init__(self, id, name, arguments):
+        self.id = id
+        self.type = "function"
+        self.function = _Fn(name, arguments)
+
+
+class _Msg:
+    def __init__(self, content, tool_calls=None):
+        self.content = content
+        self.tool_calls = tool_calls or []
+
+
+class _StreamChoice:
+    def __init__(self, delta):
+        self.delta = delta
+
+
+class _Chunk:
+    def __init__(self, content):
+        self.choices = [_StreamChoice(_Delta(content=content))]
+
+
+class _RebuiltChoice:
+    def __init__(self, message, finish_reason):
+        self.message = message
+        self.finish_reason = finish_reason
+
+
+class _Rebuilt:
+    def __init__(self, message, finish_reason):
+        self.choices = [_RebuiltChoice(message, finish_reason)]
+
+
+class _FakeLiteLLM:
+    """Minimal stand-in for the litellm module used by `_stream_real`.
+
+    *steps* is a list of dicts: ``{"tokens": [str, ...], "rebuilt": _Rebuilt}``.
+    ``completion()`` and ``stream_chunk_builder()`` are each called once per
+    agentic step, in order, so a shared cursor advances after each rebuild.
+    """
+
+    def __init__(self, steps):
+        self._steps = steps
+        self._i = 0
+        self.drop_params = False
+
+    def completion(self, **kwargs):  # noqa: D401 — mimics litellm.completion(stream=True)
+        return iter([_Chunk(t) for t in self._steps[self._i]["tokens"]])
+
+    def stream_chunk_builder(self, chunks, messages=None):
+        rebuilt = self._steps[self._i]["rebuilt"]
+        self._i += 1
+        return rebuilt
+
+
+def test_real_litellm_stream_tool_then_final(monkeypatch):
+    import sys
+
+    # A credential is present → real path (not offline).
+    monkeypatch.setattr("app.chat.llm._resolve_anthropic_key", lambda: "sk-test")
+
+    steps = [
+        # Step 1: stream some text, then call a no-arg tool.
+        {
+            "tokens": ["Looking ", "up ", "queries… "],
+            "rebuilt": _Rebuilt(
+                _Msg("", tool_calls=[_ToolCall("call_1", "list_registered_queries", "{}")]),
+                finish_reason="tool_calls",
+            ),
+        },
+        # Step 2: final plain-text answer, no tools → loop ends.
+        {
+            "tokens": ["Done."],
+            "rebuilt": _Rebuilt(_Msg("Done."), finish_reason="stop"),
+        },
+    ]
+    monkeypatch.setitem(sys.modules, "litellm", _FakeLiteLLM(steps))
+
+    from app.chat.llm import stream_chat
+
+    history = [{"role": "user", "content": "what queries exist?"}]
+    events: list[dict[str, Any]] = []
+    turn = None
+    for ev, t in stream_chat(history, "claude-opus-4-8"):
+        events.append(ev)
+        turn = t
+
+    types = [e["type"] for e in events]
+    assert types.count("token") >= 2  # tokens from both steps streamed live
+    assert "tool_use" in types and "tool_result" in types
+
+    tool_use = next(e for e in events if e["type"] == "tool_use")
+    assert tool_use["id"] == "call_1"
+    assert tool_use["name"] == "list_registered_queries"
+    assert tool_use["input"] == {}
+
+    tool_result = next(e for e in events if e["type"] == "tool_result")
+    assert tool_result["id"] == "call_1"
+    assert "queries" in tool_result["output"]  # real execute_tool ran
+
+    assert turn is not None
+    assert len(turn.tool_calls) == 1
+    assert turn.text.endswith("Done.")  # final-turn text accumulated

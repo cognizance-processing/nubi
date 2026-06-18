@@ -481,6 +481,26 @@ export const CONNECTOR_TYPES = [
     fields: [],
     summary: () => 'Built-in sample dataset',
   },
+  {
+    // Demo-seeded DuckDB connector — a real, user-owned duckdb connector that
+    // starts with a copy of the demo parquet lakehouse (editable if managed
+    // lakehouse storage is configured; read-only otherwise).  The user owns it
+    // fully: they can rename, delete, or query it independently of the shared
+    // virtual "Demo data" connector.  Submits {type:"duckdb", seed:"demo"} to
+    // the backend (POST /connectors body).
+    id: 'duckdb_demo',
+    label: 'Demo data (your copy)',
+    description: 'Start with a personal copy of the demo datasets (retail, SaaS, web, finance). Your own data to query and explore.',
+    category: 'lake',
+    // seed is passed through to the API body — not a real connector_type.
+    apiType: 'duckdb',
+    apiSeed: 'demo',
+    logo: logo('demo.svg'),
+    color: '#17b3a3',
+    // No config fields: the backend provisions the parquet automatically.
+    fields: [],
+    summary: () => 'Demo datasets (your copy)',
+  },
 
   // ── APIs & custom ─────────────────────────────────────────────────────────
   {

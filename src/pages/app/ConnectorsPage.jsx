@@ -965,6 +965,18 @@ export default function ConnectorsPage() {
       handleFormSubmit({ name: info.label, type: typeId, config: {}, secret: {} })
       return
     }
+    // Demo-seeded connectors also have no user-facing config fields — submit
+    // immediately with the seed flag so the backend provisions the parquet.
+    if (info.apiSeed === 'demo' && info.fields.length === 0) {
+      handleFormSubmit({
+        name: info.label,
+        type: info.apiType ?? typeId,
+        config: {},
+        secret: {},
+        seed: info.apiSeed,
+      })
+      return
+    }
     setSelectedType(typeId)
     setSlideStep('form')
   }
@@ -996,7 +1008,7 @@ export default function ConnectorsPage() {
   // Create / Update connector
   // ---------------------------------------------------------------------------
 
-  async function handleFormSubmit({ name, type, config, secret }) {
+  async function handleFormSubmit({ name, type, config, secret, seed }) {
     setFormLoading(true)
     setFormError(null)
     try {
@@ -1010,7 +1022,10 @@ export default function ConnectorsPage() {
         // POST — full body. The picker submits the backend factory type
         // directly (e.g. object storage → 'duckdb_storage'); no client-side
         // type remapping is needed.
-        const created = await createConnector({ name, type, config, secret })
+        // seed (optional) is passed through for demo-seeded connectors.
+        const body = { name, type, config, secret }
+        if (seed) body.seed = seed
+        const created = await createConnector(body)
         // Dedupe by id — re-adding the virtual demo connector returns its fixed
         // sentinel id, which may already be present in the list.
         setConnectors(prev => [...prev.filter(c => c.id !== created.id), created])

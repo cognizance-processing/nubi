@@ -59,10 +59,24 @@ async def _resolve_org_id(user_id: str, repo: Repo, request: Request) -> str:
 # ── Pydantic request schemas ──────────────────────────────────────────────────
 
 class CreateProjectIn(BaseModel):
-    """Request body for POST /projects."""
+    """Request body for POST /projects.
+
+    Fields
+    ------
+    name:
+        Human-readable project name (required, non-empty).
+    git:
+        Optional git integration config dict.
+    seed_demo:
+        When ``True``, seed the full demo starter template into the new project
+        after creation — connector + queries + dashboards, all tagged
+        ``sample=true`` so they can be removed/restored later.  Blank-project
+        creation (``seed_demo=False``, the default) is unchanged.
+    """
 
     name: str
     git: dict[str, Any] | None = None
+    seed_demo: bool = False
 
 
 class UpdateProjectIn(BaseModel):
@@ -133,20 +147,58 @@ async def create_project(
 ) -> dict[str, Any]:
     """Create a new project in the caller's org (slug unique per org).
 
-    New projects start EMPTY — demo content is seeded into a project only when
-    the user opts in (onboarding, or POST /projects/sample/restore for the
-    active project).
+    When ``seed_demo=false`` (the default) the project starts EMPTY — demo
+    content is seeded only when the user opts in (onboarding, or
+    POST /projects/sample/restore).
+
+    When ``seed_demo=true`` the full demo starter template is seeded into the
+    new project immediately after creation: a DuckDB connector backed by the
+    four demo datasets (retail sales, SaaS metrics, web analytics, finance ops),
+    every referenced demo query, and all 10 demo dashboards — all tagged
+    ``sample=true`` so they can be bulk-removed / restored later.  The seed
+    result is included in the response as ``"seed"``.
+
+    Returns
+    -------
+    201 ``{...project fields..., "seed": {...}}``
+        ``seed`` is present only when ``seed_demo=true``.  It follows the same
+        shape as POST /projects/sample/restore: ``{datastore_id, board_ids,
+        created}`` on success, or ``{skipped: reason}`` if the demo data could
+        not be provisioned (the project is still created; seeding failure is
+        non-fatal).
     """
     name = body.name.strip()
     if not name:
         raise AppError("invalid_request", "Project name is required.", 400)
     org_id = await _resolve_org_id(str(user["id"]), repo, request)
-    return await projects_repo.create_project(
+    project = await projects_repo.create_project(
         org_id=org_id,
         name=name,
         created_by=str(user["id"]),
         git=body.git,
     )
+
+    if body.seed_demo:
+        from app.sample import (  # noqa: PLC0415
+            checkpoint_and_promote_bundle,
+            seed_sample_bundle,
+        )
+
+        project_id = str(project["id"])
+        seed = await seed_sample_bundle(
+            org_id, project_id, str(user["id"]), repo=repo,
+        )
+        if "skipped" not in seed:
+            try:
+                seed["envs"] = await checkpoint_and_promote_bundle(
+                    org_id, project_id, str(user["id"]), repo=repo,
+                )
+            except Exception:  # noqa: BLE001 — never fail creation on env pinning
+                pass
+        project = dict(project)
+        project["seed"] = seed
+
+    return project
 
 
 @router.get("/{project_id}/deletion-impact", response_model=ProjectDeletionImpactResponse)

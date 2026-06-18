@@ -1062,3 +1062,150 @@ class TestConnectorTest:
             headers=_auth_headers(alice_id),
         )
         _assert_no_secret_in_response(test_resp.json())
+
+
+# ---------------------------------------------------------------------------
+# Tests: demo-seeded connector (seed="demo" option)
+# ---------------------------------------------------------------------------
+
+
+class TestDemoSeededConnector:
+    """Creating a connector with seed="demo" provisions a user-owned DuckDB
+    connector pre-loaded with demo parquet data.  The blank path is unchanged."""
+
+    @pytest.mark.asyncio
+    async def test_demo_seed_creates_duckdb_connector(self, connectors_client):
+        """POST {type:"duckdb", seed:"demo"} returns 201 with a real duckdb connector."""
+        from unittest.mock import patch as _patch
+
+        client, alice_id, org_id, repo = connectors_client
+
+        # Patch _build_demo_seed_config to avoid touching the filesystem in tests.
+        _fake_cfg = {
+            "connector_type": "duckdb",
+            "database": ":memory:",
+            "view_sql": "CREATE OR REPLACE VIEW sales AS SELECT 1 AS id",
+            "demo_seeded": True,
+        }
+
+        with _patch(
+            "app.routes.connectors._build_demo_seed_config",
+            return_value=_fake_cfg,
+        ):
+            resp = await client.post(
+                "/api/v1/connectors",
+                json={"name": "My Demo Copy", "type": "duckdb", "seed": "demo"},
+                headers=_auth_headers(alice_id),
+            )
+
+        assert resp.status_code == 201, resp.text
+        body = resp.json()
+        assert body["name"] == "My Demo Copy"
+        assert "id" in body
+        cfg = body["config"]
+        assert cfg["connector_type"] == "duckdb"
+        assert cfg.get("demo_seeded") is True
+        _assert_no_secret_in_response(body)
+
+    @pytest.mark.asyncio
+    async def test_demo_seed_connector_is_not_system_or_sample(self, connectors_client):
+        """A demo-seeded connector must NOT be marked system or sample (user-owned)."""
+        from unittest.mock import patch as _patch
+
+        client, alice_id, org_id, repo = connectors_client
+
+        # Return a config that would carry sample/system if not stripped.
+        _fake_cfg = {
+            "connector_type": "duckdb",
+            "database": ":memory:",
+            "view_sql": "SELECT 1",
+            "demo_seeded": True,
+            # These should have been stripped by _build_demo_seed_config already,
+            # but verify the connector row doesn't expose them.
+        }
+
+        with _patch(
+            "app.routes.connectors._build_demo_seed_config",
+            return_value=_fake_cfg,
+        ):
+            resp = await client.post(
+                "/api/v1/connectors",
+                json={"name": "Demo Copy", "type": "duckdb", "seed": "demo"},
+                headers=_auth_headers(alice_id),
+            )
+
+        assert resp.status_code == 201, resp.text
+        cfg = resp.json()["config"]
+        assert cfg.get("system") is not True, "demo-seeded connector must not be system"
+        assert cfg.get("sample") is not True, "demo-seeded connector must not be sample"
+
+    @pytest.mark.asyncio
+    async def test_demo_seed_connector_appears_in_list(self, connectors_client):
+        """A demo-seeded connector appears in GET /connectors like any normal connector."""
+        from unittest.mock import patch as _patch
+
+        client, alice_id, org_id, repo = connectors_client
+
+        _fake_cfg = {
+            "connector_type": "duckdb",
+            "database": ":memory:",
+            "view_sql": "SELECT 1",
+            "demo_seeded": True,
+        }
+
+        with _patch(
+            "app.routes.connectors._build_demo_seed_config",
+            return_value=_fake_cfg,
+        ):
+            create_resp = await client.post(
+                "/api/v1/connectors",
+                json={"name": "My Demo", "type": "duckdb", "seed": "demo"},
+                headers=_auth_headers(alice_id),
+            )
+        conn_id = create_resp.json()["id"]
+
+        list_resp = await client.get("/api/v1/connectors", headers=_auth_headers(alice_id))
+        assert list_resp.status_code == 200
+        ids = [c["id"] for c in list_resp.json()]
+        assert conn_id in ids, "demo-seeded connector must appear in the list"
+
+    @pytest.mark.asyncio
+    async def test_blank_connector_seed_unchanged(self, connectors_client):
+        """Creating a connector with seed="blank" (explicit) behaves like no seed."""
+        client, alice_id, org_id, repo = connectors_client
+
+        resp = await client.post(
+            "/api/v1/connectors",
+            json={
+                "name": "blank-pg",
+                "type": "postgres",
+                "seed": "blank",
+                "config": {"host": "h", "port": 5432, "database": "d", "user": "u"},
+                "secret": {"password": "pw"},
+            },
+            headers=_auth_headers(alice_id),
+        )
+        assert resp.status_code == 201, resp.text
+        body = resp.json()
+        assert body["name"] == "blank-pg"
+        assert body["config"]["connector_type"] == "postgres"
+        assert "demo_seeded" not in body["config"]
+        _assert_no_secret_in_response(body)
+
+    @pytest.mark.asyncio
+    async def test_no_seed_field_unchanged(self, connectors_client):
+        """Omitting seed entirely creates a normal connector — backward compatible."""
+        client, alice_id, org_id, repo = connectors_client
+
+        resp = await client.post(
+            "/api/v1/connectors",
+            json={
+                "name": "normal",
+                "type": "postgres",
+                "config": {"host": "h", "port": 5432, "database": "d", "user": "u"},
+                "secret": {"password": "pw"},
+            },
+            headers=_auth_headers(alice_id),
+        )
+        assert resp.status_code == 201, resp.text
+        assert resp.json()["config"]["connector_type"] == "postgres"

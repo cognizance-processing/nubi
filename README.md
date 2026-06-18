@@ -175,7 +175,7 @@ cd backend && DATABASE_URL=postgresql://user:pass@host/db python seed.py
 | `CORS_ORIGINS` | Backend | Comma-separated allowed origins |
 | `ENV` | Backend | `development` / `production` (disables `/docs` in prod) |
 | `KERNEL_LOCAL_ENABLED` | Backend | `true` to allow local subprocess kernel (dev only) |
-| `LLM_PROVIDER` | Optional | `anthropic` / `openai` / `gemini` + matching API key |
+| `LLM_PROVIDER` | Optional | `litellm` / `anthropic` / `openai` / `gemini`. `litellm` (one SDK, all providers + per-model cost tracking) reads `LITELLM_MODEL`; see [AI docs](docs/ai-and-mcp.md#configuring-the-llm-provider-operators). Unset ⇒ offline mode. |
 </details>
 
 ---
@@ -404,6 +404,7 @@ Full documentation lives in [`docs/`](docs/index.md) — **start at the [documen
 - [Embedding](docs/embedding.md) · [Organization & settings](docs/organization-settings.md)
 
 **Platform & security**
+- [Architecture & Economics](docs/architecture-and-economics.md) — compute model, embedding modes, billing COGS mapping
 - [Self-host](docs/self-host.md) · [Open core](docs/open-core.md) · [Open-core architecture](docs/architecture-open-core.md)
 - [Kernel security](docs/kernel-security.md) · [Connector security](docs/connector-security.md) · [Secrets](docs/secrets.md)
 - [Cache-key spec](docs/cache-key-spec.md) · [Conformance](docs/conformance.md) · [Bridges](docs/bridges.md) · [Lakehouse](docs/lakehouse.md)

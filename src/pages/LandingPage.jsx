@@ -75,6 +75,7 @@ import {
 } from '../data/pricing.js'
 import { CONNECTOR_TYPES } from '../data/connectors.js'
 import { fetchPricingData } from '../lib/pricing.js'
+import { useCurrency } from '../contexts/CurrencyContext.jsx'
 import LakehouseCalculator from '../components/marketing/LakehouseCalculator.jsx'
 import KernelInBrowser from '../components/illustrations/KernelInBrowser.jsx'
 import EdgeCache from '../components/illustrations/EdgeCache.jsx'
@@ -914,9 +915,25 @@ const fmtNum = (n) => (n >= 1000 ? `${(n / 1000).toFixed(n >= 10000 ? 0 : 1)}k` 
 
 const METER_ICONS = [Users, Zap, Database, Bot, Server]
 
+/** Parse the USD anchor out of a tier price string ("$1,000" → 1000); NaN if non-numeric. */
+const parseUsd = (price) => {
+  const n = Number(String(price ?? '').replace(/[^0-9.]/g, ''))
+  return Number.isFinite(n) && String(price).match(/\d/) ? n : NaN
+}
+
 /** Landing-page tier card — matches PricingPage TierCard quality */
 function LpTierCard({ tier }) {
   const hi = tier.highlight
+  const { isBilling, format, billedZar } = useCurrency()
+
+  // Price is anchored in USD; show it in the visitor's selected display
+  // currency, with the authoritative ZAR charge (what we actually bill) as a
+  // small note. When ZAR itself is selected, show the billed amount directly.
+  const usd = parseUsd(tier.price)
+  const hasUsd = Number.isFinite(usd)
+  const bigPrice = !hasUsd ? tier.price : isBilling ? billedZar(usd) : format(usd)
+  const zarNote = hasUsd && usd > 0 && !isBilling ? `≈ ${billedZar(usd)} / mo · billed in ZAR` : null
+
   return (
     <div
       className={`relative flex flex-col rounded-2xl border p-5 transition-all duration-200
@@ -939,9 +956,12 @@ function LpTierCard({ tier }) {
       )}
       <h3 className="font-display text-base font-bold text-fg">{tier.name}</h3>
       <div className="mt-1.5 flex items-end gap-1.5">
-        <span className="font-display text-3xl font-bold tracking-tight text-fg">{tier.price}</span>
+        <span className="font-display text-3xl font-bold tracking-tight text-fg">{bigPrice}</span>
         <span className="text-xs text-muted mb-1">{tier.cadence}</span>
       </div>
+      {zarNote && (
+        <p className="mt-1 text-[11px] text-muted/70 leading-snug tabular-nums">{zarNote}</p>
+      )}
       <p className="mt-2 text-[13px] text-muted leading-relaxed min-h-[52px]">{tier.tagline}</p>
 
       <Link

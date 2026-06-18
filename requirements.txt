@@ -60,6 +60,9 @@ cryptography>=42.0
 # anthropic>=0.25          # for AnthropicProvider (ANTHROPIC_API_KEY)
 # openai>=1.0              # for OpenAIProvider (OPENAI_API_KEY)
 # google-generativeai>=0.5 # for GeminiProvider (GEMINI_API_KEY)
+# litellm>=1.0             # for LiteLLMProvider (LLM_PROVIDER=litellm) — one SDK
+#                          # fronts all providers + per-model pricing/cost tracking.
+#                          # Reads the provider keys above; no separate proxy server.
 
 # Storage backends (lazy-imported in app/storage/*.py — app runs without them).
 # Install whichever provider(s) you configure via storage URIs.
@@ -81,6 +84,24 @@ websockets>=12.0
 # Optional at runtime: app.notify.push degrades to a logged no-op when this is
 # not installed or VAPID keys are unset, so it never blocks the dispatch path.
 pywebpush>=1.14.0
+
+# T3 PDF export (lazy-imported in app/embedding/render_pdf.py).
+# cairosvg is the preferred backend (vector, selectable text); requires the
+# cairo system library (apt: libcairo2-dev / brew: cairo).
+# svglib+reportlab is the pure-Python fallback — no system libraries needed.
+# Both are optional at runtime; the PDF export raises AppError
+# "pdf_backend_missing" (503) when neither is available.
+# cairosvg>=2.7        # preferred: pip install cairosvg  (+ system libcairo)
+# svglib>=1.5          # fallback:  pip install svglib reportlab
+# reportlab>=4.0       # required by svglib fallback
+
+# T4 PPTX export (lazy-imported in app/embedding/render_pptx.py).
+# python-pptx builds the .pptx file; cairosvg rasterizes per-widget SVGs to
+# PNG for old-client fallback. Both are optional at runtime — the PPTX export
+# route raises AppError("pptx_not_installed" / "cairosvg_not_installed", 503)
+# when they are absent, so the app runs fine without them.
+# python-pptx>=1.0
+# cairosvg>=2.7
 
 # Test dependencies
 pytest>=8.0

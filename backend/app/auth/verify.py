@@ -73,6 +73,11 @@ class VerifiedIdentity:
         List of scope strings parsed from the token.
     embed_origin:
         The ``embed_origin`` claim from an embed token, or ``None``.
+    datastore:
+        Optional host-signed ``datastore`` claim — a datastore id string that
+        acts as a whole-dashboard connector override.  ``None`` when the token
+        does not carry it.  Plumbed through verification only; it is NOT yet
+        wired into query execution (that is Mode 2's job).
     raw_claims:
         The full decoded payload dict (for downstream inspection).
     """
@@ -85,6 +90,7 @@ class VerifiedIdentity:
     policies: dict[str, Any]
     scope: list[str]
     embed_origin: str | None
+    datastore: str | None
     raw_claims: dict[str, Any]
 
 
@@ -305,6 +311,7 @@ def _finish_embed_verification(
         policies=dict(claims.get("policies") or {}),
         scope=parse_scopes(claims),
         embed_origin=embed_origin,
+        datastore=claims.get("datastore"),
         raw_claims=claims,
     )
 
@@ -431,6 +438,7 @@ def _verify_first_party_token(token: str) -> VerifiedIdentity:
         policies=dict(claims.get("policies") or {}),
         scope=token_scopes,
         embed_origin=None,
+        datastore=claims.get("datastore"),
         raw_claims=claims,
     )
 

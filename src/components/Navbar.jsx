@@ -15,6 +15,7 @@ import { Sun, Moon, Menu, X, LogOut, LayoutDashboard, ChevronDown, Github } from
 import { useTheme } from '../contexts/ThemeContext.jsx'
 import { useAuth } from '../contexts/AuthContext.jsx'
 import Logo from './Logo.jsx'
+import CurrencySelector from './CurrencySelector.jsx'
 
 const GITHUB_URL = 'https://github.com/nu-bi/nubi'
 
@@ -262,6 +263,9 @@ export default function Navbar() {
           >
             <Github size={16} strokeWidth={2} />
           </a>
+
+          {/* Display-currency picker (prices shown in chosen currency; billed in ZAR) */}
+          <CurrencySelector />
 
           <ThemeToggle />
 

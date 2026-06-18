@@ -16,6 +16,19 @@
  *   fetchPreaggSuggestions() — GET /api/v1/_preagg/suggestions → suggestion array
  *   SAMPLE_TABLE           — small in-memory Arrow table for offline fallback
  *
+ * D2 — Demo-datastore browser routing (free wedge):
+ *   fetchDemoManifest()    — GET /api/v1/demo-parquet/_manifest (cached, no auth)
+ *   fetchDemoQueryMap()    — GET /api/v1/demo-parquet/_query-map (cached, auth required)
+ *   initDemoParquetViews(manifest) — register demo parquet URLs as DuckDB views
+ *   runDemoQueryLocal(sql) — run a SQL string locally against demo parquet views
+ *
+ *   runArrowQueryById transparently routes to the local DuckDB-WASM path when the
+ *   query_id is present in the demo query map (the "is demo" predicate) so that
+ *   demo dashboard VIEW queries make ZERO POST /api/v1/query calls.
+ *
+ *   "is demo" predicate: queryId ∈ fetchDemoQueryMap() keys  (lazy, cached)
+ *   Gating is strictly demo-only — non-demo queries go to the server exactly as before.
+ *
  * Streaming path used: INCREMENTAL (RecordBatchReader.from(response.body) via
  * apache-arrow AsyncRecordBatchStreamReader). The apache-arrow `RecordBatchReader.from()`
  * static method accepts a `Response` object directly (FromArg4 in the type signature),
@@ -206,22 +219,66 @@ export async function runArrowQuery(sql, onBatch, opts) {
  * dict of named parameter values to pass as `named_params` in the request body.
  * When absent, `named_params` is omitted from the body (backward-compatible).
  *
+ * D2 — Demo routing (free wedge):
+ * When `opts.isDemo === true` OR when the queryId is found in the demo query
+ * map (fetched lazily), the query is executed entirely in the browser via
+ * DuckDB-WASM read_parquet(<demo url>) — zero POST /api/v1/query calls.
+ * All non-demo queries continue to the server path exactly as before.
+ *
  * @param {string} queryId  — Registered query id (e.g. "demo_all").
- * @param {{ namedParams?: Record<string, unknown>, onBatch?: (rowsSoFar: number) => void }} [opts]
+ * @param {{ namedParams?: Record<string, unknown>, onBatch?: (rowsSoFar: number) => void, isDemo?: boolean, datastoreId?: string }} [opts]
  * @returns {Promise<{ table: arrow.Table, cacheStatus: string, elapsedMs: number }>}
  */
 export async function runArrowQueryById(queryId, opts) {
-  // Support legacy positional (queryId, onBatch) as well as new (queryId, { namedParams, datastoreId, onBatch })
+  // Support legacy positional (queryId, onBatch) as well as new (queryId, { namedParams, datastoreId, onBatch, isDemo })
   let namedParams
   let onBatch
   let datastoreId
+  let isDemo
   if (typeof opts === 'function') {
     onBatch = opts
   } else if (opts && typeof opts === 'object') {
     namedParams = opts.namedParams
     onBatch = opts.onBatch
     datastoreId = opts.datastoreId
+    isDemo = opts.isDemo
   }
+
+  // ── D2: Demo routing — check if this query should run in the browser ────────
+  // Gate 1: explicit isDemo flag passed by the caller (e.g. SpecRenderer).
+  // Gate 2: transparent — check the lazy query map (one JSON fetch, then cached).
+  // Only apply when no namedParams are present (parameterised demo queries still
+  // go to the server so RLS/template resolution works correctly).
+  const hasParams = namedParams && Object.keys(namedParams).length > 0
+  if (!hasParams && queryId) {
+    const shouldUseDemoLocal =
+      isDemo === true ||
+      (await (async () => {
+        // Don't block on the query map for non-demo queries — race with a short
+        // timeout so slow networks don't delay live widgets.  If the map isn't
+        // resolved within 2 s we fall through to the server path.
+        try {
+          const mapPromise = fetchDemoQueryMap()
+          const timeoutPromise = new Promise((resolve) => setTimeout(() => resolve(null), 2000))
+          const map = await Promise.race([mapPromise, timeoutPromise])
+          return map != null && Object.prototype.hasOwnProperty.call(map, queryId)
+        } catch {
+          return false
+        }
+      })())
+
+    if (shouldUseDemoLocal) {
+      // Fetch the SQL for this demo query from the query map.
+      const map = await fetchDemoQueryMap()
+      const sql = map?.[queryId]
+      if (sql) {
+        console.debug('[wasmRuntime] demo route: running', queryId, 'locally in DuckDB-WASM')
+        return runDemoQueryLocal(sql)
+      }
+      // If SQL is unavailable in the map (edge case), fall through to server.
+    }
+  }
+  // ── End D2 demo routing ─────────────────────────────────────────────────────
 
   const url = `${BACKEND_URL}/api/v1/query`
 
@@ -498,6 +555,152 @@ export async function queryLocal(sql) {
   } finally {
     await conn.close()
   }
+}
+
+// ---------------------------------------------------------------------------
+// D2 — Demo-datastore browser routing (free wedge)
+// ---------------------------------------------------------------------------
+//
+// The goal: demo dashboard VIEW queries are computed entirely in the browser via
+// DuckDB-WASM read_parquet(<url>) — zero POST /api/v1/query calls for demo data.
+//
+// Two lazy-cached singleton promises back the demo path:
+//   _demoManifestPromise  — the table→URL map from /api/v1/demo-parquet/_manifest
+//   _demoQueryMapPromise  — the queryId→SQL map from /api/v1/demo-parquet/_query-map
+//
+// _demoViewsInitialized tracks whether the DuckDB-WASM engine already has the
+// demo parquet views registered (idempotent per engine lifetime).
+
+/** @type {Promise<{tables: Record<string,string>, origin: string}> | null} */
+let _demoManifestPromise = null
+
+/**
+ * Fetch the demo parquet manifest once; cached for the page lifetime.
+ * No auth required — returns { tables: { <table>: <path> }, origin }.
+ * Returns null on any failure so callers degrade gracefully.
+ *
+ * @returns {Promise<{tables: Record<string,string>, origin: string} | null>}
+ */
+export function fetchDemoManifest() {
+  if (_demoManifestPromise) return _demoManifestPromise
+  _demoManifestPromise = (async () => {
+    try {
+      const r = await fetch(`${BACKEND_URL}/api/v1/demo-parquet/_manifest`)
+      if (!r.ok) return null
+      return await r.json()
+    } catch {
+      return null
+    }
+  })()
+  return _demoManifestPromise
+}
+
+/** @type {Promise<Record<string,string>> | null} */
+let _demoQueryMapPromise = null
+
+/**
+ * Fetch the demo query map once; cached for the page lifetime.
+ * Auth required — sends the access token.
+ * Returns { <queryId>: <sql> } for all queries backed by the demo parquet datastore.
+ * Returns {} on any failure (auth error, backend unavailable, etc.).
+ *
+ * @returns {Promise<Record<string,string>>}
+ */
+export function fetchDemoQueryMap() {
+  if (_demoQueryMapPromise) return _demoQueryMapPromise
+  _demoQueryMapPromise = (async () => {
+    try {
+      const headers = {}
+      const token = getAccessToken()
+      if (token) headers['Authorization'] = `Bearer ${token}`
+      const r = await fetch(`${BACKEND_URL}/api/v1/demo-parquet/_query-map`, {
+        headers,
+        credentials: 'include',
+      })
+      if (!r.ok) return {}
+      const data = await r.json()
+      return data?.queries ?? {}
+    } catch {
+      return {}
+    }
+  })()
+  return _demoQueryMapPromise
+}
+
+/** Set of DuckDB-WASM view names already registered for the demo parquet files. */
+const _demoViewsRegistered = new Set()
+
+/**
+ * Register demo parquet URLs as DuckDB-WASM views (idempotent).
+ *
+ * For each table in the manifest, creates a view:
+ *   CREATE OR REPLACE VIEW <table> AS SELECT * FROM read_parquet('<origin><url>')
+ *
+ * Views are registered once per DuckDB engine lifetime. Subsequent calls for
+ * already-registered tables are skipped.
+ *
+ * @param {{ tables: Record<string,string>, origin: string }} manifest
+ * @returns {Promise<void>}
+ */
+export async function initDemoParquetViews(manifest) {
+  if (!manifest?.tables) return
+  const db = await initDuckDB()
+  const conn = await db.connect()
+  const origin = manifest.origin ?? BACKEND_URL
+  try {
+    for (const [table, path] of Object.entries(manifest.tables)) {
+      if (_demoViewsRegistered.has(table)) continue
+      const url = `${origin}${path}`
+      try {
+        await conn.query(
+          `CREATE OR REPLACE VIEW "${table}" AS SELECT * FROM read_parquet('${url}')`
+        )
+        _demoViewsRegistered.add(table)
+      } catch (e) {
+        // Non-fatal — some browsers may not support WASM httpfs; degrade silently.
+        console.warn(`[wasmRuntime] demo view "${table}" failed:`, e?.message)
+      }
+    }
+  } finally {
+    await conn.close()
+  }
+}
+
+/**
+ * Run a SQL string locally in DuckDB-WASM against the demo parquet views.
+ *
+ * Lazily initialises the demo views on first call by fetching the manifest and
+ * registering each table as a read_parquet view.  Result shape mirrors the
+ * server path: { table, cacheStatus: 'DEMO_LOCAL', elapsedMs }.
+ *
+ * Falls back to the SAMPLE_TABLE (cacheStatus='SAMPLE') on any error so the
+ * widget degrades gracefully.
+ *
+ * @param {string} sql
+ * @returns {Promise<{ table: import('apache-arrow').Table, cacheStatus: string, elapsedMs: number }>}
+ */
+export async function runDemoQueryLocal(sql) {
+  const t0 = performance.now()
+  try {
+    const manifest = await fetchDemoManifest()
+    if (manifest) await initDemoParquetViews(manifest)
+    const table = await queryLocal(sql)
+    return { table, cacheStatus: 'DEMO_LOCAL', elapsedMs: Math.round(performance.now() - t0) }
+  } catch (cause) {
+    console.warn('[wasmRuntime] runDemoQueryLocal failed; using SAMPLE_TABLE:', cause?.message)
+    return { table: SAMPLE_TABLE, cacheStatus: 'SAMPLE', elapsedMs: Math.round(performance.now() - t0) }
+  }
+}
+
+/**
+ * Reset demo caches (for testing / hot-reload scenarios only).
+ * Not part of the public production API.
+ * @internal
+ */
+export function _resetDemoCache() {
+  _demoManifestPromise = null
+  _demoQueryMapPromise = null
+  _demoViewsRegistered.clear()
 }
 
 // ---------------------------------------------------------------------------

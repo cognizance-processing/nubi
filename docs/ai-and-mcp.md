@@ -225,6 +225,71 @@ The server communicates over **stdio**. You won't see output unless an MCP clien
 
 ---
 
+## Configuring the LLM provider (operators)
+
+Nubi selects an LLM backend at runtime from environment variables. With none set, the assistant runs in a deterministic **offline mode** (`NullProvider`) — no network, no keys — so the whole flow works in CI and local dev without an LLM.
+
+You have two ways to connect a real model:
+
+### Option A — a single native provider
+
+Set one provider key (or pin it explicitly with `LLM_PROVIDER`). The SDK for that provider is installed and imported lazily.
+
+| Variable | Example | Notes |
+|---|---|---|
+| `LLM_PROVIDER` | `anthropic` | Optional — pins the provider. Omit to auto-detect from the key set below. |
+| `ANTHROPIC_API_KEY` | `sk-ant-…` | `pip install anthropic` |
+| `OPENAI_API_KEY` | `sk-…` | `pip install openai` |
+| `GEMINI_API_KEY` | `…` | `pip install google-generativeai` |
+
+Auto-detection priority when `LLM_PROVIDER` is unset: Anthropic → OpenAI → Gemini.
+
+### Option B — LiteLLM (recommended: one SDK, all providers, cost tracking)
+
+[LiteLLM](https://docs.litellm.ai/) is used as an **in-process library** — *not* the standalone proxy server, so there is nothing extra to run. One `litellm.completion()` call fronts 100+ providers via a `provider/model` string, and LiteLLM ships a per-model pricing table so every call is priced automatically.
+
+```bash
+pip install litellm
+```
+
+```bash
+LLM_PROVIDER=litellm
+LITELLM_MODEL=anthropic/claude-opus-4-8     # default model ("provider/model")
+ANTHROPIC_API_KEY=sk-ant-…                  # LiteLLM reads the provider key itself
+```
+
+`LITELLM_MODEL` accepts any LiteLLM model string — e.g. `gpt-4o`, `gemini/gemini-1.5-pro`, `ollama/llama3`, `bedrock/anthropic.claude-3-5-sonnet`. Setting `LITELLM_MODEL` alone (no `LLM_PROVIDER`) also activates LiteLLM.
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `LITELLM_MODEL` | — (required) | Default `provider/model` string. |
+| `LITELLM_ALLOWED_MODELS` | _(just the default)_ | Comma-separated extra models a request may pick via the API `model` field. The default is always allowed; anything else is rejected with `model_not_allowed` (400) — a cost/safety gate. |
+| `LITELLM_API_KEY` | — | Explicit key override. Usually omitted; LiteLLM reads `ANTHROPIC_API_KEY` / `OPENAI_API_KEY` / … directly. |
+| `LITELLM_NUM_RETRIES` | — | Auto-retry 429/5xx/timeout with exponential backoff (SDK-level rate-limit resilience). |
+| `LITELLM_TIMEOUT` | — | Per-request timeout (seconds). |
+| `LITELLM_MAX_BUDGET_USD` | — | Soft per-process spend cap. Calls past it raise `llm_budget_exceeded` (429) before hitting the network. |
+
+#### Pricing, usage & cost
+
+Every LiteLLM completion records its token counts (from the response `usage`) and a USD cost priced by LiteLLM's per-model table. Totals accumulate in two places and are emitted on the `nubi.ai.provider` logger:
+
+```
+litellm completion model=anthropic/claude-opus-4-8 prompt_tokens=812 completion_tokens=143 cost_usd=0.014…
+```
+
+- **Per request** — `LiteLLMProvider.usage` (an `LLMUsage` with `prompt_tokens`, `completion_tokens`, `total_tokens`, `cost_usd`, `calls`).
+- **Per process** — `app.ai.provider.get_process_usage()` returns the running total since start; call `.as_dict()` for a JSON snapshot.
+
+> **Scope.** Process-wide usage is in-memory: it does not survive a restart and is not shared across replicas. It is for local cost visibility and the soft single-process budget guard — **not** multi-tenant billing. For org-scoped budgets, hard rpm/tpm throttling, and provider fallbacks across a fleet, run the [LiteLLM proxy/Router](https://docs.litellm.ai/docs/proxy/quick_start) as a separate service and point `LITELLM_MODEL` at it.
+
+> **Everything runs through LiteLLM.** All AI surfaces now route through the LiteLLM SDK:
+> - **Non-streaming** (grounded text-to-SQL, dashboard generation, `/ai/ask`) and the **global assistant** (`/ai/chat`, `/ai/chat/stream`) call `provider.complete()` → `LiteLLMProvider`.
+> - The **dashboard-editor chat** (`/chat/stream`, `app/chat/llm.py`) streams via `litellm.completion(stream=True)` with OpenAI-format tools, reading token deltas from `chunk.choices[0].delta.content` and assembling tool calls with `litellm.stream_chunk_builder`. Editor model ids (`claude-opus-4-8`, …) are mapped to LiteLLM provider strings (`anthropic/claude-opus-4-8`, …) by `app/chat/models.py::to_litellm_model`, so the editor chat now works on any provider, not just Anthropic.
+>
+> With no provider key configured, both chat surfaces fall back to the same deterministic offline mode as before.
+
+---
+
 ## Tips
 
 - **Expand tool blocks.** The fastest way to trust an answer is to open the *Generate SQL* and *Run query* blocks and read the actual SQL and row count.

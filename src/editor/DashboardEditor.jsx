@@ -2284,9 +2284,13 @@ function TabsPanel({ spec, onSpecChange, activeTabId, onActivate, onAddTab }) {
 // ---------------------------------------------------------------------------
 
 /**
- * @param {{ boardId?: string|null, onSaved?: (board: object) => void }} props
+ * @param {{
+ *   boardId?: string|null,
+ *   onSaved?: (board: object) => void,
+ *   onSpecChange?: (spec: object) => void,
+ * }} props
  */
-export default function DashboardEditor({ boardId = null, onSaved }) {
+export default function DashboardEditor({ boardId = null, onSaved, onSpecChange, onSetSpec }) {
   // ── History state ─────────────────────────────────────────────────────────
   const [hist, setHist] = useState(() => createHistory(DEFAULT_SPEC))
   const spec = hist.present
@@ -2330,6 +2334,19 @@ export default function DashboardEditor({ boardId = null, onSaved }) {
   }, [])
 
   const setSpec = commitSpec
+
+  // Expose commitSpec to the shell (EditorShell) so the report/slides canvases
+  // can write through DashboardEditor's history without owning spec state (T10).
+  useEffect(() => {
+    onSetSpec?.(commitSpec)
+  }, [onSetSpec, commitSpec])
+
+  // Notify shell (EditorShell) whenever the spec changes so the report/slides
+  // surfaces can observe the live spec without owning it (additive, T8).
+  useEffect(() => {
+    onSpecChange?.(spec)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [spec])
 
   const [selectedId, setSelectedId] = useState(null)
   const [preview, setPreview] = useState(false)

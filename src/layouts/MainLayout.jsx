@@ -13,6 +13,7 @@ import { Outlet, useLocation } from 'react-router-dom'
 import Navbar from '../components/Navbar.jsx'
 import Footer from '../components/Footer.jsx'
 import ScrollToTop from '../components/ScrollToTop.jsx'
+import { CurrencyProvider } from '../contexts/CurrencyContext.jsx'
 
 /** Prefixes whose pages should NOT display the marketing footer. */
 const APP_PREFIXES = ['/docs', '/editor', '/playground', '/dashboard', '/d/']
@@ -31,16 +32,18 @@ export default function MainLayout() {
   const hideFooter = useHideFooter()
 
   return (
-    <div className="min-h-screen flex flex-col bg-bg text-fg">
-      {/* Reset window scroll on route change (public pages use window scroll) */}
-      <ScrollToTop />
-      <Navbar />
+    <CurrencyProvider>
+      <div className="min-h-screen flex flex-col bg-bg text-fg">
+        {/* Reset window scroll on route change (public pages use window scroll) */}
+        <ScrollToTop />
+        <Navbar />
 
-      <main className="flex-1">
-        <Outlet />
-      </main>
+        <main className="flex-1">
+          <Outlet />
+        </main>
 
-      {!hideFooter && <Footer />}
-    </div>
+        {!hideFooter && <Footer />}
+      </div>
+    </CurrencyProvider>
   )
 }

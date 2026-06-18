@@ -57,8 +57,12 @@ from app.ai.provider import NullProvider
 from app.auth.jwt import mint_access_token
 from app.dashboards.spec import (
     DashboardSpec,
+    SurfaceGridEntry,
+    Surfaces,
     Widget,
     WidgetPos,
+    get_surface_layout,
+    migrate_spec_to_surfaces,
     spec_json_schema,
     spec_to_html,
     validate_spec,
@@ -1224,3 +1228,254 @@ class TestVariableMode:
         spec, issues = validate_spec(data)
         assert spec is None, "Expected parse failure for invalid Variable.mode"
         assert len(issues) > 0
+
+
+# ---------------------------------------------------------------------------
+# 10. T1 — Schema split: surfaces model + get_surface_layout + migration
+# ---------------------------------------------------------------------------
+
+
+class TestT1GetSurfaceLayout:
+    """get_surface_layout: backward-compatible accessor for grid layout."""
+
+    def test_legacy_board_derives_layout_from_widget_pos(self):
+        """Un-migrated board: accessor derives layout from widget.pos."""
+        spec, _ = validate_spec(_good_spec_dict())
+        assert spec is not None
+        layout = get_surface_layout(spec, "grid")
+        # All three widgets have pos; layout must contain all three.
+        assert set(layout.keys()) == {"w1", "w2", "w3"}
+        entry = layout["w1"]
+        assert isinstance(entry, SurfaceGridEntry)
+        assert entry.x == 1
+        assert entry.y == 1
+        assert entry.w == 4
+        assert entry.h == 2
+
+    def test_legacy_board_layout_matches_widget_pos_exactly(self):
+        """Every layout entry derived from pos must match the original pos."""
+        spec, _ = validate_spec(_good_spec_dict())
+        assert spec is not None
+        layout = get_surface_layout(spec, "grid")
+        for widget in spec.widgets:
+            assert widget.pos is not None, f"Widget {widget.id!r} has no pos"
+            entry = layout[widget.id]
+            assert entry.x == widget.pos.x, f"x mismatch for {widget.id!r}"
+            assert entry.y == widget.pos.y, f"y mismatch for {widget.id!r}"
+            assert entry.w == widget.pos.w, f"w mismatch for {widget.id!r}"
+            assert entry.h == widget.pos.h, f"h mismatch for {widget.id!r}"
+
+    def test_migrated_board_uses_surfaces_grid(self):
+        """Migrated board: accessor returns surfaces.grid directly."""
+        spec, _ = validate_spec(_good_spec_dict())
+        assert spec is not None
+        migrated = migrate_spec_to_surfaces(spec)
+        layout = get_surface_layout(migrated, "grid")
+        # Must be the surfaces.grid map, which is non-empty.
+        assert set(layout.keys()) == {"w1", "w2", "w3"}
+
+    def test_surfaces_grid_overrides_inline_pos(self):
+        """When surfaces.grid is set, it takes precedence over widget.pos."""
+        spec, _ = validate_spec(_good_spec_dict())
+        assert spec is not None
+        # Manually override w1 in surfaces.grid with different coords.
+        from pydantic import TypeAdapter
+        data = spec.model_dump()
+        data["surfaces"] = {
+            "grid": {
+                "w1": {"x": 7, "y": 7, "w": 2, "h": 2},
+                "w2": {"x": 1, "y": 1, "w": 8, "h": 2},
+                "w3": {"x": 1, "y": 3, "w": 12, "h": 3},
+            },
+            "report": None,
+            "slides": None,
+        }
+        migrated_spec = DashboardSpec.model_validate(data)
+        layout = get_surface_layout(migrated_spec, "grid")
+        assert layout["w1"].x == 7
+        assert layout["w1"].y == 7
+        # widget.pos is unchanged — surfaces.grid wins.
+        assert migrated_spec.widgets[0].pos is not None
+        assert migrated_spec.widgets[0].pos.x == 1  # still the legacy value
+
+    def test_unknown_surface_raises(self):
+        """get_surface_layout raises ValueError for truly unknown surfaces."""
+        spec, _ = validate_spec(_good_spec_dict())
+        assert spec is not None
+        import pytest
+        with pytest.raises(ValueError, match="Unknown surface"):
+            get_surface_layout(spec, "foobar")
+
+    def test_report_surface_returns_none_when_unconfigured(self):
+        """get_surface_layout('report') returns None when report surface is not configured."""
+        spec, _ = validate_spec(_good_spec_dict())
+        assert spec is not None
+        result = get_surface_layout(spec, "report")
+        assert result is None
+
+    def test_slides_surface_returns_none_when_unconfigured(self):
+        """get_surface_layout('slides') returns None when slides surface is not configured."""
+        spec, _ = validate_spec(_good_spec_dict())
+        assert spec is not None
+        result = get_surface_layout(spec, "slides")
+        assert result is None
+
+    def test_empty_board_returns_empty_layout(self):
+        spec = DashboardSpec(title="Empty", widgets=[])
+        layout = get_surface_layout(spec, "grid")
+        assert layout == {}
+
+    def test_spec_json_schema_includes_surfaces(self):
+        schema = spec_json_schema()
+        props = schema.get("properties", {})
+        assert "surfaces" in props, (
+            f"Schema should expose 'surfaces'; props: {list(props.keys())}"
+        )
+
+
+class TestT1MigrateSpecToSurfaces:
+    """migrate_spec_to_surfaces: 1:1 additive migration."""
+
+    def test_migration_populates_surfaces_grid(self):
+        """After migration, surfaces.grid is non-empty."""
+        spec, _ = validate_spec(_good_spec_dict())
+        assert spec is not None
+        assert not spec.surfaces.grid, "Expected empty surfaces.grid before migration"
+        migrated = migrate_spec_to_surfaces(spec)
+        assert migrated.surfaces.grid, "Expected non-empty surfaces.grid after migration"
+
+    def test_migration_widget_ids_match(self):
+        """surfaces.grid contains exactly the same widget ids."""
+        spec, _ = validate_spec(_good_spec_dict())
+        assert spec is not None
+        migrated = migrate_spec_to_surfaces(spec)
+        widget_ids = {w.id for w in spec.widgets}
+        assert set(migrated.surfaces.grid.keys()) == widget_ids
+
+    def test_migration_coords_match_inline_pos(self):
+        """surfaces.grid coords are byte-equal to the original widget.pos."""
+        spec, _ = validate_spec(_good_spec_dict())
+        assert spec is not None
+        migrated = migrate_spec_to_surfaces(spec)
+        for widget in spec.widgets:
+            entry = migrated.surfaces.grid[widget.id]
+            assert entry.x == widget.pos.x, f"x mismatch for {widget.id!r}"
+            assert entry.y == widget.pos.y, f"y mismatch for {widget.id!r}"
+            assert entry.w == widget.pos.w, f"w mismatch for {widget.id!r}"
+            assert entry.h == widget.pos.h, f"h mismatch for {widget.id!r}"
+
+    def test_migration_does_not_alter_widgets(self):
+        """widgets list is unchanged after migration."""
+        spec, _ = validate_spec(_good_spec_dict())
+        assert spec is not None
+        migrated = migrate_spec_to_surfaces(spec)
+        assert len(migrated.widgets) == len(spec.widgets)
+        for orig, mig in zip(spec.widgets, migrated.widgets):
+            assert orig.id == mig.id
+            assert orig.type == mig.type
+            assert orig.pos == mig.pos  # pos is KEPT for back-compat
+
+    def test_migration_is_idempotent(self):
+        """Calling migrate twice yields the same result."""
+        spec, _ = validate_spec(_good_spec_dict())
+        assert spec is not None
+        m1 = migrate_spec_to_surfaces(spec)
+        m2 = migrate_spec_to_surfaces(m1)
+        assert m1.surfaces.grid == m2.surfaces.grid
+        assert m1 is m2 or m1.model_dump() == m2.model_dump()
+
+    def test_migration_does_not_mutate_original(self):
+        """Original spec is not changed."""
+        spec, _ = validate_spec(_good_spec_dict())
+        assert spec is not None
+        original_grid = dict(spec.surfaces.grid)
+        _ = migrate_spec_to_surfaces(spec)
+        assert spec.surfaces.grid == original_grid
+
+    def test_spec_to_html_parity_after_migration(self):
+        """spec_to_html produces identical output before and after migration."""
+        spec, _ = validate_spec(_good_spec_dict())
+        assert spec is not None
+        html_before = spec_to_html(spec)
+        migrated = migrate_spec_to_surfaces(spec)
+        html_after = spec_to_html(migrated)
+        assert html_before == html_after, (
+            "spec_to_html must be identical before and after migration.\n"
+            f"Before:\n{html_before[:400]}\n\nAfter:\n{html_after[:400]}"
+        )
+
+
+class TestT1AccessorParity:
+    """Parity test: legacy-inline board → accessor yields identical grid layout."""
+
+    def test_accessor_parity_legacy_vs_migrated(self):
+        """get_surface_layout on legacy board == surfaces.grid on migrated board."""
+        spec, _ = validate_spec(_good_spec_dict())
+        assert spec is not None
+
+        # Legacy accessor — derives from widget.pos.
+        legacy_layout = get_surface_layout(spec, "grid")
+
+        # Migrated accessor — reads surfaces.grid.
+        migrated = migrate_spec_to_surfaces(spec)
+        migrated_layout = get_surface_layout(migrated, "grid")
+
+        assert set(legacy_layout.keys()) == set(migrated_layout.keys()), (
+            f"Key mismatch: legacy={set(legacy_layout)}, migrated={set(migrated_layout)}"
+        )
+        for wid in legacy_layout:
+            l = legacy_layout[wid]
+            m = migrated_layout[wid]
+            assert l.x == m.x and l.y == m.y and l.w == m.w and l.h == m.h, (
+                f"Parity failure for widget {wid!r}: "
+                f"legacy={l.model_dump()} migrated={m.model_dump()}"
+            )
+
+    def test_accessor_parity_variable_spec(self):
+        """Parity holds for the variable spec (mixed widget types)."""
+        spec, _ = validate_spec(_make_variable_spec())
+        assert spec is not None
+
+        legacy_layout = get_surface_layout(spec, "grid")
+        migrated = migrate_spec_to_surfaces(spec)
+        migrated_layout = get_surface_layout(migrated, "grid")
+
+        assert set(legacy_layout.keys()) == set(migrated_layout.keys())
+        for wid in legacy_layout:
+            l = legacy_layout[wid]
+            m = migrated_layout[wid]
+            assert l.x == m.x and l.y == m.y and l.w == m.w and l.h == m.h
+
+    def test_round_trip_serialisation(self):
+        """spec.model_dump() round-trips through validate_spec with surfaces intact."""
+        spec, _ = validate_spec(_good_spec_dict())
+        assert spec is not None
+        migrated = migrate_spec_to_surfaces(spec)
+
+        data = migrated.model_dump()
+        assert "surfaces" in data
+        assert data["surfaces"]["grid"]
+
+        # Round-trip through validate_spec.
+        re_spec, issues = validate_spec(data)
+        hard_issues = [i for i in issues if "not in the registered" not in i]
+        assert re_spec is not None, f"Round-trip parse failed: {issues}"
+        assert hard_issues == [], f"Round-trip hard issues: {hard_issues}"
+
+        # Surfaces must survive the round-trip.
+        assert set(re_spec.surfaces.grid.keys()) == {"w1", "w2", "w3"}
+        for wid in migrated.surfaces.grid:
+            o = migrated.surfaces.grid[wid]
+            r = re_spec.surfaces.grid[wid]
+            assert o.x == r.x and o.y == r.y and o.w == r.w and o.h == r.h
+
+    def test_spec_without_surfaces_still_validates(self):
+        """Backward compat: a spec without surfaces key validates; surfaces defaults empty grid."""
+        data = _good_spec_dict()
+        assert "surfaces" not in data
+        spec, issues = validate_spec(data)
+        hard_issues = [i for i in issues if "not in the registered" not in i]
+        assert spec is not None, f"Expected valid spec; issues: {issues}"
+        assert hard_issues == []
+        # surfaces.grid defaults to empty dict for un-migrated specs.
+        assert spec.surfaces.grid == {}

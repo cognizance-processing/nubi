@@ -102,6 +102,16 @@ class _EmbedTokenIn(BaseModel):
     scope: list[str] | None = None
     """OAuth-style scope strings.  Defaults to ``["read:*"]`` when omitted."""
 
+    datastore: str | None = None
+    """Optional whole-dashboard connector override (a datastore id string).
+
+    Host-signed embed claim plumbed through verification and surfaced on
+    ``VerifiedIdentity.datastore``.  Carrying it on a dev token lets local
+    embed demos exercise the override.  NOTE: it is NOT yet wired into query
+    execution — that is Mode 2's job; this only plumbs the claim into the
+    minted payload.
+    """
+
     ttl_minutes: int = 60
     """Token lifetime in minutes.  Capped at 1440 (24 hours) for safety."""
 
@@ -167,6 +177,8 @@ async def mint_embed_dev_token(body: _EmbedTokenIn) -> dict[str, Any]:
         payload["org"] = body.org
     if body.policies:
         payload["policies"] = body.policies
+    if body.datastore is not None:
+        payload["datastore"] = body.datastore
 
     token = _jwt.encode(payload, settings.JWT_SECRET, algorithm="HS256")
     return {"token": token, "expires_in": ttl * 60}

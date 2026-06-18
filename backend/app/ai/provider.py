@@ -24,8 +24,12 @@ called during tests (tests use NullProvider exclusively).
 
 from __future__ import annotations
 
+import logging
 import os
 from abc import ABC, abstractmethod
+from dataclasses import dataclass
+
+logger = logging.getLogger("nubi.ai.provider")
 
 
 # ---------------------------------------------------------------------------
@@ -103,6 +107,69 @@ def resolve_model(
         ),
         400,
     )
+
+
+# ---------------------------------------------------------------------------
+# Token + cost accounting
+# ---------------------------------------------------------------------------
+#
+# LiteLLM ships a per-model pricing table and a ``completion_cost`` helper, so
+# every real completion can be priced in USD without us hardcoding rates.  We
+# accumulate tokens + cost in two places:
+#   * ``LiteLLMProvider.usage`` — per-instance (typically per-request) totals.
+#   * ``_PROCESS_USAGE`` (read via ``get_process_usage()``) — process-wide totals
+#     since start, used for the optional spend cap and for observability.
+#
+# NOTE on scope: ``_PROCESS_USAGE`` is in-memory and per-process — it does not
+# survive a restart and is not shared across replicas.  It is meant for local
+# cost visibility and a soft single-process budget guard, NOT multi-tenant
+# billing.  For org-scoped budgets, rpm/tpm limits, and provider fallbacks
+# across a fleet, run the LiteLLM proxy/Router (see docs/ai-and-mcp.md).
+
+
+@dataclass
+class LLMUsage:
+    """Token + cost accounting for LLM completions."""
+
+    calls: int = 0
+    prompt_tokens: int = 0
+    completion_tokens: int = 0
+    total_tokens: int = 0
+    cost_usd: float = 0.0
+
+    def add(
+        self,
+        *,
+        prompt_tokens: int,
+        completion_tokens: int,
+        total_tokens: int,
+        cost_usd: float,
+    ) -> None:
+        """Fold one completion's tokens + cost into the running totals."""
+        self.calls += 1
+        self.prompt_tokens += prompt_tokens
+        self.completion_tokens += completion_tokens
+        self.total_tokens += total_tokens
+        self.cost_usd += cost_usd
+
+    def as_dict(self) -> dict:
+        """Return a JSON-serialisable snapshot (for API responses / logs)."""
+        return {
+            "calls": self.calls,
+            "prompt_tokens": self.prompt_tokens,
+            "completion_tokens": self.completion_tokens,
+            "total_tokens": self.total_tokens,
+            "cost_usd": round(self.cost_usd, 6),
+        }
+
+
+#: Process-wide running totals across every LiteLLM completion since start.
+_PROCESS_USAGE = LLMUsage()
+
+
+def get_process_usage() -> LLMUsage:
+    """Return the process-wide token + cost accumulator (since process start)."""
+    return _PROCESS_USAGE
 
 
 class LLMProvider(ABC):
@@ -384,9 +451,230 @@ class GeminiProvider(LLMProvider):
         return response.text
 
 
+class LiteLLMProvider(LLMProvider):
+    """Unified provider backed by the LiteLLM SDK (lazy import).
+
+    LiteLLM is used as an in-process library — NOT the standalone proxy server.
+    A single ``litellm.completion()`` call fronts 100+ model providers via a
+    ``"provider/model"`` string (e.g. ``"anthropic/claude-opus-4-8"``,
+    ``"gpt-4o"``, ``"gemini/gemini-1.5-pro"``), so this one class replaces the
+    per-provider classes above when ``LLM_PROVIDER=litellm``.
+
+    Pricing / usage / cost
+    -----------------------
+    After each call we read ``response.usage`` (token counts) and price it with
+    ``litellm.completion_cost`` (LiteLLM's per-model pricing table — no rates
+    hardcoded here).  Totals are folded into ``self.usage`` (per request) and
+    ``_PROCESS_USAGE`` (process-wide), and emitted on the ``nubi.ai.provider``
+    logger.
+
+    Rate limiting / cost control
+    ----------------------------
+    * ``num_retries`` / ``timeout`` are passed through to LiteLLM, which retries
+      429/5xx/timeout with exponential backoff (SDK-level resilience).
+    * ``max_budget_usd`` is a soft per-process spend cap: once cumulative cost
+      reaches it, further calls raise ``AppError("llm_budget_exceeded", 429)``
+      BEFORE hitting the network.
+
+    For hard rpm/tpm throttling, org-scoped budgets, and provider fallbacks
+    across multiple processes, use the LiteLLM proxy/Router instead.
+
+    Raises
+    ------
+    ImportError
+        If the ``litellm`` package is not installed.
+    AppError("model_not_allowed", 400)
+        If a per-request ``model`` is outside the configured allowlist.
+    AppError("llm_budget_exceeded", 429)
+        If the per-process spend cap has been reached.
+    """
+
+    name = "litellm"
+
+    def __init__(
+        self,
+        model: str,
+        allowed: list[str] | None = None,
+        *,
+        api_key: str | None = None,
+        num_retries: int | None = None,
+        timeout: float | None = None,
+        max_budget_usd: float | None = None,
+    ) -> None:
+        # Do NOT import litellm or open a connection here.
+        self._default_model = model
+        # Allowlist = configured default + any explicit extras (order-preserving
+        # dedup).  With no extras, only the default model is permitted per-request,
+        # preserving the cost/safety gate that the native providers have.
+        self._allowed = list(dict.fromkeys([model, *(allowed or [])]))
+        self._api_key = api_key
+        self._num_retries = num_retries
+        self._timeout = timeout
+        self._max_budget_usd = max_budget_usd
+        #: Per-instance (typically per-request) token + cost totals.
+        self.usage = LLMUsage()
+
+    def complete(
+        self,
+        prompt: str,
+        system: str | None = None,
+        model: str | None = None,
+    ) -> str:
+        """Call LiteLLM and return the completion text, recording usage + cost.
+
+        The ``litellm`` package is imported here (lazy) so the module is safe to
+        import without it installed.  When *model* is supplied it is gated
+        against the configured allowlist (see ``resolve_model``).
+        """
+        # Validate the request cheaply BEFORE importing the heavy SDK: an
+        # out-of-allowlist model fails fast with model_not_allowed (400) even
+        # when litellm is not installed.
+        effective_model = resolve_model(model, self._default_model, self._allowed)
+
+        try:
+            import litellm  # noqa: PLC0415
+        except ImportError as exc:
+            raise ImportError(
+                "The 'litellm' package is required for LiteLLMProvider. "
+                "Install it with: pip install litellm"
+            ) from exc
+
+        # ── Budget guard (pre-flight) ───────────────────────────────────────
+        if (
+            self._max_budget_usd is not None
+            and _PROCESS_USAGE.cost_usd >= self._max_budget_usd
+        ):
+            from app.errors import AppError  # noqa: PLC0415
+
+            raise AppError(
+                "llm_budget_exceeded",
+                (
+                    f"LLM spend cap of ${self._max_budget_usd:.2f} reached "
+                    f"(spent ${_PROCESS_USAGE.cost_usd:.4f} this process). "
+                    "Raise LITELLM_MAX_BUDGET_USD or restart to reset."
+                ),
+                429,
+            )
+
+        messages: list[dict] = []
+        if system:
+            messages.append({"role": "system", "content": system})
+        messages.append({"role": "user", "content": prompt})
+
+        kwargs: dict = {
+            "model": effective_model,
+            "messages": messages,
+            "max_tokens": 1024,
+        }
+        if self._api_key:
+            kwargs["api_key"] = self._api_key
+        if self._num_retries is not None:
+            kwargs["num_retries"] = self._num_retries
+        if self._timeout is not None:
+            kwargs["timeout"] = self._timeout
+
+        # Silently drop params a given model rejects (e.g. max_tokens) instead of
+        # erroring — keeps one call path across heterogeneous providers.
+        litellm.drop_params = True
+
+        response = litellm.completion(**kwargs)
+        self._record(litellm, response, effective_model)
+
+        return response.choices[0].message.content or ""
+
+    def _record(self, litellm, response, model: str) -> None:
+        """Fold one completion's tokens + USD cost into both usage accumulators."""
+        usage = getattr(response, "usage", None)
+        prompt_tokens = int(getattr(usage, "prompt_tokens", 0) or 0)
+        completion_tokens = int(getattr(usage, "completion_tokens", 0) or 0)
+        total_tokens = int(
+            getattr(usage, "total_tokens", prompt_tokens + completion_tokens) or 0
+        )
+        try:
+            cost = float(litellm.completion_cost(completion_response=response) or 0.0)
+        except Exception:  # pragma: no cover — unknown model / missing pricing
+            # Pricing is best-effort: an unknown model id should not fail the call.
+            cost = 0.0
+
+        self.usage.add(
+            prompt_tokens=prompt_tokens,
+            completion_tokens=completion_tokens,
+            total_tokens=total_tokens,
+            cost_usd=cost,
+        )
+        _PROCESS_USAGE.add(
+            prompt_tokens=prompt_tokens,
+            completion_tokens=completion_tokens,
+            total_tokens=total_tokens,
+            cost_usd=cost,
+        )
+        logger.info(
+            "litellm completion model=%s prompt_tokens=%d completion_tokens=%d "
+            "cost_usd=%.6f process_cost_usd=%.6f",
+            model,
+            prompt_tokens,
+            completion_tokens,
+            cost,
+            _PROCESS_USAGE.cost_usd,
+        )
+
+
 # ---------------------------------------------------------------------------
 # Factory
 # ---------------------------------------------------------------------------
+
+
+def _parse_int(value: str | None) -> int | None:
+    """Parse an int env value; return None for unset/empty/invalid."""
+    try:
+        return int(value) if value not in (None, "") else None
+    except (TypeError, ValueError):
+        return None
+
+
+def _parse_float(value: str | None) -> float | None:
+    """Parse a float env value; return None for unset/empty/invalid."""
+    try:
+        return float(value) if value not in (None, "") else None
+    except (TypeError, ValueError):
+        return None
+
+
+def _make_litellm(env) -> LLMProvider:
+    """Build a ``LiteLLMProvider`` from ``LITELLM_*`` env, validating config.
+
+    Reads (via the *env* reader passed by ``get_provider``):
+      * ``LITELLM_MODEL`` (required) — default model string, e.g.
+        ``"anthropic/claude-opus-4-8"`` or ``"gpt-4o"``.
+      * ``LITELLM_ALLOWED_MODELS`` — comma-separated extra models a request may
+        select via ``model``.  The default model is always allowed.
+      * ``LITELLM_API_KEY`` — optional explicit key; usually omitted because
+        LiteLLM reads provider keys (ANTHROPIC_API_KEY/OPENAI_API_KEY/…) itself.
+      * ``LITELLM_NUM_RETRIES`` / ``LITELLM_TIMEOUT`` — SDK retry + timeout.
+      * ``LITELLM_MAX_BUDGET_USD`` — soft per-process spend cap.
+    """
+    from app.errors import AppError  # noqa: PLC0415
+
+    model = env("LITELLM_MODEL")
+    if not model:
+        raise AppError(
+            "llm_not_configured",
+            "LITELLM_MODEL is required when using LiteLLM "
+            "(e.g. 'anthropic/claude-opus-4-8' or 'gpt-4o').",
+            503,
+        )
+    allowed_raw = env("LITELLM_ALLOWED_MODELS")
+    allowed = (
+        [m.strip() for m in allowed_raw.split(",") if m.strip()] if allowed_raw else []
+    )
+    return LiteLLMProvider(
+        model,
+        allowed,
+        api_key=env("LITELLM_API_KEY"),
+        num_retries=_parse_int(env("LITELLM_NUM_RETRIES")),
+        timeout=_parse_float(env("LITELLM_TIMEOUT")),
+        max_budget_usd=_parse_float(env("LITELLM_MAX_BUDGET_USD")),
+    )
 
 
 def get_provider() -> LLMProvider:
@@ -394,13 +682,13 @@ def get_provider() -> LLMProvider:
 
     Selection order
     ---------------
-    1. If ``LLM_PROVIDER`` env var / settings field is set to ``"anthropic"``,
-       ``"openai"``, or ``"gemini"``, that provider is returned (or
-       ``AppError("llm_not_configured", 503)`` if the corresponding API key is
-       missing).
-    2. Otherwise, scan for API keys in priority order:
-       ``ANTHROPIC_API_KEY`` → ``OPENAI_API_KEY`` → ``GEMINI_API_KEY``.
-    3. If no key is found, return ``NullProvider()`` (safe default).
+    1. If ``LLM_PROVIDER`` env var / settings field is set to ``"litellm"``,
+       ``"anthropic"``, ``"openai"``, or ``"gemini"``, that provider is returned
+       (or ``AppError("llm_not_configured", 503)`` if its required config is
+       missing — an API key, or ``LITELLM_MODEL`` for litellm).
+    2. Otherwise, auto-detect: ``LITELLM_MODEL`` → ``ANTHROPIC_API_KEY`` →
+       ``OPENAI_API_KEY`` → ``GEMINI_API_KEY`` (first match wins).
+    3. If nothing is configured, return ``NullProvider()`` (safe default).
 
     No network call is made by this function.  Provider construction is also
     free of network I/O.
@@ -433,6 +721,8 @@ def get_provider() -> LLMProvider:
     explicit = _env("LLM_PROVIDER")
     if explicit:
         provider_name = explicit.lower()
+        if provider_name == "litellm":
+            return _make_litellm(_env)
         if provider_name == "anthropic":
             key = _env("ANTHROPIC_API_KEY")
             if not key:
@@ -462,7 +752,13 @@ def get_provider() -> LLMProvider:
             return GeminiProvider(key)
         # Unknown provider name — fall through to auto-detect.
 
-    # ── Auto-detect from available API keys (priority order) ────────────────
+    # ── Auto-detect from available config (priority order) ──────────────────
+    # LiteLLM first: when LITELLM_MODEL is set the operator has opted into the
+    # unified router, even if a raw provider key is also present (LiteLLM needs
+    # those keys itself).
+    if _env("LITELLM_MODEL"):
+        return _make_litellm(_env)
+
     anthropic_key = _env("ANTHROPIC_API_KEY")
     if anthropic_key:
         return AnthropicProvider(anthropic_key)

@@ -59,9 +59,11 @@ _demo_connector: DuckDBConnector | None = None
 def _get_demo_connector() -> DuckDBConnector:
     """Return (or create) the module-level demo DuckDB connector.
 
-    Same connector as the query route: the full 17-table demo dataset plus the
-    legacy ``demo`` table, so the Data browser lists every demo table (not just
-    the old single placeholder).
+    D1 consolidation: delegates to ``routes.query._build_demo_connector`` which
+    now reads the 17 demo tables from the static local-parquet lakehouse
+    (``seed_data/parquet/``) rather than building them in-memory.
+    Same connector as the query route: all 17 tables plus the legacy ``demo``
+    table are available for the Data browser.
     """
     global _demo_connector
     if _demo_connector is None:

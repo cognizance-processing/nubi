@@ -173,7 +173,7 @@ export const FALLBACK_TIERS = [
       'Full white-label (custom domain)',
       '90-day audit log',
       'Usage wallet — prepaid credits, auto-topup',
-      '99.5% uptime SLA',
+      '99.5% uptime target (best-effort; contractual SLA on Enterprise)',
     ],
     cta_label: 'Upgrade to Pro',
     highlight: true,
@@ -214,9 +214,9 @@ export const FALLBACK_TIERS = [
     is_enterprise: true,
     has_sla: true,
     sla: {
-      uptime: '99.99%',
-      response_time: '4-hour critical / 8-hour standard',
-      support: 'Named dedicated support engineer',
+      uptime: '99.95%',
+      response_time: 'P1 (site-down) < 30 min, 24/7 · P2 (degraded) < 2 hr',
+      support: 'Dedicated Customer Success Manager',
     },
   },
 ]
@@ -246,14 +246,14 @@ export const FALLBACK_COMPETITORS_BI = [
     id: 'metabase_pro',
     name: 'Metabase Pro',
     url: 'https://www.metabase.com/pricing',
-    note: '$575/mo base + $12/interactive viewer (10 included)',
+    note: '$500/mo base (10 users incl.) + $10/extra interactive user',
     highlight_seat_penalty: true,
-    model({ embedded_sessions }, { viewers }) {
-      const base = 575
-      const effectiveViewers = embedded_sessions > 0
-        ? Math.max(viewers, Math.ceil(embedded_sessions / 10))
-        : viewers
-      return base + Math.max(0, effectiveViewers - 10) * 12
+    // Metabase Pro Cloud is priced per interactive USER, not per embedded
+    // session — so we scale on the team's interactive viewers only (no
+    // sessions→viewers inflation), matching competitors.py ($500 + $10/user).
+    model(_usage, { viewers }) {
+      const base = 500
+      return base + Math.max(0, viewers - 10) * 10
     },
   },
   {
@@ -276,18 +276,19 @@ export const FALLBACK_COMPETITORS_BI = [
     id: 'lightdash_pro',
     name: 'Lightdash Cloud Pro',
     url: 'https://www.lightdash.com/pricing',
-    note: '$3,000/mo flat — unlimited seats & viewers',
-    highlight_seat_penalty: false,
-    model: () => 3000,
+    note: '$150/developer/mo — viewers free',
+    highlight_seat_penalty: true,
+    // Per-developer seat (viewers free), matching competitors.py.
+    model: (_usage, { editors }) => editors * 150,
   },
   {
     id: 'hex_team',
     name: 'Hex Team',
     url: 'https://hex.tech/pricing',
-    note: '$75/editor/mo + compute hours',
+    note: '$50/editor/mo + compute hours',
     highlight_seat_penalty: true,
     model({ compute_units }, { editors }) {
-      return editors * 75 + (compute_units / 1000) * 30
+      return editors * 50 + (compute_units / 1000) * 30
     },
   },
   {
@@ -312,28 +313,29 @@ export const FALLBACK_COMPETITORS_BI = [
   },
   {
     id: 'luzmo_starter',
-    name: 'Luzmo Starter',
+    name: 'Luzmo',
     url: 'https://www.luzmo.com/pricing',
-    note: '~$540/mo (EUR-priced, annual) — MAU-based',
+    note: '$149/mo (5K sessions) · $449/mo (20K sessions)',
     highlight_seat_penalty: false,
+    // Session-metered (matches competitors.py): Starter ≤5K, Business ≤20K, then custom.
     model({ embedded_sessions }) {
-      const estimatedMau = embedded_sessions / 4
-      return estimatedMau <= 250 ? 540 : 2175
+      if (embedded_sessions <= 5000) return 149
+      if (embedded_sessions <= 20000) return 449
+      return null // custom / enterprise beyond 20K sessions
     },
   },
   {
     id: 'preset_professional',
     name: 'Preset Professional',
     url: 'https://preset.io/pricing',
-    note: '$20/user/mo + $500/mo embed add-on for 50 viewers',
+    note: '$20/user/mo + $500/mo embed add-on',
     highlight_seat_penalty: true,
+    // Per-user ($20) + flat embed add-on when embedding is used. No
+    // sessions→viewers inflation — scales on the actual team size only.
     model({ embedded_sessions }, { editors, viewers }) {
       const seatCost = (editors + viewers) * 20
       const embedAddon = embedded_sessions > 0 ? 500 : 0
-      const viewerOverage = embedded_sessions > 0
-        ? Math.max(0, Math.ceil(embedded_sessions / 10) - 50) * 10
-        : 0
-      return seatCost + embedAddon + viewerOverage
+      return seatCost + embedAddon
     },
   },
 ]
@@ -555,24 +557,36 @@ export const FALLBACK_COMPETITORS_WAREHOUSE = []
 /**
  * Wallet overage rates (ZAR) charged from the usage wallet balance
  * beyond the tier's included quota.
+ *
+ * What draws from the wallet:
+ *   - Snapshot storage sidecar files  → storage_zar_per_gb
+ *   - Snapshot / report server queries → (scan rate via backend; not exposed here)
+ *   - PDF / PPT export renders         → compute_zar_per_1000_cu
+ *   - Scheduled report sends           → compute_zar_per_1000_cu
+ *   - Public/CDN export files          → storage_zar_per_gb + session_zar_per_10k
+ *
+ * What is ALWAYS FREE (zero wallet draw, zero server COGS):
+ *   - Demo / read-only / client-computed views: DuckDB-WASM runs in the
+ *     browser — no server scan, no server compute, no egress billed.
+ *   - Viewer seats at any tier: viewing a pre-computed dashboard is free.
  */
 export const WALLET_OVERAGE_RATES = {
-  storage_zar_per_gb:       1.50,   // R1.50/GB-month
-  compute_zar_per_1000_cu:  100,    // R100/1,000 CUs
+  storage_zar_per_gb:       0.33,   // R0.33/GB-month (Cloudflare R2 parity; matches backend tiers.py)
+  compute_zar_per_1000_cu:  100,    // R100/1,000 CUs (exports, scheduled reports, server-side renders)
   ai_call_zar_per_call:     5,      // R5/AI call (Haiku grounding or Sonnet chat)
-  session_zar_per_10k:      50,     // R50/10,000 embedded sessions
+  session_zar_per_10k:      50,     // R50/10,000 embedded sessions (CDN egress; public exports)
   agent_run_zar_per_run:    2,      // R2/agent or kernel run (Pro+ E2B)
 }
 
 const NUBI_TIERS_CALC = [
   {
     id: 'free', name: 'Free', usd_monthly: 0,
-    quotas: { connectors: 3, storage_gb: 1, compute_units: 500, embedded_sessions: 0, agent_runs: 0, flow_runs_per_month: 60 },
+    quotas: { connectors: 3, storage_gb: 1, compute_units: 500, embedded_sessions: 0, agent_runs: 0 },
     overages: null,
   },
   {
     id: 'starter', name: 'Starter', usd_monthly: 9,
-    quotas: { connectors: 5, storage_gb: 5, compute_units: 2000, embedded_sessions: 1000, agent_runs: 0, flow_runs_per_month: 180 },
+    quotas: { connectors: 5, storage_gb: 5, compute_units: 2000, embedded_sessions: 1000, agent_runs: 0 },
     overages: {
       storage_zar_per_gb: WALLET_OVERAGE_RATES.storage_zar_per_gb,
       compute_zar_per_1000_cu: WALLET_OVERAGE_RATES.compute_zar_per_1000_cu,
@@ -583,7 +597,7 @@ const NUBI_TIERS_CALC = [
   },
   {
     id: 'team', name: 'Team', usd_monthly: 49,
-    quotas: { connectors: 15, storage_gb: 15, compute_units: 6000, embedded_sessions: 5000, agent_runs: 10, flow_runs_per_month: 480 },
+    quotas: { connectors: 15, storage_gb: 15, compute_units: 6000, embedded_sessions: 5000, agent_runs: 10 },
     overages: {
       storage_zar_per_gb: WALLET_OVERAGE_RATES.storage_zar_per_gb,
       compute_zar_per_1000_cu: WALLET_OVERAGE_RATES.compute_zar_per_1000_cu,
@@ -594,7 +608,7 @@ const NUBI_TIERS_CALC = [
   },
   {
     id: 'pro', name: 'Pro', usd_monthly: 149,
-    quotas: { connectors: Infinity, storage_gb: 50, compute_units: 15000, embedded_sessions: 25000, agent_runs: 50, flow_runs_per_month: 1200 },
+    quotas: { connectors: Infinity, storage_gb: 50, compute_units: 15000, embedded_sessions: 25000, agent_runs: 50 },
     overages: {
       storage_zar_per_gb: WALLET_OVERAGE_RATES.storage_zar_per_gb,
       compute_zar_per_1000_cu: WALLET_OVERAGE_RATES.compute_zar_per_1000_cu,
@@ -605,7 +619,7 @@ const NUBI_TIERS_CALC = [
   },
   {
     id: 'enterprise', name: 'Enterprise', usd_monthly: 1000,
-    quotas: { connectors: Infinity, storage_gb: 500, compute_units: 200000, embedded_sessions: Infinity, agent_runs: 1000, flow_runs_per_month: Infinity },
+    quotas: { connectors: Infinity, storage_gb: 500, compute_units: 200000, embedded_sessions: Infinity, agent_runs: 1000 },
     overages: {
       storage_zar_per_gb: WALLET_OVERAGE_RATES.storage_zar_per_gb,
       compute_zar_per_1000_cu: WALLET_OVERAGE_RATES.compute_zar_per_1000_cu,
@@ -633,13 +647,15 @@ export function recommendNubi(usage, fxRate, opts = {}) {
 
   for (const tier of NUBI_TIERS_CALC.slice(minIdx)) {
     const q = tier.quotas
+    // NOTE: flow/pipeline RUNS are NOT a separate billing meter — their cost
+    // flows through compute_units (matches backend tiers.py, which has no
+    // flow-run quota). So tier fit is never gated on flow_runs_per_month.
     const fits =
       (q.connectors === Infinity || q.connectors >= usage.connectors) &&
       (q.storage_gb === Infinity || q.storage_gb >= usage.storage_gb) &&
       (q.compute_units === Infinity || q.compute_units >= usage.compute_units) &&
       (q.embedded_sessions === Infinity || q.embedded_sessions >= usage.embedded_sessions) &&
-      (q.agent_runs === Infinity || q.agent_runs >= usage.agent_runs) &&
-      (q.flow_runs_per_month === Infinity || q.flow_runs_per_month >= (usage.flow_runs_per_month ?? 0))
+      (q.agent_runs === Infinity || q.agent_runs >= usage.agent_runs)
 
     if (fits) {
       const base_zar = computeZar(tier.usd_monthly, rate)

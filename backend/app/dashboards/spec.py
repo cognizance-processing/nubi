@@ -10,9 +10,34 @@ Widget
     A single dashboard widget (kpi | table | chart | filter | text).
 DashboardSpec
     The complete dashboard specification document.
+SurfaceGridEntry
+    Per-widget layout entry in surfaces.grid ({x, y, w, h, breakpoint}).
+SurfaceGrid
+    The grid surface layout: widgetId -> SurfaceGridEntry.
+Surfaces
+    Container for per-surface layout: {grid, report, slides}.
+WidgetExportHints
+    Per-widget export/report hints (T5).
+BoardExportConfig
+    Per-board export/report config (T5).
 
 validate_spec(data) -> (DashboardSpec | None, list[str])
     Parse a raw dict into a DashboardSpec, collecting all validation issues.
+
+get_surface_layout(spec, surface) -> dict[str, SurfaceGridEntry]
+    Backward-compatible accessor: returns spec.surfaces.grid when present, else
+    derives the grid layout from the legacy inline widget.pos fields. Surface
+    must be 'grid' (only surface defined so far).
+
+migrate_spec_to_surfaces(spec) -> DashboardSpec
+    1:1 migration: populate spec.surfaces.grid from the current inline widget.pos
+    values (for any widget that carries a pos). The widgets list is unchanged.
+    Returns a NEW DashboardSpec; the original is not mutated.
+
+get_export_config(spec) -> dict
+    Return a normalized export/report config dict for the board. Absent or
+    partial config is filled in with sensible defaults so callers never need
+    to handle missing keys. (T5)
 
 spec_to_html(spec) -> str
     Compile a DashboardSpec into a CSS-grid HTML fragment composed exclusively
@@ -59,6 +84,365 @@ class WidgetPos(BaseModel):
     y: int = Field(ge=1, description="Row start (1-based).")
     w: int = Field(ge=1, description="Column span.")
     h: int = Field(ge=1, description="Row span.")
+
+
+# ---------------------------------------------------------------------------
+# Surface layout models (T1 — additive container model)
+# ---------------------------------------------------------------------------
+
+
+class SurfaceGridEntry(BaseModel):
+    """Per-widget layout entry inside surfaces.grid.
+
+    Mirrors WidgetPos (same 1-based x/y/w/h units) plus an optional breakpoint
+    token so future grid surfaces can carry multi-breakpoint overrides.
+
+    All fields are optional with sensible defaults so a partially-specified
+    entry remains valid (a grid surface need only carry the fields that differ
+    from the widget's inline pos).
+    """
+
+    x: int = Field(ge=1, default=1, description="Column start (1-based).")
+    y: int = Field(ge=1, default=1, description="Row start (1-based).")
+    w: int = Field(ge=1, default=1, description="Column span.")
+    h: int = Field(ge=1, default=1, description="Row span.")
+    breakpoint: str | None = Field(
+        default=None,
+        description="Optional breakpoint token (e.g. 'lg', 'md', 'sm').",
+    )
+
+
+# SurfaceGrid maps widgetId -> SurfaceGridEntry.
+# Using a plain dict[str, SurfaceGridEntry] keeps the JSON shape flat and
+# identical to the legacy spec.responsive[bp] maps in responsiveLayout.js.
+SurfaceGrid = dict[str, SurfaceGridEntry]
+
+
+class ReportPageItem(BaseModel):
+    """A single widget reference inside a report page.
+
+    Attributes
+    ----------
+    widget_id:
+        The id of the widget from ``spec.widgets`` to include.
+    width:
+        Layout hint for the report renderer. One of the named fractions
+        (``'full'``, ``'half'``, ``'third'``) or a numeric percentage
+        (0–100). Defaults to ``'full'``.
+    """
+
+    widget_id: str = Field(min_length=1, description="Widget id (must exist in spec.widgets).")
+    width: str | float = Field(
+        default="full",
+        description=(
+            "Width hint: 'full' | 'half' | 'third' | numeric percent (0–100). "
+            "Controls column span in the report renderer."
+        ),
+    )
+
+
+class ReportPage(BaseModel):
+    """A single page inside the report surface.
+
+    Attributes
+    ----------
+    id:
+        Stable, unique page id within the report surface.
+    items:
+        Ordered list of widget references on this page, each with a width hint.
+    page_break:
+        When ``True`` the report renderer inserts an explicit page break
+        *before* this page. Defaults to ``False``.
+    """
+
+    id: str = Field(min_length=1, description="Stable page id within the report surface.")
+    items: list[ReportPageItem] = Field(
+        default_factory=list,
+        description="Ordered widget references on this page.",
+    )
+    page_break: bool = Field(
+        default=False,
+        description="Insert a page break before this page (default False).",
+    )
+
+
+class ReportSurface(BaseModel):
+    """Report (paginated document) surface layout.
+
+    Lives at ``spec.surfaces.report``. ``None`` means no report layout has
+    been configured for this board; callers must treat ``None`` as «not
+    configured / use defaults».
+
+    Attributes
+    ----------
+    pages:
+        Ordered list of report pages. Empty list → no pages defined.
+    """
+
+    pages: list[ReportPage] = Field(
+        default_factory=list,
+        description="Ordered list of report pages (empty = no report layout).",
+    )
+
+
+class SlideItem(BaseModel):
+    """A widget box on a slide in a fixed-aspect coordinate space.
+
+    The coordinate space is 0–100 units on both axes (normalized to the slide
+    dimensions), with the origin at the top-left.
+
+    Attributes
+    ----------
+    widget_id:
+        The id of the widget from ``spec.widgets`` to display.
+    x, y:
+        Top-left position in the 0–100 coordinate space.
+    w, h:
+        Width / height in the 0–100 coordinate space.
+    """
+
+    widget_id: str = Field(min_length=1, description="Widget id (must exist in spec.widgets).")
+    x: float = Field(ge=0, le=100, default=0, description="Left edge (0–100 units).")
+    y: float = Field(ge=0, le=100, default=0, description="Top edge (0–100 units).")
+    w: float = Field(ge=0, le=100, default=50, description="Width (0–100 units).")
+    h: float = Field(ge=0, le=100, default=50, description="Height (0–100 units).")
+
+
+class Slide(BaseModel):
+    """A single slide inside the slides (presentation) surface.
+
+    Attributes
+    ----------
+    id:
+        Stable, unique slide id within the slides surface.
+    notes:
+        Optional speaker notes rendered below the slide (Markdown supported).
+        ``None`` means no notes.
+    items:
+        Widget boxes on this slide, each with a position in the 0–100
+        normalized coordinate space.
+    """
+
+    id: str = Field(min_length=1, description="Stable slide id within the slides surface.")
+    notes: str | None = Field(
+        default=None,
+        description="Speaker notes (Markdown). None = no notes.",
+    )
+    items: list[SlideItem] = Field(
+        default_factory=list,
+        description="Widget boxes on this slide (0–100 normalized coordinate space).",
+    )
+
+
+class SlidesSurface(BaseModel):
+    """Slides (presentation) surface layout.
+
+    Lives at ``spec.surfaces.slides``. ``None`` means no slides layout has
+    been configured for this board.
+
+    The coordinate space for widget placement is 0–100 units on both axes
+    (aspect-ratio–independent). The renderer maps these to screen pixels
+    based on the ``aspect`` ratio.
+
+    Attributes
+    ----------
+    aspect:
+        Aspect ratio of the slide canvas. ``'16:9'`` (default) for widescreen;
+        ``'4:3'`` for traditional slides.
+    slides:
+        Ordered list of slides. Empty list → no slides defined.
+    """
+
+    aspect: Literal["16:9", "4:3"] = Field(
+        default="16:9",
+        description="Slide canvas aspect ratio ('16:9' default or '4:3').",
+    )
+    slides: list[Slide] = Field(
+        default_factory=list,
+        description="Ordered list of slides (empty = no slides layout).",
+    )
+
+
+class Surfaces(BaseModel):
+    """Container for per-surface layout data.
+
+    Attributes
+    ----------
+    grid:
+        Mapping of widgetId -> SurfaceGridEntry for the grid (drag-and-drop)
+        surface. This is the canonical replacement for inline widget.pos once
+        a spec has been migrated. Un-migrated specs (widget.pos still inline)
+        keep working via the backward-compatible accessor
+        :func:`get_surface_layout`.
+    report:
+        Report (paginated document) surface layout. ``None`` until a report
+        layout has been configured for this board (backward-compatible default).
+    slides:
+        Slides (presentation) surface layout. ``None`` until a slides layout
+        has been configured for this board (backward-compatible default).
+    """
+
+    grid: SurfaceGrid = Field(
+        default_factory=dict,
+        description="widgetId → SurfaceGridEntry for the grid surface.",
+    )
+    report: ReportSurface | None = Field(
+        default=None,
+        description=(
+            "Report surface layout (T8). None = no report configured. "
+            "When present: pages[] each contain items[] (widgetId + width hint) "
+            "and a page_break flag."
+        ),
+    )
+    slides: SlidesSurface | None = Field(
+        default=None,
+        description=(
+            "Slides surface layout (T8). None = no slides configured. "
+            "When present: aspect ratio + slides[] each with items[] "
+            "(widgetId + {x,y,w,h} in a 0–100 normalized coordinate space) "
+            "and optional speaker notes."
+        ),
+    )
+
+
+# ---------------------------------------------------------------------------
+# Export / report layout config (T5 — additive, all defaults applied)
+# ---------------------------------------------------------------------------
+
+
+class WidgetExportHints(BaseModel):
+    """Per-widget hints for the export/report renderer.
+
+    All fields are optional with sensible defaults so existing boards need no
+    change — absent hints are identical to the defaults listed here.
+
+    Attributes
+    ----------
+    include_in_report:
+        Whether this widget appears in the generated PDF/PPTX report.
+        Defaults to ``True``. Set ``False`` to silently skip the widget.
+    order:
+        Override render order in the report / slide deck.  ``None`` (default)
+        means the widget appears in the same order as ``spec.widgets``.
+    page_break_before:
+        Insert a page / slide break immediately before this widget.
+        Defaults to ``False``.
+    caption:
+        Optional caption string rendered below the widget in the report.
+        ``None`` (default) means no caption.
+    render_as:
+        Hint to the export renderer about the preferred output form.
+        ``'auto'`` (default) lets the renderer decide based on widget type
+        (charts → SVG chart, tables → native table, KPI → styled cell, …).
+        ``'chart'`` forces chart rendering even for table/kpi widgets.
+        ``'table'`` forces tabular rendering (raw data) for any widget type.
+    """
+
+    include_in_report: bool = Field(
+        default=True,
+        description="Include this widget in PDF/PPTX export (default True).",
+    )
+    order: int | None = Field(
+        default=None,
+        description="Override render order in the report (None = spec order).",
+    )
+    page_break_before: bool = Field(
+        default=False,
+        description="Insert a page/slide break before this widget.",
+    )
+    caption: str | None = Field(
+        default=None,
+        description="Caption rendered below the widget in the report (None = no caption).",
+    )
+    render_as: Literal["auto", "chart", "table"] = Field(
+        default="auto",
+        description=(
+            "Preferred output form for the export renderer. "
+            "'auto' delegates to the renderer; 'chart' forces SVG chart; "
+            "'table' forces tabular/raw-data output."
+        ),
+    )
+
+
+class TitleSlideConfig(BaseModel):
+    """Config for the auto-generated title slide in a PPTX/PDF report.
+
+    ``None`` at the board level means no title slide is inserted.
+
+    Attributes
+    ----------
+    heading:
+        Main heading text.  Defaults to the board ``title``.
+    subheading:
+        Optional sub-heading / tagline.
+    """
+
+    heading: str | None = Field(
+        default=None,
+        description="Title slide heading (defaults to board title when None).",
+    )
+    subheading: str | None = Field(
+        default=None,
+        description="Optional sub-heading / tagline for the title slide.",
+    )
+
+
+class BoardExportConfig(BaseModel):
+    """Per-board export/report configuration (T5).
+
+    Lives under ``spec.export`` (additive, absent → all defaults apply).
+
+    Attributes
+    ----------
+    title_slide:
+        Config for the auto-generated title slide inserted at the start of a
+        PPTX or paginated PDF export.  ``None`` (default) means no title slide.
+    header:
+        Optional page-header string (e.g. board name, date).  Rendered at the
+        top of every page in PDF; in PPTX this populates the slide header
+        placeholder when present.  ``None`` (default) means no header.
+    footer:
+        Optional page-footer string (e.g. "Confidential — Nubi Analytics").
+        Rendered at the bottom of every page in PDF; in PPTX this populates
+        the slide footer placeholder.  ``None`` (default) means no footer.
+    page_size:
+        Paper/canvas size for the exported document.
+        ``'A4'`` (default) — ISO A4 portrait (210 × 297 mm).
+        ``'Letter'`` — US Letter portrait (8.5 × 11 in).
+        ``'16:9'`` — Widescreen slide canvas (33.87 × 19.05 cm), natural for
+        PPTX; PDF uses the same canvas aspect ratio.
+    widget_hints:
+        Per-widget export hints keyed by widget id.  Absent widget ids inherit
+        the ``WidgetExportHints`` defaults.
+    """
+
+    title_slide: TitleSlideConfig | None = Field(
+        default=None,
+        description="Title-slide config (None = no title slide).",
+    )
+    header: str | None = Field(
+        default=None,
+        description="Page header string (None = no header).",
+    )
+    footer: str | None = Field(
+        default=None,
+        description="Page footer string (None = no footer).",
+    )
+    page_size: Literal["A4", "Letter", "16:9"] = Field(
+        default="A4",
+        description="Paper/canvas size for the exported document.",
+    )
+    widget_hints: dict[str, WidgetExportHints] = Field(
+        default_factory=dict,
+        description="Per-widget export hints keyed by widget id.",
+    )
+
+
+# ---------------------------------------------------------------------------
+# Default WidgetExportHints instance (re-used by get_export_config)
+# ---------------------------------------------------------------------------
+
+_DEFAULT_WIDGET_HINTS = WidgetExportHints()
 
 
 class Variable(BaseModel):
@@ -273,7 +657,15 @@ class Widget(BaseModel):
     ) = None
     encoding: dict[str, str] = Field(default_factory=dict)
     props: dict[str, Any] = Field(default_factory=dict)
-    pos: WidgetPos
+    pos: WidgetPos | None = Field(
+        default=None,
+        description=(
+            "Grid position/size (legacy inline layout). Required for grid-placed "
+            "widgets when spec.surfaces.grid is absent. When spec.surfaces.grid is "
+            "present the entry for this widget id there is authoritative; pos is "
+            "kept for backward-compat and round-trip fidelity."
+        ),
+    )
     # ── placement (grid / header filter-bar / drawer) ─────────────────────
     placement: Literal["grid", "header", "drawer"] = Field(
         default="grid",
@@ -390,6 +782,217 @@ class DashboardSpec(BaseModel):
         ),
     )
     widgets: list[Widget] = Field(default_factory=list)
+    surfaces: Surfaces = Field(
+        default_factory=Surfaces,
+        description=(
+            "Per-surface layout containers (additive, T1). "
+            "surfaces.grid holds widgetId → {x,y,w,h} for the grid surface. "
+            "Un-migrated specs (widget.pos still inline) have an empty/absent "
+            "surfaces.grid — the backward-compatible accessor "
+            "get_surface_layout(spec, 'grid') derives the layout from inline pos."
+        ),
+    )
+    export: BoardExportConfig = Field(
+        default_factory=BoardExportConfig,
+        description=(
+            "Per-board export/report configuration (T5). Absent or empty → "
+            "all defaults apply. Use get_export_config(spec) for a normalized "
+            "dict with per-widget hints merged with their defaults."
+        ),
+    )
+
+
+# ---------------------------------------------------------------------------
+# get_surface_layout — backward-compatible accessor (T1)
+# ---------------------------------------------------------------------------
+
+
+def get_surface_layout(spec: "DashboardSpec", surface: str) -> SurfaceGrid:
+    """Return the layout map for *surface*, with full backward compatibility.
+
+    For the ``'grid'`` surface:
+
+    1. If ``spec.surfaces.grid`` is non-empty, return it **as-is** (the spec
+       has already been migrated / authored with the new model).
+    2. Otherwise derive the layout from the legacy inline ``widget.pos`` fields
+       (un-migrated board): each widget whose ``pos`` is not ``None`` contributes
+       a :class:`SurfaceGridEntry`.  Widgets without a ``pos`` are silently
+       skipped (header/drawer widgets legitimately have no grid position).
+
+    This means un-migrated boards keep working identically — callers never need
+    to distinguish between the two formats.
+
+    Parameters
+    ----------
+    spec:
+        A parsed (or freshly constructed) :class:`DashboardSpec`.
+    surface:
+        The surface to retrieve. ``'grid'`` returns the grid layout map;
+        ``'report'`` returns the :class:`ReportSurface` (or ``None``);
+        ``'slides'`` returns the :class:`SlidesSurface` (or ``None``).
+        Any other value raises :class:`ValueError`.
+
+    Returns
+    -------
+    SurfaceGrid | ReportSurface | None | SlidesSurface | None
+        For ``'grid'``: ``{widgetId: SurfaceGridEntry}`` mapping.
+        For ``'report'``: :class:`ReportSurface` or ``None``.
+        For ``'slides'``: :class:`SlidesSurface` or ``None``.
+
+    Raises
+    ------
+    ValueError
+        When *surface* is not one of ``'grid'``, ``'report'``, ``'slides'``.
+    """
+    if surface == "report":
+        return spec.surfaces.report
+    if surface == "slides":
+        return spec.surfaces.slides
+    if surface != "grid":
+        raise ValueError(
+            f"Unknown surface {surface!r}. Known surfaces: 'grid', 'report', 'slides'."
+        )
+
+    # ── New-format: surfaces.grid is authoritative ─────────────────────────
+    if spec.surfaces.grid:
+        return spec.surfaces.grid
+
+    # ── Legacy fallback: derive from inline widget.pos ────────────────────
+    layout: SurfaceGrid = {}
+    for widget in spec.widgets:
+        if widget.pos is None:
+            continue  # header/drawer widgets have no grid pos
+        p = widget.pos
+        layout[widget.id] = SurfaceGridEntry(x=p.x, y=p.y, w=p.w, h=p.h)
+    return layout
+
+
+# ---------------------------------------------------------------------------
+# migrate_spec_to_surfaces — 1:1 migration helper (T1)
+# ---------------------------------------------------------------------------
+
+
+def migrate_spec_to_surfaces(spec: "DashboardSpec") -> "DashboardSpec":
+    """Populate ``spec.surfaces.grid`` from the current inline widget.pos values.
+
+    This is a **1:1 additive migration**: no widget data is removed or altered.
+    The resulting spec is identical to the original in every way *except* that
+    ``surfaces.grid`` now contains a complete layout map derived from
+    ``widget.pos``.
+
+    A spec that already has a non-empty ``surfaces.grid`` is returned unchanged
+    (idempotent — safe to call repeatedly).
+
+    Parameters
+    ----------
+    spec:
+        A parsed :class:`DashboardSpec`.
+
+    Returns
+    -------
+    DashboardSpec
+        A **new** :class:`DashboardSpec` instance with ``surfaces.grid``
+        populated.  The original *spec* is not mutated.
+    """
+    # Idempotent: already migrated
+    if spec.surfaces.grid:
+        return spec
+
+    grid: SurfaceGrid = {}
+    for widget in spec.widgets:
+        if widget.pos is not None:
+            p = widget.pos
+            grid[widget.id] = SurfaceGridEntry(x=p.x, y=p.y, w=p.w, h=p.h)
+
+    new_surfaces = Surfaces(
+        grid=grid,
+        report=spec.surfaces.report,
+        slides=spec.surfaces.slides,
+    )
+    data = spec.model_dump()
+    data["surfaces"] = new_surfaces.model_dump()
+    return DashboardSpec.model_validate(data)
+
+
+# ---------------------------------------------------------------------------
+# get_export_config — normalized export config accessor (T5)
+# ---------------------------------------------------------------------------
+
+
+def get_export_config(spec: "DashboardSpec") -> dict:
+    """Return a fully-normalized export/report config dict for *spec*.
+
+    The returned dict has the following shape (all keys always present)::
+
+        {
+            "title_slide": None | {"heading": str|None, "subheading": str|None},
+            "header": str | None,
+            "footer": str | None,
+            "page_size": "A4" | "Letter" | "16:9",
+            "widget_hints": {
+                "<widgetId>": {
+                    "include_in_report": bool,
+                    "order": int | None,
+                    "page_break_before": bool,
+                    "caption": str | None,
+                    "render_as": "auto" | "chart" | "table",
+                },
+                ...  # one entry per widget in spec.widgets
+            },
+        }
+
+    Normalization rules
+    -------------------
+    - ``export`` absent / empty → every key carries its documented default.
+    - Per-widget hints: for every widget in ``spec.widgets`` the entry in
+      ``widget_hints`` is built by merging the stored hints (if any) over the
+      :class:`WidgetExportHints` defaults. Widgets not mentioned in
+      ``spec.export.widget_hints`` get pure defaults.
+    - ``title_slide``: serialised to a plain ``{"heading", "subheading"}`` dict
+      when present; ``None`` when absent (no title slide).
+
+    Parameters
+    ----------
+    spec:
+        A parsed :class:`DashboardSpec`.
+
+    Returns
+    -------
+    dict
+        Normalized export config dict. Always fully populated — callers do not
+        need to handle missing keys.
+    """
+    cfg = spec.export
+
+    # ── title_slide ───────────────────────────────────────────────────────────
+    if cfg.title_slide is None:
+        title_slide_out = None
+    else:
+        title_slide_out = {
+            "heading": cfg.title_slide.heading,
+            "subheading": cfg.title_slide.subheading,
+        }
+
+    # ── widget_hints: one entry per widget, defaults merged in ────────────────
+    widget_hints_out: dict = {}
+    for widget in spec.widgets:
+        stored = cfg.widget_hints.get(widget.id)
+        if stored is None:
+            # Use the shared default instance — copy to a plain dict for output.
+            hints_dict = _DEFAULT_WIDGET_HINTS.model_dump()
+        else:
+            # Merge: start from defaults, override with stored values.
+            hints_dict = _DEFAULT_WIDGET_HINTS.model_dump()
+            hints_dict.update(stored.model_dump(exclude_unset=False))
+        widget_hints_out[widget.id] = hints_dict
+
+    return {
+        "title_slide": title_slide_out,
+        "header": cfg.header,
+        "footer": cfg.footer,
+        "page_size": cfg.page_size,
+        "widget_hints": widget_hints_out,
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -879,10 +1482,19 @@ def spec_to_html(spec: DashboardSpec) -> str:
             return _text_tag(widget)
         return ""
 
+    # Resolve the grid layout once (backward-compatible: surfaces.grid if
+    # present, else derived from inline widget.pos).
+    _grid_layout = get_surface_layout(spec, "grid")
+
     def _widget_line(widget: "Widget") -> str:
-        pos = widget.pos
+        # Prefer surfaces.grid entry; fall back to inline widget.pos.
+        entry = _grid_layout.get(widget.id)
+        if entry is None:
+            if widget.pos is None:
+                return ""  # no positional info at all → skip
+            entry = widget.pos  # WidgetPos has the same x/y/w/h attrs
         wrapper_style = _WIDGET_WRAPPER_STYLE.format(
-            col_start=pos.x, col_span=pos.w, row_start=pos.y, row_span=pos.h,
+            col_start=entry.x, col_span=entry.w, row_start=entry.y, row_span=entry.h,
         )
         inner = _inner_tag(widget)
         if not inner:

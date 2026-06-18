@@ -62,12 +62,33 @@ flow definitions) cost ~R0/month incremental and are never metered.
 | Bandwidth (egress)             | Cloud provider egress; bundled into embedded   |
 |   (implicit)                   | session metering above                         |
 
+New server-side actions — mapped to EXISTING COGS lines (no new meters):
+| Action                              | Maps to existing COGS line                    |
+|-------------------------------------|-----------------------------------------------|
+| Snapshot create/refresh             | storage_zar_per_gb_month (sidecar .duckdb     |
+|   (app/embedding/snapshot.py)       | written to object-storage R2)                 |
+| Snapshot / report query             | scan_zar_per_tib (DuckDB query_scan events;   |
+|   (rollup queries on server)        | same bytes-scanned meter as live queries)     |
+| PDF/PPT export render               | compute_zar_per_1000_cu (server-side echarts  |
+|   (render_pdf.py / render_pptx.py)  | SSR render = container CPU seconds)           |
+| Scheduled report send               | compute_zar_per_1000_cu (scheduled render +   |
+|   (flows/handlers/report_send.py)   | delivery run = container compute)             |
+| Public/CDN file (public_export.py)  | storage_zar_per_gb_month (R2 file) +          |
+|   shared public export artefact     | embedded_session_zar_per_10k (CDN bandwidth   |
+|                                     | treated as embedded-session egress)           |
+
 NOT metered (zero marginal COGS):
   - Seats / viewers: 1 DB row + 1 auth check ≈ R0.001/user/month
   - Connector count: 1 DB row + connection pool entry ≈ R0.002/connector/month
   - Dashboard count: 1 DB row + JSON blob ≈ R0.001/dashboard/month
   - Saved query count: 1 DB row ≈ R0.001/query/month
   - Flow definition count: 1 DB row + JSON spec ≈ R0.001/flow/month
+  - Demo / read-only / client-computed views (browser DuckDB-WASM): zero server
+    compute; all DuckDB queries execute in the viewer's browser → ZERO marginal
+    COGS → never metered.  This includes all read-only embedded views where the
+    JS bundle runs the DuckDB-WASM kernel client-side.
+  - Viewer seats (all tiers): viewing a dashboard that computes in-browser
+    generates no server scan, no server compute, no server egress → free forever.
 
 Overage rates (wallet draw-down; COGS + margin)
 -----------------------------------------------
