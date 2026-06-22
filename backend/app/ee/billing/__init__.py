@@ -158,8 +158,10 @@ async def ensure_fx_refresh_flow_async() -> None:
 
         store = get_flow_store()
 
+        from app.preagg.scheduler import SYSTEM_UUID  # noqa: PLC0415
+
         try:  # avoid duplicates across restarts
-            for flow in await store.list_flows(org_id="__system__"):
+            for flow in await store.list_flows(org_id=SYSTEM_UUID):
                 if flow.get("name") == _FX_REFRESH_FLOW_NAME:
                     logger.debug(
                         "EE billing: fx_refresh flow already exists (id=%s)",
@@ -178,8 +180,8 @@ async def ensure_fx_refresh_flow_async() -> None:
             ],
         }
         flow = await store.create_flow(
-            org_id="__system__",
-            created_by="__system__",
+            org_id=SYSTEM_UUID,
+            created_by=SYSTEM_UUID,
             name=_FX_REFRESH_FLOW_NAME,
             spec=spec,
             schedule=_FX_REFRESH_CRON,

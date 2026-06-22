@@ -486,3 +486,64 @@ class TestPreaggRefreshFlowSpec:
             config={"org_id": "org-001"},
         )
         assert task.kind == "preagg_refresh"
+
+
+# ---------------------------------------------------------------------------
+# F. SYSTEM_UUID sentinel — valid UUID, not the bare "__system__" string
+# ---------------------------------------------------------------------------
+
+
+class TestSystemUUIDSentinel:
+    """SYSTEM_UUID must be a valid UUID-formatted string, not '__system__'.
+
+    The preagg scheduled flow and the EE FX-refresh flow both use this sentinel
+    as org_id / created_by.  When the value is passed to Postgres as ::uuid it
+    must be a well-formed UUID — the bare string '__system__' triggers a
+    'invalid UUID' warning/error from Postgres.
+    """
+
+    def test_system_uuid_is_importable_from_preagg(self) -> None:
+        from app.preagg import SYSTEM_UUID  # noqa: PLC0415
+
+        assert SYSTEM_UUID == "00000000-0000-0000-0000-000000000000"
+
+    def test_system_uuid_is_importable_from_scheduler(self) -> None:
+        from app.preagg.scheduler import SYSTEM_UUID  # noqa: PLC0415
+
+        assert SYSTEM_UUID == "00000000-0000-0000-0000-000000000000"
+
+    def test_system_uuid_is_valid_uuid_string(self) -> None:
+        """The sentinel must be a well-formed RFC 4122 UUID (all zeros = nil UUID)."""
+        import uuid  # noqa: PLC0415
+        from app.preagg.scheduler import SYSTEM_UUID  # noqa: PLC0415
+
+        # Must not raise ValueError.
+        parsed = uuid.UUID(SYSTEM_UUID)
+        assert str(parsed) == SYSTEM_UUID
+
+    def test_system_uuid_is_not_system_string(self) -> None:
+        """Regression: the old '__system__' string is NOT a valid UUID."""
+        from app.preagg.scheduler import SYSTEM_UUID  # noqa: PLC0415
+
+        assert SYSTEM_UUID != "__system__"
+        assert "__system__" not in SYSTEM_UUID
+
+    @pytest.mark.asyncio
+    async def test_ensure_preagg_flow_uses_system_uuid(
+        self, mem_store: InMemoryFlowStore
+    ) -> None:
+        """ensure_preagg_flow called with SYSTEM_UUID uses a valid UUID as org_id."""
+        from app.preagg.scheduler import SYSTEM_UUID  # noqa: PLC0415
+        import uuid as _uuid  # noqa: PLC0415
+
+        flow = await ensure_preagg_flow(
+            org_id=SYSTEM_UUID,
+            created_by=SYSTEM_UUID,
+            flow_store=mem_store,
+        )
+
+        assert flow["org_id"] == SYSTEM_UUID
+        assert flow["created_by"] == SYSTEM_UUID
+        # Verify both are valid UUIDs (would raise if not).
+        _uuid.UUID(flow["org_id"])
+        _uuid.UUID(flow["created_by"])

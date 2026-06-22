@@ -54,6 +54,24 @@ _PREAGG_FLOW_NAME = "__preagg_refresh__"
 # Default cron schedule — once per hour, on the hour.
 _DEFAULT_SCHEDULE = "0 * * * *"
 
+# ---------------------------------------------------------------------------
+# System sentinel UUID
+# ---------------------------------------------------------------------------
+
+# A fixed all-zeros UUID used as the ``org_id`` / ``created_by`` sentinel for
+# system-level flows that are NOT scoped to a real tenant (e.g. the global
+# preagg_refresh flow registered at startup).
+#
+# Using a valid UUID form avoids the "invalid UUID '__system__'" warning that
+# Postgres emits when the value is cast to ``::uuid`` and the string is not a
+# well-formed UUID.  The nil UUID (all zeros) is a reserved sentinel value in
+# RFC 4122 — it will never be issued as a real user/org id by any compliant
+# UUID generator, so it is safe to use as a permanent system-actor sentinel.
+#
+# Call sites that previously used ``"__system__"`` directly should import and
+# use ``SYSTEM_UUID`` instead.
+SYSTEM_UUID = "00000000-0000-0000-0000-000000000000"
+
 
 # ---------------------------------------------------------------------------
 # run_preagg_refresh — the actual suggest → materialize pass

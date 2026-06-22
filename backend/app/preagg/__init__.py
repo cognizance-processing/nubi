@@ -17,6 +17,6 @@ The scheduled flow created here uses the ``preagg_refresh`` task kind
 
 from __future__ import annotations
 
-from app.preagg.scheduler import ensure_preagg_flow, run_preagg_refresh
+from app.preagg.scheduler import SYSTEM_UUID, ensure_preagg_flow, run_preagg_refresh
 
-__all__ = ["ensure_preagg_flow", "run_preagg_refresh"]
+__all__ = ["SYSTEM_UUID", "ensure_preagg_flow", "run_preagg_refresh"]

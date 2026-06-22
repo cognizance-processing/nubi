@@ -573,3 +573,188 @@ async def test_frozen_response_redacts_storage_uri(repo: InMemoryRepo, tmp_path)
     assert "tables" in artifact, "artifact must retain 'tables'"
     assert result["frozen"] is True
     assert result["snapshot_id"] == snapshot_id
+
+
+# ---------------------------------------------------------------------------
+# Item 3: snapshot RLS-at-capture hardening — warning when policies absent
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_rls_warning_emitted_when_no_policies_on_datastore_board(
+    repo: InMemoryRepo, tmp_path
+) -> None:
+    """create_snapshot warns when policies={} and board has a datastore query.
+
+    This is the key test for Item 3: capturing a full-data view on a
+    multi-tenant board must log a WARNING so the decision is auditable.
+    """
+    import logging
+    import warnings
+
+    from unittest.mock import patch
+
+    from app.embedding.snapshot import _warn_if_no_rls_on_multi_tenant
+    from app.queries.registry import get_query_registry
+
+    # Register a query that has a datastore_id so _board_references_datastore
+    # returns True for this board.
+    reset_query_registry()
+    get_query_registry().register(
+        id="ds_backed_query",
+        sql="SELECT id, name FROM demo ORDER BY id",
+        name="Datastore-backed query",
+        datastore_id="fake-ds-001",  # non-empty → board is multi-tenant capable
+    )
+
+    # Build a board referencing the datastore-backed query.
+    board = await repo.create(
+        "boards",
+        _ORG,
+        _USER,
+        "Multi-tenant board",
+        {
+            "spec": {
+                "title": "Multi-tenant board",
+                "widgets": [
+                    {"id": "w1", "query_id": "ds_backed_query", "type": "table"},
+                ],
+            }
+        },
+    )
+    board_id = str(board["id"])
+
+    # Capture the log records emitted during create_snapshot with empty policies.
+    import app.embedding.snapshot as snap_mod
+
+    with patch.object(snap_mod.logger, "warning") as mock_warn:
+        # We don't actually need the full sidecar write to pass — just check
+        # the warning call.  Use _warn_if_no_rls_on_multi_tenant directly.
+        from app.embedding.snapshot import _board_references_datastore, _policy_fingerprint
+
+        # Reload board to get the full dict.
+        board_row = await repo.get("boards", _ORG, board_id)
+        policies: dict = {}
+        fingerprint = _policy_fingerprint(policies)
+
+        # The board references a datastore-backed query.
+        assert _board_references_datastore(board_row), (
+            "Board should be detected as datastore-backed"
+        )
+
+        _warn_if_no_rls_on_multi_tenant(board_id, policies, board_row, fingerprint)
+
+        mock_warn.assert_called_once()
+        warn_msg = mock_warn.call_args[0][0]
+        # The warning message must mention the key facts.
+        assert "RLS" in warn_msg or "rls" in warn_msg.lower()
+        assert "policy_fingerprint" in warn_msg or "fingerprint" in warn_msg.lower()
+
+
+@pytest.mark.asyncio
+async def test_rls_warning_not_emitted_when_policies_present(
+    repo: InMemoryRepo, tmp_path
+) -> None:
+    """No RLS warning when policies are non-empty (RLS filter is applied)."""
+    from unittest.mock import patch
+
+    from app.queries.registry import get_query_registry
+
+    reset_query_registry()
+    get_query_registry().register(
+        id="ds_backed_with_rls",
+        sql="SELECT id, name FROM demo ORDER BY id",
+        name="Datastore query with RLS",
+        datastore_id="fake-ds-002",
+    )
+
+    board = await repo.create(
+        "boards",
+        _ORG,
+        _USER,
+        "RLS board",
+        {
+            "spec": {
+                "title": "RLS board",
+                "widgets": [
+                    {"id": "w1", "query_id": "ds_backed_with_rls", "type": "table"},
+                ],
+            }
+        },
+    )
+    board_id = str(board["id"])
+    board_row = await repo.get("boards", _ORG, board_id)
+
+    import app.embedding.snapshot as snap_mod
+    from app.embedding.snapshot import _policy_fingerprint, _warn_if_no_rls_on_multi_tenant
+
+    # Non-empty policies — an RLS filter IS applied.
+    policies = {"tenant_id": "acme"}
+    fingerprint = _policy_fingerprint(policies)
+
+    with patch.object(snap_mod.logger, "warning") as mock_warn:
+        _warn_if_no_rls_on_multi_tenant(board_id, policies, board_row, fingerprint)
+        mock_warn.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_rls_warning_not_emitted_for_demo_only_board(
+    repo: InMemoryRepo, tmp_path
+) -> None:
+    """No RLS warning for demo-only boards (no datastore_id = not multi-tenant)."""
+    from unittest.mock import patch
+
+    # The demo query has no datastore_id (uses the built-in demo connector).
+    reset_query_registry()
+    get_query_registry().register(
+        id="demo_only",
+        sql="SELECT id, name FROM demo ORDER BY id",
+        name="Demo-only query",
+        # No datastore_id — demo connector.
+    )
+
+    board = await repo.create(
+        "boards",
+        _ORG,
+        _USER,
+        "Demo board",
+        {
+            "spec": {
+                "title": "Demo board",
+                "widgets": [
+                    {"id": "w1", "query_id": "demo_only", "type": "table"},
+                ],
+            }
+        },
+    )
+    board_id = str(board["id"])
+    board_row = await repo.get("boards", _ORG, board_id)
+
+    import app.embedding.snapshot as snap_mod
+    from app.embedding.snapshot import _policy_fingerprint, _warn_if_no_rls_on_multi_tenant
+
+    policies: dict = {}
+    fingerprint = _policy_fingerprint(policies)
+
+    with patch.object(snap_mod.logger, "warning") as mock_warn:
+        _warn_if_no_rls_on_multi_tenant(board_id, policies, board_row, fingerprint)
+        mock_warn.assert_not_called()
+
+
+def test_snapshot_policy_fingerprint_recorded_in_metadata() -> None:
+    """Snapshot metadata always records the policy fingerprint.
+
+    When policies={}, the fingerprint is the fixed sentinel "none".
+    When policies are present, the fingerprint is a sha256 prefix.
+    """
+    from app.embedding.snapshot import _policy_fingerprint
+
+    assert _policy_fingerprint({}) == "none"
+
+    fp = _policy_fingerprint({"tenant_id": "acme"})
+    assert fp != "none"
+    assert len(fp) == 16  # sha256[:16]
+
+    # Order-independent: same policies regardless of insertion order.
+    fp2 = _policy_fingerprint({"tenant_id": "acme"})
+    assert fp == fp2

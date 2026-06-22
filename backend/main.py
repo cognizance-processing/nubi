@@ -336,23 +336,21 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
         # on every startup is safe — it returns the existing flow if already
         # registered.
         #
-        # The org_id "__system__" is a sentinel used for global/system-level flows
-        # that are not scoped to a specific tenant.  Per-tenant preagg flows can
-        # be registered via the POST /preagg/schedule endpoint (future work).
-        #
         # PREAGG_SCHEDULE   — cron expression (default "0 * * * *", hourly)
         # PREAGG_MIN_HITS   — minimum query-log frequency to trigger rollup (default 3)
-        # PREAGG_ORG_ID     — org_id for the system-wide preagg flow (default "__system__")
+        # PREAGG_ORG_ID     — org_id for the system-wide preagg flow.
+        #                     Defaults to the nil UUID sentinel (SYSTEM_UUID).
+        #                     Override with a real org UUID to scope to a tenant.
         try:
-            from app.preagg import ensure_preagg_flow  # noqa: PLC0415
+            from app.preagg import SYSTEM_UUID, ensure_preagg_flow  # noqa: PLC0415
 
-            _preagg_org_id = os.getenv("PREAGG_ORG_ID", "__system__")
+            _preagg_org_id = os.getenv("PREAGG_ORG_ID", SYSTEM_UUID)
             _preagg_schedule = os.getenv("PREAGG_SCHEDULE", "0 * * * *")
             _preagg_min_hits = int(os.getenv("PREAGG_MIN_HITS", "3"))
 
             await ensure_preagg_flow(
                 org_id=_preagg_org_id,
-                created_by="__system__",
+                created_by=SYSTEM_UUID,
                 schedule=_preagg_schedule,
                 min_hits=_preagg_min_hits,
             )

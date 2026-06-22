@@ -270,6 +270,96 @@ async def get_usage_limits(org_id: str | None) -> dict[str, float | None]:
         return {}
 
 
+# ---------------------------------------------------------------------------
+# Per-org settings registry
+# ---------------------------------------------------------------------------
+#
+# A lightweight in-process store for per-org boolean/value settings that must
+# live in the OSS core without a DB migration.  Settings are keyed by
+# ``(org_id, setting_name)`` and default to ``None`` (absent).
+#
+# Currently used by:
+#   "public_exports_enabled" — the per-org opt-in for UNSAFE public exports
+#   (see app.embedding.public_export._assert_public_exports_allowed).
+#
+# In a DB-backed deployment, EE code can shadow this by registering a provider
+# via ``register_org_settings_provider`` that reads from a persistent store.
+
+OrgSettingsProvider = Callable[[str, str], "Any | Awaitable[Any]"]
+
+_ORG_SETTINGS: dict[tuple[str, str], Any] = {}
+_ORG_SETTINGS_PROVIDER: OrgSettingsProvider | None = None
+
+
+def set_org_setting(org_id: str, name: str, value: Any) -> None:
+    """Set a per-org in-process setting.
+
+    This is the primary in-process API for OSS builds.  EE code may override
+    lookup by registering a persistent provider via
+    :func:`register_org_settings_provider`.
+
+    Parameters
+    ----------
+    org_id:
+        The org to configure.
+    name:
+        Setting name (e.g. ``"public_exports_enabled"``).
+    value:
+        Setting value.  ``None`` is treated as "unset / use default".
+    """
+    _ORG_SETTINGS[(str(org_id), str(name))] = value
+
+
+def get_org_setting(org_id: str, name: str, default: Any = None) -> Any:
+    """Return the per-org in-process setting, or *default* if unset.
+
+    Checks the in-process dict first; if unset, falls through to the
+    registered provider (if any).  The provider is called **synchronously**
+    when it is a plain callable, so it MUST be fast (no I/O).  Async providers
+    are not awaited here — register a sync wrapper that caches asynchronously
+    loaded values.
+
+    Parameters
+    ----------
+    org_id:
+        The org to look up.
+    name:
+        Setting name.
+    default:
+        Value to return when the setting is not configured for this org.
+    """
+    val = _ORG_SETTINGS.get((str(org_id), str(name)))
+    if val is not None:
+        return val
+    if _ORG_SETTINGS_PROVIDER is not None:
+        try:
+            result = _ORG_SETTINGS_PROVIDER(str(org_id), str(name))
+            if result is not None:
+                return result
+        except Exception:  # noqa: BLE001
+            pass
+    return default
+
+
+def register_org_settings_provider(provider: OrgSettingsProvider | None) -> None:
+    """Register a persistent per-org settings provider (EE / DB-backed).
+
+    When set, :func:`get_org_setting` falls through to *provider* for values
+    not found in the local in-process dict.  Pass ``None`` to remove.
+
+    Raises
+    ------
+    TypeError
+        When *provider* is neither callable nor ``None``.
+    """
+    if provider is not None and not callable(provider):
+        raise TypeError(
+            f"register_org_settings_provider: provider must be callable or None, got {type(provider)!r}"
+        )
+    global _ORG_SETTINGS_PROVIDER  # noqa: PLW0603
+    _ORG_SETTINGS_PROVIDER = provider
+
+
 def reset_for_tests() -> None:
     """Clear all registered checkers and restore original commercial set.
 
@@ -283,3 +373,6 @@ def reset_for_tests() -> None:
     _QUOTA_CHECKER = None
     global _USAGE_LIMITS_PROVIDER  # noqa: PLW0603
     _USAGE_LIMITS_PROVIDER = None
+    _ORG_SETTINGS.clear()
+    global _ORG_SETTINGS_PROVIDER  # noqa: PLW0603
+    _ORG_SETTINGS_PROVIDER = None

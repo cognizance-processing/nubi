@@ -14,14 +14,19 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Install system libraries (cairo for cairosvg / PPTX export tests)
+        run: sudo apt-get update -qq && sudo apt-get install -y libcairo2
+
       - uses: actions/setup-python@v5
         with:
           python-version: "3.13"
           cache: pip
-          cache-dependency-path: requirements.txt
+          cache-dependency-path: |
+            requirements.txt
+            requirements-dev.txt
 
       - name: Install dependencies
-        run: pip install -r requirements.txt ruff
+        run: pip install -r requirements.txt -r requirements-dev.txt ruff
 
       - name: Lint (ruff)
         run: cd backend && ruff check app/

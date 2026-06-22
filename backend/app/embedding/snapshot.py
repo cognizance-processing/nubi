@@ -43,6 +43,23 @@ the sidecar is *plaintext frozen data*: **every holder of the artifact sees the
 same rows**, regardless of their own RLS context.  There is no per-viewer
 predicate injection at frozen-render time because there is no live query.
 
+**RLS-at-capture hardening (this module)**:
+
+When :func:`create_snapshot` or :func:`refresh_snapshot` is called with empty
+``policies`` (i.e. ``claims["policies"] == {}``) AND the board references a
+datastore-backed query (a multi-tenant capable data source), a **WARNING** is
+emitted to the operational log.  The warning documents:
+
+* That the artifact was captured WITHOUT an RLS filter (``policy_fingerprint``
+  will be ``"none"``).
+* That every holder of the artifact sees ALL rows in the frozen data.
+* The board id, so operators can trace which artifact may be over-exposed.
+
+The capture model is NOT changed — the warning is informational only.  If you
+deliberately want a full-data snapshot (e.g. for a public marketing board),
+this warning is expected and can be suppressed by setting a non-empty sentinel
+policy or by using a board that only references the built-in demo connector.
+
 Operational guidance:
 
 * Snapshot with ``policies={}`` (the default) only for boards whose data is safe
@@ -83,9 +100,13 @@ import uuid
 from datetime import datetime, timezone
 from typing import Any
 
+import logging
+
 from app.dashboards.collect import collect_board_data, spec_from_board
 from app.errors import AppError
 from app.repos.provider import Repo
+
+logger = logging.getLogger(__name__)
 
 # Table-name prefix for a widget's frozen rows inside the sidecar.
 _WIDGET_TABLE_PREFIX = "widget_"
@@ -307,6 +328,89 @@ def _board_snapshots(board: dict[str, Any]) -> list[dict[str, Any]]:
     return list(snaps) if isinstance(snaps, list) else []
 
 
+# ---------------------------------------------------------------------------
+# RLS-at-capture hardening helpers
+# ---------------------------------------------------------------------------
+
+
+def _board_references_datastore(board: dict[str, Any]) -> bool:
+    """Return True when the board has at least one widget backed by a datastore.
+
+    A widget is datastore-backed when its ``query_id`` resolves to a query that
+    carries a ``datastore_id``.  We check the query registry synchronously so
+    this helper is safe to call in the synchronous path; queries that cannot be
+    resolved are skipped (best-effort).
+
+    A board that only uses the built-in demo connector (no datastore_id) is NOT
+    considered multi-tenant — the demo data is static and public by design.
+    """
+    from app.dashboards.collect import spec_from_board, widget_query_targets  # noqa: PLC0415
+    from app.queries.registry import get_query_registry  # noqa: PLC0415
+
+    spec = spec_from_board(board)
+    targets = widget_query_targets(spec, only_query_id=None)
+    if not targets:
+        return False
+
+    registry = get_query_registry()
+    for t in targets:
+        registered = registry.get(t["query_id"])
+        if registered is not None and getattr(registered, "datastore_id", None):
+            return True
+    return False
+
+
+def _warn_if_no_rls_on_multi_tenant(
+    board_id: str,
+    policies: dict[str, Any],
+    board: dict[str, Any],
+    policy_fingerprint: str,
+) -> None:
+    """Log a WARNING when capturing a snapshot without RLS on a datastore board.
+
+    A snapshot with empty *policies* (no per-viewer predicate) bakes a FULL-DATA
+    view into the artifact.  Every holder of the artifact sees the same rows —
+    regardless of their own RLS context — because the sidecar is plaintext frozen
+    data with no live query.
+
+    When the board is datastore-backed (multi-tenant capable) and *policies* is
+    empty, this is a potential data-exposure hazard: operators may not realise
+    they are capturing a cross-tenant full-data snapshot.  This function emits a
+    loud WARNING so the decision is auditable in the operational logs.
+
+    The *policy_fingerprint* is included in the log so operators can trace which
+    view was baked into a given artifact (``"none"`` fingerprint = no RLS filter).
+
+    Parameters
+    ----------
+    board_id:
+        The board being snapshotted.
+    policies:
+        The RLS claim dict from the capture token (``claims["policies"]``).
+    board:
+        The board row (used to check for datastore references).
+    policy_fingerprint:
+        The pre-computed policy fingerprint for the log entry.
+    """
+    if policies:
+        # RLS policies are present — capture is filtered.  No warning needed.
+        return
+
+    if not _board_references_datastore(board):
+        # Demo-only board: no multi-tenant data, safe to capture without RLS.
+        return
+
+    logger.warning(
+        "snapshot RLS-at-capture: board %r captured with NO RLS policies "
+        "(policy_fingerprint=%r).  The frozen artifact exposes FULL-DATA "
+        "to every holder — no per-viewer predicate is injected at render time.  "
+        "If this board is multi-tenant, capture one snapshot PER tenant policy "
+        "view and hand each artifact only to entitled holders.",
+        board_id,
+        policy_fingerprint,
+    )
+
+
 async def _persist_snapshot(
     board: dict[str, Any],
     org_id: str,
@@ -386,6 +490,12 @@ async def create_snapshot(
 
     snapshot_id = str(uuid.uuid4())
     policies: dict[str, Any] = dict((claims or {}).get("policies") or {})
+    fingerprint = _policy_fingerprint(policies)
+
+    # RLS-at-capture hardening: warn loudly when capturing a full-data view on a
+    # datastore-backed (multi-tenant capable) board.  The frozen artifact exposes
+    # all rows to every holder — there is no per-viewer predicate at render time.
+    _warn_if_no_rls_on_multi_tenant(board_id, policies, board, fingerprint)
 
     widgets = await collect_board_data(board_id, org_id, claims=claims, repo=repo)
     artifact_uri = snapshot_artifact_uri(board_id, org_id, snapshot_id, base_uri=base_uri)
@@ -399,7 +509,7 @@ async def create_snapshot(
             "snapshot_id": snapshot_id,
             "board_id": board_id,
             "datastore": datastore,
-            "policy_fingerprint": _policy_fingerprint(policies),
+            "policy_fingerprint": fingerprint,
             "created_at": created_at,
         },
     )
@@ -412,7 +522,7 @@ async def create_snapshot(
         "refreshed_at": created_at,
         "datastore": datastore,
         "schedule": schedule,
-        "policy_fingerprint": _policy_fingerprint(policies),
+        "policy_fingerprint": fingerprint,
         "spec": spec_from_board(board),
         "artifact": {
             "uri": artifact_uri,
@@ -458,6 +568,12 @@ async def refresh_snapshot(
         raise AppError("snapshot_not_found", f"Snapshot {snapshot_id!r} not found.", 404)
 
     policies: dict[str, Any] = dict((claims or {}).get("policies") or {})
+    fingerprint = _policy_fingerprint(policies)
+
+    # RLS-at-capture hardening: warn when refreshing a full-data view on a
+    # multi-tenant board.  See create_snapshot for the full rationale.
+    _warn_if_no_rls_on_multi_tenant(board_id, policies, board, fingerprint)
+
     widgets = await collect_board_data(board_id, org_id, claims=claims, repo=repo)
     artifact_uri = snapshot_artifact_uri(board_id, org_id, snapshot_id, base_uri=base_uri)
     refreshed_at = _now_iso()
@@ -470,14 +586,14 @@ async def refresh_snapshot(
             "snapshot_id": snapshot_id,
             "board_id": board_id,
             "datastore": existing.get("datastore"),
-            "policy_fingerprint": _policy_fingerprint(policies),
+            "policy_fingerprint": fingerprint,
             "created_at": refreshed_at,
         },
     )
 
     descriptor = dict(existing)
     descriptor["refreshed_at"] = refreshed_at
-    descriptor["policy_fingerprint"] = _policy_fingerprint(policies)
+    descriptor["policy_fingerprint"] = fingerprint
     descriptor["spec"] = spec_from_board(board)
     descriptor["artifact"] = {
         "uri": artifact_uri,

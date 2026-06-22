@@ -26,9 +26,9 @@ import os
 
 import pytest
 
-from app.embedding.public_export import PUBLIC_EXPORTS_FEATURE, export_public
+from app.embedding.public_export import PUBLIC_EXPORTS_FEATURE, PUBLIC_EXPORTS_ORG_SETTING, export_public
 from app.errors import AppError
-from app.features import register_feature
+from app.features import register_feature, set_org_setting
 from app.features import reset_for_tests as reset_features
 from app.queries.registry import get_query_registry
 from app.queries.registry import reset_for_tests as reset_query_registry
@@ -125,11 +125,38 @@ async def test_export_refused_when_deployment_switch_off(
 
 
 @pytest.mark.asyncio
-async def test_export_refused_when_org_feature_gate_off(
+async def test_export_refused_when_org_setting_off(
     repo: InMemoryRepo, tmp_path, monkeypatch
 ) -> None:
+    """Interlock 2: per-org setting off (default) refuses even with deployment on."""
     _enable_deployment(monkeypatch)
-    # Org feature gate explicitly off.
+    # Org setting NOT set (default False) — must refuse even if kill switch is on.
+    board_id = await _make_board(repo)
+
+    with pytest.raises(AppError) as exc:
+        await export_public(
+            board_id,
+            _ORG,
+            claims={"policies": {}},
+            repo=repo,
+            exported_by=_USER,
+            base_uri="file://" + str(tmp_path),
+        )
+    assert exc.value.code == "public_exports_disabled"
+    assert exc.value.status == 403
+
+    board = await repo.get("boards", _ORG, board_id)
+    assert "public_export_audit" not in (board["config"] or {})
+
+
+@pytest.mark.asyncio
+async def test_export_refused_when_ee_feature_gate_off(
+    repo: InMemoryRepo, tmp_path, monkeypatch
+) -> None:
+    """Interlock 3: EE feature gate off refuses even with org setting on."""
+    _enable_deployment(monkeypatch)
+    # Org setting on (interlock 2 satisfied), EE feature gate explicitly off.
+    set_org_setting(_ORG, PUBLIC_EXPORTS_ORG_SETTING, True)
     register_feature(PUBLIC_EXPORTS_FEATURE, lambda: False)
     board_id = await _make_board(repo)
 
@@ -154,6 +181,8 @@ async def test_export_succeeds_writes_html_audit_and_links_snapshot(
     repo: InMemoryRepo, tmp_path, monkeypatch
 ) -> None:
     _enable_deployment(monkeypatch)
+    # Both interlocks: per-org setting (interlock 2) + feature gate (interlock 3).
+    set_org_setting(_ORG, PUBLIC_EXPORTS_ORG_SETTING, True)
     register_feature(PUBLIC_EXPORTS_FEATURE, lambda: True)
     base_uri = "file://" + str(tmp_path)
     board_id = await _make_board(repo)
@@ -212,6 +241,7 @@ async def test_export_reuses_existing_snapshot(
     repo: InMemoryRepo, tmp_path, monkeypatch
 ) -> None:
     _enable_deployment(monkeypatch)
+    set_org_setting(_ORG, PUBLIC_EXPORTS_ORG_SETTING, True)
     register_feature(PUBLIC_EXPORTS_FEATURE, lambda: True)
     base_uri = "file://" + str(tmp_path)
     board_id = await _make_board(repo)
@@ -257,3 +287,73 @@ async def test_export_reuses_existing_snapshot(
             base_uri=base_uri,
         )
     assert exc.value.code == "snapshot_not_found"
+
+
+# ---------------------------------------------------------------------------
+# Item 2: per-org setting is a REAL gate (default off, must opt in per org)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_export_refused_when_org_flag_off_even_if_kill_switch_on(
+    repo: InMemoryRepo, tmp_path, monkeypatch
+) -> None:
+    """Per-org flag default=False refuses export even when kill switch is on.
+
+    This is the key test for Item 2: public_exports_enabled is a REAL per-org
+    toggle in core — not just a docstring claim.  The export must be refused
+    when the org flag is absent/False, regardless of the deployment kill switch.
+    """
+    _enable_deployment(monkeypatch)
+    # Deliberately do NOT set_org_setting(org, PUBLIC_EXPORTS_ORG_SETTING, True).
+    # The kill switch is ON but the org flag is OFF (default).
+    board_id = await _make_board(repo)
+
+    with pytest.raises(AppError) as exc:
+        await export_public(
+            board_id,
+            _ORG,
+            claims={"policies": {}},
+            repo=repo,
+            exported_by=_USER,
+            base_uri="file://" + str(tmp_path),
+        )
+    assert exc.value.code == "public_exports_disabled"
+    assert exc.value.status == 403
+    # The error message must mention the org, not the kill switch.
+    assert _ORG in exc.value.message or "public_exports_enabled" in exc.value.message
+
+    # Nothing written; no audit entry.
+    board = await repo.get("boards", _ORG, board_id)
+    assert "public_export_audit" not in (board["config"] or {})
+
+
+@pytest.mark.asyncio
+async def test_org_flag_on_enables_export_per_org(
+    repo: InMemoryRepo, tmp_path, monkeypatch
+) -> None:
+    """Enabling org flag for one org does not enable it for another."""
+    _enable_deployment(monkeypatch)
+    other_org = "org-pubexp-other"
+
+    # Enable for _ORG only.
+    set_org_setting(_ORG, PUBLIC_EXPORTS_ORG_SETTING, True)
+
+    board_id_a = await _make_board(repo)
+
+    # _ORG should succeed.
+    descriptor = await export_public(
+        board_id_a,
+        _ORG,
+        claims={"policies": {}},
+        repo=repo,
+        exported_by=_USER,
+        base_uri="file://" + str(tmp_path),
+    )
+    assert descriptor["export_id"]
+
+    # other_org has no board to try, but the gate check for other_org should
+    # refuse before even looking up a board — verify the setting is scoped.
+    # (We patch get_org_setting indirectly by not setting it for other_org.)
+    from app.features import get_org_setting as _get
+    assert _get(other_org, PUBLIC_EXPORTS_ORG_SETTING, default=False) is False

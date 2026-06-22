@@ -24,12 +24,20 @@ A public export only runs when BOTH interlocks are satisfied:
    :data:`app.config.Settings.ALLOW_UNSAFE_PUBLIC_EXPORTS` is ``True`` (it
    defaults to ``False``, so the whole capability is off until an operator opts
    in for the deployment), AND
-2. The caller's org holds the ``public_exports`` feature gate
-   (:func:`app.features.feature_enabled`) — a per-org opt-in.
+2. The org has ``public_exports_enabled`` set to ``True`` via
+   :func:`app.features.set_org_setting` (or a registered provider via
+   :func:`app.features.register_org_settings_provider`).  In the OSS build
+   this defaults to ``False``, so operators must explicitly opt each org in.
 
 If either is off the export is refused with
 ``AppError("public_exports_disabled", …, 403)`` and **nothing is written and no
 artifact is produced**.
+
+The ``public_exports`` feature gate (:func:`app.features.feature_enabled`) is
+retained as an optional third check that EE code may register; however the
+primary second interlock is now the per-org ``public_exports_enabled`` setting
+stored in :func:`app.features.get_org_setting`.  This makes the gate a REAL
+per-org toggle in core, not just a deployment-wide flag.
 
 Audit
 -----
@@ -66,16 +74,17 @@ from app.embedding.snapshot import (
     get_snapshot,
 )
 from app.errors import AppError
-from app.features import feature_enabled
+from app.features import feature_enabled, get_org_setting
 from app.repos.provider import Repo
 
 logger = logging.getLogger(__name__)
 
-# Per-org feature gate name (see app.features).  Non-commercial by default, so
-# in an OSS build feature_enabled() returns True for it UNLESS an operator/EE
-# registers a stricter checker — which is why the deployment-wide
-# ALLOW_UNSAFE_PUBLIC_EXPORTS kill switch (defaulting OFF) is the primary guard.
+# Per-org feature gate name (see app.features).  Retained for EE use.
 PUBLIC_EXPORTS_FEATURE = "public_exports"
+
+# Per-org setting name for the real in-core gate (second interlock).
+# Set to True per-org via app.features.set_org_setting(org_id, PUBLIC_EXPORTS_ORG_SETTING, True).
+PUBLIC_EXPORTS_ORG_SETTING = "public_exports_enabled"
 
 # CDN-pinned DuckDB-WASM bundle the generated page loads (no build step needed).
 _DUCKDB_WASM_CDN = "https://cdn.jsdelivr.net/npm/@duckdb/duckdb-wasm@1.28.0/+esm"
@@ -92,17 +101,32 @@ def _now_iso() -> str:
 
 
 def _assert_public_exports_allowed(org_id: str) -> None:
-    """Raise unless BOTH the deployment switch and the org feature gate are on.
+    """Raise unless the deployment switch AND the per-org setting are both on.
 
-    UNSAFE capability — see the module docstring.  The deployment-wide
-    :data:`ALLOW_UNSAFE_PUBLIC_EXPORTS` defaults to ``False`` so public exports
-    are off until an operator explicitly opts the deployment in; the per-org
-    ``public_exports`` feature gate additionally scopes it to opted-in orgs.
+    UNSAFE capability — see the module docstring.  Two hard interlocks must
+    both be satisfied before any bytes are written:
+
+    1. **Deployment kill switch** — :data:`ALLOW_UNSAFE_PUBLIC_EXPORTS` must be
+       ``True`` (defaults to ``False``, so the whole capability is off until an
+       operator explicitly opts the deployment in).
+
+    2. **Per-org opt-in** — the org must have ``public_exports_enabled`` set to
+       ``True`` via :func:`app.features.set_org_setting` (or a registered
+       provider).  This is a REAL per-org toggle stored in core:
+       ``get_org_setting(org_id, "public_exports_enabled")`` must be truthy.
+       The default is ``False`` / absent, so each org must be explicitly
+       opted in by an operator.
+
+    An optional third check defers to the :func:`app.features.feature_enabled`
+    gate (``"public_exports"``), which EE code may register to add tier- or
+    license-based logic.  If EE has registered a checker that returns ``False``
+    the export is additionally refused — but this gate is NOT the primary
+    per-org control.
 
     Raises
     ------
     AppError("public_exports_disabled", 403)
-        When either interlock is off.  Nothing is written.
+        When any interlock is off.  Nothing is written.
     """
     if not get_settings().ALLOW_UNSAFE_PUBLIC_EXPORTS:
         raise AppError(
@@ -111,10 +135,22 @@ def _assert_public_exports_allowed(org_id: str) -> None:
             "(ALLOW_UNSAFE_PUBLIC_EXPORTS is off).",
             403,
         )
+    # ── Interlock 2: real per-org toggle (core setting, default False) ────────
+    if not get_org_setting(org_id, PUBLIC_EXPORTS_ORG_SETTING, default=False):
+        raise AppError(
+            "public_exports_disabled",
+            f"UNSAFE public/CDN exports are not enabled for org {org_id!r} "
+            f"(set public_exports_enabled=True for this org to opt in).",
+            403,
+        )
+    # ── Optional interlock 3: EE feature-gate (no-op in OSS) ─────────────────
+    # feature_enabled("public_exports") defaults to True in OSS (non-commercial
+    # feature), so this check is a no-op unless EE registers a stricter checker.
     if not feature_enabled(PUBLIC_EXPORTS_FEATURE):
         raise AppError(
             "public_exports_disabled",
-            f"UNSAFE public/CDN exports are not enabled for org {org_id!r}.",
+            f"UNSAFE public/CDN exports are not available for org {org_id!r} "
+            "(blocked by feature gate).",
             403,
         )
 
