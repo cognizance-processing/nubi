@@ -78,12 +78,25 @@ _DEFAULT_EXPORT_CFG = {
 
 
 def _count_pdf_pages(pdf_bytes: bytes) -> int:
-    """Parse the /Count entry from the Pages dict to get the page count."""
-    # /Count N inside /Type /Pages
+    """Return the page count, robust to compressed PDFs.
+
+    cairosvg/cairo writes the page tree into a compressed object stream, so the
+    plain-bytes ``/Count`` / ``/Type /Page`` heuristics find nothing.  Prefer a
+    real PDF parser (pypdf) when available; fall back to the byte heuristics for
+    the uncompressed reportlab/svglib output.
+    """
+    try:
+        import io  # noqa: PLC0415
+
+        from pypdf import PdfReader  # noqa: PLC0415
+
+        return len(PdfReader(io.BytesIO(pdf_bytes)).pages)
+    except Exception:
+        pass
+    # Fallback (uncompressed PDFs): /Count inside /Type /Pages, else /Type /Page.
     match = re.search(rb'/Count\s+(\d+)', pdf_bytes)
     if match:
         return int(match.group(1))
-    # Fallback: count /Type /Page objects (not /Pages)
     return len(re.findall(rb'/Type\s*/Page\b', pdf_bytes))
 
 
