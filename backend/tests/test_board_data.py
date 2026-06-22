@@ -32,6 +32,7 @@ Coverage
 
 from __future__ import annotations
 
+import asyncio
 import io
 import os
 import struct
@@ -1379,3 +1380,210 @@ def test_provider_max_bytes_cap_is_configurable() -> None:
 
     assert isinstance(_bd_mod._PROVIDER_MAX_BYTES, int)
     assert _bd_mod._PROVIDER_MAX_BYTES >= 0
+
+
+# ---------------------------------------------------------------------------
+# NEW: [HIGH concurrency] DuckDB thread-safety — concurrent inline base_cte
+# executions on the shared demo singleton must not crash and must return
+# correct independent results.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_concurrent_inline_base_cte_executions_are_thread_safe(
+    repo: InMemoryRepo,
+) -> None:
+    """Concurrent inline-provider (base_cte) executions on the shared demo
+    connector must not crash and must each return correct, independent results.
+
+    Before the fix, two concurrent asyncio.to_thread(connector.execute, ...)
+    calls on the same DuckDB singleton connection could race and corrupt each
+    other's state.  After the fix, _execute_with_lock serialises them via a
+    per-connector threading.Lock, so results are always correct.
+
+    Strategy: patch the demo connector with a *real* shared DuckDB connection
+    (in-memory, so no filesystem dependency) and fire off N concurrent
+    resolve_provider_data calls with different base_cte SQL.  Each must return
+    the correct rows for its own query.
+    """
+    import duckdb
+    import pyarrow as pa
+
+    from app.connectors.duckdb_conn import DuckDBConnector
+    from app.dashboards.board_data import _execute_with_lock, _get_connector_lock
+
+    # Build a real shared DuckDB connection with two tables — simulates the
+    # demo singleton.
+    shared_conn = duckdb.connect(":memory:")
+    shared_conn.execute("CREATE TABLE t1 AS SELECT 10 AS val")
+    shared_conn.execute("CREATE TABLE t2 AS SELECT 20 AS val")
+    shared_connector = DuckDBConnector(shared_conn)
+
+    # Two boards with different base_cte queries targeting the shared connector.
+    spec_a = {
+        "version": 1,
+        "title": "Concurrent Board A",
+        "widgets": [
+            {"id": "w1", "type": "table", "source": {"provider": "pa", "result": "res_a"}},
+        ],
+        "data": [
+            {
+                "id": "pa",
+                "kind": "inline",
+                "params": {},
+                "base_cte": "WITH res_a AS (SELECT val FROM t1)",
+                "results": [{"name": "res_a", "grain": None}],
+            }
+        ],
+    }
+    spec_b = {
+        "version": 1,
+        "title": "Concurrent Board B",
+        "widgets": [
+            {"id": "w1", "type": "table", "source": {"provider": "pb", "result": "res_b"}},
+        ],
+        "data": [
+            {
+                "id": "pb",
+                "kind": "inline",
+                "params": {},
+                "base_cte": "WITH res_b AS (SELECT val FROM t2)",
+                "results": [{"name": "res_b", "grain": None}],
+            }
+        ],
+    }
+
+    board_a_id = "board-concurrent-a"
+    board_b_id = "board-concurrent-b"
+    await repo.create(
+        "boards",
+        org_id=_ORG,
+        created_by="test",
+        name="Concurrent A",
+        config={"spec": spec_a},
+        id=board_a_id,
+    )
+    await repo.create(
+        "boards",
+        org_id=_ORG,
+        created_by="test",
+        name="Concurrent B",
+        config={"spec": spec_b},
+        id=board_b_id,
+    )
+
+    async def _fake_enforce_quota(org_id: str, dimension: str, amount: float = 1.0) -> None:
+        pass
+
+    with (
+        patch("app.features.enforce_quota", side_effect=_fake_enforce_quota),
+        patch("app.routes.query._get_demo_connector", return_value=shared_connector),
+    ):
+        # Fire off both concurrently — they race to use the same shared_connector.
+        results = await asyncio.gather(
+            resolve_provider_data(
+                board_id=board_a_id,
+                provider_id="pa",
+                params={},
+                org_id=_ORG,
+                claims={"policies": {}},
+                repo=repo,
+            ),
+            resolve_provider_data(
+                board_id=board_b_id,
+                provider_id="pb",
+                params={},
+                org_id=_ORG,
+                claims={"policies": {}},
+                repo=repo,
+            ),
+        )
+
+    tables_a, tables_b = results
+
+    # Each result must contain only its own data — no corruption or cross-mixing.
+    assert "res_a" in tables_a, f"res_a missing from tables_a: {list(tables_a)}"
+    assert "res_b" in tables_b, f"res_b missing from tables_b: {list(tables_b)}"
+    assert tables_a["res_a"].num_rows == 1
+    assert tables_b["res_b"].num_rows == 1
+    assert tables_a["res_a"].to_pydict() == {"val": [10]}, (
+        f"Incorrect result for res_a (DuckDB thread-safety violation?): "
+        f"{tables_a['res_a'].to_pydict()}"
+    )
+    assert tables_b["res_b"].to_pydict() == {"val": [20]}, (
+        f"Incorrect result for res_b (DuckDB thread-safety violation?): "
+        f"{tables_b['res_b'].to_pydict()}"
+    )
+
+
+@pytest.mark.asyncio
+async def test_concurrent_inline_base_cte_many_workers_no_crash(
+    repo: InMemoryRepo,
+) -> None:
+    """Higher-concurrency stress test: 6 concurrent inline executes on the shared
+    demo connector all return correct independent results without crashing.
+
+    Uses a single board/provider spec queried N times concurrently.  Each call
+    expects a stable result from the shared connection.
+    """
+    import duckdb
+
+    from app.connectors.duckdb_conn import DuckDBConnector
+
+    shared_conn = duckdb.connect(":memory:")
+    shared_conn.execute("CREATE TABLE stress AS SELECT i AS val FROM generate_series(1, 5) t(i)")
+    shared_connector = DuckDBConnector(shared_conn)
+
+    spec = {
+        "version": 1,
+        "title": "Stress Board",
+        "widgets": [
+            {"id": "w1", "type": "table", "source": {"provider": _PROVIDER_ID, "result": "revenue"}},
+        ],
+        "data": [
+            {
+                "id": _PROVIDER_ID,
+                "kind": "inline",
+                "params": {},
+                "base_cte": "WITH revenue AS (SELECT val FROM stress ORDER BY val)",
+                "results": [{"name": "revenue", "grain": None}],
+            }
+        ],
+    }
+    await repo.update("boards", _ORG, _BOARD_ID, {"config": {"spec": spec}})
+
+    async def _fake_enforce_quota(org_id: str, dimension: str, amount: float = 1.0) -> None:
+        pass
+
+    n_concurrent = 6
+    with (
+        patch("app.features.enforce_quota", side_effect=_fake_enforce_quota),
+        patch("app.routes.query._get_demo_connector", return_value=shared_connector),
+    ):
+        all_results = await asyncio.gather(
+            *[
+                resolve_provider_data(
+                    board_id=_BOARD_ID,
+                    provider_id=_PROVIDER_ID,
+                    # Use different params to bust the cache so each fires a real execute.
+                    params={"_worker": str(i)},
+                    org_id=_ORG,
+                    claims={"policies": {}},
+                    repo=repo,
+                )
+                for i in range(n_concurrent)
+            ]
+        )
+
+    for idx, tables in enumerate(all_results):
+        assert "revenue" in tables, f"Worker {idx}: revenue missing from result"
+        tbl = tables["revenue"]
+        assert isinstance(tbl, pa.Table), f"Worker {idx}: result is not pa.Table"
+        assert tbl.num_rows == 5, (
+            f"Worker {idx}: expected 5 rows, got {tbl.num_rows} "
+            "(DuckDB thread-safety violation: shared connection race?)"
+        )
+        assert tbl.to_pydict() == {"val": [1, 2, 3, 4, 5]}, (
+            f"Worker {idx}: incorrect data — DuckDB thread-safety violation? "
+            f"Got {tbl.to_pydict()}"
+        )

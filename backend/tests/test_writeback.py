@@ -842,3 +842,192 @@ def test_writeback_cap_apperror_has_correct_code_message_status():
         assert exc.code == "row_cap_exceeded"
         assert "rows_override" in exc.message
         assert exc.status == 400
+
+
+# ---------------------------------------------------------------------------
+# 22. /flows/tick refuses with 401 when FLOWS_TICK_SECRET is unset in
+#     production ENV (LOW severity — governance finding).
+#
+# Tested by calling the route handler directly (no HTTP app fixture needed)
+# so the test is immune to unrelated SyntaxErrors in other route modules.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_tick_refuses_401_when_secret_unset_in_production(monkeypatch):
+    """In production ENV, flows_tick() raises AppError(401) when the secret is
+    unset — no information leak about whether the endpoint is configured."""
+    import os  # noqa: PLC0415
+
+    from app.config import get_settings  # noqa: PLC0415
+    from app.routes.flows import flows_tick  # noqa: PLC0415
+
+    # Simulate production ENV with no secret configured.
+    monkeypatch.setenv("ENV", "production")
+    monkeypatch.delenv("FLOWS_TICK_SECRET", raising=False)
+    get_settings.cache_clear()
+    try:
+        with pytest.raises(AppError) as exc_info:
+            await flows_tick(x_nubi_tick_secret=None)
+        assert exc_info.value.status == 401, (
+            f"Expected 401 in production when secret unset, got {exc_info.value.status}"
+        )
+        assert exc_info.value.code == "unauthorized"
+    finally:
+        get_settings.cache_clear()
+
+
+@pytest.mark.asyncio
+async def test_tick_disabled_503_when_secret_unset_in_non_production(monkeypatch):
+    """In non-production ENV (dev/test), flows_tick() raises AppError(503) with
+    a clear diagnostic message when the secret is unset."""
+    import os  # noqa: PLC0415
+
+    from app.config import get_settings  # noqa: PLC0415
+    from app.routes.flows import flows_tick  # noqa: PLC0415
+
+    # Simulate dev ENV (non-production) with no secret configured.
+    monkeypatch.setenv("ENV", "development")
+    monkeypatch.delenv("FLOWS_TICK_SECRET", raising=False)
+    get_settings.cache_clear()
+    try:
+        with pytest.raises(AppError) as exc_info:
+            await flows_tick(x_nubi_tick_secret=None)
+        assert exc_info.value.status == 503, (
+            f"Expected 503 in dev when secret unset, got {exc_info.value.status}"
+        )
+        assert exc_info.value.code == "tick_not_configured"
+    finally:
+        get_settings.cache_clear()
+
+
+# ---------------------------------------------------------------------------
+# 23. POST /flows/writeback cannot bypass a server-required approval gate
+#     (LOW authz finding — caller cannot set approval_required=False to
+#     auto-commit when the server policy mandates approval).
+#
+# Tested at the engine level (submit_writeback) via _enforce_approval_policy
+# so the tests are immune to unrelated SyntaxErrors in other route modules.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_server_approval_policy_forces_approval_regardless_of_caller(monkeypatch):
+    """When the server policy (NUBI_WRITEBACK_REQUIRE_APPROVAL=true) is active,
+    a caller sending approval_required=False still lands in pending_approval.
+    The caller cannot bypass the server-required gate.
+
+    Verified via _enforce_approval_policy + submit_writeback directly so this
+    test does not need the full HTTP app stack.
+    """
+    import app.routes.flows as flows_module  # noqa: PLC0415
+
+    # Activate the server-wide approval requirement.
+    monkeypatch.setattr(flows_module, "_WRITEBACK_REQUIRE_APPROVAL", True)
+
+    store = InMemoryWritebackStore()
+    calls: list[bool] = []
+
+    def write_fn(r, t, m):
+        calls.append(True)
+        return {"rows_written": len(r)}
+
+    # The effective flag must be True even though caller passes False.
+    effective = flows_module._enforce_approval_policy(False)
+    assert effective is True, "Server policy must override caller's False"
+
+    record = await submit_writeback(
+        org_id="orgA",
+        idempotency_key=_idem(),
+        rows=[{"id": 1}],
+        target=_target(),
+        mode="append",
+        created_by="user1",
+        approval_required=effective,  # route applies _enforce_approval_policy
+        connector_write_fn=write_fn,
+        store=store,
+    )
+    # Write is gated — connector NOT called.
+    assert record["state"] == "pending_approval", (
+        f"Expected pending_approval due to server policy, got state={record['state']!r}"
+    )
+    assert len(calls) == 0, "Connector must not be called when approval is required"
+
+
+@pytest.mark.asyncio
+async def test_caller_can_opt_into_approval_without_server_policy(monkeypatch):
+    """Caller may always opt in to approval (approval_required=True) even when
+    the server policy is off.  This verifies the caller can only INCREASE
+    strictness, not bypass it."""
+    import app.routes.flows as flows_module  # noqa: PLC0415
+
+    # Server policy OFF — caller still opts in.
+    monkeypatch.setattr(flows_module, "_WRITEBACK_REQUIRE_APPROVAL", False)
+
+    store = InMemoryWritebackStore()
+
+    effective = flows_module._enforce_approval_policy(True)
+    assert effective is True, "Caller opt-in must be respected even without server policy"
+
+    record = await submit_writeback(
+        org_id="orgA",
+        idempotency_key=_idem(),
+        rows=[{"id": 42}],
+        target=_target(),
+        mode="append",
+        created_by="user1",
+        approval_required=effective,
+        connector_write_fn=_noop_write,
+        store=store,
+    )
+    assert record["state"] == "pending_approval", (
+        f"Expected pending_approval from caller opt-in, got state={record['state']!r}"
+    )
+
+
+@pytest.mark.asyncio
+async def test_no_policy_and_caller_false_auto_commits(monkeypatch):
+    """When both server policy and caller say False, writeback auto-commits.
+    Verifies the baseline (no policy → caller controls the gate)."""
+    import app.routes.flows as flows_module  # noqa: PLC0415
+
+    monkeypatch.setattr(flows_module, "_WRITEBACK_REQUIRE_APPROVAL", False)
+
+    store = InMemoryWritebackStore()
+
+    effective = flows_module._enforce_approval_policy(False)
+    assert effective is False
+
+    record = await submit_writeback(
+        org_id="orgA",
+        idempotency_key=_idem(),
+        rows=[{"id": 7}],
+        target=_target(),
+        mode="append",
+        created_by="user1",
+        approval_required=effective,
+        connector_write_fn=_noop_write,
+        store=store,
+    )
+    assert record["state"] == "committed", (
+        f"Expected committed when no policy and caller=False, got state={record['state']!r}"
+    )
+
+
+def test_enforce_approval_policy_unit():
+    """Unit test for _enforce_approval_policy precedence rules."""
+    import app.routes.flows as flows_module  # noqa: PLC0415
+
+    original = flows_module._WRITEBACK_REQUIRE_APPROVAL
+    try:
+        # Server requires approval → always True regardless of caller.
+        flows_module._WRITEBACK_REQUIRE_APPROVAL = True
+        assert flows_module._enforce_approval_policy(False) is True
+        assert flows_module._enforce_approval_policy(True) is True
+
+        # Server does NOT require approval → caller controls it.
+        flows_module._WRITEBACK_REQUIRE_APPROVAL = False
+        assert flows_module._enforce_approval_policy(False) is False
+        assert flows_module._enforce_approval_policy(True) is True
+    finally:
+        flows_module._WRITEBACK_REQUIRE_APPROVAL = original

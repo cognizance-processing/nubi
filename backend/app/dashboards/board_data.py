@@ -44,6 +44,7 @@ import hashlib
 import json
 import logging
 import os
+import threading
 from typing import Any
 
 import pyarrow as pa
@@ -71,6 +72,51 @@ _PROVIDER_MAX_BYTES: int = int(
 from app.errors import AppError
 
 logger = logging.getLogger(__name__)
+
+# ---------------------------------------------------------------------------
+# Per-connector threading lock registry
+# ---------------------------------------------------------------------------
+# DuckDB connections (including the demo singleton) are NOT safe for concurrent
+# use from multiple OS threads.  asyncio.to_thread spawns executor threads, so
+# two concurrent inline-provider requests would both call connector.execute on
+# the same shared DuckDB connection from different threads — leading to crashes
+# or data corruption.
+#
+# Fix: serialise all execute calls that share the same DuckDBConnector instance
+# via a per-instance threading.Lock.  The lock is stored in a module-level
+# WeakKeyDictionary so it is created once per connector object and is
+# automatically collected when the connector is GC'd.
+#
+# This satisfies the HARD requirement: keep the asyncio.to_thread offload (the
+# event loop is never blocked) but guarantee at most one thread executes against
+# a given DuckDB connection at a time.
+import weakref as _weakref
+
+_connector_locks: "_weakref.WeakKeyDictionary[object, threading.Lock]" = (
+    _weakref.WeakKeyDictionary()
+)
+_connector_locks_mutex = threading.Lock()  # guards _connector_locks itself
+
+
+def _get_connector_lock(connector: object) -> threading.Lock:
+    """Return the threading.Lock for *connector*, creating it if needed."""
+    with _connector_locks_mutex:
+        lock = _connector_locks.get(connector)
+        if lock is None:
+            lock = threading.Lock()
+            _connector_locks[connector] = lock
+        return lock
+
+
+def _execute_with_lock(connector: object, physical_plan: object) -> "pa.Table":
+    """Execute *physical_plan* on *connector* under the connector's thread lock.
+
+    Called from asyncio.to_thread so the event loop is not blocked, and at most
+    one thread may use a given connector simultaneously (DuckDB thread-safety).
+    """
+    lock = _get_connector_lock(connector)
+    with lock:
+        return connector.execute(physical_plan)  # type: ignore[attr-defined]
 
 
 # ---------------------------------------------------------------------------
@@ -345,7 +391,14 @@ async def _resolve_inline_provider(
                 # FIX [LOW async]: connector.execute is a synchronous (blocking)
                 # DuckDB call.  Wrap it in asyncio.to_thread so it does not
                 # block the event loop on a cache miss.
-                arrow_table = await asyncio.to_thread(connector.execute, physical_plan)
+                # FIX [HIGH concurrency]: DuckDB connections are NOT thread-safe.
+                # Two concurrent to_thread calls on the same shared demo-singleton
+                # connection would race.  _execute_with_lock acquires a per-connector
+                # threading.Lock before calling execute, serialising concurrent
+                # threads while keeping the event-loop offload benefit of to_thread.
+                arrow_table = await asyncio.to_thread(
+                    _execute_with_lock, connector, physical_plan
+                )
                 # FIX [MED resource]: cap rows to _ROW_CAP to prevent unbounded
                 # Arrow IPC payloads from inline providers.
                 if _ROW_CAP > 0 and arrow_table.num_rows > _ROW_CAP:

@@ -59,6 +59,47 @@ _MAX_SWEEP_CELLS: int = int(os.environ.get("MAX_SWEEP_CELLS", "50"))
 _MAX_BACKFILL_WINDOWS: int = int(os.environ.get("MAX_BACKFILL_WINDOWS", "500"))
 _MAX_WRITEBACK_ROWS: int = int(os.environ.get("NUBI_MAX_WRITEBACK_ROWS", "10000"))
 
+# ---------------------------------------------------------------------------
+# Writeback governance — server-side approval policy
+# ---------------------------------------------------------------------------
+# When NUBI_WRITEBACK_REQUIRE_APPROVAL=true (or "1"/"yes"), every writeback
+# submitted via POST /flows/writeback is forced into approval_required=True
+# regardless of what the caller passes.  The caller may only INCREASE
+# strictness (opt in), never bypass a server-required gate.
+#
+# Precedence (highest wins):
+#   server policy (NUBI_WRITEBACK_REQUIRE_APPROVAL=true)
+#   > caller value (approval_required=True from request body)
+#   > caller value (approval_required=False from request body)   ← weakest
+#
+# This prevents a caller from submitting approval_required=False to
+# auto-commit when the org's deployment policy mandates human review.
+_WRITEBACK_REQUIRE_APPROVAL: bool = os.environ.get(
+    "NUBI_WRITEBACK_REQUIRE_APPROVAL", ""
+).strip().lower() in ("1", "true", "yes")
+
+
+def _enforce_approval_policy(caller_value: bool) -> bool:
+    """Return the effective approval_required flag after applying server policy.
+
+    SECURITY (writeback authz): the caller may only INCREASE strictness.
+    If the server-wide policy mandates approval, the result is always True
+    regardless of what the caller sent.  The caller may always opt IN to
+    approval even when the server does not require it.
+
+    Parameters
+    ----------
+    caller_value:
+        The ``approval_required`` value from the request body.
+
+    Returns
+    -------
+    bool
+        ``True`` if approval is required (server policy OR caller opt-in).
+        ``False`` only when neither the server policy nor the caller requires it.
+    """
+    return _WRITEBACK_REQUIRE_APPROVAL or caller_value
+
 from fastapi import APIRouter, Depends, Header, Query, Request, Response
 from pydantic import BaseModel, Field
 
@@ -761,6 +802,18 @@ async def flows_tick(
     settings = get_settings()
     secret = getattr(settings, "FLOWS_TICK_SECRET", "") or ""
     if not secret:
+        # SECURITY (tick authz): In production, an unset secret is treated the
+        # same as a wrong secret (401) — it provides no information about
+        # whether the endpoint is configured, which prevents probing.  In
+        # non-production environments (dev/test) we return 503 with a clear
+        # diagnostic message so developers immediately know what is missing.
+        env = (getattr(settings, "ENV", "") or os.environ.get("ENV", "")).lower()
+        if env == "production":
+            raise AppError(
+                "unauthorized",
+                "Invalid or missing X-Nubi-Tick-Secret.",
+                401,
+            )
         raise AppError(
             "tick_not_configured",
             "FLOWS_TICK_SECRET is not set; the /flows/tick endpoint is disabled.",
@@ -2519,6 +2572,13 @@ async def submit_writeback_route(
             "dry_run": False,
         }
 
+    # SECURITY (writeback authz): enforce server-side approval policy.
+    # The caller may only INCREASE strictness (opt in to approval); they cannot
+    # bypass a server-required gate by passing approval_required=False.
+    # _enforce_approval_policy returns True when either the server policy
+    # (NUBI_WRITEBACK_REQUIRE_APPROVAL env var) OR the caller's value is True.
+    effective_approval_required = _enforce_approval_policy(body.approval_required)
+
     store = get_writeback_store()
     record = await submit_writeback(
         org_id=org_id,
@@ -2527,7 +2587,7 @@ async def submit_writeback_route(
         target=body.target.model_dump(),
         mode=body.mode,
         created_by=user_id,
-        approval_required=body.approval_required,
+        approval_required=effective_approval_required,
         connector_write_fn=_noop_write,
         store=store,
         meta=body.meta,

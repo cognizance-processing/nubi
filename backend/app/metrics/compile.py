@@ -122,6 +122,10 @@ _MAX_QUERY_LIMIT: int = int(os.environ.get("NUBI_MAX_QUERY_LIMIT", 100_000))
 # Default row cap applied when mq.limit is None (callers wanting all rows must
 # set an explicit high limit, up to NUBI_MAX_QUERY_LIMIT).
 _DEFAULT_LIMIT: int = int(os.environ.get("NUBI_METRIC_DEFAULT_LIMIT", 100_000))
+# Cap on the total number of time_comparisons in a single MetricQuery.
+# Each non-window entry adds a correlated subquery/LATERAL scanning __base,
+# so an unbounded list is an O(N_tc × rows) resource risk.
+_MAX_TC_ENTRIES: int = int(os.environ.get("NUBI_MAX_TC_ENTRIES", 20))
 
 # Valid SQL identifier pattern (for entity/time columns in latest_snapshot)
 _IDENT_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
@@ -425,6 +429,11 @@ def _compile_layered(
     # (not twice as numerator AND NULLIF denominator), so the DB only evaluates
     # it once per row.
     lateral_joins: list[tuple[str, str]] = []
+    # FIX (Issue 3 duplicate-alias): each LATERAL alias must be unique even when
+    # the same measure+kind is used more than once (e.g. two pop_pct entries for
+    # the same measure with different periods).  Include the list index so that
+    # two identical (measure, kind, periods) entries still produce distinct aliases.
+    _tc_index: int = 0
 
     for tc in regular_comparisons:
         m_col = exp.column(tc.measure)
@@ -452,7 +461,9 @@ def _compile_layered(
                 # Wrap it in a LATERAL so it executes once per row and is
                 # referenced (not re-executed) for both the numerator and the
                 # NULLIF denominator.
-                lat_alias = f"__pp_{tc.measure}_{tc.periods}__"
+                # Include _tc_index to prevent duplicate aliases when the same
+                # measure+kind combo appears more than once in time_comparisons.
+                lat_alias = f"__pp_{tc.measure}_{tc.periods}_{_tc_index}__"
                 lat_col = f"{lat_alias}.pp_val"
                 pct_sql = (
                     f"({m_col_sql} - {lat_col}) "
@@ -478,7 +489,9 @@ def _compile_layered(
                 diff_expr = sqlglot.parse_one(diff_sql, dialect=dialect)
                 outer_select_exprs.append(exp.alias_(diff_expr, out_name))
             else:  # yoy_pct — FIX (Issue 3): compute py once via LATERAL
-                lat_alias = f"__py_{tc.measure}__"
+                # Include _tc_index to prevent duplicate aliases when the same
+                # measure+kind combo appears more than once in time_comparisons.
+                lat_alias = f"__py_{tc.measure}_{_tc_index}__"
                 lat_col = f"{lat_alias}.py_val"
                 pct_sql = (
                     f"({m_col_sql} - {lat_col}) "
@@ -541,6 +554,8 @@ def _compile_layered(
                 )
             win_expr = sqlglot.parse_one(win_sql, dialect=dialect)
             outer_select_exprs.append(exp.alias_(win_expr, out_name))
+
+        _tc_index += 1
 
     # ── Assemble the outer SELECT ────────────────────────────────────────────
     # Use "__base AS __outer" so that correlated subqueries (e.g. prior-year)
@@ -611,8 +626,12 @@ def _compile_layered(
 
     # ── Top-N with Other bucket (UNION approach) ─────────────────────────────
     if mq.top_n is not None and mq.top_n.other:
+        # FIX (Issue 2): pass base_sql directly so _apply_top_n_other never needs
+        # to re-extract the __base body from the AST (which mangles {{f0}} Jinja2
+        # filter placeholders, silently dropping user filters).
         sql = _apply_top_n_other(
-            sql, mq, metric, time_alias, all_dim_names, dialect
+            sql, mq, metric, time_alias, all_dim_names, dialect,
+            base_cte_body=base_sql,
         )
 
     return sql, params
@@ -738,6 +757,8 @@ def _apply_top_n_other(
     time_alias: str | None,
     all_dim_names: list[str],
     dialect: str,
+    *,
+    base_cte_body: str | None = None,
 ) -> str:
     """Extend a layered query with a rolled-up "Other" bucket for non-top-N members.
 
@@ -750,6 +771,12 @@ def _apply_top_n_other(
 
     Fix #1 (SQLi): ``other_label`` is validated in _govern (no quotes/backslash)
     and emitted via ``exp.Literal.string(other_label).sql(...)`` — never raw f-string.
+    Fix #2 (correctness): When base_cte_body is provided (always the case on the
+    layered path), use it verbatim instead of re-extracting from the AST.  The AST
+    round-trip mangles Jinja2 {{f0}} filter placeholders (for user filters) into
+    map/struct literals, silently dropping or corrupting user filters.  The caller
+    passes the already-correct base_sql string (with intact {{name}} placeholders)
+    via base_cte_body; AST extraction is kept only as a fallback for external callers.
     Fix #3 (correctness): When time_alias is set the top-N portion uses a WHERE IN
     membership filter (not a nested window-in-window, which is illegal).
     Fix #4 (correctness): NULL columns appended for every non-latest_snapshot
@@ -767,12 +794,40 @@ def _apply_top_n_other(
     # ── FIX #1: safe label literal via sqlglot ──────────────────────────────
     safe_other_label = exp.Literal.string(other_label).sql(dialect=dialect)
 
-    # ── Build the top-N portion using AST extraction (no paren-counting) ────────
-    # Re-parse the layered SQL to add the top-N restriction to the outer SELECT.
-    # FIX (Issue 2): use AST-based extraction instead of raw paren-counting so
-    # that default_filters with IN ('a','b') (parens inside string literals)
-    # cannot break the split.
+    # ── Resolve the __base CTE body ──────────────────────────────────────────
+    # FIX (Issue 2): prefer the base_cte_body passed directly by the caller (it
+    # contains intact Jinja2 {{name}} placeholders).  Fall back to AST extraction
+    # only when no base_cte_body is provided (e.g. external / legacy callers).
     import copy  # noqa: PLC0415
+    if base_cte_body is None:
+        # AST fallback: re-parse layered_sql to extract __base body.
+        # WARNING: this path WILL mangle {{f0}} Jinja2 placeholders into invalid
+        # SQL if the base CTE contains user filters.  It is retained only for
+        # backwards-compatible external usage; the internal layered path always
+        # supplies base_cte_body.
+        try:
+            full_tree = parse_sql_cached(layered_sql, dialect=dialect)
+        except Exception:
+            return layered_sql
+
+        if not isinstance(full_tree, exp.Select):
+            return layered_sql
+
+        for cte_node in full_tree.find_all(exp.CTE):
+            alias_node = cte_node.args.get("alias")
+            alias_name = (
+                alias_node.name.lower() if alias_node and hasattr(alias_node, "name") else ""
+            )
+            if alias_name == "__base":
+                base_cte_body = cte_node.this.sql(dialect=dialect)
+                break
+        if base_cte_body is None:
+            return layered_sql  # can't find __base CTE via AST; bail out.
+
+    # Now parse just the outer SELECT portion for top-N manipulation.
+    # We reconstruct a temporary full-tree for the top-N restriction only —
+    # we don't extract base_cte_body from this parse, so placeholder mangling
+    # in the CTE body is irrelevant.
     try:
         full_tree = parse_sql_cached(layered_sql, dialect=dialect)
     except Exception:
@@ -780,19 +835,6 @@ def _apply_top_n_other(
 
     if not isinstance(full_tree, exp.Select):
         return layered_sql
-
-    # Extract __base CTE body via AST: find the CTE node whose alias is "__base".
-    base_cte_body: str | None = None
-    for cte_node in full_tree.find_all(exp.CTE):
-        alias_node = cte_node.args.get("alias")
-        alias_name = (
-            alias_node.name.lower() if alias_node and hasattr(alias_node, "name") else ""
-        )
-        if alias_name == "__base":
-            base_cte_body = cte_node.this.sql(dialect=dialect)
-            break
-    if base_cte_body is None:
-        return layered_sql  # can't find __base CTE via AST; bail out.
 
     top_n_tree = copy.deepcopy(full_tree)
 
@@ -1124,6 +1166,19 @@ def _govern(metric: MetricDefinition, mq: MetricQuery) -> str | None:
                 f"(must match [A-Za-z_][A-Za-z0-9_]*).",
             )
 
+    # FIX (Issue 1 SQLi): validate rls_keys are safe SQL identifiers.
+    # rls_keys are interpolated directly (without quoting) into f-string SQL
+    # in _top_n_membership_sql (~line 651), _prior_year_subquery_sql (~line
+    # 1605-1607), and _prior_period_subquery_sql (~line 1666-1668).
+    # An rls_key like "org_id; DROP TABLE t --" would be a SQL injection vector.
+    for rls_key in metric.rls_keys:
+        if not _IDENT_RE.fullmatch(rls_key):
+            raise MetricError(
+                "bad_rls_key",
+                f"rls_key {rls_key!r} is not a valid SQL identifier "
+                f"(must match [A-Za-z_][A-Za-z0-9_]*).",
+            )
+
     # requested dimensions must be allowed.
     for dim_name in mq.dimensions:
         if metric.dimension(dim_name) is None:
@@ -1203,6 +1258,15 @@ def _govern(metric: MetricDefinition, mq: MetricQuery) -> str | None:
 
     # ── time_comparisons governance ─────────────────────────────────────────
     if mq.time_comparisons:
+        # FIX (Issue 3 resource): cap total time_comparisons to prevent
+        # O(N_tc × rows) scans from unbounded correlated-subquery lists.
+        if len(mq.time_comparisons) > _MAX_TC_ENTRIES:
+            raise MetricError(
+                "too_many_tc_entries",
+                f"time_comparisons has {len(mq.time_comparisons)} entries which "
+                f"exceeds the maximum of {_MAX_TC_ENTRIES} "
+                f"(set NUBI_MAX_TC_ENTRIES to override).",
+            )
         for tc in mq.time_comparisons:
             # FIX 1: validate tc.name (used as a SQL alias via out_name()) is a safe identifier.
             if tc.name is not None and not _IDENT_RE.fullmatch(tc.name):
