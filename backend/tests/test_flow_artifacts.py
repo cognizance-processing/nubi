@@ -834,9 +834,12 @@ def test_production_env_no_hmac_key_get_raises():
 
 
 def test_dev_env_no_hmac_key_uses_sentinel_with_warning():
-    """In non-production environments the dev sentinel is still accepted (with a warning).
+    """In named dev/test/ci environments the dev sentinel is still accepted (with a warning).
 
-    This ensures the existing dev/test workflow is not broken.
+    This ensures the existing dev/test workflow is not broken.  Note: since the
+    fix for the unset-ENV vulnerability, ENV must be explicitly set to a dev
+    value (e.g. "dev", "test", "ci") — an unset ENV (empty string) is now
+    treated as production-like and fails closed.
     """
     import os  # noqa: PLC0415
     import warnings  # noqa: PLC0415
@@ -845,6 +848,8 @@ def test_dev_env_no_hmac_key_uses_sentinel_with_warning():
     saved_hmac = os.environ.pop("NUBI_ARTIFACT_HMAC_KEY", None)
     saved_secret = os.environ.pop("NUBI_SECRET_KEY", None)
     saved_env = os.environ.pop("ENV", None)
+    # Explicitly set ENV=dev so the sentinel allowlist applies.
+    os.environ["ENV"] = "dev"
     try:
         with warnings.catch_warnings(record=True) as caught:
             warnings.simplefilter("always")
@@ -863,8 +868,11 @@ def test_dev_env_no_hmac_key_uses_sentinel_with_warning():
             os.environ["NUBI_ARTIFACT_HMAC_KEY"] = saved_hmac
         if saved_secret is not None:
             os.environ["NUBI_SECRET_KEY"] = saved_secret
+        # Restore ENV to whatever it was (or remove it if it was unset).
         if saved_env is not None:
             os.environ["ENV"] = saved_env
+        else:
+            os.environ.pop("ENV", None)
 
 
 # ---------------------------------------------------------------------------
@@ -982,3 +990,62 @@ def test_subprocess_tampered_spool_blob_rejected():
     # Cleanup.
     import shutil  # noqa: PLC0415
     shutil.rmtree(spool_dir, ignore_errors=True)
+
+
+# ---------------------------------------------------------------------------
+# 24. Unset ENV (empty string) with no key must FAIL CLOSED (MED key-mgmt fix)
+# ---------------------------------------------------------------------------
+
+
+def test_unset_env_no_hmac_key_raises():
+    """When ENV is not set (empty string) and no HMAC key is configured, _get_hmac_key
+    must raise RuntimeError (fail-closed).
+
+    SECURITY (MED key-mgmt): the original code included '' in the dev allowlist,
+    so a docker/helm deployment that omits ENV entirely would silently fall back
+    to the public sentinel key — making pickle RCE trivial for anyone with
+    object-store write access.  The fix removes '' from the allowlist so an
+    unset ENV is treated as production-like (fail-closed).
+    """
+    import os  # noqa: PLC0415
+    import unittest.mock  # noqa: PLC0415
+
+    art_store = _mem_store()
+    # Remove ENV, NUBI_ARTIFACT_HMAC_KEY, and NUBI_SECRET_KEY from the environment.
+    env_without_keys = {k: v for k, v in os.environ.items()
+                        if k not in ("ENV", "NUBI_ARTIFACT_HMAC_KEY", "NUBI_SECRET_KEY")}
+    with unittest.mock.patch.dict("os.environ", env_without_keys, clear=True):
+        with pytest.raises(RuntimeError, match="not configured"):
+            put_artifact({"x": 1}, kind="json", org_id=ORG_A, store=art_store)
+
+
+def test_dev_env_no_hmac_key_sentinel_allowed():
+    """When ENV=dev and no HMAC key is configured, the dev sentinel is accepted
+    (with a warning).  This keeps local developer workflows working.
+    """
+    import os  # noqa: PLC0415
+    import warnings  # noqa: PLC0415
+    import unittest.mock  # noqa: PLC0415
+
+    art_store = _mem_store()
+    env_dev = {k: v for k, v in os.environ.items()
+               if k not in ("NUBI_ARTIFACT_HMAC_KEY", "NUBI_SECRET_KEY")}
+    env_dev["ENV"] = "dev"
+    with unittest.mock.patch.dict("os.environ", env_dev, clear=True):
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            handle = put_artifact({"z": 42}, kind="json", org_id=ORG_A, store=art_store)
+            loaded = get_artifact(handle, org_id=ORG_A, store=art_store)
+
+    assert is_handle(handle)
+    assert loaded == {"z": 42}
+    # A sentinel-key warning must have been emitted.
+    sentinel_warnings = [
+        w for w in caught
+        if "insecure" in str(w.message).lower()
+        or "sentinel" in str(w.message).lower()
+        or "not set" in str(w.message).lower()
+    ]
+    assert len(sentinel_warnings) >= 1, (
+        f"Expected at least one sentinel warning for ENV=dev; got: {[str(w.message) for w in caught]}"
+    )

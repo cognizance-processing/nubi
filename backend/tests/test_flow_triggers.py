@@ -579,6 +579,81 @@ async def test_trigger_registry_round_trip():
 
 
 # ---------------------------------------------------------------------------
+# 14b. list_all is bounded by FLOWS_TRIGGER_LIST_ALL_LIMIT
+# ---------------------------------------------------------------------------
+
+
+async def test_list_all_is_bounded():
+    """list_all must never return more rows than the configured limit."""
+    import app.flows.triggers as triggers_module  # noqa: PLC0415
+
+    original_limit = triggers_module._FLOWS_TRIGGER_LIST_ALL_LIMIT
+    small_limit = 3
+    triggers_module._FLOWS_TRIGGER_LIST_ALL_LIMIT = small_limit
+    try:
+        registry = get_trigger_registry()
+        # Register more triggers than the limit.
+        for i in range(small_limit + 4):
+            await registry.register(
+                flow_id=f"flow-{i}",
+                kind="event",
+                source=f"evt.key.{i}",
+                org_id="org-test",
+            )
+
+        all_triggers = await registry.list_all("org-test")
+        assert len(all_triggers) <= small_limit, (
+            f"list_all must be bounded by FLOWS_TRIGGER_LIST_ALL_LIMIT={small_limit}, "
+            f"got {len(all_triggers)}"
+        )
+
+        # Explicit limit kwarg overrides the env ceiling.
+        two = await registry.list_all("org-test", limit=2)
+        assert len(two) == 2
+
+        # Other orgs are unaffected (isolation still holds).
+        other_org = await registry.list_all("other-org")
+        assert other_org == []
+    finally:
+        triggers_module._FLOWS_TRIGGER_LIST_ALL_LIMIT = original_limit
+
+
+async def test_pg_list_all_bounded(fake_pg_table):
+    """[PgTriggerRegistry] list_all() passes LIMIT to the DB query and respects it."""
+    import app.flows.triggers as triggers_module  # noqa: PLC0415
+
+    registry = PgTriggerRegistry()
+    small_limit = 2
+
+    original_limit = triggers_module._FLOWS_TRIGGER_LIST_ALL_LIMIT
+    triggers_module._FLOWS_TRIGGER_LIST_ALL_LIMIT = small_limit
+    try:
+        with (
+            patch("app.db.fetchrow", side_effect=fake_pg_table.fake_fetchrow),
+            patch("app.db.fetch", side_effect=fake_pg_table.fake_fetch),
+            patch("app.db.execute", side_effect=fake_pg_table.fake_execute),
+        ):
+            org_id = str(uuid.uuid4())
+
+            # Register more triggers than the limit.
+            for i in range(small_limit + 3):
+                await registry.register(
+                    flow_id=str(uuid.uuid4()),
+                    kind="event",
+                    source=f"bounded.evt.{i}",
+                    org_id=org_id,
+                )
+
+            all_triggers = await registry.list_all(org_id)
+            assert len(all_triggers) <= small_limit, (
+                f"PgTriggerRegistry.list_all must be bounded by limit={small_limit}, "
+                f"got {len(all_triggers)}"
+            )
+    finally:
+        triggers_module._FLOWS_TRIGGER_LIST_ALL_LIMIT = original_limit
+
+
+# ---------------------------------------------------------------------------
 # Integration: downstream trigger wired into runtime (advance_readiness hook)
 # ---------------------------------------------------------------------------
 
@@ -1218,10 +1293,12 @@ class _FakePgTable:
                 and r["kind"] == "downstream"
                 and r["enabled"]
             ]
-        if "WHERE ORG_ID" in q and len(args) == 1:
-            # list_all: args = (org_id,)
+        if "WHERE ORG_ID" in q and "SOURCE" not in q and "KIND" not in q:
+            # list_all: args = (org_id, limit)
             org_id = args[0]
-            return [dict(r) for r in self._rows if str(r["org_id"]) == str(org_id)]
+            limit = int(args[1]) if len(args) > 1 else 1000
+            rows = [dict(r) for r in self._rows if str(r["org_id"]) == str(org_id)]
+            return rows[:limit]
         return []
 
     async def fake_execute(self, query: str, *args: Any) -> str:

@@ -516,6 +516,7 @@ def _collect_canvas_data_sync(
     canvas: dict[str, Any],
     org_id: str,
     render_claims: dict[str, Any],
+    extra_params: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Collect per-binding data for *canvas* synchronously.
 
@@ -530,6 +531,16 @@ def _collect_canvas_data_sync(
         The owning org id.
     render_claims:
         Claims dict whose ``"policies"`` key carries the captured RLS context.
+        SECURITY: these are the *owner's* verified token policies only — they
+        are NEVER overwritten by request-body ``locked_params`` (that would be
+        an RLS-predicate injection allowing cross-tenant data exfiltration).
+    extra_params:
+        Per-recipient locked params, forwarded to ``collect_canvas_data`` as
+        extra *named query params* (the board-path equivalent of
+        :func:`~app.jobs.report.inject_locked_params`).  These bind named
+        ``{{param}}`` placeholders in the canvas' queries — they do NOT and
+        cannot alter the RLS policy slice, which comes from *render_claims*
+        only.  Forwarded only when the collector supports it (forward-compat).
 
     Returns
     -------
@@ -538,20 +549,32 @@ def _collect_canvas_data_sync(
         Empty dict on any catastrophic error.
     """
     import asyncio  # noqa: PLC0415
+    import inspect  # noqa: PLC0415
 
     from app.dashboards.collect import collect_canvas_data  # noqa: PLC0415
     from app.repos.provider import get_repo  # noqa: PLC0415
 
     canvas_id: str = canvas.get("id") or ""
 
+    # Forward extra_params only if the collector's signature accepts it, so we
+    # never raise a TypeError on collectors that predate named-param support.
+    _supports_extra_params = "extra_params" in inspect.signature(
+        collect_canvas_data
+    ).parameters
+
     async def _fetch() -> dict[str, Any]:
         repo = get_repo()
+        kwargs: dict[str, Any] = {
+            "claims": render_claims,
+            "repo": repo,
+            "canvas": canvas,  # pass pre-fetched canvas to skip redundant lookup
+        }
+        if _supports_extra_params and extra_params:
+            kwargs["extra_params"] = dict(extra_params)
         return await collect_canvas_data(
             canvas_id,
             org_id,
-            claims=render_claims,
-            repo=repo,
-            canvas=canvas,  # pass pre-fetched canvas to skip redundant lookup
+            **kwargs,
         )
 
     try:
@@ -576,6 +599,7 @@ def _render_canvas(
     *,
     org_id: str = "",
     render_claims: dict[str, Any] | None = None,
+    extra_params: dict[str, Any] | None = None,
 ) -> bytes | str:
     """Render a canvas to *fmt* (``'html'`` or ``'pdf'``).
 
@@ -589,7 +613,10 @@ def _render_canvas(
     org_id:
         The owning org id (for RLS-aware data collection).
     render_claims:
-        Claims with captured policies.
+        Claims with captured policies — the owner's verified RLS slice only.
+    extra_params:
+        Per-recipient locked params, forwarded as extra *named query params*
+        (never as RLS policy overrides).  See :func:`_collect_canvas_data_sync`.
 
     Returns
     -------
@@ -606,8 +633,12 @@ def _render_canvas(
     except Exception as exc:  # noqa: BLE001
         raise ValueError(f"Canvas doc parse error: {exc}") from exc
 
-    # Collect binding data (per-recipient RLS honoured via render_claims).
-    element_data = _collect_canvas_data_sync(canvas, org_id, render_claims or {})
+    # Collect binding data.  Per-recipient RLS is honoured via render_claims
+    # (owner's verified policies); per-recipient locked_params flow in as
+    # extra NAMED params only — they can never alter the RLS slice.
+    element_data = _collect_canvas_data_sync(
+        canvas, org_id, render_claims or {}, extra_params=extra_params
+    )
 
     if fmt == "pdf":
         return render_canvas_pdf(doc, element_data, title=doc.title or canvas.get("name"))
@@ -707,16 +738,24 @@ def _handle_canvas(
             per_locked = locked_params.get(recipient, {})
             cache_key = _json.dumps(per_locked, sort_keys=True)
             if cache_key not in _rendered_cache:
+                # SECURITY [RLS predicate injection]: render_claims carries the
+                # OWNER's verified token policies and must NOT be mutated by the
+                # schedule-request-body ``locked_params``.  Previously this path
+                # did ``per_claims['policies'].update(per_locked)`` — a writer
+                # could craft locked_params (e.g. {'tenant_id': 'other_tenant'})
+                # to OVERWRITE the owner's RLS slice and exfiltrate cross-tenant
+                # rows into the scheduled email.  We now mirror the BOARD path:
+                # locked_params flow in as extra NAMED query params only
+                # (extra_params), NEVER as policy overrides.  per_claims stays
+                # exactly the owner's verified policies.
                 per_claims = dict(render_claims)
-                # Merge locked_params into render_claims so RLS-aware data
-                # collection honours them (canvas data collect uses policies).
-                if per_locked:
-                    merged_policies = dict(per_claims.get("policies") or {})
-                    merged_policies.update(per_locked)
-                    per_claims["policies"] = merged_policies
                 try:
                     _rendered_cache[cache_key] = _render_canvas(
-                        canvas, fmt, org_id=org_id, render_claims=per_claims
+                        canvas,
+                        fmt,
+                        org_id=org_id,
+                        render_claims=per_claims,
+                        extra_params=per_locked,
                     )
                 except Exception as exc:  # noqa: BLE001
                     msg = f"report_send(canvas): render failed for {recipient!r}: {exc}"

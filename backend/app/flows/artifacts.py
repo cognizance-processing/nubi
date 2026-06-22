@@ -108,16 +108,19 @@ def _get_hmac_key() -> bytes:
     # No real key configured.  In any named/deployed environment this is a
     # hard failure — using a known sentinel key allows anyone to forge valid
     # HMAC signatures and trigger pickle RCE via a crafted blob in the object
-    # store.  Only local dev / CI / test / empty ENV values are safe to fall
-    # through to the insecure sentinel.
-    _DEV_ALLOWLIST = {"", "dev", "development", "test", "testing", "ci"}
+    # store.  Only explicitly-named local dev / CI / test environments are safe
+    # to fall through to the insecure sentinel.  An UNSET ENV (empty string) is
+    # NOT in the allowlist: a docker/helm deployment that forgets to set ENV
+    # must not silently fall back to the public sentinel — it must fail closed.
+    _DEV_ALLOWLIST = {"dev", "development", "test", "testing", "ci"}
     env = os.environ.get("ENV", "").strip().lower()
     if env not in _DEV_ALLOWLIST:
         raise RuntimeError(
             f"Artifact HMAC key is not configured (ENV={env!r}). "
             "Set NUBI_ARTIFACT_HMAC_KEY (or NUBI_SECRET_KEY) before starting "
             "the server. Refusing to sign/verify artifacts with an insecure "
-            "dev-only sentinel key."
+            "dev-only sentinel key. "
+            "For local development set ENV=dev (or test/ci) in your environment."
         )
     # Dev/test sentinel — not secret, but safe for local development and CI.
     import warnings  # noqa: PLC0415

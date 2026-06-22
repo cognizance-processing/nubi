@@ -391,7 +391,7 @@ class TestCanvasPerRecipientRls:
         sender = NullSender()
         render_call_count = [0]
 
-        def _counting_render(cv, fmt, *, org_id="", render_claims=None):
+        def _counting_render(cv, fmt, *, org_id="", render_claims=None, extra_params=None):
             render_call_count[0] += 1
             return "<html>ok</html>"
 
@@ -426,7 +426,7 @@ class TestCanvasPerRecipientRls:
         sender = NullSender()
         render_call_count = [0]
 
-        def _counting_render(cv, fmt, *, org_id="", render_claims=None):
+        def _counting_render(cv, fmt, *, org_id="", render_claims=None, extra_params=None):
             render_call_count[0] += 1
             return "<html>ok</html>"
 
@@ -452,14 +452,24 @@ class TestCanvasPerRecipientRls:
         assert result["emails_sent"] == 2
         assert render_call_count[0] == 2
 
-    def test_locked_params_forwarded_to_render_claims(self):
-        """Locked params must be merged into per-recipient render_claims."""
+    def test_locked_params_forwarded_as_named_params_not_policies(self):
+        """Locked params flow in as extra NAMED query params, NOT RLS policies.
+
+        SECURITY [RLS predicate injection]: per-recipient ``locked_params`` come
+        from the schedule request body.  They must be forwarded to the canvas
+        data collector as extra named query params (``extra_params``) — the
+        board-path equivalent of ``inject_locked_params`` — and must NOT be
+        merged into ``render_claims['policies']``.  The RLS policy slice belongs
+        to the owner's verified token alone.
+        """
         canvas = _make_canvas()
         sender = NullSender()
         captured_claims: list[dict] = []
+        captured_extra: list[dict] = []
 
-        def _capture_render(cv, fmt, *, org_id="", render_claims=None):
+        def _capture_render(cv, fmt, *, org_id="", render_claims=None, extra_params=None):
             captured_claims.append(dict(render_claims or {}))
+            captured_extra.append(dict(extra_params or {}))
             return "<html>ok</html>"
 
         config = {
@@ -479,11 +489,70 @@ class TestCanvasPerRecipientRls:
                     report_send_handle(config, _ctx(), claims={})
 
         assert len(captured_claims) == 1
-        # The locked_params must have been merged into policies.
-        policies = captured_claims[0].get("policies") or {}
-        assert policies.get("tenant_id") == "acme", (
-            f"Expected tenant_id='acme' in render_claims.policies, got {policies!r}"
+        # locked_params must be forwarded as extra named params...
+        assert captured_extra[0].get("tenant_id") == "acme", (
+            f"Expected tenant_id='acme' in extra_params, got {captured_extra[0]!r}"
         )
+        # ...and must NOT have leaked into the RLS policy slice.
+        policies = captured_claims[0].get("policies") or {}
+        assert "tenant_id" not in policies, (
+            f"locked_params leaked into render_claims.policies (RLS injection): {policies!r}"
+        )
+
+    def test_malicious_locked_params_cannot_override_owner_rls(self):
+        """SECURITY [RLS predicate injection from request body].
+
+        A writer who controls the schedule's ``locked_params`` must NOT be able
+        to overwrite the owner's verified RLS policy slice.  Even when the
+        locked_params carry a key that COLLIDES with an owner policy key (e.g.
+        ``tenant_id``), the applied ``render_claims['policies']`` passed to the
+        renderer/collector must remain EXACTLY the owner's verified token
+        policies — the malicious value must never reach the RLS predicate, so no
+        cross-tenant rows can be rendered into the scheduled email.
+        """
+        canvas = _make_canvas()
+        sender = NullSender()
+        captured_claims: list[dict] = []
+        captured_extra: list[dict] = []
+
+        def _capture_render(cv, fmt, *, org_id="", render_claims=None, extra_params=None):
+            captured_claims.append(dict(render_claims or {}))
+            captured_extra.append(dict(extra_params or {}))
+            return "<html>ok</html>"
+
+        # Owner's verified token RLS: confined to tenant 'owner_tenant'.
+        owner_policies = {"tenant_id": "owner_tenant"}
+        config = {
+            "canvas_id": canvas["id"],
+            "org_id": canvas["org_id"],
+            "format": "html",
+            "recipients": ["evil@x.com"],
+            "apply_user_permissions": True,
+            # Attacker-crafted locked_params that try to OVERWRITE the owner's
+            # RLS slice with a different tenant.
+            "locked_params": {"evil@x.com": {"tenant_id": "other_tenant"}},
+            "policies": owner_policies,
+        }
+        with _patch_canvas(canvas):
+            with patch("app.jobs.report.get_default_sender", return_value=sender):
+                with patch(
+                    "app.flows.handlers.report_send._render_canvas",
+                    side_effect=_capture_render,
+                ):
+                    report_send_handle(config, _ctx(), claims={})
+
+        assert len(captured_claims) == 1
+        applied_policies = captured_claims[0].get("policies") or {}
+        # The owner's RLS slice must win — untouched by the malicious input.
+        assert applied_policies == owner_policies, (
+            "Malicious locked_params overwrote the owner's RLS policy slice "
+            f"(cross-tenant exfiltration): applied={applied_policies!r}, "
+            f"expected={owner_policies!r}"
+        )
+        assert applied_policies.get("tenant_id") == "owner_tenant"
+        # The attacker value is confined to extra named params and can never
+        # alter the RLS predicate.
+        assert captured_extra[0].get("tenant_id") == "other_tenant"
 
 
 # ---------------------------------------------------------------------------

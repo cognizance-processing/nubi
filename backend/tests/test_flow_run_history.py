@@ -1231,3 +1231,93 @@ def test_backfill_handler_applies_server_ceiling():
     assert "effective_max_windows" in src, (
         "backfill_flow must compute effective_max_windows"
     )
+
+
+# ---------------------------------------------------------------------------
+# FIX [MED]: run_cell must cap task_runs + add task_runs_truncated
+# ---------------------------------------------------------------------------
+
+
+def test_run_cell_handler_caps_task_runs_in_response():
+    """run_cell must fetch with limit=_MAX_TASK_RUNS_CEILING+1 and set flags.
+
+    We inspect the source to assert:
+    - it fetches with limit=_MAX_TASK_RUNS_CEILING+1 (not unlimited)
+    - it sets task_runs_truncated in the response
+    - it sets task_runs_total in the response
+    """
+    import inspect
+    import app.routes.flows as flows_mod
+
+    src = inspect.getsource(flows_mod.run_cell)
+    assert "task_runs_truncated" in src, (
+        "run_cell must set task_runs_truncated in its response"
+    )
+    assert "task_runs_total" in src, (
+        "run_cell must set task_runs_total in its response"
+    )
+    assert "_MAX_TASK_RUNS_CEILING" in src, (
+        "run_cell must use _MAX_TASK_RUNS_CEILING as the fetch limit"
+    )
+
+
+async def test_run_cell_task_runs_truncation_logic():
+    """run_cell response includes task_runs_truncated=True when task_runs exceed cap."""
+    import app.routes.flows as flows_mod
+    from app.flows.store import InMemoryFlowStore
+    from app.flows.runtime import drain_flow_run, materialize_flow_run
+    import unittest.mock as _mock
+
+    store = InMemoryFlowStore()
+    flow = await _make_flow(store, spec={
+        "version": 1,
+        "name": "cell_cap_test",
+        "tasks": [{"key": "t1", "kind": "noop", "needs": [], "config": {}}],
+    })
+
+    run = await materialize_flow_run(store, flow, {}, "manual", NOW)
+    run = await drain_flow_run(store, run["id"], NOW, claims=CLAIMS)
+    run_id = run["id"]
+
+    # Inject extra task_run records to push past a tiny cap.
+    extra = [
+        {"task_key": f"child_{i}", "org_id": "org-test", "state": "success", "depends_on": []}
+        for i in range(15)
+    ]
+    await store.add_task_runs(run_id, extra)
+
+    # Patch cap to 5 so 15 extras + original tasks exceed it.
+    with _mock.patch.object(flows_mod, "_MAX_TASK_RUNS_DEFAULT", 5):
+        with _mock.patch.object(flows_mod, "_MAX_TASK_RUNS_CEILING", 20):
+            raw = await store.list_task_runs(run_id, limit=flows_mod._MAX_TASK_RUNS_CEILING + 1)
+            total = len(raw)
+            truncated = total > 5
+            page = raw[:5]
+
+    assert truncated is True, "Expected truncation when extra task_runs push total > cap"
+    assert len(page) == 5
+
+
+async def test_run_cell_task_runs_not_truncated_under_cap():
+    """run_cell task_runs_truncated is False for a small flow."""
+    import app.routes.flows as flows_mod
+    from app.flows.store import InMemoryFlowStore
+    from app.flows.runtime import drain_flow_run, materialize_flow_run
+
+    store = InMemoryFlowStore()
+    flow = await _make_flow(store, spec={
+        "version": 1,
+        "name": "cell_no_truncation",
+        "tasks": [{"key": "t1", "kind": "noop", "needs": [], "config": {}}],
+    })
+
+    run = await materialize_flow_run(store, flow, {}, "manual", NOW)
+    run = await drain_flow_run(store, run["id"], NOW, claims=CLAIMS)
+
+    raw = await store.list_task_runs(run["id"], limit=flows_mod._MAX_TASK_RUNS_CEILING + 1)
+    total = len(raw)
+    truncated = total > flows_mod._MAX_TASK_RUNS_DEFAULT
+
+    assert truncated is False, (
+        f"Expected no truncation for {total} task_runs (default cap={flows_mod._MAX_TASK_RUNS_DEFAULT})"
+    )

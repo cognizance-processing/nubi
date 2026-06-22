@@ -822,3 +822,86 @@ class TestMapBranchTaskRunColumns:
             assert tr["branch_taken"] is None, (
                 f"Expected None branch_taken for {tr['task_key']}"
             )
+
+
+# ---------------------------------------------------------------------------
+# 7. list_flows bounding (limit / NUBI_MAX_FLOWS)
+# ---------------------------------------------------------------------------
+
+
+class TestListFlowsBounded:
+    """list_flows respects the limit parameter and the NUBI_MAX_FLOWS ceiling."""
+
+    async def test_list_flows_default_limit_bounds_result(self):
+        """When more flows exist than the effective limit only up to limit rows
+        are returned, proving list_flows is never unbounded.
+
+        We pass limit=3 explicitly so the test is independent of the
+        NUBI_MAX_FLOWS env var value.
+        """
+        store = InMemoryFlowStore()
+        for i in range(5):
+            await store.create_flow(
+                org_id="org-bound",
+                created_by="user-1",
+                name=f"flow_{i}",
+                spec={"version": 1, "name": f"flow_{i}", "tasks": []},
+            )
+
+        # Without explicit limit all 5 are within the default 1000 ceiling.
+        all_flows = await store.list_flows("org-bound")
+        assert len(all_flows) == 5
+
+        # With an explicit tight limit only that many rows are returned.
+        capped = await store.list_flows("org-bound", limit=3)
+        assert len(capped) == 3
+
+    async def test_list_flows_limit_returns_oldest_first(self):
+        """With limit < total, the returned slice is the oldest rows (ORDER BY
+        created_at ASC), consistent with the documented sort order."""
+        store = InMemoryFlowStore()
+        created = []
+        for i in range(5):
+            f = await store.create_flow(
+                org_id="org-order",
+                created_by="user-1",
+                name=f"flow_{i}",
+                spec={"version": 1, "name": f"flow_{i}", "tasks": []},
+            )
+            created.append(f)
+
+        capped = await store.list_flows("org-order", limit=2)
+        assert len(capped) == 2
+        assert capped[0]["id"] == created[0]["id"]
+        assert capped[1]["id"] == created[1]["id"]
+
+    async def test_list_flows_limit_zero_returns_empty(self):
+        """limit=0 is a valid sentinel — callers should never receive rows."""
+        store = InMemoryFlowStore()
+        await store.create_flow(
+            org_id="org-z",
+            created_by="user-1",
+            name="f1",
+            spec={"version": 1, "name": "f1", "tasks": []},
+        )
+        result = await store.list_flows("org-z", limit=0)
+        assert result == []
+
+    async def test_list_flows_nubi_max_flows_env_respected(self, monkeypatch):
+        """Patching the module-level _NUBI_MAX_FLOWS cap is honoured."""
+        import app.flows.store as store_mod
+
+        monkeypatch.setattr(store_mod, "_NUBI_MAX_FLOWS", 2)
+
+        store = InMemoryFlowStore()
+        for i in range(4):
+            await store.create_flow(
+                org_id="org-env",
+                created_by="user-1",
+                name=f"flow_{i}",
+                spec={"version": 1, "name": f"flow_{i}", "tasks": []},
+            )
+
+        # Without explicit limit the module cap of 2 applies.
+        result = await store.list_flows("org-env")
+        assert len(result) == 2

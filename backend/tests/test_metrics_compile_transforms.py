@@ -1472,6 +1472,174 @@ def test_top_n_time_grain_executes_in_duckdb() -> None:
     assert "C" not in regions
 
 
+# ── NULL-dim soundness: top_n.other + time_grain ─────────────────────────────
+
+def test_top_n_other_time_grain_null_dim_routes_to_other() -> None:
+    """top_n.other + time_grain with NULL dimension values:
+
+    The membership subquery excludes NULL dims (so NULL never becomes a top-N
+    member), and the Other arm routes NULL-dim rows into the Other bucket via
+    `OR <dim> IS NULL`.  Regression for the NULL-unsound NOT IN bug:
+      (A) NULL-dim rows must NOT be dropped — they land in Other.
+      (B) a NULL dim must never poison NOT IN so the whole Other bucket vanishes.
+    """
+    con = _duckdb_conn()
+    con.execute("""
+        CREATE TABLE orders_null (
+            region VARCHAR,
+            amount DOUBLE,
+            created_at DATE
+        )
+    """)
+    # A=300, B=125 are top-2.  C=10 is a non-top-N real region.
+    # NULL-dim rows total 999 (would dominate ranking if not excluded; would
+    # poison NOT IN if allowed into the membership set).
+    con.execute("""
+        INSERT INTO orders_null VALUES
+            ('A',  100, '2024-01-01'),
+            ('A',  200, '2024-02-01'),
+            ('B',   50, '2024-01-01'),
+            ('B',   75, '2024-02-01'),
+            ('C',   10, '2024-01-01'),
+            (NULL, 500, '2024-01-01'),
+            (NULL, 499, '2024-02-01')
+    """)
+    from app.metrics.models import TimeDimension as TD
+    m = MetricDefinition(
+        id="revenue",
+        name="Revenue",
+        measure=Measure(name="revenue", agg="sum", expr="amount"),
+        base_table="orders_null",
+        dimensions=(Dimension(name="region"),),
+        time_dimension=TD(
+            column="created_at",
+            grains=("day", "week", "month", "quarter", "year"),
+            default_grain="day",
+        ),
+    )
+    mq = MetricQuery(
+        metric_id="revenue",
+        dimensions=("region",),
+        time_grain="month",
+        top_n=TopN(dimension="region", n=2, order="desc", other=True, other_label="Other"),
+    )
+    sql, _ = compile_metric(m, mq)
+    # Membership subquery must exclude NULL dims (so NULL can't rank into top-N
+    # and can't poison NOT IN).
+    assert "IS NOT NULL" in sql.upper() or "NOT REGION IS NULL" in sql.upper()
+    # Other arm must route NULL-dim rows into Other.
+    assert "IS NULL" in sql.upper()
+    rows = con.execute(sql).fetchall()
+
+    # Total revenue conserved: nothing dropped.  Total = 300+125+10+999 = 1434.
+    # Columns: region, created_at_month, revenue (no org_id; no rls_keys).
+    rev_idx = 2
+    total = sum(r[rev_idx] for r in rows)
+    assert total == 1434, f"Revenue not conserved (rows dropped?): {rows}"
+
+    # Top-2 real regions A and B must appear under their own labels.
+    labelled = {r[0] for r in rows}
+    assert "A" in labelled
+    assert "B" in labelled
+
+    # The Other bucket must EXIST and be non-empty (NULL did not poison NOT IN).
+    other_rows = [r for r in rows if r[0] == "Other"]
+    assert other_rows, f"Other bucket vanished — NULL poisoned NOT IN: {rows}"
+    # Other revenue = C (10) + NULL rows (999) = 1009.
+    other_total = sum(r[rev_idx] for r in other_rows)
+    assert other_total == 1009, f"Other bucket wrong (NULL dropped or C dropped): {other_rows}"
+
+
+def test_top_n_other_no_time_grain_null_dim_in_other_unchanged() -> None:
+    """The no-time-grain QUALIFY/complement-RANK path already buckets NULL dims
+    into Other (RANK treats NULL as a rankable value), so it must be unchanged.
+
+    This guards against the NULL fix accidentally being applied to (and breaking)
+    the QUALIFY-RANK path.
+    """
+    con = _duckdb_conn()
+    con.execute("""
+        CREATE TABLE sales_null_ntg (region VARCHAR, amount DOUBLE)
+    """)
+    con.execute("""
+        INSERT INTO sales_null_ntg VALUES
+            ('A', 300), ('B', 125), ('C', 10), (NULL, 7)
+    """)
+    m = MetricDefinition(
+        id="sales",
+        name="Sales",
+        measure=Measure(name="total", agg="sum", expr="amount"),
+        base_table="sales_null_ntg",
+        dimensions=(Dimension(name="region"),),
+    )
+    mq = MetricQuery(
+        metric_id="sales",
+        dimensions=("region",),
+        top_n=TopN(dimension="region", n=2, order="desc", other=True, other_label="Other"),
+    )
+    sql, _ = compile_metric(m, mq)
+    # The no-time-grain path uses QUALIFY (complement RANK), not the membership
+    # NOT IN subquery — so the NULL membership filter must not appear here.
+    assert "QUALIFY" in sql.upper()
+    rows = con.execute(sql).fetchall()
+    rev_idx = 1
+    total = sum(r[rev_idx] for r in rows)
+    assert total == 442, f"Revenue not conserved: {rows}"  # 300+125+10+7
+    other_rows = [r for r in rows if r[0] == "Other"]
+    assert other_rows, f"Other bucket vanished: {rows}"
+    # Other = C (10) + NULL (7) = 17.
+    assert sum(r[rev_idx] for r in other_rows) == 17, other_rows
+
+
+# ── SQLi defense-in-depth: membership build site ─────────────────────────────
+
+def test_top_n_membership_sql_rejects_injection_dim_name() -> None:
+    """A crafted dimension name cannot reach _top_n_membership_sql's f-string
+    unvalidated: _govern's _IDENT_RE check fails closed first.
+
+    Documents/locks in the _govern guarantee that protects the membership
+    f-string interpolation of dim_col (and, by the same path, rank_measure).
+    """
+    m = MetricDefinition(
+        id="revenue",
+        name="Revenue",
+        measure=Measure(name="revenue", agg="sum", expr="amount"),
+        base_table="orders",
+        # Malicious dimension name — would inject SQL if interpolated raw.
+        dimensions=(Dimension(name="region) ; DROP TABLE orders --"),),
+    )
+    mq = MetricQuery(
+        metric_id="revenue",
+        dimensions=("region) ; DROP TABLE orders --",),
+        top_n=TopN(
+            dimension="region) ; DROP TABLE orders --",
+            n=2, order="desc", other=True,
+        ),
+    )
+    with pytest.raises(MetricError) as ei:
+        compile_metric(m, mq)
+    assert ei.value.code == "bad_dimension_name"
+
+
+def test_top_n_membership_build_site_fails_closed_on_bad_identifier() -> None:
+    """The membership build site asserts identifier safety itself (defense in
+    depth): calling _top_n_membership_sql with a non-identifier name fails closed
+    even if _govern were somehow bypassed."""
+    from app.metrics.compile import _top_n_membership_sql
+
+    with pytest.raises(MetricError) as ei_dim:
+        _top_n_membership_sql(
+            "region); DROP TABLE t --", "revenue", "DESC", 3, rls_keys=(),
+        )
+    assert ei_dim.value.code == "bad_dimension_name"
+
+    with pytest.raises(MetricError) as ei_meas:
+        _top_n_membership_sql(
+            "region", "revenue); DROP TABLE t --", "DESC", 3, rls_keys=(),
+        )
+    assert ei_meas.value.code == "bad_measure_name"
+
+
 # ── Fix 3: Other-bucket re-aggregation ───────────────────────────────────────
 
 def _make_multi_agg_metric() -> MetricDefinition:

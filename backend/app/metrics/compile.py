@@ -790,10 +790,41 @@ def _top_n_membership_sql(
     The dim column is the GROUP BY key (unique per row here), so it is a total,
     stable ordering of the tied group.
     """
-    rls_predicates = " AND ".join(
-        f"__base.{k} = {outer_alias}.{k}" for k in rls_keys
-    )
-    where_clause = f"WHERE {rls_predicates} " if rls_predicates else ""
+    # SQLi defense-in-depth: dim_col and rank_measure are interpolated UNQUOTED
+    # into this f-string.  _govern guarantees both are _IDENT_RE-safe before any
+    # caller reaches here: dim_col == tn.dimension is validated to be in
+    # mq.dimensions (line ~1465), every requested dimension must be an allowed
+    # metric dimension (line ~1295), and every metric dimension name is
+    # _IDENT_RE-validated (line ~1244); rank_measure == (tn.measure or
+    # metric.measure.name) is validated to be a base/derived measure (line
+    # ~1472), and every base/derived measure name is _IDENT_RE-validated (lines
+    # ~1251/~1258).  Assert it here so this build site fails closed should any
+    # future path reach it without governance.
+    if not _IDENT_RE.fullmatch(dim_col):
+        raise MetricError(
+            "bad_dimension_name",
+            f"top_n dimension {dim_col!r} is not a valid SQL identifier.",
+        )
+    if not _IDENT_RE.fullmatch(rank_measure):
+        raise MetricError(
+            "bad_measure_name",
+            f"top_n rank measure {rank_measure!r} is not a valid SQL identifier.",
+        )
+    # NULL-soundness: the membership subquery feeds an `<dim> IN (...)` (top-N
+    # arm) and `<dim> NOT IN (...)` (Other arm) test.  A NULL member poisons
+    # SQL's three-valued logic: `x NOT IN (..., NULL, ...)` is NULL (never TRUE)
+    # for every x, which would silently empty the ENTIRE Other bucket.  Exclude
+    # NULL-dim rows from membership so NULL can never become a member; NULL-dim
+    # rows are then routed into the Other bucket by _build_other_select's
+    # `OR <dim> IS NULL` clause.
+    null_filter = f"{dim_col} IS NOT NULL"
+    if rls_keys:
+        rls_predicates = " AND ".join(
+            f"__base.{k} = {outer_alias}.{k}" for k in rls_keys
+        )
+        where_clause = f"WHERE {rls_predicates} AND {null_filter} "
+    else:
+        where_clause = f"WHERE {null_filter} "
     return (
         f"SELECT {dim_col} FROM __base "
         f"{where_clause}"
@@ -987,13 +1018,25 @@ def _build_other_select(
             )
             from_node = exp.Table(this=exp.to_identifier("__base"))
         membership_expr = sqlglot.parse_one(membership_sql, dialect=dialect)
-        not_in_cond = exp.Not(
-            this=exp.paren(
-                exp.In(
-                    this=exp.column(dim_col),
-                    query=exp.Subquery(this=membership_expr),
+        # NULL-soundness: the membership subquery now excludes NULL-dim rows
+        # (see _top_n_membership_sql), so the top-N set never contains NULL and
+        # `<dim> NOT IN (...)` is no longer poisoned to NULL.  But a NULL-dim row
+        # itself still yields `NULL NOT IN (...)` => NULL (never TRUE), so it
+        # would be dropped from the Other bucket too.  Route NULL-dim rows into
+        # Other explicitly with `OR <dim> IS NULL` so no row is ever dropped.
+        not_in_cond = exp.Or(
+            this=exp.Not(
+                this=exp.paren(
+                    exp.In(
+                        this=exp.column(dim_col),
+                        query=exp.Subquery(this=membership_expr),
+                    )
                 )
-            )
+            ),
+            expression=exp.Is(
+                this=exp.column(dim_col),
+                expression=exp.Null(),
+            ),
         )
 
     # ── Projection (column order MUST match the top-N arm) ───────────────────

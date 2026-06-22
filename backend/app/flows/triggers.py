@@ -62,6 +62,11 @@ _FLOWS_TRIGGER_MAX_DEPTH: int = int(os.environ.get("FLOWS_TRIGGER_MAX_DEPTH", "8
 # Default 50; override with the FLOWS_TRIGGER_MAX_FANOUT environment variable.
 _FLOWS_TRIGGER_MAX_FANOUT: int = int(os.environ.get("FLOWS_TRIGGER_MAX_FANOUT", "50"))
 
+# B6 — list_all ceiling.
+# GET /flows/triggers (list_all) must not scan an unbounded number of rows.
+# Default 1000; override with FLOWS_TRIGGER_LIST_ALL_LIMIT environment variable.
+_FLOWS_TRIGGER_LIST_ALL_LIMIT: int = int(os.environ.get("FLOWS_TRIGGER_LIST_ALL_LIMIT", "1000"))
+
 
 # ---------------------------------------------------------------------------
 # Trigger data-class
@@ -161,12 +166,14 @@ class InMemoryTriggerRegistry:
             and t.source == upstream_flow_id
         ]
 
-    async def list_all(self, org_id: str) -> list[Trigger]:
-        """Return all triggers for *org_id*."""
-        return [
-            t for t in self._triggers.values()
-            if str(t.org_id) == str(org_id)
-        ]
+    async def list_all(self, org_id: str, limit: int | None = None) -> list[Trigger]:
+        """Return triggers for *org_id*, newest-first up to *limit* (default ceiling)."""
+        effective_limit = limit if limit is not None else _FLOWS_TRIGGER_LIST_ALL_LIMIT
+        rows = sorted(
+            (t for t in self._triggers.values() if str(t.org_id) == str(org_id)),
+            key=lambda t: t.created_at,
+        )
+        return rows[:effective_limit]
 
     async def get(self, trigger_id: str) -> Trigger | None:
         """Return the trigger by id, or None."""
@@ -320,13 +327,24 @@ class PgTriggerRegistry:
         )
         return [_row_to_trigger(r) for r in rows]
 
-    async def list_all(self, org_id: str) -> list[Trigger]:
-        """Return all triggers for *org_id*."""
+    async def list_all(self, org_id: str, limit: int | None = None) -> list[Trigger]:
+        """Return triggers for *org_id*, oldest-first up to *limit* (default ceiling).
+
+        The LIMIT prevents unbounded full-table scans on large tenants.
+        Override the default ceiling via the FLOWS_TRIGGER_LIST_ALL_LIMIT env var.
+        """
         from app.db import fetch as db_fetch  # noqa: PLC0415
 
+        effective_limit = limit if limit is not None else _FLOWS_TRIGGER_LIST_ALL_LIMIT
         rows = await db_fetch(
-            "SELECT * FROM flow_triggers WHERE org_id = $1::uuid ORDER BY created_at ASC",
+            """
+            SELECT * FROM flow_triggers
+            WHERE org_id = $1::uuid
+            ORDER BY created_at ASC
+            LIMIT $2
+            """,
             org_id,
+            effective_limit,
         )
         return [_row_to_trigger(r) for r in rows]
 

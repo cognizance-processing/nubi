@@ -30,10 +30,18 @@ Design
 
 from __future__ import annotations
 
+import os
 import uuid
 from copy import deepcopy
 from datetime import datetime, timezone
 from typing import Any
+
+# ---------------------------------------------------------------------------
+# Module-level cap: maximum flows returned by list_flows.
+# Override with the NUBI_MAX_FLOWS environment variable.
+# ---------------------------------------------------------------------------
+_MAX_FLOWS_DEFAULT = 1000
+_NUBI_MAX_FLOWS: int = int(os.environ.get("NUBI_MAX_FLOWS", _MAX_FLOWS_DEFAULT))
 
 
 def _seed_from_run_id(run_id: str) -> int:
@@ -155,13 +163,27 @@ class InMemoryFlowStore:
         return deepcopy(flow) if flow is not None else None
 
     async def list_flows(
-        self, org_id: str, project_id: str | None = None
+        self,
+        org_id: str,
+        project_id: str | None = None,
+        limit: int | None = None,
     ) -> list[Flow]:
-        """Return all flows belonging to *org_id*, sorted by created_at.
+        """Return flows belonging to *org_id*, sorted by created_at ASC.
 
-        When *project_id* is provided the result is additionally scoped to
-        that project; when ``None`` all of the org's flows are returned.
+        Parameters
+        ----------
+        org_id:
+            The owning organisation.
+        project_id:
+            When provided the result is additionally scoped to that project;
+            when ``None`` all of the org's flows are returned.
+        limit:
+            Maximum number of rows to return.  Defaults to
+            ``NUBI_MAX_FLOWS`` (env, default 1000) so the entire org's
+            spec blobs are never loaded into RAM unboundedly.  Pass an
+            explicit value to override (e.g. a tighter per-route cap).
         """
+        effective_limit = limit if limit is not None else _NUBI_MAX_FLOWS
         rows = [
             deepcopy(f)
             for f in self._flows.values()
@@ -172,7 +194,7 @@ class InMemoryFlowStore:
             )
         ]
         rows.sort(key=lambda r: r["created_at"])
-        return rows
+        return rows[:effective_limit]
 
     async def update_flow(self, flow_id: str, fields: dict[str, Any]) -> Flow | None:
         """Update mutable fields on a flow in-place; return the updated copy.
@@ -976,26 +998,43 @@ class PgFlowStore:
         return _row_to_flow(row) if row is not None else None
 
     async def list_flows(
-        self, org_id: str, project_id: str | None = None
+        self,
+        org_id: str,
+        project_id: str | None = None,
+        limit: int | None = None,
     ) -> list[Flow]:
-        """Return all flows belonging to *org_id*, sorted by created_at.
+        """Return flows belonging to *org_id*, sorted by created_at ASC.
 
-        When *project_id* is provided the result is additionally scoped to
-        that project; when ``None`` all of the org's flows are returned.
+        Parameters
+        ----------
+        org_id:
+            The owning organisation.
+        project_id:
+            When provided the result is additionally scoped to that project;
+            when ``None`` all of the org's flows are returned.
+        limit:
+            Maximum rows returned.  Applied as a SQL LIMIT so the DB never
+            sends an unbounded result set.  Defaults to ``NUBI_MAX_FLOWS``
+            (env, default 1000).
         """
         from app.db import fetch as db_fetch  # noqa: PLC0415
+
+        effective_limit = limit if limit is not None else _NUBI_MAX_FLOWS
 
         if project_id is not None:
             rows = await db_fetch(
                 "SELECT * FROM flows WHERE org_id = $1::uuid "
-                "AND project_id = $2::uuid ORDER BY created_at ASC",
+                "AND project_id = $2::uuid ORDER BY created_at ASC LIMIT $3",
                 org_id,
                 project_id,
+                effective_limit,
             )
         else:
             rows = await db_fetch(
-                "SELECT * FROM flows WHERE org_id = $1::uuid ORDER BY created_at ASC",
+                "SELECT * FROM flows WHERE org_id = $1::uuid "
+                "ORDER BY created_at ASC LIMIT $2",
                 org_id,
+                effective_limit,
             )
         return [_row_to_flow(r) for r in rows]
 

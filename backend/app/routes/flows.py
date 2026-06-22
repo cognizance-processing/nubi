@@ -1662,11 +1662,15 @@ async def run_cell(
         flow_run = await materialize_flow_run(store, transient_flow, body.params, "manual", now)
         flow_run = await drain_flow_run(store, flow_run["id"], now, claims=claims)
 
-        task_runs = await store.list_task_runs(flow_run["id"])
+        # Cap task_runs in the response (mirrors GET /flows/runs/{run_id}).
+        raw_task_runs = await store.list_task_runs(flow_run["id"], limit=_MAX_TASK_RUNS_CEILING + 1)
+        task_runs_total = len(raw_task_runs)
+        task_runs_truncated = task_runs_total > _MAX_TASK_RUNS_DEFAULT
+        task_runs_page = raw_task_runs[:_MAX_TASK_RUNS_DEFAULT]
 
         # Extract the target cell's result.
         target_tr = next(
-            (tr for tr in task_runs if tr["task_key"] == cell_key), None
+            (tr for tr in task_runs_page if tr["task_key"] == cell_key), None
         )
         if target_tr is None or target_tr.get("state") != "success":
             error_msg = (target_tr or {}).get("error") or "Cell execution failed."
@@ -1684,7 +1688,9 @@ async def run_cell(
             "rows": rows,
             "row_count": len(rows),
             "flow_run_id": flow_run["id"],
-            "task_runs": [_serialize_task_run(tr) for tr in task_runs],
+            "task_runs": [_serialize_task_run(tr) for tr in task_runs_page],
+            "task_runs_truncated": task_runs_truncated,
+            "task_runs_total": task_runs_total,
         }
     finally:
         # Clean up the transient flow to avoid polluting the store.
