@@ -21,11 +21,11 @@ Two execution modes
 -------------------
 ``ephemeral``     (default) — in-memory + TTL cache; used for live interactive
                   board views.
-``materialized``  — hook/branch for scheduled flows that write to derived tables;
-                  full scheduling is a later wave.  This module raises
-                  ``NotImplementedError`` for the materialized path as a
-                  deliberate placeholder so the later wave has a clear extension
-                  point.
+``materialized``  — serves flow-backed providers from the latest SUCCESSFUL
+                  flow_run's task_run results (the 'scheduled → derived tables'
+                  contract).  Falls back transparently to the ephemeral (live)
+                  path when no successful run exists yet.  For inline providers,
+                  always falls through to the ephemeral path (no derived tables).
 
 Security invariants
 -------------------
@@ -508,6 +508,135 @@ async def _resolve_inline_provider(
 
 
 # ---------------------------------------------------------------------------
+# Materialized flow-provider resolver
+# ---------------------------------------------------------------------------
+
+
+async def _resolve_materialized_flow_provider(
+    provider: Any,  # DataProvider with kind='flow'
+    merged_params: dict[str, Any],
+    org_id: str,
+    claims: dict[str, Any],
+) -> dict[str, pa.Table] | None:
+    """Attempt to serve a flow provider from its latest materialized run result.
+
+    Looks up the flow backing the provider, finds the most-recent SUCCESSFUL
+    flow_run, reads the task_run results for that run, and extracts the named
+    result tables declared by the provider.
+
+    Returns
+    -------
+    dict[str, pa.Table]
+        The named Arrow tables from the latest successful run, or ``None`` when
+        no successful run exists yet (caller should fall back to ephemeral).
+
+    Security
+    --------
+    * ``org_id`` is verified on the flow before accepting its run results —
+      cross-org reads are impossible.
+    * The data is sourced ONLY from the flow_store (task_run.result), never
+      from a caller-supplied URI or path.
+    """
+    from app.flows.store import get_flow_store  # noqa: PLC0415
+
+    store = get_flow_store()
+
+    # ── 1. Locate the flow for this provider (same logic as ephemeral path). ──
+    flow = await store.get_flow(provider.id)
+    if flow is None or str(flow.get("org_id", "")) != org_id:
+        # Try name-based lookup via list_flows.
+        all_flows = await store.list_flows(org_id=org_id)
+        flow = next(
+            (
+                f
+                for f in all_flows
+                if f.get("name") == provider.id or str(f.get("id")) == provider.id
+            ),
+            None,
+        )
+
+    if flow is None or str(flow.get("org_id", "")) != org_id:
+        # Flow not found in this org — no materialized result possible.
+        return None
+
+    flow_id = str(flow["id"])
+
+    # ── 2. Find the latest SUCCESSFUL flow_run for this flow. ─────────────────
+    # We fetch a small window of recent runs and pick the first success.
+    # Limit=10 is generous; a healthy scheduled flow should have a success near
+    # the top.  We avoid limit=1 because the very latest run might still be
+    # running or have failed — we want the most-recent COMPLETED success.
+    recent_runs = await store.list_flow_runs(flow_id, limit=10)
+    latest_success: dict[str, Any] | None = next(
+        (r for r in recent_runs if r.get("state") == "success"),
+        None,
+    )
+
+    if latest_success is None:
+        # No successful run found yet — fall back to ephemeral.
+        return None
+
+    run_id = str(latest_success["id"])
+
+    # ── 3. Read task_run results from the successful run. ────────────────────
+    task_runs = await store.list_task_runs(run_id)
+    result_names = {r.name for r in provider.results}
+    tables: dict[str, pa.Table] = {}
+
+    for tr in task_runs:
+        key = tr.get("task_key", "")
+        if key not in result_names:
+            continue
+        if tr.get("state") != "success":
+            continue
+        result_payload = tr.get("result") or {}
+        # Same decoding logic as _resolve_flow_provider.
+        arrow_bytes = result_payload.get("__arrow_ipc__")
+        if arrow_bytes and isinstance(arrow_bytes, (bytes, bytearray)):
+            reader = pa.ipc.open_stream(arrow_bytes)
+            tables[key] = reader.read_all()
+        elif "columns" in result_payload and "rows" in result_payload:
+            columns: list[str] = result_payload["columns"]
+            rows: list[list[Any]] = result_payload["rows"]
+            arrays = [pa.array([r[i] for r in rows]) for i in range(len(columns))]
+            tables[key] = pa.table(dict(zip(columns, arrays)))
+        else:
+            if isinstance(result_payload, dict):
+                scalar_cols = {
+                    k: pa.array([v])
+                    for k, v in result_payload.items()
+                    if not k.startswith("__")
+                }
+                if scalar_cols:
+                    tables[key] = pa.table(scalar_cols)
+
+        # Apply per-table row cap (same invariant as _resolve_flow_provider).
+        if key in tables and _ROW_CAP > 0 and tables[key].num_rows > _ROW_CAP:
+            logger.warning(
+                "materialized flow provider %r result %r: truncating %d rows to %d",
+                provider.id,
+                key,
+                tables[key].num_rows,
+                _ROW_CAP,
+            )
+            tables[key] = tables[key].slice(0, _ROW_CAP)
+
+    # ── 4. Fill missing declared results with empty tables. ───────────────────
+    for r in provider.results:
+        if r.name not in tables:
+            logger.warning(
+                "materialized provider %r: declared result %r not found in "
+                "latest run %r task_runs; returning empty table.",
+                provider.id,
+                r.name,
+                run_id,
+            )
+            tables[r.name] = pa.table({})
+
+    return tables
+
+
+# ---------------------------------------------------------------------------
 # Public resolver
 # ---------------------------------------------------------------------------
 
@@ -545,8 +674,9 @@ async def resolve_provider_data(
         Active repository implementation.
     mode:
         ``'ephemeral'`` (default) — resolve in-process with TTL cache.
-        ``'materialized'`` — reserved for a later scheduling wave (raises
-        ``NotImplementedError``).
+        ``'materialized'`` — serve from the latest successful flow_run's
+        task_run results (scheduled → derived tables).  Falls back to an
+        ephemeral live run when no successful run exists yet.
     is_embed:
         When ``True`` the caller is an embed token.  Quota enforcement is
         SKIPPED because embed viewers are never metered.  Sets ``skip_metering``
@@ -572,20 +702,14 @@ async def resolve_provider_data(
     AppError("provider_not_found", 404)
         When *provider_id* does not name a declared provider in the board's
         spec.
-    AppError("provider_mode_unsupported", 501)
-        When ``mode='materialized'`` is requested (later wave hook).
-    NotImplementedError
-        Same guard as above — also raised directly so callers relying on the
-        Python exception get a clear signal.
     """
-    if mode == "materialized":
-        # Materialized (scheduled → derived tables) is a later-wave feature.
-        # We leave the branch here as a deliberate extension point.
-        raise AppError(
-            "provider_mode_unsupported",
-            "Materialized provider mode is not yet implemented (later wave).",
-            501,
-        )
+    # ── Materialized mode guard (checked before board lookup) ─────────────────
+    # When mode='materialized' we attempt to serve from the latest successful
+    # flow run's task_run results (derived tables / scheduled flow outputs).
+    # If no materialized result exists yet we fall through to the ephemeral
+    # (live) path automatically.  501 is NEVER raised here — the provider
+    # either serves from cache, from the materialized run, or falls back to
+    # a live execution.
 
     # ── Org-scoped board lookup ───────────────────────────────────────────────
     board = await repo.get("boards", org_id, board_id)
@@ -650,6 +774,47 @@ async def resolve_provider_data(
                 cache_key,
                 exc,
             )
+
+    # ── Materialized path (flow providers only) ───────────────────────────────
+    # When mode='materialized' and the provider is flow-backed, attempt to serve
+    # from the latest SUCCESSFUL flow run's task_run results instead of re-running
+    # the flow live.  This implements the "scheduled → derived tables" contract:
+    # a scheduled flow writes results into task_runs; the dashboard reads the
+    # latest materialized result set without triggering new compute.
+    #
+    # Fall-back contract: when no successful flow run exists yet (e.g. the
+    # schedule has not fired yet), fall through transparently to the ephemeral
+    # (live run) path.  This means mode='materialized' NEVER hard-errors on a
+    # cold provider — viewers always get something, even if it costs a live run.
+    if mode == "materialized" and provider.kind == "flow":
+        tables = await _resolve_materialized_flow_provider(
+            provider, merged_params, org_id, claims
+        )
+        if tables is not None:
+            # Materialized result found — cache + return; no quota charge because
+            # no compute was triggered (reads from stored task_run data only).
+            try:
+                serialised = _tables_to_bytes(tables, max_bytes=_PROVIDER_MAX_BYTES)
+                put_base_scan(
+                    cache_key,
+                    serialised,
+                    tags=[f"org:{org_id}", f"board:{board_id}"],
+                )
+            except AppError:
+                raise
+            except Exception as exc:  # noqa: BLE001
+                logger.warning(
+                    "provider cache put failed (materialized) for key %s: %s",
+                    cache_key,
+                    exc,
+                )
+            return tables
+        # No materialized result yet — fall through to ephemeral execution below.
+        logger.info(
+            "materialized mode for provider %r: no successful run found; "
+            "falling back to ephemeral (live) execution.",
+            provider_id,
+        )
 
     # ── Execute provider ──────────────────────────────────────────────────────
     # FIX [MED metering INVARIANT]: enforce quota on a cache miss ONLY for

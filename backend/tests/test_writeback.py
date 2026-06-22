@@ -1334,3 +1334,318 @@ async def test_route_writeback_submit_viewer_blocked_by_dependency(wb_client):
         headers=_auth_headers(carol_id),  # carol is viewer
     )
     assert resp.status_code == 403
+
+
+# ---------------------------------------------------------------------------
+# PG integration tests (only active when RUN_PG_TESTS=1 + DATABASE_URL set)
+#
+# These tests exercise PgWritebackStore against a real Postgres database.
+# They are SKIPPED in the default test run — set RUN_PG_TESTS=1 and provide a
+# real DATABASE_URL to run them.
+#
+# How to run:
+#   RUN_PG_TESTS=1 \
+#   DATABASE_URL=postgresql://postgres:postgres@localhost/nubi_test \
+#   pytest tests/test_writeback.py -k pg -v
+# ---------------------------------------------------------------------------
+
+import os as _os
+from contextlib import asynccontextmanager as _asynccontextmanager
+
+_RUN_PG = bool(_os.getenv("RUN_PG_TESTS"))
+
+pytestmark_pg = pytest.mark.skipif(
+    not _RUN_PG,
+    reason="Set RUN_PG_TESTS=1 and DATABASE_URL to run PG writeback integration tests.",
+)
+
+
+@pytest_asyncio.fixture(scope="module")
+async def _pg_wb_pool():
+    """Module-scoped asyncpg pool for writeback PG tests.
+
+    Creates a throwaway schema, runs migrations, then tears down after the
+    module finishes.  Skipped when RUN_PG_TESTS is not set.
+    """
+    if not _RUN_PG:
+        yield None
+        return
+
+    db_url = _os.environ.get("DATABASE_URL", "")
+    if not db_url or "fake" in db_url:
+        pytest.skip("DATABASE_URL is not a real PG URL — skipping PG writeback tests.")
+
+    import asyncpg as _apg  # noqa: PLC0415
+    from pathlib import Path  # noqa: PLC0415
+
+    schema_name = f"nubi_wb_test_{uuid.uuid4().hex[:8]}"
+
+    admin_conn = await _apg.connect(db_url)
+    await admin_conn.execute(f'CREATE SCHEMA IF NOT EXISTS "{schema_name}"')
+
+    async def _init_conn(conn):
+        await conn.execute(f'SET search_path TO "{schema_name}", public')
+
+    pool = await _apg.create_pool(dsn=db_url, min_size=1, max_size=3, init=_init_conn)
+
+    # Run migrations.
+    migrations_dir = Path(__file__).parent.parent.parent / "database" / "migrations"
+    async with pool.acquire() as conn:
+        await conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS schema_migrations (
+                version    text        PRIMARY KEY,
+                applied_at timestamptz NOT NULL DEFAULT now()
+            )
+            """
+        )
+        applied = {
+            r["version"]
+            for r in await conn.fetch("SELECT version FROM schema_migrations")
+        }
+        for sql_file in sorted(migrations_dir.glob("*.sql")):
+            if sql_file.name in applied:
+                continue
+            sql_text = sql_file.read_text(encoding="utf-8")
+            async with conn.transaction():
+                await conn.execute(sql_text)
+                await conn.execute(
+                    "INSERT INTO schema_migrations (version) VALUES ($1)",
+                    sql_file.name,
+                )
+
+    try:
+        yield pool
+    finally:
+        await pool.close()
+        await admin_conn.execute(f'DROP SCHEMA IF EXISTS "{schema_name}" CASCADE')
+        await admin_conn.close()
+
+
+async def _pg_create_user_and_org(pool) -> tuple[str, str]:
+    """Insert a test user + org in the test schema; return (user_id, org_id)."""
+    uid = str(uuid.uuid4())
+    email = f"wb-pg-{uid[:8]}@nubi.test"
+    async with pool.acquire() as conn:
+        await conn.execute(
+            "INSERT INTO users (id, email, password_hash, name, email_verified) "
+            "VALUES ($1, $2, $3, $4, true)",
+            uid, email, "dummy-hash", "WB PG User",
+        )
+        oid = str(uuid.uuid4())
+        slug = f"wb-pg-{uid[:8]}"
+        await conn.execute(
+            "INSERT INTO orgs (id, name, slug) VALUES ($1, $2, $3)",
+            oid, "WB PG Org", slug,
+        )
+        await conn.execute(
+            "INSERT INTO org_members (org_id, user_id, role) VALUES ($1, $2, 'owner')",
+            oid, uid,
+        )
+    return uid, oid
+
+
+@_asynccontextmanager
+async def _pg_store_ctx(pool):
+    """Yield a PgWritebackStore whose app.db helpers use the test pool."""
+    import app.db as _app_db  # noqa: PLC0415
+    from app.connectors.writeback import PgWritebackStore  # noqa: PLC0415
+    from unittest.mock import patch as _patch  # noqa: PLC0415
+
+    store = PgWritebackStore()
+
+    async def _fetch(query, *args):
+        async with pool.acquire() as conn:
+            return await conn.fetch(query, *args)
+
+    async def _fetchrow(query, *args):
+        async with pool.acquire() as conn:
+            return await conn.fetchrow(query, *args)
+
+    async def _execute(query, *args):
+        async with pool.acquire() as conn:
+            return await conn.execute(query, *args)
+
+    with (
+        _patch.object(_app_db, "fetch", side_effect=_fetch),
+        _patch.object(_app_db, "fetchrow", side_effect=_fetchrow),
+        _patch.object(_app_db, "execute", side_effect=_execute),
+    ):
+        yield store
+
+
+@pytestmark_pg
+@pytest.mark.asyncio
+async def test_pg_writeback_persistence(_pg_wb_pool):
+    """PgWritebackStore: submitted records survive across store instances (persistence)."""
+    if _pg_wb_pool is None:
+        pytest.skip("pg pool not available")
+
+    user_id, org_id = await _pg_create_user_and_org(_pg_wb_pool)
+    key = str(uuid.uuid4())
+    rows_data = [{"id": 1, "value": "alpha"}, {"id": 2, "value": "beta"}]
+
+    async with _pg_store_ctx(_pg_wb_pool) as store1:
+        record = await store1.create(
+            org_id=org_id,
+            idempotency_key=key,
+            rows=rows_data,
+            target={"connector_id": "conn1", "object": "raw.orders"},
+            mode="append",
+            created_by=user_id,
+            approval_required=False,
+            meta={"source": "test"},
+        )
+        wb_id = record["id"]
+        assert record["state"] == "pending_approval"
+        assert record["rows"] == rows_data
+
+    # New store instance — same pool, no in-memory state.
+    async with _pg_store_ctx(_pg_wb_pool) as store2:
+        fetched = await store2.get(org_id, wb_id)
+        assert fetched is not None
+        assert fetched["id"] == wb_id
+        assert fetched["rows"] == rows_data
+        assert fetched["state"] == "pending_approval"
+
+
+@pytestmark_pg
+@pytest.mark.asyncio
+async def test_pg_writeback_idempotency(_pg_wb_pool):
+    """PgWritebackStore: same (org_id, idempotency_key) returns the same record."""
+    if _pg_wb_pool is None:
+        pytest.skip("pg pool not available")
+
+    user_id, org_id = await _pg_create_user_and_org(_pg_wb_pool)
+    key = str(uuid.uuid4())
+
+    async with _pg_store_ctx(_pg_wb_pool) as store:
+        r1 = await store.create(
+            org_id=org_id,
+            idempotency_key=key,
+            rows=[{"id": 10}],
+            target={"connector_id": "c1", "object": "t1"},
+            mode="append",
+            created_by=user_id,
+            approval_required=False,
+        )
+        # Duplicate create — ON CONFLICT DO NOTHING → returns existing row.
+        r2 = await store.create(
+            org_id=org_id,
+            idempotency_key=key,
+            rows=[{"id": 99}],  # different payload — must be ignored
+            target={"connector_id": "c1", "object": "t1"},
+            mode="append",
+            created_by=user_id,
+            approval_required=False,
+        )
+        assert r1["id"] == r2["id"]
+        assert r2["rows"] == [{"id": 10}]  # original payload preserved
+
+        # get_by_idempotency_key also returns it.
+        r3 = await store.get_by_idempotency_key(org_id, key)
+        assert r3 is not None
+        assert r3["id"] == r1["id"]
+
+
+@pytestmark_pg
+@pytest.mark.asyncio
+async def test_pg_writeback_org_isolation(_pg_wb_pool):
+    """PgWritebackStore: org B cannot access org A's records (org isolation)."""
+    if _pg_wb_pool is None:
+        pytest.skip("pg pool not available")
+
+    user_a, org_a = await _pg_create_user_and_org(_pg_wb_pool)
+    _user_b, org_b = await _pg_create_user_and_org(_pg_wb_pool)
+    key = str(uuid.uuid4())
+
+    async with _pg_store_ctx(_pg_wb_pool) as store:
+        record = await store.create(
+            org_id=org_a,
+            idempotency_key=key,
+            rows=[{"id": 1}],
+            target={"connector_id": "c1", "object": "t1"},
+            mode="append",
+            created_by=user_a,
+            approval_required=False,
+        )
+
+        # Org B get by ID → None
+        assert await store.get(org_b, record["id"]) is None
+
+        # Org B get_by_idempotency_key with same key → None
+        assert await store.get_by_idempotency_key(org_b, key) is None
+
+        # Org B list → does not contain org A's record
+        org_b_records = await store.list(org_b)
+        listed_ids = [r["id"] for r in org_b_records]
+        assert record["id"] not in listed_ids
+
+
+@pytestmark_pg
+@pytest.mark.asyncio
+async def test_pg_writeback_state_machine(_pg_wb_pool):
+    """PgWritebackStore: transition() advances state and persists result."""
+    if _pg_wb_pool is None:
+        pytest.skip("pg pool not available")
+
+    user_id, org_id = await _pg_create_user_and_org(_pg_wb_pool)
+
+    async with _pg_store_ctx(_pg_wb_pool) as store:
+        record = await store.create(
+            org_id=org_id,
+            idempotency_key=str(uuid.uuid4()),
+            rows=[{"id": 5}],
+            target={"connector_id": "c1", "object": "t1"},
+            mode="overwrite",
+            created_by=user_id,
+            approval_required=True,
+        )
+        assert record["state"] == "pending_approval"
+
+        committed = await store.transition(
+            org_id, record["id"], "committed",
+            result={"rows_written": 1},
+            approved_by=user_id,
+        )
+        assert committed is not None
+        assert committed["state"] == "committed"
+        assert committed["result"] == {"rows_written": 1}
+        assert committed["approved_by"] == user_id
+
+        # Terminal state guard: second transition raises 409
+        from app.errors import AppError as _AppError  # noqa: PLC0415
+        with pytest.raises(_AppError) as exc_info:
+            await store.transition(org_id, record["id"], "rejected")
+        assert exc_info.value.status == 409
+
+
+@pytestmark_pg
+@pytest.mark.asyncio
+async def test_pg_writeback_list(_pg_wb_pool):
+    """PgWritebackStore: list() returns org-scoped records in DESC created_at order."""
+    if _pg_wb_pool is None:
+        pytest.skip("pg pool not available")
+
+    user_id, org_id = await _pg_create_user_and_org(_pg_wb_pool)
+
+    async with _pg_store_ctx(_pg_wb_pool) as store:
+        created_ids = []
+        for i in range(3):
+            r = await store.create(
+                org_id=org_id,
+                idempotency_key=str(uuid.uuid4()),
+                rows=[{"id": i}],
+                target={"connector_id": "c1", "object": "t1"},
+                mode="append",
+                created_by=user_id,
+                approval_required=False,
+            )
+            created_ids.append(r["id"])
+
+        records = await store.list(org_id)
+        listed_ids = [r["id"] for r in records]
+        for cid in created_ids:
+            assert cid in listed_ids
+        # DESC order: last created should appear first.
+        assert listed_ids[0] == created_ids[-1]

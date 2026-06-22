@@ -80,6 +80,7 @@ without touching the target connector.  The diff shape is::
 
 from __future__ import annotations
 
+import json
 import uuid
 from copy import deepcopy
 from datetime import datetime, timezone
@@ -309,6 +310,184 @@ class InMemoryWritebackStore(WritebackStore):
 
 
 # ---------------------------------------------------------------------------
+# PgWritebackStore — asyncpg-backed production implementation
+# ---------------------------------------------------------------------------
+
+
+def _row_to_record(row: Any) -> dict[str, Any]:
+    """Convert an asyncpg Record (or dict) to a writeback record dict.
+
+    Ensures uuids are strings, datetimes are ISO-8601 strings (matching
+    the shape produced by InMemoryWritebackStore), and jsonb columns are
+    already-parsed Python objects (asyncpg does this automatically).
+    """
+    d = dict(row)
+    for key in ("id", "org_id", "created_by", "approved_by"):
+        if key in d and d[key] is not None and not isinstance(d[key], str):
+            d[key] = str(d[key])
+    for key in ("created_at", "updated_at"):
+        val = d.get(key)
+        if isinstance(val, datetime):
+            if val.tzinfo is None:
+                val = val.replace(tzinfo=timezone.utc)
+            d[key] = val.isoformat()
+    # asyncpg returns jsonb columns as parsed Python objects; handle the rare
+    # case where they arrive as strings (e.g. when mocked).
+    for key in ("rows", "target", "result", "meta"):
+        val = d.get(key)
+        if isinstance(val, (str, bytes, bytearray)):
+            try:
+                d[key] = json.loads(val)
+            except Exception:  # noqa: BLE001
+                pass
+    return d
+
+
+class PgWritebackStore(WritebackStore):
+    """asyncpg-backed write-back store for production use.
+
+    Uses ``fetch`` / ``fetchrow`` / ``execute`` from ``app.db``.
+    All SQL is parameterised with ``$N`` placeholders.  Column names and
+    constraints match the ``writeback_requests`` table in 0004_flows.sql.
+
+    Org-scoping: every query filters on ``org_id`` so cross-org data leakage
+    is impossible at the store layer (defence-in-depth on top of RLS).
+
+    Idempotency: backed by the UNIQUE (org_id, idempotency_key) constraint in
+    the table; ``create`` uses INSERT … ON CONFLICT DO NOTHING to prevent
+    duplicate rows from concurrent retries, then fetches the existing row on
+    conflict.
+    """
+
+    async def create(
+        self,
+        org_id: str,
+        idempotency_key: str,
+        rows: list[dict[str, Any]],
+        target: dict[str, Any],
+        mode: str,
+        created_by: str,
+        approval_required: bool,
+        meta: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        from app.db import fetchrow as db_fetchrow  # noqa: PLC0415
+
+        row = await db_fetchrow(
+            """
+            INSERT INTO writeback_requests
+                (org_id, idempotency_key, rows, target, mode,
+                 created_by, approval_required, meta)
+            VALUES
+                ($1::uuid, $2, $3::jsonb, $4::jsonb, $5,
+                 $6::uuid, $7, $8::jsonb)
+            ON CONFLICT (org_id, idempotency_key) DO NOTHING
+            RETURNING *
+            """,
+            org_id,
+            idempotency_key,
+            json.dumps(rows),
+            json.dumps(target),
+            mode,
+            created_by,
+            approval_required,
+            json.dumps(meta or {}),
+        )
+        if row is None:
+            # Race: another caller inserted with the same key; fetch it.
+            row = await db_fetchrow(
+                "SELECT * FROM writeback_requests "
+                "WHERE org_id = $1::uuid AND idempotency_key = $2",
+                org_id,
+                idempotency_key,
+            )
+        if row is None:  # pragma: no cover — should never happen
+            raise RuntimeError("writeback_requests INSERT returned no row.")
+        return _row_to_record(row)
+
+    async def get_by_idempotency_key(
+        self, org_id: str, idempotency_key: str
+    ) -> dict[str, Any] | None:
+        from app.db import fetchrow as db_fetchrow  # noqa: PLC0415
+
+        row = await db_fetchrow(
+            "SELECT * FROM writeback_requests "
+            "WHERE org_id = $1::uuid AND idempotency_key = $2",
+            org_id,
+            idempotency_key,
+        )
+        return _row_to_record(row) if row is not None else None
+
+    async def get(
+        self, org_id: str, wb_id: str
+    ) -> dict[str, Any] | None:
+        from app.db import fetchrow as db_fetchrow  # noqa: PLC0415
+
+        row = await db_fetchrow(
+            "SELECT * FROM writeback_requests "
+            "WHERE id = $1::uuid AND org_id = $2::uuid",
+            wb_id,
+            org_id,
+        )
+        return _row_to_record(row) if row is not None else None
+
+    async def transition(
+        self,
+        org_id: str,
+        wb_id: str,
+        new_state: str,
+        *,
+        result: dict[str, Any] | None = None,
+        error: str | None = None,
+        rows_override: list[dict[str, Any]] | None = None,
+        approved_by: str | None = None,
+    ) -> dict[str, Any] | None:
+        from app.db import fetchrow as db_fetchrow  # noqa: PLC0415
+
+        # Fetch current record to validate the transition (state machine guard).
+        current = await self.get(org_id, wb_id)
+        if current is None:
+            return None
+        _check_transition(current["state"], new_state)
+
+        row = await db_fetchrow(
+            """
+            UPDATE writeback_requests
+               SET state      = $3,
+                   result     = COALESCE($4::jsonb, result),
+                   error      = COALESCE($5,        error),
+                   rows       = COALESCE($6::jsonb, rows),
+                   approved_by = COALESCE($7::uuid,  approved_by),
+                   updated_at  = now()
+             WHERE id = $1::uuid AND org_id = $2::uuid
+            RETURNING *
+            """,
+            wb_id,
+            org_id,
+            new_state,
+            json.dumps(result) if result is not None else None,
+            error,
+            json.dumps(rows_override) if rows_override is not None else None,
+            approved_by,
+        )
+        return _row_to_record(row) if row is not None else None
+
+    async def list(
+        self, org_id: str, limit: int = 50
+    ) -> list[dict[str, Any]]:
+        from app.db import fetch as db_fetch  # noqa: PLC0415
+
+        rows = await db_fetch(
+            "SELECT * FROM writeback_requests "
+            "WHERE org_id = $1::uuid "
+            "ORDER BY created_at DESC "
+            "LIMIT $2",
+            org_id,
+            limit,
+        )
+        return [_row_to_record(r) for r in rows]
+
+
+# ---------------------------------------------------------------------------
 # Module-level singleton (swappable in tests)
 # ---------------------------------------------------------------------------
 
@@ -316,10 +495,17 @@ _store: WritebackStore | None = None
 
 
 def get_writeback_store() -> WritebackStore:
-    """Return the module-level ``WritebackStore`` singleton (lazily initialised)."""
+    """Return the module-level ``WritebackStore`` singleton (lazily initialised).
+
+    In production (no explicit override via ``set_writeback_store``), returns a
+    ``PgWritebackStore`` instance backed by the asyncpg pool.  Tests inject an
+    ``InMemoryWritebackStore`` via ``set_writeback_store`` to avoid any DB
+    dependency.  This mirrors the pattern used in ``app/vars/store.py`` and
+    ``app/jobs/store.py``.
+    """
     global _store
     if _store is None:
-        _store = InMemoryWritebackStore()
+        _store = PgWritebackStore()
     return _store
 
 

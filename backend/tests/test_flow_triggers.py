@@ -24,19 +24,27 @@ Coverage
 16. [RLS] Downstream trigger is SKIPPED when upstream flow has no owner-policy snapshot.
 17. [Cycle] Cyclic trigger chain (A→B→A) stops at depth limit (no infinite loop).
 18. [Cycle] Trigger chain respects FLOWS_TRIGGER_MAX_DEPTH env override.
+20. [PgTriggerRegistry] Persistence: register → list → delete round-trip via mocked DB.
+21. [PgTriggerRegistry] Org isolation: list_by_event scopes by org_id.
+22. [PgTriggerRegistry] get_trigger_registry() returns PgTriggerRegistry when no override set.
 """
 
 from __future__ import annotations
 
 import asyncio
+import json
+import uuid
 from datetime import datetime, timedelta, timezone
 from typing import Any
+from unittest.mock import AsyncMock, patch
 
 import pytest
 
 from app.flows.store import InMemoryFlowStore
 from app.flows.triggers import (
     InMemoryTriggerRegistry,
+    PgTriggerRegistry,
+    Trigger,
     fire_event,
     flag_sla_breach,
     get_trigger_registry,
@@ -1125,3 +1133,368 @@ async def test_fire_event_within_fanout_cap_all_fire():
     assert len(run_ids) == cap - 1, (
         f"Expected all {cap - 1} triggers to fire (within cap), got {len(run_ids)}"
     )
+
+
+# ---------------------------------------------------------------------------
+# 20-21. PgTriggerRegistry — unit tests against mocked app.db
+# ---------------------------------------------------------------------------
+#
+# These tests exercise PgTriggerRegistry directly by mocking the asyncpg
+# helpers (app.db.fetch / fetchrow / execute) with dict-backed in-memory
+# fakes.  They verify that:
+#   * PgTriggerRegistry.register() inserts a row and returns a Trigger.
+#   * PgTriggerRegistry.list_by_event() filters by org_id AND source AND kind.
+#   * PgTriggerRegistry.delete() removes the row.
+#   * Org isolation: a second org's triggers are NOT returned.
+# ---------------------------------------------------------------------------
+
+
+class _FakePgTable:
+    """Minimal dict-backed table that mimics asyncpg query responses for
+    the flow_triggers queries used by PgTriggerRegistry."""
+
+    def __init__(self) -> None:
+        self._rows: list[dict[str, Any]] = []
+
+    # ── INSERT with RETURNING * ──────────────────────────────────────────────
+    async def fake_fetchrow(self, query: str, *args: Any) -> dict[str, Any] | None:
+        q = query.upper().strip()
+        if "INSERT INTO FLOW_TRIGGERS" in q:
+            # args: trigger_id, org_id, flow_id, kind, source, secret, extra_json, enabled
+            trigger_id, org_id, flow_id, kind, source, secret, extra_json, enabled = args
+            extra = json.loads(extra_json) if isinstance(extra_json, str) else (extra_json or {})
+            row = {
+                "id": str(trigger_id),
+                "org_id": str(org_id),
+                "flow_id": str(flow_id),
+                "kind": kind,
+                "source": source,
+                "secret": secret,
+                "extra": extra,
+                "enabled": bool(enabled),
+                "created_at": datetime.now(timezone.utc),
+                "updated_at": datetime.now(timezone.utc),
+            }
+            self._rows.append(row)
+            return row
+        if "UPDATE FLOW_TRIGGERS" in q:
+            # args: enabled, trigger_id
+            enabled, trigger_id = args
+            for row in self._rows:
+                if row["id"] == str(trigger_id):
+                    row["enabled"] = bool(enabled)
+                    return dict(row)
+            return None
+        if "SELECT * FROM FLOW_TRIGGERS WHERE ID" in q:
+            (trigger_id,) = args
+            for row in self._rows:
+                if row["id"] == str(trigger_id):
+                    return dict(row)
+            return None
+        return None
+
+    async def fake_fetch(self, query: str, *args: Any) -> list[dict[str, Any]]:
+        q = query.upper().strip()
+        if "SELECT * FROM FLOW_TRIGGERS" not in q:
+            return []
+        # Determine filter parameters from query shape.
+        if "WHERE ORG_ID" in q and "SOURCE" in q and "KIND IN" in q:
+            # list_by_event: args = (org_id, source)
+            org_id, source = args[0], args[1]
+            return [
+                dict(r) for r in self._rows
+                if str(r["org_id"]) == str(org_id)
+                and r["source"] == source
+                and r["kind"] in ("event", "webhook")
+                and r["enabled"]
+            ]
+        if "WHERE ORG_ID" in q and "SOURCE" in q and "KIND = 'DOWNSTREAM'" in q:
+            # list_by_upstream: args = (org_id, source)
+            org_id, source = args[0], args[1]
+            return [
+                dict(r) for r in self._rows
+                if str(r["org_id"]) == str(org_id)
+                and r["source"] == source
+                and r["kind"] == "downstream"
+                and r["enabled"]
+            ]
+        if "WHERE ORG_ID" in q and len(args) == 1:
+            # list_all: args = (org_id,)
+            org_id = args[0]
+            return [dict(r) for r in self._rows if str(r["org_id"]) == str(org_id)]
+        return []
+
+    async def fake_execute(self, query: str, *args: Any) -> str:
+        q = query.upper().strip()
+        if "DELETE FROM FLOW_TRIGGERS" in q:
+            (trigger_id,) = args
+            before = len(self._rows)
+            self._rows = [r for r in self._rows if r["id"] != str(trigger_id)]
+            deleted = before - len(self._rows)
+            return f"DELETE {deleted}"
+        return "OK"
+
+
+@pytest.fixture
+def fake_pg_table():
+    """Return a fresh _FakePgTable that backs all app.db calls."""
+    return _FakePgTable()
+
+
+async def test_pg_trigger_registry_register_and_list(fake_pg_table):
+    """[PgTriggerRegistry] register() persists a row; list_by_event() retrieves it."""
+    registry = PgTriggerRegistry()
+
+    with (
+        patch("app.db.fetchrow", side_effect=fake_pg_table.fake_fetchrow),
+        patch("app.db.fetch", side_effect=fake_pg_table.fake_fetch),
+        patch("app.db.execute", side_effect=fake_pg_table.fake_execute),
+    ):
+        org_id = str(uuid.uuid4())
+        flow_id = str(uuid.uuid4())
+
+        trigger = await registry.register(
+            flow_id=flow_id,
+            kind="event",
+            source="stock.landed",
+            org_id=org_id,
+            extra={"on_states": ["success"]},
+        )
+
+        assert isinstance(trigger, Trigger)
+        assert trigger.org_id == org_id
+        assert trigger.flow_id == flow_id
+        assert trigger.kind == "event"
+        assert trigger.source == "stock.landed"
+        assert trigger.enabled is True
+
+        # list_by_event should find it.
+        found = await registry.list_by_event("stock.landed", org_id)
+        assert len(found) == 1
+        assert found[0].id == trigger.id
+
+        # list_all should include it.
+        all_triggers = await registry.list_all(org_id)
+        assert len(all_triggers) == 1
+
+
+async def test_pg_trigger_registry_delete(fake_pg_table):
+    """[PgTriggerRegistry] delete() removes the trigger; subsequent list returns empty."""
+    registry = PgTriggerRegistry()
+
+    with (
+        patch("app.db.fetchrow", side_effect=fake_pg_table.fake_fetchrow),
+        patch("app.db.fetch", side_effect=fake_pg_table.fake_fetch),
+        patch("app.db.execute", side_effect=fake_pg_table.fake_execute),
+    ):
+        org_id = str(uuid.uuid4())
+        flow_id = str(uuid.uuid4())
+
+        trigger = await registry.register(
+            flow_id=flow_id,
+            kind="event",
+            source="evt.key",
+            org_id=org_id,
+        )
+
+        # Confirm it is present.
+        assert len(await registry.list_all(org_id)) == 1
+
+        # Delete it.
+        deleted = await registry.delete(trigger.id)
+        assert deleted is True
+
+        # Now list_all returns empty.
+        assert await registry.list_all(org_id) == []
+
+        # Deleting again returns False.
+        deleted_again = await registry.delete(trigger.id)
+        assert deleted_again is False
+
+
+async def test_pg_trigger_registry_org_isolation(fake_pg_table):
+    """[PgTriggerRegistry] list_by_event() does NOT return triggers from another org."""
+    registry = PgTriggerRegistry()
+
+    with (
+        patch("app.db.fetchrow", side_effect=fake_pg_table.fake_fetchrow),
+        patch("app.db.fetch", side_effect=fake_pg_table.fake_fetch),
+        patch("app.db.execute", side_effect=fake_pg_table.fake_execute),
+    ):
+        org_a = str(uuid.uuid4())
+        org_b = str(uuid.uuid4())
+        flow_a = str(uuid.uuid4())
+        flow_b = str(uuid.uuid4())
+
+        # Register one trigger per org for the SAME event key.
+        await registry.register(
+            flow_id=flow_a,
+            kind="event",
+            source="shared.event",
+            org_id=org_a,
+        )
+        await registry.register(
+            flow_id=flow_b,
+            kind="event",
+            source="shared.event",
+            org_id=org_b,
+        )
+
+        # Querying for org_a must NOT include org_b's trigger.
+        found_a = await registry.list_by_event("shared.event", org_a)
+        assert len(found_a) == 1
+        assert found_a[0].org_id == org_a
+
+        # Querying for org_b must NOT include org_a's trigger.
+        found_b = await registry.list_by_event("shared.event", org_b)
+        assert len(found_b) == 1
+        assert found_b[0].org_id == org_b
+
+        # list_all for org_a also stays isolated.
+        all_a = await registry.list_all(org_a)
+        assert all(t.org_id == org_a for t in all_a)
+
+
+# ---------------------------------------------------------------------------
+# 22. get_trigger_registry() returns PgTriggerRegistry when no override is set
+# ---------------------------------------------------------------------------
+
+
+def test_get_trigger_registry_default_is_pg():
+    """get_trigger_registry() must return a PgTriggerRegistry when no override set."""
+    import app.flows.triggers as triggers_module  # noqa: PLC0415
+
+    original = triggers_module._registry
+    try:
+        triggers_module._registry = None  # reset to "unset" state
+        registry = get_trigger_registry()
+        assert isinstance(registry, PgTriggerRegistry), (
+            f"Expected PgTriggerRegistry (production default) but got {type(registry)}"
+        )
+    finally:
+        # Restore original (usually InMemoryTriggerRegistry from autouse fixture).
+        triggers_module._registry = original
+
+
+# ---------------------------------------------------------------------------
+# PG integration tests — require RUN_PG_TESTS=1 + DATABASE_URL
+# ---------------------------------------------------------------------------
+
+import os as _os  # noqa: E402 (module-level re-import at bottom of file)
+
+_RUN_PG = bool(_os.getenv("RUN_PG_TESTS"))
+
+
+@pytest.mark.skipif(
+    not _RUN_PG,
+    reason="Set RUN_PG_TESTS=1 and DATABASE_URL to run PG integration tests.",
+)
+async def test_pg_trigger_registry_persistence_real_db():
+    """[PG] PgTriggerRegistry persists triggers across independent registry instances.
+
+    Registers a trigger via one PgTriggerRegistry instance, then reads it back
+    via a second fresh instance — proving the data is in Postgres (not in-memory).
+    """
+    import asyncpg as _apg  # noqa: PLC0415
+    import app.db as app_db  # noqa: PLC0415
+
+    db_url = _os.environ.get("DATABASE_URL", "")
+    pool = await _apg.create_pool(dsn=db_url, min_size=1, max_size=2)
+    schema = f"nubi_trig_test_{uuid.uuid4().hex[:8]}"
+    try:
+        async with pool.acquire() as conn:
+            await conn.execute(f'CREATE SCHEMA IF NOT EXISTS "{schema}"')
+            await conn.execute(f'SET search_path TO "{schema}", public')
+            # Bootstrap minimum tables for flow_triggers FK constraints.
+            from pathlib import Path  # noqa: PLC0415
+            migrations_dir = Path(__file__).parent.parent.parent / "database" / "migrations"
+            for sql_file in sorted(migrations_dir.glob("*.sql")):
+                sql = sql_file.read_text(encoding="utf-8")
+                try:
+                    await conn.execute(sql)
+                except Exception:  # noqa: BLE001
+                    pass  # idempotent; some CREATE IF NOT EXISTS already exist
+
+        # Patch app.db to use our isolated pool with the test schema.
+        async def _fetch(query: str, *args: Any) -> list:
+            async with pool.acquire() as c:
+                await c.execute(f'SET search_path TO "{schema}", public')
+                return await c.fetch(query, *args)
+
+        async def _fetchrow(query: str, *args: Any):
+            async with pool.acquire() as c:
+                await c.execute(f'SET search_path TO "{schema}", public')
+                return await c.fetchrow(query, *args)
+
+        async def _execute(query: str, *args: Any) -> str:
+            async with pool.acquire() as c:
+                await c.execute(f'SET search_path TO "{schema}", public')
+                return await c.execute(query, *args)
+
+        with (
+            patch.object(app_db, "fetch", side_effect=_fetch),
+            patch.object(app_db, "fetchrow", side_effect=_fetchrow),
+            patch.object(app_db, "execute", side_effect=_execute),
+        ):
+            # Need real org/flow rows for FK constraints.  Insert minimal rows.
+            org_id = str(uuid.uuid4())
+            flow_id = str(uuid.uuid4())
+            async with pool.acquire() as conn:
+                await conn.execute(f'SET search_path TO "{schema}", public')
+                await conn.execute(
+                    "INSERT INTO orgs (id, name, slug) VALUES ($1::uuid, $2, $3)",
+                    org_id, "test-org", f"test-org-{uuid.uuid4().hex[:6]}"
+                )
+                # Insert a minimal user for created_by FK.
+                user_id = str(uuid.uuid4())
+                await conn.execute(
+                    "INSERT INTO users (id, email, name) VALUES ($1::uuid, $2, $3)",
+                    user_id, f"u-{uuid.uuid4().hex[:6]}@test.com", "Test User"
+                )
+                # Insert minimal project for flows FK.
+                project_id = str(uuid.uuid4())
+                await conn.execute(
+                    "INSERT INTO projects (id, org_id, name, slug) "
+                    "VALUES ($1::uuid, $2::uuid, $3, $4)",
+                    project_id, org_id, "test-project", f"proj-{uuid.uuid4().hex[:6]}"
+                )
+                await conn.execute(
+                    "INSERT INTO flows (id, org_id, project_id, created_by, name, spec) "
+                    "VALUES ($1::uuid, $2::uuid, $3::uuid, $4::uuid, $5, $6::jsonb)",
+                    flow_id, org_id, project_id, user_id, "test-flow",
+                    '{"version": 1, "name": "test-flow", "tasks": []}'
+                )
+
+            # --- Write via registry instance 1 ---
+            reg1 = PgTriggerRegistry()
+            trigger = await reg1.register(
+                flow_id=flow_id,
+                kind="event",
+                source="pg.persistence.test",
+                org_id=org_id,
+                extra={"on_states": ["success"]},
+            )
+            assert trigger.id is not None
+
+            # --- Read back via a brand-new registry instance 2 ---
+            reg2 = PgTriggerRegistry()
+            found = await reg2.list_by_event("pg.persistence.test", org_id)
+            assert len(found) == 1, "Trigger must be readable from a fresh instance (persistence)"
+            assert found[0].id == trigger.id
+            assert found[0].org_id == org_id
+
+            # --- Org isolation via Pg ---
+            org_b = str(uuid.uuid4())
+            async with pool.acquire() as conn:
+                await conn.execute(f'SET search_path TO "{schema}", public')
+                await conn.execute(
+                    "INSERT INTO orgs (id, name, slug) VALUES ($1::uuid, $2, $3)",
+                    org_b, "org-b", f"org-b-{uuid.uuid4().hex[:6]}"
+                )
+            isolated = await reg2.list_by_event("pg.persistence.test", org_b)
+            assert isolated == [], "Trigger registered in org_a must NOT appear for org_b"
+
+    finally:
+        async with pool.acquire() as conn:
+            await conn.execute(f'DROP SCHEMA IF EXISTS "{schema}" CASCADE')
+        await pool.close()

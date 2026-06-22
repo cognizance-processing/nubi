@@ -782,15 +782,68 @@ async def test_route_404_provider_not_found(route_client) -> None:
 
 
 # ---------------------------------------------------------------------------
-# 7. Materialized mode raises 501
+# 7. Materialized mode
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
-async def test_materialized_mode_raises_501(repo: InMemoryRepo) -> None:
-    """resolve_provider_data with mode='materialized' raises AppError 501."""
-    with pytest.raises(AppError) as exc_info:
-        await resolve_provider_data(
+async def test_materialized_mode_returns_result_when_present(repo: InMemoryRepo) -> None:
+    """resolve_provider_data with mode='materialized' serves from the latest
+    successful flow run when one exists — NOT a 501 and NOT a live re-run.
+
+    Contract: the 'scheduled → derived tables' path reads task_run results
+    from the most-recent successful flow_run instead of triggering new compute.
+    """
+    import io as _io
+    import pyarrow as pa
+    from app.flows.store import InMemoryFlowStore
+    import app.flows.store as _fs_mod
+
+    # Build a flow-backed board spec.
+    await repo.update(
+        "boards",
+        _ORG,
+        _BOARD_ID,
+        {"config": {"spec": _make_spec_with_flow_provider()}},
+    )
+
+    # Prepare a fake materialized result that the flow task_run produced.
+    materialized_table = _make_arrow_table(7)
+    ipc_buf = _io.BytesIO()
+    writer = pa.ipc.new_stream(ipc_buf, materialized_table.schema)
+    writer.write_table(materialized_table)
+    writer.close()
+    ipc_bytes = ipc_buf.getvalue()
+
+    fake_flow = {"id": _PROVIDER_ID, "name": _PROVIDER_ID, "org_id": _ORG}
+    fake_flow_run = {"id": "mat-run-1", "state": "success"}
+    fake_task_run = {
+        "task_key": "summary",
+        "state": "success",
+        "result": {"__arrow_ipc__": ipc_bytes},
+    }
+
+    class _FakeStore:
+        async def get_flow(self, flow_id: str) -> dict:
+            return fake_flow
+
+        async def list_flows(self, **kwargs: Any) -> list:
+            return [fake_flow]
+
+        async def list_flow_runs(self, flow_id: str, limit: int = 10, **kwargs: Any) -> list:
+            return [fake_flow_run]
+
+        async def list_task_runs(self, run_id: str) -> list:
+            return [fake_task_run]
+
+    async def _fake_enforce_quota(org_id: str, dimension: str, amount: float = 1.0) -> None:
+        pass
+
+    with (
+        patch("app.features.enforce_quota", side_effect=_fake_enforce_quota),
+        patch.object(_fs_mod, "get_flow_store", return_value=_FakeStore()),
+    ):
+        tables = await resolve_provider_data(
             board_id=_BOARD_ID,
             provider_id=_PROVIDER_ID,
             params={},
@@ -799,8 +852,81 @@ async def test_materialized_mode_raises_501(repo: InMemoryRepo) -> None:
             repo=repo,
             mode="materialized",
         )
-    assert exc_info.value.code == "provider_mode_unsupported"
-    assert exc_info.value.status == 501
+
+    # Must return the materialized result (7 rows), NOT raise 501.
+    assert "summary" in tables, f"Expected 'summary' in tables, got: {list(tables)}"
+    assert isinstance(tables["summary"], pa.Table)
+    assert tables["summary"].num_rows == 7, (
+        f"Expected 7 rows from materialized result, got {tables['summary'].num_rows}"
+    )
+
+
+@pytest.mark.asyncio
+async def test_materialized_mode_falls_back_to_ephemeral_when_absent(
+    repo: InMemoryRepo,
+) -> None:
+    """resolve_provider_data with mode='materialized' falls back to a live
+    (ephemeral) flow run when no successful materialized run exists yet.
+
+    The fallback must NOT raise — dashboards on fresh/cold providers still work.
+    """
+    import app.flows.store as _fs_mod
+
+    await repo.update(
+        "boards",
+        _ORG,
+        _BOARD_ID,
+        {"config": {"spec": _make_spec_with_flow_provider()}},
+    )
+
+    fake_flow = {"id": _PROVIDER_ID, "name": _PROVIDER_ID, "org_id": _ORG}
+    ephemeral_table = _make_arrow_table(3)
+
+    class _EmptyRunStore:
+        """Store with a known flow but no successful runs (schedule hasn't fired)."""
+
+        async def get_flow(self, flow_id: str) -> dict:
+            return fake_flow
+
+        async def list_flows(self, **kwargs: Any) -> list:
+            return [fake_flow]
+
+        async def list_flow_runs(self, flow_id: str, limit: int = 10, **kwargs: Any) -> list:
+            # Simulate a flow that has never successfully completed.
+            return []
+
+        async def list_task_runs(self, run_id: str) -> list:
+            return []
+
+    async def _fake_enforce_quota(org_id: str, dimension: str, amount: float = 1.0) -> None:
+        pass
+
+    with (
+        patch("app.features.enforce_quota", side_effect=_fake_enforce_quota),
+        # The materialized-path store sees no successful runs.
+        patch.object(_fs_mod, "get_flow_store", return_value=_EmptyRunStore()),
+        # The ephemeral fallback (_resolve_flow_provider) is mocked to return data.
+        patch(
+            "app.dashboards.board_data._resolve_flow_provider",
+            new=AsyncMock(return_value={"summary": ephemeral_table}),
+        ),
+    ):
+        tables = await resolve_provider_data(
+            board_id=_BOARD_ID,
+            provider_id=_PROVIDER_ID,
+            params={},
+            org_id=_ORG,
+            claims={"policies": {}},
+            repo=repo,
+            mode="materialized",  # still passes materialized, but falls back
+        )
+
+    # Must fall back to ephemeral result (3 rows from the mocked live run).
+    assert "summary" in tables, f"Expected 'summary' in fallback tables, got: {list(tables)}"
+    assert isinstance(tables["summary"], pa.Table)
+    assert tables["summary"].num_rows == 3, (
+        f"Expected 3 rows from ephemeral fallback, got {tables['summary'].num_rows}"
+    )
 
 
 # ---------------------------------------------------------------------------

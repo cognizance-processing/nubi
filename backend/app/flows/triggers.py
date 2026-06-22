@@ -39,6 +39,7 @@ exceeded the expected duration.  Called in the run-history serializer.
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 import uuid
@@ -192,22 +193,214 @@ class InMemoryTriggerRegistry:
 
 
 # ---------------------------------------------------------------------------
+# Pg-backed trigger registry
+# ---------------------------------------------------------------------------
+
+
+def _row_to_trigger(row: Any) -> Trigger:
+    """Convert an asyncpg Record (or dict) to a Trigger dataclass.
+
+    Coerces uuid columns to str and ensures created_at is tz-aware UTC.
+    Parses extra jsonb when returned as a raw string.
+    """
+    d = dict(row)
+    for key in ("id", "org_id", "flow_id"):
+        if key in d and d[key] is not None and not isinstance(d[key], str):
+            d[key] = str(d[key])
+    val = d.get("created_at")
+    if isinstance(val, datetime) and val.tzinfo is None:
+        d["created_at"] = val.replace(tzinfo=timezone.utc)
+    # asyncpg returns jsonb already parsed; guard against stringified jsonb.
+    extra = d.get("extra")
+    if isinstance(extra, (str, bytes, bytearray)):
+        try:
+            d["extra"] = json.loads(extra)
+        except Exception:  # noqa: BLE001
+            d["extra"] = {}
+    elif extra is None:
+        d["extra"] = {}
+    return Trigger(
+        id=d["id"],
+        flow_id=d["flow_id"],
+        kind=d["kind"],
+        source=d["source"],
+        org_id=d["org_id"],
+        secret=d.get("secret"),
+        extra=d["extra"],
+        enabled=bool(d.get("enabled", True)),
+        created_at=d.get("created_at", datetime.now(timezone.utc)),
+    )
+
+
+class PgTriggerRegistry:
+    """asyncpg-backed trigger registry for production use.
+
+    Uses the ``fetch`` / ``fetchrow`` / ``execute`` helpers from ``app.db``.
+    All SQL is parameterised with ``$N`` placeholders.  Column names match the
+    ``flow_triggers`` table from 0004_flows.sql.
+    """
+
+    async def register(
+        self,
+        flow_id: str,
+        kind: str,
+        source: str,
+        org_id: str,
+        secret: str | None = None,
+        extra: dict[str, Any] | None = None,
+        enabled: bool = True,
+    ) -> Trigger:
+        """INSERT a new trigger row and return it as a Trigger."""
+        from app.db import fetchrow as db_fetchrow  # noqa: PLC0415
+
+        trigger_id = str(uuid.uuid4())
+        extra_json = json.dumps(extra or {})
+        row = await db_fetchrow(
+            """
+            INSERT INTO flow_triggers (id, org_id, flow_id, kind, source, secret, extra, enabled)
+            VALUES ($1::uuid, $2::uuid, $3::uuid, $4, $5, $6, $7::jsonb, $8)
+            RETURNING *
+            """,
+            trigger_id,
+            org_id,
+            flow_id,
+            kind,
+            source,
+            secret,
+            extra_json,
+            enabled,
+        )
+        if row is None:
+            # Fallback: construct from inputs (shouldn't happen with RETURNING *)
+            return Trigger(
+                id=trigger_id,
+                flow_id=flow_id,
+                kind=kind,
+                source=source,
+                org_id=org_id,
+                secret=secret,
+                extra=dict(extra or {}),
+                enabled=enabled,
+            )
+        return _row_to_trigger(row)
+
+    async def list_by_event(self, event_key: str, org_id: str) -> list[Trigger]:
+        """Return enabled event/webhook triggers matching *event_key* + *org_id*."""
+        from app.db import fetch as db_fetch  # noqa: PLC0415
+
+        rows = await db_fetch(
+            """
+            SELECT * FROM flow_triggers
+            WHERE org_id = $1::uuid
+              AND source = $2
+              AND kind IN ('event', 'webhook')
+              AND enabled = TRUE
+            ORDER BY created_at ASC
+            """,
+            org_id,
+            event_key,
+        )
+        return [_row_to_trigger(r) for r in rows]
+
+    async def list_by_upstream(self, upstream_flow_id: str, org_id: str) -> list[Trigger]:
+        """Return enabled downstream triggers for *upstream_flow_id*."""
+        from app.db import fetch as db_fetch  # noqa: PLC0415
+
+        rows = await db_fetch(
+            """
+            SELECT * FROM flow_triggers
+            WHERE org_id = $1::uuid
+              AND source = $2
+              AND kind = 'downstream'
+              AND enabled = TRUE
+            ORDER BY created_at ASC
+            """,
+            org_id,
+            upstream_flow_id,
+        )
+        return [_row_to_trigger(r) for r in rows]
+
+    async def list_all(self, org_id: str) -> list[Trigger]:
+        """Return all triggers for *org_id*."""
+        from app.db import fetch as db_fetch  # noqa: PLC0415
+
+        rows = await db_fetch(
+            "SELECT * FROM flow_triggers WHERE org_id = $1::uuid ORDER BY created_at ASC",
+            org_id,
+        )
+        return [_row_to_trigger(r) for r in rows]
+
+    async def get(self, trigger_id: str) -> Trigger | None:
+        """Return the trigger by id, or None."""
+        from app.db import fetchrow as db_fetchrow  # noqa: PLC0415
+
+        row = await db_fetchrow(
+            "SELECT * FROM flow_triggers WHERE id = $1::uuid",
+            trigger_id,
+        )
+        return _row_to_trigger(row) if row is not None else None
+
+    async def delete(self, trigger_id: str) -> bool:
+        """Delete a trigger; return True if a row was deleted."""
+        from app.db import execute as db_execute  # noqa: PLC0415
+
+        status = await db_execute(
+            "DELETE FROM flow_triggers WHERE id = $1::uuid",
+            trigger_id,
+        )
+        # asyncpg returns e.g. "DELETE 1" or "DELETE 0"
+        try:
+            return int(status.split()[-1]) > 0
+        except (IndexError, ValueError):
+            return False
+
+    async def update_enabled(self, trigger_id: str, enabled: bool) -> Trigger | None:
+        """Enable/disable a trigger; return the updated trigger or None."""
+        from app.db import fetchrow as db_fetchrow  # noqa: PLC0415
+
+        row = await db_fetchrow(
+            """
+            UPDATE flow_triggers SET enabled = $1, updated_at = now()
+            WHERE id = $2::uuid
+            RETURNING *
+            """,
+            enabled,
+            trigger_id,
+        )
+        return _row_to_trigger(row) if row is not None else None
+
+
+# ---------------------------------------------------------------------------
 # Module-level singleton
 # ---------------------------------------------------------------------------
 
-_registry: InMemoryTriggerRegistry | None = None
+# _registry == None  → not yet chosen; get_trigger_registry() will lazily
+#                       create a PgTriggerRegistry (production default).
+_registry: InMemoryTriggerRegistry | PgTriggerRegistry | None = None
 
 
-def get_trigger_registry() -> InMemoryTriggerRegistry:
-    """Return (or lazily create) the module-level trigger registry."""
+def get_trigger_registry() -> InMemoryTriggerRegistry | PgTriggerRegistry:
+    """Return (or lazily create) the module-level trigger registry.
+
+    In production (no override via ``set_trigger_registry``), returns a
+    ``PgTriggerRegistry`` backed by the asyncpg pool.  Tests inject an
+    ``InMemoryTriggerRegistry`` via ``set_trigger_registry`` before each test.
+    """
     global _registry
     if _registry is None:
-        _registry = InMemoryTriggerRegistry()
+        _registry = PgTriggerRegistry()
     return _registry
 
 
-def set_trigger_registry(registry: InMemoryTriggerRegistry | None) -> None:
-    """Override the module-level trigger registry (for tests)."""
+def set_trigger_registry(
+    registry: InMemoryTriggerRegistry | PgTriggerRegistry | None,
+) -> None:
+    """Override the module-level trigger registry (for tests).
+
+    Pass an ``InMemoryTriggerRegistry`` to inject a test double.  Pass
+    ``None`` to reset so the next ``get_trigger_registry()`` call creates
+    a fresh ``PgTriggerRegistry`` (the production default).
+    """
     global _registry
     _registry = registry
 

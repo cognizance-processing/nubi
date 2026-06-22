@@ -22,8 +22,8 @@ phase             existing core machinery
 ================  =========================================================
 observe           :func:`app.connectors.preagg.mine` over the query log
 decide            rank candidates × :class:`QueryEstimate` (``Connector.estimate``)
-build             :func:`app.connectors.preagg.build_rollup` (TODO: wire R2)
-maintain          incremental refresh via the connector (TODO)
+build             :func:`app.connectors.preagg.build_rollup` (local DuckDB; R2 future)
+maintain          full rebuild via ``build_rollup``; incremental refresh future
 rewrite           :func:`app.connectors.planner.route_to_rollup_shape`
 ================  =========================================================
 
@@ -34,14 +34,26 @@ What is REAL here today
   ``frequency × estimated-bytes-saved`` that emits an :class:`OptimizerPlan`.
 * :meth:`Optimizer.detect_layout` — auto-detect a time partition key + cluster
   keys from candidate dimensions/filters and the query log.
+* :meth:`Optimizer.build` — materialize auto-build rollups via
+  :func:`app.connectors.preagg.build_rollup`; returns list of
+  :class:`~app.connectors.preagg.BuiltRollup`.
+* :meth:`Optimizer.maintain` — full-rebuild refresh of all registered rollups.
 * :meth:`Optimizer.rewrite` — a pass-through hook into ``route_to_rollup_shape``.
+
+What is REAL here today (all phases)
+-------------------------------------
+* :meth:`Optimizer.build` — calls :func:`app.connectors.preagg.build_rollup` for
+  each auto-build rollup in the plan; writes a local DuckDB file.  Returns a list
+  of :class:`~app.connectors.preagg.BuiltRollup`.  Future upgrade: swap the local
+  DuckDB write for **Parquet in R2** once the R2 write path lands (§3).
+* :meth:`Optimizer.maintain` — full rebuild of every registered rollup (minimum
+  viable; always correct).  Returns a summary dict.  Future upgrade: incremental
+  refresh (``WHERE ts > watermark`` via ``MaterializedConfig``) + lambda freshness.
 
 What is marked TODO (deeper bits)
 ---------------------------------
-* :meth:`Optimizer.build` — materialize to **R2 Parquet** (today ``build_rollup``
-  writes a local DuckDB file).
-* :meth:`Optimizer.maintain` — incremental refresh (``WHERE ts > watermark``) +
-  lambda freshness (serve-stale, async refresh).
+* R2 remote-write in :meth:`Optimizer.build` (documented inside the method).
+* Incremental refresh in :meth:`Optimizer.maintain` (documented inside the method).
 * Sketch-based measures (HLL / t-digest) for non-additive grains.
 * Partition pruning inside the rewrite (extend ``route_to_rollup_shape``).
 """
@@ -513,49 +525,199 @@ class Optimizer:
     # ── BUILD ───────────────────────────────────────────────────────────────
 
     def build(
-        self, plan: OptimizerPlan, *, rls_keys_by_table: dict[str, list[str]] | None = None
+        self,
+        plan: OptimizerPlan,
+        *,
+        rls_keys_by_table: dict[str, list[str]] | None = None,
+        source_database: str | None = None,
+        org_id: str | None = None,
     ) -> list[Any]:
         """Materialize the auto-build rollups in *plan*.
 
-        TODO (deeper): this is the §1.2 "materialization always lands in the
-        lakehouse" step.  Today :func:`app.connectors.preagg.build_rollup` writes
-        a **local DuckDB** file; the managed-lakehouse target is **Parquet in
-        R2** (sorted by the partition key, clustered by the cluster keys, zstd,
-        column stats) so httpfs range-requests prune to MBs (§3).
+        For each :class:`PlannedRollup` in ``plan.to_build`` (those that cleared
+        the auto-build threshold), this method:
 
-        Until the R2 write path lands, this method is a deliberate no-op stub
-        that returns an empty list rather than silently building local files
-        with the wrong physical layout.  The decision plan it consumes is fully
-        formed, so wiring the builder is a localized change.
+        1. Reconstructs a :class:`~app.connectors.preagg.RollupCandidate` from
+           the ``PlannedRollup``.
+        2. Calls :func:`app.connectors.preagg.build_rollup` to materialize the
+           aggregate into a **local DuckDB** file (the current write target).
+        3. Registers the resulting :class:`~app.connectors.preagg.BuiltRollup`
+           in the shared registry so the router picks it up immediately.
 
-        ``rls_keys_by_table`` carries the RLS-key columns that MUST stay in each
-        rollup's grain (§ invariants) — passed straight through to the builder
-        once wired so per-tenant filtering survives the rewrite.
+        Returns a list of :class:`~app.connectors.preagg.BuiltRollup` objects —
+        one per successfully built rollup.  Failures per-rollup are logged and
+        skipped so one bad candidate cannot block the rest.
+
+        Future upgrade (R2 remote-write path)
+        --------------------------------------
+        Today ``build_rollup`` writes a **local DuckDB** file.  The
+        managed-lakehouse target is **Parquet in R2** (sorted by the
+        :class:`LayoutHint` partition key, clustered by the cluster keys, zstd,
+        column statistics) so httpfs range-requests prune to MBs (§3 of the
+        spec).  Once the R2 write path lands, replace the ``build_rollup`` call
+        here with the R2 materializer; the rest of the orchestration stays
+        identical.
+
+        Parameters
+        ----------
+        plan:
+            The :class:`OptimizerPlan` from :meth:`decide` — only the
+            ``to_build`` subset (``auto_build=True``) is materialized.
+        rls_keys_by_table:
+            Per-table RLS-key columns that MUST be kept in each rollup's grain
+            (§ invariants — per-tenant filtering via ``WHERE <key> = <claim>``
+            survives the rewrite only when the key is physically in the rollup).
+            When ``None`` no extra RLS keys are injected (conservative; the
+            rollup is still correct but lacks the key for per-tenant filtering
+            via the rollup path, so such queries fall back to pushdown).
+        source_database:
+            Absolute path to the DuckDB file holding the base fact tables.
+            ``None`` is in-memory (suitable for tests).
+        org_id:
+            Organisation that owns these rollups.  Stored on each
+            :class:`~app.connectors.preagg.BuiltRollup` so the registry enforces
+            org-scoped candidate filtering: a rollup built for org A is never
+            routed to org B's queries.
         """
-        # Intentionally not calling build_rollup yet — see docstring (wrong
-        # physical target).  Returning [] keeps callers safe and tests honest.
-        _ = (plan, rls_keys_by_table)
-        return []
+        import logging  # noqa: PLC0415
+
+        from app.connectors.preagg import RollupCandidate, build_rollup  # noqa: PLC0415
+
+        log = logging.getLogger(__name__)
+        rls_keys_by_table = rls_keys_by_table or {}
+        built: list[Any] = []
+
+        for planned in plan.to_build:
+            candidate = RollupCandidate(
+                table=planned.candidate.table,
+                dimensions=list(planned.candidate.dimensions),
+                measures=list(planned.candidate.measures),
+                filters=list(planned.candidate.filters),
+                score=planned.candidate.score,
+                sample_count=planned.candidate.sample_count,
+                est_bytes=planned.candidate.est_bytes,
+                cluster_key=planned.candidate.cluster_key,
+            )
+            rls_keys = list(rls_keys_by_table.get(planned.table, []))
+            try:
+                rollup = build_rollup(
+                    candidate,
+                    rls_keys=rls_keys,
+                    source_database=source_database,
+                    registry=self.registry,
+                    register_query=True,
+                    org_id=org_id,
+                )
+                built.append(rollup)
+                log.info(
+                    "optimizer.build: materialized rollup %s for %s (score=%d, auto=%s)",
+                    rollup.rollup_id,
+                    planned.table,
+                    planned.score,
+                    planned.auto_build,
+                )
+            except Exception as exc:  # noqa: BLE001
+                log.warning(
+                    "optimizer.build: failed to materialize rollup for %s: %s",
+                    planned.candidate.cluster_key,
+                    exc,
+                )
+
+        return built
 
     # ── MAINTAIN ────────────────────────────────────────────────────────────
 
-    def maintain(self) -> None:
-        """Incremental refresh hook for built rollups (§2 "maintain", §3).
+    def maintain(
+        self,
+        *,
+        source_database: str | None = None,
+    ) -> dict[str, Any]:
+        """Refresh all registered rollups (§2 "maintain", §3).
 
-        TODO (deeper): for each built rollup, run an incremental refresh through
-        the source connector (``WHERE ts > watermark`` — ``MaterializedConfig``
-        already carries incremental/watermark) and apply **lambda freshness**:
-        serve the stale rollup immediately and refresh asynchronously so
-        dashboards never block.  Honour each table's ``freshness`` window from
-        ``nubi.toml``.
+        Iterates every :class:`~app.connectors.preagg.BuiltRollup` currently in
+        the registry and re-materializes it from its source table.  This is the
+        minimum viable **full rebuild** strategy — correct for all rollup types
+        and sufficient until incremental refresh lands.
 
-        This is the ONLY per-connector part of pre-agg (§1.3); everything else
-        is connector-agnostic.  Stubbed until the refresh scheduler integration
-        lands.
+        Incremental refresh (future upgrade)
+        -------------------------------------
+        The spec describes an incremental path: ``WHERE ts > watermark`` using
+        the ``MaterializedConfig`` incremental/watermark field, with **lambda
+        freshness** (serve stale, refresh async).  That path is the ONLY
+        per-connector part of pre-agg (§1.3).  Once the refresh scheduler
+        integration lands, add:
+
+        1. Check each rollup's ``MaterializedConfig.incremental`` flag.
+        2. When ``True``, run ``SELECT ... WHERE <time_col> > watermark`` and
+           UNION/UPSERT into the existing rollup file.
+        3. Advance the watermark on success.
+        4. Otherwise (``False`` or no watermark), do a full rebuild (current
+           behaviour).
+
+        Parameters
+        ----------
+        source_database:
+            Absolute path to the DuckDB file holding the base fact tables.
+            ``None`` means in-memory (test usage).
+
+        Returns
+        -------
+        dict
+            ``{refreshed: int, failed: int, skipped: int, errors: list[str]}``
         """
-        # No-op until the incremental refresh path is wired.  Listed here so the
-        # lifecycle surface is complete and callers can schedule it.
-        return None
+        import logging  # noqa: PLC0415
+
+        from app.connectors.preagg import RollupCandidate, build_rollup  # noqa: PLC0415
+
+        log = logging.getLogger(__name__)
+        refreshed = 0
+        failed = 0
+        skipped = 0
+        errors: list[str] = []
+
+        for rollup in self.registry.all_rollups():
+            # Reconstruct a minimal candidate from the registered rollup's shape.
+            candidate = RollupCandidate(
+                table=rollup.source_table,
+                dimensions=list(rollup.dimensions),
+                measures=list(rollup.measures),
+            )
+            db = source_database or rollup.database
+            if db is None:
+                log.debug(
+                    "optimizer.maintain: skipping %s (no source_database)",
+                    rollup.rollup_id,
+                )
+                skipped += 1
+                continue
+            try:
+                build_rollup(
+                    candidate,
+                    rls_keys=list(rollup.rls_keys),
+                    source_database=db,
+                    rollup_id=rollup.rollup_id,  # keep the same id → overwrites in place
+                    registry=self.registry,
+                    register_query=False,  # already registered
+                    org_id=rollup.org_id,
+                )
+                refreshed += 1
+                log.info(
+                    "optimizer.maintain: refreshed rollup %s for table %s",
+                    rollup.rollup_id,
+                    rollup.source_table,
+                )
+            except Exception as exc:  # noqa: BLE001
+                msg = f"Failed to refresh rollup {rollup.rollup_id!r}: {exc}"
+                log.warning("optimizer.maintain: %s", msg)
+                errors.append(msg)
+                failed += 1
+
+        return {
+            "refreshed": refreshed,
+            "failed": failed,
+            "skipped": skipped,
+            "errors": errors,
+        }
 
     # ── REWRITE (read-time hook into route_to_rollup_shape) ─────────────────
 

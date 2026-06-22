@@ -445,6 +445,18 @@ def _reset_state():
         except Exception:
             pass
 
+        # ── Writeback store (B3) ──────────────────────────────────────────────
+        # Reset to a fresh in-memory store between tests; the default PgWritebackStore
+        # cannot run against the fake DB.
+        try:
+            from app.connectors.writeback import (
+                InMemoryWritebackStore,
+                set_writeback_store,
+            )
+            set_writeback_store(InMemoryWritebackStore())
+        except Exception:
+            pass
+
         # ── API-key store (F-6) ───────────────────────────────────────────────
         # Reset to a fresh in-memory store so minted CLI/CI keys never leak
         # across tests (the default Pg store can't run against the fake DB).
