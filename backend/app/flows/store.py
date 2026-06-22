@@ -455,6 +455,21 @@ class InMemoryFlowStore:
         tr = self._task_runs.get(str(task_run_id))
         return deepcopy(tr) if tr is not None else None
 
+    async def get_task_run_by_key(
+        self, flow_run_id: str, task_key: str
+    ) -> TaskRun | None:
+        """Return the task_run for *flow_run_id* / *task_key*, or ``None``.
+
+        O(k) where k is the number of task_runs in this flow_run (uses the
+        flow_run_id index to avoid a full-store scan).
+        """
+        tr_ids = self._task_run_index.get(str(flow_run_id), [])
+        for tid in tr_ids:
+            tr = self._task_runs.get(tid)
+            if tr is not None and tr["task_key"] == task_key:
+                return deepcopy(tr)
+        return None
+
     async def update_task_run(self, task_run_id: str, fields: dict[str, Any]) -> TaskRun | None:
         """Update mutable fields on a task_run; return the updated copy.
 
@@ -1323,6 +1338,27 @@ class PgFlowStore:
         row = await db_fetchrow(
             "SELECT * FROM task_runs WHERE id = $1::uuid",
             task_run_id,
+        )
+        return _row_to_task_run(row) if row is not None else None
+
+    async def get_task_run_by_key(
+        self, flow_run_id: str, task_key: str
+    ) -> TaskRun | None:
+        """Return the task_run for *flow_run_id* / *task_key*, or ``None``.
+
+        Targeted single-row fetch using the (flow_run_id, task_key) index —
+        avoids the full list_task_runs round-trip used by the O(N) fallback.
+        """
+        from app.db import fetchrow as db_fetchrow  # noqa: PLC0415
+
+        row = await db_fetchrow(
+            """
+            SELECT * FROM task_runs
+            WHERE flow_run_id = $1::uuid AND task_key = $2
+            LIMIT 1
+            """,
+            flow_run_id,
+            task_key,
         )
         return _row_to_task_run(row) if row is not None else None
 

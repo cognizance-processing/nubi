@@ -320,7 +320,10 @@ async def test_seed_sample_bundle_s3_is_idempotent():
 
     boards = load_boards()
     queries = load_queries()
-    n_queries = len([k for k in referenced_query_keys(boards) if k in queries])
+    # Include metric-backed queries (seeded for /metrics even if no board
+    # references them directly) — mirrors the seed_sample_bundle logic exactly.
+    needed = set(referenced_query_keys(boards)) | {k for k, v in queries.items() if v.get("metric")}
+    n_queries = len([k for k in needed if k in queries])
 
     assert second["created"] == [], f"Second seed created unexpected resources: {second['created']}"
     assert len(await repo.list("datastores", org)) == 1

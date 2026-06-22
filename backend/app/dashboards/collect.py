@@ -104,6 +104,17 @@ _MAX_CANVAS_BINDINGS: int = int(
     os.environ.get("NUBI_MAX_CANVAS_BINDINGS", _DEFAULT_MAX_CANVAS_BINDINGS)
 )
 
+# Maximum concurrent repo.get("datastores", …) calls issued by _prefetch_datastores.
+# The widget path has Semaphore(_WIDGET_CONCURRENCY=8); the prefetch path was
+# previously unbounded — up to _MAX_CANVAS_BINDINGS (500) concurrent calls could
+# exhaust the DB pool before any widget ran.  Bound it here to avoid that burst.
+# Override via NUBI_PREFETCH_CONCURRENCY env-var (integer, positive).
+_DEFAULT_PREFETCH_CONCURRENCY = 10
+_PREFETCH_CONCURRENCY: int = max(
+    1,
+    int(os.environ.get("NUBI_PREFETCH_CONCURRENCY", _DEFAULT_PREFETCH_CONCURRENCY)),
+)
+
 
 # ---------------------------------------------------------------------------
 # Board / widget helpers
@@ -348,7 +359,7 @@ async def _resolve_connector(
 async def _prefetch_datastores(
     ds_ids: set[str], org_id: str, repo: Repo
 ) -> dict[str, Any]:
-    """Fetch *ds_ids* in a single ``asyncio.gather`` and return a cache dict.
+    """Fetch *ds_ids* concurrently (bounded) and return a cache dict.
 
     Returns a ``{ds_id: row}`` mapping for all datastore ids that were found.
     Ids that resolve to ``None`` (not found / cross-org) are omitted from the
@@ -358,18 +369,25 @@ async def _prefetch_datastores(
     This is called once at the start of :func:`collect_board_data` and
     :func:`collect_canvas_data` to eliminate N identical ``repo.get`` calls
     when N widgets/bindings share the same datastore.
+
+    Concurrency is capped at ``_PREFETCH_CONCURRENCY`` (env
+    ``NUBI_PREFETCH_CONCURRENCY``, default 10) so that a canvas with up to
+    ``_MAX_CANVAS_BINDINGS`` (500) distinct datastores cannot fire 500
+    simultaneous DB connections before any widget query runs — previously this
+    path had no semaphore while the widget path had ``Semaphore(8)``.
     """
     if not ds_ids:
         return {}
 
-    results = await asyncio.gather(
-        *(repo.get("datastores", org_id, ds_id) for ds_id in ds_ids)
-    )
-    return {
-        ds_id: row
-        for ds_id, row in zip(ds_ids, results)
-        if row is not None
-    }
+    semaphore = asyncio.Semaphore(_PREFETCH_CONCURRENCY)
+
+    async def _fetch_one(ds_id: str) -> tuple[str, Any]:
+        async with semaphore:
+            row = await repo.get("datastores", org_id, ds_id)
+        return ds_id, row
+
+    pairs = await asyncio.gather(*(_fetch_one(ds_id) for ds_id in ds_ids))
+    return {ds_id: row for ds_id, row in pairs if row is not None}
 
 
 # ---------------------------------------------------------------------------

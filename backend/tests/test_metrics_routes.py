@@ -592,3 +592,126 @@ async def test_viewer_metrics_query_skips_enforce_quota(metering_client, fake_db
         )
     finally:
         app_.dependency_overrides.pop(verified_identity, None)
+
+
+# ---------------------------------------------------------------------------
+# (e) [audit-14] /metrics/{id}/query threads the caller's org into rollup routing
+# ---------------------------------------------------------------------------
+# REGRESSION: the route used to call route_to_rollup_shape WITHOUT org_id, so
+# org-scoped rollups (build_rollup_for_metric(..., org_id)) were NEVER served and
+# an unscoped rollup could leak across tenants.  These tests assert the route now
+# passes the caller's org through, so an org-scoped rollup is served to its own
+# org and never to another org.
+
+
+@pytest.mark.asyncio
+async def test_metrics_query_passes_caller_org_to_rollup_router(metering_client):
+    """The route must call route_to_rollup_shape with org_id == the caller's org.
+
+    We spy on the (lazily-imported) router and capture the org_id kwarg.  The
+    seeded demo_revenue metric runs against the built-in demo connector, so the
+    request succeeds end-to-end while we assert the org was threaded through.
+    """
+    from app.auth.deps import verified_identity
+    from app.connectors import planner as planner_mod
+
+    client, user_id, org_id, _repo, app_ = metering_client
+    writer = _writer_identity(user_id, org_id)
+    app_.dependency_overrides[verified_identity] = lambda: writer
+
+    captured: dict[str, object] = {}
+    real_router = planner_mod.route_to_rollup_shape
+
+    def _spy(plan, registry, *, org_id=None):
+        captured["org_id"] = org_id
+        return real_router(plan, registry, org_id=org_id)
+
+    try:
+        with patch.object(planner_mod, "route_to_rollup_shape", _spy):
+            resp = await client.post(
+                "/api/v1/metrics/demo_revenue/query",
+                json={"dimensions": ["name"]},
+                headers={"Authorization": "Bearer ignored"},
+            )
+        assert resp.status_code == 200, resp.text
+        assert "org_id" in captured, "router was never invoked by the route"
+        assert captured["org_id"] == org_id, (
+            f"route must pass the caller's org ({org_id}) to the rollup router, "
+            f"got {captured['org_id']!r}"
+        )
+    finally:
+        app_.dependency_overrides.pop(verified_identity, None)
+
+
+@pytest.mark.asyncio
+async def test_metrics_query_serves_org_scoped_rollup_only_to_its_org(
+    metering_client,
+):
+    """An org-scoped rollup is served to its own org via /metrics and NEVER cross-org.
+
+    Build a rollup tagged org_id=<caller org> for the demo connector's base table
+    and confirm the router (invoked by the route with the caller's org) returns it
+    as a candidate; then assert a DIFFERENT org gets ZERO candidates for the same
+    shape — proving the route's org-scoping prevents cross-tenant rollup reuse.
+    """
+    from app.auth.deps import verified_identity
+    from app.connectors import planner as planner_mod
+    from app.connectors.preagg import BuiltRollup, get_registry
+
+    client, user_id, org_id, _repo, app_ = metering_client
+    writer = _writer_identity(user_id, org_id)
+    app_.dependency_overrides[verified_identity] = lambda: writer
+
+    # Register an org-scoped rollup for the demo base table in the GLOBAL registry
+    # the route consults.  (We assert candidate selection rather than execution so
+    # the test does not depend on a materialised rollup file matching the demo
+    # connector's data — the org-scoping decision is what the fix changes.)
+    reg = get_registry()
+    rollup = BuiltRollup(
+        rollup_id="audit14-demo-rollup",
+        table="rollup_demo",
+        source_table="demo",
+        dimensions=["name"],
+        rls_keys=[],
+        org_id=org_id,
+    )
+    reg.add_rollup(rollup)
+
+    captured: dict[str, object] = {}
+    real_router = planner_mod.route_to_rollup_shape
+
+    def _spy(plan, registry, *, org_id=None):
+        # Record what THIS org's call sees as candidates for the demo table.
+        captured["org_id"] = org_id
+        captured["candidates"] = [
+            r.rollup_id
+            for r in registry.candidates_for_table("demo", org_id=org_id)
+        ]
+        return real_router(plan, registry, org_id=org_id)
+
+    try:
+        with patch.object(planner_mod, "route_to_rollup_shape", _spy):
+            resp = await client.post(
+                "/api/v1/metrics/demo_revenue/query",
+                json={"dimensions": ["name"]},
+                headers={"Authorization": "Bearer ignored"},
+            )
+        assert resp.status_code == 200, resp.text
+        # The caller's own org sees its rollup as a candidate.
+        assert captured.get("org_id") == org_id
+        assert "audit14-demo-rollup" in captured.get("candidates", []), (
+            f"own-org rollup must be a candidate, got {captured.get('candidates')!r}"
+        )
+        # A DIFFERENT org must see NO candidates for the same table/shape.
+        other_org = str(uuid.uuid4())
+        assert reg.candidates_for_table("demo", org_id=other_org) == [], (
+            "org-scoped rollup must NEVER be a candidate for another org"
+        )
+    finally:
+        app_.dependency_overrides.pop(verified_identity, None)
+        # Clean up the rollup we injected into the process-global registry so we
+        # do not perturb other tests sharing the singleton.
+        try:
+            reg._rollups.pop("audit14-demo-rollup", None)  # type: ignore[attr-defined]
+        except Exception:  # noqa: BLE001
+            pass

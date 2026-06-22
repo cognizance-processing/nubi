@@ -17,6 +17,7 @@ Covers:
 
 from __future__ import annotations
 
+import asyncio
 import os
 import types
 import uuid
@@ -483,3 +484,62 @@ async def test_collect_board_data_demo_queries_no_datastore_lookup():
         f"Expected 0 datastore lookups for demo queries, "
         f"got {repo.datastore_get_count()} (ids: {repo.datastore_get_ids()})"
     )
+
+
+# ---------------------------------------------------------------------------
+# 7. _prefetch_datastores concurrency never exceeds _PREFETCH_CONCURRENCY cap
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_prefetch_datastores_concurrency_capped():
+    """_prefetch_datastores never runs more than _PREFETCH_CONCURRENCY fetches simultaneously.
+
+    Strategy: instrument repo.get("datastores", …) with an async mock that
+    tracks the current in-flight count.  With NUBI_PREFETCH_CONCURRENCY forced
+    to a small cap (3) and 20 distinct datastores, the observed peak must never
+    exceed the cap.
+    """
+    import app.dashboards.collect as collect_mod
+
+    original_cap = collect_mod._PREFETCH_CONCURRENCY
+    test_cap = 3
+    collect_mod._PREFETCH_CONCURRENCY = test_cap
+
+    try:
+        peak_concurrent: list[int] = [0]
+        in_flight: list[int] = [0]
+
+        # Build 20 distinct ds_ids, each backed by a real row so the cache
+        # includes them (rows that return None are omitted, which would still
+        # exercise the semaphore but would make assertions about cache size
+        # fragile).
+        n_ds = 20
+        org_id = str(uuid.uuid4())
+        ds_ids = [str(uuid.uuid4()) for _ in range(n_ds)]
+        ds_rows = {ds_id: {"id": ds_id, "org_id": org_id} for ds_id in ds_ids}
+
+        async def _tracked_get(resource, _org_id, ds_id):
+            in_flight[0] += 1
+            if in_flight[0] > peak_concurrent[0]:
+                peak_concurrent[0] = in_flight[0]
+            # yield to the event loop so other coroutines can start and the
+            # semaphore contention is actually exercised.
+            await asyncio.sleep(0)
+            in_flight[0] -= 1
+            return ds_rows.get(ds_id)
+
+        mock_repo = AsyncMock()
+        mock_repo.get = _tracked_get
+
+        cache = await collect_mod._prefetch_datastores(set(ds_ids), org_id, mock_repo)
+
+        assert len(cache) == n_ds, (
+            f"Expected all {n_ds} ds_ids in cache, got {len(cache)}"
+        )
+        assert peak_concurrent[0] <= test_cap, (
+            f"Concurrency exceeded the cap: peak={peak_concurrent[0]}, cap={test_cap}. "
+            "The semaphore in _prefetch_datastores is not working correctly."
+        )
+    finally:
+        collect_mod._PREFETCH_CONCURRENCY = original_cap

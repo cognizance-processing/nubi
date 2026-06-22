@@ -1236,3 +1236,215 @@ async def test_map_fanout_batched_small_list_single_call():
     assert call_count == 1, (
         f"Expected exactly 1 add_task_runs call for 10 items at batch_size=500, got {call_count}"
     )
+
+
+# ---------------------------------------------------------------------------
+# map_items write-time byte cap (audit-14)
+# ---------------------------------------------------------------------------
+
+
+async def test_map_items_byte_cap_raises_on_oversized_payload(monkeypatch):
+    """map fan-out raises ValueError when serialised __map_items__ exceeds cap.
+
+    Patches _MAP_ITEMS_MAX_BYTES to a tiny value so a small list of items
+    triggers the guard, verifying the cap is enforced at write time before any
+    store.update_task_run call.
+    """
+    import pytest
+    import app.flows.runtime as rt
+    from app.flows.runtime import materialize_flow_run, drain_flow_run
+    from app.flows.registry import reset_for_tests
+    from app.flows.store import InMemoryFlowStore
+
+    reset_for_tests()
+
+    # Patch cap to 1 byte so even a tiny payload fails.
+    monkeypatch.setattr(rt, "_MAP_ITEMS_MAX_BYTES", 1)
+
+    store = InMemoryFlowStore()
+    spec = {
+        "version": 1,
+        "name": "cap_test",
+        "tasks": [
+            {
+                "key": "fan",
+                "kind": "map",
+                "needs": [],
+                "config": {
+                    "item_expr": "{{ params.items }}",
+                    "item_var": "item",
+                    "body": [{"key": "work", "kind": "noop", "needs": [], "config": {}}],
+                },
+            }
+        ],
+    }
+    flow = await store.create_flow(
+        org_id="org-test", created_by="user-test", name="cap_test", spec=spec
+    )
+    flow_run = await materialize_flow_run(
+        store, flow, {"items": [{"x": 1}, {"x": 2}]}, "manual", NOW
+    )
+
+    with pytest.raises(ValueError, match="map_items payload too large"):
+        await drain_flow_run(store, flow_run["id"], NOW, claims={})
+
+
+async def test_map_items_byte_cap_passes_within_limit(monkeypatch):
+    """map fan-out succeeds when serialised __map_items__ is within the cap.
+
+    Uses a large-enough cap so 3 small items pass without error.
+    """
+    import app.flows.runtime as rt
+    from app.flows.runtime import materialize_flow_run, drain_flow_run
+    from app.flows.registry import reset_for_tests
+    from app.flows.store import InMemoryFlowStore
+
+    reset_for_tests()
+
+    # 1 MiB cap — easily covers 3 tiny items.
+    monkeypatch.setattr(rt, "_MAP_ITEMS_MAX_BYTES", 1024 * 1024)
+
+    store = InMemoryFlowStore()
+    spec = {
+        "version": 1,
+        "name": "cap_ok_test",
+        "tasks": [
+            {
+                "key": "fan",
+                "kind": "map",
+                "needs": [],
+                "config": {
+                    "item_expr": "{{ params.items }}",
+                    "item_var": "item",
+                    "body": [{"key": "work", "kind": "noop", "needs": [], "config": {}}],
+                },
+            }
+        ],
+    }
+    flow = await store.create_flow(
+        org_id="org-test", created_by="user-test", name="cap_ok_test", spec=spec
+    )
+    flow_run = await materialize_flow_run(
+        store, flow, {"items": [{"x": 1}, {"x": 2}, {"x": 3}]}, "manual", NOW
+    )
+    final = await drain_flow_run(store, flow_run["id"], NOW, claims={})
+    assert final["state"] == "success", (
+        f"Expected flow_run state 'success', got {final['state']!r}"
+    )
+
+
+async def test_map_items_byte_cap_default_is_4mib():
+    """Default _MAP_ITEMS_MAX_BYTES is 4 MiB (env unset)."""
+    import app.flows.runtime as rt
+
+    assert rt._MAP_ITEMS_MAX_BYTES == 4 * 1024 * 1024, (
+        f"Expected default _MAP_ITEMS_MAX_BYTES == {4 * 1024 * 1024}, "
+        f"got {rt._MAP_ITEMS_MAX_BYTES}"
+    )
+
+
+# ---------------------------------------------------------------------------
+# _lookup_map_item targeted fetch (audit-14)
+# ---------------------------------------------------------------------------
+
+
+async def test_lookup_map_item_uses_get_task_run_by_key():
+    """_lookup_map_item resolves via get_task_run_by_key (not list_task_runs).
+
+    Verifies:
+    - Returns the correct item value for a valid index.
+    - The store's list_task_runs is NOT called (targeted fetch only).
+    """
+    from app.flows.runtime import _lookup_map_item
+    from app.flows.store import InMemoryFlowStore
+    from unittest.mock import AsyncMock, patch
+
+    store = InMemoryFlowStore()
+
+    flow = await store.create_flow(
+        org_id="org-test", created_by="user-test", name="lookup_test",
+        spec={"version": 1, "name": "lookup_test", "tasks": []},
+    )
+    run = await store.create_flow_run(
+        flow_id=flow["id"], org_id="org-test", params={}, trigger="manual",
+    )
+    flow_run_id = run["id"]
+
+    # Insert a map task_run in waiting_children state with __map_items__.
+    items = [{"v": 10}, {"v": 20}, {"v": 30}]
+    trs = await store.add_task_runs(flow_run_id, [{
+        "task_key": "fan",
+        "org_id": "org-test",
+        "state": "waiting_children",
+        "attempt": 1,
+        "depends_on": [],
+        "result": {
+            "item_count": len(items),
+            "__map_items__": items,
+            "item_var": "item",
+        },
+    }])
+    assert trs, "Expected task_run to be inserted"
+
+    list_calls: list = []
+    original_list = store.list_task_runs
+
+    async def tracking_list(*args, **kwargs):
+        list_calls.append(args)
+        return await original_list(*args, **kwargs)
+
+    store.list_task_runs = tracking_list  # type: ignore[method-assign]
+
+    result = await _lookup_map_item(store, flow_run_id, "fan", 1)
+
+    assert result == {"v": 20}, f"Expected {{'v': 20}}, got {result!r}"
+    assert list_calls == [], (
+        "_lookup_map_item must NOT call list_task_runs; "
+        f"got {len(list_calls)} call(s)"
+    )
+
+
+async def test_lookup_map_item_missing_key_returns_empty():
+    """_lookup_map_item returns {} when the map task_run does not exist."""
+    from app.flows.runtime import _lookup_map_item
+    from app.flows.store import InMemoryFlowStore
+
+    store = InMemoryFlowStore()
+    flow = await store.create_flow(
+        org_id="org-test", created_by="user-test", name="missing_test",
+        spec={"version": 1, "name": "missing_test", "tasks": []},
+    )
+    run = await store.create_flow_run(
+        flow_id=flow["id"], org_id="org-test", params={}, trigger="manual",
+    )
+    result = await _lookup_map_item(store, run["id"], "nonexistent_key", 0)
+    assert result == {}, f"Expected empty dict, got {result!r}"
+
+
+async def test_get_task_run_by_key_inmemory():
+    """InMemoryFlowStore.get_task_run_by_key returns the correct task_run."""
+    from app.flows.store import InMemoryFlowStore
+
+    store = InMemoryFlowStore()
+    flow = await store.create_flow(
+        org_id="org-test", created_by="user-test", name="bykey_test",
+        spec={"version": 1, "name": "bykey_test", "tasks": []},
+    )
+    run = await store.create_flow_run(
+        flow_id=flow["id"], org_id="org-test", params={}, trigger="manual",
+    )
+    flow_run_id = run["id"]
+
+    trs = await store.add_task_runs(flow_run_id, [
+        {"task_key": "alpha", "org_id": "org-test", "state": "success", "attempt": 1, "depends_on": []},
+        {"task_key": "beta", "org_id": "org-test", "state": "waiting_children", "attempt": 1, "depends_on": []},
+    ])
+    assert len(trs) == 2
+
+    found = await store.get_task_run_by_key(flow_run_id, "beta")
+    assert found is not None, "Expected to find 'beta' task_run"
+    assert found["task_key"] == "beta"
+    assert found["state"] == "waiting_children"
+
+    missing = await store.get_task_run_by_key(flow_run_id, "gamma")
+    assert missing is None, f"Expected None for missing key, got {missing!r}"

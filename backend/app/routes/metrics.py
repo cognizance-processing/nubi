@@ -742,21 +742,9 @@ async def query_metric(
         params=effective_params,
     )
 
-    # ── 5. Conservative rollup routing (RLS preserved) — same as /query ──────
-    try:
-        from app.connectors.planner import route_to_rollup_shape as _route_rollup
-        from app.connectors.preagg import get_registry as _get_rollup_registry
-
-        _route = _route_rollup(physical_plan, _get_rollup_registry())
-        if _route.routed:
-            physical_plan = _route.plan
-            if _route.rollup_id:
-                _get_rollup_registry().record_hit(_route.rollup_id)
-    except Exception:  # noqa: BLE001 — routing must never break the query path.
-        pass
-
-    # ── 6a. Org attribution (must precede the scoped cache lookup) ──────────
-    # Resolve org_id for quota, metering, and scoped cache key derivation.
+    # ── 5a. Org attribution (must precede routing + the scoped cache lookup) ──
+    # Resolve org_id for quota, metering, scoped cache key derivation, AND the
+    # org-scoped rollup lookup below.
     # SECURITY: the cache key must be scoped by org_id + effective_datastore_id
     # to prevent cross-tenant collisions when two orgs have policies={} and run
     # the same metric SQL.  effective_datastore_id is known here (metric binding).
@@ -764,6 +752,25 @@ async def query_metric(
     org_id, org_lookup_error = await _resolve_caller_org(identity, repo)
 
     effective_datastore_id = metric.datastore_id or None
+
+    # ── 5b. Conservative rollup routing (RLS preserved) — same as /query ─────
+    # SECURITY/CORRECTNESS: pass org_id so ONLY this org's rollups are candidates.
+    # Without it org-scoped rollups (build_rollup_for_metric(..., org_id)) are
+    # never served, and an unscoped rollup could leak across tenants.  Org-scoping
+    # is the primary tenant-isolation guard (RLS predicates are defence-in-depth).
+    try:
+        from app.connectors.planner import route_to_rollup_shape as _route_rollup
+        from app.connectors.preagg import get_registry as _get_rollup_registry
+
+        _route = _route_rollup(
+            physical_plan, _get_rollup_registry(), org_id=org_id
+        )
+        if _route.routed:
+            physical_plan = _route.plan
+            if _route.rollup_id:
+                _get_rollup_registry().record_hit(_route.rollup_id)
+    except Exception:  # noqa: BLE001 — routing must never break the query path.
+        pass
 
     # ── 6. Cache lookup (org+datastore-scoped key) ────────────────────────────
     # SECURITY: use scope_cache_key so two orgs running the same metric SQL with

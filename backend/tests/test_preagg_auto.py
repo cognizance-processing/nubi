@@ -67,13 +67,31 @@ class TestExtractShape:
         assert shape is not None
         assert shape.routable is False  # two base tables → not routable
 
-    def test_expression_groupby_not_routable(self) -> None:
+    def test_date_trunc_grain_groupby_is_routable(self) -> None:
+        # [audit-14] A DATE_TRUNC('<grain>', <col>) group-by is now a DERIVABLE
+        # grain dimension keyed by its underlying column (rollups materialize the
+        # RAW time column; the outer query re-applies the trunc), so the shape is
+        # routable.  (Previously this was wrongly marked non-routable, which made
+        # EVERY time-grained / derived layered metric CTE unroutable.)
         shape = extract_shape(
             "SELECT date_trunc('day', ts), SUM(amount) FROM orders "
             "GROUP BY date_trunc('day', ts)"
         )
         assert shape is not None
-        assert shape.routable is False  # derived grain → not routable
+        assert shape.routable is True  # derivable grain → routable
+        assert "ts" in shape.dimensions  # keyed by the underlying time column
+        assert ("ts", "day") in shape.time_bucket_dims
+        assert shape.dimension_exprs == ()
+
+    def test_arbitrary_expression_groupby_not_routable(self) -> None:
+        # A genuinely-arbitrary expression group-by stays non-routable.
+        shape = extract_shape(
+            "SELECT a + b, SUM(amount) FROM orders GROUP BY a + b"
+        )
+        assert shape is not None
+        assert shape.routable is False
+        assert shape.dimension_exprs == ("a + b",)
+        assert shape.time_bucket_dims == ()
 
     def test_avg_measure_still_parsed(self) -> None:
         # AVG is parsed as a measure but is NOT re-aggregable; the router rejects
@@ -1587,4 +1605,205 @@ class TestRoutingOrgScoping:
             f"Layered path: org_b must NOT route to org_a's rollup, "
             f"but got routed=True. Rewritten SQL: {result.plan.sql}"
         )
+        assert result.plan is p
+
+
+# ---------------------------------------------------------------------------
+# 12. [audit-14] Time-grained / derived layered metric queries route to a
+#     matching grain rollup.
+# ---------------------------------------------------------------------------
+# REGRESSION: the metric compiler emits DATE_TRUNC('<grain>', <col>) AS
+# <col>_<grain> in the inner GROUP BY for time-grained metrics.  extract_shape
+# used to treat ANY non-bare-column GROUP BY expr as routable=False, so EVERY
+# time-grained / derived layered metric CTE was unroutable — rollup routing
+# silently never fired for time-intel metrics.  The fix recognises a
+# DATE_TRUNC('<grain>', <col>) group-by as a DERIVABLE grain dimension keyed by
+# its underlying column (rollups materialize the RAW time column; the outer layer
+# re-applies the trunc), so the router can match a rollup carrying that grain.
+
+
+@pytest.fixture()
+def source_db_ts() -> str:
+    """A temp DuckDB file with a fact table carrying a timestamp column.
+
+    Columns: tenant_id (RLS key), region (dim), created_at (time dim), amount.
+    """
+    fd, path = tempfile.mkstemp(suffix=".duckdb")
+    os.close(fd)
+    os.remove(path)
+    conn = duckdb.connect(path)
+    conn.execute(
+        "CREATE TABLE events "
+        "(tenant_id VARCHAR, region VARCHAR, created_at TIMESTAMP, amount INTEGER)"
+    )
+    conn.execute(
+        """
+        INSERT INTO events VALUES
+            ('acme', 'us', TIMESTAMP '2024-01-05 10:00:00', 10),
+            ('acme', 'us', TIMESTAMP '2024-01-20 10:00:00', 5),
+            ('acme', 'eu', TIMESTAMP '2024-02-03 10:00:00', 7),
+            ('beta', 'us', TIMESTAMP '2024-01-15 10:00:00', 100),
+            ('beta', 'eu', TIMESTAMP '2024-02-09 10:00:00', 3),
+            ('beta', 'eu', TIMESTAMP '2024-02-25 10:00:00', 4)
+        """
+    )
+    conn.close()
+    yield path
+    if os.path.exists(path):
+        os.remove(path)
+
+
+class TestTimeGrainedRouting:
+    def test_extract_shape_recognises_date_trunc_grain(self) -> None:
+        """A DATE_TRUNC('<grain>', <col>) group-by is a routable derivable dim."""
+        shape = extract_shape(
+            "SELECT region AS region, "
+            "DATE_TRUNC('month', created_at) AS created_at_month, "
+            "SUM(amount) AS amount "
+            "FROM events GROUP BY region, DATE_TRUNC('month', created_at)",
+            dialect="duckdb",
+        )
+        assert shape is not None
+        assert shape.routable is True, (
+            "DATE_TRUNC grain group-by must be routable (keyed by underlying col)"
+        )
+        # The underlying time column is recorded as a dimension (NOT an opaque expr).
+        assert "created_at" in shape.dimensions
+        assert "region" in shape.dimensions
+        assert shape.dimension_exprs == ()  # no genuinely-unroutable exprs
+        assert ("created_at", "month") in shape.time_bucket_dims
+
+    def test_arbitrary_expr_groupby_still_non_routable(self) -> None:
+        """Genuinely-arbitrary expression group-bys stay non-routable."""
+        shape = extract_shape(
+            "SELECT a + b, SUM(amount) FROM events GROUP BY a + b",
+            dialect="duckdb",
+        )
+        assert shape is not None
+        assert shape.routable is False
+        assert shape.time_bucket_dims == ()
+
+    def _build_events_grain_rollup(self, source_db_ts: str, reg: RollupRegistry):
+        """Build a rollup carrying the RAW created_at time column + region grain."""
+        from app.metrics.models import (  # noqa: PLC0415
+            Dimension,
+            Measure,
+            MetricDefinition,
+            TimeDimension,
+        )
+        from app.connectors.preagg import build_rollup_for_metric  # noqa: PLC0415
+
+        metric = MetricDefinition(
+            id="ts_revenue",
+            name="TS Revenue",
+            measure=Measure(name="revenue", agg="sum", expr="amount"),
+            base_table="events",
+            dimensions=(Dimension(name="region"),),
+            time_dimension=TimeDimension(
+                column="created_at", grains=("day", "month"), default_grain="month"
+            ),
+            rls_keys=("tenant_id",),
+        )
+        return build_rollup_for_metric(
+            metric,
+            grains=["month"],  # include the raw time column as a dimension
+            source_database=source_db_ts,
+            registry=reg,
+            register_query=False,
+        )
+
+    def test_time_grained_flat_query_routes_to_grain_rollup(
+        self, source_db_ts: str
+    ) -> None:
+        """A flat DATE_TRUNC-grained query routes to the matching grain rollup
+        and the rewrite re-aggregates the raw time column correctly on DuckDB."""
+        reg = RollupRegistry()
+        built = self._build_events_grain_rollup(source_db_ts, reg)
+
+        # The raw created_at column IS materialized in the rollup grain.
+        assert "created_at" in built.dimensions
+
+        # A time-grained query (mirrors the metric compiler's inner aggregation).
+        p = plan(
+            "SELECT region AS region, "
+            "DATE_TRUNC('month', created_at) AS created_at_month, "
+            "SUM(amount) AS amount "
+            "FROM events GROUP BY region, DATE_TRUNC('month', created_at)",
+            dialect="duckdb",
+        )
+        result = route_to_rollup_shape(p, reg)
+
+        assert result.routed is True, (
+            f"time-grained query must route to grain rollup. Reason: {result.reason}"
+        )
+        assert result.rollup_id is not None
+        rewritten = result.plan.sql.lower()
+        assert "rollup_events" in rewritten, f"expected rollup table: {result.plan.sql}"
+        assert "sum_amount" in rewritten, "expected re-aggregated partial measure"
+        assert "date_trunc" in rewritten, "grain trunc must be preserved over rollup"
+
+        # Execute the rewritten SQL on the rollup and compare to the raw aggregate.
+        roll_conn = duckdb.connect(built.database, read_only=True)
+        rewritten_rows = roll_conn.execute(
+            f'SELECT region, DATE_TRUNC(\'month\', created_at) AS m, '
+            f'SUM("sum_amount") FROM "{built.table}" '
+            f'GROUP BY region, DATE_TRUNC(\'month\', created_at) '
+            f'ORDER BY region, m'
+        ).fetchall()
+        roll_conn.close()
+
+        raw_conn = duckdb.connect(source_db_ts, read_only=True)
+        expected = raw_conn.execute(
+            "SELECT region, DATE_TRUNC('month', created_at) AS m, SUM(amount) "
+            "FROM events GROUP BY region, DATE_TRUNC('month', created_at) "
+            "ORDER BY region, m"
+        ).fetchall()
+        raw_conn.close()
+
+        assert rewritten_rows == expected, (
+            f"grain rollup re-aggregation mismatch: {rewritten_rows} != {expected}"
+        )
+
+    def test_time_grained_layered_query_routes_to_grain_rollup(
+        self, source_db_ts: str
+    ) -> None:
+        """A LAYERED time-grained metric query (WITH __base ... + outer window fn)
+        routes via its inner grain aggregation to the grain rollup."""
+        reg = RollupRegistry()
+        self._build_events_grain_rollup(source_db_ts, reg)
+
+        layered_sql = (
+            "WITH __base AS ("
+            "SELECT region AS region, "
+            "DATE_TRUNC('month', created_at) AS created_at_month, "
+            "SUM(amount) AS amount "
+            "FROM events GROUP BY region, DATE_TRUNC('month', created_at)"
+            ") "
+            "SELECT region, created_at_month, amount, "
+            "LAG(amount, 1) OVER (ORDER BY created_at_month) AS amount_prior "
+            "FROM __base"
+        )
+        p = plan(layered_sql, dialect="duckdb")
+        result = route_to_rollup_shape(p, reg)
+
+        assert result.routed is True, (
+            f"layered time-grained query must route. Reason: {result.reason}"
+        )
+        rewritten = result.plan.sql.lower()
+        assert "rollup_events" in rewritten
+        assert "with __base as" in rewritten, "layered CTE form preserved"
+        assert "lag" in rewritten, "outer window function preserved"
+
+    def test_time_grained_query_not_routed_without_rollup(
+        self, source_db_ts: str
+    ) -> None:
+        """A grain query with NO matching rollup is left untouched."""
+        reg = RollupRegistry()  # empty
+        p = plan(
+            "SELECT DATE_TRUNC('month', created_at) AS m, SUM(amount) AS amount "
+            "FROM events GROUP BY DATE_TRUNC('month', created_at)",
+            dialect="duckdb",
+        )
+        result = route_to_rollup_shape(p, reg)
+        assert result.routed is False
         assert result.plan is p

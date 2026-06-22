@@ -1498,6 +1498,17 @@ def _govern(metric: MetricDefinition, mq: MetricQuery) -> str | None:
                 "bad_limit",
                 f"limit {mq.limit!r} is out of the allowed range 1..{_MAX_QUERY_LIMIT}.",
             )
+        # FIX audit-14 MED: when top_n is set and the caller supplies an explicit
+        # limit < top_n.n, the QUALIFY/WHERE-IN admits n rows but the outer LIMIT
+        # silently drops members ranked (limit+1)..n from BOTH UNION arms.  Surface
+        # the conflict explicitly so the caller can correct the query.
+        if mq.top_n is not None and mq.limit < mq.top_n.n:
+            raise MetricError(
+                "bad_limit",
+                f"limit {mq.limit!r} is less than top_n.n {mq.top_n.n!r}; "
+                f"this would silently drop members ranked (limit+1)..n from the "
+                f"top-N result.  Set limit >= top_n.n or leave limit unset.",
+            )
 
     return time_alias
 

@@ -183,13 +183,23 @@ class QueryShape:
         zero or more than one base table (joins are out of scope for routing —
         we only mine/route single-fact aggregations conservatively).
     dimensions:
-        Sorted list of bare GROUP BY column names (lower-cased).  Only simple
-        column references are kept; expression group-bys (e.g. ``date_trunc(..)``)
-        are recorded in ``dimension_exprs`` instead and make the shape
-        non-routable (we refuse to reason about derived grains).
+        Sorted list of GROUP BY column names (lower-cased).  Plain column
+        references are kept directly; a time-bucket group-by of the form
+        ``DATE_TRUNC('<grain>', <col>)`` is treated as a *derivable* grain
+        dimension keyed by its underlying column ``<col>`` (which IS what a
+        rollup materializes — rollups carry the raw time column and the outer
+        query re-applies the trunc), so ``<col>`` is included here too.  Genuinely
+        arbitrary expression group-bys (joins, CASE, arithmetic, …) are recorded
+        in ``dimension_exprs`` instead and make the shape non-routable.
     dimension_exprs:
-        Sorted list of non-trivial GROUP BY expressions (anything that is not a
-        plain column).  A non-empty list marks the shape as non-routable.
+        Sorted list of non-trivial GROUP BY expressions (anything that is neither
+        a plain column nor a recognised ``DATE_TRUNC`` time bucket).  A non-empty
+        list marks the shape as non-routable.
+    time_bucket_dims:
+        Sorted list of ``(column, grain)`` tuples for each ``DATE_TRUNC`` group-by
+        recognised as a derivable time-bucket dimension.  Purely informational
+        (the underlying ``column`` is already present in ``dimensions``); kept so
+        the router/observability can see which dims are derived grains.
     measures:
         Sorted list of ``(func, column)`` tuples for each aggregate in the
         SELECT list, e.g. ``("sum", "amount")``.  ``column`` is ``"*"`` for
@@ -211,6 +221,7 @@ class QueryShape:
     measures: tuple[tuple[str, str | None], ...] = ()
     filter_columns: tuple[str, ...] = ()
     routable: bool = False
+    time_bucket_dims: tuple[tuple[str, str], ...] = ()
 
     def to_dict(self) -> dict[str, Any]:
         """JSON-serialisable view (measures rendered as ``func(col)`` strings)."""
@@ -221,6 +232,9 @@ class QueryShape:
             "measures": [_measure_str(f, c) for (f, c) in self.measures],
             "filter_columns": list(self.filter_columns),
             "routable": self.routable,
+            "time_bucket_dims": [
+                f"{grain}({col})" for (col, grain) in self.time_bucket_dims
+            ],
         }
 
 
@@ -249,6 +263,52 @@ def _agg_func_name(node: exp.Expression) -> str | None:
         # Map the typed class to a canonical SQL function name.
         return type(node).__name__.lower()
     return None
+
+
+def _date_trunc_grain_col(node: exp.Expression) -> tuple[str, str] | None:
+    """Recognise a ``DATE_TRUNC('<grain>', <col>)`` time-bucket expression.
+
+    Returns ``(column, grain)`` (both lower-cased) when *node* is a date/timestamp
+    truncation of a BARE column to a literal grain, else ``None``.
+
+    The metric compiler emits ``DATE_TRUNC('<grain>', <time_col>) AS
+    <time_col>_<grain>`` in the inner GROUP BY for time-grained / derived metrics.
+    sqlglot parses this as ``exp.TimestampTrunc`` (``.this`` = the column,
+    ``.unit`` = the grain ``Var``).  A rollup materializes the RAW time column
+    (``preagg.build_rollup_for_metric`` adds the raw column, NOT the truncation —
+    the outer layer re-applies the trunc), so such a group-by is a *derivable*
+    grain dimension keyed by its underlying column: the rollup carries the column,
+    re-applying DATE_TRUNC over the (additive) partials reproduces the grain.
+
+    Only a bare-column argument with a literal/var grain qualifies.  Anything
+    nested (DATE_TRUNC over an expression, an arithmetic arg, …) returns ``None``
+    so it stays a genuinely-unroutable expression dimension.
+    """
+    # sqlglot typed node for DATE_TRUNC(literal, col) is exp.TimestampTrunc /
+    # exp.DateTrunc depending on dialect/arg types.
+    typed = tuple(
+        getattr(exp, n) for n in ("TimestampTrunc", "DateTrunc") if hasattr(exp, n)
+    )
+    grain: str | None = None
+    col_node: exp.Expression | None = None
+    if typed and isinstance(node, typed):
+        col_node = node.this
+        unit = node.args.get("unit")
+        if isinstance(unit, exp.Var):
+            grain = unit.name
+        elif isinstance(unit, exp.Literal):
+            grain = unit.this
+        elif unit is not None:
+            grain = unit.sql()
+    elif isinstance(node, exp.Anonymous) and node.name.upper() in ("DATE_TRUNC", "DATETRUNC"):
+        # Anonymous fallback: DATE_TRUNC('grain', col) — first arg grain, second col.
+        args = list(node.expressions)
+        if len(args) == 2 and isinstance(args[0], exp.Literal):
+            grain = args[0].this
+            col_node = args[1]
+    if grain is None or not isinstance(col_node, exp.Column):
+        return None
+    return col_node.name.lower(), str(grain).lower()
 
 
 def _agg_arg_column(node: exp.Expression) -> str | None:
@@ -301,12 +361,22 @@ def extract_shape(sql: str, dialect: str = "postgres") -> QueryShape | None:
     # ── Dimensions ───────────────────────────────────────────────────────────
     dims: list[str] = []
     dim_exprs: list[str] = []
+    time_bucket_dims: list[tuple[str, str]] = []
     for item in group_node.expressions:
         target = item.this if isinstance(item, exp.Alias) else item
         if isinstance(target, exp.Column):
             dims.append(target.name.lower())
         else:
-            dim_exprs.append(_expr_to_str(target))
+            # A DATE_TRUNC('<grain>', <col>) bucket is a DERIVABLE grain dim:
+            # the rollup materializes the raw <col> and the outer query re-applies
+            # the truncation, so route it keyed by the underlying column.
+            tb = _date_trunc_grain_col(target)
+            if tb is not None:
+                col, grain = tb
+                dims.append(col)
+                time_bucket_dims.append((col, grain))
+            else:
+                dim_exprs.append(_expr_to_str(target))
 
     # ── Measures (aggregates in the SELECT list) ─────────────────────────────
     measures: list[tuple[str, str | None]] = []
@@ -324,6 +394,12 @@ def extract_shape(sql: str, dialect: str = "postgres") -> QueryShape | None:
         elif isinstance(inner, exp.Column):
             if inner.name.lower() not in dim_set:
                 has_non_agg_non_dim = True
+        elif _date_trunc_grain_col(inner) is not None:
+            # A DATE_TRUNC('<grain>', <col>) bucket in the SELECT list mirrors a
+            # grain GROUP BY (the underlying column is a recognised dim) — it is a
+            # derivable grain projection, not an opaque expression.  Do NOT mark
+            # the shape non-routable for it.
+            pass
         else:
             # A bare expression (e.g. CASE / arithmetic) in the SELECT list.
             has_non_agg_non_dim = True
@@ -356,6 +432,7 @@ def extract_shape(sql: str, dialect: str = "postgres") -> QueryShape | None:
         measures=tuple(sorted(measures)),
         filter_columns=tuple(sorted(filter_cols)),
         routable=routable,
+        time_bucket_dims=tuple(sorted(time_bucket_dims)),
     )
 
 

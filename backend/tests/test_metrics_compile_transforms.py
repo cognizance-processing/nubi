@@ -4934,3 +4934,61 @@ def test_declared_rls_keys_membership_byte_stable_single_dim() -> None:
     )
     sql, _ = compile_metric(m, mq)
     assert "__base.org_id = __outer.org_id".lower() in sql.lower(), sql[:500]
+
+
+# ---------------------------------------------------------------------------
+# audit-14 MED: limit < top_n.n raises MetricError
+# ---------------------------------------------------------------------------
+
+
+def test_limit_less_than_top_n_raises() -> None:
+    """limit < top_n.n must raise MetricError('bad_limit') — silent data loss fix."""
+    m = _simple_metric()
+    mq = MetricQuery(
+        metric_id="revenue",
+        dimensions=("region",),
+        limit=2,
+        top_n=TopN(dimension="region", n=5, order="desc"),
+    )
+    with pytest.raises(MetricError) as ei:
+        compile_metric(m, mq)
+    assert ei.value.code == "bad_limit"
+    assert "top_n.n" in ei.value.message or "5" in ei.value.message
+
+
+def test_limit_equal_to_top_n_accepted() -> None:
+    """limit == top_n.n is valid — no silent truncation."""
+    m = _simple_metric()
+    mq = MetricQuery(
+        metric_id="revenue",
+        dimensions=("region",),
+        limit=5,
+        top_n=TopN(dimension="region", n=5, order="desc"),
+    )
+    sql, _ = compile_metric(m, mq)
+    assert sql  # compiled without error
+
+
+def test_limit_greater_than_top_n_accepted() -> None:
+    """limit > top_n.n is valid."""
+    m = _simple_metric()
+    mq = MetricQuery(
+        metric_id="revenue",
+        dimensions=("region",),
+        limit=100,
+        top_n=TopN(dimension="region", n=5, order="desc"),
+    )
+    sql, _ = compile_metric(m, mq)
+    assert sql  # compiled without error
+
+
+def test_limit_without_top_n_unaffected() -> None:
+    """A plain limit with no top_n is unaffected by the new guard."""
+    m = _simple_metric()
+    mq = MetricQuery(
+        metric_id="revenue",
+        dimensions=("region",),
+        limit=3,
+    )
+    sql, _ = compile_metric(m, mq)
+    assert sql  # compiled without error
