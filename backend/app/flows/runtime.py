@@ -126,6 +126,16 @@ _MAP_ADD_BATCH_SIZE: int = _int_env("FLOWS_MAP_ADD_BATCH_SIZE", 500)
 #: Default: 4 MiB.
 _MAP_ITEMS_MAX_BYTES: int = _int_env("NUBI_MAP_ITEMS_MAX_BYTES", 4 * 1024 * 1024)
 
+#: HARD CEILING on the total number of task_runs a single flow_run may hold.
+#: A pathological map fan-out (N items × M body tasks) can otherwise insert an
+#: unbounded number of child task_runs, after which every drain/advance step
+#: full-scans + deepcopies the entire set.  Enforced at fan-out time: before any
+#: child task_runs are inserted, ``existing_count + len(child_runs)`` is checked
+#: against this ceiling and the map task is FAILED (no children leaked) when it
+#: would be exceeded.  Overridable via ``NUBI_MAX_TASK_RUNS_PER_RUN``.
+#: Default: 50000.
+_MAX_TASK_RUNS_PER_RUN: int = _int_env("NUBI_MAX_TASK_RUNS_PER_RUN", 50000)
+
 # Terminal states for task_runs (engine will not re-queue).
 # ``skipped`` is kept for backward compat with older flow_runs that used it.
 # ``waiting_children`` is NOT terminal — it is an intermediate map-fan-out state.
@@ -910,6 +920,37 @@ async def _add_task_runs_batched(
         await store.add_task_runs(flow_run_id, chunk)
 
 
+async def _enforce_task_run_ceiling(
+    store: Any,
+    flow_run_id: str,
+    child_count: int,
+) -> None:
+    """Raise ``ValueError`` when a map fan-out would breach the per-run ceiling.
+
+    Called BEFORE any child task_runs are inserted.  Counts the existing
+    task_runs for *flow_run_id* (cheap COUNT — never loads the rows) and, if
+    ``existing + child_count`` would exceed ``_MAX_TASK_RUNS_PER_RUN``, raises a
+    ``ValueError`` so the caller can fail the parent map task without leaking any
+    children.  No-op when the ceiling is disabled (``<= 0``) or the store does
+    not implement ``count_task_runs`` (falls back to ``list_task_runs`` length).
+    """
+    if _MAX_TASK_RUNS_PER_RUN <= 0:
+        return
+    counter = getattr(store, "count_task_runs", None)
+    if counter is not None:
+        existing = await counter(flow_run_id)
+    else:  # pragma: no cover — all bundled stores implement count_task_runs
+        existing = len(await store.list_task_runs(flow_run_id))
+    projected = existing + child_count
+    if projected > _MAX_TASK_RUNS_PER_RUN:
+        raise ValueError(
+            f"map fan-out would create {child_count} child task_runs "
+            f"({existing} existing → {projected} total), exceeding the per-run "
+            f"ceiling of {_MAX_TASK_RUNS_PER_RUN} task_runs. Reduce the item "
+            f"count or raise NUBI_MAX_TASK_RUNS_PER_RUN."
+        )
+
+
 # ---------------------------------------------------------------------------
 # Flow-run alert hook (Prefect-style)
 # ---------------------------------------------------------------------------
@@ -1498,6 +1539,29 @@ async def run_one_ready_task(
                 now=now,
                 max_concurrency=max_concurrency,
             )
+
+            # HARD CEILING: fail fast (no children inserted) when the fan-out
+            # would push this flow_run over _MAX_TASK_RUNS_PER_RUN.
+            try:
+                await _enforce_task_run_ceiling(store, flow_run_id, len(child_runs))
+            except ValueError as _ceil_err:
+                failed_tr = await store.update_task_run(
+                    task_run_id,
+                    {
+                        "state": "failed",
+                        "error": str(_ceil_err),
+                        "finished_at": now,
+                        "logs": outcome_logs,
+                    },
+                )
+                _emit_task_event("task_failed", flow_run_id, task_key, "failed", str(_ceil_err), attempt, now)
+                # No children inserted yet — snapshot is still valid.
+                await advance_readiness(
+                    store, flow_run_id, now,
+                    _preloaded_task_runs=_patch_snapshot(failed_tr or task_run),
+                )
+                raise
+
             await _add_task_runs_batched(store, flow_run_id, child_runs)
 
             # Transition map task_run to waiting_children (NOT terminal).
@@ -2629,7 +2693,15 @@ async def _execute_claimed_task_run_inner(
     # drains (run_flow / run-cell) already pass the caller's policies — kept.
     exec_claims = _claims_with_owner_policies(claims, flow_dict, flow_run_id=flow_run_id)
 
-    outcome = execute_task(full_task, ctx, exec_claims)
+    # ── Offload to a thread ────────────────────────────────────────────────────
+    # execute_task is synchronous (and enforces timeout_s internally via a
+    # ThreadPoolExecutor), so calling it inline would block the asyncio event
+    # loop for the full duration of the cell — starving the scheduler/reaper and
+    # any concurrent sweep/backfill drains.  Run it off-loop via asyncio.to_thread
+    # (mirrors run_one_ready_task's _execute_with_heartbeat offload).  Thread
+    # safety: the worker-pool path already invokes execute_task from worker
+    # threads, so this introduces no new shared-state concerns.
+    outcome = await asyncio.to_thread(execute_task, full_task, ctx, exec_claims)
 
     # set_var (A5): persist=True flushes to the long-term store (visible to later
     # cells via reload + future runs); and on the synchronous drain path, merge
@@ -2734,6 +2806,29 @@ async def _execute_claimed_task_run_inner(
                 now=now,
                 max_concurrency=max_concurrency,
             )
+
+            # HARD CEILING: fail fast (no children inserted) when the fan-out
+            # would push this flow_run over _MAX_TASK_RUNS_PER_RUN.
+            try:
+                await _enforce_task_run_ceiling(store, flow_run_id, len(child_runs))
+            except ValueError as _ceil_err:
+                result_tr = await store.update_task_run(
+                    task_run_id,
+                    {
+                        "state": "failed",
+                        "error": str(_ceil_err),
+                        "finished_at": now,
+                        "logs": outcome_logs,
+                    },
+                )
+                _emit_task_event("task_failed", flow_run_id, task_key, "failed", str(_ceil_err), attempt, now)
+                # No children inserted yet — snapshot is still valid.
+                await advance_readiness(
+                    store, flow_run_id, now,
+                    _preloaded_task_runs=_patch_snapshot(result_tr or task_run),
+                )
+                raise
+
             await _add_task_runs_batched(store, flow_run_id, child_runs)
 
             # Transition map task_run to waiting_children (NOT yet terminal).

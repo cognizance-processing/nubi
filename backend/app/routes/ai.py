@@ -61,6 +61,7 @@ fully deterministic and require no network access.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import re
 import uuid
@@ -228,13 +229,16 @@ async def ask(
     grounding = ground(body.question, catalog)
     provider = get_provider()
     system_prompt, user_prompt = build_prompt(body.question, grounding)
-    # Only pass ``model`` when explicitly requested (backward-compatible — keeps
-    # existing ``complete(prompt, system=...)`` behaviour byte-identical).
-    suggestion = (
-        provider.complete(user_prompt, system=system_prompt, model=body.model)
-        if body.model
-        else provider.complete(user_prompt, system=system_prompt)
-    )
+    # Offload the blocking LLM call (+ any multi-round repair) to a thread so
+    # the asyncio event loop is not blocked during the 5-30 s provider round-trip.
+    if body.model:
+        suggestion = await asyncio.to_thread(
+            provider.complete, user_prompt, system=system_prompt, model=body.model
+        )
+    else:
+        suggestion = await asyncio.to_thread(
+            provider.complete, user_prompt, system=system_prompt
+        )
 
     await _record_ai_call(_user, org_id, endpoint="ai_ask")
 
@@ -297,7 +301,11 @@ async def create_dashboard(
 
     catalog = build_catalog()
     provider = get_provider()
-    spec = generate_dashboard_spec(body.question, catalog, provider, model=body.model)
+    # Offload the blocking generate_dashboard_spec call (LLM + multi-round repair)
+    # to a thread so the asyncio event loop is not blocked.
+    spec = await asyncio.to_thread(
+        generate_dashboard_spec, body.question, catalog, provider, model=body.model
+    )
     html_output = spec_to_html(spec)
     ok, issues = validate_dashboard_html(html_output)
 
@@ -717,7 +725,11 @@ async def ai_chat(
     # Convert Pydantic ChatMessage objects to plain dicts for the agent.
     messages = [{"role": m.role, "content": m.content} for m in body.messages]
 
-    result = run_agent(messages, provider, claims, max_steps=8, model=body.model)
+    # Offload the blocking run_agent call (LLM loop + tool execution)
+    # to a thread so the asyncio event loop is not blocked.
+    result = await asyncio.to_thread(
+        run_agent, messages, provider, claims, max_steps=8, model=body.model
+    )
 
     await _record_ai_call(_user, org_id, endpoint="ai_chat")
 
@@ -866,7 +878,10 @@ async def generate_sql_endpoint(
     grounding = ground(body.question, catalog)
     provider = get_provider()
 
-    result = generate_sql(
+    # Offload the blocking generate_sql call (LLM + sqlglot validation)
+    # to a thread so the asyncio event loop is not blocked.
+    result = await asyncio.to_thread(
+        generate_sql,
         question=body.question,
         catalog=catalog,
         provider=provider,
@@ -1274,7 +1289,11 @@ async def generate_canvas(
 
     catalog = build_catalog()
     provider = get_provider()
-    doc = generate_canvas_doc(body.question, catalog, provider, model=body.model)
+    # Offload the blocking generate_canvas_doc call (LLM + multi-round repair)
+    # to a thread so the asyncio event loop is not blocked.
+    doc = await asyncio.to_thread(
+        generate_canvas_doc, body.question, catalog, provider, model=body.model
+    )
     ok, issues = validate_canvas_doc(doc)
 
     grounding = ground(body.question, catalog)
@@ -1355,8 +1374,10 @@ async def edit_canvas(
 
     catalog = build_catalog()
     provider = get_provider()
-    updated_doc = edit_canvas_doc(
-        canvas_doc, body.instruction, catalog, provider, model=body.model
+    # Offload the blocking edit_canvas_doc call (LLM + multi-round repair)
+    # to a thread so the asyncio event loop is not blocked.
+    updated_doc = await asyncio.to_thread(
+        edit_canvas_doc, canvas_doc, body.instruction, catalog, provider, model=body.model
     )
     ok, issues = validate_canvas_doc(updated_doc)
 

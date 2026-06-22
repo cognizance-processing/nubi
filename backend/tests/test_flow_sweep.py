@@ -1153,6 +1153,69 @@ async def test_preview_cell_execute_task_runs_in_thread():
     assert thread_calls[0][0] is real_execute_task
 
 
+# ---------------------------------------------------------------------------
+# FIX: [MED event-loop] sweep/drain path offloads execute_task to a thread
+# ---------------------------------------------------------------------------
+
+
+def test_execute_claimed_task_run_inner_uses_asyncio_to_thread():
+    """The drain/sweep path (_execute_claimed_task_run_inner) must offload
+    execute_task via asyncio.to_thread, not call it synchronously on the loop."""
+    import inspect
+    import app.flows.runtime as rt_mod
+
+    src = inspect.getsource(rt_mod._execute_claimed_task_run_inner)
+    assert "await asyncio.to_thread(execute_task" in src, (
+        "_execute_claimed_task_run_inner must call execute_task via "
+        "'await asyncio.to_thread(execute_task, ...)' so a synchronous cell does "
+        "not block the asyncio event loop during sweep/backfill drains."
+    )
+
+
+async def test_drain_path_offloads_execute_task_to_thread(monkeypatch):
+    """A drain over the sweep path runs execute_task in a worker thread.
+
+    We patch asyncio.to_thread in the runtime module to record calls and confirm
+    execute_task is dispatched off-loop while the flow still drains to success.
+    """
+    import asyncio as _asyncio
+    import app.flows.runtime as rt_mod
+    from app.flows.runtime import materialize_flow_run, drain_flow_run
+    from app.flows.registry import reset_for_tests
+    from app.flows.store import InMemoryFlowStore
+    from datetime import datetime, timezone
+
+    reset_for_tests()
+    now = datetime(2025, 1, 1, tzinfo=timezone.utc)
+
+    recorded: list[Any] = []
+    original_to_thread = _asyncio.to_thread
+
+    async def recording_to_thread(fn, *args, **kwargs):
+        recorded.append(getattr(fn, "__name__", str(fn)))
+        return await original_to_thread(fn, *args, **kwargs)
+
+    monkeypatch.setattr(rt_mod.asyncio, "to_thread", recording_to_thread)
+
+    store = InMemoryFlowStore()
+    spec = {
+        "version": 1,
+        "name": "offload_test",
+        "tasks": [{"key": "t1", "kind": "noop", "needs": [], "config": {}}],
+    }
+    flow = await store.create_flow(
+        org_id="org-test", created_by="user-test", name="offload_test", spec=spec
+    )
+    flow_run = await materialize_flow_run(store, flow, {}, "manual", now)
+    final = await drain_flow_run(store, flow_run["id"], now, claims={})
+
+    assert final["state"] == "success", f"drain did not succeed: {final.get('state')!r}"
+    assert "execute_task" in recorded, (
+        "execute_task must be dispatched via asyncio.to_thread on the drain path; "
+        f"recorded to_thread calls: {recorded}"
+    )
+
+
 async def test_sweep_cell_drain_max_steps_env_overridable(monkeypatch):
     """_SWEEP_CELL_DRAIN_MAX_STEPS is read from NUBI_SWEEP_CELL_DRAIN_MAX_STEPS env var."""
     import importlib

@@ -472,6 +472,39 @@ class InMemoryFlowStore:
             return rows[:limit]
         return rows
 
+    async def count_task_runs(self, flow_run_id: str) -> int:
+        """Return the number of task_runs belonging to *flow_run_id*.
+
+        O(1)-ish (index length) count used at map fan-out time to enforce the
+        per-run task_run ceiling WITHOUT loading + deepcopying every row.
+        """
+        return len(self._task_run_index.get(str(flow_run_id), []))
+
+    async def list_task_run_results(
+        self, flow_run_id: str
+    ) -> list[tuple[str, dict[str, Any] | None]]:
+        """Return ``(task_key, result)`` pairs for SUCCESS task_runs only.
+
+        Results-only projection used by the executor's upstream-inputs path: it
+        only needs the success tasks' keys + result dicts, not the full row set.
+        Avoids the full ``list_task_runs`` deepcopy of every field for every row.
+
+        The ``result`` value is deep-copied so callers cannot mutate internal
+        state.  Ordering matches ``list_task_runs`` (created_at, then task_key).
+        """
+        tr_ids = self._task_run_index.get(str(flow_run_id), [])
+        rows = [
+            self._task_runs[tid]
+            for tid in tr_ids
+            if tid in self._task_runs
+        ]
+        rows.sort(key=lambda r: (r["created_at"], r["task_key"]))
+        return [
+            (r["task_key"], deepcopy(r["result"]))
+            for r in rows
+            if r["state"] == "success" and r.get("result") is not None
+        ]
+
     async def get_task_run(self, task_run_id: str) -> TaskRun | None:
         """Return a copy of the task_run, or ``None`` if not found."""
         tr = self._task_runs.get(str(task_run_id))
@@ -1454,6 +1487,51 @@ class PgFlowStore:
                 flow_run_id,
             )
         return [_row_to_task_run(r) for r in rows]
+
+    async def count_task_runs(self, flow_run_id: str) -> int:
+        """Return the number of task_runs belonging to *flow_run_id*.
+
+        A cheap ``COUNT(*)`` (index-only) used at map fan-out time to enforce
+        the per-run task_run ceiling without SELECT-ing + deserialising every
+        row's full payload.
+        """
+        from app.db import fetchrow as db_fetchrow  # noqa: PLC0415
+
+        row = await db_fetchrow(
+            "SELECT count(*) AS n FROM task_runs WHERE flow_run_id = $1::uuid",
+            flow_run_id,
+        )
+        return int(dict(row)["n"]) if row is not None else 0
+
+    async def list_task_run_results(
+        self, flow_run_id: str
+    ) -> list[tuple[str, dict[str, Any] | None]]:
+        """Return ``(task_key, result)`` pairs for SUCCESS task_runs only.
+
+        Results-only projection: selects just ``task_key`` and the ``result``
+        jsonb for ``state = 'success'`` rows, so the upstream-inputs path does
+        not pull every column for every row.  Ordering matches
+        ``list_task_runs`` (created_at, then task_key).
+        """
+        from app.db import fetch as db_fetch  # noqa: PLC0415
+
+        rows = await db_fetch(
+            """
+            SELECT task_key, result FROM task_runs
+            WHERE flow_run_id = $1::uuid AND state = 'success' AND result IS NOT NULL
+            ORDER BY created_at ASC, task_key ASC
+            """,
+            flow_run_id,
+        )
+        out: list[tuple[str, dict[str, Any] | None]] = []
+        for r in rows:
+            d = dict(r)
+            result = d.get("result")
+            if result is not None and not isinstance(result, dict):
+                import json  # noqa: PLC0415
+                result = json.loads(result)
+            out.append((d["task_key"], result))
+        return out
 
     async def get_task_run(self, task_run_id: str) -> TaskRun | None:
         """Return the task_run dict, or ``None`` if not found."""

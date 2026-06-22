@@ -2704,9 +2704,13 @@ async def test_embed_flow_provider_concurrency_semaphore_limits_parallel_runs(
 
 
 @pytest.mark.asyncio
-async def test_non_embed_flow_provider_bypasses_semaphore(repo: InMemoryRepo) -> None:
-    """[MED embed amplification] Non-embed (first-party) flow provider calls are
-    NOT subject to the embed semaphore guard — only embed tokens are throttled.
+async def test_non_embed_flow_provider_bypasses_embed_semaphore(repo: InMemoryRepo) -> None:
+    """[MED amplification] Non-embed (first-party) flow provider calls are NOT
+    subject to the embed semaphore guard — they use the separate
+    _flow_provider_semaphores registry instead.
+
+    Verify: zeroing out _EMBED_FLOW_CONCURRENCY does NOT block a non-embed call
+    (it routes through the non-embed registry which has its own ceiling).
     """
     import app.dashboards.board_data as _bd_mod
     from app.connectors.cache import reset_cache_for_tests as _reset
@@ -2718,12 +2722,16 @@ async def test_non_embed_flow_provider_bypasses_semaphore(repo: InMemoryRepo) ->
         {"config": {"spec": _make_spec_with_flow_provider()}},
     )
 
-    original_concurrency = _bd_mod._EMBED_FLOW_CONCURRENCY
-    original_timeout = _bd_mod._EMBED_FLOW_TIMEOUT_S
+    original_embed_concurrency = _bd_mod._EMBED_FLOW_CONCURRENCY
+    original_embed_timeout = _bd_mod._EMBED_FLOW_TIMEOUT_S
+    original_flow_concurrency = _bd_mod._FLOW_PROVIDER_CONCURRENCY
     _bd_mod._embed_semaphores.clear()
-    _bd_mod._EMBED_FLOW_CONCURRENCY = 0  # effectively zero — semaphore would block if used
+    _bd_mod._flow_provider_semaphores.clear()
+    # Zero-out the EMBED concurrency — if non-embed used the embed semaphore it
+    # would immediately 429.  But non-embed uses its own registry (leave at >=1).
+    _bd_mod._EMBED_FLOW_CONCURRENCY = 0
     _bd_mod._EMBED_FLOW_TIMEOUT_S = 0.0
-    _bd_mod._embed_semaphores.clear()
+    _bd_mod._FLOW_PROVIDER_CONCURRENCY = 4  # non-embed has capacity
 
     async def _fake_enforce_quota(org_id: str, dimension: str, amount: float = 1.0) -> None:
         pass
@@ -2736,7 +2744,8 @@ async def test_non_embed_flow_provider_bypasses_semaphore(repo: InMemoryRepo) ->
                 new=AsyncMock(return_value={"summary": pa.table({"val": pa.array([1])})}),
             ),
         ):
-            # Non-embed call must succeed even with concurrency=0.
+            # Non-embed call must succeed even with embed concurrency=0 because
+            # it uses the separate _flow_provider_semaphores registry (cap=4).
             tables = await resolve_provider_data(
                 board_id=_BOARD_ID,
                 provider_id=_PROVIDER_ID,
@@ -2744,14 +2753,144 @@ async def test_non_embed_flow_provider_bypasses_semaphore(repo: InMemoryRepo) ->
                 org_id=_ORG,
                 claims={"policies": {}},
                 repo=repo,
-                is_embed=False,  # first-party — no semaphore applied
+                is_embed=False,  # first-party — uses non-embed registry
             )
         assert "summary" in tables
         assert tables["summary"].num_rows == 1
     finally:
-        _bd_mod._EMBED_FLOW_CONCURRENCY = original_concurrency
-        _bd_mod._EMBED_FLOW_TIMEOUT_S = original_timeout
+        _bd_mod._EMBED_FLOW_CONCURRENCY = original_embed_concurrency
+        _bd_mod._EMBED_FLOW_TIMEOUT_S = original_embed_timeout
+        _bd_mod._FLOW_PROVIDER_CONCURRENCY = original_flow_concurrency
         _bd_mod._embed_semaphores.clear()
+        _bd_mod._flow_provider_semaphores.clear()
+        _reset()
+
+
+# ---------------------------------------------------------------------------
+# NEW (fix-20): [MED non-embed concurrency] concurrent non-embed flow-provider
+# requests are bounded by the _flow_provider_semaphores registry
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_non_embed_flow_provider_concurrent_requests_are_bounded(
+    repo: InMemoryRepo,
+) -> None:
+    """[MED non-embed concurrency] Concurrent non-embed flow-provider cache misses
+    are limited by the per-(org, provider) _flow_provider_semaphores registry.
+
+    Strategy: set _FLOW_PROVIDER_CONCURRENCY=1 and _FLOW_PROVIDER_TIMEOUT_S=0.0,
+    pre-drain the semaphore to simulate a concurrent holder, then verify a second
+    non-embed call raises AppError("provider_busy", 429) immediately.
+    """
+    import app.dashboards.board_data as _bd_mod
+    from app.connectors.cache import reset_cache_for_tests as _reset
+
+    await repo.update(
+        "boards",
+        _ORG,
+        _BOARD_ID,
+        {"config": {"spec": _make_spec_with_flow_provider()}},
+    )
+
+    original_concurrency = _bd_mod._FLOW_PROVIDER_CONCURRENCY
+    original_timeout = _bd_mod._FLOW_PROVIDER_TIMEOUT_S
+    _bd_mod._flow_provider_semaphores.clear()
+    _bd_mod._FLOW_PROVIDER_CONCURRENCY = 1
+    _bd_mod._FLOW_PROVIDER_TIMEOUT_S = 0.0  # zero timeout → immediate 429
+
+    async def _fake_enforce_quota(org_id: str, dimension: str, amount: float = 1.0) -> None:
+        pass
+
+    try:
+        with (
+            patch("app.features.enforce_quota", side_effect=_fake_enforce_quota),
+            patch(
+                "app.dashboards.board_data._resolve_flow_provider",
+                new=AsyncMock(return_value={"summary": pa.table({"val": pa.array([1])})}),
+            ),
+        ):
+            # Manually acquire the non-embed semaphore to simulate a concurrent holder.
+            sem = _bd_mod._get_flow_provider_semaphore(_ORG, _PROVIDER_ID)
+            await sem.acquire()  # drain the single token
+            try:
+                # A second non-embed call with timeout=0 must 429.
+                with pytest.raises(AppError) as exc_info:
+                    await resolve_provider_data(
+                        board_id=_BOARD_ID,
+                        provider_id=_PROVIDER_ID,
+                        params={"_run": "contended-non-embed"},
+                        org_id=_ORG,
+                        claims={"policies": {}},
+                        repo=repo,
+                        is_embed=False,  # non-embed (interactive writer/viewer)
+                    )
+                assert exc_info.value.code == "provider_busy", (
+                    f"Expected provider_busy 429 on non-embed semaphore contention; "
+                    f"got {exc_info.value.code!r}"
+                )
+                assert exc_info.value.status == 429
+            finally:
+                sem.release()
+    finally:
+        _bd_mod._FLOW_PROVIDER_CONCURRENCY = original_concurrency
+        _bd_mod._FLOW_PROVIDER_TIMEOUT_S = original_timeout
+        _bd_mod._flow_provider_semaphores.clear()
+        _reset()
+
+
+@pytest.mark.asyncio
+async def test_non_embed_flow_provider_succeeds_when_below_concurrency_cap(
+    repo: InMemoryRepo,
+) -> None:
+    """[MED non-embed concurrency] A non-embed flow-provider call that fits within
+    the concurrency cap must succeed (not 429).
+
+    Sanity-checks that the guard does not over-eagerly block calls when there is
+    capacity available.
+    """
+    import app.dashboards.board_data as _bd_mod
+    from app.connectors.cache import reset_cache_for_tests as _reset
+
+    await repo.update(
+        "boards",
+        _ORG,
+        _BOARD_ID,
+        {"config": {"spec": _make_spec_with_flow_provider()}},
+    )
+
+    original_concurrency = _bd_mod._FLOW_PROVIDER_CONCURRENCY
+    original_timeout = _bd_mod._FLOW_PROVIDER_TIMEOUT_S
+    _bd_mod._flow_provider_semaphores.clear()
+    _bd_mod._FLOW_PROVIDER_CONCURRENCY = 4  # ample capacity
+    _bd_mod._FLOW_PROVIDER_TIMEOUT_S = 1.0
+
+    async def _fake_enforce_quota(org_id: str, dimension: str, amount: float = 1.0) -> None:
+        pass
+
+    try:
+        with (
+            patch("app.features.enforce_quota", side_effect=_fake_enforce_quota),
+            patch(
+                "app.dashboards.board_data._resolve_flow_provider",
+                new=AsyncMock(return_value={"summary": pa.table({"val": pa.array([42])})}),
+            ),
+        ):
+            tables = await resolve_provider_data(
+                board_id=_BOARD_ID,
+                provider_id=_PROVIDER_ID,
+                params={},
+                org_id=_ORG,
+                claims={"policies": {}},
+                repo=repo,
+                is_embed=False,
+            )
+        assert "summary" in tables
+        assert tables["summary"].to_pydict() == {"val": [42]}
+    finally:
+        _bd_mod._FLOW_PROVIDER_CONCURRENCY = original_concurrency
+        _bd_mod._FLOW_PROVIDER_TIMEOUT_S = original_timeout
+        _bd_mod._flow_provider_semaphores.clear()
         _reset()
 
 

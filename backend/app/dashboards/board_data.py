@@ -119,6 +119,36 @@ _EMBED_SEM_REGISTRY_CAP: int = int(
     os.environ.get("NUBI_EMBED_SEM_REGISTRY_CAP", _DEFAULT_EMBED_SEM_REGISTRY_CAP)
 )
 
+# ---------------------------------------------------------------------------
+# Per-(org_id, provider_id) NON-EMBED (interactive) flow concurrency guard
+# ---------------------------------------------------------------------------
+# Interactive (first-party writer/viewer) flow-provider requests are also
+# vulnerable to the same cache-bust fan-out problem as embed tokens: N concurrent
+# interactive requests on a cache miss each spawn a full live flow run.
+#
+# Fix: apply the same per-(org, provider) asyncio.Semaphore pattern used for
+# embed tokens to the non-embed (interactive) path as well.  A separate registry
+# and ceiling allow operators to tune embed and interactive concurrency
+# independently via env vars.
+#
+# NUBI_FLOW_PROVIDER_CONCURRENCY : max concurrent live flow runs per (org, provider)
+#   for non-embed callers (default 4 — interactive writers tend to be trusted so
+#   the ceiling is higher than for public embed tokens).
+# NUBI_FLOW_PROVIDER_TIMEOUT_S   : wait timeout before 429 (default 10 s, same as embed).
+# NUBI_FLOW_PROVIDER_SEM_CAP     : max semaphore registry entries (default 1024).
+_DEFAULT_FLOW_PROVIDER_CONCURRENCY = 4
+_FLOW_PROVIDER_CONCURRENCY: int = int(
+    os.environ.get("NUBI_FLOW_PROVIDER_CONCURRENCY", _DEFAULT_FLOW_PROVIDER_CONCURRENCY)
+)
+_DEFAULT_FLOW_PROVIDER_TIMEOUT_S = 10.0
+_FLOW_PROVIDER_TIMEOUT_S: float = float(
+    os.environ.get("NUBI_FLOW_PROVIDER_TIMEOUT_S", _DEFAULT_FLOW_PROVIDER_TIMEOUT_S)
+)
+_DEFAULT_FLOW_PROVIDER_SEM_CAP = 1024
+_FLOW_PROVIDER_SEM_CAP: int = int(
+    os.environ.get("NUBI_FLOW_PROVIDER_SEM_CAP", _DEFAULT_FLOW_PROVIDER_SEM_CAP)
+)
+
 # Registry: (org_id, provider_id) -> asyncio.Semaphore
 # Implemented as an OrderedDict so we can evict the least-recently-used idle
 # entry when the registry would otherwise grow beyond _EMBED_SEM_REGISTRY_CAP.
@@ -130,6 +160,13 @@ _embed_semaphores: "_collections.OrderedDict[tuple[str, str], asyncio.Semaphore]
     _collections.OrderedDict()
 )
 _embed_semaphores_lock = threading.Lock()
+
+# Non-embed (interactive) flow-provider semaphore registry — parallel to the
+# embed registry but with its own ceiling and concurrency cap.
+_flow_provider_semaphores: "_collections.OrderedDict[tuple[str, str], asyncio.Semaphore]" = (
+    _collections.OrderedDict()
+)
+_flow_provider_semaphores_lock = threading.Lock()
 
 
 def _embed_semaphore_is_idle(sem: asyncio.Semaphore) -> bool:
@@ -148,6 +185,11 @@ def _embed_semaphore_is_idle(sem: asyncio.Semaphore) -> bool:
     # _value is the remaining token count; when equal to the concurrency cap all
     # tokens are free.  When < cap at least one caller holds a token or is waiting.
     return getattr(sem, "_value", 0) >= _EMBED_FLOW_CONCURRENCY
+
+
+def _flow_provider_semaphore_is_idle(sem: asyncio.Semaphore) -> bool:
+    """Return True when *sem* (non-embed flow registry) has no in-flight callers."""
+    return getattr(sem, "_value", 0) >= _FLOW_PROVIDER_CONCURRENCY
 
 
 def _evict_idle_embed_semaphores() -> None:
@@ -170,6 +212,23 @@ def _evict_idle_embed_semaphores() -> None:
         _embed_semaphores.pop(key, None)
 
 
+def _evict_idle_flow_provider_semaphores() -> None:
+    """Evict LRU idle entries from _flow_provider_semaphores until len <= cap.
+
+    Mirrors _evict_idle_embed_semaphores for the non-embed registry.
+    Called while holding _flow_provider_semaphores_lock.
+    """
+    target = _FLOW_PROVIDER_SEM_CAP - 1
+    idle_keys = [
+        k for k, sem in _flow_provider_semaphores.items()
+        if _flow_provider_semaphore_is_idle(sem)
+    ]
+    for key in idle_keys:
+        if len(_flow_provider_semaphores) <= target:
+            break
+        _flow_provider_semaphores.pop(key, None)
+
+
 def _get_embed_semaphore(org_id: str, provider_id: str) -> asyncio.Semaphore:
     """Return the asyncio.Semaphore for *(org_id, provider_id)*, creating it once.
 
@@ -189,6 +248,26 @@ def _get_embed_semaphore(org_id: str, provider_id: str) -> asyncio.Semaphore:
             _evict_idle_embed_semaphores()
         sem = asyncio.Semaphore(_EMBED_FLOW_CONCURRENCY)
         _embed_semaphores[key] = sem
+        return sem
+
+
+def _get_flow_provider_semaphore(org_id: str, provider_id: str) -> asyncio.Semaphore:
+    """Return the non-embed asyncio.Semaphore for *(org_id, provider_id)*.
+
+    LRU-capped via _FLOW_PROVIDER_SEM_CAP; concurrency limited to
+    _FLOW_PROVIDER_CONCURRENCY.  Mirrors _get_embed_semaphore for interactive
+    (non-embed) flow-provider callers.
+    """
+    key = (org_id, provider_id)
+    with _flow_provider_semaphores_lock:
+        sem = _flow_provider_semaphores.get(key)
+        if sem is not None:
+            _flow_provider_semaphores.move_to_end(key)
+            return sem
+        if len(_flow_provider_semaphores) >= _FLOW_PROVIDER_SEM_CAP:
+            _evict_idle_flow_provider_semaphores()
+        sem = asyncio.Semaphore(_FLOW_PROVIDER_CONCURRENCY)
+        _flow_provider_semaphores[key] = sem
         return sem
 
 # ---------------------------------------------------------------------------
@@ -1207,32 +1286,45 @@ async def resolve_provider_data(
         # asyncio.Semaphore so a cache-busting embed client cannot fan out
         # arbitrarily many concurrent live flow runs.  On contention beyond the
         # timeout, raise a 429 "provider_busy" error.  Embed stays unmetered.
+        #
+        # FIX [MED non-embed compute amplification]: apply the same concurrency
+        # guard to interactive (non-embed) flow-provider execution.  N concurrent
+        # interactive requests on a cache miss each spawn a full live flow run
+        # without any cap.  We use a separate per-(org, provider) registry
+        # (_flow_provider_semaphores) with its own ceiling so operators can tune
+        # embed and interactive limits independently.
         if is_embed:
             _sem = _get_embed_semaphore(org_id, provider_id)
-            try:
-                await asyncio.wait_for(
-                    _sem.acquire(),
-                    timeout=_EMBED_FLOW_TIMEOUT_S,
-                )
-            except asyncio.TimeoutError:
-                raise AppError(
-                    "provider_busy",
-                    f"Provider {provider_id!r} is currently busy serving other embed "
-                    f"requests. Retry after a moment.",
-                    429,
-                )
-            try:
-                tables = await _resolve_flow_provider(
-                    provider, merged_params, org_id, claims,
-                    org_flows_by_key=org_flows_by_key,
-                )
-            finally:
-                _sem.release()
+            _timeout = _EMBED_FLOW_TIMEOUT_S
+            _busy_msg = (
+                f"Provider {provider_id!r} is currently busy serving other embed "
+                f"requests. Retry after a moment."
+            )
         else:
+            _sem = _get_flow_provider_semaphore(org_id, provider_id)
+            _timeout = _FLOW_PROVIDER_TIMEOUT_S
+            _busy_msg = (
+                f"Provider {provider_id!r} is currently busy. "
+                f"Too many concurrent requests — retry after a moment."
+            )
+        try:
+            await asyncio.wait_for(
+                _sem.acquire(),
+                timeout=_timeout,
+            )
+        except asyncio.TimeoutError:
+            raise AppError(
+                "provider_busy",
+                _busy_msg,
+                429,
+            )
+        try:
             tables = await _resolve_flow_provider(
                 provider, merged_params, org_id, claims,
                 org_flows_by_key=org_flows_by_key,
             )
+        finally:
+            _sem.release()
     elif provider.kind == "inline":
         tables = await _resolve_inline_provider(provider, merged_params, org_id, claims, repo)
     else:

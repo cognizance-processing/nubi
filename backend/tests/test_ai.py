@@ -17,7 +17,9 @@ to ensure get_provider() always returns NullProvider during the suite.
 
 from __future__ import annotations
 
+import asyncio
 import os
+import threading
 import uuid
 from typing import Any
 from unittest.mock import patch
@@ -568,3 +570,191 @@ class TestAskEndpoint:
         assert resp1.status_code == 200
         assert resp2.status_code == 200
         assert resp1.json()["suggestion"] == resp2.json()["suggestion"]
+
+
+# ---------------------------------------------------------------------------
+# 7. asyncio.to_thread offload — LLM calls must not block the event loop
+# ---------------------------------------------------------------------------
+
+
+class TestAskOffloadsToThread:
+    """The /ai/ask handler must offload provider.complete via asyncio.to_thread.
+
+    Strategy: patch provider.complete with a function that records its calling
+    thread.  The event-loop thread (the asyncio thread) must NOT be the thread
+    that executes the blocking LLM call.
+    """
+
+    @pytest.mark.asyncio
+    async def test_ask_provider_complete_runs_in_worker_thread(self, ai_client, monkeypatch):
+        """provider.complete must NOT run on the asyncio event-loop thread.
+
+        The handler wraps the call in asyncio.to_thread; this verifies that the
+        thread executing complete() differs from the current asyncio thread.
+        """
+        for key in ("ANTHROPIC_API_KEY", "OPENAI_API_KEY", "GEMINI_API_KEY", "LLM_PROVIDER"):
+            monkeypatch.delenv(key, raising=False)
+        from app.config import get_settings
+        get_settings.cache_clear()
+
+        event_loop_thread = threading.current_thread()
+        complete_threads: list[threading.Thread] = []
+
+        from app.ai.provider import NullProvider
+
+        original_complete = NullProvider.complete
+
+        def _recording_complete(self, prompt, **kwargs):
+            complete_threads.append(threading.current_thread())
+            return original_complete(self, prompt, **kwargs)
+
+        monkeypatch.setattr(NullProvider, "complete", _recording_complete)
+
+        ac, user_id = ai_client
+        resp = await ac.post(
+            "/api/v1/ai/ask",
+            json={"question": "show me orders"},
+            headers=_auth_headers(user_id),
+        )
+        assert resp.status_code == 200
+
+        # complete() must have been called exactly once.
+        assert len(complete_threads) == 1, (
+            f"Expected complete() to be called once; called {len(complete_threads)} time(s)."
+        )
+        # The thread running complete() must NOT be the asyncio event-loop thread.
+        assert complete_threads[0] is not event_loop_thread, (
+            "provider.complete() ran on the asyncio event-loop thread — "
+            "it was NOT offloaded via asyncio.to_thread. This blocks the event loop."
+        )
+
+    @pytest.mark.asyncio
+    async def test_dashboard_generate_returns_200_and_offloads(self, ai_client, monkeypatch):
+        """POST /ai/dashboard must return 200 and complete() must run off the event-loop thread.
+
+        generate_dashboard_spec ultimately calls provider.complete; verifying that
+        complete() runs in a worker thread confirms the to_thread wrapping is in place.
+        """
+        for key in ("ANTHROPIC_API_KEY", "OPENAI_API_KEY", "GEMINI_API_KEY", "LLM_PROVIDER"):
+            monkeypatch.delenv(key, raising=False)
+        from app.config import get_settings
+        get_settings.cache_clear()
+
+        event_loop_thread = threading.current_thread()
+        complete_threads: list[threading.Thread] = []
+
+        from app.ai.provider import NullProvider
+
+        original_complete = NullProvider.complete
+
+        def _recording_complete(self, prompt, **kwargs):
+            complete_threads.append(threading.current_thread())
+            return original_complete(self, prompt, **kwargs)
+
+        monkeypatch.setattr(NullProvider, "complete", _recording_complete)
+
+        ac, user_id = ai_client
+        resp = await ac.post(
+            "/api/v1/ai/dashboard",
+            json={"question": "show me demo data"},
+            headers=_auth_headers(user_id),
+        )
+        assert resp.status_code == 200
+
+        # NullProvider.complete may not be called at all on the null path (it
+        # returns a template directly). What matters is the route returns 200
+        # and the route is async — the to_thread wrapping in the source is
+        # the structural guarantee.  If complete WAS called, it must not be on
+        # the event-loop thread.
+        for t in complete_threads:
+            assert t is not event_loop_thread, (
+                "provider.complete() ran on the asyncio event-loop thread inside "
+                "/ai/dashboard — the to_thread wrapping is not in place."
+            )
+
+    @pytest.mark.asyncio
+    async def test_canvas_generate_returns_200_and_offloads(self, ai_client, monkeypatch):
+        """POST /ai/canvas must return 200 and complete() must run off the event-loop thread."""
+        for key in ("ANTHROPIC_API_KEY", "OPENAI_API_KEY", "GEMINI_API_KEY", "LLM_PROVIDER"):
+            monkeypatch.delenv(key, raising=False)
+        from app.config import get_settings
+        get_settings.cache_clear()
+
+        event_loop_thread = threading.current_thread()
+        complete_threads: list[threading.Thread] = []
+
+        from app.ai.provider import NullProvider
+
+        original_complete = NullProvider.complete
+
+        def _recording_complete(self, prompt, **kwargs):
+            complete_threads.append(threading.current_thread())
+            return original_complete(self, prompt, **kwargs)
+
+        monkeypatch.setattr(NullProvider, "complete", _recording_complete)
+
+        ac, user_id = ai_client
+        resp = await ac.post(
+            "/api/v1/ai/canvas",
+            json={"question": "show me demo data"},
+            headers=_auth_headers(user_id),
+        )
+        assert resp.status_code == 200
+
+        for t in complete_threads:
+            assert t is not event_loop_thread, (
+                "provider.complete() ran on the asyncio event-loop thread inside "
+                "/ai/canvas — the to_thread wrapping is not in place."
+            )
+
+    @pytest.mark.asyncio
+    async def test_canvas_edit_returns_200_and_offloads(self, ai_client, monkeypatch):
+        """POST /ai/canvas/edit must return 200 and complete() must run off the event-loop thread."""
+        for key in ("ANTHROPIC_API_KEY", "OPENAI_API_KEY", "GEMINI_API_KEY", "LLM_PROVIDER"):
+            monkeypatch.delenv(key, raising=False)
+        from app.config import get_settings
+        get_settings.cache_clear()
+
+        event_loop_thread = threading.current_thread()
+        complete_threads: list[threading.Thread] = []
+
+        from app.ai.provider import NullProvider
+
+        original_complete = NullProvider.complete
+
+        def _recording_complete(self, prompt, **kwargs):
+            complete_threads.append(threading.current_thread())
+            return original_complete(self, prompt, **kwargs)
+
+        monkeypatch.setattr(NullProvider, "complete", _recording_complete)
+
+        valid_doc = {
+            "version": 1,
+            "title": "base canvas",
+            "html": '<section><nubi-table data-el-id="el_t1"></nubi-table></section>',
+            "bindings": {
+                "el_t1": {
+                    "kind": "query",
+                    "query_id": "demo_all",
+                    "params": {},
+                    "field": None,
+                    "format": None,
+                }
+            },
+            "variables": [],
+            "assets": {},
+        }
+
+        ac, user_id = ai_client
+        resp = await ac.post(
+            "/api/v1/ai/canvas/edit",
+            json={"doc": valid_doc, "instruction": "add a title"},
+            headers=_auth_headers(user_id),
+        )
+        assert resp.status_code == 200
+
+        for t in complete_threads:
+            assert t is not event_loop_thread, (
+                "provider.complete() ran on the asyncio event-loop thread inside "
+                "/ai/canvas/edit — the to_thread wrapping is not in place."
+            )

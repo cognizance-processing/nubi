@@ -50,9 +50,33 @@ _TOKEN_RE = re.compile(r"\{\{([A-Za-z_][A-Za-z0-9_]*)\}\}")
 # followed immediately by a quote and then a {{token}} placeholder.
 # Group 1: the quote character (' or ")
 # Group 2: the token name
+# This matches tokens that are the SOLE value of the URL attribute.
 _URL_ATTR_TOKEN_RE = re.compile(
     r"""(?:href|src|action|formaction|data|xlink:href)\s*=\s*(?P<q>['"])"""
     r"""\{\{(?P<name>[A-Za-z_][A-Za-z0-9_]*)\}\}(?P=q)""",
+    re.IGNORECASE,
+)
+
+# Matches tokens that appear at the START of a URL attribute value
+# (i.e. the attribute value begins with {{token}}, potentially followed by more
+# content like "/path" or "?q=x").  These tokens sit at the scheme position and
+# can smuggle javascript:/data: even though they are not the sole value.
+# Group "name": the first token name in the attribute value.
+_URL_ATTR_START_TOKEN_RE = re.compile(
+    r"""(?:href|src|action|formaction|data|xlink:href)\s*=\s*(?P<q>['"])"""
+    r"""\{\{(?P<name>[A-Za-z_][A-Za-z0-9_]*)\}\}""",
+    re.IGNORECASE,
+)
+
+# Post-substitution scan: matches a URL attribute and captures its full value
+# so we can re-sanitize the resulting scheme after all tokens are resolved.
+# Named groups:
+#   attr  – the attribute name
+#   q     – the quote character (' or ")
+#   value – the attribute value (everything between the quotes)
+_URL_ATTR_VALUE_RE = re.compile(
+    r"""(?P<attr>href|src|action|formaction|data|xlink:href)"""
+    r"""\s*=\s*(?P<q>['"])(?P<value>[^'"<>]*)(?P=q)""",
     re.IGNORECASE,
 )
 
@@ -95,6 +119,34 @@ def _sanitize_token_url(value: str) -> str:
         return v
     # Anything that has a "word:" prefix that didn't match above is blocked.
     return "#"
+
+
+def _sanitize_url_attrs_post_substitution(html: str) -> str:
+    """Post-substitution pass: sanitize dangerous schemes in URL attribute values.
+
+    After token substitution a URL attribute value may now contain a dangerous
+    scheme if a token that sat at the START of the value resolved to e.g.
+    ``javascript:`` or ``data:``.  This includes:
+
+    - Partial concatenations: ``href="{{token}}/path"``  →  ``href="javascript:alert(1)/path"``
+    - Composite values:       ``href="{{a}}{{b}}"``       →  ``href="javascript:alert(1)"``
+    - Sole-value tokens already handled by ``_bake_tokens``'s per-token check,
+      but re-checked here as defence-in-depth.
+
+    Any URL attribute value whose resolved scheme is not in the allowlist
+    (http/https/mailto/relative-path) is replaced with ``#``.
+    """
+
+    def _neutralize_url_attr(m: re.Match) -> str:
+        attr = m.group("attr")
+        q = m.group("q")
+        value = m.group("value")
+        safe = _sanitize_token_url(value)
+        if safe != value:
+            return f'{attr}={q}{safe}{q}'
+        return m.group(0)
+
+    return _URL_ATTR_VALUE_RE.sub(_neutralize_url_attr, html)
 
 # ---------------------------------------------------------------------------
 # nubi-* custom element tags recognised by the renderer.
@@ -324,18 +376,33 @@ def _bake_tokens(html: str, element_data: dict[str, Any]) -> str:
 
     URL attribute safety
     --------------------
-    When a placeholder appears as the sole value of a URL attribute
-    (``href``, ``src``, ``action``, ``formaction``, ``data``,
-    ``xlink:href``), the resolved value is first passed through
-    :func:`_sanitize_token_url` to reject dangerous schemes such as
-    ``javascript:``, ``data:``, and ``vbscript:`` before HTML-escaping.
-    This prevents a token value like ``javascript:alert(1)`` from being
-    baked into an ``href`` and executing in the rendered email/page.
+    Two-layer defence against token-based URL injection:
+
+    **Layer 1 — per-token pre-sanitization (sole-value and start-of-value):**
+    When a ``{{token}}`` placeholder appears as the *sole* value or at the
+    *start* of a URL attribute value (``href``, ``src``, ``action``,
+    ``formaction``, ``data``, ``xlink:href``), the resolved value is passed
+    through :func:`_sanitize_token_url` before HTML-escaping.  A token that
+    resolves to ``javascript:alert(1)`` is replaced with ``#`` at this step.
+
+    **Layer 2 — post-substitution scheme scan:**
+    After all ``{{token}}`` placeholders are expanded a second pass re-scans
+    every URL attribute value in the rendered HTML and re-applies
+    :func:`_sanitize_token_url`.  This catches cases where a token was
+    embedded *within* a URL (e.g. ``href="{{token}}/path"`` or
+    ``src="x?u={{token}}"`` or ``href="{{a}}{{b}}"``): the per-token Layer 1
+    only sanitizes the raw token value in isolation, but the resulting
+    *composed* attribute value must also be validated so that a scheme
+    fragment spread across multiple tokens (or between a literal prefix and a
+    token) cannot survive the render.
     """
-    # Collect the names of tokens that appear as the sole value of a URL
-    # attribute in this HTML.  These must have their scheme validated.
+    # Collect the names of tokens that appear as the sole value OR at the start
+    # of a URL attribute value in this HTML.  These must have their scheme
+    # validated in Layer 1 (per-token pre-sanitization).
     url_attr_token_names: set[str] = {
         m.group("name") for m in _URL_ATTR_TOKEN_RE.finditer(html)
+    } | {
+        m.group("name") for m in _URL_ATTR_START_TOKEN_RE.finditer(html)
     }
 
     def _resolve_token(name: str) -> str | None:
@@ -358,11 +425,19 @@ def _bake_tokens(html: str, element_data: dict[str, Any]) -> str:
             # No match — leave placeholder visible so the author can debug.
             return _escape(f"{{{{{name}}}}}")
         if name in url_attr_token_names:
-            # Token is used in a URL attribute: validate scheme before escaping.
+            # Layer 1: token is at scheme position in a URL attribute —
+            # validate scheme before HTML-escaping.
             raw = _sanitize_token_url(raw)
         return _escape(raw)
 
-    return _TOKEN_RE.sub(_replacer, html)
+    rendered = _TOKEN_RE.sub(_replacer, html)
+
+    # Layer 2: post-substitution pass — re-scan every URL attribute value for
+    # dangerous schemes that may have been composed from multiple tokens or
+    # from a token embedded inside a longer URL value.
+    rendered = _sanitize_url_attrs_post_substitution(rendered)
+
+    return rendered
 
 
 def _replace_nubi_elements(html: str, element_data: dict[str, Any]) -> str:

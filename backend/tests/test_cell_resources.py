@@ -1403,6 +1403,189 @@ async def test_map_items_byte_cap_default_is_4mib():
 
 
 # ---------------------------------------------------------------------------
+# HARD CEILING: per-run task_run ceiling at map fan-out (_MAX_TASK_RUNS_PER_RUN)
+# ---------------------------------------------------------------------------
+
+
+async def test_task_run_ceiling_default_is_50000():
+    """Default _MAX_TASK_RUNS_PER_RUN is 50000 (env unset)."""
+    import app.flows.runtime as rt
+
+    assert rt._MAX_TASK_RUNS_PER_RUN == 50000, (
+        f"Expected default _MAX_TASK_RUNS_PER_RUN == 50000, "
+        f"got {rt._MAX_TASK_RUNS_PER_RUN}"
+    )
+
+
+async def test_task_run_ceiling_fails_oversized_fanout_zero_children(monkeypatch):
+    """Oversized map fan-out fails fast with ZERO child task_runs leaked.
+
+    With the ceiling patched below the projected total, the ceiling guard must
+    fire BEFORE any children are inserted: the map task → 'failed' and no child
+    task_runs exist.
+    """
+    import app.flows.runtime as rt
+    from app.flows.runtime import materialize_flow_run, drain_flow_run
+    from app.flows.registry import reset_for_tests
+    from app.flows.store import InMemoryFlowStore
+
+    reset_for_tests()
+
+    # Ceiling of 3: the map task itself counts as 1 existing run; a fan-out of
+    # 5 items × 1 body task = 5 children → 1 + 5 = 6 > 3 → must fail.
+    monkeypatch.setattr(rt, "_MAX_TASK_RUNS_PER_RUN", 3)
+
+    store = InMemoryFlowStore()
+    spec = {
+        "version": 1,
+        "name": "ceiling_test",
+        "tasks": [
+            {
+                "key": "fan",
+                "kind": "map",
+                "needs": [],
+                "config": {
+                    "item_expr": "{{ params.items }}",
+                    "item_var": "item",
+                    "body": [{"key": "work", "kind": "noop", "needs": [], "config": {}}],
+                },
+            }
+        ],
+    }
+    flow = await store.create_flow(
+        org_id="org-test", created_by="user-test", name="ceiling_test", spec=spec
+    )
+    flow_run = await materialize_flow_run(
+        store, flow, {"items": [{"x": i} for i in range(5)]}, "manual", NOW
+    )
+
+    with pytest.raises(ValueError, match="exceeding the per-run ceiling"):
+        await drain_flow_run(store, flow_run["id"], NOW, claims={})
+
+    all_trs = await store.list_task_runs(flow_run["id"])
+    child_trs = [tr for tr in all_trs if tr.get("parent_task_run_id") is not None]
+    assert len(child_trs) == 0, (
+        f"Expected 0 child task_runs after ceiling block, got {len(child_trs)}"
+    )
+
+    map_tr = next((tr for tr in all_trs if tr["task_key"] == "fan"), None)
+    assert map_tr is not None and map_tr["state"] == "failed", (
+        f"Expected map task_run state 'failed', got "
+        f"{map_tr['state'] if map_tr else 'MISSING'!r}"
+    )
+
+
+async def test_task_run_ceiling_within_limit_succeeds(monkeypatch):
+    """A fan-out within the ceiling fans out normally (no ceiling error)."""
+    import app.flows.runtime as rt
+    from app.flows.runtime import materialize_flow_run, drain_flow_run
+    from app.flows.registry import reset_for_tests
+    from app.flows.store import InMemoryFlowStore
+
+    reset_for_tests()
+
+    # Generous ceiling — 3 items × 1 body easily fits.
+    monkeypatch.setattr(rt, "_MAX_TASK_RUNS_PER_RUN", 50000)
+
+    store = InMemoryFlowStore()
+    spec = {
+        "version": 1,
+        "name": "ceiling_ok_test",
+        "tasks": [
+            {
+                "key": "fan",
+                "kind": "map",
+                "needs": [],
+                "config": {
+                    "item_expr": "{{ params.items }}",
+                    "item_var": "item",
+                    "body": [{"key": "work", "kind": "noop", "needs": [], "config": {}}],
+                },
+            }
+        ],
+    }
+    flow = await store.create_flow(
+        org_id="org-test", created_by="user-test", name="ceiling_ok_test", spec=spec
+    )
+    flow_run = await materialize_flow_run(
+        store, flow, {"items": [{"x": 1}, {"x": 2}, {"x": 3}]}, "manual", NOW
+    )
+    final = await drain_flow_run(store, flow_run["id"], NOW, claims={})
+    assert final["state"] == "success", (
+        f"Expected flow_run state 'success', got {final['state']!r}"
+    )
+
+
+async def test_count_task_runs_matches_list_len():
+    """store.count_task_runs equals len(list_task_runs) for a flow_run."""
+    from app.flows.runtime import materialize_flow_run
+    from app.flows.registry import reset_for_tests
+    from app.flows.store import InMemoryFlowStore
+
+    reset_for_tests()
+    store = InMemoryFlowStore()
+    spec = {
+        "version": 1,
+        "name": "count_test",
+        "tasks": [
+            {"key": "a", "kind": "noop", "needs": [], "config": {}},
+            {"key": "b", "kind": "noop", "needs": ["a"], "config": {}},
+        ],
+    }
+    flow = await store.create_flow(
+        org_id="org-test", created_by="user-test", name="count_test", spec=spec
+    )
+    flow_run = await materialize_flow_run(store, flow, {}, "manual", NOW)
+    n = await store.count_task_runs(flow_run["id"])
+    rows = await store.list_task_runs(flow_run["id"])
+    assert n == len(rows) == 2, f"count={n} list_len={len(rows)}"
+
+
+# ---------------------------------------------------------------------------
+# Results-only projection: list_task_run_results matches the inputs path
+# ---------------------------------------------------------------------------
+
+
+async def test_list_task_run_results_matches_success_inputs():
+    """list_task_run_results returns exactly the (key, result) pairs the inputs
+    path builds from list_task_runs (success-only, result present)."""
+    from app.flows.runtime import materialize_flow_run, drain_flow_run
+    from app.flows.registry import reset_for_tests
+    from app.flows.store import InMemoryFlowStore
+
+    reset_for_tests()
+    store = InMemoryFlowStore()
+    spec = {
+        "version": 1,
+        "name": "results_proj_test",
+        "tasks": [
+            {"key": "a", "kind": "noop", "needs": [], "config": {}},
+            {"key": "b", "kind": "noop", "needs": ["a"], "config": {}},
+        ],
+    }
+    flow = await store.create_flow(
+        org_id="org-test", created_by="user-test", name="results_proj_test", spec=spec
+    )
+    flow_run = await materialize_flow_run(store, flow, {}, "manual", NOW)
+    await drain_flow_run(store, flow_run["id"], NOW, claims={})
+
+    # Reference: the inputs path derives inputs from list_task_runs.
+    all_trs = await store.list_task_runs(flow_run["id"])
+    expected = {
+        tr["task_key"]: tr["result"]
+        for tr in all_trs
+        if tr["state"] == "success" and tr.get("result") is not None
+    }
+
+    # Results-only projection must produce the identical mapping.
+    pairs = await store.list_task_run_results(flow_run["id"])
+    projected = dict(pairs)
+    assert projected == expected, (
+        f"Results-only projection {projected} != inputs-path {expected}"
+    )
+
+
+# ---------------------------------------------------------------------------
 # _lookup_map_item targeted fetch (audit-14)
 # ---------------------------------------------------------------------------
 

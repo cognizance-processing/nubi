@@ -2949,3 +2949,175 @@ class TestBakeTokensUrlSanitization:
         assert "javascript:" not in result.lower(), (
             f"Single-quoted href must also be sanitized: {result!r}"
         )
+
+
+# ---------------------------------------------------------------------------
+# 15. [LOW] Partial-URL token injection — fix-22b post-substitution scan
+# ---------------------------------------------------------------------------
+
+
+class TestBakeTokensPartialUrlInjection:
+    """Tokens embedded as part of a URL attribute value must have their
+    resulting scheme validated after substitution.
+
+    fix-22 sanitized tokens that were the SOLE value of a URL attribute
+    (href="{{token}}").  A token at the SCHEME POSITION but not the sole value
+    (href="{{token}}/path", src="x?u={{token}}", href="{{a}}{{b}}") was not
+    covered.  fix-22b adds:
+
+    1. Layer 1: tokens at the START of a URL attribute value are also
+       individually sanitized (pre-substitution, scheme position only).
+    2. Layer 2: a post-substitution scan of every URL attribute value
+       re-validates the composed scheme, catching any multi-token or
+       partial-concatenation cases.
+    """
+
+    def _bake(self, html: str, token_name: str, token_value: str) -> str:
+        """Helper: run _bake_tokens with a single token binding."""
+        from app.dashboards.render_canvas import _bake_tokens  # noqa: PLC0415
+
+        element_data = {
+            "el_test": {
+                "columns": [token_name],
+                "rows": [[token_value]],
+            }
+        }
+        return _bake_tokens(html, element_data)
+
+    def _bake_two(
+        self,
+        html: str,
+        name_a: str,
+        value_a: str,
+        name_b: str,
+        value_b: str,
+    ) -> str:
+        """Helper: run _bake_tokens with two token bindings."""
+        from app.dashboards.render_canvas import _bake_tokens  # noqa: PLC0415
+
+        element_data = {
+            "el_a": {"columns": [name_a], "rows": [[value_a]]},
+            "el_b": {"columns": [name_b], "rows": [[value_b]]},
+        }
+        return _bake_tokens(html, element_data)
+
+    # ── javascript: in partial href (token + suffix path) ────────────────────
+
+    def test_javascript_partial_href_with_path_suffix_is_neutralised(self):
+        """href='{{token}}/path' where token resolves to javascript: is blocked.
+
+        The token sits at the scheme position even though it is not the sole
+        value.  Layer 1 replaces the token with '#' and the suffix '/path' is
+        appended giving '#/path'.  Layer 2 post-substitution scan also validates
+        the composed value.  Either way, the dangerous javascript: scheme must
+        not appear in the rendered output.
+        """
+        html = '<a href="{{scheme}}/path">click</a>'
+        result = self._bake(html, "scheme", "javascript:alert(1)")
+        assert "javascript:" not in result.lower(), (
+            f"javascript: must be neutralised in partial href: {result!r}"
+        )
+        # The dangerous scheme must be gone; href value may be '#' or '#/path'.
+        assert "href=" in result, result
+        assert "javascript" not in result.lower(), result
+
+    def test_data_uri_partial_href_with_path_suffix_is_neutralised(self):
+        """href='{{token}}/path' where token resolves to data: is blocked.
+
+        Layer 1 replaces the token with '#'; Layer 2 validates the composed value.
+        The dangerous data: scheme must not appear in the rendered output.
+        """
+        html = '<a href="{{scheme}}/path">click</a>'
+        result = self._bake(html, "scheme", "data:text/html,<script>alert(1)</script>")
+        assert "data:" not in result.lower(), (
+            f"data: must be neutralised in partial href: {result!r}"
+        )
+        assert "href=" in result, result
+
+    # ── javascript: in src with query-string suffix ───────────────────────────
+
+    def test_javascript_in_src_with_query_suffix_is_neutralised(self):
+        """src='x?u={{token}}' — token in query string, not scheme position.
+
+        The scheme here is 'x' (a relative path), so this is safe and must NOT
+        be blocked — the token is not at the scheme position.
+        """
+        html = '<img src="x?u={{user}}" alt="">'
+        result = self._bake(html, "user", "alice")
+        # 'x?u=alice' is a relative URL — should be preserved, not blocked.
+        assert "alice" in result, (
+            f"Token in query-string position must be preserved: {result!r}"
+        )
+        assert 'src="#"' not in result, (
+            f"Relative URL with token in query string must not be blocked: {result!r}"
+        )
+
+    def test_javascript_in_src_scheme_position_is_neutralised(self):
+        """src='{{token}}?q=1' where token resolves to javascript: is blocked.
+
+        The token is at the START of the value, so it controls the scheme.
+        The composed value is 'javascript:alert(1)?q=1' — the post-substitution
+        scan must neutralize the whole src to '#'.
+        """
+        html = '<img src="{{proto}}?q=1" alt="">'
+        result = self._bake(html, "proto", "javascript:alert(1)")
+        assert "javascript:" not in result.lower(), (
+            f"javascript: in scheme position of src must be neutralised: {result!r}"
+        )
+
+    # ── Composite token (two tokens that together form a dangerous scheme) ────
+
+    def test_composite_javascript_href_two_tokens_is_neutralised(self):
+        """href='{{a}}{{b}}' where concat resolves to 'javascript:alert(1)' is blocked.
+
+        Each individual token ('javas' and 'cript:alert(1)') is not itself a
+        dangerous scheme, so Layer 1 alone cannot catch this.  Layer 2
+        (post-substitution scan) catches the composed value.
+        """
+        html = '<a href="{{prefix}}{{suffix}}">click</a>'
+        result = self._bake_two(html, "prefix", "javas", "suffix", "cript:alert(1)")
+        assert "javascript:" not in result.lower(), (
+            f"Composite javascript: from two tokens must be neutralised: {result!r}"
+        )
+        assert 'href="#"' in result, (
+            f"Composed javascript: href must become '#': {result!r}"
+        )
+
+    # ── Legitimate partial URLs are preserved ─────────────────────────────────
+
+    def test_https_partial_href_with_path_suffix_is_preserved(self):
+        """href='{{base}}/report' where token resolves to https://example.com is kept."""
+        html = '<a href="{{base}}/report">view</a>'
+        result = self._bake(html, "base", "https://example.com")
+        assert "https://example.com" in result, (
+            f"Legitimate https:// partial href must be preserved: {result!r}"
+        )
+        assert 'href="#"' not in result, result
+
+    def test_relative_partial_href_with_prefix_is_preserved(self):
+        """href='/reports/{{id}}' — relative path with token in suffix is safe."""
+        html = '<a href="/reports/{{id}}">report</a>'
+        result = self._bake(html, "id", "q1-2024")
+        assert "/reports/q1-2024" in result, (
+            f"Relative path with token suffix must be preserved: {result!r}"
+        )
+        assert 'href="#"' not in result, result
+
+    def test_mailto_partial_href_is_preserved(self):
+        """href='mailto:{{email}}' — mailto: with token in address part is safe."""
+        html = '<a href="mailto:{{email}}">contact</a>'
+        result = self._bake(html, "email", "alice@example.com")
+        assert "mailto:" in result, (
+            f"mailto: partial href must be preserved: {result!r}"
+        )
+        assert "alice" in result, result
+        assert 'href="#"' not in result, result
+
+    def test_http_base_with_path_token_is_preserved(self):
+        """href='http://intranet.example.com/{{path}}' — token in path part is safe."""
+        html = '<a href="http://intranet.example.com/{{path}}">link</a>'
+        result = self._bake(html, "path", "reports/q1")
+        assert "http://intranet.example.com/reports/q1" in result, (
+            f"http:// URL with token path suffix must be preserved: {result!r}"
+        )
+        assert 'href="#"' not in result, result
