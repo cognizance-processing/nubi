@@ -335,7 +335,7 @@ const ALL_COMPETITORS = [
     isNubi: false,
     category: 'Notebooks + Apps',
     pricingModel: 'Per-editor seat + compute add-on',
-    entryPrice: 'Community free; Team $75/editor/mo',
+    entryPrice: 'Community free; Team $50/editor/mo',
     entryEst: false,
     seatModel: 'Per-editor; compute billed separately by kernel-minute',
     embedding: 'Enterprise add-on only; not a core surface; expensive',

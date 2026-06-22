@@ -31,7 +31,7 @@ import {
   GitBranch, Server, BarChart3, Wallet, HardDrive, Search,
 } from 'lucide-react'
 import {
-  computeZar, formatZar, recommendNubi,
+  formatZar, recommendNubi,
   estimateLakehouseCost,
   LAKEHOUSE_SCAN_USD_PER_TIB, LAKEHOUSE_STORAGE_USD_PER_GB, LAKEHOUSE_FREE_SCAN_TIB,
   FALLBACK_COMPETITORS_BI, FALLBACK_COMPETITORS_ORCHESTRATION,
@@ -121,22 +121,22 @@ function NubiRecommendation({ recommendation, fxRate, seats }) {
           {recommendation.tier.name}
         </span>
         <span className="font-display font-semibold text-xl text-fg">
-          {formatZar(recommendation.total_zar)} / month
+          ${recommendation.tier.usd_monthly}<span className="text-sm font-normal text-muted"> / month USD</span>
         </span>
         {recommendation.tier.id !== 'free' && (
-          <span className="text-xs text-muted">
-            (${recommendation.tier.usd_monthly} USD anchor)
+          <span className="inline-flex items-center gap-1 text-xs text-muted bg-surface border border-border rounded-full px-2 py-0.5">
+            ≈ {formatZar(recommendation.total_zar)} billed in ZAR
           </span>
         )}
       </div>
 
       {/* Cost breakdown */}
       <div className="flex flex-wrap gap-4 text-sm text-muted">
-        <span>Flat plan: {formatZar(recommendation.base_zar)}</span>
+        <span>Flat plan: ${recommendation.tier.usd_monthly} USD{recommendation.tier.id !== 'free' ? ` (≈ ${formatZar(recommendation.base_zar)})` : ''}</span>
         {hasOverages && (
           <span className="flex items-center gap-1 text-amber-600 dark:text-amber-400">
             <Wallet size={12} />
-            + {formatZar(recommendation.overage_zar)} from usage wallet
+            + {formatZar(recommendation.overage_zar)} wallet overage
           </span>
         )}
         <span className="font-medium text-teal-600 dark:text-teal-400">
@@ -187,6 +187,17 @@ function NubiRecommendation({ recommendation, fxRate, seats }) {
           and {seats.viewers} or {seats.viewers * 10} viewers.
         </p>
       )}
+
+      {/* ZAR disclosure */}
+      <p className="text-[11px] text-muted/60 border-t border-border pt-2">
+        Prices are anchored in USD. ZAR amounts are converted at the daily exchange rate
+        (currently{' '}
+        <span className="font-mono text-muted/80">
+          1 USD ≈ R {fxRate != null ? fxRate.toFixed(2) : '16.26'}
+        </span>
+        ) with a 2% buffer, and may vary slightly between billing cycles.
+        Questions? <a href="mailto:billing@nubi.io" className="underline hover:text-fg">billing@nubi.io</a>
+      </p>
     </div>
   )
 }
@@ -658,9 +669,15 @@ export default function PricingCalculator({
     <section className="rounded-2xl border border-border bg-surface overflow-hidden">
       {/* Section header */}
       <div className="px-6 py-5 border-b border-border bg-surface-2">
-        <h2 className="font-display font-semibold text-base text-fg">
-          Estimate your monthly cost
-        </h2>
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <h2 className="font-display font-semibold text-base text-fg">
+            Estimate your monthly cost
+          </h2>
+          <span className="inline-flex items-center gap-1.5 text-xs text-muted bg-surface border border-border rounded-full px-2.5 py-1">
+            <Info size={11} className="text-muted/70" />
+            Prices in <strong className="text-fg font-semibold">USD</strong> — billed in ZAR
+          </span>
+        </div>
         <p className="text-xs text-muted mt-1">
           Adjust your expected usage. Nubi charges for what you use — never per seat.
         </p>

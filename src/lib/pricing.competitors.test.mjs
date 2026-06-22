@@ -114,6 +114,46 @@ test('Luzmo is session-tiered ($149 / $449 / custom)', () => {
   assert.equal(bi('luzmo_starter').model({ embedded_sessions: 50000 }), null) // custom
 })
 
+test('Holistics Standard is $1,000/mo flat — not per-seat', () => {
+  // Standard tier: $1,000/mo regardless of viewer count.
+  assert.equal(bi('holistics_standard').model({ embedded_sessions: 5000 }, { viewers: 500 }), 1000)
+  assert.equal(bi('holistics_standard').model({ embedded_sessions: 0 }, { viewers: 0 }), 1000)
+})
+
+test('Holistics SCS is $2,000/mo flat', () => {
+  assert.equal(bi('holistics_scs').model({}), 2000)
+})
+
+test('Embeddable Lite is $499/mo base with $200/500-session overage', () => {
+  // Under 1,000 sessions → base only.
+  assert.equal(bi('embeddable_lite').model({ embedded_sessions: 500 }), 499)
+  // 1,500 sessions → 500 overage = 1 block → $499 + $200 = $699.
+  assert.equal(bi('embeddable_lite').model({ embedded_sessions: 1500 }), 699)
+  // 2,000 sessions → 1,000 overage = 2 blocks → $499 + $400 = $899.
+  assert.equal(bi('embeddable_lite').model({ embedded_sessions: 2000 }), 899)
+})
+
+// ---------------------------------------------------------------------------
+// Coming-soon gating: SAML/SCIM/white-label/custom-domain must be marked
+// ---------------------------------------------------------------------------
+
+test('Pro FALLBACK_TIER features flag SAML and white-label as coming soon', () => {
+  const pro = FALLBACK_TIERS.find((t) => t.id === 'pro')
+  const samlFeature = pro.features.find((f) => /saml/i.test(f))
+  assert.ok(samlFeature, 'pro tier must list SAML feature')
+  assert.match(samlFeature.toLowerCase(), /coming soon/, 'pro SAML must be marked coming soon')
+  const wlFeature = pro.features.find((f) => /white.label/i.test(f))
+  assert.ok(wlFeature, 'pro tier must list white-label feature')
+  assert.match(wlFeature.toLowerCase(), /coming soon/, 'pro white-label must be marked coming soon')
+})
+
+test('Enterprise FALLBACK_TIER features flag SAML+SCIM as coming soon', () => {
+  const ent = FALLBACK_TIERS.find((t) => t.id === 'enterprise')
+  const samlFeature = ent.features.find((f) => /saml/i.test(f))
+  assert.ok(samlFeature, 'enterprise tier must list SAML feature')
+  assert.match(samlFeature.toLowerCase(), /coming soon/, 'enterprise SAML/SCIM must be marked coming soon')
+})
+
 // ---------------------------------------------------------------------------
 // FX rounding + SLA copy
 // ---------------------------------------------------------------------------

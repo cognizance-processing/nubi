@@ -20,7 +20,7 @@
  * No per-seat pricing — unlimited seats at every tier.
  */
 
-import { ArrowUpRight, CheckCircle, Loader2, Users, ShieldCheck, Clock } from 'lucide-react'
+import { ArrowUpRight, CheckCircle, Loader2, Users, ShieldCheck, Clock, Construction } from 'lucide-react'
 import { computeZar, formatZar } from '../../lib/pricing.js'
 
 // ---------------------------------------------------------------------------
@@ -170,12 +170,28 @@ export function TierCard({
       )}
 
       <ul className="space-y-2 flex-1">
-        {tier.features.map((f) => (
-          <li key={f} className="flex items-start gap-2 text-sm text-fg">
-            <CheckCircle size={13} className="mt-0.5 shrink-0 text-teal-500" aria-hidden="true" />
-            <span>{f}</span>
-          </li>
-        ))}
+        {tier.features.map((f) => {
+          const isComingSoon = /coming soon/i.test(f)
+          // Strip the inline "(coming soon)" annotations so we can render a dedicated badge
+          const cleanText = f.replace(/\s*[(·]?\s*coming soon[)\s]*/gi, '').replace(/\s*·\s*$/, '').trim()
+          return (
+            <li key={f} className={`flex items-start gap-2 text-sm ${isComingSoon ? 'opacity-70' : 'text-fg'}`}>
+              {isComingSoon ? (
+                <Construction size={13} className="mt-0.5 shrink-0 text-amber-400" aria-hidden="true" />
+              ) : (
+                <CheckCircle size={13} className="mt-0.5 shrink-0 text-teal-500" aria-hidden="true" />
+              )}
+              <span className={isComingSoon ? 'text-muted' : ''}>
+                {cleanText}
+                {isComingSoon && (
+                  <span className="ml-1.5 inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded-full bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-400 text-[10px] font-semibold uppercase tracking-wide whitespace-nowrap">
+                    Coming soon
+                  </span>
+                )}
+              </span>
+            </li>
+          )
+        })}
       </ul>
 
       {/* CTA — rendered only when onUpgrade is provided or enterprise */}

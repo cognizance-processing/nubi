@@ -45,7 +45,6 @@ from app.metrics.models import (
     Dimension,
     Measure,
     MetricDefinition,
-    TimeDimension,
 )
 
 logger = logging.getLogger(__name__)
@@ -105,8 +104,15 @@ SEED_METRIC_IDS: frozenset[str] = frozenset({"demo_revenue"})
 def _seed_demo_metrics(registry: MetricRegistry) -> None:
     """Seed the built-in demo metric so the routes work out of the box.
 
-    ``demo_revenue`` aggregates ``SUM(value)`` from the 5-row ``demo`` table the
-    demo connector registers (id, name, value, active), grouped by ``name``.
+    ``demo_revenue`` aggregates ``SUM(value)`` from the 5-row ``demo`` stub table
+    that ``app.ai.tools._seed_demo_table`` seeds into the in-process DuckDB
+    connector — this keeps the tools / agent test path working without a real DB.
+
+    The production/demo seed path provisions REAL query-backed metrics
+    (slug ``retail_nsv``, ``retail_attainment``, ``saas_mrr``) from
+    ``seed_data/demo/queries.json`` via ``load_metrics_from_queries`` — those are
+    the metrics visible to users after ``seed --demo``. The in-code ``demo_revenue``
+    is retained ONLY for the in-process tools path and tests.
     """
     registry.register(
         MetricDefinition(
@@ -119,7 +125,11 @@ def _seed_demo_metrics(registry: MetricRegistry) -> None:
                 Dimension(name="active", type="bool"),
             ),
             time_dimension=None,
-            description="Total demo value (SUM of value) by name — built-in demo metric.",
+            description=(
+                "Total demo value (SUM of value) by name — built-in in-process "
+                "demo metric for tests/tools. Production users see the real "
+                "query-backed metrics (retail_nsv, retail_attainment, saas_mrr)."
+            ),
         )
     )
 

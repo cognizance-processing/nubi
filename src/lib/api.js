@@ -856,6 +856,74 @@ export async function fetchSchema() {
 }
 
 // ---------------------------------------------------------------------------
+// DataProvider fetch (BET-3) — POST /boards/{id}/providers/{pid}/data
+// ---------------------------------------------------------------------------
+
+/**
+ * Fetch a board DataProvider result and return the raw ArrayBuffer.
+ *
+ * The response is a multi-table Arrow IPC stream in the custom framing produced
+ * by the backend's ``tables_to_multi_ipc_stream``:
+ *
+ *   4 bytes big-endian: count N
+ *   N frames, each:
+ *     4 bytes big-endian: name_len
+ *     name bytes (UTF-8)
+ *     4 bytes big-endian: ipc_len
+ *     ipc bytes (Arrow IPC stream)
+ *
+ * Returns the raw ArrayBuffer; callers use decodeMultiTableIPC to parse it.
+ * Throws on network failure or non-2xx response.
+ *
+ * @param {string} boardId
+ * @param {string} providerId
+ * @param {Record<string, unknown>} [params]
+ * @returns {Promise<ArrayBuffer>}
+ */
+export async function fetchProviderData(boardId, providerId, params = {}) {
+  const path = `/boards/${boardId}/providers/${providerId}/data`
+  const headers = new Headers({ 'Content-Type': 'application/json' })
+  if (_accessToken) headers.set('Authorization', `Bearer ${_accessToken}`)
+  if (_activeOrgId) headers.set('X-Org-Id', _activeOrgId)
+  if (_activeProjectId) headers.set('X-Project-Id', _activeProjectId)
+
+  const response = await fetch(`${BASE}${path}`, {
+    method: 'POST',
+    headers,
+    credentials: 'include',
+    body: JSON.stringify({ params }),
+  })
+
+  if (response.status === 401) {
+    // Silent refresh + retry (mirrors the `request` helper's 401 path)
+    try {
+      const data = await _doRefresh()
+      setAccessToken(data.access_token)
+    } catch {
+      setAccessToken(null)
+      const err = new Error('Session expired. Please log in again.')
+      err.status = 401
+      throw err
+    }
+    return fetchProviderData(boardId, providerId, params)
+  }
+
+  if (!response.ok) {
+    let errPayload
+    try { errPayload = await response.json() } catch { errPayload = null }
+    const message =
+      errPayload?.error?.message ??
+      errPayload?.detail ??
+      `Provider fetch failed: ${response.status} ${response.statusText}`
+    const err = new Error(message)
+    err.status = response.status
+    throw err
+  }
+
+  return response.arrayBuffer()
+}
+
+// ---------------------------------------------------------------------------
 // JSDoc type stub (no TypeScript; gives IDE hints to C1)
 // ---------------------------------------------------------------------------
 

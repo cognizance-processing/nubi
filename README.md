@@ -120,9 +120,9 @@ make up          # docker compose up -d --build
 #    App (SPA + API): http://localhost:8000
 #    API docs:        http://localhost:8000/docs (dev only)
 
-# 3. (Optional) seed a test user
-cd backend && DATABASE_URL=postgresql://nubi:nubi@localhost:5432/nubi python seed.py
-#    → test@nubi.dev / nubitest123
+# 3. (Optional) seed the demo workspace (superuser + org + demo data)
+cd backend && DATABASE_URL=postgresql://nubi:nubi@localhost:5432/nubi python seed.py --demo
+#    → admin@nubi.dev / nubi-admin-2026
 
 # 4. Smoke test
 make smoke       # scripts/smoke.sh — health + auth + query assertions
@@ -156,11 +156,11 @@ npm run dev
 # Frontend: http://localhost:5173
 ```
 
-Seed a test user (optional, with the venv active):
+Seed the demo workspace (optional, with the venv active):
 
 ```bash
-cd backend && DATABASE_URL=postgresql://user:pass@host/db python seed.py
-# → test@nubi.dev / nubitest123
+cd backend && DATABASE_URL=postgresql://user:pass@host/db python seed.py --demo
+# → admin@nubi.dev / nubi-admin-2026
 ```
 </details>
 

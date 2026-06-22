@@ -643,5 +643,67 @@
         }
       ]
     }
+  },
+  {
+    "seed_id": "demo:board:topn_derived",
+    "name": "Retail — Top Products & Attainment",
+    "starter": false,
+    "spec": {
+      "version": 1,
+      "title": "Retail — Top Products & Attainment",
+      "layout": { "cols": 12, "row_height": 60 },
+      "variables": [],
+      "widgets": [
+        {
+          "id": "s1", "type": "section", "query_id": "", "encoding": {},
+          "props": { "title": "Top-N products (derived NSV per unit)" },
+          "pos": { "x": 1, "y": 1, "w": 12, "h": 1 }
+        },
+        {
+          "id": "t_topn", "type": "table", "query_id": "@topn_product_group", "encoding": {},
+          "props": {
+            "title": "Top 5 product groups by NSV",
+            "limit": 5,
+            "columns": ["product_group", "nsv", "units"]
+          },
+          "pos": { "x": 1, "y": 2, "w": 6, "h": 5 },
+          "columnFormats": {
+            "nsv": { "type": "currency", "currency": "USD", "decimals": 0 },
+            "units": { "type": "number", "decimals": 0 }
+          }
+        },
+        {
+          "id": "c_topn", "type": "chart", "query_id": "@topn_product_group", "chart_type": "hbar",
+          "encoding": { "x": "nsv", "y": "product_group" },
+          "props": { "title": "NSV by product group (top 5)" },
+          "pos": { "x": 7, "y": 2, "w": 6, "h": 5 }
+        },
+        {
+          "id": "s2", "type": "section", "query_id": "", "encoding": {},
+          "props": { "title": "Budget attainment (derived measure — NSV / Budget)" },
+          "pos": { "x": 1, "y": 7, "w": 12, "h": 1 }
+        },
+        {
+          "id": "c_avb2", "type": "chart", "query_id": "@avb", "chart_type": "bar",
+          "encoding": { "x": "month", "y": "actual" },
+          "props": { "title": "Monthly NSV vs Budget" },
+          "pos": { "x": 1, "y": 8, "w": 7, "h": 5 }
+        },
+        {
+          "id": "t_var2", "type": "table", "query_id": "@variance", "encoding": {},
+          "props": {
+            "title": "Attainment by region (derived variance %)",
+            "limit": 20,
+            "columns": ["region", "actual", "budget", "variance_pct"]
+          },
+          "pos": { "x": 8, "y": 8, "w": 5, "h": 5 },
+          "columnFormats": {
+            "actual": { "type": "currency", "currency": "USD", "decimals": 0 },
+            "budget": { "type": "currency", "currency": "USD", "decimals": 0 },
+            "variance_pct": { "type": "percent", "decimals": 1 }
+          }
+        }
+      ]
+    }
   }
 ]

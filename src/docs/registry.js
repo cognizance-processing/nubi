@@ -18,6 +18,7 @@ const mdFiles = import.meta.glob(
   [
     '/docs/index.md',
     // Using Nubi
+    '/docs/quickstart.md',
     '/docs/getting-started.md',
     '/docs/ui-tour.md',
     '/docs/connectors.md',
@@ -30,6 +31,8 @@ const mdFiles = import.meta.glob(
     '/docs/embedding.md',
     '/docs/organization-settings.md',
     '/docs/notifications-and-integrations.md',
+    '/docs/how-to.md',
+    '/docs/api-reference.md',
     // Nubi Cloud
     '/docs/cloud.md',
     '/docs/billing-and-usage.md',
@@ -59,10 +62,11 @@ const mdFiles = import.meta.glob(
 const LAYOUT = [
   { section: null,                  group: 'Home',              slugs: ['home'] },
 
-  { section: 'Using Nubi',          group: 'Get started',       slugs: ['getting-started', 'ui-tour'] },
+  { section: 'Using Nubi',          group: 'Get started',       slugs: ['quickstart', 'getting-started', 'ui-tour'] },
   { section: 'Using Nubi',          group: 'Work with data',    slugs: ['connectors', 'queries-and-params', 'pre-aggregations', 'dashboards', 'exports-and-jobs'] },
   { section: 'Using Nubi',          group: 'Automate & build',  slugs: ['flows', 'ai-and-mcp', 'embedding'] },
   { section: 'Using Nubi',          group: 'Your account',      slugs: ['organization-settings', 'notifications-and-integrations'] },
+  { section: 'Using Nubi',          group: 'Reference',         slugs: ['how-to', 'api-reference'] },
 
   { section: 'Nubi Cloud',          group: 'Cloud & billing',   slugs: ['cloud', 'billing-and-usage'] },
 

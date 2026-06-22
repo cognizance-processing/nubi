@@ -63,11 +63,16 @@ def _clear_s3_env(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 def _expected_counts() -> tuple[int, int]:
-    """(expected query count, expected board count) from the demo fixtures."""
+    """(expected query count, expected board count) from the demo fixtures.
+
+    Mirrors seed_sample_bundle: board-referenced queries PLUS any metric-backed
+    queries (so /metrics can pick them up after startup).
+    """
     boards = load_boards()
     queries = load_queries()
-    needed = [k for k in referenced_query_keys(boards) if k in queries]
-    return len(needed), len(boards)
+    needed = set(referenced_query_keys(boards)) | {k for k, v in queries.items() if v.get("metric")}
+    all_needed = [k for k in needed if k in queries]
+    return len(all_needed), len(boards)
 
 
 @pytest.mark.asyncio
@@ -87,7 +92,7 @@ async def test_seed_creates_full_bundle_tagged_sample(monkeypatch) -> None:
     assert len(datastores) == 1
     assert len(queries) == n_queries
     assert len(boards) == n_boards
-    assert n_boards == 10  # the demo ships exactly 10 dashboards
+    assert n_boards == 11  # the demo ships 11 dashboards
 
     # Every created resource is tagged sample=true and scoped to the project.
     for row in (*datastores, *queries, *boards):
@@ -157,17 +162,19 @@ async def test_remove_then_restore_round_trips(monkeypatch) -> None:
 
     n_queries, n_boards = _expected_counts()
     removed = await remove_sample_bundle(org, project, repo)
-    assert removed == {"boards": n_boards, "queries": n_queries, "datastores": 1}
+    # canvases key is optional — present only when the seeder created canvases
+    assert removed.get("boards") == n_boards
+    assert removed.get("queries") == n_queries
+    assert removed.get("datastores") == 1
     assert await repo.list("datastores", org) == []
     assert await repo.list("queries", org) == []
     assert await repo.list("boards", org) == []
 
     # Removing again is a no-op (idempotent).
-    assert await remove_sample_bundle(org, project, repo) == {
-        "boards": 0,
-        "queries": 0,
-        "datastores": 0,
-    }
+    removed2 = await remove_sample_bundle(org, project, repo)
+    assert removed2.get("boards", 0) == 0
+    assert removed2.get("queries", 0) == 0
+    assert removed2.get("datastores", 0) == 0
 
     # Restore re-creates the whole bundle.
     await seed_sample_bundle(org, project, user, repo)

@@ -104,3 +104,95 @@ Regenerate (and commit the changed PNGs) whenever a PR visibly changes UI that
 appears in the docs — layout, navigation, major styling — or adds a page worth
 documenting. The manifest's `version`/`commit` fields tell you exactly what
 state the current images came from.
+
+---
+
+## Screenshot shot-list
+
+The master list of all screenshots that docs reference. The pipeline must
+capture every item below; any missing capture causes the stale-reference
+check to fail CI.
+
+Screenshots are stored at `public/docs/screenshots/<name>.png`.
+
+### Getting Started / Quickstart
+
+| File | Page / route | Viewport | What to show |
+|---|---|---|---|
+| `register.png` | `/register` | 1440×900 | Sign-up form with Google and email options |
+| `onboarding.png` | `/onboarding` | 1440×900 | Join-or-create org screen |
+| `home.png` | `/home` | 1440×900 | Home page with setup checklist and quick links |
+| `quickstart-seed.png` | terminal (scripted) | 1440×900 | Terminal output of `seed.py --demo` — shows created resources |
+| `quickstart-home.png` | `/home` (after seed) | 1440×900 | Home screen right after seeded sign-in |
+| `quickstart-connector.png` | `/connectors` | 1440×900 | Connectors page with Demo data card |
+| `quickstart-query.png` | `/queries` | 1440×900 | SQL editor with revenue query + result grid |
+| `quickstart-dashboard.png` | `/d/:id` | 1440×900 | KPI + line chart dashboard in preview |
+
+### Connectors / Data Browser
+
+| File | Page / route | Viewport | What to show |
+|---|---|---|---|
+| `connectors.png` | `/connectors` | 1440×900 | Full connector list — cards with View data, Test, edit actions |
+| `data-browser.png` | `/data` | 1440×900 | Data browser — table list and column inspector |
+
+### Queries
+
+| File | Page / route | Viewport | What to show |
+|---|---|---|---|
+| `queries-editor.png` | `/queries` | 1440×900 | SQL workspace — editor, results grid, query panel |
+| `queries-editor-dark.png` | `/queries` (dark mode) | 1440×900 | Same in dark theme (README hero) |
+
+### Pre-aggregations
+
+| File | Page / route | Viewport | What to show |
+|---|---|---|---|
+| `preagg-suggestions.png` | `/queries` (Rollups tab) | 1440×900 | Suggested rollups panel with score and group-by chips |
+| `preagg-active.png` | `/queries` (Rollups tab) | 1440×900 | Active rollup card with HIT counter badge |
+
+### Dashboards
+
+| File | Page / route | Viewport | What to show |
+|---|---|---|---|
+| `dashboards.png` | `/dashboards` | 1440×900 | Dashboard list page — card grid with search and sort |
+| `dashboard-editor.png` | `/dashboards/:id/edit` | 1440×900 | Editor — canvas with widgets, toolbar, configure panel |
+| `dashboard-view.png` | `/d/:id` | 1440×900 | Published dashboard — KPI row + chart + table |
+
+### Flows
+
+| File | Page / route | Viewport | What to show |
+|---|---|---|---|
+| `flows-notebook.png` | `/flows` (Notebook view) | 1440×900 | Note, SQL, Python cells in order with Run buttons |
+| `flows-canvas.png` | `/flows` (Canvas view) | 1440×900 | DAG canvas — nodes, dependency arrows, minimap |
+| `flows-code.png` | `/flows` (Code view) | 1440×900 | File explorer with flow.py and cell files in Monaco |
+| `automations.png` | `/automations` | 1440×900 | Scheduled flows list — name, schedule, next/last run |
+| `flows-sweep.png` | `/flows` (Runs tab, sweep) | 1440×900 | Sweep results — diff surface table |
+| `flows-writeback-preview.png` | Swagger or app | 1440×900 | Write-back dry-run diff |
+| `flows-writeback-approval.png` | App UI | 1440×900 | Pending approval card with Approve/Reject buttons |
+
+### Canvas
+
+| File | Page / route | Viewport | What to show |
+|---|---|---|---|
+| `canvas-editor.png` | `/canvas/:id` | 1440×900 | Code + visual split editor with RHS binding inspector |
+| `canvas-viewer.png` | `/c/:id` | 1440×900 | Public Canvas viewer with variable filter |
+| `canvas-bindings.png` | `/canvas/:id` (inspector) | 1440×900 | RHS binding inspector — element selected, binding form |
+
+### Metrics (semantic layer)
+
+| File | Page / route | Viewport | What to show |
+|---|---|---|---|
+| `metrics-definition.png` | `/queries` (Code panel) | 1440×900 | Query with `config.metric` block visible in Code panel |
+| `metrics-query-result.png` | Network tab | 1440×900 | Arrow IPC response headers for a metric query |
+
+### API
+
+| File | Page / route | Viewport | What to show |
+|---|---|---|---|
+| `api-swagger.png` | `/docs` | 1440×900 | Swagger UI — metrics and canvas endpoints expanded |
+| `api-arrow-response.png` | Network tab | 1440×900 | `application/vnd.apache.arrow.stream` response |
+
+### Embedding
+
+| File | Page / route | Viewport | What to show |
+|---|---|---|---|
+| `embed-component.png` | host page | 1440×900 | `<nubi-dashboard>` mounted in a plain HTML host page |

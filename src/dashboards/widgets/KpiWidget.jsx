@@ -121,7 +121,14 @@ function sparkOption(values) {
   }
 }
 
-export default function KpiWidget({ widget }) {
+/**
+ * @param {{ widget: object, providerTable?: import('apache-arrow').Table | null }} props
+ *
+ * providerTable — when supplied by SpecRenderer (BET-3 DataProvider path) the
+ * widget skips its own query_id / metric fetch and renders from this table.
+ * When absent the legacy query_id / metric path is used unchanged.
+ */
+export default function KpiWidget({ widget, providerTable = null }) {
   const { query_id, encoding = {}, props: wProps = {}, params: widgetParams, metric } = widget
   const valueCol = encoding.value || encoding.y || encoding.x || ''
   const compareCol = encoding.compare || ''
@@ -145,7 +152,54 @@ export default function KpiWidget({ widget }) {
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState(null)
 
+  /**
+   * Extract KPI values from an Arrow table (shared by both provider and legacy paths).
+   */
+  function extractFromTable(table) {
+    if (table && table.numRows > 0 && valueCol) {
+      const col = table.getChild(valueCol)
+      setValue(col ? col.get(0) : null)
+    } else if (table && table.numRows > 0) {
+      setValue(table.numRows)
+    }
+    if (table && table.numRows > 0 && compareCol) {
+      const cmp = table.getChild(compareCol)
+      setCompareValue(cmp ? cmp.get(0) : null)
+    } else {
+      setCompareValue(null)
+    }
+    if (table && table.numRows > 0 && sparkCol) {
+      const sp = table.getChild(sparkCol)
+      if (sp) {
+        const arr = sp.toArray()
+        const nums = new Array(arr.length)
+        for (let i = 0; i < arr.length; i++) {
+          const v = arr[i]
+          nums[i] = v == null ? 0 : Number(v)
+        }
+        setSparkValues(nums)
+      } else {
+        setSparkValues(null)
+      }
+    } else {
+      setSparkValues(null)
+    }
+  }
+
+  // BET-3: when a providerTable is supplied, use it directly — skip the
+  // query_id / metric fetch entirely.
   useEffect(() => {
+    if (providerTable !== null) {
+      extractFromTable(providerTable)
+      setLoading(false)
+      setError(null)
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [providerTable, valueCol, compareCol, sparkCol])
+
+  useEffect(() => {
+    // Skip own fetch when this widget is bound to a DataProvider.
+    if (providerTable !== null) return
     // A widget binds to either a governed `metric` or a registered `query_id`.
     if (!metric && !query_id) return
     let cancelled = false
@@ -165,40 +219,7 @@ export default function KpiWidget({ widget }) {
               hasParams ? { namedParams: resolvedParams } : undefined,
             )
         if (!cancelled) {
-          if (table && table.numRows > 0 && valueCol) {
-            const col = table.getChild(valueCol)
-            setValue(col ? col.get(0) : null)
-          } else if (table && table.numRows > 0) {
-            // No value col specified — just show row count
-            setValue(table.numRows)
-          }
-
-          // Optional comparison baseline (first row of the compare column).
-          if (table && table.numRows > 0 && compareCol) {
-            const cmp = table.getChild(compareCol)
-            setCompareValue(cmp ? cmp.get(0) : null)
-          } else {
-            setCompareValue(null)
-          }
-
-          // Optional sparkline series (full numeric column).
-          if (table && table.numRows > 0 && sparkCol) {
-            const sp = table.getChild(sparkCol)
-            if (sp) {
-              const arr = sp.toArray()
-              const nums = new Array(arr.length)
-              for (let i = 0; i < arr.length; i++) {
-                const v = arr[i]
-                nums[i] = v == null ? 0 : Number(v)
-              }
-              setSparkValues(nums)
-            } else {
-              setSparkValues(null)
-            }
-          } else {
-            setSparkValues(null)
-          }
-
+          extractFromTable(table)
           if (cacheStatus === 'SAMPLE') {
             setError('Sample data')
           }
@@ -216,7 +237,7 @@ export default function KpiWidget({ widget }) {
   // a stable dependency so the effect only re-fires when the actual values differ.
   // refreshEpoch increments on board auto-refresh ticks.
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [query_id, JSON.stringify(metric), valueCol, compareCol, sparkCol, JSON.stringify(resolvedParams), refreshEpoch])
+  }, [query_id, JSON.stringify(metric), valueCol, compareCol, sparkCol, JSON.stringify(resolvedParams), refreshEpoch, providerTable])
 
   const delta = useMemo(
     () => (compareCol ? computeDelta(value, compareValue, deltaFormat) : null),

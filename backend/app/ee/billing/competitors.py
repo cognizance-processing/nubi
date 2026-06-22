@@ -142,27 +142,28 @@ _BI_COMPETITORS: list[dict[str, Any]] = [
     },
     {
         "tool": "Holistics",
-        "tagline": "Self-service BI with code-based modeling",
-        "model": "per-seat subscription",
-        "unit": "user-seat",
+        "tagline": "BI platform with unlimited embedded viewers on flat fee",
+        "model": "flat platform fee + additional seats",
+        "unit": "platform tier",
         "pricing": {
-            "free": "$0 (3 users, limited queries)",
-            "team": "$50/user/mo",
-            "enterprise": "custom",
+            "entry": "$800/mo annual ($960/mo monthly), 10 seats, unlimited embedded viewers, 100 reports",
+            "standard": "$1,000/mo annual ($1,200/mo monthly), unlimited reports",
+            "security_compliance_suite": "$2,000/mo annual — SAML, SCIM, RLS passthrough, HIPAA-ready",
+            "additional_seats": "$15–$18/seat/mo",
         },
-        "free_tier": True,
-        "free_tier_detail": "Free: 3 users, 1 data source, 30-day data freshness",
-        "per_seat": True,
-        "per_seat_detail": "$50/user/mo on Team plan",
+        "free_tier": False,
+        "free_tier_detail": "No permanent free tier; 14-day trial only",
+        "per_seat": False,
+        "per_seat_detail": "Flat platform fee; additional seats $15–$18/seat/mo; embedded viewers unlimited at all tiers",
         "notable_limits": [
-            "Per-seat model — 20 users = $1,000/mo on Team",
-            "No embedded analytics SDK",
-            "No native flows",
+            "Entry at $800/mo annual is ~16× Nubi Team ($49/mo) or ~5× Nubi Pro ($149/mo)",
+            "Cloud-only; no self-host option",
+            "No in-browser compute — all queries push to warehouse",
         ],
         "nubi_advantage": (
-            "Nubi's embedded SDK + unlimited seats at $49/mo (Team) undercuts "
-            "$50/user/mo from the very first user — and Pro ($149/mo) is "
-            "cheaper from 3 users."
+            "Nubi Pro ($149/mo) offers an equivalent unlimited-viewer model at "
+            "roughly one-fifth the price of Holistics Entry ($800/mo annual). "
+            "Nubi also includes browser-side compute (DuckDB-WASM) and flow orchestration."
         ),
     },
     {
@@ -191,26 +192,28 @@ _BI_COMPETITORS: list[dict[str, Any]] = [
     },
     {
         "tool": "Embeddable",
-        "tagline": "Low-code embedded analytics components",
-        "model": "flat-subscription",
-        "unit": "plan tier",
+        "tagline": "Developer-first embedded analytics SDK",
+        "model": "session-based flat tiers with per-session overage",
+        "unit": "embedded-session",
         "pricing": {
-            "starter": "$300/mo",
-            "growth": "$600/mo",
-            "enterprise": "custom",
+            "free": "200 sessions/month, 3 dashboards, Embeddable branding",
+            "lite": "$499/mo for 1,000 sessions; $200 per additional 500 sessions overage",
+            "premium": "custom pricing, white-label, dev/staging environments, result caching",
+            "enterprise": "custom, compliance, dedicated infra",
         },
-        "free_tier": False,
-        "free_tier_detail": "No free tier; demo available on request",
+        "free_tier": True,
+        "free_tier_detail": "Free: 200 sessions/month, 3 dashboards, Embeddable branding (very limited)",
         "per_seat": False,
-        "per_seat_detail": "Flat subscription, not per-seat",
+        "per_seat_detail": "Session-based metering, not per-seat",
         "notable_limits": [
-            "No free tier; $300/mo minimum",
-            "React/Vue component library only — no full BI platform",
-            "No flows, no query engine",
+            "$499/mo Lite for only 1,000 sessions — expensive for the volume",
+            "Overage at $200/500 sessions compounds quickly at scale",
+            "No open-source core; cloud-only; no in-browser compute",
         ],
         "nubi_advantage": (
-            "Nubi provides a full platform (query engine, BI, flows, embedded SDK) "
-            "at the same price point as Embeddable's component library alone."
+            "Nubi Team at $49/mo includes 5,000 sessions — more than 5× cheaper "
+            "than Embeddable Lite ($499/mo for 1,000 sessions). Nubi also includes "
+            "a full BI platform, flows, and in-browser DuckDB-WASM compute."
         ),
     },
 ]

@@ -182,7 +182,14 @@ function tableToGrid(arrowTable, columns, limit) {
   return { cols, rows }
 }
 
-export default function TableWidget({ widget }) {
+/**
+ * @param {{ widget: object, providerTable?: import('apache-arrow').Table | null }} props
+ *
+ * providerTable — when supplied by SpecRenderer (BET-3 DataProvider path) the
+ * widget skips its own query_id / metric fetch and renders from this table.
+ * When absent the legacy query_id / metric path is used unchanged.
+ */
+export default function TableWidget({ widget, providerTable = null }) {
   const {
     query_id,
     props: wProps = {},
@@ -235,7 +242,19 @@ export default function TableWidget({ widget }) {
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState(null)
 
+  // BET-3: when a providerTable is supplied, use it directly — skip own fetch.
   useEffect(() => {
+    if (providerTable !== null) {
+      setData(tableToGrid(providerTable, columns, limit))
+      setLoading(false)
+      setError(null)
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [providerTable, limit, columnsRaw])
+
+  useEffect(() => {
+    // Skip own fetch when this widget is bound to a DataProvider.
+    if (providerTable !== null) return
     // A widget binds to either a governed `metric` or a registered `query_id`.
     if (!metric && !query_id) return
     let cancelled = false
@@ -266,7 +285,7 @@ export default function TableWidget({ widget }) {
 
     fetchData()
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [query_id, JSON.stringify(metric), limit, columnsRaw, JSON.stringify(resolvedParams), refreshEpoch])
+  }, [query_id, JSON.stringify(metric), limit, columnsRaw, JSON.stringify(resolvedParams), refreshEpoch, providerTable])
 
   // ── Column descriptors with columnFormats applied via renderCell ──────────
   const gridColumns = useMemo(() => {

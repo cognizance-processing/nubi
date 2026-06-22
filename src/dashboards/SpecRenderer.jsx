@@ -44,13 +44,14 @@ import MetricWidget from './widgets/MetricWidget.jsx'
 import PivotWidget from './widgets/PivotWidget.jsx'
 import SectionWidget from './widgets/SectionWidget.jsx'
 import ActionWidget from './widgets/ActionWidget.jsx'
-import { VariableProvider, useSetVariable } from './VariableStore.jsx'
+import { VariableProvider, useSetVariable, useResolvedParams } from './VariableStore.jsx'
 import { CrossFilterProvider } from './CrossFilterContext.jsx'
 import { RefreshContext } from './RefreshContext.jsx'
 import { useAutoRefresh } from './useAutoRefresh.js'
 import { runArrowQueryById } from '../lib/wasmRuntime.js'
 import { backgroundToCss, styleToCss } from './widgetHtml.js'
 import { buildResponsiveLayouts, isHiddenAt } from './responsiveLayout.js'
+import { useProviderData } from './useProviderData.js'
 
 // ---------------------------------------------------------------------------
 // Placement (SHARED CONTRACT)
@@ -175,8 +176,12 @@ function FilterWidgetLoader({ widget, editMode = false }) {
  * filters drawer is accessible during editing; this flag is forwarded to
  * FilterWidgetLoader so it can skip the live query fetch when appropriate
  * (avoids spurious network calls in the editor canvas).
+ *
+ * providerTable — when a widget is bound to a DataProvider (BET-3), the
+ * resolved Arrow table slice for this widget is passed here so the widget
+ * skips its own query_id / metric fetch.  null = legacy path unchanged.
  */
-function WidgetComponent({ widget, onOpenDrawer, editMode = false }) {
+function WidgetComponent({ widget, onOpenDrawer, editMode = false, providerTable = null }) {
   // Normalize top-level spec fields into widget.props before dispatch
   const w = useMemo(() => normalizeWidget(widget), [widget])
 
@@ -200,10 +205,10 @@ function WidgetComponent({ widget, onOpenDrawer, editMode = false }) {
   }
 
   switch (w.type) {
-    case 'chart':   return <ChartWidget  widget={w} />
-    case 'kpi':     return <KpiWidget    widget={w} />
+    case 'chart':   return <ChartWidget  widget={w} providerTable={providerTable} />
+    case 'kpi':     return <KpiWidget    widget={w} providerTable={providerTable} />
     case 'metric':  return <MetricWidget widget={w} />
-    case 'table':   return <TableWidget  widget={w} />
+    case 'table':   return <TableWidget  widget={w} providerTable={providerTable} />
     case 'pivot':   return <PivotWidget  widget={w} />
     // Filter widgets render in both view mode AND edit mode so the filters
     // drawer is available for authoring.  editMode suppresses the live query
@@ -220,6 +225,7 @@ function WidgetComponent({ widget, onOpenDrawer, editMode = false }) {
       )
   }
 }
+
 
 // ---------------------------------------------------------------------------
 // Slide-over drawer (filters panel + drilldown panels)
@@ -363,7 +369,7 @@ function CrossFilterProviderWrapper({ onCrossFilter, onTabChange, children }) {
 // thin wrapper below). Because the early return is gone, every hook here runs
 // unconditionally on every render, satisfying the Rules of Hooks even as `spec`
 // transitions undefined → loaded (async fetch / embed hydration).
-function SpecRendererInner({ spec, initialVariables = {}, onVariableChange, onCrossFilter, forceBreakpoint, activeTabId, onTabChange, editMode = false }) {
+function SpecRendererInner({ spec, boardId: boardIdProp, initialVariables = {}, onVariableChange, onCrossFilter, forceBreakpoint, activeTabId, onTabChange, editMode = false }) {
   const cols = spec.layout?.cols ?? 12
   const rowHeight = spec.layout?.row_height ?? 60
   const allWidgets = spec.widgets ?? []
@@ -538,6 +544,91 @@ function SpecRendererInner({ spec, initialVariables = {}, onVariableChange, onCr
 
   const bgStyle = useMemo(() => backgroundToCss(spec.background), [JSON.stringify(spec.background)])
 
+  // ── BET-3 DataProvider wiring ──────────────────────────────────────────────
+  // Build a map: widgetId → Arrow table slice (for widgets bound to a provider).
+  // Widgets using legacy query_id / metric get null (their own fetch path runs).
+  //
+  // VIEWERS-NEVER-METERED invariant: we call useProviderData once PER PROVIDER
+  // (not once per widget), so a provider with N bound widgets makes exactly one
+  // server call. The named result slices are then distributed to each widget.
+  //
+  // Implementation: because React hooks cannot be called conditionally or inside
+  // loops, we use fixed-count slots (up to MAX_PROVIDERS). Each slot resolves its
+  // own provider params via useResolvedParams (a hook that reads the VariableStore
+  // context established by the VariableProvider wrapping SpecRendererInner).
+
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  const boardProviders = useMemo(() => Array.isArray(spec.data) ? spec.data : [], [JSON.stringify(spec.data)])
+
+  const MAX_PROVIDERS = 8
+  const providerSlots = useMemo(() => {
+    const slots = []
+    for (let i = 0; i < MAX_PROVIDERS; i++) {
+      slots.push(boardProviders[i] ?? null)
+    }
+    return slots
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [JSON.stringify(boardProviders)])
+
+  // boardId: prefer the explicit prop (from DashboardViewPage) and fall back to
+  // spec._boardId (for embed contexts that inject it into the spec object).
+  const boardId = boardIdProp ?? spec._boardId ?? null
+
+  // Resolve each provider's params object against the variable store.
+  // useResolvedParams reads VariableValuesContext (available here because
+  // SpecRendererInner is rendered inside <VariableProvider>).
+  // Fixed hook calls — no conditionals — one per slot.
+  // (All 8 calls are unconditional and at the top level of the component, which
+  // satisfies the Rules of Hooks regardless of how many providers are active.)
+  const resolvedP0 = useResolvedParams(providerSlots[0]?.params ?? {})
+  const resolvedP1 = useResolvedParams(providerSlots[1]?.params ?? {})
+  const resolvedP2 = useResolvedParams(providerSlots[2]?.params ?? {})
+  const resolvedP3 = useResolvedParams(providerSlots[3]?.params ?? {})
+  const resolvedP4 = useResolvedParams(providerSlots[4]?.params ?? {})
+  const resolvedP5 = useResolvedParams(providerSlots[5]?.params ?? {})
+  const resolvedP6 = useResolvedParams(providerSlots[6]?.params ?? {})
+  const resolvedP7 = useResolvedParams(providerSlots[7]?.params ?? {})
+
+  // One useProviderData call per slot (fixed count = no conditional hooks).
+  const slot0 = useProviderData(boardId, providerSlots[0]?.id ?? null, resolvedP0, refreshEpoch)
+  const slot1 = useProviderData(boardId, providerSlots[1]?.id ?? null, resolvedP1, refreshEpoch)
+  const slot2 = useProviderData(boardId, providerSlots[2]?.id ?? null, resolvedP2, refreshEpoch)
+  const slot3 = useProviderData(boardId, providerSlots[3]?.id ?? null, resolvedP3, refreshEpoch)
+  const slot4 = useProviderData(boardId, providerSlots[4]?.id ?? null, resolvedP4, refreshEpoch)
+  const slot5 = useProviderData(boardId, providerSlots[5]?.id ?? null, resolvedP5, refreshEpoch)
+  const slot6 = useProviderData(boardId, providerSlots[6]?.id ?? null, resolvedP6, refreshEpoch)
+  const slot7 = useProviderData(boardId, providerSlots[7]?.id ?? null, resolvedP7, refreshEpoch)
+
+  const providerResults = useMemo(() => {
+    const results = {}
+    const slots = [slot0, slot1, slot2, slot3, slot4, slot5, slot6, slot7]
+    boardProviders.forEach((provider, i) => {
+      if (i < MAX_PROVIDERS) {
+        results[provider.id] = slots[i]
+      }
+    })
+    return results
+  }, [boardProviders, slot0, slot1, slot2, slot3, slot4, slot5, slot6, slot7])
+
+  // Build widgetId → Arrow table slice map.
+  // A widget bound to provider P + result R gets providerResults[P].tables[R].
+  // JSON.stringify(allWidgets) avoids stale closure over spec.widgets array reference
+  // (mirrors the existing pattern used throughout this component for stable deps).
+  const widgetProviderTableMap = useMemo(() => {
+    const map = {}
+    for (const w of allWidgets) {
+      if (w.source?.provider && w.source?.result) {
+        const pResult = providerResults[w.source.provider]
+        if (pResult) {
+          map[w.id] = pResult.tables[w.source.result] ?? null
+        }
+      }
+    }
+    return map
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [JSON.stringify(allWidgets), providerResults])
+  // ── End BET-3 DataProvider wiring ─────────────────────────────────────────
+
   // Stable per-cell renderer. GridCanvas's renderGridItem useCallback depends on
   // renderItem, so an inline arrow here would rebuild it every render and remount
   // the entire widget subtree on any SpecRenderer state change (width/ResizeObserver,
@@ -560,15 +651,17 @@ function SpecRendererInner({ spec, initialVariables = {}, onVariableChange, onCr
     // browsers). Use overflow-visible for filter cells so open dropdowns
     // are never clipped; the portal approach (W3-B) makes this fully safe.
     const isFilter = widget.type === 'filter'
+    // BET-3: look up the resolved provider table slice for this widget (if any).
+    const providerTable = widgetProviderTableMap[widget.id] ?? null
     return (
       <div
         className={`w-full h-full rounded-xl ${isFilter ? 'overflow-visible' : 'overflow-hidden'} ${hasCustomBg ? '' : 'bg-surface border border-border shadow-sm'}`}
         style={customStyle}
       >
-        <WidgetComponent widget={widget} onOpenDrawer={setOpenDrawer} editMode={editMode} />
+        <WidgetComponent widget={widget} onOpenDrawer={setOpenDrawer} editMode={editMode} providerTable={providerTable} />
       </div>
     )
-  }, [visibleWidgetsById, editMode, setOpenDrawer])
+  }, [visibleWidgetsById, editMode, setOpenDrawer, widgetProviderTableMap])
 
   return (
     <VariableProvider initialValues={variableDefaults} onVariableChange={onVariableChange}>

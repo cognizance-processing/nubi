@@ -1,0 +1,84 @@
+[
+  {
+    "seed_id": "demo:flow:retail_summary",
+    "name": "Retail Monthly Summary",
+    "enabled": true,
+    "schedule": null,
+    "spec": {
+      "version": 1,
+      "name": "Retail Monthly Summary",
+      "params": [],
+      "tasks": [
+        {
+          "key": "pull_sales",
+          "kind": "query",
+          "needs": [],
+          "cell_type": "sql",
+          "config": {
+            "sql": "SELECT month, region, product_group, ROUND(SUM(nsv), 2) AS nsv, SUM(units) AS units FROM sales GROUP BY month, region, product_group ORDER BY month DESC, nsv DESC",
+            "datastore_id": "@sample_datastore"
+          },
+          "ui": { "x": 100, "y": 100 }
+        },
+        {
+          "key": "pull_budget",
+          "kind": "query",
+          "needs": [],
+          "cell_type": "sql",
+          "config": {
+            "sql": "SELECT month, region, ROUND(SUM(budget_nsv), 2) AS budget_nsv FROM budget GROUP BY month, region ORDER BY month",
+            "datastore_id": "@sample_datastore"
+          },
+          "ui": { "x": 100, "y": 240 }
+        },
+        {
+          "key": "blend_variance",
+          "kind": "python",
+          "needs": ["pull_sales", "pull_budget"],
+          "cell_type": "python",
+          "config": {
+            "code": "import pandas as pd\n\nsales = pd.DataFrame(inputs['pull_sales'])\nbudget = pd.DataFrame(inputs['pull_budget'])\n\n# Aggregate sales to month+region level\nsales_agg = sales.groupby(['month', 'region'], as_index=False).agg(nsv=('nsv', 'sum'))\n\n# Merge with budget and compute variance\nmerged = sales_agg.merge(budget, on=['month', 'region'], how='left')\nmerged['variance'] = merged['nsv'] - merged['budget_nsv'].fillna(0)\nmerged['attainment_pct'] = (merged['nsv'] / merged['budget_nsv'].replace(0, float('nan')) * 100).round(1)\n\nresult = merged.sort_values(['month', 'region'], ascending=[False, True])\noutput = result.to_dict(orient='records')\n"
+          },
+          "ui": { "x": 100, "y": 380 }
+        }
+      ],
+      "runtime_config": {}
+    }
+  },
+  {
+    "seed_id": "demo:flow:saas_mrr_report",
+    "name": "SaaS MRR Monthly Report",
+    "enabled": true,
+    "schedule": "0 8 1 * *",
+    "spec": {
+      "version": 1,
+      "name": "SaaS MRR Monthly Report",
+      "params": [],
+      "tasks": [
+        {
+          "key": "mrr_by_plan",
+          "kind": "query",
+          "needs": [],
+          "cell_type": "sql",
+          "config": {
+            "sql": "SELECT month, plan, ROUND(SUM(amount), 2) AS mrr, COUNT(DISTINCT account_id) AS accounts FROM saas_invoices GROUP BY month, plan ORDER BY month DESC, mrr DESC",
+            "datastore_id": "@sample_datastore"
+          },
+          "ui": { "x": 100, "y": 100 }
+        },
+        {
+          "key": "churn_summary",
+          "kind": "query",
+          "needs": [],
+          "cell_type": "sql",
+          "config": {
+            "sql": "SELECT month, SUM(CASE WHEN event_type = 'new' THEN 1 ELSE 0 END) AS new_accounts, SUM(CASE WHEN event_type = 'churn' THEN 1 ELSE 0 END) AS churned FROM saas_subscription_events GROUP BY month ORDER BY month DESC LIMIT 12",
+            "datastore_id": "@sample_datastore"
+          },
+          "ui": { "x": 400, "y": 100 }
+        }
+      ],
+      "runtime_config": {}
+    }
+  }
+]

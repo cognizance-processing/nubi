@@ -2,7 +2,7 @@
 name: Hex
 tagline: Collaborative data notebooks + published apps
 selfHost: "No — Hex is cloud-only (SaaS). No self-host option."
-pricing: "Per-seat: Community free (up to 5 notebooks); Professional $36/editor/month; Team $75/editor/month; Enterprise custom. Pay-as-you-go compute add-on for Team/Enterprise. Embedding requires Enterprise tier."
+pricing: "Per-seat: Community free (up to 5 notebooks); Starter $24/editor/month (annual); Team $50/editor/month; Enterprise custom. Pay-as-you-go compute add-on for Team/Enterprise. Embedding requires Enterprise tier."
 pricingUnverified: false
 sourceUrls:
   - https://hex.tech/pricing/

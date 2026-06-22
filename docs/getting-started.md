@@ -305,11 +305,13 @@ cd backend && uvicorn main:app --reload
 # API: http://localhost:8000   Swagger: http://localhost:8000/docs (dev only)
 ```
 
-To seed a superuser (optional, venv active, `DATABASE_URL` set):
+To seed a superuser with a demo workspace (optional, venv active, `DATABASE_URL` set):
 
 ```bash
-cd backend && python seed.py
+cd backend && python seed.py --demo
 # → admin@nubi.dev / nubi-admin-2026 (override with SUPERUSER_EMAIL / SUPERUSER_PASSWORD)
+# --demo also creates the org, Default project, and demo data bundle
+# Omit --demo for a bare superuser only (onboarding wizard on first login)
 ```
 
 ```bash

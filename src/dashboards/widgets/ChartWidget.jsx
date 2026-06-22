@@ -44,7 +44,14 @@ import { useResolvedParams, useSetVariable } from '../VariableStore.jsx'
 import { useCrossFilter } from '../CrossFilterContext.jsx'
 import { useRefreshEpoch } from '../RefreshContext.jsx'
 
-export default function ChartWidget({ widget }) {
+/**
+ * @param {{ widget: object, providerTable?: import('apache-arrow').Table | null }} props
+ *
+ * providerTable — when supplied by SpecRenderer (BET-3 DataProvider path) the
+ * widget skips its own query_id / metric fetch and renders from this table.
+ * When absent the legacy query_id / metric path is used unchanged.
+ */
+export default function ChartWidget({ widget, providerTable = null }) {
   const {
     query_id,
     chart_type = 'scatter',
@@ -74,8 +81,21 @@ export default function ChartWidget({ widget }) {
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState(null)
 
+  // BET-3: when a providerTable is supplied, use it directly — skip the
+  // query_id / metric fetch entirely. The provider fetch is shared across all
+  // bound widgets (one call per provider, not one per widget).
   useEffect(() => {
-    // A widget binds to either a governed `metric` or a registered `query_id`.
+    if (providerTable !== null) {
+      setTable(providerTable)
+      setLoading(false)
+      setError(null)
+    }
+  }, [providerTable])
+
+  useEffect(() => {
+    // Skip own fetch when this widget is bound to a DataProvider (providerTable
+    // is supplied by SpecRenderer). Also skip when there is no binding at all.
+    if (providerTable !== null) return
     if (!metric && !query_id) return
     let cancelled = false
 
@@ -111,7 +131,7 @@ export default function ChartWidget({ widget }) {
   // stable dep so the effect only re-fires when actual values change.
   // refreshEpoch increments on board auto-refresh ticks.
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [query_id, JSON.stringify(metric), JSON.stringify(resolvedParams), refreshEpoch])
+  }, [query_id, JSON.stringify(metric), JSON.stringify(resolvedParams), refreshEpoch, providerTable])
 
   const height = wProps.height ?? 260
 

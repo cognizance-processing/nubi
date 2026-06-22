@@ -20,7 +20,7 @@ import {
   Check, X, ArrowRight, ChevronRight, Headset, Star,
   Zap, Database, Bot, Server, Users, XCircle, CheckCircle2,
   SlidersHorizontal, TrendingDown, Shield, Wallet, GitFork, Gauge,
-  HardDrive,
+  HardDrive, Construction,
 } from 'lucide-react'
 import {
   TIERS, BILLING_MODEL, BI_COMPARISON, ORCH_COMPARISON, PRICING_FAQ, ENTERPRISE_NOTE,
@@ -133,17 +133,34 @@ function TierCard({ tier, idx }) {
       <ul className="mt-5 flex flex-col gap-2">
         {tier.features.map((f, i) => {
           const isHeader = f.endsWith('plus:')
+          const isComingSoon = !isHeader && /coming soon/i.test(f)
+          const cleanText = isComingSoon
+            ? f.replace(/\s*[(·]?\s*coming soon[)\s]*/gi, '').replace(/\s*·\s*$/, '').trim()
+            : f
           return (
             <li
               key={i}
               className={`flex items-start gap-2 ${isHeader
                 ? 'font-mono text-[10px] font-semibold uppercase tracking-[0.14em] text-muted pt-1.5'
-                : 'text-[13px] text-fg'}`}
+                : isComingSoon
+                  ? 'text-[13px] text-muted/70'
+                  : 'text-[13px] text-fg'}`}
             >
               {!isHeader && (
-                <Check size={14} strokeWidth={2.75} className="mt-0.5 shrink-0" style={{ color: accent }} />
+                isComingSoon ? (
+                  <Construction size={14} strokeWidth={2.25} className="mt-0.5 shrink-0 text-amber-400" />
+                ) : (
+                  <Check size={14} strokeWidth={2.75} className="mt-0.5 shrink-0" style={{ color: accent }} />
+                )
               )}
-              <span className={isHeader ? '' : 'leading-snug'}>{f}</span>
+              <span className={isHeader ? '' : 'leading-snug'}>
+                {cleanText}
+                {isComingSoon && (
+                  <span className="ml-1.5 inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded-full bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-400 text-[10px] font-semibold uppercase tracking-wide whitespace-nowrap">
+                    Coming soon
+                  </span>
+                )}
+              </span>
             </li>
           )
         })}

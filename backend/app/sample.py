@@ -50,6 +50,8 @@ from typing import Any
 from app.demo_bundle import (
     export_demo_parquet_local,
     load_boards,
+    load_canvases,
+    load_flows,
     load_queries,
     local_parquet_datastore_config,
     referenced_query_keys,
@@ -67,7 +69,7 @@ SAMPLE_DS = "sample:datastore:duckdb"
 
 # Resource tables the bundle touches (order matters for remove: boards →
 # queries → datastores, so nothing dangling is left if interrupted).
-_SAMPLE_TABLES = ("boards", "queries", "datastores")
+_SAMPLE_TABLES = ("boards", "queries", "datastores", "canvases")
 
 
 # ── Idempotency helpers ─────────────────────────────────────────────────────────
@@ -193,24 +195,40 @@ async def seed_sample_bundle(
         created.append("datastores")
     datastore_id = str(ds["id"])
 
-    # ── 3. All demo boards + the queries they reference ────────────────────────
+    # ── 3. All demo queries (board-referenced + metric-backed) ────────────────
     boards = load_boards()
     queries = load_queries()
     needed = referenced_query_keys(boards)
 
+    # Also seed ALL metric-backed queries so they are available via /metrics
+    # even if no board references them directly.
+    all_needed = set(needed) | {k for k, v in queries.items() if v.get("metric")}
+
     idmap: dict[str, str] = {}
-    for key in needed:
+    for key in sorted(all_needed):
         q = queries.get(key)
         if q is None:
             continue
+        # Build the query config: include the metric block when present so
+        # load_metrics_from_queries can pick it up after startup.
+        q_config: dict[str, Any] = {
+            "sql": q["sql"],
+            "datastore_id": datastore_id,
+            "params": q.get("params", []),
+        }
+        if q.get("metric"):
+            q_config["metric"] = q["metric"]
         row, q_created = await _upsert(
             repo, "queries", org_id, created_by, q["name"],
-            {"sql": q["sql"], "datastore_id": datastore_id, "params": q["params"]},
+            q_config,
             f"sample:query:{key}", project_id,
         )
         idmap[f"@{key}"] = str(row["id"])
         if q_created:
             created.append("queries")
+
+    # Keep a stable @sample_datastore placeholder for flows that reference it.
+    idmap["@sample_datastore"] = datastore_id
 
     # ── 4. Dashboards — resolve @placeholders to real query UUIDs ─────────────
     board_ids: list[str] = []
@@ -224,9 +242,140 @@ async def seed_sample_bundle(
         if b_created:
             created.append("boards")
 
+    # ── 5. Canvases — resolve @placeholders in bindings ───────────────────────
+    canvas_ids: list[str] = []
+    try:
+        canvases_fixture = load_canvases()
+        for c in canvases_fixture:
+            doc = resolve_placeholders(c["doc"], idmap)
+            canvas, c_created = await _upsert(
+                repo, "canvases", org_id, created_by, c["name"],
+                {"doc": doc}, f"sample:{c['seed_id']}", project_id,
+            )
+            canvas_ids.append(str(canvas["id"]))
+            if c_created:
+                created.append("canvases")
+    except Exception:  # noqa: BLE001 — never fail seeding over canvases
+        pass
+
+    # ── 6. Flows ───────────────────────────────────────────────────────────────
+    flow_ids: list[str] = []
+    try:
+        from app.flows.store import get_flow_store  # noqa: PLC0415
+
+        flow_store = get_flow_store()
+        flows_fixture = load_flows()
+
+        # Idempotency: check for existing flows by seed_id stored in their spec.
+        existing_flows = await flow_store.list_flows(str(org_id), str(project_id))
+        existing_seed_ids: set[str] = {
+            f.get("spec", {}).get("_seed_id", "")
+            for f in existing_flows
+        }
+
+        for fl in flows_fixture:
+            seed_id = fl["seed_id"]
+            if seed_id in existing_seed_ids:
+                continue
+            # Resolve @placeholders inside the flow spec (e.g. datastore_id).
+            spec = resolve_placeholders(fl["spec"], idmap)
+            # Tag the spec with the seed_id for idempotency on future runs.
+            spec["_seed_id"] = seed_id
+            new_flow = await flow_store.create_flow(
+                org_id=str(org_id),
+                created_by=str(created_by),
+                name=fl["name"],
+                spec=spec,
+                enabled=fl.get("enabled", True),
+                schedule=fl.get("schedule"),
+                project_id=str(project_id) if project_id is not None else None,
+            )
+            flow_ids.append(str(new_flow["id"]))
+            created.append("flows")
+    except Exception:  # noqa: BLE001 — never fail seeding over flows
+        pass
+
+    # ── 7. Watch — monitor retail NSV metric (threshold alert demo) ───────────
+    watch_ids: list[str] = []
+    try:
+        import json as _json
+        from app.db import execute as _execute, fetchrow as _fetchrow  # noqa: PLC0415
+        from app.repos.projects import get_default_project  # noqa: PLC0415
+
+        watch_slug = "sample_watch_retail_nsv"
+        watch_name = "Retail NSV Alert (demo)"
+        metric_slug = "retail_nsv"
+
+        existing_watch = await _fetchrow(
+            "SELECT id FROM watches WHERE org_id = $1::uuid AND slug = $2",
+            org_id, watch_slug,
+        )
+        if existing_watch is None:
+            import uuid as _uuid  # noqa: PLC0415
+
+            watch_id = str(_uuid.uuid4())
+            watch_config = {
+                "threshold": {"op": ">", "value": 0},
+                "time_grain": "month",
+                "enabled": True,
+                "description": "Demo watch: fires when monthly retail NSV is above 0 (always active — illustrates the watch feature).",
+                "sample": True,
+            }
+            _watch_proj = str(project_id) if project_id is not None else None
+            if _watch_proj is None:
+                try:
+                    _proj = await get_default_project(str(org_id))
+                    _watch_proj = str(_proj["id"]) if _proj else None
+                except Exception:  # noqa: BLE001
+                    pass
+            if _watch_proj:
+                await _execute(
+                    """
+                    INSERT INTO watches
+                        (id, org_id, project_id, created_by, slug, name, metric_id, config)
+                    VALUES ($1::uuid, $2::uuid, $3::uuid, $4::uuid, $5, $6, $7, $8::jsonb)
+                    ON CONFLICT (org_id, slug) DO NOTHING
+                    """,
+                    watch_id, org_id, _watch_proj, created_by,
+                    watch_slug, watch_name, metric_slug,
+                    _json.dumps(watch_config),
+                )
+                watch_ids.append(watch_id)
+                created.append("watches")
+    except Exception:  # noqa: BLE001 — best-effort; never fail seeding over watches
+        pass
+
+    # ── 8. Job — schedule a demo report job ───────────────────────────────────
+    job_ids: list[str] = []
+    try:
+        from app.jobs.store import get_job_store  # noqa: PLC0415
+
+        job_store = get_job_store()
+        existing_jobs = await job_store.list_jobs(str(org_id))
+        sample_job_names = {j["name"] for j in existing_jobs if j.get("name", "").startswith("Demo")}
+        if "Demo — Retail Monthly Report" not in sample_job_names:
+            new_job = await job_store.create_job(
+                org_id=str(org_id),
+                created_by=str(created_by),
+                name="Demo — Retail Monthly Report",
+                kind="report",
+                target=board_ids[0] if board_ids else "",
+                schedule="0 8 1 * *",
+                enabled=True,
+                project_id=str(project_id) if project_id is not None else None,
+            )
+            job_ids.append(str(new_job["id"]))
+            created.append("jobs")
+    except Exception:  # noqa: BLE001 — best-effort; never fail seeding over jobs
+        pass
+
     return {
         "datastore_id": datastore_id,
         "board_ids": board_ids,
+        "canvas_ids": canvas_ids,
+        "flow_ids": flow_ids,
+        "watch_ids": watch_ids,
+        "job_ids": job_ids,
         "created": created,
     }
 

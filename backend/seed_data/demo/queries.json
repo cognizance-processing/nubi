@@ -235,5 +235,81 @@
     "name": "Finance — department options",
     "sql": "SELECT DISTINCT department AS value, department AS label FROM fin_expenses ORDER BY 1",
     "params": []
+  },
+  "metric_nsv": {
+    "name": "Retail — Net Sales Value (metric)",
+    "sql": "SELECT month, region, product_group, channel, ROUND(SUM(nsv), 2) AS nsv, SUM(units) AS units FROM sales GROUP BY month, region, product_group, channel",
+    "params": [],
+    "metric": {
+      "slug": "retail_nsv",
+      "measure": { "name": "nsv", "agg": "sum", "expr": "nsv", "type": "additive", "format": "currency" },
+      "extra_measures": [
+        { "name": "units", "agg": "sum", "expr": "units", "type": "additive", "format": "number" }
+      ],
+      "derived_measures": [
+        { "name": "nsv_per_unit", "formula": "nsv / units", "format": "currency" }
+      ],
+      "dimensions": [
+        { "name": "region",        "type": "text" },
+        { "name": "product_group", "type": "text" },
+        { "name": "channel",       "type": "text" }
+      ],
+      "time_dimension": {
+        "column": "month",
+        "grains": ["month", "quarter", "year"],
+        "default_grain": "month"
+      },
+      "description": "Total Net Sales Value (NSV) from the retail sales fact table — the primary revenue metric.",
+      "owner": "seed"
+    }
+  },
+  "metric_units_vs_budget": {
+    "name": "Retail — Units vs Budget (metric)",
+    "sql": "SELECT month, region, ROUND(SUM(nsv), 2) AS nsv, SUM(units) AS units, ROUND(SUM(budget_nsv), 2) AS budget_nsv FROM sales LEFT JOIN budget USING (month, region) GROUP BY month, region",
+    "params": [],
+    "metric": {
+      "slug": "retail_attainment",
+      "measure": { "name": "nsv", "agg": "sum", "expr": "nsv", "type": "additive", "format": "currency" },
+      "extra_measures": [
+        { "name": "budget_nsv", "agg": "sum", "expr": "budget_nsv", "type": "additive", "format": "currency" }
+      ],
+      "derived_measures": [
+        { "name": "attainment_pct", "formula": "nsv / budget_nsv", "format": "percent" }
+      ],
+      "dimensions": [
+        { "name": "region", "type": "text" }
+      ],
+      "time_dimension": {
+        "column": "month",
+        "grains": ["month", "quarter", "year"],
+        "default_grain": "month"
+      },
+      "description": "Budget attainment: actual NSV vs budgeted NSV with derived attainment % ratio — exercises DerivedMeasure end-to-end.",
+      "owner": "seed"
+    }
+  },
+  "topn_product_group": {
+    "name": "Retail — top product groups by NSV",
+    "sql": "SELECT product_group, ROUND(SUM(nsv), 2) AS nsv, SUM(units) AS units FROM sales GROUP BY product_group ORDER BY nsv DESC LIMIT 5",
+    "params": []
+  },
+  "saas_mrr_yoy": {
+    "name": "SaaS — MRR year-over-year (time-intelligence)",
+    "sql": "SELECT month, plan, ROUND(SUM(amount), 2) AS mrr FROM saas_invoices GROUP BY month, plan ORDER BY month, plan",
+    "params": [],
+    "metric": {
+      "slug": "saas_mrr",
+      "measure": { "name": "mrr", "agg": "sum", "expr": "amount", "type": "additive", "format": "currency" },
+      "dimensions": [
+        { "name": "plan", "type": "text" }
+      ],
+      "time_dimension": {
+        "column": "month",
+        "grains": ["month", "quarter", "year"],
+        "default_grain": "month"
+      },
+      "description": "Monthly Recurring Revenue — supports period-over-period and year-over-year time-intelligence transforms.",
+      "owner": "seed"
+    }
   }
 }

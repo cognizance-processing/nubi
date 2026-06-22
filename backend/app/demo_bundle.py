@@ -75,6 +75,30 @@ def load_boards(starter_only: bool = False) -> list[dict[str, Any]]:
     return [b for b in boards if b.get("starter")] if starter_only else boards
 
 
+def load_flows() -> list[dict[str, Any]]:
+    """Return flow fixtures ``[{seed_id, name, enabled, schedule, spec}, ...]``.
+
+    Returns empty list when flows.json is absent so older deployments don't fail.
+    """
+    flows_path = _DEMO_DIR / "flows.json"
+    if not flows_path.exists():
+        return []
+    with open(flows_path) as f:
+        return json.load(f)
+
+
+def load_canvases() -> list[dict[str, Any]]:
+    """Return canvas fixtures ``[{seed_id, name, doc}, ...]``.
+
+    Returns empty list when canvases.json is absent.
+    """
+    canvases_path = _DEMO_DIR / "canvases.json"
+    if not canvases_path.exists():
+        return []
+    with open(canvases_path) as f:
+        return json.load(f)
+
+
 def referenced_query_keys(boards: list[dict[str, Any]]) -> list[str]:
     """Logical query keys referenced by the given boards (via ``@key`` placeholders)."""
     keys: set[str] = set()

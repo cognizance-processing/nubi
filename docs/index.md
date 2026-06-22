@@ -22,7 +22,8 @@ Nubi is a batteries-included BI and embedded-analytics platform. The kernel runs
 
 | | |
 |---|---|
-| [**Getting Started**](/docs/getting-started) | Sign up, connect a source, run your first query, build your first board; Free plan limits; self-host quickstart |
+| [**Quickstart**](/docs/quickstart) | Clone → `seed.py --demo` → run → first dashboard in 5 minutes; demo data reference; admin@nubi.dev credentials |
+| [**Getting Started**](/docs/getting-started) | Sign up on Nubi Cloud, connect a source, run your first query, build your first board; Free plan limits |
 | [**UI Tour**](/docs/ui-tour) | A guided walk through the app shell — sidebar, topbar, and every page |
 | [**Connectors**](/docs/connectors) | Postgres, DuckDB (in-mem + file), HttpJson, MySQL/MariaDB, JDBC, BYO warehouse, 7-flag capability contract, Data Browser |
 | [**Queries & Parameters**](/docs/queries-and-params) | Registered queries, `{{named}}` typed params, query library, text-to-SQL |
@@ -35,6 +36,8 @@ Nubi is a batteries-included BI and embedded-analytics platform. The kernel runs
 | [**AI, Chat & MCP**](/docs/ai-and-mcp) | Grounded ask, agentic chat, 14 agent tools, MCP server (15 tools), Slack/WhatsApp gateway |
 | [**Embedding**](/docs/embedding) | JWT minting (RS256/ES256), per-viewer RLS, token-locked params, `<nubi-dashboard>` |
 | [**Organization & Settings**](/docs/organization-settings) | Members, roles and invites; integrations; usage; project settings and the Git connection |
+| [**How-to guides**](/docs/how-to) | Worked examples: semantic metrics (define/query/derive/time-intel/top-N); pre-agg build; Flows sweep/backfill/triggers/write-back/action-widgets; Canvas authoring + bindings; DataProvider boards |
+| [**API Reference**](/docs/api-reference) | Full HTTP API reference — /metrics, /canvas/canvases, /ai/canvas, /flows sweep/backfill/triggers/writeback, /boards/providers/data |
 
 ### Nubi Cloud
 

@@ -313,6 +313,7 @@ export default function DashboardViewPage() {
         <div data-testid="dashboard-spec-renderer">
           <SpecRenderer
             spec={spec}
+            boardId={boardId}
             initialVariables={initialVariables}
             onVariableChange={handleVariableChange}
             activeTabId={activeTabId}
