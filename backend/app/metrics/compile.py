@@ -104,7 +104,6 @@ from typing import Any, get_args
 import sqlglot
 import sqlglot.expressions as exp
 
-from app.connectors.sql_parse import parse_sql_cached
 from app.metrics.models import (
     FilterOp,
     MetricDefinition,
@@ -291,7 +290,18 @@ def _compile_layered(
     time_alias: str | None,
     dialect: str,
 ) -> tuple[str, dict[str, Any]]:
-    """Emit the two-level CTE query with derived + time-intel + top-N layers."""
+    """Emit the two-level CTE query with derived + time-intel + top-N layers.
+
+    Everything is assembled as a SINGLE sqlglot AST: the ``__base`` aggregation
+    is attached as a CTE (via :meth:`exp.Select.with_`) to the top-level
+    statement (the outer SELECT, or — for ``top_n.other`` — an :class:`exp.Union`
+    of the top-N arm and the Other-bucket arm).  The whole statement is rendered
+    to SQL **exactly once** and the sentinel→``{{name}}`` substitution is applied
+    **exactly once** on that final string.  No intermediate ``.sql()`` renders are
+    re-embedded into f-strings, and no already-rendered SQL is re-parsed —
+    eliminating the placeholder-corruption / double-WITH / paren-counting bugs of
+    the previous string-assembly path.
+    """
     params: dict[str, Any] = {}
     subs: dict[str, str] = {}
 
@@ -608,31 +618,40 @@ def _compile_layered(
         mq.limit if mq.limit is not None else _DEFAULT_LIMIT
     )
 
-    # ── Top-N (outermost QUALIFY/RANK layer) ─────────────────────────────────
-    if mq.top_n is not None and not mq.top_n.other:
+    # ── Top-N restriction on the outer SELECT ────────────────────────────────
+    # top_n (no Other) → WHERE dim IN (membership) or QUALIFY RANK() <= N.
+    # top_n.other      → the top-N arm of a UNION (membership/QUALIFY) UNIONed
+    #                    with an Other-bucket arm; both share the one __base CTE.
+    if mq.top_n is not None:
         outer_select = _apply_top_n(outer_select, mq, metric, time_alias, dialect)
 
-    # ── Assemble CTE ────────────────────────────────────────────────────────
-    # Render __base, substitute sentinels, then assemble the final WITH statement.
-    base_sql = base_select.sql(dialect=dialect)
-    for sentinel, placeholder in subs.items():
-        base_sql = base_sql.replace(sentinel, placeholder)
-
-    outer_sql = outer_select.sql(dialect=dialect)
-
-    # sqlglot renders WITH … AS separately; build as a raw string to preserve
-    # sentinel substitution in base_sql and avoid double-rendering.
-    sql = f"WITH __base AS ({base_sql}) {outer_sql}"
-
-    # ── Top-N with Other bucket (UNION approach) ─────────────────────────────
+    # ── Choose the top-level statement (outer SELECT or UNION) ───────────────
+    top_stmt: exp.Expression
     if mq.top_n is not None and mq.top_n.other:
-        # FIX (Issue 2): pass base_sql directly so _apply_top_n_other never needs
-        # to re-extract the __base body from the AST (which mangles {{f0}} Jinja2
-        # filter placeholders, silently dropping user filters).
-        sql = _apply_top_n_other(
-            sql, mq, metric, time_alias, all_dim_names, dialect,
-            base_cte_body=base_sql,
+        other_select = _build_other_select(
+            mq, metric, time_alias, all_dim_names, dialect
         )
+        # Wrap each arm in parentheses (exp.Subquery) so per-arm ORDER BY / QUALIFY
+        # / LIMIT are unambiguous — required by DuckDB / standard SQL for a UNION
+        # whose arms carry those clauses.
+        top_stmt = exp.Union(
+            this=exp.Subquery(this=outer_select),
+            expression=exp.Subquery(this=other_select),
+            distinct=False,
+        )
+    else:
+        top_stmt = outer_select
+
+    # ── Attach the __base CTE to the SINGLE top-level statement ──────────────
+    # .with_ on a Select attaches a WITH clause; on a Union it attaches the WITH
+    # at the union level so BOTH arms can reference __base.  Either way the whole
+    # statement renders with exactly one ``WITH __base AS (...)``.
+    top_stmt = top_stmt.with_("__base", as_=base_select, dialect=dialect)
+
+    # ── Render ONCE, substitute sentinels ONCE ───────────────────────────────
+    sql = top_stmt.sql(dialect=dialect)
+    for sentinel, placeholder in subs.items():
+        sql = sql.replace(sentinel, placeholder)
 
     return sql, params
 
@@ -725,9 +744,21 @@ def _apply_top_n(
         outer_select = outer_select.where(where_cond)
     else:
         # No time grain: simple QUALIFY RANK() <= N.
+        # RLS soundness: the rank MUST be partitioned by every rls_key.  For the
+        # top_n.other path the planner injects RLS on the OUTER union wrapper —
+        # i.e. AFTER this RANK is computed inside the top-N arm — so without a
+        # PARTITION BY the rank would be computed across ALL tenants and the
+        # post-rank RLS filter could drop a tenant's entire top-N set (or admit
+        # another tenant's members).  Partitioning by rls_keys makes the rank
+        # per-tenant, matching the time_grain path's per-tenant correlated
+        # membership subquery.  For the non-other path RLS lands on this same
+        # select (WHERE before window), so the partition is a harmless no-op
+        # (a single partition per tenant).
         rank_m_col = exp.column(rank_measure)
+        rank_partition = [exp.column(k) for k in metric.rls_keys]
         rank_over = exp.Window(
             this=exp.func("RANK", dialect=dialect),
+            partition_by=rank_partition or None,
             order=exp.Order(
                 expressions=[
                     exp.Ordered(
@@ -750,275 +781,139 @@ def _apply_top_n(
 # ---------------------------------------------------------------------------
 
 
-def _apply_top_n_other(
-    layered_sql: str,
+def _build_other_select(
     mq: "MetricQuery",
     metric: "MetricDefinition",
     time_alias: str | None,
     all_dim_names: list[str],
     dialect: str,
-    *,
-    base_cte_body: str | None = None,
-) -> str:
-    """Extend a layered query with a rolled-up "Other" bucket for non-top-N members.
+) -> exp.Select:
+    """Build the Other-bucket arm of a ``top_n.other`` UNION as a single AST node.
 
-    Produces:
-        <top-N select> UNION ALL <other bucket select>
+    The returned :class:`exp.Select` reads ``FROM __base`` (the shared CTE) and
+    rolls every non-top-N member of the ranked dimension into one bucket labelled
+    ``tn.other_label``.  Its column list (names + order) is IDENTICAL to the
+    top-N arm so the UNION is well-formed:
 
-    Both UNION arms must have identical column lists.  Time-comparison window
-    columns (``tc.out_name()``) are emitted as ``NULL AS <name>`` in the Other
-    arm since window functions cannot be re-applied over the rolled-up bucket.
+        ranked dim            → other_label literal AS <dim>
+        other dims            → passthrough
+        time alias            → passthrough
+        base measures         → re-aggregated per agg (sum/count→SUM, min→MIN,
+                                 max→MAX, avg/count_distinct/percentile/approx→NULL)
+        derived measures      → recomputed from the re-aggregated base measures
+        time-comparison cols  → NULL AS <out_name> (windows can't span the bucket)
 
-    Fix #1 (SQLi): ``other_label`` is validated in _govern (no quotes/backslash)
-    and emitted via ``exp.Literal.string(other_label).sql(...)`` — never raw f-string.
-    Fix #2 (correctness): When base_cte_body is provided (always the case on the
-    layered path), use it verbatim instead of re-extracting from the AST.  The AST
-    round-trip mangles Jinja2 {{f0}} filter placeholders (for user filters) into
-    map/struct literals, silently dropping or corrupting user filters.  The caller
-    passes the already-correct base_sql string (with intact {{name}} placeholders)
-    via base_cte_body; AST extraction is kept only as a fallback for external callers.
-    Fix #3 (correctness): When time_alias is set the top-N portion uses a WHERE IN
-    membership filter (not a nested window-in-window, which is illegal).
-    Fix #4 (correctness): NULL columns appended for every non-latest_snapshot
-    time_comparison so both UNION arms have identical column counts.
-    Fix #5 (correctness): count(*) Other bucket emits SUM(m.name) — sum the
-    pre-computed count column from __base, not SUM(COUNT(*)) which is a nested agg.
+    Members are excluded via ``WHERE <dim> NOT IN (<membership>)`` where the
+    membership subquery is the SAME per-tenant-correlated top-N set as the top-N
+    arm (correlated on every rls_key when a time_grain is set), so a dim is never
+    double-counted nor dropped.
+
+    Everything is AST: the membership subquery and the re-aggregation/derived
+    fragments are parsed into nodes and embedded — no string concatenation, no
+    re-parse of already-rendered SQL.
     """
     tn = mq.top_n
     assert tn is not None and tn.other
 
     rank_measure = tn.measure or metric.measure.name
     dim_col = tn.dimension
-    other_label = tn.other_label
-
-    # ── FIX #1: safe label literal via sqlglot ──────────────────────────────
-    safe_other_label = exp.Literal.string(other_label).sql(dialect=dialect)
-
-    # ── Resolve the __base CTE body ──────────────────────────────────────────
-    # FIX (Issue 2): prefer the base_cte_body passed directly by the caller (it
-    # contains intact Jinja2 {{name}} placeholders).  Fall back to AST extraction
-    # only when no base_cte_body is provided (e.g. external / legacy callers).
-    import copy  # noqa: PLC0415
-    if base_cte_body is None:
-        # AST fallback: re-parse layered_sql to extract __base body.
-        # WARNING: this path WILL mangle {{f0}} Jinja2 placeholders into invalid
-        # SQL if the base CTE contains user filters.  It is retained only for
-        # backwards-compatible external usage; the internal layered path always
-        # supplies base_cte_body.
-        try:
-            full_tree = parse_sql_cached(layered_sql, dialect=dialect)
-        except Exception:
-            return layered_sql
-
-        if not isinstance(full_tree, exp.Select):
-            return layered_sql
-
-        for cte_node in full_tree.find_all(exp.CTE):
-            alias_node = cte_node.args.get("alias")
-            alias_name = (
-                alias_node.name.lower() if alias_node and hasattr(alias_node, "name") else ""
-            )
-            if alias_name == "__base":
-                base_cte_body = cte_node.this.sql(dialect=dialect)
-                break
-        if base_cte_body is None:
-            return layered_sql  # can't find __base CTE via AST; bail out.
-
-    # Now parse just the outer SELECT portion for top-N manipulation.
-    # We reconstruct a temporary full-tree for the top-N restriction only —
-    # we don't extract base_cte_body from this parse, so placeholder mangling
-    # in the CTE body is irrelevant.
-    try:
-        full_tree = parse_sql_cached(layered_sql, dialect=dialect)
-    except Exception:
-        return layered_sql
-
-    if not isinstance(full_tree, exp.Select):
-        return layered_sql
-
-    top_n_tree = copy.deepcopy(full_tree)
-
     order_dir = "DESC" if tn.order == "desc" else "ASC"
-    if time_alias is not None:
-        # membership filter via correlated subquery — no nested window-in-window.
-        # FIX (Issue 1): correlate on every rls_key so top-N is per-tenant.
-        membership_sql = _top_n_membership_sql(
-            dim_col, rank_measure, order_dir, tn.n,
-            tuple(metric.rls_keys), outer_alias="__outer",
-        )
-        membership_expr = sqlglot.parse_one(membership_sql, dialect=dialect)
-        where_cond = exp.In(
-            this=exp.column(dim_col),
-            query=exp.Subquery(this=membership_expr),
-        )
-        top_n_tree = top_n_tree.where(where_cond)
-    else:
-        # No time grain: simple QUALIFY RANK() <= N.
-        rank_m_col = exp.column(rank_measure)
-        rank_over = exp.Window(
-            this=exp.func("RANK", dialect=dialect),
-            order=exp.Order(
-                expressions=[
-                    exp.Ordered(this=rank_m_col.copy(), desc=(tn.order == "desc"))
-                ]
-            ),
-        )
-        qualify_cond = exp.LTE(
-            this=rank_over,
-            expression=exp.Literal.number(tn.n),
-        )
-        top_n_tree = top_n_tree.qualify(qualify_cond)
 
-    # Extract just the outer SELECT from top_n_tree by stripping the WITH clause.
-    # AST approach: copy and set the 'with_' slot to None, then render.
-    # NOTE: sqlglot's Select node stores the WITH clause under the key "with_"
-    # (trailing underscore) NOT "with".  Using set("with", None) is a no-op and
-    # the WITH clause survives, producing a nested double-WITH.
-    top_n_no_with = top_n_tree.copy()
-    top_n_no_with.set("with_", None)
-    top_n_outer_sql = top_n_no_with.sql(dialect=dialect)
-
-    # ── Build the "Other" bucket SELECT from __base ───────────────────────────
-    # Subquery to identify top-N members (used in NOT IN exclusion).
-    # REGRESSION FIX: when rls_keys is non-empty the NOT IN membership subquery
-    # MUST be correlated on the same rls_keys as the IN arm — otherwise the
-    # Other arm uses the GLOBAL top-N set, not the per-tenant top-N set:
-    #   - A dim in tenant X's top-N but not the global top-N → DOUBLE-COUNTED
-    #     (appears in both the IN arm and passes the global NOT IN exclusion).
-    #   - A dim in the global top-N but not tenant X's top-N → MISSING
-    #     (excluded by the NOT IN even though it's not in tenant X's top-N).
-    # Fix: use _top_n_membership_sql with rls_keys=tuple(metric.rls_keys) and
-    # an __other_outer alias; alias the Other arm's FROM as "__other_outer" so
-    # the correlated subquery can resolve the outer alias.  When rls_keys is
-    # empty (no RLS), fall back to the non-correlated form (no FROM alias needed).
-    _other_outer_alias = "__other_outer"
+    # ── Membership subquery (NOT IN) — per-tenant correlated like the IN arm ──
     _other_rls_keys = tuple(metric.rls_keys)
     if _other_rls_keys:
-        top_members_subquery = _top_n_membership_sql(
-            dim_col, rank_measure,
-            "DESC" if tn.order == "desc" else "ASC",
-            tn.n,
-            rls_keys=_other_rls_keys,
-            outer_alias=_other_outer_alias,
+        # Correlate on the Other arm's FROM alias so the top-N set is per-tenant.
+        membership_sql = _top_n_membership_sql(
+            dim_col, rank_measure, order_dir, tn.n,
+            rls_keys=_other_rls_keys, outer_alias="__other_outer",
         )
-        _other_from_clause = f"__base AS {_other_outer_alias}"
+        from_node: exp.Expression = exp.alias_(
+            exp.Table(this=exp.to_identifier("__base")), "__other_outer"
+        )
     else:
-        top_members_subquery = _top_n_membership_sql(
-            dim_col, rank_measure,
-            "DESC" if tn.order == "desc" else "ASC",
-            tn.n, rls_keys=(),
+        membership_sql = _top_n_membership_sql(
+            dim_col, rank_measure, order_dir, tn.n, rls_keys=(),
         )
-        _other_from_clause = "__base"
+        from_node = exp.Table(this=exp.to_identifier("__base"))
+    membership_expr = sqlglot.parse_one(membership_sql, dialect=dialect)
+    not_in_cond = exp.Not(
+        this=exp.paren(
+            exp.In(
+                this=exp.column(dim_col),
+                query=exp.Subquery(this=membership_expr),
+            )
+        )
+    )
 
-    # Group by: time alias (if present) + all non-ranked dims EXCEPT the ranked dim.
-    other_group_cols = []
-    if time_alias:
-        other_group_cols.append(time_alias)
-    for d in all_dim_names:
-        if d != dim_col:
-            other_group_cols.append(d)
+    # ── Projection (column order MUST match the top-N arm) ───────────────────
+    select_exprs: list[exp.Expression] = []
 
-    other_select_parts: list[str] = []
-
-    # (a) Dimension columns: rank dim → safe other_label literal, others → passthrough.
+    # (a) dimension columns: ranked dim → label literal; others → passthrough.
     for d in all_dim_names:
         if d == dim_col:
-            # FIX #1: use sqlglot-escaped literal, not raw f-string interpolation.
-            other_select_parts.append(f"{safe_other_label} AS {dim_col}")
+            select_exprs.append(
+                exp.alias_(exp.Literal.string(tn.other_label), dim_col)
+            )
         else:
-            other_select_parts.append(f"{d}")
+            select_exprs.append(exp.alias_(exp.column(d), d))
 
-    # (b) Time alias passthrough.
-    if time_alias:
-        other_select_parts.append(f"{time_alias}")
+    # (b) time alias passthrough.
+    if time_alias is not None:
+        select_exprs.append(exp.alias_(exp.column(time_alias), time_alias))
 
-    # (c) Base measures: re-aggregate correctly per agg type.
-    # FIX 3: SUM(avg/min/max) is wrong. Use the correct re-aggregation per agg:
-    #   min -> MIN(name), max -> MAX(name), sum/count -> SUM(name),
-    #   avg -> NULL (partial-avg not re-aggregable without weights),
-    #   count_distinct / percentile_cont / approx_count_distinct -> NULL.
-    base_measure_sums: dict[str, str] = {}
+    # (c) base measures: re-aggregate per agg type (build via AST).
+    #   sum/count → SUM(name); min → MIN(name); max → MAX(name);
+    #   avg/count_distinct/percentile/approx → NULL (not re-aggregable).
+    bare_name_to_agg_node: dict[str, exp.Expression] = {}
     for m in metric.measures():
         if m.agg == "min":
-            base_measure_sums[m.name] = f"MIN({m.name}) AS {m.name}"
+            agg_node: exp.Expression = exp.func("MIN", exp.column(m.name), dialect=dialect)
         elif m.agg == "max":
-            base_measure_sums[m.name] = f"MAX({m.name}) AS {m.name}"
+            agg_node = exp.func("MAX", exp.column(m.name), dialect=dialect)
         elif m.agg in ("sum", "count"):
-            base_measure_sums[m.name] = f"SUM({m.name}) AS {m.name}"
+            agg_node = exp.func("SUM", exp.column(m.name), dialect=dialect)
         else:
-            # avg, count_distinct, percentile_cont, approx_count_distinct:
-            # not safely re-aggregable; emit NULL as a conservative fallback.
-            base_measure_sums[m.name] = f"NULL AS {m.name}"
-        other_select_parts.append(base_measure_sums[m.name])
+            agg_node = exp.Null()
+        bare_name_to_agg_node[m.name] = agg_node
+        select_exprs.append(exp.alias_(agg_node.copy(), m.name))
 
-    # (d) Derived measures: recomputed from the re-aggregated base measures.
-    # The Other-bucket SELECT is a GROUP BY aggregate query; bare measure names
-    # (e.g. "delivered") are NOT in the GROUP BY and would cause a Binder Error.
-    # Strategy: compile the formula with _compile_derived_formula first (which
-    # applies NULLIF-guarding and returns SQL like
-    #   "delivered / NULLIF(ordered, 0)"
-    # ), then substitute each bare base-measure name with its aggregate SQL
-    # expression (e.g. "delivered" → "SUM(delivered)", "min_sale" → "MIN(min_sale)")
-    # via whole-word regex.  This order is safe because:
-    #   1. _compile_derived_formula does not validate NAME tokens against base_names
-    #      (governance already ran in _govern); it only applies NULLIF guards.
-    #   2. Whole-word substitution cannot accidentally match inside aggregate
-    #      function names because measure names are plain identifiers.
-    bare_name_to_agg: dict[str, str] = {}
-    for m in metric.measures():
-        # Extract the aggregate SQL fragment (without the " AS <name>" suffix).
-        entry = base_measure_sums[m.name]
-        agg_expr = entry.split(" AS ")[0]  # e.g. "SUM(delivered)" or "NULL"
-        bare_name_to_agg[m.name] = agg_expr
-
+    # (d) derived measures: recompute from the re-aggregated base measures.
+    # Compile the formula to SQL (NULLIF-guarded), parse to an AST, then replace
+    # every bare base-measure column reference with its aggregate node so the
+    # GROUP BY query is valid (bare measure names are not in the GROUP BY).
     base_measure_names_set = set(metric.measure_names())
     for dm in metric.derived_measures:
-        # Step 1: compile formula → SQL with NULLIF guards on bare names.
         formula_sql = _compile_derived_formula(dm, base_measure_names_set)
-        # Step 2: substitute each bare base-measure name with its aggregate form.
-        # Use whole-word regex to avoid substring collisions.
-        for bare_name, agg_expr in bare_name_to_agg.items():
-            formula_sql = re.sub(
-                r"\b" + re.escape(bare_name) + r"\b",
-                agg_expr,
-                formula_sql,
-            )
-        other_select_parts.append(f"{formula_sql} AS {dm.name}")
+        formula_expr = sqlglot.parse_one(formula_sql, dialect=dialect)
 
-    # (e) FIX #4: time-comparison window columns — emit NULL AS <out_name> in the
-    # Other arm so both UNION arms have identical column counts.
-    # FIX 1: use exp.to_identifier(quoted=True) so the alias is never raw user input.
-    regular_comparisons = [tc for tc in mq.time_comparisons if tc.kind != "latest_snapshot"]
+        def _replace_col(node: exp.Expression) -> exp.Expression:
+            if isinstance(node, exp.Column) and node.name in bare_name_to_agg_node:
+                return bare_name_to_agg_node[node.name].copy()
+            return node
+
+        formula_expr = formula_expr.transform(_replace_col)
+        select_exprs.append(exp.alias_(formula_expr, dm.name))
+
+    # (e) time-comparison columns → NULL AS <out_name> (column-count parity).
+    regular_comparisons = [
+        tc for tc in mq.time_comparisons if tc.kind != "latest_snapshot"
+    ]
     for tc in regular_comparisons:
-        safe_alias = exp.to_identifier(tc.out_name(), quoted=True).sql(dialect=dialect)
-        other_select_parts.append(f"NULL AS {safe_alias}")
+        select_exprs.append(exp.alias_(exp.Null(), tc.out_name()))
 
-    # WHERE: exclude top-N members.
-    where_clause = f"WHERE {dim_col} NOT IN ({top_members_subquery})"
+    # ── GROUP BY: time alias (if any) + every non-ranked dim ─────────────────
+    group_exprs: list[exp.Expression] = []
+    if time_alias is not None:
+        group_exprs.append(exp.column(time_alias))
+    for d in all_dim_names:
+        if d != dim_col:
+            group_exprs.append(exp.column(d))
 
-    # GROUP BY.
-    if other_group_cols:
-        group_by_clause = "GROUP BY " + ", ".join(other_group_cols)
-    else:
-        group_by_clause = ""
-
-    other_sql = (
-        f"SELECT {', '.join(other_select_parts)} "
-        f"FROM {_other_from_clause} "
-        f"{where_clause} "
-        f"{group_by_clause}"
-    ).strip()
-
-    # Wrap both UNION arms in a single CTE so both parts can reference __base.
-    # base_cte_body and top_n_outer_sql are both extracted via AST above.
-    # Wrap in parentheses so that ORDER BY / QUALIFY / LIMIT inside each arm
-    # are unambiguous (required by DuckDB and standard SQL).
-    result = (
-        f"WITH __base AS ({base_cte_body}) "
-        f"({top_n_outer_sql}) "
-        f"UNION ALL ({other_sql})"
-    )
-    return result
+    other_select = exp.Select().select(*select_exprs).from_(from_node)
+    other_select = other_select.where(not_in_cond)
+    if group_exprs:
+        other_select = other_select.group_by(*group_exprs)
+    return other_select
 
 
 # ---------------------------------------------------------------------------

@@ -2941,6 +2941,87 @@ def test_top_n_other_per_tenant_no_double_count_no_missing() -> None:
     )
 
 
+def test_top_n_other_no_time_grain_rank_is_per_tenant() -> None:
+    """[HIGH RLS] top_n.other WITHOUT a time_grain must rank per-tenant.
+
+    Regression for a real defect: the no-time-grain top-N path emits
+    ``QUALIFY RANK() OVER (ORDER BY <measure> DESC) <= N`` on the top-N arm.
+    For top_n.other the planner injects RLS (``WHERE org_id = …``) on the OUTER
+    union wrapper — i.e. AFTER the RANK is computed inside the top-N arm.  Without
+    a ``PARTITION BY <rls_keys>`` the RANK is computed across ALL tenants, so a
+    tenant whose values are dominated by another tenant gets its ENTIRE top-N set
+    ranked out (rank > N) and the post-rank RLS filter then drops it — the top-N
+    arm returns zero rows for that tenant, leaving only the Other bucket.
+
+    Setup: tenant A's values are small; tenant B's are huge.  Globally B's cats
+    take ranks 1-2, so A's top-2 would be ranked out without the partition.
+    With the per-tenant PARTITION BY the rank is computed within each tenant.
+    """
+    con = _duckdb_conn6()
+    con.execute("""
+        CREATE TABLE topn_other_nograin (
+            tenant VARCHAR,
+            cat    VARCHAR,
+            amount DOUBLE
+        )
+    """)
+    con.execute("""
+        INSERT INTO topn_other_nograin VALUES
+            ('A', 'apple',   30, ),
+            ('A', 'banana',  20, ),
+            ('A', 'cherry',  10, ),
+            ('A', 'date',     5, ),
+            ('B', 'mega1', 9999, ),
+            ('B', 'mega2', 8888, ),
+            ('B', 'tiny',     1, )
+    """)
+
+    m = MetricDefinition(
+        id="nograin_other",
+        name="No-Grain Other",
+        measure=Measure(name="amount", agg="sum", expr="amount"),
+        base_table="topn_other_nograin",
+        dimensions=(Dimension(name="cat"),),
+        rls_keys=("tenant",),
+    )
+    mq = MetricQuery(
+        metric_id="nograin_other",
+        dimensions=("cat",),
+        top_n=TopN(dimension="cat", n=2, other=True, other_label="Other"),
+    )
+
+    sql, named = compile_metric(m, mq)
+    from app.connectors.planner import resolve_named_params
+    pos_sql, _ = resolve_named_params(sql, named)
+
+    # ── Tenant A: small values, dominated globally by tenant B ────────────────
+    p_a = _plan6(pos_sql, claims={"policies": {"tenant": "A"}})
+    rows_a = con.execute(p_a.sql, p_a.params).fetchall()
+    by_cat_a = {r[0]: r for r in rows_a}
+    # A's top-2 by amount: apple(30), banana(20); Other = cherry(10)+date(5)=15.
+    assert "apple" in by_cat_a and "banana" in by_cat_a, (
+        f"Tenant A top-2 missing (rank computed cross-tenant?); rows={rows_a}"
+    )
+    assert "Other" in by_cat_a, f"Tenant A Other missing; rows={rows_a}"
+    # No cross-tenant leak.
+    assert "B" not in {r[1] for r in rows_a}, f"cross-tenant leak; rows={rows_a}"
+    assert by_cat_a["Other"][2] == 15.0, (
+        f"Tenant A Other expected 15 (cherry=10 + date=5), got {by_cat_a['Other'][2]}; "
+        f"rows={rows_a}"
+    )
+
+    # ── Tenant B: its own top-2 ───────────────────────────────────────────────
+    p_b = _plan6(pos_sql, claims={"policies": {"tenant": "B"}})
+    rows_b = con.execute(p_b.sql, p_b.params).fetchall()
+    by_cat_b = {r[0]: r for r in rows_b}
+    assert "mega1" in by_cat_b and "mega2" in by_cat_b, f"rows={rows_b}"
+    assert "A" not in {r[1] for r in rows_b}, f"cross-tenant leak; rows={rows_b}"
+    # Other = tiny(1).
+    assert by_cat_b["Other"][2] == 1.0, (
+        f"Tenant B Other expected 1 (tiny), got {by_cat_b['Other'][2]}; rows={rows_b}"
+    )
+
+
 # ── Leap-year-aware prior_year date arithmetic ────────────────────────────────
 
 
@@ -3056,34 +3137,53 @@ def _plan8(sql: str, claims=None):
 
 
 def _setup_matrix_table(con, table_name: str) -> None:
-    """Create a small orders table for matrix tests."""
+    """Create a small orders table for matrix tests.
+
+    ``cost`` is a second base measure so the matrix can exercise a derived
+    measure (``margin = (amount - cost) / amount``).  Existing callers that only
+    read ``region/amount/sale_date/org_id`` are unaffected by the extra column.
+    """
     con.execute(f"""
         CREATE TABLE IF NOT EXISTS {table_name} (
             region    VARCHAR,
             amount    DOUBLE,
+            cost      DOUBLE,
             sale_date DATE,
             org_id    VARCHAR
         )
     """)
     con.execute(f"""
         INSERT INTO {table_name} VALUES
-            ('A',  500.0, '2024-01-01', 'org1'),
-            ('A',  300.0, '2024-02-01', 'org1'),
-            ('B',  200.0, '2024-01-01', 'org1'),
-            ('B',  100.0, '2024-02-01', 'org1'),
-            ('C',   50.0, '2024-01-01', 'org2'),
-            ('C',   30.0, '2024-02-01', 'org2')
+            ('A',  500.0, 200.0, '2024-01-01', 'org1'),
+            ('A',  300.0, 100.0, '2024-02-01', 'org1'),
+            ('B',  200.0,  80.0, '2024-01-01', 'org1'),
+            ('B',  100.0,  40.0, '2024-02-01', 'org1'),
+            ('C',   50.0,  20.0, '2024-01-01', 'org2'),
+            ('C',   30.0,  10.0, '2024-02-01', 'org2')
     """)
 
 
-def _matrix_metric(table_name: str, rls_keys=("org_id",)) -> MetricDefinition:
+def _matrix_metric(
+    table_name: str, rls_keys=("org_id",), with_derived: bool = False
+) -> MetricDefinition:
     """Build a metric for matrix tests.
 
     org_id is included as a dimension so it can be used as a user filter field
     (governance requires filter fields to be declared dimensions or the time col).
     rls_keys=("org_id",) ensures per-tenant isolation via the planner.
+
+    When ``with_derived`` is set the metric also declares a second base measure
+    ``cost`` and a derived ratio ``margin = (revenue - cost) / revenue`` so the
+    composition matrix can cross the derived-measure axis.
     """
     from app.metrics.models import TimeDimension as _TD
+    extra_measures: tuple = ()
+    derived_measures: tuple = ()
+    if with_derived:
+        extra_measures = (Measure(name="cost", agg="sum", expr="cost"),)
+        derived_measures = (
+            DerivedMeasure(name="margin", formula="(revenue - cost) / revenue"),
+        )
     return MetricDefinition(
         id="matrix_rev",
         name="Matrix Revenue",
@@ -3095,6 +3195,8 @@ def _matrix_metric(table_name: str, rls_keys=("org_id",)) -> MetricDefinition:
             grains=("month",),
             default_grain="month",
         ),
+        extra_measures=extra_measures,
+        derived_measures=derived_measures,
         rls_keys=rls_keys,
     )
 
@@ -3400,12 +3502,13 @@ def _run_matrix_cell(
     with_filter: bool,
     tc_count: int,
     tenant_count: int,
+    with_derived: bool = False,
 ) -> None:
     """Execute one matrix cell and assert all invariants."""
     import sqlglot as _sg
     from app.connectors.planner import resolve_named_params
 
-    m = _matrix_metric(table_name)
+    m = _matrix_metric(table_name, with_derived=with_derived)
 
     # time_comparisons: 0=none, 1=one pop_pct(1), 2=two pop_pct(1)+pop_pct(2)
     if tc_count == 0:
@@ -3449,12 +3552,23 @@ def _run_matrix_cell(
 
     sql, named_params = compile_metric(m, mq)
 
+    cell = (
+        f"[other={top_n_other}, filter={with_filter}, tc={tc_count}, "
+        f"derived={with_derived}, tenants={tenant_count}]"
+    )
+
     # Must parse.
     parsed = _sg.parse_one(sql, dialect="duckdb")
-    assert parsed is not None, (
-        f"SQL failed to parse [other={top_n_other}, filter={with_filter}, "
-        f"tc={tc_count}, tenants={tenant_count}]:\n{sql[:600]}"
+    assert parsed is not None, f"SQL failed to parse {cell}:\n{sql[:600]}"
+
+    # Exactly ONE 'WITH __BASE' (single CTE — no double-nested WITH).
+    assert sql.upper().count("WITH __BASE") == 1, (
+        f"Expected exactly one 'WITH __BASE' {cell}:\n{sql[:600]}"
     )
+
+    # Derived measure column must be present when requested.
+    if with_derived:
+        assert "margin" in sql.lower(), f"derived column missing {cell}:\n{sql[:600]}"
 
     # Resolve named params.
     pos_sql, pos_params = resolve_named_params(sql, named_params)
@@ -3541,31 +3655,74 @@ def _run_matrix_cell(
                     f"regions={row_regions}"
                 )
 
+        # ── User filter IS reflected in the executed VALUES ──────────────────
+        # org_id is projected through both arms (it is an rls_key extra dim at
+        # column index 1).  When the user filter org_id='org1' is applied, every
+        # returned row's org_id MUST be 'org1' — proving the {{f0}} placeholder
+        # survived the single-render/substitute path and the filter landed in the
+        # __base CTE (this is the bug the old AST re-parse silently dropped).
+        if with_filter:
+            for r in rows:
+                assert r[1] == "org1", (
+                    f"User filter org_id='org1' not reflected in values: row org_id "
+                    f"{r[1]!r} {cell}; rows={rows}"
+                )
+
+        # ── Correct per-tenant aggregate VALUE (filter respected, no leak) ───
+        # For org1 the revenue total of region A is 500+300=800 regardless of the
+        # filter (filter is org1 itself); if org2 data ever leaked into __base the
+        # Other/A aggregates would change.  revenue is the first numeric, non-bool
+        # column after the org_id rls dim.
+        if tenant_id == "org1" and not top_n_other:
+            a_rows = [r for r in rows if r[0] == "A"]
+            if a_rows and tc_count == 0:
+                # Without a time_grain there is exactly one A row; revenue is the
+                # first float column.
+                a_rev = next(
+                    v for v in a_rows[0]
+                    if isinstance(v, (int, float)) and v not in (True, False)
+                )
+                assert a_rev == 800.0, (
+                    f"org1 region A revenue should be 800 {cell}; got {a_rev}; "
+                    f"row={a_rows[0]}"
+                )
+
         # No duplicate-alias SQL error: if we got here without exception, we're fine.
 
 
-@pytest.mark.parametrize("top_n_other,with_filter,tc_count,tenant_count", list(
-    _itertools.product(
-        [False, True],   # top_n_other
-        [False, True],   # with_filter
-        [0, 1, 2],       # tc_count (0=no TC, 1=one pop_pct, 2=two same-measure)
-        [1, 2],          # tenant_count
-    )
-))
+@pytest.mark.parametrize(
+    "top_n_other,with_filter,tc_count,with_derived,tenant_count",
+    list(
+        _itertools.product(
+            [False, True],   # top_n_other        (none / n / n+other)
+            [False, True],   # with_filter        (none / org_id=org1)
+            [0, 1, 2],       # tc_count           ([] / [pop_pct] / [pop_pct, pop_pct])
+            [False, True],   # with_derived       (no / margin=(revenue-cost)/revenue)
+            [1, 2],          # tenant_count       (1 / 2 tenants for isolation)
+        )
+    ),
+)
 def test_matrix_top_n_filter_tc_tenant(
     top_n_other: bool,
     with_filter: bool,
     tc_count: int,
+    with_derived: bool,
     tenant_count: int,
 ) -> None:
-    """[COMPREHENSIVE MATRIX] Cross-product of top_n.other x filters x time_comparisons x tenants.
+    """[COMPOSITION MATRIX] Cross-product of top_n.other x filters x time_comparisons
+    x derived-measure x tenants — every combination compiled through
+    compile_metric → resolve_named_params → plan(claims={'policies': {...}}) →
+    DuckDB :memory: execution.
 
-    Each cell asserts: SQL parses + plan() accepts + executes + filter respected +
-    per-tenant isolation + no duplicate-alias error.
+    Each cell asserts: SQL parses (sqlglot) + plan() accepts + executes without
+    error + the user filter IS reflected in values + per-tenant isolation (no
+    cross-tenant rows, correct per-tenant top-N + Other) + no duplicate-alias
+    error + exactly ONE 'WITH __BASE'.
     """
     # Use a unique table name per cell to avoid table-already-exists conflicts.
     table_suffix = (
-        f"o{int(top_n_other)}_f{int(with_filter)}_tc{tc_count}_t{tenant_count}"
+        f"o{int(top_n_other)}_f{int(with_filter)}_tc{tc_count}"
+        f"_d{int(with_derived)}_t{tenant_count}"
     )
     table_name = f"matrix_{table_suffix}"
 
@@ -3579,4 +3736,5 @@ def test_matrix_top_n_filter_tc_tenant(
         with_filter=with_filter,
         tc_count=tc_count,
         tenant_count=tenant_count,
+        with_derived=with_derived,
     )
