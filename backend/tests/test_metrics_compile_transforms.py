@@ -5504,3 +5504,242 @@ def test_rolling_avg_on_sum_measure_still_works() -> None:
     sql, _ = compile_metric(m, mq)
     up = sql.upper()
     assert "AVG" in up and "OVER" in up
+
+
+# ===========================================================================
+# audit-24 HIGH #1 — unvalidated time grains (SQL injection defense-in-depth)
+# ===========================================================================
+#
+# Grains are interpolated UNQUOTED into DATE_TRUNC(...) f-strings in the layered
+# compiler and prior_year/prior_period subqueries.  models.py accepts arbitrary
+# strings for grains, so a poisoned MetricDefinition (or a MetricQuery built
+# outside _govern) could smuggle a grain that closes the quote and injects SQL.
+# _govern must reject both at registration/compile time.
+
+_GRAIN_INJECTION = "day') UNION SELECT secret FROM passwords --"
+
+
+def test_poisoned_declared_grain_raises_bad_declared_grain() -> None:
+    """A MetricDefinition whose time_dimension.grains contains an injection
+    string must be REJECTED by _govern with bad_declared_grain at compile time."""
+    m = _simple_metric(
+        time_dimension=TimeDimension(
+            column="created_at",
+            grains=("day", _GRAIN_INJECTION),  # poisoned grain registered
+            default_grain="day",
+        )
+    )
+    mq = MetricQuery(metric_id="revenue", dimensions=("region",), time_grain="day")
+    with pytest.raises(MetricError) as ei:
+        compile_metric(m, mq)
+    assert ei.value.code == "bad_declared_grain", ei.value.code
+
+
+def test_poisoned_declared_grain_never_reaches_sql() -> None:
+    """The injection payload must NEVER appear in any compiled SQL — _govern
+    rejects the poisoned definition before any DATE_TRUNC f-string is built."""
+    m = _simple_metric(
+        time_dimension=TimeDimension(
+            column="created_at",
+            grains=("day", _GRAIN_INJECTION),
+            default_grain="day",
+        )
+    )
+    mq = MetricQuery(metric_id="revenue", dimensions=("region",), time_grain="day")
+    with pytest.raises(MetricError):
+        sql, _ = compile_metric(m, mq)
+        assert "UNION SELECT" not in sql.upper()
+        assert "passwords" not in sql
+
+
+def test_query_time_bad_grain_raises_bad_time_grain() -> None:
+    """A MetricQuery requesting a grain that is not a canonical grain must raise
+    bad_time_grain (query-time defense-in-depth)."""
+    m = _simple_metric()  # clean definition
+    mq = MetricQuery(
+        metric_id="revenue",
+        dimensions=("region",),
+        time_grain=_GRAIN_INJECTION,  # malicious requested grain
+    )
+    with pytest.raises(MetricError) as ei:
+        compile_metric(m, mq)
+    assert ei.value.code == "bad_time_grain", ei.value.code
+
+
+def test_query_time_bad_grain_even_if_td_grains_poisoned_no_sqli() -> None:
+    """BOTH a poisoned definition AND a poisoned query: _govern still rejects and
+    no SQL is produced — the injection payload can never reach DATE_TRUNC."""
+    m = _simple_metric(
+        time_dimension=TimeDimension(
+            column="created_at",
+            grains=("day", _GRAIN_INJECTION),
+            default_grain="day",
+        )
+    )
+    mq = MetricQuery(
+        metric_id="revenue", dimensions=("region",), time_grain=_GRAIN_INJECTION
+    )
+    with pytest.raises(MetricError) as ei:
+        compile_metric(m, mq)
+    assert ei.value.code in {"bad_declared_grain", "bad_time_grain"}, ei.value.code
+
+
+def test_all_canonical_grains_still_compile() -> None:
+    """Defense-in-depth must NOT break valid metrics: every canonical grain
+    compiles cleanly."""
+    for g in ("hour", "day", "week", "month", "quarter", "year"):
+        m = _simple_metric(
+            time_dimension=TimeDimension(
+                column="created_at",
+                grains=("hour", "day", "week", "month", "quarter", "year"),
+                default_grain="day",
+            )
+        )
+        mq = MetricQuery(metric_id="revenue", dimensions=("region",), time_grain=g)
+        sql, _ = compile_metric(m, mq)
+        assert sql  # compiles without raising
+
+
+# ===========================================================================
+# audit-24 HIGH #2 — top_n.other + time_grain + explicit limit truncation
+# ===========================================================================
+#
+# With a time_grain the top-N arm spans n * num_time_buckets rows.  A per-arm
+# LIMIT capped it at effective_limit while the Other arm stayed uncapped ->
+# asymmetric UNION / corrupted stacked time-series.  Fix: strip the per-arm
+# LIMIT when top_n.other + time_grain; apply an EXPLICIT limit on the outer
+# union instead.
+
+
+def _topn_other_grain_metric() -> MetricDefinition:
+    return MetricDefinition(
+        id="rev_ts",
+        name="Rev TS",
+        measure=Measure(name="revenue", agg="sum", expr="amount"),
+        base_table="rev_ts",
+        dimensions=(Dimension(name="region"),),
+        time_dimension=TimeDimension(
+            column="created_at",
+            grains=("day", "month"),
+            default_grain="day",
+        ),
+    )
+
+
+def _setup_rev_ts(con) -> None:
+    con.execute(
+        "CREATE TABLE rev_ts (region VARCHAR, created_at DATE, amount DOUBLE)"
+    )
+    # Two months. Per month: A is top, B+C roll into Other.
+    con.execute(
+        """
+        INSERT INTO rev_ts VALUES
+            ('A', DATE '2024-01-15', 1000),
+            ('B', DATE '2024-01-15', 200),
+            ('C', DATE '2024-01-15', 50),
+            ('A', DATE '2024-02-15', 800),
+            ('B', DATE '2024-02-15', 300),
+            ('C', DATE '2024-02-15', 40)
+        """
+    )
+
+
+def test_topn_other_time_grain_no_truncation_full_top_n_per_bucket() -> None:
+    """[HIGH correctness] top_n.other + time_grain over 2 buckets returns the FULL
+    n*num_buckets top-N rows + the per-bucket Other rows, with no truncation."""
+    con = _duckdb_conn()
+    _setup_rev_ts(con)
+    m = _topn_other_grain_metric()
+    mq = MetricQuery(
+        metric_id="rev_ts",
+        dimensions=("region",),
+        time_grain="month",
+        top_n=TopN(dimension="region", n=1, order="desc", other=True, other_label="Other"),
+    )
+    sql, _ = compile_metric(m, mq)
+    rows = _plan_and_run(sql, con, claims={})
+
+    def _month(r):
+        v = r[1]
+        return getattr(v, "month", v)
+
+    by = {}
+    for r in rows:
+        by.setdefault((r[0], _month(r)), r)
+
+    a_rows = [k for k in by if k[0] == "A"]
+    assert len(a_rows) == 2, f"Top-N arm truncated; A months={a_rows} rows={rows}"
+    other_rows = [k for k in by if k[0] == "Other"]
+    assert len(other_rows) == 2, f"Other arm wrong bucket count: {other_rows} rows={rows}"
+
+    def _rev(r):
+        return next(
+            v for v in r
+            if isinstance(v, (int, float)) and v is not True and v is not False
+        )
+
+    assert _rev(by[("A", 1)]) == 1000.0, by[("A", 1)]
+    assert _rev(by[("A", 2)]) == 800.0, by[("A", 2)]
+    assert _rev(by[("Other", 1)]) == 250.0, f"Jan Other should be B+C=250: {by[('Other', 1)]}"
+    assert _rev(by[("Other", 2)]) == 340.0, f"Feb Other should be B+C=340: {by[('Other', 2)]}"
+
+
+def test_topn_other_time_grain_explicit_limit_caps_combined_union() -> None:
+    """[HIGH correctness] An EXPLICIT mq.limit caps the COMBINED union (top-N +
+    Other) rather than truncating the per-series length.  With 4 result rows
+    available (2 top + 2 Other) a limit of 2 returns exactly 2 rows total."""
+    con = _duckdb_conn()
+    _setup_rev_ts(con)
+    m = _topn_other_grain_metric()
+    mq = MetricQuery(
+        metric_id="rev_ts",
+        dimensions=("region",),
+        time_grain="month",
+        limit=2,
+        top_n=TopN(dimension="region", n=1, order="desc", other=True, other_label="Other"),
+    )
+    sql, _ = compile_metric(m, mq)
+    rows = _plan_and_run(sql, con, claims={})
+    assert len(rows) == 2, f"Explicit limit must cap combined union to 2 rows: {rows}"
+
+
+def test_topn_other_time_grain_default_limit_does_not_truncate() -> None:
+    """Without an explicit limit, the union is uncapped so all top-N + Other rows
+    survive (no default per-arm cap leaks in)."""
+    con = _duckdb_conn()
+    _setup_rev_ts(con)
+    m = _topn_other_grain_metric()
+    mq = MetricQuery(
+        metric_id="rev_ts",
+        dimensions=("region",),
+        time_grain="month",
+        top_n=TopN(dimension="region", n=1, order="desc", other=True, other_label="Other"),
+    )
+    sql, _ = compile_metric(m, mq)
+    rows = _plan_and_run(sql, con, claims={})
+    assert len(rows) == 4, f"Expected 4 rows (no truncation), got {len(rows)}: {rows}"
+
+
+def test_topn_other_no_time_grain_path_unchanged_keeps_limit() -> None:
+    """The no-time-grain top_n.other path is UNCHANGED: the per-arm LIMIT still
+    applies (regression guard for Fix #2)."""
+    con = _duckdb_conn()
+    con.execute("CREATE TABLE rev_ntg (region VARCHAR, amount DOUBLE)")
+    con.execute("INSERT INTO rev_ntg VALUES ('A', 1000), ('B', 200), ('C', 50)")
+    m = MetricDefinition(
+        id="rev_ntg",
+        name="Rev NTG",
+        measure=Measure(name="revenue", agg="sum", expr="amount"),
+        base_table="rev_ntg",
+        dimensions=(Dimension(name="region"),),
+    )
+    mq = MetricQuery(
+        metric_id="rev_ntg",
+        dimensions=("region",),
+        top_n=TopN(dimension="region", n=1, order="desc", other=True, other_label="Other"),
+    )
+    sql, _ = compile_metric(m, mq)
+    assert "LIMIT" in sql.upper()
+    rows = _plan_and_run(sql, con, claims={})
+    row_by_region = {r[0]: r for r in rows}
+    assert "A" in row_by_region and "Other" in row_by_region, rows

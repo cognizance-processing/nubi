@@ -725,7 +725,19 @@ def _compile_layered(
         if mq.top_n is not None:
             # Never let the default cap fall below the requested top-N size.
             effective_limit = max(effective_limit, mq.top_n.n)
-    outer_select = outer_select.limit(effective_limit)
+
+    # FIX (audit-24 HIGH correctness): for ``top_n.other`` WITH a time_grain the
+    # top-N arm spans ``n * num_time_buckets`` rows (one per top series per
+    # bucket).  A per-arm LIMIT on the top-N arm caps it at ``effective_limit``
+    # while the Other arm stays uncapped -> asymmetric UNION / corrupted stacked
+    # time-series.  In that case we must NOT put the LIMIT on the per-arm
+    # ``outer_select``; instead we apply it (only if EXPLICITLY provided) on the
+    # OUTER union below, capping the combined result rather than per-series length.
+    other_timeseries = (
+        mq.top_n is not None and mq.top_n.other and time_alias is not None
+    )
+    if not other_timeseries:
+        outer_select = outer_select.limit(effective_limit)
 
     # ── Top-N restriction on the outer SELECT ────────────────────────────────
     # top_n (no Other) → WHERE dim IN (membership) or QUALIFY RANK() <= N.
@@ -745,11 +757,18 @@ def _compile_layered(
         # Wrap each arm in parentheses (exp.Subquery) so per-arm ORDER BY / QUALIFY
         # / LIMIT are unambiguous — required by DuckDB / standard SQL for a UNION
         # whose arms carry those clauses.
-        top_stmt = exp.Union(
+        union_stmt = exp.Union(
             this=exp.Subquery(this=outer_select),
             expression=exp.Subquery(this=other_select),
             distinct=False,
         )
+        # FIX (audit-24 HIGH correctness): with a time_grain the per-arm LIMIT was
+        # stripped above; honour an EXPLICIT mq.limit by capping the COMBINED union
+        # (top-N + Other rows) here.  Without an explicit limit we leave the union
+        # uncapped so the full n*num_buckets top-N + per-bucket Other rows survive.
+        if other_timeseries and mq.limit is not None:
+            union_stmt = union_stmt.limit(mq.limit)
+        top_stmt = union_stmt
     else:
         top_stmt = outer_select
 
@@ -1392,6 +1411,23 @@ def _govern(metric: MetricDefinition, mq: MetricQuery) -> str | None:
                 f"(must match [A-Za-z_][A-Za-z0-9_]*).",
             )
 
+        # FIX (audit-24 HIGH SQLi): every declared grain MUST be in the canonical
+        # _TIME_GRAINS set.  Grains are interpolated UNQUOTED into DATE_TRUNC(...)
+        # f-strings in the layered compiler (~1414) and in
+        # _prior_year_subquery_sql / _prior_period_subquery_sql.  models.py accepts
+        # arbitrary strings for grains, so a first-party writer could register a
+        # MetricDefinition with a poisoned grain (e.g. one that closes the quote and
+        # appends UNION SELECT ...) and then query with it -> SQL injection.  Reject
+        # any poisoned definition here so a malicious grain can never reach SQL.
+        for g in metric.time_dimension.grains:
+            if g not in _TIME_GRAINS:
+                raise MetricError(
+                    "bad_declared_grain",
+                    f"time_dimension grain {g!r} on metric {metric.id!r} is not a "
+                    f"known time grain (allowed: "
+                    f"{', '.join(sorted(_TIME_GRAINS))}).",
+                )
+
     # requested dimensions must be allowed.
     for dim_name in mq.dimensions:
         if metric.dimension(dim_name) is None:
@@ -1410,6 +1446,17 @@ def _govern(metric: MetricDefinition, mq: MetricQuery) -> str | None:
                 "no_time_dimension",
                 f"Metric {metric.id!r} has no time dimension; cannot apply a "
                 f"time_grain.",
+            )
+        # FIX (audit-24 HIGH SQLi, defense-in-depth): the requested grain MUST be a
+        # canonical grain BEFORE we even check it against td.grains.  This guards a
+        # MetricQuery constructed without going through a governed definition (or one
+        # whose td.grains somehow slipped a bad value) — the grain is interpolated
+        # UNQUOTED into DATE_TRUNC f-strings, so it must come from the safe set.
+        if mq.time_grain not in _TIME_GRAINS:
+            raise MetricError(
+                "bad_time_grain",
+                f"Time grain {mq.time_grain!r} is not a known time grain "
+                f"(allowed: {', '.join(sorted(_TIME_GRAINS))}).",
             )
         if mq.time_grain not in td.grains:
             raise MetricError(
