@@ -4551,3 +4551,174 @@ def test_single_tenant_request_returns_full_top_n_through_plan() -> None:
     assert len(result) == 4, f"Single-tenant top-N not full: {result}"
     assert regions == {"orgA_r4", "orgA_r3", "orgA_r2", "orgA_r1"}, regions
     assert all(r.startswith("orgA_") for r in regions), f"Cross-tenant leak: {regions}"
+
+
+# ---------------------------------------------------------------------------
+# TWELFTH-WAVE — compiler percentile consistency + top_n.other tie determinism
+# (through plan() + DuckDB)
+# ---------------------------------------------------------------------------
+
+
+# ── HIGH: percentile_cont ORDER BY built from PARSED arg, not raw expr ────────
+
+def test_percentile_benign_expr_works_through_plan_duckdb() -> None:
+    """[HIGH] A benign percentile_cont expr compiles, plans, and computes the
+    correct quantile on DuckDB."""
+    con = _duckdb_conn()
+    con.execute("CREATE TABLE lat (latency_ms DOUBLE)")
+    # values 10,20,30,40,50 → p50 (continuous) = 30
+    con.execute("INSERT INTO lat VALUES (10),(20),(30),(40),(50)")
+    m = MetricDefinition(
+        id="lat",
+        name="Lat",
+        measure=Measure(name="p50_latency", agg="percentile_cont",
+                        expr="latency_ms", format="p50"),
+        base_table="lat",
+    )
+    mq = MetricQuery(metric_id="lat")
+    sql, _ = compile_metric(m, mq)
+    rows = _plan_and_run(sql, con, claims={})
+    assert rows[0][0] == 30.0, f"p50 should be 30, got {rows}"
+
+
+def test_percentile_subquery_expr_rejected() -> None:
+    """[HIGH] A percentile_cont expr containing a subquery must be rejected with
+    MetricError (raw user text can never reach the ORDER BY f-string)."""
+    m = MetricDefinition(
+        id="lat_bad",
+        name="LatBad",
+        measure=Measure(
+            name="p50_latency",
+            agg="percentile_cont",
+            expr="(SELECT latency_ms FROM secrets)",
+            format="p50",
+        ),
+        base_table="requests",
+    )
+    mq = MetricQuery(metric_id="lat_bad")
+    with pytest.raises(MetricError) as ei:
+        compile_metric(m, mq)
+    assert ei.value.code == "bad_percentile_expr"
+
+
+def test_percentile_subquery_expr_not_in_emitted_sql() -> None:
+    """[HIGH] The raw subquery text never survives into emitted SQL (fail-closed)."""
+    m = MetricDefinition(
+        id="lat_bad2",
+        name="LatBad2",
+        measure=Measure(
+            name="p95_latency",
+            agg="percentile_cont",
+            expr="x) WITHIN GROUP (ORDER BY (SELECT 1)",  # trailing-SQL injection attempt
+            format="p95",
+        ),
+        base_table="requests",
+    )
+    mq = MetricQuery(metric_id="lat_bad2")
+    # Fail-closed: either the malformed/injecting expr is rejected (MetricError
+    # for an embedded subquery, or a sqlglot ParseError when the raw text is no
+    # longer a parseable scalar expression), or the parsed arg is re-serialized
+    # safely.  In no case may the raw SELECT survive verbatim into the SQL.
+    import sqlglot.errors
+    try:
+        sql, _ = compile_metric(m, mq)
+    except (MetricError, sqlglot.errors.ParseError):
+        return
+    # If it compiled, the embedded raw SELECT must NOT be present verbatim.
+    assert "select 1" not in sql.lower()
+
+
+# ── MED: top_n.other time-grain tie boundary determinism ──────────────────────
+
+def test_top_n_other_time_grain_tie_boundary_deterministic() -> None:
+    """[MED] At a tie on the top-N boundary, the TOP arm and OTHER arm select the
+    IDENTICAL member set — no double-count, no drop — and totals are exact.
+
+    Setup: regions A=300, B=200, C=200, D=100 across two months. top_n n=2.
+    B and C are TIED at the #2/#3 boundary.  With a stable tiebreaker
+    (SUM(measure) DESC, region ASC) the top-2 is deterministically {A, B}; the
+    Other arm is the exact complement {C, D}.  The tied member (B or C) appears
+    in EXACTLY ONE arm — the grand total must equal the sum of all rows (800).
+    """
+    con = _duckdb_conn()
+    con.execute("""
+        CREATE TABLE tie_tg (
+            region     VARCHAR,
+            amount     DOUBLE,
+            created_at DATE
+        )
+    """)
+    # Per region totals: A=300, B=200, C=200 (tie with B), D=100.
+    # Spread across two months so a time_grain is meaningful.
+    con.execute("""
+        INSERT INTO tie_tg VALUES
+            ('A', 150, DATE '2024-01-15'), ('A', 150, DATE '2024-02-15'),
+            ('B', 100, DATE '2024-01-15'), ('B', 100, DATE '2024-02-15'),
+            ('C', 100, DATE '2024-01-15'), ('C', 100, DATE '2024-02-15'),
+            ('D',  50, DATE '2024-01-15'), ('D',  50, DATE '2024-02-15')
+    """)
+    m = MetricDefinition(
+        id="tie_tg",
+        name="Tie TG",
+        measure=Measure(name="revenue", agg="sum", expr="amount"),
+        base_table="tie_tg",
+        dimensions=(Dimension(name="region"),),
+        time_dimension=TimeDimension(
+            column="created_at",
+            grains=("month",),
+            default_grain="month",
+        ),
+    )
+    mq = MetricQuery(
+        metric_id="tie_tg",
+        dimensions=("region",),
+        time_grain="month",
+        top_n=TopN(dimension="region", n=2, measure="revenue", order="desc",
+                   other=True, other_label="Other"),
+    )
+    sql, _ = compile_metric(m, mq)
+
+    # Determinism: compiling twice yields byte-identical SQL.
+    sql2, _ = compile_metric(m, mq)
+    assert sql == sql2
+
+    rows = _plan_and_run(sql, con, claims={})
+    # Columns: region, created_at_month, revenue.
+    region_idx = 0
+    rev_idx = 2
+    # Grand total across all returned rows must equal the full table total (800):
+    # A=300, B=200, C=200, D=100 → every input row must land in EXACTLY one arm
+    # (no double-count, no drop).
+    grand_total = sum(r[rev_idx] for r in rows)
+    assert grand_total == 800.0, f"Total mismatch (double-count/drop): {rows}"
+
+    # Determine which named (non-Other) regions appear.
+    named = {r[region_idx] for r in rows if r[region_idx] != "Other"}
+    # Stable tiebreaker (region ASC) makes B win the tie over C.
+    assert named == {"A", "B"}, f"Top-2 not deterministic {{A,B}}: {named}"
+    # The tied loser C must be in Other, never double-listed as a named region.
+    assert "C" not in named
+
+
+def test_top_n_other_time_grain_tie_both_arms_same_membership_sql() -> None:
+    """[MED] The TOP arm's membership IN-subquery and the OTHER arm's NOT-IN
+    membership subquery use the SAME deterministic ORDER BY (with the stable
+    {dim} tiebreaker), so both arms agree on the member set at a tie."""
+    m = _simple_metric()
+    mq = MetricQuery(
+        metric_id="revenue",
+        dimensions=("region",),
+        time_grain="month",
+        top_n=TopN(dimension="region", n=2, order="desc",
+                   other=True, other_label="Other"),
+    )
+    sql, _ = compile_metric(m, mq)
+    up = sql.upper()
+    # The membership ORDER BY must carry the stable secondary tiebreaker on the
+    # dimension column (region ASC) in BOTH arms.
+    # Count occurrences of "ORDER BY SUM(REVENUE) DESC, REGION" — one per arm.
+    needle = "SUM(REVENUE) DESC, REGION"
+    assert up.count(needle) == 2, (
+        f"Expected the stable tiebreaker in both membership subqueries; "
+        f"found {up.count(needle)} in:\n{sql}"
+    )

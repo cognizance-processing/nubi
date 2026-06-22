@@ -794,9 +794,18 @@ async def query_metric(
     # serve or store results.
 
     # ── 7. Compute quota (mirror /query) ─────────────────────────────────────
+    # INVARIANT: embed tokens and first-party viewer-role users are NEVER metered.
     from app.features import enforce_quota as _enforce_quota
 
-    await _enforce_quota(org_id, "compute_units", amount=1.0)
+    _skip_metering: bool = identity.kind == "embed"
+    if not _skip_metering and identity.user_id and org_id:
+        from app.auth.roles import get_org_role as _get_org_role
+
+        _caller_role = await _get_org_role(identity.user_id, org_id, repo)
+        if _caller_role == "viewer":
+            _skip_metering = True
+    if not _skip_metering:
+        await _enforce_quota(org_id, "compute_units", amount=1.0)
 
     # ── 8. Build the connector — the SAME helper /query + /estimate use ──────
     # Honours the metric's bound datastore_id (org-scoped), secret injection,

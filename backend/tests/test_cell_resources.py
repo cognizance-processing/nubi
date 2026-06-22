@@ -1095,3 +1095,144 @@ def test_map_handler_author_above_ceiling_clamped(monkeypatch):
 
     result = handle_map(config, ctx, claims={})
     assert result["item_count"] == 8
+
+
+# ---------------------------------------------------------------------------
+# Batched add_task_runs: large map fan-out writes children in bounded chunks
+# ---------------------------------------------------------------------------
+
+
+async def test_map_fanout_add_task_runs_batched():
+    """_add_task_runs_batched splits a large child list into bounded inserts.
+
+    Verify:
+    - All children are created (total count correct).
+    - The store's add_task_runs is called in multiple chunks, each <= batch_size.
+    - No single call receives more rows than the configured batch_size.
+    """
+    import app.flows.runtime as rt
+    from app.flows.runtime import _add_task_runs_batched, _expand_map_children
+    from app.flows.store import InMemoryFlowStore
+    from app.flows.registry import reset_for_tests
+    from unittest.mock import AsyncMock, patch
+
+    reset_for_tests()
+    store = InMemoryFlowStore()
+
+    flow = await store.create_flow(
+        org_id="org-test", created_by="user-test", name="batch_test",
+        spec={
+            "version": 1, "name": "batch_test",
+            "tasks": [{"key": "fan", "kind": "noop", "needs": [], "config": {}}],
+        },
+    )
+    run = await store.create_flow_run(
+        flow_id=flow["id"], org_id="org-test", params={}, trigger="manual",
+    )
+    flow_run_id = run["id"]
+
+    n_items = 1200  # Large enough to require multiple batches at batch_size=500.
+    items = [{"n": i} for i in range(n_items)]
+    body_tasks = [{"key": "work", "kind": "noop", "needs": [], "config": {}}]
+
+    child_runs = _expand_map_children(
+        flow_run_id=flow_run_id,
+        org_id="org-test",
+        map_task_run_id="map-tr-batch",
+        map_task_key="fan",
+        items=items,
+        body_tasks=body_tasks,
+        item_var="item",
+        now=NOW,
+        max_concurrency=0,
+    )
+
+    assert len(child_runs) == n_items, f"Expected {n_items} child_runs, got {len(child_runs)}"
+
+    batch_size = 500
+    call_sizes: list[int] = []
+    original_add = store.add_task_runs
+
+    async def recording_add(frid: str, runs: list) -> None:
+        call_sizes.append(len(runs))
+        await original_add(frid, runs)
+
+    store.add_task_runs = recording_add  # type: ignore[method-assign]
+
+    await _add_task_runs_batched(store, flow_run_id, child_runs, batch_size=batch_size)
+
+    # All children must have been inserted.
+    all_trs = await store.list_task_runs(flow_run_id)
+    inserted_children = [tr for tr in all_trs if "[" in tr["task_key"]]
+    assert len(inserted_children) == n_items, (
+        f"Expected {n_items} inserted children, got {len(inserted_children)}"
+    )
+
+    # Must have taken more than one call.
+    assert len(call_sizes) > 1, (
+        f"Expected multiple add_task_runs calls for {n_items} items at batch_size={batch_size}, "
+        f"but got {len(call_sizes)} call(s)"
+    )
+
+    # No single call must exceed the batch size.
+    oversized = [s for s in call_sizes if s > batch_size]
+    assert not oversized, (
+        f"Some add_task_runs calls exceeded batch_size={batch_size}: {oversized}"
+    )
+
+    # Sanity: total inserted equals n_items.
+    assert sum(call_sizes) == n_items, (
+        f"Sum of batch sizes {sum(call_sizes)} != n_items {n_items}"
+    )
+
+
+async def test_map_fanout_batched_small_list_single_call():
+    """A child list smaller than batch_size issues exactly one add_task_runs call."""
+    from app.flows.runtime import _add_task_runs_batched, _expand_map_children
+    from app.flows.store import InMemoryFlowStore
+    from app.flows.registry import reset_for_tests
+
+    reset_for_tests()
+    store = InMemoryFlowStore()
+
+    flow = await store.create_flow(
+        org_id="org-test", created_by="user-test", name="small_batch_test",
+        spec={
+            "version": 1, "name": "small_batch_test",
+            "tasks": [{"key": "fan", "kind": "noop", "needs": [], "config": {}}],
+        },
+    )
+    run = await store.create_flow_run(
+        flow_id=flow["id"], org_id="org-test", params={}, trigger="manual",
+    )
+    flow_run_id = run["id"]
+
+    items = [{"n": i} for i in range(10)]
+    body_tasks = [{"key": "work", "kind": "noop", "needs": [], "config": {}}]
+    child_runs = _expand_map_children(
+        flow_run_id=flow_run_id,
+        org_id="org-test",
+        map_task_run_id="map-tr-small",
+        map_task_key="fan",
+        items=items,
+        body_tasks=body_tasks,
+        item_var="item",
+        now=NOW,
+        max_concurrency=0,
+    )
+
+    call_count = 0
+    original_add = store.add_task_runs
+
+    async def counting_add(frid: str, runs: list) -> None:
+        nonlocal call_count
+        call_count += 1
+        await original_add(frid, runs)
+
+    store.add_task_runs = counting_add  # type: ignore[method-assign]
+
+    await _add_task_runs_batched(store, flow_run_id, child_runs, batch_size=500)
+
+    assert call_count == 1, (
+        f"Expected exactly 1 add_task_runs call for 10 items at batch_size=500, got {call_count}"
+    )

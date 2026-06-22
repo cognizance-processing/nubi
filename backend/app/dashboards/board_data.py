@@ -419,7 +419,16 @@ async def _resolve_inline_provider(
             # whose names map to result names, e.g.:
             #   WITH revenue_by_day AS (SELECT ... FROM orders ...)
             # The result name is the CTE alias; we SELECT * FROM it.
-            sql = f"{provider.base_cte.rstrip(';')} SELECT * FROM {r.name}"
+            # FIX [MED DB-level LIMIT]: wrap the inline query in an outer SELECT
+            # so the DB never returns more than _ROW_CAP rows into memory.
+            # The post-fetch slice below is kept as a backstop but the heavy
+            # lifting now happens inside the DB engine before any data is
+            # transferred to the Python process.
+            inner_sql = f"{provider.base_cte.rstrip(';')} SELECT * FROM {r.name}"
+            if _ROW_CAP > 0:
+                sql = f"SELECT * FROM ({inner_sql}) AS _nubi_inline_capped LIMIT {_ROW_CAP}"
+            else:
+                sql = inner_sql
             try:
                 from app.connectors import plan as planner_plan  # noqa: PLC0415
                 from app.routes.query import _get_demo_connector  # noqa: PLC0415

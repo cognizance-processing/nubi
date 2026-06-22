@@ -67,6 +67,7 @@ members).
 from __future__ import annotations
 
 import logging
+import os
 import threading
 import time
 from collections import OrderedDict
@@ -77,6 +78,26 @@ logger = logging.getLogger("nubi.connectors.cache")
 
 _DEFAULT_MAX_ENTRIES: int = 256
 _DEFAULT_TTL_SECONDS: float = 300.0  # 5 minutes
+
+# Per-entry byte cap: entries larger than this limit are silently skipped (not
+# cached) so a single large result cannot consume a disproportionate share of
+# the cache or blow the process memory.  Override with NUBI_CACHE_MAX_ENTRY_BYTES.
+_DEFAULT_MAX_ENTRY_BYTES: int = 32 * 1024 * 1024  # 32 MiB
+
+
+def _max_entry_bytes() -> int:
+    """Return the per-entry byte cap (env-overridable)."""
+    raw = os.environ.get("NUBI_CACHE_MAX_ENTRY_BYTES")
+    if raw is not None:
+        try:
+            return int(raw)
+        except ValueError:
+            logger.warning(
+                "NUBI_CACHE_MAX_ENTRY_BYTES=%r is not a valid integer; using default %d",
+                raw,
+                _DEFAULT_MAX_ENTRY_BYTES,
+            )
+    return _DEFAULT_MAX_ENTRY_BYTES
 
 # Redis key namespacing.  Value keys: ``nubi:cache:<key>``.  Tag set keys:
 # ``nubi:cache:tag:<tag>`` (a Redis SET holding the member value-keys for that
@@ -210,6 +231,12 @@ class ContentAddressedCache:
         If the cache is at capacity the least-recently-used entry is evicted
         before inserting the new one.  The TTL clock resets on every ``put``.
 
+        Entries larger than the per-entry byte cap (``NUBI_CACHE_MAX_ENTRY_BYTES``,
+        default 32 MiB) are silently skipped — they are NOT stored, and a
+        subsequent ``get`` for the same key will return ``None``.  This prevents
+        a single large result from consuming a disproportionate share of the
+        cache or blowing process memory.
+
         Parameters
         ----------
         key:
@@ -221,6 +248,15 @@ class ContentAddressedCache:
             can later be bulk-invalidated via :meth:`invalidate`.  ``None``
             (the default) attaches no tags — existing call sites are unaffected.
         """
+        cap = _max_entry_bytes()
+        if len(value) > cap:
+            logger.debug(
+                "cache: skipping oversized entry key=%s (%d bytes > cap %d bytes)",
+                key,
+                len(value),
+                cap,
+            )
+            return
         normalized_tags: tuple[str, ...] = tuple(tags) if tags else ()
         expires_at = time.monotonic() + self._ttl
         entry = _CacheEntry(value=value, expires_at=expires_at, tags=normalized_tags)
@@ -434,6 +470,9 @@ class RedisCacheBackend:
         A Redis failure is a no-op (logged at WARNING) — the request proceeds
         uncached rather than erroring.
 
+        Entries larger than the per-entry byte cap (``NUBI_CACHE_MAX_ENTRY_BYTES``,
+        default 32 MiB) are silently skipped — they are NOT stored.
+
         Tag-set TTL (growth prevention)
         --------------------------------
         After each ``SADD`` we call ``EXPIRE`` on the tag SET with a lifetime
@@ -442,6 +481,15 @@ class RedisCacheBackend:
         (fully-expired-member) sets are reaped automatically by Redis within
         ``2 * ttl`` seconds of the last write — preventing unbounded growth.
         """
+        cap = _max_entry_bytes()
+        if len(value) > cap:
+            logger.debug(
+                "redis cache: skipping oversized entry key=%s (%d bytes > cap %d bytes)",
+                key,
+                len(value),
+                cap,
+            )
+            return
         client = self._client()
         if client is None:
             return

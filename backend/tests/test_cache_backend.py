@@ -423,6 +423,74 @@ def test_redis_invalidate_all_stale_members_do_not_inflate_count(fake_redis):
 
 
 # ===========================================================================
+# Per-entry byte cap (MED fix) — NUBI_CACHE_MAX_ENTRY_BYTES
+# ===========================================================================
+
+
+def test_memory_oversized_entry_not_cached(monkeypatch):
+    """An entry whose byte length exceeds the cap must NOT be stored.
+
+    A subsequent get() for the same key must return None (MISS), not the
+    oversized value.  The cap is set to a small value via monkeypatch so the
+    test does not need to allocate tens of MiB.
+    """
+    monkeypatch.setenv("NUBI_CACHE_MAX_ENTRY_BYTES", "10")
+    cache = ContentAddressedCache()
+    oversized = b"x" * 11  # 11 bytes > cap of 10
+    cache.put("big_key", oversized)
+    assert cache.get("big_key") is None, (
+        "Oversized entry must not be stored — get() must return None (MISS)."
+    )
+    assert cache.size() == 0
+
+
+def test_memory_normal_entry_still_cached(monkeypatch):
+    """An entry within the byte cap must be stored and retrievable normally."""
+    monkeypatch.setenv("NUBI_CACHE_MAX_ENTRY_BYTES", "10")
+    cache = ContentAddressedCache()
+    small = b"hello"  # 5 bytes <= cap of 10
+    cache.put("small_key", small)
+    assert cache.get("small_key") == small, (
+        "Normal (within-cap) entry must be cached and returned on get()."
+    )
+    assert cache.size() == 1
+
+
+def test_memory_oversized_entry_not_cached_exact_boundary(monkeypatch):
+    """An entry of exactly cap+1 bytes must be skipped; exactly cap bytes is stored."""
+    monkeypatch.setenv("NUBI_CACHE_MAX_ENTRY_BYTES", "8")
+    cache = ContentAddressedCache()
+    at_cap = b"x" * 8   # 8 bytes == cap → allowed
+    over_cap = b"x" * 9  # 9 bytes > cap → skipped
+    cache.put("at_cap", at_cap)
+    cache.put("over_cap", over_cap)
+    assert cache.get("at_cap") == at_cap
+    assert cache.get("over_cap") is None
+
+
+def test_redis_oversized_entry_not_cached(monkeypatch, fake_redis):
+    """Redis backend must also skip oversized entries (not call SETEX)."""
+    monkeypatch.setenv("NUBI_CACHE_MAX_ENTRY_BYTES", "10")
+    backend = RedisCacheBackend(ttl=300)
+    oversized = b"y" * 11
+    backend.put("big_redis_key", oversized)
+    # The value must NOT be in the fake Redis kv store.
+    assert "nubi:cache:big_redis_key" not in fake_redis.kv, (
+        "Oversized entry must not be written to Redis."
+    )
+    assert backend.get("big_redis_key") is None
+
+
+def test_redis_normal_entry_still_cached(monkeypatch, fake_redis):
+    """Redis backend must cache normal (within-cap) entries as before."""
+    monkeypatch.setenv("NUBI_CACHE_MAX_ENTRY_BYTES", "10")
+    backend = RedisCacheBackend(ttl=300)
+    small = b"ok"  # 2 bytes <= cap of 10
+    backend.put("small_redis_key", small)
+    assert backend.get("small_redis_key") == small
+
+
+# ===========================================================================
 # Backend selection via get_cache()
 # ===========================================================================
 

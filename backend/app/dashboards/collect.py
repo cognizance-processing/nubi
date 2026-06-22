@@ -206,7 +206,16 @@ async def run_query_rows(
 
     from app.connectors import plan as planner_plan
 
-    physical_plan = planner_plan(sql=sql, claims={"policies": policies}, params=params)
+    # Push _ROW_CAP+1 as a LIMIT into the physical plan so the DB/connector
+    # never materialises more than cap+1 rows into memory.  Using cap+1 (not
+    # cap) preserves the ability to detect truncation: len(arrow_table) > cap
+    # is still detectable when the connector returns exactly cap+1 rows.
+    # The post-fetch slice below is kept as a backstop for connectors that
+    # ignore the plan's LIMIT node.
+    _plan_limit: int | None = (_ROW_CAP + 1) if _ROW_CAP > 0 else None
+    physical_plan = planner_plan(
+        sql=sql, claims={"policies": policies}, params=params, limit=_plan_limit
+    )
 
     connector, connector_owned = await _resolve_connector(
         registered, org_id, repo, physical_plan, ds_cache=ds_cache

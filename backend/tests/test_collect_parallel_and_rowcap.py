@@ -226,6 +226,65 @@ async def test_row_cap_logs_warning_when_truncating(
 
 
 # ---------------------------------------------------------------------------
+# 3b. LIMIT is pushed into the physical plan (not just sliced post-fetch)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_row_cap_limit_pushed_into_plan(repo: InMemoryRepo) -> None:
+    """run_query_rows must push LIMIT(_ROW_CAP+1) into the PhysicalPlan SQL.
+
+    The DB-level cap must be enforced before the connector returns rows so that
+    the connector never materialises more than cap+1 rows into memory.  The test
+    captures the plan that was actually passed to connector.execute and asserts
+    that its SQL contains a LIMIT clause bounded by cap+1.
+    """
+    import app.dashboards.collect as _collect
+
+    reg = get_query_registry()
+    reg.register(id="q-limit-push", sql="SELECT id, val FROM demo", name="LimitPush")
+
+    captured_plans: list = []
+
+    class _CapturingConnector:
+        def execute(self, plan):  # noqa: ANN001
+            captured_plans.append(plan)
+            # Return a table smaller than cap so no post-fetch truncation fires.
+            return pa.table({"id": [1, 2], "val": [10, 20]})
+
+        def close(self) -> None:
+            pass
+
+    original_cap = _collect._ROW_CAP
+    try:
+        _collect._ROW_CAP = 5  # cap=5 → expect LIMIT 6 in the plan SQL
+
+        with mock.patch(
+            "app.dashboards.collect._resolve_connector",
+            return_value=(_CapturingConnector(), False),
+        ):
+            cols, rows = await run_query_rows("q-limit-push", _ORG, repo, {})
+    finally:
+        _collect._ROW_CAP = original_cap
+
+    assert len(rows) == 2, "Rows below cap should be returned unchanged"
+    assert captured_plans, "connector.execute was never called"
+
+    plan_sql: str = captured_plans[0].sql.upper()
+    assert "LIMIT" in plan_sql, (
+        f"Expected LIMIT in physical plan SQL (cap+1 pushed); got: {captured_plans[0].sql!r}"
+    )
+    # The LIMIT value must be cap+1 (6 for cap=5) — not larger.
+    import re as _re
+    limit_match = _re.search(r"LIMIT\s+(\d+)", plan_sql)
+    assert limit_match is not None, f"LIMIT not parseable in SQL: {captured_plans[0].sql!r}"
+    limit_val = int(limit_match.group(1))
+    assert limit_val == 6, (
+        f"Expected LIMIT 6 (cap+1=5+1) in plan SQL; got LIMIT {limit_val} in {captured_plans[0].sql!r}"
+    )
+
+
+# ---------------------------------------------------------------------------
 # 4. Small results (below cap) are unchanged — happy path
 # ---------------------------------------------------------------------------
 

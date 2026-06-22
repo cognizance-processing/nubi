@@ -75,6 +75,23 @@ _MAX_WRITEBACK_ROWS: int = int(os.environ.get("NUBI_MAX_WRITEBACK_ROWS", "10000"
 _MAX_TASK_LOG_LINES: int = int(os.environ.get("NUBI_MAX_TASK_LOG_LINES", "1000"))
 _MAX_TASK_LOG_BYTES: int = int(os.environ.get("NUBI_MAX_TASK_LOG_BYTES", str(512 * 1024)))
 
+# ---------------------------------------------------------------------------
+# Task-run result-blob cap (MED resource — unbounded result in run-detail)
+# ---------------------------------------------------------------------------
+# GET /flows/runs/{run_id} serialises ALL task_runs including full result blobs.
+# Without a cap, a run with large per-task results returns an unbounded payload.
+#
+# NUBI_MAX_RESULT_BLOB_BYTES — max byte length of a serialised per-task result
+#                              included inline in GET /flows/runs/{run_id}.
+#                              Results exceeding this are replaced with a metadata
+#                              stub ``{result_omitted: true, result_size_bytes: N}``.
+#                              Pass ``?include_results=1`` to bypass the cap and
+#                              receive the full blob (useful for debuggers / CLI).
+#                              Default: 64 KiB.
+_MAX_RESULT_BLOB_BYTES: int = int(
+    os.environ.get("NUBI_MAX_RESULT_BLOB_BYTES", str(64 * 1024))
+)
+
 
 def _cap_task_logs(
     logs: list[str],
@@ -97,6 +114,54 @@ def _cap_task_logs(
         capped.append(line)
         total_bytes += line_bytes
     return capped, False
+
+
+def _truncate_result_blob(
+    result: Any,
+    max_bytes: int = _MAX_RESULT_BLOB_BYTES,
+) -> dict[str, Any]:
+    """Return either the original result or a metadata stub if it is too large.
+
+    Serialises *result* to JSON once to measure its byte footprint.  When it
+    fits within *max_bytes* the raw value is returned unchanged.  When it
+    exceeds the cap the original is discarded and a lightweight stub is
+    returned instead::
+
+        {"result_omitted": True, "result_size_bytes": <N>}
+
+    Callers that need the full blob should re-request with
+    ``?include_results=1``.
+
+    Parameters
+    ----------
+    result:
+        The raw task_run result (any JSON-serialisable value, or ``None``).
+    max_bytes:
+        Byte cap.  Defaults to ``_MAX_RESULT_BLOB_BYTES``.
+
+    Returns
+    -------
+    dict
+        Either ``{"result": <original>}`` or
+        ``{"result_omitted": True, "result_size_bytes": N}``.
+    """
+    import json as _json  # noqa: PLC0415
+
+    if result is None:
+        return {"result": None}
+
+    try:
+        serialised = _json.dumps(result, default=str)
+        size = len(serialised.encode("utf-8", errors="replace"))
+    except Exception:  # noqa: BLE001
+        # Non-serialisable result — treat as omitted for safety.
+        return {"result_omitted": True, "result_size_bytes": 0}
+
+    if size <= max_bytes:
+        return {"result": result}
+
+    return {"result_omitted": True, "result_size_bytes": size}
+
 
 # ---------------------------------------------------------------------------
 # Writeback governance — server-side approval policy
@@ -457,8 +522,24 @@ def _serialize_flow_run(run: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def _serialize_task_run(tr: dict[str, Any]) -> dict[str, Any]:
-    """Convert a task_run dict to a JSON-serialisable form."""
+def _serialize_task_run(
+    tr: dict[str, Any],
+    include_results: bool = False,
+) -> dict[str, Any]:
+    """Convert a task_run dict to a JSON-serialisable form.
+
+    Parameters
+    ----------
+    tr:
+        The raw task_run dict from the store.
+    include_results:
+        When ``True`` the full ``result`` blob is included verbatim.
+        When ``False`` (default) the blob is passed through
+        :func:`_truncate_result_blob`: if it fits within
+        ``_MAX_RESULT_BLOB_BYTES`` it is included; otherwise it is replaced
+        with ``{"result_omitted": True, "result_size_bytes": N}`` so callers
+        can detect the truncation without fetching the whole payload.
+    """
     # Duration in seconds (None if not started or not finished).
     started = tr.get("started_at")
     finished = tr.get("finished_at")
@@ -470,7 +551,13 @@ def _serialize_task_run(tr: dict[str, Any]) -> dict[str, Any]:
         except Exception:  # noqa: BLE001
             pass
 
-    return {
+    raw_result = tr.get("result")
+    if include_results:
+        result_payload: dict[str, Any] = {"result": raw_result}
+    else:
+        result_payload = _truncate_result_blob(raw_result)
+
+    serialised: dict[str, Any] = {
         "id": tr["id"],
         "flow_run_id": tr["flow_run_id"],
         "org_id": tr["org_id"],
@@ -479,7 +566,6 @@ def _serialize_task_run(tr: dict[str, Any]) -> dict[str, Any]:
         "attempt": tr.get("attempt", 0),
         "depends_on": tr.get("depends_on", []),
         "cache_key": tr.get("cache_key"),
-        "result": tr.get("result"),
         "error": tr.get("error"),
         "logs": tr.get("logs") or [],
         "duration_s": duration_s,
@@ -488,6 +574,10 @@ def _serialize_task_run(tr: dict[str, Any]) -> dict[str, Any]:
         "finished_at": _dt_iso(tr.get("finished_at")),
         "created_at": _dt_iso(tr.get("created_at")),
     }
+    # Merge result payload: either {"result": ...} or
+    # {"result_omitted": True, "result_size_bytes": N}.
+    serialised.update(result_payload)
+    return serialised
 
 
 def _compute_next_run_at(schedule: str | None, now: datetime) -> datetime | None:
@@ -871,6 +961,7 @@ async def flows_tick(
 @router.get("/runs/{run_id}", status_code=200)
 async def get_flow_run_by_id(
     run_id: str,
+    include_results: int = Query(default=0, ge=0, le=1),
     user: dict[str, Any] = Depends(current_user),
     repo: Repo = Depends(get_repo),
 ) -> dict[str, Any]:
@@ -879,6 +970,17 @@ async def get_flow_run_by_id(
     Returns ``flow_run + {task_runs: [...]}`` for live polling.
     Each task_run includes ``logs``, ``error``, ``attempt``, ``duration_s``.
     Returns 404 if the run does not exist or belongs to a different org.
+
+    Result blobs
+    ------------
+    By default large per-task ``result`` blobs are omitted from each
+    ``task_run`` entry and replaced with metadata::
+
+        {"result_omitted": true, "result_size_bytes": <N>}
+
+    Small results (≤ ``NUBI_MAX_RESULT_BLOB_BYTES``, default 64 KiB) are
+    included verbatim.  Pass ``?include_results=1`` to receive the full
+    blob regardless of size (useful for debugging / CLI tooling).
     """
     org_id = await _get_user_org(str(user["id"]), repo)
     store = get_flow_store()
@@ -886,9 +988,12 @@ async def get_flow_run_by_id(
     if run is None or str(run["org_id"]) != str(org_id):
         raise AppError("not_found", "Flow run not found.", 404)
 
+    _include_results: bool = bool(include_results)
     task_runs = await store.list_task_runs(run_id)
     result = _serialize_flow_run(run)
-    result["task_runs"] = [_serialize_task_run(tr) for tr in task_runs]
+    result["task_runs"] = [
+        _serialize_task_run(tr, include_results=_include_results) for tr in task_runs
+    ]
     return result
 
 

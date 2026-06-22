@@ -547,7 +547,12 @@ def _extract_layered_cte(
     return inner_sql, outer_sql
 
 
-def route_to_rollup_shape(plan: PhysicalPlan, registry: Any) -> RollupRouteResult:
+def route_to_rollup_shape(
+    plan: PhysicalPlan,
+    registry: Any,
+    *,
+    org_id: str | None = None,
+) -> RollupRouteResult:
     """Conservatively rewrite *plan* to read a built rollup when SOUND.
 
     This is the auto-pre-aggregation router.  Unlike the legacy exact-sig
@@ -562,7 +567,7 @@ def route_to_rollup_shape(plan: PhysicalPlan, registry: Any) -> RollupRouteResul
        For layered ``WITH __base AS (<inner>) <outer>`` queries, the
        router inspects the INNER aggregation (the outer window fns / derived
        formulas compute over the base and pass through unchanged).
-    2. A built rollup exists for the same base table.
+    2. A built rollup exists for the same base table AND the same org scope.
     3. The query's GROUP BY columns ⊆ the rollup's dimensions (so re-grouping
        the rollup reproduces the query's grain).
     4. Every query measure ``func(col)`` is:
@@ -570,6 +575,18 @@ def route_to_rollup_shape(plan: PhysicalPlan, registry: Any) -> RollupRouteResul
          b. materialized by the rollup (the rollup computed ``func(col)``).
     5. Every WHERE-clause column is present in the rollup (so the predicate —
        including any RLS predicate injected upstream — still applies).
+
+    Tenant-isolation (org-scoping)
+    --------------------------------
+    *org_id* scopes the registry lookup so only rollups built for the calling
+    organisation are ever considered.  A rollup built for org A is **never** a
+    candidate for org B's queries, even when both share the same base table and
+    query shape.  RLS predicates in the plan act as defence-in-depth, but the
+    org-scoped registry lookup is the primary isolation guard.
+
+    When *org_id* is ``None`` (unscoped / legacy path) only rollups that are
+    themselves unscoped (``org_id=None``) are returned — a scoped rollup is
+    never served to an unscoped caller.
 
     Layered (windowed / derived) metric queries
     --------------------------------------------
@@ -590,6 +607,19 @@ def route_to_rollup_shape(plan: PhysicalPlan, registry: Any) -> RollupRouteResul
     Be conservative: anything unproven leaves the plan EXACTLY as-is (same
     object, same cache_key) so RLS + cache behaviour is preserved on the
     non-routed path.
+
+    Parameters
+    ----------
+    plan:
+        The ``PhysicalPlan`` produced by ``plan()``, including any RLS-injected
+        predicates.
+    registry:
+        A ``RollupRegistry`` instance.
+    org_id:
+        The organisation that owns the query.  Pass the org from the verified
+        token / identity; ``None`` for unscoped / legacy paths.  Rollup
+        candidates are filtered to this org so cross-tenant misrouting is
+        impossible at the registry level (in addition to RLS).
     """
     # PERF (hot path): the rollup registry is empty in the common/default case
     # (no built rollups). Short-circuit BEFORE the sqlglot parse so every plain
@@ -612,7 +642,8 @@ def route_to_rollup_shape(plan: PhysicalPlan, registry: Any) -> RollupRouteResul
         if inner_shape is None or not inner_shape.routable or inner_shape.base_table is None:
             return RollupRouteResult(plan, False, reason="layered: inner not routable")
 
-        rollups = registry.candidates_for_table(inner_shape.base_table)
+        # Pass org_id so only this org's rollups are considered (tenant isolation).
+        rollups = registry.candidates_for_table(inner_shape.base_table, org_id=org_id)
         if not rollups:
             return RollupRouteResult(plan, False, reason="layered: no rollup for base table")
 
@@ -691,7 +722,8 @@ def route_to_rollup_shape(plan: PhysicalPlan, registry: Any) -> RollupRouteResul
     if shape is None or not shape.routable or shape.base_table is None:
         return RollupRouteResult(plan, False, reason="not a routable aggregation")
 
-    rollups = registry.candidates_for_table(shape.base_table)
+    # Pass org_id so only this org's rollups are considered (tenant isolation).
+    rollups = registry.candidates_for_table(shape.base_table, org_id=org_id)
     if not rollups:
         return RollupRouteResult(plan, False, reason="no rollup for base table")
 

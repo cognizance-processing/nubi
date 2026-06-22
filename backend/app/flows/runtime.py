@@ -86,6 +86,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 from copy import deepcopy
 from datetime import datetime, timedelta, timezone
 from typing import Any
@@ -97,6 +98,26 @@ from app.compute.kernel_interface import (
 )
 
 logger = logging.getLogger(__name__)
+
+# ---------------------------------------------------------------------------
+# Map fan-out insert batching
+# ---------------------------------------------------------------------------
+
+def _int_env(name: str, default: int) -> int:
+    """Read an integer from an environment variable (best-effort; returns default on error)."""
+    raw = os.environ.get(name)
+    if raw is None or not raw.strip():
+        return default
+    try:
+        return int(raw)
+    except ValueError:
+        return default
+
+
+#: Maximum number of child task_runs inserted per ``add_task_runs`` call during
+#: a map fan-out.  Overridable via the ``FLOWS_MAP_ADD_BATCH_SIZE`` env var.
+#: Set to 0 to disable batching (single insert — legacy behaviour).
+_MAP_ADD_BATCH_SIZE: int = _int_env("FLOWS_MAP_ADD_BATCH_SIZE", 500)
 
 # Terminal states for task_runs (engine will not re-queue).
 # ``skipped`` is kept for backward compat with older flow_runs that used it.
@@ -836,6 +857,53 @@ def _collect_map_results(
 
 
 # ---------------------------------------------------------------------------
+# Batched add_task_runs helper
+# ---------------------------------------------------------------------------
+
+
+async def _add_task_runs_batched(
+    store: Any,
+    flow_run_id: str,
+    task_runs: list[dict[str, Any]],
+    batch_size: int | None = None,
+) -> None:
+    """Insert *task_runs* into the store in bounded batches.
+
+    A large map fan-out can produce thousands of child task_run dicts in one
+    go.  Passing them all to ``store.add_task_runs`` in a single call creates a
+    single large DB insert and holds the full list in memory simultaneously.
+    This helper slices the list into chunks of at most *batch_size* rows and
+    issues one ``add_task_runs`` call per chunk, so memory pressure and insert
+    latency are bounded regardless of fan-out size.
+
+    Parameters
+    ----------
+    store:
+        Flow store instance.
+    flow_run_id:
+        The parent flow run id shared by all task_runs.
+    task_runs:
+        The full list of child task_run dicts to insert.
+    batch_size:
+        Maximum rows per insert.  Defaults to the module-level
+        ``_MAP_ADD_BATCH_SIZE`` (env-overridable via
+        ``FLOWS_MAP_ADD_BATCH_SIZE``; default 500).  Pass 0 to disable
+        batching and issue a single insert (legacy behaviour).
+    """
+    if batch_size is None:
+        batch_size = _MAP_ADD_BATCH_SIZE
+
+    if batch_size <= 0 or len(task_runs) <= batch_size:
+        # Either batching disabled, or the list fits in one call.
+        await store.add_task_runs(flow_run_id, task_runs)
+        return
+
+    for offset in range(0, len(task_runs), batch_size):
+        chunk = task_runs[offset : offset + batch_size]
+        await store.add_task_runs(flow_run_id, chunk)
+
+
+# ---------------------------------------------------------------------------
 # Flow-run alert hook (Prefect-style)
 # ---------------------------------------------------------------------------
 
@@ -1378,7 +1446,7 @@ async def run_one_ready_task(
                 now=now,
                 max_concurrency=max_concurrency,
             )
-            await store.add_task_runs(flow_run_id, child_runs)
+            await _add_task_runs_batched(store, flow_run_id, child_runs)
 
             # Transition map task_run to waiting_children (NOT terminal).
             # Store items in result so _get_task_spec can look up item values for children.
@@ -2550,7 +2618,7 @@ async def _execute_claimed_task_run_inner(
                 now=now,
                 max_concurrency=max_concurrency,
             )
-            await store.add_task_runs(flow_run_id, child_runs)
+            await _add_task_runs_batched(store, flow_run_id, child_runs)
 
             # Transition map task_run to waiting_children (NOT yet terminal).
             # Store the items list in the result so _get_task_spec can resolve

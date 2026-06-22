@@ -1535,6 +1535,99 @@ def test_tables_to_bytes_raises_early_on_max_bytes_exceeded() -> None:
 
 
 # ---------------------------------------------------------------------------
+# NEW: [MED DB-level LIMIT] inline provider base_cte pushes LIMIT into SQL
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_inline_provider_base_cte_pushes_db_level_limit(repo: InMemoryRepo) -> None:
+    """Inline provider with base_cte wraps the SQL in SELECT * FROM (...) LIMIT _ROW_CAP.
+
+    The DB-level LIMIT must appear in the SQL string passed to planner_plan
+    so the database engine never returns more than _ROW_CAP rows into memory.
+    The post-fetch slice is a backstop only; the primary cap fires inside the DB.
+    """
+    import app.dashboards.board_data as _bd_mod
+
+    original_row_cap = _bd_mod._ROW_CAP
+    small_cap = 5
+    _bd_mod._ROW_CAP = small_cap
+
+    cte_spec = {
+        "version": 1,
+        "title": "LIMIT Test Board",
+        "widgets": [
+            {
+                "id": "w1",
+                "type": "table",
+                "source": {"provider": _PROVIDER_ID, "result": "revenue"},
+            }
+        ],
+        "data": [
+            {
+                "id": _PROVIDER_ID,
+                "kind": "inline",
+                "params": {},
+                "base_cte": "WITH revenue AS (SELECT i AS amount FROM generate_series(1, 1000) t(i))",
+                "results": [{"name": "revenue", "grain": None}],
+            }
+        ],
+    }
+    await repo.update("boards", _ORG, _BOARD_ID, {"config": {"spec": cte_spec}})
+
+    captured_sql: list[str] = []
+
+    def _capture_plan(sql: str, claims: dict, params: list) -> object:
+        captured_sql.append(sql)
+        return object()
+
+    expected_table = pa.table({"amount": pa.array(list(range(small_cap)))})
+
+    async def _fake_enforce_quota(org_id: str, dimension: str, amount: float = 1.0) -> None:
+        pass
+
+    try:
+        with (
+            patch("app.features.enforce_quota", side_effect=_fake_enforce_quota),
+            patch("app.connectors.plan", side_effect=_capture_plan),
+            patch("app.routes.query._get_demo_connector") as mock_connector_factory,
+        ):
+            mock_connector = mock_connector_factory.return_value
+            mock_connector.execute.return_value = expected_table
+
+            tables = await resolve_provider_data(
+                board_id=_BOARD_ID,
+                provider_id=_PROVIDER_ID,
+                params={},
+                org_id=_ORG,
+                claims={"policies": {}},
+                repo=repo,
+            )
+    finally:
+        _bd_mod._ROW_CAP = original_row_cap
+
+    # The SQL passed to planner_plan must contain a LIMIT clause with the cap value.
+    assert len(captured_sql) == 1, f"Expected exactly one planner_plan call; got: {captured_sql}"
+    executed_sql = captured_sql[0]
+    limit_keyword = f"LIMIT {small_cap}"
+    assert limit_keyword in executed_sql, (
+        f"DB-level LIMIT not pushed into SQL (MED finding: DB still returns all rows "
+        f"before Python truncation). Expected '{limit_keyword}' in:\n{executed_sql}"
+    )
+    # The wrapping pattern must be SELECT * FROM (...) LIMIT N (outer SELECT).
+    assert executed_sql.strip().upper().startswith("SELECT"), (
+        f"Wrapped SQL must start with SELECT; got: {executed_sql[:80]}"
+    )
+
+    # The result rows must still be bounded by the cap.
+    assert "revenue" in tables
+    assert tables["revenue"].num_rows <= small_cap, (
+        f"Row cap not enforced: got {tables['revenue'].num_rows} rows, "
+        f"expected <= {small_cap}."
+    )
+
+
+# ---------------------------------------------------------------------------
 # NEW: [HIGH concurrency] DuckDB thread-safety — concurrent inline base_cte
 # executions on the shared demo singleton must not crash and must return
 # correct independent results.

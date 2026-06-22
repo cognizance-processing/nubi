@@ -1226,7 +1226,17 @@ async def query(
 
     from app.features import enforce_quota as _enforce_quota
 
-    await _enforce_quota(org_id, "compute_units", amount=1.0)
+    # INVARIANT: embed tokens and first-party viewer-role users are NEVER metered.
+    # Only first-party callers with a writer/admin/member/owner role trigger quota.
+    _skip_metering: bool = identity.kind == "embed"
+    if not _skip_metering and identity.user_id and org_id:
+        from app.auth.roles import get_org_role as _get_org_role
+
+        _caller_role = await _get_org_role(identity.user_id, org_id, repo)
+        if _caller_role == "viewer":
+            _skip_metering = True
+    if not _skip_metering:
+        await _enforce_quota(org_id, "compute_units", amount=1.0)
 
     # Connector kind for the metering event's ``tier`` dimension.
     _conn_kind = "demo"
@@ -1707,13 +1717,23 @@ async def query_estimate(
 
     from app.features import enforce_quota as _enforce_quota
 
+    # INVARIANT: embed tokens and first-party viewer-role users are NEVER metered.
+    _skip_metering_est: bool = identity.kind == "embed"
+    if not _skip_metering_est and identity.user_id and org_id:
+        from app.auth.roles import get_org_role as _get_org_role_est
+
+        _caller_role_est = await _get_org_role_est(identity.user_id, org_id, repo)
+        if _caller_role_est == "viewer":
+            _skip_metering_est = True
+
     # SECURITY/cost: an estimate is a dry-run (EXPLAIN), far cheaper than an
     # execution, and the UI may auto-refresh it on every keystroke. Charge a
     # SMALL fraction of a compute unit (not a full one) so estimates cannot be
     # abused to exhaust the org's execution quota — and so the charge matches
     # this route's "consumes a small dry-run budget" contract above.
     _ESTIMATE_QUOTA_UNITS = 0.05
-    await _enforce_quota(org_id, "compute_units", amount=_ESTIMATE_QUOTA_UNITS)
+    if not _skip_metering_est:
+        await _enforce_quota(org_id, "compute_units", amount=_ESTIMATE_QUOTA_UNITS)
 
     # ── Build the connector (same secret/network/RLS-gate path as /query) ────
     # Reuses _build_connector_for_plan so the capability-gated RLS refusal

@@ -1410,3 +1410,181 @@ class TestRollupRegistryEviction:
         cands_b = reg.candidates_for_table("orders", org_id="org_b")
         assert len(cands_b) == 1
         assert cands_b[0].rollup_id == "rb1"
+
+
+# ---------------------------------------------------------------------------
+# 11. [MED + LOW follow-on] Rollup routing org-scoping via route_to_rollup_shape
+# ---------------------------------------------------------------------------
+
+
+def _build_org_scoped_rollup(
+    source_db: str, reg: RollupRegistry, org_id: str | None
+):
+    """Build a rollup for the given org_id (or unscoped when None)."""
+    candidate = RollupCandidate(
+        table="orders",
+        dimensions=["region"],
+        measures=["sum(amount)", "count(*)"],
+    )
+    return build_rollup(
+        candidate,
+        rls_keys=["tenant_id"],
+        source_database=source_db,
+        registry=reg,
+        register_query=False,
+        org_id=org_id,
+    )
+
+
+class TestRoutingOrgScoping:
+    """route_to_rollup_shape must honour org_id so only the caller's-org rollups
+    are ever considered; a different org's rollup must never be a candidate.
+
+    FIX [MED]: candidates_for_table is called with org_id=org_id in BOTH the
+    flat path and the layered-CTE path.
+
+    Isolation contract:
+    - A query for org_a routes to org_a's rollup.
+    - A query for org_b does NOT route to org_a's rollup even when the shape
+      and base table are identical.
+    - Unscoped rollups (org_id=None) still serve unscoped queries (org_id=None).
+    - An org-scoped query (org_id='org_a') is NOT served by an unscoped rollup.
+    """
+
+    def test_query_routes_to_own_org_rollup_flat_path(self, source_db: str) -> None:
+        """Flat-path: a query routed with org_id='org_a' hits org_a's rollup."""
+        reg = RollupRegistry()
+        _build_org_scoped_rollup(source_db, reg, org_id="org_a")
+
+        p = plan("SELECT region, SUM(amount) FROM orders GROUP BY region")
+        result = route_to_rollup_shape(p, reg, org_id="org_a")
+
+        assert result.routed is True, (
+            f"Expected route to org_a's rollup, got routed=False. Reason: {result.reason}"
+        )
+        assert result.rollup_id is not None
+        assert "rollup_orders" in result.plan.sql.lower()
+
+    def test_query_never_routes_to_other_org_rollup_flat_path(
+        self, source_db: str
+    ) -> None:
+        """Flat-path: a query for org_b must NOT route to org_a's rollup.
+
+        Even with an identical shape and base table, cross-org routing is
+        forbidden.  This is the primary tenant-isolation guard at the routing
+        level (defence-in-depth on top of RLS).
+        """
+        reg = RollupRegistry()
+        _build_org_scoped_rollup(source_db, reg, org_id="org_a")
+
+        p = plan("SELECT region, SUM(amount) FROM orders GROUP BY region")
+        result = route_to_rollup_shape(p, reg, org_id="org_b")
+
+        assert result.routed is False, (
+            f"org_b must NOT route to org_a's rollup, but got routed=True. "
+            f"Rewritten SQL: {result.plan.sql}"
+        )
+        assert result.plan is p  # original plan unchanged
+
+    def test_two_orgs_each_route_to_their_own_rollup(self, source_db: str) -> None:
+        """Both org_a and org_b roll out; each query is routed to its own rollup."""
+        reg = RollupRegistry()
+        built_a = _build_org_scoped_rollup(source_db, reg, org_id="org_a")
+        built_b = _build_org_scoped_rollup(source_db, reg, org_id="org_b")
+
+        p = plan("SELECT region, SUM(amount) FROM orders GROUP BY region")
+
+        result_a = route_to_rollup_shape(p, reg, org_id="org_a")
+        assert result_a.routed is True
+        assert result_a.rollup_id == built_a.rollup_id, (
+            f"org_a should route to built_a ({built_a.rollup_id}), "
+            f"got {result_a.rollup_id}"
+        )
+
+        result_b = route_to_rollup_shape(p, reg, org_id="org_b")
+        assert result_b.routed is True
+        assert result_b.rollup_id == built_b.rollup_id, (
+            f"org_b should route to built_b ({built_b.rollup_id}), "
+            f"got {result_b.rollup_id}"
+        )
+
+        # They must have routed to DIFFERENT rollups.
+        assert result_a.rollup_id != result_b.rollup_id
+
+    def test_unscoped_rollup_serves_unscoped_query(self, source_db: str) -> None:
+        """A rollup with org_id=None is served to an unscoped (org_id=None) query."""
+        reg = RollupRegistry()
+        _build_org_scoped_rollup(source_db, reg, org_id=None)
+
+        p = plan("SELECT region, SUM(amount) FROM orders GROUP BY region")
+        result = route_to_rollup_shape(p, reg, org_id=None)
+
+        assert result.routed is True, (
+            f"Unscoped rollup should serve unscoped query, got routed=False. "
+            f"Reason: {result.reason}"
+        )
+
+    def test_org_scoped_query_not_served_by_unscoped_rollup(
+        self, source_db: str
+    ) -> None:
+        """An org-scoped query must NOT be routed to an unscoped rollup.
+
+        Mixing a scoped query with an unscoped (shared/legacy) rollup could
+        allow cross-tenant data leakage through a shared pre-aggregate.
+        """
+        reg = RollupRegistry()
+        _build_org_scoped_rollup(source_db, reg, org_id=None)  # unscoped rollup
+
+        p = plan("SELECT region, SUM(amount) FROM orders GROUP BY region")
+        result = route_to_rollup_shape(p, reg, org_id="org_a")
+
+        assert result.routed is False, (
+            f"org_a query must NOT be routed to an unscoped rollup, "
+            f"but got routed=True. Rewritten SQL: {result.plan.sql}"
+        )
+        assert result.plan is p
+
+    def test_query_routes_to_own_org_rollup_layered_cte_path(
+        self, source_db: str
+    ) -> None:
+        """Layered-CTE path: routing respects org_id in the layered query path."""
+        reg = RollupRegistry()
+        _build_org_scoped_rollup(source_db, reg, org_id="org_a")
+
+        layered_sql = (
+            "WITH __base AS ("
+            "SELECT region, SUM(amount) AS amount FROM orders GROUP BY region"
+            ") "
+            "SELECT region, amount, "
+            "LAG(amount, 1) OVER (ORDER BY region) AS amount_prior_period "
+            "FROM __base"
+        )
+        p = plan(layered_sql, dialect="postgres")
+        result = route_to_rollup_shape(p, reg, org_id="org_a")
+
+        assert result.routed is True, (
+            f"Layered path: expected route to org_a's rollup. Reason: {result.reason}"
+        )
+        assert "rollup_orders" in result.plan.sql.lower()
+
+    def test_layered_query_never_routes_to_other_org_rollup(
+        self, source_db: str
+    ) -> None:
+        """Layered-CTE path: org_b query must NOT route to org_a's rollup."""
+        reg = RollupRegistry()
+        _build_org_scoped_rollup(source_db, reg, org_id="org_a")
+
+        layered_sql = (
+            "WITH __base AS ("
+            "SELECT region, SUM(amount) AS amount FROM orders GROUP BY region"
+            ") "
+            "SELECT region, amount FROM __base"
+        )
+        p = plan(layered_sql, dialect="postgres")
+        result = route_to_rollup_shape(p, reg, org_id="org_b")
+
+        assert result.routed is False, (
+            f"Layered path: org_b must NOT route to org_a's rollup, "
+            f"but got routed=True. Rewritten SQL: {result.plan.sql}"
+        )
+        assert result.plan is p

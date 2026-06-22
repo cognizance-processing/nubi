@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import uuid
 from io import BytesIO
+from unittest.mock import AsyncMock, patch
 
 import pyarrow.ipc as pa_ipc
 import pytest
@@ -366,3 +367,228 @@ async def test_delete_metric_unregisters(m_client):
     # Gone after delete (the persistence-free path returns 404 from the registry).
     after = await client.get(f"/api/v1/metrics/{metric_id}", headers=headers)
     assert after.status_code == 404, after.text
+
+
+# ---------------------------------------------------------------------------
+# (11) Embed / viewer metering INVARIANT
+#
+# INVARIANT: embed tokens and first-party viewer-role users are NEVER metered.
+# Only first-party callers with a writer/admin/member/owner role hit enforce_quota.
+#
+# Tests:
+#  (a) Embed identity on POST /metrics/{id}/query → enforce_quota NOT called.
+#  (b) Embed identity on POST /query              → enforce_quota NOT called.
+#  (c) First-party writer on POST /metrics/{id}/query → enforce_quota IS called.
+#  (d) First-party viewer on POST /metrics/{id}/query → enforce_quota NOT called.
+#
+# Strategy: inject VerifiedIdentity via dependency_overrides to avoid needing a
+# real embed issuer (asymmetric keys etc.) — the route logic only reads
+# identity.kind, identity.user_id, identity.org, and identity.scope.
+# ---------------------------------------------------------------------------
+
+
+@pytest_asyncio.fixture
+async def metering_client(app, fake_db):
+    """Client with InMemoryRepo + seeded user/org for metering-invariant tests."""
+    from app.repos.memory import InMemoryRepo
+    from app.repos.provider import set_repo
+
+    repo = InMemoryRepo()
+    set_repo(repo)
+
+    user_id = str(uuid.uuid4())
+    org_id = str(uuid.uuid4())
+
+    fake_db.users[user_id] = {
+        "id": user_id,
+        "email": "metering-inv@example.com",
+        "name": "Metering Inv",
+        "avatar_url": None,
+        "email_verified": True,
+        "created_at": "2024-01-01T00:00:00+00:00",
+    }
+    # Seed as a writer (owner) by default.
+    repo.seed_org_member(org_id=org_id, user_id=user_id, role="owner")
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(
+        transport=transport, base_url="http://testserver", follow_redirects=False
+    ) as ac:
+        yield ac, user_id, org_id, repo, app
+
+    set_repo(None)
+
+
+def _embed_identity(org_id: str) -> "VerifiedIdentity":
+    """Build a VerifiedIdentity with kind='embed' for dependency injection."""
+    from app.auth.verify import VerifiedIdentity
+
+    return VerifiedIdentity(
+        kind="embed",
+        user_id="embed-user",
+        org=org_id,
+        project=None,
+        roles=["viewer"],
+        policies={},
+        scope=["read:query"],
+        embed_origin=None,
+        datastore=None,
+        raw_claims={},
+    )
+
+
+def _writer_identity(user_id: str, org_id: str) -> "VerifiedIdentity":
+    """Build a VerifiedIdentity with kind='access' and owner role."""
+    from app.auth.verify import VerifiedIdentity
+
+    return VerifiedIdentity(
+        kind="access",
+        user_id=user_id,
+        org=org_id,
+        project=None,
+        roles=["owner"],
+        policies={},
+        scope=["read:query", "write:*"],
+        embed_origin=None,
+        datastore=None,
+        raw_claims={},
+    )
+
+
+def _viewer_identity(user_id: str, org_id: str) -> "VerifiedIdentity":
+    """Build a VerifiedIdentity with kind='access' and viewer role."""
+    from app.auth.verify import VerifiedIdentity
+
+    return VerifiedIdentity(
+        kind="access",
+        user_id=user_id,
+        org=org_id,
+        project=None,
+        roles=["viewer"],
+        policies={},
+        scope=["read:query"],
+        embed_origin=None,
+        datastore=None,
+        raw_claims={},
+    )
+
+
+@pytest.mark.asyncio
+async def test_embed_token_metrics_query_skips_enforce_quota(metering_client):
+    """(a) Embed identity on POST /metrics/{id}/query MUST NOT call enforce_quota."""
+    from app.auth.deps import verified_identity
+
+    client, _user_id, org_id, _repo, app_ = metering_client
+    embed_id = _embed_identity(org_id)
+    app_.dependency_overrides[verified_identity] = lambda: embed_id
+    try:
+        with patch("app.features.enforce_quota", new_callable=AsyncMock) as mock_eq:
+            resp = await client.post(
+                "/api/v1/metrics/demo_revenue/query",
+                json={"dimensions": ["name"]},
+                headers={"Authorization": "Bearer ignored"},
+            )
+        assert resp.status_code == 200, resp.text
+        compute_calls = [
+            c for c in mock_eq.call_args_list if "compute_units" in str(c)
+        ]
+        assert compute_calls == [], (
+            f"enforce_quota was called for embed identity: {mock_eq.call_args_list}"
+        )
+    finally:
+        app_.dependency_overrides.pop(verified_identity, None)
+
+
+@pytest.mark.asyncio
+async def test_embed_token_query_skips_enforce_quota(metering_client):
+    """(b) Embed identity on POST /query MUST NOT call enforce_quota.
+
+    Embed tokens must use a registered query_id (raw SQL is rejected for embed).
+    We use the built-in 'demo_all' registered query.
+    """
+    from app.auth.deps import verified_identity
+
+    client, _user_id, org_id, _repo, app_ = metering_client
+    embed_id = _embed_identity(org_id)
+    app_.dependency_overrides[verified_identity] = lambda: embed_id
+    try:
+        with patch("app.features.enforce_quota", new_callable=AsyncMock) as mock_eq:
+            resp = await client.post(
+                "/api/v1/query",
+                json={"query_id": "demo_all"},
+                headers={"Authorization": "Bearer ignored"},
+            )
+        assert resp.status_code == 200, resp.text
+        compute_calls = [
+            c for c in mock_eq.call_args_list if "compute_units" in str(c)
+        ]
+        assert compute_calls == [], (
+            f"enforce_quota was called for embed identity: {mock_eq.call_args_list}"
+        )
+    finally:
+        app_.dependency_overrides.pop(verified_identity, None)
+
+
+@pytest.mark.asyncio
+async def test_writer_metrics_query_calls_enforce_quota(metering_client):
+    """(c) First-party writer on POST /metrics/{id}/query MUST call enforce_quota."""
+    from app.auth.deps import verified_identity
+
+    client, user_id, org_id, _repo, app_ = metering_client
+    writer_id = _writer_identity(user_id, org_id)
+    app_.dependency_overrides[verified_identity] = lambda: writer_id
+    try:
+        with patch("app.features.enforce_quota", new_callable=AsyncMock) as mock_eq:
+            resp = await client.post(
+                "/api/v1/metrics/demo_revenue/query",
+                json={"dimensions": ["name"]},
+                headers={"Authorization": "Bearer ignored"},
+            )
+        assert resp.status_code == 200, resp.text
+        compute_calls = [
+            c for c in mock_eq.call_args_list if "compute_units" in str(c)
+        ]
+        assert len(compute_calls) >= 1, (
+            f"enforce_quota was NOT called for writer: {mock_eq.call_args_list}"
+        )
+    finally:
+        app_.dependency_overrides.pop(verified_identity, None)
+
+
+@pytest.mark.asyncio
+async def test_viewer_metrics_query_skips_enforce_quota(metering_client, fake_db):
+    """(d) First-party viewer on POST /metrics/{id}/query MUST NOT call enforce_quota."""
+    from app.auth.deps import verified_identity
+
+    client, _user_id, org_id, repo, app_ = metering_client
+
+    # Create a separate viewer user in the same org.
+    viewer_id = str(uuid.uuid4())
+    fake_db.users[viewer_id] = {
+        "id": viewer_id,
+        "email": "viewer-inv@example.com",
+        "name": "Viewer Inv",
+        "avatar_url": None,
+        "email_verified": True,
+        "created_at": "2024-01-01T00:00:00+00:00",
+    }
+    repo.seed_org_member(org_id=org_id, user_id=viewer_id, role="viewer")
+
+    viewer_id_obj = _viewer_identity(viewer_id, org_id)
+    app_.dependency_overrides[verified_identity] = lambda: viewer_id_obj
+    try:
+        with patch("app.features.enforce_quota", new_callable=AsyncMock) as mock_eq:
+            resp = await client.post(
+                "/api/v1/metrics/demo_revenue/query",
+                json={"dimensions": ["name"]},
+                headers={"Authorization": "Bearer ignored"},
+            )
+        assert resp.status_code == 200, resp.text
+        compute_calls = [
+            c for c in mock_eq.call_args_list if "compute_units" in str(c)
+        ]
+        assert compute_calls == [], (
+            f"enforce_quota was called for viewer: {mock_eq.call_args_list}"
+        )
+    finally:
+        app_.dependency_overrides.pop(verified_identity, None)

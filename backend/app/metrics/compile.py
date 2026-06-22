@@ -717,8 +717,17 @@ def _top_n_membership_sql(
         SELECT <dim_col> FROM __base
         [WHERE __base.<rls_key1> = <outer_alias>.<rls_key1> [AND ...]]
         GROUP BY <dim_col>
-        ORDER BY SUM(<rank_measure>) <order_dir>
+        ORDER BY SUM(<rank_measure>) <order_dir>, <dim_col> ASC
         LIMIT <n>
+
+    DETERMINISM FIX: a STABLE secondary tiebreaker (``<dim_col> ASC``) is
+    appended to the ORDER BY so that, at a tie on ``SUM(<rank_measure>)``, the
+    membership set is selected deterministically.  The top-N arm and the Other
+    arm both build their membership via this same helper (differing only by the
+    outer alias), so without a tiebreaker a boundary tie could resolve
+    differently in the two arms — double-counting or dropping a tied member.
+    The dim column is the GROUP BY key (unique per row here), so it is a total,
+    stable ordering of the tied group.
     """
     rls_predicates = " AND ".join(
         f"__base.{k} = {outer_alias}.{k}" for k in rls_keys
@@ -728,7 +737,7 @@ def _top_n_membership_sql(
         f"SELECT {dim_col} FROM __base "
         f"{where_clause}"
         f"GROUP BY {dim_col} "
-        f"ORDER BY SUM({rank_measure}) {order_dir} "
+        f"ORDER BY SUM({rank_measure}) {order_dir}, {dim_col} ASC "
         f"LIMIT {n}"
     )
 
@@ -1544,12 +1553,25 @@ def _measure_expr(measure: Any, dialect: str) -> exp.Expression:
         inner = exp.Count(this=exp.Distinct(expressions=[arg]))
     elif agg == "percentile_cont":
         p = _percentile_p(measure)
-        arg = _parse_expr(measure.expr, dialect)
         # PERCENTILE_CONT(p) WITHIN GROUP (ORDER BY col) — DuckDB also supports
         # quantile_cont(col, p) but PERCENTILE_CONT is standard SQL.
-        # Build as raw SQL and parse for AST safety.
+        # CONSISTENCY FIX: parse measure.expr into an AST FIRST, then build the
+        # ORDER BY from the PARSED arg (re-serialized) — never f-string the raw
+        # measure.expr.  This matches every other aggregate (which uses the
+        # parsed AST) so raw user text (e.g. a subquery or trailing SQL) can
+        # never survive into the WITHIN GROUP (ORDER BY ...) clause.
+        arg = _parse_expr(measure.expr, dialect)
+        # Fail-closed: an ORDER BY argument must be a scalar column/expression,
+        # not a subquery — reject any embedded SELECT.
+        if arg.find(exp.Select) is not None:
+            raise MetricError(
+                "bad_percentile_expr",
+                f"Measure {measure.name!r} percentile_cont expr must be a scalar "
+                f"column/expression, not a subquery.",
+            )
+        arg_sql = arg.sql(dialect=dialect)
         raw = (
-            f"PERCENTILE_CONT({p}) WITHIN GROUP (ORDER BY {measure.expr})"
+            f"PERCENTILE_CONT({p}) WITHIN GROUP (ORDER BY {arg_sql})"
         )
         inner = sqlglot.parse_one(raw, dialect=dialect)
         return exp.alias_(inner, measure.name)
