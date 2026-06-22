@@ -165,6 +165,10 @@ class RegisteredQuery:
     # a governed metric (docs/query-metric-unification.md). Carried so the
     # registry GET can round-trip it back to the query editor.
     metric: dict | None = None
+    #: True for built-in/seed queries (demo_*) — globally visible, never org-scoped.
+    #: User/runtime-registered queries default False and are gated by the caller's
+    #: org row_ids in GET /query/registry (so one org never sees another's SQL).
+    system: bool = False
 
     def params_as_list(self) -> list[QueryParam]:
         """Return params as a plain list (convenience helper)."""
@@ -198,6 +202,7 @@ class QueryRegistry:
         output_schema: list[OutputColumn] | None = None,
         strict_output_schema: bool = False,
         metric: dict | None = None,
+        system: bool = False,
     ) -> RegisteredQuery:
         """Register a query and return the ``RegisteredQuery`` object.
 
@@ -240,6 +245,7 @@ class QueryRegistry:
             output_schema=tuple(output_schema) if output_schema else None,
             strict_output_schema=strict_output_schema,
             metric=metric or None,
+            system=system or _SEEDING_BUILTIN,
         )
         self._store[id] = rq
         return rq
@@ -262,6 +268,11 @@ class QueryRegistry:
 # ---------------------------------------------------------------------------
 
 _registry: QueryRegistry | None = None
+
+#: True only while the built-in demo/seed queries are being registered (inside
+#: get_query_registry). register() stamps those entries ``system=True`` so they
+#: stay globally visible while user/org queries remain org-scoped.
+_SEEDING_BUILTIN: bool = False
 
 
 def reset_for_tests() -> None:
@@ -298,9 +309,10 @@ def get_query_registry() -> QueryRegistry:
     ``demo_points_500k``
         500 000 synthetic points — large-data / stress demo.
     """
-    global _registry
+    global _registry, _SEEDING_BUILTIN
     if _registry is None:
         _registry = QueryRegistry()
+        _SEEDING_BUILTIN = True  # everything registered below is built-in/system
         # ── Seed demo queries ─────────────────────────────────────────────
         _registry.register(
             id="demo_all",
@@ -369,6 +381,7 @@ def get_query_registry() -> QueryRegistry:
                 ),
             ],
         )
+    _SEEDING_BUILTIN = False  # stop stamping system=True on later runtime registers
     return _registry
 
 

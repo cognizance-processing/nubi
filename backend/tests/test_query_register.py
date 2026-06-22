@@ -499,7 +499,9 @@ async def test_registry_fallback_does_not_leak_cross_org_sql() -> None:
             sys.modules["app.routes._org"] = orig
         reset_for_tests()
 
-    # The response must be empty — no cross-org SQL must leak.
+    # Security property: on the scoping-error fallback, NO non-system
+    # (tenant/cross-org) query may leak. Built-in/system queries (demo_*) are
+    # global seed data carrying no tenant SQL and MAY still appear.
     returned_ids = [q["id"] for q in result["queries"]]
     assert "cross_org_secret_q" not in returned_ids, (
         "registry fallback leaked cross-org SQL (cross_org_secret_q)"
@@ -507,6 +509,8 @@ async def test_registry_fallback_does_not_leak_cross_org_sql() -> None:
     assert "cross_org_secret_q2" not in returned_ids, (
         "registry fallback leaked cross-org SQL (cross_org_secret_q2)"
     )
-    assert result["queries"] == [], (
-        f"registry fallback must return empty list on error, got: {returned_ids}"
-    )
+    # Everything returned must be a built-in/system query (reset_for_tests in the
+    # finally above removed the cross-org entries and re-seeded only the built-ins).
+    builtin_ids = {rq.id for rq in get_query_registry().all()}
+    leaked = set(returned_ids) - builtin_ids
+    assert not leaked, f"registry fallback leaked non-built-in queries: {leaked}"

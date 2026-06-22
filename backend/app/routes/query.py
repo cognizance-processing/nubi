@@ -1783,8 +1783,12 @@ async def list_query_registry(
     entries = registry.all()
 
     # ── ORG/PROJECT SCOPING (DECISION 3) ─────────────────────────────────────
+    # Built-in/seed queries (RegisteredQuery.system, e.g. demo_*) are global —
+    # safe to surface to any authenticated caller. User/runtime queries are
+    # per-tenant and MUST be org-scoped: we gate them by the caller's org
+    # row_ids. On a scoping error we fail closed (row_ids=set()) so non-system
+    # queries are never leaked cross-org, while system queries stay visible.
     row_ids: set[str] | None = None
-    include_slug_only = identity.kind == "embed"
     try:
         repo = get_repo()
         if identity.kind == "embed":
@@ -1805,12 +1809,7 @@ async def list_query_registry(
         row_ids = set()  # fail closed: never leak cross-org SQL on error
 
     if row_ids is not None:
-        entries = [
-            rq
-            for rq in entries
-            if rq.id in row_ids
-            or (include_slug_only and not _is_uuid_str(rq.id))
-        ]
+        entries = [rq for rq in entries if rq.system or rq.id in row_ids]
 
     queries = []
     for rq in entries:

@@ -486,6 +486,7 @@ async def test_get_registry_returns_declared_params(params_client):
         params=[
             QueryParam(name="some_id", type="number", required=True),
         ],
+        system=True,  # built-in/global → visible without org scoping (tests param serialisation)
     )
 
     resp = await client.get(
