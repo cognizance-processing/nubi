@@ -169,6 +169,12 @@ class RegisteredQuery:
     #: User/runtime-registered queries default False and are gated by the caller's
     #: org row_ids in GET /query/registry (so one org never sees another's SQL).
     system: bool = False
+    #: Owning org for non-system queries registered at runtime (e.g. via save_as).
+    #: ``None`` for built-in/seed queries and for queries registered without an
+    #: org context.  An entry with a non-None ``owner_org_id`` may only be
+    #: overwritten by a call that carries the SAME ``owner_org_id`` — cross-org
+    #: overwrites are rejected in ``QueryRegistry.register()``.
+    owner_org_id: str | None = None
 
     def params_as_list(self) -> list[QueryParam]:
         """Return params as a plain list (convenience helper)."""
@@ -203,11 +209,15 @@ class QueryRegistry:
         strict_output_schema: bool = False,
         metric: dict | None = None,
         system: bool = False,
+        owner_org_id: str | None = None,
     ) -> RegisteredQuery:
         """Register a query and return the ``RegisteredQuery`` object.
 
         Overwrites any existing registration with the same *id* — this is
-        intentional so that seed queries can be refreshed at startup.
+        intentional so that seed queries can be refreshed at startup — UNLESS
+        the existing entry is owned by a DIFFERENT org.  Cross-org overwrites
+        are rejected with ``ValueError`` to prevent org A from silently
+        shadowing org B's registered id.
 
         Parameters
         ----------
@@ -229,12 +239,45 @@ class QueryRegistry:
             Optional id of the datastore this query is bound to.  When set the
             query executes against that (org-scoped) datastore unless the
             request body supplies its own ``datastore_id``.
+        owner_org_id:
+            Optional org id that owns this registration.  When set, any
+            subsequent attempt to overwrite this id from a *different*
+            ``owner_org_id`` is rejected.  ``None`` means unowned (built-ins
+            and queries registered without an org context are never blocked).
 
         Returns
         -------
         RegisteredQuery
             The newly registered query object.
+
+        Raises
+        ------
+        ValueError
+            If an existing entry for *id* is owned by a different org than
+            the incoming *owner_org_id* (cross-org collision prevention).
         """
+        # Cross-org collision guard: reject overwrites where BOTH the existing
+        # AND the incoming registration carry a non-None owner_org_id that
+        # differ from each other.  This prevents org A from shadowing org B's
+        # registered id in the process-global registry.
+        #
+        # Allowed scenarios:
+        #   existing.owner_org_id is None  → unowned; overwrite freely (seed/reload)
+        #   incoming owner_org_id is None  → unowned caller; allowed (e.g. load_persisted_queries)
+        #   same org_id on both sides      → same org updating its own query
+        existing = self._store.get(id)
+        if (
+            existing is not None
+            and existing.owner_org_id is not None
+            and owner_org_id is not None
+            and existing.owner_org_id != owner_org_id
+        ):
+            raise ValueError(
+                f"Query id {id!r} is already registered by org "
+                f"{existing.owner_org_id!r}; org {owner_org_id!r} may not "
+                "overwrite it."
+            )
+
         rq = RegisteredQuery(
             id=id,
             sql=sql,
@@ -246,6 +289,7 @@ class QueryRegistry:
             strict_output_schema=strict_output_schema,
             metric=metric or None,
             system=system or _SEEDING_BUILTIN,
+            owner_org_id=owner_org_id,
         )
         self._store[id] = rq
         return rq

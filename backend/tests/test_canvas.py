@@ -2069,3 +2069,213 @@ class TestApiBindingPathValidation:
 
         entry = result.get("el_p", {})
         assert "error" not in entry, f"Empty path should not error: {entry}"
+
+
+# ---------------------------------------------------------------------------
+# 10. [HIGH concurrency] Demo DuckDB connector thread-safety
+# ---------------------------------------------------------------------------
+
+
+class TestRunQueryRowsConcurrentThreadSafety:
+    """run_query_rows must not crash or corrupt results when called concurrently.
+
+    The demo DuckDB connector is a process-wide singleton whose connection is
+    NOT thread-safe.  asyncio.to_thread previously passed connector.execute
+    directly, allowing multiple threads to race on the same connection.
+
+    The fix in collect.py mirrors board_data.py: a module-level WeakKeyDictionary
+    of threading.Locks + _execute_with_lock serialises concurrent threads per
+    connector instance while keeping the event-loop offload of asyncio.to_thread.
+    """
+
+    @pytest.mark.asyncio
+    async def test_concurrent_run_query_rows_do_not_crash(self):
+        """Multiple concurrent run_query_rows calls over the SAME connector do not crash.
+
+        Regression test for HIGH concurrency finding: concurrent asyncio.to_thread
+        calls on a shared connector must be serialised via the per-connector lock.
+
+        We simulate the shared-singleton scenario by patching _resolve_connector
+        to always return the same connector object, then fire N concurrent
+        run_query_rows calls and assert all N return correct independent results.
+        """
+        import asyncio  # noqa: PLC0415
+        import threading
+        import types as _types
+        import pyarrow as pa
+
+        from app.dashboards.collect import run_query_rows  # noqa: PLC0415
+        from app.queries.registry import get_query_registry  # noqa: PLC0415
+
+        # Register a temporary query.
+        reg = get_query_registry()
+        fake_query_id = f"_test_concurrent_{uuid.uuid4().hex}"
+        fake_query = _types.SimpleNamespace(
+            id=fake_query_id,
+            sql="SELECT 1",
+            params=[],
+            datastore_id=None,
+        )
+
+        def _patched_get(qid):
+            if qid == fake_query_id:
+                return fake_query
+            return reg._store.get(qid)
+
+        # Shared (singleton-like) connector — tracks concurrent call count.
+        concurrent_high_watermark: list[int] = [0]
+        active_count: list[int] = [0]
+        active_count_lock = threading.Lock()
+
+        N = 8  # number of concurrent callers
+
+        class _SharedConnector:
+            """Mimics a non-thread-safe singleton; asserts it is never entered twice."""
+
+            def execute(self, plan):
+                with active_count_lock:
+                    active_count[0] += 1
+                    concurrent_high_watermark[0] = max(
+                        concurrent_high_watermark[0], active_count[0]
+                    )
+                # Simulate some work so concurrent calls would overlap without the lock.
+                import time
+                time.sleep(0.005)
+                with active_count_lock:
+                    active_count[0] -= 1
+                return pa.table({"n": [1, 2, 3]})
+
+            def close(self):
+                pass
+
+        shared_connector = _SharedConnector()
+        repo = InMemoryRepo()
+        org_id = str(uuid.uuid4())
+
+        with (
+            patch.object(reg, "get", side_effect=_patched_get),
+            patch(
+                "app.dashboards.collect._resolve_connector",
+                new=AsyncMock(return_value=(shared_connector, False)),
+            ),
+        ):
+            results = await asyncio.gather(
+                *[
+                    run_query_rows(
+                        query_id=fake_query_id,
+                        org_id=org_id,
+                        repo=repo,
+                        policies={},
+                    )
+                    for _ in range(N)
+                ]
+            )
+
+        # All N calls must have succeeded and returned correct data.
+        assert len(results) == N, f"Expected {N} results, got {len(results)}"
+        for i, (cols, rows) in enumerate(results):
+            assert cols == ["n"], f"Call {i}: unexpected columns {cols}"
+            assert rows == [[1], [2], [3]], f"Call {i}: unexpected rows {rows}"
+
+        # The per-connector lock must have serialised execution: at most 1 thread
+        # should have been inside execute() at any given time.
+        assert concurrent_high_watermark[0] == 1, (
+            f"Expected at most 1 concurrent execute() call (lock serialisation); "
+            f"got high-watermark={concurrent_high_watermark[0]}. "
+            "The per-connector lock in collect.py is not working."
+        )
+
+    @pytest.mark.asyncio
+    async def test_concurrent_collect_canvas_data_do_not_crash(self):
+        """Multiple concurrent collect_canvas_data calls over shared query connector do not crash.
+
+        This exercises the full collect_canvas_data path to verify the
+        _execute_with_lock fix is applied end-to-end (not just in run_query_rows).
+        """
+        import asyncio  # noqa: PLC0415
+        import types as _types
+        import pyarrow as pa
+
+        from app.dashboards.collect import collect_canvas_data  # noqa: PLC0415
+        from app.queries.registry import get_query_registry  # noqa: PLC0415
+
+        reg = get_query_registry()
+        fake_query_id = f"_test_concurrent_canvas_{uuid.uuid4().hex}"
+        fake_query = _types.SimpleNamespace(
+            id=fake_query_id,
+            sql="SELECT 1",
+            params=[],
+            datastore_id=None,
+        )
+
+        def _patched_get(qid):
+            if qid == fake_query_id:
+                return fake_query
+            return reg._store.get(qid)
+
+        repo = InMemoryRepo()
+        org_id = str(uuid.uuid4())
+        user_id = str(uuid.uuid4())
+        repo.seed_org_member(org_id=org_id, user_id=user_id)
+
+        N = 6  # number of concurrent canvases
+
+        # Create N canvases, each with one query binding to the shared fake query.
+        canvas_ids = []
+        for i in range(N):
+            canvas = await repo.create(
+                "canvases",
+                org_id=org_id,
+                created_by=user_id,
+                name=f"Concurrent Canvas {i}",
+                config={
+                    "doc": {
+                        "version": 1,
+                        "html": f'<nubi-kpi data-el-id="el_{i}"></nubi-kpi>',
+                        "bindings": {
+                            f"el_{i}": {"kind": "query", "query_id": fake_query_id},
+                        },
+                    }
+                },
+            )
+            canvas_ids.append(canvas["id"])
+
+        class _SharedConnector:
+            def execute(self, plan):
+                import time
+                time.sleep(0.003)
+                return pa.table({"value": [42]})
+
+            def close(self):
+                pass
+
+        shared_connector = _SharedConnector()
+
+        with (
+            patch.object(reg, "get", side_effect=_patched_get),
+            patch(
+                "app.dashboards.collect._resolve_connector",
+                new=AsyncMock(return_value=(shared_connector, False)),
+            ),
+        ):
+            all_results = await asyncio.gather(
+                *[
+                    collect_canvas_data(
+                        canvas_id=cid,
+                        org_id=org_id,
+                        claims={},
+                        repo=repo,
+                    )
+                    for cid in canvas_ids
+                ]
+            )
+
+        # All N collections must have returned correct, independent results.
+        assert len(all_results) == N
+        for i, result in enumerate(all_results):
+            el_id = f"el_{i}"
+            assert el_id in result, f"Canvas {i}: missing el_id {el_id!r} in {list(result)}"
+            entry = result[el_id]
+            assert "error" not in entry, f"Canvas {i}: unexpected error {entry.get('error')}"
+            assert entry.get("columns") == ["value"], f"Canvas {i}: columns={entry.get('columns')}"
+            assert entry.get("rows") == [[42]], f"Canvas {i}: rows={entry.get('rows')}"

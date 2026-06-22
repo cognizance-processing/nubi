@@ -32,13 +32,61 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import threading
+import weakref
 from typing import Any
+
+import pyarrow as pa
 
 from app.errors import AppError
 from app.queries.registry import ensure_persisted_query, get_query_registry
 from app.repos.provider import Repo
 
 logger = logging.getLogger(__name__)
+
+# ---------------------------------------------------------------------------
+# Per-connector threading lock registry
+# ---------------------------------------------------------------------------
+# DuckDB connections (including the demo singleton) are NOT safe for concurrent
+# use from multiple OS threads.  asyncio.to_thread spawns executor threads, so
+# two concurrent requests would both call connector.execute on the same shared
+# DuckDB connection from different threads — leading to crashes or data
+# corruption (the demo DuckDB connector is a process-wide singleton).
+#
+# Fix: serialise all execute calls that share the same connector instance via a
+# per-instance threading.Lock stored in a module-level WeakKeyDictionary so the
+# lock is created once per connector object and is automatically collected when
+# the connector is GC'd.
+#
+# This pattern mirrors the fix already applied in board_data.py and keeps the
+# asyncio.to_thread offload (the event loop is never blocked) while guaranteeing
+# at most one thread executes against a given DuckDB connection at a time.
+
+_connector_locks: "weakref.WeakKeyDictionary[object, threading.Lock]" = (
+    weakref.WeakKeyDictionary()
+)
+_connector_locks_mutex = threading.Lock()  # guards _connector_locks itself
+
+
+def _get_connector_lock(connector: object) -> threading.Lock:
+    """Return the threading.Lock for *connector*, creating it if needed."""
+    with _connector_locks_mutex:
+        lock = _connector_locks.get(connector)
+        if lock is None:
+            lock = threading.Lock()
+            _connector_locks[connector] = lock
+        return lock
+
+
+def _execute_with_lock(connector: object, physical_plan: object) -> "pa.Table":
+    """Execute *physical_plan* on *connector* under the connector's thread lock.
+
+    Called from asyncio.to_thread so the event loop is not blocked, and at most
+    one thread may use a given connector simultaneously (DuckDB thread-safety).
+    """
+    lock = _get_connector_lock(connector)
+    with lock:
+        return connector.execute(physical_plan)  # type: ignore[attr-defined]
 
 # Maximum rows materialised per widget into Python memory.
 # Override via NUBI_COLLECT_ROW_CAP env-var (integer).  0 = unlimited.
@@ -151,7 +199,12 @@ async def run_query_rows(
     connector, connector_owned = await _resolve_connector(registered, org_id, repo, physical_plan)
 
     try:
-        arrow_table = await asyncio.to_thread(connector.execute, physical_plan)
+        # [HIGH concurrency] Use _execute_with_lock so at most one thread
+        # executes against a given DuckDB connection at a time.  The demo
+        # connector is a process-wide singleton whose connection is NOT
+        # thread-safe; asyncio.to_thread would otherwise allow concurrent
+        # threads to collide on the same connection.
+        arrow_table = await asyncio.to_thread(_execute_with_lock, connector, physical_plan)
         cap = _ROW_CAP
         if cap > 0 and len(arrow_table) > cap:
             logger.warning(
@@ -518,7 +571,11 @@ async def collect_canvas_data(
                     api_plan = planner_plan(
                         sql="SELECT *", claims={"policies": policies}, params=[]
                     )
-                    result_table = await asyncio.to_thread(connector.execute, api_plan)
+                    # [HIGH concurrency] Also lock the api connector execute.
+                    # HttpJsonConnector is typically not shared (each binding gets its
+                    # own instance), but applying the same lock pattern is consistent
+                    # and safe (a no-contention lock adds negligible overhead).
+                    result_table = await asyncio.to_thread(_execute_with_lock, connector, api_plan)
                     cap = _ROW_CAP
                     if cap > 0 and len(result_table) > cap:
                         logger.warning(

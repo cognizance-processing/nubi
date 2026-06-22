@@ -887,12 +887,21 @@ async def generate_sql_endpoint(
             for name in placeholder_names
         ]
         registry = get_query_registry()
-        registry.register(
-            id=body.save_as,
-            sql=sql,
-            name=body.question[:200],
-            params=params if params else None,
-        )
+        try:
+            registry.register(
+                id=body.save_as,
+                sql=sql,
+                name=body.question[:200],
+                params=params if params else None,
+                owner_org_id=org_id,
+            )
+        except ValueError as _exc:
+            # Cross-org id collision: org A tried to overwrite org B's id.
+            raise AppError(
+                "query_id_conflict",
+                str(_exc),
+                409,
+            ) from _exc
         registered_id = body.save_as
 
     await _record_ai_call(_user, org_id, endpoint="ai_sql")

@@ -682,6 +682,34 @@ def test_backfill_server_ceiling_caps_body_max():
     )
 
 
+def test_sweep_body_max_cells_field_bounds():
+    """SweepIn.max_cells must reject non-positive (zero/negative) values at parse time.
+
+    This is the LOW validation fix: without a ge=1 lower bound, a caller can
+    pass max_cells=0 or max_cells=-1, which would either silently pass through
+    min(body.max_cells, _MAX_SWEEP_CELLS) as 0 or a negative number and bypass
+    the server cap arithmetic.
+    """
+    from pydantic import ValidationError
+    import app.routes.flows as flows_mod
+
+    SweepIn = flows_mod.SweepIn  # type: ignore[attr-defined]
+
+    # Valid boundary values.
+    s = SweepIn(max_cells=1)
+    assert s.max_cells == 1
+    s = SweepIn(max_cells=200)
+    assert s.max_cells == 200
+
+    # Non-positive values must fail validation.
+    with pytest.raises(ValidationError):
+        SweepIn(max_cells=0)
+    with pytest.raises(ValidationError):
+        SweepIn(max_cells=-1)
+    with pytest.raises(ValidationError):
+        SweepIn(max_cells=-100)
+
+
 def test_backfill_body_max_windows_field_bounds():
     """BackfillIn.max_windows must reject values outside [1, 10000]."""
     from pydantic import ValidationError

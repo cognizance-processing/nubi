@@ -94,13 +94,29 @@ def _get_hmac_key() -> bytes:
     """Return the HMAC signing key as bytes.
 
     Precedence: NUBI_ARTIFACT_HMAC_KEY > NUBI_SECRET_KEY > dev sentinel.
-    The dev sentinel is only used when neither env var is set; it logs a
-    warning so operators notice in non-development environments.
+    The dev sentinel is only used when neither env var is set AND the
+    environment is NOT production.
+
+    In production (ENV=production) with no real key configured this function
+    raises ``RuntimeError`` (fail-closed) rather than using the insecure
+    dev sentinel — an HMAC signed with a known, public sentinel key is
+    forgeable, which defeats the pickle-RCE protection entirely.
     """
     key = os.environ.get("NUBI_ARTIFACT_HMAC_KEY") or os.environ.get("NUBI_SECRET_KEY")
     if key:
         return key.encode("utf-8") if isinstance(key, str) else key
-    # Dev sentinel — not secret, but safe for local tests.
+    # No real key configured.  In production this is a hard failure — using
+    # a known sentinel key would allow anyone to forge valid HMAC signatures
+    # and trigger pickle RCE via a crafted blob in the object store.
+    env = os.environ.get("ENV", "").strip().lower()
+    if env == "production":
+        raise RuntimeError(
+            "Artifact HMAC key is not configured in production. "
+            "Set NUBI_ARTIFACT_HMAC_KEY (or NUBI_SECRET_KEY) before starting "
+            "the server. Refusing to sign/verify artifacts with an insecure "
+            "dev-only sentinel key."
+        )
+    # Dev/test sentinel — not secret, but safe for local development and CI.
     import warnings  # noqa: PLC0415
     warnings.warn(
         "NUBI_ARTIFACT_HMAC_KEY (or NUBI_SECRET_KEY) is not set. "

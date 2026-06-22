@@ -267,6 +267,42 @@ class TestValidateDashboardHtml:
         assert ok is False
         assert any("does_not_exist_ever_xyz" in issue for issue in issues), issues
 
+    def test_inline_handler_with_space_before_equals_detected(self):
+        """on*= handler with whitespace before '=' must be caught (XSS bypass fix).
+
+        SECURITY (LOW XSS): the old regex r'\\bon\\w+=' was bypassed by inserting
+        a space (or tab) before the '=' sign, e.g. 'onclick ="bad()"'.
+        The fix adds \\s* so 'onclick =' / 'onclick\\t=' are also matched.
+        """
+        # Space before '='
+        html_space = '<div onclick ="bad()"><nubi-table query-id="demo_all"></nubi-table></div>'
+        ok, issues = validate_dashboard_html(html_space)
+        assert ok is False, (
+            "Expected validate_dashboard_html to reject 'onclick =' (space before =)"
+        )
+        assert any("on*=" in issue or "handler" in issue.lower() for issue in issues), issues
+
+        # Tab before '='
+        html_tab = '<div onclick\t="bad()"><nubi-table query-id="demo_all"></nubi-table></div>'
+        ok2, issues2 = validate_dashboard_html(html_tab)
+        assert ok2 is False, (
+            "Expected validate_dashboard_html to reject 'onclick\\t=' (tab before =)"
+        )
+        assert any("on*=" in issue or "handler" in issue.lower() for issue in issues2), issues2
+
+        # Multiple spaces before '='
+        html_multi = '<div onmouseover   ="bad()"><nubi-table query-id="demo_all"></nubi-table></div>'
+        ok3, issues3 = validate_dashboard_html(html_multi)
+        assert ok3 is False, (
+            "Expected validate_dashboard_html to reject 'onmouseover   =' (multiple spaces)"
+        )
+        assert any("on*=" in issue or "handler" in issue.lower() for issue in issues3), issues3
+
+        # No space — original case must still work.
+        html_nospace = '<div onclick="bad()"><nubi-table query-id="demo_all"></nubi-table></div>'
+        ok4, issues4 = validate_dashboard_html(html_nospace)
+        assert ok4 is False, "Expected validate_dashboard_html to reject 'onclick=' (no space)"
+
     def test_empty_html_is_valid(self):
         ok, issues = validate_dashboard_html("")
         assert ok is True

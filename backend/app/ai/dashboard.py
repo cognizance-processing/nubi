@@ -78,7 +78,7 @@ HTML_PREVIEW_LENGTH: int = 200
 
 # Regex patterns for security checks.
 _SCRIPT_RE = re.compile(r"<\s*script", re.IGNORECASE)
-_ON_HANDLER_RE = re.compile(r"\bon\w+=", re.IGNORECASE)
+_ON_HANDLER_RE = re.compile(r"\bon\w+\s*=", re.IGNORECASE)
 _JAVASCRIPT_URI_RE = re.compile(r"javascript\s*:", re.IGNORECASE)
 _DATA_HTML_RE = re.compile(r"data\s*:\s*text/html", re.IGNORECASE)
 

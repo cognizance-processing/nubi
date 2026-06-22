@@ -1014,6 +1014,72 @@ async def test_no_policy_and_caller_false_auto_commits(monkeypatch):
     )
 
 
+# ---------------------------------------------------------------------------
+# 24. GET /flows/writeback — viewer is blocked (LOW authz fix)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_route_list_writebacks_viewer_forbidden(wb_client):
+    """GET /flows/writeback must return 403 for viewers.
+
+    Write-back payloads may contain recommendation data.  Viewers (read-only
+    role) must NOT be able to enumerate write-back records.
+    """
+    client, alice_id, bob_id, carol_id, org_id, wb_store, repo = wb_client
+
+    resp = await client.get(
+        "/api/v1/flows/writeback",
+        headers=_auth_headers(carol_id),
+    )
+    assert resp.status_code == 403
+
+
+@pytest.mark.asyncio
+async def test_route_get_writeback_detail_viewer_forbidden(wb_client):
+    """GET /flows/writeback/{id} must return 403 for viewers.
+
+    Viewers must not be able to read write-back detail records.
+    """
+    client, alice_id, bob_id, carol_id, org_id, wb_store, repo = wb_client
+
+    # Alice submits a write-back so there's a real record to probe.
+    resp = await client.post(
+        "/api/v1/flows/writeback",
+        json={
+            "idempotency_key": _idem(),
+            "rows": [{"id": 1}],
+            "target": {"connector_id": "c1", "object": "raw.t"},
+            "mode": "append",
+            "approval_required": False,
+            "dry_run": False,
+            "meta": {},
+        },
+        headers=_auth_headers(alice_id),
+    )
+    assert resp.status_code == 201
+    wb_id = resp.json()["id"]
+
+    # Carol (viewer) tries to read the detail — must be blocked.
+    resp2 = await client.get(
+        f"/api/v1/flows/writeback/{wb_id}",
+        headers=_auth_headers(carol_id),
+    )
+    assert resp2.status_code == 403
+
+
+@pytest.mark.asyncio
+async def test_route_list_writebacks_member_allowed(wb_client):
+    """GET /flows/writeback must succeed (200) for member (writer) role."""
+    client, alice_id, bob_id, carol_id, org_id, wb_store, repo = wb_client
+
+    resp = await client.get(
+        "/api/v1/flows/writeback",
+        headers=_auth_headers(bob_id),  # bob is member
+    )
+    assert resp.status_code == 200
+
+
 def test_enforce_approval_policy_unit():
     """Unit test for _enforce_approval_policy precedence rules."""
     import app.routes.flows as flows_module  # noqa: PLC0415

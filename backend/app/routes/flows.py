@@ -1681,7 +1681,7 @@ async def list_flows(
 
 # B3: writeback GET routes must be registered BEFORE /{flow_id} so FastAPI
 # does not swallow /writeback as a flow_id parameter.
-@router.get("/writeback", status_code=200)
+@router.get("/writeback", status_code=200, dependencies=[Depends(require_writer_default)])
 async def _list_writebacks_route_early(
     limit: int = 50,
     user: dict[str, Any] = Depends(current_user),
@@ -1690,6 +1690,9 @@ async def _list_writebacks_route_early(
     """List write-back requests for the caller's org (newest first).
 
     Returns up to *limit* records.  Org-scoped from the verified token.
+    RBAC: caller must have writer role (owner/admin/member); viewers are blocked.
+    Write-back payloads may contain recommendation data — not suitable for
+    read-only viewer access.
     """
     from app.connectors.writeback import get_writeback_store  # noqa: PLC0415
 
@@ -1700,7 +1703,7 @@ async def _list_writebacks_route_early(
     return {"writebacks": records, "count": len(records)}
 
 
-@router.get("/writeback/{wb_id}", status_code=200)
+@router.get("/writeback/{wb_id}", status_code=200, dependencies=[Depends(require_writer_default)])
 async def _get_writeback_route_early(
     wb_id: str,
     user: dict[str, Any] = Depends(current_user),
@@ -1709,6 +1712,7 @@ async def _get_writeback_route_early(
     """Return a single write-back request by id.
 
     Returns 404 when the record does not exist or belongs to a different org.
+    RBAC: caller must have writer role (owner/admin/member); viewers are blocked.
     """
     from app.connectors.writeback import get_writeback_store  # noqa: PLC0415
 
@@ -1992,7 +1996,7 @@ class SweepIn(BaseModel):
 
     param_sets: list[dict[str, Any]] | None = None
     grid: dict[str, list[Any]] | None = None
-    max_cells: int = 200
+    max_cells: int = Field(default=200, ge=1, le=10000)
 
 
 class BackfillIn(BaseModel):

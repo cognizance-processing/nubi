@@ -767,3 +767,101 @@ def test_oversized_ndarray_pre_serialise_cap_disabled():
         # Cap disabled — must not raise.
         handle = put_artifact(arr, kind="pickle", org_id=ORG_A, store=art_store)
         assert is_handle(handle)
+
+
+# ---------------------------------------------------------------------------
+# 20–21. Production HMAC fail-closed (MED RCE hardening)
+# ---------------------------------------------------------------------------
+
+
+def test_production_env_no_hmac_key_put_raises():
+    """put_artifact in production with no HMAC key must raise RuntimeError (fail-closed).
+
+    SECURITY (MED RCE): using the dev-sentinel key in production allows an
+    attacker who can write to the object store to forge HMAC-signed pickle
+    blobs and trigger arbitrary code execution on deserialization.
+    """
+    import unittest.mock  # noqa: PLC0415
+
+    art_store = _mem_store()
+    env_patch = {"ENV": "production"}
+    # Ensure neither HMAC key nor secret key is set.
+    with unittest.mock.patch.dict(
+        "os.environ",
+        env_patch,
+        clear=False,
+    ):
+        import os  # noqa: PLC0415
+        # Temporarily remove both key env vars if present.
+        saved_hmac = os.environ.pop("NUBI_ARTIFACT_HMAC_KEY", None)
+        saved_secret = os.environ.pop("NUBI_SECRET_KEY", None)
+        try:
+            with pytest.raises(RuntimeError, match="not configured in production"):
+                put_artifact({"x": 1}, kind="json", org_id=ORG_A, store=art_store)
+        finally:
+            if saved_hmac is not None:
+                os.environ["NUBI_ARTIFACT_HMAC_KEY"] = saved_hmac
+            if saved_secret is not None:
+                os.environ["NUBI_SECRET_KEY"] = saved_secret
+
+
+def test_production_env_no_hmac_key_get_raises():
+    """get_artifact in production with no HMAC key must raise RuntimeError (fail-closed).
+
+    The HMAC key is required to VERIFY the envelope — without it the check
+    cannot run, and proceeding would skip tamper-detection entirely.
+    """
+    import unittest.mock  # noqa: PLC0415
+    import os  # noqa: PLC0415
+
+    # First, create a legitimate artifact outside of production mode so we
+    # have a valid handle to attempt to retrieve.
+    art_store = _mem_store()
+    saved_hmac = os.environ.pop("NUBI_ARTIFACT_HMAC_KEY", None)
+    saved_secret = os.environ.pop("NUBI_SECRET_KEY", None)
+    try:
+        handle = put_artifact({"y": 2}, kind="json", org_id=ORG_A, store=art_store)
+
+        # Now simulate production with no HMAC key → get must also raise.
+        with unittest.mock.patch.dict("os.environ", {"ENV": "production"}, clear=False):
+            with pytest.raises(RuntimeError, match="not configured in production"):
+                get_artifact(handle, org_id=ORG_A, store=art_store)
+    finally:
+        if saved_hmac is not None:
+            os.environ["NUBI_ARTIFACT_HMAC_KEY"] = saved_hmac
+        if saved_secret is not None:
+            os.environ["NUBI_SECRET_KEY"] = saved_secret
+
+
+def test_dev_env_no_hmac_key_uses_sentinel_with_warning():
+    """In non-production environments the dev sentinel is still accepted (with a warning).
+
+    This ensures the existing dev/test workflow is not broken.
+    """
+    import os  # noqa: PLC0415
+    import warnings  # noqa: PLC0415
+
+    art_store = _mem_store()
+    saved_hmac = os.environ.pop("NUBI_ARTIFACT_HMAC_KEY", None)
+    saved_secret = os.environ.pop("NUBI_SECRET_KEY", None)
+    saved_env = os.environ.pop("ENV", None)
+    try:
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            handle = put_artifact({"z": 3}, kind="json", org_id=ORG_A, store=art_store)
+            loaded = get_artifact(handle, org_id=ORG_A, store=art_store)
+
+        assert is_handle(handle)
+        assert loaded == {"z": 3}
+        # A warning about the insecure sentinel key must have been emitted.
+        sentinel_warnings = [w for w in caught if "insecure" in str(w.message).lower() or "sentinel" in str(w.message).lower() or "not set" in str(w.message).lower()]
+        assert len(sentinel_warnings) >= 1, (
+            f"Expected at least one sentinel warning; got: {[str(w.message) for w in caught]}"
+        )
+    finally:
+        if saved_hmac is not None:
+            os.environ["NUBI_ARTIFACT_HMAC_KEY"] = saved_hmac
+        if saved_secret is not None:
+            os.environ["NUBI_SECRET_KEY"] = saved_secret
+        if saved_env is not None:
+            os.environ["ENV"] = saved_env

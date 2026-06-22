@@ -125,6 +125,12 @@ _DEFAULT_LIMIT: int = int(os.environ.get("NUBI_METRIC_DEFAULT_LIMIT", 100_000))
 # Each non-window entry adds a correlated subquery/LATERAL scanning __base,
 # so an unbounded list is an O(N_tc × rows) resource risk.
 _MAX_TC_ENTRIES: int = int(os.environ.get("NUBI_MAX_TC_ENTRIES", 20))
+# Cap on the number of elements in a single in/not_in filter value list.
+# Each element becomes a separate bind parameter via the planner's inclause
+# expansion, so an unbounded list is a parameter-explosion resource risk.
+_MAX_IN_LIST: int = int(os.environ.get("NUBI_MAX_IN_LIST", 1000))
+# Cap on the total number of filters in a single MetricQuery.
+_MAX_FILTERS: int = int(os.environ.get("NUBI_MAX_FILTERS", 50))
 
 # Valid SQL identifier pattern (for entity/time columns in latest_snapshot)
 _IDENT_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
@@ -819,31 +825,68 @@ def _build_other_select(
     dim_col = tn.dimension
     order_dir = "DESC" if tn.order == "desc" else "ASC"
 
-    # ── Membership subquery (NOT IN) — per-tenant correlated like the IN arm ──
+    # ── Membership / complement-rank exclusion ────────────────────────────────
+    # FIX (Issue 2 tie semantics): the TOP arm and OTHER arm MUST partition every
+    # __base row into exactly one bucket.  The no-time-grain TOP arm uses
+    # QUALIFY RANK() OVER (PARTITION BY rls_keys ORDER BY measure) <= N.  RANK
+    # keeps ALL rows tied at the N-th boundary, but a LIMIT-N membership subquery
+    # keeps exactly N — so boundary-tie rows would land in BOTH arms (double
+    # count).  We therefore make the no-time-grain OTHER arm use the COMPLEMENT of
+    # the same RANK window (RANK(...) > N): every row whose rank is <= N is in the
+    # TOP arm, every row whose rank is > N is in the OTHER arm — a clean partition
+    # with no double-counting and no dropped rows, identical RANK computation on
+    # both sides.  The time-grain path keeps the correlated membership subquery
+    # (the outer SELECT there has one row per (dim, bucket) so a per-bucket RANK
+    # would not match the per-dim top-N semantics).
     _other_rls_keys = tuple(metric.rls_keys)
-    if _other_rls_keys:
-        # Correlate on the Other arm's FROM alias so the top-N set is per-tenant.
-        membership_sql = _top_n_membership_sql(
-            dim_col, rank_measure, order_dir, tn.n,
-            rls_keys=_other_rls_keys, outer_alias="__other_outer",
+    not_in_cond: exp.Expression | None = None
+    complement_qualify: exp.Expression | None = None
+
+    if time_alias is None:
+        # Complement RANK window — mirror _apply_top_n's no-time-grain arm.
+        rank_m_col = exp.column(rank_measure)
+        rank_partition = [exp.column(k) for k in _other_rls_keys]
+        rank_over = exp.Window(
+            this=exp.func("RANK", dialect=dialect),
+            partition_by=rank_partition or None,
+            order=exp.Order(
+                expressions=[
+                    exp.Ordered(
+                        this=rank_m_col,
+                        desc=(tn.order == "desc"),
+                    )
+                ]
+            ),
         )
-        from_node: exp.Expression = exp.alias_(
-            exp.Table(this=exp.to_identifier("__base")), "__other_outer"
+        complement_qualify = exp.GT(
+            this=rank_over,
+            expression=exp.Literal.number(tn.n),
         )
+        from_node: exp.Expression = exp.Table(this=exp.to_identifier("__base"))
     else:
-        membership_sql = _top_n_membership_sql(
-            dim_col, rank_measure, order_dir, tn.n, rls_keys=(),
-        )
-        from_node = exp.Table(this=exp.to_identifier("__base"))
-    membership_expr = sqlglot.parse_one(membership_sql, dialect=dialect)
-    not_in_cond = exp.Not(
-        this=exp.paren(
-            exp.In(
-                this=exp.column(dim_col),
-                query=exp.Subquery(this=membership_expr),
+        # Time-grain path: per-tenant correlated membership subquery (NOT IN).
+        if _other_rls_keys:
+            membership_sql = _top_n_membership_sql(
+                dim_col, rank_measure, order_dir, tn.n,
+                rls_keys=_other_rls_keys, outer_alias="__other_outer",
+            )
+            from_node = exp.alias_(
+                exp.Table(this=exp.to_identifier("__base")), "__other_outer"
+            )
+        else:
+            membership_sql = _top_n_membership_sql(
+                dim_col, rank_measure, order_dir, tn.n, rls_keys=(),
+            )
+            from_node = exp.Table(this=exp.to_identifier("__base"))
+        membership_expr = sqlglot.parse_one(membership_sql, dialect=dialect)
+        not_in_cond = exp.Not(
+            this=exp.paren(
+                exp.In(
+                    this=exp.column(dim_col),
+                    query=exp.Subquery(this=membership_expr),
+                )
             )
         )
-    )
 
     # ── Projection (column order MUST match the top-N arm) ───────────────────
     select_exprs: list[exp.Expression] = []
@@ -909,8 +952,30 @@ def _build_other_select(
         if d != dim_col:
             group_exprs.append(exp.column(d))
 
-    other_select = exp.Select().select(*select_exprs).from_(from_node)
-    other_select = other_select.where(not_in_cond)
+    # ── Assemble ──────────────────────────────────────────────────────────────
+    # No-time-grain (complement RANK) path: the QUALIFY RANK(...) > N must be
+    # evaluated on individual __base rows BEFORE this arm's roll-up aggregation.
+    # We therefore pre-filter __base in a subquery (SELECT * FROM __base QUALIFY
+    # RANK(...) > N) AS __other_base and aggregate over it.  This guarantees every
+    # __base row whose rank exceeds N (the exact complement of the TOP arm's
+    # rank <= N) is rolled into the Other bucket — boundary ties included exactly
+    # once, never double-counted.
+    if complement_qualify is not None:
+        complement_base = (
+            exp.Select()
+            .select(exp.Star())
+            .from_(exp.Table(this=exp.to_identifier("__base")))
+            .qualify(complement_qualify)
+        )
+        complement_from = exp.Subquery(
+            this=complement_base,
+            alias=exp.TableAlias(this=exp.to_identifier("__other_base")),
+        )
+        other_select = exp.Select().select(*select_exprs).from_(complement_from)
+    else:
+        other_select = exp.Select().select(*select_exprs).from_(from_node)
+        assert not_in_cond is not None
+        other_select = other_select.where(not_in_cond)
     if group_exprs:
         other_select = other_select.group_by(*group_exprs)
     return other_select
@@ -1074,6 +1139,22 @@ def _govern(metric: MetricDefinition, mq: MetricQuery) -> str | None:
                 f"(must match [A-Za-z_][A-Za-z0-9_]*).",
             )
 
+    # FIX (Issue 1 SQLi): UNCONDITIONALLY validate metric.time_dimension.column
+    # is a safe SQL identifier whenever a time_dimension exists.  This column is
+    # interpolated UNQUOTED into time_alias f-strings used by the
+    # _prior_year_subquery_sql / _prior_period_subquery_sql / ytd/qtd/mtd window
+    # helpers (the time_alias is "<column>_<grain>").  Previously it was only
+    # validated in the latest_snapshot path, leaving every other time-comparison
+    # path open to injection via a crafted time_dimension.column.
+    if metric.time_dimension is not None:
+        td_col = metric.time_dimension.column
+        if not _IDENT_RE.fullmatch(td_col):
+            raise MetricError(
+                "bad_time_column",
+                f"time_dimension.column {td_col!r} is not a valid SQL identifier "
+                f"(must match [A-Za-z_][A-Za-z0-9_]*).",
+            )
+
     # requested dimensions must be allowed.
     for dim_name in mq.dimensions:
         if metric.dimension(dim_name) is None:
@@ -1104,6 +1185,16 @@ def _govern(metric: MetricDefinition, mq: MetricQuery) -> str | None:
     # the time column is a legal filter field iff a time dimension exists.
     time_col = metric.time_dimension.column if metric.time_dimension else None
 
+    # FIX (Issue 5 resource): cap the total number of filters to prevent a
+    # MetricQuery with an unbounded filter list from inflating the WHERE clause /
+    # parameter count.
+    if len(mq.filters) > _MAX_FILTERS:
+        raise MetricError(
+            "too_many_filters",
+            f"MetricQuery has {len(mq.filters)} filters which exceeds the maximum "
+            f"of {_MAX_FILTERS} (set NUBI_MAX_FILTERS to override).",
+        )
+
     # filters: field allowed, op known, list/scalar value shape correct.
     for f in mq.filters:
         if metric.dimension(f.field) is None and f.field != time_col:
@@ -1123,6 +1214,16 @@ def _govern(metric: MetricDefinition, mq: MetricQuery) -> str | None:
                 "bad_filter_value",
                 f"Filter op {f.op!r} on {f.field!r} requires a list value.",
             )
+        # FIX (Issue 4 resource): cap the length of in/not_in list values to
+        # prevent parameter explosion (each element becomes a separate bind).
+        if f.op in _LIST_OPS and isinstance(f.value, (list, tuple)):
+            if len(f.value) > _MAX_IN_LIST:
+                raise MetricError(
+                    "in_list_too_large",
+                    f"Filter op {f.op!r} on {f.field!r} has {len(f.value)} values "
+                    f"which exceeds the maximum of {_MAX_IN_LIST} "
+                    f"(set NUBI_MAX_IN_LIST to override).",
+                )
         if f.op in _SCALAR_OPS and isinstance(f.value, (list, tuple)):
             raise MetricError(
                 "bad_filter_value",
@@ -1241,12 +1342,22 @@ def _govern(metric: MetricDefinition, mq: MetricQuery) -> str | None:
         # the membership subquery would ORDER BY SUM(<derived>) but the derived column
         # is not present in __base (only base measures are in __base).
         derived_measure_names = {dm.name for dm in metric.derived_measures}
-        if mq.time_grain is not None and rank_measure in derived_measure_names:
+        # FIX (Issue 3): block a derived rank measure whenever the rank uses a
+        # __base membership subquery — that is, when a time_grain is set OR when
+        # top_n.other is True.  Both the time-grain top-N arm and the Other arm's
+        # NOT IN membership query rank by ORDER BY SUM(<rank_measure>) against
+        # __base, which only contains BASE measures — a derived rank column is not
+        # present there and would produce a runtime SQL (Binder) error.
+        if (
+            (mq.time_grain is not None or tn.other)
+            and rank_measure in derived_measure_names
+        ):
             raise MetricError(
                 "bad_top_n",
                 f"top_n.measure {rank_measure!r} is a derived measure; derived measures "
-                f"cannot be used as the top_n rank measure when time_grain is set "
-                f"(the membership subquery references __base which only contains base measures).",
+                f"cannot be used as the top_n rank measure when time_grain is set or "
+                f"top_n.other is True (the membership subquery references __base which "
+                f"only contains base measures).",
             )
         # FIX issue 2: non-additive base measure as rank measure with time_grain is
         # wrong — the membership subquery ranks by SUM(rank_measure) across time
@@ -1560,15 +1671,25 @@ def _prior_year_subquery_sql(
     """
     interval = _PRIOR_YEAR_INTERVAL.get(grain, "INTERVAL '1 year'")
 
+    # FIX (Issue 1 defense-in-depth): emit every identifier (dims, time_alias,
+    # measure) as a quoted identifier so a name that slipped past validation
+    # cannot break out of the f-string.  Governance already validates these, but
+    # quoting here is a second line of defense.
+    def _q(name: str) -> str:
+        return exp.to_identifier(name, quoted=True).sql(dialect=dialect)
+
+    measure_q = _q(measure_name)
+
     # Qualify outer-row column references with __outer. to avoid ambiguity.
     dim_conditions = " AND ".join(
-        f"__py.{d} = __outer.{d}" for d in all_dim_names
+        f"__py.{_q(d)} = __outer.{_q(d)}" for d in all_dim_names
     )
 
     if time_alias is not None:
+        time_alias_q = _q(time_alias)
         time_condition = (
-            f"__py.{time_alias} = "
-            f"DATE_TRUNC('{grain}', __outer.{time_alias} - {interval})"
+            f"__py.{time_alias_q} = "
+            f"DATE_TRUNC('{grain}', __outer.{time_alias_q} - {interval})"
         )
         if dim_conditions:
             where_clause = f"WHERE {dim_conditions} AND {time_condition}"
@@ -1581,7 +1702,7 @@ def _prior_year_subquery_sql(
             where_clause = ""
 
     return (
-        f"(SELECT __py.{measure_name} FROM __base AS __py {where_clause})"
+        f"(SELECT __py.{measure_q} FROM __base AS __py {where_clause})"
     )
 
 
@@ -1622,14 +1743,21 @@ def _prior_period_subquery_sql(
     interval_tmpl = _PRIOR_PERIOD_INTERVAL_BY_N.get(grain, "INTERVAL '{n} day'")
     interval = interval_tmpl.replace("{n}", str(periods))
 
+    # FIX (Issue 1 defense-in-depth): quote every interpolated identifier.
+    def _q(name: str) -> str:
+        return exp.to_identifier(name, quoted=True).sql(dialect=dialect)
+
+    measure_q = _q(measure_name)
+
     dim_conditions = " AND ".join(
-        f"__pp.{d} = __outer.{d}" for d in all_dim_names
+        f"__pp.{_q(d)} = __outer.{_q(d)}" for d in all_dim_names
     )
 
     if time_alias is not None:
+        time_alias_q = _q(time_alias)
         time_condition = (
-            f"__pp.{time_alias} = "
-            f"DATE_TRUNC('{grain}', __outer.{time_alias} - {interval})"
+            f"__pp.{time_alias_q} = "
+            f"DATE_TRUNC('{grain}', __outer.{time_alias_q} - {interval})"
         )
         if dim_conditions:
             where_clause = f"WHERE {dim_conditions} AND {time_condition}"
@@ -1642,5 +1770,5 @@ def _prior_period_subquery_sql(
             where_clause = ""
 
     return (
-        f"(SELECT __pp.{measure_name} FROM __base AS __pp {where_clause})"
+        f"(SELECT __pp.{measure_q} FROM __base AS __pp {where_clause})"
     )

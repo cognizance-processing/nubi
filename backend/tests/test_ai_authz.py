@@ -6,6 +6,8 @@ that mutates state. Writer/admin/owner must still receive 200.
 Findings fixed:
   [HIGH] POST /ai/sql with save_as — viewer was not blocked (writer_default guard added).
   [MED]  POST /ai/pin            — viewer was not blocked (writer guard added).
+  [MED]  POST /ai/sql save_as    — cross-tenant id collision: org A can overwrite org B's
+                                   registered query id in the process-global registry.
 """
 
 from __future__ import annotations
@@ -286,3 +288,177 @@ class TestPinAuthz:
         widgets = row["config"]["spec"]["widgets"]
         assert len(widgets) == 1
         assert widgets[0]["query_id"] == _SALES_QUERY_ID
+
+
+# ---------------------------------------------------------------------------
+# [MED] Cross-tenant QueryRegistry id collision via POST /ai/sql save_as
+# ---------------------------------------------------------------------------
+
+
+@pytest_asyncio.fixture
+async def two_org_clients(app, fake_db, monkeypatch):
+    """Two fully independent orgs (org A and org B), each with an owner user.
+
+    Clears LLM env vars so both clients use NullProvider (deterministic, no
+    network).  Yields (client_a, writer_a, org_a, client_b, writer_b, org_b).
+    """
+    from app.config import get_settings
+    from app.repos.memory import InMemoryRepo
+    from app.repos.provider import set_repo
+
+    for key in ("ANTHROPIC_API_KEY", "OPENAI_API_KEY", "GEMINI_API_KEY", "LLM_PROVIDER"):
+        monkeypatch.delenv(key, raising=False)
+    get_settings.cache_clear()
+
+    repo = InMemoryRepo()
+    set_repo(repo)
+
+    writer_a = str(uuid.uuid4())
+    org_a = str(uuid.uuid4())
+    writer_b = str(uuid.uuid4())
+    org_b = str(uuid.uuid4())
+
+    for uid, email in [(writer_a, "org_a_owner@example.com"), (writer_b, "org_b_owner@example.com")]:
+        fake_db.users[uid] = {
+            "id": uid,
+            "email": email,
+            "name": "Owner",
+            "avatar_url": None,
+            "email_verified": True,
+            "created_at": "2024-01-01T00:00:00+00:00",
+        }
+    repo.seed_org_member(org_id=org_a, user_id=writer_a, role="owner")
+    repo.seed_org_member(org_id=org_b, user_id=writer_b, role="owner")
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://testserver", follow_redirects=False) as ac:
+        yield ac, writer_a, org_a, writer_b, org_b
+
+    set_repo(None)
+
+
+class TestCrossTenantSaveAs:
+    """POST /ai/sql save_as must NOT allow org B to overwrite org A's registered id."""
+
+    @pytest.mark.asyncio
+    async def test_org_b_cannot_overwrite_org_a_save_as(self, two_org_clients):
+        """Org B's save_as with an id already registered by org A → 409."""
+        ac, writer_a, org_a, writer_b, org_b = two_org_clients
+        shared_id = f"shared_query_{uuid.uuid4().hex[:8]}"
+
+        # Org A registers the id first.
+        resp_a = await ac.post(
+            "/api/v1/ai/sql",
+            json={"question": "show orders", "save_as": shared_id},
+            headers=_auth_headers(writer_a),
+        )
+        assert resp_a.status_code == 200, (
+            f"Org A save_as failed unexpectedly: {resp_a.status_code} {resp_a.text}"
+        )
+        assert resp_a.json()["registered_id"] == shared_id
+
+        # Org B tries to overwrite the same id → must be rejected (409).
+        resp_b = await ac.post(
+            "/api/v1/ai/sql",
+            json={"question": "different question", "save_as": shared_id},
+            headers=_auth_headers(writer_b),
+        )
+        assert resp_b.status_code == 409, (
+            f"Expected 409 (cross-tenant collision) but got {resp_b.status_code}: {resp_b.text}"
+        )
+
+    @pytest.mark.asyncio
+    async def test_registry_retains_org_a_sql_after_collision_attempt(self, two_org_clients):
+        """After a rejected collision attempt the registry still holds org A's SQL."""
+        from app.queries.registry import get_query_registry
+
+        ac, writer_a, org_a, writer_b, org_b = two_org_clients
+        shared_id = f"retain_query_{uuid.uuid4().hex[:8]}"
+
+        # Org A registers first.
+        resp_a = await ac.post(
+            "/api/v1/ai/sql",
+            json={"question": "count users", "save_as": shared_id},
+            headers=_auth_headers(writer_a),
+        )
+        assert resp_a.status_code == 200
+        original_sql = resp_a.json()["sql"]
+
+        # Org B collides → rejected.
+        await ac.post(
+            "/api/v1/ai/sql",
+            json={"question": "totally different", "save_as": shared_id},
+            headers=_auth_headers(writer_b),
+        )
+
+        # The registry must still hold org A's SQL unchanged.
+        rq = get_query_registry().get(shared_id)
+        assert rq is not None, "Org A's query was removed from registry"
+        assert rq.sql == original_sql, (
+            f"Registry SQL was silently overwritten: expected {original_sql!r}, "
+            f"got {rq.sql!r}"
+        )
+        assert rq.owner_org_id == org_a, (
+            f"Registry owner_org_id changed: expected {org_a!r}, got {rq.owner_org_id!r}"
+        )
+
+    @pytest.mark.asyncio
+    async def test_each_org_can_register_its_own_unique_id(self, two_org_clients):
+        """Each org can independently register a unique id without collision."""
+        ac, writer_a, org_a, writer_b, org_b = two_org_clients
+
+        id_a = f"org_a_query_{uuid.uuid4().hex[:8]}"
+        id_b = f"org_b_query_{uuid.uuid4().hex[:8]}"
+
+        resp_a = await ac.post(
+            "/api/v1/ai/sql",
+            json={"question": "list orders", "save_as": id_a},
+            headers=_auth_headers(writer_a),
+        )
+        assert resp_a.status_code == 200, resp_a.text
+
+        resp_b = await ac.post(
+            "/api/v1/ai/sql",
+            json={"question": "list users", "save_as": id_b},
+            headers=_auth_headers(writer_b),
+        )
+        assert resp_b.status_code == 200, resp_b.text
+
+        assert resp_a.json()["registered_id"] == id_a
+        assert resp_b.json()["registered_id"] == id_b
+
+    @pytest.mark.asyncio
+    async def test_same_org_can_overwrite_its_own_save_as(self, two_org_clients):
+        """The same org can update/overwrite its own registered id (upsert)."""
+        ac, writer_a, org_a, writer_b, org_b = two_org_clients
+        my_id = f"my_query_{uuid.uuid4().hex[:8]}"
+
+        # Register once.
+        r1 = await ac.post(
+            "/api/v1/ai/sql",
+            json={"question": "list orders", "save_as": my_id},
+            headers=_auth_headers(writer_a),
+        )
+        assert r1.status_code == 200, r1.text
+
+        # Same org registers again (upsert) — must succeed.
+        r2 = await ac.post(
+            "/api/v1/ai/sql",
+            json={"question": "updated orders", "save_as": my_id},
+            headers=_auth_headers(writer_a),
+        )
+        assert r2.status_code == 200, (
+            f"Same-org upsert failed: {r2.status_code} {r2.text}"
+        )
+        assert r2.json()["registered_id"] == my_id
+
+    @pytest.mark.asyncio
+    async def test_system_builtin_ids_not_blocked(self, two_org_clients):
+        """Built-in/system query ids (demo_*) remain accessible and unaffected."""
+        from app.queries.registry import get_query_registry
+
+        _ac, _writer_a, _org_a, _writer_b, _org_b = two_org_clients
+        registry = get_query_registry()
+        rq = registry.get("demo_all")
+        assert rq is not None, "Built-in 'demo_all' missing from registry"
+        assert rq.system is True, "Built-in demo_all must have system=True"

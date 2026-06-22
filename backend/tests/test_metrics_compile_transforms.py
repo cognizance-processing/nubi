@@ -160,7 +160,8 @@ def test_prior_period_lag() -> None:
     up = sql.upper()
     assert "WITH __BASE AS" in up
     # Must use a date-correct correlated subquery, NOT positional LAG.
-    assert "SELECT __PP.REVENUE FROM __BASE AS __PP" in up
+    # Identifiers are quoted (defense-in-depth), so the measure ref is __pp."revenue".
+    assert 'SELECT __PP."REVENUE" FROM __BASE AS __PP' in up
     assert "INTERVAL" in up
     assert "revenue_prior_period".upper() in up
 
@@ -211,7 +212,8 @@ def test_prior_year_lag_by_grain_month() -> None:
     sql, _ = compile_metric(m, mq)
     up = sql.upper()
     # Must use a correlated subquery on __base, not positional LAG.
-    assert "SELECT __PY.REVENUE FROM __BASE AS __PY" in up
+    # Identifiers are quoted (defense-in-depth), so the measure ref is __py."revenue".
+    assert 'SELECT __PY."REVENUE" FROM __BASE AS __PY' in up
     # Must shift by exactly 1 year (INTERVAL '1 year').
     assert "INTERVAL" in up
     assert "1" in up
@@ -2165,7 +2167,7 @@ def test_prior_period_sparse_series_date_correct_through_plan() -> None:
     )
     sql, _ = compile_metric(m, mq)
     # Must use date-correct subquery not LAG.
-    assert "SELECT __PP.REVENUE FROM __BASE AS __PP".lower() in sql.lower()
+    assert 'SELECT __PP."REVENUE" FROM __BASE AS __PP'.lower() in sql.lower()
     # Through plan().
     p = plan(sql, claims={}, dialect="duckdb")
     rows = con.execute(p.sql).fetchall()
@@ -2257,7 +2259,7 @@ def test_yoy_pct_emits_single_prior_year_subquery() -> None:
     # Count how many times the prior-year inner SELECT appears.
     # With the LATERAL fix it should appear exactly once (inside the LATERAL),
     # and the pct expression references the lateral alias column twice.
-    inner = "SELECT __PY.REVENUE FROM __BASE AS __PY"
+    inner = 'SELECT __PY."REVENUE" FROM __BASE AS __PY'
     count = sql.upper().count(inner)
     assert count == 1, (
         f"yoy_pct should emit exactly 1 prior-year subquery (inside LATERAL), "
@@ -2520,7 +2522,7 @@ def test_pop_pct_subquery_appears_once_via_lateral() -> None:
     sql, _ = compile_metric(m, mq)
 
     # The prior-period correlated subquery must appear exactly once.
-    inner = "SELECT __PP.REVENUE FROM __BASE AS __PP"
+    inner = 'SELECT __PP."REVENUE" FROM __BASE AS __PP'
     count = sql.upper().count(inner)
     assert count == 1, (
         f"pop_pct should emit exactly 1 prior-period subquery (inside LATERAL), "
@@ -3738,3 +3740,376 @@ def test_matrix_top_n_filter_tc_tenant(
         tenant_count=tenant_count,
         with_derived=with_derived,
     )
+
+
+# ---------------------------------------------------------------------------
+# 14. NINTH-WAVE — metric COMPILER audit fixes (compile.py)
+#
+# Through plan() + DuckDB asserting EXACT rows.  Covers:
+#   #1 time_dimension.column SQLi raises (all paths)
+#   #2 top_n.other + no-time-grain tie semantics: complement RANK -> no
+#      double-count, exact totals
+#   #3 derived rank measure + other (and/or time_grain, no grain) raises
+#   #4 oversized in/not_in list raises
+#   #5 too many filters raises
+# ---------------------------------------------------------------------------
+
+
+# ── #1: time_dimension.column SQLi raises on ALL time-comparison paths ────────
+
+def test_time_column_sqli_raises_unconditionally() -> None:
+    """[HIGH SQLi] A malicious time_dimension.column must raise MetricError even
+    when no latest_snapshot is used (e.g. a prior_period time-comparison)."""
+    m = MetricDefinition(
+        id="evil_time",
+        name="Evil Time",
+        measure=Measure(name="revenue", agg="sum", expr="amount"),
+        base_table="t",
+        dimensions=(Dimension(name="region"),),
+        time_dimension=TimeDimension(
+            column="created_at) AS x; DROP TABLE t --",  # injection
+            grains=("month",),
+            default_grain="month",
+        ),
+    )
+    mq = MetricQuery(
+        metric_id="evil_time",
+        dimensions=("region",),
+        time_grain="month",
+        time_comparisons=(
+            TimeComparison(measure="revenue", kind="prior_period", periods=1),
+        ),
+    )
+    with pytest.raises(MetricError) as ei:
+        compile_metric(m, mq)
+    assert ei.value.code == "bad_time_column"
+
+
+def test_time_column_sqli_raises_even_without_grain() -> None:
+    """[HIGH SQLi] The time column is validated whenever a time_dimension exists,
+    independent of time_grain / time_comparisons."""
+    m = MetricDefinition(
+        id="evil_time2",
+        name="Evil Time 2",
+        measure=Measure(name="revenue", agg="sum", expr="amount"),
+        base_table="t",
+        dimensions=(Dimension(name="region"),),
+        time_dimension=TimeDimension(
+            column="ok'; DROP TABLE t --",
+            grains=("month",),
+            default_grain="month",
+        ),
+    )
+    mq = MetricQuery(metric_id="evil_time2", dimensions=("region",))
+    with pytest.raises(MetricError) as ei:
+        compile_metric(m, mq)
+    assert ei.value.code == "bad_time_column"
+
+
+def test_valid_time_column_still_compiles_through_plan() -> None:
+    """A valid identifier time column still compiles + runs through plan()."""
+    con = _duckdb_conn()
+    con.execute("""
+        CREATE TABLE tcol_ok (region VARCHAR, amount DOUBLE, sale_date DATE)
+    """)
+    con.execute("""
+        INSERT INTO tcol_ok VALUES
+            ('A', 100, '2024-01-01'),
+            ('A', 200, '2024-02-01')
+    """)
+    m = MetricDefinition(
+        id="tcol_ok",
+        name="OK",
+        measure=Measure(name="revenue", agg="sum", expr="amount"),
+        base_table="tcol_ok",
+        dimensions=(Dimension(name="region"),),
+        time_dimension=TimeDimension(
+            column="sale_date", grains=("month",), default_grain="month",
+        ),
+    )
+    mq = MetricQuery(
+        metric_id="tcol_ok",
+        dimensions=("region",),
+        time_grain="month",
+        time_comparisons=(
+            TimeComparison(measure="revenue", kind="prior_period", periods=1),
+        ),
+    )
+    sql, _ = compile_metric(m, mq)
+    rows = _plan_and_run(sql, con, claims={})
+    assert len(rows) == 2
+
+
+# ── #2: top_n.other + no-time-grain TIE semantics (complement RANK) ──────────
+
+def test_top_n_other_no_grain_boundary_tie_no_double_count() -> None:
+    """[HIGH correctness] Rows tied at the N-th boundary must NOT appear in BOTH
+    the TOP arm and the OTHER arm.  With the complement-RANK fix every __base row
+    lands in exactly one arm and totals are exact.
+
+    Data (n=2, order=desc): A=300 (rank 1), B=100, C=100, D=100 are all TIED at
+    rank 2 (RANK assigns 2 to all three).  The TOP arm (RANK<=2) keeps A,B,C,D.
+    The OTHER arm (RANK>2) keeps none.  The grand total must equal the sum of all
+    rows with NO row counted twice.
+    """
+    con = _duckdb_conn()
+    con.execute("""
+        CREATE TABLE tie_orders (region VARCHAR, amount DOUBLE)
+    """)
+    con.execute("""
+        INSERT INTO tie_orders VALUES
+            ('A', 300),
+            ('B', 100),
+            ('C', 100),
+            ('D', 100)
+    """)
+    m = MetricDefinition(
+        id="tie",
+        name="Tie",
+        measure=Measure(name="revenue", agg="sum", expr="amount"),
+        base_table="tie_orders",
+        dimensions=(Dimension(name="region"),),
+    )
+    mq = MetricQuery(
+        metric_id="tie",
+        dimensions=("region",),
+        top_n=TopN(dimension="region", n=2, order="desc", other=True, other_label="Other"),
+    )
+    sql, _ = compile_metric(m, mq)
+    rows = _plan_and_run(sql, con, claims={})
+    # Columns: region, revenue
+    by_region = {r[0]: r[1] for r in rows}
+    # No region may appear twice (would surface as a UNION collision / wrong total).
+    region_names = [r[0] for r in rows]
+    assert len(region_names) == len(set(region_names)), (
+        f"A region appears in both arms (double-count): {region_names}"
+    )
+    # Total across all output rows must equal the true grand total of __base
+    # (300+100+100+100 = 600) with NO double-counting of boundary ties.
+    grand_total = sum(v for v in by_region.values() if v is not None)
+    assert grand_total == 600.0, f"Expected exact total 600, got {grand_total}; rows={rows}"
+    # A is clearly top; the three tied-at-2 rows are all kept by RANK<=2 (TOP arm)
+    # so the Other (RANK>2) bucket has NO members — its revenue must be empty/NULL
+    # (never a positive value, which would mean a boundary row leaked into BOTH
+    # arms / was double-counted).
+    assert "A" in by_region
+    assert by_region.get("Other") in (None, 0.0), (
+        f"Other bucket must be empty for this tie set (no boundary double-count); rows={rows}"
+    )
+
+
+def test_top_n_other_no_grain_partition_exact_with_distinct_ranks() -> None:
+    """[HIGH correctness] With distinct measures the complement-RANK partition is
+    exact: TOP arm = top-N rows, OTHER arm = SUM of the rest, no row dropped/dup."""
+    con = _duckdb_conn()
+    con.execute("""
+        CREATE TABLE part_orders (region VARCHAR, amount DOUBLE)
+    """)
+    # A=1000, B=500, C=300, D=200, E=100 -> n=2 keeps A,B; Other=C+D+E=600
+    con.execute("""
+        INSERT INTO part_orders VALUES
+            ('A', 1000), ('B', 500), ('C', 300), ('D', 200), ('E', 100)
+    """)
+    m = MetricDefinition(
+        id="part",
+        name="Part",
+        measure=Measure(name="revenue", agg="sum", expr="amount"),
+        base_table="part_orders",
+        dimensions=(Dimension(name="region"),),
+    )
+    mq = MetricQuery(
+        metric_id="part",
+        dimensions=("region",),
+        top_n=TopN(dimension="region", n=2, order="desc", other=True, other_label="Other"),
+    )
+    sql, _ = compile_metric(m, mq)
+    rows = _plan_and_run(sql, con, claims={})
+    by_region = {r[0]: r[1] for r in rows}
+    assert by_region.get("A") == 1000.0
+    assert by_region.get("B") == 500.0
+    assert by_region.get("Other") == 600.0, f"Other must be C+D+E=600; rows={rows}"
+    # Exact partition: total preserved, no C/D/E leaking into the top arm.
+    assert "C" not in by_region and "D" not in by_region and "E" not in by_region
+    grand_total = sum(v for v in by_region.values() if v is not None)
+    assert grand_total == 2100.0, f"Expected total 2100, got {grand_total}"
+
+
+def test_top_n_other_no_grain_per_tenant_tie_partition() -> None:
+    """[HIGH correctness + RLS] Complement-RANK is partitioned by rls_keys so each
+    tenant's top-N + Other is computed independently; boundary ties never cross
+    arms within a tenant."""
+    con = _duckdb_conn()
+    con.execute("""
+        CREATE TABLE rls_tie (region VARCHAR, amount DOUBLE, org_id VARCHAR)
+    """)
+    # org1: A=500, B=100, C=100 (B,C tie at rank 2); org2: X=50, Y=40, Z=30
+    con.execute("""
+        INSERT INTO rls_tie VALUES
+            ('A', 500, 'org1'),
+            ('B', 100, 'org1'),
+            ('C', 100, 'org1'),
+            ('X', 50,  'org2'),
+            ('Y', 40,  'org2'),
+            ('Z', 30,  'org2')
+    """)
+    m = MetricDefinition(
+        id="rls_tie",
+        name="RLS Tie",
+        measure=Measure(name="revenue", agg="sum", expr="amount"),
+        base_table="rls_tie",
+        dimensions=(Dimension(name="region"),),
+        rls_keys=("org_id",),
+    )
+    mq = MetricQuery(
+        metric_id="rls_tie",
+        dimensions=("region",),
+        top_n=TopN(dimension="region", n=1, order="desc", other=True, other_label="Other"),
+    )
+    sql, _ = compile_metric(m, mq)
+    # org1 only: A is top-1; B+C (tied) roll into Other = 200.
+    rows = _plan_and_run(sql, con, claims={"policies": {"org_id": "org1"}})
+    # Output columns: region, org_id (rls passthrough), revenue. Pick the numeric
+    # revenue value from each row regardless of its exact position.
+    def _rev(r):
+        return next(v for v in r[1:] if isinstance(v, (int, float)) or v is None)
+    by_region = {r[0]: _rev(r) for r in rows}
+    # No cross-tenant leakage.
+    assert "X" not in by_region and "Y" not in by_region and "Z" not in by_region
+    assert by_region.get("A") == 500.0
+    assert by_region.get("Other") == 200.0, f"org1 Other must be B+C=200; rows={rows}"
+    # No region twice.
+    names = [r[0] for r in rows]
+    assert len(names) == len(set(names))
+    total = sum(v for v in by_region.values() if v is not None)
+    assert total == 700.0, f"org1 total must be 700, got {total}"
+
+
+# ── #3: derived rank measure + other (no grain) raises ──────────────────────
+
+def test_derived_rank_measure_with_other_no_grain_rejected() -> None:
+    """[HIGH governance] A derived rank measure with top_n.other=True (even with
+    NO time_grain) must raise — the Other arm's membership/complement queries
+    __base, which lacks derived columns."""
+    m = _orders_metric(
+        derived_measures=(
+            DerivedMeasure(name="pvd", formula="delivered / ordered"),
+        )
+    )
+    mq = MetricQuery(
+        metric_id="orders",
+        dimensions=("region",),
+        # No time_grain, but other=True -> still uses a __base membership/complement.
+        top_n=TopN(dimension="region", n=3, measure="pvd", order="desc", other=True),
+    )
+    with pytest.raises(MetricError) as ei:
+        compile_metric(m, mq)
+    assert ei.value.code == "bad_top_n"
+
+
+def test_derived_rank_measure_no_other_no_grain_still_ok() -> None:
+    """A derived rank measure with NO other and NO time_grain still compiles
+    (the top arm's QUALIFY RANK works on the outer SELECT which has the derived
+    column) — regression guard for the narrower #3 block."""
+    con = _duckdb_conn()
+    con.execute("""
+        CREATE TABLE der_ok (region VARCHAR, delivered_qty DOUBLE, ordered_qty DOUBLE)
+    """)
+    con.execute("""
+        INSERT INTO der_ok VALUES
+            ('A', 90, 100),
+            ('B', 50, 100),
+            ('C', 10, 100)
+    """)
+    m = MetricDefinition(
+        id="der_ok",
+        name="Der OK",
+        measure=Measure(name="delivered", agg="sum", expr="delivered_qty"),
+        base_table="der_ok",
+        extra_measures=(Measure(name="ordered", agg="sum", expr="ordered_qty"),),
+        derived_measures=(DerivedMeasure(name="pvd", formula="delivered / ordered"),),
+        dimensions=(Dimension(name="region"),),
+    )
+    mq = MetricQuery(
+        metric_id="der_ok",
+        dimensions=("region",),
+        top_n=TopN(dimension="region", n=2, measure="pvd", order="desc"),  # other defaults False
+    )
+    sql, _ = compile_metric(m, mq)
+    rows = _plan_and_run(sql, con, claims={})
+    regions = {r[0] for r in rows}
+    # Top-2 by pvd: A(0.9), B(0.5); C(0.1) excluded.
+    assert "A" in regions and "B" in regions and "C" not in regions
+
+
+# ── #4: oversized in/not_in list raises ─────────────────────────────────────
+
+def test_in_list_too_large_raises() -> None:
+    """[HIGH resource] An in/not_in filter value list above NUBI_MAX_IN_LIST raises."""
+    import os
+    max_in = int(os.environ.get("NUBI_MAX_IN_LIST", 1000))
+    m = _simple_metric()
+    mq = MetricQuery(
+        metric_id="revenue",
+        dimensions=("region",),
+        filters=(
+            MetricFilter(field="region", op="in", value=[str(i) for i in range(max_in + 1)]),
+        ),
+    )
+    with pytest.raises(MetricError) as ei:
+        compile_metric(m, mq)
+    assert ei.value.code == "in_list_too_large"
+
+
+def test_in_list_at_cap_accepted() -> None:
+    """An in-list exactly at the cap compiles (boundary)."""
+    import os
+    max_in = int(os.environ.get("NUBI_MAX_IN_LIST", 1000))
+    m = _simple_metric()
+    mq = MetricQuery(
+        metric_id="revenue",
+        dimensions=("region",),
+        filters=(
+            MetricFilter(field="region", op="in", value=[str(i) for i in range(max_in)]),
+        ),
+    )
+    sql, params = compile_metric(m, mq)
+    assert sql  # compiled
+    assert len(params["f0"]) == max_in
+
+
+# ── #5: too many filters raises ─────────────────────────────────────────────
+
+def test_too_many_filters_raises() -> None:
+    """[LOW resource] More than NUBI_MAX_FILTERS filters raises MetricError."""
+    import os
+    max_f = int(os.environ.get("NUBI_MAX_FILTERS", 50))
+    m = _simple_metric()
+    mq = MetricQuery(
+        metric_id="revenue",
+        dimensions=("region",),
+        filters=tuple(
+            MetricFilter(field="region", op="=", value=f"v{i}")
+            for i in range(max_f + 1)
+        ),
+    )
+    with pytest.raises(MetricError) as ei:
+        compile_metric(m, mq)
+    assert ei.value.code == "too_many_filters"
+
+
+def test_filters_at_cap_accepted() -> None:
+    """Exactly NUBI_MAX_FILTERS filters compiles (boundary)."""
+    import os
+    max_f = int(os.environ.get("NUBI_MAX_FILTERS", 50))
+    m = _simple_metric()
+    mq = MetricQuery(
+        metric_id="revenue",
+        dimensions=("region",),
+        filters=tuple(
+            MetricFilter(field="region", op="=", value=f"v{i}")
+            for i in range(max_f)
+        ),
+    )
+    sql, params = compile_metric(m, mq)
+    assert sql
+    assert len(params) == max_f
