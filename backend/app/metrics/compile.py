@@ -764,10 +764,21 @@ def _compile_layered(
         )
         # FIX (audit-24 HIGH correctness): with a time_grain the per-arm LIMIT was
         # stripped above; honour an EXPLICIT mq.limit by capping the COMBINED union
-        # (top-N + Other rows) here.  Without an explicit limit we leave the union
-        # uncapped so the full n*num_buckets top-N + per-bucket Other rows survive.
-        if other_timeseries and mq.limit is not None:
-            union_stmt = union_stmt.limit(mq.limit)
+        # (top-N + Other rows) here.
+        #
+        # FIX (HIGH unbounded — regression from fix-25): ALWAYS cap the union.  The
+        # earlier code applied the cap ONLY when mq.limit was explicitly set, so a
+        # caller that omitted limit produced an UNCAPPED union — skipping the
+        # _DEFAULT_LIMIT safety net that protects every other compile path.  We now
+        # always cap with the explicit limit when present, else ``effective_limit``
+        # (which already encodes _DEFAULT_LIMIT / max(_DEFAULT_LIMIT, top_n.n)).  For
+        # a small dataset effective_limit comfortably exceeds n*num_buckets + Other,
+        # so the full per-bucket top-N still survives (no truncation, preserving the
+        # fix-25 correctness); the cap is purely an unbounded-scan safety net.
+        if other_timeseries:
+            union_stmt = union_stmt.limit(
+                mq.limit if mq.limit is not None else effective_limit
+            )
         top_stmt = union_stmt
     else:
         top_stmt = outer_select

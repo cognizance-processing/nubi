@@ -1938,3 +1938,81 @@ async def test_pg_writeback_list(_pg_wb_pool):
             assert cid in listed_ids
         # DESC order: last created should appear first.
         assert listed_ids[0] == created_ids[-1]
+
+
+# ---------------------------------------------------------------------------
+# 27. [LOW] TOCTOU fix: two concurrent approve_writeback calls must invoke
+#     connector_write_fn exactly once; the loser gets a 409 conflict.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_concurrent_approve_writeback_invokes_connector_exactly_once():
+    """Two concurrent approve_writeback calls on the same pending record must
+    invoke connector_write_fn exactly once.
+
+    The CAS (compare-and-swap) on state='pending_approval' → 'committing'
+    ensures that exactly one approver wins the race and proceeds to call the
+    connector.  The loser sees a 409 AppError without ever calling the
+    connector.
+    """
+    import asyncio  # noqa: PLC0415
+
+    from app.errors import AppError  # noqa: PLC0415
+
+    store = InMemoryWritebackStore()
+    call_count = [0]
+
+    async def slow_write(r, t, m):
+        """Simulate a connector write that takes a moment."""
+        call_count[0] += 1
+        await asyncio.sleep(0)  # yield to allow interleaving
+        return {"rows_written": len(r)}
+
+    # Submit a gated record (pending_approval).
+    record = await submit_writeback(
+        org_id="orgA",
+        idempotency_key=_idem(),
+        rows=[{"id": 1}, {"id": 2}],
+        target=_target(),
+        mode="append",
+        created_by="user1",
+        approval_required=True,
+        connector_write_fn=slow_write,
+        store=store,
+    )
+    assert record["state"] == "pending_approval"
+    wb_id = record["id"]
+
+    # Launch two concurrent approve calls.
+    results: list[dict | BaseException] = []
+
+    async def try_approve(approver_id: str) -> None:
+        try:
+            r = await approve_writeback(
+                org_id="orgA",
+                wb_id=wb_id,
+                action="approve",
+                approver_id=approver_id,
+                connector_write_fn=slow_write,
+                store=store,
+            )
+            results.append(r)
+        except AppError as exc:
+            results.append(exc)
+
+    await asyncio.gather(
+        try_approve("approver1"),
+        try_approve("approver2"),
+    )
+
+    # Exactly one call to connector_write_fn.
+    assert call_count[0] == 1, (
+        f"connector_write_fn must be called exactly once; got {call_count[0]}"
+    )
+
+    # Exactly one success (committed) and one conflict (409).
+    successes = [r for r in results if isinstance(r, dict) and r.get("state") == "committed"]
+    conflicts = [r for r in results if isinstance(r, AppError) and r.status == 409]
+    assert len(successes) == 1, f"Expected 1 committed result, got: {results}"
+    assert len(conflicts) == 1, f"Expected 1 conflict (409), got: {results}"

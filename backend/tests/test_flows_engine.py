@@ -647,6 +647,70 @@ class TestDrainLinearFlow:
         assert by_key["summary"]["result"] is not None
 
 
+class TestDrainWallTimeout:
+    """drain_flow_run's optional wall_timeout_s execution budget."""
+
+    def setup_method(self):
+        reset_for_tests()
+        self.store = InMemoryFlowStore()
+
+    async def test_default_no_wall_timeout_is_unchanged(self):
+        """Without wall_timeout_s (default 0) drain behaviour is unchanged."""
+        flow = await _make_flow(self.store, _linear_spec())
+        frun = await materialize_flow_run(self.store, flow, {}, "manual", NOW)
+        final = await drain_flow_run(self.store, frun["id"], NOW, CLAIMS)
+        assert final["state"] == "success"
+
+    async def test_explicit_zero_wall_timeout_is_unchanged(self):
+        """wall_timeout_s=0 explicitly is identical to the default (no deadline)."""
+        flow = await _make_flow(self.store, _linear_spec())
+        frun = await materialize_flow_run(self.store, flow, {}, "manual", NOW)
+        final = await drain_flow_run(
+            self.store, frun["id"], NOW, CLAIMS, wall_timeout_s=0.0
+        )
+        assert final["state"] == "success"
+
+    async def test_generous_wall_timeout_still_succeeds(self):
+        """A generous budget never trips for a fast flow."""
+        flow = await _make_flow(self.store, _linear_spec())
+        frun = await materialize_flow_run(self.store, flow, {}, "manual", NOW)
+        final = await drain_flow_run(
+            self.store, frun["id"], NOW, CLAIMS, wall_timeout_s=60.0
+        )
+        assert final["state"] == "success"
+
+    async def test_exceeded_wall_timeout_raises(self):
+        """A positive budget that elapses aborts the drain with asyncio.TimeoutError.
+
+        We arm a tiny positive budget and advance the runtime's monotonic clock
+        past the deadline so the top-of-loop check fires deterministically on the
+        first iteration regardless of host speed.
+        """
+        import asyncio  # noqa: PLC0415
+        from unittest.mock import patch  # noqa: PLC0415
+
+        import app.flows.runtime as rt  # noqa: PLC0415
+
+        flow = await _make_flow(self.store, _linear_spec())
+        frun = await materialize_flow_run(self.store, flow, {}, "manual", NOW)
+
+        base = rt.time.monotonic()
+        # First call (deadline computation) anchors at 'base'; every subsequent
+        # call (the top-of-loop check) returns base+10 so the deadline is already
+        # exceeded on the first iteration.
+        calls = {"n": 0}
+
+        def _clock() -> float:
+            calls["n"] += 1
+            return base if calls["n"] == 1 else base + 10.0
+
+        with patch.object(rt.time, "monotonic", _clock):
+            with pytest.raises(asyncio.TimeoutError):
+                await drain_flow_run(
+                    self.store, frun["id"], NOW, CLAIMS, wall_timeout_s=0.5
+                )
+
+
 # ---------------------------------------------------------------------------
 # 6. Failing task → downstream skipped, flow failed
 # ---------------------------------------------------------------------------

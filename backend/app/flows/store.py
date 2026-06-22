@@ -43,6 +43,13 @@ from typing import Any
 _MAX_FLOWS_DEFAULT = 1000
 _NUBI_MAX_FLOWS: int = int(os.environ.get("NUBI_MAX_FLOWS", _MAX_FLOWS_DEFAULT))
 
+# ---------------------------------------------------------------------------
+# Per-run task_run ceiling — must match runtime.py's _MAX_TASK_RUNS_PER_RUN.
+# Both read the same env var so they stay in sync without a cross-import.
+# Used to bound list_task_run_results so a drain step never loads all 50k blobs.
+# ---------------------------------------------------------------------------
+_MAX_TASK_RUNS_PER_RUN: int = int(os.environ.get("NUBI_MAX_TASK_RUNS_PER_RUN", 50_000))
+
 
 def _seed_from_run_id(run_id: str) -> int:
     """Derive a deterministic integer seed from a UUID run_id string.
@@ -503,7 +510,7 @@ class InMemoryFlowStore:
             (r["task_key"], deepcopy(r["result"]))
             for r in rows
             if r["state"] == "success" and r.get("result") is not None
-        ]
+        ][:_MAX_TASK_RUNS_PER_RUN]
 
     async def get_task_run(self, task_run_id: str) -> TaskRun | None:
         """Return a copy of the task_run, or ``None`` if not found."""
@@ -1520,8 +1527,10 @@ class PgFlowStore:
             SELECT task_key, result FROM task_runs
             WHERE flow_run_id = $1::uuid AND state = 'success' AND result IS NOT NULL
             ORDER BY created_at ASC, task_key ASC
+            LIMIT $2
             """,
             flow_run_id,
+            _MAX_TASK_RUNS_PER_RUN,
         )
         out: list[tuple[str, dict[str, Any] | None]] = []
         for r in rows:

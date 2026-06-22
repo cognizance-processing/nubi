@@ -43,6 +43,7 @@ from app.connectors.cache import (
     get_cache,
     reset_cache_for_tests,
     _DEFAULT_MAX_ENTRIES,
+    _DEFAULT_BASE_SCAN_MAX_ENTRIES,
 )
 
 
@@ -945,5 +946,71 @@ def test_base_scan_max_total_bytes_env_override_honored(monkeypatch):
     base_scan = _get_base_scan_backend()
     assert isinstance(base_scan, ContentAddressedCache)
     assert base_scan._max_total_bytes == 32 * 1024  # noqa: SLF001
+
+    reset_cache_for_tests()
+
+
+def test_base_scan_max_entries_env_var_is_independent_of_exact_result(monkeypatch):
+    """NUBI_CACHE_BASE_SCAN_MAX_ENTRIES and NUBI_CACHE_MAX_ENTRIES must be
+    independent: setting one must not affect the other.
+
+    Regression guard for fix-24 follow-on: the base-scan singleton previously
+    read NUBI_CACHE_MAX_ENTRIES (the exact-result env var) for its max_entries,
+    making the two caches impossible to tune independently.
+    """
+    from app.connectors.cache import _get_base_scan_backend
+
+    reset_cache_for_tests()
+    # Set the exact-result var to a distinct value from the base-scan var.
+    monkeypatch.setenv("NUBI_CACHE_MAX_ENTRIES", "50")
+    monkeypatch.setenv("NUBI_CACHE_BASE_SCAN_MAX_ENTRIES", "20")
+    monkeypatch.setattr("app.cache.redis_client.redis_available", lambda: False)
+
+    exact = get_cache()
+    base_scan = _get_base_scan_backend()
+
+    assert isinstance(exact, ContentAddressedCache)
+    assert isinstance(base_scan, ContentAddressedCache)
+
+    # The exact-result cache uses NUBI_CACHE_MAX_ENTRIES.
+    assert exact._max_entries == 50, (  # noqa: SLF001
+        f"Exact-result cache should have max_entries=50 (from NUBI_CACHE_MAX_ENTRIES), "
+        f"got {exact._max_entries}"  # noqa: SLF001
+    )
+    # The base-scan cache uses NUBI_CACHE_BASE_SCAN_MAX_ENTRIES, NOT the exact-result var.
+    assert base_scan._max_entries == 20, (  # noqa: SLF001
+        f"Base-scan cache should have max_entries=20 (from NUBI_CACHE_BASE_SCAN_MAX_ENTRIES), "
+        f"got {base_scan._max_entries}. "  # noqa: SLF001
+        "It must NOT read NUBI_CACHE_MAX_ENTRIES."
+    )
+
+    reset_cache_for_tests()
+
+
+def test_base_scan_max_entries_defaults_independently(monkeypatch):
+    """When neither NUBI_CACHE_MAX_ENTRIES nor NUBI_CACHE_BASE_SCAN_MAX_ENTRIES
+    is set, each cache gets its own correct default (256 vs 128).
+    """
+    from app.connectors.cache import _get_base_scan_backend
+
+    reset_cache_for_tests()
+    monkeypatch.delenv("NUBI_CACHE_MAX_ENTRIES", raising=False)
+    monkeypatch.delenv("NUBI_CACHE_BASE_SCAN_MAX_ENTRIES", raising=False)
+    monkeypatch.setattr("app.cache.redis_client.redis_available", lambda: False)
+
+    exact = get_cache()
+    base_scan = _get_base_scan_backend()
+
+    assert isinstance(exact, ContentAddressedCache)
+    assert isinstance(base_scan, ContentAddressedCache)
+    assert exact._max_entries == _DEFAULT_MAX_ENTRIES, (  # noqa: SLF001
+        f"Exact-result cache default should be {_DEFAULT_MAX_ENTRIES}, got {exact._max_entries}"  # noqa: SLF001
+    )
+    assert base_scan._max_entries == _DEFAULT_BASE_SCAN_MAX_ENTRIES, (  # noqa: SLF001
+        f"Base-scan cache default should be {_DEFAULT_BASE_SCAN_MAX_ENTRIES}, "
+        f"got {base_scan._max_entries}"  # noqa: SLF001
+    )
+    # They must differ — base-scan has a smaller default.
+    assert exact._max_entries != base_scan._max_entries  # noqa: SLF001
 
     reset_cache_for_tests()

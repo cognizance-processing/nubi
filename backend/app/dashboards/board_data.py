@@ -149,6 +149,24 @@ _FLOW_PROVIDER_SEM_CAP: int = int(
     os.environ.get("NUBI_FLOW_PROVIDER_SEM_CAP", _DEFAULT_FLOW_PROVIDER_SEM_CAP)
 )
 
+# [MED event-loop starvation] Wall-clock EXECUTION timeout for a flow-provider
+# drain, applied AFTER the per-(org, provider) semaphore slot is acquired.  The
+# semaphore's wait_for only bounds ACQUISITION (10s); once acquired,
+# drain_flow_run runs with no execution timeout (max_steps=200) so a slow flow
+# holds the slot for minutes, starving the shared semaphore for every other
+# caller of that (org, provider).  We wrap the post-acquisition execution in
+# asyncio.wait_for(timeout=_FLOW_PROVIDER_EXEC_TIMEOUT_S) and raise
+# AppError('provider_timeout', 504) on TimeoutError, releasing the slot in
+# finally.  The same budget is threaded into drain_flow_run(wall_timeout_s=...)
+# so the drain self-aborts even if the outer wait_for is somehow bypassed.
+# Override via NUBI_FLOW_PROVIDER_EXEC_TIMEOUT_S (seconds; default 120).
+_DEFAULT_FLOW_PROVIDER_EXEC_TIMEOUT_S = 120.0
+_FLOW_PROVIDER_EXEC_TIMEOUT_S: float = float(
+    os.environ.get(
+        "NUBI_FLOW_PROVIDER_EXEC_TIMEOUT_S", _DEFAULT_FLOW_PROVIDER_EXEC_TIMEOUT_S
+    )
+)
+
 # Registry: (org_id, provider_id) -> asyncio.Semaphore
 # Implemented as an OrderedDict so we can evict the least-recently-used idle
 # entry when the registry would otherwise grow beyond _EMBED_SEM_REGISTRY_CAP.
@@ -490,6 +508,7 @@ async def _resolve_flow_provider(
     claims: dict[str, Any],
     *,
     org_flows_by_key: dict[str, Any] | None = None,
+    exec_timeout_s: float = 0.0,
 ) -> dict[str, pa.Table]:
     """Execute a ``kind='flow'`` provider and return named Arrow tables.
 
@@ -558,7 +577,16 @@ async def _resolve_flow_provider(
 
     now = datetime.now(timezone.utc)
     flow_run = await materialize_flow_run(store, flow, merged_params, "agent", now)
-    flow_run = await drain_flow_run(store, flow_run["id"], now, claims=run_claims)
+    # Layer 2: pass the execution budget so the drain self-aborts (TimeoutError)
+    # at the deadline even if the outer asyncio.wait_for is bypassed.  0 keeps
+    # legacy unbounded behaviour for direct callers / tests.
+    flow_run = await drain_flow_run(
+        store,
+        flow_run["id"],
+        now,
+        claims=run_claims,
+        wall_timeout_s=exec_timeout_s,
+    )
 
     if flow_run.get("state") != "success":
         raise AppError(
@@ -1318,10 +1346,28 @@ async def resolve_provider_data(
                 _busy_msg,
                 429,
             )
+        # FIX [MED event-loop starvation]: the wait_for above only bounds slot
+        # ACQUISITION.  Once acquired, drain_flow_run could run for minutes
+        # (max_steps=200) holding this per-(org, provider) slot and starving the
+        # shared semaphore.  Bound the post-acquisition EXECUTION with a second
+        # wait_for; on timeout raise provider_timeout (504).  Either way the slot
+        # is released in finally.  Applies to BOTH embed and non-embed paths.
         try:
-            tables = await _resolve_flow_provider(
-                provider, merged_params, org_id, claims,
-                org_flows_by_key=org_flows_by_key,
+            tables = await asyncio.wait_for(
+                _resolve_flow_provider(
+                    provider, merged_params, org_id, claims,
+                    org_flows_by_key=org_flows_by_key,
+                    exec_timeout_s=_FLOW_PROVIDER_EXEC_TIMEOUT_S,
+                ),
+                timeout=_FLOW_PROVIDER_EXEC_TIMEOUT_S,
+            )
+        except asyncio.TimeoutError:
+            raise AppError(
+                "provider_timeout",
+                f"Provider {provider_id!r} flow execution exceeded "
+                f"{_FLOW_PROVIDER_EXEC_TIMEOUT_S:g}s "
+                f"(set NUBI_FLOW_PROVIDER_EXEC_TIMEOUT_S to raise the limit).",
+                504,
             )
         finally:
             _sem.release()

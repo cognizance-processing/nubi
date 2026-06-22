@@ -88,6 +88,7 @@ import asyncio
 import json
 import logging
 import os
+import time
 from copy import deepcopy
 from datetime import datetime, timedelta, timezone
 from typing import Any
@@ -1718,6 +1719,7 @@ async def drain_flow_run(
     now: datetime,
     claims: dict[str, Any] | None = None,
     max_steps: int = 200,
+    wall_timeout_s: float = 0.0,
 ) -> dict[str, Any]:
     """Run ready tasks in *flow_run_id* until quiescent or ``max_steps`` hit.
 
@@ -1733,6 +1735,13 @@ async def drain_flow_run(
         Caller's auth claims.
     max_steps:
         Safety cap on iteration count.
+    wall_timeout_s:
+        Optional wall-clock execution budget (seconds).  When > 0 a deadline is
+        computed (``time.monotonic() + wall_timeout_s``) before the loop starts
+        and checked at the top of each iteration; once exceeded the drain raises
+        ``asyncio.TimeoutError`` so an outer ``asyncio.wait_for`` is not the only
+        guard against a slow flow holding a shared concurrency slot for minutes.
+        When 0 (the default) behaviour is unchanged — no deadline is enforced.
 
     Returns
     -------
@@ -1741,6 +1750,12 @@ async def drain_flow_run(
     """
     if claims is None:
         claims = {}
+
+    # Layer 2 wall-clock deadline (see fix: _resolve_flow_provider drain timeout).
+    # Only armed when an explicit budget is passed; 0 keeps legacy behaviour.
+    _deadline: float | None = (
+        time.monotonic() + wall_timeout_s if wall_timeout_s and wall_timeout_s > 0 else None
+    )
 
     steps = 0
     # Run-scoped variable overlay (A5): a python cell's set_var values flow to
@@ -1754,6 +1769,16 @@ async def drain_flow_run(
     _cached_task_runs: list[dict[str, Any]] | None = None
     _snapshot_stale: bool = True  # True → must re-query at top of next step
     while steps < max_steps:
+        # Layer 2: enforce the optional wall-clock budget at the top of each
+        # iteration so a slow flow cannot run unbounded (and thus hold a shared
+        # per-(org, provider) semaphore slot) for minutes.  Raising here lets the
+        # provider path surface a 504 and release its slot in finally.
+        if _deadline is not None and time.monotonic() >= _deadline:
+            raise asyncio.TimeoutError(
+                f"drain_flow_run exceeded wall_timeout_s={wall_timeout_s} for "
+                f"flow_run {flow_run_id}"
+            )
+
         # Check if the flow_run itself is already terminal (advance may have done this).
         flow_run = await store.get_flow_run(flow_run_id)
         if flow_run and flow_run.get("state") in ("success", "failed", "cancelled"):

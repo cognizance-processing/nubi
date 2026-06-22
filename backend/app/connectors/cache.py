@@ -81,6 +81,7 @@ logger = logging.getLogger("nubi.connectors.cache")
 
 
 _DEFAULT_MAX_ENTRIES: int = 256
+_DEFAULT_BASE_SCAN_MAX_ENTRIES: int = 128   # independent default for base-scan cache
 _DEFAULT_TTL_SECONDS: float = 300.0  # 5 minutes
 
 # Per-entry byte cap: entries larger than this limit are silently skipped (not
@@ -133,6 +134,34 @@ def _max_entries_from_env() -> int:
                 _DEFAULT_MAX_ENTRIES,
             )
     return _DEFAULT_MAX_ENTRIES
+
+
+def _base_scan_max_entries_from_env() -> int:
+    """Return the base-scan max_entries limit (env-overridable via NUBI_CACHE_BASE_SCAN_MAX_ENTRIES).
+
+    Separate from ``_max_entries_from_env`` so operators can tune the base-scan
+    and exact-result caches independently.  Defaults to
+    ``_DEFAULT_BASE_SCAN_MAX_ENTRIES`` (128), which is smaller than the
+    exact-result default (256) because base-scan entries are typically larger.
+    """
+    raw = os.environ.get("NUBI_CACHE_BASE_SCAN_MAX_ENTRIES")
+    if raw is not None:
+        try:
+            v = int(raw)
+            if v >= 1:
+                return v
+            logger.warning(
+                "NUBI_CACHE_BASE_SCAN_MAX_ENTRIES=%r must be >= 1; using default %d",
+                raw,
+                _DEFAULT_BASE_SCAN_MAX_ENTRIES,
+            )
+        except ValueError:
+            logger.warning(
+                "NUBI_CACHE_BASE_SCAN_MAX_ENTRIES=%r is not a valid integer; using default %d",
+                raw,
+                _DEFAULT_BASE_SCAN_MAX_ENTRIES,
+            )
+    return _DEFAULT_BASE_SCAN_MAX_ENTRIES
 
 
 def _max_total_bytes_from_env(
@@ -911,7 +940,6 @@ def reset_cache_for_tests() -> None:
 # are thin wrappers; the underlying isolation guarantees are in the key computation.
 
 _BASE_SCAN_KEY_PREFIX: str = "bscan:"
-_BASE_SCAN_MAX_ENTRIES: int = 128   # independent LRU; does not compete with exact-result entries
 
 # Separate in-memory singleton for base-scan entries.  Only used when the active
 # backend is NOT Redis (in-process LRU contention is the problem to avoid).
@@ -927,8 +955,10 @@ def _get_base_scan_backend() -> ContentAddressedCache | RedisCacheBackend:
       base-scan entries live in their own LRU and cannot evict exact-result
       entries (or vice-versa).
 
-    The base-scan singleton respects ``NUBI_CACHE_MAX_ENTRIES`` (default 128)
-    and ``NUBI_CACHE_BASE_SCAN_MAX_TOTAL_BYTES`` (default 256 MiB).
+    The base-scan singleton respects ``NUBI_CACHE_BASE_SCAN_MAX_ENTRIES``
+    (default 128) and ``NUBI_CACHE_BASE_SCAN_MAX_TOTAL_BYTES`` (default 256 MiB),
+    both independently tunable from the exact-result cache's
+    ``NUBI_CACHE_MAX_ENTRIES`` / ``NUBI_CACHE_MAX_TOTAL_BYTES``.
     """
     active = get_cache()
     if isinstance(active, RedisCacheBackend):
@@ -943,10 +973,11 @@ def _get_base_scan_backend() -> ContentAddressedCache | RedisCacheBackend:
         if _base_scan_instance is None:
             # Base-scan entries are typically larger (full-table scans) so they
             # get their own, separately-tunable env vars.
-            base_scan_max_entries = _max_entries_from_env()
+            base_scan_max_entries = _base_scan_max_entries_from_env()
             # Use a smaller per-instance default than the exact-result cache.
             # The base-scan entries are large, so 128 entries + 256 MiB is the
-            # right balance.  Override with NUBI_CACHE_BASE_SCAN_MAX_TOTAL_BYTES.
+            # right balance.  Override with NUBI_CACHE_BASE_SCAN_MAX_ENTRIES /
+            # NUBI_CACHE_BASE_SCAN_MAX_TOTAL_BYTES.
             base_scan_max_total_bytes = _max_total_bytes_from_env(
                 "NUBI_CACHE_BASE_SCAN_MAX_TOTAL_BYTES",
                 _DEFAULT_BASE_SCAN_MAX_TOTAL_BYTES,

@@ -1550,6 +1550,83 @@ def test_top_n_other_time_grain_null_dim_routes_to_other() -> None:
     assert other_total == 1009, f"Other bucket wrong (NULL dropped or C dropped): {other_rows}"
 
 
+# ── Unbounded safety net: top_n.other + time_grain with NO explicit limit ────
+
+def test_top_n_other_time_grain_no_limit_caps_union_yet_keeps_full_top_n() -> None:
+    """Regression (HIGH unbounded — fix-25 regression): top_n.other + time_grain
+    with NO explicit mq.limit must STILL cap the combined UNION (the _DEFAULT_LIMIT
+    safety net), while preserving full per-bucket top-N for a small dataset.
+
+    Bug: the outer-union LIMIT was applied ONLY when mq.limit was explicitly set,
+    so omitting limit left the UNION uncapped — every other compile path is
+    protected by _DEFAULT_LIMIT, this one was not.
+    """
+    m = _simple_metric()
+    mq = MetricQuery(
+        metric_id="revenue",
+        dimensions=("region",),
+        time_grain="month",
+        top_n=TopN(dimension="region", n=3, order="desc", other=True),
+        # NOTE: no limit set.
+    )
+    assert mq.limit is None
+    sql, _ = compile_metric(m, mq)
+    up = sql.upper()
+    # UNION must be present and the OUTER union must carry a LIMIT (safety net).
+    assert "UNION ALL" in up
+    # The emitted SQL must end with the union-level LIMIT cap (default safety net).
+    parsed = sqlglot.parse_one(sql, dialect="duckdb")
+    assert parsed.find(sqlglot.exp.Limit) is not None, "union has no LIMIT cap"
+
+    # And the cap is the _DEFAULT_LIMIT (no explicit mq.limit) — large enough that
+    # a small dataset's full per-bucket top-N + Other rows are NOT truncated.
+    from app.metrics.compile import _DEFAULT_LIMIT
+
+    con = _duckdb_conn()
+    con.execute("""
+        CREATE TABLE sales (region VARCHAR, amount DOUBLE, ts DATE)
+    """)
+    # 4 regions over 2 months. Top-3 by total: A(300), B(200), C(100); D(10)→Other.
+    con.execute("""
+        INSERT INTO sales VALUES
+            ('A', 100, '2024-01-15'), ('A', 200, '2024-02-15'),
+            ('B',  80, '2024-01-15'), ('B', 120, '2024-02-15'),
+            ('C',  40, '2024-01-15'), ('C',  60, '2024-02-15'),
+            ('D',   4, '2024-01-15'), ('D',   6, '2024-02-15')
+    """)
+    m2 = MetricDefinition(
+        id="revenue",
+        name="Revenue",
+        measure=Measure(name="revenue", agg="sum", expr="amount"),
+        base_table="sales",
+        dimensions=(Dimension(name="region"),),
+        time_dimension=TimeDimension(
+            column="ts",
+            grains=("day", "week", "month", "quarter", "year"),
+            default_grain="day",
+        ),
+    )
+    sql2, _ = compile_metric(m2, mq)
+    parsed2 = sqlglot.parse_one(sql2, dialect="duckdb")
+    # The cap is the default safety net, not some truncating value.
+    limit_node = parsed2.find(sqlglot.exp.Limit)
+    assert limit_node is not None
+    assert int(limit_node.expression.name) == _DEFAULT_LIMIT
+
+    rows = con.execute(sql2).fetchall()
+    # Full per-bucket top-N survives: A, B, C each appear in BOTH months, plus an
+    # Other bucket per month — 3 top series * 2 months + 2 Other = 8 rows, none
+    # truncated by the (huge) default cap.
+    labelled = {r[0] for r in rows}
+    assert {"A", "B", "C"}.issubset(labelled)
+    assert "D" not in labelled  # D rolled into Other, not its own series.
+    other_rows = [r for r in rows if r[0] not in ("A", "B", "C")]
+    assert other_rows, f"Other bucket missing: {rows}"
+    # Two months => two per-bucket top-N entries for each top series.
+    a_rows = [r for r in rows if r[0] == "A"]
+    assert len(a_rows) == 2, f"per-bucket top-N truncated: {a_rows}"
+
+
 def test_top_n_other_no_time_grain_null_dim_in_other_unchanged() -> None:
     """The no-time-grain QUALIFY/complement-RANK path already buckets NULL dims
     into Other (RANK treats NULL as a rankable value), so it must be unchanged.

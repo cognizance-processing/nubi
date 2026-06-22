@@ -262,6 +262,109 @@ async def test_flow_provider_missing_result_yields_empty_table(repo: InMemoryRep
 
 
 # ---------------------------------------------------------------------------
+# REGRESSION: flow-provider drain EXECUTION timeout (MED — event-loop starvation)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_flow_provider_slow_drain_504s_at_exec_timeout(repo: InMemoryRepo) -> None:
+    """A slow flow-provider drain raises provider_timeout (504) at the exec timeout.
+
+    The per-(org, provider) semaphore's wait_for only bounds ACQUISITION; once
+    acquired, drain runs unbounded.  resolve_provider_data wraps the
+    post-acquisition execution in asyncio.wait_for(_FLOW_PROVIDER_EXEC_TIMEOUT_S)
+    and raises AppError('provider_timeout', 504) on TimeoutError.
+    """
+    import app.dashboards.board_data as bd  # noqa: PLC0415
+
+    await repo.update(
+        "boards",
+        _ORG,
+        _BOARD_ID,
+        {"config": {"spec": _make_spec_with_flow_provider()}},
+    )
+
+    async def _slow_resolve(*args: Any, **kwargs: Any) -> dict[str, pa.Table]:
+        await asyncio.sleep(60)  # far longer than the patched exec timeout
+        return {"summary": _make_arrow_table(1)}
+
+    with (
+        patch.object(bd, "_FLOW_PROVIDER_EXEC_TIMEOUT_S", 0.05),
+        patch.object(bd, "_resolve_flow_provider", new=_slow_resolve),
+    ):
+        with pytest.raises(AppError) as ei:
+            await resolve_provider_data(
+                board_id=_BOARD_ID,
+                provider_id=_PROVIDER_ID,
+                params={},
+                org_id=_ORG,
+                claims={"policies": {}},
+                repo=repo,
+            )
+
+    assert ei.value.code == "provider_timeout"
+    assert ei.value.status == 504
+
+
+@pytest.mark.asyncio
+async def test_flow_provider_exec_timeout_releases_semaphore(repo: InMemoryRepo) -> None:
+    """After an exec-timeout 504 the per-(org, provider) semaphore slot is freed.
+
+    A subsequent (fast) request on the same (org, provider) must be able to
+    acquire the slot and succeed — proving the timeout path released it in
+    finally rather than leaking it.
+    """
+    import app.dashboards.board_data as bd  # noqa: PLC0415
+
+    await repo.update(
+        "boards",
+        _ORG,
+        _BOARD_ID,
+        {"config": {"spec": _make_spec_with_flow_provider()}},
+    )
+
+    sem = bd._get_flow_provider_semaphore(_ORG, _PROVIDER_ID)
+    initial_value = sem._value  # full (no holders)
+
+    async def _slow_resolve(*args: Any, **kwargs: Any) -> dict[str, pa.Table]:
+        await asyncio.sleep(60)
+        return {"summary": _make_arrow_table(1)}
+
+    with (
+        patch.object(bd, "_FLOW_PROVIDER_EXEC_TIMEOUT_S", 0.05),
+        patch.object(bd, "_resolve_flow_provider", new=_slow_resolve),
+    ):
+        with pytest.raises(AppError):
+            await resolve_provider_data(
+                board_id=_BOARD_ID,
+                provider_id=_PROVIDER_ID,
+                params={},
+                org_id=_ORG,
+                claims={"policies": {}},
+                repo=repo,
+            )
+
+    # Slot fully returned to the registry semaphore after the timeout.
+    assert bd._get_flow_provider_semaphore(_ORG, _PROVIDER_ID)._value == initial_value
+
+    # And a fast follow-up request can acquire + succeed.
+    with patch.object(
+        bd,
+        "_resolve_flow_provider",
+        new=AsyncMock(return_value={"summary": _make_arrow_table(2)}),
+    ):
+        tables = await resolve_provider_data(
+            board_id=_BOARD_ID,
+            provider_id=_PROVIDER_ID,
+            params={"k": "v2"},  # distinct params → cache miss → real execution
+            org_id=_ORG,
+            claims={"policies": {}},
+            repo=repo,
+        )
+    assert tables["summary"].num_rows == 2
+
+
+# ---------------------------------------------------------------------------
 # REGRESSION: N+1 list_flows scan (MED — fix 2)
 # ---------------------------------------------------------------------------
 

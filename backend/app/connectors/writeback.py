@@ -133,6 +133,7 @@ def _require_approver_role(role: str | None) -> None:
 
 _VALID_STATES = {
     "pending_approval",
+    "committing",
     "committed",
     "rejected",
     "failed",
@@ -140,6 +141,13 @@ _VALID_STATES = {
 
 #: Terminal states — once in these, no further transitions are allowed.
 _TERMINAL_STATES = {"committed", "rejected", "failed"}
+
+#: Transient lock state used during the approval CAS sequence.
+#: A record in 'committing' is owned by exactly one concurrent approver that
+#: won the CAS race; all other callers see state != 'pending_approval' and
+#: get a 409.  The owning approver transitions straight to 'committed' or
+#: 'failed' after the connector write returns.
+_COMMITTING_STATE = "committing"
 
 #: Terminal states that represent a rolled-back or non-committed outcome.
 #: A NEW logical attempt with the same idempotency_key is allowed to
@@ -201,11 +209,21 @@ class WritebackStore:
         wb_id: str,
         new_state: str,
         *,
+        from_state: str | None = None,
         result: dict[str, Any] | None = None,
         error: str | None = None,
         rows_override: list[dict[str, Any]] | None = None,
         approved_by: str | None = None,
     ) -> dict[str, Any] | None:
+        """Transition the record to *new_state*.
+
+        When *from_state* is supplied the UPDATE is conditional: it only
+        succeeds when the current ``state`` column equals *from_state*.  This
+        makes the transition an atomic compare-and-swap (CAS) at the store
+        layer.  Returns ``None`` when the record does not exist **or** when
+        the CAS predicate failed (i.e. another writer already transitioned the
+        record out of *from_state*).
+        """
         raise NotImplementedError
 
     async def supersede(
@@ -315,6 +333,7 @@ class InMemoryWritebackStore(WritebackStore):
         wb_id: str,
         new_state: str,
         *,
+        from_state: str | None = None,
         result: dict[str, Any] | None = None,
         error: str | None = None,
         rows_override: list[dict[str, Any]] | None = None,
@@ -322,6 +341,11 @@ class InMemoryWritebackStore(WritebackStore):
     ) -> dict[str, Any] | None:
         record = self._records.get(str(wb_id))
         if record is None or str(record["org_id"]) != str(org_id):
+            return None
+        # CAS predicate: if from_state is specified, only proceed when the
+        # current state matches.  This is the atomic compare-and-swap that
+        # prevents the TOCTOU race between concurrent approvers.
+        if from_state is not None and record["state"] != from_state:
             return None
         _check_transition(record["state"], new_state)
         record["state"] = new_state
@@ -503,6 +527,7 @@ class PgWritebackStore(WritebackStore):
         wb_id: str,
         new_state: str,
         *,
+        from_state: str | None = None,
         result: dict[str, Any] | None = None,
         error: str | None = None,
         rows_override: list[dict[str, Any]] | None = None,
@@ -516,26 +541,53 @@ class PgWritebackStore(WritebackStore):
             return None
         _check_transition(current["state"], new_state)
 
-        row = await db_fetchrow(
-            """
-            UPDATE writeback_requests
-               SET state      = $3,
-                   result     = COALESCE($4::jsonb, result),
-                   error      = COALESCE($5,        error),
-                   rows       = COALESCE($6::jsonb, rows),
-                   approved_by = COALESCE($7::uuid,  approved_by),
-                   updated_at  = now()
-             WHERE id = $1::uuid AND org_id = $2::uuid
-            RETURNING *
-            """,
-            wb_id,
-            org_id,
-            new_state,
-            json.dumps(result) if result is not None else None,
-            error,
-            json.dumps(rows_override) if rows_override is not None else None,
-            approved_by,
-        )
+        # Build the WHERE clause.  When from_state is provided, add an atomic
+        # state predicate so the UPDATE is a compare-and-swap: if another
+        # concurrent writer already transitioned the row out of from_state the
+        # UPDATE matches zero rows and we return None (CAS loss).
+        if from_state is not None:
+            row = await db_fetchrow(
+                """
+                UPDATE writeback_requests
+                   SET state       = $3,
+                       result      = COALESCE($4::jsonb, result),
+                       error       = COALESCE($5,        error),
+                       rows        = COALESCE($6::jsonb, rows),
+                       approved_by = COALESCE($7::uuid,  approved_by),
+                       updated_at  = now()
+                 WHERE id = $1::uuid AND org_id = $2::uuid AND state = $8
+                RETURNING *
+                """,
+                wb_id,
+                org_id,
+                new_state,
+                json.dumps(result) if result is not None else None,
+                error,
+                json.dumps(rows_override) if rows_override is not None else None,
+                approved_by,
+                from_state,
+            )
+        else:
+            row = await db_fetchrow(
+                """
+                UPDATE writeback_requests
+                   SET state       = $3,
+                       result      = COALESCE($4::jsonb, result),
+                       error       = COALESCE($5,        error),
+                       rows        = COALESCE($6::jsonb, rows),
+                       approved_by = COALESCE($7::uuid,  approved_by),
+                       updated_at  = now()
+                 WHERE id = $1::uuid AND org_id = $2::uuid
+                RETURNING *
+                """,
+                wb_id,
+                org_id,
+                new_state,
+                json.dumps(result) if result is not None else None,
+                error,
+                json.dumps(rows_override) if rows_override is not None else None,
+                approved_by,
+            )
         return _row_to_record(row) if row is not None else None
 
     async def supersede(
@@ -868,12 +920,49 @@ async def approve_writeback(
         )
 
     if action == "reject":
+        # Rejection does not call the connector, so a simple CAS from
+        # pending_approval → rejected is sufficient to prevent double-rejection.
         updated = await store.transition(
-            org_id, wb_id, "rejected", approved_by=approver_id
+            org_id, wb_id, "rejected",
+            from_state="pending_approval",
+            approved_by=approver_id,
         )
-        return updated or record
+        if updated is None:
+            # CAS lost — another concurrent approver already transitioned this
+            # record.  Treat as idempotent no-op; re-fetch to return current state.
+            current = await store.get(org_id, wb_id)
+            raise AppError(
+                "conflict",
+                f"Write-back {wb_id!r} was already actioned by a concurrent approver "
+                f"(current state: {repr(current['state']) if current else repr('unknown')}).",
+                409,
+            )
+        return updated
 
     # action == 'approve' or 'edit'
+    #
+    # TOCTOU fix: atomically claim the record by transitioning it from
+    # 'pending_approval' → 'committing' BEFORE invoking connector_write_fn.
+    # The CAS (from_state='pending_approval') ensures that exactly one
+    # concurrent approver wins this race; all losers get None back and raise
+    # 409 without ever calling connector_write_fn.
+    committing_record = await store.transition(
+        org_id, wb_id, _COMMITTING_STATE,
+        from_state="pending_approval",
+        approved_by=approver_id,
+        rows_override=rows_override,
+    )
+    if committing_record is None:
+        # CAS lost — another approver already claimed this record.
+        current = await store.get(org_id, wb_id)
+        _current_state = repr(current["state"]) if current else repr("unknown")
+        raise AppError(
+            "conflict",
+            f"Write-back {wb_id!r} was already actioned by a concurrent approver "
+            f"(current state: {_current_state}).",
+            409,
+        )
+
     rows_to_write = rows_override if rows_override is not None else record["rows"]
     target = record["target"]
     mode = record["mode"]
@@ -891,7 +980,7 @@ async def approve_writeback(
             approved_by=approver_id,
             rows_override=rows_override,
         )
-        return updated or record
+        return updated or committing_record
     except Exception as exc:  # noqa: BLE001
         err_msg = str(exc)[:500]
         updated = await store.transition(
@@ -899,4 +988,4 @@ async def approve_writeback(
             error=err_msg,
             approved_by=approver_id,
         )
-        return updated or record
+        return updated or committing_record
