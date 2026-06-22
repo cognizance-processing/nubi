@@ -106,6 +106,21 @@ _SWEEP_TASK_RUNS_LIMIT: int = int(
     os.environ.get("NUBI_SWEEP_TASK_RUNS_LIMIT", "500")
 )
 
+# ---------------------------------------------------------------------------
+# Phase 2 gather concurrency cap.
+#
+# run_sweep Phase 2 issues one store.list_task_runs call per successful cell
+# via asyncio.gather.  An unbounded gather over many cells can exhaust the DB
+# connection pool.  This semaphore limits how many list_task_runs calls run
+# concurrently.  Should never exceed the pool size (typically 10-20 for
+# lightweight deployments).
+#
+# Override via NUBI_SWEEP_GATHER_CONCURRENCY.  Default: 10.
+# ---------------------------------------------------------------------------
+_SWEEP_GATHER_CONCURRENCY: int = int(
+    os.environ.get("NUBI_SWEEP_GATHER_CONCURRENCY", "10")
+)
+
 
 # ---------------------------------------------------------------------------
 # Data-classes for structured results
@@ -463,16 +478,21 @@ async def run_sweep(
             _pending_output_cells.append(idx)
 
     # Phase 2: batch-collect outputs for all successful cells in one gather.
-    # A single asyncio.gather issues all list_task_runs calls concurrently so
-    # the per-cell output read is bounded to a single concurrent round-trip
-    # rather than O(cells) sequential blocking queries.
+    # A semaphore bounds how many list_task_runs calls are in-flight at once so
+    # a large sweep cannot exhaust the DB connection pool (fix: unbounded gather).
     #
     # Pass _SWEEP_TASK_RUNS_LIMIT so a flow with thousands of tasks cannot
     # produce an unbounded result set per cell in this output-collection phase.
     if _pending_output_cells:
         run_ids_to_fetch = [cells[i].run_id for i in _pending_output_cells]
+        _sem = asyncio.Semaphore(_SWEEP_GATHER_CONCURRENCY)
+
+        async def _fetch_task_runs(rid: str) -> list:
+            async with _sem:
+                return await store.list_task_runs(rid, limit=_SWEEP_TASK_RUNS_LIMIT)
+
         task_run_lists = await asyncio.gather(
-            *(store.list_task_runs(rid, limit=_SWEEP_TASK_RUNS_LIMIT) for rid in run_ids_to_fetch)
+            *(_fetch_task_runs(rid) for rid in run_ids_to_fetch)
         )
         for cell_idx, task_runs in zip(_pending_output_cells, task_run_lists):
             outputs: dict[str, Any] = {}

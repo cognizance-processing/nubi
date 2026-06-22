@@ -860,3 +860,60 @@ def test_no_snapshot_key_triggers_warning_not_empty_policy_merge():
         "Pre-B2 flow with no __owner_policies__ key must NOT inject a 'policies' key; "
         "got: " + repr(result)
     )
+
+
+# ---------------------------------------------------------------------------
+# REGRESSION Fix 6: run_one_ready_task worker path — bounded list_task_runs
+# ---------------------------------------------------------------------------
+
+
+async def test_run_one_ready_task_worker_bounded_list_task_runs():
+    """run_one_ready_task (distributed worker path) must issue at most 2
+    list_task_runs calls per tick regardless of flow size.
+
+    The pre-fix N+1: every advance_readiness call inside run_one_ready_task
+    issued its own unconditional list_task_runs (≥2 calls per tick on a map
+    fan-out after a normal task, more on retrying/failed paths).  The fix
+    threads _preloaded_task_runs=_patch_snapshot(updated_tr) into every
+    advance_readiness call on non-map paths so advance_readiness can skip
+    its own initial load, reducing the total to at most 2 per worker tick
+    (1 fetch in run_one_ready_task + at most 1 conditional reload inside
+    advance_readiness when a map fan-in / branch activates).
+
+    This test runs a 5-task linear chain one task at a time via
+    run_one_ready_task and asserts that each individual tick issues at most
+    2 list_task_runs calls.
+    """
+    from app.flows.runtime import run_one_ready_task
+
+    reset_for_tests()
+    N = 5
+    inner = InMemoryFlowStore()
+    store = _CountingStore(inner)
+
+    tasks = [
+        {"key": f"W{i}", "kind": "noop", "needs": [f"W{i - 1}"] if i > 0 else [], "config": {}}
+        for i in range(N)
+    ]
+    flow = await inner.create_flow(
+        org_id="org-test",
+        created_by="user-test",
+        name="worker_n1_flow",
+        spec={"version": 1, "name": "worker_n1", "tasks": tasks},
+    )
+    run = await materialize_flow_run(inner, flow, {}, "manual", NOW)
+    await advance_readiness(inner, run["id"], NOW)
+
+    for tick in range(N):
+        store.list_task_runs_count = 0
+        result = await run_one_ready_task(store, NOW, claims=CLAIMS)
+        calls_this_tick = store.list_task_runs_count
+        assert result is not None, f"Tick {tick}: expected a task to run but got None"
+        assert calls_this_tick <= 2, (
+            f"Tick {tick} (task {result.get('task_key')!r}): run_one_ready_task issued "
+            f"{calls_this_tick} list_task_runs calls; expected at most 2 "
+            f"(1 in worker body + at most 1 conditional reload in advance_readiness). "
+            f"N+1 regression in the distributed worker path."
+        )
+        # Advance readiness so the next task becomes ready for the next tick.
+        await advance_readiness(inner, run["id"], NOW)

@@ -1049,3 +1049,89 @@ def test_dev_env_no_hmac_key_sentinel_allowed():
     assert len(sentinel_warnings) >= 1, (
         f"Expected at least one sentinel warning for ENV=dev; got: {[str(w.message) for w in caught]}"
     )
+
+
+# ---------------------------------------------------------------------------
+# 25. InMemoryArtifactStore total-bytes cap raises MemoryError (LOW resource fix)
+# ---------------------------------------------------------------------------
+
+
+def test_in_memory_store_total_cap_raises_memory_error():
+    """Uploading beyond max_total_bytes raises MemoryError.
+
+    REGRESSION: before the fix, _blobs was an unbounded dict — a large
+    sweep/backfill could OOM the test/dev process with no guard.
+    """
+    from app.flows.artifacts import InMemoryArtifactStore  # noqa: PLC0415
+
+    # Cap at 100 bytes.
+    store = InMemoryArtifactStore(max_total_bytes=100)
+
+    # Upload exactly 100 bytes — must succeed.
+    store.upload("art-1", ORG_A, b"x" * 100)
+
+    # Upload 1 more byte — must raise MemoryError (total would be 101).
+    with pytest.raises(MemoryError, match="ceiling exceeded"):
+        store.upload("art-2", ORG_A, b"y")
+
+
+def test_in_memory_store_total_cap_replacement_does_not_double_count():
+    """Re-uploading an existing key replaces it; the total does not double-count.
+
+    Uploading a new blob to the same key must subtract the old size so the
+    running total stays accurate and a same-or-smaller replacement never
+    spuriously triggers the cap.
+    """
+    from app.flows.artifacts import InMemoryArtifactStore  # noqa: PLC0415
+
+    store = InMemoryArtifactStore(max_total_bytes=100)
+
+    # Store 80 bytes.
+    store.upload("art-1", ORG_A, b"a" * 80)
+    assert store._total_bytes == 80
+
+    # Replace the same key with a 50-byte blob (smaller) — must succeed.
+    store.upload("art-1", ORG_A, b"b" * 50)
+    assert store._total_bytes == 50  # not 130
+
+    # Now try to push it to 101 with a second key — must raise.
+    with pytest.raises(MemoryError, match="ceiling exceeded"):
+        store.upload("art-2", ORG_A, b"c" * 51)
+
+
+def test_in_memory_store_clear_resets_cap():
+    """clear() removes all blobs and resets _total_bytes so uploads work again.
+
+    This is the intended test-teardown path: after clear() the store behaves
+    as if freshly constructed.
+    """
+    from app.flows.artifacts import InMemoryArtifactStore  # noqa: PLC0415
+
+    store = InMemoryArtifactStore(max_total_bytes=50)
+
+    # Fill the store to the cap.
+    store.upload("art-1", ORG_A, b"z" * 50)
+
+    # Any further upload must raise.
+    with pytest.raises(MemoryError):
+        store.upload("art-2", ORG_A, b"z")
+
+    # clear() resets.
+    store.clear()
+    assert store._total_bytes == 0
+    assert store._blobs == {}
+
+    # Uploads work again after clear().
+    store.upload("art-3", ORG_A, b"z" * 50)
+    assert store._total_bytes == 50
+
+
+def test_in_memory_store_cap_disabled_zero():
+    """When max_total_bytes=0 the cap is disabled and any size is accepted."""
+    from app.flows.artifacts import InMemoryArtifactStore  # noqa: PLC0415
+
+    store = InMemoryArtifactStore(max_total_bytes=0)
+
+    # Should not raise regardless of size.
+    store.upload("art-1", ORG_A, b"x" * 10_000_000)  # 10 MB
+    assert store.exists("art-1", ORG_A)

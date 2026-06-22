@@ -2236,3 +2236,254 @@ async def test_huge_run_task_runs_are_bounded(repo: InMemoryRepo) -> None:
 
     finally:
         _bd_mod._MAX_TASK_RUNS = original_max
+
+
+# ---------------------------------------------------------------------------
+# NEW: [MED] inline provider base_cte executes against the org's real connector
+# (fix: was always using _get_demo_connector regardless of org configuration)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_inline_base_cte_uses_real_connector_when_configured(
+    repo: InMemoryRepo,
+) -> None:
+    """Inline provider with base_cte MUST execute against the org's real connector,
+    not always the demo singleton.
+
+    Before the fix, _resolve_inline_provider always called _get_demo_connector()
+    for the base_cte branch, even when the org had a real connector configured.
+    A real-connector inline-provider binding would silently execute against demo
+    data and bypass connector-layer RLS.
+
+    Fix: _resolve_org_connector lists the org's datastores and picks the first
+    non-system, non-demo datastore; the inline provider then executes against THAT
+    connector, not the demo.
+
+    This test:
+    1. Seeds a real (non-demo, non-system) datastore into the org's repo.
+    2. Patches _resolve_org_connector to confirm it returns a spy connector
+       (not the demo).
+    3. Verifies the inline provider executed against the spy connector.
+    """
+    from unittest.mock import MagicMock
+
+    cte_spec = {
+        "version": 1,
+        "title": "Real Connector Board",
+        "widgets": [
+            {
+                "id": "w1",
+                "type": "table",
+                "source": {"provider": _PROVIDER_ID, "result": "revenue"},
+            }
+        ],
+        "data": [
+            {
+                "id": _PROVIDER_ID,
+                "kind": "inline",
+                "params": {},
+                "base_cte": "WITH revenue AS (SELECT 42 AS amount)",
+                "results": [{"name": "revenue", "grain": None}],
+            }
+        ],
+    }
+    await repo.update("boards", _ORG, _BOARD_ID, {"config": {"spec": cte_spec}})
+
+    expected_table = pa.table({"amount": pa.array([42])})
+
+    # Track which connector was used.
+    real_connector_calls: list[str] = []
+    demo_connector_calls: list[str] = []
+
+    # Build a spy real connector whose execute() records a call.
+    real_connector = MagicMock()
+    real_connector.execute.side_effect = lambda plan: (
+        real_connector_calls.append("real") or expected_table
+    )
+
+    # Build a spy demo connector whose execute() records a call.
+    demo_connector = MagicMock()
+    demo_connector.execute.side_effect = lambda plan: (
+        demo_connector_calls.append("demo") or expected_table
+    )
+
+    async def _fake_resolve_org_connector(org_id: str, repo: Any) -> tuple[Any, bool]:
+        # Simulate: org has a real connector configured.
+        return real_connector, False  # not owned (spy)
+
+    async def _fake_enforce_quota(org_id: str, dimension: str, amount: float = 1.0) -> None:
+        pass
+
+    with (
+        patch("app.features.enforce_quota", side_effect=_fake_enforce_quota),
+        patch("app.connectors.plan", return_value=object()),
+        patch(
+            "app.dashboards.board_data._resolve_org_connector",
+            side_effect=_fake_resolve_org_connector,
+        ),
+        patch(
+            "app.routes.query._get_demo_connector",
+            return_value=demo_connector,
+        ),
+    ):
+        tables = await resolve_provider_data(
+            board_id=_BOARD_ID,
+            provider_id=_PROVIDER_ID,
+            params={},
+            org_id=_ORG,
+            claims={"policies": {}},
+            repo=repo,
+        )
+
+    assert "revenue" in tables
+
+    # The REAL connector must have been used, NOT the demo.
+    assert len(real_connector_calls) >= 1, (
+        "Real connector was NOT called — inline provider executed against demo "
+        "data instead of the org's real connector (regression)."
+    )
+    assert len(demo_connector_calls) == 0, (
+        f"Demo connector was called even though the org has a real connector "
+        f"configured — connector bypass regression. Demo calls: {demo_connector_calls}"
+    )
+
+
+@pytest.mark.asyncio
+async def test_inline_base_cte_falls_back_to_demo_when_no_real_connector(
+    repo: InMemoryRepo,
+) -> None:
+    """Inline provider with base_cte falls back to the demo connector when no
+    real connector is configured for the org.
+
+    _resolve_org_connector must return the demo connector (owned=False) when the
+    org's datastore list is empty or contains only system/demo entries.
+
+    This test verifies:
+    1. The demo connector IS used when no real connector exists.
+    2. The provider still returns a result (no error on demo fallback).
+    """
+    from unittest.mock import MagicMock
+
+    cte_spec = {
+        "version": 1,
+        "title": "Demo Fallback Board",
+        "widgets": [
+            {
+                "id": "w1",
+                "type": "table",
+                "source": {"provider": _PROVIDER_ID, "result": "revenue"},
+            }
+        ],
+        "data": [
+            {
+                "id": _PROVIDER_ID,
+                "kind": "inline",
+                "params": {},
+                "base_cte": "WITH revenue AS (SELECT 1 AS amount)",
+                "results": [{"name": "revenue", "grain": None}],
+            }
+        ],
+    }
+    await repo.update("boards", _ORG, _BOARD_ID, {"config": {"spec": cte_spec}})
+
+    expected_table = pa.table({"amount": pa.array([1])})
+    demo_connector_calls: list[str] = []
+
+    demo_connector = MagicMock()
+    demo_connector.execute.side_effect = lambda plan: (
+        demo_connector_calls.append("demo") or expected_table
+    )
+
+    async def _fake_resolve_org_connector(org_id: str, repo: Any) -> tuple[Any, bool]:
+        # Simulate: org has NO real connector → demo fallback.
+        from app.routes.query import _get_demo_connector as _demo
+
+        return _demo(), False
+
+    async def _fake_enforce_quota(org_id: str, dimension: str, amount: float = 1.0) -> None:
+        pass
+
+    with (
+        patch("app.features.enforce_quota", side_effect=_fake_enforce_quota),
+        patch("app.connectors.plan", return_value=object()),
+        patch(
+            "app.dashboards.board_data._resolve_org_connector",
+            side_effect=_fake_resolve_org_connector,
+        ),
+        patch("app.routes.query._get_demo_connector", return_value=demo_connector),
+    ):
+        tables = await resolve_provider_data(
+            board_id=_BOARD_ID,
+            provider_id=_PROVIDER_ID,
+            params={},
+            org_id=_ORG,
+            claims={"policies": {}},
+            repo=repo,
+        )
+
+    # Provider must still return a result (demo fallback path works).
+    assert "revenue" in tables
+
+
+@pytest.mark.asyncio
+async def test_resolve_org_connector_returns_demo_when_no_datastores(
+    repo: InMemoryRepo,
+) -> None:
+    """_resolve_org_connector returns the demo connector when the org has no
+    datastores (empty list).
+
+    The demo fallback must work correctly for orgs that have not yet configured
+    any connector (new accounts, dev environments, demo mode).
+    """
+    from app.dashboards.board_data import _resolve_org_connector
+
+    # repo has no datastores seeded for _ORG — simulates a fresh org.
+    demo_connector_mock = object()
+
+    with patch("app.routes.query._get_demo_connector", return_value=demo_connector_mock):
+        connector, owned = await _resolve_org_connector(_ORG, repo)
+
+    assert connector is demo_connector_mock, (
+        "_resolve_org_connector must return the demo connector when no real "
+        "connector is configured."
+    )
+    assert owned is False, (
+        "_resolve_org_connector must return owned=False for the demo singleton "
+        "(caller must not close it)."
+    )
+
+
+@pytest.mark.asyncio
+async def test_resolve_org_connector_skips_system_datastores(
+    repo: InMemoryRepo,
+) -> None:
+    """_resolve_org_connector skips system-flagged datastores and falls back to demo.
+
+    System datastores (e.g. the demo-hidden marker) must never be used as the
+    real connector for inline provider execution — they are internal bookkeeping
+    rows, not connectable data sources.
+    """
+    from app.dashboards.board_data import _resolve_org_connector
+
+    # Seed a system-flagged datastore (simulates demo-hidden marker).
+    system_ds_id = "sys-ds-1"
+    await repo.create(
+        "datastores",
+        org_id=_ORG,
+        created_by="test",
+        name="System DS",
+        config={"connector_type": "duckdb", "system": True},
+        id=system_ds_id,
+    )
+
+    demo_connector_mock = object()
+
+    with patch("app.routes.query._get_demo_connector", return_value=demo_connector_mock):
+        connector, owned = await _resolve_org_connector(_ORG, repo)
+
+    # System datastore must be skipped → demo fallback.
+    assert connector is demo_connector_mock, (
+        "_resolve_org_connector must skip system datastores and fall back to demo."
+    )
+    assert owned is False

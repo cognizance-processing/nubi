@@ -1921,3 +1921,94 @@ async def test_diff_surface_no_truncation_marker_when_under_aggregate_cap():
         assert "__surface_truncated__" not in entry, (
             f"Unexpected truncation marker: {entry!r}"
         )
+
+
+# ---------------------------------------------------------------------------
+# FIX [LOW]: Phase 2 gather concurrency is bounded by _SWEEP_GATHER_CONCURRENCY
+# ---------------------------------------------------------------------------
+
+
+async def test_phase2_gather_concurrency_never_exceeds_cap():
+    """Phase 2 list_task_runs calls must never exceed _SWEEP_GATHER_CONCURRENCY
+    in-flight simultaneously.
+
+    We patch store.list_task_runs to track the peak number of concurrent
+    invocations and assert it never exceeds the cap, even when there are more
+    successful cells than the cap allows concurrently.
+    """
+    import app.flows.sweep as sweep_mod
+
+    # Use a cap of 3 to make the test deterministic with 8 cells.
+    CAP = 3
+    N_CELLS = 8  # > CAP so the semaphore must throttle
+
+    original_cap = sweep_mod._SWEEP_GATHER_CONCURRENCY
+    sweep_mod._SWEEP_GATHER_CONCURRENCY = CAP
+    try:
+        reset_for_tests()
+        store = InMemoryFlowStore()
+        flow = await _make_flow(store, _output_task())
+
+        original_ltr = store.list_task_runs
+        in_flight: list[int] = [0]
+        peak_in_flight: list[int] = [0]
+
+        async def _tracking_ltr(run_id, limit=None):
+            in_flight[0] += 1
+            if in_flight[0] > peak_in_flight[0]:
+                peak_in_flight[0] = in_flight[0]
+            try:
+                return await original_ltr(run_id, limit=limit)
+            finally:
+                in_flight[0] -= 1
+
+        store.list_task_runs = _tracking_ltr
+        try:
+            result = await run_sweep(
+                store=store,
+                flow=flow,
+                param_sets=[{"multiplier": i} for i in range(N_CELLS)],
+                trigger="sweep",
+                now=NOW,
+                claims=CLAIMS,
+            )
+        finally:
+            store.list_task_runs = original_ltr
+
+        assert result.total == N_CELLS
+        assert result.succeeded == N_CELLS
+
+        # The peak concurrent in-flight count must never exceed the cap.
+        # (drain's internal calls also go through the patched ltr, but those
+        #  are sequential — not gathered — so they do not accumulate concurrently.)
+        assert peak_in_flight[0] <= CAP, (
+            f"Peak concurrent list_task_runs calls ({peak_in_flight[0]}) "
+            f"exceeded _SWEEP_GATHER_CONCURRENCY cap ({CAP}). "
+            "The semaphore is not bounding Phase 2 concurrency correctly."
+        )
+    finally:
+        sweep_mod._SWEEP_GATHER_CONCURRENCY = original_cap
+
+
+async def test_phase2_gather_concurrency_constant_exists_and_is_positive():
+    """_SWEEP_GATHER_CONCURRENCY must exist and be a positive integer."""
+    import app.flows.sweep as sweep_mod
+
+    assert hasattr(sweep_mod, "_SWEEP_GATHER_CONCURRENCY"), (
+        "_SWEEP_GATHER_CONCURRENCY constant missing from sweep.py"
+    )
+    assert isinstance(sweep_mod._SWEEP_GATHER_CONCURRENCY, int)
+    assert sweep_mod._SWEEP_GATHER_CONCURRENCY > 0, (
+        "_SWEEP_GATHER_CONCURRENCY must be a positive integer"
+    )
+
+
+async def test_phase2_gather_concurrency_env_overridable(monkeypatch):
+    """_SWEEP_GATHER_CONCURRENCY must be patchable (env-overridable by convention)."""
+    import app.flows.sweep as sweep_mod
+
+    original = sweep_mod._SWEEP_GATHER_CONCURRENCY
+    monkeypatch.setattr(sweep_mod, "_SWEEP_GATHER_CONCURRENCY", 5)
+    assert sweep_mod._SWEEP_GATHER_CONCURRENCY == 5
+    monkeypatch.undo()
+    assert sweep_mod._SWEEP_GATHER_CONCURRENCY == original

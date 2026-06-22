@@ -448,6 +448,108 @@ async def _resolve_flow_provider(
 
 
 # ---------------------------------------------------------------------------
+# Inline-provider connector resolution
+# ---------------------------------------------------------------------------
+
+
+async def _resolve_org_connector(
+    org_id: str,
+    repo: Any,
+) -> tuple[Any, bool]:
+    """Return (connector, owned) for the org's real datastore, or the demo fallback.
+
+    Mirrors the pattern in ``app.dashboards.collect._resolve_connector``:
+
+    * Lists all datastores for *org_id* (org-scoped — no cross-tenant access).
+    * Picks the first non-system, non-demo datastore (i.e. a real user-configured
+      connector).
+    * Builds and returns that connector so ``_resolve_inline_provider`` executes
+      against the org's actual data source, not always the demo singleton.
+    * Falls back to the demo connector when no real connector is configured
+      (preserves existing demo/dev behaviour).
+
+    ``owned`` is ``True`` when the caller is responsible for closing the
+    connector (freshly-created real connector).  ``False`` means the returned
+    connector is the shared demo singleton and must NOT be closed.
+
+    Security: the repo lookup is already org-scoped (``repo.list("datastores",
+    org_id)``), so cross-tenant reads are impossible here.
+    """
+    from app.routes.query import _get_demo_connector  # noqa: PLC0415
+
+    try:
+        datastores = await repo.list("datastores", org_id)
+    except Exception:  # noqa: BLE001
+        datastores = []
+
+    # Filter out system/demo datastores — only pick real user-configured connectors.
+    _DEMO_SYSTEM_TYPES = frozenset({"__demo__", "__demo_hidden__"})
+    real_ds = None
+    for ds in (datastores or []):
+        cfg = ds.get("config") or {}
+        ctype = cfg.get("connector_type") or cfg.get("type") or ""
+        # Skip system-flagged rows (e.g. the demo-hidden marker) and the virtual
+        # demo connector sentinel.
+        if cfg.get("system") or ctype in _DEMO_SYSTEM_TYPES:
+            continue
+        real_ds = ds
+        break
+
+    if real_ds is None:
+        # No real connector configured — fall back to the demo singleton.
+        return _get_demo_connector(), False
+
+    cfg: dict[str, Any] = dict(real_ds.get("config") or {})
+    ctype = cfg.get("connector_type") or cfg.get("type")
+
+    try:
+        from app.connectors.registry import get_connector_registry  # noqa: PLC0415
+
+        factory = get_connector_registry().get(ctype)
+        if factory is None:
+            logger.warning(
+                "inline provider: org %r datastore type %r has no registered factory; "
+                "falling back to demo connector.",
+                org_id,
+                ctype,
+            )
+            return _get_demo_connector(), False
+
+        if ctype == "duckdb":
+            db_path = cfg.get("database") or cfg.get("path")
+            if db_path and db_path != ":memory:":
+                import duckdb  # noqa: PLC0415
+
+                from app.connectors.duckdb_conn import harden_connection as _harden  # noqa: PLC0415
+
+                conn = duckdb.connect(database=db_path, read_only=True)
+                _harden(conn, disable_external_access=True)
+                return factory(conn), True
+            return factory(), True
+        if ctype == "postgres":
+            dsn = cfg.get("dsn")
+            if dsn is None:
+                host = cfg.get("host", "localhost")
+                port = cfg.get("port", 5432)
+                dbname = cfg.get("dbname") or cfg.get("database") or "postgres"
+                user = cfg.get("user") or cfg.get("username") or "postgres"
+                password = cfg.get("password", "")
+                dsn = f"postgresql://{user}:{password}@{host}:{port}/{dbname}"
+            return factory(dsn), True
+
+        return factory(cfg), True
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(
+            "inline provider: failed to build connector for org %r datastore type %r: %s; "
+            "falling back to demo connector.",
+            org_id,
+            ctype,
+            exc,
+        )
+        return _get_demo_connector(), False
+
+
+# ---------------------------------------------------------------------------
 # Inline provider
 # ---------------------------------------------------------------------------
 
@@ -493,12 +595,21 @@ async def _resolve_inline_provider(
                 sql = f"SELECT * FROM ({inner_sql}) AS _nubi_inline_capped LIMIT {_ROW_CAP}"
             else:
                 sql = inner_sql
+            _connector: Any = None
+            _connector_owned: bool = False
             try:
                 from app.connectors import plan as planner_plan  # noqa: PLC0415
-                from app.routes.query import _get_demo_connector  # noqa: PLC0415
 
                 physical_plan = planner_plan(sql=sql, claims={"policies": policies}, params=[])
-                connector = _get_demo_connector()
+                # FIX [MED connector]: resolve the org's actual connector rather
+                # than always falling back to the demo singleton.  _resolve_org_connector
+                # returns the first real (non-system, non-demo) datastore connector
+                # for the org, or the demo connector when none is configured.
+                # This fixes a bug where a real-connector inline-provider binding
+                # would silently execute against demo data and bypass connector-layer
+                # RLS.  The planner RLS-predicate injection below is kept as-is
+                # (defence in depth).
+                _connector, _connector_owned = await _resolve_org_connector(org_id, repo)
                 # FIX [LOW async]: connector.execute is a synchronous (blocking)
                 # DuckDB call.  Wrap it in asyncio.to_thread so it does not
                 # block the event loop on a cache miss.
@@ -508,7 +619,7 @@ async def _resolve_inline_provider(
                 # threading.Lock before calling execute, serialising concurrent
                 # threads while keeping the event-loop offload benefit of to_thread.
                 arrow_table = await asyncio.to_thread(
-                    _execute_with_lock, connector, physical_plan
+                    _execute_with_lock, _connector, physical_plan
                 )
                 # FIX [MED resource]: cap rows to _ROW_CAP to prevent unbounded
                 # Arrow IPC payloads from inline providers.
@@ -531,6 +642,15 @@ async def _resolve_inline_provider(
                     exc,
                 )
                 tables[r.name] = pa.table({})
+            finally:
+                # Close freshly-created (owned) connectors to release their
+                # underlying connections.  The shared demo singleton must NOT
+                # be closed (owned=False) — it is a module-level singleton.
+                if _connector_owned and _connector is not None:
+                    try:
+                        _connector.close()
+                    except Exception:  # noqa: BLE001
+                        pass
         else:
             # Treat the result name as a registered query id.
             try:

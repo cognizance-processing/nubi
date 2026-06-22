@@ -342,20 +342,56 @@ def _deserialise(data: bytes, kind: str) -> Any:
 # ---------------------------------------------------------------------------
 
 
+_IN_MEMORY_DEFAULT_MAX_TOTAL_BYTES: int = 2 * 1024 * 1024 * 1024  # 2 GiB
+
+
 class InMemoryArtifactStore:
     """Dict-backed artifact store for tests (no real I/O).
 
     Thread-safe enough for sequential test usage.  Not async — all methods
     are synchronous (same contract as ``StorageClient``).
+
+    Parameters
+    ----------
+    max_total_bytes:
+        Total in-memory byte ceiling across *all* blobs stored in this
+        instance.  Defaults to 2 GiB.  Set to ``0`` to disable the cap
+        (not recommended outside of targeted unit tests).  When a call to
+        ``upload`` would push the cumulative total past this ceiling,
+        ``MemoryError`` is raised and the blob is NOT stored.
     """
 
-    def __init__(self) -> None:
-        self._blobs: dict[str, bytes] = {}  # artifact_id → raw bytes
+    def __init__(self, max_total_bytes: int = _IN_MEMORY_DEFAULT_MAX_TOTAL_BYTES) -> None:
+        self._blobs: dict[str, bytes] = {}  # key → raw bytes
+        self._total_bytes: int = 0
+        self._max_total_bytes: int = max_total_bytes
 
     def upload(self, artifact_id: str, org_id: str, data: bytes) -> str:
-        """Store *data* under an org-namespaced key; return its logical URI."""
+        """Store *data* under an org-namespaced key; return its logical URI.
+
+        Raises
+        ------
+        MemoryError
+            When the total stored bytes (including *data*) would exceed
+            ``max_total_bytes`` (and the cap is active, i.e. > 0).
+        """
         key = f"orgs/{org_id}/artifacts/{artifact_id}"
+        incoming = len(data)
+        # Account for replacement: if the key already exists subtract its
+        # current size before adding the new one so we don't double-count.
+        existing = len(self._blobs[key]) if key in self._blobs else 0
+        new_total = self._total_bytes - existing + incoming
+        if self._max_total_bytes > 0 and new_total > self._max_total_bytes:
+            raise MemoryError(
+                f"InMemoryArtifactStore total-bytes ceiling exceeded: "
+                f"storing {incoming:,} bytes would bring the total to "
+                f"{new_total:,} bytes, which exceeds the configured limit of "
+                f"{self._max_total_bytes:,} bytes. "
+                "Use a smaller artifact, raise max_total_bytes, or call "
+                "clear() to reset the store."
+            )
         self._blobs[key] = data
+        self._total_bytes = new_total
         return f"mem://{key}"
 
     def download(self, artifact_id: str, org_id: str) -> bytes:
@@ -377,6 +413,15 @@ class InMemoryArtifactStore:
         """Return True if the artifact exists for this org."""
         key = f"orgs/{org_id}/artifacts/{artifact_id}"
         return key in self._blobs
+
+    def clear(self) -> None:
+        """Remove all stored blobs and reset the byte counter.
+
+        Intended for test teardown so a shared store instance can be reused
+        across tests without bleed-over.
+        """
+        self._blobs.clear()
+        self._total_bytes = 0
 
 
 class ObjectStoreArtifactStore:
