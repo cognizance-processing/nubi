@@ -37,6 +37,8 @@ from app.ai.provider import (
 )
 from app.auth.jwt import mint_access_token
 from app.errors import AppError
+from app.repos.memory import InMemoryRepo
+from app.repos.provider import set_repo
 
 
 # ---------------------------------------------------------------------------
@@ -92,9 +94,19 @@ def _make_user(user_id: str) -> dict[str, Any]:
 
 @pytest_asyncio.fixture
 async def ai_client(app, fake_db):
-    """HTTPX async client with a pre-seeded user for AI endpoint tests."""
+    """HTTPX async client with a pre-seeded owner user in an org for AI endpoint tests.
+
+    The user is seeded as an org owner so that require_writer_default passes —
+    AI endpoints are metered and must be write-gated (viewers must never be metered).
+    """
     user_id = str(uuid.uuid4())
+    org_id = str(uuid.uuid4())
     fake_db.users[user_id] = _make_user(user_id)
+
+    repo = InMemoryRepo()
+    repo.seed_org_member(org_id=org_id, user_id=user_id, role="owner")
+    set_repo(repo)
+
     transport = ASGITransport(app=app)
     async with AsyncClient(
         transport=transport,
@@ -102,6 +114,8 @@ async def ai_client(app, fake_db):
         follow_redirects=False,
     ) as ac:
         yield ac, user_id
+
+    set_repo(None)
 
 
 def _claims(user_id: str = "u1") -> dict[str, Any]:

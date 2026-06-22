@@ -45,6 +45,8 @@ from app.ai.grounding import build_catalog
 from app.ai.provider import NullProvider
 from app.auth.jwt import mint_access_token
 from app.queries.registry import get_query_registry
+from app.repos.memory import InMemoryRepo
+from app.repos.provider import set_repo
 
 
 # ---------------------------------------------------------------------------
@@ -75,9 +77,19 @@ def _make_user(user_id: str) -> dict[str, Any]:
 
 @pytest_asyncio.fixture
 async def dashboard_client(app, fake_db):
-    """HTTPX async client with a pre-seeded user for dashboard endpoint tests."""
+    """HTTPX async client with a pre-seeded owner user in an org for dashboard endpoint tests.
+
+    The user is seeded as an org owner so that require_writer_default passes —
+    dashboard endpoints are metered (AI quota) and must be write-gated.
+    """
     user_id = str(uuid.uuid4())
+    org_id = str(uuid.uuid4())
     fake_db.users[user_id] = _make_user(user_id)
+
+    repo = InMemoryRepo()
+    repo.seed_org_member(org_id=org_id, user_id=user_id, role="owner")
+    set_repo(repo)
+
     transport = ASGITransport(app=app)
     async with AsyncClient(
         transport=transport,
@@ -85,6 +97,8 @@ async def dashboard_client(app, fake_db):
         follow_redirects=False,
     ) as ac:
         yield ac, user_id
+
+    set_repo(None)
 
 
 # ---------------------------------------------------------------------------
