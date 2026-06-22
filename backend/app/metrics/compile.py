@@ -559,9 +559,10 @@ def _apply_top_n(
             f"LIMIT {tn.n}"
         )
         membership_expr = sqlglot.parse_one(membership_sql, dialect=dialect)
+        # FIX 2: wrap in exp.Subquery so sqlglot renders "IN (SELECT ...)" not "IN SELECT ...".
         where_cond = exp.In(
             this=exp.column(dim_col),
-            query=membership_expr,
+            query=exp.Subquery(this=membership_expr),
         )
         outer_select = outer_select.where(where_cond)
     else:
@@ -650,9 +651,10 @@ def _apply_top_n_other(
             f"LIMIT {tn.n}"
         )
         membership_expr = sqlglot.parse_one(membership_sql, dialect=dialect)
+        # FIX 2: wrap in exp.Subquery so sqlglot renders "IN (SELECT ...)" not "IN SELECT ...".
         where_cond = exp.In(
             this=exp.column(dim_col),
-            query=membership_expr,
+            query=exp.Subquery(this=membership_expr),
         )
         top_n_tree = top_n_tree.where(where_cond)
     else:
@@ -705,19 +707,23 @@ def _apply_top_n_other(
     if time_alias:
         other_select_parts.append(f"{time_alias}")
 
-    # (c) Base measures: SUM the pre-aggregated column from __base.
-    # FIX #5: count(*) must use SUM(m.name) — the count is already computed in __base,
-    # so we sum those pre-computed values, NOT SUM(COUNT(*)) which is a nested agg.
+    # (c) Base measures: re-aggregate correctly per agg type.
+    # FIX 3: SUM(avg/min/max) is wrong. Use the correct re-aggregation per agg:
+    #   min -> MIN(name), max -> MAX(name), sum/count -> SUM(name),
+    #   avg -> NULL (partial-avg not re-aggregable without weights),
+    #   count_distinct / percentile_cont / approx_count_distinct -> NULL.
     base_measure_sums: dict[str, str] = {}
     for m in metric.measures():
-        if m.agg == "count_distinct":
-            # count_distinct is not re-aggregable; emit NULL as a conservative fallback.
-            base_measure_sums[m.name] = f"NULL AS {m.name}"
-        elif m.agg in ("percentile_cont", "approx_count_distinct"):
-            base_measure_sums[m.name] = f"NULL AS {m.name}"
-        else:
-            # For count(*), count(col), sum, min, max, avg — sum the pre-agg value.
+        if m.agg == "min":
+            base_measure_sums[m.name] = f"MIN({m.name}) AS {m.name}"
+        elif m.agg == "max":
+            base_measure_sums[m.name] = f"MAX({m.name}) AS {m.name}"
+        elif m.agg in ("sum", "count"):
             base_measure_sums[m.name] = f"SUM({m.name}) AS {m.name}"
+        else:
+            # avg, count_distinct, percentile_cont, approx_count_distinct:
+            # not safely re-aggregable; emit NULL as a conservative fallback.
+            base_measure_sums[m.name] = f"NULL AS {m.name}"
         other_select_parts.append(base_measure_sums[m.name])
 
     # (d) Derived measures: recomputed from the summed base measures.
@@ -728,9 +734,11 @@ def _apply_top_n_other(
 
     # (e) FIX #4: time-comparison window columns — emit NULL AS <out_name> in the
     # Other arm so both UNION arms have identical column counts.
+    # FIX 1: use exp.to_identifier(quoted=True) so the alias is never raw user input.
     regular_comparisons = [tc for tc in mq.time_comparisons if tc.kind != "latest_snapshot"]
     for tc in regular_comparisons:
-        other_select_parts.append(f"NULL AS {tc.out_name()}")
+        safe_alias = exp.to_identifier(tc.out_name(), quoted=True).sql(dialect=dialect)
+        other_select_parts.append(f"NULL AS {safe_alias}")
 
     # WHERE: exclude top-N members.
     where_clause = f"WHERE {dim_col} NOT IN ({top_members_subquery})"
@@ -987,6 +995,13 @@ def _govern(metric: MetricDefinition, mq: MetricQuery) -> str | None:
     # ── time_comparisons governance ─────────────────────────────────────────
     if mq.time_comparisons:
         for tc in mq.time_comparisons:
+            # FIX 1: validate tc.name (used as a SQL alias via out_name()) is a safe identifier.
+            if tc.name is not None and not _IDENT_RE.fullmatch(tc.name):
+                raise MetricError(
+                    "bad_tc_name",
+                    f"time_comparison.name {tc.name!r} is not a valid SQL identifier "
+                    f"(must match [A-Za-z_][A-Za-z0-9_]*).",
+                )
             # latest_snapshot repurposes .measure as entity col; skip measure check.
             if tc.kind == "latest_snapshot":
                 if metric.time_dimension is None:
@@ -1053,6 +1068,17 @@ def _govern(metric: MetricDefinition, mq: MetricQuery) -> str | None:
             raise MetricError(
                 "bad_top_n",
                 f"top_n.measure {rank_measure!r} is not a base or derived measure.",
+            )
+        # FIX 4: derived measure as rank measure with time_grain is invalid —
+        # the membership subquery would ORDER BY SUM(<derived>) but the derived column
+        # is not present in __base (only base measures are in __base).
+        derived_measure_names = {dm.name for dm in metric.derived_measures}
+        if mq.time_grain is not None and rank_measure in derived_measure_names:
+            raise MetricError(
+                "bad_top_n",
+                f"top_n.measure {rank_measure!r} is a derived measure; derived measures "
+                f"cannot be used as the top_n rank measure when time_grain is set "
+                f"(the membership subquery references __base which only contains base measures).",
             )
         # FIX #1: validate other_label contains no single-quote or backslash.
         if tn.other and ("'" in tn.other_label or "\\" in tn.other_label):

@@ -388,6 +388,276 @@ import asyncio  # noqa: E402 (needs to be after the test that uses it)
 
 
 # ---------------------------------------------------------------------------
+# REGRESSION Fix 2: MAP_MAX_CONCURRENCY semaphore is ACTUALLY enforced at
+# execution time (acquire_map_slot / release_map_slot are called for children)
+# ---------------------------------------------------------------------------
+
+
+async def test_map_slot_acquired_and_released_for_child_execution():
+    """Map child execution acquires and releases the semaphore slot.
+
+    The bug: acquire_map_slot / release_map_slot were imported but never called
+    in the execution paths, so the concurrency cap was not enforced at runtime
+    (only at fan-out time via _expand_map_children).  This test verifies that
+    _execute_claimed_task_run holds the semaphore while a map child runs and
+    releases it when done.
+
+    Approach: patch acquire_map_slot and release_map_slot with async/sync
+    counters, build a minimal map-child task_run, and confirm both were called.
+    """
+    import app.flows.runtime as rt
+    from app.flows.store import InMemoryFlowStore
+    from app.flows.registry import reset_for_tests
+    from datetime import datetime, timezone
+
+    reset_for_tests()
+    inner = InMemoryFlowStore()
+
+    # Build a minimal map child task_run.
+    spec = {
+        "version": 1,
+        "name": "map_flow",
+        "tasks": [
+            {
+                "key": "fan",
+                "kind": "map",
+                "needs": [],
+                "config": {
+                    "items": [1, 2, 3],
+                    "item_var": "item",
+                    "body": [{"key": "step", "kind": "noop", "needs": [], "config": {}}],
+                    "collect_key": "step",
+                },
+            }
+        ],
+    }
+    flow = await inner.create_flow(org_id="org-t", created_by="u", name="f", spec=spec)
+    run = await inner.create_flow_run(
+        flow_id=flow["id"], org_id="org-t", params={}, trigger="manual"
+    )
+    now = datetime(2025, 6, 1, 12, 0, 0, tzinfo=timezone.utc)
+
+    # Manually insert a map-child task_run (key contains '[').
+    child_tr_list = [{
+        "task_key": "fan[0].step",
+        "org_id": "org-t",
+        "state": "ready",
+        "depends_on": [],
+        "attempt": 0,
+        "kind": "noop",
+        "config": {"__item__": 1, "__item_var__": "item", "__item_index__": 0},
+        "retries": 0,
+        "retry_backoff_s": 30,
+        "timeout_s": 0,
+        "cache_ttl_s": 0,
+        "parent_task_run_id": None,
+    }]
+    await inner.add_task_runs(run["id"], child_tr_list)
+    trs = await inner.list_task_runs(run["id"])
+    child_tr = next(tr for tr in trs if tr["task_key"] == "fan[0].step")
+    # Claim it.
+    child_tr = await inner.update_task_run(child_tr["id"], {"state": "running"})
+    child_tr["flow_run_id"] = run["id"]
+
+    acquire_calls: list[str] = []
+    release_calls: list[str] = []
+
+    original_acquire = rt.acquire_map_slot
+    original_release = rt.release_map_slot
+
+    async def mock_acquire():
+        acquire_calls.append("acquire")
+
+    def mock_release():
+        release_calls.append("release")
+
+    try:
+        rt.acquire_map_slot = mock_acquire
+        rt.release_map_slot = mock_release
+
+        await rt._execute_claimed_task_run(
+            inner, child_tr, now, claims={}, secrets={}, run_var_overlay=None
+        )
+    finally:
+        rt.acquire_map_slot = original_acquire
+        rt.release_map_slot = original_release
+
+    assert len(acquire_calls) == 1, (
+        f"Expected 1 acquire_map_slot call for map child, got {len(acquire_calls)}"
+    )
+    assert len(release_calls) == 1, (
+        f"Expected 1 release_map_slot call for map child, got {len(release_calls)}"
+    )
+
+
+async def test_non_map_child_does_not_acquire_slot():
+    """Regular (non-map-child) task execution must NOT touch the semaphore."""
+    import app.flows.runtime as rt
+    from app.flows.runtime import materialize_flow_run as _mfr
+    from app.flows.store import InMemoryFlowStore
+    from app.flows.registry import reset_for_tests
+    from datetime import datetime, timezone
+
+    reset_for_tests()
+    inner = InMemoryFlowStore()
+
+    spec = {
+        "version": 1,
+        "name": "simple_flow",
+        "tasks": [{"key": "t1", "kind": "noop", "needs": [], "config": {}}],
+    }
+    flow = await inner.create_flow(org_id="org-t", created_by="u", name="f", spec=spec)
+    now = datetime(2025, 6, 1, 12, 0, 0, tzinfo=timezone.utc)
+    run = await _mfr(inner, flow, {}, "manual", now)
+
+    trs = await inner.list_task_runs(run["id"])
+    assert trs, "Expected at least one task_run from materialize_flow_run"
+    regular_tr = trs[0]
+    regular_tr = await inner.update_task_run(regular_tr["id"], {"state": "running"})
+    regular_tr["flow_run_id"] = run["id"]
+
+    acquire_calls: list[str] = []
+
+    original_acquire = rt.acquire_map_slot
+
+    async def mock_acquire():
+        acquire_calls.append("acquire")
+
+    try:
+        rt.acquire_map_slot = mock_acquire
+
+        await rt._execute_claimed_task_run(
+            inner, regular_tr, now, claims={}, secrets={}, run_var_overlay=None
+        )
+    finally:
+        rt.acquire_map_slot = original_acquire
+
+    assert len(acquire_calls) == 0, (
+        f"Non-map-child must NOT acquire a map slot, but acquire was called {len(acquire_calls)} time(s)"
+    )
+
+
+async def test_map_concurrency_cap_enforced_at_runtime():
+    """Map child execution acquires and releases semaphore slots, respecting the cap.
+
+    This test verifies that the runtime actually calls acquire_map_slot /
+    release_map_slot for each map child task_run (the dead-code fix).  We
+    set MAP_MAX_CONCURRENCY=2 and directly execute 3 map-child task_runs via
+    _execute_claimed_task_run, tracking peak concurrent in-flight count.
+
+    Since drain is sequential (one task at a time in a single-threaded drain),
+    peak_in_flight will be 1 — but what we verify is:
+      a) acquire is called for EVERY map child (not 0 times as before the fix)
+      b) peak never exceeds the semaphore cap of 2
+      c) the slot count returns to 0 after each child completes
+    """
+    import app.flows.runtime as rt
+    import app.compute.kernel_interface as ki
+    from app.flows.runtime import materialize_flow_run as _mfr
+    from app.flows.store import InMemoryFlowStore
+    from app.flows.registry import reset_for_tests
+    from datetime import datetime, timezone
+
+    reset_for_tests()
+    reset_map_semaphore()
+
+    original_ki_cap = ki.MAP_MAX_CONCURRENCY
+    original_rt_cap = rt.MAP_MAX_CONCURRENCY
+    original_acquire = rt.acquire_map_slot
+    original_release = rt.release_map_slot
+
+    try:
+        ki.MAP_MAX_CONCURRENCY = 2
+        rt.MAP_MAX_CONCURRENCY = 2
+        reset_map_semaphore()
+
+        in_flight = 0
+        peak_in_flight = 0
+        total_acquires = 0
+
+        async def counting_acquire():
+            nonlocal in_flight, peak_in_flight, total_acquires
+            await original_acquire()
+            in_flight += 1
+            total_acquires += 1
+            if in_flight > peak_in_flight:
+                peak_in_flight = in_flight
+
+        def counting_release():
+            nonlocal in_flight
+            original_release()
+            in_flight -= 1
+
+        rt.acquire_map_slot = counting_acquire
+        rt.release_map_slot = counting_release
+
+        inner = InMemoryFlowStore()
+        now = datetime(2025, 6, 1, 12, 0, 0, tzinfo=timezone.utc)
+
+        # Build a minimal spec so we can get a flow_run + task_runs.
+        # We don't use a 'map' spec because it requires item_expr.
+        # Instead, we directly insert map-child task_runs (task_key with '[').
+        spec = {
+            "version": 1,
+            "name": "simple",
+            "tasks": [{"key": "root", "kind": "noop", "needs": [], "config": {}}],
+        }
+        flow = await inner.create_flow(org_id="org-t", created_by="u", name="f", spec=spec)
+        run = await _mfr(inner, flow, {}, "manual", now)
+
+        # Inject 3 map-child task_runs directly into the store.
+        child_trs = [
+            {
+                "task_key": f"root[{i}].work",
+                "org_id": "org-t",
+                "state": "ready",
+                "depends_on": [],
+                "attempt": 0,
+                "kind": "noop",
+                "config": {"__item__": i, "__item_var__": "item", "__item_index__": i},
+                "retries": 0,
+                "retry_backoff_s": 30,
+                "timeout_s": 0,
+                "cache_ttl_s": 0,
+                "parent_task_run_id": None,
+            }
+            for i in range(3)
+        ]
+        await inner.add_task_runs(run["id"], child_trs)
+        all_trs = await inner.list_task_runs(run["id"])
+        map_children = [tr for tr in all_trs if "[" in tr["task_key"]]
+        assert len(map_children) == 3, f"Expected 3 map children, got {len(map_children)}"
+
+        # Execute each child via _execute_claimed_task_run (drain-path function).
+        for child in map_children:
+            child_claimed = await inner.update_task_run(child["id"], {"state": "running"})
+            child_claimed["flow_run_id"] = run["id"]
+            await rt._execute_claimed_task_run(
+                inner, child_claimed, now, claims={}, secrets={}, run_var_overlay=None
+            )
+
+    finally:
+        rt.acquire_map_slot = original_acquire
+        rt.release_map_slot = original_release
+        ki.MAP_MAX_CONCURRENCY = original_ki_cap
+        rt.MAP_MAX_CONCURRENCY = original_rt_cap
+        reset_map_semaphore()
+
+    # Acquire must have been called once per map child (3 times total).
+    assert total_acquires == 3, (
+        f"Expected acquire_map_slot called 3 times (once per map child), got {total_acquires}"
+    )
+    # Sequential drain → peak is 1; must never exceed the cap of 2.
+    assert peak_in_flight <= 2, (
+        f"Map concurrency cap violated: peak in-flight was {peak_in_flight}, cap is 2"
+    )
+    # After all children finish, in_flight must be back to 0.
+    assert in_flight == 0, (
+        f"Semaphore slot leak: {in_flight} slots still held after all children finished"
+    )
+
+
+# ---------------------------------------------------------------------------
 # REGRESSION: [MED RBAC] viewer must receive 403 on POST /flows/compile
 # ---------------------------------------------------------------------------
 

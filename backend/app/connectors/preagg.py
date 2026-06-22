@@ -486,8 +486,8 @@ def build_rollup_for_metric(
         else:
             agg = m.agg.lower()
             expr = m.expr
-        if agg.replace("_distinct", "") not in _ADDITIVE_AGGS:
-            continue  # skip non-additive (avg, percentile, approx_count_distinct)
+        if agg not in _ADDITIVE_AGGS:
+            continue  # skip non-additive (count_distinct, approx_count_distinct, avg, percentile)
         measures_str.append(f"{agg}({expr})")
 
     if not measures_str:

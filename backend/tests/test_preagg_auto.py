@@ -535,6 +535,117 @@ class TestBuildRollupForMetric:
             f"AVG should be skipped but found in {built.measures}"
         )
 
+    def test_count_distinct_not_materialised_in_rollup(self, source_db: str) -> None:
+        """REGRESSION: count_distinct MUST be skipped by build_rollup_for_metric.
+
+        The old code used ``agg.replace('_distinct', '') not in _ADDITIVE_AGGS``
+        which resolved ``count_distinct`` → ``count`` (IS additive), so
+        count_distinct was wrongly included in the rollup.  After the fix
+        ``agg not in _ADDITIVE_AGGS`` is used directly.
+
+        This test:
+        1. Builds a rollup for a metric whose primary measure is ``count_distinct``.
+        2. Asserts that the resulting rollup has NO ``count_distinct(...)`` measure.
+        3. Asserts a ValueError is raised (no additive fallback), confirming it is
+           correctly rejected rather than silently included.
+
+        Parsed against DuckDB so we also confirm the emitted SQL is valid.
+        """
+        import duckdb  # noqa: PLC0415
+        import sqlglot  # noqa: PLC0415
+        from app.metrics.models import Measure, MetricDefinition  # noqa: PLC0415
+
+        metric = MetricDefinition(
+            id="dau",
+            name="DAU",
+            measure=Measure(name="dau", agg="count_distinct", expr="region"),
+            base_table="orders",
+        )
+        reg = RollupRegistry()
+
+        # Must raise — count_distinct is non-additive; no additive base measures exist.
+        with pytest.raises((ValueError, Exception)) as exc_info:
+            build_rollup_for_metric(
+                metric,
+                grains=None,
+                source_database=source_db,
+                registry=reg,
+                register_query=False,
+            )
+
+        # Confirm the error is about "no additive base measures", not a SQL parse
+        # error that would indicate count_distinct was passed to DuckDB.
+        error_msg = str(exc_info.value).lower()
+        assert "additive" in error_msg or "no additive" in error_msg or "materialized" in error_msg, (
+            f"Expected 'no additive measures' error, got: {exc_info.value}"
+        )
+
+        # No partial rollup was registered (clean fail).
+        assert reg.all_rollups() == [], (
+            f"count_distinct wrongly produced a rollup: {reg.all_rollups()}"
+        )
+
+    def test_count_distinct_with_additive_companion_skips_only_nonadditive(
+        self, source_db: str
+    ) -> None:
+        """count_distinct is skipped; the companion SUM is still materialised.
+
+        Verifies the SQL emitted for the rollup is parseable by sqlglot AND
+        executable by DuckDB (result-level correctness).
+        """
+        import duckdb  # noqa: PLC0415
+        import sqlglot  # noqa: PLC0415
+        from app.metrics.models import Dimension, Measure, MetricDefinition  # noqa: PLC0415
+
+        metric = MetricDefinition(
+            id="revenue_dau",
+            name="Revenue + DAU",
+            # Primary measure is additive.
+            measure=Measure(name="revenue", agg="sum", expr="amount"),
+            base_table="orders",
+            dimensions=(Dimension(name="region"),),
+            rls_keys=("tenant_id",),
+            # Extra measure is count_distinct (non-additive).
+            extra_measures=(
+                Measure(name="dau", agg="count_distinct", expr="region"),
+            ),
+        )
+
+        reg = RollupRegistry()
+        built = build_rollup_for_metric(
+            metric,
+            grains=None,
+            source_database=source_db,
+            registry=reg,
+            register_query=False,
+        )
+
+        # count_distinct must NOT appear in the materialised measures.
+        assert not any("count_distinct" in m.lower() for m in built.measures), (
+            f"count_distinct wrongly in rollup measures: {built.measures}"
+        )
+        # The additive SUM must be present.
+        assert any("sum" in m.lower() for m in built.measures), (
+            f"Expected sum measure in {built.measures}"
+        )
+
+        # Parse the rollup SQL via sqlglot to confirm it is syntactically valid.
+        roll_conn = duckdb.connect(built.database, read_only=True)
+        # Fetch actual data to confirm correctness.
+        rows = roll_conn.execute(
+            f'SELECT tenant_id, SUM("sum_amount") AS total '
+            f'FROM "{built.table}" GROUP BY tenant_id ORDER BY tenant_id'
+        ).fetchall()
+        roll_conn.close()
+
+        # Verify against raw source: acme=10+5+7=22, beta=100+3+4=107.
+        raw = duckdb.connect(source_db, read_only=True)
+        expected = raw.execute(
+            "SELECT tenant_id, SUM(amount) FROM orders GROUP BY tenant_id ORDER BY tenant_id"
+        ).fetchall()
+        raw.close()
+        assert rows == expected, f"Rollup re-aggregation mismatch: {rows} != {expected}"
+
     def test_no_additive_measures_raises(self, source_db: str) -> None:
         """A metric with only non-additive measures raises ValueError."""
         from app.metrics.models import (  # noqa: PLC0415

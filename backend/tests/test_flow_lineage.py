@@ -436,3 +436,151 @@ def test_stochastic_different_seeds_different_results():
             values.add(result["result"]["value"])
 
     assert len(values) > 1, "Different seeds should produce different values"
+
+
+# ---------------------------------------------------------------------------
+# REGRESSION Fix 1: _claims_with_owner_policies uses key-presence not truthiness
+# ---------------------------------------------------------------------------
+
+
+def _make_flow_with_owner_policies(policies: dict) -> dict:
+    """Build a minimal flow dict containing an owner-policy snapshot."""
+    return {
+        "id": "flow-rls-1",
+        "org_id": "org-test",
+        "spec": {
+            "tasks": [],
+            "runtime_config": {
+                "__owner_policies__": policies,
+            },
+        },
+    }
+
+
+def test_admin_empty_policies_not_overridden_by_owner_snapshot():
+    """An admin interactive run (policies={}) must NOT inherit the flow's owner snapshot.
+
+    The bug: `claims.get('policies')` is falsy for `{}`, so an explicit empty-
+    policy set was being replaced with the flow's snapshotted tenant policies,
+    silently restricting the admin to one tenant.  The fix uses key-presence
+    (`'policies' in claims`) instead.
+    """
+    from app.flows.runtime import _claims_with_owner_policies
+
+    # The flow has a non-empty owner snapshot that should NOT be applied.
+    owner_snapshot = {"org_id": "org-owner", "tenant": "owner-tenant"}
+    flow = _make_flow_with_owner_policies(owner_snapshot)
+
+    # Admin explicitly supplies an empty policy set (unrestricted).
+    admin_claims = {"sub": "admin-user", "policies": {}}
+
+    result = _claims_with_owner_policies(admin_claims, flow, flow_run_id="run-1")
+
+    # The result must keep the admin's explicitly-supplied empty policy set,
+    # NOT the owner snapshot.
+    assert result["policies"] == {}, (
+        f"Admin empty-policy set must not be replaced by owner snapshot; got {result['policies']!r}"
+    )
+    assert result is admin_claims or result == admin_claims, (
+        "Claims with 'policies' key must be returned unchanged (no merge)"
+    )
+
+
+def test_scheduled_run_no_policies_key_gets_owner_snapshot():
+    """Scheduled / worker-pool runs (no 'policies' key in claims) get the owner snapshot.
+
+    This is the correct path: the scheduler drains with claims={} (no 'policies'
+    key), and the flow's owner-policy snapshot is threaded in so SQL cells
+    row-filter to the owner's tenant.
+    """
+    from app.flows.runtime import _claims_with_owner_policies
+
+    owner_snapshot = {"org_id": "org-owner", "tenant": "owner-tenant"}
+    flow = _make_flow_with_owner_policies(owner_snapshot)
+
+    # Scheduled run: no 'policies' key at all.
+    sched_claims: dict = {"org_id": "org-test"}
+
+    result = _claims_with_owner_policies(sched_claims, flow, flow_run_id="run-2")
+
+    assert result["policies"] == owner_snapshot, (
+        f"Scheduled run must receive owner snapshot; got {result['policies']!r}"
+    )
+
+
+def test_nonempty_policies_in_claims_never_overridden():
+    """Non-empty policies already in claims (interactive user) must never be touched."""
+    from app.flows.runtime import _claims_with_owner_policies
+
+    owner_snapshot = {"org_id": "org-owner", "tenant": "owner-tenant"}
+    flow = _make_flow_with_owner_policies(owner_snapshot)
+
+    user_policies = {"org_id": "org-test", "tenant": "user-tenant"}
+    user_claims = {"sub": "user-1", "policies": user_policies}
+
+    result = _claims_with_owner_policies(user_claims, flow, flow_run_id="run-3")
+
+    assert result["policies"] == user_policies, (
+        "Non-empty user policies must not be replaced by owner snapshot"
+    )
+
+
+# ---------------------------------------------------------------------------
+# REGRESSION Fix 3: advance_readiness query count is reduced (not 4x per call)
+# ---------------------------------------------------------------------------
+
+
+class _CountingStore:
+    """Wraps InMemoryFlowStore and counts list_task_runs calls."""
+
+    def __init__(self, inner: InMemoryFlowStore) -> None:
+        self._inner = inner
+        self.list_task_runs_count = 0
+
+    def __getattr__(self, name: str):
+        return getattr(self._inner, name)
+
+    async def list_task_runs(self, flow_run_id: str) -> list:
+        self.list_task_runs_count += 1
+        return await self._inner.list_task_runs(flow_run_id)
+
+
+async def test_advance_readiness_query_count_reduced():
+    """advance_readiness must call list_task_runs fewer than 4 times per invocation.
+
+    The original code unconditionally called list_task_runs 4 times on every
+    invocation.  The fix reduces this to at most 2 calls (1 initial load +
+    1 conditional reload only when map fan-in or branch activation mutates state).
+    For a simple flow with no map/branch nodes, only 1 call should be made.
+    """
+    reset_for_tests()
+    inner = InMemoryFlowStore()
+    store = _CountingStore(inner)
+
+    # Three-task linear chain: A → B → C.
+    flow = await inner.create_flow(
+        org_id="org-test",
+        created_by="user-test",
+        name="chain_flow",
+        spec={
+            "version": 1,
+            "name": "chain",
+            "tasks": [
+                {"key": "A", "kind": "noop", "needs": [], "config": {}},
+                {"key": "B", "kind": "noop", "needs": ["A"], "config": {}},
+                {"key": "C", "kind": "noop", "needs": ["B"], "config": {}},
+            ],
+        },
+    )
+    run = await materialize_flow_run(inner, flow, {}, "manual", NOW)
+
+    store.list_task_runs_count = 0  # reset counter after setup
+
+    await advance_readiness(store, run["id"], NOW)
+
+    # The original implementation would have called list_task_runs 4 times.
+    # The fixed implementation calls it at most 2 (usually 1 for no-map flows).
+    assert store.list_task_runs_count < 4, (
+        f"advance_readiness called list_task_runs {store.list_task_runs_count} times; "
+        f"expected fewer than 4 (N+1 regression)."
+    )

@@ -488,6 +488,12 @@ async def resolve_provider_data(
 
     # ── Execute provider ──────────────────────────────────────────────────────
     if provider.kind == "flow":
+        # FIX [LOW metering]: enforce quota before executing the flow so embed
+        # viewers cannot trigger unmetered warehouse compute on a cache miss.
+        from app.features import enforce_quota  # noqa: PLC0415
+
+        await enforce_quota(org_id, "compute_units", amount=1.0)
+
         # FIX [MED N+1]: pre-fetch the org's flows once and pass the lookup
         # dict into _resolve_flow_provider so it does NOT call list_flows per
         # provider.  A single board load with N flow providers now issues at

@@ -343,3 +343,174 @@ async def test_run_history_enrichment():
     rc = spec.get("runtime_config") or {}
     expected_s = rc.get("freshness_sla_s")
     assert flag_sla_breach(run, expected_s, now) is False
+
+
+# ---------------------------------------------------------------------------
+# REGRESSION: [MED N+1] list_run_outputs_for_runs batch method
+# ---------------------------------------------------------------------------
+
+
+async def test_list_run_outputs_for_runs_batch():
+    """list_run_outputs_for_runs must return outputs grouped by run_id."""
+    store = InMemoryFlowStore()
+    flow = await _make_flow(store)
+
+    # Create two runs and add outputs for each.
+    run_a = await _run_flow(store, flow, params={"run": "a"})
+    run_b = await _run_flow(store, flow, params={"run": "b"})
+
+    await store.add_run_output(
+        flow_run_id=run_a["id"], org_id="org-test", task_key="t1",
+        output_key="out_a1", output_type="table",
+    )
+    await store.add_run_output(
+        flow_run_id=run_a["id"], org_id="org-test", task_key="t1",
+        output_key="out_a2", output_type="file",
+    )
+    await store.add_run_output(
+        flow_run_id=run_b["id"], org_id="org-test", task_key="t1",
+        output_key="out_b1", output_type="metric",
+    )
+
+    batch = await store.list_run_outputs_for_runs([run_a["id"], run_b["id"]])
+
+    assert set(batch.keys()) == {run_a["id"], run_b["id"]}
+    assert len(batch[run_a["id"]]) == 2
+    assert len(batch[run_b["id"]]) == 1
+    keys_a = {o["output_key"] for o in batch[run_a["id"]]}
+    assert keys_a == {"out_a1", "out_a2"}
+    assert batch[run_b["id"]][0]["output_key"] == "out_b1"
+
+
+async def test_list_run_outputs_for_runs_empty():
+    """Empty run_ids list must return empty dict."""
+    store = InMemoryFlowStore()
+    result = await store.list_run_outputs_for_runs([])
+    assert result == {}
+
+
+async def test_list_run_outputs_for_runs_no_outputs():
+    """Runs with no outputs must be omitted from the result."""
+    store = InMemoryFlowStore()
+    flow = await _make_flow(store)
+    run = await _run_flow(store, flow)
+
+    batch = await store.list_run_outputs_for_runs([run["id"]])
+    # No outputs were added — run_id should be absent.
+    assert run["id"] not in batch
+
+
+async def test_list_run_outputs_for_runs_single_query_semantics():
+    """The batch method must return the same data as N individual list_run_outputs calls."""
+    store = InMemoryFlowStore()
+    flow = await _make_flow(store)
+
+    runs = []
+    for i in range(4):
+        r = await _run_flow(store, flow, params={"i": i})
+        runs.append(r)
+        await store.add_run_output(
+            flow_run_id=r["id"], org_id="org-test", task_key="t1",
+            output_key=f"out_{i}", output_type="table",
+        )
+
+    run_ids = [r["id"] for r in runs]
+    batch = await store.list_run_outputs_for_runs(run_ids)
+
+    for r in runs:
+        individual = await store.list_run_outputs(r["id"])
+        batch_out = batch.get(r["id"], [])
+        assert len(individual) == len(batch_out), (
+            f"Batch output count {len(batch_out)} != individual count "
+            f"{len(individual)} for run {r['id']}"
+        )
+        ind_keys = {o["output_key"] for o in individual}
+        batch_keys = {o["output_key"] for o in batch_out}
+        assert ind_keys == batch_keys
+
+
+# ---------------------------------------------------------------------------
+# REGRESSION: [MED N+1] list_flow_runs limit parameter
+# ---------------------------------------------------------------------------
+
+
+async def test_list_flow_runs_limit_applied():
+    """list_flow_runs must respect the limit parameter."""
+    store = InMemoryFlowStore()
+    flow = await _make_flow(store)
+
+    # Create 10 runs.
+    for i in range(10):
+        await materialize_flow_run(store, flow, {"i": i}, "manual", NOW)
+
+    all_runs = await store.list_flow_runs(flow["id"], limit=500)
+    assert len(all_runs) == 10
+
+    limited = await store.list_flow_runs(flow["id"], limit=3)
+    assert len(limited) == 3
+
+    # Bounded result must still be newest-first.
+    assert limited[0]["params"]["i"] > limited[-1]["params"]["i"]
+
+
+async def test_list_flow_runs_default_limit_is_bounded():
+    """Default limit must be <= 500 (not unbounded)."""
+    store = InMemoryFlowStore()
+    flow = await _make_flow(store)
+
+    # Create a modest batch of runs and verify the default is sane.
+    for i in range(5):
+        await materialize_flow_run(store, flow, {"i": i}, "manual", NOW)
+
+    runs = await store.list_flow_runs(flow["id"])
+    assert len(runs) <= 500
+
+
+# ---------------------------------------------------------------------------
+# REGRESSION: [MED authz] viewer 403 on /flows/triggers/fire (unit gate check)
+# ---------------------------------------------------------------------------
+
+
+async def test_fire_trigger_event_has_writer_guard():
+    """The /triggers/fire endpoint must carry require_writer_default dependency.
+
+    We inspect the FastAPI route's dependencies list to assert the guard is
+    present — this catches the regression where it was absent and viewers
+    could fire flows, consuming unmetered server compute.
+    """
+    import app.routes.flows as flows_mod
+    from app.auth.roles import require_writer_default
+
+    router = flows_mod.router
+    fire_route = None
+    for route in router.routes:
+        if hasattr(route, "path") and route.path.endswith("/triggers/fire"):
+            fire_route = route
+            break
+
+    assert fire_route is not None, "Route /triggers/fire not found"
+
+    # Extract the dependency callables from the route's dependencies list.
+    dep_callables = [d.dependency for d in (fire_route.dependencies or [])]
+    assert require_writer_default in dep_callables, (
+        "require_writer_default dependency missing from /triggers/fire — "
+        "viewers can fire flows!"
+    )
+
+
+async def test_fire_trigger_scope_uses_identity_not_hardcoded():
+    """Claims scope in fire_trigger_event must derive from identity.scope.
+
+    We do a static check: the route source must NOT contain the hardcoded
+    '\"write:*\"' literal inside the fire_trigger_event function body.
+    (The bug was scope=[\"read:*\",\"write:*\"] hardcoded regardless of token.)
+    """
+    import inspect
+    import app.routes.flows as flows_mod
+
+    src = inspect.getsource(flows_mod.fire_trigger_event)
+    # The hardcoded literal must not appear in the function body.
+    assert '"write:*"' not in src, (
+        "fire_trigger_event must not hardcode scope=[\"read:*\",\"write:*\"]; "
+        "use identity.scope instead."
+    )

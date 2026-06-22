@@ -280,6 +280,7 @@ def _iter_windows(
     start: datetime,
     end: datetime,
     window: str,
+    max_windows: int | None = None,
 ) -> list[tuple[datetime, datetime]]:
     """Iterate date windows over [start, end) with the given step.
 
@@ -294,6 +295,10 @@ def _iter_windows(
         ``'Nm'`` (minutes), or an ISO-8601 duration like ``'P1D'``,
         ``'PT1H'``, ``'PT30M'``.  Shorthand: ``'daily'`` = 1 day,
         ``'weekly'`` = 7 days, ``'hourly'`` = 1 hour.
+    max_windows:
+        When set, the cap is enforced INSIDE the loop: a ``ValueError`` is
+        raised as soon as the count would exceed the cap, before the full
+        list is materialised.  This prevents OOM on huge date ranges.
 
     Returns
     -------
@@ -306,6 +311,10 @@ def _iter_windows(
     windows: list[tuple[datetime, datetime]] = []
     cursor = start
     while cursor < end:
+        if max_windows is not None and len(windows) >= max_windows:
+            raise ValueError(
+                f"Backfill range too large: would exceed max_windows={max_windows}."
+            )
         w_end = min(cursor + delta, end)
         windows.append((cursor, w_end))
         cursor = cursor + delta
@@ -432,12 +441,9 @@ async def run_backfill(
     if end.tzinfo is None:
         end = end.replace(tzinfo=timezone.utc)
 
-    windows = _iter_windows(start, end, window)
-
-    if len(windows) > max_windows:
-        raise ValueError(
-            f"Backfill range too large: {len(windows)} windows exceeds max_windows={max_windows}."
-        )
+    # The cap is enforced INSIDE _iter_windows — it raises ValueError before
+    # the full list is materialised, preventing OOM on huge date ranges.
+    windows = _iter_windows(start, end, window, max_windows=max_windows)
 
     backfill_id = str(uuid.uuid4())
     flow_id = flow["id"]

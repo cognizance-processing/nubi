@@ -362,6 +362,62 @@ async def test_flow_provider_list_flows_called_at_most_once(repo: InMemoryRepo) 
 
 
 # ---------------------------------------------------------------------------
+# REGRESSION: flow-provider cache-miss calls enforce_quota (LOW metering fix)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_flow_provider_cache_miss_calls_enforce_quota(repo: InMemoryRepo) -> None:
+    """On a cache miss for a flow provider, enforce_quota must be called.
+
+    Before the fix, materialize+drain ran with NO quota enforcement so embed
+    viewers could trigger unmetered warehouse compute.  After the fix,
+    ``enforce_quota(org_id, 'compute_units', amount=1.0)`` is awaited before
+    ``_resolve_flow_provider`` is invoked.
+    """
+    quota_calls: list[tuple[str, str, float]] = []
+
+    async def _fake_enforce_quota(org_id: str, dimension: str, amount: float = 1.0) -> None:
+        quota_calls.append((org_id, dimension, amount))
+
+    await repo.update(
+        "boards",
+        _ORG,
+        _BOARD_ID,
+        {"config": {"spec": _make_spec_with_flow_provider()}},
+    )
+
+    with (
+        patch(
+            "app.features.enforce_quota",
+            side_effect=_fake_enforce_quota,
+        ),
+        patch(
+            "app.dashboards.board_data._resolve_flow_provider",
+            new=AsyncMock(return_value={"summary": pa.table({})}),
+        ),
+    ):
+        await resolve_provider_data(
+            board_id=_BOARD_ID,
+            provider_id=_PROVIDER_ID,
+            params={},
+            org_id=_ORG,
+            claims={"policies": {}},
+            repo=repo,
+        )
+
+    assert len(quota_calls) >= 1, (
+        "enforce_quota was NOT called on flow-provider cache miss "
+        "(unmetered warehouse compute regression)."
+    )
+    # Correct dimension and org_id.
+    org_ids = [c[0] for c in quota_calls]
+    dimensions = [c[1] for c in quota_calls]
+    assert _ORG in org_ids, f"enforce_quota called with wrong org_id: {quota_calls}"
+    assert "compute_units" in dimensions, f"enforce_quota called with wrong dimension: {quota_calls}"
+
+
+# ---------------------------------------------------------------------------
 # 2. resolve_provider_data — inline kind
 # ---------------------------------------------------------------------------
 

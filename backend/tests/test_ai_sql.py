@@ -43,6 +43,8 @@ from app.ai.provider import LLMProvider, NullProvider
 from app.ai.sql import generate_sql
 from app.auth.jwt import mint_access_token
 from app.queries.registry import get_query_registry
+from app.repos.memory import InMemoryRepo
+from app.repos.provider import set_repo
 
 
 # ---------------------------------------------------------------------------
@@ -114,9 +116,19 @@ class _ValidSQLProvider(LLMProvider):
 
 @pytest_asyncio.fixture
 async def sql_client(app, fake_db):
-    """HTTPX async client with a pre-seeded user for /ai/sql endpoint tests."""
+    """HTTPX async client with a pre-seeded user for /ai/sql endpoint tests.
+
+    Uses InMemoryRepo so ``require_writer_default`` can resolve the user's org
+    and confirm they are not a viewer (owner role is seeded here).
+    """
+    repo = InMemoryRepo()
+    set_repo(repo)
+
     user_id = str(uuid.uuid4())
+    org_id = str(uuid.uuid4())
     fake_db.users[user_id] = _make_user(user_id)
+    repo.seed_org_member(org_id=org_id, user_id=user_id, role="owner")
+
     transport = ASGITransport(app=app)
     async with AsyncClient(
         transport=transport,
@@ -124,6 +136,8 @@ async def sql_client(app, fake_db):
         follow_redirects=False,
     ) as ac:
         yield ac, user_id
+
+    set_repo(None)
 
 
 def _clear_llm_env(monkeypatch: Any) -> None:

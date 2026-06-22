@@ -82,6 +82,17 @@ _ON_HANDLER_RE = re.compile(r"\bon\w+=", re.IGNORECASE)
 _JAVASCRIPT_URI_RE = re.compile(r"javascript\s*:", re.IGNORECASE)
 _DATA_HTML_RE = re.compile(r"data\s*:\s*text/html", re.IGNORECASE)
 
+# Tags that must never appear in a dashboard or canvas document — they can be
+# used for phishing (iframe/form), plugin execution (object/embed), or
+# redirecting base URLs (base/meta/link).  Any one of these is a hard error.
+_FORBIDDEN_TAGS_RE = re.compile(
+    r"<\s*(iframe|object|embed|form|meta|base|link)[\s>/>]",
+    re.IGNORECASE,
+)
+_FORBIDDEN_TAG_NAMES: tuple[str, ...] = (
+    "iframe", "object", "embed", "form", "meta", "base", "link"
+)
+
 
 # ---------------------------------------------------------------------------
 # Prompt template for real LLM providers
@@ -662,6 +673,17 @@ def validate_dashboard_html(html: str) -> tuple[bool, list[str]]:
         issues.append("HTML contains javascript: URI — forbidden.")
     if _DATA_HTML_RE.search(html):
         issues.append("HTML contains data:text/html URI — forbidden.")
+
+    # 3b. Forbidden structural tags (iframe, object, embed, form, meta, base, link).
+    # These are blocked at save time so they can never reach the renderer.
+    m = _FORBIDDEN_TAGS_RE.search(html)
+    if m:
+        tag_name = m.group(1).lower()
+        issues.append(
+            f"HTML contains forbidden tag <{tag_name}> — "
+            "iframe/object/embed/form/meta/base/link are not permitted in "
+            "dashboard or canvas documents."
+        )
 
     # 4. Check that all custom elements (tag names with a hyphen) are nubi-*.
     custom_tag_re = re.compile(r"<([a-z][a-z0-9]*-[a-z0-9-]+)", re.IGNORECASE)

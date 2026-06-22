@@ -56,6 +56,14 @@ import uuid
 from datetime import datetime, timezone
 from typing import Any, Literal
 
+# ---------------------------------------------------------------------------
+# Size cap for artifact uploads (protects object-store from runaway writes).
+# Set NUBI_ARTIFACT_MAX_BYTES=0 to disable (not recommended in production).
+# Default: 500 MB.
+# ---------------------------------------------------------------------------
+
+_ARTIFACT_MAX_BYTES: int = int(os.environ.get("NUBI_ARTIFACT_MAX_BYTES", 500 * 1024 * 1024))
+
 
 # ---------------------------------------------------------------------------
 # ArtifactHandle — the lightweight descriptor that crosses cell boundaries
@@ -358,6 +366,15 @@ def put_artifact(
         raise ValueError("org_id is required for artifact.put_artifact().")
 
     data = _serialise(obj, kind)
+
+    # FIX [MED resource]: guard against runaway uploads.
+    if _ARTIFACT_MAX_BYTES > 0 and len(data) > _ARTIFACT_MAX_BYTES:
+        raise ValueError(
+            f"Artifact size {len(data):,} bytes exceeds the maximum allowed "
+            f"{_ARTIFACT_MAX_BYTES:,} bytes (NUBI_ARTIFACT_MAX_BYTES). "
+            "Reduce the artifact size or raise the limit."
+        )
+
     artifact_id = str(uuid.uuid4())
 
     _store = store or get_artifact_store()

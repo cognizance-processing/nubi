@@ -658,6 +658,9 @@ def _handle_python(
         artifact_spool_dir_json = json.dumps(artifact_spool_dir)
         artifact_org_id_json = json.dumps(ctx.org_id or "")
         artifact_run_id_json = json.dumps(ctx.run_id or "")
+        # FIX [MED resource]: mirror the parent-process size cap in the subprocess.
+        from app.flows.artifacts import _ARTIFACT_MAX_BYTES as _parent_max_bytes  # noqa: PLC0415
+        artifact_max_bytes_json = json.dumps(_parent_max_bytes)
     except (TypeError, ValueError) as exc:
         raise AppError("invalid_task_context", f"Context not JSON-serialisable: {exc}", 400)
 
@@ -767,6 +770,7 @@ def _handle_python(
         _ARTIFACT_SPOOL_DIR = _json.loads({artifact_spool_dir_json!r})
         _ARTIFACT_ORG_ID = _json.loads({artifact_org_id_json!r})
         _ARTIFACT_RUN_ID = _json.loads({artifact_run_id_json!r})
+        _ARTIFACT_MAX_BYTES = _json.loads({artifact_max_bytes_json!r})
         _artifact_handles = {{}}  # name → handle dict (for __ARTIFACT_HANDLES__ sentinel)
 
         class _ArtifactCtx:
@@ -791,6 +795,13 @@ def _handle_python(
                     data = _json.dumps(obj).encode("utf-8")
                 else:
                     raise ValueError(f"Unsupported artifact kind {{kind!r}}")
+                # FIX [MED resource]: enforce size cap (mirrors parent process).
+                if _ARTIFACT_MAX_BYTES > 0 and len(data) > _ARTIFACT_MAX_BYTES:
+                    raise ValueError(
+                        f"Artifact size {{len(data):,}} bytes exceeds the maximum allowed "
+                        f"{{_ARTIFACT_MAX_BYTES:,}} bytes (NUBI_ARTIFACT_MAX_BYTES). "
+                        "Reduce the artifact size or raise the limit."
+                    )
                 # Write to spool.
                 spool_path = _os.path.join(_ARTIFACT_SPOOL_DIR, artifact_id)
                 _os.makedirs(_ARTIFACT_SPOOL_DIR, exist_ok=True)

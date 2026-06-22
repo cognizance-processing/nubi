@@ -246,10 +246,16 @@ def _replace_nubi_element(
     if tag_lower == "nubi-value":
         return _render_value_html(el_id, attrs_str, element_data)
     if tag_lower in ("nubi-filter", "nubi-text"):
-        # Filters are not interactive in static renders; text passes through.
-        return inner or ""
+        # Filters are not interactive in static renders.
+        # Strip ALL HTML tags from the inner content and HTML-escape what remains
+        # so that attacker-controlled markup (iframe, form, object, etc.) stored
+        # inside a nubi-text/nubi-filter element cannot survive into the
+        # server-rendered email output.
+        raw_inner = inner or ""
+        plain_text = re.sub(r"<[^>]+>", "", raw_inner)
+        return _html_module.escape(plain_text, quote=False)
     # Unknown nubi-* tag: drop silently (already validated upstream).
-    return inner or ""
+    return ""
 
 
 def _bake_tokens(html: str, element_data: dict[str, Any]) -> str:

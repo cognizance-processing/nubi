@@ -1284,3 +1284,353 @@ def test_triple_nested_division_fully_guarded() -> None:
     sql, _ = compile_metric(m, mq)
     # a / NULLIF(b / NULLIF((c + 1), 0), 0) — two NULLIF guards.
     assert sql.upper().count("NULLIF") >= 2
+
+
+# ---------------------------------------------------------------------------
+# 11. SECOND-WAVE REGRESSION TESTS — real SQL parse + DuckDB execution
+#     Every test here uses sqlglot.parse_one to verify the SQL is valid,
+#     and where values matter, executes against an in-memory DuckDB.
+# ---------------------------------------------------------------------------
+
+import sqlglot  # noqa: E402 (used in regression tests only)
+
+
+def _duckdb_conn():
+    """Return a fresh in-memory DuckDB connection (skips if duckdb not installed)."""
+    try:
+        import duckdb
+        return duckdb.connect(":memory:")
+    except ImportError:
+        import pytest
+        pytest.skip("duckdb not installed")
+
+
+# ── Fix 1: tc.name SQLi in alias position ────────────────────────────────────
+
+def test_tc_name_sqli_raises_metric_error() -> None:
+    """tc.name containing non-identifier chars must raise MetricError(bad_tc_name)."""
+    m = _simple_metric()
+    mq = MetricQuery(
+        metric_id="revenue",
+        dimensions=("region",),
+        time_grain="month",
+        time_comparisons=(
+            TimeComparison(
+                measure="revenue",
+                kind="prior_period",
+                periods=1,
+                name="x'; DROP TABLE foo --",  # SQLi attempt
+            ),
+        ),
+    )
+    with pytest.raises(MetricError) as ei:
+        compile_metric(m, mq)
+    assert ei.value.code == "bad_tc_name"
+
+
+def test_tc_name_valid_identifier_accepted_and_sql_parses() -> None:
+    """A valid tc.name compiles; the SQL parses without error via sqlglot."""
+    m = _simple_metric()
+    mq = MetricQuery(
+        metric_id="revenue",
+        dimensions=("region",),
+        time_grain="month",
+        time_comparisons=(
+            TimeComparison(
+                measure="revenue",
+                kind="prior_period",
+                periods=1,
+                name="rev_prev",
+            ),
+        ),
+    )
+    sql, _ = compile_metric(m, mq)
+    # Must parse cleanly.
+    parsed = sqlglot.parse_one(sql, dialect="duckdb")
+    assert parsed is not None
+    assert "rev_prev" in sql.lower()
+
+
+def test_tc_name_none_uses_default_out_name_and_sql_parses() -> None:
+    """tc.name=None uses the default out_name(); SQL must still parse."""
+    m = _simple_metric()
+    mq = MetricQuery(
+        metric_id="revenue",
+        dimensions=("region",),
+        time_grain="month",
+        time_comparisons=(
+            TimeComparison(measure="revenue", kind="prior_period", periods=1),
+        ),
+    )
+    sql, _ = compile_metric(m, mq)
+    parsed = sqlglot.parse_one(sql, dialect="duckdb")
+    assert parsed is not None
+    assert "revenue_prior_period" in sql.lower()
+
+
+# ── Fix 2: IN without subquery parentheses ───────────────────────────────────
+
+def test_top_n_time_grain_sql_parses() -> None:
+    """top_n + time_grain: the emitted SQL must parse (IN subquery must have parens)."""
+    m = _simple_metric()
+    mq = MetricQuery(
+        metric_id="revenue",
+        dimensions=("region",),
+        time_grain="month",
+        top_n=TopN(dimension="region", n=3, order="desc"),
+    )
+    sql, _ = compile_metric(m, mq)
+    # This would raise if the SQL is invalid (e.g. "IN SELECT ..." without parens).
+    parsed = sqlglot.parse_one(sql, dialect="duckdb")
+    assert parsed is not None
+    # The IN clause must be a subquery (parenthesised).
+    sql_upper = sql.upper()
+    assert "IN (" in sql_upper or "IN(" in sql_upper
+
+
+def test_top_n_other_time_grain_sql_parses() -> None:
+    """top_n.other + time_grain: the emitted SQL must parse."""
+    m = _simple_metric()
+    mq = MetricQuery(
+        metric_id="revenue",
+        dimensions=("region",),
+        time_grain="month",
+        top_n=TopN(dimension="region", n=2, order="desc", other=True),
+    )
+    sql, _ = compile_metric(m, mq)
+    # Parse the full UNION ALL SQL.
+    parsed = sqlglot.parse_one(sql, dialect="duckdb")
+    assert parsed is not None
+    assert "UNION ALL" in sql.upper()
+
+
+def test_top_n_time_grain_executes_in_duckdb() -> None:
+    """top_n + time_grain emits SQL that actually executes in DuckDB."""
+    con = _duckdb_conn()
+    # Create a tiny orders table (no org_id; use a metric without rls_keys).
+    con.execute("""
+        CREATE TABLE orders_topn (
+            region VARCHAR,
+            amount DOUBLE,
+            created_at DATE
+        )
+    """)
+    con.execute("""
+        INSERT INTO orders_topn VALUES
+            ('A', 100, '2024-01-01'),
+            ('A', 200, '2024-02-01'),
+            ('B', 50,  '2024-01-01'),
+            ('B', 75,  '2024-02-01'),
+            ('C', 10,  '2024-01-01')
+    """)
+    # Use a metric without rls_keys so no extra org_id GROUP BY column is injected.
+    from app.metrics.models import TimeDimension as TD
+    m = MetricDefinition(
+        id="revenue",
+        name="Revenue",
+        measure=Measure(name="revenue", agg="sum", expr="amount"),
+        base_table="orders_topn",
+        dimensions=(Dimension(name="region"),),
+        time_dimension=TD(
+            column="created_at",
+            grains=("day", "week", "month", "quarter", "year"),
+            default_grain="day",
+        ),
+    )
+    mq = MetricQuery(
+        metric_id="revenue",
+        dimensions=("region",),
+        time_grain="month",
+        top_n=TopN(dimension="region", n=2, order="desc"),
+    )
+    sql, _ = compile_metric(m, mq)
+    # Must parse.
+    parsed = sqlglot.parse_one(sql, dialect="duckdb")
+    assert parsed is not None
+    # Must execute without error.
+    rows = con.execute(sql).fetchall()
+    # Top-2 regions by SUM(amount) are A (300) and B (125); C (10) excluded.
+    regions = {r[0] for r in rows}
+    assert "A" in regions
+    assert "B" in regions
+    assert "C" not in regions
+
+
+# ── Fix 3: Other-bucket re-aggregation ───────────────────────────────────────
+
+def _make_multi_agg_metric() -> MetricDefinition:
+    """Metric with sum, min, max, avg measures for re-aggregation testing."""
+    return MetricDefinition(
+        id="sales",
+        name="Sales",
+        measure=Measure(name="total_sales", agg="sum", expr="amount"),
+        base_table="sales",
+        extra_measures=(
+            Measure(name="min_sale", agg="min", expr="amount"),
+            Measure(name="max_sale", agg="max", expr="amount"),
+            Measure(name="avg_sale", agg="avg", expr="amount"),
+        ),
+        dimensions=(Dimension(name="region"),),
+    )
+
+
+def test_other_bucket_min_uses_min_not_sum() -> None:
+    """The Other bucket re-aggregates a min measure with MIN(), not SUM()."""
+    m = _make_multi_agg_metric()
+    mq = MetricQuery(
+        metric_id="sales",
+        dimensions=("region",),
+        top_n=TopN(dimension="region", n=1, order="desc", other=True),
+    )
+    sql, _ = compile_metric(m, mq)
+    # SQL must parse.
+    sqlglot.parse_one(sql, dialect="duckdb")
+    # Extract the Other arm (after UNION ALL).
+    parts = sql.split("UNION ALL", 1)
+    other_arm = parts[1].upper()
+    assert "MIN(MIN_SALE)" in other_arm, f"Expected MIN(MIN_SALE) in Other arm:\n{other_arm[:500]}"
+    assert "SUM(MIN_SALE)" not in other_arm, "Must NOT use SUM for a min measure"
+
+
+def test_other_bucket_max_uses_max_not_sum() -> None:
+    """The Other bucket re-aggregates a max measure with MAX(), not SUM()."""
+    m = _make_multi_agg_metric()
+    mq = MetricQuery(
+        metric_id="sales",
+        dimensions=("region",),
+        top_n=TopN(dimension="region", n=1, order="desc", other=True),
+    )
+    sql, _ = compile_metric(m, mq)
+    sqlglot.parse_one(sql, dialect="duckdb")
+    parts = sql.split("UNION ALL", 1)
+    other_arm = parts[1].upper()
+    assert "MAX(MAX_SALE)" in other_arm, f"Expected MAX(MAX_SALE) in Other arm:\n{other_arm[:500]}"
+    assert "SUM(MAX_SALE)" not in other_arm, "Must NOT use SUM for a max measure"
+
+
+def test_other_bucket_avg_emits_null() -> None:
+    """The Other bucket emits NULL for avg measures (not re-aggregable without weights)."""
+    m = _make_multi_agg_metric()
+    mq = MetricQuery(
+        metric_id="sales",
+        dimensions=("region",),
+        top_n=TopN(dimension="region", n=1, order="desc", other=True),
+    )
+    sql, _ = compile_metric(m, mq)
+    sqlglot.parse_one(sql, dialect="duckdb")
+    parts = sql.split("UNION ALL", 1)
+    other_arm = parts[1].upper()
+    assert "NULL AS AVG_SALE" in other_arm or "NULL AS \"AVG_SALE\"" in other_arm, (
+        f"Expected NULL AS avg_sale in Other arm:\n{other_arm[:500]}"
+    )
+
+
+def test_other_bucket_sum_uses_sum() -> None:
+    """The Other bucket re-aggregates a sum measure with SUM()."""
+    m = _make_multi_agg_metric()
+    mq = MetricQuery(
+        metric_id="sales",
+        dimensions=("region",),
+        top_n=TopN(dimension="region", n=1, order="desc", other=True),
+    )
+    sql, _ = compile_metric(m, mq)
+    sqlglot.parse_one(sql, dialect="duckdb")
+    parts = sql.split("UNION ALL", 1)
+    other_arm = parts[1].upper()
+    assert "SUM(TOTAL_SALES)" in other_arm, (
+        f"Expected SUM(TOTAL_SALES) in Other arm:\n{other_arm[:500]}"
+    )
+
+
+def test_other_bucket_values_correct_in_duckdb() -> None:
+    """Execute the Other-bucket query against real DuckDB data and check values."""
+    con = _duckdb_conn()
+    con.execute("""
+        CREATE TABLE sales (
+            region VARCHAR,
+            amount DOUBLE
+        )
+    """)
+    # Regions A (top-1), B and C (go to Other).
+    con.execute("""
+        INSERT INTO sales VALUES
+            ('A', 1000),
+            ('A', 500),
+            ('B', 100),
+            ('B', 200),
+            ('C', 50),
+            ('C', 30)
+    """)
+    m = MetricDefinition(
+        id="sales",
+        name="Sales",
+        measure=Measure(name="total_sales", agg="sum", expr="amount"),
+        base_table="sales",
+        extra_measures=(
+            Measure(name="min_sale", agg="min", expr="amount"),
+            Measure(name="max_sale", agg="max", expr="amount"),
+        ),
+        dimensions=(Dimension(name="region"),),
+    )
+    mq = MetricQuery(
+        metric_id="sales",
+        dimensions=("region",),
+        top_n=TopN(dimension="region", n=1, order="desc", other=True, other_label="Other"),
+    )
+    sql, _ = compile_metric(m, mq)
+    # SQL must parse.
+    sqlglot.parse_one(sql, dialect="duckdb")
+    rows = con.execute(sql).fetchall()
+    # Columns: region, total_sales, min_sale, max_sale
+    row_by_region = {r[0]: r for r in rows}
+    # Top region A should be there.
+    assert "A" in row_by_region
+    # Other bucket.
+    assert "Other" in row_by_region
+    other = row_by_region["Other"]
+    # total_sales in Other = SUM of B+C = 100+200+50+30 = 380
+    assert other[1] == 380.0, f"Expected Other total_sales=380, got {other[1]}"
+    # min_sale in Other = MIN of B+C amounts = 30
+    assert other[2] == 30.0, f"Expected Other min_sale=30, got {other[2]}"
+    # max_sale in Other = MAX of B+C amounts = 200
+    assert other[3] == 200.0, f"Expected Other max_sale=200, got {other[3]}"
+
+
+# ── Fix 4: derived measure as rank measure with time_grain ───────────────────
+
+def test_derived_rank_measure_with_time_grain_rejected() -> None:
+    """Using a derived measure as top_n rank measure with time_grain raises MetricError."""
+    m = _orders_metric(
+        derived_measures=(
+            DerivedMeasure(name="pvd", formula="delivered / ordered"),
+        )
+    )
+    mq = MetricQuery(
+        metric_id="orders",
+        dimensions=("region",),
+        time_grain="month",
+        top_n=TopN(dimension="region", n=3, measure="pvd", order="desc"),
+    )
+    with pytest.raises(MetricError) as ei:
+        compile_metric(m, mq)
+    assert ei.value.code == "bad_top_n"
+
+
+def test_derived_rank_measure_without_time_grain_ok() -> None:
+    """Using a derived measure as rank measure WITHOUT time_grain compiles fine."""
+    m = _orders_metric(
+        derived_measures=(
+            DerivedMeasure(name="pvd", formula="delivered / ordered"),
+        )
+    )
+    mq = MetricQuery(
+        metric_id="orders",
+        dimensions=("region",),
+        # No time_grain — so derived rank is valid (no membership subquery against __base).
+        top_n=TopN(dimension="region", n=3, measure="pvd", order="desc"),
+    )
+    sql, _ = compile_metric(m, mq)
+    # Must parse.
+    parsed = sqlglot.parse_one(sql, dialect="duckdb")
+    assert parsed is not None
+    assert "pvd" in sql.lower()

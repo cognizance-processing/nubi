@@ -488,3 +488,130 @@ def test_in_memory_store_org_isolation():
     assert store.exists(artifact_id, ORG_B) is False
     with pytest.raises(FileNotFoundError):
         store.download(artifact_id, ORG_B)
+
+
+# ---------------------------------------------------------------------------
+# 14. Oversized artifact raises ValueError (MED resource fix)
+# ---------------------------------------------------------------------------
+
+
+def test_oversized_artifact_raises_value_error():
+    """put_artifact raises ValueError when the serialised bytes exceed the cap.
+
+    REGRESSION: before the fix, there was no size cap — any size object could
+    be uploaded to the object store, exhausting storage.
+    """
+    import unittest.mock  # noqa: PLC0415
+    from app.flows import artifacts as _art_mod  # noqa: PLC0415
+
+    art_store = _mem_store()
+    # Temporarily lower the cap to 10 bytes so we can test without allocating
+    # 500 MB of data.
+    with unittest.mock.patch.object(_art_mod, "_ARTIFACT_MAX_BYTES", 10):
+        # A 11-byte payload must be rejected.
+        with pytest.raises(ValueError, match="exceeds the maximum"):
+            put_artifact(b"x" * 11, kind="bytes", org_id=ORG_A, store=art_store)
+
+        # A 10-byte payload (exactly at the cap) must succeed.
+        handle = put_artifact(b"x" * 10, kind="bytes", org_id=ORG_A, store=art_store)
+        assert is_handle(handle)
+
+    # With cap=0 (disabled), any size must pass.
+    with unittest.mock.patch.object(_art_mod, "_ARTIFACT_MAX_BYTES", 0):
+        handle2 = put_artifact(b"x" * 10_000, kind="bytes", org_id=ORG_A, store=art_store)
+        assert is_handle(handle2)
+
+
+def test_oversized_artifact_json_raises():
+    """put_artifact with kind='json' also enforces the size cap."""
+    import unittest.mock  # noqa: PLC0415
+    from app.flows import artifacts as _art_mod  # noqa: PLC0415
+
+    art_store = _mem_store()
+    big_obj = {"data": "a" * 1000}  # serialises to >> 10 bytes
+    with unittest.mock.patch.object(_art_mod, "_ARTIFACT_MAX_BYTES", 10):
+        with pytest.raises(ValueError, match="exceeds the maximum"):
+            put_artifact(big_obj, kind="json", org_id=ORG_A, store=art_store)
+
+
+# ---------------------------------------------------------------------------
+# 15. Concurrent log capture does not cross-contaminate (LOW concurrency fix)
+# ---------------------------------------------------------------------------
+
+
+def test_concurrent_log_capture_no_cross_contamination():
+    """_run_handler_with_logs must not let concurrent tasks bleed logs.
+
+    REGRESSION: the old implementation added/removed a handler on the ROOT
+    logger, which is process-global.  Two threads running handlers concurrently
+    would see each other's log output.
+
+    This test runs two handlers in parallel threads, each emitting a unique
+    sentinel string, and asserts that each handler only captures its own sentinel.
+    """
+    import logging  # noqa: PLC0415
+    import threading  # noqa: PLC0415
+    from app.flows.executor import TaskContext, _run_handler_with_logs  # noqa: PLC0415
+
+    SENTINEL_A = "LOG_SENTINEL_ALPHA_XYZ"
+    SENTINEL_B = "LOG_SENTINEL_BETA_XYZ"
+
+    def _make_handler(sentinel: str):
+        """Return a handler that logs *sentinel* via a named logger."""
+        def _handler(config, ctx, claims):
+            # Log via a module logger (not root) — mirrors real handler code.
+            task_log = logging.getLogger(f"nubi.flow.task.{threading.get_ident()}")
+            task_log.warning(sentinel)
+            return {"ok": True}
+        return _handler
+
+    ctx = TaskContext(flow_params={}, inputs={}, now=None, org_id="org-test")
+
+    captured_a: list[str] = []
+    captured_b: list[str] = []
+    errors: list[Exception] = []
+
+    barrier = threading.Barrier(2)
+
+    def _run_a():
+        try:
+            barrier.wait()
+            _, logs = _run_handler_with_logs(
+                _make_handler(SENTINEL_A), {}, ctx, {}, []
+            )
+            captured_a.extend(logs)
+        except Exception as e:  # noqa: BLE001
+            errors.append(e)
+
+    def _run_b():
+        try:
+            barrier.wait()
+            _, logs = _run_handler_with_logs(
+                _make_handler(SENTINEL_B), {}, ctx, {}, []
+            )
+            captured_b.extend(logs)
+        except Exception as e:  # noqa: BLE001
+            errors.append(e)
+
+    t_a = threading.Thread(target=_run_a)
+    t_b = threading.Thread(target=_run_b)
+    t_a.start()
+    t_b.start()
+    t_a.join(timeout=10)
+    t_b.join(timeout=10)
+
+    assert not errors, f"Thread errors: {errors}"
+
+    # Each capture list should contain only its own sentinel (no cross-contamination).
+    all_a = "\n".join(captured_a)
+    all_b = "\n".join(captured_b)
+
+    # Sentinel B must NOT appear in A's capture and vice versa.
+    assert SENTINEL_B not in all_a, (
+        f"Cross-contamination: sentinel B found in A's captured logs.\n"
+        f"captured_a={captured_a}\ncaptured_b={captured_b}"
+    )
+    assert SENTINEL_A not in all_b, (
+        f"Cross-contamination: sentinel A found in B's captured logs.\n"
+        f"captured_a={captured_a}\ncaptured_b={captured_b}"
+    )

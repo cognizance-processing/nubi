@@ -1027,18 +1027,27 @@ def _run_handler_with_logs(
     """
     import io  # noqa: PLC0415
     import logging  # noqa: PLC0415
+    import threading  # noqa: PLC0415
 
     captured: list[str] = []
     log_stream = io.StringIO()
     log_handler = logging.StreamHandler(log_stream)
     log_handler.setLevel(logging.DEBUG)
-    root_logger = logging.getLogger()
-    root_logger.addHandler(log_handler)
+
+    # FIX [LOW concurrency]: use a per-invocation logger with propagate=False
+    # so concurrent tasks do NOT cross-contaminate each other's captured logs
+    # (mutating the ROOT logger is process-global and not thread-safe here).
+    _task_logger_name = f"nubi.flow.task.{threading.get_ident()}"
+    task_logger = logging.getLogger(_task_logger_name)
+    task_logger.setLevel(logging.DEBUG)
+    task_logger.propagate = False
+    task_logger.addHandler(log_handler)
 
     try:
         result = handler(config, ctx, claims)
     finally:
-        root_logger.removeHandler(log_handler)
+        task_logger.removeHandler(log_handler)
+        task_logger.propagate = True  # restore default for reuse safety
         log_output = log_stream.getvalue()
         if log_output.strip():
             captured.extend(log_output.splitlines())

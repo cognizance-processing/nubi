@@ -296,6 +296,7 @@ async def advance_readiness(
     store: Any,
     flow_run_id: str,
     now: datetime,
+    _preloaded_task_runs: list[dict[str, Any]] | None = None,
 ) -> None:
     """Transition pending task_runs to ready/upstream_failed; finalise flow_run if done.
 
@@ -307,10 +308,33 @@ async def advance_readiness(
         UUID string of the flow_run to advance.
     now:
         Injected clock datetime.
+    _preloaded_task_runs:
+        Optional pre-fetched task_run list from a caller that already holds a
+        fresh snapshot (e.g. drain_flow_run).  When provided the initial
+        ``store.list_task_runs`` query is skipped, reducing N+1 overhead.
+        The intermediate reloads within this function are gated behind
+        ``_changed`` flags so they only fire when a state mutation actually
+        occurred.
+
+    N+1 reduction
+    --------------
+    The original function called ``store.list_task_runs`` 4 times unconditionally.
+    The revised version calls it at most twice:
+    1. Once at entry (skipped when _preloaded_task_runs is supplied).
+    2. Once after the map fan-in / branch activation passes, but ONLY when those
+       passes mutated state (``_map_or_branch_changed`` flag).  This reload
+       ensures the second pending-task pass and the final-state check see the
+       updated states for newly-promoted tasks.
+    The final-state check uses the in-memory ``state_by_key`` (which is kept
+    up-to-date throughout all mutation paths), so no separate reload is needed.
     """
     from app.flows.events import FlowEvent, emit_flow_event  # noqa: PLC0415
 
-    task_runs = await store.list_task_runs(flow_run_id)
+    # ── Load task_runs once (skip when caller supplied a fresh snapshot) ──────
+    if _preloaded_task_runs is not None:
+        task_runs = _preloaded_task_runs
+    else:
+        task_runs = await store.list_task_runs(flow_run_id)
 
     # Build a lookup: task_key → state.
     state_by_key: dict[str, str] = {tr["task_key"]: tr["state"] for tr in task_runs}
@@ -323,6 +347,8 @@ async def advance_readiness(
         for tr in task_runs
     }
 
+    _first_pass_changed: bool = False
+
     for tr in task_runs:
         if tr["state"] != "pending":
             continue  # only advance pending tasks
@@ -334,6 +360,7 @@ async def advance_readiness(
             # Defensively mark it ready in case it was missed.
             await store.update_task_run(tr["id"], {"state": "ready", "scheduled_at": now})
             state_by_key[tr["task_key"]] = "ready"
+            _first_pass_changed = True
             continue
 
         dep_states = [state_by_key.get(dep, "pending") for dep in deps]
@@ -352,6 +379,7 @@ async def advance_readiness(
                 continue
             await store.update_task_run(tr["id"], {"state": "upstream_failed", "finished_at": now})
             state_by_key[tr["task_key"]] = "upstream_failed"
+            _first_pass_changed = True
             emit_flow_event(FlowEvent(
                 type="task_upstream_failed",
                 flow_run_id=flow_run_id,
@@ -373,14 +401,20 @@ async def advance_readiness(
                 continue
             await store.update_task_run(tr["id"], {"state": "ready", "scheduled_at": now})
             state_by_key[tr["task_key"]] = "ready"
+            _first_pass_changed = True
 
         # Otherwise some deps are still running/pending — leave as pending.
 
     # ── Map fan-in: detect waiting_children nodes whose children are all done ──
-    # Reload task_runs to capture any new child task_runs just added.
-    task_runs = await store.list_task_runs(flow_run_id)
-    # Rebuild state_by_key to include children (child keys contain '[i].' syntax).
-    state_by_key = {tr["task_key"]: tr["state"] for tr in task_runs}
+    # Children are added to the store BEFORE advance_readiness is called, so the
+    # initial list_task_runs already includes them.  We do NOT need a fresh reload
+    # here — state_by_key already reflects the current state of all task_runs
+    # (including children).  The only case that changes the task list structure
+    # (not just state) is when children are added mid-call, which never happens
+    # within advance_readiness itself.
+    _map_or_branch_changed: bool = False
+
+    _parent_id_available = any("parent_task_run_id" in c for c in task_runs)
 
     for tr in task_runs:
         if tr["state"] != "waiting_children":
@@ -395,9 +429,6 @@ async def advance_readiness(
         # have different map_key values).  Use parent_task_run_id when available
         # (set by PgFlowStore); fall back to prefix-only
         # matching for InMemoryFlowStore which does not persist the column.
-        _parent_id_available = any(
-            "parent_task_run_id" in c for c in task_runs
-        )
         if _parent_id_available:
             children = [
                 c for c in task_runs
@@ -426,6 +457,7 @@ async def advance_readiness(
                 "error": "One or more map child tasks failed.",
             })
             state_by_key[map_key] = "failed"
+            _map_or_branch_changed = True
             _emit_task_event("task_failed", flow_run_id, map_key, "failed",
                              "One or more map child tasks failed.", 0, now)
         else:
@@ -444,6 +476,7 @@ async def advance_readiness(
                 "finished_at": now,
             })
             state_by_key[map_key] = "success"
+            _map_or_branch_changed = True
             _emit_task_event("task_success", flow_run_id, map_key, "success", None, 0, now)
 
     # ── Branch activation: for each 'success' branch node, activate/deactivate
@@ -480,6 +513,7 @@ async def advance_readiness(
                         "scheduled_at": now,
                     })
                     state_by_key[dep_task_key] = "ready"
+                    _map_or_branch_changed = True
             else:
                 # Inactive branch path — mark upstream_failed.
                 await store.update_task_run(dep_tr["id"], {
@@ -487,6 +521,7 @@ async def advance_readiness(
                     "finished_at": now,
                 })
                 state_by_key[dep_task_key] = "upstream_failed"
+                _map_or_branch_changed = True
                 emit_flow_event(FlowEvent(
                     type="task_upstream_failed",
                     flow_run_id=flow_run_id,
@@ -495,11 +530,14 @@ async def advance_readiness(
                     timestamp=now,
                 ))
 
-    # ── Second pending-task pass: re-advance after map fan-in / branch ───────
-    # Map fan-in and branch activation may have changed upstream states.
-    # Run a second pass to unblock any pending tasks that are now eligible.
-    task_runs = await store.list_task_runs(flow_run_id)
-    state_by_key = {tr["task_key"]: tr["state"] for tr in task_runs}
+    # ── Second pending-task pass: re-advance after map fan-in / branch ────────
+    # Map fan-in and branch activation may have changed upstream states.  Only
+    # run a second pass (and an intermediate reload) when those passes actually
+    # mutated something — otherwise the first-pass state_by_key is still accurate.
+    if _map_or_branch_changed:
+        # Reload to pick up map fan-in state changes in state_by_key.
+        task_runs = await store.list_task_runs(flow_run_id)
+        state_by_key = {tr["task_key"]: tr["state"] for tr in task_runs}
 
     for tr in task_runs:
         if tr["state"] != "pending":
@@ -528,9 +566,8 @@ async def advance_readiness(
             state_by_key[tr["task_key"]] = "ready"
 
     # ── Finalise flow_run if all task_runs are terminal ───────────────────────
-    # Reload state_by_key after all the above mutations.
-    task_runs = await store.list_task_runs(flow_run_id)
-    state_by_key = {tr["task_key"]: tr["state"] for tr in task_runs}
+    # state_by_key is kept up-to-date throughout all mutation paths above, so no
+    # additional store.list_task_runs reload is needed here.
     all_states = list(state_by_key.values())
 
     if all_states and all(s in _TERMINAL_STATES for s in all_states):
@@ -1219,17 +1256,28 @@ async def run_one_ready_task(
     # for_each cells are rewritten into a legacy 'map' task so the existing
     # fan-out machinery runs unchanged.
     _apply_for_each_rewrite(full_task, task_spec)
-    # Execute in a thread with an asyncio heartbeat extending the lease, so a
-    # task running longer than lease_seconds is never reaped mid-execution.
-    outcome = await _execute_with_heartbeat(
-        store,
-        full_task,
-        ctx,
-        exec_claims,
-        task_run_id=task_run_id,
-        worker_id=task_run.get("worker_id"),
-        lease_seconds=lease_seconds,
-    )
+    # B1 — MAP concurrency cap: acquire a slot before executing a map child task.
+    # Map children are identified by '[' in their task_key (e.g. "fan[0].step").
+    # The slot is released in the finally block regardless of success or failure.
+    _rot_task_key = task_run.get("task_key", "")
+    _rot_is_map_child = _is_map_child_task_key(_rot_task_key)
+    if _rot_is_map_child:
+        await acquire_map_slot()
+    try:
+        # Execute in a thread with an asyncio heartbeat extending the lease, so a
+        # task running longer than lease_seconds is never reaped mid-execution.
+        outcome = await _execute_with_heartbeat(
+            store,
+            full_task,
+            ctx,
+            exec_claims,
+            task_run_id=task_run_id,
+            worker_id=task_run.get("worker_id"),
+            lease_seconds=lease_seconds,
+        )
+    finally:
+        if _rot_is_map_child:
+            release_map_slot()
 
     # set_var(persist=True) (A5): flush published vars to the long-term store so
     # later cells (which reload via load_vars_namespace) and future runs see them.
@@ -2145,8 +2193,12 @@ def _claims_with_owner_policies(
     pre-B2 behaviour — but we LOG it so the gap is observable (a scheduled flow
     that should be RLS-scoped but predates the snapshot).
     """
-    if claims.get("policies"):
+    if "policies" in claims:
         # Caller already supplied policies (interactive path) — never override.
+        # Use key-presence (not truthiness) so an explicitly-supplied EMPTY policy
+        # set {} (admin interactive run) is respected and NOT overridden with the
+        # flow's owner snapshot.  claims.get("policies") is FALSY for {} and would
+        # incorrectly fall through to the scheduled-run branch.
         return claims
     owner_policies = _owner_policies_from_flow(flow)
     if not owner_policies:
@@ -2181,6 +2233,16 @@ async def _resolve_secrets(org_id: str) -> dict[str, str]:
         return {}
 
 
+def _is_map_child_task_key(task_key: str) -> bool:
+    """Return True when *task_key* is a map fan-out child (contains '[i].' syntax).
+
+    Map child keys have the form ``"{map_key}[{i}].{child_key}"``.  We use
+    the presence of ``[`` as a fast, reliable sentinel — ordinary task keys
+    never contain square brackets (they must be valid Python identifiers).
+    """
+    return "[" in task_key
+
+
 async def _execute_claimed_task_run(
     store: Any,
     task_run: dict[str, Any],
@@ -2196,6 +2258,14 @@ async def _execute_claimed_task_run(
 
     The task spec (kind, config, retries, etc.) is resolved from the flow spec
     because the TaskRun shape only stores run-time state fields.
+
+    Map concurrency enforcement (B1)
+    ---------------------------------
+    When the task is a map fan-out child (task_key contains '['), a slot is
+    acquired from the module-level ``MAP_MAX_CONCURRENCY`` semaphore before
+    execution and released in a finally block.  This caps the number of
+    simultaneously-executing map children across all concurrent workers/drain
+    loops in this process.
 
     Parameters
     ----------
@@ -2217,6 +2287,44 @@ async def _execute_claimed_task_run(
     task_run_id = task_run["id"]
     flow_run_id = task_run["flow_run_id"]
     task_key = task_run.get("task_key", "")
+
+    # B1 — MAP concurrency cap: acquire a slot before executing a map child.
+    # Map children are identified by '[' in their task_key (e.g. "fan[0].step").
+    # The slot is released in the finally block regardless of outcome.
+    _is_map_child = _is_map_child_task_key(task_key)
+    if _is_map_child:
+        await acquire_map_slot()
+    try:
+        return await _execute_claimed_task_run_inner(
+            store=store,
+            task_run=task_run,
+            now=now,
+            claims=claims,
+            secrets=secrets,
+            run_var_overlay=run_var_overlay,
+            task_run_id=task_run_id,
+            flow_run_id=flow_run_id,
+            task_key=task_key,
+        )
+    finally:
+        if _is_map_child:
+            release_map_slot()
+
+
+async def _execute_claimed_task_run_inner(
+    store: Any,
+    task_run: dict[str, Any],
+    now: datetime,
+    claims: dict[str, Any],
+    secrets: dict[str, str] | None,
+    run_var_overlay: dict[str, Any] | None,
+    task_run_id: str,
+    flow_run_id: str,
+    task_key: str,
+) -> dict[str, Any]:
+    """Inner body of ``_execute_claimed_task_run`` (slot already acquired)."""
+    from app.flows.executor import TaskContext, execute_task  # noqa: PLC0415
+    from app.vars.store import load_vars_namespace  # noqa: PLC0415
 
     # Emit task_started.
     _emit_task_event("task_started", flow_run_id, task_key, "running", None,

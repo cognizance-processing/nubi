@@ -73,6 +73,7 @@ from pydantic import BaseModel
 from app.ai.grounding import build_catalog, build_prompt, ground
 from app.ai.provider import get_provider
 from app.auth.deps import current_user
+from app.auth.roles import require_writer, require_writer_default
 from app.compute.metering import record_usage
 from app.errors import AppError
 from app.features import enforce_quota
@@ -815,7 +816,7 @@ class SqlResponse(BaseModel):
     registered_id: str | None = None
 
 
-@api_router.post("/ai/sql", response_model=SqlResponse, tags=["ai"])
+@api_router.post("/ai/sql", response_model=SqlResponse, tags=["ai"], dependencies=[Depends(require_writer_default)])
 async def generate_sql_endpoint(
     body: SqlRequest,
     _user: dict[str, Any] = Depends(current_user),
@@ -1032,7 +1033,7 @@ def _build_pin_widget(
     return widget
 
 
-@api_router.post("/ai/pin", response_model=PinResponse, tags=["ai"])
+@api_router.post("/ai/pin", response_model=PinResponse, tags=["ai"], dependencies=[Depends(require_writer)])
 async def pin_answer(
     body: PinRequest,
     request: Request,

@@ -308,12 +308,49 @@ class InMemoryFlowStore:
         run = self._flow_runs.get(str(run_id))
         return deepcopy(run) if run is not None else None
 
-    async def list_flow_runs(self, flow_id: str) -> list[FlowRun]:
-        """Return all flow_runs for *flow_id*, newest first."""
+    async def list_flow_runs(self, flow_id: str, limit: int = 500) -> list[FlowRun]:
+        """Return flow_runs for *flow_id*, newest first, bounded by *limit*.
+
+        Parameters
+        ----------
+        flow_id:
+            The flow whose runs are listed.
+        limit:
+            Maximum number of rows to return (default 500).  Callers should
+            pass a tighter bound (e.g. the route's ``?limit`` query param)
+            so the result set is always bounded DB-side rather than
+            post-hoc in Python.
+        """
         run_ids = self._flow_run_index.get(str(flow_id), [])
         rows = [deepcopy(self._flow_runs[rid]) for rid in run_ids if rid in self._flow_runs]
         rows.sort(key=lambda r: r["created_at"], reverse=True)
-        return rows
+        return rows[:limit]
+
+    async def list_run_outputs_for_runs(
+        self, run_ids: list[str]
+    ) -> dict[str, list[dict[str, Any]]]:
+        """Batch-fetch run outputs for multiple run_ids in a single pass.
+
+        Returns a dict mapping each run_id to its list of output records
+        (ordered by created_at).  Run IDs with no outputs are omitted from
+        the result dict (callers should use ``.get(run_id, [])``).
+
+        This avoids an N+1 query pattern in the run-history endpoint where
+        one ``list_run_outputs`` call per run would be issued.
+        """
+        result: dict[str, list[dict[str, Any]]] = {}
+        for run_id in run_ids:
+            rid = str(run_id)
+            ids = self._run_output_index.get(rid, [])
+            rows = [
+                deepcopy(self._run_outputs[oid])
+                for oid in ids
+                if oid in self._run_outputs
+            ]
+            if rows:
+                rows.sort(key=lambda r: r["created_at"])
+                result[rid] = rows
+        return result
 
     async def update_flow_run(self, run_id: str, fields: dict[str, Any]) -> FlowRun | None:
         """Update mutable fields on a flow_run; return the updated copy.
@@ -1094,15 +1131,58 @@ class PgFlowStore:
         )
         return _row_to_flow_run(row) if row is not None else None
 
-    async def list_flow_runs(self, flow_id: str) -> list[FlowRun]:
-        """Return all flow_runs for *flow_id*, newest first."""
+    async def list_flow_runs(self, flow_id: str, limit: int = 500) -> list[FlowRun]:
+        """Return flow_runs for *flow_id*, newest first, bounded by *limit*.
+
+        Parameters
+        ----------
+        flow_id:
+            The flow whose runs are listed.
+        limit:
+            Maximum rows returned.  Applied in SQL so the DB never sends
+            an unbounded result set.
+        """
         from app.db import fetch as db_fetch  # noqa: PLC0415
 
         rows = await db_fetch(
-            "SELECT * FROM flow_runs WHERE flow_id = $1::uuid ORDER BY created_at DESC",
+            "SELECT * FROM flow_runs WHERE flow_id = $1::uuid "
+            "ORDER BY created_at DESC LIMIT $2",
             flow_id,
+            limit,
         )
         return [_row_to_flow_run(r) for r in rows]
+
+    async def list_run_outputs_for_runs(
+        self, run_ids: list[str]
+    ) -> dict[str, list[dict[str, Any]]]:
+        """Batch-fetch run outputs for multiple run_ids in a single IN query.
+
+        Returns a dict mapping each run_id to its list of output records
+        (ordered by created_at).  Run IDs with no outputs are omitted from
+        the result dict (callers should use ``.get(run_id, [])``).
+
+        This eliminates the N+1 pattern in the run-history route.
+        """
+        from app.db import fetch as db_fetch  # noqa: PLC0415
+
+        if not run_ids:
+            return {}
+
+        # asyncpg supports passing a list as an ANY array parameter.
+        rows = await db_fetch(
+            """
+            SELECT * FROM flow_run_outputs
+            WHERE flow_run_id = ANY($1::uuid[])
+            ORDER BY flow_run_id, created_at ASC
+            """,
+            [str(rid) for rid in run_ids],
+        )
+        result: dict[str, list[dict[str, Any]]] = {}
+        for row in rows:
+            rec = _row_to_run_output(row)
+            rid = str(rec["flow_run_id"])
+            result.setdefault(rid, []).append(rec)
+        return result
 
     async def update_flow_run(self, run_id: str, fields: dict[str, Any]) -> FlowRun | None:
         """Update mutable fields on a flow_run; return the updated dict or ``None``."""

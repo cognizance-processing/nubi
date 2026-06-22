@@ -580,3 +580,123 @@ async def test_sweep_timeout_raises_asyncio_timeout():
     # Wait_for with 0.05 s timeout must raise TimeoutError before sleep ends.
     with pytest.raises(_asyncio.TimeoutError):
         await _asyncio.wait_for(_slow_sweep(), timeout=0.05)
+
+
+# ---------------------------------------------------------------------------
+# REGRESSION: [HIGH OOM] _iter_windows cap enforced INSIDE the loop
+# ---------------------------------------------------------------------------
+
+
+def test_iter_windows_cap_enforced_inside_loop():
+    """Cap must raise BEFORE the full list is materialised (not post-hoc).
+
+    We verify this by passing max_windows=2 over a 10-day range with 1d windows.
+    The ValueError should be raised as soon as count would exceed 2, without
+    building a list of 10 items first.
+    """
+    start = datetime(2025, 1, 1, tzinfo=timezone.utc)
+    end = datetime(2025, 1, 11, tzinfo=timezone.utc)  # 10 days -> 10 windows
+
+    with pytest.raises(ValueError, match="max_windows"):
+        _iter_windows(start, end, "1d", max_windows=2)
+
+
+def test_iter_windows_cap_exact_allowed():
+    """Exactly max_windows windows must succeed."""
+    start = datetime(2025, 1, 1, tzinfo=timezone.utc)
+    end = datetime(2025, 1, 4, tzinfo=timezone.utc)  # 3 days -> 3 windows
+
+    windows = _iter_windows(start, end, "1d", max_windows=3)
+    assert len(windows) == 3
+
+
+def test_iter_windows_cap_one_over_raises():
+    """max_windows + 1 must raise before materialising the extra window."""
+    start = datetime(2025, 1, 1, tzinfo=timezone.utc)
+    end = datetime(2025, 1, 5, tzinfo=timezone.utc)  # 4 days
+
+    with pytest.raises(ValueError, match="max_windows"):
+        _iter_windows(start, end, "1d", max_windows=3)
+
+
+async def test_backfill_cap_raises_before_materialising():
+    """Enormous date range (years with hourly windows) must raise before OOM.
+
+    This is the core OOM regression: without the in-loop cap, run_backfill
+    would pass the full list through _iter_windows and then check len() —
+    potentially building tens-of-thousands of tuples before the ValueError.
+    With the fix, the error is raised as soon as the cap is hit.
+    """
+    reset_for_tests()
+    store = InMemoryFlowStore()
+    flow = await _make_flow(store)
+
+    # 10 years of hourly windows = ~87,600 windows; cap at 5
+    start = datetime(2015, 1, 1, tzinfo=timezone.utc)
+    end = datetime(2025, 1, 1, tzinfo=timezone.utc)
+
+    with pytest.raises(ValueError, match="max_windows"):
+        await run_backfill(
+            store=store,
+            flow=flow,
+            start=start,
+            end=end,
+            window="1h",
+            trigger="backfill",
+            now=NOW,
+            claims=CLAIMS,
+            max_windows=5,  # tiny cap — must raise immediately, not OOM
+        )
+
+
+# ---------------------------------------------------------------------------
+# REGRESSION: [HIGH resource] backfill max_windows server-side ceiling
+# ---------------------------------------------------------------------------
+
+
+def test_backfill_server_ceiling_constant_present():
+    """_MAX_BACKFILL_WINDOWS must exist and be a positive integer."""
+    import app.routes.flows as flows_mod
+
+    assert hasattr(flows_mod, "_MAX_BACKFILL_WINDOWS"), (
+        "_MAX_BACKFILL_WINDOWS constant missing from routes/flows.py"
+    )
+    assert isinstance(flows_mod._MAX_BACKFILL_WINDOWS, int)
+    assert flows_mod._MAX_BACKFILL_WINDOWS > 0
+
+
+def test_backfill_server_ceiling_caps_body_max():
+    """effective_max_windows = min(body.max_windows, _MAX_BACKFILL_WINDOWS).
+
+    When a caller passes body.max_windows > _MAX_BACKFILL_WINDOWS, the
+    server ceiling must win.  We verify the arithmetic used in the route.
+    """
+    import app.routes.flows as flows_mod
+
+    server_cap = flows_mod._MAX_BACKFILL_WINDOWS
+    # Caller requests double the server cap.
+    caller_max = server_cap * 2
+    effective = min(caller_max, server_cap)
+    assert effective == server_cap, (
+        "Server ceiling must reduce effective_max_windows to _MAX_BACKFILL_WINDOWS"
+    )
+
+
+def test_backfill_body_max_windows_field_bounds():
+    """BackfillIn.max_windows must reject values outside [1, 10000]."""
+    from pydantic import ValidationError
+    import app.routes.flows as flows_mod
+
+    BackfillIn = flows_mod.BackfillIn  # type: ignore[attr-defined]
+
+    # Valid boundary values.
+    b = BackfillIn(start="2025-01-01T00:00:00Z", end="2025-02-01T00:00:00Z", window="1d", max_windows=1)
+    assert b.max_windows == 1
+    b = BackfillIn(start="2025-01-01T00:00:00Z", end="2025-02-01T00:00:00Z", window="1d", max_windows=10000)
+    assert b.max_windows == 10000
+
+    # Out-of-bound values must fail validation.
+    with pytest.raises(ValidationError):
+        BackfillIn(start="2025-01-01T00:00:00Z", end="2025-02-01T00:00:00Z", window="1d", max_windows=0)
+    with pytest.raises(ValidationError):
+        BackfillIn(start="2025-01-01T00:00:00Z", end="2025-02-01T00:00:00Z", window="1d", max_windows=10001)

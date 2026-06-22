@@ -52,13 +52,14 @@ from datetime import datetime, timezone
 from typing import Any
 
 # ---------------------------------------------------------------------------
-# Sweep safety caps (env-configurable)
+# Sweep / backfill safety caps (env-configurable)
 # ---------------------------------------------------------------------------
 _SWEEP_TIMEOUT_S: float = float(os.environ.get("SWEEP_TIMEOUT_S", "300"))
 _MAX_SWEEP_CELLS: int = int(os.environ.get("MAX_SWEEP_CELLS", "50"))
+_MAX_BACKFILL_WINDOWS: int = int(os.environ.get("MAX_BACKFILL_WINDOWS", "500"))
 
-from fastapi import APIRouter, Depends, Header, Request, Response
-from pydantic import BaseModel
+from fastapi import APIRouter, Depends, Header, Query, Request, Response
+from pydantic import BaseModel, Field
 
 from app.auth.deps import current_user, verified_identity
 from app.auth.roles import require_writer_default
@@ -1932,7 +1933,7 @@ class BackfillIn(BaseModel):
     start: str  # ISO-8601 datetime string
     end: str  # ISO-8601 datetime string
     window: str  # e.g. '1d', 'daily', 'PT1H'
-    max_windows: int = 500
+    max_windows: int = Field(default=500, ge=1, le=10000)
     params: dict[str, Any] = {}
 
 
@@ -2102,6 +2103,9 @@ async def backfill_flow(
 
     now = datetime.now(timezone.utc)
 
+    # Apply server-side ceiling so callers cannot bypass the cap.
+    effective_max_windows = min(body.max_windows, _MAX_BACKFILL_WINDOWS)
+
     try:
         result = await run_backfill(
             store=store,
@@ -2112,7 +2116,7 @@ async def backfill_flow(
             trigger="backfill",
             now=now,
             claims=claims,
-            max_windows=body.max_windows,
+            max_windows=effective_max_windows,
             extra_params=body.params or {},
         )
     except ValueError as exc:
@@ -2220,7 +2224,7 @@ async def list_triggers(
     ]
 
 
-@router.post("/triggers/fire", status_code=200)
+@router.post("/triggers/fire", status_code=200, dependencies=[Depends(require_writer_default)])
 async def fire_trigger_event(
     body: FireEventIn,
     user: dict[str, Any] = Depends(current_user),
@@ -2245,7 +2249,7 @@ async def fire_trigger_event(
         "sub": str(user.get("id", "")),
         "org_id": org_id,
         "policies": dict(identity.policies),
-        "scope": ["read:*", "write:*"],
+        "scope": list(identity.scope),
     }
 
     now = datetime.now(timezone.utc)
@@ -2274,13 +2278,13 @@ async def fire_trigger_event(
 @router.get("/{flow_id}/runs/history", status_code=200)
 async def get_flow_run_history(
     flow_id: str,
-    limit: int = 50,
+    limit: int = Query(default=50, ge=1, le=500),
     user: dict[str, Any] = Depends(current_user),
     repo: Repo = Depends(get_repo),
 ) -> dict[str, Any]:
     """Return enriched run history for a flow including lineage + SLA flags.
 
-    Returns up to *limit* runs (newest first) with:
+    Returns up to *limit* runs (newest first, max 500) with:
     - Full run metadata (state, trigger, duration, params_snapshot).
     - Per-run output lineage (``outputs`` — which keys were written).
     - SLA breach flag (``sla_exceeded``) when the flow spec carries a
@@ -2294,8 +2298,8 @@ async def get_flow_run_history(
     store = get_flow_store()
     flow = await _require_flow_in_org(flow_id, org_id, store)
 
-    runs = await store.list_flow_runs(flow_id)
-    runs = runs[:limit]
+    # Pass limit into the store so the DB query is bounded, not post-hoc sliced.
+    runs = await store.list_flow_runs(flow_id, limit=limit)
 
     # Extract SLA hint from flow spec.runtime_config (optional).
     spec = flow.get("spec") or {}
@@ -2304,25 +2308,29 @@ async def get_flow_run_history(
 
     now = datetime.now(timezone.utc)
 
+    # Batch-fetch all run outputs in ONE query (avoids N+1).
+    run_ids = [r["id"] for r in runs]
+    try:
+        outputs_by_run = await store.list_run_outputs_for_runs(run_ids)
+    except Exception:  # noqa: BLE001
+        outputs_by_run = {}
+
     enriched: list[dict[str, Any]] = []
     for run in runs:
         serialized = _serialize_flow_run(run)
 
-        # Attach lineage outputs.
-        try:
-            outputs = await store.list_run_outputs(run["id"])
-            serialized["outputs"] = [
-                {
-                    "output_key": o["output_key"],
-                    "output_type": o["output_type"],
-                    "output_uri": o.get("output_uri"),
-                    "task_key": o["task_key"],
-                    "created_at": _dt_iso(o.get("created_at")),
-                }
-                for o in outputs
-            ]
-        except Exception:  # noqa: BLE001
-            serialized["outputs"] = []
+        # Attach lineage outputs (already fetched in single batch query).
+        run_outputs = outputs_by_run.get(run["id"], [])
+        serialized["outputs"] = [
+            {
+                "output_key": o["output_key"],
+                "output_type": o["output_type"],
+                "output_uri": o.get("output_uri"),
+                "task_key": o["task_key"],
+                "created_at": _dt_iso(o.get("created_at")),
+            }
+            for o in run_outputs
+        ]
 
         # Attach lineage: params_snapshot + code_version.
         serialized["params_snapshot"] = run.get("params_snapshot")
