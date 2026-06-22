@@ -86,6 +86,50 @@ from app.errors import AppError
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
+# Per-(org_id, provider_id) embed concurrency semaphore registry
+# ---------------------------------------------------------------------------
+# Embed tokens are never billed, but on a cache miss a flow provider still
+# drives full live execution (materialize + drain).  Without a concurrency
+# guard, a client can cache-bust with unique params and fan out arbitrarily
+# many concurrent live runs, amplifying compute unboundedly.
+#
+# Fix: for is_embed + kind=='flow' we acquire a small per-(org, provider)
+# asyncio.Semaphore before executing.  The semaphore ceiling is controlled by
+# NUBI_EMBED_FLOW_CONCURRENCY (default 2).  Callers that cannot acquire within
+# NUBI_EMBED_FLOW_TIMEOUT_S seconds receive a 429 "provider_busy" error.
+#
+# Embed stays unmetered; this guard only limits SERVER-SIDE compute parallelism.
+_DEFAULT_EMBED_FLOW_CONCURRENCY = 2
+_EMBED_FLOW_CONCURRENCY: int = int(
+    os.environ.get("NUBI_EMBED_FLOW_CONCURRENCY", _DEFAULT_EMBED_FLOW_CONCURRENCY)
+)
+_DEFAULT_EMBED_FLOW_TIMEOUT_S = 10.0
+_EMBED_FLOW_TIMEOUT_S: float = float(
+    os.environ.get("NUBI_EMBED_FLOW_TIMEOUT_S", _DEFAULT_EMBED_FLOW_TIMEOUT_S)
+)
+
+# Registry: (org_id, provider_id) -> asyncio.Semaphore
+# WeakValueDictionary is intentionally NOT used here: asyncio.Semaphore objects
+# that still have waiters must not be GC'd.  The registry is bounded in practice
+# (one entry per active embed board×provider combination) and entries are tiny.
+_embed_semaphores: dict[tuple[str, str], asyncio.Semaphore] = {}
+_embed_semaphores_lock = threading.Lock()
+
+
+def _get_embed_semaphore(org_id: str, provider_id: str) -> asyncio.Semaphore:
+    """Return the asyncio.Semaphore for *(org_id, provider_id)*, creating it once."""
+    key = (org_id, provider_id)
+    sem = _embed_semaphores.get(key)
+    if sem is not None:
+        return sem
+    with _embed_semaphores_lock:
+        sem = _embed_semaphores.get(key)
+        if sem is None:
+            sem = asyncio.Semaphore(_EMBED_FLOW_CONCURRENCY)
+            _embed_semaphores[key] = sem
+        return sem
+
+# ---------------------------------------------------------------------------
 # Per-connector threading lock registry
 # ---------------------------------------------------------------------------
 # DuckDB connections (including the demo singleton) are NOT safe for concurrent
@@ -575,118 +619,144 @@ async def _resolve_inline_provider(
     policies: dict[str, Any] = dict((claims or {}).get("policies") or {})
     tables: dict[str, pa.Table] = {}
 
-    for r in provider.results:
-        if provider.base_cte:
-            # Run the inline CTE + a trivial SELECT of the result name.
-            # In practice an inline provider with a base_cte exposes named CTEs
-            # whose names map to result names, e.g.:
-            #   WITH revenue_by_day AS (SELECT ... FROM orders ...)
-            # The result name is the CTE alias; we SELECT * FROM it.
-            # FIX [MED DB-level LIMIT]: wrap the inline query in an outer SELECT
-            # so the DB never returns more than _ROW_CAP rows into memory.
-            # The post-fetch slice below is kept as a backstop but the heavy
-            # lifting now happens inside the DB engine before any data is
-            # transferred to the Python process.
-            # FIX [LOW injection]: validate result-name before interpolation
-            # into SQL so an attacker-influenced name cannot inject SQL.
-            _validate_result_name(r.name)
-            inner_sql = f"{provider.base_cte.rstrip(';')} SELECT * FROM {r.name}"
-            if _ROW_CAP > 0:
-                sql = f"SELECT * FROM ({inner_sql}) AS _nubi_inline_capped LIMIT {_ROW_CAP}"
-            else:
-                sql = inner_sql
-            _connector: Any = None
-            _connector_owned: bool = False
-            try:
-                from app.connectors import plan as planner_plan  # noqa: PLC0415
+    # FIX [LOW N+1 — regression from fix-19]: resolve the org connector ONCE per
+    # provider call and reuse it for every result iteration.  The previous code
+    # called _resolve_org_connector (which calls repo.list("datastores", org_id))
+    # inside the per-result loop, causing O(results) DB roundtrips per provider.
+    # Hoisting the lookup here reduces it to at most 1 roundtrip per provider
+    # regardless of how many named results the provider declares.
+    _shared_connector: Any = None
+    _shared_connector_owned: bool = False
+    if provider.base_cte:
+        try:
+            _shared_connector, _shared_connector_owned = await _resolve_org_connector(
+                org_id, repo
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "inline provider %r: failed to resolve org connector (pre-loop): %s; "
+                "per-result fallback will be attempted.",
+                provider.id,
+                exc,
+            )
 
-                physical_plan = planner_plan(sql=sql, claims={"policies": policies}, params=[])
-                # FIX [MED connector]: resolve the org's actual connector rather
-                # than always falling back to the demo singleton.  _resolve_org_connector
-                # returns the first real (non-system, non-demo) datastore connector
-                # for the org, or the demo connector when none is configured.
-                # This fixes a bug where a real-connector inline-provider binding
-                # would silently execute against demo data and bypass connector-layer
-                # RLS.  The planner RLS-predicate injection below is kept as-is
-                # (defence in depth).
-                _connector, _connector_owned = await _resolve_org_connector(org_id, repo)
-                # FIX [LOW async]: connector.execute is a synchronous (blocking)
-                # DuckDB call.  Wrap it in asyncio.to_thread so it does not
-                # block the event loop on a cache miss.
-                # FIX [HIGH concurrency]: DuckDB connections are NOT thread-safe.
-                # Two concurrent to_thread calls on the same shared demo-singleton
-                # connection would race.  _execute_with_lock acquires a per-connector
-                # threading.Lock before calling execute, serialising concurrent
-                # threads while keeping the event-loop offload benefit of to_thread.
-                arrow_table = await asyncio.to_thread(
-                    _execute_with_lock, _connector, physical_plan
-                )
-                # FIX [MED resource]: cap rows to _ROW_CAP to prevent unbounded
-                # Arrow IPC payloads from inline providers.
-                if _ROW_CAP > 0 and arrow_table.num_rows > _ROW_CAP:
+    try:
+        for r in provider.results:
+            if provider.base_cte:
+                # Run the inline CTE + a trivial SELECT of the result name.
+                # In practice an inline provider with a base_cte exposes named CTEs
+                # whose names map to result names, e.g.:
+                #   WITH revenue_by_day AS (SELECT ... FROM orders ...)
+                # The result name is the CTE alias; we SELECT * FROM it.
+                # FIX [MED DB-level LIMIT]: wrap the inline query in an outer SELECT
+                # so the DB never returns more than _ROW_CAP rows into memory.
+                # The post-fetch slice below is kept as a backstop but the heavy
+                # lifting now happens inside the DB engine before any data is
+                # transferred to the Python process.
+                # FIX [LOW injection]: validate result-name before interpolation
+                # into SQL so an attacker-influenced name cannot inject SQL.
+                _validate_result_name(r.name)
+                inner_sql = f"{provider.base_cte.rstrip(';')} SELECT * FROM {r.name}"
+                if _ROW_CAP > 0:
+                    sql = f"SELECT * FROM ({inner_sql}) AS _nubi_inline_capped LIMIT {_ROW_CAP}"
+                else:
+                    sql = inner_sql
+                try:
+                    from app.connectors import plan as planner_plan  # noqa: PLC0415
+
+                    physical_plan = planner_plan(
+                        sql=sql, claims={"policies": policies}, params=[]
+                    )
+                    # Use the connector resolved once above (hoisted out of the loop).
+                    # FIX [MED connector]: resolve the org's actual connector rather
+                    # than always falling back to the demo singleton.
+                    # If the pre-loop resolve failed (None), fall back to resolving
+                    # per-result as a last resort so individual result errors stay isolated.
+                    if _shared_connector is not None:
+                        _connector = _shared_connector
+                    else:
+                        _connector, _ = await _resolve_org_connector(org_id, repo)
+                    # FIX [LOW async]: connector.execute is a synchronous (blocking)
+                    # DuckDB call.  Wrap it in asyncio.to_thread so it does not
+                    # block the event loop on a cache miss.
+                    # FIX [HIGH concurrency]: DuckDB connections are NOT thread-safe.
+                    # Two concurrent to_thread calls on the same shared demo-singleton
+                    # connection would race.  _execute_with_lock acquires a per-connector
+                    # threading.Lock before calling execute, serialising concurrent
+                    # threads while keeping the event-loop offload benefit of to_thread.
+                    arrow_table = await asyncio.to_thread(
+                        _execute_with_lock, _connector, physical_plan
+                    )
+                    # FIX [MED resource]: cap rows to _ROW_CAP to prevent unbounded
+                    # Arrow IPC payloads from inline providers.
+                    if _ROW_CAP > 0 and arrow_table.num_rows > _ROW_CAP:
+                        logger.warning(
+                            "inline provider %r result %r: truncating %d rows to %d "
+                            "(set NUBI_COLLECT_ROW_CAP to raise limit)",
+                            provider.id,
+                            r.name,
+                            arrow_table.num_rows,
+                            _ROW_CAP,
+                        )
+                        arrow_table = arrow_table.slice(0, _ROW_CAP)
+                    tables[r.name] = arrow_table
+                except Exception as exc:  # noqa: BLE001
                     logger.warning(
-                        "inline provider %r result %r: truncating %d rows to %d "
-                        "(set NUBI_COLLECT_ROW_CAP to raise limit)",
+                        "inline provider %r result %r: query failed: %s",
                         provider.id,
                         r.name,
-                        arrow_table.num_rows,
-                        _ROW_CAP,
+                        exc,
                     )
-                    arrow_table = arrow_table.slice(0, _ROW_CAP)
-                tables[r.name] = arrow_table
-            except Exception as exc:  # noqa: BLE001
-                logger.warning(
-                    "inline provider %r result %r: query failed: %s",
-                    provider.id,
-                    r.name,
-                    exc,
-                )
-                tables[r.name] = pa.table({})
-            finally:
-                # Close freshly-created (owned) connectors to release their
-                # underlying connections.  The shared demo singleton must NOT
-                # be closed (owned=False) — it is a module-level singleton.
-                if _connector_owned and _connector is not None:
-                    try:
-                        _connector.close()
-                    except Exception:  # noqa: BLE001
-                        pass
-        else:
-            # Treat the result name as a registered query id.
+                    tables[r.name] = pa.table({})
+            else:
+                # Treat the result name as a registered query id.
+                try:
+                    columns, rows = await run_query_rows(r.name, org_id, repo, policies)
+                    # FIX [LOW row cap]: cap rows BEFORE building the Arrow table so
+                    # an unbounded run_query_rows result cannot materialise a huge
+                    # pa.array in memory.  Mirror the same DB-level LIMIT + post-fetch
+                    # slice pattern used by the base_cte branch above.
+                    if _ROW_CAP > 0 and len(rows) > _ROW_CAP:
+                        logger.warning(
+                            "inline provider %r result %r (non-base_cte): truncating "
+                            "%d rows to %d (set NUBI_COLLECT_ROW_CAP to raise limit)",
+                            provider.id,
+                            r.name,
+                            len(rows),
+                            _ROW_CAP,
+                        )
+                        rows = rows[:_ROW_CAP]
+                    arrays = [
+                        pa.array([row[i] for row in rows]) for i in range(len(columns))
+                    ]
+                    tables[r.name] = pa.table(dict(zip(columns, arrays)))
+                except AppError as exc:
+                    logger.warning(
+                        "inline provider %r result %r: query error %s",
+                        provider.id,
+                        r.name,
+                        exc.code,
+                    )
+                    tables[r.name] = pa.table({})
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning(
+                        "inline provider %r result %r: unexpected error: %s",
+                        provider.id,
+                        r.name,
+                        exc,
+                    )
+                    tables[r.name] = pa.table({})
+
+    finally:
+        # Close freshly-created (owned) connectors to release their underlying
+        # connections.  The shared demo singleton must NOT be closed (owned=False)
+        # — it is a module-level singleton.  This finally block replaces the old
+        # per-iteration close that was inside the loop.
+        if _shared_connector_owned and _shared_connector is not None:
             try:
-                columns, rows = await run_query_rows(r.name, org_id, repo, policies)
-                # FIX [LOW row cap]: cap rows BEFORE building the Arrow table so
-                # an unbounded run_query_rows result cannot materialise a huge
-                # pa.array in memory.  Mirror the same DB-level LIMIT + post-fetch
-                # slice pattern used by the base_cte branch above.
-                if _ROW_CAP > 0 and len(rows) > _ROW_CAP:
-                    logger.warning(
-                        "inline provider %r result %r (non-base_cte): truncating "
-                        "%d rows to %d (set NUBI_COLLECT_ROW_CAP to raise limit)",
-                        provider.id,
-                        r.name,
-                        len(rows),
-                        _ROW_CAP,
-                    )
-                    rows = rows[:_ROW_CAP]
-                arrays = [pa.array([row[i] for row in rows]) for i in range(len(columns))]
-                tables[r.name] = pa.table(dict(zip(columns, arrays)))
-            except AppError as exc:
-                logger.warning(
-                    "inline provider %r result %r: query error %s",
-                    provider.id,
-                    r.name,
-                    exc.code,
-                )
-                tables[r.name] = pa.table({})
-            except Exception as exc:  # noqa: BLE001
-                logger.warning(
-                    "inline provider %r result %r: unexpected error: %s",
-                    provider.id,
-                    r.name,
-                    exc,
-                )
-                tables[r.name] = pa.table({})
+                _shared_connector.close()
+            except Exception:  # noqa: BLE001
+                pass
 
     return tables
 
@@ -701,12 +771,23 @@ async def _resolve_materialized_flow_provider(
     merged_params: dict[str, Any],
     org_id: str,
     claims: dict[str, Any],
+    *,
+    org_flows_by_key: dict[str, Any] | None = None,
 ) -> dict[str, pa.Table] | None:
     """Attempt to serve a flow provider from its latest materialized run result.
 
     Looks up the flow backing the provider, finds the most-recent SUCCESSFUL
     flow_run, reads the task_run results for that run, and extracts the named
     result tables declared by the provider.
+
+    Parameters
+    ----------
+    org_flows_by_key:
+        Optional pre-built mapping of ``{id: flow, name: flow, ...}`` for all
+        flows in *org_id*, produced once per board-load by ``resolve_provider_data``
+        to avoid the O(providers × flows) list_flows scan.  When *None* the
+        function falls back to calling ``list_flows`` itself (backwards-compatible
+        for direct callers / tests).
 
     Returns
     -------
@@ -728,16 +809,22 @@ async def _resolve_materialized_flow_provider(
     # ── 1. Locate the flow for this provider (same logic as ephemeral path). ──
     flow = await store.get_flow(provider.id)
     if flow is None or str(flow.get("org_id", "")) != org_id:
-        # Try name-based lookup via list_flows.
-        all_flows = await store.list_flows(org_id=org_id)
-        flow = next(
-            (
-                f
-                for f in all_flows
-                if f.get("name") == provider.id or str(f.get("id")) == provider.id
-            ),
-            None,
-        )
+        # Try name-based lookup using the pre-built per-board dict when available
+        # (avoids an extra list_flows call per provider → O(1) per provider).
+        if org_flows_by_key is not None:
+            flow = org_flows_by_key.get(provider.id)
+        else:
+            # Fallback: direct list_flows call (e.g. when called from tests that
+            # mock _resolve_materialized_flow_provider directly).
+            all_flows = await store.list_flows(org_id=org_id)
+            flow = next(
+                (
+                    f
+                    for f in all_flows
+                    if f.get("name") == provider.id or str(f.get("id")) == provider.id
+                ),
+                None,
+            )
 
     if flow is None or str(flow.get("org_id", "")) != org_id:
         # Flow not found in this org — no materialized result possible.
@@ -971,6 +1058,25 @@ async def resolve_provider_data(
                 exc,
             )
 
+    # ── FIX [MED N+1]: Pre-fetch org flows ONCE for all flow-provider paths ──────
+    # Both the materialized and ephemeral paths need to locate a flow by provider
+    # id.  Building the lookup dict here (once, before the mode branch) means
+    # neither path ever calls list_flows again — O(1) lookup per provider instead
+    # of O(providers) scans.
+    org_flows_by_key: dict[str, Any] = {}
+    if provider.kind == "flow":
+        from app.flows.store import get_flow_store as _get_flow_store  # noqa: PLC0415
+
+        _store = _get_flow_store()
+        _all_org_flows = await _store.list_flows(org_id=org_id)
+        for _f in _all_org_flows:
+            _fid = str(_f.get("id", ""))
+            _fname = _f.get("name", "")
+            if _fid:
+                org_flows_by_key[_fid] = _f
+            if _fname:
+                org_flows_by_key[_fname] = _f
+
     # ── Materialized path (flow providers only) ───────────────────────────────
     # When mode='materialized' and the provider is flow-backed, attempt to serve
     # from the latest SUCCESSFUL flow run's task_run results instead of re-running
@@ -984,7 +1090,8 @@ async def resolve_provider_data(
     # cold provider — viewers always get something, even if it costs a live run.
     if mode == "materialized" and provider.kind == "flow":
         tables = await _resolve_materialized_flow_provider(
-            provider, merged_params, org_id, claims
+            provider, merged_params, org_id, claims,
+            org_flows_by_key=org_flows_by_key,
         )
         if tables is not None:
             # Materialized result found — cache + return; no quota charge because
@@ -1025,28 +1132,37 @@ async def resolve_provider_data(
         await enforce_quota(org_id, "compute_units", amount=1.0)
 
     if provider.kind == "flow":
-        # FIX [MED N+1]: pre-fetch the org's flows once and pass the lookup
-        # dict into _resolve_flow_provider so it does NOT call list_flows per
-        # provider.  A single board load with N flow providers now issues at
-        # most one list_flows rather than up to N.
-        from app.flows.store import get_flow_store as _get_flow_store  # noqa: PLC0415
-
-        _store = _get_flow_store()
-        _all_org_flows = await _store.list_flows(org_id=org_id)
-        # Build a dict keyed by both id and name so _resolve_flow_provider can
-        # do O(1) lookups instead of a linear scan.
-        org_flows_by_key: dict[str, Any] = {}
-        for _f in _all_org_flows:
-            _fid = str(_f.get("id", ""))
-            _fname = _f.get("name", "")
-            if _fid:
-                org_flows_by_key[_fid] = _f
-            if _fname:
-                org_flows_by_key[_fname] = _f
-
-        tables = await _resolve_flow_provider(
-            provider, merged_params, org_id, claims, org_flows_by_key=org_flows_by_key
-        )
+        # FIX [MED embed compute amplification]: for embed tokens + flow kind,
+        # guard live execution behind a small per-(org_id, provider_id)
+        # asyncio.Semaphore so a cache-busting embed client cannot fan out
+        # arbitrarily many concurrent live flow runs.  On contention beyond the
+        # timeout, raise a 429 "provider_busy" error.  Embed stays unmetered.
+        if is_embed:
+            _sem = _get_embed_semaphore(org_id, provider_id)
+            try:
+                await asyncio.wait_for(
+                    _sem.acquire(),
+                    timeout=_EMBED_FLOW_TIMEOUT_S,
+                )
+            except asyncio.TimeoutError:
+                raise AppError(
+                    "provider_busy",
+                    f"Provider {provider_id!r} is currently busy serving other embed "
+                    f"requests. Retry after a moment.",
+                    429,
+                )
+            try:
+                tables = await _resolve_flow_provider(
+                    provider, merged_params, org_id, claims,
+                    org_flows_by_key=org_flows_by_key,
+                )
+            finally:
+                _sem.release()
+        else:
+            tables = await _resolve_flow_provider(
+                provider, merged_params, org_id, claims,
+                org_flows_by_key=org_flows_by_key,
+            )
     elif provider.kind == "inline":
         tables = await _resolve_inline_provider(provider, merged_params, org_id, claims, repo)
     else:

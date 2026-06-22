@@ -1864,6 +1864,83 @@ class TestApiBindingPathValidation:
         assert "error" in entry, f"Expected error for protocol-relative path, got: {entry}"
         assert entry["error"] == "invalid_binding_path", entry
 
+    # -- double-encoding tests (%252e%252e and deeper nestings) ----------------
+
+    @pytest.mark.asyncio
+    async def test_double_encoded_dotdot_is_rejected(self):
+        """Double-encoded traversal '%252e%252e/x' is rejected.
+
+        Single unquote: '%2e%2e/x' — looks safe.
+        Fixpoint unquote: '../x'   — caught by '..' check.
+        """
+        from app.dashboards.collect import collect_canvas_data  # noqa: PLC0415
+
+        repo, org_id, canvas_id = await self._make_canvas_with_path("%252e%252e/x")
+
+        result = await collect_canvas_data(
+            canvas_id=canvas_id, org_id=org_id, claims={}, repo=repo
+        )
+
+        entry = result.get("el_p", {})
+        assert "error" in entry, (
+            f"Expected error for double-encoded '..', got: {entry}"
+        )
+        assert entry["error"] == "invalid_binding_path", entry
+
+    @pytest.mark.asyncio
+    async def test_triple_encoded_dotdot_is_rejected(self):
+        """Triple-encoded traversal '%25252e%25252e/x' is rejected.
+
+        This exercises deeper nesting (%25 -> %2525 -> %252e -> %2e -> .)
+        and ensures the fixpoint loop handles it within the iteration cap.
+        """
+        from app.dashboards.collect import collect_canvas_data  # noqa: PLC0415
+
+        repo, org_id, canvas_id = await self._make_canvas_with_path(
+            "%25252e%25252e/secret"
+        )
+
+        result = await collect_canvas_data(
+            canvas_id=canvas_id, org_id=org_id, claims={}, repo=repo
+        )
+
+        entry = result.get("el_p", {})
+        assert "error" in entry, (
+            f"Expected error for triple-encoded '..', got: {entry}"
+        )
+        assert entry["error"] == "invalid_binding_path", entry
+
+    def test_double_encoded_dotdot_rejected_at_save_time(self):
+        """ApiBinding._validate_path rejects '%252e%252e/x' at model construction.
+
+        This is the save-time (Pydantic) guard: the double-encoded path must
+        never be accepted into a CanvasDoc at all.
+        """
+        import pytest as _pytest  # noqa: PLC0415
+        from app.dashboards.canvas import ApiBinding  # noqa: PLC0415
+
+        with _pytest.raises(Exception, match=r"unsafe"):
+            ApiBinding.model_validate(
+                {
+                    "kind": "api",
+                    "connector_id": "some-connector-id",
+                    "path": "%252e%252e/x",
+                }
+            )
+
+    def test_normal_relative_path_accepted_at_save_time(self):
+        """ApiBinding._validate_path accepts a plain relative path like '/v1/data'."""
+        from app.dashboards.canvas import ApiBinding  # noqa: PLC0415
+
+        b = ApiBinding.model_validate(
+            {
+                "kind": "api",
+                "connector_id": "some-connector-id",
+                "path": "/v1/data",
+            }
+        )
+        assert b.path == "/v1/data"
+
     @pytest.mark.asyncio
     async def test_valid_relative_path_is_accepted(self):
         """A normal relative path like '/v1/users' passes validation.

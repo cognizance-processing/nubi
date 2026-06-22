@@ -211,7 +211,9 @@ async def test_downstream_trigger_fires_on_success():
             "runtime_config": {"__owner_policies__": {"tenant_id": "org-test"}},
         },
     )
-    downstream = await _make_flow(store, name="downstream_flow")
+    downstream = await _make_flow_with_owner_policies(
+        store, name="downstream_flow", owner_policies={"tenant_id": "org-test"}
+    )
 
     await register_trigger(
         flow_id=downstream["id"],
@@ -286,7 +288,9 @@ async def test_downstream_trigger_fires_on_failed_when_configured():
             "runtime_config": {"__owner_policies__": {"tenant_id": "org-test"}},
         },
     )
-    downstream = await _make_flow(store, name="downstream")
+    downstream = await _make_flow_with_owner_policies(
+        store, name="downstream", owner_policies={"tenant_id": "org-test"}
+    )
 
     await register_trigger(
         flow_id=downstream["id"],
@@ -336,7 +340,9 @@ async def test_downstream_trigger_error_isolated():
             "runtime_config": {"__owner_policies__": {"tenant_id": "org-test"}},
         },
     )
-    downstream = await _make_flow(store, name="downstream_ok")
+    downstream = await _make_flow_with_owner_policies(
+        store, name="downstream_ok", owner_policies={"tenant_id": "org-test"}
+    )
 
     # Register a trigger with a NONEXISTENT flow_id (will cause an error).
     registry = get_trigger_registry()
@@ -396,7 +402,9 @@ async def test_downstream_trigger_idempotency_note():
             "runtime_config": {"__owner_policies__": {"tenant_id": "org-test"}},
         },
     )
-    downstream = await _make_flow(store, name="downstream")
+    downstream = await _make_flow_with_owner_policies(
+        store, name="downstream", owner_policies={"tenant_id": "org-test"}
+    )
 
     registry = get_trigger_registry()
     await registry.register(
@@ -678,7 +686,9 @@ async def test_downstream_trigger_via_runtime():
             "runtime_config": {"__owner_policies__": {"tenant_id": "org-test"}},
         },
     )
-    downstream = await _make_flow(store, name="downstream_rt")
+    downstream = await _make_flow_with_owner_policies(
+        store, name="downstream_rt", owner_policies={"tenant_id": "org-test"}
+    )
 
     registry = get_trigger_registry()
     await registry.register(
@@ -741,7 +751,9 @@ async def test_downstream_trigger_carries_owner_policies():
     upstream = await _make_flow_with_owner_policies(
         store, name="upstream_rls", owner_policies=owner_policies
     )
-    downstream = await _make_flow(store, name="downstream_rls")
+    downstream = await _make_flow_with_owner_policies(
+        store, name="downstream_rls", owner_policies={"tenant_id": "org-test"}
+    )
 
     registry = get_trigger_registry()
     await registry.register(
@@ -820,6 +832,97 @@ async def test_downstream_trigger_skipped_without_owner_policies():
         "Downstream trigger must be skipped when upstream has no owner-policy snapshot "
         "and claims carry no policies (fail-closed)"
     )
+
+
+async def test_downstream_trigger_skipped_when_downstream_lacks_snapshot():
+    """[RLS] Trigger is skipped when the DOWNSTREAM flow lacks an owner-policy snapshot.
+
+    Even when the upstream flow HAS a snapshot (passing the upstream guard), the
+    downstream flow drains using its OWN snapshot.  If the downstream flow has no
+    snapshot and the caller carries no policies, the drain would resolve claims to
+    {} → NO RLS predicates → cross-tenant rows.  The trigger must be skipped
+    (fail-closed), mirroring the upstream guard.
+    """
+    from app.flows.runtime import materialize_flow_run  # noqa: PLC0415
+
+    store = InMemoryFlowStore()
+    # Upstream HAS a snapshot (so the upstream guard passes).
+    upstream = await _make_flow_with_owner_policies(
+        store, name="ds_guard_upstream", owner_policies={"tenant_id": "org-test"}
+    )
+    # Downstream has NO owner-policy snapshot (created before the feature).
+    downstream = await _make_flow(store, name="ds_guard_downstream_no_policy")
+
+    registry = get_trigger_registry()
+    await registry.register(
+        flow_id=downstream["id"],
+        kind="downstream",
+        source=upstream["id"],
+        org_id="org-test",
+        extra={"on_states": ["success"]},
+    )
+
+    flow_run = await materialize_flow_run(store, upstream, {}, "manual", NOW)
+    await store.update_flow_run(flow_run["id"], {"state": "success"})
+
+    # Empty claims: no policies on caller AND no snapshot on downstream flow.
+    await on_flow_run_complete(
+        store=store,
+        flow_run_id=flow_run["id"],
+        state="success",
+        now=NOW,
+        claims={},  # no policies
+    )
+
+    # The trigger MUST be skipped — the downstream run would otherwise drain with
+    # empty RLS context and leak cross-tenant rows.
+    downstream_runs = await store.list_flow_runs(downstream["id"])
+    assert len(downstream_runs) == 0, (
+        "Downstream trigger must be skipped when the DOWNSTREAM flow has no "
+        "owner-policy snapshot and claims carry no policies (fail-closed). "
+        f"Got {len(downstream_runs)} runs — cross-tenant RLS leak risk."
+    )
+
+
+async def test_downstream_trigger_fires_when_both_flows_have_snapshot():
+    """[RLS] Trigger fires RLS-correctly when BOTH upstream and downstream have snapshots."""
+    from app.flows.runtime import materialize_flow_run  # noqa: PLC0415
+
+    store = InMemoryFlowStore()
+    upstream = await _make_flow_with_owner_policies(
+        store, name="ds_guard_upstream_ok", owner_policies={"tenant_id": "org-test"}
+    )
+    # Downstream ALSO carries a usable owner-policy snapshot.
+    downstream = await _make_flow_with_owner_policies(
+        store, name="ds_guard_downstream_ok", owner_policies={"tenant_id": "org-test"}
+    )
+
+    registry = get_trigger_registry()
+    await registry.register(
+        flow_id=downstream["id"],
+        kind="downstream",
+        source=upstream["id"],
+        org_id="org-test",
+        extra={"on_states": ["success"]},
+    )
+
+    flow_run = await materialize_flow_run(store, upstream, {}, "manual", NOW)
+    await store.update_flow_run(flow_run["id"], {"state": "success"})
+
+    await on_flow_run_complete(
+        store=store,
+        flow_run_id=flow_run["id"],
+        state="success",
+        now=NOW,
+        claims={},  # no policies — relies on downstream snapshot for RLS
+    )
+
+    downstream_runs = await store.list_flow_runs(downstream["id"])
+    assert len(downstream_runs) == 1, (
+        "Downstream trigger must fire when the downstream flow has a usable "
+        "owner-policy snapshot."
+    )
+    assert downstream_runs[0]["params"].get("__trigger_depth__") == 1
 
 
 async def test_downstream_trigger_interactive_claims_bypass_snapshot():
@@ -1031,7 +1134,11 @@ async def test_downstream_trigger_fires_for_admin_flow_with_empty_policies():
             },
         },
     )
-    downstream = await _make_flow(store, name="admin_downstream")
+    # Admin downstream flow ALSO carries an explicitly-empty owner-policy snapshot
+    # (admin/no-RLS): key present, value {} — should still fire (not fail-closed).
+    downstream = await _make_flow_with_owner_policies(
+        store, name="admin_downstream", owner_policies={}
+    )
 
     registry = get_trigger_registry()
     await registry.register(

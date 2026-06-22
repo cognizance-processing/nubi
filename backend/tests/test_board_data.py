@@ -2487,3 +2487,300 @@ async def test_resolve_org_connector_skips_system_datastores(
         "_resolve_org_connector must skip system datastores and fall back to demo."
     )
     assert owned is False
+
+
+# ---------------------------------------------------------------------------
+# NEW (fix-19b): [MED embed compute amplification] findings 1a + 1b
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_embed_flow_provider_concurrency_semaphore_limits_parallel_runs(
+    repo: InMemoryRepo,
+) -> None:
+    """[MED embed amplification] Concurrent embed+flow cache misses are limited by
+    the per-(org, provider) semaphore — excess concurrent requests get 429.
+
+    Strategy: pre-drain the semaphore (concurrency=1) so it has no tokens, then
+    call resolve_provider_data(is_embed=True) with timeout=0 and verify it raises
+    AppError("provider_busy", 429) immediately.
+    """
+    import app.dashboards.board_data as _bd_mod
+    from app.connectors.cache import reset_cache_for_tests as _reset
+
+    await repo.update(
+        "boards",
+        _ORG,
+        _BOARD_ID,
+        {"config": {"spec": _make_spec_with_flow_provider()}},
+    )
+
+    original_concurrency = _bd_mod._EMBED_FLOW_CONCURRENCY
+    original_timeout = _bd_mod._EMBED_FLOW_TIMEOUT_S
+    _bd_mod._embed_semaphores.clear()
+    _bd_mod._EMBED_FLOW_CONCURRENCY = 1
+    _bd_mod._EMBED_FLOW_TIMEOUT_S = 0.0  # zero timeout → immediate 429 on contention
+
+    async def _fake_enforce_quota(org_id: str, dimension: str, amount: float = 1.0) -> None:
+        pass
+
+    try:
+        with (
+            patch("app.features.enforce_quota", side_effect=_fake_enforce_quota),
+            patch(
+                "app.dashboards.board_data._resolve_flow_provider",
+                new=AsyncMock(return_value={"summary": pa.table({"val": pa.array([1])})}),
+            ),
+        ):
+            # Manually acquire the semaphore to simulate a concurrent holder.
+            sem = _bd_mod._get_embed_semaphore(_ORG, _PROVIDER_ID)
+            # Drain the semaphore (concurrency=1 → take the single token).
+            await sem.acquire()
+            try:
+                # Now the semaphore is at capacity; a new call with timeout=0 must 429.
+                with pytest.raises(AppError) as exc_info:
+                    await resolve_provider_data(
+                        board_id=_BOARD_ID,
+                        provider_id=_PROVIDER_ID,
+                        params={"_run": "contended"},
+                        org_id=_ORG,
+                        claims={"policies": {}},
+                        repo=repo,
+                        is_embed=True,
+                    )
+                assert exc_info.value.code == "provider_busy", (
+                    f"Expected provider_busy 429 on semaphore contention; "
+                    f"got {exc_info.value.code!r}"
+                )
+                assert exc_info.value.status == 429
+            finally:
+                sem.release()  # restore semaphore state
+
+    finally:
+        _bd_mod._EMBED_FLOW_CONCURRENCY = original_concurrency
+        _bd_mod._EMBED_FLOW_TIMEOUT_S = original_timeout
+        _bd_mod._embed_semaphores.clear()
+        _reset()
+
+
+@pytest.mark.asyncio
+async def test_non_embed_flow_provider_bypasses_semaphore(repo: InMemoryRepo) -> None:
+    """[MED embed amplification] Non-embed (first-party) flow provider calls are
+    NOT subject to the embed semaphore guard — only embed tokens are throttled.
+    """
+    import app.dashboards.board_data as _bd_mod
+    from app.connectors.cache import reset_cache_for_tests as _reset
+
+    await repo.update(
+        "boards",
+        _ORG,
+        _BOARD_ID,
+        {"config": {"spec": _make_spec_with_flow_provider()}},
+    )
+
+    original_concurrency = _bd_mod._EMBED_FLOW_CONCURRENCY
+    original_timeout = _bd_mod._EMBED_FLOW_TIMEOUT_S
+    _bd_mod._embed_semaphores.clear()
+    _bd_mod._EMBED_FLOW_CONCURRENCY = 0  # effectively zero — semaphore would block if used
+    _bd_mod._EMBED_FLOW_TIMEOUT_S = 0.0
+    _bd_mod._embed_semaphores.clear()
+
+    async def _fake_enforce_quota(org_id: str, dimension: str, amount: float = 1.0) -> None:
+        pass
+
+    try:
+        with (
+            patch("app.features.enforce_quota", side_effect=_fake_enforce_quota),
+            patch(
+                "app.dashboards.board_data._resolve_flow_provider",
+                new=AsyncMock(return_value={"summary": pa.table({"val": pa.array([1])})}),
+            ),
+        ):
+            # Non-embed call must succeed even with concurrency=0.
+            tables = await resolve_provider_data(
+                board_id=_BOARD_ID,
+                provider_id=_PROVIDER_ID,
+                params={},
+                org_id=_ORG,
+                claims={"policies": {}},
+                repo=repo,
+                is_embed=False,  # first-party — no semaphore applied
+            )
+        assert "summary" in tables
+        assert tables["summary"].num_rows == 1
+    finally:
+        _bd_mod._EMBED_FLOW_CONCURRENCY = original_concurrency
+        _bd_mod._EMBED_FLOW_TIMEOUT_S = original_timeout
+        _bd_mod._embed_semaphores.clear()
+        _reset()
+
+
+# ---------------------------------------------------------------------------
+# NEW (fix-19b): [MED N+1] materialized path uses the pre-fetched org_flows_by_key
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_materialized_path_uses_prefetch_no_per_provider_list_flows(
+    repo: InMemoryRepo,
+) -> None:
+    """[MED N+1] _resolve_materialized_flow_provider must not call list_flows when
+    org_flows_by_key is supplied by resolve_provider_data.
+
+    Before the fix, both the ephemeral AND materialized paths called list_flows
+    independently — with M materialized providers per board that would be 2×M
+    list_flows calls instead of 1.  After the fix, the prefetch in
+    resolve_provider_data covers both paths.
+    """
+    import io as _io
+    import app.flows.store as _fs_mod
+
+    await repo.update(
+        "boards",
+        _ORG,
+        _BOARD_ID,
+        {"config": {"spec": _make_spec_with_flow_provider()}},
+    )
+
+    # Prepare a materialized result.
+    mat_table = _make_arrow_table(3)
+    ipc_buf = _io.BytesIO()
+    writer = pa.ipc.new_stream(ipc_buf, mat_table.schema)
+    writer.write_table(mat_table)
+    writer.close()
+    ipc_bytes = ipc_buf.getvalue()
+
+    fake_flow = {"id": _PROVIDER_ID, "name": _PROVIDER_ID, "org_id": _ORG}
+    fake_flow_run = {"id": "mat-run-prefetch", "state": "success"}
+    fake_task_run = {
+        "task_key": "summary",
+        "state": "success",
+        "result": {"__arrow_ipc__": ipc_bytes},
+    }
+
+    list_flows_calls: list[dict] = []
+
+    class _TrackingStore:
+        async def get_flow(self, flow_id: str):
+            return fake_flow
+
+        async def list_flows(self, **kwargs):
+            list_flows_calls.append(kwargs)
+            return [fake_flow]
+
+        async def list_flow_runs(self, flow_id: str, limit: int = 10, **kwargs):
+            return [fake_flow_run]
+
+        async def list_task_runs(self, run_id: str, limit=None):
+            result = [fake_task_run]
+            return result[:limit] if limit is not None else result
+
+    async def _fake_enforce_quota(org_id: str, dimension: str, amount: float = 1.0) -> None:
+        pass
+
+    with (
+        patch("app.features.enforce_quota", side_effect=_fake_enforce_quota),
+        patch.object(_fs_mod, "get_flow_store", return_value=_TrackingStore()),
+    ):
+        tables = await resolve_provider_data(
+            board_id=_BOARD_ID,
+            provider_id=_PROVIDER_ID,
+            params={},
+            org_id=_ORG,
+            claims={"policies": {}},
+            repo=repo,
+            mode="materialized",
+        )
+
+    # list_flows must be called AT MOST ONCE — the pre-fetch in resolve_provider_data.
+    # _resolve_materialized_flow_provider must NOT make an additional list_flows call
+    # because get_flow() returns the flow directly (no fallback needed).
+    assert len(list_flows_calls) <= 1, (
+        f"list_flows called {len(list_flows_calls)} times; expected at most 1 "
+        "(materialized path N+1 regression: prefetch not passed through)."
+    )
+
+    # Must still return the materialized result.
+    assert "summary" in tables
+    assert isinstance(tables["summary"], pa.Table)
+
+
+# ---------------------------------------------------------------------------
+# NEW (fix-19b): [LOW N+1] inline connector resolved once per provider call
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_inline_connector_resolved_once_per_provider_call(
+    repo: InMemoryRepo,
+) -> None:
+    """[LOW N+1] _resolve_org_connector must be called ONCE per provider call,
+    not once per declared result.
+
+    Before the fix, _resolve_org_connector was called inside the per-result loop
+    in _resolve_inline_provider, causing O(results) repo.list("datastores") calls.
+    After the fix, it is hoisted above the loop so only one call is made regardless
+    of how many named results the provider has.
+    """
+    # Build a board with an inline provider that has TWO declared results.
+    two_result_spec = {
+        "version": 1,
+        "title": "Two-result Inline Board",
+        "widgets": [
+            {"id": "w1", "type": "table", "source": {"provider": _PROVIDER_ID, "result": "r1"}},
+            {"id": "w2", "type": "table", "source": {"provider": _PROVIDER_ID, "result": "r2"}},
+        ],
+        "data": [
+            {
+                "id": _PROVIDER_ID,
+                "kind": "inline",
+                "params": {},
+                "base_cte": "WITH r1 AS (SELECT 1 AS x), r2 AS (SELECT 2 AS x)",
+                "results": [
+                    {"name": "r1", "grain": None},
+                    {"name": "r2", "grain": None},
+                ],
+            }
+        ],
+    }
+    await repo.update("boards", _ORG, _BOARD_ID, {"config": {"spec": two_result_spec}})
+
+    resolve_connector_calls: list[tuple[str, Any]] = []
+
+    async def _tracking_resolve_org_connector(org_id: str, repo: Any):
+        resolve_connector_calls.append((org_id, repo))
+        # Return a dummy connector and owned=False (no close needed).
+        from unittest.mock import MagicMock
+        dummy = MagicMock()
+        dummy.execute.return_value = pa.table({"x": pa.array([1])})
+        return dummy, False
+
+    async def _fake_enforce_quota(org_id: str, dimension: str, amount: float = 1.0) -> None:
+        pass
+
+    with (
+        patch("app.features.enforce_quota", side_effect=_fake_enforce_quota),
+        patch("app.connectors.plan", return_value=object()),
+        patch(
+            "app.dashboards.board_data._resolve_org_connector",
+            side_effect=_tracking_resolve_org_connector,
+        ),
+    ):
+        tables = await resolve_provider_data(
+            board_id=_BOARD_ID,
+            provider_id=_PROVIDER_ID,
+            params={},
+            org_id=_ORG,
+            claims={"policies": {}},
+            repo=repo,
+        )
+
+    # _resolve_org_connector must be called exactly ONCE regardless of result count.
+    assert len(resolve_connector_calls) == 1, (
+        f"_resolve_org_connector called {len(resolve_connector_calls)} times for a "
+        f"provider with 2 results; expected exactly 1 "
+        "(N+1 regression: connector resolved per-result instead of once per provider)."
+    )
+    # Both results must still be present (correctness).
+    assert "r1" in tables
+    assert "r2" in tables

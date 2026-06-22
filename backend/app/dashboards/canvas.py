@@ -131,7 +131,16 @@ class ApiBinding(BaseModel):
         """
         if not v or not isinstance(v, str):
             return v
-        decoded = urllib.parse.unquote(v).strip()
+        # Decode percent-encoding to a fixpoint so double-encoded sequences
+        # like %252e%252e are fully expanded before the safety checks.
+        # Cap iterations to prevent pathological inputs from looping forever.
+        decoded = v
+        for _ in range(16):
+            next_decoded = urllib.parse.unquote(decoded)
+            if next_decoded == decoded:
+                break
+            decoded = next_decoded
+        decoded = decoded.strip()
         if (
             "://" in decoded
             or decoded.startswith("//")

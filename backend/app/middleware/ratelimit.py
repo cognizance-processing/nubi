@@ -430,8 +430,19 @@ def _classify(path: str) -> tuple[str | None, int]:
         return "auth", _cfg.auth_rpm
 
     # Query: POST /api/v1/query (exact or with trailing /registry etc.)
+    # Board provider data: POST /api/v1/boards/<id>/providers/<pid>/data
+    # Embed tokens never face billing but still drive server compute; classifying
+    # this route into the 'query' bucket gives it the same hard rpm ceiling so a
+    # cache-busting embed token cannot trigger unbounded live flow executions.
     if path == "/api/v1/query" or path.startswith("/api/v1/query/"):
         return "query", _cfg.query_rpm
+
+    if path.startswith("/api/v1/boards/") and path.endswith("/data"):
+        # Match: /api/v1/boards/<board_id>/providers/<pid>/data
+        parts = path.split("/")
+        # Expected: ['', 'api', 'v1', 'boards', <bid>, 'providers', <pid>, 'data']
+        if len(parts) == 8 and parts[5] == "providers":
+            return "query", _cfg.query_rpm
 
     return None, 0
 

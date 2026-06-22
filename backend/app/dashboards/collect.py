@@ -672,7 +672,17 @@ async def collect_canvas_data(
                 # ("//"), and paths containing ".." segments that could escape
                 # the base URL's path hierarchy.
                 if binding_path:
-                    _path_norm = urllib.parse.unquote(binding_path).strip()
+                    # Decode percent-encoding to a fixpoint so double-encoded
+                    # sequences like %252e%252e are fully expanded before the
+                    # safety checks.  Cap iterations to prevent pathological
+                    # inputs from looping forever.
+                    _path_norm = binding_path
+                    for _ in range(16):
+                        _next = urllib.parse.unquote(_path_norm)
+                        if _next == _path_norm:
+                            break
+                        _path_norm = _next
+                    _path_norm = _path_norm.strip()
                     if (
                         "://" in _path_norm
                         or _path_norm.startswith("//")

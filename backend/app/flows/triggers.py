@@ -806,6 +806,26 @@ async def on_flow_run_complete(
                     )
                     continue
 
+                # ── RLS fail-closed guard on the DOWNSTREAM flow ──────────────
+                # The downstream run drains using its OWN owner-policy snapshot
+                # (via _claims_with_owner_policies in runtime.py).  If the
+                # downstream flow lacks that snapshot (e.g. created before the
+                # feature) AND the caller's claims carry no policies, the drain
+                # would resolve claims to {} → NO RLS predicates → cross-tenant
+                # rows.  Mirror the upstream guard: validate the downstream flow
+                # also has a usable snapshot and SKIP (fail-closed) otherwise.
+                downstream_claims = _downstream_claims_with_owner_policies(
+                    claims, downstream_flow, flow_run_id
+                )
+                if downstream_claims is None:
+                    logger.warning(
+                        "on_flow_run_complete: downstream flow %s (trigger %s) has no "
+                        "owner-policy snapshot and caller carries no policies; skipping "
+                        "trigger (fail-closed for RLS safety).",
+                        trigger.flow_id, trigger.id,
+                    )
+                    continue
+
                 run_params: dict[str, Any] = {
                     "__upstream_flow_id__": upstream_flow_id,
                     "__upstream_run_id__": flow_run_id,

@@ -112,6 +112,39 @@ def test_forged_org_claim_does_not_redirect_bucket(limited_app):
     assert 429 in codes, codes
 
 
+def test_board_provider_data_route_classified_as_query(limited_app):
+    """POST /api/v1/boards/<id>/providers/<pid>/data is classified into the 'query'
+    bucket so embed cache-busting requests face the same hard rpm ceiling as regular
+    queries — closing the embed compute-amplification vector (MED finding 1a).
+    """
+    from app.middleware.ratelimit import _classify
+
+    path = "/api/v1/boards/board-abc-123/providers/provider-xyz/data"
+    route_class, rpm = _classify(path)
+    assert route_class == "query", (
+        f"Board provider data route must be classified as 'query'; got {route_class!r}. "
+        "Embed tokens can otherwise cache-bust indefinitely without hitting the rpm ceiling."
+    )
+    assert rpm > 0, "query rpm must be positive"
+
+
+def test_board_provider_data_route_throttles_after_cap(limited_app):
+    """The board provider data route IS throttled once the query cap (3) is exceeded."""
+    # Register a dummy endpoint on the app under test so the route exists.
+    @limited_app.post("/api/v1/boards/{board_id}/providers/{pid}/data")
+    async def _dummy_provider_data(board_id: str, pid: str) -> dict:
+        return {"ok": True}
+
+    client = TestClient(limited_app)
+    codes = [
+        client.post(f"/api/v1/boards/b1/providers/p1/data").status_code
+        for _ in range(6)
+    ]
+    # First 3 should pass (cap=3, burst_factor=1.0); 4th onwards should be 429.
+    assert codes[:3] == [200, 200, 200], codes
+    assert 429 in codes[3:], codes
+
+
 def test_disabled_flag_is_noop(limited_app):
     """With enabled=False the middleware passes everything through (dev/test path)."""
     ratelimit._cfg.enabled = False
