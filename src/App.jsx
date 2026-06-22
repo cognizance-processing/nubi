@@ -84,6 +84,7 @@ import NotFound from './pages/NotFound.jsx'
 const DashboardViewPage = lazy(() => import('./pages/DashboardViewPage.jsx'))
 const CanvasViewPage = lazy(() => import('./pages/CanvasViewPage.jsx'))
 const EditorPage = lazy(() => import('./pages/EditorPage.jsx'))
+const CanvasEditor = lazy(() => import('./editor/CanvasEditor.jsx'))
 
 const HomePage = lazy(() => import('./pages/app/HomePage.jsx'))
 const InviteAcceptPage = lazy(() => import('./pages/app/InviteAcceptPage.jsx'))
@@ -308,6 +309,7 @@ export default function App() {
           <Route path="usage" element={<Navigate to="/settings/usage" replace />} />
           <Route path="editor" element={<EditorPage />} />
           <Route path="editor/:id" element={<EditorPage />} />
+          <Route path="canvas/:id" element={<CanvasEditor />} />
           {/* Playground merged into Queries — keep route as a redirect so old links work */}
           <Route path="playground" element={<Navigate to="/queries" replace />} />
           {/* Settings — sub-nav layout with per-section routes */}

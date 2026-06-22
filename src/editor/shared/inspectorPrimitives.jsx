@@ -1,0 +1,132 @@
+/**
+ * shared/inspectorPrimitives.jsx — Low-level UI building blocks for widget
+ * inspector panels. Shared between DashboardEditor and CanvasEditor so the two
+ * editors render identical inspector chrome without diverging.
+ *
+ * Exports:
+ *   inputCls        string  — Tailwind class string for <input> controls
+ *   selectCls       string  — Tailwind class string for <select> controls
+ *   FieldLabel      React component
+ *   SectionLabel    React component
+ *   Section         React component  (collapsible <details>)
+ *   ToggleRow       React component  (label + toggle switch)
+ *   ChipRow         React component  (preset chip row)
+ *   ColumnSelect    React component  (column-picker <select> with label)
+ */
+
+// Shared control styling. Targets a consistent ~32px control height across
+// inputs and selects, with calm focus rings and the app's design tokens.
+export const inputCls =
+  'w-full h-8 text-sm border border-border rounded-lg px-2.5 bg-surface text-fg ' +
+  'placeholder:text-muted/50 focus:outline-none focus:ring-2 focus:ring-ring/60 ' +
+  'focus:border-ring/40 hover:border-border/80 transition-colors'
+
+// Native <select> with a custom chevron (appearance-none) so it matches the
+// inputs exactly. The chevron is a STATIC, fully percent-encoded SVG data URL
+// (quotes → %22, spaces → %20) so (a) Tailwind's static scanner picks up the
+// arbitrary value and (b) the CSS minifier sees no raw quotes/parens in url().
+export const selectCls =
+  'w-full h-8 text-sm border border-border rounded-lg pl-2.5 pr-8 bg-surface text-fg appearance-none cursor-pointer ' +
+  'focus:outline-none focus:ring-2 focus:ring-ring/60 focus:border-ring/40 hover:border-border/80 transition-colors ' +
+  'bg-[length:14px] bg-[right_0.5rem_center] bg-no-repeat ' +
+  'bg-[url(data:image/svg+xml,%3Csvg%20xmlns=%22http://www.w3.org/2000/svg%22%20viewBox=%220%200%2012%2012%22%20fill=%22none%22%20stroke=%22%238895a8%22%20stroke-width=%221.4%22%20stroke-linecap=%22round%22%20stroke-linejoin=%22round%22%3E%3Cpath%20d=%22M3%204.5%206%207.5%209%204.5%22/%3E%3C/svg%3E)]'
+
+/** A field label used above inputs/selects. Consistent weight + spacing. */
+export function FieldLabel({ children, className = '' }) {
+  return (
+    <label className={`block text-[11px] font-medium text-muted mb-1 ${className}`}>
+      {children}
+    </label>
+  )
+}
+
+/** A small all-caps section header. */
+export function SectionLabel({ children }) {
+  return (
+    <p className="text-[10px] font-semibold text-muted/80 uppercase tracking-[0.08em]">
+      {children}
+    </p>
+  )
+}
+
+/**
+ * A collapsible <details> section with a consistent header.
+ * Props: title, icon (optional Lucide component), defaultOpen, right (optional node)
+ */
+export function Section({ title, icon: Icon, children, defaultOpen = true, right = null }) {
+  return (
+    <details open={defaultOpen} className="group rounded-xl border border-border bg-surface-2/30 overflow-hidden">
+      <summary className="flex items-center justify-between gap-2 px-3 h-9 cursor-pointer select-none list-none hover:bg-surface-2/50 transition-colors">
+        <span className="flex items-center gap-2 text-xs font-semibold text-fg">
+          {Icon && <Icon size={13} className="text-muted shrink-0" />}
+          {title}
+        </span>
+        <span className="flex items-center gap-2">
+          {right}
+          <svg className="w-3 h-3 text-muted/70 transition-transform group-open:rotate-90" viewBox="0 0 12 12" fill="none" stroke="currentColor" strokeWidth="1.5">
+            <path d="M4.5 3l3 3-3 3" strokeLinecap="round" strokeLinejoin="round" />
+          </svg>
+        </span>
+      </summary>
+      <div className="px-3 pb-3 pt-2 space-y-3 border-t border-border/60">{children}</div>
+    </details>
+  )
+}
+
+/**
+ * A labelled toggle switch row.
+ * Props: label, checked, onChange(bool), hint (optional sub-label)
+ */
+export function ToggleRow({ label, checked, onChange, hint }) {
+  return (
+    <label className="flex items-center justify-between gap-3 cursor-pointer py-0.5">
+      <span className="text-xs font-medium text-fg">
+        {label}
+        {hint && <span className="block text-[10px] text-muted/70 font-normal mt-0.5">{hint}</span>}
+      </span>
+      <button
+        type="button"
+        role="switch"
+        aria-checked={checked}
+        onClick={() => onChange(!checked)}
+        className={`relative inline-flex h-5 w-9 shrink-0 items-center rounded-full transition-colors focus:outline-none focus:ring-2 focus:ring-ring/50 focus:ring-offset-1 focus:ring-offset-surface ${checked ? 'bg-primary' : 'bg-border'}`}
+      >
+        <span className={`inline-block h-4 w-4 rounded-full bg-white shadow transform transition-transform ${checked ? 'translate-x-4' : 'translate-x-0.5'}`} />
+      </button>
+    </label>
+  )
+}
+
+/**
+ * A compact preset-chip row (e.g. column-count picker, row-height picker).
+ * Props: options (array), value (current), onChange(option), suffix (string appended to each chip label)
+ */
+export function ChipRow({ options, value, onChange, suffix = '' }) {
+  return (
+    <div className="flex flex-wrap gap-1.5">
+      {options.map(opt => (
+        <button key={opt} onClick={() => onChange(opt)}
+          className={`px-2.5 py-1 text-xs font-medium rounded-lg border transition-all ${value === opt ? 'bg-primary text-primary-fg border-primary' : 'bg-surface text-fg border-border hover:border-primary hover:text-primary'}`}>
+          {opt}{suffix}
+        </button>
+      ))}
+    </div>
+  )
+}
+
+/**
+ * A labelled column <select> for data-encoding fields.
+ * Props: label, value, onChange(col), columns (string[]), optional (adds "— none —" option)
+ */
+export function ColumnSelect({ label, value, onChange, columns, optional = false }) {
+  return (
+    <div>
+      <FieldLabel>{label}</FieldLabel>
+      <select className={selectCls} value={value || ''} onChange={e => onChange(e.target.value)}>
+        {optional && <option value="">— none —</option>}
+        {!optional && !value && <option value="">Select column…</option>}
+        {columns.map(col => <option key={col} value={col}>{col}</option>)}
+      </select>
+    </div>
+  )
+}

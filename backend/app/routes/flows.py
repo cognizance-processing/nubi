@@ -1603,6 +1603,48 @@ async def list_flows(
     return rows
 
 
+# B3: writeback GET routes must be registered BEFORE /{flow_id} so FastAPI
+# does not swallow /writeback as a flow_id parameter.
+@router.get("/writeback", status_code=200)
+async def _list_writebacks_route_early(
+    limit: int = 50,
+    user: dict[str, Any] = Depends(current_user),
+    repo: Repo = Depends(get_repo),
+) -> dict[str, Any]:
+    """List write-back requests for the caller's org (newest first).
+
+    Returns up to *limit* records.  Org-scoped from the verified token.
+    """
+    from app.connectors.writeback import get_writeback_store  # noqa: PLC0415
+
+    user_id = str(user["id"])
+    org_id = await _get_user_org(user_id, repo)
+    store = get_writeback_store()
+    records = await store.list(org_id, limit=limit)
+    return {"writebacks": records, "count": len(records)}
+
+
+@router.get("/writeback/{wb_id}", status_code=200)
+async def _get_writeback_route_early(
+    wb_id: str,
+    user: dict[str, Any] = Depends(current_user),
+    repo: Repo = Depends(get_repo),
+) -> dict[str, Any]:
+    """Return a single write-back request by id.
+
+    Returns 404 when the record does not exist or belongs to a different org.
+    """
+    from app.connectors.writeback import get_writeback_store  # noqa: PLC0415
+
+    user_id = str(user["id"])
+    org_id = await _get_user_org(user_id, repo)
+    store = get_writeback_store()
+    record = await store.get(org_id, wb_id)
+    if record is None:
+        raise AppError("not_found", f"Write-back {wb_id!r} not found.", 404)
+    return record
+
+
 @router.get("/{flow_id}", status_code=200)
 async def get_flow(
     flow_id: str,
@@ -2277,6 +2319,246 @@ async def get_flow_run_history(
         "runs": enriched,
         "count": len(enriched),
     }
+
+
+# ---------------------------------------------------------------------------
+# B3: Governed write-back endpoints
+# ---------------------------------------------------------------------------
+# Routes:
+#   POST /flows/writeback/preview  — dry-run: returns diff without committing
+#   POST /flows/writeback          — submit (dry_run|commit), idempotent
+#   POST /flows/writeback/{id}/approval — approve/reject/edit a pending request
+#   GET  /flows/writeback          — list write-back requests for the caller's org
+#   GET  /flows/writeback/{id}     — get a single write-back request
+#
+# Security:
+#   - writers (owner/admin/member) may POST submit/preview
+#   - approvers (owner/admin) may POST approval
+#   - RLS: every lookup is org-scoped from the verified token; no cross-org access
+
+
+class WritebackTargetIn(BaseModel):
+    """Target descriptor for a write-back request."""
+    connector_id: str
+    object: str
+
+
+class WritebackSubmitIn(BaseModel):
+    """Request body for ``POST /flows/writeback``."""
+    idempotency_key: str
+    rows: list[dict[str, Any]]
+    target: WritebackTargetIn
+    mode: str = "append"
+    approval_required: bool = False
+    dry_run: bool = False
+    meta: dict[str, Any] = {}
+
+
+class WritebackApprovalIn(BaseModel):
+    """Request body for ``POST /flows/writeback/{id}/approval``."""
+    action: str  # 'approve' | 'reject' | 'edit'
+    rows_override: list[dict[str, Any]] | None = None
+
+
+def _get_caller_role(user_id: str, org_id: str, repo: Any) -> str | None:
+    """Return the caller's role in *org_id* synchronously (for sync route bodies).
+
+    Uses InMemoryRepo._org_members when available (test path), else falls back
+    to None (callers must handle the live-DB case via get_org_role).
+    """
+    if hasattr(repo, "_org_members"):
+        entry = repo._org_members.get(f"{org_id}:{user_id}")
+        return entry["role"] if entry else None
+    return None
+
+
+@router.post("/writeback/preview", status_code=200)
+async def writeback_preview(
+    body: WritebackSubmitIn,
+    user: dict[str, Any] = Depends(current_user),
+    repo: Repo = Depends(get_repo),
+) -> dict[str, Any]:
+    """Dry-run a write-back: return the rows/diff that WOULD be written.
+
+    No data is committed to the target connector.  RBAC: caller must have
+    writer role (owner/admin/member).  Returns ``{rows, row_count,
+    target_object, mode, dry_run: True}``.
+    """
+    from app.auth.roles import get_org_role  # noqa: PLC0415
+    from app.connectors.writeback import (  # noqa: PLC0415
+        _require_writer_role,
+        dry_run_writeback,
+    )
+
+    user_id = str(user["id"])
+    org_id = await _get_user_org(user_id, repo)
+    role = await get_org_role(user_id, org_id, repo)
+    _require_writer_role(role)
+
+    return dry_run_writeback(
+        rows=body.rows,
+        target=body.target.model_dump(),
+        mode=body.mode,
+    )
+
+
+@router.post("/writeback", status_code=201)
+async def submit_writeback_route(
+    body: WritebackSubmitIn,
+    user: dict[str, Any] = Depends(current_user),
+    repo: Repo = Depends(get_repo),
+) -> dict[str, Any]:
+    """Submit an idempotent write-back request (commit or gate for approval).
+
+    RBAC: caller must have writer role (owner/admin/member).  When
+    ``dry_run=True`` the request is handled identically to ``/writeback/preview``
+    (no record created, no commit).  When ``approval_required=True`` the record
+    enters ``pending_approval`` and waits for an approver action; otherwise the
+    write is committed immediately.
+
+    Idempotent: a second call with the same ``idempotency_key`` returns the
+    existing record without re-applying the write.
+
+    Returns the write-back record (or the dry-run diff).
+    """
+    from app.auth.roles import get_org_role  # noqa: PLC0415
+    from app.connectors.writeback import (  # noqa: PLC0415
+        _require_writer_role,
+        dry_run_writeback,
+        get_writeback_store,
+        submit_writeback,
+    )
+
+    user_id = str(user["id"])
+    org_id = await _get_user_org(user_id, repo)
+    role = await get_org_role(user_id, org_id, repo)
+    _require_writer_role(role)
+
+    if body.dry_run:
+        return dry_run_writeback(
+            rows=body.rows,
+            target=body.target.model_dump(),
+            mode=body.mode,
+        )
+
+    # Build a no-op connector_write_fn for the in-memory path:
+    # The actual connector write is performed by the caller's flow task
+    # (connector_write handler); here we record the write-back request and
+    # the commit result is the row snapshot itself (idempotent, no re-staging).
+    def _noop_write(rows: list, target: dict, mode: str) -> dict:
+        return {
+            "rows_written": len(rows),
+            "mode": mode,
+            "target_object": str(target.get("object") or ""),
+            "dry_run": False,
+        }
+
+    store = get_writeback_store()
+    record = await submit_writeback(
+        org_id=org_id,
+        idempotency_key=body.idempotency_key,
+        rows=body.rows,
+        target=body.target.model_dump(),
+        mode=body.mode,
+        created_by=user_id,
+        approval_required=body.approval_required,
+        connector_write_fn=_noop_write,
+        store=store,
+        meta=body.meta,
+    )
+    return record
+
+
+@router.post("/writeback/{wb_id}/approval", status_code=200)
+async def writeback_approval_route(
+    wb_id: str,
+    body: WritebackApprovalIn,
+    user: dict[str, Any] = Depends(current_user),
+    repo: Repo = Depends(get_repo),
+) -> dict[str, Any]:
+    """Approve, reject, or edit a pending write-back request.
+
+    RBAC: caller must have approver role (owner/admin).  The record must be in
+    ``pending_approval`` state.
+
+    Actions:
+    - ``'approve'`` — commit the write as-is.
+    - ``'reject'``  — mark as rejected (no write committed).
+    - ``'edit'``    — replace the rows (``rows_override`` required) and commit.
+
+    Returns the updated write-back record.
+    """
+    from app.auth.roles import get_org_role  # noqa: PLC0415
+    from app.connectors.writeback import (  # noqa: PLC0415
+        _require_approver_role,
+        approve_writeback,
+        get_writeback_store,
+    )
+
+    user_id = str(user["id"])
+    org_id = await _get_user_org(user_id, repo)
+    role = await get_org_role(user_id, org_id, repo)
+    _require_approver_role(role)
+
+    def _noop_write(rows: list, target: dict, mode: str) -> dict:
+        return {
+            "rows_written": len(rows),
+            "mode": mode,
+            "target_object": str(target.get("object") or ""),
+            "dry_run": False,
+        }
+
+    store = get_writeback_store()
+    record = await approve_writeback(
+        org_id=org_id,
+        wb_id=wb_id,
+        action=body.action,
+        approver_id=user_id,
+        connector_write_fn=_noop_write,
+        store=store,
+        rows_override=body.rows_override,
+    )
+    return record
+
+
+@router.get("/writeback", status_code=200)
+async def list_writebacks_route(
+    limit: int = 50,
+    user: dict[str, Any] = Depends(current_user),
+    repo: Repo = Depends(get_repo),
+) -> dict[str, Any]:
+    """List write-back requests for the caller's org (newest first).
+
+    Returns up to *limit* records.  Org-scoped from the verified token.
+    """
+    from app.connectors.writeback import get_writeback_store  # noqa: PLC0415
+
+    user_id = str(user["id"])
+    org_id = await _get_user_org(user_id, repo)
+    store = get_writeback_store()
+    records = await store.list(org_id, limit=limit)
+    return {"writebacks": records, "count": len(records)}
+
+
+@router.get("/writeback/{wb_id}", status_code=200)
+async def get_writeback_route(
+    wb_id: str,
+    user: dict[str, Any] = Depends(current_user),
+    repo: Repo = Depends(get_repo),
+) -> dict[str, Any]:
+    """Return a single write-back request by id.
+
+    Returns 404 when the record does not exist or belongs to a different org.
+    """
+    from app.connectors.writeback import get_writeback_store  # noqa: PLC0415
+
+    user_id = str(user["id"])
+    org_id = await _get_user_org(user_id, repo)
+    store = get_writeback_store()
+    record = await store.get(org_id, wb_id)
+    if record is None:
+        raise AppError("not_found", f"Write-back {wb_id!r} not found.", 404)
+    return record
 
 
 # ---------------------------------------------------------------------------

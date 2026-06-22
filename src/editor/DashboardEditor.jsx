@@ -75,7 +75,6 @@ const CHART_ICONS = {
 }
 import { GridCanvas } from '../dashboards/grid/index.js'
 import { get, post, put } from '../lib/api.js'
-import { runArrowQueryById } from '../lib/wasmRuntime.js'
 import ChartWidget from '../dashboards/widgets/ChartWidget.jsx'
 import KpiWidget from '../dashboards/widgets/KpiWidget.jsx'
 import TableWidget from '../dashboards/widgets/TableWidget.jsx'
@@ -84,7 +83,6 @@ import TextWidget from '../dashboards/widgets/TextWidget.jsx'
 import HtmlWidget from '../dashboards/widgets/HtmlWidget.jsx'
 import MetricWidget from '../dashboards/widgets/MetricWidget.jsx'
 import MetricPicker from '../components/app/MetricPicker.jsx'
-import { listMetrics } from '../lib/metrics.js'
 import PivotWidget from '../dashboards/widgets/PivotWidget.jsx'
 import SectionWidget from '../dashboards/widgets/SectionWidget.jsx'
 import ExportShareMenu from '../components/ExportShareMenu.jsx'
@@ -111,23 +109,25 @@ import {
   canUndo,
   canRedo,
 } from './history.js'
+// ── Shared inspector panels ──────────────────────────────────────────────────
+import {
+  inputCls, selectCls, FieldLabel, SectionLabel, Section, ToggleRow, ChipRow, ColumnSelect,
+  useColumnIntrospection, useMetricsList,
+  QueryPicker, BackgroundEditor, ParamBindingSection,
+  ChartConfig, KpiConfig,
+  TableConfig, ColumnFormatsEditor, ConditionalRulesEditor,
+  FilterConfig, TextConfig, PlacementControl, effectivePlacement,
+  DEMO_QUERY_IDS, CHART_TYPES, SERIES_TYPES, FILTER_SUBTYPES, VARIABLE_TYPES,
+  FORMAT_OPS, COLUMN_FORMAT_TYPES, BACKGROUND_TYPES, PIVOT_AGGS,
+} from './shared/index.js'
 
 // ---------------------------------------------------------------------------
 // Constants
 // ---------------------------------------------------------------------------
 
-const DEMO_QUERY_IDS = ['demo_all', 'demo_active', 'demo_points_10k', 'demo_points_100k']
-const CHART_TYPES = ['line', 'bar', 'hbar', 'scatter', 'area', 'pie', 'donut', 'heatmap', 'gauge']
-const SERIES_TYPES = ['bar', 'line', 'area', 'scatter']
-const FILTER_SUBTYPES = ['select', 'multiselect', 'daterange', 'text']
-const VARIABLE_TYPES = ['text', 'number', 'date', 'daterange', 'select', 'multiselect']
-
-// Conditional-formatting operators (mirror conditionalFormat.js evalRules)
-const FORMAT_OPS = ['eq', 'ne', 'gt', 'gte', 'lt', 'lte', 'between', 'contains']
-// Per-column value-format types (mirror conditionalFormat.js formatValue)
-const COLUMN_FORMAT_TYPES = ['number', 'currency', 'percent', 'date']
-const BACKGROUND_TYPES = ['none', 'transparent', 'solid', 'gradient', 'image', 'css']
-const PIVOT_AGGS = ['sum', 'avg', 'count', 'min', 'max']
+// NOTE: DEMO_QUERY_IDS, CHART_TYPES, SERIES_TYPES, FILTER_SUBTYPES, VARIABLE_TYPES,
+// FORMAT_OPS, COLUMN_FORMAT_TYPES, BACKGROUND_TYPES, PIVOT_AGGS are now imported
+// from ./shared/constants.js (via ./shared/index.js above).
 // react-grid-layout compaction modes exposed in the Dashboard panel.
 const COMPACTION_MODES = [
   { id: 'free',       label: 'Free place', hint: 'Keep widgets exactly where placed' },
@@ -191,18 +191,7 @@ const TAB_VARIANTS = ['underline', 'pills', 'segmented']
 const TAB_ALIGNS = ['start', 'center', 'end', 'stretch']
 const TAB_SIZES = ['sm', 'md', 'lg']
 
-/**
- * Effective placement for a widget: 'grid' | 'header' | 'drawer'.
- * SHARED CONTRACT (mirrors SpecRenderer.effectivePlacement + backend):
- *   - explicit widget.placement wins;
- *   - else widget.drawer === true → 'drawer' (legacy flag);
- *   - else 'grid' (default).
- */
-function effectivePlacement(w) {
-  if (w?.placement) return w.placement
-  if (w?.drawer === true) return 'drawer'
-  return 'grid'
-}
+// effectivePlacement is now imported from ./shared/index.js
 
 /** Filter widgets eligible for the above-grid filter bar (placement → 'header'),
  *  scoped to a tab like widgetsForTab, then ordered by widget.order ascending. */
@@ -403,75 +392,16 @@ function makeWidget(type, pos) {
 // ---------------------------------------------------------------------------
 // Shared input classes
 // ---------------------------------------------------------------------------
-
-// Shared control styling. Targets a consistent ~32px control height across
-// inputs and selects, with calm focus rings and the app's design tokens.
-const inputCls = 'w-full h-8 text-sm border border-border rounded-lg px-2.5 bg-surface text-fg placeholder:text-muted/50 focus:outline-none focus:ring-2 focus:ring-ring/60 focus:border-ring/40 hover:border-border/80 transition-colors'
-
-// Native <select> with a custom chevron (appearance-none) so it matches the
-// inputs exactly. The chevron is a STATIC, fully percent-encoded SVG data URL
-// (quotes → %22, spaces → %20) so (a) Tailwind's static scanner picks up the
-// arbitrary value and (b) the CSS minifier sees no raw quotes/parens in url().
-const selectCls =
-  'w-full h-8 text-sm border border-border rounded-lg pl-2.5 pr-8 bg-surface text-fg appearance-none cursor-pointer ' +
-  'focus:outline-none focus:ring-2 focus:ring-ring/60 focus:border-ring/40 hover:border-border/80 transition-colors ' +
-  'bg-[length:14px] bg-[right_0.5rem_center] bg-no-repeat ' +
-  'bg-[url(data:image/svg+xml,%3Csvg%20xmlns=%22http://www.w3.org/2000/svg%22%20viewBox=%220%200%2012%2012%22%20fill=%22none%22%20stroke=%22%238895a8%22%20stroke-width=%221.4%22%20stroke-linecap=%22round%22%20stroke-linejoin=%22round%22%3E%3Cpath%20d=%22M3%204.5%206%207.5%209%204.5%22/%3E%3C/svg%3E)]'
-
-// A field label used above inputs/selects. Consistent weight + spacing.
-function FieldLabel({ children, className = '' }) {
-  return <label className={`block text-[11px] font-medium text-muted mb-1 ${className}`}>{children}</label>
-}
+// NOTE: inputCls, selectCls, FieldLabel are now imported from ./shared/index.js
 
 // ---------------------------------------------------------------------------
 // QueryPicker
 // ---------------------------------------------------------------------------
-
-function QueryPicker({ value, onChange, extraIds = [] }) {
-  const [freeText, setFreeText] = useState('')
-  const allIds = useMemo(() => {
-    const set = new Set([...DEMO_QUERY_IDS, ...extraIds])
-    if (value && !set.has(value)) set.add(value)
-    return [...set]
-  }, [extraIds, value])
-
-  return (
-    <div className="space-y-1.5">
-      <select
-        className={selectCls}
-        value={allIds.includes(value) ? value : '__custom__'}
-        onChange={e => { if (e.target.value !== '__custom__') onChange(e.target.value) }}
-      >
-        {allIds.map(id => <option key={id} value={id}>{id}</option>)}
-        <option value="__custom__">Custom...</option>
-      </select>
-      {(!allIds.includes(value) || !value) && (
-        <input
-          type="text"
-          placeholder="Enter query_id..."
-          className={inputCls}
-          value={freeText || value}
-          onChange={e => { setFreeText(e.target.value); onChange(e.target.value) }}
-        />
-      )}
-    </div>
-  )
-}
+// NOTE: QueryPicker is now imported from ./shared/index.js
 
 // ---------------------------------------------------------------------------
-// useMetricsList — load the org's governed metrics once for the inspector's
-// metric-binding picker. Degrades to [] on any failure (listMetrics is safe).
+// useMetricsList — now imported from ./shared/index.js
 // ---------------------------------------------------------------------------
-
-function useMetricsList() {
-  const [metrics, setMetrics] = useState([])
-  useEffect(() => {
-    let cancelled = false
-    listMetrics().then(rows => { if (!cancelled) setMetrics(rows) })
-    return () => { cancelled = true }
-  }, [])
-  return metrics
-}
 
 // ---------------------------------------------------------------------------
 // MetricBindingSection — bind a data widget to a GOVERNED metric (alternative
@@ -507,573 +437,22 @@ function MetricBindingSection({ widget, onChange }) {
 }
 
 // ---------------------------------------------------------------------------
-// useColumnIntrospection
+// useColumnIntrospection — now imported from ./shared/index.js
 // ---------------------------------------------------------------------------
 
-function useColumnIntrospection(queryId) {
-  const [columns, setColumns] = useState([])
-  const [introspecting, setIntrospecting] = useState(false)
-  useEffect(() => {
-    if (!queryId) { setColumns([]); return }
-    let cancelled = false
-    setIntrospecting(true)
-    runArrowQueryById(queryId).then(({ table }) => {
-      if (!cancelled) { setColumns(table.schema.fields.map(f => f.name)); setIntrospecting(false) }
-    }).catch(() => { if (!cancelled) { setColumns([]); setIntrospecting(false) } })
-    return () => { cancelled = true }
-  }, [queryId])
-  return { columns, introspecting }
-}
-
 // ---------------------------------------------------------------------------
-// ColumnSelect
+// ColumnSelect — now imported from ./shared/index.js
 // ---------------------------------------------------------------------------
-
-function ColumnSelect({ label, value, onChange, columns, optional = false }) {
-  return (
-    <div>
-      <FieldLabel>{label}</FieldLabel>
-      <select className={selectCls} value={value || ''} onChange={e => onChange(e.target.value)}>
-        {optional && <option value="">— none —</option>}
-        {!optional && !value && <option value="">Select column…</option>}
-        {columns.map(col => <option key={col} value={col}>{col}</option>)}
-      </select>
-    </div>
-  )
-}
 
 // ---------------------------------------------------------------------------
 // ChartConfig / KpiConfig / TableConfig / FilterConfig / TextConfig
 // ---------------------------------------------------------------------------
+// NOTE: SectionLabel, Section, ToggleRow are now imported from ./shared/index.js
+// NOTE: ChartConfig, KpiConfig, TableConfig, FilterConfig, TextConfig are now imported from ./shared/index.js
 
-// ---------------------------------------------------------------------------
-// Small shared config primitives
-// ---------------------------------------------------------------------------
-
-function SectionLabel({ children }) {
-  return <p className="text-[10px] font-semibold text-muted/80 uppercase tracking-[0.08em]">{children}</p>
-}
-
-/** A collapsible <details> section with a consistent header. */
-function Section({ title, icon: Icon, children, defaultOpen = true, right = null }) {
-  return (
-    <details open={defaultOpen} className="group rounded-xl border border-border bg-surface-2/30 overflow-hidden">
-      <summary className="flex items-center justify-between gap-2 px-3 h-9 cursor-pointer select-none list-none hover:bg-surface-2/50 transition-colors">
-        <span className="flex items-center gap-2 text-xs font-semibold text-fg">
-          {Icon && <Icon size={13} className="text-muted shrink-0" />}
-          {title}
-        </span>
-        <span className="flex items-center gap-2">
-          {right}
-          <svg className="w-3 h-3 text-muted/70 transition-transform group-open:rotate-90" viewBox="0 0 12 12" fill="none" stroke="currentColor" strokeWidth="1.5">
-            <path d="M4.5 3l3 3-3 3" strokeLinecap="round" strokeLinejoin="round" />
-          </svg>
-        </span>
-      </summary>
-      <div className="px-3 pb-3 pt-2 space-y-3 border-t border-border/60">{children}</div>
-    </details>
-  )
-}
-
-function ToggleRow({ label, checked, onChange, hint }) {
-  return (
-    <label className="flex items-center justify-between gap-3 cursor-pointer py-0.5">
-      <span className="text-xs font-medium text-fg">
-        {label}
-        {hint && <span className="block text-[10px] text-muted/70 font-normal mt-0.5">{hint}</span>}
-      </span>
-      <button
-        type="button"
-        role="switch"
-        aria-checked={checked}
-        onClick={() => onChange(!checked)}
-        className={`relative inline-flex h-5 w-9 shrink-0 items-center rounded-full transition-colors focus:outline-none focus:ring-2 focus:ring-ring/50 focus:ring-offset-1 focus:ring-offset-surface ${checked ? 'bg-primary' : 'bg-border'}`}
-      >
-        <span className={`inline-block h-4 w-4 rounded-full bg-white shadow transform transition-transform ${checked ? 'translate-x-4' : 'translate-x-0.5'}`} />
-      </button>
-    </label>
-  )
-}
-
-// ---------------------------------------------------------------------------
-// Chart series builder (combo / dual-axis) — writes encoding.y
-// ---------------------------------------------------------------------------
-
-/** Normalise encoding.y (string | SeriesDef[]) into an editable SeriesDef[]. */
-function normalizeSeries(encY, baseType) {
-  if (Array.isArray(encY)) {
-    return encY.map(s => ({ col: s.col ?? '', type: s.type ?? baseType, axis: s.axis === 'right' ? 'right' : 'left' }))
-  }
-  if (typeof encY === 'string' && encY) return [{ col: encY, type: baseType, axis: 'left' }]
-  return []
-}
-
-/** Serialise a SeriesDef[] back to the most compact encoding.y form. */
-function serializeSeries(list, baseType) {
-  if (list.length === 0) return ''
-  if (list.length === 1 && list[0].axis !== 'right' && list[0].type === baseType) return list[0].col
-  return list.map(s => ({ col: s.col, type: s.type, axis: s.axis }))
-}
-
-function ChartConfig({ widget, onChange }) {
-  const { columns, introspecting } = useColumnIntrospection(widget.query_id)
-  const enc = widget.encoding ?? {}
-  const props = widget.props ?? {}
-  const baseType = widget.chart_type || 'bar'
-  const setEncoding = (key, val) => onChange({ ...widget, encoding: { ...enc, [key]: val } })
-  const setProps = (key, val) => onChange({ ...widget, props: { ...props, [key]: val } })
-
-  const series = normalizeSeries(enc.y, baseType)
-  const writeSeries = (list) => onChange({ ...widget, encoding: { ...enc, y: serializeSeries(list, baseType) } })
-  const setSeries = (idx, patch) => writeSeries(series.map((s, i) => i === idx ? { ...s, ...patch } : s))
-  const addSeries = () => writeSeries([...series, { col: columns[0] ?? '', type: baseType, axis: 'left' }])
-  const removeSeries = (idx) => writeSeries(series.filter((_, i) => i !== idx))
-
-  // Pie & donut share the category + single-value model.
-  const isPie = baseType === 'pie' || baseType === 'donut'
-  const isHeatmap = baseType === 'heatmap'
-  const isGauge = baseType === 'gauge'
-  // Charts that use the cartesian series builder (X + Y series + color).
-  const usesSeries = !isPie && !isHeatmap && !isGauge
-
-  return (
-    <div className="space-y-3">
-      <Section title="Chart type" icon={BarChart3}>
-        <div className="grid grid-cols-3 gap-1.5">
-          {CHART_TYPES.map(t => {
-            const Icon = CHART_ICONS[t] ?? BarChart3
-            const active = baseType === t
-            return (
-              <button key={t} onClick={() => onChange({ ...widget, chart_type: t })}
-                className={`flex flex-col items-center justify-center gap-1 h-14 px-1 text-[11px] font-medium rounded-lg border capitalize transition-all focus:outline-none focus:ring-2 focus:ring-ring/50 ${
-                  active ? 'bg-primary text-primary-fg border-primary shadow-sm' : 'bg-surface text-muted border-border hover:border-primary/60 hover:text-primary'
-                }`}>
-                <Icon size={17} className={active ? '' : 'text-muted'} />
-                {t}
-              </button>
-            )
-          })}
-        </div>
-      </Section>
-
-      <Section title="Data" icon={Database}>
-        {introspecting && <p className="text-xs text-muted animate-pulse">Introspecting columns…</p>}
-
-        {isGauge ? (
-          <ColumnSelect label="Value column" value={enc.value} onChange={v => setEncoding('value', v)} columns={columns} />
-        ) : isHeatmap ? (
-          <>
-            <ColumnSelect label="X column (category)" value={enc.x} onChange={v => setEncoding('x', v)} columns={columns} />
-            <ColumnSelect label="Y column (category)" value={typeof enc.y === 'string' ? enc.y : ''} onChange={v => setEncoding('y', v)} columns={columns} />
-            <ColumnSelect label="Value column (heat)" value={enc.value} onChange={v => setEncoding('value', v)} columns={columns} />
-          </>
-        ) : (
-          <>
-            <ColumnSelect label={isPie ? 'Category column' : (baseType === 'hbar' ? 'Category (Y) column' : 'X column')} value={enc.x} onChange={v => setEncoding('x', v)} columns={columns} />
-
-        {isPie ? (
-          <ColumnSelect label="Value column" value={typeof enc.y === 'string' ? enc.y : ''} onChange={v => setEncoding('y', v)} columns={columns} />
-        ) : (
-          <div className="space-y-2">
-            <div className="flex items-center justify-between">
-              <FieldLabel className="mb-0">Series (Y)</FieldLabel>
-              <button onClick={addSeries}
-                className="flex items-center gap-1 text-[11px] font-medium pl-1.5 pr-2 h-6 rounded-lg border border-dashed border-border hover:border-primary text-muted hover:text-primary transition-colors focus:outline-none focus:ring-2 focus:ring-ring/50">
-                <Plus size={12} /> Add series
-              </button>
-            </div>
-            {series.length === 0 && (
-              <p className="text-xs text-muted/70 rounded-lg border border-dashed border-border bg-surface-2/30 px-3 py-2 text-center">
-                No series yet — add one to plot data.
-              </p>
-            )}
-            {series.map((s, idx) => (
-              <div key={idx} className="rounded-lg border border-border p-2 space-y-1.5 bg-surface">
-                <div className="flex items-center gap-1.5">
-                  <select className={`${selectCls} flex-1`} value={s.col || ''} onChange={e => setSeries(idx, { col: e.target.value })}>
-                    {!s.col && <option value="">Select column…</option>}
-                    {columns.map(c => <option key={c} value={c}>{c}</option>)}
-                  </select>
-                  <button onClick={() => removeSeries(idx)} title="Remove series"
-                    className="w-7 h-7 shrink-0 flex items-center justify-center rounded-lg border border-transparent hover:border-red-300 hover:bg-red-50 text-muted hover:text-red-500 transition-colors">
-                    <Trash2 size={13} />
-                  </button>
-                </div>
-                <div className="flex gap-1.5">
-                  <select className={`${selectCls} flex-1`} value={s.type} onChange={e => setSeries(idx, { type: e.target.value })}>
-                    {SERIES_TYPES.map(t => <option key={t} value={t}>{t}</option>)}
-                  </select>
-                  <div className="flex h-8 rounded-lg border border-border overflow-hidden shrink-0">
-                    {['left', 'right'].map(ax => (
-                      <button key={ax} onClick={() => setSeries(idx, { axis: ax })}
-                        className={`w-8 text-[11px] font-medium transition-colors ${s.axis === ax ? 'bg-primary text-primary-fg' : 'bg-surface text-muted hover:text-primary'}`}
-                        title={`${ax} y-axis`}>
-                        {ax === 'left' ? 'L' : 'R'}
-                      </button>
-                    ))}
-                  </div>
-                </div>
-              </div>
-            ))}
-          </div>
-        )}
-
-            {usesSeries && <ColumnSelect label="Group / color column" value={enc.color} onChange={v => setEncoding('color', v)} columns={columns} optional />}
-          </>
-        )}
-      </Section>
-
-      {(usesSeries || isGauge) && (
-        <Section title="Display" defaultOpen={false} icon={SlidersHorizontal}>
-          {usesSeries && (
-            <ToggleRow label="Stack series" hint="Bar / line / area share a stack" checked={props.stack === true || typeof props.stack === 'string'} onChange={v => setProps('stack', v)} />
-          )}
-          {isGauge && (
-            <div>
-              <FieldLabel>Max (gauge range)</FieldLabel>
-              <input type="number" className={inputCls} value={props.max ?? ''} placeholder="auto (value × 1.5)"
-                onChange={e => setProps('max', e.target.value === '' ? undefined : (parseFloat(e.target.value) || undefined))} />
-            </div>
-          )}
-          <div>
-            <FieldLabel>Height (px)</FieldLabel>
-            <input type="number" min={120} max={1200} className={inputCls} value={props.height ?? 260}
-              onChange={e => setProps('height', parseInt(e.target.value, 10) || 260)} />
-          </div>
-        </Section>
-      )}
-    </div>
-  )
-}
-
-function KpiConfig({ widget, onChange }) {
-  const { columns, introspecting } = useColumnIntrospection(widget.query_id)
-  const enc = widget.encoding ?? {}
-  const props = widget.props ?? {}
-  const setEncoding = (key, val) => onChange({ ...widget, encoding: { ...enc, [key]: val } })
-  const setProps = (key, val) => onChange({ ...widget, props: { ...props, [key]: val } })
-  const deltaFormat = props.deltaFormat || 'percent'
-  return (
-    <div className="space-y-3">
-      <Section title="Data" icon={Database}>
-        {introspecting && <p className="text-xs text-muted animate-pulse">Introspecting columns…</p>}
-        <ColumnSelect label="Value column" value={enc.value} onChange={v => setEncoding('value', v)} columns={columns} />
-        <div>
-          <FieldLabel>Label</FieldLabel>
-          <input type="text" className={inputCls} value={props.label ?? ''} placeholder="e.g. Total revenue" onChange={e => setProps('label', e.target.value)} />
-        </div>
-        <div>
-          <FieldLabel>Format</FieldLabel>
-          <select className={selectCls} value={props.format ?? 'number'} onChange={e => setProps('format', e.target.value)}>
-            {['number', 'integer', 'percent', 'currency'].map(f => <option key={f} value={f}>{f}</option>)}
-          </select>
-        </div>
-      </Section>
-
-      <Section title="Delta & sparkline" defaultOpen={false} icon={TrendingUp}>
-        <ColumnSelect label="Comparison column" value={enc.compare} onChange={v => setEncoding('compare', v)} columns={columns} optional />
-        {enc.compare && (
-          <div>
-            <FieldLabel>Delta format</FieldLabel>
-            <div className="flex h-8 rounded-lg border border-border overflow-hidden">
-              {['percent', 'absolute'].map(f => (
-                <button key={f} onClick={() => setProps('deltaFormat', f)}
-                  className={`flex-1 text-[11px] font-medium capitalize transition-colors ${deltaFormat === f ? 'bg-primary text-primary-fg' : 'bg-surface text-muted hover:text-primary'}`}>
-                  {f}
-                </button>
-              ))}
-            </div>
-          </div>
-        )}
-        <ColumnSelect label="Sparkline column" value={enc.spark} onChange={v => setEncoding('spark', v)} columns={columns} optional />
-      </Section>
-    </div>
-  )
-}
-
-/** Coerce props.columns (array | comma-string | undefined) to a string[]. */
-function columnsToArray(raw) {
-  if (Array.isArray(raw)) return raw
-  if (typeof raw === 'string' && raw) return raw.split(',').map(c => c.trim()).filter(Boolean)
-  return []
-}
-
-function TableConfig({ widget, onChange }) {
-  const { columns: allCols, introspecting } = useColumnIntrospection(widget.query_id)
-  const props = widget.props ?? {}
-  const setProps = (key, val) => onChange({ ...widget, props: { ...props, [key]: val } })
-
-  const selected = columnsToArray(props.columns)
-  const toggleCol = (col) => {
-    const next = selected.includes(col) ? selected.filter(c => c !== col) : [...selected, col]
-    setProps('columns', next)
-  }
-  // Columns the formatting editors operate on: explicit selection, else all.
-  const fmtCols = selected.length > 0 ? selected : allCols
-
-  return (
-    <div className="space-y-3">
-      <Section title="Rows & columns" icon={Table2}>
-        <div>
-          <FieldLabel>Row limit</FieldLabel>
-          <input type="number" min={1} max={10000} className={inputCls} value={props.limit ?? 50}
-            onChange={e => setProps('limit', parseInt(e.target.value, 10) || 50)} />
-        </div>
-        <div className="space-y-1.5">
-          <div className="flex items-center justify-between">
-            <FieldLabel className="mb-0">Visible columns</FieldLabel>
-            {selected.length > 0 && (
-              <button onClick={() => setProps('columns', [])} className="text-[10px] font-medium text-muted hover:text-primary transition-colors">show all</button>
-            )}
-          </div>
-          {introspecting && <p className="text-xs text-muted animate-pulse">Introspecting columns…</p>}
-          {!introspecting && allCols.length === 0 && (
-            <p className="text-xs text-muted/70 rounded-lg border border-dashed border-border bg-surface-2/30 px-3 py-2 text-center">Pick a query to list columns.</p>
-          )}
-          <div className="flex flex-wrap gap-1.5">
-            {allCols.map(col => {
-              const on = selected.length === 0 || selected.includes(col)
-              return (
-                <button key={col} onClick={() => toggleCol(col)}
-                  className={`px-2 h-7 text-[11px] font-mono rounded-lg border transition-all focus:outline-none focus:ring-2 focus:ring-ring/50 ${
-                    on && selected.includes(col) ? 'bg-primary text-primary-fg border-primary'
-                      : on ? 'bg-surface text-fg border-border hover:border-primary'
-                      : 'bg-surface text-muted/50 border-border line-through'
-                  }`}>
-                  {col}
-                </button>
-              )
-            })}
-          </div>
-          {allCols.length > 0 && <p className="text-[10px] text-muted/70">None selected → all columns shown.</p>}
-        </div>
-      </Section>
-
-      <Section title="Column formats" defaultOpen={false} icon={Hash}>
-        <ColumnFormatsEditor
-          columns={fmtCols}
-          value={widget.columnFormats ?? {}}
-          onChange={cf => onChange({ ...widget, columnFormats: cf })}
-        />
-      </Section>
-
-      <Section title="Conditional formatting" defaultOpen={false} icon={Palette}>
-        <ConditionalRulesEditor
-          columns={fmtCols}
-          rules={widget.formattingRules ?? []}
-          onChange={rules => onChange({ ...widget, formattingRules: rules })}
-        />
-      </Section>
-    </div>
-  )
-}
-
-// ---------------------------------------------------------------------------
-// ColumnFormatsEditor — widget.columnFormats: { col: { type, decimals, ... } }
-// ---------------------------------------------------------------------------
-
-function ColumnFormatsEditor({ columns, value, onChange }) {
-  const setFmt = (col, patch) => {
-    const next = { ...value }
-    const merged = { ...(next[col] ?? {}), ...patch }
-    if (!merged.type) delete next[col]
-    else next[col] = merged
-    onChange(next)
-  }
-  if (columns.length === 0) return <p className="text-xs text-muted/70 rounded-lg border border-dashed border-border bg-surface-2/30 px-3 py-2 text-center">No columns to format yet.</p>
-  return (
-    <div className="space-y-2">
-      {columns.map(col => {
-        const fmt = value[col] ?? {}
-        return (
-          <div key={col} className="rounded-lg border border-border p-2 space-y-1.5 bg-surface">
-            <div className="flex items-center gap-1.5">
-              <span className="flex-1 text-xs font-mono text-fg truncate">{col}</span>
-              <select className={`${selectCls} w-28`} value={fmt.type ?? ''} onChange={e => setFmt(col, { type: e.target.value })}>
-                <option value="">raw</option>
-                {COLUMN_FORMAT_TYPES.map(t => <option key={t} value={t}>{t}</option>)}
-              </select>
-            </div>
-            {(fmt.type === 'number' || fmt.type === 'currency' || fmt.type === 'percent') && (
-              <div className="flex gap-1.5">
-                <input type="number" min={0} max={10} placeholder="decimals" className={`${inputCls} flex-1`}
-                  value={fmt.decimals ?? ''} onChange={e => setFmt(col, { decimals: e.target.value === '' ? undefined : parseInt(e.target.value, 10) })} />
-                {fmt.type === 'currency' && (
-                  <input type="text" placeholder="USD" className={`${inputCls} w-20`}
-                    value={fmt.currency ?? ''} onChange={e => setFmt(col, { currency: e.target.value || undefined })} />
-                )}
-              </div>
-            )}
-            {fmt.type === 'date' && (
-              <select className={selectCls} value={fmt.dateStyle ?? 'short'} onChange={e => setFmt(col, { dateStyle: e.target.value })}>
-                {['short', 'medium', 'long', 'full'].map(s => <option key={s} value={s}>{s}</option>)}
-              </select>
-            )}
-          </div>
-        )
-      })}
-    </div>
-  )
-}
-
-// ---------------------------------------------------------------------------
-// ConditionalRulesEditor — widget.formattingRules: [{ column, op, value, ... }]
-// ---------------------------------------------------------------------------
-
-function ConditionalRulesEditor({ columns, rules, onChange }) {
-  const addRule = () => onChange([...rules, {
-    column: columns[0] ?? '', op: 'gt', value: '', scope: 'cell',
-    style: { backgroundColor: '#dcfce7', color: '#166534' },
-  }])
-  const setRule = (idx, patch) => onChange(rules.map((r, i) => i === idx ? { ...r, ...patch } : r))
-  const setStyle = (idx, patch) => onChange(rules.map((r, i) => i === idx ? { ...r, style: { ...r.style, ...patch } } : r))
-  const removeRule = (idx) => onChange(rules.filter((_, i) => i !== idx))
-
-  return (
-    <div className="space-y-2">
-      <div className="flex items-center justify-between">
-        <p className="text-[10px] text-muted/70">When a cell matches, apply a style.</p>
-        <button onClick={addRule}
-          className="text-[11px] font-medium px-2 h-6 rounded-lg border border-dashed border-border hover:border-primary text-muted hover:text-primary transition-colors focus:outline-none focus:ring-2 focus:ring-ring/50">+ Add rule</button>
-      </div>
-      {rules.length === 0 && <p className="text-xs text-muted/70 rounded-lg border border-dashed border-border bg-surface-2/30 px-3 py-2 text-center">No rules yet.</p>}
-      {rules.map((r, idx) => (
-        <div key={idx} className="rounded-lg border border-border p-2 space-y-1.5 bg-surface">
-          <div className="flex items-center gap-1.5">
-            <select className={`${selectCls} flex-1`} value={r.column ?? ''} onChange={e => setRule(idx, { column: e.target.value })}>
-              {!r.column && <option value="">column…</option>}
-              {columns.map(c => <option key={c} value={c}>{c}</option>)}
-            </select>
-            <select className={`${selectCls} w-24`} value={r.op ?? 'gt'} onChange={e => setRule(idx, { op: e.target.value })}>
-              {FORMAT_OPS.map(o => <option key={o} value={o}>{o}</option>)}
-            </select>
-            <button onClick={() => removeRule(idx)} title="Remove rule"
-              className="w-7 h-7 shrink-0 flex items-center justify-center text-xs rounded-lg border border-transparent hover:border-border hover:bg-surface-2 text-muted hover:text-fg transition-colors">✕</button>
-          </div>
-          <div className="flex gap-1.5">
-            <input type="text" placeholder="value" className={`${inputCls} flex-1`} value={r.value ?? ''} onChange={e => setRule(idx, { value: e.target.value })} />
-            {r.op === 'between' && (
-              <input type="text" placeholder="and" className={`${inputCls} flex-1`} value={r.value2 ?? ''} onChange={e => setRule(idx, { value2: e.target.value })} />
-            )}
-          </div>
-          <div className="flex items-center gap-2">
-            <div className="flex h-7 rounded-lg border border-border overflow-hidden">
-              {['cell', 'row'].map(sc => (
-                <button key={sc} onClick={() => setRule(idx, { scope: sc })}
-                  className={`px-2.5 text-[11px] font-medium capitalize transition-colors ${(r.scope ?? 'cell') === sc ? 'bg-primary text-primary-fg' : 'bg-surface text-muted hover:text-primary'}`}>{sc}</button>
-              ))}
-            </div>
-            <label className="flex items-center gap-1 text-[10px] text-muted cursor-pointer">bg
-              <input type="color" className="h-6 w-6 rounded border border-border bg-surface cursor-pointer" value={r.style?.backgroundColor ?? '#dcfce7'} onChange={e => setStyle(idx, { backgroundColor: e.target.value })} />
-            </label>
-            <label className="flex items-center gap-1 text-[10px] text-muted cursor-pointer">text
-              <input type="color" className="h-6 w-6 rounded border border-border bg-surface cursor-pointer" value={r.style?.color ?? '#166534'} onChange={e => setStyle(idx, { color: e.target.value })} />
-            </label>
-            <button onClick={() => setStyle(idx, { fontWeight: r.style?.fontWeight === 'bold' ? undefined : 'bold' })}
-              className={`w-7 h-7 text-[11px] rounded-lg border font-bold transition-colors ${r.style?.fontWeight === 'bold' ? 'border-primary text-primary bg-primary/5' : 'border-border text-muted hover:text-fg'}`}>B</button>
-          </div>
-        </div>
-      ))}
-    </div>
-  )
-}
-
-// ---------------------------------------------------------------------------
-// PlacementControl — where a widget renders: in the grid, in the above-grid
-// filter bar (header), or in the slide-over drawer. Writes widget.placement and
-// keeps the legacy drawer flag in sync for back-compat (so old viewers + the
-// filters-drawer authoring panel still see drawer filters).
-// ---------------------------------------------------------------------------
-
-const PLACEMENT_OPTIONS = [
-  { id: 'grid',   label: 'In grid',          hint: 'A normal grid cell you drag & resize.' },
-  { id: 'header', label: 'Above grid (bar)', hint: 'A compact control in the filter bar above the grid.' },
-  { id: 'drawer', label: 'In drawer',        hint: 'Lives in the slide-over Filters drawer.' },
-]
-
-/** Apply a placement choice to a widget, keeping the legacy drawer flag/group in
- *  sync (drawer → drawer=true + drawer_group='filters'; grid/header → drawer=false). */
-function applyPlacement(widget, placement) {
-  const next = { ...widget, placement }
-  if (placement === 'drawer') {
-    next.drawer = true
-    if (!next.drawer_group) next.drawer_group = 'filters'
-  } else {
-    next.drawer = false
-  }
-  return next
-}
-
-function PlacementControl({ widget, onChange }) {
-  const current = effectivePlacement(widget)
-  const active = PLACEMENT_OPTIONS.find(o => o.id === current) ?? PLACEMENT_OPTIONS[0]
-  return (
-    <div>
-      <FieldLabel className="flex items-center gap-1.5"><LayoutGrid size={12} /> Placement</FieldLabel>
-      <div className="grid grid-cols-3 gap-1.5" data-testid="widget-placement-control">
-        {PLACEMENT_OPTIONS.map(o => (
-          <button key={o.id} type="button"
-            onClick={() => onChange(applyPlacement(widget, o.id))}
-            data-testid={`placement-${o.id}`}
-            title={o.hint}
-            className={`h-8 px-1.5 text-[11px] font-medium rounded-lg border transition-all focus:outline-none focus:ring-2 focus:ring-ring/50 ${
-              current === o.id ? 'bg-primary text-primary-fg border-primary shadow-sm' : 'bg-surface text-muted border-border hover:border-primary hover:text-primary'
-            }`}>
-            {o.label}
-          </button>
-        ))}
-      </div>
-      <p className="text-[10px] text-muted/70 mt-1">{active.hint}</p>
-    </div>
-  )
-}
-
-function FilterConfig({ widget, onChange }) {
-  const setField = (key, val) => onChange({ ...widget, [key]: val })
-  const props = widget.props ?? {}
-  const setProps = (key, val) => onChange({ ...widget, props: { ...props, [key]: val } })
-  return (
-    <div className="space-y-3">
-      <PlacementControl widget={widget} onChange={onChange} />
-      <div>
-        <FieldLabel>Label</FieldLabel>
-        <input type="text" className={inputCls} value={props.label ?? ''} onChange={e => setProps('label', e.target.value)} />
-      </div>
-      <div>
-        <FieldLabel>Subtype</FieldLabel>
-        <select className={selectCls} value={widget.subtype ?? 'select'} onChange={e => setField('subtype', e.target.value)}>
-          {FILTER_SUBTYPES.map(s => <option key={s} value={s}>{s}</option>)}
-        </select>
-      </div>
-      <div>
-        <FieldLabel>Target variable</FieldLabel>
-        <input type="text" placeholder="e.g. selected_region" className={inputCls}
-          value={widget.target_var ?? ''} onChange={e => setField('target_var', e.target.value)} />
-      </div>
-      {(widget.subtype === 'select' || widget.subtype === 'multiselect') && (
-        <div>
-          <FieldLabel>Options query ID</FieldLabel>
-          <QueryPicker value={widget.options_query_id ?? ''} onChange={v => setField('options_query_id', v)} />
-        </div>
-      )}
-    </div>
-  )
-}
-
-function TextConfig({ widget, onChange }) {
-  return (
-    <div className="space-y-3">
-      <PlacementControl widget={widget} onChange={onChange} />
-      <div>
-        <FieldLabel>Markdown content</FieldLabel>
-        <textarea rows={8} className={`${inputCls} h-auto py-1.5 resize-y font-mono text-xs leading-relaxed`}
-          value={widget.content ?? ''} onChange={e => onChange({ ...widget, content: e.target.value })}
-          placeholder="# Heading&#10;&#10;Enter **markdown** here..." />
-      </div>
-      <p className="text-[10px] text-muted/70">Supports standard Markdown.</p>
-    </div>
-  )
-}
+// NOTE: ChartConfig, KpiConfig, TableConfig, ColumnFormatsEditor, ConditionalRulesEditor,
+// FilterConfig, TextConfig, PlacementControl, applyPlacement, effectivePlacement are all
+// imported from ./shared/index.js
 
 function PivotConfig({ widget, onChange }) {
   const { columns, introspecting } = useColumnIntrospection(widget.query_id)
@@ -1255,74 +634,8 @@ function WidgetLayoutSection({ widget, onChange, spec, activeBreakpoint = 'lg', 
 }
 
 // ---------------------------------------------------------------------------
-// ParamBindingSection
+// ParamBindingSection — now imported from ./shared/index.js
 // ---------------------------------------------------------------------------
-
-function ParamBindingSection({ widget, onChange, specVariables }) {
-  const params = widget.params ?? {}
-  const varNames = (specVariables ?? []).map(v => v.name)
-
-  const setParam = (paramName, value) => onChange({ ...widget, params: { ...params, [paramName]: value } })
-  const removeParam = (paramName) => { const next = { ...params }; delete next[paramName]; onChange({ ...widget, params: next }) }
-  const addParam = () => { const name = `param${Object.keys(params).length + 1}`; if (!(name in params)) setParam(name, '') }
-  const entries = Object.entries(params)
-
-  return (
-    <div className="space-y-2">
-      <div className="flex items-center justify-between">
-        <SectionLabel>Param bindings</SectionLabel>
-        <button onClick={addParam}
-          className="text-[11px] font-medium px-2 h-6 rounded-lg border border-dashed border-border hover:border-primary text-muted hover:text-primary transition-colors focus:outline-none focus:ring-2 focus:ring-ring/50">
-          + Add
-        </button>
-      </div>
-      {entries.length === 0 && <p className="text-xs text-muted/70 rounded-lg border border-dashed border-border bg-surface-2/30 px-3 py-2 text-center">No params bound.</p>}
-      {entries.map(([paramName, binding]) => {
-        const isRef = binding !== null && typeof binding === 'object' && 'ref' in binding
-        return (
-          <div key={paramName} className="rounded-lg border border-border p-2 space-y-1.5 bg-surface-2">
-            <div className="flex items-center gap-1.5">
-              <input type="text" className={`${inputCls} flex-1 font-mono text-xs`} value={paramName}
-                onChange={e => {
-                  const newName = e.target.value
-                  if (!newName || newName === paramName) return
-                  const next = {}
-                  for (const [k, v] of Object.entries(params)) next[k === paramName ? newName : k] = v
-                  onChange({ ...widget, params: next })
-                }} placeholder="param name" />
-              <button onClick={() => removeParam(paramName)}
-                className="text-xs px-1.5 py-0.5 rounded border border-transparent hover:border-border text-muted hover:text-fg transition-colors" title="Remove binding">✕</button>
-            </div>
-            <div className="flex gap-1">
-              <button onClick={() => setParam(paramName, isRef ? '' : { ref: varNames[0] ?? '' })}
-                className={`flex-1 text-xs py-0.5 rounded border transition-colors ${isRef ? 'border-primary text-primary bg-surface' : 'border-border text-muted hover:border-primary hover:text-primary'}`}>
-                {isRef ? '↔ Variable' : 'Variable'}
-              </button>
-              <button onClick={() => setParam(paramName, isRef ? '' : binding)}
-                className={`flex-1 text-xs py-0.5 rounded border transition-colors ${!isRef ? 'border-primary text-primary bg-surface' : 'border-border text-muted hover:border-primary hover:text-primary'}`}>
-                {!isRef ? '↔ Literal' : 'Literal'}
-              </button>
-            </div>
-            {isRef ? (
-              <select className={selectCls} value={binding.ref ?? ''} onChange={e => setParam(paramName, { ref: e.target.value })}>
-                {varNames.length === 0 && <option value="">— no variables defined —</option>}
-                {varNames.map(v => <option key={v} value={v}>{v}</option>)}
-                {binding.ref && !varNames.includes(binding.ref) && <option value={binding.ref}>{binding.ref} (not found)</option>}
-              </select>
-            ) : (
-              <input type="text" className={`${inputCls} font-mono text-xs`} placeholder="literal value"
-                value={typeof binding === 'string' ? binding : JSON.stringify(binding)}
-                onChange={e => {
-                  const raw = e.target.value
-                  try { setParam(paramName, JSON.parse(raw)) } catch { setParam(paramName, raw) }
-                }} />
-            )}
-          </div>
-        )
-      })}
-    </div>
-  )
-}
 
 // ---------------------------------------------------------------------------
 // VariablesEditor
@@ -1374,49 +687,7 @@ function VariablesEditor({ variables, onChange }) {
 // ConfigPanel
 // ---------------------------------------------------------------------------
 
-// ---------------------------------------------------------------------------
-// BackgroundEditor — edits a background descriptor (dashboard or widget)
-// ---------------------------------------------------------------------------
-
-function BackgroundEditor({ value, onChange }) {
-  const bg = value ?? {}
-  const type = bg.type ?? 'none'
-  const set = (patch) => onChange({ ...bg, ...patch })
-  return (
-    <div className="space-y-2">
-      <div className="grid grid-cols-5 gap-1">
-        {BACKGROUND_TYPES.map(t => (
-          <button key={t} onClick={() => set({ type: t === 'none' ? undefined : t })}
-            className={`h-7 px-1.5 text-[11px] font-medium rounded-lg border capitalize transition-all focus:outline-none focus:ring-2 focus:ring-ring/50 ${
-              (type === t || (t === 'none' && !bg.type)) ? 'bg-primary text-primary-fg border-primary' : 'bg-surface text-muted border-border hover:border-primary hover:text-primary'
-            }`}>{t}</button>
-        ))}
-      </div>
-      {type === 'solid' && (
-        <div className="flex items-center gap-2">
-          <input type="color" className="h-8 w-10 shrink-0 rounded-lg border border-border bg-surface cursor-pointer" value={bg.color ?? '#0b0f1a'} onChange={e => set({ color: e.target.value })} />
-          <input type="text" className={`${inputCls} flex-1`} value={bg.color ?? ''} placeholder="#0b0f1a or any CSS color" onChange={e => set({ color: e.target.value })} />
-        </div>
-      )}
-      {type === 'gradient' && (
-        <div className="flex items-center gap-2">
-          <input type="color" className="h-8 w-10 shrink-0 rounded-lg border border-border bg-surface cursor-pointer" value={bg.from ?? '#6366f1'} onChange={e => set({ from: e.target.value })} />
-          <span className="text-xs text-muted">→</span>
-          <input type="color" className="h-8 w-10 shrink-0 rounded-lg border border-border bg-surface cursor-pointer" value={bg.to ?? '#ec4899'} onChange={e => set({ to: e.target.value })} />
-          <input type="number" className={`${inputCls} flex-1`} placeholder="angle" value={bg.angle ?? 135} onChange={e => set({ angle: parseInt(e.target.value, 10) })} />
-          <span className="text-xs text-muted">°</span>
-        </div>
-      )}
-      {type === 'image' && (
-        <input type="text" className={inputCls} placeholder="https://…/image.png" value={bg.imageUrl ?? ''} onChange={e => set({ imageUrl: e.target.value })} />
-      )}
-      {type === 'css' && (
-        <textarea rows={3} className={`${inputCls} h-auto py-1.5 font-mono text-xs resize-y`} placeholder="background: radial-gradient(…); border-radius: 16px;"
-          value={bg.css ?? ''} onChange={e => set({ css: e.target.value })} />
-      )}
-    </div>
-  )
-}
+// BackgroundEditor is now imported from ./shared/index.js
 
 // ---------------------------------------------------------------------------
 // WidgetAppearanceSection — widget.style + widget.html (full HTML flexibility)
@@ -1480,19 +751,7 @@ function WidgetAppearanceSection({ widget, onChange }) {
 // DashboardPanel — dashboard-level settings: background, grid, variables
 // ---------------------------------------------------------------------------
 
-// A compact preset-chip row used across the Grid section (columns, row height, …).
-function ChipRow({ options, value, onChange, suffix = '' }) {
-  return (
-    <div className="flex flex-wrap gap-1.5">
-      {options.map(opt => (
-        <button key={opt} onClick={() => onChange(opt)}
-          className={`px-2.5 py-1 text-xs font-medium rounded-lg border transition-all ${value === opt ? 'bg-primary text-primary-fg border-primary' : 'bg-surface text-fg border-border hover:border-primary hover:text-primary'}`}>
-          {opt}{suffix}
-        </button>
-      ))}
-    </div>
-  )
-}
+// ChipRow is now imported from ./shared/index.js
 
 function DashboardPanel({ spec, onSpecChange }) {
   const layout = spec.layout ?? {}

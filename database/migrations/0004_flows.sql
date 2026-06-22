@@ -228,3 +228,48 @@ CREATE TABLE IF NOT EXISTS flow_sla_alerts (
 
 CREATE INDEX IF NOT EXISTS flow_sla_alerts_org_id_idx  ON flow_sla_alerts (org_id);
 CREATE INDEX IF NOT EXISTS flow_sla_alerts_flow_id_idx ON flow_sla_alerts (flow_id);
+
+-- ── B3: writeback_requests — governed write-back state machine ────────────────
+-- One row per write-back request submitted via the Canvas action widget.
+-- State machine: pending_approval → committed | rejected; or auto-commit.
+--
+-- idempotency_key:  caller-supplied deduplication key (per-org unique).
+-- rows:             JSONB snapshot of the rows submitted for writing.
+-- target:           {connector_id, object} target descriptor.
+-- mode:             'append' | 'overwrite' | 'merge'.
+-- approval_required: when TRUE the write is gated behind an approver action.
+-- state:            current state of the state machine.
+-- result:           JSONB result from the loader layer (populated on commit).
+-- approved_by:      user_id of the member who approved/rejected the request.
+
+CREATE TABLE IF NOT EXISTS writeback_requests (
+    id               uuid        PRIMARY KEY DEFAULT gen_random_uuid(),
+    org_id           uuid        NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
+    idempotency_key  text        NOT NULL,
+    rows             jsonb       NOT NULL DEFAULT '[]'::jsonb,
+    target           jsonb       NOT NULL DEFAULT '{}'::jsonb,
+    mode             text        NOT NULL DEFAULT 'append'
+                                 CHECK (mode IN ('append', 'overwrite', 'merge')),
+    created_by       uuid        NOT NULL,
+    approval_required boolean    NOT NULL DEFAULT false,
+    state            text        NOT NULL DEFAULT 'pending_approval'
+                                 CHECK (state IN (
+                                     'pending_approval',
+                                     'committed',
+                                     'rejected',
+                                     'failed'
+                                 )),
+    result           jsonb,
+    error            text,
+    approved_by      uuid,
+    meta             jsonb       NOT NULL DEFAULT '{}'::jsonb,
+    created_at       timestamptz NOT NULL DEFAULT now(),
+    updated_at       timestamptz NOT NULL DEFAULT now(),
+    UNIQUE (org_id, idempotency_key)
+);
+
+CREATE INDEX IF NOT EXISTS writeback_requests_org_id_idx
+    ON writeback_requests (org_id);
+CREATE INDEX IF NOT EXISTS writeback_requests_state_idx
+    ON writeback_requests (org_id, state)
+    WHERE state = 'pending_approval';
