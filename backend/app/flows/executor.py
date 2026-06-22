@@ -157,6 +157,13 @@ class TaskContext:
     #         (the handler then synthesises a uuid).
     run_id: str | None = field(default=None)
 
+    # B2: Run-level seed for stochastic cells.
+    # Derived from the flow_run UUID and stored on flow_runs.seed.
+    # When non-None, stochastic python cells receive this seed so the same
+    # run is reproducible (retries produce the same output) while different
+    # runs diverge.  None = no seed injection (preview / test path).
+    seed: int | None = field(default=None)
+
 
 # ---------------------------------------------------------------------------
 # Template resolution
@@ -723,6 +730,24 @@ def execute_task(
         existing_code = raw_config.get("code", "")
         raw_config = dict(raw_config)
         raw_config["code"] = item_preamble + existing_code
+
+    # B2: Stochastic cell seed injection.
+    # When a python task is flagged stochastic (task["stochastic"] = True) and
+    # the run carries a seed (ctx.seed is not None), prepend a seed-setting
+    # preamble to the user code so that random / numpy / torch calls are
+    # reproducible within the same run while varying across different runs.
+    is_stochastic: bool = bool(task.get("stochastic", False))
+    if kind == "python" and is_stochastic and ctx.seed is not None:
+        seed_preamble = (
+            f"import random as __random__\n"
+            f"__random__.seed({ctx.seed!r})\n"
+            f"try:\n"
+            f"    import numpy as __np__; __np__.random.seed({ctx.seed!r})\n"
+            f"except ImportError:\n"
+            f"    pass\n"
+        )
+        raw_config = dict(raw_config)
+        raw_config["code"] = seed_preamble + (raw_config.get("code", ""))
 
     # Resolve templates in config.
     # Exception: map tasks require native (non-string) resolution for item_expr

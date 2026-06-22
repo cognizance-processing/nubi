@@ -401,6 +401,125 @@ def reset_for_tests() -> None:
 # ===========================================================================
 
 
+# ---------------------------------------------------------------------------
+# Metric-driven rollup builder
+# ---------------------------------------------------------------------------
+
+
+def build_rollup_for_metric(
+    metric: Any,
+    grains: list[str] | None = None,
+    *,
+    source_database: str | None = None,
+    rollup_id: str | None = None,
+    registry: "RollupRegistry | None" = None,
+    register_query: bool = True,
+    datastore_id: str | None = None,
+) -> "BuiltRollup":
+    """Materialize a rollup that covers a MetricDefinition's base measures.
+
+    Produces a rollup whose shape is exactly what the metric compiler's
+    ``__base`` CTE aggregates: base measures (additive components) +
+    declared dimensions + time bucket column(s) at the requested grains +
+    rls_keys.  This ensures the router's soundness check can route both
+    flat queries and layered (derived / windowed) metric queries to the
+    materialized rollup.
+
+    Parameters
+    ----------
+    metric:
+        A :class:`~app.metrics.models.MetricDefinition` instance.
+    grains:
+        Time-bucket grain columns to include as dimensions.  When the metric
+        declares a ``time_dimension`` the column is included verbatim (the
+        finest grain needed is the raw column, since the outer layer applies
+        DATE_TRUNC on top).  Pass ``None`` to skip time columns.
+    source_database:
+        Absolute path to the DuckDB file holding the base fact table.
+    rollup_id:
+        Stable id for the rollup (defaults to a generated one).
+    registry:
+        Registry to record the rollup in (defaults to the singleton).
+    register_query:
+        When ``True`` (default) register a runtime ``SELECT * FROM <rollup>``
+        query so reads resolve without a restart.
+    datastore_id:
+        Datastore the materialized rollup is served through.
+
+    Returns
+    -------
+    BuiltRollup
+        The materialization manifest, also recorded in the registry.
+
+    Notes
+    -----
+    Derived measures are NOT materialized — they are recomputed from the
+    base measure sums.  Only additive base measures (agg ∈ SUM/COUNT/MIN/MAX)
+    are materialized; non-additive (AVG, percentile, approx_count_distinct)
+    are silently skipped to keep the rollup conservative and re-routable.
+    """
+    # Resolve metric fields regardless of whether metric is a dataclass or dict.
+    if isinstance(metric, dict):
+        _base_table = metric.get("base_table") or metric.get("id", "unknown")
+        _dims = [d["name"] if isinstance(d, dict) else d.name for d in metric.get("dimensions", [])]
+        _measures_raw = metric.get("measures", [])
+        _rls_keys = list(metric.get("rls_keys") or [])
+        _time_col = None
+        td = metric.get("time_dimension")
+        if td:
+            _time_col = td.get("column") if isinstance(td, dict) else getattr(td, "column", None)
+    else:
+        _base_table = metric.base_table or (metric.base_sql and "base") or "unknown"
+        _dims = [d.name for d in metric.dimensions]
+        _measures_raw = list(metric.measures())
+        _rls_keys = list(metric.rls_keys or [])
+        _time_col = metric.time_dimension.column if metric.time_dimension else None
+
+    # ── Resolve additive base measures ───────────────────────────────────────
+    # Only SUM/COUNT/MIN/MAX are re-aggregable (additive over the rollup grain).
+    _ADDITIVE_AGGS = {"sum", "count", "min", "max"}
+    measures_str: list[str] = []
+    for m in _measures_raw:
+        if isinstance(m, dict):
+            agg = m.get("agg", "sum").lower()
+            expr = m.get("expr", "*")
+        else:
+            agg = m.agg.lower()
+            expr = m.expr
+        if agg.replace("_distinct", "") not in _ADDITIVE_AGGS:
+            continue  # skip non-additive (avg, percentile, approx_count_distinct)
+        measures_str.append(f"{agg}({expr})")
+
+    if not measures_str:
+        raise ValueError(
+            f"Metric {getattr(metric, 'id', '?')!r} has no additive base measures "
+            "that can be materialized into a rollup."
+        )
+
+    # ── Resolve dimensions ───────────────────────────────────────────────────
+    dimensions = list(_dims)
+    # Add the time column (raw, not date_trunced — outer layer applies trunc).
+    if _time_col and grains is not None:
+        if _time_col not in dimensions:
+            dimensions.append(_time_col)
+
+    candidate = RollupCandidate(
+        table=_base_table,
+        dimensions=sorted(dimensions),
+        measures=sorted(measures_str),
+    )
+
+    return build_rollup(
+        candidate,
+        rls_keys=_rls_keys,
+        source_database=source_database,
+        rollup_id=rollup_id,
+        registry=registry,
+        register_query=register_query,
+        datastore_id=datastore_id,
+    )
+
+
 def _rollup_database_path(rollup_id: str) -> str:
     """On-disk DuckDB target for a rollup: ``seed_data/rollups/<id>.duckdb``."""
     import os  # noqa: PLC0415

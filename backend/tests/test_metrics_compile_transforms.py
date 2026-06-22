@@ -773,3 +773,98 @@ def test_ccbsa_rolling_mix() -> None:
     assert "27" in sql  # ROWS BETWEEN 27 PRECEDING
     assert "SUM" in sql.upper()
     assert "OVER" in sql.upper()
+
+
+# ---------------------------------------------------------------------------
+# 9. Top-N with "Other" bucket
+# ---------------------------------------------------------------------------
+
+
+def test_top_n_other_emits_union_all() -> None:
+    """top_n.other=True emits a UNION ALL with an Other bucket."""
+    m = _simple_metric()
+    mq = MetricQuery(
+        metric_id="revenue",
+        dimensions=("region",),
+        top_n=TopN(dimension="region", n=3, order="desc", other=True, other_label="Other"),
+    )
+    sql, _ = compile_metric(m, mq)
+    up = sql.upper()
+    # Must emit UNION ALL structure.
+    assert "UNION ALL" in up, f"Expected UNION ALL in: {sql[:400]}"
+    # Must include the "Other" label.
+    assert "Other" in sql or "other" in sql.lower()
+
+
+def test_top_n_other_label_appears_in_sql() -> None:
+    """The other_label value appears in the emitted SQL for the Other bucket."""
+    m = _simple_metric()
+    mq = MetricQuery(
+        metric_id="revenue",
+        dimensions=("region",),
+        top_n=TopN(dimension="region", n=2, order="desc", other=True, other_label="All Others"),
+    )
+    sql, _ = compile_metric(m, mq)
+    assert "All Others" in sql, f"Expected 'All Others' label in: {sql[:400]}"
+
+
+def test_top_n_other_has_qualify_for_top_rows() -> None:
+    """The top-N portion still uses QUALIFY to restrict to top-N rows."""
+    m = _simple_metric()
+    mq = MetricQuery(
+        metric_id="revenue",
+        dimensions=("region",),
+        top_n=TopN(dimension="region", n=5, order="desc", other=True),
+    )
+    sql, _ = compile_metric(m, mq)
+    up = sql.upper()
+    assert "QUALIFY" in up, f"Expected QUALIFY for top-N in: {sql[:400]}"
+    assert "UNION ALL" in up
+
+
+def test_top_n_no_other_unchanged() -> None:
+    """top_n.other=False (default) does NOT emit UNION ALL (no regression)."""
+    m = _simple_metric()
+    mq = MetricQuery(
+        metric_id="revenue",
+        dimensions=("region",),
+        top_n=TopN(dimension="region", n=3, order="desc", other=False),
+    )
+    sql, _ = compile_metric(m, mq)
+    assert "UNION ALL" not in sql.upper(), "other=False must not emit UNION ALL"
+    assert "QUALIFY" in sql.upper()
+
+
+def test_top_n_other_with_derived_measure() -> None:
+    """Other bucket recomputes derived measures from summed base measures."""
+    m = _orders_metric(
+        derived_measures=(
+            DerivedMeasure(name="pvd", formula="delivered / ordered"),
+        )
+    )
+    mq = MetricQuery(
+        metric_id="orders",
+        dimensions=("region",),
+        top_n=TopN(dimension="region", n=2, order="desc", other=True),
+    )
+    sql, _ = compile_metric(m, mq)
+    up = sql.upper()
+    # The derived measure formula must appear in the Other bucket (UNION ALL part).
+    assert "UNION ALL" in up
+    assert "pvd" in sql.lower() or "PVD" in up
+    assert "NULLIF" in up  # division guard present in the Other bucket too
+
+
+def test_top_n_other_with_time_grain() -> None:
+    """Other bucket works correctly when a time_grain is present."""
+    m = _simple_metric()
+    mq = MetricQuery(
+        metric_id="revenue",
+        dimensions=("region",),
+        time_grain="month",
+        top_n=TopN(dimension="region", n=3, order="desc", other=True),
+    )
+    sql, _ = compile_metric(m, mq)
+    up = sql.upper()
+    assert "UNION ALL" in up
+    assert "QUALIFY" in up

@@ -36,6 +36,25 @@ from datetime import datetime, timezone
 from typing import Any
 
 
+def _seed_from_run_id(run_id: str) -> int:
+    """Derive a deterministic integer seed from a UUID run_id string.
+
+    Uses the first 8 hex digits of the UUID (before any dashes) as a 32-bit
+    unsigned integer, masked to fit a signed 32-bit range so it is safe to
+    pass as a Python random/numpy seed.
+
+    This is a pure function — given the same run_id it always returns the same
+    seed — which is the reproducibility guarantee we need: a stochastic cell
+    retried within the SAME run produces the same result; different runs (with
+    different run_ids) get different seeds.
+    """
+    hex_digits = run_id.replace("-", "")[:8]
+    try:
+        return int(hex_digits, 16) & 0x7FFFFFFF
+    except ValueError:
+        return 0
+
+
 # ---------------------------------------------------------------------------
 # Type aliases
 # ---------------------------------------------------------------------------
@@ -89,6 +108,9 @@ class InMemoryFlowStore:
         # Incremental materialization watermarks keyed by (flow_id, model_key,
         # env) → ISO watermark string.  Mirrors the flow_watermarks Pg table.
         self._watermarks: dict[tuple[str, str, str], str] = {}
+        # B2: data-lineage output records keyed by id.
+        self._run_outputs: dict[str, dict] = {}            # output_id → output record
+        self._run_output_index: dict[str, list[str]] = {}  # run_id → [output_id]
 
     # ------------------------------------------------------------------
     # Flow operations
@@ -232,15 +254,31 @@ class InMemoryFlowStore:
         trigger: str,
         scheduled_at: datetime | None = None,
         env: str = "prod",
+        seed: int | None = None,
+        code_version: dict[str, Any] | None = None,
+        params_snapshot: dict[str, Any] | None = None,
     ) -> FlowRun:
         """Create and store a new flow_run; return the stored dict.
 
-        ``env`` is the resolved execution environment for this run (override →
-        the flow's project default env → "prod").  It namespaces
-        materialized/incremental targets.
+        B2 additions
+        ------------
+        ``seed``:
+            Run-level integer seed for stochastic cells.  Derived from the UUID
+            run_id by convention (``int(run_id_hex[:8], 16) & 0x7FFFFFFF``) when
+            not explicitly supplied.  Stored on the row so reproducibility probes
+            can request a specific seed.
+        ``code_version``:
+            Snapshot of the flow spec version/hash at trigger time.
+        ``params_snapshot``:
+            Full copy of the resolved params at trigger time.
         """
         run_id = str(uuid.uuid4())
         now = datetime.now(timezone.utc)
+
+        # Derive seed from the run_id when not explicitly provided.
+        if seed is None:
+            seed = _seed_from_run_id(run_id)
+
         run: FlowRun = {
             "id": run_id,
             "flow_id": str(flow_id),
@@ -254,10 +292,15 @@ class InMemoryFlowStore:
             "error": None,
             "created_at": now,
             "env": env or "prod",
+            # B2 lineage fields
+            "seed": seed,
+            "code_version": deepcopy(code_version) if code_version is not None else None,
+            "params_snapshot": deepcopy(params_snapshot if params_snapshot is not None else params),
         }
         self._flow_runs[run_id] = run
         self._flow_run_index.setdefault(str(flow_id), []).append(run_id)
         self._task_run_index[run_id] = []
+        self._run_output_index[run_id] = []
         return deepcopy(run)
 
     async def get_flow_run(self, run_id: str) -> FlowRun | None:
@@ -329,6 +372,11 @@ class InMemoryFlowStore:
                 #   condition that matched (e.g. "condition_0", "default");
                 #   NULL for all other task_runs.
                 "branch_taken": tr.get("branch_taken", None),
+                # B1: per-cell resource request fields.
+                "cpu_cores": float(tr.get("cpu_cores", 0.0) or 0.0),
+                "mem_mb": int(tr.get("mem_mb", 0) or 0),
+                # B2: stochastic flag (bypasses cache, receives seed preamble).
+                "stochastic": bool(tr.get("stochastic", False)),
             }
             self._task_runs[tr_id] = record
             self._task_run_index.setdefault(flow_run_id, []).append(tr_id)
@@ -531,6 +579,96 @@ class InMemoryFlowStore:
     # Incremental watermark operations
     # ------------------------------------------------------------------
 
+    # ------------------------------------------------------------------
+    # B2: Data-lineage output records
+    # ------------------------------------------------------------------
+
+    async def add_run_output(
+        self,
+        flow_run_id: str,
+        org_id: str,
+        task_key: str,
+        output_key: str,
+        output_type: str = "table",
+        output_uri: str | None = None,
+        meta: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """Record that *flow_run_id* / *task_key* produced an output.
+
+        Parameters
+        ----------
+        flow_run_id:
+            The flow run that produced the output.
+        org_id:
+            The owning org (for multi-tenant queries).
+        task_key:
+            Which task inside the run produced the output.
+        output_key:
+            Logical name for the output (e.g. materialise target or dataset name).
+        output_type:
+            One of ``'table'``, ``'file'``, ``'dataset'``, ``'metric'``.
+        output_uri:
+            Physical URI / table path (optional).
+        meta:
+            Optional free-form metadata (row counts, schema hash, etc.).
+
+        Returns
+        -------
+        dict
+            The stored output record.
+        """
+        output_id = str(uuid.uuid4())
+        now = datetime.now(timezone.utc)
+        record: dict[str, Any] = {
+            "id": output_id,
+            "flow_run_id": str(flow_run_id),
+            "org_id": str(org_id),
+            "task_key": task_key,
+            "output_key": output_key,
+            "output_uri": output_uri,
+            "output_type": output_type,
+            "meta": deepcopy(meta) if meta is not None else None,
+            "created_at": now,
+        }
+        self._run_outputs[output_id] = record
+        self._run_output_index.setdefault(str(flow_run_id), []).append(output_id)
+        return deepcopy(record)
+
+    async def list_run_outputs(
+        self,
+        flow_run_id: str,
+    ) -> list[dict[str, Any]]:
+        """Return all output records for *flow_run_id*, ordered by created_at."""
+        ids = self._run_output_index.get(str(flow_run_id), [])
+        rows = [
+            deepcopy(self._run_outputs[oid])
+            for oid in ids
+            if oid in self._run_outputs
+        ]
+        rows.sort(key=lambda r: r["created_at"])
+        return rows
+
+    async def get_run_outputs_by_key(
+        self,
+        org_id: str,
+        output_key: str,
+    ) -> list[dict[str, Any]]:
+        """Return all output records matching *output_key* for an org, newest first.
+
+        Allows answering "which flow_run produced this table?" by key.
+        """
+        rows = [
+            deepcopy(rec)
+            for rec in self._run_outputs.values()
+            if str(rec["org_id"]) == str(org_id) and rec["output_key"] == output_key
+        ]
+        rows.sort(key=lambda r: r["created_at"], reverse=True)
+        return rows
+
+    # ------------------------------------------------------------------
+    # Incremental watermark operations
+    # ------------------------------------------------------------------
+
     async def get_watermark(
         self, flow_id: str, model_key: str, env: str = "prod"
     ) -> str | None:
@@ -613,6 +751,24 @@ def _row_to_flow_run(row: Any) -> FlowRun:
     # env column; old rows / pre-migration read as "prod".
     if not d.get("env"):
         d["env"] = "prod"
+    # B2 lineage columns; default for pre-migration rows.
+    d.setdefault("seed", None)
+    if "code_version" in d and d["code_version"] is not None and not isinstance(d["code_version"], dict):
+        import json as _j  # noqa: PLC0415
+        try:
+            d["code_version"] = _j.loads(d["code_version"])
+        except Exception:  # noqa: BLE001
+            d["code_version"] = None
+    else:
+        d.setdefault("code_version", None)
+    if "params_snapshot" in d and d["params_snapshot"] is not None and not isinstance(d["params_snapshot"], dict):
+        import json as _j  # noqa: PLC0415
+        try:
+            d["params_snapshot"] = _j.loads(d["params_snapshot"])
+        except Exception:  # noqa: BLE001
+            d["params_snapshot"] = None
+    else:
+        d.setdefault("params_snapshot", None)
     return d
 
 
@@ -654,6 +810,26 @@ def _row_to_task_run(row: Any) -> TaskRun:
     else:
         d.setdefault("parent_task_run_id", None)
     d.setdefault("branch_taken", None)
+    return d
+
+
+def _row_to_run_output(row: Any) -> dict[str, Any]:
+    """Convert an asyncpg Record to a flow_run_outputs dict."""
+    d = dict(row)
+    for key in ("id", "flow_run_id", "org_id"):
+        if key in d and d[key] is not None and not isinstance(d[key], str):
+            d[key] = str(d[key])
+    val = d.get("created_at")
+    if isinstance(val, datetime) and val.tzinfo is None:
+        d["created_at"] = val.replace(tzinfo=timezone.utc)
+    if "meta" in d and d["meta"] is not None and not isinstance(d["meta"], dict):
+        import json as _j  # noqa: PLC0415
+        try:
+            d["meta"] = _j.loads(d["meta"])
+        except Exception:  # noqa: BLE001
+            d["meta"] = None
+    else:
+        d.setdefault("meta", None)
     return d
 
 
@@ -864,19 +1040,34 @@ class PgFlowStore:
         trigger: str,
         scheduled_at: datetime | None = None,
         env: str = "prod",
+        seed: int | None = None,
+        code_version: dict[str, Any] | None = None,
+        params_snapshot: dict[str, Any] | None = None,
     ) -> FlowRun:
         """Insert a new flow_run row and return the stored dict.
 
         ``env`` is the resolved execution environment for this
         run.  It namespaces materialized/incremental targets.
+        B2: ``seed``, ``code_version``, ``params_snapshot`` are persisted for
+        lineage / reproducibility.
         """
         import json  # noqa: PLC0415
         from app.db import fetchrow as db_fetchrow  # noqa: PLC0415
 
+        # Derive seed from a temporary run_id approximation when not provided;
+        # the actual run_id is assigned by the DB.  We use uuid4 as the source.
+        temp_id = str(uuid.uuid4())
+        if seed is None:
+            seed = _seed_from_run_id(temp_id)
+
+        snapshot = params_snapshot if params_snapshot is not None else params
+
         row = await db_fetchrow(
             """
-            INSERT INTO flow_runs (flow_id, org_id, params, trigger, scheduled_at, env)
-            VALUES ($1::uuid, $2::uuid, $3::jsonb, $4, $5, $6)
+            INSERT INTO flow_runs (flow_id, org_id, params, trigger, scheduled_at, env,
+                                   seed, code_version, params_snapshot)
+            VALUES ($1::uuid, $2::uuid, $3::jsonb, $4, $5, $6,
+                    $7, $8::jsonb, $9::jsonb)
             RETURNING *
             """,
             flow_id,
@@ -885,6 +1076,9 @@ class PgFlowStore:
             trigger,
             scheduled_at,
             env or "prod",
+            seed,
+            json.dumps(code_version) if code_version is not None else None,
+            json.dumps(snapshot),
         )
         if row is None:  # pragma: no cover
             raise RuntimeError("INSERT INTO flow_runs returned no row.")
@@ -1245,6 +1439,77 @@ class PgFlowStore:
         if wm is not None:
             await self.set_watermark(flow_id, model_key, dst_env, wm)
         return wm
+
+    # ------------------------------------------------------------------
+    # B2: Data-lineage output records (flow_run_outputs table)
+    # ------------------------------------------------------------------
+
+    async def add_run_output(
+        self,
+        flow_run_id: str,
+        org_id: str,
+        task_key: str,
+        output_key: str,
+        output_type: str = "table",
+        output_uri: str | None = None,
+        meta: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """Insert a new flow_run_outputs row and return it."""
+        import json  # noqa: PLC0415
+        from app.db import fetchrow as db_fetchrow  # noqa: PLC0415
+
+        row = await db_fetchrow(
+            """
+            INSERT INTO flow_run_outputs
+                (flow_run_id, org_id, task_key, output_key, output_type,
+                 output_uri, meta)
+            VALUES ($1::uuid, $2::uuid, $3, $4, $5, $6, $7::jsonb)
+            RETURNING *
+            """,
+            flow_run_id,
+            org_id,
+            task_key,
+            output_key,
+            output_type,
+            output_uri,
+            json.dumps(meta) if meta is not None else None,
+        )
+        if row is None:  # pragma: no cover
+            raise RuntimeError("INSERT INTO flow_run_outputs returned no row.")
+        return _row_to_run_output(row)
+
+    async def list_run_outputs(self, flow_run_id: str) -> list[dict[str, Any]]:
+        """Return all output records for *flow_run_id*, ordered by created_at."""
+        from app.db import fetch as db_fetch  # noqa: PLC0415
+
+        rows = await db_fetch(
+            """
+            SELECT * FROM flow_run_outputs
+            WHERE flow_run_id = $1::uuid
+            ORDER BY created_at ASC
+            """,
+            flow_run_id,
+        )
+        return [_row_to_run_output(r) for r in rows]
+
+    async def get_run_outputs_by_key(
+        self,
+        org_id: str,
+        output_key: str,
+    ) -> list[dict[str, Any]]:
+        """Return output records matching *output_key* for an org, newest first."""
+        from app.db import fetch as db_fetch  # noqa: PLC0415
+
+        rows = await db_fetch(
+            """
+            SELECT * FROM flow_run_outputs
+            WHERE org_id = $1::uuid AND output_key = $2
+            ORDER BY created_at DESC
+            """,
+            org_id,
+            output_key,
+        )
+        return [_row_to_run_output(r) for r in rows]
 
 
 # ---------------------------------------------------------------------------

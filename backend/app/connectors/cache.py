@@ -616,3 +616,76 @@ def reset_cache_for_tests() -> None:
     with _cache_lock:
         _active_backend = None
         _cache_instance = None
+
+
+# ---------------------------------------------------------------------------
+# Base-scan cache (BET 2b) — shared base-scan key namespace
+# ---------------------------------------------------------------------------
+# When a board fires N widget queries over the SAME model + predicate + RLS
+# tenant, the per-plan ``cache_key`` will differ for each widget (they select
+# different columns / aggregations), but the ``base_scan_key`` (computed by
+# ``compute_base_scan_key`` in ``cache_key.py``) will be identical.  We store
+# the raw base-scan Arrow IPC bytes under a *namespaced* key so different
+# widgets within the same board reuse the same underlying scan.
+#
+# The namespace prefix ensures base-scan entries and exact-result entries
+# NEVER collide in the shared backend (both are stored in the same
+# ``ContentAddressedCache`` / Redis backend).
+#
+# SECURITY: ``compute_base_scan_key`` incorporates the full RLS policies dict
+# so tenants NEVER share a base-scan entry.  ``get_base_scan()`` / ``put_base_scan()``
+# are thin wrappers that add the namespace; the underlying isolation guarantees
+# are already in the key computation.
+
+_BASE_SCAN_KEY_PREFIX: str = "bscan:"
+
+
+def _base_scan_store_key(base_scan_key: str) -> str:
+    """Return the namespaced store key for a base-scan entry."""
+    return f"{_BASE_SCAN_KEY_PREFIX}{base_scan_key}"
+
+
+def get_base_scan(base_scan_key: str) -> bytes | None:
+    """Look up a cached base-scan result by *base_scan_key*.
+
+    Returns the cached Arrow IPC bytes on a HIT, ``None`` on a MISS.
+    Uses the same active backend as :func:`get_cache`.
+
+    Parameters
+    ----------
+    base_scan_key:
+        The key returned by ``compute_base_scan_key``.  ``None`` input is
+        safe (treated as a MISS) so callers can pass the result of
+        ``compute_base_scan_key`` directly without a None-guard.
+    """
+    if not base_scan_key:
+        return None
+    cache = get_cache()
+    return cache.get(_base_scan_store_key(base_scan_key))
+
+
+def put_base_scan(
+    base_scan_key: str,
+    value: bytes,
+    tags: list[str] | None = None,
+) -> None:
+    """Store *value* (Arrow IPC bytes) in the base-scan namespace.
+
+    No-ops when *base_scan_key* is falsy so callers can pass
+    ``compute_base_scan_key(...)`` (which may return ``None``) directly.
+
+    Parameters
+    ----------
+    base_scan_key:
+        The key returned by ``compute_base_scan_key``.
+    value:
+        Arrow IPC stream bytes to cache.
+    tags:
+        Optional invalidation tags forwarded to the backend ``put`` (e.g.
+        ``["org:<id>", "datastore:<id>"]``) so that per-tenant or per-datastore
+        invalidation also evicts base-scan entries.
+    """
+    if not base_scan_key:
+        return
+    cache = get_cache()
+    cache.put(_base_scan_store_key(base_scan_key), value, tags=tags)

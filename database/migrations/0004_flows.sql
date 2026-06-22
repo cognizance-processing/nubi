@@ -129,3 +129,46 @@ CREATE TABLE IF NOT EXISTS flow_watermarks (
     updated_at  timestamptz NOT NULL DEFAULT now(),
     PRIMARY KEY (flow_id, model_key, env)
 );
+
+-- ── B2: Run-level seed + code-version snapshot columns on flow_runs ──────────
+-- seed:         integer seed for this run's stochastic cells (derived from the
+--               run_id for reproducibility across retries).  NULL = no seed.
+-- code_version: a snapshot of the flow spec version/hash at trigger time.
+--               Stored as jsonb for extensibility (e.g. {version: 3, hash: "..."}).
+-- params_snapshot: full copy of the resolved params at trigger time (independent
+--               of any later spec edits).
+
+ALTER TABLE flow_runs
+    ADD COLUMN IF NOT EXISTS seed              bigint,
+    ADD COLUMN IF NOT EXISTS code_version      jsonb,
+    ADD COLUMN IF NOT EXISTS params_snapshot   jsonb;
+
+-- ── B2: flow_run_outputs — data-lineage: output → flow_run link ───────────────
+-- Records which flow run PRODUCED a named output table / dataset so
+-- dashboards / queries can answer "which run produced these numbers?".
+--
+-- output_key:   logical name for the output (e.g. task_key or table name).
+-- output_uri:   physical URI / table path (e.g. s3://... or duckdb path).
+-- output_type:  'table' | 'file' | 'dataset' | 'metric'.
+-- task_key:     which task_run inside the flow run produced this output.
+-- meta:         optional free-form metadata (row counts, schema hash, etc.).
+
+CREATE TABLE IF NOT EXISTS flow_run_outputs (
+    id           uuid        PRIMARY KEY DEFAULT gen_random_uuid(),
+    flow_run_id  uuid        NOT NULL REFERENCES flow_runs(id) ON DELETE CASCADE,
+    org_id       uuid        NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
+    task_key     text        NOT NULL,
+    output_key   text        NOT NULL,
+    output_uri   text,
+    output_type  text        NOT NULL DEFAULT 'table'
+                             CHECK (output_type IN ('table', 'file', 'dataset', 'metric')),
+    meta         jsonb,
+    created_at   timestamptz NOT NULL DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS flow_run_outputs_run_id_idx
+    ON flow_run_outputs (flow_run_id);
+CREATE INDEX IF NOT EXISTS flow_run_outputs_org_id_idx
+    ON flow_run_outputs (org_id);
+CREATE INDEX IF NOT EXISTS flow_run_outputs_output_key_idx
+    ON flow_run_outputs (output_key);

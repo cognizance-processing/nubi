@@ -90,6 +90,12 @@ from copy import deepcopy
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
+from app.compute.kernel_interface import (
+    MAP_MAX_CONCURRENCY,
+    acquire_map_slot,
+    release_map_slot,
+)
+
 logger = logging.getLogger(__name__)
 
 # Terminal states for task_runs (engine will not re-queue).
@@ -199,6 +205,13 @@ async def materialize_flow_run(
 
     resolved_env = await _resolve_env(env, flow)
 
+    # B2: Capture code_version from the flow spec at trigger time.
+    code_version: dict[str, Any] = {
+        "version": flow.get("version") or 1,
+        "spec_version": (flow.get("spec") or {}).get("version") or 1,
+        "flow_id": flow.get("id"),
+    }
+
     # Create the flow_run (state starts as 'pending' from the store constructor,
     # then we immediately transition it to 'running').
     flow_run = await store.create_flow_run(
@@ -208,6 +221,8 @@ async def materialize_flow_run(
         trigger=trigger,
         scheduled_at=None,
         env=resolved_env,
+        code_version=code_version,
+        params_snapshot=dict(params),
     )
     flow_run = await store.update_flow_run(
         flow_run["id"],
@@ -258,6 +273,10 @@ async def materialize_flow_run(
             "retry_backoff_s": task.retry_backoff_s,
             "timeout_s": task.timeout_s,
             "cache_ttl_s": task.cache_ttl_s,
+            # B2: stochastic flag + per-cell resource requests
+            "stochastic": bool(getattr(task, "stochastic", False)),
+            "cpu_cores": float(getattr(task, "cpu_cores", 0.0)),
+            "mem_mb": int(getattr(task, "mem_mb", 0)),
         }
         if is_root:
             tr["scheduled_at"] = now
@@ -558,9 +577,18 @@ def _expand_map_children(
     The task_run ``task_key`` uses the composite format
     ``"{map_key}[{i}].{child_task_key}"``.
 
-    Root body tasks (no ``needs``) are set to ``state='ready'``;
-    non-root body tasks are ``state='pending'`` with ``depends_on`` set to
-    the composite keys of their upstream body tasks.
+    Root body tasks (no ``needs``) are set to ``state='ready'`` up to the
+    effective concurrency limit, then ``state='pending'`` (throttled).
+    Non-root body tasks are always ``state='pending'`` with ``depends_on``
+    set to the composite keys of their upstream body tasks.
+
+    B1 — Map fan-out concurrency cap
+    ---------------------------------
+    The effective cap is ``min(max_concurrency, MAP_MAX_CONCURRENCY)`` when both
+    are > 0, or whichever single value is > 0, or unlimited (0) when neither
+    specifies a limit.  Items beyond the cap start as ``'pending'`` rather than
+    ``'ready'`` — ``advance_readiness`` will promote them as earlier items
+    complete (standard pending→ready flow via their synthetic depends_on).
 
     The item value is injected into each task_run's config as
     ``config["__item__"]`` so the python handler can expose it as a local
@@ -587,17 +615,35 @@ def _expand_map_children(
     now:
         Injected clock datetime (used as ``scheduled_at`` for root tasks).
     max_concurrency:
-        Reserved — currently not enforced at the task_run level.
-        Pass ``0`` for unlimited.
+        Per-flow cap on concurrent item executions (from ``config.max_concurrency``).
+        ``0`` = unlimited (subject to the module-level ``MAP_MAX_CONCURRENCY``).
 
     Returns
     -------
     list[dict]
         Flat list of task_run dicts, ready for ``store.add_task_runs``.
     """
+    # B1: compute effective concurrency cap.
+    # MAP_MAX_CONCURRENCY is the global ceiling; max_concurrency is the per-flow
+    # request.  0 means "no per-value limit" from that source.
+    _global_cap = MAP_MAX_CONCURRENCY  # from module-level env var
+    if max_concurrency > 0 and _global_cap > 0:
+        effective_cap = min(max_concurrency, _global_cap)
+    elif max_concurrency > 0:
+        effective_cap = max_concurrency
+    elif _global_cap > 0:
+        effective_cap = _global_cap
+    else:
+        effective_cap = 0  # unlimited
+
     child_runs: list[dict[str, Any]] = []
+    ready_item_count = 0  # number of items whose root body tasks are already 'ready'
 
     for i, item in enumerate(items):
+        # Determine whether this item's root-body tasks start as 'ready' or
+        # 'pending' (throttled).  Non-root body tasks are always 'pending'.
+        throttle_this_item = (effective_cap > 0 and ready_item_count >= effective_cap)
+
         for body_task in body_tasks:
             child_key = f"{map_task_key}[{i}].{body_task['key']}"
 
@@ -609,6 +655,13 @@ def _expand_map_children(
 
             is_root = len(child_depends_on) == 0
 
+            # A root task starts 'ready' unless the concurrency cap is hit.
+            # Throttled root tasks start 'pending'; the advance_readiness loop
+            # will unblock them once prior items complete (standard DAG mechanics).
+            initial_state = "pending"
+            if is_root and not throttle_this_item:
+                initial_state = "ready"
+
             # Copy config and inject the item value.
             child_config: dict[str, Any] = dict(body_task.get("config") or {})
             child_config["__item__"] = item
@@ -618,7 +671,7 @@ def _expand_map_children(
             tr: dict[str, Any] = {
                 "task_key": child_key,
                 "org_id": org_id,
-                "state": "ready" if is_root else "pending",
+                "state": initial_state,
                 "depends_on": child_depends_on,
                 "attempt": 0,
                 "kind": body_task.get("kind", "noop"),
@@ -629,10 +682,14 @@ def _expand_map_children(
                 "cache_ttl_s": body_task.get("cache_ttl_s", 0),
                 "parent_task_run_id": map_task_run_id,
             }
-            if is_root:
+            if initial_state == "ready":
                 tr["scheduled_at"] = now
 
             child_runs.append(tr)
+
+        # Count this item as consuming a ready slot if we started it ready.
+        if not throttle_this_item:
+            ready_item_count += 1
 
     return child_runs
 
@@ -1059,10 +1116,14 @@ async def run_one_ready_task(
 
     # ── Cache check ────────────────────────────────────────────────────────────
     # cache_ttl_s > 0 and cache_key set: check for a prior success with same key.
+    # B2: stochastic tasks bypass cache entirely — each run must produce fresh
+    # output (even within the same flow_run, so a retry gets a new stochastic
+    # draw).  The seed ensures reproducibility for retries when needed.
     cache_ttl_s: int = int(task_run.get("cache_ttl_s", 0) or 0)
     cache_key: str | None = task_run.get("cache_key")
+    _is_stochastic: bool = bool(task_run.get("stochastic", False))
 
-    if cache_ttl_s > 0 and cache_key:
+    if cache_ttl_s > 0 and cache_key and not _is_stochastic:
         # Look through all task_runs for this flow_run (or could be org-wide in prod).
         all_trs = await store.list_task_runs(flow_run_id)
         for other in all_trs:
@@ -1115,6 +1176,9 @@ async def run_one_ready_task(
         store, flow_run, task_run, task_spec
     )
 
+    # B2: thread run-level seed into TaskContext for stochastic cell reproducibility.
+    run_seed: int | None = (flow_run or {}).get("seed")
+
     ctx = TaskContext(
         flow_params=flow_params,
         inputs=inputs,
@@ -1126,6 +1190,7 @@ async def run_one_ready_task(
         flow=flow_dict,
         watermark=watermark,
         run_id=flow_run_id,
+        seed=run_seed,
     )
 
     # ── Execute ────────────────────────────────────────────────────────────────
@@ -1241,6 +1306,8 @@ async def run_one_ready_task(
         )
         # Persist an advanced incremental watermark, if the handler returned one.
         await _persist_watermark(store, flow_run, task_run, task_spec, outcome["result"])
+        # B2: record data-lineage output link (best-effort).
+        await _record_run_output(store, flow_run, task_run, task_spec, outcome["result"])
         _emit_task_event("task_success", flow_run_id, task_key, "success", None, attempt, now)
         await advance_readiness(store, flow_run_id, now)
         return finished_tr
@@ -1815,6 +1882,75 @@ async def _persist_watermark(
         logger.debug("Failed to persist watermark for flow %s task %s", flow_id, task_run.get("task_key"))
 
 
+async def _record_run_output(
+    store: Any,
+    flow_run: dict[str, Any] | None,
+    task_run: dict[str, Any],
+    task_spec: dict[str, Any],
+    result: dict[str, Any] | None,
+) -> None:
+    """Record a data-lineage output link when a task produces a named output.
+
+    Called on the success path for tasks whose result carries a
+    materialisation target or a ``__output_key__`` marker so the lineage
+    table tracks ``output → flow_run``.
+
+    Best-effort: any error is logged and swallowed — lineage is advisory and
+    MUST NEVER break a flow run.
+
+    Recorded when:
+    - A ``query`` or ``materialize`` task has ``config.materialized.target``
+      (a persistent materialization).
+    - Any task returns ``result.__output_key__`` (opt-in from any handler).
+    """
+    if not isinstance(result, dict):
+        return
+    rec = getattr(store, "add_run_output", None)
+    if rec is None:
+        return  # store does not support lineage (e.g. very old stub)
+
+    flow_run_id = task_run.get("flow_run_id")
+    org_id = task_run.get("org_id") or (flow_run or {}).get("org_id") or ""
+    task_key = task_run.get("task_key", "")
+
+    # Determine output_key, output_uri, output_type from the task result.
+    output_key: str | None = result.get("__output_key__")
+    output_uri: str | None = result.get("__output_uri__")
+    output_type: str = result.get("__output_type__") or "table"
+
+    # For materialized SQL/materialize tasks use the target as the key.
+    if not output_key:
+        mat = (task_spec.get("config") or {}).get("materialized") or {}
+        if isinstance(mat, dict):
+            target = mat.get("target")
+            if target:
+                output_key = str(target)
+                output_uri = output_uri or result.get("output_uri") or target
+
+    if not output_key:
+        return  # nothing to record
+
+    try:
+        meta: dict[str, Any] = {
+            "row_count": result.get("row_count"),
+            "new_watermark": result.get("new_watermark"),
+        }
+        await rec(
+            flow_run_id=flow_run_id,
+            org_id=org_id,
+            task_key=task_key,
+            output_key=output_key,
+            output_type=output_type,
+            output_uri=output_uri,
+            meta={k: v for k, v in meta.items() if v is not None} or None,
+        )
+    except Exception:  # noqa: BLE001
+        logger.debug(
+            "Failed to record run output for flow_run %s task %s",
+            flow_run_id, task_key,
+        )
+
+
 def _apply_for_each_rewrite(
     full_task: dict[str, Any],
     task_spec: dict[str, Any],
@@ -2031,6 +2167,9 @@ async def _execute_claimed_task_run(
         store, flow_run, task_run, task_spec
     )
 
+    # B2: thread run-level seed into TaskContext for stochastic cell reproducibility.
+    run_seed_drain: int | None = (flow_run or {}).get("seed")
+
     ctx = TaskContext(
         flow_params=flow_params,
         inputs=inputs,
@@ -2047,6 +2186,7 @@ async def _execute_claimed_task_run(
         flow=flow_dict,
         watermark=watermark,
         run_id=flow_run_id,
+        seed=run_seed_drain,
     )
 
     # Merge task_run fields with task_spec so execute_task sees kind/config/timeout.
@@ -2166,6 +2306,8 @@ async def _execute_claimed_task_run(
         )
         # Persist an advanced incremental watermark, if the handler returned one.
         await _persist_watermark(store, flow_run, task_run, task_spec, outcome["result"])
+        # B2: record data-lineage output link (best-effort).
+        await _record_run_output(store, flow_run, task_run, task_spec, outcome["result"])
         _emit_task_event("task_success", flow_run_id, task_key, "success", None, attempt, now)
         await advance_readiness(store, flow_run_id, now)
         return result_tr or task_run

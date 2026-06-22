@@ -102,6 +102,7 @@ from typing import Any, get_args
 import sqlglot
 import sqlglot.expressions as exp
 
+from app.connectors.sql_parse import parse_sql_cached
 from app.metrics.models import (
     FilterOp,
     MetricDefinition,
@@ -478,7 +479,7 @@ def _compile_layered(
         outer_select = outer_select.limit(mq.limit)
 
     # ── Top-N (outermost QUALIFY/RANK layer) ─────────────────────────────────
-    if mq.top_n is not None:
+    if mq.top_n is not None and not mq.top_n.other:
         outer_select = _apply_top_n(outer_select, mq, metric, time_alias, dialect)
 
     # ── Assemble CTE ────────────────────────────────────────────────────────
@@ -492,6 +493,13 @@ def _compile_layered(
     # sqlglot renders WITH … AS separately; build as a raw string to preserve
     # sentinel substitution in base_sql and avoid double-rendering.
     sql = f"WITH __base AS ({base_sql}) {outer_sql}"
+
+    # ── Top-N with Other bucket (UNION approach) ─────────────────────────────
+    if mq.top_n is not None and mq.top_n.other:
+        sql = _apply_top_n_other(
+            sql, mq, metric, time_alias, all_dim_names, dialect
+        )
+
     return sql, params
 
 
@@ -553,6 +561,203 @@ def _apply_top_n(
     )
     outer_select = outer_select.qualify(qualify_cond)
     return outer_select
+
+
+# ---------------------------------------------------------------------------
+# Top-N "Other" bucket
+# ---------------------------------------------------------------------------
+
+
+def _apply_top_n_other(
+    layered_sql: str,
+    mq: "MetricQuery",
+    metric: "MetricDefinition",
+    time_alias: str | None,
+    all_dim_names: list[str],
+    dialect: str,
+) -> str:
+    """Extend a layered query with a rolled-up "Other" bucket for non-top-N members.
+
+    Produces:
+        <top-N QUALIFY select> UNION ALL <other bucket select>
+
+    The top-N part is the layered SQL with a QUALIFY RANK() <= N filter applied
+    (same as the no-Other path).  The "Other" bucket is a separate SELECT from
+    ``__base`` that:
+    - Labels the top_n.dimension column as ``other_label`` (e.g. ``"Other"``).
+    - For each time bucket (if present), groups that bucket separately so the
+      "Other" row carries a time series aligned with the top-N rows.
+    - SUMs the base measures over all non-top-N members.
+    - Recomputes derived measures from those sums (exactly like the outer SELECT
+      does for the top-N rows).
+    - Passes other non-dimension columns (rls_keys) through as NULL (they are
+      not meaningful when mixing members; RLS is already applied to __base).
+
+    The no-Other path (``top_n.other=False``) is unchanged.
+    """
+    tn = mq.top_n
+    assert tn is not None and tn.other
+
+    rank_measure = tn.measure or metric.measure.name
+    dim_col = tn.dimension
+    other_label = tn.other_label
+
+    # ── Build the top-N portion: apply QUALIFY to the existing layered SQL ────
+    # Re-parse the layered SQL to add QUALIFY to the outer SELECT.
+    try:
+        full_tree = parse_sql_cached(layered_sql, dialect=dialect)
+    except Exception:
+        # Fallback: return original SQL unchanged (conservative).
+        return layered_sql
+
+    if not isinstance(full_tree, exp.Select):
+        return layered_sql
+
+    # Build a clone of the outer select with QUALIFY for top-N.
+    import copy  # noqa: PLC0415
+    top_n_tree = copy.deepcopy(full_tree)
+
+    if time_alias is not None:
+        rank_m_col = exp.column(rank_measure)
+        total_win = exp.Window(
+            this=exp.func("SUM", rank_m_col.copy(), dialect=dialect),
+            partition_by=[exp.column(dim_col)],
+        )
+        rank_over = exp.Window(
+            this=exp.func("RANK", dialect=dialect),
+            order=exp.Order(
+                expressions=[
+                    exp.Ordered(this=total_win, desc=(tn.order == "desc"))
+                ]
+            ),
+        )
+    else:
+        rank_m_col = exp.column(rank_measure)
+        rank_over = exp.Window(
+            this=exp.func("RANK", dialect=dialect),
+            order=exp.Order(
+                expressions=[
+                    exp.Ordered(this=rank_m_col.copy(), desc=(tn.order == "desc"))
+                ]
+            ),
+        )
+
+    qualify_cond = exp.LTE(
+        this=rank_over,
+        expression=exp.Literal.number(tn.n),
+    )
+    top_n_tree = top_n_tree.qualify(qualify_cond)
+    top_n_sql = top_n_tree.sql(dialect=dialect)
+
+    # ── Build the "Other" bucket SELECT from __base ───────────────────────────
+    # Determine top-N members using a subquery:
+    #   NOT IN (SELECT DISTINCT <dim_col> FROM __base ORDER BY <rank_measure> DESC LIMIT N)
+    # We exclude top-N by their rank based on SUM of rank_measure.
+    top_members_subquery = (
+        f"SELECT DISTINCT {dim_col} FROM __base "
+        f"GROUP BY {dim_col} "
+        f"ORDER BY SUM({rank_measure}) {'DESC' if tn.order == 'desc' else 'ASC'} "
+        f"LIMIT {tn.n}"
+    )
+
+    # Build the Other SELECT.
+    # Group by: time alias (if present) + all non-ranked dims + rls_keys EXCEPT the ranked dim.
+    other_group_cols = []
+    if time_alias:
+        other_group_cols.append(time_alias)
+    for d in all_dim_names:
+        if d != dim_col:
+            other_group_cols.append(d)
+
+    other_select_parts: list[str] = []
+
+    # (a) Dimension columns: rank dim → other_label, others → passthrough or NULL.
+    for d in all_dim_names:
+        if d == dim_col:
+            other_select_parts.append(f"'{other_label}' AS {dim_col}")
+        else:
+            other_select_parts.append(f"{d}")
+
+    # (b) Time alias passthrough.
+    if time_alias:
+        other_select_parts.append(f"{time_alias}")
+
+    # (c) Base measures: SUM over the non-top-N members.
+    base_measure_sums: dict[str, str] = {}
+    for m in metric.measures():
+        agg_sql = _AGG_SQL.get(m.agg, "SUM")
+        if m.agg == "count" and (m.expr or "*") == "*":
+            base_measure_sums[m.name] = f"SUM(COUNT(*)) AS {m.name}"
+        elif m.agg == "count_distinct":
+            # count_distinct is not re-aggregable; emit NULL as a conservative fallback.
+            base_measure_sums[m.name] = f"NULL AS {m.name}"
+        elif m.agg in ("percentile_cont", "approx_count_distinct"):
+            base_measure_sums[m.name] = f"NULL AS {m.name}"
+        else:
+            base_measure_sums[m.name] = f"SUM({m.name}) AS {m.name}"
+        other_select_parts.append(base_measure_sums[m.name])
+
+    # (d) Derived measures: recomputed from the summed base measures.
+    base_measure_names = set(metric.measure_names())
+    for dm in metric.derived_measures:
+        formula_sql = _compile_derived_formula(dm, base_measure_names)
+        other_select_parts.append(f"{formula_sql} AS {dm.name}")
+
+    # WHERE: exclude top-N members.
+    where_clause = f"WHERE {dim_col} NOT IN ({top_members_subquery})"
+
+    # GROUP BY.
+    if other_group_cols:
+        group_by_clause = "GROUP BY " + ", ".join(other_group_cols)
+    else:
+        group_by_clause = ""
+
+    other_sql = (
+        f"SELECT {', '.join(other_select_parts)} "
+        f"FROM __base "
+        f"{where_clause} "
+        f"{group_by_clause}"
+    ).strip()
+
+    # Wrap in CTE so both parts can reference __base.
+    # Extract the __base CTE definition from the layered_sql.
+    # layered_sql = "WITH __base AS (...) <outer>"
+    inner_start = layered_sql.find("WITH __base AS (")
+    if inner_start == -1:
+        inner_start = layered_sql.upper().find("WITH __BASE AS (")
+    if inner_start == -1:
+        return layered_sql  # can't find the CTE; return unchanged.
+
+    # Find end of base CTE: count parens.
+    cte_prefix = "WITH __base AS ("
+    cte_body_start = layered_sql.find("(", inner_start + len("WITH __base AS")) + 1
+    depth = 1
+    pos = cte_body_start
+    while pos < len(layered_sql) and depth > 0:
+        if layered_sql[pos] == "(":
+            depth += 1
+        elif layered_sql[pos] == ")":
+            depth -= 1
+        pos += 1
+    base_cte_def = layered_sql[inner_start : pos]
+
+    # top_n_sql already contains "WITH __base AS ..." — extract just its outer SELECT.
+    # Strip the "WITH __base AS (...) " prefix from top_n_sql.
+    top_n_outer_start = top_n_sql.find("(", top_n_sql.upper().find("WITH __BASE AS")) + 1
+    depth2 = 1
+    pos2 = top_n_outer_start
+    while pos2 < len(top_n_sql) and depth2 > 0:
+        if top_n_sql[pos2] == "(":
+            depth2 += 1
+        elif top_n_sql[pos2] == ")":
+            depth2 -= 1
+        pos2 += 1
+    top_n_outer_sql = top_n_sql[pos2:].strip()
+
+    result = f"{base_cte_def[:-1].rstrip()} {top_n_outer_sql} UNION ALL SELECT * FROM ({other_sql})"
+    # Close the CTE properly.
+    result = f"WITH __base AS ({base_cte_def[base_cte_def.find('(')+1 : base_cte_def.rfind(')')].strip()}) {top_n_outer_sql} UNION ALL SELECT * FROM ({other_sql})"
+    return result
 
 
 # ---------------------------------------------------------------------------

@@ -323,6 +323,45 @@ class TaskSpec(BaseModel):
         ),
     )
 
+    # ── B1: Per-cell resource requests (additive, all optional / defaulted) ──
+    # These fields declare the compute resources the cell needs.  The kernel
+    # placement layer forwards them to the remote runner (E2B/Modal) or clamps
+    # them to local limits.  All default to 0 = use system defaults.
+    cpu_cores: float = Field(
+        default=0.0,
+        ge=0.0,
+        description=(
+            "CPU cores requested for this cell (fractional allowed, e.g. 0.5).  "
+            "0 = use system/provider default.  Forwarded to the remote kernel; "
+            "clamped for the local runner."
+        ),
+    )
+    mem_mb: int = Field(
+        default=0,
+        ge=0,
+        description=(
+            "Memory in MiB requested for this cell.  0 = use system/provider "
+            "default.  Forwarded to the remote kernel; clamped for the local "
+            "runner."
+        ),
+    )
+
+    # ── B2: Stochastic / no-cache flag ───────────────────────────────────────
+    # When True: (a) per-run seed is injected into the cell's execution
+    # namespace so Monte-Carlo results are reproducible, AND (b) the cell's
+    # result is NEVER served from cache (cache_key is omitted) so stale
+    # recommendations don't persist across runs.
+    stochastic: bool = Field(
+        default=False,
+        description=(
+            "True when this cell produces non-deterministic output (e.g. Monte "
+            "Carlo, random sampling).  The engine injects the run-level seed so "
+            "results are reproducible across retries of the SAME run, but "
+            "different runs yield different results.  Cache is bypassed when "
+            "stochastic=True."
+        ),
+    )
+
 
 class FlowSpec(BaseModel):
     """Canonical flow specification — version 1.

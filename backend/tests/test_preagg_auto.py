@@ -25,6 +25,7 @@ from app.connectors.preagg import (
     RollupCandidate,
     RollupRegistry,
     build_rollup,
+    build_rollup_for_metric,
     mine,
 )
 from app.connectors.query_log import QueryLog, extract_shape
@@ -354,3 +355,253 @@ class TestRouteSoundness:
         result = route_to_rollup_shape(p, reg)
         assert result.routed is False
         assert result.plan is p
+
+
+# ---------------------------------------------------------------------------
+# 5. Layered CTE routing (windowed / derived metric queries)
+# ---------------------------------------------------------------------------
+
+
+class TestLayeredCTERouting:
+    """A layered WITH __base AS (<inner>) <outer> query routes via the inner."""
+
+    def test_layered_windowed_routes_to_rollup(self, source_db: str) -> None:
+        """A metric compiler layered query (with LAG window fn) routes to a rollup."""
+        reg = RollupRegistry()
+        _build_orders_rollup(source_db, reg)
+
+        # Simulate a layered metric query: __base aggregates, outer adds window fn.
+        layered_sql = (
+            "WITH __base AS ("
+            "SELECT region, SUM(amount) AS amount FROM orders GROUP BY region"
+            ") "
+            "SELECT region, amount, "
+            "LAG(amount, 1) OVER (ORDER BY region) AS amount_prior_period "
+            "FROM __base"
+        )
+        p = plan(layered_sql, dialect="postgres")
+        result = route_to_rollup_shape(p, reg)
+
+        assert result.routed is True, f"Expected routed=True, got: {result.reason}"
+        assert result.rollup_id is not None
+        # The rewritten SQL still has the __base CTE form with the rollup table.
+        rewritten = result.plan.sql.lower()
+        assert "rollup_orders" in rewritten, f"Expected rollup_orders in: {result.plan.sql}"
+        assert "with __base as" in rewritten, "Expected layered CTE preserved"
+        # The outer window function is preserved.
+        assert "lag" in rewritten, "Expected window function preserved in outer"
+
+    def test_layered_unsound_inner_not_routed(self, source_db: str) -> None:
+        """If the inner aggregation is not provably sound, the plan is untouched."""
+        reg = RollupRegistry()
+        _build_orders_rollup(source_db, reg)
+
+        # Inner groups by a column NOT in the rollup dims → unsound.
+        layered_sql = (
+            "WITH __base AS ("
+            "SELECT product, SUM(amount) AS amount FROM orders GROUP BY product"
+            ") "
+            "SELECT product, amount FROM __base"
+        )
+        p = plan(layered_sql, dialect="postgres")
+        result = route_to_rollup_shape(p, reg)
+        assert result.routed is False
+        assert result.plan is p
+
+    def test_layered_rls_preserved(self, source_db: str) -> None:
+        """RLS claims survive the layered CTE rewrite."""
+        reg = RollupRegistry()
+        _build_orders_rollup(source_db, reg)
+
+        layered_sql = (
+            "WITH __base AS ("
+            "SELECT region, SUM(amount) AS amount FROM orders GROUP BY region"
+            ") "
+            "SELECT region, amount FROM __base"
+        )
+        p = plan(
+            layered_sql,
+            claims={"policies": {"tenant_id": "acme"}},
+            dialect="postgres",
+        )
+        result = route_to_rollup_shape(p, reg)
+        # Even with RLS injection on the outer plan the router handles it gracefully.
+        # (RLS is injected into the outer SELECT by planner; inner shape is clean.)
+        assert result.plan.rls_claims == {"policies": {"tenant_id": "acme"}}
+
+    def test_non_base_cte_name_not_touched(self, source_db: str) -> None:
+        """A WITH that uses a different alias than __base is left untouched."""
+        reg = RollupRegistry()
+        _build_orders_rollup(source_db, reg)
+
+        layered_sql = (
+            "WITH my_cte AS ("
+            "SELECT region, SUM(amount) AS amount FROM orders GROUP BY region"
+            ") "
+            "SELECT region, amount FROM my_cte"
+        )
+        p = plan(layered_sql, dialect="postgres")
+        result = route_to_rollup_shape(p, reg)
+        # Router does NOT touch non-__base CTEs.
+        assert result.plan is p or result.routed is False
+
+
+# ---------------------------------------------------------------------------
+# 6. build_rollup_for_metric
+# ---------------------------------------------------------------------------
+
+
+class TestBuildRollupForMetric:
+    """build_rollup_for_metric materializes the right shape for a MetricDefinition."""
+
+    def test_materializes_base_measures_and_dims(self, source_db: str) -> None:
+        """build_rollup_for_metric produces a rollup with the metric's dims + measures.
+
+        The source_db fixture has columns: tenant_id, region, amount.
+        We declare a metric WITHOUT a time_dimension to avoid referencing a missing column.
+        """
+        from app.metrics.models import (  # noqa: PLC0415
+            Dimension,
+            Measure,
+            MetricDefinition,
+        )
+
+        metric = MetricDefinition(
+            id="revenue",
+            name="Revenue",
+            measure=Measure(name="revenue", agg="sum", expr="amount"),
+            base_table="orders",
+            dimensions=(
+                Dimension(name="region"),
+            ),
+            rls_keys=("tenant_id",),
+        )
+
+        reg = RollupRegistry()
+        built = build_rollup_for_metric(
+            metric,
+            grains=None,  # no time column (source_db has no timestamp column)
+            source_database=source_db,
+            registry=reg,
+            register_query=False,
+        )
+
+        # Rollup registered.
+        rollups = reg.candidates_for_table("orders")
+        assert len(rollups) == 1, f"Expected 1 rollup, got: {rollups}"
+
+        # RLS key preserved.
+        assert "tenant_id" in built.rls_keys
+
+        # Dimensions include metric dims.
+        assert "region" in built.dimensions
+
+        # Base measure materialized.
+        assert any("sum" in m.lower() for m in built.measures), (
+            f"Expected sum measure in {built.measures}"
+        )
+
+    def test_skips_non_additive_measures(self, source_db: str) -> None:
+        """Non-additive measures (avg, percentile) are skipped gracefully."""
+        from app.metrics.models import (  # noqa: PLC0415
+            Dimension,
+            Measure,
+            MetricDefinition,
+        )
+
+        metric = MetricDefinition(
+            id="avg_metric",
+            name="Avg Metric",
+            measure=Measure(name="total", agg="sum", expr="amount"),
+            base_table="orders",
+            dimensions=(Dimension(name="region"),),
+            extra_measures=(
+                Measure(name="avg_amt", agg="avg", expr="amount"),
+            ),
+        )
+
+        reg = RollupRegistry()
+        built = build_rollup_for_metric(
+            metric,
+            grains=None,
+            source_database=source_db,
+            registry=reg,
+            register_query=False,
+        )
+
+        # Only the additive SUM measure should be present (AVG skipped).
+        assert any("sum" in m.lower() for m in built.measures)
+        assert not any("avg" in m.lower() for m in built.measures), (
+            f"AVG should be skipped but found in {built.measures}"
+        )
+
+    def test_no_additive_measures_raises(self, source_db: str) -> None:
+        """A metric with only non-additive measures raises ValueError."""
+        from app.metrics.models import (  # noqa: PLC0415
+            Measure,
+            MetricDefinition,
+        )
+
+        metric = MetricDefinition(
+            id="approx",
+            name="Approx",
+            measure=Measure(name="dau", agg="approx_count_distinct", expr="user_id"),
+            base_table="orders",
+        )
+        reg = RollupRegistry()
+        with pytest.raises((ValueError, Exception)):
+            build_rollup_for_metric(
+                metric, grains=None, source_database=source_db,
+                registry=reg, register_query=False,
+            )
+
+    def test_rollup_routes_layered_metric_query(self, source_db: str) -> None:
+        """A rollup built from a MetricDefinition enables routing of layered queries."""
+        from app.metrics.models import (  # noqa: PLC0415
+            Dimension,
+            DerivedMeasure,
+            Measure,
+            MetricDefinition,
+            MetricQuery,
+        )
+        from app.metrics.compile import compile_metric  # noqa: PLC0415
+
+        metric = MetricDefinition(
+            id="revenue",
+            name="Revenue",
+            measure=Measure(name="revenue", agg="sum", expr="amount"),
+            base_table="orders",
+            dimensions=(Dimension(name="region"),),
+            rls_keys=("tenant_id",),
+            derived_measures=(
+                DerivedMeasure(name="revenue_share", formula="revenue / revenue"),
+            ),
+        )
+
+        # Build rollup from metric definition.
+        reg = RollupRegistry()
+        build_rollup_for_metric(
+            metric,
+            grains=None,
+            source_database=source_db,
+            registry=reg,
+            register_query=False,
+        )
+
+        # Compile a derived metric query (produces layered SQL).
+        mq = MetricQuery(metric_id="revenue", dimensions=("region",))
+        sql, _params = compile_metric(metric, mq)
+
+        # The compiled SQL should be layered.
+        assert "WITH __base AS" in sql or "WITH __BASE AS" in sql.upper(), (
+            f"Expected layered SQL, got: {sql[:200]}"
+        )
+
+        # Route the compiled query to the rollup.
+        p = plan(sql, dialect="duckdb")
+        result = route_to_rollup_shape(p, reg)
+
+        assert result.routed is True, (
+            f"Expected layered metric query to route to rollup. Reason: {result.reason}"
+        )
+        assert "rollup_orders" in result.plan.sql.lower()

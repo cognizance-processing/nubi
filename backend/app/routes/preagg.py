@@ -46,6 +46,7 @@ from app.auth.roles import require_writer
 from app.connectors.preagg import (
     RollupCandidate,
     build_rollup,
+    build_rollup_for_metric,
     get_registry,
     mine,
     suggest,
@@ -203,6 +204,92 @@ async def preagg_build(
         source_database=body.source_database,
         datastore_id=body.datastore_id,
     )
+    return built.to_dict()
+
+
+# ---------------------------------------------------------------------------
+# POST /preagg/build_from_metric — build a rollup driven by a metric definition
+# ---------------------------------------------------------------------------
+
+
+class BuildFromMetricIn(BaseModel):
+    """Request body for POST /preagg/build_from_metric.
+
+    Attributes
+    ----------
+    metric_id:
+        The id of a registered MetricDefinition to materialize a rollup for.
+        The metric's base measures, dimensions, time column, and rls_keys are
+        used as the rollup shape (best-effort, first-party metrics only).
+    grains:
+        Time grains to include the time column for.  When ``None`` the time
+        column is included if the metric declares one.  Pass ``[]`` to skip.
+    source_database:
+        Absolute path to the DuckDB file holding the base fact table.
+    datastore_id:
+        Datastore the materialized rollup is served through.
+    rls_keys:
+        Override the metric's declared rls_keys (merged with metric's).
+    """
+
+    metric_id: str
+    grains: list[str] | None = None
+    source_database: str | None = None
+    datastore_id: str | None = None
+    rls_keys: list[str] = []
+
+
+@router.post("/preagg/build_from_metric", status_code=201, dependencies=[Depends(require_writer)])
+async def preagg_build_from_metric(
+    body: BuildFromMetricIn,
+    request: Request,
+    user: dict = Depends(current_user),
+) -> dict[str, Any]:
+    """Build a rollup driven by a declared MetricDefinition (auto-shape).
+
+    Resolves the metric by id from the metrics registry, extracts the base
+    measures (additive components), dimensions, time column, and rls_keys, and
+    materializes a rollup whose shape exactly matches the metric compiler's
+    ``__base`` CTE.  This enables both flat and layered (derived / windowed)
+    metric queries to route to the rollup transparently.
+
+    Returns 404 when the metric is not registered.  Returns 400 when the
+    metric has no additive base measures (non-additive metrics cannot be
+    rolled up).
+    """
+    await resolve_org_id(str(user["id"]), get_repo(), request)
+
+    # Resolve the metric from the metrics registry.
+    try:
+        from app.metrics.registry import get_metric_registry  # noqa: PLC0415
+        metric_reg = get_metric_registry()
+        metric = metric_reg.get(body.metric_id)
+    except ImportError:
+        metric = None
+
+    if metric is None:
+        raise AppError(
+            "metric_not_found",
+            f"Metric {body.metric_id!r} is not registered.",
+            404,
+        )
+
+    try:
+        built = build_rollup_for_metric(
+            metric,
+            grains=body.grains,
+            source_database=body.source_database,
+            registry=get_registry(),
+            register_query=True,
+            datastore_id=body.datastore_id,
+        )
+    except (ValueError, Exception) as exc:
+        raise AppError(
+            "rollup_build_failed",
+            str(exc),
+            400,
+        ) from exc
+
     return built.to_dict()
 
 

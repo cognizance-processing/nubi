@@ -54,7 +54,8 @@ from app.auth.scopes import has_scope
 from app.auth.verify import VerifiedIdentity
 from app.connectors import plan as planner_plan
 from app.connectors.arrow_io import ipc_stream_from_bytes, table_to_ipc_bytes
-from app.connectors.cache import get_cache
+from app.connectors.cache import get_base_scan, get_cache, put_base_scan
+from app.connectors.cache_key import compute_base_scan_key
 from app.connectors.planner import resolve_named_params
 from app.errors import AppError
 from app.metrics.compile import compile_metric
@@ -764,6 +765,25 @@ async def query_metric(
             headers={"X-Nubi-Cache": "HIT"},
         )
 
+    # ── 6a. Base-scan cache lookup (BET 2b — shared scan key) ────────────────
+    # When multiple metric widgets target the same base model + predicate + RLS
+    # tenant, the ``base_scan_key`` is identical across them.  A HIT here lets
+    # a sibling widget reuse the base-scan bytes without re-querying the connector.
+    # SECURITY: RLS policies are incorporated in the key — tenants never share.
+    _base_scan_key = compute_base_scan_key(
+        physical_plan.sql,
+        list(physical_plan.params),
+        dict(physical_plan.rls_claims),
+    )
+    _base_scan_bytes = get_base_scan(_base_scan_key) if _base_scan_key else None
+    if _base_scan_bytes is not None:
+        cache.put(physical_plan.cache_key, _base_scan_bytes)
+        return StreamingResponse(
+            ipc_stream_from_bytes(_base_scan_bytes),
+            media_type=_ARROW_STREAM_MEDIA_TYPE,
+            headers={"X-Nubi-Cache": "HIT", "X-Nubi-Fusion": "base-scan"},
+        )
+
     # ── 7. Org attribution + compute quota (mirror /query) ───────────────────
     repo = get_repo()
     org_id, org_lookup_error = await _resolve_caller_org(identity, repo)
@@ -829,7 +849,18 @@ async def query_metric(
         pass
 
     # ── 11. Cache + stream the MISS response ─────────────────────────────────
-    cache.put(physical_plan.cache_key, full_bytes)
+    _cache_tags: list[str] = [f"org:{org_id}"]
+    if effective_datastore_id:
+        _cache_tags.append(f"datastore:{effective_datastore_id}")
+    cache.put(physical_plan.cache_key, full_bytes, tags=_cache_tags)
+
+    # Store base-scan entry so sibling metric/query widgets can reuse this scan.
+    try:
+        if _base_scan_key:
+            put_base_scan(_base_scan_key, full_bytes, tags=_cache_tags)
+    except Exception:  # noqa: BLE001 — base-scan cache is advisory; never breaks the path
+        pass
+
     return StreamingResponse(
         ipc_stream_from_bytes(full_bytes),
         media_type=_ARROW_STREAM_MEDIA_TYPE,

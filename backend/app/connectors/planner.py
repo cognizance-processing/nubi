@@ -485,6 +485,58 @@ def _measure_alias(func: str, col: str) -> str:
     return f"{func.lower()}_{col}"
 
 
+def _extract_layered_cte(
+    sql: str, dialect: str
+) -> tuple[str, str] | None:
+    """Detect a single-CTE ``WITH __base AS (<inner>) <outer>`` form.
+
+    Returns ``(inner_sql, outer_sql)`` if the SQL matches this exact form,
+    or ``None`` otherwise (flat query or multi-CTE — leave untouched).
+
+    Conservative: any parse failure, unexpected CTE count, or non-``__base``
+    CTE name returns ``None`` (caller treats as non-routable).
+    """
+    try:
+        tree = parse_sql_cached(sql, dialect=dialect)
+    except Exception:
+        return None
+    if not isinstance(tree, exp.Select):
+        return None
+
+    # sqlglot wraps WITH … SELECT as a exp.Subquery with .with_ or the
+    # entire thing is a Select that has `with` in its args.
+    # Check for a WITH clause on the outermost SELECT.
+    # sqlglot uses "with_" (trailing underscore) as the key in Select.args.
+    with_node = tree.args.get("with_") or tree.args.get("with")
+    if with_node is None:
+        return None
+
+    ctes = with_node.expressions  # list[exp.CTE]
+    if len(ctes) != 1:
+        return None  # multi-CTE — too complex, leave untouched.
+
+    cte = ctes[0]
+    cte_alias = cte.alias_or_name
+    if cte_alias.lower() != "__base":
+        return None  # not our compiler's CTE — don't touch.
+
+    # Extract the inner SELECT from the CTE body.
+    inner_node = cte.this
+    if not isinstance(inner_node, exp.Select):
+        return None
+
+    # The outer SELECT references __base; strip the WITH clause from the tree
+    # to get the standalone outer SELECT.
+    outer_tree = tree.copy()
+    # sqlglot uses "with_" (trailing underscore) as the key; set to None to strip.
+    outer_tree.args["with_"] = None
+    outer_tree.args["with"] = None  # belt-and-suspenders for other sqlglot versions
+
+    inner_sql = inner_node.sql(dialect=dialect)
+    outer_sql = outer_tree.sql(dialect=dialect)
+    return inner_sql, outer_sql
+
+
 def route_to_rollup_shape(plan: PhysicalPlan, registry: Any) -> RollupRouteResult:
     """Conservatively rewrite *plan* to read a built rollup when SOUND.
 
@@ -497,6 +549,9 @@ def route_to_rollup_shape(plan: PhysicalPlan, registry: Any) -> RollupRouteResul
     -------------------------------------------------------------------
     1. The query is a single-table aggregation parseable to a routable
        ``QueryShape`` (no joins / derived grains / expression measures).
+       For layered ``WITH __base AS (<inner>) <outer>`` queries, the
+       router inspects the INNER aggregation (the outer window fns / derived
+       formulas compute over the base and pass through unchanged).
     2. A built rollup exists for the same base table.
     3. The query's GROUP BY columns ⊆ the rollup's dimensions (so re-grouping
        the rollup reproduces the query's grain).
@@ -505,6 +560,17 @@ def route_to_rollup_shape(plan: PhysicalPlan, registry: Any) -> RollupRouteResul
          b. materialized by the rollup (the rollup computed ``func(col)``).
     5. Every WHERE-clause column is present in the rollup (so the predicate —
        including any RLS predicate injected upstream — still applies).
+
+    Layered (windowed / derived) metric queries
+    --------------------------------------------
+    When the SQL is a single-CTE ``WITH __base AS (<inner>) <outer>`` form
+    (as emitted by the metric compiler for derived or windowed metrics), the
+    router tries to rewrite the INNER aggregation to hit a rollup and then
+    rebuilds the layered query with the rewritten inner.  The outer transform
+    layer (window functions, derived formulas) computes over the rollup-served
+    base — the results are identical to running over the raw fact table because
+    the base measures are re-aggregated additively.  If the inner is not
+    provably routable the plan is returned untouched.
 
     When all hold, the SELECT/GROUP BY/FROM are rewritten via the sqlglot AST:
     aggregates become ``SUM(<rollup measure col>)`` (etc.), the FROM target
@@ -525,6 +591,92 @@ def route_to_rollup_shape(plan: PhysicalPlan, registry: Any) -> RollupRouteResul
     # query_log; preagg imports planner only at call sites).
     from app.connectors.query_log import extract_shape  # noqa: PLC0415
 
+    # ── Detect layered CTE (windowed / derived metric queries) ───────────────
+    # When the SQL is a single-CTE WITH __base AS (<inner>) <outer>, we extract
+    # the inner aggregation and route that.  If routed, we rebuild the WITH
+    # using the rewritten inner — the outer transform layer is preserved verbatim.
+    cte_parts = _extract_layered_cte(plan.sql, dialect=plan.dialect)
+    if cte_parts is not None:
+        inner_sql, outer_sql = cte_parts
+        inner_shape = extract_shape(inner_sql, dialect=plan.dialect)
+        if inner_shape is None or not inner_shape.routable or inner_shape.base_table is None:
+            return RollupRouteResult(plan, False, reason="layered: inner not routable")
+
+        rollups = registry.candidates_for_table(inner_shape.base_table)
+        if not rollups:
+            return RollupRouteResult(plan, False, reason="layered: no rollup for base table")
+
+        q_dims = set(inner_shape.dimensions)
+        q_filter_cols = set(inner_shape.filter_columns)
+
+        # Build a temporary inner plan to reuse _rewrite_to_rollup.
+        inner_plan = PhysicalPlan(
+            dialect=plan.dialect,
+            sql=inner_sql,
+            params=list(plan.params),
+            projection=None,
+            predicates=[],
+            rls_claims=dict(plan.rls_claims),
+            cache_key="",
+        )
+
+        for rollup in rollups:
+            roll_dims = set(rollup.dimensions)
+            # RLS keys are physically present in the rollup (they're grouped on too),
+            # so they count as valid GROUP BY targets when checking the soundness rule.
+            roll_all_dims = roll_dims | set(rollup.rls_keys)
+            if not q_dims.issubset(roll_all_dims):
+                continue
+            roll_measures = rollup.measure_funcs
+            ok_measures = True
+            for func, col in inner_shape.measures:
+                col_key = col if col is not None else "*"
+                if func not in _REAGG or (func, col_key) not in roll_measures:
+                    ok_measures = False
+                    break
+            if not ok_measures:
+                continue
+            roll_cols = roll_all_dims
+            if not q_filter_cols.issubset(roll_cols):
+                continue
+
+            # All soundness rules pass → rewrite the inner aggregation.
+            rewritten_inner = _rewrite_to_rollup(inner_plan, rollup)
+            if rewritten_inner is None:
+                continue
+
+            # Rebuild the layered query with the rewritten inner CTE.
+            rewritten_sql = f"WITH __base AS ({rewritten_inner}) {outer_sql}"
+
+            new_cache_key = compute_cache_key(
+                sql=rewritten_sql,
+                params=plan.params,
+                rls_claims=plan.rls_claims,
+            )
+            new_plan = PhysicalPlan(
+                dialect=plan.dialect,
+                sql=rewritten_sql,
+                params=list(plan.params),
+                projection=plan.projection,
+                predicates=list(plan.predicates),
+                rls_claims=dict(plan.rls_claims),
+                cache_key=new_cache_key,
+            )
+            roll_partitions = _rollup_partition_cols(rollup)
+            pruned = tuple(
+                sorted(c for c in roll_partitions if c in roll_cols and c in q_filter_cols)
+            )
+            reason = f"layered: sound superset rewrite onto {rollup.table}"
+            if pruned:
+                reason += f" (partition-pruned on {', '.join(pruned)})"
+            return RollupRouteResult(
+                new_plan, True, rollup_id=rollup.rollup_id,
+                reason=reason, pruned_partitions=pruned,
+            )
+
+        return RollupRouteResult(plan, False, reason="layered: no sound rollup match")
+
+    # ── Flat path ────────────────────────────────────────────────────────────
     shape = extract_shape(plan.sql, dialect=plan.dialect)
     if shape is None or not shape.routable or shape.base_table is None:
         return RollupRouteResult(plan, False, reason="not a routable aggregation")
