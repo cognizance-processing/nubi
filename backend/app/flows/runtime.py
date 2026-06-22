@@ -1510,14 +1510,28 @@ async def drain_flow_run(
     # later cells in THIS synchronous run (value-only; persist=True also hits
     # the store). In-process only — the distributed claim path does not share it.
     run_var_overlay: dict[str, Any] = {}
+    # N+1 fix: cache the task_run snapshot and reuse it across the step where
+    # safe.  We only re-query after a state mutation (_execute_claimed_task_run
+    # calls advance_readiness which writes new states).  On the first iteration
+    # we have no snapshot yet (sentinel None); after execution we invalidate.
+    _cached_task_runs: list[dict[str, Any]] | None = None
+    _snapshot_stale: bool = True  # True → must re-query at top of next step
     while steps < max_steps:
         # Check if the flow_run itself is already terminal (advance may have done this).
         flow_run = await store.get_flow_run(flow_run_id)
         if flow_run and flow_run.get("state") in ("success", "failed", "cancelled"):
             return flow_run
 
-        # Check if there are any ready task_runs for this specific flow_run.
-        task_runs = await store.list_task_runs(flow_run_id)
+        # Re-query task_runs only when the snapshot is stale (i.e. a mutation
+        # occurred in the previous step).  This reduces list_task_runs calls from
+        # O(steps) to O(mutations) — in the common single-flow-run sweep/backfill
+        # path each step is one mutation so the count stays bounded, but we never
+        # skip a re-query after state changes.
+        if _snapshot_stale or _cached_task_runs is None:
+            _cached_task_runs = await store.list_task_runs(flow_run_id)
+            _snapshot_stale = False
+
+        task_runs = _cached_task_runs
         # "retrying" tasks with scheduled_at <= now are also eligible (claimed as 'ready').
         ready = [tr for tr in task_runs if tr["state"] == "ready"]
         retrying_due = [
@@ -1529,8 +1543,11 @@ async def drain_flow_run(
             break
 
         # Promote retrying tasks that are due back to ready so claim_ready_task_run picks them up.
-        for tr in retrying_due:
-            await store.update_task_run(tr["id"], {"state": "ready"})
+        if retrying_due:
+            for tr in retrying_due:
+                await store.update_task_run(tr["id"], {"state": "ready"})
+            # Snapshot is now stale — promotions changed state.
+            _snapshot_stale = True
 
         # Run one.  Note: claim_ready_task_run is global across the store;
         # we loop until we get one from this flow_run or exhaust ready tasks.
@@ -1541,6 +1558,9 @@ async def drain_flow_run(
         await _execute_claimed_task_run(
             store, task_run, now, claims, run_var_overlay=run_var_overlay
         )
+        # Execution calls advance_readiness which mutates task_run states —
+        # invalidate the snapshot so the next iteration re-queries.
+        _snapshot_stale = True
         steps += 1
 
     # Re-fetch and return the final state.

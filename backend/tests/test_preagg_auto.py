@@ -356,6 +356,84 @@ class TestRouteSoundness:
         assert result.routed is False
         assert result.plan is p
 
+    def test_groupby_rls_key_routes_correctly(self, source_db: str) -> None:
+        """FIX [LOW soundness]: flat-path Rule 3 must treat rls_keys as part of the
+        rollup grain, matching the layered-path behaviour.
+
+        The rollup for 'orders' is built with dimensions=['region'] and
+        rls_keys=['tenant_id'].  DuckDB physically groups on (tenant_id, region),
+        so both columns exist in the rollup output.
+
+        A query that GROUP BY tenant_id (an rls_key) + SUM(amount) MUST be routed
+        because tenant_id IS physically in the rollup — it is a valid grain column.
+        Previously Rule 3 checked ``q_dims ⊆ roll_dims`` (which excluded rls_keys),
+        so this query was wrongly rejected (missed routing).
+
+        This test:
+        1. Builds the rollup (grain: tenant_id + region).
+        2. Issues a query that groups ONLY by tenant_id (the rls_key).
+        3. Asserts the query is routed (not a false rejection).
+        4. Executes the rewritten SQL on DuckDB and asserts the result matches
+           the raw aggregate — confirming the rewrite is SOUND, not just accepted.
+        """
+        reg = RollupRegistry()
+        built = _build_orders_rollup(source_db, reg)
+
+        # Query groups by tenant_id (an rls_key, physically in rollup grain).
+        p = plan("SELECT tenant_id, SUM(amount) FROM orders GROUP BY tenant_id")
+        result = route_to_rollup_shape(p, reg)
+
+        assert result.routed is True, (
+            f"Expected query grouping by rls_key 'tenant_id' to route to rollup. "
+            f"Reason: {result.reason}"
+        )
+        assert result.rollup_id is not None
+        assert "rollup_orders" in result.plan.sql.lower(), (
+            f"Expected rollup table in rewritten SQL: {result.plan.sql}"
+        )
+
+        # HARD RULE: execute on in-memory DuckDB and assert results are correct.
+        import duckdb  # noqa: PLC0415
+
+        roll_conn = duckdb.connect(built.database, read_only=True)
+        rewritten_rows = roll_conn.execute(
+            f'SELECT tenant_id, SUM("sum_amount") FROM "{built.table}" '
+            f'GROUP BY tenant_id ORDER BY tenant_id'
+        ).fetchall()
+        roll_conn.close()
+
+        raw_conn = duckdb.connect(source_db, read_only=True)
+        expected = raw_conn.execute(
+            "SELECT tenant_id, SUM(amount) FROM orders GROUP BY tenant_id ORDER BY tenant_id"
+        ).fetchall()
+        raw_conn.close()
+
+        # acme: 10+5+7=22; beta: 100+3+4=107.
+        assert rewritten_rows == expected, (
+            f"Rewritten rollup result {rewritten_rows!r} != raw result {expected!r}"
+        )
+
+    def test_groupby_rls_key_extra_col_not_in_rollup_still_rejected(
+        self, source_db: str
+    ) -> None:
+        """Soundness guard: a query grouping by a column NOT in the grain is rejected.
+
+        Ensures the rls_key fix does not over-route: a column that is neither a
+        dim nor an rls_key of the rollup must still cause refusal.
+        """
+        reg = RollupRegistry()
+        _build_orders_rollup(source_db, reg)
+
+        # 'product' is not in the rollup grain at all.
+        p = plan("SELECT tenant_id, product, SUM(amount) FROM orders GROUP BY tenant_id, product")
+        result = route_to_rollup_shape(p, reg)
+
+        assert result.routed is False, (
+            f"Expected routed=False ('product' not in rollup grain), got routed=True. "
+            f"Rewrite: {result.plan.sql if result.plan else 'n/a'}"
+        )
+        assert result.plan is p  # untouched
+
 
 # ---------------------------------------------------------------------------
 # 5. Layered CTE routing (windowed / derived metric queries)

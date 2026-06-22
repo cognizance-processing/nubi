@@ -393,6 +393,7 @@ async def resolve_provider_data(
     *,
     mode: str = "ephemeral",
     is_embed: bool = False,
+    skip_metering: bool = False,
 ) -> dict[str, pa.Table]:
     """Resolve a single DataProvider and return named Arrow tables.
 
@@ -418,11 +419,17 @@ async def resolve_provider_data(
         ``'materialized'`` — reserved for a later scheduling wave (raises
         ``NotImplementedError``).
     is_embed:
-        When ``True`` the caller is an embed/viewer token.  Quota enforcement is
-        SKIPPED for embed callers because viewers are never metered — compute is
-        charged to the org only on first-party (non-embed) cache misses.  The
-        cache still serves embed callers: a first-party miss populates the cache
-        and subsequent embed requests are served from it at zero marginal cost.
+        When ``True`` the caller is an embed token.  Quota enforcement is
+        SKIPPED because embed viewers are never metered.  Sets ``skip_metering``
+        to ``True`` automatically (see below).
+    skip_metering:
+        When ``True`` quota enforcement is SKIPPED entirely on a cache miss.
+        The route sets this for BOTH embed tokens (``is_embed=True``) AND
+        first-party users whose org role is ``'viewer'``.  Viewers — whether
+        embed or first-party — are NEVER metered; compute is charged to the org
+        only on first-party writer/admin/member cache misses.  The cache still
+        serves non-metered callers: a metered miss populates the cache and
+        subsequent viewer requests are served from it at zero marginal cost.
 
     Returns
     -------
@@ -516,11 +523,13 @@ async def resolve_provider_data(
             )
 
     # ── Execute provider ──────────────────────────────────────────────────────
-    # FIX [MED metering]: enforce quota on a cache miss, but ONLY for first-party
-    # (non-embed) callers.  Embed/viewer tokens are NEVER metered — they may
-    # benefit from a cache entry that a first-party caller already paid for, but
-    # they must not trigger metering themselves.  is_embed=True skips this block.
-    if not is_embed:
+    # FIX [MED metering INVARIANT]: enforce quota on a cache miss ONLY for
+    # first-party callers whose org role is writer/admin/member.  Viewers are
+    # NEVER metered — this covers both embed tokens (is_embed=True) AND
+    # first-party users with org role 'viewer' (skip_metering=True set by the
+    # route).  The combined flag is: skip if is_embed OR skip_metering.
+    _skip = is_embed or skip_metering
+    if not _skip:
         from app.features import enforce_quota  # noqa: PLC0415
 
         await enforce_quota(org_id, "compute_units", amount=1.0)

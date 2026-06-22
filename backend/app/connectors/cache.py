@@ -612,36 +612,82 @@ def _get_memory_singleton(
 
 def reset_cache_for_tests() -> None:
     """Drop the selected backend and the in-memory singleton (tests only)."""
-    global _active_backend, _cache_instance
+    global _active_backend, _cache_instance, _base_scan_instance
     with _cache_lock:
         _active_backend = None
         _cache_instance = None
+        _base_scan_instance = None
 
 
 # ---------------------------------------------------------------------------
-# Base-scan cache (BET 2b) — shared base-scan key namespace
+# Base-scan cache (BET 2b) — SEGMENTED base-scan store
 # ---------------------------------------------------------------------------
 # When a board fires N widget queries over the SAME model + predicate + RLS
 # tenant, the per-plan ``cache_key`` will differ for each widget (they select
 # different columns / aggregations), but the ``base_scan_key`` (computed by
 # ``compute_base_scan_key`` in ``cache_key.py``) will be identical.  We store
-# the raw base-scan Arrow IPC bytes under a *namespaced* key so different
-# widgets within the same board reuse the same underlying scan.
+# the raw base-scan Arrow IPC bytes here so different widgets within the same
+# board reuse the same underlying scan result.
 #
-# The namespace prefix ensures base-scan entries and exact-result entries
-# NEVER collide in the shared backend (both are stored in the same
-# ``ContentAddressedCache`` / Redis backend).
+# FIX [LOW] Cache segmentation: base-scan entries previously shared the SAME
+# 256-entry LRU as exact-result entries (via a ``bscan:`` key prefix), which
+# allowed base-scan puts to evict exact-result entries and vice-versa, degrading
+# both.  The fix gives base-scan its OWN bounded ``ContentAddressedCache``
+# instance (separate from the exact-result singleton).  This means:
+#   * In-memory backend: two independent LRUs; no cross-segment eviction.
+#   * Redis backend: namespace isolation was already provided by the ``bscan:``
+#     prefix and Redis has no fixed-size LRU by default; we use the shared Redis
+#     backend there (same as before) since Redis does not have the eviction
+#     contention problem of a fixed-size LRU.
 #
 # SECURITY: ``compute_base_scan_key`` incorporates the full RLS policies dict
 # so tenants NEVER share a base-scan entry.  ``get_base_scan()`` / ``put_base_scan()``
-# are thin wrappers that add the namespace; the underlying isolation guarantees
-# are already in the key computation.
+# are thin wrappers; the underlying isolation guarantees are in the key computation.
 
 _BASE_SCAN_KEY_PREFIX: str = "bscan:"
+_BASE_SCAN_MAX_ENTRIES: int = 128   # independent LRU; does not compete with exact-result entries
+
+# Separate in-memory singleton for base-scan entries.  Only used when the active
+# backend is NOT Redis (in-process LRU contention is the problem to avoid).
+_base_scan_instance: ContentAddressedCache | None = None
+
+
+def _get_base_scan_backend() -> ContentAddressedCache | RedisCacheBackend:
+    """Return the store to use for base-scan entries.
+
+    * Redis: use the shared ``RedisCacheBackend`` (namespaced keys + no fixed
+      LRU capacity, so no eviction contention with exact-result entries).
+    * In-memory: return a SEPARATE ``ContentAddressedCache`` singleton so
+      base-scan entries live in their own LRU and cannot evict exact-result
+      entries (or vice-versa).
+    """
+    active = get_cache()
+    if isinstance(active, RedisCacheBackend):
+        # Redis: the ``bscan:`` prefix provides namespace isolation; no separate
+        # store needed.
+        return active
+    # In-memory: use (or lazily create) the dedicated base-scan singleton.
+    global _base_scan_instance
+    if _base_scan_instance is not None:
+        return _base_scan_instance
+    with _cache_lock:
+        if _base_scan_instance is None:
+            _base_scan_instance = ContentAddressedCache(
+                max_entries=_BASE_SCAN_MAX_ENTRIES,
+                ttl=_DEFAULT_TTL_SECONDS,
+            )
+    return _base_scan_instance
 
 
 def _base_scan_store_key(base_scan_key: str) -> str:
-    """Return the namespaced store key for a base-scan entry."""
+    """Return the namespaced store key for a base-scan entry.
+
+    The ``bscan:`` prefix is retained for Redis (where both base-scan and
+    exact-result entries coexist in the same Redis keyspace) and for any
+    future shared backend where key-space isolation matters.  For the
+    in-memory backend the separate singleton already provides physical
+    isolation, but keeping the prefix is harmless and aids debugging.
+    """
     return f"{_BASE_SCAN_KEY_PREFIX}{base_scan_key}"
 
 
@@ -649,19 +695,18 @@ def get_base_scan(base_scan_key: str) -> bytes | None:
     """Look up a cached base-scan result by *base_scan_key*.
 
     Returns the cached Arrow IPC bytes on a HIT, ``None`` on a MISS.
-    Uses the same active backend as :func:`get_cache`.
 
     Parameters
     ----------
     base_scan_key:
-        The key returned by ``compute_base_scan_key``.  ``None`` input is
-        safe (treated as a MISS) so callers can pass the result of
+        The key returned by ``compute_base_scan_key``.  ``None`` / empty input
+        is safe (treated as a MISS) so callers can pass the result of
         ``compute_base_scan_key`` directly without a None-guard.
     """
     if not base_scan_key:
         return None
-    cache = get_cache()
-    return cache.get(_base_scan_store_key(base_scan_key))
+    store = _get_base_scan_backend()
+    return store.get(_base_scan_store_key(base_scan_key))
 
 
 def put_base_scan(
@@ -669,7 +714,7 @@ def put_base_scan(
     value: bytes,
     tags: list[str] | None = None,
 ) -> None:
-    """Store *value* (Arrow IPC bytes) in the base-scan namespace.
+    """Store *value* (Arrow IPC bytes) in the base-scan store.
 
     No-ops when *base_scan_key* is falsy so callers can pass
     ``compute_base_scan_key(...)`` (which may return ``None``) directly.
@@ -687,5 +732,20 @@ def put_base_scan(
     """
     if not base_scan_key:
         return
-    cache = get_cache()
-    cache.put(_base_scan_store_key(base_scan_key), value, tags=tags)
+    store = _get_base_scan_backend()
+    store.put(_base_scan_store_key(base_scan_key), value, tags=tags)
+
+
+def invalidate_base_scan_tag(tag: str) -> int:
+    """Invalidate all base-scan entries carrying *tag*.
+
+    Thin wrapper that forwards to the base-scan backend's ``invalidate``
+    method.  Use this instead of ``get_cache().invalidate(tag)`` when you
+    want to evict base-scan entries: on the in-memory backend the base-scan
+    store is now a SEPARATE singleton from the exact-result cache, so calling
+    the latter's ``invalidate`` would not reach base-scan entries.
+
+    Returns the number of entries evicted (0 on a MISS or error).
+    """
+    store = _get_base_scan_backend()
+    return store.invalidate(tag)

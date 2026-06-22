@@ -261,7 +261,8 @@ async def get_provider_data(
         )
 
     # ── Resolve org_id ────────────────────────────────────────────────────────
-    if identity.kind == "embed" and identity.org:
+    _is_embed = identity.kind == "embed"
+    if _is_embed and identity.org:
         org_id = identity.org
     else:
         org_id = await get_user_org(identity.user_id, repo)
@@ -273,9 +274,22 @@ async def get_provider_data(
         "org_id": org_id,
     }
 
+    # ── Determine whether metering should be skipped ──────────────────────────
+    # INVARIANT: viewers are NEVER metered — this applies to BOTH embed tokens
+    # AND first-party users whose org role is 'viewer'.  Only first-party
+    # writer/admin/member callers trigger quota enforcement on a cache miss.
+    _skip_metering = _is_embed  # embed tokens always skip metering
+    if not _is_embed and identity.user_id:
+        # First-party caller: resolve the org role and skip metering for viewers.
+        from app.auth.roles import get_org_role  # noqa: PLC0415
+
+        _caller_role = await get_org_role(identity.user_id, org_id, repo)
+        if _caller_role == "viewer":
+            _skip_metering = True
+
     # ── Resolve provider data ─────────────────────────────────────────────────
-    # Pass is_embed so resolve_provider_data can skip quota enforcement for
-    # embed/viewer callers (viewers are never metered — invariant).
+    # Pass skip_metering so resolve_provider_data can skip quota enforcement for
+    # embed tokens and first-party viewer-role users (viewers are never metered).
     tables = await resolve_provider_data(
         board_id=board_id,
         provider_id=provider_id,
@@ -283,7 +297,8 @@ async def get_provider_data(
         org_id=org_id,
         claims=claims,
         repo=repo,
-        is_embed=(identity.kind == "embed"),
+        is_embed=_is_embed,
+        skip_metering=_skip_metering,
     )
 
     # ── Serialise to multi-table IPC stream ───────────────────────────────────

@@ -1094,3 +1094,138 @@ async def test_first_party_cache_miss_calls_enforce_quota(repo: InMemoryRepo) ->
     )
     org_ids = [c[0] for c in quota_calls]
     assert _ORG in org_ids, f"enforce_quota called with wrong org_id: {quota_calls}"
+
+
+# ---------------------------------------------------------------------------
+# NEW: [MED metering INVARIANT] first-party VIEWER-role must not be metered
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_first_party_viewer_role_cache_miss_does_not_call_enforce_quota(
+    repo: InMemoryRepo,
+) -> None:
+    """[MED metering INVARIANT] First-party viewer-role cache miss must NOT meter.
+
+    A first-party user (identity.kind='access') whose org role is 'viewer' must
+    be exempt from quota enforcement — the same invariant that covers embed tokens.
+    resolve_provider_data(skip_metering=True) is passed by the route for viewers.
+    """
+    quota_calls: list[tuple] = []
+
+    async def _fake_enforce_quota(org_id: str, dimension: str, amount: float = 1.0) -> None:
+        quota_calls.append((org_id, dimension, amount))
+
+    async def _fake_run(query_id, org_id, _repo, policies):
+        return ["amount"], [[7.0]]
+
+    with (
+        patch("app.features.enforce_quota", side_effect=_fake_enforce_quota),
+        patch("app.dashboards.collect.run_query_rows", side_effect=_fake_run),
+    ):
+        tables = await resolve_provider_data(
+            board_id=_BOARD_ID,
+            provider_id=_PROVIDER_ID,
+            params={},
+            org_id=_ORG,
+            claims={"policies": {}},
+            repo=repo,
+            is_embed=False,       # first-party token (not embed)
+            skip_metering=True,   # viewer role — route sets this for org role='viewer'
+        )
+
+    # Provider must still execute and return data.
+    assert "revenue" in tables
+    assert tables["revenue"].num_rows == 1
+
+    # But quota must NOT have been called for a viewer-role first-party caller.
+    assert len(quota_calls) == 0, (
+        f"enforce_quota was called for a first-party viewer-role caller — "
+        f"viewers are never metered. Calls: {quota_calls}"
+    )
+
+
+@pytest.mark.asyncio
+async def test_first_party_writer_role_cache_miss_calls_enforce_quota(
+    repo: InMemoryRepo,
+) -> None:
+    """[MED metering] First-party writer/admin cache miss MUST call enforce_quota.
+
+    Writers and admins ARE metered on cache miss.  skip_metering=False (default)
+    is the path for non-viewer, non-embed callers.
+    """
+    quota_calls: list[tuple] = []
+
+    async def _fake_enforce_quota(org_id: str, dimension: str, amount: float = 1.0) -> None:
+        quota_calls.append((org_id, dimension, amount))
+
+    async def _fake_run(query_id, org_id, _repo, policies):
+        return ["amount"], [[55.0]]
+
+    with (
+        patch("app.features.enforce_quota", side_effect=_fake_enforce_quota),
+        patch("app.dashboards.collect.run_query_rows", side_effect=_fake_run),
+    ):
+        tables = await resolve_provider_data(
+            board_id=_BOARD_ID,
+            provider_id=_PROVIDER_ID,
+            params={},
+            org_id=_ORG,
+            claims={"policies": {}},
+            repo=repo,
+            is_embed=False,        # first-party token
+            skip_metering=False,   # writer/admin/member — metering applies
+        )
+
+    # Provider must execute and return data.
+    assert "revenue" in tables
+
+    # Quota MUST be called for a writer-role first-party cache miss.
+    assert len(quota_calls) >= 1, (
+        "enforce_quota was NOT called for a first-party writer cache miss — "
+        "metering regression."
+    )
+    org_ids = [c[0] for c in quota_calls]
+    assert _ORG in org_ids, f"enforce_quota called with wrong org_id: {quota_calls}"
+
+
+@pytest.mark.asyncio
+async def test_embed_token_skip_metering_does_not_call_enforce_quota(
+    repo: InMemoryRepo,
+) -> None:
+    """[MED metering INVARIANT] Embed token cache miss must NOT call enforce_quota.
+
+    is_embed=True sets skip_metering implicitly in resolve_provider_data; even
+    if skip_metering is left at its default (False), is_embed alone suppresses
+    quota enforcement for embed/viewer tokens.
+    """
+    quota_calls: list[tuple] = []
+
+    async def _fake_enforce_quota(org_id: str, dimension: str, amount: float = 1.0) -> None:
+        quota_calls.append((org_id, dimension, amount))
+
+    async def _fake_run(query_id, org_id, _repo, policies):
+        return ["amount"], [[3.0]]
+
+    with (
+        patch("app.features.enforce_quota", side_effect=_fake_enforce_quota),
+        patch("app.dashboards.collect.run_query_rows", side_effect=_fake_run),
+    ):
+        tables = await resolve_provider_data(
+            board_id=_BOARD_ID,
+            provider_id=_PROVIDER_ID,
+            params={},
+            org_id=_ORG,
+            claims={"policies": {}},
+            repo=repo,
+            is_embed=True,         # embed token — always skips metering
+            skip_metering=False,   # is_embed alone should suppress quota
+        )
+
+    assert "revenue" in tables
+    assert tables["revenue"].num_rows == 1
+
+    assert len(quota_calls) == 0, (
+        f"enforce_quota was called for an embed token — viewers are never metered. "
+        f"Calls: {quota_calls}"
+    )

@@ -418,16 +418,23 @@ def _compile_layered(
     partition_cols = [exp.column(d) for d in all_dim_names]
     order_col = exp.column(time_alias) if time_alias else None
 
+    # Lateral join entries for prior-period / prior-year pct expressions.
+    # Each entry is (lateral_alias, lateral_sql) — the lateral SELECT computes
+    # the prior value once; the pct expression references the alias column.
+    # This ensures the correlated subquery text appears in the SQL exactly ONCE
+    # (not twice as numerator AND NULLIF denominator), so the DB only evaluates
+    # it once per row.
+    lateral_joins: list[tuple[str, str]] = []
+
     for tc in regular_comparisons:
         m_col = exp.column(tc.measure)
         out_name = tc.out_name()
 
         if tc.kind in ("prior_period", "pop_abs", "pop_pct"):
-            # FIX issue 4: use date-correct correlated subquery instead of
-            # positional LAG.  Positional LAG(measure, N) is wrong for sparse
-            # (non-dense) time series because missing buckets shift the row offset.
-            # We match by DATE arithmetic (bucket - N periods) instead.
-            # This requires time_grain to be set (governance already enforces it).
+            # Date-correct correlated subquery instead of positional LAG.
+            # LAG(measure, N) is wrong for sparse time series (missing buckets
+            # shift the row offset).  We match by DATE arithmetic instead.
+            # Governance already enforces time_grain is set for these kinds.
             pp_expr_sql = _prior_period_subquery_sql(
                 tc.measure, mq.time_grain or "day", tc.periods,
                 time_alias, all_dim_names, dialect
@@ -440,24 +447,25 @@ def _compile_layered(
                 diff_sql = f"({m_col_sql} - ({pp_expr_sql}))"
                 diff_expr = sqlglot.parse_one(diff_sql, dialect=dialect)
                 outer_select_exprs.append(exp.alias_(diff_expr, out_name))
-            else:  # pop_pct
-                # Compute pp once to avoid two identical correlated subqueries.
+            else:  # pop_pct — FIX (Issue 3): compute pp once via LATERAL
+                # The prior-period subquery is correlated and can be expensive.
+                # Wrap it in a LATERAL so it executes once per row and is
+                # referenced (not re-executed) for both the numerator and the
+                # NULLIF denominator.
+                lat_alias = f"__pp_{tc.measure}_{tc.periods}__"
+                lat_col = f"{lat_alias}.pp_val"
                 pct_sql = (
-                    f"({m_col_sql} - ({pp_expr_sql})) "
-                    f"/ NULLIF(({pp_expr_sql}), 0)"
+                    f"({m_col_sql} - {lat_col}) "
+                    f"/ NULLIF({lat_col}, 0)"
                 )
                 pct_expr = sqlglot.parse_one(pct_sql, dialect=dialect)
                 outer_select_exprs.append(exp.alias_(pct_expr, out_name))
+                lateral_joins.append((lat_alias, pp_expr_sql))
 
         elif tc.kind in ("prior_year", "yoy_abs", "yoy_pct"):
-            # Date-correct prior-year lookup via correlated scalar subquery on
-            # __base.  Positional LAG(measure, N) is WRONG for sparse (non-dense)
-            # time series because missing buckets shift the row offset.
-            # Instead we look up the value at exactly (bucket - 1 year/period)
-            # using a correlated subquery that matches on date + all dimensions.
-            # This is correct for any grain and any sparsity pattern.
-            # FIX issue 5: compute the prior-year subquery SQL ONCE and reuse it
-            # — avoids emitting N identical correlated subqueries for yoy_pct.
+            # Date-correct prior-year lookup via correlated scalar subquery.
+            # Positional LAG is WRONG for sparse time series; the correlated
+            # subquery matches by date (bucket - 1 year), correct for any sparsity.
             py_expr_sql = _prior_year_subquery_sql(
                 tc.measure, mq.time_grain or "day", time_alias, all_dim_names, dialect
             )
@@ -469,26 +477,35 @@ def _compile_layered(
                 diff_sql = f"({m_col_sql} - ({py_expr_sql}))"
                 diff_expr = sqlglot.parse_one(diff_sql, dialect=dialect)
                 outer_select_exprs.append(exp.alias_(diff_expr, out_name))
-            else:  # yoy_pct — FIX issue 5: reuse py_expr_sql (not recomputed)
+            else:  # yoy_pct — FIX (Issue 3): compute py once via LATERAL
+                lat_alias = f"__py_{tc.measure}__"
+                lat_col = f"{lat_alias}.py_val"
                 pct_sql = (
-                    f"({m_col_sql} - ({py_expr_sql})) "
-                    f"/ NULLIF(({py_expr_sql}), 0)"
+                    f"({m_col_sql} - {lat_col}) "
+                    f"/ NULLIF({lat_col}, 0)"
                 )
                 pct_expr = sqlglot.parse_one(pct_sql, dialect=dialect)
                 outer_select_exprs.append(exp.alias_(pct_expr, out_name))
+                lateral_joins.append((lat_alias, py_expr_sql))
 
         elif tc.kind in ("ytd", "qtd", "mtd"):
             trunc_unit = {"ytd": "year", "qtd": "quarter", "mtd": "month"}[tc.kind]
             # Partition by trunc(time, unit) + non-time dims; ORDER BY time alias;
             # ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW.
-            partition_parts = [d for d in all_dim_names]
+            # FIX (Issue 4): emit partition columns as quoted identifiers to avoid
+            # injection from names that need quoting and to prevent SQL injection.
+            partition_parts_quoted = [
+                exp.to_identifier(d, quoted=True).sql(dialect=dialect)
+                for d in all_dim_names
+            ]
             if time_alias:
+                time_alias_quoted = exp.to_identifier(time_alias, quoted=True).sql(dialect=dialect)
                 partition_parts_sql = ", ".join(
-                    [*partition_parts, f"DATE_TRUNC('{trunc_unit}', {time_alias})"]
+                    [*partition_parts_quoted, f"DATE_TRUNC('{trunc_unit}', {time_alias_quoted})"]
                 )
-                order_part_sql = time_alias
+                order_part_sql = time_alias_quoted
             else:
-                partition_parts_sql = ", ".join(partition_parts) if partition_parts else "1"
+                partition_parts_sql = ", ".join(partition_parts_quoted) if partition_parts_quoted else "1"
                 order_part_sql = "1"
             win_sql = (
                 f"SUM({tc.measure}) OVER ("
@@ -502,10 +519,15 @@ def _compile_layered(
         elif tc.kind in ("rolling_sum", "rolling_avg"):
             agg_fn = "SUM" if tc.kind == "rolling_sum" else "AVG"
             rows_back = tc.periods - 1
-            partition_parts = [d for d in all_dim_names]
-            partition_parts_sql = ", ".join(partition_parts) if partition_parts else "1"
+            # FIX (Issue 4): emit partition columns as quoted identifiers.
+            partition_parts_quoted = [
+                exp.to_identifier(d, quoted=True).sql(dialect=dialect)
+                for d in all_dim_names
+            ]
+            partition_parts_sql = ", ".join(partition_parts_quoted) if partition_parts_quoted else "1"
             if time_alias:
-                order_part_sql = time_alias
+                time_alias_quoted = exp.to_identifier(time_alias, quoted=True).sql(dialect=dialect)
+                order_part_sql = time_alias_quoted
                 win_sql = (
                     f"{agg_fn}({tc.measure}) OVER ("
                     f"PARTITION BY {partition_parts_sql} "
@@ -531,6 +553,33 @@ def _compile_layered(
             "__outer",
         )
     )
+
+    # FIX (Issue 3): add CROSS JOIN LATERAL for any pop_pct / yoy_pct columns.
+    # Each lateral computes the prior value once per row (as `pp_val` / `py_val`)
+    # so the correlated subquery SQL text appears exactly once in the output,
+    # and the DB evaluates it only once per outer row.
+    # DuckDB supports: CROSS JOIN LATERAL (SELECT expr) AS alias
+    for lat_alias, lat_inner_sql in lateral_joins:
+        # Determine the inner column name from the alias prefix.
+        if lat_alias.startswith("__pp_"):
+            lat_col_name = "pp_val"
+        else:
+            lat_col_name = "py_val"
+        # Build via AST: parse a dummy full SELECT to extract the join node,
+        # then attach it to the outer_select.  The inner SELECT uses the
+        # correlated subquery as its sole expression.
+        inner_select_sql = f"SELECT {lat_inner_sql} AS {lat_col_name}"
+        inner_select_expr = sqlglot.parse_one(inner_select_sql, dialect=dialect)
+        lat_node = exp.Lateral(
+            this=exp.Subquery(this=inner_select_expr),
+            view=False,
+            outer=False,
+            alias=exp.TableAlias(this=exp.to_identifier(lat_alias)),
+        )
+        lat_join = exp.Join(this=lat_node, kind="CROSS")
+        joins_list = outer_select.args.get("joins") or []
+        joins_list.append(lat_join)
+        outer_select.set("joins", joins_list)
 
     # ORDER BY and LIMIT (on the outer).
     # When mq.limit is None we apply a default cap to prevent unbounded scans
@@ -574,6 +623,43 @@ def _compile_layered(
 # ---------------------------------------------------------------------------
 
 
+def _top_n_membership_sql(
+    dim_col: str,
+    rank_measure: str,
+    order_dir: str,
+    n: int,
+    rls_keys: tuple[str, ...],
+    outer_alias: str = "__outer",
+) -> str:
+    """Build the per-tenant top-N membership subquery SQL.
+
+    When rls_keys is non-empty the subquery is correlated on every rls_key
+    column so the top-N set is computed per-tenant (per RLS policy value),
+    not globally across all tenants.
+
+    The outer SELECT already uses ``FROM __base AS <outer_alias>`` so each
+    RLS key is unambiguously qualified as ``<outer_alias>.<rls_key>``.
+
+    Emits:
+        SELECT <dim_col> FROM __base
+        [WHERE __base.<rls_key1> = <outer_alias>.<rls_key1> [AND ...]]
+        GROUP BY <dim_col>
+        ORDER BY SUM(<rank_measure>) <order_dir>
+        LIMIT <n>
+    """
+    rls_predicates = " AND ".join(
+        f"__base.{k} = {outer_alias}.{k}" for k in rls_keys
+    )
+    where_clause = f"WHERE {rls_predicates} " if rls_predicates else ""
+    return (
+        f"SELECT {dim_col} FROM __base "
+        f"{where_clause}"
+        f"GROUP BY {dim_col} "
+        f"ORDER BY SUM({rank_measure}) {order_dir} "
+        f"LIMIT {n}"
+    )
+
+
 def _apply_top_n(
     outer_select: exp.Select,
     mq: MetricQuery,
@@ -588,10 +674,13 @@ def _apply_top_n(
     in DuckDB/PG, so instead we use a membership filter:
         WHERE <dim_col> IN (
             SELECT <dim_col> FROM __base
+            [WHERE __base.<rls_key> = __outer.<rls_key> [AND ...]]
             GROUP BY <dim_col>
             ORDER BY SUM(<rank_measure>) DESC
             LIMIT <n>
         )
+    The membership subquery is correlated on every metric.rls_keys column so
+    the top-N set is computed per-tenant, not globally across all tenants.
     Without a time_grain the per-row measure value is already the aggregate,
     so the simple QUALIFY RANK() OVER (ORDER BY measure) <= N is valid.
     """
@@ -602,16 +691,14 @@ def _apply_top_n(
     dim_col = tn.dimension
 
     if time_alias is not None:
-        # With time grain: use membership filter via subquery on __base.
+        # With time grain: use membership filter via correlated subquery on __base.
         order_dir = "DESC" if tn.order == "desc" else "ASC"
-        membership_sql = (
-            f"SELECT {dim_col} FROM __base "
-            f"GROUP BY {dim_col} "
-            f"ORDER BY SUM({rank_measure}) {order_dir} "
-            f"LIMIT {tn.n}"
+        membership_sql = _top_n_membership_sql(
+            dim_col, rank_measure, order_dir, tn.n,
+            tuple(metric.rls_keys), outer_alias="__outer",
         )
         membership_expr = sqlglot.parse_one(membership_sql, dialect=dialect)
-        # FIX 2: wrap in exp.Subquery so sqlglot renders "IN (SELECT ...)" not "IN SELECT ...".
+        # wrap in exp.Subquery so sqlglot renders "IN (SELECT ...)" not "IN SELECT ...".
         where_cond = exp.In(
             this=exp.column(dim_col),
             query=exp.Subquery(this=membership_expr),
@@ -680,8 +767,12 @@ def _apply_top_n_other(
     # ── FIX #1: safe label literal via sqlglot ──────────────────────────────
     safe_other_label = exp.Literal.string(other_label).sql(dialect=dialect)
 
-    # ── Build the top-N portion: apply the same logic as _apply_top_n ────────
+    # ── Build the top-N portion using AST extraction (no paren-counting) ────────
     # Re-parse the layered SQL to add the top-N restriction to the outer SELECT.
+    # FIX (Issue 2): use AST-based extraction instead of raw paren-counting so
+    # that default_filters with IN ('a','b') (parens inside string literals)
+    # cannot break the split.
+    import copy  # noqa: PLC0415
     try:
         full_tree = parse_sql_cached(layered_sql, dialect=dialect)
     except Exception:
@@ -690,20 +781,30 @@ def _apply_top_n_other(
     if not isinstance(full_tree, exp.Select):
         return layered_sql
 
-    import copy  # noqa: PLC0415
+    # Extract __base CTE body via AST: find the CTE node whose alias is "__base".
+    base_cte_body: str | None = None
+    for cte_node in full_tree.find_all(exp.CTE):
+        alias_node = cte_node.args.get("alias")
+        alias_name = (
+            alias_node.name.lower() if alias_node and hasattr(alias_node, "name") else ""
+        )
+        if alias_name == "__base":
+            base_cte_body = cte_node.this.sql(dialect=dialect)
+            break
+    if base_cte_body is None:
+        return layered_sql  # can't find __base CTE via AST; bail out.
+
     top_n_tree = copy.deepcopy(full_tree)
 
+    order_dir = "DESC" if tn.order == "desc" else "ASC"
     if time_alias is not None:
-        # FIX #3: membership filter via subquery — no nested window-in-window.
-        order_dir = "DESC" if tn.order == "desc" else "ASC"
-        membership_sql = (
-            f"SELECT {dim_col} FROM __base "
-            f"GROUP BY {dim_col} "
-            f"ORDER BY SUM({rank_measure}) {order_dir} "
-            f"LIMIT {tn.n}"
+        # membership filter via correlated subquery — no nested window-in-window.
+        # FIX (Issue 1): correlate on every rls_key so top-N is per-tenant.
+        membership_sql = _top_n_membership_sql(
+            dim_col, rank_measure, order_dir, tn.n,
+            tuple(metric.rls_keys), outer_alias="__outer",
         )
         membership_expr = sqlglot.parse_one(membership_sql, dialect=dialect)
-        # FIX 2: wrap in exp.Subquery so sqlglot renders "IN (SELECT ...)" not "IN SELECT ...".
         where_cond = exp.In(
             this=exp.column(dim_col),
             query=exp.Subquery(this=membership_expr),
@@ -726,15 +827,22 @@ def _apply_top_n_other(
         )
         top_n_tree = top_n_tree.qualify(qualify_cond)
 
-    top_n_sql = top_n_tree.sql(dialect=dialect)
+    # Extract just the outer SELECT from top_n_tree by stripping the WITH clause.
+    # AST approach: copy and set the 'with' slot to None, then render.
+    top_n_no_with = top_n_tree.copy()
+    top_n_no_with.set("with", None)
+    top_n_outer_sql = top_n_no_with.sql(dialect=dialect)
 
     # ── Build the "Other" bucket SELECT from __base ───────────────────────────
     # Subquery to identify top-N members (used in NOT IN exclusion).
-    top_members_subquery = (
-        f"SELECT {dim_col} FROM __base "
-        f"GROUP BY {dim_col} "
-        f"ORDER BY SUM({rank_measure}) {'DESC' if tn.order == 'desc' else 'ASC'} "
-        f"LIMIT {tn.n}"
+    # The "Other" bucket is a standalone GROUP BY aggregation, not a per-row
+    # correlated query, so the NOT IN subquery is non-correlated (no __outer
+    # alias available here).  RLS isolation for both UNION arms is enforced
+    # at the UNION wrapper level by plan()'s RLS injection.
+    top_members_subquery = _top_n_membership_sql(
+        dim_col, rank_measure,
+        "DESC" if tn.order == "desc" else "ASC",
+        tn.n, rls_keys=(),  # non-correlated; RLS applied by plan() on wrapper
     )
 
     # Group by: time alias (if present) + all non-ranked dims EXCEPT the ranked dim.
@@ -836,40 +944,10 @@ def _apply_top_n_other(
         f"{group_by_clause}"
     ).strip()
 
-    # Wrap in CTE so both parts can reference __base.
-    # layered_sql = "WITH __base AS (...) <outer>"
-    inner_start = layered_sql.find("WITH __base AS (")
-    if inner_start == -1:
-        inner_start = layered_sql.upper().find("WITH __BASE AS (")
-    if inner_start == -1:
-        return layered_sql  # can't find the CTE; return unchanged.
-
-    # Find end of base CTE body: count parens.
-    cte_body_start = layered_sql.find("(", inner_start + len("WITH __base AS")) + 1
-    depth = 1
-    pos = cte_body_start
-    while pos < len(layered_sql) and depth > 0:
-        if layered_sql[pos] == "(":
-            depth += 1
-        elif layered_sql[pos] == ")":
-            depth -= 1
-        pos += 1
-    base_cte_body = layered_sql[cte_body_start : pos - 1].strip()
-
-    # top_n_sql already contains "WITH __base AS ..." — extract just its outer SELECT.
-    top_n_outer_start = top_n_sql.find("(", top_n_sql.upper().find("WITH __BASE AS")) + 1
-    depth2 = 1
-    pos2 = top_n_outer_start
-    while pos2 < len(top_n_sql) and depth2 > 0:
-        if top_n_sql[pos2] == "(":
-            depth2 += 1
-        elif top_n_sql[pos2] == ")":
-            depth2 -= 1
-        pos2 += 1
-    top_n_outer_sql = top_n_sql[pos2:].strip()
-
-    # Wrap both UNION arms in parentheses so that ORDER BY / QUALIFY / LIMIT
-    # inside each arm are unambiguous (required by DuckDB and standard SQL).
+    # Wrap both UNION arms in a single CTE so both parts can reference __base.
+    # base_cte_body and top_n_outer_sql are both extracted via AST above.
+    # Wrap in parentheses so that ORDER BY / QUALIFY / LIMIT inside each arm
+    # are unambiguous (required by DuckDB and standard SQL).
     result = (
         f"WITH __base AS ({base_cte_body}) "
         f"({top_n_outer_sql}) "

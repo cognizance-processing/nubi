@@ -57,6 +57,7 @@ from typing import Any
 _SWEEP_TIMEOUT_S: float = float(os.environ.get("SWEEP_TIMEOUT_S", "300"))
 _MAX_SWEEP_CELLS: int = int(os.environ.get("MAX_SWEEP_CELLS", "50"))
 _MAX_BACKFILL_WINDOWS: int = int(os.environ.get("MAX_BACKFILL_WINDOWS", "500"))
+_MAX_WRITEBACK_ROWS: int = int(os.environ.get("NUBI_MAX_WRITEBACK_ROWS", "10000"))
 
 from fastapi import APIRouter, Depends, Header, Query, Request, Response
 from pydantic import BaseModel, Field
@@ -2405,7 +2406,7 @@ class WritebackTargetIn(BaseModel):
 class WritebackSubmitIn(BaseModel):
     """Request body for ``POST /flows/writeback``."""
     idempotency_key: str
-    rows: list[dict[str, Any]]
+    rows: list[dict[str, Any]] = Field(default=..., max_length=_MAX_WRITEBACK_ROWS)
     target: WritebackTargetIn
     mode: str = "append"
     approval_required: bool = False
@@ -2454,6 +2455,9 @@ async def writeback_preview(
     role = await get_org_role(user_id, org_id, repo)
     _require_writer_role(role)
 
+    if len(body.rows) > _MAX_WRITEBACK_ROWS:
+        raise AppError(400, f"rows exceeds server cap of {_MAX_WRITEBACK_ROWS}")
+
     return dry_run_writeback(
         rows=body.rows,
         target=body.target.model_dump(),
@@ -2492,6 +2496,9 @@ async def submit_writeback_route(
     org_id = await _get_user_org(user_id, repo)
     role = await get_org_role(user_id, org_id, repo)
     _require_writer_role(role)
+
+    if len(body.rows) > _MAX_WRITEBACK_ROWS:
+        raise AppError(400, f"rows exceeds server cap of {_MAX_WRITEBACK_ROWS}")
 
     if body.dry_run:
         return dry_run_writeback(

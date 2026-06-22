@@ -700,8 +700,15 @@ def route_to_rollup_shape(plan: PhysicalPlan, registry: Any) -> RollupRouteResul
 
     for rollup in rollups:
         roll_dims = set(rollup.dimensions)
-        # Rule 3: query group-by ⊆ rollup dims.
-        if not q_dims.issubset(roll_dims):
+        # RLS keys are physically present in the rollup (they are grouped on too),
+        # so they count as valid GROUP BY targets when checking soundness.
+        # FIX [LOW soundness]: Rule 3 must use the FULL grain (roll_dims ∪ rls_keys)
+        # to match how the layered/CTE path already treats rls_keys.  Using only
+        # roll_dims caused a query grouping by an rls_key (a physically-present
+        # grain column) to be wrongly rejected (missed routing).
+        roll_all_dims = roll_dims | set(rollup.rls_keys)
+        # Rule 3: query group-by ⊆ rollup full grain (dims + rls_keys).
+        if not q_dims.issubset(roll_all_dims):
             continue
         # Rule 4: every measure re-aggregable AND materialized by the rollup.
         roll_measures = rollup.measure_funcs  # set of (func, col)
@@ -719,7 +726,7 @@ def route_to_rollup_shape(plan: PhysicalPlan, registry: Any) -> RollupRouteResul
         # `sum_amount`) does NOT exist in the rollup, so a `WHERE amount > 100`
         # would reference a missing column and produce wrong results / an error.
         # Such a filter is never sound post-rollup → leave the plan untouched.
-        roll_cols = roll_dims | set(rollup.rls_keys)
+        roll_cols = roll_all_dims  # already includes rls_keys
         if not q_filter_cols.issubset(roll_cols):
             continue
 

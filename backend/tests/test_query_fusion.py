@@ -27,6 +27,7 @@ import pytest
 from app.auth.jwt import mint_access_token
 from app.connectors.cache import (
     get_base_scan,
+    invalidate_base_scan_tag,
     put_base_scan,
     reset_cache_for_tests,
 )
@@ -185,18 +186,92 @@ class TestBaseScanCacheRoundtrip:
         assert get_base_scan(raw_key) == b"base_scan_bytes"
 
     def test_tags_forwarded_to_backend(self):
-        """Tags passed to put_base_scan are used for invalidation."""
-        from app.connectors.cache import get_cache
+        """Tags passed to put_base_scan are used for invalidation.
 
+        FIX: use invalidate_base_scan_tag() rather than get_cache().invalidate()
+        because on the in-memory backend the base-scan store is now a SEPARATE
+        singleton — calling get_cache().invalidate() would not reach base-scan
+        entries (that was the bug: cross-segment eviction).
+        """
         reset_cache_for_tests()
         key = "d" * 64
         put_base_scan(key, b"some_bytes", tags=["org:test_org"])
         # Verify the entry is present.
         assert get_base_scan(key) == b"some_bytes"
-        # Invalidate via tag.
-        get_cache().invalidate("org:test_org")
+        # Invalidate via the base-scan-specific helper.
+        invalidate_base_scan_tag("org:test_org")
         # Entry must be gone.
         assert get_base_scan(key) is None
+
+    def test_cache_segmentation_no_cross_eviction(self):
+        """FIX [LOW]: base-scan entries live in a SEPARATE bounded store from
+        exact-result entries so they cannot evict each other.
+
+        Creates two ContentAddressedCache stores with max_entries=1 to model
+        the worst-case eviction scenario: filling one store must NOT affect the
+        other.  This mirrors how _base_scan_instance is independent of
+        _cache_instance on the in-memory backend.
+        """
+        from app.connectors.cache import ContentAddressedCache
+
+        # Two independent bounded stores (max_entries=1 forces aggressive eviction).
+        exact_store = ContentAddressedCache(max_entries=2, ttl=300.0)
+        bscan_store = ContentAddressedCache(max_entries=2, ttl=300.0)
+
+        # Fill the exact-result store.
+        exact_store.put("exact_1", b"exact_bytes_1")
+        exact_store.put("exact_2", b"exact_bytes_2")
+
+        # Fill the base-scan store.
+        bscan_store.put("bscan_1", b"bscan_bytes_1")
+        bscan_store.put("bscan_2", b"bscan_bytes_2")
+
+        # Exact store entries must not have been displaced by base-scan puts.
+        assert exact_store.get("exact_1") == b"exact_bytes_1", (
+            "Exact-result entry evicted by base-scan puts (cross-segment eviction)."
+        )
+        assert exact_store.get("exact_2") == b"exact_bytes_2"
+
+        # Base-scan store entries must not have been displaced by exact-result puts.
+        assert bscan_store.get("bscan_1") == b"bscan_bytes_1", (
+            "Base-scan entry evicted by exact-result puts (cross-segment eviction)."
+        )
+        assert bscan_store.get("bscan_2") == b"bscan_bytes_2"
+
+        # Filling one store beyond max_entries must NOT evict from the other.
+        exact_store.put("exact_3", b"exact_bytes_3")  # causes LRU eviction in exact_store
+        assert bscan_store.get("bscan_1") == b"bscan_bytes_1", (
+            "Base-scan entry evicted when exact-result store overflowed — stores share LRU."
+        )
+
+    def test_exact_cache_invalidate_does_not_clear_base_scan(self):
+        """get_cache().invalidate_all() must NOT clear the base-scan store.
+
+        On the in-memory backend, the two stores are now separate singletons.
+        This guards against a regression where clearing the exact-result cache
+        accidentally empties the base-scan store (or vice-versa).
+        """
+        from app.connectors.cache import get_cache
+
+        reset_cache_for_tests()
+        key_exact = "e" * 64
+        key_bscan = "f" * 64
+
+        # Populate both stores.
+        get_cache().put(key_exact, b"exact_data")
+        put_base_scan(key_bscan, b"bscan_data")
+
+        # Clear the exact-result cache.
+        get_cache().invalidate_all()
+
+        # Exact entry must be gone.
+        assert get_cache().get(key_exact) is None
+
+        # Base-scan entry must survive (different store).
+        assert get_base_scan(key_bscan) == b"bscan_data", (
+            "Base-scan entry was cleared when exact-result cache was invalidated — "
+            "the two stores are not properly segmented."
+        )
 
 
 # ---------------------------------------------------------------------------

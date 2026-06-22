@@ -36,12 +36,25 @@ from __future__ import annotations
 
 import itertools
 import logging
+import os
 import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
 logger = logging.getLogger(__name__)
+
+# ---------------------------------------------------------------------------
+# Resource cap: max drain steps per sweep/backfill cell.
+#
+# A single runaway cell flow (e.g. an infinite retry loop) must not block the
+# entire sweep/backfill request.  This cap limits how many task-run steps
+# drain_flow_run will execute for each cell.  Override via env var for longer
+# flows (e.g. NUBI_SWEEP_CELL_DRAIN_MAX_STEPS=500).
+# ---------------------------------------------------------------------------
+_SWEEP_CELL_DRAIN_MAX_STEPS: int = int(
+    os.environ.get("NUBI_SWEEP_CELL_DRAIN_MAX_STEPS", "50")
+)
 
 
 # ---------------------------------------------------------------------------
@@ -253,7 +266,10 @@ async def run_sweep(
                 store, flow, tagged_params, trigger, now
             )
             run_id = flow_run["id"]
-            final_run = await drain_flow_run(store, run_id, now, claims=claims)
+            final_run = await drain_flow_run(
+                store, run_id, now, claims=claims,
+                max_steps=_SWEEP_CELL_DRAIN_MAX_STEPS,
+            )
             cell_state = final_run.get("state", "failed")
 
             # Collect task outputs (success tasks).
@@ -497,7 +513,10 @@ async def run_backfill(
                 store, flow, params, trigger, now
             )
             run_id = flow_run["id"]
-            final_run = await drain_flow_run(store, run_id, now, claims=claims)
+            final_run = await drain_flow_run(
+                store, run_id, now, claims=claims,
+                max_steps=_SWEEP_CELL_DRAIN_MAX_STEPS,
+            )
             win_state = final_run.get("state", "failed")
 
             if win_state == "success":

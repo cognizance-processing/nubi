@@ -706,3 +706,62 @@ async def test_rbac_approver_role_owner_passes():
 
 async def test_rbac_approver_role_admin_passes():
     _require_approver_role("admin")
+
+
+# ---------------------------------------------------------------------------
+# 19. Row cap: submit with rows over cap → 400; within cap → 201
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_route_submit_over_row_cap_rejected(wb_client, monkeypatch):
+    """Submitting more rows than the server cap returns 400."""
+    import app.routes.flows as flows_module  # noqa: PLC0415
+
+    monkeypatch.setattr(flows_module, "_MAX_WRITEBACK_ROWS", 5)
+
+    client, alice_id, bob_id, carol_id, org_id, wb_store, repo = wb_client
+
+    over_cap_rows = [{"id": i} for i in range(6)]  # 6 > cap of 5
+    resp = await client.post(
+        "/api/v1/flows/writeback",
+        json={
+            "idempotency_key": _idem(),
+            "rows": over_cap_rows,
+            "target": {"connector_id": "c1", "object": "raw.t"},
+            "mode": "append",
+            "approval_required": False,
+            "dry_run": False,
+            "meta": {},
+        },
+        headers=_auth_headers(alice_id),
+    )
+    assert resp.status_code == 400
+
+
+@pytest.mark.asyncio
+async def test_route_submit_within_row_cap_succeeds(wb_client, monkeypatch):
+    """Submitting rows at or below the cap succeeds with 201."""
+    import app.routes.flows as flows_module  # noqa: PLC0415
+
+    monkeypatch.setattr(flows_module, "_MAX_WRITEBACK_ROWS", 5)
+
+    client, alice_id, bob_id, carol_id, org_id, wb_store, repo = wb_client
+
+    within_cap_rows = [{"id": i} for i in range(5)]  # exactly 5 == cap
+    resp = await client.post(
+        "/api/v1/flows/writeback",
+        json={
+            "idempotency_key": _idem(),
+            "rows": within_cap_rows,
+            "target": {"connector_id": "c1", "object": "raw.t"},
+            "mode": "append",
+            "approval_required": False,
+            "dry_run": False,
+            "meta": {},
+        },
+        headers=_auth_headers(alice_id),
+    )
+    assert resp.status_code == 201
+    body = resp.json()
+    assert body["state"] == "committed"

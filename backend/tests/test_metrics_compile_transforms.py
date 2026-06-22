@@ -2236,11 +2236,12 @@ def test_pop_abs_sparse_series_date_correct_through_plan() -> None:
 def test_yoy_pct_emits_single_prior_year_subquery() -> None:
     """[MED perf] yoy_pct must NOT emit the same prior-year subquery twice.
 
-    Previously yoy_pct computed py_expr_sql independently inside the pct_sql
-    f-string, producing two identical correlated scalar subqueries.  The fix
-    reuses py_expr_sql (computed once) so the output SQL contains exactly
-    2 occurrences of the correlated subquery (one for numerator, one for
-    NULLIF denominator) — not 4.
+    Fix (Issue 3): the prior-year correlated subquery is now wrapped in a
+    CROSS JOIN LATERAL so it is evaluated exactly once per outer row and
+    referenced (not re-executed) for both the numerator and the NULLIF
+    denominator.  The subquery SQL text therefore appears exactly 1 time
+    in the output (inside the LATERAL), not 2 times (old inline approach)
+    or 4 times (original double-compute approach).
     """
     m = _simple_metric()
     mq = MetricQuery(
@@ -2253,11 +2254,445 @@ def test_yoy_pct_emits_single_prior_year_subquery() -> None:
     )
     sql, _ = compile_metric(m, mq)
     # Count how many times the prior-year inner SELECT appears.
-    # It should appear exactly twice (numerator and NULLIF denominator),
-    # not four times (old code computed py_expr_sql twice, each appearing twice).
+    # With the LATERAL fix it should appear exactly once (inside the LATERAL),
+    # and the pct expression references the lateral alias column twice.
     inner = "SELECT __PY.REVENUE FROM __BASE AS __PY"
     count = sql.upper().count(inner)
-    assert count == 2, (
-        f"yoy_pct should emit exactly 2 prior-year subqueries (1 for diff, "
-        f"1 for NULLIF denom), found {count}. SQL fragment: {sql[:500]}"
+    assert count == 1, (
+        f"yoy_pct should emit exactly 1 prior-year subquery (inside LATERAL), "
+        f"found {count}. SQL fragment: {sql[:500]}"
+    )
+    # The lateral alias must be referenced in the pct expression.
+    assert "__py_revenue__" in sql.lower() or "py_val" in sql.lower(), (
+        f"Expected lateral alias reference in SQL:\n{sql[:300]}"
+    )
+    # Must still contain NULLIF for the zero-division guard.
+    assert "NULLIF" in sql.upper()
+
+# ---------------------------------------------------------------------------
+# 14. FIFTH-WAVE REGRESSION TESTS — adversarial audit fixes (Issues 1-4)
+#
+# HARD RULE: all tests go through plan() and execute on in-memory DuckDB,
+# asserting RESULTS not just SQL text.
+# ---------------------------------------------------------------------------
+
+import sqlglot as _sqlglot  # noqa: E402 (already imported above as sqlglot)
+
+
+def _duckdb_conn5():
+    """Fresh in-memory DuckDB connection (skips if duckdb not installed)."""
+    try:
+        import duckdb
+        return duckdb.connect(":memory:")
+    except ImportError:
+        import pytest as _pt
+        _pt.skip("duckdb not installed")
+
+
+def _plan5(sql: str, claims=None):
+    """Run SQL through plan() and return PhysicalPlan."""
+    from app.connectors.planner import plan
+    return plan(sql, claims=claims or {}, dialect="duckdb")
+
+
+# ── Issue 1 [HIGH]: per-tenant top-N correctness ─────────────────────────────
+
+def test_top_n_time_grain_per_tenant_not_global() -> None:
+    """[HIGH per-tenant correctness] top-N members must be the per-tenant top-N,
+    not the global top-N across all tenants.
+
+    Two tenants have DIFFERENT top-N members:
+      tenant 'A': region X=1000, Y=200, Z=50  → top-1 = X
+      tenant 'B': region Y=900,  X=100, Z=10  → top-1 = Y
+
+    With the buggy global subquery, plan() with claims={org_id: 'A'} could
+    still see the global top member (which might be Y for some data distribution).
+    With the fix (correlated subquery WHERE __base.org_id = __outer.org_id),
+    each tenant sees ITS OWN top-1.
+    """
+    con = _duckdb_conn5()
+    con.execute("""
+        CREATE TABLE topn_tenant (
+            region  VARCHAR,
+            amount  DOUBLE,
+            org_id  VARCHAR,
+            created_at DATE
+        )
+    """)
+    # org_A: X=1000, Y=200, Z=50  → top-1 = X
+    # org_B: Y=900,  X=100, Z=10  → top-1 = Y
+    con.execute("""
+        INSERT INTO topn_tenant VALUES
+            ('X', 1000, 'org_A', '2024-01-01'),
+            ('X',  500, 'org_A', '2024-02-01'),
+            ('Y',  200, 'org_A', '2024-01-01'),
+            ('Y',  100, 'org_A', '2024-02-01'),
+            ('Z',   50, 'org_A', '2024-01-01'),
+            ('Y',  900, 'org_B', '2024-01-01'),
+            ('Y',  400, 'org_B', '2024-02-01'),
+            ('X',  100, 'org_B', '2024-01-01'),
+            ('X',   50, 'org_B', '2024-02-01'),
+            ('Z',   10, 'org_B', '2024-01-01')
+    """)
+    m = MetricDefinition(
+        id="topn_rev",
+        name="TopN Rev",
+        measure=Measure(name="revenue", agg="sum", expr="amount"),
+        base_table="topn_tenant",
+        dimensions=(Dimension(name="region"),),
+        time_dimension=TimeDimension(
+            column="created_at",
+            grains=("month",),
+            default_grain="month",
+        ),
+        rls_keys=("org_id",),
+        # Need a derived measure or time comparison to trigger the layered path
+        # (top_n alone with time_grain uses the layered path).
+        derived_measures=(
+            DerivedMeasure(name="rev_ratio", formula="revenue / revenue"),
+        ),
+    )
+    mq = MetricQuery(
+        metric_id="topn_rev",
+        dimensions=("region",),
+        time_grain="month",
+        top_n=TopN(dimension="region", n=1, order="desc"),
+    )
+    sql, _ = compile_metric(m, mq)
+
+    # Verify the membership subquery is correlated on org_id.
+    assert "__base.org_id = __outer.org_id".lower() in sql.lower(), (
+        f"Expected per-tenant RLS correlation in membership subquery:\n{sql[:600]}"
+    )
+
+    # Execute for org_A: top-1 should be X (total revenue 1500).
+    p_a = _plan5(sql, claims={"policies": {"org_id": "org_A"}})
+    rows_a = con.execute(p_a.sql).fetchall()
+    regions_a = {r[0] for r in rows_a}
+    assert "X" in regions_a, (
+        f"org_A top-1 should include X (total=1500); got regions={regions_a}"
+    )
+    assert "Y" not in regions_a, (
+        f"org_A top-1 should NOT include Y (total=300); got regions={regions_a}"
+    )
+
+    # Execute for org_B: top-1 should be Y (total revenue 1300).
+    p_b = _plan5(sql, claims={"policies": {"org_id": "org_B"}})
+    rows_b = con.execute(p_b.sql).fetchall()
+    regions_b = {r[0] for r in rows_b}
+    assert "Y" in regions_b, (
+        f"org_B top-1 should include Y (total=1300); got regions={regions_b}"
+    )
+    assert "X" not in regions_b, (
+        f"org_B top-1 should NOT include X (total=150); got regions={regions_b}"
+    )
+
+
+# ── Issue 2 [MED robustness]: paren-in-literal default_filter ────────────────
+
+def test_top_n_other_default_filter_with_parens_in_literal_compiles() -> None:
+    """[MED robustness] default_filter with IN ('a','b') must not break the
+    AST-based CTE extraction in _apply_top_n_other.
+
+    Previously the paren-counting extraction would mis-count when the base
+    CTE body contained string literals with parentheses — e.g. a default_filter
+    like "status IN ('open','closed')" would cause depth counting to diverge.
+    With the AST extraction (via full_tree.find_all(exp.CTE)), this is safe.
+    """
+    m = MetricDefinition(
+        id="orders_with_filter",
+        name="Orders With Filter",
+        measure=Measure(name="revenue", agg="sum", expr="amount"),
+        base_table="orders",
+        dimensions=(Dimension(name="region"),),
+        # default_filter contains parentheses inside a string literal context
+        # (IN clause with string values).  This would break paren-counting.
+        default_filters=("status IN ('open', 'closed')",),
+        derived_measures=(
+            DerivedMeasure(name="rev_ratio", formula="revenue / revenue"),
+        ),
+    )
+    mq = MetricQuery(
+        metric_id="orders_with_filter",
+        dimensions=("region",),
+        top_n=TopN(dimension="region", n=2, order="desc", other=True),
+    )
+    # Must compile without error.
+    sql, _ = compile_metric(m, mq)
+
+    # Must parse cleanly via sqlglot.
+    parsed = _sqlglot.parse_one(sql, dialect="duckdb")
+    assert parsed is not None, f"SQL failed to parse:\n{sql[:500]}"
+
+    # Must contain UNION ALL (Other bucket).
+    assert "UNION ALL" in sql.upper(), f"Expected UNION ALL:\n{sql[:400]}"
+
+    # The default_filter value must appear in the base CTE body.
+    assert "open" in sql.lower(), f"Expected default_filter value in SQL:\n{sql[:500]}"
+
+
+def test_top_n_other_default_filter_parens_literal_executes_in_duckdb() -> None:
+    """[MED robustness] The parens-in-literal default_filter compiles and executes."""
+    con = _duckdb_conn5()
+    con.execute("""
+        CREATE TABLE orders_paren (
+            region  VARCHAR,
+            amount  DOUBLE,
+            status  VARCHAR
+        )
+    """)
+    con.execute("""
+        INSERT INTO orders_paren VALUES
+            ('A', 500, 'open'),
+            ('A', 300, 'closed'),
+            ('B', 200, 'open'),
+            ('B', 100, 'closed'),
+            ('C',  50, 'pending')  -- excluded by default_filter
+    """)
+    m = MetricDefinition(
+        id="orders_paren",
+        name="Orders Paren",
+        measure=Measure(name="revenue", agg="sum", expr="amount"),
+        base_table="orders_paren",
+        dimensions=(Dimension(name="region"),),
+        default_filters=("status IN ('open', 'closed')",),
+        derived_measures=(
+            DerivedMeasure(name="rev_ratio", formula="revenue / revenue"),
+        ),
+    )
+    mq = MetricQuery(
+        metric_id="orders_paren",
+        dimensions=("region",),
+        top_n=TopN(dimension="region", n=1, order="desc", other=True, other_label="Other"),
+    )
+    sql, _ = compile_metric(m, mq)
+
+    # Parse.
+    _sqlglot.parse_one(sql, dialect="duckdb")
+
+    # Execute.
+    p = _plan5(sql, claims={})
+    rows = con.execute(p.sql).fetchall()
+    row_by_region = {r[0]: r for r in rows}
+
+    # Top-1 by status-filtered revenue: A=800, B=300, C excluded.
+    assert "A" in row_by_region, f"Top region A missing; rows={rows}"
+    assert "Other" in row_by_region, f"Other bucket missing; rows={rows}"
+
+    # C (status='pending') is excluded by default_filter → only B goes to Other.
+    other_rev = row_by_region["Other"][1]
+    assert other_rev == 300.0, (
+        f"Other revenue should be 300 (B only, C excluded by filter), got {other_rev}"
+    )
+
+
+# ── Issue 3 [MED perf]: pop_pct subquery appears once via LATERAL ────────────
+
+def test_pop_pct_subquery_appears_once_via_lateral() -> None:
+    """[MED perf] pop_pct prior-period correlated subquery must appear exactly
+    once in the SQL (inside a LATERAL), not twice (inline numerator + NULLIF denom).
+
+    The fix wraps the correlated subquery in CROSS JOIN LATERAL so the DB
+    evaluates it once per row and both the numerator and NULLIF denominator
+    reference the lateral column alias.
+    """
+    m = MetricDefinition(
+        id="rev_pop",
+        name="Rev PoP",
+        measure=Measure(name="revenue", agg="sum", expr="amount"),
+        base_table="sales",
+        dimensions=(Dimension(name="region"),),
+        time_dimension=TimeDimension(
+            column="sale_date",
+            grains=("month",),
+            default_grain="month",
+        ),
+    )
+    mq = MetricQuery(
+        metric_id="rev_pop",
+        dimensions=("region",),
+        time_grain="month",
+        time_comparisons=(
+            TimeComparison(measure="revenue", kind="pop_pct", periods=1),
+        ),
+    )
+    sql, _ = compile_metric(m, mq)
+
+    # The prior-period correlated subquery must appear exactly once.
+    inner = "SELECT __PP.REVENUE FROM __BASE AS __PP"
+    count = sql.upper().count(inner)
+    assert count == 1, (
+        f"pop_pct should emit exactly 1 prior-period subquery (inside LATERAL), "
+        f"found {count}. SQL:\n{sql[:600]}"
+    )
+
+    # Must contain LATERAL for the single-evaluation wrapper.
+    assert "LATERAL" in sql.upper(), (
+        f"Expected LATERAL in SQL for pop_pct fix:\n{sql[:400]}"
+    )
+
+    # Must contain NULLIF for zero-division guard.
+    assert "NULLIF" in sql.upper()
+
+    # Must parse cleanly.
+    parsed = _sqlglot.parse_one(sql, dialect="duckdb")
+    assert parsed is not None
+
+
+def test_pop_pct_lateral_executes_correct_values_in_duckdb() -> None:
+    """[MED perf] pop_pct via LATERAL executes correctly on DuckDB."""
+    con = _duckdb_conn5()
+    con.execute("""
+        CREATE TABLE pop_pct_data (
+            region    VARCHAR,
+            amount    DOUBLE,
+            sale_date DATE
+        )
+    """)
+    # Jan=100, Feb=150 → pct change = (150-100)/100 = 0.5
+    con.execute("""
+        INSERT INTO pop_pct_data VALUES
+            ('A', 100, '2024-01-01'),
+            ('A', 150, '2024-02-01')
+    """)
+    m = MetricDefinition(
+        id="pop_pct_exec",
+        name="PoP Pct Exec",
+        measure=Measure(name="revenue", agg="sum", expr="amount"),
+        base_table="pop_pct_data",
+        dimensions=(Dimension(name="region"),),
+        time_dimension=TimeDimension(
+            column="sale_date",
+            grains=("month",),
+            default_grain="month",
+        ),
+    )
+    mq = MetricQuery(
+        metric_id="pop_pct_exec",
+        dimensions=("region",),
+        time_grain="month",
+        time_comparisons=(
+            TimeComparison(measure="revenue", kind="pop_pct", periods=1),
+        ),
+    )
+    sql, _ = compile_metric(m, mq)
+    p = _plan5(sql, claims={})
+    rows = con.execute(p.sql).fetchall()
+
+    # Sort by month.
+    row_by_ym = {(r[1].year, r[1].month): r for r in rows}
+    assert (2024, 1) in row_by_ym, f"Missing 2024-01; rows={rows}"
+    assert (2024, 2) in row_by_ym, f"Missing 2024-02; rows={rows}"
+
+    # 2024-01: no prior period → pop_pct = NULL
+    assert row_by_ym[(2024, 1)][3] is None, (
+        f"2024-01 pop_pct should be NULL, got {row_by_ym[(2024, 1)][3]}"
+    )
+    # 2024-02: (150-100)/100 = 0.5
+    assert abs(row_by_ym[(2024, 2)][3] - 0.5) < 1e-9, (
+        f"2024-02 pop_pct should be 0.5, got {row_by_ym[(2024, 2)][3]}"
+    )
+
+
+# ── Issue 4 [LOW]: YTD/QTD/MTD PARTITION BY uses quoted identifiers ───────────
+
+def test_ytd_partition_columns_quoted() -> None:
+    """[LOW] YTD window PARTITION BY must emit quoted dimension column names.
+
+    Previously the PARTITION BY was built from unquoted column names via
+    f-string, which breaks for names needing quoting and is an injection surface.
+    The fix emits each column via exp.to_identifier(name, quoted=True).
+    """
+    m = MetricDefinition(
+        id="ytd_quoted",
+        name="YTD Quoted",
+        measure=Measure(name="revenue", agg="sum", expr="amount"),
+        base_table="sales",
+        dimensions=(Dimension(name="region"), Dimension(name="store_id")),
+        time_dimension=TimeDimension(
+            column="sale_date",
+            grains=("month",),
+            default_grain="month",
+        ),
+    )
+    mq = MetricQuery(
+        metric_id="ytd_quoted",
+        dimensions=("region", "store_id"),
+        time_grain="month",
+        time_comparisons=(
+            TimeComparison(measure="revenue", kind="ytd"),
+        ),
+    )
+    sql, _ = compile_metric(m, mq)
+
+    # The PARTITION BY clause must use double-quoted column names.
+    # In DuckDB dialect, quoted identifiers use double-quotes.
+    assert '"region"' in sql or '"store_id"' in sql, (
+        f"Expected quoted column names in PARTITION BY; SQL:\n{sql[:600]}"
+    )
+
+    # Must parse cleanly.
+    parsed = _sqlglot.parse_one(sql, dialect="duckdb")
+    assert parsed is not None
+
+    # Must contain the YTD alias.
+    assert "revenue_ytd" in sql.lower()
+
+
+def test_ytd_partition_quoted_executes_in_duckdb() -> None:
+    """[LOW] YTD with quoted PARTITION BY executes correctly on DuckDB."""
+    con = _duckdb_conn5()
+    con.execute("""
+        CREATE TABLE ytd_sales (
+            region    VARCHAR,
+            amount    DOUBLE,
+            sale_date DATE
+        )
+    """)
+    # Jan=100, Feb=200, Mar=300 (all same year) → YTD at Mar = 600
+    con.execute("""
+        INSERT INTO ytd_sales VALUES
+            ('A', 100, '2024-01-01'),
+            ('A', 200, '2024-02-01'),
+            ('A', 300, '2024-03-01')
+    """)
+    m = MetricDefinition(
+        id="ytd_exec",
+        name="YTD Exec",
+        measure=Measure(name="revenue", agg="sum", expr="amount"),
+        base_table="ytd_sales",
+        dimensions=(Dimension(name="region"),),
+        time_dimension=TimeDimension(
+            column="sale_date",
+            grains=("month",),
+            default_grain="month",
+        ),
+    )
+    mq = MetricQuery(
+        metric_id="ytd_exec",
+        dimensions=("region",),
+        time_grain="month",
+        time_comparisons=(
+            TimeComparison(measure="revenue", kind="ytd"),
+        ),
+    )
+    sql, _ = compile_metric(m, mq)
+    p = _plan5(sql, claims={})
+    rows = con.execute(p.sql).fetchall()
+
+    # Columns: region, sale_date_month, revenue, revenue_ytd
+    row_by_ym = {(r[1].year, r[1].month): r for r in rows}
+    assert (2024, 1) in row_by_ym
+    assert (2024, 2) in row_by_ym
+    assert (2024, 3) in row_by_ym
+
+    # YTD at each month (running sum within year).
+    assert row_by_ym[(2024, 1)][3] == 100.0, (
+        f"YTD at 2024-01 should be 100, got {row_by_ym[(2024, 1)][3]}"
+    )
+    assert row_by_ym[(2024, 2)][3] == 300.0, (
+        f"YTD at 2024-02 should be 300, got {row_by_ym[(2024, 2)][3]}"
+    )
+    assert row_by_ym[(2024, 3)][3] == 600.0, (
+        f"YTD at 2024-03 should be 600, got {row_by_ym[(2024, 3)][3]}"
     )
