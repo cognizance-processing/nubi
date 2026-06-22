@@ -49,6 +49,8 @@ class InMemoryRepo:
 
     def __init__(self) -> None:
         # Per-table storage: table_name -> {id: row_dict}
+        # Build the initial store from RESOURCE_TABLE_MAP so new tables (e.g.
+        # "canvases") are automatically included without manual edits here.
         self._store: dict[str, dict[str, dict[str, Any]]] = {
             table: {} for table in RESOURCE_TABLE_MAP.values()
         }

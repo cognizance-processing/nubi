@@ -335,3 +335,184 @@ async def collect_board_data(
     )
 
     return out
+
+
+# ---------------------------------------------------------------------------
+# Canvas data collector (Canvas Wave 1)
+# ---------------------------------------------------------------------------
+
+
+async def collect_canvas_data(
+    canvas_id: str,
+    org_id: str,
+    claims: dict[str, Any],
+    repo: Repo,
+    *,
+    canvas: dict[str, Any] | None = None,
+) -> dict[str, list[dict[str, Any]]]:
+    """Collect per-binding data for an org-scoped Canvas document.
+
+    Resolves the canvas (org-scoped) from *repo*, iterates the ``bindings``
+    map in ``config.doc``, and runs each binding against the appropriate
+    backend (query registry, metric compiler, HTTP_JSON connector), returning a
+    dict keyed by ``el_id``::
+
+        {
+            "el_1": {"columns": [...], "rows": [...]},
+            "el_2": {"columns": [...], "rows": [...]},
+            "el_3": {"error": "query_not_registered"},
+        }
+
+    Security model (identical to collect_board_data)
+    -------------------------------------------------
+    * The canvas is resolved **org-scoped** — never cross-org.
+    * RLS predicates come from ``claims["policies"]`` (the verified token) only.
+    * Query execution reuses ``run_query_rows``, which enforces RLS at the AST
+      level via the planner — never from the request body.
+    * API (HTTP_JSON) connector resolution reuses ``_resolve_connector`` — the
+      ``source_unsupported_rls`` guard applies unchanged.
+
+    Parameters
+    ----------
+    canvas_id:
+        The canvas id to resolve (org-scoped).
+    org_id:
+        The caller's org id.
+    claims:
+        The verified token's claims.  Only ``claims["policies"]`` is used here.
+    repo:
+        Active repository implementation.
+    canvas:
+        Optional pre-fetched canvas row.  When supplied, the repo lookup is
+        skipped.
+
+    Returns
+    -------
+    dict[str, list[dict]]
+        Mapping from ``el_id`` → ``{columns, rows}`` or ``{error: code}``.
+
+    Raises
+    ------
+    AppError("canvas_not_found", 404)
+        When no canvas with *canvas_id* exists in *org_id*.
+    """
+    if canvas is None:
+        canvas = await repo.get("canvases", org_id, canvas_id)
+    if canvas is None:
+        raise AppError("canvas_not_found", f"Canvas {canvas_id!r} not found.", 404)
+
+    config = canvas.get("config") or {}
+    doc_raw = config.get("doc") or {}
+    bindings_raw = doc_raw.get("bindings") or {}
+
+    # RLS comes from the verified token's policies claim only.
+    policies: dict[str, Any] = dict((claims or {}).get("policies") or {})
+
+    async def _fetch_binding(el_id: str, binding: dict[str, Any]) -> dict[str, Any]:
+        entry: dict[str, Any] = {"el_id": el_id}
+        kind = binding.get("kind")
+        try:
+            if kind == "query":
+                query_id = binding.get("query_id") or ""
+                columns, rows = await run_query_rows(query_id, org_id, repo, policies)
+                entry["columns"] = columns
+                entry["rows"] = rows
+
+            elif kind == "metric":
+                # Reuse query execution via the metric registry.
+                metric_id = binding.get("metric_id") or ""
+                try:
+                    from app.metrics.registry import get_metric_registry  # noqa: PLC0415
+                    mreg = get_metric_registry()
+                    mdef = mreg.get(metric_id)
+                    if mdef is None:
+                        raise AppError(
+                            "metric_not_registered",
+                            f"No registered metric for id={metric_id!r}.",
+                            404,
+                        )
+                    # Metrics back onto queries — resolve via the query_id on
+                    # the metric definition (the source query_id).
+                    source_query_id = getattr(mdef, "query_id", None) or metric_id
+                    columns, rows = await run_query_rows(
+                        source_query_id, org_id, repo, policies
+                    )
+                    entry["columns"] = columns
+                    entry["rows"] = rows
+                except ImportError:
+                    raise AppError(
+                        "metric_not_supported",
+                        "Metric registry is not available in this build.",
+                        501,
+                    )
+
+            elif kind == "api":
+                # HTTP_JSON connector resolution via _resolve_connector.
+                connector_id = binding.get("connector_id") or ""
+                from app.queries.registry import get_query_registry  # noqa: PLC0415
+                from app.connectors import plan as planner_plan  # noqa: PLC0415
+
+                # Build a minimal stub registered object so _resolve_connector
+                # can look up the datastore.
+                class _ApiStub:
+                    datastore_id = connector_id
+                    params: list = []
+                    sql: str = ""
+
+                stub = _ApiStub()
+                physical_plan = planner_plan(
+                    sql="SELECT 1", claims={"policies": policies}, params=[]
+                )
+                connector, connector_owned = await _resolve_connector(
+                    stub, org_id, repo, physical_plan
+                )
+                try:
+                    # Build a simple fetch using the connector's execute path.
+                    # For HTTP_JSON connectors, append the configured path.
+                    path = binding.get("path") or "/"
+                    # Construct a minimal SQL-like request understood by the
+                    # HTTP_JSON connector (GET {path}).
+                    from app.connectors import plan as _plan  # noqa: PLC0415
+                    api_plan = _plan(
+                        sql=f"GET {path}",
+                        claims={"policies": policies},
+                        params=[],
+                    )
+                    result_table = connector.execute(api_plan)
+                    columns = list(result_table.schema.names)
+                    rows_raw = result_table.to_pylist()
+                    rows = [[r.get(c) for c in columns] for r in rows_raw]
+                    entry["columns"] = columns
+                    entry["rows"] = rows
+                finally:
+                    if connector_owned:
+                        connector.close()
+            else:
+                raise AppError(
+                    "unknown_binding_kind",
+                    f"Canvas binding el_id={el_id!r} has unknown kind={kind!r}.",
+                    400,
+                )
+
+        except AppError as exc:
+            entry["error"] = exc.code
+        except Exception as exc:  # noqa: BLE001 — best-effort collection
+            entry["error"] = f"collect_failed: {exc.__class__.__name__}"
+
+        return entry
+
+    # Run binding fetches concurrently (bounded by the same semaphore as boards).
+    semaphore = asyncio.Semaphore(_WIDGET_CONCURRENCY)
+
+    async def _fetch_guarded(el_id: str, binding: dict[str, Any]) -> dict[str, Any]:
+        async with semaphore:
+            return await _fetch_binding(el_id, binding)
+
+    results = list(
+        await asyncio.gather(
+            *(_fetch_guarded(el_id, binding) for el_id, binding in bindings_raw.items())
+        )
+    )
+
+    # Return as a dict keyed by el_id (matching the bindings map shape).
+    return {entry["el_id"]: {k: v for k, v in entry.items() if k != "el_id"} for entry in results}

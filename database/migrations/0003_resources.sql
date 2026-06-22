@@ -98,6 +98,19 @@ CREATE TABLE IF NOT EXISTS boards (
 
 CREATE INDEX IF NOT EXISTS boards_project_id_idx ON boards (project_id);
 
+CREATE TABLE IF NOT EXISTS canvases (
+    id         uuid        PRIMARY KEY DEFAULT gen_random_uuid(),
+    org_id     uuid        NOT NULL REFERENCES orgs     (id) ON DELETE CASCADE,
+    project_id uuid        NOT NULL REFERENCES projects (id) ON DELETE CASCADE,
+    created_by uuid        NOT NULL REFERENCES users    (id) ON DELETE RESTRICT,
+    name       text        NOT NULL,
+    config     jsonb       NOT NULL DEFAULT '{}',
+    created_at timestamptz NOT NULL DEFAULT now(),
+    updated_at timestamptz NOT NULL DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS canvases_project_id_idx ON canvases (project_id);
+
 CREATE TABLE IF NOT EXISTS queries (
     id         uuid        PRIMARY KEY DEFAULT gen_random_uuid(),
     org_id     uuid        NOT NULL REFERENCES orgs     (id) ON DELETE CASCADE,

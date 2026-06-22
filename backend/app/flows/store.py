@@ -606,7 +606,7 @@ class InMemoryFlowStore:
         output_key:
             Logical name for the output (e.g. materialise target or dataset name).
         output_type:
-            One of ``'table'``, ``'file'``, ``'dataset'``, ``'metric'``.
+            One of ``'table'``, ``'file'``, ``'dataset'``, ``'metric'``, ``'artifact'``.
         output_uri:
             Physical URI / table path (optional).
         meta:

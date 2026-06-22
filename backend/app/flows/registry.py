@@ -594,6 +594,52 @@ def _handle_python(
     # the prefix).  The spool dir is private to this run and cleaned up after.
     spool_dir = tempfile.mkdtemp(prefix="nubi-pystage-")
 
+    # ── B4: pre-fetch artifact bytes into the spool dir ───────────────────────
+    # The subprocess cannot call the parent's StorageClient directly.  We
+    # pre-download every ArtifactHandle found in ctx.inputs and write the raw
+    # bytes into ``<spool_dir>/artifacts/<artifact_id>`` so the subprocess can
+    # read them via ``ctx.get_artifact(handle)``.  Handles carry their artifact_id;
+    # the subprocess reads the spool file by id.  Only handles belonging to the
+    # executing org are materialised (isolation).
+    artifact_spool_dir = os.path.join(spool_dir, "artifacts")
+    os.makedirs(artifact_spool_dir, exist_ok=True)
+
+    def _pre_fetch_artifacts() -> None:
+        """Best-effort: download artifact bytes from ctx.inputs into the spool."""
+        try:
+            from app.flows.artifacts import get_artifact_store, is_handle  # noqa: PLC0415
+        except Exception:
+            return
+        art_store = getattr(ctx, "_artifact_store", None) or get_artifact_store()
+        executing_org = ctx.org_id or ""
+        if not executing_org:
+            return
+        # Scan all values in ctx.inputs for ArtifactHandles.
+        for _result in ctx.inputs.values():
+            if not isinstance(_result, dict):
+                continue
+            # The result itself may be a handle, or contain handles as top-level values.
+            candidates = [_result] + list(_result.values())
+            for cand in candidates:
+                if not is_handle(cand):
+                    continue
+                if str(cand.get("org_id", "")) != str(executing_org):
+                    continue  # never materialise cross-org artifacts
+                artifact_id = cand.get("artifact_id", "")
+                if not artifact_id:
+                    continue
+                dest = os.path.join(artifact_spool_dir, artifact_id)
+                if os.path.exists(dest):
+                    continue
+                try:
+                    data = art_store.download(artifact_id, executing_org)
+                    with open(dest, "wb") as fh:
+                        fh.write(data)
+                except Exception:  # noqa: BLE001
+                    pass  # artifact may not exist yet; subprocess will raise on access
+
+    _pre_fetch_artifacts()
+
     # Serialise context for injection.
     try:
         inputs_json = json.dumps(ctx.inputs)
@@ -608,6 +654,10 @@ def _handle_python(
         # read before this task ran; the cell may advance it via its return.
         watermark_json = json.dumps(ctx.watermark)
         spool_dir_json = json.dumps(spool_dir)
+        # B4: artifact context
+        artifact_spool_dir_json = json.dumps(artifact_spool_dir)
+        artifact_org_id_json = json.dumps(ctx.org_id or "")
+        artifact_run_id_json = json.dumps(ctx.run_id or "")
     except (TypeError, ValueError) as exc:
         raise AppError("invalid_task_context", f"Context not JSON-serialisable: {exc}", 400)
 
@@ -701,6 +751,108 @@ def _handle_python(
 
         staging = _StagingWriter()
 
+        # ── B4: ctx.put_artifact / ctx.get_artifact ───────────────────────
+        # ctx.put_artifact(obj, name, kind) serialises *obj* into the spool dir
+        # under a deterministic filename and returns a pending ArtifactHandle.
+        # The PARENT process picks up the spool files after the subprocess exits,
+        # uploads them to the object store, and replaces the handles in the result
+        # with real URIs.
+        # ctx.get_artifact(handle) reads the pre-fetched bytes that the PARENT
+        # downloaded from the object store into the spool dir before launching
+        # the subprocess (``<spool_dir>/artifacts/<artifact_id>``).
+        import uuid as _uuid_mod
+        import pickle as _pickle
+        import io as _artifact_io
+
+        _ARTIFACT_SPOOL_DIR = _json.loads({artifact_spool_dir_json!r})
+        _ARTIFACT_ORG_ID = _json.loads({artifact_org_id_json!r})
+        _ARTIFACT_RUN_ID = _json.loads({artifact_run_id_json!r})
+        _artifact_handles = {{}}  # name → handle dict (for __ARTIFACT_HANDLES__ sentinel)
+
+        class _ArtifactCtx:
+            def _put_artifact(self, obj, name=None, kind="pickle", meta=None):
+                # Serialise obj to a spool file.
+                import hashlib as _ahash
+                artifact_id = str(_uuid_mod.uuid4())
+                # Serialise according to kind.
+                if kind == "pickle":
+                    data = _pickle.dumps(obj, protocol=_pickle.HIGHEST_PROTOCOL)
+                elif kind == "joblib":
+                    try:
+                        import joblib as _jbl
+                    except ImportError as _e:
+                        raise ImportError("joblib is required for kind='joblib'") from _e
+                    _buf = _artifact_io.BytesIO()
+                    _jbl.dump(obj, _buf)
+                    data = _buf.getvalue()
+                elif kind == "bytes":
+                    data = bytes(obj)
+                elif kind == "json":
+                    data = _json.dumps(obj).encode("utf-8")
+                else:
+                    raise ValueError(f"Unsupported artifact kind {{kind!r}}")
+                # Write to spool.
+                spool_path = _os.path.join(_ARTIFACT_SPOOL_DIR, artifact_id)
+                _os.makedirs(_ARTIFACT_SPOOL_DIR, exist_ok=True)
+                with open(spool_path, "wb") as _fh:
+                    _fh.write(data)
+                handle = {{
+                    "artifact_id": artifact_id,
+                    "kind": kind,
+                    "uri": None,  # parent will fill in the real URI
+                    "org_id": _ARTIFACT_ORG_ID,
+                    "produced_by_run": _ARTIFACT_RUN_ID or None,
+                    "name": name,
+                    "meta": meta,
+                    "__type__": "artifact_handle",
+                    "__spool__": spool_path,  # private field for parent
+                }}
+                _artifact_handles[artifact_id] = handle
+                return handle
+
+            def _get_artifact(self, handle):
+                # Validate.
+                if not (isinstance(handle, dict) and handle.get("__type__") == "artifact_handle"):
+                    raise ValueError("get_artifact() requires a valid ArtifactHandle dict.")
+                handle_org = handle.get("org_id", "")
+                if handle_org and _ARTIFACT_ORG_ID and str(handle_org) != str(_ARTIFACT_ORG_ID):
+                    raise PermissionError(
+                        f"Artifact org isolation violation: handle org {{handle_org!r}} "
+                        f"but executing org {{_ARTIFACT_ORG_ID!r}}."
+                    )
+                artifact_id = handle.get("artifact_id", "")
+                kind = handle.get("kind", "pickle")
+                # Look for pre-fetched bytes in the artifacts sub-dir.
+                spool_path = _os.path.join(_ARTIFACT_SPOOL_DIR, artifact_id)
+                if not _os.path.exists(spool_path):
+                    raise FileNotFoundError(
+                        f"Artifact {{artifact_id!r}} not found in the spool dir. "
+                        "Ensure the upstream cell returned the ArtifactHandle in its result."
+                    )
+                with open(spool_path, "rb") as _fh:
+                    data = _fh.read()
+                if kind == "pickle":
+                    return _pickle.loads(data)
+                elif kind == "joblib":
+                    try:
+                        import joblib as _jbl
+                    except ImportError as _e:
+                        raise ImportError("joblib is required for kind='joblib'") from _e
+                    return _jbl.load(_artifact_io.BytesIO(data))
+                elif kind == "bytes":
+                    return data
+                elif kind == "json":
+                    return _json.loads(data.decode("utf-8"))
+                else:
+                    raise ValueError(f"Unsupported artifact kind {{kind!r}}")
+
+        _art_ctx = _ArtifactCtx()
+
+        class ctx:
+            put_artifact = staticmethod(_art_ctx._put_artifact)
+            get_artifact = staticmethod(_art_ctx._get_artifact)
+            staging = staging  # keep existing staging writer accessible via ctx too
+
         # set_var (A5): a python cell can publish a variable for LATER cells in
         # the same run. Collected into `_set_vars`, emitted under the reserved
         # `__set_vars__` key (never collides with user `result` keys). persist=True
@@ -768,6 +920,12 @@ def _handle_python(
         if _staged_manifest["files"]:
             print("__STAGING_MANIFEST__:" + _json.dumps(_staged_manifest, default=str))
 
+        # B4: emit artifact handles so the PARENT can upload the spooled bytes
+        # and replace the pending handles with real URIs in the task result.
+        # Emitted BEFORE __FLOW_RESULT__ so the parent can patch handles in _out.
+        if _artifact_handles:
+            print("__ARTIFACT_HANDLES__:" + _json.dumps(list(_artifact_handles.values()), default=str))
+
         print("__FLOW_RESULT__:" + _json.dumps(_out, default=str))
     """)
 
@@ -829,6 +987,7 @@ def _handle_python(
     stdout_lines: list[str] = []
     task_result: dict[str, Any] = {}
     staged_manifest_raw: dict[str, Any] | None = None
+    artifact_handles_raw: list[dict[str, Any]] | None = None
     for line in stdout_text.splitlines():
         if line.startswith("__FLOW_RESULT__:"):
             try:
@@ -840,6 +999,11 @@ def _handle_python(
                 staged_manifest_raw = json.loads(line[len("__STAGING_MANIFEST__:"):])
             except Exception:  # noqa: BLE001
                 staged_manifest_raw = None
+        elif line.startswith("__ARTIFACT_HANDLES__:"):
+            try:
+                artifact_handles_raw = json.loads(line[len("__ARTIFACT_HANDLES__:"):])
+            except Exception:  # noqa: BLE001
+                artifact_handles_raw = None
         else:
             # Every other stdout line is a user log line (the truncation
             # marker, when present, surfaces here as a log line too).
@@ -853,6 +1017,17 @@ def _handle_python(
                 stdout_lines.append(ln)
         _cleanup_spool(spool_dir)
         raise RuntimeError(f"Python task failed (exit {run.returncode}): {stderr[:500]}")
+
+    # ── B4: Upload spooled artifacts and patch handles in task_result ─────────
+    # The subprocess serialised artifacts to ``<spool_dir>/artifacts/<artifact_id>``
+    # and emitted their pending handles (uri=None).  The PARENT now uploads each
+    # spool file to the artifact store and patches the handle in task_result with
+    # the real URI (so downstream cells can call ctx.get_artifact(handle)).
+    try:
+        if artifact_handles_raw:
+            _promote_python_artifacts(artifact_handles_raw, ctx, task_result)
+    except Exception:  # noqa: BLE001 — artifact upload must not break a flow run
+        pass
 
     # ── Promote spooled Parquet into the server-pinned staging prefix ──────────
     # The subprocess wrote Parquet into the private spool dir and reported a
@@ -884,6 +1059,99 @@ def _cleanup_spool(spool_dir: str) -> None:
         shutil.rmtree(spool_dir, ignore_errors=True)
     except Exception:  # noqa: BLE001
         pass
+
+
+def _promote_python_artifacts(
+    handles_raw: list[dict[str, Any]],
+    ctx: Any,
+    task_result: dict[str, Any],
+) -> None:
+    """Upload spooled artifact bytes and patch handles in *task_result* with real URIs.
+
+    For each pending handle in *handles_raw*:
+    1. Reads the spool file from ``handle["__spool__"]``.
+    2. Uploads to the artifact store (org-namespaced).
+    3. Replaces the handle's ``uri`` with the real URI and strips the private
+       ``__spool__`` field.
+    4. Patches any occurrence of the same ``artifact_id`` in *task_result* so
+       downstream cells receive a complete, real handle.
+
+    Best-effort: errors on individual handles are logged and skipped so one bad
+    artifact does not kill a cell that produced other valid outputs.
+    """
+    import logging as _logging  # noqa: PLC0415
+
+    _log = _logging.getLogger(__name__)
+
+    try:
+        from app.flows.artifacts import get_artifact_store  # noqa: PLC0415
+    except Exception:
+        return
+
+    art_store = getattr(ctx, "_artifact_store", None) or get_artifact_store()
+    org_id: str = str(getattr(ctx, "org_id", "") or "")
+    if not org_id:
+        return
+
+    for handle in handles_raw:
+        artifact_id = handle.get("artifact_id", "")
+        spool_path = handle.get("__spool__", "")
+        kind = handle.get("kind", "pickle")
+        name = handle.get("name")
+        meta = handle.get("meta")
+
+        if not artifact_id or not spool_path:
+            continue
+
+        try:
+            if not __import__("os").path.exists(spool_path):
+                continue
+            with open(spool_path, "rb") as fh:
+                data = fh.read()
+            uri = art_store.upload(artifact_id, org_id, data)
+        except Exception as exc:  # noqa: BLE001
+            _log.debug("Failed to upload artifact %s: %s", artifact_id, exc)
+            continue
+
+        # Build the final (public) handle — no __spool__ field.
+        final_handle: dict[str, Any] = {
+            "artifact_id": artifact_id,
+            "kind": kind,
+            "uri": uri,
+            "org_id": org_id,
+            "produced_by_run": handle.get("produced_by_run"),
+            "name": name,
+            "meta": meta,
+            "__type__": "artifact_handle",
+        }
+
+        # Patch task_result: replace any pending handle that has the same artifact_id.
+        _patch_artifact_handle(task_result, artifact_id, final_handle)
+
+
+def _patch_artifact_handle(
+    obj: Any,
+    artifact_id: str,
+    final_handle: dict[str, Any],
+    _depth: int = 0,
+) -> None:
+    """Recursively replace a pending artifact handle in *obj* with *final_handle*.
+
+    Mutates *obj* in place.  Only traverses dicts (no lists inside lists) to
+    avoid unbounded recursion — task results are shallow dicts in practice.
+    Depth-limited to 3 to be safe.
+    """
+    if _depth > 3 or not isinstance(obj, dict):
+        return
+    for k, v in list(obj.items()):
+        if (
+            isinstance(v, dict)
+            and v.get("__type__") == "artifact_handle"
+            and v.get("artifact_id") == artifact_id
+        ):
+            obj[k] = final_handle
+        elif isinstance(v, dict):
+            _patch_artifact_handle(v, artifact_id, final_handle, _depth + 1)
 
 
 def _promote_python_staging(

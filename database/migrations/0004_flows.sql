@@ -161,7 +161,7 @@ CREATE TABLE IF NOT EXISTS flow_run_outputs (
     output_key   text        NOT NULL,
     output_uri   text,
     output_type  text        NOT NULL DEFAULT 'table'
-                             CHECK (output_type IN ('table', 'file', 'dataset', 'metric')),
+                             CHECK (output_type IN ('table', 'file', 'dataset', 'metric', 'artifact')),
     meta         jsonb,
     created_at   timestamptz NOT NULL DEFAULT now()
 );

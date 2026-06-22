@@ -1179,6 +1179,13 @@ async def run_one_ready_task(
     # B2: thread run-level seed into TaskContext for stochastic cell reproducibility.
     run_seed: int | None = (flow_run or {}).get("seed")
 
+    # B4: resolve artifact store singleton for this run.
+    try:
+        from app.flows.artifacts import get_artifact_store as _get_art_store  # noqa: PLC0415
+        _artifact_store = _get_art_store()
+    except Exception:  # noqa: BLE001
+        _artifact_store = None
+
     ctx = TaskContext(
         flow_params=flow_params,
         inputs=inputs,
@@ -1191,6 +1198,7 @@ async def run_one_ready_task(
         watermark=watermark,
         run_id=flow_run_id,
         seed=run_seed,
+        _artifact_store=_artifact_store,
     )
 
     # ── Execute ────────────────────────────────────────────────────────────────
@@ -1308,6 +1316,8 @@ async def run_one_ready_task(
         await _persist_watermark(store, flow_run, task_run, task_spec, outcome["result"])
         # B2: record data-lineage output link (best-effort).
         await _record_run_output(store, flow_run, task_run, task_spec, outcome["result"])
+        # B4: record artifact lineage (best-effort).
+        await _record_artifact_handles(store, flow_run, task_run, outcome["result"])
         _emit_task_event("task_success", flow_run_id, task_key, "success", None, attempt, now)
         await advance_readiness(store, flow_run_id, now)
         return finished_tr
@@ -1951,6 +1961,74 @@ async def _record_run_output(
         )
 
 
+async def _record_artifact_handles(
+    store: Any,
+    flow_run: dict[str, Any] | None,
+    task_run: dict[str, Any],
+    result: dict[str, Any] | None,
+) -> None:
+    """Record lineage for any ArtifactHandles returned in a task result.
+
+    A task that calls ``ctx.put_artifact(...)`` returns a handle dict (or a
+    dict containing one or more handles) in its ``result``.  We scan the top-
+    level values of *result* for artifact handles and, for each one found,
+    record a ``flow_run_output`` row with ``output_type='artifact'``.  This
+    links the artifact to the run for lineage queries.
+
+    Best-effort: any error is logged and swallowed — never breaks a flow run.
+    """
+    if not isinstance(result, dict):
+        return
+    rec = getattr(store, "add_run_output", None)
+    if rec is None:
+        return
+
+    try:
+        from app.flows.artifacts import is_handle  # noqa: PLC0415
+    except Exception:  # noqa: BLE001
+        return
+
+    flow_run_id = task_run.get("flow_run_id")
+    org_id = task_run.get("org_id") or (flow_run or {}).get("org_id") or ""
+    task_key = task_run.get("task_key", "")
+
+    # Collect handles: either the result IS a handle, or top-level values are handles.
+    handles_to_record: list[dict[str, Any]] = []
+    if is_handle(result):
+        handles_to_record.append(result)
+    else:
+        for v in result.values():
+            if is_handle(v):
+                handles_to_record.append(v)
+
+    for handle in handles_to_record:
+        try:
+            artifact_id = handle.get("artifact_id", "")
+            name = handle.get("name") or artifact_id
+            uri = handle.get("uri")
+            meta: dict[str, Any] = {
+                "artifact_id": artifact_id,
+                "kind": handle.get("kind"),
+                "produced_by_run": handle.get("produced_by_run"),
+            }
+            if handle.get("meta"):
+                meta.update(handle["meta"])
+            await rec(
+                flow_run_id=flow_run_id,
+                org_id=org_id,
+                task_key=task_key,
+                output_key=name,
+                output_type="artifact",
+                output_uri=uri,
+                meta={k: v for k, v in meta.items() if v is not None} or None,
+            )
+        except Exception:  # noqa: BLE001
+            logger.debug(
+                "Failed to record artifact lineage for flow_run %s task %s",
+                flow_run_id, task_key,
+            )
+
+
 def _apply_for_each_rewrite(
     full_task: dict[str, Any],
     task_spec: dict[str, Any],
@@ -2170,6 +2248,13 @@ async def _execute_claimed_task_run(
     # B2: thread run-level seed into TaskContext for stochastic cell reproducibility.
     run_seed_drain: int | None = (flow_run or {}).get("seed")
 
+    # B4: resolve artifact store for this run (drain path).
+    try:
+        from app.flows.artifacts import get_artifact_store as _get_art_store_drain  # noqa: PLC0415
+        _artifact_store_drain = _get_art_store_drain()
+    except Exception:  # noqa: BLE001
+        _artifact_store_drain = None
+
     ctx = TaskContext(
         flow_params=flow_params,
         inputs=inputs,
@@ -2187,6 +2272,7 @@ async def _execute_claimed_task_run(
         watermark=watermark,
         run_id=flow_run_id,
         seed=run_seed_drain,
+        _artifact_store=_artifact_store_drain,
     )
 
     # Merge task_run fields with task_spec so execute_task sees kind/config/timeout.
@@ -2308,6 +2394,8 @@ async def _execute_claimed_task_run(
         await _persist_watermark(store, flow_run, task_run, task_spec, outcome["result"])
         # B2: record data-lineage output link (best-effort).
         await _record_run_output(store, flow_run, task_run, task_spec, outcome["result"])
+        # B4: record artifact lineage (best-effort).
+        await _record_artifact_handles(store, flow_run, task_run, outcome["result"])
         _emit_task_event("task_success", flow_run_id, task_key, "success", None, attempt, now)
         await advance_readiness(store, flow_run_id, now)
         return result_tr or task_run

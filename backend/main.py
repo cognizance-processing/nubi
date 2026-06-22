@@ -116,6 +116,11 @@ import app.routes.ai  # noqa: F401, E402
 # registered ahead of the generic /{resource} catch-all in resources.py.
 import app.routes.dashboards  # noqa: F401, E402
 
+# Import canvas route (POST /canvas/validate + /canvases CRUD) BEFORE resources
+# so its /canvas and /canvases prefix routes are registered ahead of the generic
+# /{resource} catch-all in resources.py.
+import app.routes.canvas  # noqa: F401, E402
+
 # Import jobs route BEFORE resources so the /jobs prefix routes are registered
 # ahead of the generic /{resource} catch-all in resources.py.
 import app.routes.jobs  # noqa: F401, E402

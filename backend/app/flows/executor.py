@@ -164,6 +164,91 @@ class TaskContext:
     # runs diverge.  None = no seed injection (preview / test path).
     seed: int | None = field(default=None)
 
+    # ── B4: Artifact store reference ──────────────────────────────────────────
+    # Populated by the runtime from the module-level singleton.  None means
+    # the artifact channel is unavailable (very old test harnesses).
+    _artifact_store: Any = field(default=None, repr=False)
+
+    # ------------------------------------------------------------------
+    # B4: Artifact helpers — put / get
+    # ------------------------------------------------------------------
+
+    def put_artifact(
+        self,
+        obj: Any,
+        name: str | None = None,
+        *,
+        kind: str = "pickle",
+        meta: dict[str, Any] | None = None,
+    ) -> "dict[str, Any]":
+        """Serialise *obj* and upload it to the artifact store.
+
+        Returns an ``ArtifactHandle`` dict that can be returned from the cell
+        and passed to ``ctx.get_artifact(handle)`` in any downstream cell.
+
+        Parameters
+        ----------
+        obj:
+            Any Python object to persist.
+        name:
+            Optional human-readable label (e.g. ``"trained_model"``).
+        kind:
+            Serialisation format: ``'pickle'`` (default), ``'joblib'``,
+            ``'bytes'``, or ``'json'``.
+        meta:
+            Optional free-form metadata dict (stored on the handle).
+
+        Raises
+        ------
+        ValueError
+            If ``ctx.org_id`` is not set (required for tenant isolation).
+        """
+        from app.flows.artifacts import put_artifact as _put  # noqa: PLC0415
+
+        if not self.org_id:
+            raise ValueError(
+                "ctx.put_artifact() requires ctx.org_id to be set "
+                "(artifact storage is org-scoped for tenant isolation)."
+            )
+        return _put(
+            obj,
+            kind=kind,
+            name=name,
+            org_id=self.org_id,
+            flow_run_id=self.run_id,
+            meta=meta,
+            store=self._artifact_store,
+        )
+
+    def get_artifact(self, handle: "dict[str, Any]") -> Any:
+        """Download and deserialise the artifact referenced by *handle*.
+
+        Parameters
+        ----------
+        handle:
+            An ``ArtifactHandle`` dict previously returned by
+            ``ctx.put_artifact`` (or the ``put_artifact`` module function).
+
+        Returns
+        -------
+        Any
+            The deserialised Python object.
+
+        Raises
+        ------
+        PermissionError
+            When the handle belongs to a different org (isolation guard).
+        ValueError
+            When *handle* is not a valid ``ArtifactHandle`` dict.
+        """
+        from app.flows.artifacts import get_artifact as _get  # noqa: PLC0415
+
+        if not self.org_id:
+            raise ValueError(
+                "ctx.get_artifact() requires ctx.org_id to be set."
+            )
+        return _get(handle, org_id=self.org_id, store=self._artifact_store)
+
 
 # ---------------------------------------------------------------------------
 # Template resolution

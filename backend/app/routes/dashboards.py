@@ -1,7 +1,7 @@
-"""Dashboard spec validation endpoint for external AI agents.
+"""Dashboard spec validation + DataProvider data endpoints.
 
-Endpoint
---------
+Endpoints
+---------
 POST /dashboards/validate
     Accepts ``{spec: <dashboard spec dict>}``, runs the canonical
     ``validate_spec`` parser, and returns *structured, repair-oriented* issues
@@ -11,40 +11,65 @@ POST /dashboards/validate
     anything.  Requires a valid first-party Bearer token (``current_user``),
     matching the sibling AI/grounding routes in ``app.routes.ai``.
 
-Response shape
---------------
+POST /boards/{board_id}/providers/{provider_id}/data
+    Resolve a DataProvider declared in a board's DashboardSpec and return the
+    named result-sets as a multi-table Arrow IPC stream (one IPC stream per
+    declared ``results[*].name``).
+
+    * Org-scoped: the board is resolved in the caller's org only.
+    * RLS: ``claims["policies"]`` from the **verified token** only — never from
+      the request body.
+    * Accepts both first-party Bearer tokens (``current_user``) and host-signed
+      embed JWTs (``verified_identity``).
+    * Cached by ``(provider_id, params, rls_hash)`` using the Wave-2 base-scan
+      cache (TTL 5 minutes).
+
+Response shape for /boards/{id}/providers/{pid}/data
+------------------------------------------------------
+``Content-Type: application/vnd.apache.arrow.stream``
+
+A binary multi-table IPC frame::
+
+    4-byte big-endian table count N
+    then N frames, each:
+        4-byte big-endian name length
+        UTF-8 name bytes
+        4-byte big-endian IPC stream length
+        Arrow IPC stream bytes
+
+POST /dashboards/validate response shape
+-----------------------------------------
 ::
 
     {
-        "valid": true | false,            # true iff there are no error-severity issues
-        "errors":   [StructuredIssue...], # severity == "error"
-        "warnings": [StructuredIssue...]  # severity == "warning"
+        "valid": true | false,
+        "errors":   [StructuredIssue...],
+        "warnings": [StructuredIssue...]
     }
 
 Each StructuredIssue is::
 
     {
-        "path": "widgets[2].encoding.x",  # JSON path to the offending value
-        "code": "missing_encoding_x",     # stable machine code
+        "path": "widgets[2].encoding.x",
+        "code": "missing_encoding_x",
         "message": "Widget 'w3' (chart): encoding must include 'x' column.",
-        "severity": "error",              # "error" | "warning"
+        "severity": "error",
         "suggestion": "Set encoding.x to one of the bound query's columns ...",
-        "valid_options": ["region", "revenue", "month"]  # or null
+        "valid_options": ["region", "revenue", "month"]
     }
-
-A mid-tier agent can read a single error and fix it in one round-trip: ``path``
-tells it WHERE and ``valid_options`` tells it the legal VALUES (e.g. the bound
-query's real columns for a bad chart encoding).
 """
 
 from __future__ import annotations
 
 from typing import Any
 
-from fastapi import Depends
+from fastapi import Depends, Request
+from fastapi.responses import Response
 from pydantic import BaseModel
 
-from app.auth.deps import current_user
+from app.auth.deps import current_user, verified_identity
+from app.auth.verify import VerifiedIdentity
+from app.repos.provider import Repo, get_repo
 from app.routes import api_router
 
 
@@ -130,4 +155,143 @@ async def validate_dashboard(
         valid=not errors,
         errors=errors,
         warnings=warnings,
+    )
+
+
+# ---------------------------------------------------------------------------
+# POST /boards/{board_id}/providers/{provider_id}/data
+# ---------------------------------------------------------------------------
+
+
+class ProviderDataRequest(BaseModel):
+    """Request body for POST /boards/{id}/providers/{pid}/data."""
+
+    params: dict[str, Any] = {}
+
+
+@api_router.post(
+    "/boards/{board_id}/providers/{provider_id}/data",
+    tags=["dashboards"],
+    response_class=Response,
+    responses={
+        200: {"content": {"application/vnd.apache.arrow.stream": {}}},
+        404: {"description": "Board or provider not found"},
+        403: {"description": "Forbidden"},
+    },
+)
+async def get_provider_data(
+    board_id: str,
+    provider_id: str,
+    body: ProviderDataRequest,
+    request: Request,
+    identity: VerifiedIdentity = Depends(verified_identity),
+    repo: Repo = Depends(get_repo),
+) -> Response:
+    """Resolve a DataProvider and return a multi-table Arrow IPC stream.
+
+    Resolves the DataProvider named *provider_id* declared in board *board_id*,
+    executes it (flow or inline), and returns the named result-sets as a
+    concatenated multi-table Arrow IPC stream.
+
+    Parameters
+    ----------
+    board_id:
+        The board id (must exist in the caller's org).
+    provider_id:
+        The ``DataProvider.id`` declared in the board's spec.
+    body:
+        ``{params: {...}}`` — request-time parameter overrides merged with the
+        provider's declared param defaults.  RLS is NEVER taken from the body.
+    request:
+        The incoming FastAPI request (used for embed origin verification via
+        ``verified_identity`` and for org resolution).
+    identity:
+        Verified token identity (injected by ``verified_identity``).
+        Accepts both first-party HS256 access tokens and host-signed embed JWTs.
+    repo:
+        Active repository implementation.
+
+    Returns
+    -------
+    Response
+        ``Content-Type: application/vnd.apache.arrow.stream`` — binary
+        multi-table IPC frame (one Arrow IPC stream per declared result).
+
+    Raises
+    ------
+    AppError("unauthorized", 401)
+        If the token is missing or invalid.
+    AppError("insufficient_scope", 403)
+        If the token does not carry a qualifying read scope.
+    AppError("board_not_found", 404)
+        If no board with *board_id* exists in the caller's org.
+    AppError("provider_not_found", 404)
+        If *provider_id* is not declared in the board's spec.
+    AppError("provider_mode_unsupported", 501)
+        If the materialized execution mode is requested (later wave).
+
+    Security notes
+    --------------
+    * RLS predicates come ONLY from ``identity.policies`` (the verified token).
+    * The board and any datastore are resolved org-scoped — never cross-org.
+    * Embed tokens with ``embed_origin`` are validated against the request
+      ``Origin`` header by ``verified_identity`` before this handler runs.
+    * Viewers (embed tokens) are NOT counted as metered compute (the per-result
+      cache means compute is only charged once, not once per viewer).
+    """
+    from app.auth.scopes import has_scope  # noqa: PLC0415
+    from app.dashboards.board_data import (  # noqa: PLC0415
+        resolve_provider_data,
+        tables_to_multi_ipc_stream,
+    )
+    from app.routes._org import get_user_org  # noqa: PLC0415
+
+    # ── Scope gate (mirrors embed.py) ─────────────────────────────────────────
+    _scopes = identity.scope
+    _has_read = has_scope(_scopes, "read:query") or any(
+        s.startswith("read:") for s in _scopes
+    )
+    if not _has_read:
+        from app.errors import AppError  # noqa: PLC0415
+
+        raise AppError(
+            "insufficient_scope",
+            "Token does not carry the required scope: read:query",
+            403,
+        )
+
+    # ── Resolve org_id ────────────────────────────────────────────────────────
+    if identity.kind == "embed" and identity.org:
+        org_id = identity.org
+    else:
+        org_id = await get_user_org(identity.user_id, repo)
+
+    # ── Build claims (RLS from verified token only) ───────────────────────────
+    claims: dict[str, Any] = {
+        "policies": dict(identity.policies or {}),
+        "sub": identity.user_id or "",
+        "org_id": org_id,
+    }
+
+    # ── Resolve provider data ─────────────────────────────────────────────────
+    tables = await resolve_provider_data(
+        board_id=board_id,
+        provider_id=provider_id,
+        params=dict(body.params),
+        org_id=org_id,
+        claims=claims,
+        repo=repo,
+    )
+
+    # ── Serialise to multi-table IPC stream ───────────────────────────────────
+    ipc_bytes = tables_to_multi_ipc_stream(tables)
+
+    return Response(
+        content=ipc_bytes,
+        media_type="application/vnd.apache.arrow.stream",
+        headers={
+            "X-Provider-Id": provider_id,
+            "X-Board-Id": board_id,
+            "X-Result-Count": str(len(tables)),
+        },
     )
