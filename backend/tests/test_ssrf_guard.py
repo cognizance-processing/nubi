@@ -26,7 +26,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from app.connectors.ssrf import guard_url
+from app.connectors.ssrf import guard_url, resolve_and_pin
 from app.errors import AppError
 
 
@@ -237,6 +237,69 @@ class TestEscapeHatch:
 
 
 # ---------------------------------------------------------------------------
+# resolve_and_pin: TOCTOU-safe resolver used on the actual fetch path
+# ---------------------------------------------------------------------------
+
+
+class TestResolveAndPin:
+    def test_pins_first_validated_public_address(self) -> None:
+        """A public host resolves once and pins to the validated IP literal."""
+        fake = _getaddrinfo_returning("93.184.216.34")
+        with patch.object(socket, "getaddrinfo", fake):
+            pinned = resolve_and_pin("https://api.example.com/v1/records")
+        assert pinned.ip == "93.184.216.34"
+        assert pinned.host == "api.example.com"
+        assert pinned.port == 443
+        assert pinned.url == "https://api.example.com/v1/records"
+
+    def test_default_http_port(self) -> None:
+        fake = _getaddrinfo_returning("93.184.216.34")
+        with patch.object(socket, "getaddrinfo", fake):
+            pinned = resolve_and_pin("http://api.example.com/x")
+        assert pinned.port == 80
+
+    def test_explicit_port_preserved(self) -> None:
+        fake = _getaddrinfo_returning("93.184.216.34")
+        with patch.object(socket, "getaddrinfo", fake):
+            pinned = resolve_and_pin("http://api.example.com:8443/x")
+        assert pinned.port == 8443
+
+    def test_blocks_private_resolution(self) -> None:
+        fake = _getaddrinfo_returning("10.1.2.3")
+        with patch.object(socket, "getaddrinfo", fake):
+            with pytest.raises(AppError) as exc_info:
+                resolve_and_pin("http://evil.example.com/")
+        assert exc_info.value.code == "ssrf_blocked"
+
+    def test_blocks_metadata_resolution(self) -> None:
+        fake = _getaddrinfo_returning("169.254.169.254")
+        with patch.object(socket, "getaddrinfo", fake):
+            with pytest.raises(AppError):
+                resolve_and_pin("http://rebind.example.com/")
+
+    def test_blocks_mixed_public_and_private(self) -> None:
+        """Every resolved address is validated before pinning the first safe one;
+        a private address anywhere in the answer blocks the request."""
+        fake = _getaddrinfo_returning("93.184.216.34", "127.0.0.1")
+        with patch.object(socket, "getaddrinfo", fake):
+            with pytest.raises(AppError) as exc_info:
+                resolve_and_pin("http://sneaky.example.com/")
+        assert exc_info.value.code == "ssrf_blocked"
+
+    def test_unresolvable_host_is_rejected(self) -> None:
+        """Unlike guard_url, resolve_and_pin FAILS CLOSED: there is no safe IP to
+        pin, so it refuses rather than letting the client re-resolve freely."""
+        with patch.object(socket, "getaddrinfo", _getaddrinfo_raising):
+            with pytest.raises(AppError) as exc_info:
+                resolve_and_pin("http://does-not-resolve.invalid/")
+        assert exc_info.value.code == "ssrf_blocked"
+
+    def test_blocks_non_http_scheme(self) -> None:
+        with pytest.raises(AppError):
+            resolve_and_pin("file:///etc/passwd")
+
+
+# ---------------------------------------------------------------------------
 # Integration: http_json connector invokes the guard before fetching
 # ---------------------------------------------------------------------------
 
@@ -262,17 +325,23 @@ class TestHttpJsonInvokesGuard:
             cache_key="cafebabe" * 8,
         )
 
-        with patch("httpx.get") as mock_get:
+        with patch("httpx.request") as mock_request:
             with pytest.raises(AppError) as exc_info:
                 conn.execute(plan)
 
         assert exc_info.value.code == "ssrf_blocked"
-        assert mock_get.call_count == 0, "guard must short-circuit before any fetch"
+        assert mock_request.call_count == 0, "guard must short-circuit before any fetch"
 
-    def test_execute_invokes_guard_url_function(self) -> None:
-        """Directly assert guard_url is invoked with the connector's URL."""
+    def test_execute_invokes_pinning_resolver(self) -> None:
+        """Directly assert the TOCTOU-safe resolver is invoked with the URL.
+
+        The connector now fetches through ``resolve_and_pin`` (resolve once,
+        validate, pin) rather than the validation-only ``guard_url``; pinning is
+        what closes the DNS-rebinding window, so it must be on the fetch path.
+        """
         from app.connectors.http_json import HttpJsonConnector
         from app.connectors.plan import PhysicalPlan
+        from app.connectors.ssrf import PinnedTarget
 
         url = "https://api.example.com/records"
         conn = HttpJsonConnector({"url": url})
@@ -290,12 +359,14 @@ class TestHttpJsonInvokesGuard:
         mock_response.json.return_value = []
         mock_response.raise_for_status = MagicMock()
 
-        with patch("app.connectors.http_json.guard_url") as mock_guard, patch(
-            "httpx.get", return_value=mock_response
-        ):
+        pinned = PinnedTarget(url=url, ip="93.184.216.34", host="api.example.com", port=443)
+
+        with patch(
+            "app.connectors.http_json.resolve_and_pin", return_value=pinned
+        ) as mock_pin, patch("httpx.request", return_value=mock_response):
             conn.execute(plan)
 
-        mock_guard.assert_called_once_with(url)
+        mock_pin.assert_called_once_with(url)
 
 
 # ---------------------------------------------------------------------------

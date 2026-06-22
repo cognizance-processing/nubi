@@ -833,8 +833,9 @@ async def test_materialized_mode_returns_result_when_present(repo: InMemoryRepo)
         async def list_flow_runs(self, flow_id: str, limit: int = 10, **kwargs: Any) -> list:
             return [fake_flow_run]
 
-        async def list_task_runs(self, run_id: str) -> list:
-            return [fake_task_run]
+        async def list_task_runs(self, run_id: str, limit: int | None = None) -> list:
+            result = [fake_task_run]
+            return result[:limit] if limit is not None else result
 
     async def _fake_enforce_quota(org_id: str, dimension: str, amount: float = 1.0) -> None:
         pass
@@ -895,7 +896,7 @@ async def test_materialized_mode_falls_back_to_ephemeral_when_absent(
             # Simulate a flow that has never successfully completed.
             return []
 
-        async def list_task_runs(self, run_id: str) -> list:
+        async def list_task_runs(self, run_id: str, limit: int | None = None) -> list:
             return []
 
     async def _fake_enforce_quota(org_id: str, dimension: str, amount: float = 1.0) -> None:
@@ -1573,8 +1574,9 @@ async def test_flow_provider_result_tables_are_row_capped(repo: InMemoryRepo) ->
             async def list_flows(self, **kwargs):
                 return [fake_flow]
 
-            async def list_task_runs(self, run_id: str) -> list:
-                return [fake_task_run]
+            async def list_task_runs(self, run_id: str, limit: int | None = None) -> list:
+                result = [fake_task_run]
+                return result[:limit] if limit is not None else result
 
         from app.flows.store import get_flow_store as _orig_get_flow_store
 
@@ -2089,3 +2091,148 @@ def test_validate_result_name_accepts_valid_identifiers() -> None:
     for good_name in valid_names:
         # Must not raise.
         _validate_result_name(good_name)
+
+
+# ---------------------------------------------------------------------------
+# NEW: [MED resource] list_task_runs is bounded at both call sites
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_huge_run_task_runs_are_bounded(repo: InMemoryRepo) -> None:
+    """list_task_runs is called with limit=_MAX_TASK_RUNS+1 at both resolver
+    call sites so a map-fan-out run with thousands of child task_runs never
+    loads unbounded RAM on a provider HTTP request.
+
+    Strategy: replace list_task_runs with a spy that records the ``limit``
+    keyword argument.  We exercise BOTH paths:
+    1. _resolve_flow_provider (ephemeral/live execution path)
+    2. _resolve_materialized_flow_provider (scheduled/derived-tables path)
+
+    Asserts:
+    * list_task_runs is always called with a finite limit= kwarg.
+    * The limit is equal to _MAX_TASK_RUNS+1 (the +1 allows truncation detection).
+    * When the store returns more than _MAX_TASK_RUNS rows the result is
+      truncated to at most _MAX_TASK_RUNS entries (the cap fires).
+    """
+    import io as _io
+    import app.dashboards.board_data as _bd_mod
+    import app.flows.store as _fs_mod
+
+    original_max = _bd_mod._MAX_TASK_RUNS
+    small_ceiling = 3  # Use a small ceiling so we can build a over-limit list easily
+    _bd_mod._MAX_TASK_RUNS = small_ceiling
+
+    try:
+        # Build more task_runs than the ceiling to verify truncation.
+        n_task_runs = small_ceiling + 5  # exceeds ceiling by 5
+        fake_flow = {"id": _PROVIDER_ID, "name": _PROVIDER_ID, "org_id": _ORG}
+        fake_flow_run = {"id": "huge-run-1", "state": "success"}
+
+        # Each task_run has a unique task_key so none are filtered by result_names.
+        # We include a "summary" task_run so the result table is not empty.
+        fake_task_runs = [
+            {
+                "task_key": "summary" if i == 0 else f"child_{i}",
+                "state": "success",
+                "result": {"columns": ["val"], "rows": [[i]]},
+            }
+            for i in range(n_task_runs)
+        ]
+
+        limit_args_seen: list[int | None] = []
+
+        class _SpyStore:
+            """Store that records limit kwargs passed to list_task_runs."""
+
+            async def get_flow(self, flow_id: str) -> dict:
+                return fake_flow
+
+            async def list_flows(self, **kwargs: Any) -> list:
+                return [fake_flow]
+
+            async def list_flow_runs(self, flow_id: str, limit: int = 10, **kwargs: Any) -> list:
+                return [fake_flow_run]
+
+            async def list_task_runs(self, run_id: str, limit: int | None = None) -> list:
+                limit_args_seen.append(limit)
+                result = list(fake_task_runs)
+                return result[:limit] if limit is not None else result
+
+        await repo.update(
+            "boards",
+            _ORG,
+            _BOARD_ID,
+            {"config": {"spec": _make_spec_with_flow_provider()}},
+        )
+
+        async def _fake_enforce_quota(org_id: str, dimension: str, amount: float = 1.0) -> None:
+            pass
+
+        # ── 1. Ephemeral path (_resolve_flow_provider) ────────────────────────
+        with (
+            patch("app.features.enforce_quota", side_effect=_fake_enforce_quota),
+            patch.object(_fs_mod, "get_flow_store", return_value=_SpyStore()),
+            patch(
+                "app.flows.runtime.materialize_flow_run",
+                new=AsyncMock(return_value=fake_flow_run),
+            ),
+            patch(
+                "app.flows.runtime.drain_flow_run",
+                new=AsyncMock(return_value=fake_flow_run),
+            ),
+        ):
+            tables_ephemeral = await resolve_provider_data(
+                board_id=_BOARD_ID,
+                provider_id=_PROVIDER_ID,
+                params={"_path": "ephemeral"},
+                org_id=_ORG,
+                claims={"policies": {}},
+                repo=repo,
+            )
+
+        assert len(limit_args_seen) >= 1, "list_task_runs was never called (ephemeral path)"
+        ephemeral_limit = limit_args_seen[-1]
+        assert ephemeral_limit is not None, (
+            "list_task_runs called with limit=None on ephemeral path — unbounded!"
+        )
+        assert ephemeral_limit == small_ceiling + 1, (
+            f"Expected limit={small_ceiling + 1} (ceiling+1) on ephemeral path; "
+            f"got limit={ephemeral_limit}"
+        )
+        # Truncation must fire: result should have at most small_ceiling task_runs processed.
+        # "summary" is the only declared result, so only 1 table is expected.
+        assert "summary" in tables_ephemeral
+
+        # ── 2. Materialized path (_resolve_materialized_flow_provider) ────────
+        limit_args_seen.clear()
+        from app.connectors.cache import reset_cache_for_tests as _reset
+        _reset()
+
+        with (
+            patch("app.features.enforce_quota", side_effect=_fake_enforce_quota),
+            patch.object(_fs_mod, "get_flow_store", return_value=_SpyStore()),
+        ):
+            tables_mat = await resolve_provider_data(
+                board_id=_BOARD_ID,
+                provider_id=_PROVIDER_ID,
+                params={"_path": "materialized"},
+                org_id=_ORG,
+                claims={"policies": {}},
+                repo=repo,
+                mode="materialized",
+            )
+
+        assert len(limit_args_seen) >= 1, "list_task_runs was never called (materialized path)"
+        mat_limit = limit_args_seen[-1]
+        assert mat_limit is not None, (
+            "list_task_runs called with limit=None on materialized path — unbounded!"
+        )
+        assert mat_limit == small_ceiling + 1, (
+            f"Expected limit={small_ceiling + 1} (ceiling+1) on materialized path; "
+            f"got limit={mat_limit}"
+        )
+        assert "summary" in tables_mat
+
+    finally:
+        _bd_mod._MAX_TASK_RUNS = original_max

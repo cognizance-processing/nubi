@@ -55,6 +55,7 @@ from typing import Any
 # Sweep / backfill safety caps (env-configurable)
 # ---------------------------------------------------------------------------
 _SWEEP_TIMEOUT_S: float = float(os.environ.get("SWEEP_TIMEOUT_S", "300"))
+_BACKFILL_TIMEOUT_S: float = float(os.environ.get("BACKFILL_TIMEOUT_S", "600"))
 _MAX_SWEEP_CELLS: int = int(os.environ.get("MAX_SWEEP_CELLS", "50"))
 _MAX_BACKFILL_WINDOWS: int = int(os.environ.get("MAX_BACKFILL_WINDOWS", "500"))
 _MAX_WRITEBACK_ROWS: int = int(os.environ.get("NUBI_MAX_WRITEBACK_ROWS", "10000"))
@@ -2409,17 +2410,26 @@ async def backfill_flow(
     effective_max_windows = min(body.max_windows, _MAX_BACKFILL_WINDOWS)
 
     try:
-        result = await run_backfill(
-            store=store,
-            flow=flow,
-            start=start,
-            end=end,
-            window=body.window,
-            trigger="backfill",
-            now=now,
-            claims=claims,
-            max_windows=effective_max_windows,
-            extra_params=body.params or {},
+        result = await asyncio.wait_for(
+            run_backfill(
+                store=store,
+                flow=flow,
+                start=start,
+                end=end,
+                window=body.window,
+                trigger="backfill",
+                now=now,
+                claims=claims,
+                max_windows=effective_max_windows,
+                extra_params=body.params or {},
+            ),
+            timeout=_BACKFILL_TIMEOUT_S,
+        )
+    except asyncio.TimeoutError:
+        raise AppError(
+            "backfill_timeout",
+            f"Backfill exceeded the server wall-clock limit of {_BACKFILL_TIMEOUT_S}s.",
+            504,
         )
     except ValueError as exc:
         raise AppError("bad_request", str(exc), 400)

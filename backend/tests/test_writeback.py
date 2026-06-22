@@ -1411,6 +1411,221 @@ async def test_route_approval_viewer_forbidden(wb_client):
 
 
 # ---------------------------------------------------------------------------
+# 26. [LOW] Rollback-then-retry idempotency: a failed/rejected terminal record
+#     must be superseded so a legitimate retry can proceed, while a committed
+#     record is never superseded (double-commit protection).
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_rollback_then_retry_after_failed_terminal_proceeds():
+    """After a failed auto-commit, re-submitting with the same idempotency_key
+    creates a fresh record and runs the write — the failed outcome is superseded.
+
+    This is the rollback-then-retry path: the connector raised an error on the
+    first attempt (state=failed).  A legitimate retry should not be blocked by
+    the still-indexed idempotency key.
+    """
+    store = InMemoryWritebackStore()
+    key = _idem()
+    call_count = [0]
+
+    def failing_write(r, t, m):
+        call_count[0] += 1
+        raise RuntimeError("Warehouse unavailable")
+
+    # First attempt — connector fails → state='failed'.
+    r1 = await submit_writeback(
+        org_id="orgA",
+        idempotency_key=key,
+        rows=[{"id": 1}],
+        target=_target(),
+        mode="append",
+        created_by="user1",
+        approval_required=False,
+        connector_write_fn=failing_write,
+        store=store,
+    )
+    assert r1["state"] == "failed"
+    assert call_count[0] == 1
+
+    # Simulate rollback recovery — connector now works.
+    def succeeding_write(r, t, m):
+        call_count[0] += 1
+        return {"rows_written": len(r)}
+
+    # Retry with the SAME idempotency key — must supersede the failed record.
+    r2 = await submit_writeback(
+        org_id="orgA",
+        idempotency_key=key,
+        rows=[{"id": 1}],
+        target=_target(),
+        mode="append",
+        created_by="user1",
+        approval_required=False,
+        connector_write_fn=succeeding_write,
+        store=store,
+    )
+    # A fresh record was created (different id) and committed successfully.
+    assert r2["id"] != r1["id"], "Retry must produce a new record, not return the failed one"
+    assert r2["state"] == "committed"
+    assert call_count[0] == 2  # connector called once for each attempt
+
+
+@pytest.mark.asyncio
+async def test_rollback_then_retry_after_rejected_terminal_proceeds():
+    """After an approval rejection, re-submitting with the same idempotency_key
+    creates a fresh record (rejected outcome is superseded).
+
+    Rejection is a non-committed terminal state — the data was never written —
+    so a re-submission represents a new logical attempt and must be allowed.
+    """
+    store = InMemoryWritebackStore()
+    key = _idem()
+    calls = []
+
+    def write_fn(r, t, m):
+        calls.append(len(r))
+        return {"rows_written": len(r)}
+
+    # First attempt — submit then reject.
+    r1 = await submit_writeback(
+        org_id="orgA",
+        idempotency_key=key,
+        rows=[{"id": 10}],
+        target=_target(),
+        mode="append",
+        created_by="user1",
+        approval_required=True,
+        connector_write_fn=write_fn,
+        store=store,
+    )
+    assert r1["state"] == "pending_approval"
+
+    rejected = await approve_writeback(
+        org_id="orgA",
+        wb_id=r1["id"],
+        action="reject",
+        approver_id="approver1",
+        connector_write_fn=write_fn,
+        store=store,
+    )
+    assert rejected["state"] == "rejected"
+    assert len(calls) == 0  # write never happened
+
+    # Re-submit with the same key after rejection — must create a fresh record.
+    r2 = await submit_writeback(
+        org_id="orgA",
+        idempotency_key=key,
+        rows=[{"id": 10}],
+        target=_target(),
+        mode="append",
+        created_by="user1",
+        approval_required=False,
+        connector_write_fn=write_fn,
+        store=store,
+    )
+    assert r2["id"] != r1["id"], "Retry must produce a new record, not the rejected one"
+    assert r2["state"] == "committed"
+    assert len(calls) == 1  # write ran once for the retry
+
+
+@pytest.mark.asyncio
+async def test_committed_record_is_never_superseded():
+    """A successfully committed record must NEVER be superseded on retry.
+
+    A re-submit with the same idempotency key after a committed outcome must
+    return the existing committed record without calling the write function
+    again — double-commit protection is the primary dedup invariant.
+    """
+    store = InMemoryWritebackStore()
+    key = _idem()
+    call_count = [0]
+
+    def write_fn(r, t, m):
+        call_count[0] += 1
+        return {"rows_written": len(r)}
+
+    # First submit — auto-commit.
+    r1 = await submit_writeback(
+        org_id="orgA",
+        idempotency_key=key,
+        rows=[{"id": 99}],
+        target=_target(),
+        mode="append",
+        created_by="user1",
+        approval_required=False,
+        connector_write_fn=write_fn,
+        store=store,
+    )
+    assert r1["state"] == "committed"
+    assert call_count[0] == 1
+
+    # Retry with same key — must return existing committed record, NOT re-write.
+    r2 = await submit_writeback(
+        org_id="orgA",
+        idempotency_key=key,
+        rows=[{"id": 99}],
+        target=_target(),
+        mode="append",
+        created_by="user1",
+        approval_required=False,
+        connector_write_fn=write_fn,
+        store=store,
+    )
+    assert r2["id"] == r1["id"], "Committed record must be returned as-is (no new record)"
+    assert r2["state"] == "committed"
+    assert call_count[0] == 1, "Write function must NOT be called again after a committed record"
+
+
+@pytest.mark.asyncio
+async def test_pending_approval_record_is_not_superseded():
+    """An in-flight (pending_approval) record must not be superseded.
+
+    Submitting the same idempotency key while the original is awaiting
+    approval must return the pending record unchanged — the dedup window
+    covers in-flight submissions too.
+    """
+    store = InMemoryWritebackStore()
+    key = _idem()
+    calls = []
+
+    def write_fn(r, t, m):
+        calls.append(True)
+        return {"rows_written": len(r)}
+
+    # First submit — gated (pending_approval).
+    r1 = await submit_writeback(
+        org_id="orgA",
+        idempotency_key=key,
+        rows=[{"id": 5}],
+        target=_target(),
+        mode="append",
+        created_by="user1",
+        approval_required=True,
+        connector_write_fn=write_fn,
+        store=store,
+    )
+    assert r1["state"] == "pending_approval"
+
+    # Retry (e.g. network retry from submitter) — must return the same pending record.
+    r2 = await submit_writeback(
+        org_id="orgA",
+        idempotency_key=key,
+        rows=[{"id": 5}],
+        target=_target(),
+        mode="append",
+        created_by="user1",
+        approval_required=True,
+        connector_write_fn=write_fn,
+        store=store,
+    )
+    assert r2["id"] == r1["id"], "Pending record must be returned as-is on retry"
+    assert r2["state"] == "pending_approval"
+    assert len(calls) == 0  # write never triggered
+
+
+# ---------------------------------------------------------------------------
 # PG integration tests (only active when RUN_PG_TESTS=1 + DATABASE_URL set)
 #
 # These tests exercise PgWritebackStore against a real Postgres database.

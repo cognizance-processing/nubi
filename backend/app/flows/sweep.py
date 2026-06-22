@@ -75,6 +75,37 @@ _SWEEP_DIFF_RESULT_BYTES_CAP: int = int(
     os.environ.get("NUBI_SWEEP_DIFF_RESULT_BYTES_CAP", str(64 * 1024))
 )
 
+# ---------------------------------------------------------------------------
+# Diff-surface aggregate byte cap.
+#
+# Even with per-task-result capping, a sweep with many cells and many tasks can
+# still produce a large aggregate payload: cells(50) × tasks(50) × 64 KiB cap
+# = up to 160 MiB serialised into a single HTTP response.  This aggregate cap
+# applies across ALL cells and tasks: once the running total of serialised
+# output bytes exceeds this threshold, further per-cell/per-task blobs are
+# omitted and a ``__surface_truncated__`` marker is appended to the surface
+# list, recording how many cells were omitted and the total bytes accumulated.
+#
+# Override via NUBI_SWEEP_DIFF_AGGREGATE_BYTES_CAP (bytes).  Default: 16 MiB.
+# ---------------------------------------------------------------------------
+_SWEEP_DIFF_AGGREGATE_BYTES_CAP: int = int(
+    os.environ.get("NUBI_SWEEP_DIFF_AGGREGATE_BYTES_CAP", str(16 * 1024 * 1024))
+)
+
+# ---------------------------------------------------------------------------
+# Per-cell task-run limit in the sweep output-collection phase.
+#
+# When gathering task-run results for the diff surface, cap the number of
+# task_run rows fetched per cell.  A flow with thousands of tasks would
+# otherwise return an unbounded set of rows per cell in Phase 2.  Consumers
+# that need more rows should query the run directly.
+#
+# Override via NUBI_SWEEP_TASK_RUNS_LIMIT (rows).  Default: 500 rows per cell.
+# ---------------------------------------------------------------------------
+_SWEEP_TASK_RUNS_LIMIT: int = int(
+    os.environ.get("NUBI_SWEEP_TASK_RUNS_LIMIT", "500")
+)
+
 
 # ---------------------------------------------------------------------------
 # Data-classes for structured results
@@ -107,6 +138,7 @@ class SweepResult:
     def diff_surface(
         self,
         result_bytes_cap: int | None = None,
+        aggregate_bytes_cap: int | None = None,
     ) -> list[dict[str, Any]]:
         """Return the comparison surface — one entry per successful cell.
 
@@ -120,9 +152,20 @@ class SweepResult:
                 "cap_bytes": <cap>,
             }
 
-        This keeps the payload bounded (O(N * cap) not O(N * result_size)) while
-        preserving enough metadata for consumers to diff structural information
-        across param sets without shipping raw megabyte blobs.
+        Once the running total of serialised output bytes across all cells and
+        tasks exceeds *aggregate_bytes_cap*, further cells are omitted and a
+        surface-level truncation marker is appended as the final list entry::
+
+            {
+                "__surface_truncated__": True,
+                "cells_included": <count>,
+                "cells_omitted": <count>,
+                "aggregate_bytes": <total bytes included>,
+                "aggregate_cap_bytes": <cap>,
+            }
+
+        This doubly-bounds the payload: per-result at *result_bytes_cap* and
+        the entire surface at *aggregate_bytes_cap*.
 
         Parameters
         ----------
@@ -130,37 +173,65 @@ class SweepResult:
             Per-task-result byte cap for JSON serialisation.  Defaults to
             ``_SWEEP_DIFF_RESULT_BYTES_CAP`` (64 KiB, env-overridable via
             ``NUBI_SWEEP_DIFF_RESULT_BYTES_CAP``).  Pass ``0`` or a negative
-            value to disable capping entirely (useful in tests that need raw
-            results).
+            value to disable per-result capping (useful in tests).
+        aggregate_bytes_cap:
+            Aggregate byte cap across the entire surface (all cells × all
+            tasks).  Defaults to ``_SWEEP_DIFF_AGGREGATE_BYTES_CAP`` (16 MiB,
+            env-overridable via ``NUBI_SWEEP_DIFF_AGGREGATE_BYTES_CAP``).
+            Pass ``0`` or a negative value to disable aggregate capping.
         """
         cap = result_bytes_cap if result_bytes_cap is not None else _SWEEP_DIFF_RESULT_BYTES_CAP
+        agg_cap = aggregate_bytes_cap if aggregate_bytes_cap is not None else _SWEEP_DIFF_AGGREGATE_BYTES_CAP
 
-        def _cap_result(result: Any) -> Any:
-            """Return result as-is or replace with a truncation summary."""
-            if cap <= 0:
-                # Capping disabled — return raw value.
-                return result
+        def _cap_result(result: Any) -> tuple[Any, int]:
+            """Return (capped_result, serialised_byte_size).
+
+            When capping is disabled (cap <= 0) the size is still measured so
+            the aggregate accumulator remains accurate.
+            """
             try:
                 serialised = json.dumps(result, default=str)
             except Exception:  # noqa: BLE001
                 serialised = str(result)
             size = len(serialised.encode("utf-8"))
-            if size <= cap:
-                return result
-            return {
-                "__truncated__": True,
-                "size_bytes": size,
-                "cap_bytes": cap,
-            }
+            if cap > 0 and size > cap:
+                return (
+                    {
+                        "__truncated__": True,
+                        "size_bytes": size,
+                        "cap_bytes": cap,
+                    },
+                    # The truncation summary is tiny; charge only the summary size.
+                    len(json.dumps({"__truncated__": True, "size_bytes": size, "cap_bytes": cap}).encode("utf-8")),
+                )
+            return result, size
 
-        surface = []
-        for c in self.cells:
-            if c.state != "success":
-                continue
-            capped_outputs = {
-                task_key: _cap_result(result)
-                for task_key, result in c.outputs.items()
-            }
+        success_cells = [c for c in self.cells if c.state == "success"]
+        total_success = len(success_cells)
+
+        surface: list[dict[str, Any]] = []
+        aggregate_bytes = 0
+        cells_included = 0
+        aggregate_hit = False
+
+        for c in success_cells:
+            if agg_cap > 0 and aggregate_bytes >= agg_cap:
+                aggregate_hit = True
+                break
+
+            capped_outputs: dict[str, Any] = {}
+            cell_bytes = 0
+            for task_key, result in c.outputs.items():
+                if agg_cap > 0 and aggregate_bytes + cell_bytes >= agg_cap:
+                    # Aggregate cap hit mid-cell; stop adding more blobs.
+                    aggregate_hit = True
+                    break
+                capped_val, byte_size = _cap_result(result)
+                capped_outputs[task_key] = capped_val
+                cell_bytes += byte_size
+
+            aggregate_bytes += cell_bytes
+            cells_included += 1
             surface.append(
                 {
                     "index": c.index,
@@ -169,6 +240,25 @@ class SweepResult:
                     "outputs": capped_outputs,
                 }
             )
+
+            if aggregate_hit:
+                break
+
+        # If the aggregate cap was hit before all cells were included, append a
+        # surface-level truncation marker so consumers can detect the omission.
+        if aggregate_hit or cells_included < total_success:
+            cells_omitted = total_success - cells_included
+            if cells_omitted > 0:
+                surface.append(
+                    {
+                        "__surface_truncated__": True,
+                        "cells_included": cells_included,
+                        "cells_omitted": cells_omitted,
+                        "aggregate_bytes": aggregate_bytes,
+                        "aggregate_cap_bytes": agg_cap,
+                    }
+                )
+
         return surface
 
 
@@ -376,10 +466,13 @@ async def run_sweep(
     # A single asyncio.gather issues all list_task_runs calls concurrently so
     # the per-cell output read is bounded to a single concurrent round-trip
     # rather than O(cells) sequential blocking queries.
+    #
+    # Pass _SWEEP_TASK_RUNS_LIMIT so a flow with thousands of tasks cannot
+    # produce an unbounded result set per cell in this output-collection phase.
     if _pending_output_cells:
         run_ids_to_fetch = [cells[i].run_id for i in _pending_output_cells]
         task_run_lists = await asyncio.gather(
-            *(store.list_task_runs(rid) for rid in run_ids_to_fetch)
+            *(store.list_task_runs(rid, limit=_SWEEP_TASK_RUNS_LIMIT) for rid in run_ids_to_fetch)
         )
         for cell_idx, task_runs in zip(_pending_output_cells, task_run_lists):
             outputs: dict[str, Any] = {}

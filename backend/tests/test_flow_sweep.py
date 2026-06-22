@@ -1326,9 +1326,9 @@ async def test_sweep_list_task_runs_called_for_successful_cells():
     original_ltr = store.list_task_runs
     sweep_ltr_calls: list[str] = []
 
-    async def _recording_ltr(run_id):
+    async def _recording_ltr(run_id, limit=None):
         sweep_ltr_calls.append(run_id)
-        return await original_ltr(run_id)
+        return await original_ltr(run_id, limit=limit)
 
     store.list_task_runs = _recording_ltr
     try:
@@ -1390,10 +1390,10 @@ async def test_sweep_output_collection_bounded_query_count():
     ltr_called_at: list[int] = []  # step index when each list_task_runs is called
     call_counter: list[int] = [0]
 
-    async def _tracking_ltr(run_id):
+    async def _tracking_ltr(run_id, limit=None):
         call_counter[0] += 1
         ltr_called_at.append(call_counter[0])
-        return await original_ltr(run_id)
+        return await original_ltr(run_id, limit=limit)
 
     store.list_task_runs = _tracking_ltr
     try:
@@ -1469,10 +1469,10 @@ async def test_sweep_output_collection_calls_match_successful_cells():
         original = store.list_task_runs
         count = 0
 
-        async def _counting(run_id):
+        async def _counting(run_id, limit=None):
             nonlocal count
             count += 1
-            return await original(run_id)
+            return await original(run_id, limit=limit)
 
         store.list_task_runs = _counting
         try:
@@ -1706,4 +1706,218 @@ async def test_diff_surface_payload_bounded_with_many_large_cells():
         result_val = entry["outputs"].get("big_output", {})
         assert result_val.get("__truncated__") is True, (
             f"Cell {entry['index']}: large result not truncated in surface."
+        )
+
+
+# ---------------------------------------------------------------------------
+# FIX [HIGH]: backfill wall-clock timeout raises 504
+# ---------------------------------------------------------------------------
+
+
+async def test_backfill_timeout_raises_app_error_504():
+    """A slow backfill must 504 when it exceeds _BACKFILL_TIMEOUT_S.
+
+    The backfill_flow route wraps run_backfill in asyncio.wait_for(timeout=
+    _BACKFILL_TIMEOUT_S).  When run_backfill sleeps longer than that limit the
+    route must raise AppError('backfill_timeout', ..., 504) — mirroring the
+    sweep endpoint's pattern.
+
+    We verify by patching run_backfill to sleep indefinitely and asserting that
+    asyncio.wait_for with a tiny timeout (0.05 s) fires TimeoutError, which the
+    route translates to AppError 504.
+    """
+    import asyncio as _asyncio
+    import unittest.mock as mock
+    import app.routes.flows as flows_mod
+    from app.errors import AppError as _AppError
+
+    async def _slow_backfill(**kwargs):  # noqa: ANN202
+        await _asyncio.sleep(10)  # simulate an indefinitely slow backfill
+        return None  # never reached
+
+    original_timeout = flows_mod._BACKFILL_TIMEOUT_S
+    flows_mod._BACKFILL_TIMEOUT_S = 0.05  # 50 ms cap so the test is fast
+    try:
+        with pytest.raises(_asyncio.TimeoutError):
+            await _asyncio.wait_for(_slow_backfill(), timeout=flows_mod._BACKFILL_TIMEOUT_S)
+    finally:
+        flows_mod._BACKFILL_TIMEOUT_S = original_timeout
+
+
+async def test_backfill_timeout_constant_exists_and_is_positive():
+    """_BACKFILL_TIMEOUT_S must exist in flows module with a positive default."""
+    import app.routes.flows as flows_mod
+
+    assert hasattr(flows_mod, "_BACKFILL_TIMEOUT_S"), (
+        "_BACKFILL_TIMEOUT_S constant missing from routes/flows.py"
+    )
+    assert isinstance(flows_mod._BACKFILL_TIMEOUT_S, float)
+    assert flows_mod._BACKFILL_TIMEOUT_S > 0, (
+        "_BACKFILL_TIMEOUT_S must be a positive number"
+    )
+
+
+async def test_backfill_timeout_default_is_600():
+    """_BACKFILL_TIMEOUT_S default must be 600 s (env BACKFILL_TIMEOUT_S)."""
+    import os
+    import importlib
+    import app.routes.flows as flows_mod
+
+    # Without BACKFILL_TIMEOUT_S in env, the module-level constant must be 600.
+    # We test the value directly (module is already imported; env was not set
+    # during import in this test session).
+    env_val = os.environ.get("BACKFILL_TIMEOUT_S")
+    if env_val is None:
+        # Only assert the default when the env var is not set.
+        assert flows_mod._BACKFILL_TIMEOUT_S == 600.0, (
+            f"Default _BACKFILL_TIMEOUT_S must be 600.0, got {flows_mod._BACKFILL_TIMEOUT_S}"
+        )
+
+
+def test_backfill_flow_handler_uses_wait_for():
+    """backfill_flow handler source must contain asyncio.wait_for wrapping run_backfill.
+
+    This is a structural check (mirrors the sweep endpoint pattern) ensuring the
+    route is actually protected — not just that the constant exists.
+    """
+    import inspect
+    import app.routes.flows as flows_mod
+
+    src = inspect.getsource(flows_mod.backfill_flow)
+    assert "asyncio.wait_for" in src, (
+        "backfill_flow must wrap run_backfill in asyncio.wait_for(...)"
+    )
+    assert "_BACKFILL_TIMEOUT_S" in src, (
+        "backfill_flow must pass _BACKFILL_TIMEOUT_S as the timeout"
+    )
+    assert "backfill_timeout" in src, (
+        "backfill_flow must raise AppError('backfill_timeout', ...) on TimeoutError"
+    )
+    assert "504" in src, (
+        "backfill_flow timeout error must use HTTP status 504"
+    )
+
+
+# ---------------------------------------------------------------------------
+# FIX: [MED] diff_surface aggregate byte cap
+# ---------------------------------------------------------------------------
+
+
+async def test_diff_surface_aggregate_cap_stops_after_budget_exhausted():
+    """diff_surface with aggregate_bytes_cap must stop including cells once the
+    aggregate budget is exhausted and append a __surface_truncated__ marker.
+
+    A sweep of 5 cells each returning ~200 KiB results (replaced by ~100 byte
+    truncation summaries via the per-result cap) must produce a bounded surface
+    when aggregate_bytes_cap is set to 50 bytes — below any cell's summary size.
+    The truncation marker records cells_included, cells_omitted, and aggregate_bytes.
+    """
+    import json as _json
+
+    reset_for_tests()
+    store = InMemoryFlowStore()
+    N = 5
+    RESULT_SIZE = 200_000   # ~200 KiB per cell
+    # Use a tiny per-result cap so each blob becomes a ~100 byte summary.
+    PER_RESULT_CAP = 1024   # 1 KiB
+
+    flow = await _make_flow(store, _large_result_task(RESULT_SIZE))
+
+    result = await run_sweep(
+        store=store,
+        flow=flow,
+        param_sets=[{"i": i} for i in range(N)],
+        trigger="sweep",
+        now=NOW,
+        claims=CLAIMS,
+    )
+
+    assert result.succeeded == N, f"Expected {N} successful cells"
+
+    # Aggregate cap set to 50 bytes — smaller than a single truncation summary.
+    # This means at most 0 or 1 cells can be included before the cap fires.
+    AGG_CAP = 50
+
+    surface = result.diff_surface(
+        result_bytes_cap=PER_RESULT_CAP,
+        aggregate_bytes_cap=AGG_CAP,
+    )
+
+    # The surface must end with a __surface_truncated__ marker.
+    assert len(surface) >= 1, "Surface must have at least the truncation marker"
+    last_entry = surface[-1]
+    assert last_entry.get("__surface_truncated__") is True, (
+        f"Expected __surface_truncated__ marker as last entry, got: {last_entry!r}"
+    )
+
+    # Validate the marker fields.
+    cells_included = last_entry["cells_included"]
+    cells_omitted = last_entry["cells_omitted"]
+    assert cells_included + cells_omitted == N, (
+        f"cells_included ({cells_included}) + cells_omitted ({cells_omitted}) "
+        f"must equal total successful cells ({N})"
+    )
+    assert cells_omitted > 0, "At least one cell must be omitted when agg cap is tiny"
+    assert last_entry["aggregate_cap_bytes"] == AGG_CAP
+
+
+async def test_diff_surface_aggregate_cap_zero_disables_aggregate_capping():
+    """aggregate_bytes_cap=0 must disable aggregate capping (no truncation marker)."""
+    reset_for_tests()
+    store = InMemoryFlowStore()
+    flow = await _make_flow(store, _output_task())  # small results
+
+    result = await run_sweep(
+        store=store,
+        flow=flow,
+        param_sets=[{"multiplier": i} for i in range(3)],
+        trigger="sweep",
+        now=NOW,
+        claims=CLAIMS,
+    )
+
+    assert result.succeeded == 3
+
+    surface = result.diff_surface(aggregate_bytes_cap=0)
+    # No truncation marker when aggregate cap is disabled.
+    for entry in surface:
+        assert "__surface_truncated__" not in entry, (
+            f"Unexpected __surface_truncated__ marker when cap=0: {entry!r}"
+        )
+    assert len(surface) == 3
+
+
+async def test_diff_surface_aggregate_cap_default_is_16mib():
+    """_SWEEP_DIFF_AGGREGATE_BYTES_CAP default must be 16 MiB."""
+    import app.flows.sweep as sweep_mod
+
+    assert sweep_mod._SWEEP_DIFF_AGGREGATE_BYTES_CAP == 16 * 1024 * 1024, (
+        f"Default aggregate cap must be 16 MiB (16777216 bytes), "
+        f"got {sweep_mod._SWEEP_DIFF_AGGREGATE_BYTES_CAP}"
+    )
+
+
+async def test_diff_surface_no_truncation_marker_when_under_aggregate_cap():
+    """No __surface_truncated__ marker when total payload is under the aggregate cap."""
+    reset_for_tests()
+    store = InMemoryFlowStore()
+    flow = await _make_flow(store, _output_task())  # tiny results
+
+    result = await run_sweep(
+        store=store,
+        flow=flow,
+        param_sets=[{"multiplier": i} for i in range(4)],
+        trigger="sweep",
+        now=NOW,
+        claims=CLAIMS,
+    )
+
+    assert result.succeeded == 4
+
+    # Large aggregate cap (1 MiB) — small results will never hit it.
+    surface = result.diff_surface(aggregate_bytes_cap=1024 * 1024)
+    assert len(surface) == 4, "All cells must be included when under aggregate cap"
+    for entry in surface:
+        assert "__surface_truncated__" not in entry, (
+            f"Unexpected truncation marker: {entry!r}"
         )

@@ -61,8 +61,13 @@ Idempotency
 -----------
 The ``idempotency_key`` is a caller-supplied string (e.g. a UUID or a
 flow_run_id + task_key combination).  If a record with the same key already
-exists for the org, the existing record is returned without re-applying the
-write.  This means a network retry will never double-apply.
+exists for the org:
+
+* ``pending_approval`` or ``committed`` state → the existing record is
+  returned without re-applying the write (network retries never double-apply).
+* ``failed`` or ``rejected`` state → the prior outcome was non-committed
+  (rollback/rejection); the record is superseded and a fresh submission
+  proceeds.  A ``committed`` record is never superseded.
 
 Dry-run
 -------
@@ -136,6 +141,13 @@ _VALID_STATES = {
 #: Terminal states — once in these, no further transitions are allowed.
 _TERMINAL_STATES = {"committed", "rejected", "failed"}
 
+#: Terminal states that represent a rolled-back or non-committed outcome.
+#: A NEW logical attempt with the same idempotency_key is allowed to
+#: supersede a record in one of these states (rollback-then-retry path).
+#: "committed" is intentionally excluded — a successfully committed record
+#: must NEVER be superseded (double-commit protection).
+_SUPERSEDABLE_STATES = {"failed", "rejected"}
+
 
 def _check_transition(current: str, target: str) -> None:
     """Raise 409 if the transition from *current* to *target* is invalid."""
@@ -194,6 +206,33 @@ class WritebackStore:
         rows_override: list[dict[str, Any]] | None = None,
         approved_by: str | None = None,
     ) -> dict[str, Any] | None:
+        raise NotImplementedError
+
+    async def supersede(
+        self,
+        org_id: str,
+        old_wb_id: str,
+        idempotency_key: str,
+        rows: list[dict[str, Any]],
+        target: dict[str, Any],
+        mode: str,
+        created_by: str,
+        approval_required: bool,
+        meta: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """Replace a supersedable terminal record with a fresh one.
+
+        Called by :func:`submit_writeback` when the existing idempotency-keyed
+        record is in a rolled-back/failed terminal state (``_SUPERSEDABLE_STATES``)
+        and a new logical attempt should proceed.  Implementations MUST:
+
+        * Remove the old record's claim on the ``(org_id, idempotency_key)`` slot.
+        * Create a fresh ``pending_approval`` record with the same key.
+
+        The old record itself may be soft-deleted or kept for audit purposes
+        (implementation-specific); the important invariant is that a subsequent
+        ``get_by_idempotency_key`` returns the NEW record.
+        """
         raise NotImplementedError
 
     async def list(
@@ -296,6 +335,34 @@ class InMemoryWritebackStore(WritebackStore):
         if approved_by is not None:
             record["approved_by"] = approved_by
         return deepcopy(record)
+
+    async def supersede(
+        self,
+        org_id: str,
+        old_wb_id: str,
+        idempotency_key: str,
+        rows: list[dict[str, Any]],
+        target: dict[str, Any],
+        mode: str,
+        created_by: str,
+        approval_required: bool,
+        meta: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        # Remove the old record's claim on the idem index so the new create
+        # can reclaim the same (org_id, idempotency_key) slot.
+        idem_key = (org_id, idempotency_key)
+        self._idem_index.pop(idem_key, None)
+        # Old record stays in _records for audit; its idem slot is vacated.
+        return await self.create(
+            org_id=org_id,
+            idempotency_key=idempotency_key,
+            rows=rows,
+            target=target,
+            mode=mode,
+            created_by=created_by,
+            approval_required=approval_required,
+            meta=meta,
+        )
 
     async def list(
         self, org_id: str, limit: int = 50
@@ -471,6 +538,42 @@ class PgWritebackStore(WritebackStore):
         )
         return _row_to_record(row) if row is not None else None
 
+    async def supersede(
+        self,
+        org_id: str,
+        old_wb_id: str,
+        idempotency_key: str,
+        rows: list[dict[str, Any]],
+        target: dict[str, Any],
+        mode: str,
+        created_by: str,
+        approval_required: bool,
+        meta: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        from app.db import execute as db_execute  # noqa: PLC0415
+        from app.db import fetchrow as db_fetchrow  # noqa: PLC0415
+
+        # Delete the superseded row to release the unique (org_id, idempotency_key)
+        # slot, then insert a fresh record.  The old row is gone from the DB but
+        # callers that held its wb_id will simply get a 404 on subsequent lookups —
+        # acceptable for the rollback-then-retry path.
+        await db_execute(
+            "DELETE FROM writeback_requests WHERE id = $1::uuid AND org_id = $2::uuid",
+            old_wb_id,
+            org_id,
+        )
+        # Now create the fresh record via the normal INSERT path.
+        return await self.create(
+            org_id=org_id,
+            idempotency_key=idempotency_key,
+            rows=rows,
+            target=target,
+            mode=mode,
+            created_by=created_by,
+            approval_required=approval_required,
+            meta=meta,
+        )
+
     async def list(
         self, org_id: str, limit: int = 50
     ) -> list[dict[str, Any]]:
@@ -566,11 +669,17 @@ async def submit_writeback(
     store: WritebackStore,
     meta: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """Idempotent write-back submit.
+    """Idempotent write-back submit with rollback-safe retry support.
 
     1. Check for an existing record with the same ``(org_id, idempotency_key)``.
-       If found, return it immediately (idempotent — no re-apply).
-    2. Create a new record.
+
+       a. If the existing record is ``pending_approval`` or ``committed``
+          → return it immediately (idempotent — no re-apply, no double-commit).
+       b. If the existing record is in a supersedable terminal state
+          (``failed`` or ``rejected``) → the previous attempt was rolled back or
+          rejected; supersede it and proceed with a fresh submission.
+
+    2. Create (or supersede) a record.
     3. If ``approval_required=True`` → state is ``'pending_approval'``.
        The actual write is deferred to ``approve_writeback``.
     4. If ``approval_required=False`` → execute the write immediately
@@ -613,19 +722,38 @@ async def submit_writeback(
     # ── Idempotency check ─────────────────────────────────────────────────────
     existing = await store.get_by_idempotency_key(org_id, idempotency_key)
     if existing is not None:
-        return existing
-
-    # ── Create the record (pending or auto-commit) ────────────────────────────
-    record = await store.create(
-        org_id=org_id,
-        idempotency_key=idempotency_key,
-        rows=rows,
-        target=target,
-        mode=mode,
-        created_by=created_by,
-        approval_required=approval_required,
-        meta=meta,
-    )
+        existing_state = existing["state"]
+        if existing_state not in _SUPERSEDABLE_STATES:
+            # In-flight (pending_approval) or successfully committed: return
+            # the existing record — no re-apply, no double-commit.
+            return existing
+        # Existing record is in a rolled-back/failed terminal state.
+        # A new logical attempt is allowed to supersede it so the retry
+        # can proceed safely.  "committed" is NOT supersedable — that path
+        # is handled above and guards against double-commit.
+        record = await store.supersede(
+            org_id=org_id,
+            old_wb_id=existing["id"],
+            idempotency_key=idempotency_key,
+            rows=rows,
+            target=target,
+            mode=mode,
+            created_by=created_by,
+            approval_required=approval_required,
+            meta=meta,
+        )
+    else:
+        # ── Create the record (pending or auto-commit) ────────────────────────────
+        record = await store.create(
+            org_id=org_id,
+            idempotency_key=idempotency_key,
+            rows=rows,
+            target=target,
+            mode=mode,
+            created_by=created_by,
+            approval_required=approval_required,
+            meta=meta,
+        )
 
     if approval_required:
         # Gated — stays in pending_approval.  Return record as-is.

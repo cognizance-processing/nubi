@@ -40,6 +40,10 @@ Design (in-memory backend)
   ``_misses`` on a miss (including expiry).  ``stats()`` exposes these.
 - A tag→keys index (``dict[str, set[str]]``) is maintained on put / evict /
   expire so ``invalidate(tag)`` is O(members of that tag).
+- A key→tags reverse index (``dict[str, tuple[str, ...]]``) is maintained in
+  parallel so LRU eviction via ``popitem`` can look up a key's tags in O(1)
+  instead of scanning the full tag index.  This reduces ``_purge_key_from_tags``
+  from O(all-tags) to O(tags-for-key).
 - Thread-safe via a simple ``threading.Lock``.
 
 Redis tag-set growth prevention
@@ -157,6 +161,10 @@ class ContentAddressedCache:
         # tag → set of keys carrying that tag.  Maintained on put / evict /
         # expire so invalidate(tag) is O(members).
         self._tag_index: dict[str, set[str]] = {}
+        # key → tuple of tags (reverse index).  Maintained in parallel with
+        # _tag_index so that LRU eviction via popitem() can look up a key's
+        # tags in O(1) instead of scanning the full tag index.
+        self._key_tags: dict[str, tuple[str, ...]] = {}
         self._lock = threading.Lock()
         # Hit/miss counters (protected by _lock).
         self._hits: int = 0
@@ -166,13 +174,22 @@ class ContentAddressedCache:
     # Internal helpers (caller must hold _lock)
     # ------------------------------------------------------------------
 
-    def _index_tags(self, key: str, tags: Iterable[str]) -> None:
-        """Register *key* under each tag in *tags* (caller holds _lock)."""
+    def _index_tags(self, key: str, tags: tuple[str, ...]) -> None:
+        """Register *key* under each tag in *tags* (caller holds _lock).
+
+        Also updates the reverse index (``_key_tags``) so that LRU eviction can
+        look up a key's tags in O(1) without scanning ``_tag_index``.
+        """
+        self._key_tags[key] = tags
         for tag in tags:
             self._tag_index.setdefault(tag, set()).add(key)
 
     def _deindex_key(self, key: str, tags: Iterable[str]) -> None:
-        """Remove *key* from each of *tags*' member sets (caller holds _lock)."""
+        """Remove *key* from each of *tags*' member sets (caller holds _lock).
+
+        Also removes the key from the reverse index (``_key_tags``).
+        """
+        self._key_tags.pop(key, None)
         for tag in tags:
             members = self._tag_index.get(tag)
             if members is None:
@@ -271,11 +288,10 @@ class ContentAddressedCache:
             else:
                 if len(self._store) >= self._max_entries:
                     # Evict the least-recently-used entry (left end) and its
-                    # tag associations.
+                    # tag associations.  We peek at the LRU key BEFORE popping
+                    # so we can look up its tags from the reverse index in O(1)
+                    # via _purge_key_from_tags — avoiding a full tag-index scan.
                     lru_key, _ = self._store.popitem(last=False)
-                    # popitem already removed it from _store; clean tag index.
-                    # (We can't read the popped entry's tags after popitem, so
-                    # re-pop via a peek-free path: reconstruct via _tag_index.)
                     self._purge_key_from_tags(lru_key)
                 self._store[key] = entry
             self._index_tags(key, normalized_tags)
@@ -283,16 +299,19 @@ class ContentAddressedCache:
     def _purge_key_from_tags(self, key: str) -> None:
         """Remove *key* from every tag member set (caller holds _lock).
 
-        Used after an LRU ``popitem`` where the evicted entry's tags are no
-        longer readable; we scan the (small) tag index instead.
+        Used after an LRU ``popitem`` where the evicted entry has already been
+        removed from ``_store``.  Uses the reverse index ``_key_tags`` to look
+        up only the tags this key carries — O(tags-for-key) instead of the
+        previous O(all-tags) full scan.
         """
-        empty: list[str] = []
-        for tag, members in self._tag_index.items():
+        tags = self._key_tags.pop(key, ())
+        for tag in tags:
+            members = self._tag_index.get(tag)
+            if members is None:
+                continue
             members.discard(key)
             if not members:
-                empty.append(tag)
-        for tag in empty:
-            self._tag_index.pop(tag, None)
+                self._tag_index.pop(tag, None)
 
     def invalidate(self, tag: str) -> int:
         """Evict every entry carrying *tag*.  Return the number evicted.
@@ -309,6 +328,8 @@ class ContentAddressedCache:
                 if entry is None:
                     continue
                 count += 1
+                # Remove this key from the reverse index.
+                self._key_tags.pop(key, None)
                 # Remove this key from any OTHER tags it also carried.
                 for other in entry.tags:
                     if other == tag:
@@ -326,6 +347,7 @@ class ContentAddressedCache:
             count = len(self._store)
             self._store.clear()
             self._tag_index.clear()
+            self._key_tags.clear()
             return count
 
     def size(self) -> int:
@@ -338,6 +360,7 @@ class ContentAddressedCache:
         with self._lock:
             self._store.clear()
             self._tag_index.clear()
+            self._key_tags.clear()
             self._hits = 0
             self._misses = 0
 

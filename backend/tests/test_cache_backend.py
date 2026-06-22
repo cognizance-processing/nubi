@@ -145,6 +145,96 @@ def test_lru_eviction_keeps_tag_index_consistent():
     assert cache.invalidate("t") == 2
 
 
+def test_purge_key_from_tags_uses_reverse_index_not_full_scan():
+    """_purge_key_from_tags must use the O(tags-for-key) reverse index path.
+
+    Regression guard for the LOW fix: previously _purge_key_from_tags iterated
+    the FULL _tag_index to find and remove a single key, causing O(all-tags)
+    latency under a large tag set.  The fix maintains a _key_tags reverse index
+    (key → tags) so purge is O(tags-for-key).
+
+    This test verifies:
+    1. After LRU eviction the evicted key is absent from _tag_index but all
+       other keys' entries are intact (no lost invalidations).
+    2. The reverse index (_key_tags) does NOT retain the evicted key.
+    3. A large number of unrelated tags in the index does NOT cause _tag_index
+       to be scanned for a single-key eviction (structural correctness: only the
+       evicted key's specific tags are touched).
+    """
+    # Build a cache with 1 slot so every put beyond the first triggers LRU eviction.
+    cache = ContentAddressedCache(max_entries=1)
+
+    # Populate a large number of distinct tags for other (future) keys so that
+    # a full-scan implementation would iterate all of them unnecessarily.
+    # We seed the _tag_index directly to simulate many tags without actually
+    # putting entries (which would themselves be evicted).
+    many_unrelated_tags: list[str] = [f"org:{i}" for i in range(500)]
+
+    # Put the first entry with its own tag.
+    cache.put("evict_me", b"val_a", tags=["evict_tag"])
+
+    # Directly inject many unrelated tag entries into the index to simulate a
+    # large tag index — these tags carry no keys but inflate the index.
+    with cache._lock:  # noqa: SLF001
+        for t in many_unrelated_tags:
+            cache._tag_index[t] = {f"phantom:{t}"}  # noqa: SLF001
+
+    # Confirm the evictable key is currently tracked in the reverse index.
+    assert "evict_me" in cache._key_tags  # noqa: SLF001
+
+    # This put triggers LRU eviction of "evict_me".
+    cache.put("survivor", b"val_b", tags=["survivor_tag"])
+
+    # The evicted key must be gone from _store and both indexes.
+    assert cache.get("evict_me") is None
+    assert "evict_me" not in cache._key_tags  # noqa: SLF001
+    assert "evict_me" not in cache._tag_index.get("evict_tag", set())  # noqa: SLF001
+    # The evict_tag set itself must be cleaned up (it's now empty).
+    assert "evict_tag" not in cache._tag_index  # noqa: SLF001
+
+    # The 500 unrelated tags must be UNTOUCHED — a full scan would not have
+    # modified their sets, but we confirm no corruption happened.
+    assert len([t for t in many_unrelated_tags if t in cache._tag_index]) == 500  # noqa: SLF001
+
+    # The survivor key must be retrievable and in the reverse index.
+    assert cache.get("survivor") == b"val_b"
+    assert cache._key_tags.get("survivor") == ("survivor_tag",)  # noqa: SLF001
+
+
+def test_purge_correctness_multi_tag_key_eviction():
+    """LRU eviction of a key with multiple tags cleans ALL its tag associations.
+
+    A key carrying N tags must be removed from all N tag sets — not just the
+    first one.  After eviction, invalidating any of those tags must not return
+    the evicted key (it's gone), and the tag sets must not retain stale members.
+    """
+    cache = ContentAddressedCache(max_entries=2)
+
+    # "multi" carries 3 tags and will be the LRU candidate.
+    cache.put("multi", b"M", tags=["tag_x", "tag_y", "tag_z"])
+    cache.put("second", b"S", tags=["tag_x"])
+
+    # "third" evicts "multi" (LRU at this point).
+    cache.put("third", b"T", tags=["tag_z"])
+
+    # "multi" must be gone from ALL tag sets.
+    assert "multi" not in cache._tag_index.get("tag_x", set())  # noqa: SLF001
+    assert "multi" not in cache._tag_index.get("tag_y", set())  # noqa: SLF001
+    assert "multi" not in cache._tag_index.get("tag_z", set())  # noqa: SLF001
+
+    # tag_y had only "multi" — it should be fully cleaned up.
+    assert "tag_y" not in cache._tag_index  # noqa: SLF001
+
+    # "multi" must be absent from the reverse index too.
+    assert "multi" not in cache._key_tags  # noqa: SLF001
+
+    # invalidate(tag_x) evicts "second" only (1 key).
+    assert cache.invalidate("tag_x") == 1
+    # invalidate(tag_z) evicts "third" only (1 key).
+    assert cache.invalidate("tag_z") == 1
+    assert cache.size() == 0
+
+
 # ===========================================================================
 # Redis backend — exercised against an in-process fake (no server)
 # ===========================================================================

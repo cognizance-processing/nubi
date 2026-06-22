@@ -55,6 +55,17 @@ import pyarrow as pa
 _DEFAULT_ROW_CAP = 100_000
 _ROW_CAP: int = int(os.environ.get("NUBI_COLLECT_ROW_CAP", _DEFAULT_ROW_CAP))
 
+# [MED resource] Cap: max task_runs loaded from the store per flow run.
+# A map fan-out run may spawn thousands of child task_runs; loading them all
+# into RAM on every provider HTTP request is unbounded.  We fetch at most
+# _MAX_TASK_RUNS+1 records: if we get more than _MAX_TASK_RUNS back we log a
+# warning (the +1 lets us detect truncation without an extra COUNT query).
+# Override via env var NUBI_MAX_TASK_RUNS_CEILING.
+_DEFAULT_MAX_TASK_RUNS = 10_000
+_MAX_TASK_RUNS: int = int(
+    os.environ.get("NUBI_MAX_TASK_RUNS_CEILING", _DEFAULT_MAX_TASK_RUNS)
+)
+
 # [MED resource] Cap: max number of result tables per provider response.
 # A provider returning huge numbers of named result sets would produce an
 # unbounded Arrow IPC payload cached in memory.  Override via env var.
@@ -366,7 +377,19 @@ async def _resolve_flow_provider(
         )
 
     # ── Collect named results from task_runs ──────────────────────────────────
-    task_runs = await store.list_task_runs(flow_run["id"])
+    _fetch_limit = _MAX_TASK_RUNS + 1
+    task_runs = await store.list_task_runs(flow_run["id"], limit=_fetch_limit)
+    if len(task_runs) > _MAX_TASK_RUNS:
+        logger.warning(
+            "flow provider %r run %r: task_run count exceeds ceiling %d — "
+            "truncating to %d (set NUBI_MAX_TASK_RUNS_CEILING to raise limit). "
+            "Some task_run results may be silently omitted.",
+            provider.id,
+            flow_run["id"],
+            _MAX_TASK_RUNS,
+            _MAX_TASK_RUNS,
+        )
+        task_runs = task_runs[:_MAX_TASK_RUNS]
     result_names = {r.name for r in provider.results}
     tables: dict[str, pa.Table] = {}
 
@@ -620,7 +643,19 @@ async def _resolve_materialized_flow_provider(
     run_id = str(latest_success["id"])
 
     # ── 3. Read task_run results from the successful run. ────────────────────
-    task_runs = await store.list_task_runs(run_id)
+    _fetch_limit = _MAX_TASK_RUNS + 1
+    task_runs = await store.list_task_runs(run_id, limit=_fetch_limit)
+    if len(task_runs) > _MAX_TASK_RUNS:
+        logger.warning(
+            "materialized flow provider %r run %r: task_run count exceeds ceiling %d — "
+            "truncating to %d (set NUBI_MAX_TASK_RUNS_CEILING to raise limit). "
+            "Some task_run results may be silently omitted.",
+            provider.id,
+            run_id,
+            _MAX_TASK_RUNS,
+            _MAX_TASK_RUNS,
+        )
+        task_runs = task_runs[:_MAX_TASK_RUNS]
     result_names = {r.name for r in provider.results}
     tables: dict[str, pa.Table] = {}
 

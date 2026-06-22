@@ -56,7 +56,7 @@ import pyarrow as pa
 
 from app.connectors.base import Connector
 from app.connectors.plan import PhysicalPlan
-from app.connectors.ssrf import guard_url
+from app.connectors.ssrf import PinnedTarget, resolve_and_pin
 from app.connectors.sdk import (
     apply_limit_postfetch,
     apply_projection_postfetch,
@@ -156,13 +156,24 @@ class HttpJsonConnector(Connector):
         # unit-test imports that monkeypatch httpx).
         import httpx  # noqa: PLC0415
 
-        # SSRF guard: reject the fetch if the target host resolves to an
-        # internal/loopback/link-local/metadata address before any outbound
-        # request is made.  Raises AppError("ssrf_blocked", 400) on a block.
-        guard_url(self._url)
+        # SSRF guard (TOCTOU-safe): resolve the host EXACTLY ONCE, validate
+        # every resolved address against the forbidden-IP policy, and PIN the
+        # connection to a checked IP literal.  ``resolve_and_pin`` raises
+        # AppError("ssrf_blocked", 400) if the scheme is wrong, the host does
+        # not resolve, or any resolved address is internal / loopback /
+        # link-local / cloud-metadata.
+        #
+        # Pinning closes the DNS-rebinding window: ``guard_url`` alone only
+        # validated at check time, but ``httpx`` re-resolves the hostname at
+        # connect time — so an attacker domain with TTL=0 could pass the guard
+        # then rebind to 169.254.169.254 / RFC1918 / loopback before the socket
+        # opened.  By connecting to the already-validated IP (while preserving
+        # the original Host header and TLS SNI/cert verification), no second
+        # resolution exists for an attacker to rebind.
+        pinned = resolve_and_pin(self._url)
 
         try:
-            response = httpx.get(self._url, headers=self._headers)
+            response = _fetch_pinned(httpx, "GET", pinned, self._headers)
             response.raise_for_status()
             body = response.json()
         except (httpx.RequestError, httpx.HTTPStatusError) as exc:
@@ -209,6 +220,71 @@ class HttpJsonConnector(Connector):
 # ---------------------------------------------------------------------------
 # Internal helpers
 # ---------------------------------------------------------------------------
+
+
+def _pinned_url(pinned: PinnedTarget) -> str:
+    """Rewrite ``pinned.url``'s host to the validated IP literal it pins to.
+
+    The path, query, fragment, scheme and port are preserved; only the host is
+    swapped for the checked IP so the HTTP client connects there directly
+    instead of re-resolving the hostname (the DNS-rebinding defence). IPv6
+    literals are wrapped in brackets as required by the URL grammar.
+    """
+    from urllib.parse import urlsplit, urlunsplit  # noqa: PLC0415
+
+    parts = urlsplit(pinned.url)
+    ip = pinned.ip
+    host_literal = f"[{ip}]" if ":" in ip else ip
+    netloc = f"{host_literal}:{pinned.port}"
+    return urlunsplit((parts.scheme, netloc, parts.path, parts.query, parts.fragment))
+
+
+def _fetch_pinned(
+    httpx: Any,
+    method: str,
+    pinned: PinnedTarget,
+    headers: dict[str, str],
+) -> Any:
+    """Issue an HTTP request to a pinned, SSRF-validated target.
+
+    Connects to the already-validated IP literal (``pinned.ip``) rather than the
+    hostname, so the host cannot be DNS-rebound between the SSRF check and the
+    socket connect. The original hostname is preserved for:
+
+    * the ``Host`` request header — so virtual-hosted servers route correctly;
+    * TLS SNI **and** certificate verification (via httpx's ``sni_hostname``
+      request extension) — so HTTPS still validates against the hostname the
+      user configured, not the bare IP.
+
+    Applies to ANY HTTP method (GET/POST/...) so every request the connector
+    makes is pinned the same way.
+    """
+    target_url = _pinned_url(pinned)
+
+    # Preserve caller headers, then force the Host header to the original
+    # hostname (include the non-default port per RFC 7230). Use a case-aware
+    # merge so a caller-supplied Host (any casing) does not duplicate ours.
+    request_headers: dict[str, str] = {
+        k: v for k, v in headers.items() if k.lower() != "host"
+    }
+    scheme = pinned.url.split(":", 1)[0].lower()
+    default_port = 443 if scheme == "https" else 80
+    host_header = (
+        pinned.host if pinned.port == default_port else f"{pinned.host}:{pinned.port}"
+    )
+    request_headers["Host"] = host_header
+
+    # ``sni_hostname`` drives both the TLS SNI and the certificate hostname that
+    # httpx/httpcore verify against, so the cert must match the ORIGINAL host
+    # even though we connect to an IP literal.
+    extensions = {"sni_hostname": pinned.host}
+
+    return httpx.request(
+        method,
+        target_url,
+        headers=request_headers,
+        extensions=extensions,
+    )
 
 
 def _navigate_record_path(

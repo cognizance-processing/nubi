@@ -31,6 +31,7 @@ Test strategy
 
 from __future__ import annotations
 
+import socket
 import uuid
 from io import BytesIO
 from unittest.mock import MagicMock, patch
@@ -209,17 +210,25 @@ async def test_http_json_datastore_returns_mocked_rows(conn_client):
         org_id=org_id,
         created_by=user_id,
         name="API source",
-        config={"type": "http_json", "url": "http://x/api/data"},
+        config={"type": "http_json", "url": "http://api.example.com/api/data"},
     )
     ds_id = ds["id"]
 
-    # Monkeypatch httpx.get (httpx is lazily imported inside execute(); patch at the
-    # httpx module level so the lazy import picks up the patched version).
+    # Monkeypatch the request boundary. The connector now resolves the host once
+    # and pins the connection to the validated IP (DNS-rebinding defence), then
+    # issues the request via httpx.request — so we mock the resolver to a public
+    # IP and patch httpx.request (httpx is lazily imported inside execute(); patch
+    # at the httpx module level so the lazy import picks up the patched version).
     mock_response = MagicMock()
     mock_response.raise_for_status = MagicMock()
     mock_response.json.return_value = mocked_rows
 
-    with patch("httpx.get", return_value=mock_response):
+    def _fake_getaddrinfo(host, *args, **kwargs):  # noqa: ANN001, ANN002, ANN003
+        return [(socket.AF_INET, socket.SOCK_STREAM, socket.IPPROTO_TCP, "", ("93.184.216.34", 0))]
+
+    with patch.object(socket, "getaddrinfo", _fake_getaddrinfo), patch(
+        "httpx.request", return_value=mock_response
+    ):
         resp = await client.post(
             "/api/v1/query",
             # First-party tokens can use raw SQL.

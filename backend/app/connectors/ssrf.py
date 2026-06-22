@@ -151,6 +151,22 @@ def guard_url(url: str) -> None:
         the URL has no host, or any resolved address is a forbidden target
         (loopback, link-local, unique-local, RFC1918 private, ``0.0.0.0``, or a
         cloud-metadata IP).
+
+    Notes
+    -----
+    This performs validation only.  Because DNS is re-resolved by the HTTP
+    client at request time, ``guard_url`` alone is vulnerable to a TOCTOU /
+    DNS-rebinding race (the host can pass the check then rebind to an internal
+    address before the socket connects).  For the actual outbound fetch, use
+    :func:`resolve_and_pin` instead, which closes that window by resolving the
+    host **once**, validating every address, and pinning the connection to a
+    checked IP literal.  ``guard_url`` remains useful for cheap create-time /
+    pre-flight validation where no request follows immediately.
+
+    Unlike :func:`resolve_and_pin`, ``guard_url`` **fails open** on an
+    unresolvable host: a host that cannot be resolved is not an SSRF target (the
+    downstream request will simply fail), so the caller can surface the real DNS
+    error rather than a spurious block.
     """
     parts = urlsplit(url)
     scheme = parts.scheme.lower()
@@ -181,6 +197,119 @@ def guard_url(url: str) -> None:
                 "targets are not permitted.",
                 status=400,
             )
+
+
+class PinnedTarget:
+    """A validated outbound target whose connection IP has been pinned.
+
+    Carries everything an HTTP client needs to issue a request that cannot be
+    DNS-rebound after the SSRF check:
+
+    * ``url`` — the original, unmodified URL (host = original hostname). Used for
+      TLS certificate verification / SNI so the cert still validates against the
+      hostname the user configured.
+    * ``ip`` — a string IP literal that was resolved from the host and passed
+      the forbidden-address policy. The HTTP client must connect to *this*
+      address rather than re-resolving the hostname.
+    * ``host`` — the original hostname (for the ``Host`` request header / SNI).
+    * ``port`` — the effective TCP port (explicit, or scheme default).
+    """
+
+    __slots__ = ("url", "ip", "host", "port")
+
+    def __init__(self, url: str, ip: str, host: str, port: int) -> None:
+        self.url = url
+        self.ip = ip
+        self.host = host
+        self.port = port
+
+
+def resolve_and_pin(url: str) -> PinnedTarget:
+    """Resolve *url* once, validate every address, and return a pinned target.
+
+    This is the TOCTOU-safe entry point for outbound connector fetches. It
+    resolves the hostname a **single** time, rejects the request if *any*
+    resolved address is a forbidden SSRF target (defeating DNS rebinding where a
+    public A-record masks a private one), and returns a :class:`PinnedTarget`
+    whose ``ip`` the caller must connect to directly. Because the caller pins
+    the connection to this checked IP — rather than letting the HTTP client
+    re-resolve the hostname at socket-connect time — an attacker domain with a
+    zero-TTL record cannot rebind to ``169.254.169.254`` / RFC1918 / loopback
+    between the check and the request.
+
+    Parameters
+    ----------
+    url:
+        The user-supplied URL about to be fetched on the server.
+
+    Returns
+    -------
+    PinnedTarget
+        The validated, pinned connection target.
+
+    Raises
+    ------
+    app.errors.AppError
+        ``code="ssrf_blocked"`` (400) if the scheme is not ``http``/``https``,
+        the URL has no host, the host does not resolve to any address, or any
+        resolved address is a forbidden target (loopback, link-local,
+        unique-local, RFC1918 private, ``0.0.0.0``, or a cloud-metadata IP).
+    """
+    parts = urlsplit(url)
+    scheme = parts.scheme.lower()
+
+    if scheme not in ("http", "https"):
+        raise AppError(
+            "ssrf_blocked",
+            f"URL scheme {scheme or '(none)'!r} is not allowed; only http(s) URLs may be fetched.",
+            status=400,
+        )
+
+    host = parts.hostname
+    if not host:
+        raise AppError(
+            "ssrf_blocked",
+            "URL has no host component and cannot be fetched.",
+            status=400,
+        )
+
+    allow_private = _allow_private()
+
+    # Resolve the host EXACTLY ONCE. Every subsequent decision (validation and
+    # the pinned connection) is made against this same resolution, so there is
+    # no second lookup that an attacker could rebind.
+    addrs = _resolve_addresses(host)
+
+    safe_ip: str | None = None
+    for ip in addrs:
+        if _is_forbidden(ip, allow_private=allow_private):
+            raise AppError(
+                "ssrf_blocked",
+                f"Refusing to fetch {host!r}: it resolves to a blocked address "
+                f"({ip}). Internal, loopback, link-local, and cloud-metadata "
+                "targets are not permitted.",
+                status=400,
+            )
+        if safe_ip is None:
+            # Pin the first validated address. Prefer the original-form literal
+            # (the mapped IPv4 form is only used for classification, never for
+            # the actual connection).
+            safe_ip = str(ip)
+
+    if safe_ip is None:
+        # No address resolved. Unlike guard_url's historical fail-open, a fetch
+        # we are about to pin MUST have a concrete, checked IP to connect to —
+        # there is nothing safe to pin, so refuse.
+        raise AppError(
+            "ssrf_blocked",
+            f"Refusing to fetch {host!r}: the host does not resolve to any "
+            "address, so no safe connection target could be pinned.",
+            status=400,
+        )
+
+    port = parts.port if parts.port is not None else (443 if scheme == "https" else 80)
+
+    return PinnedTarget(url=url, ip=safe_ip, host=host, port=port)
 
 
 def guard_s3_endpoint(endpoint: str) -> None:

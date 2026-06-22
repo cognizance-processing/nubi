@@ -15,6 +15,8 @@ Coverage
 from __future__ import annotations
 
 import json
+import socket
+from contextlib import contextmanager
 from typing import Any
 from unittest.mock import MagicMock, patch
 
@@ -25,6 +27,42 @@ from app.connectors.http_json import HttpJsonConnector, _records_to_arrow, _navi
 from app.connectors.plan import PhysicalPlan
 from app.connectors.registry import get_connector_registry
 from app.errors import AppError
+
+
+# A public IP every test host "resolves" to, so the TOCTOU-safe pinning
+# resolver (resolve_and_pin) sees a safe address and never blocks the mocked
+# fetches below.  No real DNS or network call is made anywhere in this module.
+_PUBLIC_IP = "93.184.216.34"  # example.com
+
+
+def _fake_getaddrinfo(*ips: str):
+    """Return a fake socket.getaddrinfo resolving any host to *ips*."""
+
+    def _fake(host, *args, **kwargs):  # noqa: ANN001, ANN002, ANN003
+        infos = []
+        for ip in ips:
+            if ":" in ip:
+                family, sockaddr = socket.AF_INET6, (ip, 0, 0, 0)
+            else:
+                family, sockaddr = socket.AF_INET, (ip, 0)
+            infos.append((family, socket.SOCK_STREAM, socket.IPPROTO_TCP, "", sockaddr))
+        return infos
+
+    return _fake
+
+
+@contextmanager
+def _patched_fetch(response, *, resolves_to: tuple[str, ...] = (_PUBLIC_IP,)):
+    """Patch the resolver to a safe public IP and httpx.request -> *response*.
+
+    The connector now pins the connection to a validated IP (DNS-rebinding
+    defence) and issues the request via ``httpx.request``; tests must mock both
+    the resolution and the request boundary.  Yields the request mock so callers
+    can assert on how the request was issued.
+    """
+    with patch.object(socket, "getaddrinfo", _fake_getaddrinfo(*resolves_to)):
+        with patch("httpx.request", return_value=response) as mock_request:
+            yield mock_request
 
 
 # ---------------------------------------------------------------------------
@@ -113,7 +151,7 @@ class TestHttpJsonConnectorRls:
         conn = HttpJsonConnector({"url": "http://api.example.com/records"})
         plan = _make_plan(rls_claims={"policies": {"tenant_id": "acme"}})
 
-        with patch("httpx.get", return_value=_fake_httpx_get(_TWO_TENANT_RECORDS)):
+        with _patched_fetch(_fake_httpx_get(_TWO_TENANT_RECORDS)):
             result = conn.execute(plan)
 
         assert result.num_rows == 2, "Only acme rows should survive post-fetch RLS"
@@ -126,7 +164,7 @@ class TestHttpJsonConnectorRls:
         conn = HttpJsonConnector({"url": "http://api.example.com/records"})
         plan = _make_plan(rls_claims={"policies": {"tenant_id": "globex"}})
 
-        with patch("httpx.get", return_value=_fake_httpx_get(_TWO_TENANT_RECORDS)):
+        with _patched_fetch(_fake_httpx_get(_TWO_TENANT_RECORDS)):
             result = conn.execute(plan)
 
         assert result.num_rows == 1
@@ -137,7 +175,7 @@ class TestHttpJsonConnectorRls:
         conn = HttpJsonConnector({"url": "http://api.example.com/records"})
         plan = _make_plan(rls_claims={})
 
-        with patch("httpx.get", return_value=_fake_httpx_get(_TWO_TENANT_RECORDS)):
+        with _patched_fetch(_fake_httpx_get(_TWO_TENANT_RECORDS)):
             result = conn.execute(plan)
 
         assert result.num_rows == 3
@@ -155,7 +193,7 @@ class TestHttpJsonConnectorRls:
         conn = HttpJsonConnector({"url": "http://api.example.com/records"})
         plan = _make_plan(rls_claims={"policies": {"tenant_id": "acme"}})
 
-        with patch("httpx.get", return_value=_fake_httpx_get(records_without_tenant)):
+        with _patched_fetch(_fake_httpx_get(records_without_tenant)):
             with pytest.raises(AppError) as exc_info:
                 conn.execute(plan)
 
@@ -178,7 +216,7 @@ class TestHttpJsonConnectorProjection:
             projection=["id", "tenant_id"],
         )
 
-        with patch("httpx.get", return_value=_fake_httpx_get(_TWO_TENANT_RECORDS)):
+        with _patched_fetch(_fake_httpx_get(_TWO_TENANT_RECORDS)):
             result = conn.execute(plan)
 
         assert result.schema.names == ["id", "tenant_id"]
@@ -189,7 +227,7 @@ class TestHttpJsonConnectorProjection:
         conn = HttpJsonConnector({"url": "http://api.example.com/records"})
         plan = _make_plan(projection=None)
 
-        with patch("httpx.get", return_value=_fake_httpx_get(_TWO_TENANT_RECORDS)):
+        with _patched_fetch(_fake_httpx_get(_TWO_TENANT_RECORDS)):
             result = conn.execute(plan)
 
         assert set(result.schema.names) == {"id", "tenant_id", "value"}
@@ -199,7 +237,7 @@ class TestHttpJsonConnectorProjection:
         conn = HttpJsonConnector({"url": "http://api.example.com/records"})
         plan = _make_plan(projection=["id", "nonexistent_col"])
 
-        with patch("httpx.get", return_value=_fake_httpx_get(_TWO_TENANT_RECORDS)):
+        with _patched_fetch(_fake_httpx_get(_TWO_TENANT_RECORDS)):
             result = conn.execute(plan)
 
         assert result.schema.names == ["id"]
@@ -218,9 +256,10 @@ class TestHttpJsonConnectorFetchError:
         conn = HttpJsonConnector({"url": "http://api.example.com/records"})
         plan = _make_plan()
 
-        with patch("httpx.get", side_effect=httpx.RequestError("Connection refused")):
-            with pytest.raises(AppError) as exc_info:
-                conn.execute(plan)
+        with patch.object(socket, "getaddrinfo", _fake_getaddrinfo(_PUBLIC_IP)):
+            with patch("httpx.request", side_effect=httpx.RequestError("Connection refused")):
+                with pytest.raises(AppError) as exc_info:
+                    conn.execute(plan)
 
         err = exc_info.value
         assert err.code == "source_fetch_error"
@@ -231,7 +270,7 @@ class TestHttpJsonConnectorFetchError:
         conn = HttpJsonConnector({"url": "http://api.example.com/records"})
         plan = _make_plan()
 
-        with patch("httpx.get", return_value=_fake_httpx_get({}, status_code=500)):
+        with _patched_fetch(_fake_httpx_get({}, status_code=500)):
             with pytest.raises(AppError) as exc_info:
                 conn.execute(plan)
 
@@ -261,7 +300,7 @@ class TestHttpJsonConnectorRecordPath:
         })
         plan = _make_plan(rls_claims={"policies": {"tenant_id": "acme"}})
 
-        with patch("httpx.get", return_value=_fake_httpx_get(nested_body)):
+        with _patched_fetch(_fake_httpx_get(nested_body)):
             result = conn.execute(plan)
 
         # Should have navigated to data.items and applied RLS
@@ -277,7 +316,7 @@ class TestHttpJsonConnectorRecordPath:
         })
         plan = _make_plan()
 
-        with patch("httpx.get", return_value=_fake_httpx_get(body)):
+        with _patched_fetch(_fake_httpx_get(body)):
             result = conn.execute(plan)
 
         assert result.num_rows == 3
@@ -291,7 +330,7 @@ class TestHttpJsonConnectorRecordPath:
         })
         plan = _make_plan()
 
-        with patch("httpx.get", return_value=_fake_httpx_get(body)):
+        with _patched_fetch(_fake_httpx_get(body)):
             with pytest.raises(AppError) as exc_info:
                 conn.execute(plan)
 
@@ -304,7 +343,7 @@ class TestHttpJsonConnectorRecordPath:
         conn = HttpJsonConnector({"url": "http://api.example.com/records"})
         plan = _make_plan()
 
-        with patch("httpx.get", return_value=_fake_httpx_get(_TWO_TENANT_RECORDS)):
+        with _patched_fetch(_fake_httpx_get(_TWO_TENANT_RECORDS)):
             result = conn.execute(plan)
 
         assert result.num_rows == 3
@@ -362,7 +401,7 @@ class TestHttpJsonConnectorStream:
         conn = HttpJsonConnector({"url": "http://api.example.com/records"})
         plan = _make_plan(rls_claims={"policies": {"tenant_id": "acme"}})
 
-        with patch("httpx.get", return_value=_fake_httpx_get(_TWO_TENANT_RECORDS)):
+        with _patched_fetch(_fake_httpx_get(_TWO_TENANT_RECORDS)):
             batches = list(conn.execute_stream(plan))
 
         assert len(batches) > 0
@@ -378,22 +417,40 @@ class TestHttpJsonConnectorStream:
 
 class TestHttpJsonConnectorHeaders:
     def test_custom_headers_passed_to_httpx(self) -> None:
-        """Custom headers from config are forwarded to httpx.get."""
+        """Custom headers from config are forwarded to the pinned request."""
         conn = HttpJsonConnector({
             "url": "http://api.example.com/records",
             "headers": {"Authorization": "Bearer test-token", "X-Custom": "value"},
         })
         plan = _make_plan()
 
-        with patch("httpx.get", return_value=_fake_httpx_get([])) as mock_get:
+        with _patched_fetch(_fake_httpx_get([])) as mock_request:
             conn.execute(plan)
 
-        call_kwargs = mock_get.call_args
-        passed_headers = call_kwargs.kwargs.get("headers") or call_kwargs.args[1] if len(call_kwargs.args) > 1 else call_kwargs.kwargs.get("headers", {})
-        # Just verify httpx.get was called with the right URL and headers kwarg
-        assert mock_get.called
-        _, kwargs = mock_get.call_args
-        assert kwargs.get("headers", {}).get("Authorization") == "Bearer test-token"
+        assert mock_request.called
+        _, kwargs = mock_request.call_args
+        headers = kwargs.get("headers", {})
+        assert headers.get("Authorization") == "Bearer test-token"
+        assert headers.get("X-Custom") == "value"
+
+    def test_pinned_request_connects_to_ip_and_preserves_host(self) -> None:
+        """TOCTOU defence: the request goes to the validated IP literal, while the
+        original hostname is preserved in the Host header and the TLS SNI."""
+        conn = HttpJsonConnector({"url": "https://api.example.com/records"})
+        plan = _make_plan()
+
+        with _patched_fetch(_fake_httpx_get([]), resolves_to=(_PUBLIC_IP,)) as mock_request:
+            conn.execute(plan)
+
+        args, kwargs = mock_request.call_args
+        method, target_url = args[0], args[1]
+        assert method == "GET"
+        # Connection target is the pinned IP literal, NOT the hostname.
+        assert _PUBLIC_IP in target_url
+        assert "api.example.com" not in target_url
+        # Host header + TLS SNI/cert hostname still the original hostname.
+        assert kwargs.get("headers", {}).get("Host") == "api.example.com"
+        assert kwargs.get("extensions", {}).get("sni_hostname") == "api.example.com"
 
 
 # ---------------------------------------------------------------------------
@@ -417,7 +474,78 @@ class TestHttpJsonRegistryIntegration:
 
         plan = _make_plan(rls_claims={"policies": {"tenant_id": "acme"}})
 
-        with patch("httpx.get", return_value=_fake_httpx_get(_TWO_TENANT_RECORDS)):
+        with _patched_fetch(_fake_httpx_get(_TWO_TENANT_RECORDS)):
             result = conn.execute(plan)
 
         assert result.num_rows == 2
+
+
+# ---------------------------------------------------------------------------
+# DNS-rebinding / TOCTOU regression
+# ---------------------------------------------------------------------------
+
+
+class TestHttpJsonDnsRebinding:
+    """Regression: a host that passes the SSRF check then rebinds to an internal
+    address at connect time must NOT reach that address."""
+
+    def test_rebind_to_internal_is_blocked_and_pinned(self) -> None:
+        """Resolver returns a PUBLIC IP at check time, then would return an
+        INTERNAL IP if re-resolved at connect time.
+
+        Because the connector resolves once and pins the connection to the
+        validated public IP, the second (malicious) resolution is never used:
+        httpx.request is invoked with the pinned public IP literal, never the
+        internal one — closing the TOCTOU window.
+        """
+        conn = HttpJsonConnector({"url": "http://rebind.example.com/records"})
+        plan = _make_plan()
+
+        # A resolver whose answer FLIPS between calls: public first (check),
+        # internal second (the rebind a naive client would connect to).
+        answers = iter(
+            [
+                _fake_getaddrinfo(_PUBLIC_IP),       # 1st call: SSRF check
+                _fake_getaddrinfo("169.254.169.254"),  # 2nd call: rebind
+            ]
+        )
+
+        def _flipping(host, *args, **kwargs):  # noqa: ANN001, ANN002, ANN003
+            return next(answers)(host, *args, **kwargs)
+
+        with patch.object(socket, "getaddrinfo", _flipping):
+            with patch("httpx.request", return_value=_fake_httpx_get([])) as mock_request:
+                conn.execute(plan)
+
+        # The connection was pinned to the checked PUBLIC IP, not the rebind.
+        target_url = mock_request.call_args.args[1]
+        assert _PUBLIC_IP in target_url
+        assert "169.254.169.254" not in target_url
+
+    def test_rebind_resolving_only_to_internal_is_blocked(self) -> None:
+        """If the host resolves to an internal address at check time, the fetch
+        is blocked outright and no request is ever issued."""
+        conn = HttpJsonConnector({"url": "http://evil.example.com/records"})
+        plan = _make_plan()
+
+        with patch.object(socket, "getaddrinfo", _fake_getaddrinfo("169.254.169.254")):
+            with patch("httpx.request") as mock_request:
+                with pytest.raises(AppError) as exc_info:
+                    conn.execute(plan)
+
+        assert exc_info.value.code == "ssrf_blocked"
+        assert mock_request.call_count == 0
+
+    def test_mixed_public_and_internal_addresses_blocked(self) -> None:
+        """A public A-record cannot mask an internal one: every resolved address
+        is validated, so the presence of any forbidden address blocks the fetch."""
+        conn = HttpJsonConnector({"url": "http://sneaky.example.com/records"})
+        plan = _make_plan()
+
+        with patch.object(socket, "getaddrinfo", _fake_getaddrinfo(_PUBLIC_IP, "127.0.0.1")):
+            with patch("httpx.request") as mock_request:
+                with pytest.raises(AppError) as exc_info:
+                    conn.execute(plan)
+
+        assert exc_info.value.code == "ssrf_blocked"
+        assert mock_request.call_count == 0
