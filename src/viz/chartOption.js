@@ -6,6 +6,7 @@
  *
  * Supported chartType values:
  *   'line' | 'bar' | 'scatter' | 'area' | 'pie' | 'donut' | 'hbar' | 'heatmap' | 'gauge'
+ *   | 'waterfall' | 'quadrant' | 'sparkline'
  *
  * Extra chart types (encoding → ECharts mapping):
  *   donut   — pie variant; x→name, y→value, with an inner-radius hole.
@@ -776,6 +777,392 @@ function buildHeatmap(table, xCol, yCol, valueCol) {
   }
 }
 
+// ---------------------------------------------------------------------------
+// Waterfall chart builder
+// ---------------------------------------------------------------------------
+
+/**
+ * Build a waterfall chart option.
+ *
+ * Encoding: x (category) → x-axis labels, y (value) → incremental deltas.
+ *
+ * props.subtotals {string[]}  — x values that are rendered as subtotal bars
+ *                               (sum of preceding deltas; rendered in a distinct
+ *                               colour as a "floating" bar from 0).
+ * props.totalLabel {string}   — x value of a final total bar (defaults to
+ *                               rendering as a distinct total colour).
+ *
+ * Implementation note: ECharts waterfall is built from two stacked bar series:
+ *   1. An invisible "spacer" series holding the running base offset.
+ *   2. A visible "delta" series rendered on top of the spacer.
+ *
+ * @param {import('apache-arrow').Table} table
+ * @param {string} xCol  — category column
+ * @param {string} yCol  — delta value column
+ * @param {object} [props]
+ * @returns {object} ECharts option
+ */
+function buildWaterfall(table, xCol, yCol, props = {}) {
+  const xRaw = getColumn(table, xCol)
+  const yRaw = getColumn(table, yCol)
+  if (!xRaw || !yRaw) return {}
+
+  const n = Math.min(xRaw.length, yRaw.length)
+  if (n === 0) return {}
+
+  const xLabels   = toStrings(xRaw)
+  const deltas    = toNumbers(yRaw)
+  const subtotals = new Set(Array.isArray(props.subtotals) ? props.subtotals.map(String) : [])
+  const totalLbl  = props.totalLabel ? String(props.totalLabel) : null
+
+  // Compute running offsets and render types per bar.
+  const spacerData  = []
+  const deltaData   = []
+  const itemColors  = []
+
+  const positiveColor = PALETTE[2]  // emerald
+  const negativeColor = PALETTE[3]  // red
+  const subtotalColor = PALETTE[4]  // blue
+  const totalColor    = PALETTE[5]  // violet
+
+  let runningTotal = 0
+  for (let i = 0; i < n; i++) {
+    const label = xLabels[i]
+    const delta = deltas[i]
+    const isTotal    = totalLbl !== null && label === totalLbl
+    const isSubtotal = subtotals.has(label)
+
+    if (isTotal) {
+      // Total bar: goes from 0 to the current running total (ignore delta).
+      spacerData.push(0)
+      deltaData.push(runningTotal)
+      itemColors.push({ value: runningTotal, itemStyle: { color: totalColor } })
+    } else if (isSubtotal) {
+      // Subtotal: show current running total as a full bar from 0.
+      spacerData.push(0)
+      deltaData.push(runningTotal)
+      itemColors.push({ value: runningTotal, itemStyle: { color: subtotalColor } })
+      // Do NOT advance runningTotal for subtotals.
+    } else {
+      // Regular delta bar.
+      const base = delta < 0 ? runningTotal + delta : runningTotal
+      spacerData.push(base)
+      deltaData.push(Math.abs(delta))
+      itemColors.push({
+        value: Math.abs(delta),
+        itemStyle: { color: delta >= 0 ? positiveColor : negativeColor },
+      })
+      runningTotal += delta
+    }
+  }
+
+  const opt = baseOption({ showLegend: false, showDataZoom: n > 30 })
+  opt.tooltip = {
+    trigger: 'axis',
+    confine: true,
+    axisPointer: { type: 'shadow' },
+    formatter: (params) => {
+      // params[1] is the visible delta series; suppress the spacer row.
+      const p = params.find(p => p.seriesName !== '__spacer__')
+      if (!p) return ''
+      const idx = p.dataIndex
+      return `${xLabels[idx]}: ${deltas[idx] >= 0 ? '+' : ''}${deltas[idx]}`
+    },
+  }
+  opt.xAxis = {
+    type: 'category',
+    data: xLabels,
+    name: xCol,
+    nameLocation: 'middle',
+    nameGap: 28,
+    nameTextStyle: { fontSize: 11 },
+    axisLabel: { rotate: n > 12 ? 30 : 0, fontSize: 10 },
+  }
+  opt.yAxis = {
+    type: 'value',
+    name: yCol,
+    nameLocation: 'middle',
+    nameGap: 36,
+    nameTextStyle: { fontSize: 11 },
+  }
+  opt.series = [
+    {
+      // Invisible spacer — provides the base offset for the visible delta bars.
+      name: '__spacer__',
+      type: 'bar',
+      stack: 'waterfall',
+      data: spacerData,
+      itemStyle: { color: 'transparent', borderColor: 'transparent' },
+      emphasis: { disabled: true },
+      tooltip: { show: false },
+    },
+    {
+      name: yCol,
+      type: 'bar',
+      stack: 'waterfall',
+      data: itemColors,
+      label: {
+        show: n <= 20,
+        position: 'top',
+        fontSize: 9,
+        formatter: (p) => {
+          const idx = p.dataIndex
+          if (totalLbl && xLabels[idx] === totalLbl) return `${Math.round(runningTotal)}`
+          return deltas[idx] >= 0 ? `+${deltas[idx]}` : `${deltas[idx]}`
+        },
+      },
+    },
+  ]
+
+  return opt
+}
+
+// ---------------------------------------------------------------------------
+// Quadrant / zoned scatter builder
+// ---------------------------------------------------------------------------
+
+/**
+ * Build a quadrant scatter (bubble matrix) option.
+ *
+ * Extends the standard scatter with:
+ *   - reference lines at props.xMid / props.yMid dividing the canvas into four
+ *     quadrants (default: median of the respective axis).
+ *   - optional background shading per quadrant via props.quadrantColors[].
+ *   - optional bubble-size encoding via encoding.size column.
+ *   - quadrant labels via props.quadrantLabels[topRight, topLeft, bottomLeft, bottomRight].
+ *
+ * @param {import('apache-arrow').Table} table
+ * @param {string} xCol
+ * @param {string} yCol
+ * @param {string|undefined} colorCol
+ * @param {object} [encoding]
+ * @param {object} [props]
+ * @returns {object} ECharts option
+ */
+function buildQuadrant(table, xCol, yCol, colorCol, encoding = {}, props = {}) {
+  const xRaw = getColumn(table, xCol)
+  const yRaw = getColumn(table, yCol)
+  if (!xRaw || !yRaw) return {}
+
+  const n = Math.min(xRaw.length, yRaw.length)
+  if (n === 0) return {}
+
+  const xVals  = toNumbers(xRaw)
+  const yVals  = toNumbers(yRaw)
+
+  // Optional size column → symbol size proportional to value.
+  const sizeColName = encoding.size || props.sizeCol || null
+  const sizeRaw  = sizeColName ? getColumn(table, sizeColName) : null
+  const sizeVals = sizeRaw ? toNumbers(sizeRaw) : null
+  let maxSize = 1
+  if (sizeVals) {
+    for (let i = 0; i < sizeVals.length; i++) {
+      if (sizeVals[i] > maxSize) maxSize = sizeVals[i]
+    }
+  }
+
+  // Mid-point for quadrant dividers.
+  const xSorted = [...xVals].sort((a, b) => a - b)
+  const ySorted = [...yVals].sort((a, b) => a - b)
+  const median  = (arr) => {
+    const mid = Math.floor(arr.length / 2)
+    return arr.length % 2 === 0 ? (arr[mid - 1] + arr[mid]) / 2 : arr[mid]
+  }
+  const xMid = props.xMid ?? median(xSorted)
+  const yMid = props.yMid ?? median(ySorted)
+
+  const xPad = (Math.max(...xVals) - Math.min(...xVals)) * 0.1 || 1
+  const yPad = (Math.max(...yVals) - Math.min(...yVals)) * 0.1 || 1
+  const xMin = Math.min(...xVals) - xPad
+  const xMax = Math.max(...xVals) + xPad
+  const yMin = Math.min(...yVals) - yPad
+  const yMax = Math.max(...yVals) + yPad
+
+  // Default quadrant background colours (very subtle).
+  const qColors = props.quadrantColors ?? [
+    'rgba(16,185,129,0.06)',  // top-right  (positive/positive)
+    'rgba(99,102,241,0.06)',  // top-left   (negative/positive)
+    'rgba(239,68,68,0.06)',   // bottom-left (negative/negative)
+    'rgba(245,158,11,0.06)',  // bottom-right (positive/negative)
+  ]
+
+  // Quadrant label positions (center of each quadrant).
+  const qLabels = props.quadrantLabels ?? ['', '', '', '']
+  const labelObjs = qLabels.map((text, i) => {
+    if (!text) return null
+    const positions = [
+      { x: (xMid + xMax) / 2, y: (yMid + yMax) / 2 },   // top-right
+      { x: (xMin + xMid) / 2, y: (yMid + yMax) / 2 },   // top-left
+      { x: (xMin + xMid) / 2, y: (yMin + yMid) / 2 },   // bottom-left
+      { x: (xMid + xMax) / 2, y: (yMin + yMid) / 2 },   // bottom-right
+    ]
+    return {
+      type: 'text',
+      style: { text, fontSize: 11, fill: '#9ca3af', textAlign: 'center' },
+      position: [positions[i].x, positions[i].y],
+    }
+  }).filter(Boolean)
+
+  const colorRaw = getColumn(table, colorCol)
+  const opt = baseOption({ showLegend: !!colorCol, showDataZoom: false })
+
+  opt.tooltip = {
+    trigger: 'item',
+    confine: true,
+    formatter: (params) => {
+      const idx = params.dataIndex
+      const szPart = sizeVals ? `<br/>${sizeColName}: ${sizeVals[idx]}` : ''
+      return `${xCol}: ${xVals[idx]}<br/>${yCol}: ${yVals[idx]}${szPart}`
+    },
+  }
+
+  opt.xAxis = {
+    type: 'value',
+    name: xCol,
+    nameLocation: 'middle',
+    nameGap: 28,
+    nameTextStyle: { fontSize: 11 },
+    min: xMin,
+    max: xMax,
+  }
+  opt.yAxis = {
+    type: 'value',
+    name: yCol,
+    nameLocation: 'middle',
+    nameGap: 36,
+    nameTextStyle: { fontSize: 11 },
+    min: yMin,
+    max: yMax,
+  }
+
+  // Quadrant background markAreas.
+  const markArea = {
+    silent: true,
+    data: [
+      // top-right
+      [{ xAxis: xMid, yAxis: yMid, itemStyle: { color: qColors[0] } },
+       { xAxis: xMax, yAxis: yMax }],
+      // top-left
+      [{ xAxis: xMin, yAxis: yMid, itemStyle: { color: qColors[1] } },
+       { xAxis: xMid, yAxis: yMax }],
+      // bottom-left
+      [{ xAxis: xMin, yAxis: yMin, itemStyle: { color: qColors[2] } },
+       { xAxis: xMid, yAxis: yMid }],
+      // bottom-right
+      [{ xAxis: xMid, yAxis: yMin, itemStyle: { color: qColors[3] } },
+       { xAxis: xMax, yAxis: yMid }],
+    ],
+  }
+
+  // Reference lines at the midpoints.
+  const markLine = {
+    silent: true,
+    symbol: ['none', 'none'],
+    lineStyle: { type: 'dashed', color: '#d1d5db', width: 1 },
+    data: [
+      { xAxis: xMid, label: { show: false } },
+      { yAxis: yMid, label: { show: false } },
+    ],
+  }
+
+  const symbolSize = (d) => {
+    if (!sizeVals) return 8
+    const idx = d[2] !== undefined ? d[2] : 0
+    return Math.max(4, Math.sqrt(idx / maxSize) * 30)
+  }
+
+  if (colorRaw && !isNumericArray(colorRaw)) {
+    const groups = groupByCategory(xVals, yVals, colorRaw)
+    opt.series = groups.map((g, gi) => ({
+      type: 'scatter',
+      name: g.category,
+      data: g.xVals.map((x, i) => [x, g.yVals[i]]),
+      symbolSize: 8,
+      ...(gi === 0 ? { markArea, markLine } : {}),
+    }))
+  } else {
+    const data = sizeVals
+      ? xVals.map((x, i) => [x, yVals[i], sizeVals[i]])
+      : xVals.map((x, i) => [x, yVals[i]])
+    opt.series = [{
+      type: 'scatter',
+      data,
+      symbolSize: sizeVals ? symbolSize : 8,
+      itemStyle: { color: PALETTE[0] },
+      markArea,
+      markLine,
+    }]
+  }
+
+  if (labelObjs.length > 0) {
+    opt.graphic = labelObjs
+  }
+
+  return opt
+}
+
+// ---------------------------------------------------------------------------
+// Sparkline builder (axis-less, embeddable inside KPI tiles)
+// ---------------------------------------------------------------------------
+
+/**
+ * Build a minimal sparkline option — designed to be rendered at small sizes
+ * (36–48 px tall) with no axes, no tooltip, no labels.
+ *
+ * Encoding: x (optional) → category/index, y → numeric series.
+ * props.sparkColor {string}   — line/fill colour (default PALETTE[0]).
+ * props.sparkType  {'line'|'bar'} — render style (default 'line').
+ * props.showDot    {boolean}  — show a dot on the last data point (default true).
+ *
+ * @param {import('apache-arrow').Table} table
+ * @param {string} yCol  — numeric value column
+ * @param {object} [props]
+ * @returns {object} ECharts option
+ */
+function buildSparkline(table, yCol, props = {}) {
+  const yRaw = getColumn(table, yCol)
+  if (!yRaw) return {}
+
+  const n = yRaw.length
+  if (n === 0) return {}
+
+  const yVals = toNumbers(yRaw)
+  const color = props.sparkColor ?? PALETTE[0]
+  const sparkType = props.sparkType === 'bar' ? 'bar' : 'line'
+  const showDot   = props.showDot !== false
+
+  const option = {
+    backgroundColor: 'transparent',
+    animation: false,
+    grid: { top: 2, right: 2, bottom: 2, left: 2 },
+    xAxis: { type: 'category', show: false, boundaryGap: sparkType === 'bar',
+      data: yVals.map((_, i) => i) },
+    yAxis: { type: 'value', show: false, scale: true },
+    tooltip: { show: false },
+    series: [{
+      type: sparkType,
+      data: sparkType === 'line'
+        ? yVals.map((v, i) => {
+            const isLast = i === n - 1
+            return isLast && showDot
+              ? { value: v, symbol: 'circle', symbolSize: 5, itemStyle: { color } }
+              : { value: v, symbol: 'none' }
+          })
+        : yVals,
+      ...(sparkType === 'line' ? {
+        smooth: true,
+        lineStyle: { width: 1.5, color },
+        areaStyle: { color, opacity: 0.15 },
+        symbol: 'none',  // default — overridden per-point above
+      } : {
+        itemStyle: { color },
+        barMaxWidth: 8,
+      }),
+    }],
+  }
+  return option
+}
+
 /**
  * Build a single-value gauge option.
  *
@@ -975,7 +1362,7 @@ export function buildChartOption({ chartType, table, x, y, color, encoding = {},
 
   // Types that own a bespoke (non-cartesian or single-value) builder and must
   // bypass the combo/stack/dual-axis multi-series path entirely.
-  const SINGLE_BUILDER_TYPES = new Set(['donut', 'heatmap', 'gauge', 'pie'])
+  const SINGLE_BUILDER_TYPES = new Set(['donut', 'heatmap', 'gauge', 'pie', 'waterfall', 'quadrant', 'sparkline'])
 
   // --- Advanced multi-series path (combo / stack / dual-axis) ---
   // Resolve from both encoding and props; returns null if neither declares multi-series.
@@ -1010,8 +1397,62 @@ export function buildChartOption({ chartType, table, x, y, color, encoding = {},
       const heatVal = encoding.value || effectiveColor
       return buildHeatmap(table, x || encoding.x, effectiveY || encoding.y, heatVal)
     }
-    case 'gauge':   return buildGauge(table, encoding.value || effectiveY || x, props)
+    case 'gauge':     return buildGauge(table, encoding.value || effectiveY || x, props)
+    case 'waterfall': return buildWaterfall(table, x || encoding.x, effectiveY || encoding.y, props)
+    case 'quadrant':  return buildQuadrant(table, x || encoding.x, effectiveY || encoding.y, effectiveColor, encoding, props)
+    case 'sparkline': return buildSparkline(table, effectiveY || x || encoding.y || encoding.x, props)
     default:
       return buildScatter(table, x, effectiveY, effectiveColor)
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Sparkline option from a plain numeric array (no Arrow Table needed).
+// Used by KpiWidget to embed a sparkline without a separate table fetch.
+// ---------------------------------------------------------------------------
+
+/**
+ * Build a minimal axis-less sparkline ECharts option from a plain number array.
+ * This is the lightweight KPI-embed variant — no Arrow dependency.
+ *
+ * @param {number[]} values
+ * @param {object} [props]  — sparkColor, sparkType, showDot
+ * @returns {object} ECharts option
+ */
+export function buildSparklineOption(values, props = {}) {
+  if (!values || values.length === 0) return {}
+  const n = values.length
+  const color = props.sparkColor ?? PALETTE[0]
+  const sparkType = props.sparkType === 'bar' ? 'bar' : 'line'
+  const showDot   = props.showDot !== false
+
+  return {
+    backgroundColor: 'transparent',
+    animation: false,
+    grid: { top: 2, right: 2, bottom: 2, left: 2 },
+    xAxis: { type: 'category', show: false, boundaryGap: sparkType === 'bar',
+      data: values.map((_, i) => i) },
+    yAxis: { type: 'value', show: false, scale: true },
+    tooltip: { show: false },
+    series: [{
+      type: sparkType,
+      data: sparkType === 'line'
+        ? values.map((v, i) => {
+            const isLast = i === n - 1
+            return isLast && showDot
+              ? { value: v, symbol: 'circle', symbolSize: 5, itemStyle: { color } }
+              : { value: v, symbol: 'none' }
+          })
+        : values,
+      ...(sparkType === 'line' ? {
+        smooth: true,
+        lineStyle: { width: 1.5, color },
+        areaStyle: { color, opacity: 0.15 },
+        symbol: 'none',
+      } : {
+        itemStyle: { color },
+        barMaxWidth: 8,
+      }),
+    }],
   }
 }

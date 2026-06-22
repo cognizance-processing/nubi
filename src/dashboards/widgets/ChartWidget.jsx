@@ -35,12 +35,14 @@
  * - Widgets without params behave identically to before (regression-safe).
  */
 
-import { useState, useEffect, useMemo, useCallback } from 'react'
+import { useState, useEffect, useMemo } from 'react'
 import { runArrowQueryById } from '../../lib/wasmRuntime.js'
 import { runMetricQuery } from '../../lib/metricRuntime.js'
 import { buildChartOption } from '../../viz/chartOption.js'
 import EChart from '../../viz/EChart.jsx'
 import { useResolvedParams, useSetVariable } from '../VariableStore.jsx'
+import { useCrossFilter } from '../CrossFilterContext.jsx'
+import { useRefreshEpoch } from '../RefreshContext.jsx'
 
 export default function ChartWidget({ widget }) {
   const {
@@ -50,6 +52,7 @@ export default function ChartWidget({ widget }) {
     props: wProps = {},
     params: widgetParams,
     drilldown,
+    onClick: onClickSpec,   // widget.onClick → cross-filter / navigate spec
     metric,
   } = widget
 
@@ -62,6 +65,10 @@ export default function ChartWidget({ widget }) {
   // Resolve widget params against the variable store — re-renders when vars change.
   // Widgets with no params get {} and behave identically to pre-M14-C (regression-safe).
   const resolvedParams = useResolvedParams(widgetParams)
+
+  // Board-level refresh epoch — when the board's auto-refresh timer fires this
+  // increments and causes the widget to re-fetch its data.
+  const refreshEpoch = useRefreshEpoch()
 
   const [table, setTable] = useState(null)
   const [loading, setLoading] = useState(false)
@@ -102,34 +109,56 @@ export default function ChartWidget({ widget }) {
     return () => { cancelled = true }
   // resolvedParams + metric are new objects each render; JSON.stringify gives a
   // stable dep so the effect only re-fires when actual values change.
+  // refreshEpoch increments on board auto-refresh ticks.
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [query_id, JSON.stringify(metric), JSON.stringify(resolvedParams)])
+  }, [query_id, JSON.stringify(metric), JSON.stringify(resolvedParams), refreshEpoch])
 
   const height = wProps.height ?? 260
 
-  // ── Drilldown (cross-widget filtering) ──────────────────────────────────
-  // When widget.drilldown = { target_var, value_field? } is set, clicking a
-  // data point writes the clicked value into the named dashboard variable so
-  // other widgets bound to that variable re-query.
-  const setVariable = useSetVariable()
+  // ── Drilldown / cross-filter (cross-widget filtering + tab navigation) ─────
+  // Supports two opt-in mechanisms — both are inactive unless configured:
+  //
+  //   1. Legacy `drilldown` — writes a single variable (backward-compatible).
+  //      widget.drilldown = { target_var, value_field? }
+  //
+  //   2. New `onClick` spec — uses the CrossFilterContext bus (set var AND/OR
+  //      navigate to a tab, and fires an optional external onCrossFilter callback).
+  //      widget.onClick = { setVar?, valueField?, navigateTab? }
+  //
+  // Both can coexist; the legacy drilldown fires first.
+  const setVariable   = useSetVariable()
+  const { emit: emitCrossFilter } = useCrossFilter()
+
   const onEvents = useMemo(() => {
-    const targetVar = drilldown?.target_var
-    if (!targetVar) return undefined
+    const targetVar    = drilldown?.target_var
+    const hasCrossFilter = !!(onClickSpec?.setVar || onClickSpec?.navigateTab)
+
+    if (!targetVar && !hasCrossFilter) return undefined
+
     return {
       click: (params) => {
-        // Prefer an explicit value_field from the clicked row's data object,
-        // else fall back to the category name (params.name = x value).
-        const field = drilldown.value_field
-        let val
-        if (field && params?.data && typeof params.data === 'object' && field in params.data) {
-          val = params.data[field]
-        } else {
-          val = params?.name ?? params?.value
+        // Legacy drilldown path (backward-compatible).
+        if (targetVar) {
+          const field = drilldown.value_field
+          let val
+          if (field && params?.data && typeof params.data === 'object' && field in params.data) {
+            val = params.data[field]
+          } else {
+            val = params?.name ?? params?.value
+          }
+          if (val !== undefined && val !== null) setVariable(targetVar, val)
         }
-        if (val !== undefined && val !== null) setVariable(targetVar, val)
+
+        // New cross-filter / navigate path.
+        if (hasCrossFilter) {
+          emitCrossFilter(onClickSpec, params)
+        }
       },
     }
-  }, [drilldown?.target_var, drilldown?.value_field, setVariable])
+  }, [
+    drilldown?.target_var, drilldown?.value_field, setVariable,
+    onClickSpec, emitCrossFilter,
+  ])
 
   // Build ECharts option — threading encoding + props through for advanced features
   const option = useMemo(() => {

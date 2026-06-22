@@ -43,7 +43,10 @@ import HtmlWidget from './widgets/HtmlWidget.jsx'
 import MetricWidget from './widgets/MetricWidget.jsx'
 import PivotWidget from './widgets/PivotWidget.jsx'
 import SectionWidget from './widgets/SectionWidget.jsx'
-import { VariableProvider } from './VariableStore.jsx'
+import { VariableProvider, useSetVariable } from './VariableStore.jsx'
+import { CrossFilterProvider } from './CrossFilterContext.jsx'
+import { RefreshContext } from './RefreshContext.jsx'
+import { useAutoRefresh } from './useAutoRefresh.js'
 import { runArrowQueryById } from '../lib/wasmRuntime.js'
 import { backgroundToCss, styleToCss } from './widgetHtml.js'
 import { buildResponsiveLayouts, isHiddenAt } from './responsiveLayout.js'
@@ -305,11 +308,41 @@ function buildVariableDefaults(specVariables) {
 // SpecRenderer
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// CrossFilterProviderWrapper — inner wrapper that binds setVariable from the
+// VariableStore context (which is only available once VariableProvider mounts).
+// ---------------------------------------------------------------------------
+
+/**
+ * Thin adapter: reads setVariable from VariableStore then passes it to
+ * CrossFilterProvider so widgets can emit cross-filter events that write
+ * board variables.
+ *
+ * @param {{ onCrossFilter?, onTabChange?, children }} props
+ */
+function CrossFilterProviderWrapper({ onCrossFilter, onTabChange, children }) {
+  const setVariable = useSetVariable()
+  return (
+    <CrossFilterProvider
+      setVariable={setVariable}
+      onTabChange={onTabChange}
+      onCrossFilter={onCrossFilter}
+    >
+      {children}
+    </CrossFilterProvider>
+  )
+}
+
+// ---------------------------------------------------------------------------
+// SpecRendererInner
+// ---------------------------------------------------------------------------
+
 /**
  * @param {{
  *   spec: object,
  *   initialVariables?: Record<string, unknown>,
  *   onVariableChange?: (name: string, value: unknown) => void,
+ *   onCrossFilter?: (event: { type: string, var: string|null, value: unknown, tabId: string|null }) => void,
  * }} props
  *
  * initialVariables — externally supplied variable values (e.g. from URL params
@@ -319,15 +352,31 @@ function buildVariableDefaults(specVariables) {
  * onVariableChange — optional callback fired when any filter widget changes a
  * variable.  Used by DashboardViewPage to write the new value back to URL search
  * params so the state survives a refresh and is shareable.
+ *
+ * onCrossFilter — optional callback fired when a widget emits a cross-filter or
+ * navigate event (data-point click). Receives { type, var, value, tabId }.
+ * Useful for parent frames / embed integrations.
  */
 // Inner component — ASSUMES `spec` is non-null (the null-guard lives in the
 // thin wrapper below). Because the early return is gone, every hook here runs
 // unconditionally on every render, satisfying the Rules of Hooks even as `spec`
 // transitions undefined → loaded (async fetch / embed hydration).
-function SpecRendererInner({ spec, initialVariables = {}, onVariableChange, forceBreakpoint, activeTabId, onTabChange, editMode = false }) {
+function SpecRendererInner({ spec, initialVariables = {}, onVariableChange, onCrossFilter, forceBreakpoint, activeTabId, onTabChange, editMode = false }) {
   const cols = spec.layout?.cols ?? 12
   const rowHeight = spec.layout?.row_height ?? 60
   const allWidgets = spec.widgets ?? []
+
+  // ── Auto-refresh / polling ──────────────────────────────────────────────
+  // spec.refresh.interval_ms (or spec.refresh_interval_ms) enables board-level
+  // polling.  The epoch counter is exposed via RefreshContext so widgets can
+  // include it in their fetch deps and re-query on each tick.
+  const refreshIntervalMs = spec.refresh?.interval_ms ?? spec.refresh_interval_ms ?? null
+  const [refreshEpoch, setRefreshEpoch] = useState(0)
+  useAutoRefresh({
+    intervalMs: refreshIntervalMs,
+    onRefresh:  () => setRefreshEpoch(e => e + 1),
+    enabled:    !editMode,   // never auto-refresh in the editor canvas
+  })
 
   // Breakpoint thresholds + per-breakpoint column counts. lg/md default to the
   // spec column count; sm stacks into a single column. New per-breakpoint cols
@@ -521,6 +570,8 @@ function SpecRendererInner({ spec, initialVariables = {}, onVariableChange, forc
 
   return (
     <VariableProvider initialValues={variableDefaults} onVariableChange={onVariableChange}>
+      <RefreshContext.Provider value={refreshEpoch}>
+      <CrossFilterProviderWrapper onCrossFilter={onCrossFilter} onTabChange={setTab}>
       <div
         className="w-full"
         ref={containerRef}
@@ -593,6 +644,8 @@ function SpecRendererInner({ spec, initialVariables = {}, onVariableChange, forc
         wide={openDrawer != null && openDrawer !== 'filters'}
         onClose={() => setOpenDrawer(null)}
       />
+      </CrossFilterProviderWrapper>
+      </RefreshContext.Provider>
     </VariableProvider>
   )
 }

@@ -16,7 +16,16 @@ from typing import Any, Literal
 
 # ── Vocabularies ────────────────────────────────────────────────────────────
 
-AggFunc = Literal["sum", "count", "count_distinct", "min", "max", "avg"]
+AggFunc = Literal[
+    "sum",
+    "count",
+    "count_distinct",
+    "min",
+    "max",
+    "avg",
+    "percentile_cont",
+    "approx_count_distinct",
+]
 MeasureType = Literal["additive", "semi_additive", "non_additive"]
 TimeGrain = Literal["hour", "day", "week", "month", "quarter", "year"]
 DimType = Literal["text", "number", "bool", "date", "timestamp"]
@@ -27,6 +36,8 @@ FilterOp = Literal["=", "!=", "<", "<=", ">", ">=", "in", "not_in"]
 #   prior_year / yoy_abs / yoy_pct    — vs the same bucket one year earlier
 #   ytd / qtd / mtd                   — running total within year / quarter / month
 #   rolling_sum / rolling_avg         — trailing window of ``periods`` buckets
+#   latest_snapshot                   — dedupe the base grain to the latest row per
+#                                       entity; see compile.py for details
 TimeCompareKind = Literal[
     "prior_period",
     "pop_abs",
@@ -39,6 +50,7 @@ TimeCompareKind = Literal[
     "mtd",
     "rolling_sum",
     "rolling_avg",
+    "latest_snapshot",
 ]
 
 # How many prior buckets one calendar year spans, per grain — used to offset the

@@ -39,6 +39,8 @@ import { runArrowQueryById } from '../../lib/wasmRuntime.js'
 import { runMetricQuery } from '../../lib/metricRuntime.js'
 import { useResolvedParams } from '../VariableStore.jsx'
 import EChart from '../../viz/EChart.jsx'
+import { applySignal } from '../../viz/signals.js'
+import { useRefreshEpoch } from '../RefreshContext.jsx'
 
 /** Format a raw value for display. */
 function formatValue(raw, format) {
@@ -127,10 +129,15 @@ export default function KpiWidget({ widget }) {
   const label = wProps.label || (valueCol ? valueCol.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase()) : 'KPI')
   const format = wProps.format || 'number'
   const deltaFormat = wProps.deltaFormat || 'percent'
+  // Signal rules for threshold coloring: widget.signalRules or widget.props.signalRules.
+  const signalRules = widget.signalRules ?? wProps.signalRules ?? null
 
   // Resolve widget params against the variable store. Re-renders (and re-queries)
   // whenever any referenced variable changes. Widgets with no params get {}.
   const resolvedParams = useResolvedParams(widgetParams)
+
+  // Board-level refresh epoch for auto-refresh polling.
+  const refreshEpoch = useRefreshEpoch()
 
   const [value, setValue] = useState(null)
   const [compareValue, setCompareValue] = useState(null)
@@ -207,8 +214,9 @@ export default function KpiWidget({ widget }) {
     return () => { cancelled = true }
   // resolvedParams is a new object each render when vars change; JSON.stringify gives
   // a stable dependency so the effect only re-fires when the actual values differ.
+  // refreshEpoch increments on board auto-refresh ticks.
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [query_id, JSON.stringify(metric), valueCol, compareCol, sparkCol, JSON.stringify(resolvedParams)])
+  }, [query_id, JSON.stringify(metric), valueCol, compareCol, sparkCol, JSON.stringify(resolvedParams), refreshEpoch])
 
   const delta = useMemo(
     () => (compareCol ? computeDelta(value, compareValue, deltaFormat) : null),
@@ -220,6 +228,15 @@ export default function KpiWidget({ widget }) {
     [sparkValues],
   )
 
+  // Evaluate signal rules against the headline value for threshold coloring.
+  const signal = useMemo(
+    () => applySignal(value, signalRules),
+    [value, signalRules],
+  )
+
+  // When a signal matched, tint the number; keep default color otherwise.
+  const valueColor = signal.matched ? signal.color : undefined
+
   return (
     <div className="flex flex-col justify-center h-full px-5 py-4">
       {loading ? (
@@ -230,9 +247,23 @@ export default function KpiWidget({ widget }) {
       ) : (
         <>
           <div className="flex items-baseline gap-2 flex-wrap">
-            <p className="text-3xl font-bold font-display text-fg tabular-nums leading-none">
+            <p
+              className="text-3xl font-bold font-display tabular-nums leading-none"
+              style={{ color: valueColor ?? undefined }}
+            >
               {formatValue(value, format)}
             </p>
+            {signal.matched && signal.label && (
+              <span
+                className="text-xs font-semibold px-1.5 py-0.5 rounded"
+                style={{
+                  background: signal.color ? `${signal.color}20` : undefined,
+                  color: signal.color ?? undefined,
+                }}
+              >
+                {signal.label}
+              </span>
+            )}
             {delta && (
               <span className="text-sm font-semibold tabular-nums" style={{ color: DELTA_COLORS[delta.direction] }}>
                 {delta.text}

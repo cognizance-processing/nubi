@@ -8,6 +8,12 @@ Variable
     A dashboard-level variable (name, type, default).
 Widget
     A single dashboard widget (kpi | table | chart | filter | text).
+ProviderResult
+    A single named result-set within a DataProvider (name + optional grain).
+DataProvider
+    Board-level semantic-engine data provider (BET-3). Widgets may bind to a
+    provider result via ``widget.source`` instead of (or instead of) ``query_id``
+    / ``metric``.  Board-level: ``spec.data`` holds the declared providers.
 DashboardSpec
     The complete dashboard specification document.
 SurfaceGridEntry
@@ -57,6 +63,27 @@ Security notes
 - The ``style`` attribute used for grid layout contains only known-safe CSS
   property values (integers, units) — no user-supplied strings are injected
   into style values.
+
+DataProvider / semantic-engine contract (BET-3 — SPEC MODELS ONLY)
+-------------------------------------------------------------------
+The ``DataProvider`` model and the ``widget.source`` binding are the *binding
+contract* introduced in BET-3.  The resolver, routes, and SpecRenderer are
+implemented in a LATER wave:
+
+  Resolver  : backend/app/dashboards/board_data.py
+              ``resolve_provider(provider, params, rls_hash) -> dict[str, ArrowTable]``
+              — executes the provider (flow / inline CTE), caches by
+              ``(provider_id, frozen_params, rls_hash)``, returns one Arrow table
+              per ``results[*].name``.
+
+  Route     : POST /boards/{id}/providers/{pid}/data
+              Body: ``{params: {...}}``  (RLS comes ONLY from the verified token,
+              never from the request body — INVARIANT).
+              Response: multi-table Arrow IPC stream (one batch per result-set
+              name). Cache key: ``(pid, frozen_params, rls_hash)``.
+
+  SpecRenderer: groups widgets by ``widget.source.provider``, fetches each
+                provider once, then fans results to the bound widgets.
 """
 
 from __future__ import annotations
@@ -445,6 +472,114 @@ class BoardExportConfig(BaseModel):
 _DEFAULT_WIDGET_HINTS = WidgetExportHints()
 
 
+# ---------------------------------------------------------------------------
+# DataProvider models (BET-3 — semantic-engine binding contract)
+# ---------------------------------------------------------------------------
+
+
+class ProviderResult(BaseModel):
+    """A single named result-set produced by a :class:`DataProvider`.
+
+    Attributes
+    ----------
+    name:
+        Stable result-set name referenced by ``widget.source.result``.
+        Must be unique within its parent provider's ``results`` list.
+    grain:
+        Optional grain descriptor (e.g. ``"day"``, ``"week"``, ``"sku"``).
+        Purely documentary in this wave — the resolver (later wave) uses it to
+        pick the matching CTE / aggregate level.
+    """
+
+    name: str = Field(min_length=1, description="Result-set name (unique within provider).")
+    grain: str | None = Field(
+        default=None,
+        description="Optional grain descriptor (e.g. 'day', 'sku'). Documentary in BET-3.",
+    )
+
+
+class DataProvider(BaseModel):
+    """Board-level semantic-engine data provider (BET-3 binding contract).
+
+    A ``DataProvider`` declares a named data source that one or more widgets can
+    bind to via ``widget.source = {provider: '<id>', result: '<name>'}``.  This
+    is the governed alternative to per-widget ``query_id`` / ``metric`` bindings:
+    the engine fetches each provider **once** per request, caches the result, and
+    fans the named result-sets to all bound widgets (Power BI / Tableau model).
+
+    Attributes
+    ----------
+    id:
+        Stable, unique provider id within this board spec (e.g. ``"p1"``).
+    kind:
+        ``'flow'`` — the provider is backed by a registered Flow (the engine
+        executes ``flow.run(params)`` and maps outputs to ``results`` by name).
+        ``'inline'`` — the provider is a self-contained SQL fragment (see
+        ``base_cte``); the resolver runs it directly.
+    params:
+        Parameter bindings for this provider.  Each value is either a
+        ``{ref: '<varName>'}`` reference to a dashboard variable or a literal
+        scalar.  The resolver merges these with the request-time param overrides.
+    base_cte:
+        Optional shared base CTE (``WITH ... AS (...)`` preamble) used when
+        ``kind == 'inline'``.  ``None`` for flow-backed providers.
+    results:
+        Ordered list of named result-sets this provider emits.  Each widget
+        that binds to this provider references one result by ``name``.
+
+    Later-wave notes
+    ----------------
+    - The resolver (``board_data.py``) executes the provider and caches by
+      ``(id, frozen_params, rls_hash)``.
+    - RLS comes ONLY from the verified JWT token (never from the request body).
+    - Route: ``POST /boards/{board_id}/providers/{pid}/data``.
+    """
+
+    id: str = Field(min_length=1, description="Stable, unique provider id within this spec.")
+    kind: Literal["flow", "inline"] = Field(
+        description="Provider backend: 'flow' (registered Flow) or 'inline' (SQL CTE).",
+    )
+    params: dict[str, Any] = Field(
+        default_factory=dict,
+        description=(
+            "Parameter bindings: {paramName: {ref:'<varName>'} | <literal>}. "
+            "Merged with request-time overrides by the resolver."
+        ),
+    )
+    base_cte: str | None = Field(
+        default=None,
+        description=(
+            "Shared base CTE SQL preamble for kind='inline' providers. "
+            "None for flow-backed providers."
+        ),
+    )
+    results: list[ProviderResult] = Field(
+        default_factory=list,
+        description="Named result-sets emitted by this provider (at least one expected).",
+    )
+
+
+class WidgetSource(BaseModel):
+    """Provider-binding for a widget (BET-3 alternative to query_id / metric).
+
+    Attributes
+    ----------
+    provider:
+        The ``id`` of a :class:`DataProvider` declared in ``spec.data``.
+    result:
+        The ``name`` of a :class:`ProviderResult` within that provider.
+
+    Validation
+    ----------
+    A widget may set AT MOST ONE of ``query_id`` (non-empty) / ``metric`` /
+    ``source``.  Having more than one binding is a hard validation error
+    (enforced in ``validate_spec`` step 11).
+    """
+
+    provider: str = Field(min_length=1, description="Provider id (must be in spec.data).")
+    result: str = Field(min_length=1, description="Result-set name within the provider.")
+
+
 class Variable(BaseModel):
     """A dashboard-level variable.
 
@@ -717,6 +852,18 @@ class Widget(BaseModel):
             "Named param bindings: {paramName: {ref:'<varName>'} | <literal>}."
         ),
     )
+    # ── DataProvider binding (BET-3, alternative to query_id / metric) ────────
+    # A widget may use AT MOST ONE of: non-empty query_id / metric / source.
+    # validate_spec step 11 enforces this; existing query_id/metric widgets are
+    # unaffected (source defaults to None → absent in serialization).
+    source: WidgetSource | None = Field(
+        default=None,
+        description=(
+            "DataProvider binding (BET-3). When set, this widget's data comes "
+            "from the referenced provider result instead of query_id / metric. "
+            "A widget may set at most one of: non-empty query_id, metric, source."
+        ),
+    )
 
     def effective_placement(self) -> str:
         """Resolve this widget's effective placement ('grid'|'header'|'drawer').
@@ -762,6 +909,19 @@ class DashboardSpec(BaseModel):
         these via ``params: {paramName: {ref: '<varName>'}}``.
     widgets:
         Ordered list of widgets to render on the dashboard.
+    data:
+        Board-level DataProvider declarations (BET-3 semantic engine, additive).
+        Empty list (default) → absent in serialization for legacy boards.
+        Widgets may bind to a provider result via ``widget.source``.
+
+    Serialization / back-compat notes
+    ----------------------------------
+    - ``data`` defaults to ``[]``.  Legacy boards that never set it round-trip
+      with ``data=[]`` in the object but the key may be omitted from the raw
+      dict — ``model_validate`` handles either form.
+    - ``widget.source`` defaults to ``None``.  Existing boards that never set
+      it round-trip byte-identical (``source`` is absent from the serialized
+      widget dict when ``None`` via ``exclude_none`` serialization).
     """
 
     version: int = Field(default=1, ge=1)
@@ -798,6 +958,16 @@ class DashboardSpec(BaseModel):
             "Per-board export/report configuration (T5). Absent or empty → "
             "all defaults apply. Use get_export_config(spec) for a normalized "
             "dict with per-widget hints merged with their defaults."
+        ),
+    )
+    data: list[DataProvider] = Field(
+        default_factory=list,
+        description=(
+            "Board-level DataProvider declarations (BET-3 semantic engine). "
+            "Empty list (default) = absent / not configured. Each entry declares "
+            "a named data source that widgets can bind to via 'widget.source'. "
+            "See DataProvider for the full contract and the later-wave notes on "
+            "the resolver + route."
         ),
     )
 
@@ -1019,12 +1189,20 @@ def validate_spec(data: Any) -> tuple[DashboardSpec | None, list[str]]:
     7. Each ``query_id`` is checked against the live query registry.
        Unknown ids produce a warning (not a hard failure — forward compat).
     8. Data widgets (``kpi``/``table``/``chart``/``metric``/``pivot``) must carry
-       EITHER a non-empty ``query_id`` OR a ``metric`` binding (not neither — a
-       hard error). When both are set, ``metric`` takes precedence (allowed).
+       at least one of: non-empty ``query_id``, ``metric`` binding, or ``source``
+       provider binding. None of the three is a hard error.
     9. When a widget has a ``metric`` binding, its ``metric.metric_id`` is checked
        against the live metric registry. Unknown ids produce a WARNING (not a hard
        failure — mirrors the soft ``query_id`` rule so specs validate before the
        metric is registered).
+    10. Header-bar placement sanity — a non-filter/text widget in 'header'
+        placement is a soft WARNING.
+    11. At-most-one binding (BET-3 hard error): a widget may carry at most one
+        of: non-empty ``query_id`` / ``metric`` / ``source``.  Having more than
+        one is ambiguous — hard error.
+    12. Provider / result existence check (BET-3 hard error): ``widget.source``
+        must reference a declared ``spec.data[*].id`` and a valid result name
+        within that provider.
 
     Parameters
     ----------
@@ -1170,19 +1348,22 @@ def validate_spec(data: Any) -> tuple[DashboardSpec | None, list[str]]:
     except Exception:  # noqa: BLE001 — registry unavailable; skip silently
         pass
 
-    # ── Step 8: data widget must have a query_id OR a metric binding ──────────
+    # ── Step 8: data widget must have a query_id OR a metric OR source binding ──
     # A data widget (kpi/table/chart/metric/pivot) needs a data source: either a
-    # non-empty query_id OR a metric binding. Neither is a HARD error (mirrors the
-    # severity of a missing chart encoding). Both is ALLOWED — `metric` takes
-    # precedence (documented on Widget.metric / spec_to_html).
+    # non-empty query_id, a metric binding, or a provider source (BET-3). None of
+    # the three is a HARD error (mirrors the severity of a missing chart encoding).
+    # Multiple bindings is caught by Step 11 (at-most-one); precedence when all
+    # three somehow coexist: source > metric > query_id (resolver decides in the
+    # later wave — at-most-one is the invariant in practice).
     _DATA_WIDGET_TYPES = {"kpi", "table", "chart", "metric", "pivot"}
     for widget in spec.widgets:
         if widget.type not in _DATA_WIDGET_TYPES:
             continue
-        if not widget.query_id and widget.metric is None:
+        if not widget.query_id and widget.metric is None and widget.source is None:
             issues.append(
                 f"Widget {widget.id!r} ({widget.type}): a data widget must have "
-                "either a non-empty 'query_id' or a 'metric' binding."
+                "either a non-empty 'query_id', a 'metric' binding, or a "
+                "'source' provider binding."
             )
 
     # ── Step 9: metric binding registry check (soft warning) ─────────────────
@@ -1218,6 +1399,48 @@ def validate_spec(data: Any) -> tuple[DashboardSpec | None, list[str]]:
                 f"[warn] Widget {widget.id!r} ({widget.type}): placement 'header' "
                 "is intended for filter/text widgets (the header bar is a filter "
                 "bar) — a non-filter widget there may look out of place."
+            )
+
+    # ── Step 11: at-most-one binding (BET-3 hard error) ──────────────────────
+    # A widget may carry AT MOST ONE of: non-empty query_id / metric / source.
+    # Having more than one is a hard validation error — the spec is ambiguous.
+    # (Existing boards with only query_id or only metric are unaffected.)
+    for widget in spec.widgets:
+        bindings = [
+            ("query_id", bool(widget.query_id)),
+            ("metric", widget.metric is not None),
+            ("source", widget.source is not None),
+        ]
+        active = [name for name, active in bindings if active]
+        if len(active) > 1:
+            issues.append(
+                f"Widget {widget.id!r}: at most one data binding may be set, "
+                f"but found {active!r}. Use exactly one of: non-empty "
+                "'query_id', 'metric', or 'source'."
+            )
+
+    # ── Step 12: provider / result existence check (hard errors, BET-3) ──────
+    # A widget.source.provider must match a declared spec.data[*].id, and
+    # widget.source.result must match one of that provider's results[*].name.
+    provider_map: dict[str, set[str]] = {
+        p.id: {r.name for r in p.results} for p in spec.data
+    }
+    for widget in spec.widgets:
+        if widget.source is None:
+            continue
+        pid = widget.source.provider
+        rname = widget.source.result
+        if pid not in provider_map:
+            issues.append(
+                f"Widget {widget.id!r}: source.provider {pid!r} is not declared "
+                f"in spec.data. Declared providers: "
+                f"{sorted(provider_map.keys()) or '[]'}."
+            )
+        elif rname not in provider_map[pid]:
+            issues.append(
+                f"Widget {widget.id!r}: source.result {rname!r} is not declared "
+                f"in provider {pid!r}. Declared results: "
+                f"{sorted(provider_map[pid]) or '[]'}."
             )
 
     return spec, issues

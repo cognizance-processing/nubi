@@ -57,10 +57,13 @@ from app.ai.provider import NullProvider
 from app.auth.jwt import mint_access_token
 from app.dashboards.spec import (
     DashboardSpec,
+    DataProvider,
+    ProviderResult,
     SurfaceGridEntry,
     Surfaces,
     Widget,
     WidgetPos,
+    WidgetSource,
     get_surface_layout,
     migrate_spec_to_surfaces,
     spec_json_schema,
@@ -1479,3 +1482,321 @@ class TestT1AccessorParity:
         assert hard_issues == []
         # surfaces.grid defaults to empty dict for un-migrated specs.
         assert spec.surfaces.grid == {}
+
+
+# ---------------------------------------------------------------------------
+# 11. BET-3 — DataProvider + widget.source binding contract
+# ---------------------------------------------------------------------------
+
+
+def _make_provider_spec() -> dict[str, Any]:
+    """Spec with a DataProvider and a widget that binds to it via source."""
+    return {
+        "version": 1,
+        "title": "Semantic Engine Dashboard",
+        "layout": {"cols": 12, "row_height": 60},
+        "data": [
+            {
+                "id": "p1",
+                "kind": "inline",
+                "params": {},
+                "base_cte": "WITH base AS (SELECT * FROM sales)",
+                "results": [
+                    {"name": "daily", "grain": "day"},
+                    {"name": "weekly", "grain": "week"},
+                ],
+            }
+        ],
+        "widgets": [
+            {
+                "id": "w1",
+                "type": "kpi",
+                "query_id": "",
+                "source": {"provider": "p1", "result": "daily"},
+                "encoding": {"value": "revenue"},
+                "pos": {"x": 1, "y": 1, "w": 4, "h": 2},
+            },
+        ],
+    }
+
+
+class TestBet3DataProviderModels:
+    """BET-3: DataProvider, ProviderResult, WidgetSource model construction."""
+
+    def test_provider_result_model(self):
+        r = ProviderResult(name="daily", grain="day")
+        assert r.name == "daily"
+        assert r.grain == "day"
+
+    def test_provider_result_grain_optional(self):
+        r = ProviderResult(name="sku")
+        assert r.grain is None
+
+    def test_data_provider_inline(self):
+        p = DataProvider(
+            id="p1",
+            kind="inline",
+            base_cte="WITH x AS (SELECT 1)",
+            results=[ProviderResult(name="r1")],
+        )
+        assert p.id == "p1"
+        assert p.kind == "inline"
+        assert p.base_cte == "WITH x AS (SELECT 1)"
+        assert len(p.results) == 1
+
+    def test_data_provider_flow(self):
+        p = DataProvider(
+            id="p2",
+            kind="flow",
+            params={"region": "ZA"},
+            results=[ProviderResult(name="out")],
+        )
+        assert p.kind == "flow"
+        assert p.base_cte is None
+
+    def test_data_provider_params_default_empty(self):
+        p = DataProvider(id="p1", kind="inline", results=[])
+        assert p.params == {}
+
+    def test_widget_source_model(self):
+        ws = WidgetSource(provider="p1", result="daily")
+        assert ws.provider == "p1"
+        assert ws.result == "daily"
+
+    def test_widget_source_on_widget(self):
+        w = Widget(
+            id="w1",
+            type="kpi",
+            source=WidgetSource(provider="p1", result="daily"),
+        )
+        assert w.source is not None
+        assert w.source.provider == "p1"
+        assert w.query_id == ""
+        assert w.metric is None
+
+    def test_widget_source_defaults_none(self):
+        """Legacy widget: source defaults to None."""
+        w = Widget(id="w1", type="kpi", query_id="demo_all")
+        assert w.source is None
+
+
+class TestBet3DashboardSpecData:
+    """BET-3: DashboardSpec.data field — parsing, defaults, schema."""
+
+    def test_data_defaults_empty(self):
+        spec = DashboardSpec(title="T", widgets=[])
+        assert spec.data == []
+
+    def test_spec_with_data_parses(self):
+        spec, issues = validate_spec(_make_provider_spec())
+        hard_issues = [i for i in issues if not i.startswith("[warn]")]
+        assert spec is not None, f"Expected valid spec; issues: {issues}"
+        assert hard_issues == [], f"Unexpected hard issues: {hard_issues}"
+
+    def test_data_field_populated(self):
+        spec, _ = validate_spec(_make_provider_spec())
+        assert spec is not None
+        assert len(spec.data) == 1
+        p = spec.data[0]
+        assert p.id == "p1"
+        assert p.kind == "inline"
+        assert len(p.results) == 2
+
+    def test_data_provider_results_parsed(self):
+        spec, _ = validate_spec(_make_provider_spec())
+        assert spec is not None
+        p = spec.data[0]
+        assert p.results[0].name == "daily"
+        assert p.results[0].grain == "day"
+        assert p.results[1].name == "weekly"
+
+    def test_spec_json_schema_includes_data(self):
+        schema = spec_json_schema()
+        props = schema.get("properties", {})
+        assert "data" in props, (
+            f"Schema should expose 'data'; props: {list(props.keys())}"
+        )
+
+
+class TestBet3LegacyRoundTrip:
+    """BET-3: legacy specs (no data / no source) round-trip byte-identical."""
+
+    def _hard(self, issues: list[str]) -> list[str]:
+        return [i for i in issues if "not in the registered" not in i and not i.startswith("[warn]")]
+
+    def test_legacy_spec_round_trips(self):
+        """A legacy spec with no data/source round-trips with data=[] and source=None."""
+        data = _good_spec_dict()
+        spec, issues = validate_spec(data)
+        assert spec is not None
+        assert self._hard(issues) == []
+        # data key absent in raw dict → defaults to empty list.
+        assert spec.data == []
+        # Every widget has source=None.
+        for w in spec.widgets:
+            assert w.source is None
+
+    def test_legacy_spec_model_dump_no_source_key_when_none(self):
+        """model_dump(exclude_none=True) omits source for legacy widgets."""
+        spec, _ = validate_spec(_good_spec_dict())
+        assert spec is not None
+        dumped = spec.model_dump(exclude_none=True)
+        for w_dict in dumped.get("widgets", []):
+            assert "source" not in w_dict, (
+                f"Widget {w_dict['id']!r}: 'source' should be absent when None; "
+                f"got: {w_dict}"
+            )
+
+    def test_legacy_spec_model_dump_no_data_key_when_empty(self):
+        """model_dump(exclude_defaults=True) omits data=[] for legacy boards."""
+        spec, _ = validate_spec(_good_spec_dict())
+        assert spec is not None
+        # exclude_defaults drops default-value fields (data=[] is the default).
+        dumped = spec.model_dump(exclude_defaults=True)
+        assert "data" not in dumped or dumped.get("data") == [], (
+            f"Legacy board should omit 'data' when empty: {dumped.get('data')}"
+        )
+
+    def test_provider_spec_round_trips(self):
+        """A spec with data + widget.source round-trips through model_dump / validate_spec."""
+        spec, issues = validate_spec(_make_provider_spec())
+        assert spec is not None
+        assert self._hard(issues) == []
+
+        dumped = spec.model_dump()
+        spec2, issues2 = validate_spec(dumped)
+        assert spec2 is not None
+        assert self._hard(issues2) == []
+
+        # data preserved
+        assert len(spec2.data) == 1
+        assert spec2.data[0].id == "p1"
+
+        # widget.source preserved
+        w = next(w for w in spec2.widgets if w.id == "w1")
+        assert w.source is not None
+        assert w.source.provider == "p1"
+        assert w.source.result == "daily"
+
+    def test_legacy_validate_spec_unchanged(self):
+        """validate_spec still returns the same issues for legacy specs (regression)."""
+        data = _good_spec_dict()
+        spec, issues = validate_spec(data)
+        hard = self._hard(issues)
+        assert spec is not None
+        assert hard == [], f"Regression: unexpected hard issues for legacy spec: {hard}"
+
+
+class TestBet3Validation:
+    """BET-3: at-most-one binding + provider/result existence checks."""
+
+    def _hard(self, issues: list[str]) -> list[str]:
+        return [i for i in issues if "not in the registered" not in i and not i.startswith("[warn]")]
+
+    # ── at-most-one binding ───────────────────────────────────────────────────
+
+    def test_widget_with_only_source_is_valid(self):
+        data = _make_provider_spec()
+        spec, issues = validate_spec(data)
+        assert spec is not None
+        assert self._hard(issues) == [], f"Unexpected issues: {issues}"
+
+    def test_widget_with_query_id_and_source_is_rejected(self):
+        """A widget with both query_id and source is a hard error."""
+        data = _make_provider_spec()
+        # Add a non-empty query_id alongside source.
+        data["widgets"][0]["query_id"] = "demo_all"
+        _, issues = validate_spec(data)
+        hard = self._hard(issues)
+        assert any("at most one" in i.lower() or "query_id" in i for i in hard), (
+            f"Expected at-most-one error for query_id+source, got: {issues}"
+        )
+
+    def test_widget_with_metric_and_source_is_rejected(self):
+        """A widget with both metric and source is a hard error."""
+        data = _make_provider_spec()
+        data["widgets"][0]["metric"] = {
+            "metric_id": "some_metric",
+            "dimensions": [],
+        }
+        _, issues = validate_spec(data)
+        hard = self._hard(issues)
+        # metric registry soft-warns unknown metric; at-most-one is the hard error.
+        at_most_one = [i for i in hard if "at most one" in i.lower()]
+        assert at_most_one, (
+            f"Expected at-most-one error for metric+source, hard issues: {hard}"
+        )
+
+    def test_widget_with_query_id_only_still_valid(self):
+        """Existing widget with only query_id is unaffected."""
+        data = _good_spec_dict()
+        spec, issues = validate_spec(data)
+        hard = self._hard(issues)
+        assert spec is not None
+        assert hard == [], f"Regression: query_id-only widget should be valid: {hard}"
+
+    def test_widget_with_no_binding_produces_error(self):
+        """A data widget with no binding (empty query_id + no metric + no source) is an error."""
+        data = _good_spec_dict()
+        data["widgets"][0]["query_id"] = ""
+        _, issues = validate_spec(data)
+        assert any("must have" in i.lower() for i in issues), (
+            f"Expected missing-binding error, got: {issues}"
+        )
+
+    # ── provider / result existence ───────────────────────────────────────────
+
+    def test_unknown_provider_id_is_error(self):
+        """source.provider referencing an undeclared provider is a hard error."""
+        data = _make_provider_spec()
+        data["widgets"][0]["source"]["provider"] = "p_missing"
+        _, issues = validate_spec(data)
+        hard = self._hard(issues)
+        assert any("p_missing" in i and "not declared" in i for i in hard), (
+            f"Expected undeclared provider error, got: {hard}"
+        )
+
+    def test_unknown_result_name_is_error(self):
+        """source.result referencing an undeclared result name is a hard error."""
+        data = _make_provider_spec()
+        data["widgets"][0]["source"]["result"] = "r_missing"
+        _, issues = validate_spec(data)
+        hard = self._hard(issues)
+        assert any("r_missing" in i and "not declared" in i for i in hard), (
+            f"Expected undeclared result error, got: {hard}"
+        )
+
+    def test_valid_provider_and_result_passes(self):
+        """A widget with a valid source binding passes validation."""
+        data = _make_provider_spec()
+        spec, issues = validate_spec(data)
+        hard = self._hard(issues)
+        assert spec is not None
+        assert hard == [], f"Valid source binding should have no hard issues: {hard}"
+
+    def test_second_result_name_also_valid(self):
+        """Binding to the second result in a provider is also valid."""
+        data = _make_provider_spec()
+        data["widgets"][0]["source"]["result"] = "weekly"
+        spec, issues = validate_spec(data)
+        hard = self._hard(issues)
+        assert spec is not None
+        assert hard == [], f"Second result binding should be valid: {hard}"
+
+    def test_flow_kind_provider_validates(self):
+        """kind='flow' provider without base_cte validates."""
+        data = _make_provider_spec()
+        data["data"][0]["kind"] = "flow"
+        data["data"][0]["base_cte"] = None
+        spec, issues = validate_spec(data)
+        hard = self._hard(issues)
+        assert spec is not None
+        assert hard == [], f"Flow provider should validate: {hard}"
+
+    def test_invalid_provider_kind_rejected(self):
+        """An invalid 'kind' value is rejected by Pydantic."""
+        data = _make_provider_spec()
+        data["data"][0]["kind"] = "external"
+        spec, issues = validate_spec(data)
+        assert spec is None, "Expected parse failure for invalid provider kind"
+        assert len(issues) > 0

@@ -196,7 +196,7 @@ class TestValidateMetricBinding:
         assert spec is not None  # parse succeeds; this is a semantic error
         # The raw issue names the missing-source rule.
         assert any(
-            "must have either a non-empty 'query_id' or a 'metric' binding" in i
+            "must have" in i and "query_id" in i
             for i in issues
         )
         structured = to_structured_issues(spec_data, issues)
