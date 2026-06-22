@@ -199,6 +199,7 @@ def compile_metric(
     mq: MetricQuery,
     *,
     dialect: str = _DEFAULT_DIALECT,
+    policy_cols: tuple[str, ...] = (),
 ) -> tuple[str, dict[str, Any]]:
     """Compile *metric* + *mq* into ``(sql, params)``.
 
@@ -207,6 +208,17 @@ def compile_metric(
     :class:`MetricError`.
 
     See module docstring for the time-bucket alias and in/not_in conventions.
+
+    ``policy_cols`` — the RLS policy column NAMES the downstream planner will
+    inject as ``WHERE <col> = <claim>`` predicates at query time (i.e. the keys
+    of ``claims['policies']``).  These are threaded into the layered top-N path
+    so the membership / ranking subqueries correlate on them EVEN WHEN
+    ``metric.rls_keys`` is empty and the only projected dimension is the ranked
+    dimension.  Without this the membership subquery would compute the GLOBAL
+    top-N across tenants and the planner's outer per-tenant RLS filter would then
+    yield a WRONG / empty per-tenant result (a tenant's true top member excluded
+    because another tenant's member ranks higher globally).  Empty (the default)
+    preserves the prior single-tenant behaviour exactly.
     """
     # ── 1. GOVERN (everything BEFORE we build any SQL) ──────────────────────
     time_alias = _govern(metric, mq)
@@ -217,7 +229,7 @@ def compile_metric(
     if not needs_layer:
         return _compile_flat(metric, mq, time_alias, dialect)
     else:
-        return _compile_layered(metric, mq, time_alias, dialect)
+        return _compile_layered(metric, mq, time_alias, dialect, policy_cols)
 
 
 def compile_metric_sql(
@@ -311,6 +323,7 @@ def _compile_layered(
     mq: MetricQuery,
     time_alias: str | None,
     dialect: str,
+    policy_cols: tuple[str, ...] = (),
 ) -> tuple[str, dict[str, Any]]:
     """Emit the two-level CTE query with derived + time-intel + top-N layers.
 
@@ -340,6 +353,31 @@ def _compile_layered(
             # dimension expression that remaps it.  The simplest safe approach:
             # add it as a bare column to both __base and the outer SELECT.
             extra_rls_dims.append(rls_key)
+
+    # FIX (MED correctness/RLS — single-ranked-dim top-N tenant leak): when the
+    # metric declares NO rls_keys but the REQUEST carries RLS policies (the
+    # planner will inject ``WHERE <policy_col> = <claim>`` on the outer select),
+    # the top-N membership subquery must correlate on those policy columns so the
+    # top-N set is computed PER TENANT.  fix-13 handled this when a non-ranked
+    # dimension exists (the membership correlates on it); but when the metric has
+    # rls_keys=[] AND the ONLY projected dim IS the ranked dim, there is no other
+    # column to correlate on — the membership computes the GLOBAL top-N and the
+    # outer per-tenant RLS filter then yields a wrong/empty result.  We therefore
+    # hoist every active policy column into the grain here (so __base groups by it
+    # and the outer SELECT projects it — giving the planner a real column to land
+    # its predicate on AND giving the membership subquery a column to correlate
+    # on).  These hoisted columns are passed to _membership_correlation_keys via
+    # all_dim_names below so they are picked up even when rls_keys=[].  Empty
+    # policy_cols (single-tenant) is a no-op — prior behaviour is byte-stable.
+    for policy_col in policy_cols:
+        if not _IDENT_RE.fullmatch(policy_col):
+            # Defense-in-depth: these names are interpolated unquoted into the
+            # membership f-string.  Skip any name that is not a safe identifier
+            # rather than risk an injection (the planner still applies its own
+            # RLS predicate; correlation is an additional soundness measure).
+            continue
+        if policy_col not in mq.dimensions and policy_col not in extra_rls_dims:
+            extra_rls_dims.append(policy_col)
 
     # ── Detect latest_snapshot comparisons ─────────────────────────────────
     snapshot_specs = [tc for tc in mq.time_comparisons if tc.kind == "latest_snapshot"]
@@ -579,13 +617,33 @@ def _compile_layered(
             if time_alias:
                 time_alias_quoted = exp.to_identifier(time_alias, quoted=True).sql(dialect=dialect)
                 order_part_sql = time_alias_quoted
+                # FIX (LOW correctness — time-interval rolling frame): a rolling
+                # window over a TIME series must measure its lookback in CALENDAR
+                # time, not physical rows.  ``ROWS BETWEEN N PRECEDING`` counts N
+                # prior rows, so a rolling 28-day window over data with missing /
+                # sparse days actually spans far MORE than 28 calendar days (it
+                # walks back 28 *populated* buckets).  Emit ``RANGE BETWEEN
+                # INTERVAL 'N <unit>' PRECEDING AND CURRENT ROW`` ordered by the
+                # time bucket so gaps are handled correctly: the frame is the set
+                # of rows whose ordering value falls within the time interval,
+                # regardless of how many physical rows that is.  DuckDB and PG
+                # both support RANGE with an INTERVAL offset.  ``rows_back``
+                # (periods - 1) is the interval magnitude so the frame
+                # [bucket - (N-1) units, bucket] spans exactly N grain units
+                # inclusive, matching the prior ROWS semantics on dense data.
+                interval_unit = _ROLLING_INTERVAL_UNIT.get(
+                    mq.time_grain or "day", "day"
+                )
                 win_sql = (
                     f"{agg_fn}({tc.measure}) OVER ("
                     f"PARTITION BY {partition_parts_sql} "
                     f"ORDER BY {order_part_sql} "
-                    f"ROWS BETWEEN {rows_back} PRECEDING AND CURRENT ROW)"
+                    f"RANGE BETWEEN INTERVAL '{rows_back} {interval_unit}' "
+                    f"PRECEDING AND CURRENT ROW)"
                 )
             else:
+                # Non-time rolling window (no grain/order column): keep the
+                # physical ROWS frame — there is no time axis to range over.
                 win_sql = (
                     f"{agg_fn}({tc.measure}) OVER ("
                     f"ROWS BETWEEN {rows_back} PRECEDING AND CURRENT ROW)"
@@ -1823,6 +1881,21 @@ def _window_lag(
         partition_by=partition_cols,
         order=exp.Order(expressions=[exp.Ordered(this=order_col.copy())]) if order_col else None,
     )
+
+
+# Time-interval unit per grain for the RANGE-based rolling-window frame.
+# A rolling window over a sparse time series must span CALENDAR time, not a
+# physical row count, so we emit ``RANGE BETWEEN INTERVAL 'N <unit>' PRECEDING``
+# ordered by the time bucket.  The unit is the bucket grain itself, so a rolling
+# window of N buckets covers N grain-units of calendar time regardless of gaps.
+_ROLLING_INTERVAL_UNIT: dict[str, str] = {
+    "hour": "hour",
+    "day": "day",
+    "week": "week",
+    "month": "month",
+    "quarter": "quarter",
+    "year": "year",
+}
 
 
 # Interval subtraction SQL per grain for the date-correct prior-year lookup.

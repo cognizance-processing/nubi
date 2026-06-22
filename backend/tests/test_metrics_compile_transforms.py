@@ -5211,3 +5211,173 @@ def test_limit_without_top_n_unaffected() -> None:
     )
     sql, _ = compile_metric(m, mq)
     assert sql  # compiled without error
+
+
+# ---------------------------------------------------------------------------
+# MED correctness/RLS — single-ranked-dim top-N tenant correlation via
+# policy_cols.  When metric.rls_keys=[] AND the ONLY projected dim IS the ranked
+# dim AND policies are injected at query time, the membership subquery must
+# correlate on the active policy columns (threaded via policy_cols) so each
+# tenant gets its OWN top-N — not the GLOBAL top-N across tenants.
+# ---------------------------------------------------------------------------
+
+
+def _two_tenant_top_n_metric() -> MetricDefinition:
+    """Revenue metric with NO rls_keys and a single ranked dimension (member)."""
+    return MetricDefinition(
+        id="member_rev",
+        name="Member Revenue",
+        measure=Measure(name="rev", agg="sum", expr="amt"),
+        base_table="member_sales",
+        dimensions=(Dimension(name="member"),),
+        time_dimension=TimeDimension(
+            column="d", grains=("month",), default_grain="month"
+        ),
+        rls_keys=(),  # NO declared rls_keys — the edge case under test.
+    )
+
+
+def _seed_two_tenant_sales(con) -> None:
+    """org_a's top member (m1=20) ranks BELOW org_b's top member (m3=200) globally.
+
+    So a GLOBAL top-1 membership would pick m3 (org_b) for both tenants, and the
+    outer per-tenant RLS filter would then exclude org_a's true top member m1.
+    """
+    con.execute(
+        "CREATE TABLE member_sales (org_id VARCHAR, member VARCHAR, d DATE, amt DOUBLE)"
+    )
+    con.execute(
+        """
+        INSERT INTO member_sales VALUES
+            ('org_a', 'm1', '2024-01-01', 10),
+            ('org_a', 'm1', '2024-02-01', 10),
+            ('org_a', 'm2', '2024-01-01', 5),
+            ('org_b', 'm3', '2024-01-01', 100),
+            ('org_b', 'm3', '2024-02-01', 100),
+            ('org_b', 'm4', '2024-01-01', 1)
+        """
+    )
+
+
+def test_single_ranked_dim_top_n_correlates_on_policy_cols_per_tenant() -> None:
+    """[MED RLS] rls_keys=[] + single ranked dim + time_grain + injected policies.
+
+    Each tenant must get its OWN top-1 member (not the GLOBAL top-1).  Threaded
+    via compile_metric(..., policy_cols=('org_id',)) so the membership subquery
+    correlates on org_id and the planner's outer RLS filter lands on a projected
+    column.  Verified through plan() + DuckDB.
+    """
+    con = _duckdb_conn()
+    _seed_two_tenant_sales(con)
+    m = _two_tenant_top_n_metric()
+    mq = MetricQuery(
+        metric_id="member_rev",
+        dimensions=("member",),
+        time_grain="month",
+        top_n=TopN(dimension="member", n=1, order="desc"),
+    )
+    # policy_cols is what routes/metrics.py passes (keys of claims['policies']).
+    sql, _ = compile_metric(m, mq, policy_cols=("org_id",))
+
+    for org, expected_member in (("org_a", "m1"), ("org_b", "m3")):
+        p = plan(sql, claims={"policies": {"org_id": org}}, dialect="duckdb")
+        rows = con.execute(p.sql).fetchall()
+        members = {r[0] for r in rows}
+        assert members == {expected_member}, (
+            f"{org} top-1 should be its OWN top member {expected_member!r}, "
+            f"got {members} — membership computed globally, not per-tenant. "
+            f"rows={rows}"
+        )
+
+
+def test_single_ranked_dim_top_n_without_policy_cols_unchanged() -> None:
+    """[MED RLS] Empty policy_cols (single-tenant) preserves prior behaviour.
+
+    With no policies and no policy_cols the global top-N is the only sensible
+    result; org_id is NOT projected and no correlation predicate is emitted.
+    """
+    con = _duckdb_conn()
+    _seed_two_tenant_sales(con)
+    m = _two_tenant_top_n_metric()
+    mq = MetricQuery(
+        metric_id="member_rev",
+        dimensions=("member",),
+        time_grain="month",
+        top_n=TopN(dimension="member", n=1, order="desc"),
+    )
+    sql, _ = compile_metric(m, mq)  # no policy_cols
+    # org_id must NOT be hoisted into the projection / correlation.
+    assert "org_id" not in sql.lower()
+    # Global top-1 across all rows is m3 (org_b, 200).
+    p = plan(sql, claims={}, dialect="duckdb")
+    rows = con.execute(p.sql).fetchall()
+    assert {r[0] for r in rows} == {"m3"}, f"Global top-1 should be m3; rows={rows}"
+
+
+def test_rolling_window_uses_range_interval_over_missing_days() -> None:
+    """[LOW correctness] Time-based rolling window must use a TIME-INTERVAL frame.
+
+    With data that has missing/sparse days, a rolling 3-day sum must cover the
+    3 CALENDAR days [d-2, d], NOT the prior 3 physical rows.  We emit
+    RANGE BETWEEN INTERVAL 'N days' PRECEDING so gaps are handled correctly.
+    """
+    con = _duckdb_conn()
+    con.execute(
+        "CREATE TABLE roll_sales (region VARCHAR, d DATE, amt DOUBLE)"
+    )
+    # Sparse series for region 'A': 01, 02, then a gap, then 10.
+    # Rolling-3-day (RANGE INTERVAL '2 days') sums:
+    #   01-01 → 1            (only itself)
+    #   01-02 → 1 + 2 = 3    (01-01 within 2 days)
+    #   01-10 → 3            (01-01/02 are >2 days back → EXCLUDED)
+    # A physical ROWS BETWEEN 2 PRECEDING frame would WRONGLY sum 1+2+3=6 on
+    # 01-10 (the 3 prior rows), ignoring the calendar gap.
+    con.execute(
+        """
+        INSERT INTO roll_sales VALUES
+            ('A', '2024-01-01', 1),
+            ('A', '2024-01-02', 2),
+            ('A', '2024-01-10', 3)
+        """
+    )
+    m = MetricDefinition(
+        id="roll",
+        name="Roll",
+        measure=Measure(name="rev", agg="sum", expr="amt"),
+        base_table="roll_sales",
+        dimensions=(Dimension(name="region"),),
+        time_dimension=TimeDimension(
+            column="d", grains=("day",), default_grain="day"
+        ),
+        rls_keys=(),
+    )
+    mq = MetricQuery(
+        metric_id="roll",
+        dimensions=("region",),
+        time_grain="day",
+        time_comparisons=(
+            TimeComparison(
+                measure="rev", kind="rolling_sum", periods=3, name="rev_roll_3d"
+            ),
+        ),
+    )
+    sql, _ = compile_metric(m, mq)
+    # Must emit a RANGE INTERVAL frame, not a physical ROWS frame.
+    up = sql.upper()
+    assert "RANGE BETWEEN INTERVAL" in up, f"Expected RANGE INTERVAL frame; sql={sql}"
+    # sqlglot normalises INTERVAL '2 day' → INTERVAL '2' DAY; the interval
+    # magnitude is periods-1 (==2) and the unit is the grain (DAY).
+    assert "INTERVAL '2' DAY" in up, f"Expected '2 day' interval (periods-1); sql={sql}"
+
+    p = plan(sql, claims={}, dialect="duckdb")
+    rows = con.execute(p.sql).fetchall()
+    # Map d_day bucket → rolling value.  Column order: region, d_day, rev, rev_roll_3d.
+    by_date = {str(r[1])[:10]: r[-1] for r in rows}
+    assert by_date["2024-01-01"] == 1.0, f"rows={rows}"
+    assert by_date["2024-01-02"] == 3.0, f"rows={rows}"
+    # The KEY assertion: the gap day covers the TIME interval, not 3 prior rows.
+    assert by_date["2024-01-10"] == 3.0, (
+        f"Rolling 3-day on 2024-01-10 must EXCLUDE the >2-day-old rows "
+        f"(time interval, not physical row count); got {by_date['2024-01-10']}, "
+        f"rows={rows}"
+    )

@@ -905,3 +905,94 @@ class TestListFlowsBounded:
         # Without explicit limit the module cap of 2 applies.
         result = await store.list_flows("org-env")
         assert len(result) == 2
+
+
+# ---------------------------------------------------------------------------
+# 7. PgFlowStore.add_task_runs — single round-trip (N+1 fix, perf shape)
+# ---------------------------------------------------------------------------
+#
+# The Pg store's SQL semantics are covered against a live DB in
+# tests/test_pg_integration.py.  Here we verify the PERFORMANCE SHAPE without
+# a database: a bulk add of many task_runs must issue exactly ONE
+# ``app.db.fetch`` call (not N), passing per-column parameter arrays whose
+# lengths all equal the batch size — i.e. one round-trip, not 500.
+
+
+class TestPgAddTaskRunsSingleRoundTrip:
+    async def test_bulk_add_issues_one_fetch_with_column_arrays(self, monkeypatch):
+        import app.db as app_db  # noqa: PLC0415
+        from app.flows.store import PgFlowStore  # noqa: PLC0415
+
+        calls: list[tuple[str, tuple[Any, ...]]] = []
+
+        async def fake_fetch(query: str, *args: Any):
+            calls.append((query, args))
+            # Emulate the unnest INSERT...RETURNING: one row per input id
+            # ($2 is the ids array passed by add_task_runs).
+            flow_run_id = args[0]
+            ids = args[1]
+            org_ids = args[2]
+            task_keys = args[3]
+            states = args[4]
+            return [
+                {
+                    "id": ids[i],
+                    "flow_run_id": flow_run_id,
+                    "org_id": org_ids[i],
+                    "task_key": task_keys[i],
+                    "state": states[i],
+                    "attempt": 0,
+                    "depends_on": [],
+                    "cache_key": None,
+                    "result": None,
+                    "error": None,
+                    "logs": [],
+                    "scheduled_at": None,
+                    "started_at": None,
+                    "finished_at": None,
+                    "created_at": datetime.now(timezone.utc),
+                    "lease_expires_at": None,
+                    "worker_id": None,
+                    "parent_task_run_id": None,
+                    "branch_taken": None,
+                }
+                for i in range(len(ids))
+            ]
+
+        monkeypatch.setattr(app_db, "fetch", fake_fetch)
+
+        store = PgFlowStore()
+        run_id = str(uuid.uuid4())
+        n = 500
+        inputs = [_make_task_run(f"t{i}", state="ready") for i in range(n)]
+
+        stored = await store.add_task_runs(run_id, inputs)
+
+        # Exactly ONE round-trip — not N.
+        assert len(calls) == 1, f"expected 1 fetch, got {len(calls)}"
+        # All rows returned, in input order.
+        assert len(stored) == n
+        assert [t["task_key"] for t in stored] == [f"t{i}" for i in range(n)]
+        # Every per-column array parameter has batch-size length.
+        _query, args = calls[0]
+        assert args[0] == run_id
+        for arr in args[1:]:
+            assert isinstance(arr, list)
+            assert len(arr) == n
+
+    async def test_empty_batch_issues_no_fetch(self, monkeypatch):
+        import app.db as app_db  # noqa: PLC0415
+        from app.flows.store import PgFlowStore  # noqa: PLC0415
+
+        calls: list[Any] = []
+
+        async def fake_fetch(query: str, *args: Any):
+            calls.append(query)
+            return []
+
+        monkeypatch.setattr(app_db, "fetch", fake_fetch)
+
+        store = PgFlowStore()
+        result = await store.add_task_runs(str(uuid.uuid4()), [])
+        assert result == []
+        assert calls == []

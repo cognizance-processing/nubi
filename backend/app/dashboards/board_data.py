@@ -108,25 +108,87 @@ _EMBED_FLOW_TIMEOUT_S: float = float(
     os.environ.get("NUBI_EMBED_FLOW_TIMEOUT_S", _DEFAULT_EMBED_FLOW_TIMEOUT_S)
 )
 
+# [LOW resource] Cap: maximum number of (org_id, provider_id) semaphore entries
+# kept in the registry at any time.  When the registry is full, idle semaphores
+# (value == _EMBED_FLOW_CONCURRENCY, i.e. no in-flight or waiting callers) are
+# evicted in LRU order before a new entry is created.  A semaphore that still
+# has callers holding or waiting on it is NEVER evicted — those entries survive
+# until they become idle.  Override via env var NUBI_EMBED_SEM_REGISTRY_CAP.
+_DEFAULT_EMBED_SEM_REGISTRY_CAP = 1024
+_EMBED_SEM_REGISTRY_CAP: int = int(
+    os.environ.get("NUBI_EMBED_SEM_REGISTRY_CAP", _DEFAULT_EMBED_SEM_REGISTRY_CAP)
+)
+
 # Registry: (org_id, provider_id) -> asyncio.Semaphore
-# WeakValueDictionary is intentionally NOT used here: asyncio.Semaphore objects
-# that still have waiters must not be GC'd.  The registry is bounded in practice
-# (one entry per active embed board×provider combination) and entries are tiny.
-_embed_semaphores: dict[tuple[str, str], asyncio.Semaphore] = {}
+# Implemented as an OrderedDict so we can evict the least-recently-used idle
+# entry when the registry would otherwise grow beyond _EMBED_SEM_REGISTRY_CAP.
+# Invariant: a semaphore with _value < _EMBED_FLOW_CONCURRENCY has in-flight or
+# waiting callers and MUST NOT be evicted.
+import collections as _collections
+
+_embed_semaphores: "_collections.OrderedDict[tuple[str, str], asyncio.Semaphore]" = (
+    _collections.OrderedDict()
+)
 _embed_semaphores_lock = threading.Lock()
 
 
+def _embed_semaphore_is_idle(sem: asyncio.Semaphore) -> bool:
+    """Return True when *sem* has no in-flight or waiting callers.
+
+    A semaphore is idle when its internal counter equals the initial value set
+    at construction (_EMBED_FLOW_CONCURRENCY) — i.e. all tokens are free and
+    no coroutines are waiting on it.  Such an entry can safely be evicted.
+
+    asyncio.Semaphore exposes ``_value`` (the current token count) as a private
+    attribute; there is no public API for this in the stdlib.  The check is safe
+    because this function is only called while holding _embed_semaphores_lock and
+    while the event loop is idle (no other coroutine can acquire/release the sem
+    between the check and the eviction decision under the GIL).
+    """
+    # _value is the remaining token count; when equal to the concurrency cap all
+    # tokens are free.  When < cap at least one caller holds a token or is waiting.
+    return getattr(sem, "_value", 0) >= _EMBED_FLOW_CONCURRENCY
+
+
+def _evict_idle_embed_semaphores() -> None:
+    """Evict LRU idle entries from _embed_semaphores until len <= cap.
+
+    Called while holding _embed_semaphores_lock.  Only removes entries whose
+    semaphore is idle (no in-flight or waiting callers).  If the registry is
+    over-cap but all entries are in-use, no eviction happens — correctness is
+    preserved at the cost of temporarily exceeding the cap.
+    """
+    target = _EMBED_SEM_REGISTRY_CAP - 1  # make room for one new entry
+    # Iterate in LRU order (oldest first in OrderedDict); collect idle keys.
+    idle_keys = [
+        k for k, sem in _embed_semaphores.items() if _embed_semaphore_is_idle(sem)
+    ]
+    # Evict oldest idle entries until we're at or below target.
+    for key in idle_keys:
+        if len(_embed_semaphores) <= target:
+            break
+        _embed_semaphores.pop(key, None)
+
+
 def _get_embed_semaphore(org_id: str, provider_id: str) -> asyncio.Semaphore:
-    """Return the asyncio.Semaphore for *(org_id, provider_id)*, creating it once."""
+    """Return the asyncio.Semaphore for *(org_id, provider_id)*, creating it once.
+
+    LRU-capped: when the registry is at _EMBED_SEM_REGISTRY_CAP capacity, idle
+    entries (no in-flight or waiting callers) are evicted in LRU order before the
+    new entry is inserted.  In-use semaphores are never evicted.
+    """
     key = (org_id, provider_id)
-    sem = _embed_semaphores.get(key)
-    if sem is not None:
-        return sem
     with _embed_semaphores_lock:
         sem = _embed_semaphores.get(key)
-        if sem is None:
-            sem = asyncio.Semaphore(_EMBED_FLOW_CONCURRENCY)
-            _embed_semaphores[key] = sem
+        if sem is not None:
+            # Move to MRU position (most recently used).
+            _embed_semaphores.move_to_end(key)
+            return sem
+        # New entry: evict idle LRU entries if at capacity.
+        if len(_embed_semaphores) >= _EMBED_SEM_REGISTRY_CAP:
+            _evict_idle_embed_semaphores()
+        sem = asyncio.Semaphore(_EMBED_FLOW_CONCURRENCY)
+        _embed_semaphores[key] = sem
         return sem
 
 # ---------------------------------------------------------------------------

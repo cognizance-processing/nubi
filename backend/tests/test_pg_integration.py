@@ -727,6 +727,86 @@ async def test_flow_create_and_run_end_to_end(pg_db):
 
 
 # ---------------------------------------------------------------------------
+# Test: PgFlowStore.add_task_runs bulk insert (single round-trip, real PG)
+# ---------------------------------------------------------------------------
+#
+# Regression guard for the N+1 fix: add_task_runs must persist a whole batch
+# in ONE statement while remaining byte-for-byte equivalent to the old
+# per-row INSERT path — in particular the per-row depends_on text[] arrays
+# (passed as jsonb[] and rebuilt via jsonb_array_elements_text) and the
+# RETURNING ordering (restored to caller input order).
+
+
+@pytest.mark.asyncio(loop_scope="session")
+async def test_pg_add_task_runs_bulk_insert(pg_db):
+    """Bulk add_task_runs stores all rows correctly against a live PG."""
+    pool = pg_db
+    uid, oid = await _create_user_and_org(pool)
+
+    import app.db as app_db  # noqa: PLC0415
+
+    original_pool = app_db._pool
+    app_db._pool = pool
+    try:
+        from app.flows.store import PgFlowStore  # noqa: PLC0415
+
+        store = PgFlowStore()
+
+        flow = await store.create_flow(
+            org_id=oid, created_by=uid, name="bulk", spec={"version": 1, "tasks": []}
+        )
+        run = await store.create_flow_run(
+            flow_id=flow["id"], org_id=oid, params={}, trigger="manual"
+        )
+
+        # Mix of: empty depends_on, single dep, multi dep, a result jsonb,
+        # a branch_taken, and a parent_task_run_id.  First insert a parent so
+        # the FK on parent_task_run_id is satisfiable.
+        parent = (await store.add_task_runs(run["id"], [
+            {"task_key": "parent", "org_id": oid, "state": "waiting_children",
+             "depends_on": []},
+        ]))[0]
+
+        inputs = [
+            {"task_key": "a", "org_id": oid, "state": "ready", "depends_on": []},
+            {"task_key": "b", "org_id": oid, "state": "pending",
+             "depends_on": ["a"]},
+            {"task_key": "c", "org_id": oid, "state": "pending",
+             "depends_on": ["a", "b"], "attempt": 2,
+             "result": {"rows": 5}, "branch_taken": "condition_0",
+             "parent_task_run_id": parent["id"], "cache_key": "ck-c"},
+        ]
+        stored = await store.add_task_runs(run["id"], inputs)
+
+        # All returned, in input order.
+        assert [t["task_key"] for t in stored] == ["a", "b", "c"]
+        # Per-row depends_on text[] arrays preserved exactly.
+        assert stored[0]["depends_on"] == []
+        assert stored[1]["depends_on"] == ["a"]
+        assert stored[2]["depends_on"] == ["a", "b"]
+        # Scalar + jsonb + nullable fields preserved.
+        assert stored[2]["attempt"] == 2
+        assert stored[2]["result"] == {"rows": 5}
+        assert stored[2]["branch_taken"] == "condition_0"
+        assert stored[2]["parent_task_run_id"] == parent["id"]
+        assert stored[2]["cache_key"] == "ck-c"
+        assert stored[0]["flow_run_id"] == run["id"]
+        # DB-generated id / created_at populated.
+        assert all(isinstance(t["id"], str) and t["id"] for t in stored)
+        assert all(t["created_at"] is not None for t in stored)
+
+        # Round-trip through list_task_runs matches what was returned.
+        listed = await store.list_task_runs(run["id"])
+        by_key = {t["task_key"]: t for t in listed}
+        assert by_key["c"]["depends_on"] == ["a", "b"]
+        assert by_key["c"]["result"] == {"rows": 5}
+        assert by_key["b"]["depends_on"] == ["a"]
+
+    finally:
+        app_db._pool = original_pool
+
+
+# ---------------------------------------------------------------------------
 # Query/Metric unification — migration 0012 + slug stability
 # ---------------------------------------------------------------------------
 

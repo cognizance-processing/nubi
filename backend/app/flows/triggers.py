@@ -175,21 +175,43 @@ class InMemoryTriggerRegistry:
         )
         return rows[:effective_limit]
 
-    async def get(self, trigger_id: str) -> Trigger | None:
-        """Return the trigger by id, or None."""
-        return self._triggers.get(trigger_id)
+    async def get(self, trigger_id: str, org_id: str | None = None) -> Trigger | None:
+        """Return the trigger by id, or None.
 
-    async def delete(self, trigger_id: str) -> bool:
-        """Delete a trigger; return True if deleted."""
-        if trigger_id in self._triggers:
-            del self._triggers[trigger_id]
-            return True
-        return False
-
-    async def update_enabled(self, trigger_id: str, enabled: bool) -> Trigger | None:
-        """Enable/disable a trigger; return the updated trigger or None."""
+        When *org_id* is provided the trigger is only returned when its
+        ``org_id`` matches — preventing cross-tenant access.
+        """
         t = self._triggers.get(trigger_id)
         if t is None:
+            return None
+        if org_id is not None and str(t.org_id) != str(org_id):
+            return None
+        return t
+
+    async def delete(self, trigger_id: str, org_id: str | None = None) -> bool:
+        """Delete a trigger; return True if deleted.
+
+        When *org_id* is provided the row is only deleted when it belongs to
+        that org — preventing cross-tenant mutation.
+        """
+        t = self._triggers.get(trigger_id)
+        if t is None:
+            return False
+        if org_id is not None and str(t.org_id) != str(org_id):
+            return False
+        del self._triggers[trigger_id]
+        return True
+
+    async def update_enabled(self, trigger_id: str, enabled: bool, org_id: str | None = None) -> Trigger | None:
+        """Enable/disable a trigger; return the updated trigger or None.
+
+        When *org_id* is provided the update is only applied when the trigger
+        belongs to that org — preventing cross-tenant mutation.
+        """
+        t = self._triggers.get(trigger_id)
+        if t is None:
+            return None
+        if org_id is not None and str(t.org_id) != str(org_id):
             return None
         t.enabled = enabled
         return t
@@ -348,43 +370,84 @@ class PgTriggerRegistry:
         )
         return [_row_to_trigger(r) for r in rows]
 
-    async def get(self, trigger_id: str) -> Trigger | None:
-        """Return the trigger by id, or None."""
+    async def get(self, trigger_id: str, org_id: str | None = None) -> Trigger | None:
+        """Return the trigger by id, or None.
+
+        When *org_id* is provided, an ``AND org_id = $2::uuid`` predicate is
+        appended so the row is only returned when it belongs to that org —
+        preventing cross-tenant read access.
+        """
         from app.db import fetchrow as db_fetchrow  # noqa: PLC0415
 
-        row = await db_fetchrow(
-            "SELECT * FROM flow_triggers WHERE id = $1::uuid",
-            trigger_id,
-        )
+        if org_id is not None:
+            row = await db_fetchrow(
+                "SELECT * FROM flow_triggers WHERE id = $1::uuid AND org_id = $2::uuid",
+                trigger_id,
+                org_id,
+            )
+        else:
+            row = await db_fetchrow(
+                "SELECT * FROM flow_triggers WHERE id = $1::uuid",
+                trigger_id,
+            )
         return _row_to_trigger(row) if row is not None else None
 
-    async def delete(self, trigger_id: str) -> bool:
-        """Delete a trigger; return True if a row was deleted."""
+    async def delete(self, trigger_id: str, org_id: str | None = None) -> bool:
+        """Delete a trigger; return True if a row was deleted.
+
+        When *org_id* is provided, an ``AND org_id = $2::uuid`` predicate is
+        appended so only the owning org can delete its own trigger — preventing
+        cross-tenant mutation.
+        """
         from app.db import execute as db_execute  # noqa: PLC0415
 
-        status = await db_execute(
-            "DELETE FROM flow_triggers WHERE id = $1::uuid",
-            trigger_id,
-        )
+        if org_id is not None:
+            status = await db_execute(
+                "DELETE FROM flow_triggers WHERE id = $1::uuid AND org_id = $2::uuid",
+                trigger_id,
+                org_id,
+            )
+        else:
+            status = await db_execute(
+                "DELETE FROM flow_triggers WHERE id = $1::uuid",
+                trigger_id,
+            )
         # asyncpg returns e.g. "DELETE 1" or "DELETE 0"
         try:
             return int(status.split()[-1]) > 0
         except (IndexError, ValueError):
             return False
 
-    async def update_enabled(self, trigger_id: str, enabled: bool) -> Trigger | None:
-        """Enable/disable a trigger; return the updated trigger or None."""
+    async def update_enabled(self, trigger_id: str, enabled: bool, org_id: str | None = None) -> Trigger | None:
+        """Enable/disable a trigger; return the updated trigger or None.
+
+        When *org_id* is provided, an ``AND org_id = $3::uuid`` predicate is
+        appended so only the owning org can mutate its own trigger — preventing
+        cross-tenant mutation.
+        """
         from app.db import fetchrow as db_fetchrow  # noqa: PLC0415
 
-        row = await db_fetchrow(
-            """
-            UPDATE flow_triggers SET enabled = $1, updated_at = now()
-            WHERE id = $2::uuid
-            RETURNING *
-            """,
-            enabled,
-            trigger_id,
-        )
+        if org_id is not None:
+            row = await db_fetchrow(
+                """
+                UPDATE flow_triggers SET enabled = $1, updated_at = now()
+                WHERE id = $2::uuid AND org_id = $3::uuid
+                RETURNING *
+                """,
+                enabled,
+                trigger_id,
+                org_id,
+            )
+        else:
+            row = await db_fetchrow(
+                """
+                UPDATE flow_triggers SET enabled = $1, updated_at = now()
+                WHERE id = $2::uuid
+                RETURNING *
+                """,
+                enabled,
+                trigger_id,
+            )
         return _row_to_trigger(row) if row is not None else None
 
 

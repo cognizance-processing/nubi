@@ -1360,18 +1360,32 @@ class _FakePgTable:
             self._rows.append(row)
             return row
         if "UPDATE FLOW_TRIGGERS" in q:
-            # args: enabled, trigger_id
-            enabled, trigger_id = args
-            for row in self._rows:
-                if row["id"] == str(trigger_id):
-                    row["enabled"] = bool(enabled)
-                    return dict(row)
+            # Two forms:
+            #   with org_id:    args = (enabled, trigger_id, org_id)
+            #   without org_id: args = (enabled, trigger_id)
+            if "AND ORG_ID" in q:
+                enabled, trigger_id, org_id = args[0], args[1], args[2]
+                for row in self._rows:
+                    if row["id"] == str(trigger_id) and str(row["org_id"]) == str(org_id):
+                        row["enabled"] = bool(enabled)
+                        return dict(row)
+            else:
+                enabled, trigger_id = args[0], args[1]
+                for row in self._rows:
+                    if row["id"] == str(trigger_id):
+                        row["enabled"] = bool(enabled)
+                        return dict(row)
             return None
         if "SELECT * FROM FLOW_TRIGGERS WHERE ID" in q:
-            (trigger_id,) = args
+            # Two forms:
+            #   with org_id:    args = (trigger_id, org_id)
+            #   without org_id: args = (trigger_id,)
+            trigger_id = args[0]
+            org_id_filter = str(args[1]) if len(args) > 1 else None
             for row in self._rows:
                 if row["id"] == str(trigger_id):
-                    return dict(row)
+                    if org_id_filter is None or str(row["org_id"]) == org_id_filter:
+                        return dict(row)
             return None
         return None
 
@@ -1411,9 +1425,19 @@ class _FakePgTable:
     async def fake_execute(self, query: str, *args: Any) -> str:
         q = query.upper().strip()
         if "DELETE FROM FLOW_TRIGGERS" in q:
-            (trigger_id,) = args
+            # Two forms:
+            #   with org_id:    args = (trigger_id, org_id)
+            #   without org_id: args = (trigger_id,)
+            trigger_id = args[0]
+            org_id_filter = str(args[1]) if len(args) > 1 else None
             before = len(self._rows)
-            self._rows = [r for r in self._rows if r["id"] != str(trigger_id)]
+            if org_id_filter is not None:
+                self._rows = [
+                    r for r in self._rows
+                    if not (r["id"] == str(trigger_id) and str(r["org_id"]) == org_id_filter)
+                ]
+            else:
+                self._rows = [r for r in self._rows if r["id"] != str(trigger_id)]
             deleted = before - len(self._rows)
             return f"DELETE {deleted}"
         return "OK"
@@ -1537,6 +1561,181 @@ async def test_pg_trigger_registry_org_isolation(fake_pg_table):
         # list_all for org_a also stays isolated.
         all_a = await registry.list_all(org_a)
         assert all(t.org_id == org_a for t in all_a)
+
+
+# ---------------------------------------------------------------------------
+# [LOW tenant-isolation] PgTriggerRegistry org-scoping: get/delete/update_enabled
+# ---------------------------------------------------------------------------
+# These tests verify that a mismatched org_id on get/delete/update_enabled
+# does NOT return or affect another tenant's row (cross-tenant safety).
+# ---------------------------------------------------------------------------
+
+
+async def test_inmemory_get_with_mismatched_org_id_returns_none():
+    """[tenant-isolation] InMemoryTriggerRegistry.get with wrong org_id returns None."""
+    registry = get_trigger_registry()
+    trigger = await registry.register(
+        flow_id="flow-x",
+        kind="event",
+        source="evt.x",
+        org_id="org-owner",
+    )
+    # Correct org returns the trigger.
+    found = await registry.get(trigger.id, org_id="org-owner")
+    assert found is not None
+    assert found.id == trigger.id
+
+    # Mismatched org_id must return None — cross-tenant isolation.
+    not_found = await registry.get(trigger.id, org_id="org-other")
+    assert not_found is None, (
+        "get() with a mismatched org_id must return None to prevent cross-tenant read"
+    )
+
+
+async def test_inmemory_delete_with_mismatched_org_id_does_not_delete():
+    """[tenant-isolation] InMemoryTriggerRegistry.delete with wrong org_id is a no-op."""
+    registry = get_trigger_registry()
+    trigger = await registry.register(
+        flow_id="flow-x",
+        kind="event",
+        source="evt.x",
+        org_id="org-owner",
+    )
+    # Mismatched org_id must NOT delete the row.
+    deleted = await registry.delete(trigger.id, org_id="org-other")
+    assert deleted is False, (
+        "delete() with a mismatched org_id must return False (no-op)"
+    )
+    # Row must still exist.
+    still_there = await registry.get(trigger.id, org_id="org-owner")
+    assert still_there is not None, "Trigger must not have been deleted by mismatched org delete"
+
+
+async def test_inmemory_update_enabled_with_mismatched_org_id_returns_none():
+    """[tenant-isolation] InMemoryTriggerRegistry.update_enabled with wrong org_id is a no-op."""
+    registry = get_trigger_registry()
+    trigger = await registry.register(
+        flow_id="flow-x",
+        kind="event",
+        source="evt.x",
+        org_id="org-owner",
+        enabled=True,
+    )
+    # Mismatched org_id must NOT mutate the row.
+    result = await registry.update_enabled(trigger.id, enabled=False, org_id="org-other")
+    assert result is None, (
+        "update_enabled() with a mismatched org_id must return None (no-op)"
+    )
+    # Row must remain enabled=True (not mutated).
+    unchanged = await registry.get(trigger.id, org_id="org-owner")
+    assert unchanged is not None and unchanged.enabled is True, (
+        "Trigger must remain enabled=True — mismatched org must not mutate it"
+    )
+
+
+async def test_pg_get_with_mismatched_org_id_returns_none(fake_pg_table):
+    """[tenant-isolation] PgTriggerRegistry.get with wrong org_id returns None."""
+    registry = PgTriggerRegistry()
+
+    with (
+        patch("app.db.fetchrow", side_effect=fake_pg_table.fake_fetchrow),
+        patch("app.db.fetch", side_effect=fake_pg_table.fake_fetch),
+        patch("app.db.execute", side_effect=fake_pg_table.fake_execute),
+    ):
+        org_owner = str(uuid.uuid4())
+        org_other = str(uuid.uuid4())
+
+        trigger = await registry.register(
+            flow_id=str(uuid.uuid4()),
+            kind="event",
+            source="isolated.evt",
+            org_id=org_owner,
+        )
+
+        # Correct org returns the trigger.
+        found = await registry.get(trigger.id, org_id=org_owner)
+        assert found is not None
+        assert found.id == trigger.id
+
+        # Mismatched org_id must return None.
+        not_found = await registry.get(trigger.id, org_id=org_other)
+        assert not_found is None, (
+            "PgTriggerRegistry.get() with a mismatched org_id must return None "
+            "(cross-tenant read prevention)"
+        )
+
+
+async def test_pg_delete_with_mismatched_org_id_does_not_delete(fake_pg_table):
+    """[tenant-isolation] PgTriggerRegistry.delete with wrong org_id is a no-op."""
+    registry = PgTriggerRegistry()
+
+    with (
+        patch("app.db.fetchrow", side_effect=fake_pg_table.fake_fetchrow),
+        patch("app.db.fetch", side_effect=fake_pg_table.fake_fetch),
+        patch("app.db.execute", side_effect=fake_pg_table.fake_execute),
+    ):
+        org_owner = str(uuid.uuid4())
+        org_other = str(uuid.uuid4())
+
+        trigger = await registry.register(
+            flow_id=str(uuid.uuid4()),
+            kind="event",
+            source="isolated.evt",
+            org_id=org_owner,
+        )
+
+        # Mismatched org must NOT delete the row.
+        deleted = await registry.delete(trigger.id, org_id=org_other)
+        assert deleted is False, (
+            "PgTriggerRegistry.delete() with a mismatched org_id must return False (no-op)"
+        )
+
+        # Row must still exist for the owning org.
+        still_there = await registry.get(trigger.id, org_id=org_owner)
+        assert still_there is not None, (
+            "Trigger must still exist after a mismatched-org delete attempt"
+        )
+
+        # Correct org CAN delete.
+        deleted_ok = await registry.delete(trigger.id, org_id=org_owner)
+        assert deleted_ok is True
+
+
+async def test_pg_update_enabled_with_mismatched_org_id_returns_none(fake_pg_table):
+    """[tenant-isolation] PgTriggerRegistry.update_enabled with wrong org_id is a no-op."""
+    registry = PgTriggerRegistry()
+
+    with (
+        patch("app.db.fetchrow", side_effect=fake_pg_table.fake_fetchrow),
+        patch("app.db.fetch", side_effect=fake_pg_table.fake_fetch),
+        patch("app.db.execute", side_effect=fake_pg_table.fake_execute),
+    ):
+        org_owner = str(uuid.uuid4())
+        org_other = str(uuid.uuid4())
+
+        trigger = await registry.register(
+            flow_id=str(uuid.uuid4()),
+            kind="event",
+            source="isolated.evt",
+            org_id=org_owner,
+        )
+        assert trigger.enabled is True
+
+        # Mismatched org must NOT mutate the row.
+        result = await registry.update_enabled(trigger.id, enabled=False, org_id=org_other)
+        assert result is None, (
+            "PgTriggerRegistry.update_enabled() with a mismatched org_id must return None (no-op)"
+        )
+
+        # Row must remain enabled=True.
+        unchanged = await registry.get(trigger.id, org_id=org_owner)
+        assert unchanged is not None and unchanged.enabled is True, (
+            "Trigger must remain enabled=True — mismatched org must not mutate it"
+        )
+
+        # Correct org CAN disable.
+        updated = await registry.update_enabled(trigger.id, enabled=False, org_id=org_owner)
+        assert updated is not None and updated.enabled is False
 
 
 # ---------------------------------------------------------------------------

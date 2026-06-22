@@ -2784,3 +2784,102 @@ async def test_inline_connector_resolved_once_per_provider_call(
     # Both results must still be present (correctness).
     assert "r1" in tables
     assert "r2" in tables
+
+
+# ---------------------------------------------------------------------------
+# NEW (fix-20b): [LOW] _embed_semaphores LRU-bounded registry
+# ---------------------------------------------------------------------------
+
+
+def test_embed_semaphore_registry_stays_bounded_under_many_keys() -> None:
+    """[LOW] The _embed_semaphores registry must not grow beyond _EMBED_SEM_REGISTRY_CAP.
+
+    Inserting N >> cap distinct (org_id, provider_id) keys must result in a
+    registry whose length is at most _EMBED_SEM_REGISTRY_CAP — idle entries are
+    evicted in LRU order as the cap is approached.
+
+    All created semaphores are idle (no callers hold them), so eviction is always
+    safe and the final registry size must be <= cap.
+    """
+    import app.dashboards.board_data as _bd_mod
+
+    original_cap = _bd_mod._EMBED_SEM_REGISTRY_CAP
+    original_concurrency = _bd_mod._EMBED_FLOW_CONCURRENCY
+    cap = 10
+    _bd_mod._EMBED_SEM_REGISTRY_CAP = cap
+    _bd_mod._EMBED_FLOW_CONCURRENCY = 2
+    _bd_mod._embed_semaphores.clear()
+
+    try:
+        n_keys = cap * 3  # insert 3× the cap
+        for i in range(n_keys):
+            _bd_mod._get_embed_semaphore(f"org-{i}", f"provider-{i}")
+
+        registry_size = len(_bd_mod._embed_semaphores)
+        assert registry_size <= cap, (
+            f"_embed_semaphores grew to {registry_size} entries with cap={cap} "
+            f"and {n_keys} distinct idle keys — LRU eviction is not bounding the registry."
+        )
+    finally:
+        _bd_mod._EMBED_SEM_REGISTRY_CAP = original_cap
+        _bd_mod._EMBED_FLOW_CONCURRENCY = original_concurrency
+        _bd_mod._embed_semaphores.clear()
+
+
+@pytest.mark.asyncio
+async def test_embed_semaphore_registry_does_not_evict_in_use_semaphore() -> None:
+    """[LOW] An in-use semaphore (token held) is NEVER evicted from the registry,
+    even when the registry is over its cap and all other entries are idle.
+
+    Strategy:
+    1. Set cap=2 and acquire a token on the semaphore for (org-0, p-0) so it
+       is in-use.
+    2. Fill the registry to beyond the cap with idle keys.
+    3. Assert the in-use entry is still present.
+    4. Assert the 429 provider_busy behaviour still works for a contended
+       in-use semaphore (correctness check).
+    """
+    import app.dashboards.board_data as _bd_mod
+
+    original_cap = _bd_mod._EMBED_SEM_REGISTRY_CAP
+    original_concurrency = _bd_mod._EMBED_FLOW_CONCURRENCY
+    cap = 2
+    _bd_mod._EMBED_SEM_REGISTRY_CAP = cap
+    _bd_mod._EMBED_FLOW_CONCURRENCY = 1  # one token per semaphore
+    _bd_mod._embed_semaphores.clear()
+
+    in_use_key = ("org-inuse", "provider-inuse")
+
+    try:
+        # Obtain the in-use semaphore and acquire its single token.
+        sem_in_use = _bd_mod._get_embed_semaphore(*in_use_key)
+        await sem_in_use.acquire()  # token is now held; semaphore is NOT idle
+
+        # Insert enough idle keys to overflow the cap and trigger eviction.
+        for i in range(cap + 5):
+            _bd_mod._get_embed_semaphore(f"org-idle-{i}", f"provider-idle-{i}")
+
+        # The in-use entry must still be in the registry.
+        assert in_use_key in _bd_mod._embed_semaphores, (
+            "In-use semaphore was evicted from the registry — "
+            "live in-flight semaphore must not be removed."
+        )
+
+        # Correctness: the same semaphore object is returned on the next lookup.
+        sem_retrieved = _bd_mod._get_embed_semaphore(*in_use_key)
+        assert sem_retrieved is sem_in_use, (
+            "Different semaphore object returned after near-eviction — "
+            "in-use semaphore must be the same object throughout."
+        )
+
+        # The held token means the semaphore is at zero; _value == 0 < concurrency.
+        assert not _bd_mod._embed_semaphore_is_idle(sem_in_use), (
+            "_embed_semaphore_is_idle returned True for a held semaphore."
+        )
+
+    finally:
+        # Always release before cleanup so the semaphore returns to idle.
+        sem_in_use.release()
+        _bd_mod._EMBED_SEM_REGISTRY_CAP = original_cap
+        _bd_mod._EMBED_FLOW_CONCURRENCY = original_concurrency
+        _bd_mod._embed_semaphores.clear()

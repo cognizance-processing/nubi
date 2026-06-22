@@ -1298,38 +1298,123 @@ class PgFlowStore:
     async def add_task_runs(
         self, flow_run_id: str, task_runs: list[dict[str, Any]]
     ) -> list[TaskRun]:
-        """Bulk-insert task_runs for a flow_run; return the stored list."""
-        import json  # noqa: PLC0415
-        from app.db import fetchrow as db_fetchrow  # noqa: PLC0415
+        """Bulk-insert task_runs for a flow_run in a SINGLE round-trip.
 
-        stored: list[TaskRun] = []
+        Performance
+        -----------
+        The previous implementation issued one ``INSERT ... RETURNING`` per
+        row, so a 500-item map fan-out chunk meant 500 sequential DB
+        round-trips.  This collapses the whole batch into ONE statement by
+        ``unnest``-ing per-column parameter arrays into a multi-row
+        ``INSERT ... SELECT ... RETURNING``.
+
+        Correctness
+        -----------
+        Each stored row is byte-for-byte equivalent to the old per-row path:
+        the same columns are written (``flow_run_id, org_id, task_key, state,
+        attempt, depends_on, cache_key, result, scheduled_at,
+        parent_task_run_id, branch_taken``) with ``id`` / ``created_at`` left
+        to their DB defaults, and ``_row_to_task_run`` normalises the result
+        identically.
+
+        The per-row ``depends_on text[]`` column is the tricky bit: a flat
+        ``text[]`` parameter cannot carry one array *per row*.  We pass the
+        depends_on lists as a ``jsonb[]`` (one JSON array per row) and rebuild
+        each row's ``text[]`` in SQL via ``jsonb_array_elements_text`` — this
+        preserves per-row arrays (including empty ``{}``) exactly.
+
+        ``WITH ORDINALITY`` carries the input index through so the RETURNING
+        rows are re-ordered back into the caller's input order (Postgres does
+        not otherwise guarantee RETURNING order), matching the old path.
+        """
+        import json  # noqa: PLC0415
+        from app.db import fetch as db_fetch  # noqa: PLC0415
+
+        if not task_runs:
+            return []
+
+        ids: list[str] = []
+        org_ids: list[str] = []
+        task_keys: list[str] = []
+        states: list[str] = []
+        attempts: list[int] = []
+        depends_on_json: list[str] = []
+        cache_keys: list[str | None] = []
+        results_json: list[str | None] = []
+        scheduled_ats: list[datetime | None] = []
+        parent_ids: list[str | None] = []
+        branch_takens: list[str | None] = []
+
         for tr in task_runs:
-            parent_id = tr.get("parent_task_run_id")
-            row = await db_fetchrow(
-                """
-                INSERT INTO task_runs (flow_run_id, org_id, task_key, state, attempt,
-                                       depends_on, cache_key, result, scheduled_at,
-                                       parent_task_run_id, branch_taken)
-                VALUES ($1::uuid, $2::uuid, $3, $4, $5, $6, $7, $8::jsonb, $9,
-                        $10::uuid, $11)
-                RETURNING *
-                """,
-                flow_run_id,
-                tr.get("org_id", ""),
-                tr["task_key"],
-                tr.get("state", "pending"),
-                tr.get("attempt", 0),
-                tr.get("depends_on", []),
-                tr.get("cache_key"),
-                json.dumps(tr["result"]) if tr.get("result") is not None else None,
-                tr.get("scheduled_at"),
-                parent_id,
-                tr.get("branch_taken"),
+            # Assign an id client-side when absent (matches InMemory semantics)
+            # so we can deterministically restore input order from RETURNING —
+            # Postgres does not guarantee RETURNING preserves the SELECT order.
+            ids.append(str(tr.get("id") or uuid.uuid4()))
+            org_ids.append(str(tr.get("org_id", "")))
+            task_keys.append(tr["task_key"])
+            states.append(tr.get("state", "pending"))
+            attempts.append(int(tr.get("attempt", 0)))
+            # One JSON array per row → rebuilt into text[] in SQL.
+            depends_on_json.append(json.dumps(list(tr.get("depends_on", []))))
+            cache_keys.append(tr.get("cache_key"))
+            results_json.append(
+                json.dumps(tr["result"]) if tr.get("result") is not None else None
             )
-            if row is None:  # pragma: no cover
-                raise RuntimeError("INSERT INTO task_runs returned no row.")
-            stored.append(_row_to_task_run(row))
-        return stored
+            scheduled_ats.append(tr.get("scheduled_at"))
+            pid = tr.get("parent_task_run_id")
+            parent_ids.append(str(pid) if pid is not None else None)
+            branch_takens.append(tr.get("branch_taken"))
+
+        rows = await db_fetch(
+            """
+            INSERT INTO task_runs (id, flow_run_id, org_id, task_key, state, attempt,
+                                   depends_on, cache_key, result, scheduled_at,
+                                   parent_task_run_id, branch_taken)
+            SELECT
+                u.id::uuid,
+                $1::uuid,
+                u.org_id::uuid,
+                u.task_key,
+                u.state,
+                u.attempt,
+                ARRAY(SELECT jsonb_array_elements_text(u.depends_on))::text[],
+                u.cache_key,
+                u.result,
+                u.scheduled_at,
+                u.parent_task_run_id::uuid,
+                u.branch_taken
+            FROM unnest(
+                $2::text[], $3::text[], $4::text[], $5::text[], $6::int[],
+                $7::jsonb[], $8::text[], $9::jsonb[], $10::timestamptz[],
+                $11::text[], $12::text[]
+            ) AS u(
+                id, org_id, task_key, state, attempt,
+                depends_on, cache_key, result, scheduled_at,
+                parent_task_run_id, branch_taken
+            )
+            RETURNING *
+            """,
+            flow_run_id,
+            ids,
+            org_ids,
+            task_keys,
+            states,
+            attempts,
+            depends_on_json,
+            cache_keys,
+            results_json,
+            scheduled_ats,
+            parent_ids,
+            branch_takens,
+        )
+        if len(rows) != len(task_runs):  # pragma: no cover
+            raise RuntimeError(
+                f"bulk INSERT INTO task_runs returned {len(rows)} rows "
+                f"for {len(task_runs)} inputs."
+            )
+        # Restore caller input order (RETURNING order is not guaranteed).
+        by_id = {str(dict(r)["id"]): r for r in rows}
+        return [_row_to_task_run(by_id[tid]) for tid in ids]
 
     async def list_task_runs(
         self, flow_run_id: str, limit: int | None = None

@@ -678,8 +678,12 @@ async def compile_metric_dry(
     payload["metric_id"] = metric_id
     mq = MetricQuery.from_dict(payload)
 
+    # Thread active RLS policy columns so the dry-compiled SQL reflects the same
+    # per-tenant top-N membership correlation the executing /query path uses
+    # (see query_metric for the full rationale).
+    policy_cols = tuple((identity.policies or {}).keys())
     try:
-        sql, params = compile_metric(metric, mq)
+        sql, params = compile_metric(metric, mq, policy_cols=policy_cols)
     except MetricError as exc:
         raise AppError(exc.code, exc.message, 400) from exc
 
@@ -724,8 +728,18 @@ async def query_metric(
     mq = MetricQuery.from_dict(payload)
 
     # ── 1. Compile the governed metric → (sql with {{params}}, params dict) ──
+    # SECURITY/CORRECTNESS (RLS top-N): thread the ACTIVE RLS policy column names
+    # (the keys of identity.policies, which the planner will inject as
+    # ``WHERE <col> = <claim>`` below) into the compiler so the layered top-N
+    # membership/ranking subqueries correlate on them and compute the top-N set
+    # PER TENANT — not globally across tenants — even when the metric declares no
+    # rls_keys and the only projected dimension IS the ranked dimension.  Without
+    # this the membership computes the GLOBAL top-N and the outer per-tenant RLS
+    # filter then yields a wrong/empty per-tenant result.  Empty policies (single
+    # tenant) → empty policy_cols → byte-stable prior behaviour.
+    policy_cols = tuple((identity.policies or {}).keys())
     try:
-        sql, named_params = compile_metric(metric, mq)
+        sql, named_params = compile_metric(metric, mq, policy_cols=policy_cols)
     except MetricError as exc:
         raise AppError(exc.code, exc.message, 400) from exc
 
