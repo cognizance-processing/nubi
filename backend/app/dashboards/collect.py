@@ -48,6 +48,13 @@ _ROW_CAP: int = int(os.environ.get("NUBI_COLLECT_ROW_CAP", _DEFAULT_ROW_CAP))
 # Maximum concurrent widget queries per board collection run.
 _WIDGET_CONCURRENCY = 8
 
+# Maximum number of Canvas bindings processed per collect call.
+# Override via NUBI_MAX_CANVAS_BINDINGS env-var (integer).  0 = unlimited.
+_DEFAULT_MAX_CANVAS_BINDINGS = 500
+_MAX_CANVAS_BINDINGS: int = int(
+    os.environ.get("NUBI_MAX_CANVAS_BINDINGS", _DEFAULT_MAX_CANVAS_BINDINGS)
+)
+
 
 # ---------------------------------------------------------------------------
 # Board / widget helpers
@@ -481,6 +488,16 @@ async def collect_canvas_data(
                     result_table = connector.execute(api_plan)
                     columns = list(result_table.schema.names)
                     rows_raw = result_table.to_pylist()
+                    cap = _ROW_CAP
+                    if cap > 0 and len(rows_raw) > cap:
+                        logger.warning(
+                            "collect_canvas: api binding el_id=%r returned %d rows, "
+                            "truncating to %d (set NUBI_COLLECT_ROW_CAP to raise limit)",
+                            el_id,
+                            len(rows_raw),
+                            cap,
+                        )
+                        rows_raw = rows_raw[:cap]
                     rows = [[r.get(c) for c in columns] for r in rows_raw]
                     entry["columns"] = columns
                     entry["rows"] = rows
@@ -501,6 +518,19 @@ async def collect_canvas_data(
 
         return entry
 
+    # Cap the number of bindings to prevent excessive resource consumption.
+    bindings_items = list(bindings_raw.items())
+    max_bindings = _MAX_CANVAS_BINDINGS
+    if max_bindings > 0 and len(bindings_items) > max_bindings:
+        logger.warning(
+            "collect_canvas: canvas_id=%r has %d bindings, truncating to %d "
+            "(set NUBI_MAX_CANVAS_BINDINGS to raise limit)",
+            canvas_id,
+            len(bindings_items),
+            max_bindings,
+        )
+        bindings_items = bindings_items[:max_bindings]
+
     # Run binding fetches concurrently (bounded by the same semaphore as boards).
     semaphore = asyncio.Semaphore(_WIDGET_CONCURRENCY)
 
@@ -510,7 +540,7 @@ async def collect_canvas_data(
 
     results = list(
         await asyncio.gather(
-            *(_fetch_guarded(el_id, binding) for el_id, binding in bindings_raw.items())
+            *(_fetch_guarded(el_id, binding) for el_id, binding in bindings_items)
         )
     )
 

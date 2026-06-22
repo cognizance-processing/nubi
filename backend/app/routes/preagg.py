@@ -36,6 +36,8 @@ This module self-registers on ``api_router`` at import time.  The wiring line in
 
 from __future__ import annotations
 
+import asyncio
+import functools
 from typing import Any
 
 from fastapi import APIRouter, Depends, Request
@@ -198,11 +200,14 @@ async def preagg_build(
         measures=sorted(measures),
     )
 
-    built = build_rollup(
-        candidate,
-        rls_keys=list(body.rls_keys),
-        source_database=body.source_database,
-        datastore_id=body.datastore_id,
+    built = await asyncio.to_thread(
+        functools.partial(
+            build_rollup,
+            candidate,
+            rls_keys=list(body.rls_keys),
+            source_database=body.source_database,
+            datastore_id=body.datastore_id,
+        )
     )
     return built.to_dict()
 
@@ -275,13 +280,16 @@ async def preagg_build_from_metric(
         )
 
     try:
-        built = build_rollup_for_metric(
-            metric,
-            grains=body.grains,
-            source_database=body.source_database,
-            registry=get_registry(),
-            register_query=True,
-            datastore_id=body.datastore_id,
+        built = await asyncio.to_thread(
+            functools.partial(
+                build_rollup_for_metric,
+                metric,
+                grains=body.grains,
+                source_database=body.source_database,
+                registry=get_registry(),
+                register_query=True,
+                datastore_id=body.datastore_id,
+            )
         )
     except (ValueError, Exception) as exc:
         raise AppError(

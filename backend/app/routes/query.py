@@ -1163,28 +1163,20 @@ async def query(
             headers={"X-Nubi-Cache": "HIT"},
         )
 
-    # ── 2a. Base-scan cache lookup (BET 2b — shared scan key) ───────────────
-    # When multiple widgets on a board query the SAME model + predicate + RLS
-    # tenant, their per-plan ``cache_key`` differs (different SELECT columns /
-    # aggregations) but the ``base_scan_key`` is the same.  A HIT here means
-    # a sibling widget already executed the underlying scan and we can reuse its
-    # bytes, saving a round-trip to the connector for the shared base data.
-    # SECURITY: ``compute_base_scan_key`` incorporates the full RLS policies dict
-    # so tenants NEVER share a base-scan entry (different policies → different key).
+    # NOTE: Base-scan fusion (BET 2b) is DISABLED.
+    # The base_scan_key helpers exist but are NOT used here: the original
+    # implementation stored fully-aggregated bytes under the coarser key and
+    # returned them to a different query with a different GROUP BY — wrong
+    # schema and wrong values (data corruption).  A correct implementation
+    # must cache the pre-GROUP-BY raw scan, which requires a plan-split that
+    # is out of scope.  See cache_key.py module docstring for full rationale.
     _base_scan_key = compute_base_scan_key(
         physical_plan.sql,
         list(physical_plan.params),
         dict(physical_plan.rls_claims),
     )
-    _base_scan_bytes = get_base_scan(_base_scan_key) if _base_scan_key else None
-    if _base_scan_bytes is not None:
-        # Base-scan HIT: promote to exact cache and return.
-        cache.put(physical_plan.cache_key, _base_scan_bytes)
-        return StreamingResponse(
-            ipc_stream_from_bytes(_base_scan_bytes),
-            media_type=_ARROW_STREAM_MEDIA_TYPE,
-            headers={"X-Nubi-Cache": "HIT", "X-Nubi-Fusion": "base-scan"},
-        )
+    # _base_scan_key is computed (for future use / observability) but NOT
+    # used to serve or store results.
 
     # ── 3. Pick connector (M12-A + M22-A) ───────────────────────────────────
     # If a datastore_id is provided: resolve the datastore from the repo (org-
@@ -1625,16 +1617,10 @@ async def query(
         _cache_tags.append(f"datastore:{effective_datastore_id}")
     cache.put(physical_plan.cache_key, full_bytes, tags=_cache_tags)
 
-    # ── 6a. Store base-scan entry (BET 2b — shared scan key) ─────────────────
-    # After executing the full query, store the result under the coarser
-    # ``base_scan_key`` so sibling widget queries (same model + predicate + RLS)
-    # can reuse this scan without hitting the connector again.
-    # Best-effort: a put failure must never break the response.
-    try:
-        if _base_scan_key:
-            put_base_scan(_base_scan_key, full_bytes, tags=_cache_tags)
-    except Exception:  # noqa: BLE001 — base-scan cache is advisory; never breaks the path
-        pass
+    # NOTE: Base-scan fusion write (BET 2b) is DISABLED.
+    # put_base_scan is intentionally NOT called here — storing aggregated result
+    # bytes under the coarser base_scan_key would corrupt responses for sibling
+    # queries with a different GROUP BY.  See cache_key.py for full rationale.
 
     # ── 6b. Log the query for pre-agg mining (best-effort; never breaks query) ─
     try:

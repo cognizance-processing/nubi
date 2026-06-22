@@ -95,6 +95,8 @@ No DB, no FastAPI, no I/O.  Governance violations raise
 
 from __future__ import annotations
 
+import os
+import re
 import tokenize
 import io
 from typing import Any, get_args
@@ -112,6 +114,14 @@ from app.metrics.models import (
     YEAR_LAG_BY_GRAIN,
     DerivedMeasure,
 )
+
+# ── Resource caps (env-overridable) ─────────────────────────────────────────
+_MAX_TC_PERIODS: int = int(os.environ.get("NUBI_MAX_TC_PERIODS", 3650))
+_MAX_TOP_N: int = int(os.environ.get("NUBI_MAX_TOP_N", 1000))
+_MAX_QUERY_LIMIT: int = int(os.environ.get("NUBI_MAX_QUERY_LIMIT", 100_000))
+
+# Valid SQL identifier pattern (for entity/time columns in latest_snapshot)
+_IDENT_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
 _DEFAULT_DIALECT = "duckdb"
 
@@ -327,14 +337,18 @@ def _compile_layered(
             )
         entity_col = snapshot_specs[0].measure  # repurposed: entity column name
         time_col = td.column
+        # Both columns are validated by _govern via _IDENT_RE; emit as quoted
+        # identifiers to prevent any residual injection.
+        entity_col_sql = exp.to_identifier(entity_col, quoted=True).sql(dialect=dialect)
+        time_col_sql = exp.to_identifier(time_col, quoted=True).sql(dialect=dialect)
         # Build: SELECT * FROM <source> QUALIFY ROW_NUMBER() OVER
         #        (PARTITION BY <entity> ORDER BY <time> DESC) = 1
         raw_source = _source_expr(metric, dialect)
         inner_select = exp.Select().select(exp.Star()).from_(raw_source)
         # Build QUALIFY expression as a raw SQL fragment (sqlglot supports QUALIFY)
         qualify_sql = (
-            f"ROW_NUMBER() OVER (PARTITION BY {entity_col} "
-            f"ORDER BY {time_col} DESC) = 1"
+            f"ROW_NUMBER() OVER (PARTITION BY {entity_col_sql} "
+            f"ORDER BY {time_col_sql} DESC) = 1"
         )
         qualify_expr = sqlglot.parse_one(qualify_sql, dialect=dialect)
         inner_select = inner_select.qualify(qualify_expr)
@@ -515,33 +529,43 @@ def _apply_top_n(
     time_alias: str | None,
     dialect: str,
 ) -> exp.Select:
-    """Wrap the outer select with a QUALIFY RANK() <= N filter for top-N."""
+    """Wrap the outer select with a top-N filter.
+
+    With a time_grain the outer SELECT has one row per (dim, time_bucket).
+    A nested window-in-window (RANK OVER (ORDER BY SUM() OVER ())) is invalid
+    in DuckDB/PG, so instead we use a membership filter:
+        WHERE <dim_col> IN (
+            SELECT <dim_col> FROM __base
+            GROUP BY <dim_col>
+            ORDER BY SUM(<rank_measure>) DESC
+            LIMIT <n>
+        )
+    Without a time_grain the per-row measure value is already the aggregate,
+    so the simple QUALIFY RANK() OVER (ORDER BY measure) <= N is valid.
+    """
     tn = mq.top_n
     assert tn is not None
 
     rank_measure = tn.measure or metric.measure.name
     dim_col = tn.dimension
 
-    # With a time_grain, rank by grand total (sum over all time buckets per dim).
     if time_alias is not None:
-        # Rank window: partition by dim, order by SUM(measure) OVER ALL time.
-        rank_m_col = exp.column(rank_measure)
-        total_win = exp.Window(
-            this=exp.func("SUM", rank_m_col, dialect=dialect),
-            partition_by=[exp.column(dim_col)],
+        # With time grain: use membership filter via subquery on __base.
+        order_dir = "DESC" if tn.order == "desc" else "ASC"
+        membership_sql = (
+            f"SELECT {dim_col} FROM __base "
+            f"GROUP BY {dim_col} "
+            f"ORDER BY SUM({rank_measure}) {order_dir} "
+            f"LIMIT {tn.n}"
         )
-        rank_over = exp.Window(
-            this=exp.func("RANK", dialect=dialect),
-            order=exp.Order(
-                expressions=[
-                    exp.Ordered(
-                        this=total_win,
-                        desc=(tn.order == "desc"),
-                    )
-                ]
-            ),
+        membership_expr = sqlglot.parse_one(membership_sql, dialect=dialect)
+        where_cond = exp.In(
+            this=exp.column(dim_col),
+            query=membership_expr,
         )
+        outer_select = outer_select.where(where_cond)
     else:
+        # No time grain: simple QUALIFY RANK() <= N.
         rank_m_col = exp.column(rank_measure)
         rank_over = exp.Window(
             this=exp.func("RANK", dialect=dialect),
@@ -554,12 +578,11 @@ def _apply_top_n(
                 ]
             ),
         )
-
-    qualify_cond = exp.LTE(
-        this=rank_over,
-        expression=exp.Literal.number(tn.n),
-    )
-    outer_select = outer_select.qualify(qualify_cond)
+        qualify_cond = exp.LTE(
+            this=rank_over,
+            expression=exp.Literal.number(tn.n),
+        )
+        outer_select = outer_select.qualify(qualify_cond)
     return outer_select
 
 
@@ -579,21 +602,20 @@ def _apply_top_n_other(
     """Extend a layered query with a rolled-up "Other" bucket for non-top-N members.
 
     Produces:
-        <top-N QUALIFY select> UNION ALL <other bucket select>
+        <top-N select> UNION ALL <other bucket select>
 
-    The top-N part is the layered SQL with a QUALIFY RANK() <= N filter applied
-    (same as the no-Other path).  The "Other" bucket is a separate SELECT from
-    ``__base`` that:
-    - Labels the top_n.dimension column as ``other_label`` (e.g. ``"Other"``).
-    - For each time bucket (if present), groups that bucket separately so the
-      "Other" row carries a time series aligned with the top-N rows.
-    - SUMs the base measures over all non-top-N members.
-    - Recomputes derived measures from those sums (exactly like the outer SELECT
-      does for the top-N rows).
-    - Passes other non-dimension columns (rls_keys) through as NULL (they are
-      not meaningful when mixing members; RLS is already applied to __base).
+    Both UNION arms must have identical column lists.  Time-comparison window
+    columns (``tc.out_name()``) are emitted as ``NULL AS <name>`` in the Other
+    arm since window functions cannot be re-applied over the rolled-up bucket.
 
-    The no-Other path (``top_n.other=False``) is unchanged.
+    Fix #1 (SQLi): ``other_label`` is validated in _govern (no quotes/backslash)
+    and emitted via ``exp.Literal.string(other_label).sql(...)`` — never raw f-string.
+    Fix #3 (correctness): When time_alias is set the top-N portion uses a WHERE IN
+    membership filter (not a nested window-in-window, which is illegal).
+    Fix #4 (correctness): NULL columns appended for every non-latest_snapshot
+    time_comparison so both UNION arms have identical column counts.
+    Fix #5 (correctness): count(*) Other bucket emits SUM(m.name) — sum the
+    pre-computed count column from __base, not SUM(COUNT(*)) which is a nested agg.
     """
     tn = mq.top_n
     assert tn is not None and tn.other
@@ -602,36 +624,39 @@ def _apply_top_n_other(
     dim_col = tn.dimension
     other_label = tn.other_label
 
-    # ── Build the top-N portion: apply QUALIFY to the existing layered SQL ────
-    # Re-parse the layered SQL to add QUALIFY to the outer SELECT.
+    # ── FIX #1: safe label literal via sqlglot ──────────────────────────────
+    safe_other_label = exp.Literal.string(other_label).sql(dialect=dialect)
+
+    # ── Build the top-N portion: apply the same logic as _apply_top_n ────────
+    # Re-parse the layered SQL to add the top-N restriction to the outer SELECT.
     try:
         full_tree = parse_sql_cached(layered_sql, dialect=dialect)
     except Exception:
-        # Fallback: return original SQL unchanged (conservative).
         return layered_sql
 
     if not isinstance(full_tree, exp.Select):
         return layered_sql
 
-    # Build a clone of the outer select with QUALIFY for top-N.
     import copy  # noqa: PLC0415
     top_n_tree = copy.deepcopy(full_tree)
 
     if time_alias is not None:
-        rank_m_col = exp.column(rank_measure)
-        total_win = exp.Window(
-            this=exp.func("SUM", rank_m_col.copy(), dialect=dialect),
-            partition_by=[exp.column(dim_col)],
+        # FIX #3: membership filter via subquery — no nested window-in-window.
+        order_dir = "DESC" if tn.order == "desc" else "ASC"
+        membership_sql = (
+            f"SELECT {dim_col} FROM __base "
+            f"GROUP BY {dim_col} "
+            f"ORDER BY SUM({rank_measure}) {order_dir} "
+            f"LIMIT {tn.n}"
         )
-        rank_over = exp.Window(
-            this=exp.func("RANK", dialect=dialect),
-            order=exp.Order(
-                expressions=[
-                    exp.Ordered(this=total_win, desc=(tn.order == "desc"))
-                ]
-            ),
+        membership_expr = sqlglot.parse_one(membership_sql, dialect=dialect)
+        where_cond = exp.In(
+            this=exp.column(dim_col),
+            query=membership_expr,
         )
+        top_n_tree = top_n_tree.where(where_cond)
     else:
+        # No time grain: simple QUALIFY RANK() <= N.
         rank_m_col = exp.column(rank_measure)
         rank_over = exp.Window(
             this=exp.func("RANK", dialect=dialect),
@@ -641,27 +666,24 @@ def _apply_top_n_other(
                 ]
             ),
         )
+        qualify_cond = exp.LTE(
+            this=rank_over,
+            expression=exp.Literal.number(tn.n),
+        )
+        top_n_tree = top_n_tree.qualify(qualify_cond)
 
-    qualify_cond = exp.LTE(
-        this=rank_over,
-        expression=exp.Literal.number(tn.n),
-    )
-    top_n_tree = top_n_tree.qualify(qualify_cond)
     top_n_sql = top_n_tree.sql(dialect=dialect)
 
     # ── Build the "Other" bucket SELECT from __base ───────────────────────────
-    # Determine top-N members using a subquery:
-    #   NOT IN (SELECT DISTINCT <dim_col> FROM __base ORDER BY <rank_measure> DESC LIMIT N)
-    # We exclude top-N by their rank based on SUM of rank_measure.
+    # Subquery to identify top-N members (used in NOT IN exclusion).
     top_members_subquery = (
-        f"SELECT DISTINCT {dim_col} FROM __base "
+        f"SELECT {dim_col} FROM __base "
         f"GROUP BY {dim_col} "
         f"ORDER BY SUM({rank_measure}) {'DESC' if tn.order == 'desc' else 'ASC'} "
         f"LIMIT {tn.n}"
     )
 
-    # Build the Other SELECT.
-    # Group by: time alias (if present) + all non-ranked dims + rls_keys EXCEPT the ranked dim.
+    # Group by: time alias (if present) + all non-ranked dims EXCEPT the ranked dim.
     other_group_cols = []
     if time_alias:
         other_group_cols.append(time_alias)
@@ -671,10 +693,11 @@ def _apply_top_n_other(
 
     other_select_parts: list[str] = []
 
-    # (a) Dimension columns: rank dim → other_label, others → passthrough or NULL.
+    # (a) Dimension columns: rank dim → safe other_label literal, others → passthrough.
     for d in all_dim_names:
         if d == dim_col:
-            other_select_parts.append(f"'{other_label}' AS {dim_col}")
+            # FIX #1: use sqlglot-escaped literal, not raw f-string interpolation.
+            other_select_parts.append(f"{safe_other_label} AS {dim_col}")
         else:
             other_select_parts.append(f"{d}")
 
@@ -682,18 +705,18 @@ def _apply_top_n_other(
     if time_alias:
         other_select_parts.append(f"{time_alias}")
 
-    # (c) Base measures: SUM over the non-top-N members.
+    # (c) Base measures: SUM the pre-aggregated column from __base.
+    # FIX #5: count(*) must use SUM(m.name) — the count is already computed in __base,
+    # so we sum those pre-computed values, NOT SUM(COUNT(*)) which is a nested agg.
     base_measure_sums: dict[str, str] = {}
     for m in metric.measures():
-        agg_sql = _AGG_SQL.get(m.agg, "SUM")
-        if m.agg == "count" and (m.expr or "*") == "*":
-            base_measure_sums[m.name] = f"SUM(COUNT(*)) AS {m.name}"
-        elif m.agg == "count_distinct":
+        if m.agg == "count_distinct":
             # count_distinct is not re-aggregable; emit NULL as a conservative fallback.
             base_measure_sums[m.name] = f"NULL AS {m.name}"
         elif m.agg in ("percentile_cont", "approx_count_distinct"):
             base_measure_sums[m.name] = f"NULL AS {m.name}"
         else:
+            # For count(*), count(col), sum, min, max, avg — sum the pre-agg value.
             base_measure_sums[m.name] = f"SUM({m.name}) AS {m.name}"
         other_select_parts.append(base_measure_sums[m.name])
 
@@ -702,6 +725,12 @@ def _apply_top_n_other(
     for dm in metric.derived_measures:
         formula_sql = _compile_derived_formula(dm, base_measure_names)
         other_select_parts.append(f"{formula_sql} AS {dm.name}")
+
+    # (e) FIX #4: time-comparison window columns — emit NULL AS <out_name> in the
+    # Other arm so both UNION arms have identical column counts.
+    regular_comparisons = [tc for tc in mq.time_comparisons if tc.kind != "latest_snapshot"]
+    for tc in regular_comparisons:
+        other_select_parts.append(f"NULL AS {tc.out_name()}")
 
     # WHERE: exclude top-N members.
     where_clause = f"WHERE {dim_col} NOT IN ({top_members_subquery})"
@@ -720,7 +749,6 @@ def _apply_top_n_other(
     ).strip()
 
     # Wrap in CTE so both parts can reference __base.
-    # Extract the __base CTE definition from the layered_sql.
     # layered_sql = "WITH __base AS (...) <outer>"
     inner_start = layered_sql.find("WITH __base AS (")
     if inner_start == -1:
@@ -728,8 +756,7 @@ def _apply_top_n_other(
     if inner_start == -1:
         return layered_sql  # can't find the CTE; return unchanged.
 
-    # Find end of base CTE: count parens.
-    cte_prefix = "WITH __base AS ("
+    # Find end of base CTE body: count parens.
     cte_body_start = layered_sql.find("(", inner_start + len("WITH __base AS")) + 1
     depth = 1
     pos = cte_body_start
@@ -739,10 +766,9 @@ def _apply_top_n_other(
         elif layered_sql[pos] == ")":
             depth -= 1
         pos += 1
-    base_cte_def = layered_sql[inner_start : pos]
+    base_cte_body = layered_sql[cte_body_start : pos - 1].strip()
 
     # top_n_sql already contains "WITH __base AS ..." — extract just its outer SELECT.
-    # Strip the "WITH __base AS (...) " prefix from top_n_sql.
     top_n_outer_start = top_n_sql.find("(", top_n_sql.upper().find("WITH __BASE AS")) + 1
     depth2 = 1
     pos2 = top_n_outer_start
@@ -754,9 +780,11 @@ def _apply_top_n_other(
         pos2 += 1
     top_n_outer_sql = top_n_sql[pos2:].strip()
 
-    result = f"{base_cte_def[:-1].rstrip()} {top_n_outer_sql} UNION ALL SELECT * FROM ({other_sql})"
-    # Close the CTE properly.
-    result = f"WITH __base AS ({base_cte_def[base_cte_def.find('(')+1 : base_cte_def.rfind(')')].strip()}) {top_n_outer_sql} UNION ALL SELECT * FROM ({other_sql})"
+    result = (
+        f"WITH __base AS ({base_cte_body}) "
+        f"{top_n_outer_sql} "
+        f"UNION ALL SELECT * FROM ({other_sql})"
+    )
     return result
 
 
@@ -799,6 +827,9 @@ def _guard_divisions(tokens: list[tuple[int, str]]) -> list[str]:
     """Walk the token list and wrap every immediate '/' denominator in NULLIF(..., 0).
 
     This handles simple cases like ``a / b`` and ``a / (b + c)``.
+
+    FIX #7: Also recurse into parenthesised groups so that a/(b/c) guards the
+    inner b/c expression before wrapping the outer group in NULLIF.
     """
     result: list[str] = []
     i = 0
@@ -806,10 +837,12 @@ def _guard_divisions(tokens: list[tuple[int, str]]) -> list[str]:
         tok_type, tok_str = tokens[i]
         if tok_str == "/" and i + 1 < len(tokens):
             result.append("/")
-            # Collect the denominator (next atom or parenthesised group)
+            # Collect the denominator (next atom or parenthesised group).
             i += 1
-            denom_tokens, advance = _collect_atom(tokens, i)
-            denom_sql = " ".join(denom_tokens)
+            denom_token_tuples, advance = _collect_atom(tokens, i)
+            # FIX #7: recurse into the denominator to guard any nested divisions.
+            inner_guarded = _guard_divisions(denom_token_tuples)
+            denom_sql = " ".join(inner_guarded)
             result.append(f"NULLIF({denom_sql}, 0)")
             i += advance
         else:
@@ -820,22 +853,24 @@ def _guard_divisions(tokens: list[tuple[int, str]]) -> list[str]:
 
 def _collect_atom(
     tokens: list[tuple[int, str]], start: int
-) -> tuple[list[str], int]:
+) -> tuple[list[tuple[int, str]], int]:
     """Collect the next arithmetic atom (name, number, or parenthesised group).
 
-    Returns (token_strings, count_consumed).
+    Returns (token_tuples, count_consumed).  Returning tuples (not bare strings)
+    lets _guard_divisions recurse safely into parenthesised groups (Fix #7).
     """
     if start >= len(tokens):
         return [], 0
     tok_type, tok_str = tokens[start]
     if tok_str == "(":
-        # Collect until matching close paren.
+        # Collect until matching close paren — return raw (type, str) tuples so
+        # the caller can recurse with _guard_divisions on the inner group.
         depth = 0
-        collected: list[str] = []
+        collected: list[tuple[int, str]] = []
         i = start
         while i < len(tokens):
-            _, ts = tokens[i]
-            collected.append(ts)
+            tt, ts = tokens[i]
+            collected.append((tt, ts))
             if ts == "(":
                 depth += 1
             elif ts == ")":
@@ -845,7 +880,7 @@ def _collect_atom(
             i += 1
         return collected, i - start
     else:
-        return [tok_str], 1
+        return [(tok_type, tok_str)], 1
 
 
 # ---------------------------------------------------------------------------
@@ -959,6 +994,22 @@ def _govern(metric: MetricDefinition, mq: MetricQuery) -> str | None:
                         "snapshot_no_time",
                         "latest_snapshot requires the metric to declare a time_dimension.",
                     )
+                # FIX #2: validate entity_col (repurposed .measure) is a safe identifier.
+                entity_col = tc.measure
+                if not _IDENT_RE.fullmatch(entity_col):
+                    raise MetricError(
+                        "bad_snapshot_entity",
+                        f"latest_snapshot entity column {entity_col!r} is not a valid "
+                        f"SQL identifier (must match [A-Za-z_][A-Za-z0-9_]*).",
+                    )
+                # FIX #2: validate time_col from the metric's time_dimension.
+                time_col_val = metric.time_dimension.column
+                if not _IDENT_RE.fullmatch(time_col_val):
+                    raise MetricError(
+                        "bad_snapshot_time_col",
+                        f"time_dimension.column {time_col_val!r} is not a valid "
+                        f"SQL identifier (must match [A-Za-z_][A-Za-z0-9_]*).",
+                    )
                 continue
             if tc.measure not in base_measure_names:
                 raise MetricError(
@@ -972,12 +1023,25 @@ def _govern(metric: MetricDefinition, mq: MetricQuery) -> str | None:
                     "tc_requires_grain",
                     "time_comparisons require a time_grain on the MetricQuery.",
                 )
+            # FIX #6: cap tc.periods to 1..NUBI_MAX_TC_PERIODS.
+            if not (1 <= tc.periods <= _MAX_TC_PERIODS):
+                raise MetricError(
+                    "bad_tc_periods",
+                    f"time_comparison.periods {tc.periods!r} is out of the allowed "
+                    f"range 1..{_MAX_TC_PERIODS}.",
+                )
 
     # ── top_n governance ────────────────────────────────────────────────────
     if mq.top_n is not None:
         tn = mq.top_n
         if tn.n <= 0:
             raise MetricError("bad_top_n", "top_n.n must be > 0.")
+        # FIX #6: cap top_n.n to 1..NUBI_MAX_TOP_N.
+        if tn.n > _MAX_TOP_N:
+            raise MetricError(
+                "bad_top_n",
+                f"top_n.n {tn.n!r} exceeds the maximum allowed value of {_MAX_TOP_N}.",
+            )
         if tn.dimension not in mq.dimensions:
             raise MetricError(
                 "bad_top_n",
@@ -989,6 +1053,20 @@ def _govern(metric: MetricDefinition, mq: MetricQuery) -> str | None:
             raise MetricError(
                 "bad_top_n",
                 f"top_n.measure {rank_measure!r} is not a base or derived measure.",
+            )
+        # FIX #1: validate other_label contains no single-quote or backslash.
+        if tn.other and ("'" in tn.other_label or "\\" in tn.other_label):
+            raise MetricError(
+                "bad_other_label",
+                f"top_n.other_label must not contain single-quotes or backslashes.",
+            )
+
+    # FIX #6: cap mq.limit to 1..NUBI_MAX_QUERY_LIMIT.
+    if mq.limit is not None:
+        if not (1 <= mq.limit <= _MAX_QUERY_LIMIT):
+            raise MetricError(
+                "bad_limit",
+                f"limit {mq.limit!r} is out of the allowed range 1..{_MAX_QUERY_LIMIT}.",
             )
 
     return time_alias

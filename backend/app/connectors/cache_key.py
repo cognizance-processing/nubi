@@ -17,13 +17,32 @@ CACHE_KEY_VERSION is embedded for future algorithm migrations; it is NOT part of
 the hash input (the algorithm itself encodes the version implicitly via the dict
 structure).  Bump it if the algorithm changes; old keys are then invalid.
 
-Base-scan cache key (BET 2b)
-----------------------------
+Base-scan cache key (BET 2b) — DISABLED
+-----------------------------------------
 :func:`compute_base_scan_key` derives a COARSER key from
 ``(base_tables, WHERE_predicates_normalised, params, rls_policies)``
-— stripping SELECT/GROUP BY/HAVING/ORDER BY so that two widget queries
-that scan the *same* model with the *same* filter predicate and the *same*
-RLS tenant share one base-scan cache entry.
+— stripping SELECT/GROUP BY/HAVING/ORDER BY.
+
+**BASE-SCAN FUSION IS CURRENTLY DISABLED.**
+
+The helper is defined (and its key derivation is sound for RLS isolation) but
+the put/get integration in the query/metrics routes has been removed because the
+original implementation was UNSOUND: it stored the **fully-aggregated** result of
+one query (e.g. ``SELECT SUM(amount) GROUP BY category``) under the coarser key
+and then returned those bytes verbatim to a DIFFERENT query that shared only the
+base table and WHERE clause but had a different GROUP BY.  The second query
+received the wrong schema and wrong values — data corruption across requests.
+
+A correct implementation MUST cache the **pre-GROUP-BY raw scan** (the unaggregated
+row stream), not the final aggregated result.  That requires splitting the execution
+into a raw-scan phase and a per-query aggregation phase — a non-trivial engine
+change that is out of scope here.
+
+Until that raw-unaggregated-scan implementation ships, ``compute_base_scan_key``
+returns a key that callers MAY store/retrieve independently, but the routes
+(``routes/query.py`` and ``routes/metrics.py``) do NOT call ``put_base_scan`` or
+act on a ``get_base_scan`` HIT.  The helpers remain available for tests and for
+the future correct implementation.
 
 SECURITY: the rls_hash component incorporates the full ``policies`` dict so
 different tenants NEVER share a base-scan entry even for identical SQL shapes.

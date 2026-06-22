@@ -337,8 +337,12 @@ def _sanitize_for_render(html: str) -> str:
         try:
             from app.ai.dashboard import validate_dashboard_html  # noqa: PLC0415
             ok, issues = validate_dashboard_html(html)
-        except Exception:  # noqa: BLE001
-            _ok, issues = True, []
+        except Exception as _inner_exc:  # noqa: BLE001
+            # Both validation paths failed — fail CLOSED: re-raise rather than
+            # letting unchecked HTML through.
+            raise ValueError(
+                "Canvas HTML safety validation unavailable; refusing to render."
+            ) from _inner_exc
 
     hard_errors = [i for i in issues if not i.lstrip().lower().startswith("[warn]")]
     if hard_errors:
@@ -414,8 +418,14 @@ def render_canvas_html(
     if include_assets_css:
         assets_raw = (doc.assets or {}).get("css") or ""
         if assets_raw:
-            # Strip any remaining <script> or on*= from user-authored CSS (minimal).
-            assets_css = "\n" + assets_raw
+            # Sanitize user-authored CSS: remove any attempt to break out of the
+            # <style> block (closing style tags) or inject script tags.
+            # This prevents an org member from setting assets.css to a value like:
+            #   </style><script>evil()</script><style>
+            # and having it execute in the emailed HTML.
+            sanitized_css = re.sub(r"</\s*style", "", assets_raw, flags=re.IGNORECASE)
+            sanitized_css = re.sub(r"<\s*script", "", sanitized_css, flags=re.IGNORECASE)
+            assets_css = "\n" + sanitized_css
 
     doc_html = (
         "<!DOCTYPE html>\n"

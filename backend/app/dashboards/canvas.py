@@ -152,8 +152,10 @@ class CanvasDoc(BaseModel):
     version: int = 1
     title: str = ""
     html: str = ""
-    bindings: dict[str, CanvasBinding] = Field(default_factory=dict)
-    """Mapping from data-el-id → binding descriptor."""
+    bindings: dict[str, CanvasBinding] = Field(default_factory=dict, max_length=500)
+    """Mapping from data-el-id → binding descriptor.  At most 500 entries are
+    accepted; larger dicts are rejected at parse/save time (Pydantic v2
+    ``max_length`` on ``dict`` fields)."""
     variables: list[CanvasVariable] = Field(default_factory=list)
     assets: dict[str, Any] = Field(default_factory=dict)
     """Optional assets (e.g. ``{"css": "...scoped stylesheet..."}``).  The

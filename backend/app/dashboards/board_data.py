@@ -72,13 +72,21 @@ def _params_hash(params: dict[str, Any]) -> str:
     return hashlib.sha256(canonical.encode()).hexdigest()[:16]
 
 
-def _provider_cache_key(provider_id: str, params: dict[str, Any], policies: dict[str, Any]) -> str:
-    """Composite cache key: ``provider:<pid>:<params_hash>:<rls_hash>``.
+def _provider_cache_key(
+    org_id: str,
+    provider_id: str,
+    params: dict[str, Any],
+    policies: dict[str, Any],
+) -> str:
+    """Composite cache key: ``provider:<org_id>:<pid>:<params_hash>:<rls_hash>``.
+
+    ``org_id`` is the first component so two different orgs sharing the same
+    ``provider_id`` and empty policies can NEVER collide in the cache.
 
     Stored in the base-scan cache namespace so it shares TTL + invalidation
     infrastructure without colliding with exact-result plan keys.
     """
-    return f"provider:{provider_id}:{_params_hash(params)}:{_rls_hash(policies)}"
+    return f"provider:{org_id}:{provider_id}:{_params_hash(params)}:{_rls_hash(policies)}"
 
 
 # ---------------------------------------------------------------------------
@@ -148,12 +156,24 @@ async def _resolve_flow_provider(
     merged_params: dict[str, Any],
     org_id: str,
     claims: dict[str, Any],
+    *,
+    org_flows_by_key: dict[str, Any] | None = None,
 ) -> dict[str, pa.Table]:
     """Execute a ``kind='flow'`` provider and return named Arrow tables.
 
     The provider ``id`` is used as the Flow lookup key.  The flow is identified
     by looking for a flow in the org whose ``name`` (or ``id``) matches the
     provider id.
+
+    Parameters
+    ----------
+    org_flows_by_key:
+        Optional pre-built mapping of ``{id: flow, name: flow, ...}`` for all
+        flows in *org_id*, produced once per board-load by
+        ``resolve_provider_data`` to avoid O(providers × flows) list scans.
+        When *None* the function falls back to calling ``list_flows`` itself
+        (backwards-compatible for direct callers / tests that patch
+        ``_resolve_flow_provider``).
 
     SECURITY: ``claims["policies"]`` from the verified token is forwarded to
     the flow runtime as RLS context.  No RLS from request body.
@@ -170,12 +190,18 @@ async def _resolve_flow_provider(
     # Try direct id lookup first; fall back to name-match within org.
     flow = await store.get_flow(provider.id)
     if flow is None or str(flow.get("org_id", "")) != org_id:
-        # Try name-based lookup within org flows.
-        all_flows = await store.list_flows(org_id=org_id)
-        flow = next(
-            (f for f in all_flows if f.get("name") == provider.id or str(f.get("id")) == provider.id),
-            None,
-        )
+        # Try name-based lookup using the pre-built per-board dict (avoids an
+        # extra list_flows call per provider → O(1) per provider).
+        if org_flows_by_key is not None:
+            flow = org_flows_by_key.get(provider.id)
+        else:
+            # Fallback: direct list_flows call (e.g. when called from tests
+            # that mock _resolve_flow_provider directly).
+            all_flows = await store.list_flows(org_id=org_id)
+            flow = next(
+                (f for f in all_flows if f.get("name") == provider.id or str(f.get("id")) == provider.id),
+                None,
+            )
 
     if flow is None:
         raise AppError(
@@ -443,7 +469,9 @@ async def resolve_provider_data(
 
     # ── Cache lookup ──────────────────────────────────────────────────────────
     policies: dict[str, Any] = dict((claims or {}).get("policies") or {})
-    cache_key = _provider_cache_key(provider_id, merged_params, policies)
+    # FIX [HIGH cross-tenant cache]: org_id is now the first component so two
+    # different orgs with the same provider_id + empty policies never collide.
+    cache_key = _provider_cache_key(org_id, provider_id, merged_params, policies)
 
     from app.connectors.cache import get_base_scan, put_base_scan  # noqa: PLC0415
 
@@ -460,7 +488,28 @@ async def resolve_provider_data(
 
     # ── Execute provider ──────────────────────────────────────────────────────
     if provider.kind == "flow":
-        tables = await _resolve_flow_provider(provider, merged_params, org_id, claims)
+        # FIX [MED N+1]: pre-fetch the org's flows once and pass the lookup
+        # dict into _resolve_flow_provider so it does NOT call list_flows per
+        # provider.  A single board load with N flow providers now issues at
+        # most one list_flows rather than up to N.
+        from app.flows.store import get_flow_store as _get_flow_store  # noqa: PLC0415
+
+        _store = _get_flow_store()
+        _all_org_flows = await _store.list_flows(org_id=org_id)
+        # Build a dict keyed by both id and name so _resolve_flow_provider can
+        # do O(1) lookups instead of a linear scan.
+        org_flows_by_key: dict[str, Any] = {}
+        for _f in _all_org_flows:
+            _fid = str(_f.get("id", ""))
+            _fname = _f.get("name", "")
+            if _fid:
+                org_flows_by_key[_fid] = _f
+            if _fname:
+                org_flows_by_key[_fname] = _f
+
+        tables = await _resolve_flow_provider(
+            provider, merged_params, org_id, claims, org_flows_by_key=org_flows_by_key
+        )
     elif provider.kind == "inline":
         tables = await _resolve_inline_provider(provider, merged_params, org_id, claims, repo)
     else:

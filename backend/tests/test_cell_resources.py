@@ -385,3 +385,125 @@ async def test_map_semaphore_blocks_at_cap(monkeypatch):
 
 
 import asyncio  # noqa: E402 (needs to be after the test that uses it)
+
+
+# ---------------------------------------------------------------------------
+# REGRESSION: [MED RBAC] viewer must receive 403 on POST /flows/compile
+# ---------------------------------------------------------------------------
+
+
+import uuid as _uuid  # noqa: E402
+import pytest_asyncio  # noqa: E402
+from httpx import ASGITransport, AsyncClient  # noqa: E402
+
+from app.auth.jwt import mint_access_token  # noqa: E402
+from app.flows.store import InMemoryFlowStore, set_flow_store  # noqa: E402
+from app.repos.memory import InMemoryRepo  # noqa: E402
+from app.repos.provider import set_repo  # noqa: E402
+
+
+def _make_compile_user(user_id: str | None = None, email: str = "bob@example.com") -> dict:
+    uid = user_id or str(_uuid.uuid4())
+    return {
+        "id": uid,
+        "email": email,
+        "name": "Bob",
+        "avatar_url": None,
+        "email_verified": True,
+        "created_at": "2024-01-01T00:00:00+00:00",
+    }
+
+
+def _compile_auth_headers(user_id: str) -> dict:
+    token = mint_access_token(user_id)
+    return {"Authorization": f"Bearer {token}"}
+
+
+@pytest_asyncio.fixture
+async def compile_client(app, fake_db):
+    """Client with a viewer user seeded for RBAC tests."""
+    store = InMemoryFlowStore()
+    set_flow_store(store)
+
+    repo = InMemoryRepo()
+    set_repo(repo)
+
+    viewer_id = str(_uuid.uuid4())
+    org_id = str(_uuid.uuid4())
+    viewer = _make_compile_user(user_id=viewer_id)
+
+    fake_db.users[viewer_id] = viewer
+    # Seed as viewer role — must be blocked from /compile.
+    repo.seed_org_member(org_id=org_id, user_id=viewer_id, role="viewer")
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(
+        transport=transport,
+        base_url="http://testserver",
+        follow_redirects=False,
+    ) as client:
+        yield client, viewer_id, org_id
+
+    set_flow_store(None)
+    set_repo(None)
+
+
+@pytest_asyncio.fixture
+async def compile_client_writer(app, fake_db):
+    """Client with a member (writer) user for positive control."""
+    store = InMemoryFlowStore()
+    set_flow_store(store)
+
+    repo = InMemoryRepo()
+    set_repo(repo)
+
+    writer_id = str(_uuid.uuid4())
+    org_id = str(_uuid.uuid4())
+    writer = _make_compile_user(user_id=writer_id, email="writer@example.com")
+
+    fake_db.users[writer_id] = writer
+    repo.seed_org_member(org_id=org_id, user_id=writer_id, role="member")
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(
+        transport=transport,
+        base_url="http://testserver",
+        follow_redirects=False,
+    ) as client:
+        yield client, writer_id, org_id
+
+    set_flow_store(None)
+    set_repo(None)
+
+
+@pytest.mark.asyncio
+async def test_viewer_cannot_compile_code(compile_client):
+    """A viewer calling POST /flows/compile must receive 403 Forbidden."""
+    client, viewer_id, _org_id = compile_client
+
+    resp = await client.post(
+        "/api/v1/flows/compile",
+        json={"code": "# harmless"},
+        headers=_compile_auth_headers(viewer_id),
+    )
+    assert resp.status_code == 403, (
+        f"Expected 403 for viewer on /flows/compile, got {resp.status_code}: {resp.text}"
+    )
+    body = resp.json()
+    assert body.get("code") == "forbidden" or resp.status_code == 403
+
+
+@pytest.mark.asyncio
+async def test_member_can_reach_compile_endpoint(compile_client_writer):
+    """A member (writer) calling /compile must NOT get 403 — may get 400 on bad code."""
+    client, writer_id, _org_id = compile_client_writer
+
+    resp = await client.post(
+        "/api/v1/flows/compile",
+        json={"code": "# no @flow decorator"},
+        headers=_compile_auth_headers(writer_id),
+    )
+    # Must not be 403; expected to get 400 (compile error) or 200.
+    assert resp.status_code != 403, (
+        f"Writer should not receive 403 on /compile, got {resp.status_code}: {resp.text}"
+    )

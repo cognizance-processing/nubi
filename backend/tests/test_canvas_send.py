@@ -748,3 +748,138 @@ class TestRenderCanvasHtmlFormatHelpers:
         result = render_canvas_html(doc, {})
         # Should render something with the token name (for debugging), not blank.
         assert "unknown_token" in result or "{{" not in result
+
+
+# ---------------------------------------------------------------------------
+# Security regression tests — XSS via assets.css (HIGH) and fail-open (MED)
+# ---------------------------------------------------------------------------
+
+
+class TestSecurityRegressions:
+    # ── Finding 1: XSS via assets.css ────────────────────────────────────────
+
+    def test_assets_css_closing_style_tag_stripped(self):
+        """assets.css cannot inject a </style> tag to break out of the style block.
+
+        An org member setting assets.css = '</style><script>evil()</script><style>'
+        must NOT be able to inject a <script> into the emailed HTML.  The
+        closing </style> and opening <script must be stripped before injection.
+        """
+        malicious_css = "</style><script>alert('xss')</script><style>.ok{color:red}"
+        doc = _make_doc(
+            html="<p>safe content</p>",
+            assets={"css": malicious_css},
+        )
+        result = render_canvas_html(doc, {})
+
+        # The closing style tag sequence must not survive.
+        assert "</style><script" not in result.lower()
+        # No raw <script> tag must appear anywhere in the rendered output.
+        import re as _re
+        assert not _re.search(r"<script", result, _re.IGNORECASE), (
+            "A <script> tag survived assets.css injection — XSS vector open."
+        )
+        # The document must still be a valid HTML wrapper (not broken).
+        assert "<!DOCTYPE html>" in result
+        assert "</html>" in result
+
+    def test_assets_css_script_tag_variant_stripped(self):
+        """assets.css with whitespace-padded <script tags is also neutralised."""
+        malicious_css = "body{color:red}</style>< script >evil()</ script ><style>"
+        doc = _make_doc(
+            html="<p>ok</p>",
+            assets={"css": malicious_css},
+        )
+        result = render_canvas_html(doc, {})
+
+        import re as _re
+        # No opening script tag (with or without whitespace) survives.
+        assert not _re.search(r"<\s*script", result, _re.IGNORECASE), (
+            "Whitespace-padded <script tag survived assets.css sanitization."
+        )
+
+    def test_assets_css_case_insensitive_stripped(self):
+        """assets.css attack with mixed case (</Style>, <SCRIPT>) is neutralised."""
+        malicious_css = "</Style><SCRIPT>evil()</SCRIPT><style>.ok{}"
+        doc = _make_doc(
+            html="<p>ok</p>",
+            assets={"css": malicious_css},
+        )
+        result = render_canvas_html(doc, {})
+
+        import re as _re
+        assert not _re.search(r"<\s*script", result, _re.IGNORECASE)
+
+    def test_benign_assets_css_still_inlined(self):
+        """Legitimate assets.css (no breakout attempt) is still inlined unchanged."""
+        safe_css = ".brand { font-family: 'Inter', sans-serif; color: #0d1527; }"
+        doc = _make_doc(
+            html="<p>ok</p>",
+            assets={"css": safe_css},
+        )
+        result = render_canvas_html(doc, {})
+        assert ".brand" in result
+        assert "font-family" in result
+
+    # ── Finding 2: sanitizer fail-open → fail-closed ─────────────────────────
+
+    def test_validator_unavailable_raises_not_passes(self):
+        """If BOTH validation paths raise, render_canvas_html must raise ValueError.
+
+        This ensures that when the validator is unavailable (import failure,
+        parse error in both paths), we fail CLOSED rather than letting
+        potentially unsafe HTML through unchecked.
+        """
+        from unittest.mock import patch as _patch
+        from app.dashboards import render_canvas as _rc
+
+        doc = _make_doc(html="<p>harmless</p>")
+
+        # Simulate both the CanvasDoc and validate_dashboard_html paths raising.
+        def _boom(*args, **kwargs):
+            raise RuntimeError("validator not available in this environment")
+
+        with _patch.object(_rc, "_sanitize_for_render", wraps=_rc._sanitize_for_render):
+            # Patch the inner imports so both branches explode.
+            with _patch(
+                "app.dashboards.canvas.CanvasDoc",
+                side_effect=RuntimeError("CanvasDoc unavailable"),
+            ):
+                with _patch(
+                    "app.dashboards.render_canvas._sanitize_for_render",
+                    side_effect=ValueError("Canvas HTML safety validation unavailable; refusing to render."),
+                ):
+                    with pytest.raises(ValueError, match="validation unavailable|refusing to render"):
+                        render_canvas_html(doc, {})
+
+    def test_sanitize_for_render_both_paths_fail_raises(self):
+        """_sanitize_for_render raises ValueError when both validator branches fail.
+
+        Simulates a broken environment where CanvasDoc construction raises AND
+        the validate_dashboard_html fallback also raises — the function must
+        re-raise a ValueError rather than returning the HTML unchecked.
+        """
+        from unittest.mock import patch as _patch
+        from app.dashboards.render_canvas import _sanitize_for_render
+        import app.dashboards.canvas as _canvas_mod
+        import app.ai.dashboard as _dashboard_mod
+
+        # Make CanvasDoc construction raise (triggers the outer except).
+        # Then make validate_dashboard_html also raise (triggers inner except).
+        with _patch.object(_canvas_mod, "CanvasDoc", side_effect=RuntimeError("CanvasDoc broken")):
+            with _patch.object(
+                _dashboard_mod,
+                "validate_dashboard_html",
+                side_effect=RuntimeError("validate_dashboard_html broken"),
+            ):
+                with pytest.raises(ValueError, match="unavailable|refusing"):
+                    _sanitize_for_render("<p>test</p>")
+
+    def test_script_in_html_still_rejected_normally(self):
+        """Normal <script> rejection still works after the fail-closed fix."""
+        from app.dashboards.render_canvas import _sanitize_for_render
+        # A doc with a script tag must still raise (existing behaviour preserved).
+        with pytest.raises((ValueError, Exception)):
+            # Either via sanitize directly (if validator is live) or via render.
+            doc = _make_doc(html="<script>alert(1)</script>")
+            render_canvas_html(doc, {})

@@ -45,9 +45,17 @@ All flow state is held in an ``InMemoryFlowStore`` (singleton via
 
 from __future__ import annotations
 
+import asyncio
 import hmac
+import os
 from datetime import datetime, timezone
 from typing import Any
+
+# ---------------------------------------------------------------------------
+# Sweep safety caps (env-configurable)
+# ---------------------------------------------------------------------------
+_SWEEP_TIMEOUT_S: float = float(os.environ.get("SWEEP_TIMEOUT_S", "300"))
+_MAX_SWEEP_CELLS: int = int(os.environ.get("MAX_SWEEP_CELLS", "50"))
 
 from fastapi import APIRouter, Depends, Header, Request, Response
 from pydantic import BaseModel
@@ -893,7 +901,7 @@ async def codegen_from_spec(
     return {"source": source, "issues": issues}
 
 
-@router.post("/compile", status_code=200)
+@router.post("/compile", status_code=200, dependencies=[Depends(require_writer_default)])
 async def compile_code(
     body: CompileCodeIn,
     _user: dict[str, Any] = Depends(current_user),
@@ -1989,16 +1997,28 @@ async def sweep_flow(
 
     now = datetime.now(timezone.utc)
 
+    # Enforce a hard server cap so callers cannot bypass it via the request body.
+    effective_max = min(body.max_cells, _MAX_SWEEP_CELLS)
+
     try:
-        result = await run_sweep(
-            store=store,
-            flow=flow,
-            param_sets=body.param_sets,
-            trigger="sweep",
-            now=now,
-            claims=claims,
-            grid=body.grid,
-            max_cells=body.max_cells,
+        result = await asyncio.wait_for(
+            run_sweep(
+                store=store,
+                flow=flow,
+                param_sets=body.param_sets,
+                trigger="sweep",
+                now=now,
+                claims=claims,
+                grid=body.grid,
+                max_cells=effective_max,
+            ),
+            timeout=_SWEEP_TIMEOUT_S,
+        )
+    except asyncio.TimeoutError:
+        raise AppError(
+            "sweep_timeout",
+            f"Sweep exceeded the server wall-clock limit of {_SWEEP_TIMEOUT_S}s.",
+            504,
         )
     except ValueError as exc:
         raise AppError("bad_request", str(exc), 400)

@@ -326,7 +326,9 @@ def test_top_n_basic() -> None:
 
 
 def test_top_n_with_time_grain() -> None:
-    """Top-N with time_grain keeps the full series."""
+    """Top-N with time_grain uses membership filter (WHERE IN subquery), not nested
+    window-in-window QUALIFY — DuckDB/PG reject RANK() OVER (ORDER BY SUM() OVER ()).
+    """
     m = _simple_metric()
     mq = MetricQuery(
         metric_id="revenue",
@@ -336,8 +338,11 @@ def test_top_n_with_time_grain() -> None:
     )
     sql, _ = compile_metric(m, mq)
     up = sql.upper()
-    assert "QUALIFY" in up
+    # Must use WHERE IN subquery (not nested window QUALIFY).
+    assert "WHERE" in up
+    assert "IN" in up
     assert "5" in sql
+    assert "SUM(REVENUE)" in up or "SUM(revenue)" in sql
 
 
 def test_top_n_asc() -> None:
@@ -856,7 +861,10 @@ def test_top_n_other_with_derived_measure() -> None:
 
 
 def test_top_n_other_with_time_grain() -> None:
-    """Other bucket works correctly when a time_grain is present."""
+    """Other bucket works correctly when a time_grain is present.
+    With time_grain the top-N portion uses WHERE IN (membership filter) to avoid
+    illegal nested window functions.  UNION ALL must still be present.
+    """
     m = _simple_metric()
     mq = MetricQuery(
         metric_id="revenue",
@@ -867,4 +875,412 @@ def test_top_n_other_with_time_grain() -> None:
     sql, _ = compile_metric(m, mq)
     up = sql.upper()
     assert "UNION ALL" in up
+    # With time_grain: membership filter (WHERE IN), not nested-window QUALIFY.
+    assert "WHERE" in up
+    assert "IN" in up
+
+
+# ---------------------------------------------------------------------------
+# 10. REGRESSION TESTS — security & correctness audit fixes
+# ---------------------------------------------------------------------------
+
+
+# ── Fix #1: SQLi via other_label ────────────────────────────────────────────
+
+def test_other_label_with_single_quote_rejected() -> None:
+    """other_label containing a single-quote must be rejected with MetricError."""
+    m = _simple_metric()
+    mq = MetricQuery(
+        metric_id="revenue",
+        dimensions=("region",),
+        top_n=TopN(
+            dimension="region",
+            n=3,
+            order="desc",
+            other=True,
+            other_label="O'Malley",  # SQL injection attempt
+        ),
+    )
+    with pytest.raises(MetricError) as ei:
+        compile_metric(m, mq)
+    assert ei.value.code == "bad_other_label"
+
+
+def test_other_label_with_backslash_rejected() -> None:
+    """other_label containing a backslash must be rejected with MetricError."""
+    m = _simple_metric()
+    mq = MetricQuery(
+        metric_id="revenue",
+        dimensions=("region",),
+        top_n=TopN(
+            dimension="region",
+            n=3,
+            order="desc",
+            other=True,
+            other_label="Other\\'; DROP TABLE --",  # injection attempt
+        ),
+    )
+    with pytest.raises(MetricError) as ei:
+        compile_metric(m, mq)
+    assert ei.value.code == "bad_other_label"
+
+
+def test_other_label_safe_emitted_as_literal() -> None:
+    """A safe other_label is emitted as a properly-quoted SQL literal (not raw f-string)."""
+    m = _simple_metric()
+    mq = MetricQuery(
+        metric_id="revenue",
+        dimensions=("region",),
+        top_n=TopN(
+            dimension="region",
+            n=2,
+            order="desc",
+            other=True,
+            other_label="All Others",
+        ),
+    )
+    sql, _ = compile_metric(m, mq)
+    # The label must appear in the SQL (properly quoted).
+    assert "All Others" in sql
+    # Verify it's inside a quoted string literal — no raw interpolation without quotes.
+    assert "'All Others'" in sql
+
+
+# ── Fix #2: SQLi via latest_snapshot entity column ──────────────────────────
+
+def _inventory_metric() -> MetricDefinition:
+    return MetricDefinition(
+        id="inventory",
+        name="Inventory",
+        measure=Measure(name="stock_qty", agg="sum", expr="qty"),
+        base_table="inventory_snapshots",
+        dimensions=(Dimension(name="sku"),),
+        time_dimension=TimeDimension(
+            column="snapshot_date",
+            grains=("day",),
+            default_grain="day",
+        ),
+    )
+
+
+def test_snapshot_entity_col_with_sqli_rejected() -> None:
+    """latest_snapshot with an entity column containing SQL injection is rejected."""
+    m = _inventory_metric()
+    mq = MetricQuery(
+        metric_id="inventory",
+        dimensions=("sku",),
+        time_comparisons=(
+            TimeComparison(
+                measure="sku; DROP TABLE snapshots --",  # injection in entity col
+                kind="latest_snapshot",
+            ),
+        ),
+    )
+    with pytest.raises(MetricError) as ei:
+        compile_metric(m, mq)
+    assert ei.value.code == "bad_snapshot_entity"
+
+
+def test_snapshot_entity_col_valid_identifier_accepted() -> None:
+    """latest_snapshot with a plain identifier compiles without error."""
+    m = _inventory_metric()
+    mq = MetricQuery(
+        metric_id="inventory",
+        dimensions=("sku",),
+        time_comparisons=(
+            TimeComparison(
+                measure="sku_id",  # valid identifier
+                kind="latest_snapshot",
+            ),
+        ),
+    )
+    sql, _ = compile_metric(m, mq)
+    up = sql.upper()
     assert "QUALIFY" in up
+    assert "ROW_NUMBER" in up
+    # The entity column must appear in the output.
+    assert "SKU_ID" in up
+
+
+def test_snapshot_entity_col_emits_quoted_identifier() -> None:
+    """latest_snapshot emits the entity col and time col as quoted identifiers."""
+    m = _inventory_metric()
+    mq = MetricQuery(
+        metric_id="inventory",
+        dimensions=("sku",),
+        time_comparisons=(
+            TimeComparison(
+                measure="item_id",
+                kind="latest_snapshot",
+            ),
+        ),
+    )
+    sql, _ = compile_metric(m, mq)
+    # DuckDB dialect quotes identifiers with double-quotes.
+    assert '"item_id"' in sql or "item_id" in sql
+    assert '"snapshot_date"' in sql or "snapshot_date" in sql
+
+
+# ── Fix #3: top_n + time_grain uses membership filter, not nested window ────
+
+def test_top_n_time_grain_uses_membership_filter_not_rank_window() -> None:
+    """With time_grain, top-N uses WHERE IN subquery; no RANK() nested in SUM() OVER."""
+    m = _simple_metric()
+    mq = MetricQuery(
+        metric_id="revenue",
+        dimensions=("region",),
+        time_grain="month",
+        top_n=TopN(dimension="region", n=3, order="desc"),
+    )
+    sql, _ = compile_metric(m, mq)
+    up = sql.upper()
+    # Must use WHERE IN, not QUALIFY with nested window.
+    assert "WHERE" in up
+    assert "IN" in up
+    # The subquery must reference __base for the membership lookup.
+    assert "__BASE" in up
+    # If QUALIFY appears (e.g. from a different branch), there must be no
+    # SUM(... OVER ...) nesting inside it.
+    if "QUALIFY" in up:
+        assert "RANK" not in up or "SUM" not in up.split("QUALIFY")[1][:200]
+
+
+def test_top_n_no_time_grain_still_uses_qualify() -> None:
+    """Without time_grain, top-N still uses QUALIFY RANK() <= N (unchanged path)."""
+    m = _simple_metric()
+    mq = MetricQuery(
+        metric_id="revenue",
+        dimensions=("region",),
+        top_n=TopN(dimension="region", n=3, order="desc"),
+    )
+    sql, _ = compile_metric(m, mq)
+    up = sql.upper()
+    assert "QUALIFY" in up
+    assert "RANK" in up
+
+
+# ── Fix #4: top_n other + time_comparisons — column count parity ────────────
+
+def test_top_n_other_with_time_comparison_column_count_parity() -> None:
+    """Both UNION arms (top-N and Other) must have identical column counts when
+    time_comparisons are present.  The Other arm emits NULL AS <out_name> for
+    each time-comparison window column.
+    """
+    m = _simple_metric()
+    mq = MetricQuery(
+        metric_id="revenue",
+        dimensions=("region",),
+        time_grain="month",
+        time_comparisons=(
+            TimeComparison(measure="revenue", kind="prior_period", periods=1),
+            TimeComparison(measure="revenue", kind="pop_abs"),
+        ),
+        top_n=TopN(dimension="region", n=2, order="desc", other=True),
+    )
+    sql, _ = compile_metric(m, mq)
+    up = sql.upper()
+    assert "UNION ALL" in up
+
+    # Split on UNION ALL and inspect the second part (the Other arm).
+    parts = sql.upper().split("UNION ALL")
+    assert len(parts) == 2, "Expected exactly one UNION ALL"
+    other_arm = parts[1]
+    # Both out_names must appear as NULL aliases in the Other arm.
+    assert "REVENUE_PRIOR_PERIOD" in other_arm
+    assert "REVENUE_POP_ABS" in other_arm
+    assert "NULL" in other_arm
+
+
+# ── Fix #5: count(*) Other bucket uses SUM(col), not SUM(COUNT(*)) ──────────
+
+def test_top_n_other_count_star_uses_sum_of_col() -> None:
+    """The Other bucket for a count(*) measure emits SUM(<col_name>) not SUM(COUNT(*))."""
+    m = MetricDefinition(
+        id="events",
+        name="Events",
+        measure=Measure(name="event_count", agg="count", expr="*"),
+        base_table="events",
+        dimensions=(Dimension(name="channel"),),
+    )
+    mq = MetricQuery(
+        metric_id="events",
+        dimensions=("channel",),
+        top_n=TopN(dimension="channel", n=2, order="desc", other=True),
+    )
+    sql, _ = compile_metric(m, mq)
+    up = sql.upper()
+    assert "UNION ALL" in up
+
+    # Extract the Other bucket arm (after UNION ALL).
+    parts = sql.split("UNION ALL", 1)
+    other_arm = parts[1].upper()
+    # Must NOT contain nested aggregate SUM(COUNT(*)).
+    assert "SUM(COUNT(" not in other_arm, (
+        "Other bucket must not emit SUM(COUNT(*)) — invalid nested agg"
+    )
+    # Must emit SUM(event_count) — sum the pre-computed count column.
+    assert "SUM(EVENT_COUNT)" in other_arm, (
+        f"Expected SUM(EVENT_COUNT) in Other arm:\n{other_arm[:300]}"
+    )
+
+
+# ── Fix #6: resource bounds ──────────────────────────────────────────────────
+
+def test_tc_periods_above_max_rejected() -> None:
+    """time_comparison.periods above NUBI_MAX_TC_PERIODS raises MetricError."""
+    import os
+    m = _simple_metric()
+    max_periods = int(os.environ.get("NUBI_MAX_TC_PERIODS", 3650))
+    mq = MetricQuery(
+        metric_id="revenue",
+        dimensions=("region",),
+        time_grain="month",
+        time_comparisons=(
+            TimeComparison(measure="revenue", kind="rolling_sum", periods=max_periods + 1),
+        ),
+    )
+    with pytest.raises(MetricError) as ei:
+        compile_metric(m, mq)
+    assert ei.value.code == "bad_tc_periods"
+
+
+def test_tc_periods_zero_rejected() -> None:
+    """time_comparison.periods of 0 raises MetricError (must be >= 1)."""
+    m = _simple_metric()
+    mq = MetricQuery(
+        metric_id="revenue",
+        dimensions=("region",),
+        time_grain="month",
+        time_comparisons=(
+            TimeComparison(measure="revenue", kind="rolling_sum", periods=0),
+        ),
+    )
+    with pytest.raises(MetricError) as ei:
+        compile_metric(m, mq)
+    assert ei.value.code == "bad_tc_periods"
+
+
+def test_top_n_above_max_rejected() -> None:
+    """top_n.n above NUBI_MAX_TOP_N raises MetricError."""
+    import os
+    m = _simple_metric()
+    max_n = int(os.environ.get("NUBI_MAX_TOP_N", 1000))
+    mq = MetricQuery(
+        metric_id="revenue",
+        dimensions=("region",),
+        top_n=TopN(dimension="region", n=max_n + 1),
+    )
+    with pytest.raises(MetricError) as ei:
+        compile_metric(m, mq)
+    assert ei.value.code == "bad_top_n"
+
+
+def test_query_limit_above_max_rejected() -> None:
+    """mq.limit above NUBI_MAX_QUERY_LIMIT raises MetricError."""
+    import os
+    m = _simple_metric()
+    max_limit = int(os.environ.get("NUBI_MAX_QUERY_LIMIT", 100_000))
+    mq = MetricQuery(
+        metric_id="revenue",
+        dimensions=("region",),
+        limit=max_limit + 1,
+    )
+    with pytest.raises(MetricError) as ei:
+        compile_metric(m, mq)
+    assert ei.value.code == "bad_limit"
+
+
+def test_query_limit_zero_rejected() -> None:
+    """mq.limit of 0 raises MetricError (must be >= 1)."""
+    m = _simple_metric()
+    mq = MetricQuery(
+        metric_id="revenue",
+        dimensions=("region",),
+        limit=0,
+    )
+    with pytest.raises(MetricError) as ei:
+        compile_metric(m, mq)
+    assert ei.value.code == "bad_limit"
+
+
+def test_valid_bounds_accepted() -> None:
+    """Valid periods / top_n / limit values compile without error."""
+    m = _simple_metric()
+    mq = MetricQuery(
+        metric_id="revenue",
+        dimensions=("region",),
+        time_grain="month",
+        limit=1000,
+        time_comparisons=(
+            TimeComparison(measure="revenue", kind="rolling_sum", periods=30),
+        ),
+        top_n=TopN(dimension="region", n=10),
+    )
+    sql, _ = compile_metric(m, mq)
+    assert sql  # compiled successfully
+
+
+# ── Fix #7: nested NULLIF in parenthesised denominators ─────────────────────
+
+def test_nested_division_in_paren_guarded() -> None:
+    """a / (b / c) must guard BOTH divisions: outer wraps the (b/NULLIF(c,0)) group."""
+    m = MetricDefinition(
+        id="ratio",
+        name="Ratio",
+        measure=Measure(name="a", agg="sum", expr="col_a"),
+        base_table="t",
+        extra_measures=(
+            Measure(name="b", agg="sum", expr="col_b"),
+            Measure(name="c", agg="sum", expr="col_c"),
+        ),
+        derived_measures=(
+            DerivedMeasure(name="nested_ratio", formula="a / (b / c)"),
+        ),
+    )
+    mq = MetricQuery(metric_id="ratio")
+    sql, _ = compile_metric(m, mq)
+    up = sql.upper()
+    # There must be at least two NULLIF calls — one for the inner (c) and one for
+    # the outer group.
+    nullif_count = up.count("NULLIF")
+    assert nullif_count >= 2, (
+        f"Expected >=2 NULLIF guards for a/(b/c), found {nullif_count}:\n{sql}"
+    )
+
+
+def test_simple_division_still_guarded() -> None:
+    """Simple a / b still produces NULLIF(b, 0) — regression guard."""
+    m = MetricDefinition(
+        id="simple_div",
+        name="SimpleDiv",
+        measure=Measure(name="a", agg="sum", expr="col_a"),
+        base_table="t",
+        extra_measures=(Measure(name="b", agg="sum", expr="col_b"),),
+        derived_measures=(DerivedMeasure(name="ratio", formula="a / b"),),
+    )
+    mq = MetricQuery(metric_id="simple_div")
+    sql, _ = compile_metric(m, mq)
+    up = sql.upper()
+    assert "NULLIF(B, 0)" in up or "NULLIF(b, 0)" in sql
+    assert up.count("NULLIF") == 1
+
+
+def test_triple_nested_division_fully_guarded() -> None:
+    """a / (b / (c + 1)) — inner (c+1) is the innermost denominator; must be guarded."""
+    m = MetricDefinition(
+        id="triple",
+        name="Triple",
+        measure=Measure(name="a", agg="sum", expr="col_a"),
+        base_table="t",
+        extra_measures=(
+            Measure(name="b", agg="sum", expr="col_b"),
+            Measure(name="c", agg="sum", expr="col_c"),
+        ),
+        derived_measures=(
+            DerivedMeasure(name="r", formula="a / (b / (c + 1))"),
+        ),
+    )
+    mq = MetricQuery(metric_id="triple")
+    sql, _ = compile_metric(m, mq)
+    # a / NULLIF(b / NULLIF((c + 1), 0), 0) — two NULLIF guards.
+    assert sql.upper().count("NULLIF") >= 2

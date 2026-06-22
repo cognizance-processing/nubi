@@ -75,10 +75,20 @@ This mirrors the ``execute_job`` broad-except pattern in
 
 from __future__ import annotations
 
+import logging
+import os
 import re
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any
+
+logger = logging.getLogger(__name__)
+
+# ---------------------------------------------------------------------------
+# Row-cap safety: prevent OOM from unbounded arrow→pylist conversion.
+# Override via NUBI_FLOW_QUERY_ROW_CAP env var.
+# ---------------------------------------------------------------------------
+_FLOW_QUERY_ROW_CAP: int = int(os.environ.get("NUBI_FLOW_QUERY_ROW_CAP", "100000"))
 
 
 # ---------------------------------------------------------------------------
@@ -727,6 +737,16 @@ def _execute_query_with_bridge(
 
     arrow_table = connector.execute(physical_plan)
     columns = arrow_table.schema.names
+    total_rows = arrow_table.num_rows
+    if total_rows > _FLOW_QUERY_ROW_CAP:
+        logger.warning(
+            "_execute_query_with_bridge: result truncated from %d to %d rows "
+            "(cap NUBI_FLOW_QUERY_ROW_CAP=%d)",
+            total_rows,
+            _FLOW_QUERY_ROW_CAP,
+            _FLOW_QUERY_ROW_CAP,
+        )
+        arrow_table = arrow_table.slice(0, _FLOW_QUERY_ROW_CAP)
     rows = arrow_table.to_pylist()
     return {"rows": rows, "row_count": len(rows), "columns": columns}
 

@@ -9,12 +9,14 @@ Coverage
 5. ``get_base_scan`` / ``put_base_scan`` roundtrip in the in-memory backend.
 6. Different RLS policies → separate base-scan entries (SECURITY).
 7. Base-scan namespace is SEPARATE from exact-key namespace (no collision).
-8. Integration (route-level): two POST /query calls sharing (model, predicate, RLS)
-   — first call: MISS → stores base-scan entry; second call (different projection)
-   hits base-scan cache → HIT (X-Nubi-Fusion: base-scan header).
+8. Integration (route-level): two POST /query calls with different GROUP BY over the
+   same base — base-scan fusion is DISABLED; the second query must execute
+   independently (MISS) and return its OWN correct schema + values.
+   (The old behaviour — returning the first query's aggregated bytes to the second
+   query — was data corruption: wrong schema + wrong values across requests/boards.)
 9. Integration (route-level): same SQL, DIFFERENT RLS → second call still MISS
    (no cross-tenant reuse).
-10. Response bytes from base-scan HIT are identical to original MISS bytes.
+10. Response bytes from exact-key cache HIT are identical to original MISS bytes.
 """
 from __future__ import annotations
 
@@ -223,31 +225,64 @@ def _make_token(policies: dict | None = None):
 
 
 @pytest.mark.asyncio
-async def test_first_query_miss_second_same_base_hit(client):
-    """Two queries with identical base (table+WHERE+RLS) share base-scan cache."""
+async def test_first_query_miss_second_different_group_by_also_miss(client):
+    """REGRESSION: two queries differing only in GROUP BY must NOT share bytes.
+
+    Base-scan fusion (BET 2b) is DISABLED because the old implementation stored
+    the fully-aggregated result of query 1 under the coarser key and then served
+    those bytes to query 2 which has a DIFFERENT GROUP BY — wrong schema and wrong
+    values (data corruption across requests/boards).
+
+    Correct behaviour: each query executes independently and gets its own MISS.
+    The second query must return its OWN schema/values, not query 1's aggregated
+    bytes.
+    """
+    from io import BytesIO
+
+    import pyarrow.ipc as pa_ipc
+
     token = _make_token()
     headers = {"Authorization": f"Bearer {token}"}
 
-    # First widget: SELECT id, SUM(value) FROM demo WHERE active = true GROUP BY id
-    r1 = await client.post(
-        "/api/v1/query",
-        json={"sql": "SELECT id, SUM(value) FROM demo WHERE active = true GROUP BY id"},
-        headers=headers,
-    )
+    # Query 1: GROUP BY id — produces rows with columns (id, sum_value).
+    sql1 = "SELECT id, SUM(value) AS sum_value FROM demo WHERE active = true GROUP BY id"
+    r1 = await client.post("/api/v1/query", json={"sql": sql1}, headers=headers)
     assert r1.status_code == 200
     assert r1.headers.get("x-nubi-cache") == "MISS"
-    bytes_r1 = r1.content
+    table1 = pa_ipc.open_stream(BytesIO(r1.content)).read_all()
+    # GROUP BY id over 3 active rows → 3 distinct id rows.
+    assert "id" in table1.schema.names
+    assert "sum_value" in table1.schema.names
 
-    # Second widget: different SELECT (COUNT) but same base + predicate + RLS.
-    # The base-scan entry from query 1 should be reused.
-    r2 = await client.post(
-        "/api/v1/query",
-        json={"sql": "SELECT COUNT(*) FROM demo WHERE active = true"},
-        headers=headers,
-    )
+    # Query 2: different GROUP BY (name) — different SQL, different schema.
+    # With base-scan fusion DISABLED, this must be a MISS, NOT a HIT returning
+    # query 1's aggregated bytes.
+    sql2 = "SELECT name, COUNT(*) AS cnt FROM demo WHERE active = true GROUP BY name"
+    r2 = await client.post("/api/v1/query", json={"sql": sql2}, headers=headers)
     assert r2.status_code == 200
-    # Should be a HIT (base-scan reuse) — X-Nubi-Cache: HIT
-    assert r2.headers.get("x-nubi-cache") == "HIT"
+    # CRITICAL: must be MISS — base-scan fusion is disabled; each query executes
+    # independently. A HIT here would mean the route served query 1's aggregated
+    # bytes to query 2 (wrong schema + wrong values = data corruption).
+    assert r2.headers.get("x-nubi-cache") == "MISS", (
+        "REGRESSION: base-scan fusion returned query 1's aggregated result to "
+        "query 2 which has a different GROUP BY — this is data corruption."
+    )
+    assert "x-nubi-fusion" not in r2.headers, (
+        "REGRESSION: X-Nubi-Fusion header present — route is still doing "
+        "unsound base-scan cache promotion."
+    )
+    # Verify the second query returns its OWN correct schema and values.
+    table2 = pa_ipc.open_stream(BytesIO(r2.content)).read_all()
+    assert "name" in table2.schema.names, (
+        "Query 2 (GROUP BY name) must return a 'name' column, not query 1's schema."
+    )
+    assert "cnt" in table2.schema.names, (
+        "Query 2 (GROUP BY name) must return a 'cnt' column, not query 1's schema."
+    )
+    # Schema of query 2 must NOT contain the columns unique to query 1.
+    assert "sum_value" not in table2.schema.names, (
+        "Query 2 must not carry query 1's 'sum_value' column — schemas differ."
+    )
 
 
 def test_different_rls_no_base_scan_reuse_key_isolation():
@@ -312,12 +347,22 @@ async def test_response_bytes_consistent(client):
 
 
 @pytest.mark.asyncio
-async def test_no_rls_base_scan_shared_across_same_user_different_widgets(client):
-    """Without RLS policies, two widget queries over same base share a scan."""
+async def test_different_select_columns_each_get_independent_miss(client):
+    """REGRESSION: two queries with different SELECT columns each get a MISS.
+
+    Base-scan fusion is DISABLED.  Even without RLS, two queries that differ
+    in their SELECT columns have different physical plans (different cache_key)
+    and must each execute independently — one must NOT receive the other's bytes.
+    Returning ``SELECT active`` bytes to a ``SELECT id`` query corrupts the result.
+    """
+    from io import BytesIO
+
+    import pyarrow.ipc as pa_ipc
+
     token = _make_token(policies={})
     headers = {"Authorization": f"Bearer {token}"}
 
-    # Widget 1: SELECT active FROM demo (no WHERE)
+    # Query 1: SELECT active FROM demo — returns a bool column.
     r1 = await client.post(
         "/api/v1/query",
         json={"sql": "SELECT active FROM demo"},
@@ -325,14 +370,26 @@ async def test_no_rls_base_scan_shared_across_same_user_different_widgets(client
     )
     assert r1.status_code == 200
     assert r1.headers.get("x-nubi-cache") == "MISS"
+    table1 = pa_ipc.open_stream(BytesIO(r1.content)).read_all()
+    assert "active" in table1.schema.names
 
-    # Widget 2: SELECT id FROM demo (different SELECT, same base, no WHERE)
+    # Query 2: SELECT id FROM demo — different SELECT, should be an independent MISS.
     r2 = await client.post(
         "/api/v1/query",
         json={"sql": "SELECT id FROM demo"},
         headers=headers,
     )
     assert r2.status_code == 200
-    # Both queries scan the same table with no WHERE and no RLS — base-scan key
-    # should match, so second call is a HIT.
-    assert r2.headers.get("x-nubi-cache") == "HIT"
+    # Base-scan fusion is disabled: different SQL → different cache_key → MISS.
+    assert r2.headers.get("x-nubi-cache") == "MISS", (
+        "REGRESSION: base-scan fusion is serving query 1's bytes to query 2 "
+        "which has a different SELECT — this is data corruption."
+    )
+    assert "x-nubi-fusion" not in r2.headers
+    # Verify query 2 returned its own correct schema.
+    table2 = pa_ipc.open_stream(BytesIO(r2.content)).read_all()
+    assert "id" in table2.schema.names
+    # Must NOT have the 'active' column from query 1.
+    assert "active" not in table2.schema.names, (
+        "Query 2 (SELECT id) must not carry query 1's 'active' column."
+    )

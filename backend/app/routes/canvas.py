@@ -33,7 +33,9 @@ from typing import Any
 from fastapi import Depends
 from pydantic import BaseModel
 
-from app.auth.deps import current_user
+from app.auth.deps import current_user, verified_identity
+from app.auth.roles import require_writer_default
+from app.auth.verify import VerifiedIdentity
 from app.errors import AppError
 from app.repos.provider import Repo, get_repo
 from app.routes import api_router
@@ -221,7 +223,7 @@ async def list_canvases(
 # ---------------------------------------------------------------------------
 
 
-@api_router.post("/canvases", tags=["canvas"], status_code=201)
+@api_router.post("/canvases", tags=["canvas"], status_code=201, dependencies=[Depends(require_writer_default)])
 async def create_canvas(
     body: CanvasCreateRequest,
     user: dict[str, Any] = Depends(current_user),
@@ -262,19 +264,46 @@ async def get_canvas(
 # ---------------------------------------------------------------------------
 
 
-@api_router.put("/canvases/{canvas_id}", tags=["canvas"])
+@api_router.put("/canvases/{canvas_id}", tags=["canvas"], dependencies=[Depends(require_writer_default)])
 async def update_canvas(
     canvas_id: str,
     body: CanvasUpdateRequest,
     user: dict[str, Any] = Depends(current_user),
     repo: Repo = Depends(get_repo),
 ) -> dict[str, Any]:
-    """Update a canvas's name and/or config (org-scoped)."""
+    """Update a canvas's name and/or config (org-scoped).
+
+    When ``config`` contains a ``doc``, the doc is parsed as a :class:`CanvasDoc`
+    and validated.  Hard validation failures (non-``[warn]`` issues) are rejected
+    with 400 ``invalid_canvas_doc`` to prevent persisting XSS payloads.
+    """
+    from app.dashboards.canvas import CanvasDoc, validate_canvas_doc  # noqa: PLC0415
+
     org_id = await _get_org(user)
     fields: dict[str, Any] = {}
     if body.name is not None:
         fields["name"] = body.name
     if body.config is not None:
+        # SECURITY: validate any embedded CanvasDoc before persisting — prevents
+        # XSS payloads (e.g. <script> tags) from reaching the canvas store.
+        doc_raw = body.config.get("doc")
+        if doc_raw is not None:
+            try:
+                doc = CanvasDoc.model_validate(doc_raw)
+            except Exception as exc:  # noqa: BLE001
+                raise AppError(
+                    "invalid_canvas_doc",
+                    f"Canvas doc parse error: {exc}",
+                    400,
+                ) from exc
+            _ok, issues = validate_canvas_doc(doc, org_id=org_id)
+            hard = [i for i in issues if not i.lstrip().lower().startswith("[warn]")]
+            if hard:
+                raise AppError(
+                    "invalid_canvas_doc",
+                    "; ".join(hard),
+                    400,
+                )
         fields["config"] = body.config
     if not fields:
         raise AppError("no_fields", "At least one of name or config must be provided.", 400)
@@ -294,11 +323,13 @@ async def update_canvas(
     response_model=CanvasScheduleResponse,
     tags=["canvas"],
     status_code=201,
+    dependencies=[Depends(require_writer_default)],
 )
 async def schedule_canvas(
     canvas_id: str,
     body: CanvasScheduleRequest,
     user: dict[str, Any] = Depends(current_user),
+    identity: VerifiedIdentity = Depends(verified_identity),
     repo: Repo = Depends(get_repo),
 ) -> CanvasScheduleResponse:
     """Create a scheduled ``report_send`` flow for a canvas.
@@ -389,13 +420,22 @@ async def schedule_canvas(
     if body.cron:
         flow_spec["trigger"] = {"kind": "cron", "cron": body.cron}
 
+    # SECURITY (RLS): snapshot the owner's RLS policies onto the flow spec so
+    # the scheduled report_send renders under the owner's row-filter claims
+    # rather than an empty policy set (which would leak all tenant rows).
+    # Mirrors the pattern used by create_flow / update_flow / create_scheduled_query
+    # in routes/flows.py.
+    from app.routes.flows import _snapshot_owner_policies  # noqa: PLC0415
+
+    flow_spec_to_store = _snapshot_owner_policies(flow_spec, identity)
+
     # Persist the flow via the flow store.
     store = get_flow_store()
     flow = await store.create_flow(
         org_id=org_id,
         created_by=str(user["id"]),
         name=flow_name,
-        spec=flow_spec,
+        spec=flow_spec_to_store,
     )
 
     return CanvasScheduleResponse(
@@ -411,7 +451,7 @@ async def schedule_canvas(
 # ---------------------------------------------------------------------------
 
 
-@api_router.delete("/canvases/{canvas_id}", tags=["canvas"], status_code=204)
+@api_router.delete("/canvases/{canvas_id}", tags=["canvas"], status_code=204, dependencies=[Depends(require_writer_default)])
 async def delete_canvas(
     canvas_id: str,
     user: dict[str, Any] = Depends(current_user),
