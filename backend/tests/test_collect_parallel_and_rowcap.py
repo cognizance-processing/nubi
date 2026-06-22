@@ -379,3 +379,80 @@ async def test_parallel_collect_one_error_does_not_abort_others(
     # The failing widget has an error key, not rows.
     assert "error" in by_wid["wfail"]
     assert "rows" not in by_wid["wfail"]
+
+
+# ---------------------------------------------------------------------------
+# 6. Board widget cap: boards with > cap widgets are truncated
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_board_widget_cap_truncates_excess_widgets(
+    repo: InMemoryRepo, caplog: pytest.LogCaptureFixture
+) -> None:
+    """collect_board_data truncates targets to _MAX_BOARD_WIDGETS when exceeded.
+
+    A board with N > cap widgets must:
+    - return exactly cap results (not N),
+    - emit a WARNING log mentioning the board_id and the cap,
+    - preserve the first cap widgets in original order.
+    """
+    import app.dashboards.collect as _collect
+
+    # Register enough queries to populate the widgets list.
+    cap = 5
+    total = cap + 3  # 8 widgets total; cap is 5
+    reg = get_query_registry()
+    for i in range(total):
+        reg.register(
+            id=f"q-cap-{i}",
+            sql="SELECT id, name FROM demo ORDER BY id",
+            name=f"Cap{i}",
+        )
+
+    board_id = "board-widget-cap"
+    widgets = [
+        {"id": f"w{i}", "query_id": f"q-cap-{i}", "pos": {"x": i, "y": 1, "w": 2, "h": 2}}
+        for i in range(total)
+    ]
+    await repo.create(
+        "boards",
+        org_id=_ORG,
+        created_by="test",
+        name="Widget cap board",
+        id=board_id,
+        **_board_spec(widgets),
+    )
+
+    # Patch run_query_rows to avoid needing a real connector.
+    async def _fake_run(query_id: str, org_id: str, repo_arg, policies, **_kw):
+        return (["id"], [[1]])
+
+    original_cap = _collect._MAX_BOARD_WIDGETS
+    try:
+        _collect._MAX_BOARD_WIDGETS = cap
+
+        with mock.patch.object(_collect, "run_query_rows", _fake_run), \
+             caplog.at_level(logging.WARNING, logger="app.dashboards.collect"):
+            results = await collect_board_data(board_id, _ORG, {}, repo)
+    finally:
+        _collect._MAX_BOARD_WIDGETS = original_cap
+
+    # Only the first `cap` widgets should be returned.
+    assert len(results) == cap, (
+        f"Expected {cap} results after widget cap, got {len(results)}"
+    )
+    # Order must be preserved: w0 … w{cap-1}.
+    returned_ids = [r["widget_id"] for r in results]
+    assert returned_ids == [f"w{i}" for i in range(cap)], (
+        f"Widget order not preserved: {returned_ids}"
+    )
+
+    # A WARNING must have been logged mentioning the board_id.
+    warning_msgs = [r.message for r in caplog.records if r.levelno == logging.WARNING]
+    assert any("truncat" in m.lower() for m in warning_msgs), (
+        f"Expected a truncation warning; got: {warning_msgs}"
+    )
+    assert any(board_id in m for m in warning_msgs), (
+        f"Warning should mention board_id={board_id!r}; got: {warning_msgs}"
+    )

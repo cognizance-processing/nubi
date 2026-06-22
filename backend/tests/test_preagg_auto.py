@@ -1918,3 +1918,127 @@ class TestRollupRewriteNoOverwalk:
         # The original SQL must parse cleanly (sanity check).
         parsed = sqlglot.parse_one(result.plan.sql, dialect="postgres")
         assert parsed is not None
+
+
+# ---------------------------------------------------------------------------
+# 13. [LOW RLS] Layered-CTE rollup rewrite must stay RLS-sound when fix-21
+#     hoists a policy column into the __base grain.
+#
+# fix-21 hoists every active RLS policy column into the layered __base GROUP BY
+# so the top-N membership subquery can correlate PER TENANT.  When the layered
+# router re-points __base at a rollup, the rollup's grain MUST include that
+# policy-hoisted dim — otherwise re-grouping the rollup happens at a coarser
+# grain that has already collapsed across the tenant column, silently dropping
+# the per-tenant correlation (a cross-tenant leak in the top-N membership set).
+# ---------------------------------------------------------------------------
+
+
+class TestLayeredRLSHoistedDimSoundness:
+    """A layered query carrying a policy-hoisted dim must only route to a rollup
+    whose grain includes that dim (RLS preserved); else it falls back to base.
+    """
+
+    def _build_region_only_rollup(self, source_db: str, reg: RollupRegistry):
+        """A rollup grouped ONLY on region — NO tenant_id anywhere in its grain
+        (no dim, no rls_key).  Routing the tenant-hoisted query here would drop
+        the per-tenant correlation, so it MUST be refused.
+        """
+        candidate = RollupCandidate(
+            table="orders",
+            dimensions=["region"],
+            measures=["sum(amount)", "count(*)"],
+        )
+        return build_rollup(
+            candidate,
+            rls_keys=[],  # tenant_id deliberately absent from the grain
+            source_database=source_db,
+            registry=reg,
+            register_query=False,
+        )
+
+    def _build_tenant_region_rollup(self, source_db: str, reg: RollupRegistry):
+        """A rollup whose FULL grain carries tenant_id (as an rls_key) + region —
+        a superset of the policy-hoisted dim, so routing preserves RLS.
+        """
+        candidate = RollupCandidate(
+            table="orders",
+            dimensions=["region"],
+            measures=["sum(amount)", "count(*)"],
+        )
+        return build_rollup(
+            candidate,
+            rls_keys=["tenant_id"],  # tenant_id physically present in the grain
+            source_database=source_db,
+            registry=reg,
+            register_query=False,
+        )
+
+    # The layered query AS fix-21 would emit it: __base GROUPs BY the hoisted
+    # policy column (tenant_id) + region; the outer adds a window fn.
+    _HOISTED_LAYERED_SQL = (
+        "WITH __base AS ("
+        "SELECT tenant_id, region, SUM(amount) AS amount "
+        "FROM orders GROUP BY tenant_id, region"
+        ") "
+        "SELECT tenant_id, region, amount, "
+        "LAG(amount, 1) OVER (PARTITION BY tenant_id ORDER BY region) AS prior "
+        "FROM __base"
+    )
+
+    def test_policy_hoisted_dim_does_not_route_to_rollup_lacking_it(
+        self, source_db: str
+    ) -> None:
+        """A query with a policy-hoisted dim (tenant_id) must NOT route to a
+        rollup whose grain lacks tenant_id — it falls back to the base table.
+        """
+        reg = RollupRegistry()
+        self._build_region_only_rollup(source_db, reg)
+
+        p = plan(
+            self._HOISTED_LAYERED_SQL,
+            claims={"policies": {"tenant_id": "acme"}},
+            dialect="postgres",
+        )
+        result = route_to_rollup_shape(p, reg)
+
+        assert result.routed is False, (
+            f"RLS-unsound route accepted: a rollup lacking the policy-hoisted "
+            f"dim 'tenant_id' must be refused. Reason: {result.reason}"
+        )
+        # The returned plan is left untouched and still reads the base table.
+        assert result.plan is p
+        assert "orders" in result.plan.sql.lower()
+        # RLS claims preserved on the fallback plan.
+        assert result.plan.rls_claims == {"policies": {"tenant_id": "acme"}}
+
+    def test_policy_hoisted_dim_routes_to_rollup_including_it(
+        self, source_db: str
+    ) -> None:
+        """The SAME query DOES route when the rollup's grain includes the
+        policy-hoisted dim (tenant_id as an rls_key) — RLS correlation preserved.
+        """
+        reg = RollupRegistry()
+        built = self._build_tenant_region_rollup(source_db, reg)
+
+        p = plan(
+            self._HOISTED_LAYERED_SQL,
+            claims={"policies": {"tenant_id": "acme"}},
+            dialect="postgres",
+        )
+        result = route_to_rollup_shape(p, reg)
+
+        assert result.routed is True, (
+            f"RLS-sound route refused: a rollup whose grain includes the "
+            f"policy-hoisted dim 'tenant_id' must serve the query. "
+            f"Reason: {result.reason}"
+        )
+        assert result.rollup_id == built.rollup_id
+        rewritten = result.plan.sql.lower()
+        assert built.table.lower() in rewritten, (
+            f"Expected rollup table in rewrite: {result.plan.sql}"
+        )
+        assert "with __base as" in rewritten, "layered CTE form preserved"
+        # tenant_id (the hoisted policy dim) survives in the rewritten grain.
+        assert "tenant_id" in rewritten
+        # RLS claims preserved through the rewrite.
+        assert result.plan.rls_claims == {"policies": {"tenant_id": "acme"}}

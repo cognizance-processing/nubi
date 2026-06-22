@@ -2012,3 +2012,103 @@ async def test_phase2_gather_concurrency_env_overridable(monkeypatch):
     assert sweep_mod._SWEEP_GATHER_CONCURRENCY == 5
     monkeypatch.undo()
     assert sweep_mod._SWEEP_GATHER_CONCURRENCY == original
+
+
+# ---------------------------------------------------------------------------
+# FIX [LOW]: SweepIn input caps applied at parse time (before expansion)
+# ---------------------------------------------------------------------------
+
+
+def test_sweep_in_param_sets_max_length_cap_at_parse_time():
+    """SweepIn.param_sets must be rejected at Pydantic parse time when it exceeds
+    _MAX_SWEEP_CELLS, so the full list is never materialised before the check.
+    """
+    from pydantic import ValidationError
+    import app.routes.flows as flows_mod
+
+    SweepIn = flows_mod.SweepIn  # type: ignore[attr-defined]
+    cap = flows_mod._MAX_SWEEP_CELLS
+
+    # Exactly at cap: must succeed.
+    s = SweepIn(param_sets=[{"i": i} for i in range(cap)])
+    assert s.param_sets is not None
+    assert len(s.param_sets) == cap
+
+    # One over the cap: must fail at parse time.
+    with pytest.raises(ValidationError):
+        SweepIn(param_sets=[{"i": i} for i in range(cap + 1)])
+
+
+def test_sweep_in_param_sets_none_is_valid():
+    """SweepIn.param_sets=None (omitted) must be accepted (grid path)."""
+    import app.routes.flows as flows_mod
+
+    SweepIn = flows_mod.SweepIn  # type: ignore[attr-defined]
+    s = SweepIn(grid={"a": [1, 2]})
+    assert s.param_sets is None
+
+
+def test_sweep_in_grid_product_cap_at_parse_time():
+    """SweepIn.grid must be rejected at Pydantic parse time when the Cartesian
+    product of value-list lengths exceeds _MAX_SWEEP_CELLS.
+    """
+    from pydantic import ValidationError
+    import app.routes.flows as flows_mod
+
+    SweepIn = flows_mod.SweepIn  # type: ignore[attr-defined]
+    cap = flows_mod._MAX_SWEEP_CELLS
+
+    # Build a grid whose product is exactly cap+1 — must be rejected.
+    # Use two keys: one with (cap+1) values, one with 1 value → product = cap+1.
+    oversized_grid = {"a": list(range(cap + 1)), "b": [1]}
+    with pytest.raises(ValidationError):
+        SweepIn(grid=oversized_grid)
+
+
+def test_sweep_in_grid_product_exactly_at_cap_is_accepted():
+    """A grid whose product equals exactly _MAX_SWEEP_CELLS must be accepted."""
+    from pydantic import ValidationError
+    import app.routes.flows as flows_mod
+
+    SweepIn = flows_mod.SweepIn  # type: ignore[attr-defined]
+    cap = flows_mod._MAX_SWEEP_CELLS
+
+    # product = cap × 1 = cap: must succeed.
+    s = SweepIn(grid={"a": list(range(cap)), "b": [1]})
+    assert s.grid is not None
+    assert len(s.grid["a"]) == cap
+
+
+def test_sweep_in_grid_large_multi_dim_rejected_at_parse_time():
+    """A multi-dimensional grid that OOM-expands must be rejected at parse time.
+
+    This is the core guard: a 100×100 grid has a product of 10 000 which is
+    much larger than the default _MAX_SWEEP_CELLS=50.  The validator must fire
+    during Pydantic model construction, before expand_grid is called.
+    """
+    from pydantic import ValidationError
+    import app.routes.flows as flows_mod
+
+    SweepIn = flows_mod.SweepIn  # type: ignore[attr-defined]
+
+    # 100 × 100 = 10 000 >> default cap of 50.
+    with pytest.raises(ValidationError):
+        SweepIn(grid={"x": list(range(100)), "y": list(range(100))})
+
+
+def test_sweep_in_grid_none_is_valid():
+    """SweepIn.grid=None (omitted) must be accepted (param_sets path)."""
+    import app.routes.flows as flows_mod
+
+    SweepIn = flows_mod.SweepIn  # type: ignore[attr-defined]
+    s = SweepIn(param_sets=[{"i": 1}])
+    assert s.grid is None
+
+
+def test_sweep_in_grid_empty_is_valid():
+    """SweepIn.grid={} (empty dict) must be accepted (product = 1, within cap)."""
+    import app.routes.flows as flows_mod
+
+    SweepIn = flows_mod.SweepIn  # type: ignore[attr-defined]
+    s = SweepIn(grid={})
+    assert s.grid == {}

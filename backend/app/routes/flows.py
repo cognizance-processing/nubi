@@ -222,7 +222,7 @@ def _enforce_approval_policy(caller_value: bool) -> bool:
     return _WRITEBACK_REQUIRE_APPROVAL or caller_value
 
 from fastapi import APIRouter, Depends, Header, Query, Request, Response
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 from app.auth.deps import current_user, verified_identity
 from app.auth.roles import require_writer_default
@@ -2212,11 +2212,50 @@ class SweepIn(BaseModel):
     Supply either *param_sets* (a list of param dicts — one flow run per entry)
     or *grid* (a name→[values] dict whose Cartesian product is expanded into
     param sets).  *param_sets* takes precedence when both are supplied.
+
+    Input caps (applied at parse time, before any expansion):
+    - ``param_sets`` is limited to ``_MAX_SWEEP_CELLS`` entries so the full
+      list is never materialised in memory before the ceiling check.
+    - ``grid`` value-list product is bounded to ``_MAX_SWEEP_CELLS`` by a
+      validator so ``expand_grid`` is never called with a hopelessly huge
+      grid that would OOM before the in-loop cap could fire.
     """
 
-    param_sets: list[dict[str, Any]] | None = None
+    param_sets: list[dict[str, Any]] | None = Field(
+        default=None,
+        max_length=_MAX_SWEEP_CELLS,
+        description=(
+            "Explicit list of param dicts; capped at MAX_SWEEP_CELLS at parse time."
+        ),
+    )
     grid: dict[str, list[Any]] | None = None
     max_cells: int = Field(default=200, ge=1, le=10000)
+
+    @field_validator("grid", mode="before")
+    @classmethod
+    def _cap_grid_product(cls, v: Any) -> Any:
+        """Reject grids whose Cartesian product would exceed _MAX_SWEEP_CELLS.
+
+        Computed as the product of each value-list's length.  This fires at
+        *parse time* (before ``expand_grid`` is called) so a payload like
+        ``{"a": range(1000), "b": range(1000)}`` is rejected with a 422 rather
+        than OOM-ing the server during expansion.
+        """
+        if v is None:
+            return v
+        product = 1
+        for key, values in v.items():
+            if not isinstance(values, list):
+                # Let Pydantic's type coercion handle this.
+                continue
+            product *= len(values)
+            if product > _MAX_SWEEP_CELLS:
+                raise ValueError(
+                    f"grid Cartesian-product size ({product}) exceeds the server "
+                    f"cap of {_MAX_SWEEP_CELLS} cells (MAX_SWEEP_CELLS). "
+                    "Reduce the number of values per dimension."
+                )
+        return v
 
 
 class BackfillIn(BaseModel):

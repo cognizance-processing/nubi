@@ -5381,3 +5381,126 @@ def test_rolling_window_uses_range_interval_over_missing_days() -> None:
         f"(time interval, not physical row count); got {by_date['2024-01-10']}, "
         f"rows={rows}"
     )
+
+
+# ---------------------------------------------------------------------------
+# Non-additive measures in re-aggregating time-comparison windows
+# (FIX HIGH correctness — bad_tc_non_additive)
+# ---------------------------------------------------------------------------
+
+
+def _na_metric(**overrides) -> MetricDefinition:
+    """Metric with an additive SUM measure plus non-additive avg/count_distinct."""
+    kwargs = dict(
+        id="usage",
+        name="Usage",
+        measure=Measure(name="revenue", agg="sum", expr="amount"),
+        base_table="events",
+        dimensions=(Dimension(name="region"),),
+        time_dimension=TimeDimension(
+            column="created_at",
+            grains=("day", "week", "month", "quarter", "year"),
+            default_grain="day",
+        ),
+        extra_measures=(
+            Measure(name="avg_amount", agg="avg", expr="amount"),
+            Measure(name="active_users", agg="count_distinct", expr="user_id"),
+            Measure(name="order_count", agg="count", expr="id"),
+        ),
+        rls_keys=("org_id",),
+    )
+    kwargs.update(overrides)
+    return MetricDefinition(**kwargs)
+
+
+@pytest.mark.parametrize("kind", ["ytd", "qtd", "mtd", "rolling_sum"])
+@pytest.mark.parametrize("measure", ["avg_amount", "active_users"])
+def test_re_aggregating_tc_on_non_additive_measure_raises(kind, measure) -> None:
+    """ytd/qtd/mtd/rolling_sum over an avg/count_distinct measure must RAISE.
+
+    SUM-over-buckets of per-bucket averages / distinct-counts is mathematically
+    wrong (a silent plausible-but-incorrect number), so the compiler fails closed.
+    """
+    m = _na_metric()
+    mq = MetricQuery(
+        metric_id="usage",
+        dimensions=("region",),
+        time_grain="month",
+        time_comparisons=(
+            TimeComparison(measure=measure, kind=kind, periods=3),
+        ),
+    )
+    with pytest.raises(MetricError) as ei:
+        compile_metric(m, mq)
+    assert ei.value.code == "bad_tc_non_additive", ei.value.code
+
+
+@pytest.mark.parametrize("kind", ["ytd", "qtd", "mtd", "rolling_sum"])
+@pytest.mark.parametrize("measure", ["revenue", "order_count"])
+def test_re_aggregating_tc_on_additive_measure_still_works(kind, measure) -> None:
+    """The same kinds over a SUM/COUNT measure still compile fine."""
+    m = _na_metric()
+    mq = MetricQuery(
+        metric_id="usage",
+        dimensions=("region",),
+        time_grain="month",
+        time_comparisons=(
+            TimeComparison(measure=measure, kind=kind, periods=3),
+        ),
+    )
+    sql, _ = compile_metric(m, mq)
+    up = sql.upper()
+    assert "OVER" in up
+    assert f"{measure}_{kind}".lower() in sql.lower()
+
+
+def test_rolling_avg_on_avg_measure_is_allowed_approximate() -> None:
+    """rolling_avg over an AVG measure is APPROXIMATE (AVG-of-bucket-AVGs) but
+    DEFINED — it is allowed (documented), not blocked."""
+    m = _na_metric()
+    mq = MetricQuery(
+        metric_id="usage",
+        dimensions=("region",),
+        time_grain="week",
+        time_comparisons=(
+            TimeComparison(measure="avg_amount", kind="rolling_avg", periods=4),
+        ),
+    )
+    sql, _ = compile_metric(m, mq)
+    up = sql.upper()
+    assert "AVG" in up and "OVER" in up
+    assert "avg_amount_rolling_avg" in sql.lower()
+
+
+@pytest.mark.parametrize("measure", ["active_users"])
+def test_rolling_avg_on_count_distinct_raises(measure) -> None:
+    """rolling_avg over a count_distinct measure is still wrong (averaging
+    distinct-counts across buckets is not a valid distinct-count) → RAISE."""
+    m = _na_metric()
+    mq = MetricQuery(
+        metric_id="usage",
+        dimensions=("region",),
+        time_grain="week",
+        time_comparisons=(
+            TimeComparison(measure=measure, kind="rolling_avg", periods=4),
+        ),
+    )
+    with pytest.raises(MetricError) as ei:
+        compile_metric(m, mq)
+    assert ei.value.code == "bad_tc_non_additive", ei.value.code
+
+
+def test_rolling_avg_on_sum_measure_still_works() -> None:
+    """rolling_avg over a SUM measure compiles fine (AVG of per-bucket sums)."""
+    m = _na_metric()
+    mq = MetricQuery(
+        metric_id="usage",
+        dimensions=("region",),
+        time_grain="week",
+        time_comparisons=(
+            TimeComparison(measure="revenue", kind="rolling_avg", periods=4),
+        ),
+    )
+    sql, _ = compile_metric(m, mq)
+    up = sql.upper()
+    assert "AVG" in up and "OVER" in up

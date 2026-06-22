@@ -54,6 +54,7 @@ import io
 import json
 import os
 import pickle
+import re
 import uuid
 from datetime import datetime, timezone
 from typing import Any, Literal
@@ -88,6 +89,45 @@ _ARTIFACT_MAX_BYTES: int = int(os.environ.get("NUBI_ARTIFACT_MAX_BYTES", 500 * 1
 
 _HMAC_ENVELOPE_PREFIX = b"NUBI1:"
 _HMAC_DIGEST_LEN = 64  # hex chars for SHA-256
+
+# ---------------------------------------------------------------------------
+# Org-bound HMAC envelope (NUBI2)
+#
+# SECURITY (MED cross-org): the original NUBI1 envelope signed only the raw
+# payload bytes.  Because the HMAC key is shared process-wide, a blob signed
+# for org_A verifies identically when fetched as org_B — so a writer-crafted
+# handle that normalises to ANOTHER org's storage key (path traversal) would
+# still pass HMAC verification, enabling cross-org reads / pickle RCE.
+#
+# NUBI2 binds the signature to the owning org by computing the HMAC over
+# ``org_id_utf8 + b"\\x00" + payload``.  Verification REQUIRES the caller to
+# pass the org_id it expects the blob to belong to; a blob signed for org_Y
+# can never verify when fetched as org_X.
+#
+# NUBI1 (legacy / org-less) signing+verification is retained ONLY for callers
+# that pass ``org_id=None`` (internal helpers / tests that exercise raw
+# integrity without an org context).  All real artifact paths pass an org.
+# ---------------------------------------------------------------------------
+
+_HMAC_ENVELOPE_PREFIX_V2 = b"NUBI2:"
+
+# A bare UUID (uuid4) string — the only shape a real artifact_id can take.
+# Used to reject writer-crafted ids such as ``../../other_org/artifacts/<uuid>``
+# BEFORE they are ever interpolated into a storage key or filesystem path.
+_UUID_RE = re.compile(
+    r"\A[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-"
+    r"[0-9a-fA-F]{4}-[0-9a-fA-F]{12}\Z"
+)
+
+
+def is_valid_artifact_id(artifact_id: Any) -> bool:
+    """Return True iff *artifact_id* is a bare UUID string.
+
+    Real artifact_ids are always ``uuid.uuid4()`` strings.  Anything else
+    (path separators, ``..`` traversal, empty, non-str) is rejected so a
+    crafted handle cannot escape the org-namespaced storage key / spool dir.
+    """
+    return isinstance(artifact_id, str) and bool(_UUID_RE.match(artifact_id))
 
 
 def _get_hmac_key() -> bytes:
@@ -133,30 +173,64 @@ def _get_hmac_key() -> bytes:
     return b"nubi-dev-hmac-sentinel-NOT-FOR-PRODUCTION"
 
 
-def _hmac_sign(payload: bytes) -> bytes:
-    """Return the full envelope: prefix + hex-digest + colon + payload."""
+def _hmac_message(org_id: str | None, payload: bytes) -> bytes:
+    """Return the byte string the HMAC is computed over.
+
+    When *org_id* is provided the signature is bound to the org
+    (``org_id_utf8 + b"\\x00" + payload``) so a blob signed for one org can
+    never verify under another (NUBI2).  When *org_id* is ``None`` the legacy
+    org-less message (payload only) is used (NUBI1).
+    """
+    if org_id is None:
+        return payload
+    return org_id.encode("utf-8") + b"\x00" + payload
+
+
+def _hmac_sign(payload: bytes, org_id: str | None = None) -> bytes:
+    """Return the full HMAC envelope for *payload*.
+
+    When *org_id* is given the org-bound NUBI2 envelope is produced; otherwise
+    the legacy org-less NUBI1 envelope is produced.  Both share the layout
+    ``<prefix><64-hex-digest>:<payload>``.
+    """
     key = _get_hmac_key()
-    digest = hmac.new(key, payload, hashlib.sha256).hexdigest().encode("ascii")
-    return _HMAC_ENVELOPE_PREFIX + digest + b":" + payload
+    message = _hmac_message(org_id, payload)
+    digest = hmac.new(key, message, hashlib.sha256).hexdigest().encode("ascii")
+    prefix = _HMAC_ENVELOPE_PREFIX_V2 if org_id is not None else _HMAC_ENVELOPE_PREFIX
+    return prefix + digest + b":" + payload
 
 
-def _hmac_verify_and_strip(blob: bytes) -> bytes:
+def _hmac_verify_and_strip(blob: bytes, org_id: str | None = None) -> bytes:
     """Verify the HMAC envelope and return the inner payload bytes.
+
+    Parameters
+    ----------
+    blob:
+        The stored blob (envelope + payload).
+    org_id:
+        The org the caller expects this blob to belong to.  When provided the
+        blob MUST carry the org-bound NUBI2 envelope AND its signature must
+        verify against *org_id* — a blob signed for a different org (or with
+        the legacy org-less NUBI1 envelope) is rejected.  When ``None`` the
+        legacy NUBI1 (org-less) envelope is required.
 
     Raises
     ------
     ValueError
-        When the blob lacks the NUBI1 envelope (missing signature) or the
-        HMAC does not match (tampered blob).  Either condition is treated as
-        an integrity failure — the caller must not proceed to deserialise.
+        When the blob lacks the expected envelope (missing/legacy signature)
+        or the HMAC does not match (tampered blob / wrong org / wrong key).
+        Any of these is an integrity failure — the caller must not proceed to
+        deserialise.
     """
-    if not blob.startswith(_HMAC_ENVELOPE_PREFIX):
+    expected_prefix = _HMAC_ENVELOPE_PREFIX_V2 if org_id is not None else _HMAC_ENVELOPE_PREFIX
+    if not blob.startswith(expected_prefix):
         raise ValueError(
             "Artifact integrity check failed: missing HMAC envelope. "
-            "The blob was not produced by this system or the signature was stripped."
+            "The blob was not produced by this system, was signed for a "
+            "different org, or the signature was stripped."
         )
-    # Structure: b"NUBI1:<64-hex-chars>:<payload>"
-    rest = blob[len(_HMAC_ENVELOPE_PREFIX):]  # "<64-hex-chars>:<payload>"
+    # Structure: b"<prefix><64-hex-chars>:<payload>"
+    rest = blob[len(expected_prefix):]  # "<64-hex-chars>:<payload>"
     sep_pos = _HMAC_DIGEST_LEN  # the colon is right after the 64 hex chars
     if len(rest) <= sep_pos or rest[sep_pos:sep_pos + 1] != b":":
         raise ValueError(
@@ -166,12 +240,14 @@ def _hmac_verify_and_strip(blob: bytes) -> bytes:
     payload = rest[sep_pos + 1:]    # the actual serialised object bytes
 
     key = _get_hmac_key()
-    expected_digest = hmac.new(key, payload, hashlib.sha256).hexdigest().encode("ascii")
+    message = _hmac_message(org_id, payload)
+    expected_digest = hmac.new(key, message, hashlib.sha256).hexdigest().encode("ascii")
 
     if not hmac.compare_digest(stored_digest, expected_digest):
         raise ValueError(
             "Artifact integrity check failed: HMAC mismatch. "
-            "The blob may have been tampered with or produced with a different key."
+            "The blob may have been tampered with, signed for a different org, "
+            "or produced with a different key."
         )
     return payload
 
@@ -587,8 +663,10 @@ def put_artifact(
     artifact_id = str(uuid.uuid4())
 
     # Sign the serialised bytes before uploading so any tampering can be
-    # detected at load time before pickle/joblib deserialisation.
-    signed_data = _hmac_sign(data)
+    # detected at load time before pickle/joblib deserialisation.  The
+    # signature is BOUND to org_id so a blob signed for this org can never
+    # verify when fetched as another org (closes the cross-org bypass).
+    signed_data = _hmac_sign(data, org_id=str(org_id))
 
     _store = store or get_artifact_store()
     uri = _store.upload(artifact_id, org_id, signed_data)
@@ -655,11 +733,24 @@ def get_artifact(
     artifact_id = handle["artifact_id"]
     kind = handle["kind"]
 
+    # SECURITY (path traversal / cross-org): a real artifact_id is always a
+    # bare uuid4.  A writer-crafted handle id such as
+    # ``../../other_org/artifacts/<uuid>`` would, after the (passing) org
+    # check above, normalise to another org's storage key on a file:// store.
+    # Reject anything that is not a bare UUID before it is used in any key.
+    if not is_valid_artifact_id(artifact_id):
+        raise ValueError(
+            f"Invalid artifact_id {artifact_id!r}: expected a bare UUID. "
+            "Refusing to fetch a non-canonical artifact id (possible path "
+            "traversal / cross-org access attempt)."
+        )
+
     _store = store or get_artifact_store()
     blob = _store.download(artifact_id, org_id)
 
-    # Verify HMAC *before* deserialising — rejects tampered/forged blobs so
-    # a compromised object store cannot trigger pickle RCE.
-    data = _hmac_verify_and_strip(blob)
+    # Verify HMAC *before* deserialising — rejects tampered/forged blobs so a
+    # compromised object store cannot trigger pickle RCE.  Bind verification to
+    # the requesting org so a blob signed for a different org cannot verify.
+    data = _hmac_verify_and_strip(blob, org_id=str(org_id))
 
     return _deserialise(data, kind)

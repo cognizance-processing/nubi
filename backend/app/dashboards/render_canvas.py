@@ -42,6 +42,61 @@ logger = logging.getLogger("nubi.dashboards.render_canvas")
 _TOKEN_RE = re.compile(r"\{\{([A-Za-z_][A-Za-z0-9_]*)\}\}")
 
 # ---------------------------------------------------------------------------
+# URL attributes whose values are treated as URLs — tokens interpolated into
+# these attributes must have their scheme validated.
+# ---------------------------------------------------------------------------
+
+# Matches an opening URL attribute (href/src/action/formaction/data/xlink:href)
+# followed immediately by a quote and then a {{token}} placeholder.
+# Group 1: the quote character (' or ")
+# Group 2: the token name
+_URL_ATTR_TOKEN_RE = re.compile(
+    r"""(?:href|src|action|formaction|data|xlink:href)\s*=\s*(?P<q>['"])"""
+    r"""\{\{(?P<name>[A-Za-z_][A-Za-z0-9_]*)\}\}(?P=q)""",
+    re.IGNORECASE,
+)
+
+# Schemes permitted in href/src/etc. token values:
+# - empty string / pure relative path (no scheme)
+# - http:// or https://
+# - mailto:
+# Everything else (javascript:, data:, vbscript:, file:, ...) is blocked.
+_SAFE_URL_SCHEME_RE = re.compile(
+    r"^(?:https?://|mailto:|[^:/?#]*[/?#]|[^:/?#]*$)",
+    re.IGNORECASE,
+)
+
+
+def _sanitize_token_url(value: str) -> str:
+    """Return *value* if its scheme is safe for a URL attribute, else ``#``.
+
+    Permitted:
+    - Empty string.
+    - Relative paths (no scheme, no ``//`` prefix).
+    - ``http://`` and ``https://`` absolute URLs.
+    - ``mailto:`` URIs.
+
+    Blocked (replaced with ``#``):
+    - ``javascript:`` — code execution.
+    - ``data:``        — data URIs (can carry HTML/JS payloads).
+    - ``vbscript:``    — legacy IE code execution.
+    - ``//...``        — protocol-relative URLs (scheme inherited from page).
+    - Any other scheme not explicitly allowed.
+    """
+    v = value.strip()
+    if not v:
+        return v
+    vl = v.lower().lstrip()
+    # Block protocol-relative URLs.
+    if vl.startswith("//"):
+        return "#"
+    # Block any scheme that is not http/https/mailto and is not a relative path.
+    if _SAFE_URL_SCHEME_RE.match(v):
+        return v
+    # Anything that has a "word:" prefix that didn't match above is blocked.
+    return "#"
+
+# ---------------------------------------------------------------------------
 # nubi-* custom element tags recognised by the renderer.
 # The renderer replaces these with static HTML equivalents.
 # ---------------------------------------------------------------------------
@@ -266,10 +321,25 @@ def _bake_tokens(html: str, element_data: dict[str, Any]) -> str:
     of the token name across all binding columns.
 
     Values are HTML-escaped before injection — never raw.
+
+    URL attribute safety
+    --------------------
+    When a placeholder appears as the sole value of a URL attribute
+    (``href``, ``src``, ``action``, ``formaction``, ``data``,
+    ``xlink:href``), the resolved value is first passed through
+    :func:`_sanitize_token_url` to reject dangerous schemes such as
+    ``javascript:``, ``data:``, and ``vbscript:`` before HTML-escaping.
+    This prevents a token value like ``javascript:alert(1)`` from being
+    baked into an ``href`` and executing in the rendered email/page.
     """
-    def _replacer(m: re.Match) -> str:
-        name = m.group(1)
-        # Search every el_id's data for a column named *name*.
+    # Collect the names of tokens that appear as the sole value of a URL
+    # attribute in this HTML.  These must have their scheme validated.
+    url_attr_token_names: set[str] = {
+        m.group("name") for m in _URL_ATTR_TOKEN_RE.finditer(html)
+    }
+
+    def _resolve_token(name: str) -> str | None:
+        """Return the raw (un-escaped) resolved value for *name*, or None."""
         for _el_id, data in element_data.items():
             if data.get("error"):
                 continue
@@ -278,9 +348,19 @@ def _bake_tokens(html: str, element_data: dict[str, Any]) -> str:
             if name in columns and rows:
                 idx = columns.index(name)
                 val = rows[0][idx] if rows[0] and idx < len(rows[0]) else None
-                return _escape(val)
-        # No match — leave placeholder visible so the author can debug.
-        return _escape(f"{{{{{name}}}}}")
+                return str(val) if val is not None else ""
+        return None
+
+    def _replacer(m: re.Match) -> str:
+        name = m.group(1)
+        raw = _resolve_token(name)
+        if raw is None:
+            # No match — leave placeholder visible so the author can debug.
+            return _escape(f"{{{{{name}}}}}")
+        if name in url_attr_token_names:
+            # Token is used in a URL attribute: validate scheme before escaping.
+            raw = _sanitize_token_url(raw)
+        return _escape(raw)
 
     return _TOKEN_RE.sub(_replacer, html)
 

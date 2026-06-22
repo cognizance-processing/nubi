@@ -300,16 +300,22 @@ def _provider_cache_key(
     provider_id: str,
     params: dict[str, Any],
     policies: dict[str, Any],
+    board_id: str = "",
 ) -> str:
-    """Composite cache key: ``provider:<org_id>:<pid>:<params_hash>:<rls_hash>``.
+    """Composite cache key: ``provider:<org_id>:<board_id>:<pid>:<params_hash>:<rls_hash>``.
 
     ``org_id`` is the first component so two different orgs sharing the same
     ``provider_id`` and empty policies can NEVER collide in the cache.
 
+    ``board_id`` is included so the same ``provider_id`` used on two different
+    boards within the same org gets distinct cache entries — a cross-board
+    collision would otherwise serve board-A's data to board-B when both declare
+    a provider with the same id but different board-level context.
+
     Stored in the base-scan cache namespace so it shares TTL + invalidation
     infrastructure without colliding with exact-result plan keys.
     """
-    return f"provider:{org_id}:{provider_id}:{_params_hash(params)}:{_rls_hash(policies)}"
+    return f"provider:{org_id}:{board_id}:{provider_id}:{_params_hash(params)}:{_rls_hash(policies)}"
 
 
 # ---------------------------------------------------------------------------
@@ -1105,7 +1111,9 @@ async def resolve_provider_data(
     policies: dict[str, Any] = dict((claims or {}).get("policies") or {})
     # FIX [HIGH cross-tenant cache]: org_id is now the first component so two
     # different orgs with the same provider_id + empty policies never collide.
-    cache_key = _provider_cache_key(org_id, provider_id, merged_params, policies)
+    # FIX [LOW cross-board cache]: board_id is included so the same provider_id
+    # on two different boards never shares a cache entry.
+    cache_key = _provider_cache_key(org_id, provider_id, merged_params, policies, board_id)
 
     from app.connectors.cache import get_base_scan, put_base_scan  # noqa: PLC0415
 

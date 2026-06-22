@@ -1551,6 +1551,55 @@ def _govern(metric: MetricDefinition, mq: MetricQuery) -> str | None:
                     f"time_comparison.periods {tc.periods!r} is out of the allowed "
                     f"range 1..{_MAX_TC_PERIODS}.",
                 )
+            # FIX (HIGH correctness — non-additive measures in re-aggregating
+            # time-comparison windows): ytd/qtd/mtd/rolling_sum emit
+            # ``SUM(<measure>) OVER (...)`` (and rolling_sum/rolling_avg an
+            # AGG OVER) that RE-AGGREGATE the already-bucketed __base measure
+            # values across buckets.  Re-aggregating a non-additive agg is
+            # mathematically WRONG and returns a silent, plausible-but-incorrect
+            # number:
+            #   * YTD/QTD/MTD/rolling_sum SUM the per-bucket values — but SUM of
+            #     per-bucket AVGs is meaningless, and SUM of per-bucket
+            #     COUNT(DISTINCT)/percentiles double-counts entities shared
+            #     across buckets (a user active in 3 months is counted 3x in a
+            #     YTD count_distinct).  Block ALL of _NON_ADDITIVE_AGGS for these.
+            #   * rolling_avg AVGs the per-bucket values.  For an AVG measure
+            #     this is AVG-of-bucket-AVGs: well-DEFINED but only APPROXIMATE
+            #     (it weights every bucket equally, ignoring per-bucket row
+            #     counts).  We allow it (documented as approximate) rather than
+            #     block it.  But COUNT(DISTINCT)/percentile/approx_count_distinct
+            #     remain wrong even under AVG (averaging distinct-counts /
+            #     percentiles across buckets is not a valid distinct-count /
+            #     percentile), so those are still blocked for rolling_avg.
+            tc_agg = next(
+                (m.agg for m in metric.measures() if m.name == tc.measure), None
+            )
+            if tc.kind in ("ytd", "qtd", "mtd", "rolling_sum") and (
+                tc_agg in _NON_ADDITIVE_AGGS
+            ):
+                raise MetricError(
+                    "bad_tc_non_additive",
+                    f"time_comparison.kind {tc.kind!r} re-aggregates measure "
+                    f"{tc.measure!r} (agg {tc_agg!r}) across time buckets, but "
+                    f"{tc_agg!r} is non-additive: SUM of per-bucket "
+                    f"averages/distinct-counts/percentiles is mathematically "
+                    f"wrong and would return a silently incorrect number. Use a "
+                    f"SUM/COUNT base measure for {tc.kind!r}.",
+                )
+            if tc.kind == "rolling_avg" and tc_agg in (
+                "count_distinct",
+                "percentile_cont",
+                "approx_count_distinct",
+            ):
+                raise MetricError(
+                    "bad_tc_non_additive",
+                    f"time_comparison.kind 'rolling_avg' averages per-bucket "
+                    f"values of measure {tc.measure!r} (agg {tc_agg!r}); "
+                    f"averaging distinct-counts/percentiles across buckets is "
+                    f"not a valid distinct-count/percentile and returns a "
+                    f"silently incorrect number. Use a SUM/COUNT/AVG base "
+                    f"measure for 'rolling_avg'.",
+                )
 
     # ── top_n governance ────────────────────────────────────────────────────
     if mq.top_n is not None:

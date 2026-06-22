@@ -517,6 +517,146 @@ def test_cross_tenant_cache_key_no_collision() -> None:
     assert key_org_b.startswith("provider:org-beta:")
 
 
+def test_cross_board_cache_key_no_collision() -> None:
+    """Two boards with the same provider_id in the same org MUST get distinct keys.
+
+    Before the fix, _provider_cache_key omitted board_id so board-A and board-B
+    sharing a provider_id (e.g. 'p1') in the same org with the same params and
+    empty policies produced identical cache keys — board-B would silently be
+    served board-A's cached Arrow tables.
+
+    After the fix, board_id is included as a key component.
+    """
+    params: dict = {}
+    policies: dict = {}
+    key_board_a = _provider_cache_key("org-x", "p1", params, policies, "board-alpha")
+    key_board_b = _provider_cache_key("org-x", "p1", params, policies, "board-beta")
+    assert key_board_a != key_board_b, (
+        "Cross-board cache collision: board-alpha and board-beta must NOT share a "
+        "cache key for the same provider_id in the same org."
+    )
+    # Sanity: both keys must embed the board_id.
+    assert "board-alpha" in key_board_a
+    assert "board-beta" in key_board_b
+
+
+@pytest.mark.asyncio
+async def test_same_provider_id_different_boards_get_distinct_cache_entries(
+    repo: InMemoryRepo,
+) -> None:
+    """Two boards with the same provider_id execute independently (no cross-board hit).
+
+    Scenario: org has two boards, both with a provider named 'p1'.  A first call
+    on board-A populates the cache.  A second call on board-B with the same params
+    must NOT hit the board-A cache entry — it must re-execute and produce its own
+    (distinct) result.
+    """
+    _BOARD_A = "board-xb-a"
+    _BOARD_B = "board-xb-b"
+    _PID = "shared-pid"
+
+    spec_a = {
+        "version": 1,
+        "title": "Board A",
+        "widgets": [
+            {"id": "w1", "type": "table", "source": {"provider": _PID, "result": "revenue"}},
+        ],
+        "data": [
+            {
+                "id": _PID,
+                "kind": "inline",
+                "params": {},
+                "base_cte": None,
+                "results": [{"name": "revenue", "grain": None}],
+            }
+        ],
+    }
+    spec_b = {
+        "version": 1,
+        "title": "Board B",
+        "widgets": [
+            {"id": "w1", "type": "table", "source": {"provider": _PID, "result": "revenue"}},
+        ],
+        "data": [
+            {
+                "id": _PID,
+                "kind": "inline",
+                "params": {},
+                "base_cte": None,
+                "results": [{"name": "revenue", "grain": None}],
+            }
+        ],
+    }
+
+    await repo.create(
+        "boards",
+        org_id=_ORG,
+        created_by="test",
+        name="Board A",
+        config={"spec": spec_a},
+        id=_BOARD_A,
+    )
+    await repo.create(
+        "boards",
+        org_id=_ORG,
+        created_by="test",
+        name="Board B",
+        config={"spec": spec_b},
+        id=_BOARD_B,
+    )
+
+    call_count = 0
+
+    async def _fake_run(query_id, org_id, _repo, policies):
+        nonlocal call_count
+        call_count += 1
+        # Return a unique value per call so we can tell the two apart.
+        return ["val"], [[float(call_count * 100)]]
+
+    async def _fake_enforce_quota(org_id: str, dimension: str, amount: float = 1.0) -> None:
+        pass
+
+    with (
+        patch("app.features.enforce_quota", side_effect=_fake_enforce_quota),
+        patch("app.dashboards.collect.run_query_rows", side_effect=_fake_run),
+    ):
+        tables_a = await resolve_provider_data(
+            board_id=_BOARD_A,
+            provider_id=_PID,
+            params={},
+            org_id=_ORG,
+            claims={"policies": {}},
+            repo=repo,
+        )
+        # Board-B has the same provider_id + params — must NOT hit board-A's cache.
+        tables_b = await resolve_provider_data(
+            board_id=_BOARD_B,
+            provider_id=_PID,
+            params={},
+            org_id=_ORG,
+            claims={"policies": {}},
+            repo=repo,
+        )
+
+    # run_query_rows must have been called TWICE (once per board) — not once
+    # (which would mean board-B got a cross-board cache hit from board-A).
+    assert call_count == 2, (
+        f"Cross-board cache collision detected: run_query_rows called {call_count} times "
+        "but expected 2 (once per board). Board-B incorrectly hit board-A's cache entry."
+    )
+
+    # Both results must exist and be structurally independent.
+    assert "revenue" in tables_a
+    assert "revenue" in tables_b
+    # The values differ because each call produced a unique counter value.
+    val_a = tables_a["revenue"].to_pydict()["val"][0]
+    val_b = tables_b["revenue"].to_pydict()["val"][0]
+    assert val_a != val_b, (
+        f"Board-A and board-B returned identical values ({val_a!r}) — "
+        "cross-board cache collision not fixed."
+    )
+
+
 @pytest.mark.asyncio
 async def test_different_org_raises_board_not_found(repo: InMemoryRepo) -> None:
     """A board belonging to org A must not be accessible from org B."""

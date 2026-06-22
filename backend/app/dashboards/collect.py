@@ -104,6 +104,13 @@ _MAX_CANVAS_BINDINGS: int = int(
     os.environ.get("NUBI_MAX_CANVAS_BINDINGS", _DEFAULT_MAX_CANVAS_BINDINGS)
 )
 
+# Maximum number of board widgets processed per collect_board_data call.
+# Override via NUBI_MAX_BOARD_WIDGETS env-var (integer).  0 = unlimited.
+_DEFAULT_MAX_BOARD_WIDGETS = 500
+_MAX_BOARD_WIDGETS: int = int(
+    os.environ.get("NUBI_MAX_BOARD_WIDGETS", _DEFAULT_MAX_BOARD_WIDGETS)
+)
+
 # Maximum concurrent repo.get("datastores", …) calls issued by _prefetch_datastores.
 # The widget path has Semaphore(_WIDGET_CONCURRENCY=8); the prefetch path was
 # previously unbounded — up to _MAX_CANVAS_BINDINGS (500) concurrent calls could
@@ -456,6 +463,18 @@ async def collect_board_data(
 
     spec = spec_from_board(board)
     targets = widget_query_targets(spec, only_query_id)
+
+    # Cap the number of widgets to prevent excessive resource consumption.
+    max_widgets = _MAX_BOARD_WIDGETS
+    if max_widgets > 0 and len(targets) > max_widgets:
+        logger.warning(
+            "collect_board_data: board_id=%r has %d widgets, truncating to %d "
+            "(set NUBI_MAX_BOARD_WIDGETS to raise limit)",
+            board_id,
+            len(targets),
+            max_widgets,
+        )
+        targets = targets[:max_widgets]
 
     # RLS comes from the verified token's policies claim only.
     policies: dict[str, Any] = dict((claims or {}).get("policies") or {})

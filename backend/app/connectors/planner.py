@@ -650,6 +650,24 @@ def route_to_rollup_shape(
         q_dims = set(inner_shape.dimensions)
         q_filter_cols = set(inner_shape.filter_columns)
 
+        # ── RLS-soundness (fix-21 interaction) ───────────────────────────────
+        # fix-21 hoists every active policy column into the layered __base grain
+        # (so __base GROUPs BY it AND the top-N membership subquery can correlate
+        # per-tenant on it).  These policy-hoisted dims carry the per-tenant
+        # correlation: if the layered query is re-pointed at a rollup whose grain
+        # does NOT include them, the inner aggregation would re-group at a coarser
+        # grain that has already collapsed across the policy column — silently
+        # dropping the per-tenant correlation the membership subquery relies on.
+        # Therefore a rollup is only RLS-sound for this layered query when its
+        # FULL grain (dimensions ∪ rls_keys) is a SUPERSET of the policy-hoisted
+        # dims.  We derive those dims from the verified token claims (NEVER from
+        # the SQL text) and intersect with the inner grain so we only require the
+        # columns that were actually hoisted into __base.
+        policy_hoisted_dims = {
+            col.lower()
+            for col in (plan.rls_claims.get("policies") or {})
+        } & {d.lower() for d in inner_shape.dimensions}
+
         # Build a temporary inner plan to reuse _rewrite_to_rollup.
         inner_plan = PhysicalPlan(
             dialect=plan.dialect,
@@ -667,6 +685,15 @@ def route_to_rollup_shape(
             # so they count as valid GROUP BY targets when checking the soundness rule.
             roll_all_dims = roll_dims | set(rollup.rls_keys)
             if not q_dims.issubset(roll_all_dims):
+                continue
+            # RLS-soundness check (fix-21): refuse to route the layered query to
+            # a rollup whose grain does not carry every policy-hoisted dim.  This
+            # is checked case-insensitively against the rollup's FULL grain so a
+            # rollup that drops the per-tenant correlation column can never serve
+            # this query — we fall back to the base instead of leaking across
+            # tenants in the top-N membership subquery.
+            roll_all_dims_lc = {d.lower() for d in roll_all_dims}
+            if not policy_hoisted_dims.issubset(roll_all_dims_lc):
                 continue
             roll_measures = rollup.measure_funcs
             ok_measures = True

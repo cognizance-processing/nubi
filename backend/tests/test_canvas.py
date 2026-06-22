@@ -2813,3 +2813,139 @@ class TestCreateCanvasXssAndEmbedBlock:
             f"Expected 401 or 403 for embed token on POST /canvases, "
             f"got {resp.status_code}: {resp.text}"
         )
+
+
+# ---------------------------------------------------------------------------
+# 14. _bake_tokens URL-attribute scheme sanitization (LOW security)
+# ---------------------------------------------------------------------------
+
+
+class TestBakeTokensUrlSanitization:
+    """_bake_tokens must sanitize token values interpolated into URL attributes.
+
+    A token value like ``javascript:alert(1)`` or ``data:text/html,...`` baked
+    into an ``href`` / ``src`` attribute is an XSS vector in the rendered
+    email/page.  The fix: when a ``{{token}}`` placeholder is the sole value
+    of a URL attribute, validate the resolved scheme and replace dangerous
+    ones with ``#`` before HTML-escaping.
+    """
+
+    def _bake(self, html: str, token_name: str, token_value: str) -> str:
+        """Helper: run _bake_tokens with a single token binding."""
+        from app.dashboards.render_canvas import _bake_tokens  # noqa: PLC0415
+
+        element_data = {
+            "el_test": {
+                "columns": [token_name],
+                "rows": [[token_value]],
+            }
+        }
+        return _bake_tokens(html, element_data)
+
+    # ── javascript: scheme is blocked ────────────────────────────────────────
+
+    def test_javascript_scheme_in_href_is_neutralised(self):
+        """javascript: token value in href is replaced with '#'."""
+        html = '<a href="{{link}}">click</a>'
+        result = self._bake(html, "link", "javascript:alert(document.cookie)")
+        assert "javascript:" not in result, (
+            f"javascript: must not appear in rendered output: {result!r}"
+        )
+        assert 'href="#"' in result, (
+            f"Expected href=\"#\" after sanitization, got: {result!r}"
+        )
+
+    def test_javascript_mixed_case_in_href_is_neutralised(self):
+        """Case-variant 'JaVaScRiPt:' in href is also blocked."""
+        html = '<a href="{{link}}">click</a>'
+        result = self._bake(html, "link", "JaVaScRiPt:alert(1)")
+        assert "javascript:" not in result.lower(), (
+            f"Mixed-case javascript: must not appear: {result!r}"
+        )
+        assert 'href="#"' in result, result
+
+    def test_data_uri_in_href_is_neutralised(self):
+        """data:text/html token value in href is replaced with '#'."""
+        html = '<a href="{{link}}">click</a>'
+        result = self._bake(html, "link", "data:text/html,<script>alert(1)</script>")
+        assert "data:" not in result, (
+            f"data: must not appear in rendered href: {result!r}"
+        )
+        assert 'href="#"' in result, result
+
+    def test_vbscript_in_href_is_neutralised(self):
+        """vbscript: token value in href is replaced with '#'."""
+        html = '<a href="{{link}}">click</a>'
+        result = self._bake(html, "link", "vbscript:MsgBox(1)")
+        assert "vbscript:" not in result.lower(), (
+            f"vbscript: must not appear in rendered href: {result!r}"
+        )
+        assert 'href="#"' in result, result
+
+    def test_javascript_scheme_in_src_is_neutralised(self):
+        """javascript: token value in src attribute is also blocked."""
+        html = '<img src="{{img}}" alt="test">'
+        result = self._bake(html, "img", "javascript:void(0)")
+        assert "javascript:" not in result.lower(), (
+            f"javascript: must not appear in src: {result!r}"
+        )
+
+    # ── Safe values pass through unchanged ───────────────────────────────────
+
+    def test_https_url_in_href_is_allowed(self):
+        """A legitimate https:// URL is passed through intact."""
+        html = '<a href="{{link}}">click</a>'
+        result = self._bake(html, "link", "https://example.com/report")
+        assert "https://example.com/report" in result, (
+            f"https:// URL must be preserved: {result!r}"
+        )
+
+    def test_http_url_in_href_is_allowed(self):
+        """A legitimate http:// URL is passed through intact."""
+        html = '<a href="{{link}}">click</a>'
+        result = self._bake(html, "link", "http://intranet.example.com/data")
+        assert "http://intranet.example.com/data" in result, result
+
+    def test_mailto_in_href_is_allowed(self):
+        """mailto: scheme is permitted in href."""
+        html = '<a href="{{link}}">email</a>'
+        result = self._bake(html, "link", "mailto:alice@example.com")
+        assert "mailto:alice@example.com" in result, result
+
+    def test_relative_path_in_href_is_allowed(self):
+        """A relative path like '/reports/q1' is permitted in href."""
+        html = '<a href="{{link}}">report</a>'
+        result = self._bake(html, "link", "/reports/q1")
+        assert "/reports/q1" in result, result
+
+    # ── Token NOT in a URL attribute: value is only HTML-escaped, not blocked ─
+
+    def test_javascript_value_in_text_content_is_escaped_not_blocked(self):
+        """A 'javascript:...' string in text content is HTML-escaped, not '#'."""
+        html = "<p>{{text}}</p>"
+        result = self._bake(html, "text", "javascript:alert(1)")
+        # The value must appear (HTML-escaped) — it is text, not an attribute URL.
+        assert "javascript" in result, (
+            f"Non-URL-attr token should not be blocked, only escaped: {result!r}"
+        )
+        # But it must be HTML-escaped so it can't break out of the tag.
+        assert "<script" not in result and 'href="javascript' not in result, result
+
+    def test_javascript_value_in_non_url_attr_is_escaped_not_blocked(self):
+        """Token in a non-URL attribute (title=) is only HTML-escaped."""
+        html = '<span title="{{tip}}">hover</span>'
+        result = self._bake(html, "tip", "javascript:alert(1)")
+        # Not a URL attribute — value is HTML-escaped but not replaced with #.
+        assert "javascript" in result, (
+            f"Non-URL-attr token must not be replaced with #: {result!r}"
+        )
+
+    # ── Single-quoted href is also sanitized ──────────────────────────────────
+
+    def test_javascript_in_single_quoted_href_is_neutralised(self):
+        """javascript: is blocked even when href uses single quotes."""
+        html = "<a href='{{link}}'>click</a>"
+        result = self._bake(html, "link", "javascript:alert(1)")
+        assert "javascript:" not in result.lower(), (
+            f"Single-quoted href must also be sanitized: {result!r}"
+        )

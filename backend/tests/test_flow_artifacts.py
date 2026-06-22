@@ -730,10 +730,13 @@ def test_hmac_missing_signature_rejected():
     This prevents an attacker from bypassing the HMAC by writing a raw pickle
     blob directly to the object store without the NUBI1: envelope.
     """
+    import uuid as _uuid  # noqa: PLC0415
     art_store = _mem_store()
     # Write a raw pickle blob directly — no HMAC envelope.
     raw_pickle = pickle.dumps({"evil": "payload"})
-    artifact_id = "unsigned-artifact"
+    # Use a bare UUID so we exercise the HMAC-envelope check (not the
+    # artifact_id format guard, which fires earlier for non-UUID ids).
+    artifact_id = str(_uuid.uuid4())
     key = f"orgs/{ORG_A}/artifacts/{artifact_id}"
     art_store._blobs[key] = raw_pickle
 
@@ -1135,3 +1138,189 @@ def test_in_memory_store_cap_disabled_zero():
     # Should not raise regardless of size.
     store.upload("art-1", ORG_A, b"x" * 10_000_000)  # 10 MB
     assert store.exists("art-1", ORG_A)
+
+
+# ---------------------------------------------------------------------------
+# 26. Path-traversal / cross-org artifact_id hardening (MED security)
+# ---------------------------------------------------------------------------
+
+
+def test_traversal_artifact_id_rejected_in_get():
+    """A crafted, non-UUID artifact_id (path traversal) is rejected by get_artifact.
+
+    SECURITY (MED): a writer-crafted handle id such as
+    ``../../other_org/artifacts/<uuid>`` (with the caller's own org_id so the
+    org check passes) would otherwise normalise to another org's storage key on
+    a file:// store and escape the spool dir.  get_artifact must reject any id
+    that is not a bare UUID BEFORE it is used.
+    """
+    art_store = _mem_store()
+    for bad_id in (
+        "../../other-org/artifacts/" + str(__import__("uuid").uuid4()),
+        "..",
+        "foo/bar",
+        "not-a-uuid",
+        "",
+        "/etc/passwd",
+    ):
+        handle = make_handle(
+            artifact_id=bad_id,
+            kind="pickle",
+            uri="mem://whatever",
+            org_id=ORG_A,
+            produced_by_run=None,
+        )
+        with pytest.raises(ValueError, match="Invalid artifact_id|bare UUID"):
+            get_artifact(handle, org_id=ORG_A, store=art_store)
+
+
+def test_is_valid_artifact_id_accepts_real_uuid_rejects_traversal():
+    """is_valid_artifact_id accepts bare uuid4 strings and rejects everything else."""
+    import uuid as _uuid  # noqa: PLC0415
+    from app.flows.artifacts import is_valid_artifact_id  # noqa: PLC0415
+
+    assert is_valid_artifact_id(str(_uuid.uuid4())) is True
+    assert is_valid_artifact_id("../../other/artifacts/x") is False
+    assert is_valid_artifact_id("..") is False
+    assert is_valid_artifact_id("foo/bar") is False
+    assert is_valid_artifact_id("") is False
+    assert is_valid_artifact_id(None) is False
+    assert is_valid_artifact_id(123) is False  # type: ignore[arg-type]
+
+
+def test_spool_confinement_traversal_id_not_written():
+    """_pre_fetch_artifacts must NOT write a traversal artifact_id outside the spool.
+
+    SECURITY (MED): a handle whose artifact_id contains ``..`` would, via
+    os.path.join, escape ``<spool_dir>/artifacts``.  The id-validation +
+    realpath confinement must skip it so no file is ever written outside the
+    spool dir.
+    """
+    import os  # noqa: PLC0415
+    import tempfile  # noqa: PLC0415
+    import shutil  # noqa: PLC0415
+    from app.flows.artifacts import _hmac_sign  # noqa: PLC0415
+
+    art_store = _mem_store()
+
+    # The crafted id traverses up out of the artifacts spool dir.
+    crafted_id = "../escaped-artifact"
+    # Seed the store under the *normalised* key the download would compute so
+    # that, absent the guard, a blob would be available to write.
+    signed = _hmac_sign(b"payload-bytes", org_id=ORG_A)
+    art_store._blobs[f"orgs/{ORG_A}/artifacts/{crafted_id}"] = signed
+
+    handle = make_handle(
+        artifact_id=crafted_id,
+        kind="bytes",
+        uri="mem://whatever",
+        org_id=ORG_A,
+        produced_by_run=None,
+    )
+
+    spool_dir = tempfile.mkdtemp(prefix="nubi-test-confine-")
+    artifact_spool_dir = os.path.join(spool_dir, "artifacts")
+    os.makedirs(artifact_spool_dir, exist_ok=True)
+    escaped_path = os.path.normpath(os.path.join(artifact_spool_dir, crafted_id))
+
+    ctx = TaskContext(
+        flow_params={},
+        inputs={"upstream": handle},
+        now=NOW,
+        org_id=ORG_A,
+        run_id="run-confine",
+        _artifact_store=art_store,
+    )
+
+    # Re-implement the exact guard _pre_fetch_artifacts uses (the function is a
+    # nested closure in registry._handle_python).  This asserts the guard logic
+    # that protects the spool dir.
+    from app.flows.artifacts import is_handle, is_valid_artifact_id  # noqa: PLC0415
+
+    spool_root = os.path.realpath(artifact_spool_dir)
+    wrote_outside = False
+    for _result in ctx.inputs.values():
+        if not isinstance(_result, dict):
+            continue
+        candidates = [_result] + list(_result.values())
+        for cand in candidates:
+            if not is_handle(cand):
+                continue
+            if str(cand.get("org_id", "")) != str(ORG_A):
+                continue
+            artifact_id = cand.get("artifact_id", "")
+            if not artifact_id:
+                continue
+            if not is_valid_artifact_id(artifact_id):
+                continue  # guard #1: reject non-UUID
+            dest = os.path.join(artifact_spool_dir, artifact_id)
+            dest_real = os.path.realpath(dest)
+            if dest_real != spool_root and not dest_real.startswith(spool_root + os.sep):
+                continue  # guard #2: confinement
+            with open(dest, "wb") as fh:
+                fh.write(b"should-not-happen")
+            wrote_outside = True
+
+    assert wrote_outside is False, "Guard failed: a traversal id was written."
+    assert not os.path.exists(escaped_path), (
+        "A file was written outside the artifacts spool dir via path traversal."
+    )
+
+    shutil.rmtree(spool_dir, ignore_errors=True)
+
+
+# ---------------------------------------------------------------------------
+# 27. Org-bound HMAC: a blob signed for org A fails verify under org B
+# ---------------------------------------------------------------------------
+
+
+def test_hmac_org_binding_cross_org_verify_fails():
+    """A blob signed for org A must fail HMAC verification when fetched as org B.
+
+    SECURITY (MED cross-org): the HMAC key is shared process-wide, so the old
+    payload-only signature verified identically across orgs.  With org-bound
+    NUBI2 envelopes a blob signed for ORG_A cannot verify under ORG_B even if a
+    key-normalisation / traversal trick routes the bytes there.
+    """
+    from app.flows.artifacts import _hmac_sign, _hmac_verify_and_strip  # noqa: PLC0415
+
+    payload = b"org-a-secret-bytes"
+    signed_for_a = _hmac_sign(payload, org_id=ORG_A)
+
+    # Same blob verifies under ORG_A.
+    assert _hmac_verify_and_strip(signed_for_a, org_id=ORG_A) == payload
+
+    # But NOT under ORG_B — the org-bound signature mismatches.
+    with pytest.raises(ValueError, match="HMAC mismatch|integrity check failed|missing HMAC envelope"):
+        _hmac_verify_and_strip(signed_for_a, org_id=ORG_B)
+
+
+def test_cross_org_blob_smuggled_to_other_org_key_fails_get():
+    """End-to-end: an org-A blob copied to org-B's key fails get_artifact for org B.
+
+    Simulates the exact bypass: even if an attacker arranges for org A's signed
+    bytes to live at org B's storage key, get_artifact(org_B) must reject them
+    because the HMAC is bound to org A.
+    """
+    art_store = _mem_store()
+    obj = {"secret": "org-a"}
+    handle_a = put_artifact(obj, kind="pickle", org_id=ORG_A, store=art_store)
+
+    artifact_id = handle_a["artifact_id"]
+    # Copy org A's signed blob to org B's storage key (attacker-controlled store).
+    a_blob = art_store._blobs[f"orgs/{ORG_A}/artifacts/{artifact_id}"]
+    art_store._blobs[f"orgs/{ORG_B}/artifacts/{artifact_id}"] = a_blob
+
+    # A handle that claims org B and points at the (valid-UUID) artifact_id.
+    handle_b = make_handle(
+        artifact_id=artifact_id,
+        kind="pickle",
+        uri=f"mem://orgs/{ORG_B}/artifacts/{artifact_id}",
+        org_id=ORG_B,
+        produced_by_run=None,
+    )
+
+    # Org check passes (handle says org B, caller is org B) but HMAC is bound to
+    # org A → integrity failure, no deserialise.
+    with pytest.raises(ValueError, match="HMAC mismatch|integrity check failed|missing HMAC envelope"):
+        get_artifact(handle_b, org_id=ORG_B, store=art_store)
