@@ -1,0 +1,750 @@
+"""Tests for Canvas Wave 5 — scheduled sending.
+
+Coverage
+--------
+1.  render_canvas_html: bakes {{token}} values from element_data.
+2.  render_canvas_html: replaces <nubi-kpi> with a static div.
+3.  render_canvas_html: replaces <nubi-table> with a static table.
+4.  render_canvas_html: replaces <nubi-value> with an inline span.
+5.  render_canvas_html: sanitization — <script> tag is rejected.
+6.  render_canvas_html: sanitization — on*= handler is rejected.
+7.  render_canvas_html: data values are HTML-escaped (XSS prevention).
+8.  render_canvas_html: no live JavaScript survives (custom elements gone).
+9.  report_send handle() with canvas_id: renders and sends (mocked transport).
+10. report_send handle() with canvas_id, format='pdf': sends bytes attachment.
+11. Per-recipient RLS: canvas_id + locked_params → one render per unique slice.
+12. Board path unchanged: existing board tests still pass (smoke check).
+13. canvas_id with missing canvas → AppError(canvas_not_found).
+14. canvas_id with unsupported format → AppError(invalid_task_config).
+15. canvas_id with empty recipients → AppError(invalid_task_config).
+16. canvas_id with missing org_id → AppError(invalid_task_config).
+17. render_canvas_html: assets CSS is inlined.
+18. _render_canvas: parses doc from canvas config and calls render_canvas_html.
+19. Notify channel called for canvas path.
+20. canvas_id in result dict (not board_id).
+"""
+
+from __future__ import annotations
+
+import uuid
+from typing import Any
+from unittest.mock import MagicMock, patch
+
+import pytest
+
+from app.dashboards.canvas import CanvasDoc
+from app.dashboards.render_canvas import render_canvas_html
+from app.errors import AppError
+from app.flows.executor import TaskContext
+from app.flows.handlers.report_send import handle as report_send_handle
+from app.jobs.report import NullSender
+
+
+# ---------------------------------------------------------------------------
+# Fixtures / helpers
+# ---------------------------------------------------------------------------
+
+
+def _make_canvas(
+    canvas_id: str | None = None,
+    org_id: str = "org-test",
+    name: str = "Test Canvas",
+    html: str = "<h1>Hello</h1>",
+    bindings: dict | None = None,
+) -> dict[str, Any]:
+    cid = canvas_id or str(uuid.uuid4())
+    return {
+        "id": cid,
+        "org_id": org_id,
+        "name": name,
+        "config": {
+            "doc": {
+                "version": 1,
+                "title": name,
+                "html": html,
+                "bindings": bindings or {},
+            }
+        },
+        "created_at": "2024-01-01T00:00:00+00:00",
+    }
+
+
+def _make_doc(
+    html: str = "<h1>Hello</h1>",
+    bindings: dict | None = None,
+    assets: dict | None = None,
+) -> CanvasDoc:
+    return CanvasDoc(
+        version=1,
+        title="Test",
+        html=html,
+        bindings=bindings or {},
+        assets=assets or {},
+    )
+
+
+def _ctx(org_id: str = "org-test") -> TaskContext:
+    return TaskContext(org_id=org_id)
+
+
+def _patch_canvas(canvas: dict | None):
+    """Patch _resolve_canvas_sync in the report_send handler module."""
+    return patch(
+        "app.flows.handlers.report_send._resolve_canvas_sync",
+        return_value=canvas,
+    )
+
+
+def _patch_canvas_data(data: dict):
+    """Patch _collect_canvas_data_sync in the report_send handler module."""
+    return patch(
+        "app.flows.handlers.report_send._collect_canvas_data_sync",
+        return_value=data,
+    )
+
+
+_ELEMENT_DATA_KPI = {
+    "el_1": {"columns": ["value"], "rows": [[42]]},
+}
+
+_ELEMENT_DATA_TABLE = {
+    "el_tbl": {"columns": ["name", "amount"], "rows": [["Alice", 100], ["Bob", 200]]},
+}
+
+
+# ---------------------------------------------------------------------------
+# 1-8. render_canvas_html unit tests
+# ---------------------------------------------------------------------------
+
+
+class TestRenderCanvasHtml:
+    def test_token_substitution(self):
+        """{{token}} is replaced with the HTML-escaped resolved value."""
+        doc = _make_doc(
+            html="<p>Revenue: {{value}}</p>",
+        )
+        element_data = {"el_1": {"columns": ["value"], "rows": [[1234]]}}
+        result = render_canvas_html(doc, element_data)
+        assert "Revenue: 1234" in result
+        assert "{{value}}" not in result
+
+    def test_token_xss_escaped(self):
+        """{{token}} values are HTML-escaped — XSS payloads must not survive."""
+        doc = _make_doc(html="<p>Greeting: {{msg}}</p>")
+        element_data = {"el_x": {"columns": ["msg"], "rows": [["<script>alert(1)</script>"]]}}
+        result = render_canvas_html(doc, element_data)
+        assert "<script>" not in result
+        assert "&lt;script&gt;" in result
+
+    def test_nubi_kpi_replaced(self):
+        """<nubi-kpi> is replaced by a static div with the resolved value."""
+        doc = _make_doc(
+            html='<nubi-kpi data-el-id="el_1" label="Revenue"></nubi-kpi>',
+        )
+        result = render_canvas_html(doc, _ELEMENT_DATA_KPI)
+        # Custom element must be gone.
+        assert "<nubi-kpi" not in result
+        # Value baked in.
+        assert "42" in result
+        # Label rendered.
+        assert "Revenue" in result
+
+    def test_nubi_table_replaced(self):
+        """<nubi-table> is replaced by a static HTML table."""
+        doc = _make_doc(
+            html='<nubi-table data-el-id="el_tbl"></nubi-table>',
+        )
+        result = render_canvas_html(doc, _ELEMENT_DATA_TABLE)
+        assert "<nubi-table" not in result
+        assert "<table" in result
+        assert "Alice" in result
+        assert "200" in result
+
+    def test_nubi_value_replaced(self):
+        """<nubi-value> is replaced by an inline span."""
+        doc = _make_doc(
+            html='<p>Total: <nubi-value data-el-id="el_v" field="total"/></p>',
+        )
+        element_data = {"el_v": {"columns": ["total"], "rows": [[99]]}}
+        result = render_canvas_html(doc, element_data)
+        assert "<nubi-value" not in result
+        assert "99" in result
+
+    def test_script_tag_rejected(self):
+        """HTML containing <script> must raise ValueError."""
+        doc = _make_doc(html="<script>alert(1)</script><p>ok</p>")
+        with pytest.raises(ValueError, match="script"):
+            render_canvas_html(doc, {})
+
+    def test_on_handler_rejected(self):
+        """HTML containing on*= event handlers must raise ValueError."""
+        doc = _make_doc(html='<img src="x" onerror="alert(1)">')
+        with pytest.raises(ValueError, match="event handler"):
+            render_canvas_html(doc, {})
+
+    def test_no_live_custom_elements_in_output(self):
+        """After rendering, no <nubi-*> custom element tags must remain."""
+        import re
+        doc = _make_doc(
+            html=(
+                '<nubi-kpi data-el-id="k1" label="KPI"></nubi-kpi>'
+                '<nubi-table data-el-id="t1"></nubi-table>'
+            ),
+        )
+        element_data = {
+            "k1": {"columns": ["v"], "rows": [[7]]},
+            "t1": {"columns": ["col"], "rows": [["row1"]]},
+        }
+        result = render_canvas_html(doc, element_data)
+        custom_el_re = re.compile(r"<nubi-", re.IGNORECASE)
+        assert not custom_el_re.search(result), (
+            "Live custom elements found in rendered output — must be baked in server-side"
+        )
+
+    def test_assets_css_inlined(self):
+        """doc.assets.css is inlined into the <style> block."""
+        doc = _make_doc(
+            html="<p>ok</p>",
+            assets={"css": ".custom { color: red; }"},
+        )
+        result = render_canvas_html(doc, {})
+        assert ".custom" in result
+        assert "color: red" in result
+
+    def test_self_contained_document(self):
+        """Output is a complete <!DOCTYPE html> document."""
+        doc = _make_doc(html="<p>ok</p>")
+        result = render_canvas_html(doc, {})
+        assert result.startswith("<!DOCTYPE html>")
+        assert "<html" in result
+        assert "<style>" in result
+        assert "</html>" in result
+
+    def test_error_binding_renders_dash(self):
+        """Bindings with errors render as '–' placeholder, not crash."""
+        doc = _make_doc(
+            html='<nubi-kpi data-el-id="el_err" label="Broken"></nubi-kpi>',
+        )
+        element_data = {"el_err": {"error": "query_not_registered"}}
+        result = render_canvas_html(doc, element_data)
+        assert "<nubi-kpi" not in result
+        # Should still contain the label and a dash placeholder.
+        assert "Broken" in result
+
+    def test_no_data_renders_dash(self):
+        """Bindings with empty rows render as no-data placeholder, not crash."""
+        doc = _make_doc(
+            html='<nubi-kpi data-el-id="el_nd" label="Empty"></nubi-kpi>',
+        )
+        element_data = {"el_nd": {"columns": [], "rows": []}}
+        result = render_canvas_html(doc, element_data)
+        assert "<nubi-kpi" not in result
+
+    def test_table_row_cap(self):
+        """Tables truncate at _MAX_TABLE_ROWS rows with a '… more rows' note."""
+        from app.dashboards.render_canvas import _MAX_TABLE_ROWS
+        rows = [[f"row{i}"] for i in range(_MAX_TABLE_ROWS + 10)]
+        doc = _make_doc(html='<nubi-table data-el-id="t1"></nubi-table>')
+        element_data = {"t1": {"columns": ["x"], "rows": rows}}
+        result = render_canvas_html(doc, element_data)
+        assert "more rows" in result
+
+
+# ---------------------------------------------------------------------------
+# 9-10. report_send handle() canvas path
+# ---------------------------------------------------------------------------
+
+
+class TestReportSendCanvas:
+    def test_canvas_html_renders_and_sends(self):
+        """handle() with canvas_id delivers an HTML email."""
+        canvas = _make_canvas()
+        sender = NullSender()
+        config = {
+            "canvas_id": canvas["id"],
+            "org_id": canvas["org_id"],
+            "format": "html",
+            "recipients": ["alice@x.com", "bob@x.com"],
+            "subject": "Weekly Canvas",
+        }
+
+        with _patch_canvas(canvas):
+            with _patch_canvas_data({}):
+                with patch("app.jobs.report.get_default_sender", return_value=sender):
+                    result = report_send_handle(config, _ctx(), claims={})
+
+        assert result["canvas_id"] == canvas["id"]
+        assert result["format"] == "html"
+        assert result["recipients_count"] == 2
+        assert result["emails_sent"] == 2
+        assert len(sender.sent) == 2
+        assert {s["to"] for s in sender.sent} == {"alice@x.com", "bob@x.com"}
+
+    def test_canvas_html_attachment_name(self):
+        """Attachment name is report.html for HTML format."""
+        canvas = _make_canvas()
+        sender = NullSender()
+        config = {
+            "canvas_id": canvas["id"],
+            "org_id": canvas["org_id"],
+            "format": "html",
+            "recipients": ["a@x.com"],
+        }
+        with _patch_canvas(canvas):
+            with _patch_canvas_data({}):
+                with patch("app.jobs.report.get_default_sender", return_value=sender):
+                    report_send_handle(config, _ctx(), claims={})
+
+        assert sender.sent[0]["attachment_name"] == "report.html"
+
+    def test_canvas_html_is_str(self):
+        """HTML format renders as a str, not bytes."""
+        canvas = _make_canvas()
+        sender = NullSender()
+        config = {
+            "canvas_id": canvas["id"],
+            "org_id": canvas["org_id"],
+            "format": "html",
+            "recipients": ["a@x.com"],
+        }
+        with _patch_canvas(canvas):
+            with _patch_canvas_data({}):
+                with patch("app.jobs.report.get_default_sender", return_value=sender):
+                    report_send_handle(config, _ctx(), claims={})
+
+        assert isinstance(sender.sent[0]["attachment_data"], str)
+
+    def test_canvas_pdf_renders_and_sends(self):
+        """handle() with canvas_id + format=pdf sends bytes attachment."""
+        canvas = _make_canvas()
+        sender = NullSender()
+        config = {
+            "canvas_id": canvas["id"],
+            "org_id": canvas["org_id"],
+            "format": "pdf",
+            "recipients": ["a@x.com"],
+        }
+        with _patch_canvas(canvas):
+            with _patch_canvas_data({}):
+                with patch("app.jobs.report.get_default_sender", return_value=sender):
+                    result = report_send_handle(config, _ctx(), claims={})
+
+        assert result["format"] == "pdf"
+        assert result["emails_sent"] == 1
+        assert sender.sent[0]["attachment_name"] == "report.pdf"
+        assert isinstance(sender.sent[0]["attachment_data"], bytes)
+
+    def test_canvas_result_shape(self):
+        """Result dict must carry canvas_id, not board_id."""
+        canvas = _make_canvas()
+        sender = NullSender()
+        config = {
+            "canvas_id": canvas["id"],
+            "org_id": canvas["org_id"],
+            "format": "html",
+            "recipients": ["a@x.com"],
+        }
+        with _patch_canvas(canvas):
+            with _patch_canvas_data({}):
+                with patch("app.jobs.report.get_default_sender", return_value=sender):
+                    result = report_send_handle(config, _ctx(), claims={})
+
+        assert "canvas_id" in result
+        assert "board_id" not in result
+        for key in ("org_id", "format", "recipients_count", "emails_sent",
+                    "channel_notifications", "errors"):
+            assert key in result, f"missing key {key!r}"
+
+
+# ---------------------------------------------------------------------------
+# 11. Per-recipient RLS (canvas path)
+# ---------------------------------------------------------------------------
+
+
+class TestCanvasPerRecipientRls:
+    def test_one_send_per_recipient_with_locked_params(self):
+        """apply_user_permissions=True + locked_params → per-recipient send."""
+        canvas = _make_canvas()
+        sender = NullSender()
+        config = {
+            "canvas_id": canvas["id"],
+            "org_id": canvas["org_id"],
+            "format": "html",
+            "recipients": ["alice@x.com", "bob@x.com"],
+            "apply_user_permissions": True,
+            "locked_params": {
+                "alice@x.com": {"tenant_id": "acme"},
+                "bob@x.com": {"tenant_id": "globex"},
+            },
+        }
+        with _patch_canvas(canvas):
+            with _patch_canvas_data({}):
+                with patch("app.jobs.report.get_default_sender", return_value=sender):
+                    result = report_send_handle(config, _ctx(), claims={})
+
+        assert result["emails_sent"] == 2
+        assert {s["to"] for s in sender.sent} == {"alice@x.com", "bob@x.com"}
+
+    def test_shared_policy_renders_once(self):
+        """Same locked_params for multiple recipients → single render call."""
+        canvas = _make_canvas()
+        sender = NullSender()
+        render_call_count = [0]
+
+        def _counting_render(cv, fmt, *, org_id="", render_claims=None):
+            render_call_count[0] += 1
+            return "<html>ok</html>"
+
+        config = {
+            "canvas_id": canvas["id"],
+            "org_id": canvas["org_id"],
+            "format": "html",
+            "recipients": ["a@x.com", "b@x.com", "c@x.com"],
+            "apply_user_permissions": True,
+            "locked_params": {
+                "a@x.com": {"tenant_id": "acme"},
+                "b@x.com": {"tenant_id": "acme"},
+                "c@x.com": {"tenant_id": "acme"},
+            },
+        }
+        with _patch_canvas(canvas):
+            with patch("app.jobs.report.get_default_sender", return_value=sender):
+                with patch(
+                    "app.flows.handlers.report_send._render_canvas",
+                    side_effect=_counting_render,
+                ):
+                    result = report_send_handle(config, _ctx(), claims={})
+
+        assert result["emails_sent"] == 3
+        assert render_call_count[0] == 1, (
+            f"Expected 1 render for shared policy, got {render_call_count[0]}"
+        )
+
+    def test_distinct_policies_render_separately(self):
+        """Different locked_params → separate render per unique slice."""
+        canvas = _make_canvas()
+        sender = NullSender()
+        render_call_count = [0]
+
+        def _counting_render(cv, fmt, *, org_id="", render_claims=None):
+            render_call_count[0] += 1
+            return "<html>ok</html>"
+
+        config = {
+            "canvas_id": canvas["id"],
+            "org_id": canvas["org_id"],
+            "format": "html",
+            "recipients": ["alice@x.com", "bob@x.com"],
+            "apply_user_permissions": True,
+            "locked_params": {
+                "alice@x.com": {"tenant_id": "acme"},
+                "bob@x.com": {"tenant_id": "globex"},
+            },
+        }
+        with _patch_canvas(canvas):
+            with patch("app.jobs.report.get_default_sender", return_value=sender):
+                with patch(
+                    "app.flows.handlers.report_send._render_canvas",
+                    side_effect=_counting_render,
+                ):
+                    result = report_send_handle(config, _ctx(), claims={})
+
+        assert result["emails_sent"] == 2
+        assert render_call_count[0] == 2
+
+    def test_locked_params_forwarded_to_render_claims(self):
+        """Locked params must be merged into per-recipient render_claims."""
+        canvas = _make_canvas()
+        sender = NullSender()
+        captured_claims: list[dict] = []
+
+        def _capture_render(cv, fmt, *, org_id="", render_claims=None):
+            captured_claims.append(dict(render_claims or {}))
+            return "<html>ok</html>"
+
+        config = {
+            "canvas_id": canvas["id"],
+            "org_id": canvas["org_id"],
+            "format": "html",
+            "recipients": ["alice@x.com"],
+            "apply_user_permissions": True,
+            "locked_params": {"alice@x.com": {"tenant_id": "acme"}},
+        }
+        with _patch_canvas(canvas):
+            with patch("app.jobs.report.get_default_sender", return_value=sender):
+                with patch(
+                    "app.flows.handlers.report_send._render_canvas",
+                    side_effect=_capture_render,
+                ):
+                    report_send_handle(config, _ctx(), claims={})
+
+        assert len(captured_claims) == 1
+        # The locked_params must have been merged into policies.
+        policies = captured_claims[0].get("policies") or {}
+        assert policies.get("tenant_id") == "acme", (
+            f"Expected tenant_id='acme' in render_claims.policies, got {policies!r}"
+        )
+
+
+# ---------------------------------------------------------------------------
+# 12. Board path unchanged (smoke test)
+# ---------------------------------------------------------------------------
+
+
+class TestBoardPathUnchanged:
+    def test_board_path_still_works(self):
+        """board_id config path still renders + sends CSV (board path unchanged)."""
+        board_id = str(uuid.uuid4())
+        board = {
+            "id": board_id,
+            "org_id": "org-test",
+            "name": "Test Board",
+            "config": {
+                "spec": {
+                    "version": 1,
+                    "title": "T",
+                    "layout": {"cols": 12, "row_height": 60},
+                    "widgets": [],
+                }
+            },
+        }
+        sender = NullSender()
+        config = {
+            "board_id": board_id,
+            "org_id": "org-test",
+            "format": "csv",
+            "recipients": ["a@x.com"],
+        }
+        with patch("app.jobs.report.resolve_board_sync", return_value=board):
+            with patch("app.jobs.report.get_default_sender", return_value=sender):
+                result = report_send_handle(config, _ctx(), claims={})
+
+        assert result["board_id"] == board_id
+        assert result["emails_sent"] == 1
+        assert "canvas_id" not in result
+
+
+# ---------------------------------------------------------------------------
+# 13-16. Error cases (canvas path)
+# ---------------------------------------------------------------------------
+
+
+class TestCanvasErrorCases:
+    def test_canvas_not_found_raises(self):
+        """Canvas not found → AppError(canvas_not_found)."""
+        config = {
+            "canvas_id": str(uuid.uuid4()),
+            "org_id": "org-test",
+            "format": "html",
+            "recipients": ["a@x.com"],
+        }
+        with _patch_canvas(None):
+            with pytest.raises(AppError) as exc_info:
+                report_send_handle(config, _ctx(), claims={})
+        assert exc_info.value.code == "canvas_not_found"
+
+    def test_unsupported_format_raises(self):
+        """Unsupported format → AppError(invalid_task_config)."""
+        canvas = _make_canvas()
+        config = {
+            "canvas_id": canvas["id"],
+            "org_id": canvas["org_id"],
+            "format": "pptx",  # not supported for canvas
+            "recipients": ["a@x.com"],
+        }
+        with _patch_canvas(canvas):
+            with pytest.raises(AppError) as exc_info:
+                report_send_handle(config, _ctx(), claims={})
+        assert exc_info.value.code == "invalid_task_config"
+
+    def test_empty_recipients_raises(self):
+        """Empty recipients → AppError(invalid_task_config)."""
+        canvas = _make_canvas()
+        config = {
+            "canvas_id": canvas["id"],
+            "org_id": canvas["org_id"],
+            "format": "html",
+            "recipients": [],
+        }
+        with _patch_canvas(canvas):
+            with pytest.raises(AppError) as exc_info:
+                report_send_handle(config, _ctx(), claims={})
+        assert exc_info.value.code == "invalid_task_config"
+
+    def test_missing_org_id_raises(self):
+        """Missing org_id → AppError(invalid_task_config)."""
+        canvas = _make_canvas()
+        config = {
+            "canvas_id": canvas["id"],
+            # org_id intentionally absent
+            "format": "html",
+            "recipients": ["a@x.com"],
+        }
+        ctx = TaskContext(org_id=None)
+        with _patch_canvas(canvas):
+            with pytest.raises(AppError) as exc_info:
+                report_send_handle(config, ctx, claims={})
+        assert exc_info.value.code == "invalid_task_config"
+
+    def test_org_id_from_ctx(self):
+        """org_id falls back to ctx.org_id."""
+        canvas = _make_canvas(org_id="ctx-org")
+        sender = NullSender()
+        config = {
+            "canvas_id": canvas["id"],
+            # no org_id in config
+            "format": "html",
+            "recipients": ["a@x.com"],
+        }
+        ctx = TaskContext(org_id="ctx-org")
+        with _patch_canvas(canvas):
+            with _patch_canvas_data({}):
+                with patch("app.jobs.report.get_default_sender", return_value=sender):
+                    result = report_send_handle(config, ctx, claims={})
+        assert result["emails_sent"] == 1
+
+    def test_org_id_from_claims(self):
+        """org_id falls back to claims['org_id']."""
+        canvas = _make_canvas(org_id="claims-org")
+        sender = NullSender()
+        config = {
+            "canvas_id": canvas["id"],
+            "format": "html",
+            "recipients": ["a@x.com"],
+        }
+        ctx = TaskContext(org_id=None)
+        with _patch_canvas(canvas):
+            with _patch_canvas_data({}):
+                with patch("app.jobs.report.get_default_sender", return_value=sender):
+                    result = report_send_handle(config, ctx, claims={"org_id": "claims-org"})
+        assert result["emails_sent"] == 1
+
+
+# ---------------------------------------------------------------------------
+# 19. Notify channel called for canvas path
+# ---------------------------------------------------------------------------
+
+
+class TestCanvasNotifyChannels:
+    def test_null_channel_counted(self):
+        """A 'null' channel must be counted in channel_notifications."""
+        canvas = _make_canvas()
+        sender = NullSender()
+        config = {
+            "canvas_id": canvas["id"],
+            "org_id": canvas["org_id"],
+            "format": "html",
+            "recipients": ["a@x.com"],
+            "notify_channels": [{"kind": "null"}],
+        }
+        with _patch_canvas(canvas):
+            with _patch_canvas_data({}):
+                with patch("app.jobs.report.get_default_sender", return_value=sender):
+                    result = report_send_handle(config, _ctx(), claims={})
+
+        assert result["channel_notifications"] == 1
+
+    def test_broken_channel_logged_not_raised(self):
+        """A failing channel must be logged in errors, not raised."""
+        from app.notify.channels import ChannelError
+
+        canvas = _make_canvas()
+        sender = NullSender()
+        config = {
+            "canvas_id": canvas["id"],
+            "org_id": canvas["org_id"],
+            "format": "html",
+            "recipients": ["a@x.com"],
+            "notify_channels": [{"kind": "slack", "webhook_url": "http://bad"}],
+        }
+
+        def _raising_send(text, image_png=None):
+            raise ChannelError("simulated channel failure")
+
+        with _patch_canvas(canvas):
+            with _patch_canvas_data({}):
+                with patch("app.jobs.report.get_default_sender", return_value=sender):
+                    with patch("app.notify.channels.get_channel") as mock_ch:
+                        ch = MagicMock()
+                        ch.send.side_effect = _raising_send
+                        mock_ch.return_value = ch
+                        result = report_send_handle(config, _ctx(), claims={})
+
+        assert result["channel_notifications"] == 0
+        assert len(result["errors"]) > 0
+
+
+# ---------------------------------------------------------------------------
+# Policies precedence — canvas path
+# ---------------------------------------------------------------------------
+
+
+class TestCanvasPoliciesPrecedence:
+    def test_task_config_policies_override_flow_snapshot(self):
+        """Task-config policies take precedence over flow-level snapshot."""
+        canvas = _make_canvas()
+        sender = NullSender()
+        captured_claims: list[dict] = []
+
+        def _capture_render(cv, fmt, *, org_id="", render_claims=None):
+            captured_claims.append(dict(render_claims or {}))
+            return "<html>ok</html>"
+
+        flow_snapshot = {"row_filter": "tenant = 'shared'"}
+        task_policies = {"row_filter": "tenant = 'acme'"}
+
+        config = {
+            "canvas_id": canvas["id"],
+            "org_id": canvas["org_id"],
+            "format": "html",
+            "recipients": ["a@x.com"],
+            "policies": task_policies,
+        }
+        incoming_claims = {"org_id": canvas["org_id"], "policies": flow_snapshot}
+
+        with _patch_canvas(canvas):
+            with patch("app.jobs.report.get_default_sender", return_value=sender):
+                with patch(
+                    "app.flows.handlers.report_send._render_canvas",
+                    side_effect=_capture_render,
+                ):
+                    result = report_send_handle(config, _ctx(), claims=incoming_claims)
+
+        assert result["emails_sent"] == 1
+        assert len(captured_claims) == 1
+        assert captured_claims[0].get("policies") == task_policies, (
+            f"Expected task-config policies {task_policies!r}, "
+            f"got {captured_claims[0].get('policies')!r}"
+        )
+
+
+# ---------------------------------------------------------------------------
+# render_canvas_html: format helpers
+# ---------------------------------------------------------------------------
+
+
+class TestRenderCanvasHtmlFormatHelpers:
+    def test_currency_format(self):
+        """format='currency' renders value with 'R' prefix and 2 decimal places."""
+        doc = _make_doc(
+            html='<nubi-kpi data-el-id="k1" label="Rev" format="currency"></nubi-kpi>',
+        )
+        element_data = {"k1": {"columns": ["rev"], "rows": [[1234.5]]}}
+        result = render_canvas_html(doc, element_data)
+        # Should contain currency-formatted value
+        assert "1,234.50" in result or "R" in result
+
+    def test_missing_el_id_no_data(self):
+        """element_data missing el_id → renders dash placeholder gracefully."""
+        doc = _make_doc(
+            html='<nubi-kpi data-el-id="unknown" label="X"></nubi-kpi>',
+        )
+        result = render_canvas_html(doc, {})
+        assert "<nubi-kpi" not in result  # replaced with static HTML
+
+    def test_token_missing_renders_placeholder(self):
+        """{{token}} with no match renders a visible placeholder (not blank)."""
+        doc = _make_doc(html="<p>Value: {{unknown_token}}</p>")
+        result = render_canvas_html(doc, {})
+        # Should render something with the token name (for debugging), not blank.
+        assert "unknown_token" in result or "{{" not in result

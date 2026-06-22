@@ -33,6 +33,7 @@ import {
   Settings,
   Shield,
   BookOpen,
+  PanelTop,
 } from 'lucide-react'
 import { useAuth } from '../../contexts/AuthContext.jsx'
 import { useUi } from '../../contexts/UiContext.jsx'
@@ -49,6 +50,7 @@ const NAV_ITEMS = [
   { label: 'Data',        to: '/data',        Icon: Table2 },
   { label: 'Queries',     to: '/queries',     Icon: FileCode2 },
   { label: 'Dashboards',  to: '/dashboards',  Icon: LayoutDashboard },
+  { label: 'Canvases',   to: '/canvases',    Icon: PanelTop },
   { label: 'Flows',       to: '/flows',       Icon: Workflow },
   { label: 'Watches',     to: '/watches',     Icon: BellRing },
   { label: 'Automations', to: '/automations', Icon: CalendarClock },

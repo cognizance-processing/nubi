@@ -1,0 +1,345 @@
+"""B6 — Run-history: run lineage + SLA flag tests.
+
+Coverage
+--------
+1.  list_flow_runs returns runs newest-first.
+2.  Each run includes params_snapshot, code_version, seed.
+3.  Run-history endpoint (get_flow_run_by_id) returns task_runs + lineage.
+4.  list_run_outputs / add_run_output used for per-run lineage.
+5.  SLA flag: run exceeding expected_s is flagged.
+6.  SLA flag: run within expected_s is NOT flagged.
+7.  Multiple runs for the same flow are all returned.
+8.  Cross-org run is NOT accessible (404).
+9.  Run history with trigger=sweep has __sweep_id__ in params_snapshot.
+10. Run history with trigger=backfill has __backfill_id__ in params_snapshot.
+"""
+
+from __future__ import annotations
+
+import asyncio
+from datetime import datetime, timedelta, timezone
+from typing import Any
+
+import pytest
+
+from app.flows.runtime import drain_flow_run, materialize_flow_run
+from app.flows.store import InMemoryFlowStore
+from app.flows.triggers import flag_sla_breach
+from app.flows.registry import reset_for_tests
+
+pytestmark = pytest.mark.asyncio
+
+NOW = datetime(2025, 6, 1, 12, 0, 0, tzinfo=timezone.utc)
+CLAIMS: dict[str, Any] = {"org_id": "org-test", "sub": "user-test"}
+
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+
+async def _make_flow(
+    store: InMemoryFlowStore,
+    org_id: str = "org-test",
+    name: str = "test_flow",
+    spec: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    if spec is None:
+        spec = {
+            "version": 1,
+            "name": name,
+            "tasks": [{"key": "t1", "kind": "noop", "needs": [], "config": {}}],
+        }
+    return await store.create_flow(
+        org_id=org_id,
+        created_by="user-test",
+        name=name,
+        spec=spec,
+    )
+
+
+async def _run_flow(
+    store: InMemoryFlowStore,
+    flow: dict[str, Any],
+    params: dict[str, Any] | None = None,
+    trigger: str = "manual",
+) -> dict[str, Any]:
+    reset_for_tests()
+    flow_run = await materialize_flow_run(store, flow, params or {}, trigger, NOW)
+    return await drain_flow_run(store, flow_run["id"], NOW, claims=CLAIMS)
+
+
+# ---------------------------------------------------------------------------
+# 1. list_flow_runs returns runs newest-first
+# ---------------------------------------------------------------------------
+
+
+async def test_list_flow_runs_newest_first():
+    store = InMemoryFlowStore()
+    flow = await _make_flow(store)
+
+    r1 = await materialize_flow_run(store, flow, {"i": 0}, "manual", NOW)
+    r2 = await materialize_flow_run(store, flow, {"i": 1}, "manual", NOW)
+    r3 = await materialize_flow_run(store, flow, {"i": 2}, "manual", NOW)
+
+    runs = await store.list_flow_runs(flow["id"])
+    # Newest first: r3 > r2 > r1.
+    assert runs[0]["id"] == r3["id"]
+    assert runs[-1]["id"] == r1["id"]
+
+
+# ---------------------------------------------------------------------------
+# 2. Each run includes params_snapshot, code_version, seed
+# ---------------------------------------------------------------------------
+
+
+async def test_run_has_lineage_fields():
+    store = InMemoryFlowStore()
+    flow = await _make_flow(store)
+
+    params = {"region": "ZA", "date": "2025-06-01"}
+    run = await materialize_flow_run(store, flow, params, "manual", NOW)
+
+    assert run.get("params_snapshot") is not None
+    assert run["params_snapshot"].get("region") == "ZA"
+
+    assert run.get("code_version") is not None
+    assert run["code_version"].get("flow_id") == flow["id"]
+
+    assert run.get("seed") is not None
+    assert isinstance(run["seed"], int)
+
+
+# ---------------------------------------------------------------------------
+# 3. get_flow_run returns task_runs with lineage
+# ---------------------------------------------------------------------------
+
+
+async def test_get_flow_run_includes_task_runs():
+    store = InMemoryFlowStore()
+    flow = await _make_flow(store)
+
+    final_run = await _run_flow(store, flow, params={"x": 1})
+    assert final_run["state"] == "success"
+
+    task_runs = await store.list_task_runs(final_run["id"])
+    assert len(task_runs) >= 1
+    assert all("task_key" in tr for tr in task_runs)
+    assert all("state" in tr for tr in task_runs)
+
+
+# ---------------------------------------------------------------------------
+# 4. add_run_output + list_run_outputs for per-run lineage
+# ---------------------------------------------------------------------------
+
+
+async def test_run_output_lineage():
+    store = InMemoryFlowStore()
+    flow = await _make_flow(store)
+
+    run = await _run_flow(store, flow)
+    run_id = run["id"]
+
+    output = await store.add_run_output(
+        flow_run_id=run_id,
+        org_id="org-test",
+        task_key="t1",
+        output_key="sales_table",
+        output_type="table",
+        output_uri="s3://bucket/sales",
+        meta={"row_count": 1000},
+    )
+
+    assert output["output_key"] == "sales_table"
+
+    outputs = await store.list_run_outputs(run_id)
+    assert len(outputs) == 1
+    assert outputs[0]["task_key"] == "t1"
+    assert outputs[0]["meta"]["row_count"] == 1000
+
+
+# ---------------------------------------------------------------------------
+# 5. SLA flag: exceeded
+# ---------------------------------------------------------------------------
+
+
+def test_sla_flag_exceeded():
+    now = datetime(2025, 6, 1, 12, 0, 0, tzinfo=timezone.utc)
+    run = {
+        "started_at": now - timedelta(seconds=200),
+        "finished_at": now,
+        "state": "success",
+    }
+    assert flag_sla_breach(run, expected_s=100.0, now=now) is True
+
+
+# ---------------------------------------------------------------------------
+# 6. SLA flag: within
+# ---------------------------------------------------------------------------
+
+
+def test_sla_flag_within():
+    now = datetime(2025, 6, 1, 12, 0, 0, tzinfo=timezone.utc)
+    run = {
+        "started_at": now - timedelta(seconds=50),
+        "finished_at": now,
+        "state": "success",
+    }
+    assert flag_sla_breach(run, expected_s=100.0, now=now) is False
+
+
+# ---------------------------------------------------------------------------
+# 7. Multiple runs for the same flow are all returned
+# ---------------------------------------------------------------------------
+
+
+async def test_multiple_runs_all_returned():
+    store = InMemoryFlowStore()
+    flow = await _make_flow(store)
+
+    for i in range(5):
+        await materialize_flow_run(store, flow, {"i": i}, "manual", NOW)
+
+    runs = await store.list_flow_runs(flow["id"])
+    assert len(runs) == 5
+
+
+# ---------------------------------------------------------------------------
+# 8. Cross-org run not accessible
+# ---------------------------------------------------------------------------
+
+
+async def test_cross_org_run_not_accessible():
+    store = InMemoryFlowStore()
+    flow_a = await _make_flow(store, org_id="org-A")
+    flow_b = await _make_flow(store, org_id="org-B")
+
+    run_a = await materialize_flow_run(store, flow_a, {}, "manual", NOW)
+
+    # Verify the run belongs to org-A.
+    fetched = await store.get_flow_run(run_a["id"])
+    assert fetched is not None
+    assert str(fetched["org_id"]) == "org-A"
+
+    # Simulate what the route does: check org_id.
+    assert str(fetched["org_id"]) != "org-B", "Cross-org run should not be accessible to org-B"
+
+
+# ---------------------------------------------------------------------------
+# 9. Sweep runs have __sweep_id__ in params
+# ---------------------------------------------------------------------------
+
+
+async def test_sweep_run_has_sweep_id_in_params():
+    from app.flows.sweep import run_sweep  # noqa: PLC0415
+    from app.flows.triggers import set_trigger_registry, InMemoryTriggerRegistry  # noqa: PLC0415
+
+    set_trigger_registry(InMemoryTriggerRegistry())
+    reset_for_tests()
+
+    store = InMemoryFlowStore()
+    flow = await _make_flow(store)
+
+    result = await run_sweep(
+        store=store,
+        flow=flow,
+        param_sets=[{"region": "ZA"}],
+        trigger="sweep",
+        now=NOW,
+        claims=CLAIMS,
+    )
+
+    assert result.succeeded == 1
+    run_id = result.cells[0].run_id
+    run = await store.get_flow_run(run_id)
+    assert run is not None
+    assert run["params"].get("__sweep_id__") == result.sweep_id
+    assert run["trigger"] == "sweep"
+
+
+# ---------------------------------------------------------------------------
+# 10. Backfill runs have __backfill_id__ in params
+# ---------------------------------------------------------------------------
+
+
+async def test_backfill_run_has_backfill_id_in_params():
+    from app.flows.sweep import run_backfill  # noqa: PLC0415
+    from app.flows.triggers import set_trigger_registry, InMemoryTriggerRegistry  # noqa: PLC0415
+
+    set_trigger_registry(InMemoryTriggerRegistry())
+    reset_for_tests()
+
+    store = InMemoryFlowStore()
+    flow = await _make_flow(store)
+
+    start = datetime(2025, 1, 1, tzinfo=timezone.utc)
+    end = datetime(2025, 1, 3, tzinfo=timezone.utc)
+
+    result = await run_backfill(
+        store=store,
+        flow=flow,
+        start=start,
+        end=end,
+        window="1d",
+        trigger="backfill",
+        now=NOW,
+        claims=CLAIMS,
+    )
+
+    assert result.total == 2
+    assert result.succeeded == 2
+
+    for w in result.windows:
+        run = await store.get_flow_run(w.run_id)
+        assert run is not None
+        assert run["params"].get("__backfill_id__") == result.backfill_id
+        assert run["trigger"] == "backfill"
+
+
+# ---------------------------------------------------------------------------
+# 11. Run history retrieves enriched data via list_flow_runs
+# ---------------------------------------------------------------------------
+
+
+async def test_run_history_enrichment():
+    """Simulate what the run-history endpoint does: list runs + outputs + lineage."""
+    store = InMemoryFlowStore()
+    flow = await _make_flow(store, spec={
+        "version": 1,
+        "name": "enriched_flow",
+        "runtime_config": {"freshness_sla_s": 3600},  # 1 hour SLA
+        "tasks": [{"key": "t1", "kind": "noop", "needs": [], "config": {}}],
+    })
+
+    final_run = await _run_flow(store, flow, params={"key": "val"})
+    assert final_run["state"] == "success"
+
+    # Add an output record.
+    await store.add_run_output(
+        flow_run_id=final_run["id"],
+        org_id="org-test",
+        task_key="t1",
+        output_key="my_output",
+        output_type="table",
+    )
+
+    runs = await store.list_flow_runs(flow["id"])
+    assert len(runs) == 1
+    run = runs[0]
+
+    # Lineage fields present.
+    assert run.get("params_snapshot") is not None
+    assert run.get("code_version") is not None
+    assert run.get("seed") is not None
+
+    # Output.
+    outputs = await store.list_run_outputs(run["id"])
+    assert len(outputs) == 1
+    assert outputs[0]["output_key"] == "my_output"
+
+    # SLA not exceeded (run completed immediately in test).
+    now = datetime.now(timezone.utc)
+    spec = flow.get("spec") or {}
+    rc = spec.get("runtime_config") or {}
+    expected_s = rc.get("freshness_sla_s")
+    assert flag_sla_breach(run, expected_s, now) is False

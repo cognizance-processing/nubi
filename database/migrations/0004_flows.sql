@@ -39,7 +39,7 @@ CREATE TABLE IF NOT EXISTS flow_runs (
                              CHECK (state IN ('pending','running','success','failed','cancelled')),
     params       jsonb       NOT NULL DEFAULT '{}'::jsonb,
     trigger      text        NOT NULL DEFAULT 'manual'
-                             CHECK (trigger IN ('manual','schedule','event','agent')),
+                             CHECK (trigger IN ('manual','schedule','event','agent','sweep','backfill')),
     env          text,
     scheduled_at timestamptz,
     started_at   timestamptz,
@@ -172,3 +172,59 @@ CREATE INDEX IF NOT EXISTS flow_run_outputs_org_id_idx
     ON flow_run_outputs (org_id);
 CREATE INDEX IF NOT EXISTS flow_run_outputs_output_key_idx
     ON flow_run_outputs (output_key);
+
+-- ── B6: flow_triggers — event/webhook/downstream trigger registry ─────────────
+-- Registers which flows fire in response to events, webhooks, or the
+-- completion of another flow (downstream triggers).
+--
+-- kind:   'event' | 'webhook' | 'downstream'
+-- source: for event/webhook: the event_key string
+--         for downstream: the upstream flow_id (text, not FK, for flexibility)
+-- secret: optional HMAC secret for webhook signature verification
+-- extra:  free-form jsonb (filter predicates, on_states list, static params, etc.)
+
+CREATE TABLE IF NOT EXISTS flow_triggers (
+    id          uuid        PRIMARY KEY DEFAULT gen_random_uuid(),
+    org_id      uuid        NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
+    flow_id     uuid        NOT NULL REFERENCES flows(id) ON DELETE CASCADE,
+    kind        text        NOT NULL
+                            CHECK (kind IN ('event', 'webhook', 'downstream')),
+    source      text        NOT NULL,
+    secret      text,
+    extra       jsonb       NOT NULL DEFAULT '{}'::jsonb,
+    enabled     boolean     NOT NULL DEFAULT true,
+    created_at  timestamptz NOT NULL DEFAULT now(),
+    updated_at  timestamptz NOT NULL DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS flow_triggers_org_id_idx    ON flow_triggers (org_id);
+CREATE INDEX IF NOT EXISTS flow_triggers_flow_id_idx   ON flow_triggers (flow_id);
+CREATE INDEX IF NOT EXISTS flow_triggers_source_idx    ON flow_triggers (source);
+-- Efficient lookup of triggers by event_key + org.
+CREATE INDEX IF NOT EXISTS flow_triggers_event_idx
+    ON flow_triggers (org_id, source)
+    WHERE kind IN ('event', 'webhook') AND enabled = TRUE;
+-- Efficient lookup of downstream triggers by upstream flow_id.
+CREATE INDEX IF NOT EXISTS flow_triggers_downstream_idx
+    ON flow_triggers (org_id, source)
+    WHERE kind = 'downstream' AND enabled = TRUE;
+
+-- ── B6: flow_sla_alerts — SLA breach log ──────────────────────────────────────
+-- Optional log of runs that exceeded their expected duration.  Populated by the
+-- SLA hook (flag_sla_breach) when the flow spec carries a freshness_sla_s hint.
+-- Consumers can query this table for alerting / dashboarding without touching
+-- the hot flow_runs table.
+
+CREATE TABLE IF NOT EXISTS flow_sla_alerts (
+    id              uuid        PRIMARY KEY DEFAULT gen_random_uuid(),
+    org_id          uuid        NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
+    flow_id         uuid        NOT NULL REFERENCES flows(id) ON DELETE CASCADE,
+    flow_run_id     uuid        NOT NULL REFERENCES flow_runs(id) ON DELETE CASCADE,
+    expected_s      float       NOT NULL,
+    actual_s        float       NOT NULL,
+    state           text        NOT NULL,
+    created_at      timestamptz NOT NULL DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS flow_sla_alerts_org_id_idx  ON flow_sla_alerts (org_id);
+CREATE INDEX IF NOT EXISTS flow_sla_alerts_flow_id_idx ON flow_sla_alerts (flow_id);

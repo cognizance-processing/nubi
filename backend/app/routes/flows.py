@@ -1854,6 +1854,432 @@ async def codegen_flow(
 
 
 # ---------------------------------------------------------------------------
+# B5: Sweep + Backfill request schemas
+# ---------------------------------------------------------------------------
+
+
+class SweepIn(BaseModel):
+    """Request body for ``POST /flows/{id}/sweep``.
+
+    Supply either *param_sets* (a list of param dicts — one flow run per entry)
+    or *grid* (a name→[values] dict whose Cartesian product is expanded into
+    param sets).  *param_sets* takes precedence when both are supplied.
+    """
+
+    param_sets: list[dict[str, Any]] | None = None
+    grid: dict[str, list[Any]] | None = None
+    max_cells: int = 200
+
+
+class BackfillIn(BaseModel):
+    """Request body for ``POST /flows/{id}/backfill``.
+
+    Iterates ``[start, end)`` in *window*-sized steps (e.g. ``'1d'``,
+    ``'daily'``, ``'PT1H'``), creating one flow run per window with
+    ``params.__window_start__`` / ``params.__window_end__`` set.
+    """
+
+    start: str  # ISO-8601 datetime string
+    end: str  # ISO-8601 datetime string
+    window: str  # e.g. '1d', 'daily', 'PT1H'
+    max_windows: int = 500
+    params: dict[str, Any] = {}
+
+
+# ---------------------------------------------------------------------------
+# B6: Trigger request schemas
+# ---------------------------------------------------------------------------
+
+
+class RegisterTriggerIn(BaseModel):
+    """Request body for ``POST /flows/triggers``."""
+
+    flow_id: str
+    kind: str  # 'event' | 'webhook' | 'downstream'
+    source: str  # event_key OR upstream flow_id
+    secret: str | None = None
+    extra: dict[str, Any] = {}
+    enabled: bool = True
+
+
+class FireEventIn(BaseModel):
+    """Request body for ``POST /flows/triggers/fire``."""
+
+    event_key: str
+    payload: dict[str, Any] = {}
+
+
+# ---------------------------------------------------------------------------
+# B5: Sweep endpoint
+# ---------------------------------------------------------------------------
+
+
+@router.post("/{flow_id}/sweep", status_code=200, dependencies=[Depends(require_writer_default)])
+async def sweep_flow(
+    flow_id: str,
+    body: SweepIn,
+    user: dict[str, Any] = Depends(current_user),
+    identity: VerifiedIdentity = Depends(verified_identity),
+    repo: Repo = Depends(get_repo),
+) -> dict[str, Any]:
+    """Run a param sweep over a flow — one run per param set in the matrix.
+
+    Either ``param_sets`` (explicit list) or ``grid`` (Cartesian-product
+    expansion) must be supplied.  Each cell is a real flow_run that participates
+    in lineage.  Returns a diff surface (per-param-set outputs keyed for diffing).
+    """
+    from app.flows.sweep import run_sweep  # noqa: PLC0415
+
+    org_id = await _get_user_org(str(user["id"]), repo)
+    store = get_flow_store()
+    flow = await _require_flow_in_org(flow_id, org_id, store)
+
+    if not body.param_sets and not body.grid:
+        raise AppError("bad_request", "Supply 'param_sets' or 'grid'.", 400)
+
+    claims: dict[str, Any] = {
+        "kind": "access",
+        "sub": str(user.get("id", "")),
+        "org_id": org_id,
+        "policies": dict(identity.policies),
+        "scope": ["read:*", "write:*"],
+    }
+
+    now = datetime.now(timezone.utc)
+
+    try:
+        result = await run_sweep(
+            store=store,
+            flow=flow,
+            param_sets=body.param_sets,
+            trigger="sweep",
+            now=now,
+            claims=claims,
+            grid=body.grid,
+            max_cells=body.max_cells,
+        )
+    except ValueError as exc:
+        raise AppError("bad_request", str(exc), 400)
+
+    return {
+        "sweep_id": result.sweep_id,
+        "flow_id": result.flow_id,
+        "total": result.total,
+        "succeeded": result.succeeded,
+        "failed": result.failed,
+        "diff_surface": result.diff_surface(),
+        "cells": [
+            {
+                "index": c.index,
+                "params": c.params,
+                "run_id": c.run_id,
+                "state": c.state,
+                "error": c.error,
+            }
+            for c in result.cells
+        ],
+    }
+
+
+# ---------------------------------------------------------------------------
+# B5: Backfill endpoint
+# ---------------------------------------------------------------------------
+
+
+def _parse_iso_dt(value: str, field_name: str) -> datetime:
+    """Parse an ISO-8601 string into a tz-aware UTC datetime."""
+    from datetime import timezone as _tz  # noqa: PLC0415
+
+    try:
+        # Try fromisoformat first (Python 3.11+ handles 'Z' suffix).
+        dt = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        raise AppError(
+            "bad_request",
+            f"Field '{field_name}' is not a valid ISO-8601 datetime: {value!r}",
+            400,
+        )
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=_tz.utc)
+    return dt
+
+
+@router.post("/{flow_id}/backfill", status_code=200, dependencies=[Depends(require_writer_default)])
+async def backfill_flow(
+    flow_id: str,
+    body: BackfillIn,
+    user: dict[str, Any] = Depends(current_user),
+    identity: VerifiedIdentity = Depends(verified_identity),
+    repo: Repo = Depends(get_repo),
+) -> dict[str, Any]:
+    """Re-run a flow over a date range (one run per window).
+
+    Iterates ``[start, end)`` in *window*-sized steps.  Each run receives
+    ``params.__window_start__`` / ``params.__window_end__`` (ISO strings).
+    Best-effort: a failing window is recorded but does NOT abort the rest.
+    """
+    from app.flows.sweep import run_backfill  # noqa: PLC0415
+
+    org_id = await _get_user_org(str(user["id"]), repo)
+    store = get_flow_store()
+    flow = await _require_flow_in_org(flow_id, org_id, store)
+
+    start = _parse_iso_dt(body.start, "start")
+    end = _parse_iso_dt(body.end, "end")
+
+    if end <= start:
+        raise AppError("bad_request", "'end' must be after 'start'.", 400)
+
+    claims: dict[str, Any] = {
+        "kind": "access",
+        "sub": str(user.get("id", "")),
+        "org_id": org_id,
+        "policies": dict(identity.policies),
+        "scope": ["read:*", "write:*"],
+    }
+
+    now = datetime.now(timezone.utc)
+
+    try:
+        result = await run_backfill(
+            store=store,
+            flow=flow,
+            start=start,
+            end=end,
+            window=body.window,
+            trigger="backfill",
+            now=now,
+            claims=claims,
+            max_windows=body.max_windows,
+            extra_params=body.params or {},
+        )
+    except ValueError as exc:
+        raise AppError("bad_request", str(exc), 400)
+
+    return {
+        "backfill_id": result.backfill_id,
+        "flow_id": result.flow_id,
+        "total": result.total,
+        "succeeded": result.succeeded,
+        "failed": result.failed,
+        "skipped": result.skipped,
+        "windows": [
+            {
+                "index": w.index,
+                "window_start": w.window_start.isoformat(),
+                "window_end": w.window_end.isoformat(),
+                "run_id": w.run_id,
+                "state": w.state,
+                "error": w.error,
+            }
+            for w in result.windows
+        ],
+    }
+
+
+# ---------------------------------------------------------------------------
+# B6: Trigger management endpoints
+# ---------------------------------------------------------------------------
+
+
+@router.post("/triggers", status_code=201, dependencies=[Depends(require_writer_default)])
+async def create_trigger(
+    body: RegisterTriggerIn,
+    user: dict[str, Any] = Depends(current_user),
+    repo: Repo = Depends(get_repo),
+) -> dict[str, Any]:
+    """Register a new flow trigger (event/webhook/downstream).
+
+    ``kind`` must be one of ``'event'``, ``'webhook'``, or ``'downstream'``.
+    For ``'event'`` / ``'webhook'``: ``source`` is the event key.
+    For ``'downstream'``: ``source`` is the upstream flow_id.
+
+    Triggers are org-scoped.
+    """
+    from app.flows.triggers import register_trigger  # noqa: PLC0415
+
+    org_id = await _get_user_org(str(user["id"]), repo)
+    store = get_flow_store()
+
+    if body.kind not in ("event", "webhook", "downstream"):
+        raise AppError("bad_request", f"Invalid trigger kind {body.kind!r}; must be 'event', 'webhook', or 'downstream'.", 400)
+
+    # Verify the target flow belongs to this org.
+    await _require_flow_in_org(body.flow_id, org_id, store)
+
+    # For downstream triggers, also verify the source (upstream) flow belongs to this org.
+    if body.kind == "downstream":
+        await _require_flow_in_org(body.source, org_id, store)
+
+    trigger = await register_trigger(
+        flow_id=body.flow_id,
+        kind=body.kind,
+        source=body.source,
+        org_id=org_id,
+        secret=body.secret,
+        extra=body.extra,
+        enabled=body.enabled,
+    )
+
+    return {
+        "id": trigger.id,
+        "flow_id": trigger.flow_id,
+        "kind": trigger.kind,
+        "source": trigger.source,
+        "org_id": trigger.org_id,
+        "enabled": trigger.enabled,
+        "created_at": trigger.created_at.isoformat(),
+    }
+
+
+@router.get("/triggers", status_code=200)
+async def list_triggers(
+    user: dict[str, Any] = Depends(current_user),
+    repo: Repo = Depends(get_repo),
+) -> list[dict[str, Any]]:
+    """List all flow triggers for the caller's org."""
+    from app.flows.triggers import get_trigger_registry  # noqa: PLC0415
+
+    org_id = await _get_user_org(str(user["id"]), repo)
+    registry = get_trigger_registry()
+    triggers = await registry.list_all(org_id)
+
+    return [
+        {
+            "id": t.id,
+            "flow_id": t.flow_id,
+            "kind": t.kind,
+            "source": t.source,
+            "org_id": t.org_id,
+            "enabled": t.enabled,
+            "created_at": t.created_at.isoformat(),
+        }
+        for t in triggers
+    ]
+
+
+@router.post("/triggers/fire", status_code=200)
+async def fire_trigger_event(
+    body: FireEventIn,
+    user: dict[str, Any] = Depends(current_user),
+    identity: VerifiedIdentity = Depends(verified_identity),
+    repo: Repo = Depends(get_repo),
+) -> dict[str, Any]:
+    """Fire an event, triggering all matching flows.
+
+    Fires all enabled event/webhook triggers registered for *event_key* in the
+    caller's org.  Each matching flow is materialised (run starts asynchronously
+    via the work pool).
+
+    Returns the list of run_ids created.
+    """
+    from app.flows.triggers import fire_event  # noqa: PLC0415
+
+    org_id = await _get_user_org(str(user["id"]), repo)
+    store = get_flow_store()
+
+    claims: dict[str, Any] = {
+        "kind": "access",
+        "sub": str(user.get("id", "")),
+        "org_id": org_id,
+        "policies": dict(identity.policies),
+        "scope": ["read:*", "write:*"],
+    }
+
+    now = datetime.now(timezone.utc)
+
+    run_ids = await fire_event(
+        event_key=body.event_key,
+        payload=body.payload,
+        org_id=org_id,
+        store=store,
+        now=now,
+        claims=claims,
+    )
+
+    return {
+        "event_key": body.event_key,
+        "run_ids": run_ids,
+        "fired": len(run_ids),
+    }
+
+
+# ---------------------------------------------------------------------------
+# B6: Enhanced run-history endpoints with lineage + SLA
+# ---------------------------------------------------------------------------
+
+
+@router.get("/{flow_id}/runs/history", status_code=200)
+async def get_flow_run_history(
+    flow_id: str,
+    limit: int = 50,
+    user: dict[str, Any] = Depends(current_user),
+    repo: Repo = Depends(get_repo),
+) -> dict[str, Any]:
+    """Return enriched run history for a flow including lineage + SLA flags.
+
+    Returns up to *limit* runs (newest first) with:
+    - Full run metadata (state, trigger, duration, params_snapshot).
+    - Per-run output lineage (``outputs`` — which keys were written).
+    - SLA breach flag (``sla_exceeded``) when the flow spec carries a
+      ``freshness_sla_s`` hint in ``runtime_config``.
+
+    Returns 404 if the flow does not exist or belongs to a different org.
+    """
+    from app.flows.triggers import flag_sla_breach  # noqa: PLC0415
+
+    org_id = await _get_user_org(str(user["id"]), repo)
+    store = get_flow_store()
+    flow = await _require_flow_in_org(flow_id, org_id, store)
+
+    runs = await store.list_flow_runs(flow_id)
+    runs = runs[:limit]
+
+    # Extract SLA hint from flow spec.runtime_config (optional).
+    spec = flow.get("spec") or {}
+    rc = spec.get("runtime_config") or {}
+    expected_s: float | None = rc.get("freshness_sla_s") or None
+
+    now = datetime.now(timezone.utc)
+
+    enriched: list[dict[str, Any]] = []
+    for run in runs:
+        serialized = _serialize_flow_run(run)
+
+        # Attach lineage outputs.
+        try:
+            outputs = await store.list_run_outputs(run["id"])
+            serialized["outputs"] = [
+                {
+                    "output_key": o["output_key"],
+                    "output_type": o["output_type"],
+                    "output_uri": o.get("output_uri"),
+                    "task_key": o["task_key"],
+                    "created_at": _dt_iso(o.get("created_at")),
+                }
+                for o in outputs
+            ]
+        except Exception:  # noqa: BLE001
+            serialized["outputs"] = []
+
+        # Attach lineage: params_snapshot + code_version.
+        serialized["params_snapshot"] = run.get("params_snapshot")
+        serialized["code_version"] = run.get("code_version")
+        serialized["seed"] = run.get("seed")
+
+        # SLA breach flag.
+        serialized["sla_exceeded"] = flag_sla_breach(run, expected_s, now)
+
+        enriched.append(serialized)
+
+    return {
+        "flow_id": flow_id,
+        "runs": enriched,
+        "count": len(enriched),
+    }
+
+
+# ---------------------------------------------------------------------------
 # Register on the shared api_router
 # ---------------------------------------------------------------------------
 

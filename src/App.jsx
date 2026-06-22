@@ -82,6 +82,7 @@ import NotFound from './pages/NotFound.jsx'
 // path. Marketing routes above remain eager. All render inside the top-level
 // <Suspense> boundary around <Routes>.
 const DashboardViewPage = lazy(() => import('./pages/DashboardViewPage.jsx'))
+const CanvasViewPage = lazy(() => import('./pages/CanvasViewPage.jsx'))
 const EditorPage = lazy(() => import('./pages/EditorPage.jsx'))
 
 const HomePage = lazy(() => import('./pages/app/HomePage.jsx'))
@@ -90,6 +91,7 @@ const ConnectorsPage = lazy(() => import('./pages/app/ConnectorsPage.jsx'))
 const QueriesPage = lazy(() => import('./pages/app/QueriesPage.jsx'))
 const BlendBuilder = lazy(() => import('./pages/app/BlendBuilder.jsx'))
 const DashboardsPage = lazy(() => import('./pages/app/DashboardsPage.jsx'))
+const CanvasesPage = lazy(() => import('./pages/app/CanvasesPage.jsx'))
 const FlowsPage = lazy(() => import('./pages/app/FlowsPage.jsx'))
 const WatchesPage = lazy(() => import('./pages/app/WatchesPage.jsx'))
 const AutomationsPage = lazy(() => import('./pages/app/AutomationsPage.jsx'))
@@ -293,6 +295,7 @@ export default function App() {
           <Route path="queries/:id" element={<QueriesPage />} />
           <Route path="queries/blend" element={<BlendBuilder />} />
           <Route path="dashboards" element={<DashboardsPage />} />
+          <Route path="canvases" element={<CanvasesPage />} />
           <Route path="flows" element={<FlowsPage />} />
           <Route path="flows/:id" element={<FlowsPage />} />
           {/* Metrics are now authored on the query (config.metric); the
@@ -369,6 +372,23 @@ export default function App() {
                   <ProjectProvider>
                     <EnvProvider>
                       <DashboardViewPage />
+                    </EnvProvider>
+                  </ProjectProvider>
+                </OrgProvider>
+              </UiProvider>
+            </ProtectedRoute>
+          }
+        />
+        <Route
+          path="c/:id"
+          element={
+            <ProtectedRoute>
+              {/* Canvas public viewer — same provider setup as /d/:id */}
+              <UiProvider>
+                <OrgProvider>
+                  <ProjectProvider>
+                    <EnvProvider>
+                      <CanvasViewPage />
                     </EnvProvider>
                   </ProjectProvider>
                 </OrgProvider>

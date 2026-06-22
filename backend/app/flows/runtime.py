@@ -554,6 +554,13 @@ async def advance_readiness(
         # Prefect-style outbound alert (best-effort — never breaks the run).
         await _fire_flow_alert(store, flow_run_id, flow_run_state, task_runs, now)
 
+        # B6: fire downstream completion triggers (best-effort — never breaks the run).
+        try:
+            from app.flows.triggers import on_flow_run_complete  # noqa: PLC0415
+            await on_flow_run_complete(store, flow_run_id, flow_run_state, now)
+        except Exception:  # noqa: BLE001
+            logger.debug("Downstream trigger hook failed for flow_run %s", flow_run_id, exc_info=True)
+
 
 # ---------------------------------------------------------------------------
 # Map fan-out helpers

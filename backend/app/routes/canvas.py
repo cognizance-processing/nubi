@@ -98,6 +98,54 @@ class CanvasUpdateRequest(BaseModel):
     config: dict[str, Any] | None = None
 
 
+class CanvasScheduleRequest(BaseModel):
+    """Request body for POST /canvases/{canvas_id}/schedule.
+
+    Creates a ``'report_send'``-style flow task that delivers the canvas on a
+    schedule.  The canvas is referenced by ``canvas_id`` (injected from the
+    URL parameter).
+
+    Fields mirror the ``report_send`` task config shape documented in
+    :mod:`app.flows.handlers.report_send`.
+    """
+
+    format: str = "html"
+    """Render format: ``'html'`` (default) or ``'pdf'``."""
+
+    recipients: list[str]
+    """Email addresses to deliver the report to."""
+
+    subject: str | None = None
+    """Email subject.  Defaults to the canvas name."""
+
+    body: str | None = None
+    """Optional plain-text email body."""
+
+    params: dict[str, Any] = {}
+    """Base named query parameters."""
+
+    locked_params: dict[str, dict[str, Any]] = {}
+    """Per-recipient locked params for RLS — ``{email: {param: value}}``."""
+
+    notify_channels: list[dict[str, Any]] = []
+    """Additional notification channels (Slack/Teams/etc)."""
+
+    cron: str | None = None
+    """Optional cron expression for the flow trigger (e.g. ``'0 8 * * MON'``)."""
+
+    flow_name: str | None = None
+    """Optional human-readable name for the created flow."""
+
+
+class CanvasScheduleResponse(BaseModel):
+    """Response body for POST /canvases/{canvas_id}/schedule."""
+
+    flow_id: str
+    canvas_id: str
+    format: str
+    recipients_count: int
+
+
 # ---------------------------------------------------------------------------
 # POST /canvas/validate — stateless oracle
 # ---------------------------------------------------------------------------
@@ -234,6 +282,128 @@ async def update_canvas(
     if updated is None:
         raise AppError("canvas_not_found", f"Canvas {canvas_id!r} not found.", 404)
     return updated
+
+
+# ---------------------------------------------------------------------------
+# POST /canvases/{canvas_id}/schedule — create a scheduled send flow
+# ---------------------------------------------------------------------------
+
+
+@api_router.post(
+    "/canvases/{canvas_id}/schedule",
+    response_model=CanvasScheduleResponse,
+    tags=["canvas"],
+    status_code=201,
+)
+async def schedule_canvas(
+    canvas_id: str,
+    body: CanvasScheduleRequest,
+    user: dict[str, Any] = Depends(current_user),
+    repo: Repo = Depends(get_repo),
+) -> CanvasScheduleResponse:
+    """Create a scheduled ``report_send`` flow for a canvas.
+
+    Writes a ``'report_send'``-style flow task config with ``canvas_id`` so
+    the canvas is rendered and delivered to *recipients* on the configured
+    schedule.  The canvas is resolved org-scoped before creating the flow to
+    ensure it exists and belongs to the caller's org.
+
+    Parameters
+    ----------
+    canvas_id:
+        The canvas to schedule.
+    body:
+        Schedule config — see :class:`CanvasScheduleRequest`.
+
+    Returns
+    -------
+    CanvasScheduleResponse
+        ``{flow_id, canvas_id, format, recipients_count}``.
+
+    Raises
+    ------
+    AppError("canvas_not_found", 404)
+        When the canvas does not exist in the caller's org.
+    AppError("invalid_task_config", 400)
+        When ``format`` or ``recipients`` are invalid.
+    """
+    from app.flows.store import get_flow_store  # noqa: PLC0415
+
+    org_id = await _get_org(user)
+
+    # Verify the canvas exists and belongs to this org.
+    canvas = await repo.get("canvases", org_id, canvas_id)
+    if canvas is None:
+        raise AppError("canvas_not_found", f"Canvas {canvas_id!r} not found.", 404)
+
+    # Validate format.
+    fmt = (body.format or "html").lower().strip()
+    if fmt not in ("html", "pdf"):
+        raise AppError(
+            "invalid_task_config",
+            f"schedule: unsupported format {fmt!r}. Expected 'html' or 'pdf'.",
+            400,
+        )
+
+    # Validate recipients.
+    if not body.recipients:
+        raise AppError(
+            "invalid_task_config",
+            "schedule requires at least one recipient.",
+            400,
+        )
+
+    canvas_name: str = canvas.get("name") or canvas_id
+    flow_name: str = body.flow_name or f"canvas_report_{canvas_id[:8]}"
+    subject: str = body.subject or f"Nubi Report: {canvas_name}"
+
+    # Build the report_send task config.
+    task_config: dict[str, Any] = {
+        "canvas_id": canvas_id,
+        "org_id": org_id,
+        "format": fmt,
+        "recipients": list(body.recipients),
+        "subject": subject,
+        "body": body.body or "",
+        "params": dict(body.params or {}),
+        "locked_params": dict(body.locked_params or {}),
+        "notify_channels": list(body.notify_channels or []),
+        "policies": {},  # populated at tick time from owner claims
+    }
+
+    # Build the flow spec.
+    flow_spec: dict[str, Any] = {
+        "version": 1,
+        "name": flow_name,
+        "tasks": [
+            {
+                "key": "send_canvas_report",
+                "kind": "report_send",
+                "needs": [],
+                "config": task_config,
+            }
+        ],
+    }
+
+    # Add cron trigger if supplied.
+    if body.cron:
+        flow_spec["trigger"] = {"kind": "cron", "cron": body.cron}
+
+    # Persist the flow via the flow store.
+    store = get_flow_store()
+    flow = await store.create_flow(
+        org_id=org_id,
+        created_by=str(user["id"]),
+        name=flow_name,
+        spec=flow_spec,
+    )
+
+    return CanvasScheduleResponse(
+        flow_id=str(flow["id"]),
+        canvas_id=canvas_id,
+        format=fmt,
+        recipients_count=len(body.recipients),
+    )
 
 
 # ---------------------------------------------------------------------------
