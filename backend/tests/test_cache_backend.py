@@ -42,6 +42,7 @@ from app.connectors.cache import (
     RedisCacheBackend,
     get_cache,
     reset_cache_for_tests,
+    _DEFAULT_MAX_ENTRIES,
 )
 
 
@@ -718,3 +719,231 @@ async def test_cache_routes_reject_embed_token(cache_client):
     )
     assert r1.status_code == 401
     assert r2.status_code == 401
+
+
+# ===========================================================================
+# Total-bytes cap (MED fix) — max_total_bytes + NUBI_CACHE_MAX_TOTAL_BYTES
+# ===========================================================================
+
+
+def test_total_bytes_cap_evicts_lru_to_fit():
+    """When adding an entry would exceed max_total_bytes, LRU entries are
+    evicted first until there is room, not just when max_entries is hit.
+
+    Setup: cap = 30 bytes, per-entry cap = 100 bytes.
+    Put a (10 bytes) → b (10 bytes) → c (10 bytes) → all fit (total=30).
+    Put d (10 bytes) → total would be 40 > 30, so LRU (a) is evicted first.
+    After d: b+c+d in store (30 bytes), a evicted.
+    """
+    cache = ContentAddressedCache(max_entries=100, max_total_bytes=30)
+    cache.put("a", b"x" * 10)
+    cache.put("b", b"x" * 10)
+    cache.put("c", b"x" * 10)
+
+    assert cache.total_bytes() == 30
+    assert cache.size() == 3
+
+    # Access b so it becomes MRU; a is still LRU.
+    cache.get("b")
+
+    cache.put("d", b"x" * 10)  # forces eviction of LRU (a)
+
+    assert cache.get("a") is None, "LRU entry 'a' must have been evicted"
+    assert cache.get("b") == b"x" * 10
+    assert cache.get("c") == b"x" * 10
+    assert cache.get("d") == b"x" * 10
+    assert cache.total_bytes() == 30
+    assert cache.size() == 3
+
+
+def test_total_bytes_cap_rejects_oversized_single_entry():
+    """A single entry whose size alone exceeds max_total_bytes is silently
+    skipped — the cache must NOT evict everything just to accommodate it.
+    """
+    cache = ContentAddressedCache(max_entries=100, max_total_bytes=20)
+    cache.put("small", b"x" * 10)
+
+    # This entry alone (25 bytes) exceeds the total cap (20 bytes).
+    cache.put("giant", b"x" * 25)
+
+    # The giant entry must be rejected.
+    assert cache.get("giant") is None, (
+        "An entry exceeding max_total_bytes alone must not be stored."
+    )
+    # The existing small entry must be unaffected.
+    assert cache.get("small") == b"x" * 10
+    assert cache.total_bytes() == 10
+    assert cache.size() == 1
+
+
+def test_total_bytes_correct_after_overwrite():
+    """Overwriting a key with a different-size value must correctly update
+    _total_bytes (deduct old, add new).
+    """
+    cache = ContentAddressedCache(max_entries=10, max_total_bytes=100)
+    cache.put("k", b"x" * 20)
+    assert cache.total_bytes() == 20
+
+    # Overwrite with a larger value.
+    cache.put("k", b"y" * 35)
+    assert cache.total_bytes() == 35
+    assert cache.get("k") == b"y" * 35
+
+    # Overwrite with a smaller value.
+    cache.put("k", b"z" * 5)
+    assert cache.total_bytes() == 5
+    assert cache.get("k") == b"z" * 5
+
+
+def test_total_bytes_correct_after_lru_eviction():
+    """_total_bytes must be accurately decremented on every LRU eviction."""
+    cache = ContentAddressedCache(max_entries=2, max_total_bytes=1000)
+    cache.put("a", b"x" * 10)
+    cache.put("b", b"y" * 20)
+    assert cache.total_bytes() == 30
+
+    # Third entry triggers LRU eviction of 'a' (10 bytes).
+    cache.put("c", b"z" * 15)
+    assert cache.get("a") is None
+    assert cache.total_bytes() == 35  # b(20) + c(15)
+    assert cache.size() == 2
+
+
+def test_total_bytes_correct_after_tag_purge():
+    """_total_bytes must be accurately decremented when invalidate(tag) evicts
+    entries.
+    """
+    cache = ContentAddressedCache(max_entries=10, max_total_bytes=1000)
+    cache.put("a", b"x" * 10, tags=["org:1"])
+    cache.put("b", b"y" * 20, tags=["org:1"])
+    cache.put("c", b"z" * 15, tags=["org:2"])
+    assert cache.total_bytes() == 45
+
+    n = cache.invalidate("org:1")
+    assert n == 2
+    assert cache.total_bytes() == 15   # only c remains
+    assert cache.size() == 1
+
+
+def test_total_bytes_correct_after_ttl_expiry():
+    """_total_bytes must be decremented when an expired entry is lazily evicted
+    on get().
+    """
+    cache = ContentAddressedCache(max_entries=10, ttl=0.05, max_total_bytes=1000)
+    cache.put("a", b"x" * 10, tags=["org:1"])
+    cache.put("b", b"y" * 20)
+    assert cache.total_bytes() == 30
+
+    time.sleep(0.08)
+    # get("a") triggers lazy TTL eviction.
+    assert cache.get("a") is None
+    assert cache.total_bytes() == 20   # only b remains (not yet accessed/expired)
+
+
+def test_total_bytes_zero_after_invalidate_all():
+    """invalidate_all() must reset _total_bytes to 0."""
+    cache = ContentAddressedCache(max_entries=10, max_total_bytes=1000)
+    cache.put("a", b"x" * 10)
+    cache.put("b", b"y" * 20)
+    assert cache.total_bytes() == 30
+
+    cache.invalidate_all()
+    assert cache.total_bytes() == 0
+    assert cache.size() == 0
+
+
+def test_total_bytes_zero_after_clear():
+    """clear() must reset _total_bytes to 0."""
+    cache = ContentAddressedCache(max_entries=10, max_total_bytes=1000)
+    cache.put("a", b"x" * 10)
+    cache.put("b", b"y" * 20)
+    assert cache.total_bytes() == 30
+
+    cache.clear()
+    assert cache.total_bytes() == 0
+    assert cache.size() == 0
+
+
+def test_total_bytes_evicts_multiple_entries_to_fit():
+    """When a large new entry requires evicting multiple LRU entries to fit,
+    ALL required entries must be evicted (not just one).
+    """
+    cache = ContentAddressedCache(max_entries=100, max_total_bytes=50)
+    # Fill up: 3 entries × 15 bytes = 45 bytes used.
+    cache.put("a", b"x" * 15)
+    cache.put("b", b"y" * 15)
+    cache.put("c", b"z" * 15)
+    assert cache.total_bytes() == 45
+
+    # New entry of 20 bytes: needs to evict until 50 - 20 = 30 bytes free.
+    # Evict a (15) → total=30, still no room (30+20=50 OK, borderline).
+    # Actually 30 + 20 = 50 == cap, so exactly fits after evicting a.
+    cache.put("d", b"w" * 20)
+    assert cache.get("a") is None, "'a' must have been evicted to make room"
+    assert cache.total_bytes() == 50  # b(15) + c(15) + d(20)
+    assert cache.size() == 3
+
+
+# ===========================================================================
+# max_entries env override (LOW fix) — NUBI_CACHE_MAX_ENTRIES
+# ===========================================================================
+
+
+def test_max_entries_env_override_honored(monkeypatch):
+    """NUBI_CACHE_MAX_ENTRIES must override the default max_entries for the
+    memory singleton created by get_cache().
+    """
+    reset_cache_for_tests()
+    monkeypatch.setenv("NUBI_CACHE_MAX_ENTRIES", "3")
+    monkeypatch.setattr("app.cache.redis_client.redis_available", lambda: False)
+
+    cache = get_cache()
+    assert isinstance(cache, ContentAddressedCache)
+    assert cache._max_entries == 3  # noqa: SLF001
+
+    reset_cache_for_tests()
+
+
+def test_max_entries_default_when_env_not_set(monkeypatch):
+    """When NUBI_CACHE_MAX_ENTRIES is not set, the singleton gets the default."""
+    reset_cache_for_tests()
+    monkeypatch.delenv("NUBI_CACHE_MAX_ENTRIES", raising=False)
+    monkeypatch.setattr("app.cache.redis_client.redis_available", lambda: False)
+
+    cache = get_cache()
+    assert isinstance(cache, ContentAddressedCache)
+    assert cache._max_entries == _DEFAULT_MAX_ENTRIES  # noqa: SLF001
+
+    reset_cache_for_tests()
+
+
+def test_max_total_bytes_env_override_honored(monkeypatch):
+    """NUBI_CACHE_MAX_TOTAL_BYTES must override the total-byte cap for the
+    memory singleton.
+    """
+    reset_cache_for_tests()
+    monkeypatch.setenv("NUBI_CACHE_MAX_TOTAL_BYTES", str(64 * 1024))  # 64 KiB
+    monkeypatch.setattr("app.cache.redis_client.redis_available", lambda: False)
+
+    cache = get_cache()
+    assert isinstance(cache, ContentAddressedCache)
+    assert cache._max_total_bytes == 64 * 1024  # noqa: SLF001
+
+    reset_cache_for_tests()
+
+
+def test_base_scan_max_total_bytes_env_override_honored(monkeypatch):
+    """NUBI_CACHE_BASE_SCAN_MAX_TOTAL_BYTES must override the base-scan total cap."""
+    from app.connectors.cache import _get_base_scan_backend
+
+    reset_cache_for_tests()
+    monkeypatch.setenv("NUBI_CACHE_BASE_SCAN_MAX_TOTAL_BYTES", str(32 * 1024))  # 32 KiB
+    monkeypatch.setattr("app.cache.redis_client.redis_available", lambda: False)
+
+    # Bootstrap the exact-result cache first (required before base-scan).
+    get_cache()
+    base_scan = _get_base_scan_backend()
+    assert isinstance(base_scan, ContentAddressedCache)
+    assert base_scan._max_total_bytes == 32 * 1024  # noqa: SLF001
+
+    reset_cache_for_tests()

@@ -2175,3 +2175,69 @@ def test_sweep_in_grid_empty_is_valid():
     SweepIn = flows_mod.SweepIn  # type: ignore[attr-defined]
     s = SweepIn(grid={})
     assert s.grid == {}
+
+
+# ---------------------------------------------------------------------------
+# FIX [MED scale]: backfill yields between windows (event-loop starvation fix)
+# ---------------------------------------------------------------------------
+
+
+async def test_backfill_yields_between_windows():
+    """run_backfill must yield to the event loop between windows so concurrent
+    coroutines make progress during a multi-window backfill.
+
+    We schedule a counter coroutine that increments each time it gets a turn on
+    the event loop, then run a 4-window backfill concurrently.  By the time the
+    backfill finishes the counter must have been incremented at least once per
+    window — proving that the loop was yielded between windows (via
+    asyncio.sleep(0)) rather than running all windows back-to-back without
+    ever returning control.
+    """
+    reset_for_tests()
+    store = InMemoryFlowStore()
+    flow = await _make_flow(store)
+
+    start = datetime(2025, 2, 1, tzinfo=timezone.utc)
+    end = datetime(2025, 2, 5, tzinfo=timezone.utc)  # 4 daily windows
+
+    # A simple coroutine that counts how many times the event loop scheduled it.
+    yields_observed: list[int] = [0]
+
+    async def _counter():
+        while True:
+            await asyncio.sleep(0)  # give up control so backfill can run
+            yields_observed[0] += 1
+
+    # Run the counter alongside the backfill; cancel it once the backfill finishes.
+    counter_task = asyncio.ensure_future(_counter())
+    try:
+        result = await run_backfill(
+            store=store,
+            flow=flow,
+            start=start,
+            end=end,
+            window="1d",
+            trigger="backfill",
+            now=NOW,
+            claims=CLAIMS,
+        )
+    finally:
+        counter_task.cancel()
+        try:
+            await counter_task
+        except asyncio.CancelledError:
+            pass
+
+    assert result.total == 4
+    assert result.succeeded == 4
+
+    # The counter must have been scheduled at least N_WINDOWS times: the
+    # asyncio.sleep(0) before each window yields control, so a concurrent
+    # coroutine that also awaits sleep(0) is guaranteed to get at least one
+    # turn per window.
+    N_WINDOWS = 4
+    assert yields_observed[0] >= N_WINDOWS, (
+        f"Counter only ran {yields_observed[0]} times during a {N_WINDOWS}-window "
+        f"backfill.  Expected >= {N_WINDOWS} yields — run_backfill must call "
+        "asyncio.sleep(0) between windows to avoid starving concurrent coroutines."
+    )

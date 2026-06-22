@@ -799,3 +799,94 @@ class TestDiamondDag:
         await advance_readiness(self.store, frun["id"], NOW)
         by_key = {tr["task_key"]: tr for tr in await self.store.list_task_runs(frun["id"])}
         assert by_key["d"]["state"] == "ready", f"d should now be ready, got {by_key['d']['state']}"
+
+
+# ---------------------------------------------------------------------------
+# Regression: advance_readiness drain correctness after map fan-in WITHOUT a
+# full reload (fix-23 follow-up).  The map fan-in pass promotes the map node to
+# success in-memory (state_by_key) but the in-memory task_runs dicts are NOT
+# reloaded from the store; the second pending pass must still promote the
+# dependent task to 'ready' in the SAME advance_readiness call by reading the
+# authoritative state_by_key (not the stale row dicts).
+# ---------------------------------------------------------------------------
+
+
+class TestMapFanInDependentOrdering:
+    def setup_method(self):
+        reset_for_tests()
+        self.store = InMemoryFlowStore()
+
+    async def _build_map_with_dependent(self):
+        """Create a flow_run with a map node (waiting_children, terminal
+        children) and a downstream task that depends on the map node."""
+        flow = await self.store.create_flow(
+            org_id="org-test",
+            created_by="user-test",
+            name="map_fanin",
+            spec={"version": 1, "name": "map_fanin", "tasks": []},
+        )
+        run = await self.store.create_flow_run(flow["id"], "org-test", {}, "manual", NOW)
+        # Map node currently waiting on its children.
+        await self.store.add_task_runs(run["id"], [
+            {"task_key": "m", "org_id": "org-test", "state": "waiting_children",
+             "depends_on": [], "config": {"collect_key": "work"}},
+        ])
+        m = await self.store.get_task_run_by_key(run["id"], "m")
+        # Two terminal (success) children of the map node.
+        await self.store.add_task_runs(run["id"], [
+            {"task_key": "m[0].work", "org_id": "org-test", "state": "success",
+             "depends_on": [], "result": {"v": 1}, "parent_task_run_id": m["id"]},
+            {"task_key": "m[1].work", "org_id": "org-test", "state": "success",
+             "depends_on": [], "result": {"v": 2}, "parent_task_run_id": m["id"]},
+        ])
+        # Downstream task depending on the map node — must run AFTER fan-in.
+        await self.store.add_task_runs(run["id"], [
+            {"task_key": "after", "org_id": "org-test", "state": "pending",
+             "depends_on": ["m"]},
+        ])
+        return run
+
+    async def test_map_fanin_promotes_dependent_in_single_call(self):
+        run = await self._build_map_with_dependent()
+
+        # ONE advance_readiness call must both close the map node AND unblock
+        # the dependent task — proving the second pass keys off the in-memory
+        # state map (no full reload needed for correctness).
+        await advance_readiness(self.store, run["id"], NOW)
+
+        by_key = {tr["task_key"]: tr for tr in await self.store.list_task_runs(run["id"])}
+        assert by_key["m"]["state"] == "success", f"map node: {by_key['m']['state']}"
+        assert by_key["after"]["state"] == "ready", (
+            f"dependent task should be 'ready' after map fan-in in the same "
+            f"advance_readiness call, got {by_key['after']['state']}"
+        )
+
+    async def test_map_fanin_dependent_not_resurrected_when_branch_deactivates(self):
+        """A downstream pending task whose map dep FAILS must end upstream_failed,
+        and the no-reload second pass must NOT resurrect it to 'ready'."""
+        run = await self.store.create_flow_run(
+            (await self.store.create_flow(
+                org_id="org-test", created_by="user-test", name="f",
+                spec={"version": 1, "name": "f", "tasks": []}))["id"],
+            "org-test", {}, "manual", NOW,
+        )
+        await self.store.add_task_runs(run["id"], [
+            {"task_key": "m", "org_id": "org-test", "state": "waiting_children",
+             "depends_on": [], "config": {}},
+        ])
+        m = await self.store.get_task_run_by_key(run["id"], "m")
+        await self.store.add_task_runs(run["id"], [
+            {"task_key": "m[0].work", "org_id": "org-test", "state": "failed",
+             "depends_on": [], "error": "boom", "parent_task_run_id": m["id"]},
+            {"task_key": "after", "org_id": "org-test", "state": "pending",
+             "depends_on": ["m"]},
+        ])
+
+        await advance_readiness(self.store, run["id"], NOW)
+
+        by_key = {tr["task_key"]: tr for tr in await self.store.list_task_runs(run["id"])}
+        assert by_key["m"]["state"] == "failed", f"map node: {by_key['m']['state']}"
+        assert by_key["after"]["state"] == "upstream_failed", (
+            f"dependent of a failed map must be upstream_failed (not resurrected "
+            f"to ready), got {by_key['after']['state']}"
+        )

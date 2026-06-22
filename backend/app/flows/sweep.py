@@ -692,7 +692,23 @@ async def run_backfill(
     failed = 0
     skipped = 0
 
+    # NOTE: Large backfills (hundreds of windows) run sequentially here on the
+    # request coroutine.  The wall-clock timeout in the route handler
+    # (_BACKFILL_TIMEOUT_S) bounds total duration, but the coroutine still holds
+    # the event loop between every window's drain steps.  For very large backfills
+    # (e.g. years of daily windows) the recommended approach is to enqueue a
+    # scheduled/background job rather than running inline.  The yield below
+    # (asyncio.sleep(0)) is a minimal safeguard that hands control back to the
+    # event loop between windows so concurrent requests are not starved.
     for idx, (w_start, w_end) in enumerate(windows):
+        # Yield to the event loop before each window so concurrent requests
+        # (HTTP handlers, health checks, etc.) can make progress during a
+        # multi-window backfill.  drain_flow_run itself issues awaits internally
+        # (via asyncio.to_thread), but those only yield during the thread-offload
+        # handoff.  This explicit sleep(0) ensures we yield between windows too,
+        # regardless of how fast each window drains.
+        await asyncio.sleep(0)
+
         run_id = "?"
         win_state = "error"
         error: str | None = None

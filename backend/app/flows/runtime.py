@@ -570,42 +570,62 @@ async def advance_readiness(
 
     # ── Second pending-task pass: re-advance after map fan-in / branch ────────
     # Map fan-in and branch activation may have changed upstream states.  Only
-    # run a second pass (and an intermediate reload) when those passes actually
-    # mutated something — otherwise the first-pass state_by_key is still accurate.
+    # run a second pass when those passes actually mutated something — otherwise
+    # the first-pass state_by_key is still accurate and nothing new can unblock.
+    #
+    # NOTE: we do NOT reload task_runs here.  ``state_by_key`` is the single
+    # source of truth — it is updated in place on EVERY mutation in the first
+    # pass, map fan-in, and branch activation.  The original code reloaded the
+    # full row set purely so the second pass could re-read ``tr["state"]``; that
+    # was an O(N) deepcopy on the hot path.  Reading the per-task current state
+    # from ``state_by_key`` (keyed by task_key) is exactly equivalent and avoids
+    # a stale-dict hazard: e.g. a branch arm deactivated to ``upstream_failed``
+    # in the activation pass still has ``tr["state"] == "pending"`` in the
+    # original (un-reloaded) dict, and re-reading the dict would wrongly
+    # resurrect it.  state_by_key reflects the deactivation, so we key off it.
     if _map_or_branch_changed:
-        # Reload to pick up map fan-in state changes in state_by_key.
-        task_runs = await store.list_task_runs(flow_run_id)
-        state_by_key = {tr["task_key"]: tr["state"] for tr in task_runs}
+        for tr in task_runs:
+            task_key = tr["task_key"]
+            if state_by_key.get(task_key) != "pending":
+                continue  # already advanced/terminal per the authoritative map
 
-    for tr in task_runs:
-        if tr["state"] != "pending":
-            continue
+            deps: list[str] = tr.get("depends_on") or []
+            if not deps:
+                await store.update_task_run(tr["id"], {"state": "ready", "scheduled_at": now})
+                state_by_key[task_key] = "ready"
+                continue
 
-        deps: list[str] = tr.get("depends_on") or []
-        if not deps:
-            await store.update_task_run(tr["id"], {"state": "ready", "scheduled_at": now})
-            state_by_key[tr["task_key"]] = "ready"
-            continue
+            dep_states = [state_by_key.get(dep, "pending") for dep in deps]
 
-        dep_states = [state_by_key.get(dep, "pending") for dep in deps]
-
-        if any(s in _BLOCKING_STATES for s in dep_states):
-            await store.update_task_run(tr["id"], {"state": "upstream_failed", "finished_at": now})
-            state_by_key[tr["task_key"]] = "upstream_failed"
-            emit_flow_event(FlowEvent(
-                type="task_upstream_failed",
-                flow_run_id=flow_run_id,
-                task_key=tr["task_key"],
-                state="upstream_failed",
-                timestamp=now,
-            ))
-        elif all(s == "success" for s in dep_states):
-            await store.update_task_run(tr["id"], {"state": "ready", "scheduled_at": now})
-            state_by_key[tr["task_key"]] = "ready"
+            if any(s in _BLOCKING_STATES for s in dep_states):
+                await store.update_task_run(tr["id"], {"state": "upstream_failed", "finished_at": now})
+                state_by_key[task_key] = "upstream_failed"
+                emit_flow_event(FlowEvent(
+                    type="task_upstream_failed",
+                    flow_run_id=flow_run_id,
+                    task_key=task_key,
+                    state="upstream_failed",
+                    timestamp=now,
+                ))
+            elif all(s == "success" for s in dep_states):
+                await store.update_task_run(tr["id"], {"state": "ready", "scheduled_at": now})
+                state_by_key[task_key] = "ready"
 
     # ── Finalise flow_run if all task_runs are terminal ───────────────────────
     # state_by_key is kept up-to-date throughout all mutation paths above, so no
     # additional store.list_task_runs reload is needed here.
+    #
+    # Reconcile the in-memory task_runs dicts' ``state`` from the authoritative
+    # state_by_key (cheap in-place writes, no deepcopy / no DB round-trip).  The
+    # dicts may be stale relative to state_by_key (e.g. a map node promoted to
+    # success/failed in the fan-in pass), and downstream consumers of this list
+    # — _fire_flow_alert's failed-task scan — read tr["state"].  This keeps that
+    # scan identical to the old reload-based behaviour.
+    for tr in task_runs:
+        cur = state_by_key.get(tr["task_key"])
+        if cur is not None:
+            tr["state"] = cur
+
     all_states = list(state_by_key.values())
 
     if all_states and all(s in _TERMINAL_STATES for s in all_states):
@@ -1325,30 +1345,40 @@ async def run_one_ready_task(
     cache_key: str | None = task_run.get("cache_key")
     _is_stochastic: bool = bool(task_run.get("stochastic", False))
 
-    # ── Fetch all task_runs ONCE (reused for cache check + TaskContext inputs) ──
-    # Fetching here — before the cache block — means a single list_task_runs
-    # covers both the cache-hit scan and the upstream-inputs collection below,
-    # avoiding the N+1 that previously issued a second unconditional fetch at
-    # the TaskContext build step.  On a cache hit we return early; the list is
-    # only built once regardless.
-    all_task_runs = await store.list_task_runs(flow_run_id)
+    # ── Lazy full-row loader ───────────────────────────────────────────────────
+    # The full ``list_task_runs`` (every column, every row, deep-copied) is O(N)
+    # on the hot path and at the 50k ceiling dominates the per-step cost.  We load
+    # it LAZILY and at most once: only the cache-hit scan (needs cache_key/state
+    # across rows) and ``_patch_snapshot`` (needs the full row set to hand
+    # advance_readiness a preloaded snapshot) require it.  Paths that need neither
+    # — cache disabled AND advance_readiness loads fresh (map fan-out / the
+    # explicit fresh-load branches) — never pay for the full scan.
+    _all_task_runs: list[dict[str, Any]] | None = None
+
+    async def _load_all_task_runs() -> list[dict[str, Any]]:
+        nonlocal _all_task_runs
+        if _all_task_runs is None:
+            _all_task_runs = await store.list_task_runs(flow_run_id)
+        return _all_task_runs
 
     # ── Snapshot-patch helper ─────────────────────────────────────────────────
     # Returns a copy of all_task_runs with the just-updated task_run entry
     # replaced by updated_tr.  Passed to advance_readiness (_preloaded_task_runs)
     # on non-map paths so advance_readiness can skip its own initial
-    # list_task_runs call, eliminating the per-tick N+1.
+    # list_task_runs call, eliminating the per-tick N+1.  Triggers the lazy full
+    # load when not already loaded (cache-miss success/skip/fail paths).
     # Map fan-out inserts new child task_runs AFTER this fetch, so that path
     # must NOT pass a preloaded snapshot (advance_readiness loads fresh there).
-    def _patch_snapshot(updated_tr: dict[str, Any]) -> list[dict[str, Any]]:
+    async def _patch_snapshot(updated_tr: dict[str, Any]) -> list[dict[str, Any]]:
+        rows = await _load_all_task_runs()
         return [
             (updated_tr if tr["id"] == task_run_id else tr)
-            for tr in all_task_runs
+            for tr in rows
         ]
 
     if cache_ttl_s > 0 and cache_key and not _is_stochastic:
         # Look through all task_runs for this flow_run (or could be org-wide in prod).
-        for other in all_task_runs:
+        for other in await _load_all_task_runs():
             if (
                 other["id"] != task_run_id
                 and other.get("cache_key") == cache_key
@@ -1366,7 +1396,7 @@ async def run_one_ready_task(
                 )
                 await advance_readiness(
                     store, flow_run_id, now,
-                    _preloaded_task_runs=_patch_snapshot(finished_tr or task_run),
+                    _preloaded_task_runs=await _patch_snapshot(finished_tr or task_run),
                 )
                 return finished_tr
 
@@ -1381,12 +1411,14 @@ async def run_one_ready_task(
     await _extend_lease_for_timeout(store, task_run, task_spec, now, lease_seconds)
 
     # ── Build TaskContext ──────────────────────────────────────────────────────
-    # Collect upstream results: task_key → result dict.
-    # all_task_runs was already fetched above (shared with the cache check).
-    inputs: dict[str, Any] = {}
-    for tr in all_task_runs:
-        if tr["state"] == "success" and tr.get("result") is not None:
-            inputs[tr["task_key"]] = tr["result"]
+    # Collect upstream results: task_key → result dict.  Uses the success-only
+    # projection (task_key, result for state='success' AND result IS NOT NULL)
+    # rather than scanning every full row — identical contents, far cheaper than
+    # deep-copying every column of every task_run at the 50k ceiling.
+    inputs: dict[str, Any] = {
+        task_key_: result_
+        for task_key_, result_ in await store.list_task_run_results(flow_run_id)
+    }
 
     # Get flow-level params from the flow_run.
     flow_run = await store.get_flow_run(flow_run_id)
@@ -1488,7 +1520,7 @@ async def run_one_ready_task(
         _emit_task_event("task_skipped", flow_run_id, task_key, "skipped", None, attempt, now)
         await advance_readiness(
             store, flow_run_id, now,
-            _preloaded_task_runs=_patch_snapshot(skipped_tr or task_run),
+            _preloaded_task_runs=await _patch_snapshot(skipped_tr or task_run),
         )
         return skipped_tr
 
@@ -1524,7 +1556,7 @@ async def run_one_ready_task(
                 # Snapshot is still valid (no children inserted yet on this error path).
                 await advance_readiness(
                     store, flow_run_id, now,
-                    _preloaded_task_runs=_patch_snapshot(failed_tr or task_run),
+                    _preloaded_task_runs=await _patch_snapshot(failed_tr or task_run),
                 )
                 raise ValueError(_cap_err)
 
@@ -1558,7 +1590,7 @@ async def run_one_ready_task(
                 # No children inserted yet — snapshot is still valid.
                 await advance_readiness(
                     store, flow_run_id, now,
-                    _preloaded_task_runs=_patch_snapshot(failed_tr or task_run),
+                    _preloaded_task_runs=await _patch_snapshot(failed_tr or task_run),
                 )
                 raise
 
@@ -1608,7 +1640,7 @@ async def run_one_ready_task(
         # Pass patched snapshot so advance_readiness skips its own initial load.
         await advance_readiness(
             store, flow_run_id, now,
-            _preloaded_task_runs=_patch_snapshot(finished_tr or task_run),
+            _preloaded_task_runs=await _patch_snapshot(finished_tr or task_run),
         )
         return finished_tr
 
@@ -1627,7 +1659,7 @@ async def run_one_ready_task(
         # Pass patched snapshot so advance_readiness skips its own initial load.
         await advance_readiness(
             store, flow_run_id, now,
-            _preloaded_task_runs=_patch_snapshot(timed_out_tr or task_run),
+            _preloaded_task_runs=await _patch_snapshot(timed_out_tr or task_run),
         )
         return timed_out_tr
 
@@ -1652,7 +1684,7 @@ async def run_one_ready_task(
             # Pass patched snapshot so advance_readiness skips its own initial load.
             await advance_readiness(
                 store, flow_run_id, now,
-                _preloaded_task_runs=_patch_snapshot(result_tr or task_run),
+                _preloaded_task_runs=await _patch_snapshot(result_tr or task_run),
             )
             return result_tr
         else:
@@ -1670,7 +1702,7 @@ async def run_one_ready_task(
             # Pass patched snapshot so advance_readiness skips its own initial load.
             await advance_readiness(
                 store, flow_run_id, now,
-                _preloaded_task_runs=_patch_snapshot(failed_tr or task_run),
+                _preloaded_task_runs=await _patch_snapshot(failed_tr or task_run),
             )
             return failed_tr
 
@@ -2628,16 +2660,16 @@ async def _execute_claimed_task_run_inner(
     )
 
     # Build TaskContext.
-    # ── N+1 fix: load task_runs ONCE for inputs; reuse the patched snapshot for
-    # advance_readiness on non-map paths so advance_readiness can skip its own
-    # initial list_task_runs call (its _preloaded_task_runs != None path).
-    # Map fan-out inserts new child task_runs after this fetch, so that path lets
-    # advance_readiness do its own fresh load (no _preloaded_task_runs passed).
-    all_task_runs = await store.list_task_runs(flow_run_id)
-    inputs: dict[str, Any] = {}
-    for tr in all_task_runs:
-        if tr["state"] == "success" and tr.get("result") is not None:
-            inputs[tr["task_key"]] = tr["result"]
+    # ── inputs from the success-only projection (task_key, result for
+    # state='success' AND result IS NOT NULL) — identical contents to a full-row
+    # scan but without deep-copying every column of every task_run.  The full row
+    # set is loaded LAZILY (see _load_all_task_runs) and only when a path actually
+    # needs it for _patch_snapshot; the map fan-out / fresh-load paths never pay
+    # for it.
+    inputs: dict[str, Any] = {
+        task_key_: result_
+        for task_key_, result_ in await store.list_task_run_results(flow_run_id)
+    }
 
     flow_run = await store.get_flow_run(flow_run_id)
     flow_params: dict[str, Any] = (flow_run.get("params") or {}) if flow_run else {}
@@ -2725,17 +2757,31 @@ async def _execute_claimed_task_run_inner(
     outcome_state = outcome["state"]
     outcome_logs = outcome.get("logs") or []
 
-    # ── Snapshot-patch helper ─────────────────────────────────────────────────
-    # Returns a copy of all_task_runs with the just-updated task_run entry
-    # replaced by updated_tr.  Used to thread a preloaded snapshot into
+    # ── Lazy full-row loader + snapshot-patch helper ──────────────────────────
+    # The full ``list_task_runs`` (every column, every row, deep-copied) is O(N)
+    # and at the 50k ceiling dominates the per-step cost.  It is loaded LAZILY and
+    # at most once, only when _patch_snapshot actually needs it to hand
+    # advance_readiness a preloaded snapshot.  Paths that pass no preloaded
+    # snapshot (map fan-out / explicit fresh-load branches) never pay for it.
+    _all_task_runs: list[dict[str, Any]] | None = None
+
+    async def _load_all_task_runs() -> list[dict[str, Any]]:
+        nonlocal _all_task_runs
+        if _all_task_runs is None:
+            _all_task_runs = await store.list_task_runs(flow_run_id)
+        return _all_task_runs
+
+    # Returns a copy of the full task_runs list with the just-updated task_run
+    # entry replaced by updated_tr.  Used to thread a preloaded snapshot into
     # advance_readiness (skipping its own initial list_task_runs call) on paths
     # that make exactly ONE update_task_run call (no child-task insertions).
     # Map fan-out (add_task_runs) invalidates the snapshot; that path passes no
     # preloaded snapshot so advance_readiness loads fresh.
-    def _patch_snapshot(updated_tr: dict[str, Any]) -> list[dict[str, Any]]:
+    async def _patch_snapshot(updated_tr: dict[str, Any]) -> list[dict[str, Any]]:
+        rows = await _load_all_task_runs()
         return [
             (updated_tr if tr["id"] == task_run_id else tr)
-            for tr in all_task_runs
+            for tr in rows
         ]
 
     if outcome_state == "skipped":
@@ -2754,7 +2800,7 @@ async def _execute_claimed_task_run_inner(
         # Pass patched snapshot so advance_readiness skips its own initial load.
         await advance_readiness(
             store, flow_run_id, now,
-            _preloaded_task_runs=_patch_snapshot(result_tr or task_run),
+            _preloaded_task_runs=await _patch_snapshot(result_tr or task_run),
         )
         return result_tr or task_run
 
@@ -2790,7 +2836,7 @@ async def _execute_claimed_task_run_inner(
                 _emit_task_event("task_failed", flow_run_id, task_key, "failed", _cap_err, attempt, now)
                 await advance_readiness(
                     store, flow_run_id, now,
-                    _preloaded_task_runs=_patch_snapshot(result_tr or task_run),
+                    _preloaded_task_runs=await _patch_snapshot(result_tr or task_run),
                 )
                 raise ValueError(_cap_err)
 
@@ -2825,7 +2871,7 @@ async def _execute_claimed_task_run_inner(
                 # No children inserted yet — snapshot is still valid.
                 await advance_readiness(
                     store, flow_run_id, now,
-                    _preloaded_task_runs=_patch_snapshot(result_tr or task_run),
+                    _preloaded_task_runs=await _patch_snapshot(result_tr or task_run),
                 )
                 raise
 
@@ -2878,7 +2924,7 @@ async def _execute_claimed_task_run_inner(
         # Pass patched snapshot so advance_readiness skips its own initial load.
         await advance_readiness(
             store, flow_run_id, now,
-            _preloaded_task_runs=_patch_snapshot(result_tr or task_run),
+            _preloaded_task_runs=await _patch_snapshot(result_tr or task_run),
         )
         return result_tr or task_run
 
@@ -2897,7 +2943,7 @@ async def _execute_claimed_task_run_inner(
         # Pass patched snapshot so advance_readiness skips its own initial load.
         await advance_readiness(
             store, flow_run_id, now,
-            _preloaded_task_runs=_patch_snapshot(result_tr or task_run),
+            _preloaded_task_runs=await _patch_snapshot(result_tr or task_run),
         )
         return result_tr or task_run
 
@@ -2921,7 +2967,7 @@ async def _execute_claimed_task_run_inner(
             # Pass patched snapshot so advance_readiness skips its own initial load.
             await advance_readiness(
                 store, flow_run_id, now,
-                _preloaded_task_runs=_patch_snapshot(result_tr or task_run),
+                _preloaded_task_runs=await _patch_snapshot(result_tr or task_run),
             )
             return result_tr or task_run
         else:
@@ -2938,7 +2984,7 @@ async def _execute_claimed_task_run_inner(
             # Pass patched snapshot so advance_readiness skips its own initial load.
             await advance_readiness(
                 store, flow_run_id, now,
-                _preloaded_task_runs=_patch_snapshot(result_tr or task_run),
+                _preloaded_task_runs=await _patch_snapshot(result_tr or task_run),
             )
             return result_tr or task_run
 

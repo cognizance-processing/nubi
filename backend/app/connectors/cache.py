@@ -88,6 +88,15 @@ _DEFAULT_TTL_SECONDS: float = 300.0  # 5 minutes
 # the cache or blow the process memory.  Override with NUBI_CACHE_MAX_ENTRY_BYTES.
 _DEFAULT_MAX_ENTRY_BYTES: int = 32 * 1024 * 1024  # 32 MiB
 
+# Total heap byte cap for the exact-result cache (ContentAddressedCache
+# singleton) and the base-scan singleton respectively.  When adding an entry
+# would push _total_bytes over the limit the LRU entries are evicted first
+# until there is room.  A single entry whose size exceeds the total cap is
+# skipped entirely (no point evicting everything for one monster entry).
+# Override with NUBI_CACHE_MAX_TOTAL_BYTES / NUBI_CACHE_BASE_SCAN_MAX_TOTAL_BYTES.
+_DEFAULT_MAX_TOTAL_BYTES: int = 512 * 1024 * 1024   # 512 MiB — exact-result cache
+_DEFAULT_BASE_SCAN_MAX_TOTAL_BYTES: int = 256 * 1024 * 1024  # 256 MiB — base-scan cache
+
 
 def _max_entry_bytes() -> int:
     """Return the per-entry byte cap (env-overridable)."""
@@ -102,6 +111,55 @@ def _max_entry_bytes() -> int:
                 _DEFAULT_MAX_ENTRY_BYTES,
             )
     return _DEFAULT_MAX_ENTRY_BYTES
+
+
+def _max_entries_from_env() -> int:
+    """Return the max_entries limit (env-overridable via NUBI_CACHE_MAX_ENTRIES)."""
+    raw = os.environ.get("NUBI_CACHE_MAX_ENTRIES")
+    if raw is not None:
+        try:
+            v = int(raw)
+            if v >= 1:
+                return v
+            logger.warning(
+                "NUBI_CACHE_MAX_ENTRIES=%r must be >= 1; using default %d",
+                raw,
+                _DEFAULT_MAX_ENTRIES,
+            )
+        except ValueError:
+            logger.warning(
+                "NUBI_CACHE_MAX_ENTRIES=%r is not a valid integer; using default %d",
+                raw,
+                _DEFAULT_MAX_ENTRIES,
+            )
+    return _DEFAULT_MAX_ENTRIES
+
+
+def _max_total_bytes_from_env(
+    env_var: str,
+    default: int,
+) -> int:
+    """Return a total-byte cap read from *env_var* (falling back to *default*)."""
+    raw = os.environ.get(env_var)
+    if raw is not None:
+        try:
+            v = int(raw)
+            if v >= 1:
+                return v
+            logger.warning(
+                "%s=%r must be >= 1; using default %d",
+                env_var,
+                raw,
+                default,
+            )
+        except ValueError:
+            logger.warning(
+                "%s=%r is not a valid integer; using default %d",
+                env_var,
+                raw,
+                default,
+            )
+    return default
 
 # Redis key namespacing.  Value keys: ``nubi:cache:<key>``.  Tag set keys:
 # ``nubi:cache:tag:<tag>`` (a Redis SET holding the member value-keys for that
@@ -131,11 +189,20 @@ class ContentAddressedCache:
     ----------
     max_entries:
         Maximum number of entries before LRU eviction kicks in.
-        Default: 256.
+        Default: 256 (or NUBI_CACHE_MAX_ENTRIES env override).
     ttl:
         Time-to-live in seconds for each entry.  Entries are treated as
         misses (and lazily evicted) after this many seconds from insertion.
         Default: 300 s (5 minutes).
+    max_total_bytes:
+        Hard cap on the total heap bytes held by the cache across ALL entries.
+        When inserting a new entry would exceed this cap, the LRU entries are
+        evicted (oldest-first) until there is room or the store is empty.  A
+        single entry whose size alone exceeds this cap is silently skipped
+        (so one monster entry does not forcibly evict everything).
+        Default: 512 MiB (or NUBI_CACHE_MAX_TOTAL_BYTES env override for the
+        exact-result singleton; 256 MiB / NUBI_CACHE_BASE_SCAN_MAX_TOTAL_BYTES
+        for the base-scan singleton).
 
     Notes
     -----
@@ -148,13 +215,17 @@ class ContentAddressedCache:
         self,
         max_entries: int = _DEFAULT_MAX_ENTRIES,
         ttl: float = _DEFAULT_TTL_SECONDS,
+        max_total_bytes: int = _DEFAULT_MAX_TOTAL_BYTES,
     ) -> None:
         if max_entries < 1:
             raise ValueError(f"max_entries must be >= 1, got {max_entries}")
         if ttl <= 0:
             raise ValueError(f"ttl must be > 0, got {ttl}")
+        if max_total_bytes < 1:
+            raise ValueError(f"max_total_bytes must be >= 1, got {max_total_bytes}")
         self._max_entries = max_entries
         self._ttl = ttl
+        self._max_total_bytes = max_total_bytes
         # OrderedDict preserves insertion order; we move accessed items to the
         # right so the left end is always the LRU entry.
         self._store: OrderedDict[str, _CacheEntry] = OrderedDict()
@@ -169,6 +240,10 @@ class ContentAddressedCache:
         # Hit/miss counters (protected by _lock).
         self._hits: int = 0
         self._misses: int = 0
+        # Running total of bytes stored across all live entries (protected by
+        # _lock).  Deducted on every eviction path (LRU, tag-purge, TTL-expiry,
+        # overwrite, invalidate_all).
+        self._total_bytes: int = 0
 
     # ------------------------------------------------------------------
     # Internal helpers (caller must hold _lock)
@@ -202,6 +277,7 @@ class ContentAddressedCache:
         """Remove *key* from the store and the tag index (caller holds _lock)."""
         entry = self._store.pop(key, None)
         if entry is not None:
+            self._total_bytes -= len(entry.value)
             self._deindex_key(key, entry.tags)
 
     # ------------------------------------------------------------------
@@ -274,26 +350,43 @@ class ContentAddressedCache:
                 cap,
             )
             return
+        entry_size = len(value)
+        # Skip if a single entry alone exceeds the total cap (evicting
+        # everything would still not make room, so don't bother).
+        if entry_size > self._max_total_bytes:
+            logger.debug(
+                "cache: skipping entry key=%s (%d bytes > total cap %d bytes)",
+                key,
+                entry_size,
+                self._max_total_bytes,
+            )
+            return
         normalized_tags: tuple[str, ...] = tuple(tags) if tags else ()
         expires_at = time.monotonic() + self._ttl
         entry = _CacheEntry(value=value, expires_at=expires_at, tags=normalized_tags)
         with self._lock:
             existing = self._store.get(key)
             if existing is not None:
-                # Drop the old tag associations before re-indexing (tags may
-                # have changed across puts of the same key).
+                # Overwrite: deduct the old entry's bytes, drop old tag
+                # associations, then re-index with new tags + bytes.
+                self._total_bytes -= len(existing.value)
                 self._deindex_key(key, existing.tags)
                 self._store[key] = entry
                 self._store.move_to_end(key, last=True)
             else:
-                if len(self._store) >= self._max_entries:
-                    # Evict the least-recently-used entry (left end) and its
-                    # tag associations.  We peek at the LRU key BEFORE popping
-                    # so we can look up its tags from the reverse index in O(1)
-                    # via _purge_key_from_tags — avoiding a full tag-index scan.
-                    lru_key, _ = self._store.popitem(last=False)
+                # Evict LRU entries until:
+                #   (a) the total byte budget has room for the new entry, AND
+                #   (b) we are under the max_entries count.
+                while self._store and (
+                    self._total_bytes + entry_size > self._max_total_bytes
+                    or len(self._store) >= self._max_entries
+                ):
+                    # Evict the least-recently-used entry (left end).
+                    lru_key, lru_entry = self._store.popitem(last=False)
+                    self._total_bytes -= len(lru_entry.value)
                     self._purge_key_from_tags(lru_key)
                 self._store[key] = entry
+            self._total_bytes += entry_size
             self._index_tags(key, normalized_tags)
 
     def _purge_key_from_tags(self, key: str) -> None:
@@ -328,6 +421,7 @@ class ContentAddressedCache:
                 if entry is None:
                     continue
                 count += 1
+                self._total_bytes -= len(entry.value)
                 # Remove this key from the reverse index.
                 self._key_tags.pop(key, None)
                 # Remove this key from any OTHER tags it also carried.
@@ -348,12 +442,18 @@ class ContentAddressedCache:
             self._store.clear()
             self._tag_index.clear()
             self._key_tags.clear()
+            self._total_bytes = 0
             return count
 
     def size(self) -> int:
         """Return the current number of entries in the cache (including expired)."""
         with self._lock:
             return len(self._store)
+
+    def total_bytes(self) -> int:
+        """Return the current total byte usage of all live entries."""
+        with self._lock:
+            return self._total_bytes
 
     def clear(self) -> None:
         """Remove all entries and reset counters.  Useful in tests."""
@@ -363,6 +463,7 @@ class ContentAddressedCache:
             self._key_tags.clear()
             self._hits = 0
             self._misses = 0
+            self._total_bytes = 0
 
     def stats(self) -> dict:
         """Return cache statistics.
@@ -392,6 +493,7 @@ class ContentAddressedCache:
             misses = self._misses
             entries = len(self._store)
             tags = len(self._tag_index)
+            total_bytes = self._total_bytes
         total = hits + misses
         hit_rate = hits / total if total > 0 else 0.0
         return {
@@ -400,6 +502,7 @@ class ContentAddressedCache:
             "misses": misses,
             "hit_rate": hit_rate,
             "tags": tags,
+            "total_bytes": total_bytes,
         }
 
 
@@ -695,7 +798,7 @@ _active_backend: ContentAddressedCache | RedisCacheBackend | None = None
 
 
 def get_cache(
-    max_entries: int = _DEFAULT_MAX_ENTRIES,
+    max_entries: int | None = None,
     ttl: float = _DEFAULT_TTL_SECONDS,
 ) -> ContentAddressedCache | RedisCacheBackend:
     """Return the active cache backend.
@@ -709,6 +812,9 @@ def get_cache(
     are ignored, preserving the historical singleton contract).  ``ttl`` is
     also passed to the Redis backend so both honour the same TTL.
 
+    ``max_entries`` defaults to the value of ``NUBI_CACHE_MAX_ENTRIES`` (or
+    256 if the env var is not set) when not explicitly provided.
+
     Returns
     -------
     ContentAddressedCache | RedisCacheBackend
@@ -717,9 +823,10 @@ def get_cache(
     global _active_backend
     if _active_backend is not None:
         return _active_backend
+    resolved_max_entries = max_entries if max_entries is not None else _max_entries_from_env()
     with _cache_lock:
         if _active_backend is None:
-            _active_backend = _select_backend(max_entries=max_entries, ttl=ttl)
+            _active_backend = _select_backend(max_entries=resolved_max_entries, ttl=ttl)
     return _active_backend
 
 
@@ -750,10 +857,22 @@ def _get_memory_singleton(
     Caller holds ``_cache_lock`` (or accepts the brief race the inner check
     guards against).  Preserved as a distinct singleton so the in-memory cache
     survives even if backend selection later flips.
+
+    The singleton is constructed with the ``NUBI_CACHE_MAX_TOTAL_BYTES`` env
+    override for its total-byte cap so the default 512 MiB limit is
+    configurable without recompiling.
     """
     global _cache_instance
     if _cache_instance is None:
-        _cache_instance = ContentAddressedCache(max_entries=max_entries, ttl=ttl)
+        max_total_bytes = _max_total_bytes_from_env(
+            "NUBI_CACHE_MAX_TOTAL_BYTES",
+            _DEFAULT_MAX_TOTAL_BYTES,
+        )
+        _cache_instance = ContentAddressedCache(
+            max_entries=max_entries,
+            ttl=ttl,
+            max_total_bytes=max_total_bytes,
+        )
     return _cache_instance
 
 
@@ -807,6 +926,9 @@ def _get_base_scan_backend() -> ContentAddressedCache | RedisCacheBackend:
     * In-memory: return a SEPARATE ``ContentAddressedCache`` singleton so
       base-scan entries live in their own LRU and cannot evict exact-result
       entries (or vice-versa).
+
+    The base-scan singleton respects ``NUBI_CACHE_MAX_ENTRIES`` (default 128)
+    and ``NUBI_CACHE_BASE_SCAN_MAX_TOTAL_BYTES`` (default 256 MiB).
     """
     active = get_cache()
     if isinstance(active, RedisCacheBackend):
@@ -819,9 +941,20 @@ def _get_base_scan_backend() -> ContentAddressedCache | RedisCacheBackend:
         return _base_scan_instance
     with _cache_lock:
         if _base_scan_instance is None:
+            # Base-scan entries are typically larger (full-table scans) so they
+            # get their own, separately-tunable env vars.
+            base_scan_max_entries = _max_entries_from_env()
+            # Use a smaller per-instance default than the exact-result cache.
+            # The base-scan entries are large, so 128 entries + 256 MiB is the
+            # right balance.  Override with NUBI_CACHE_BASE_SCAN_MAX_TOTAL_BYTES.
+            base_scan_max_total_bytes = _max_total_bytes_from_env(
+                "NUBI_CACHE_BASE_SCAN_MAX_TOTAL_BYTES",
+                _DEFAULT_BASE_SCAN_MAX_TOTAL_BYTES,
+            )
             _base_scan_instance = ContentAddressedCache(
-                max_entries=_BASE_SCAN_MAX_ENTRIES,
+                max_entries=base_scan_max_entries,
                 ttl=_DEFAULT_TTL_SECONDS,
+                max_total_bytes=base_scan_max_total_bytes,
             )
     return _base_scan_instance
 
