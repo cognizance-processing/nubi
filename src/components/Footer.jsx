@@ -112,8 +112,8 @@ export default function Footer() {
   return (
     <footer className="bg-surface-2 border-t border-border">
 
-      {/* Brand-gradient accent rule at the very top for polish */}
-      <div className="h-px bg-brand-gradient opacity-60" />
+      {/* Brand-gradient accent rule */}
+      <div className="nubi-footer-brand-rule" />
 
       <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
 

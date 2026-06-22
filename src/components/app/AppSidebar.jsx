@@ -3,15 +3,20 @@
  *
  * Behaviour:
  *  - Collapsible to icon-only mode (controlled by UiContext.sidebarCollapsed)
- *  - Active-route highlight via NavLink isActive
+ *  - Active-route highlight via NavLink isActive + a left-rail indicator
  *  - ≥ 44px tap targets on every nav item
  *  - On mobile: rendered as an off-canvas drawer controlled by `mobileOpen` prop
  *
  * Nav items:
  *   Home         /home
  *   Connectors   /connectors
+ *   Data         /data
  *   Queries      /queries
  *   Dashboards   /dashboards
+ *   Canvases     /canvases
+ *   Flows        /flows
+ *   Watches      /watches
+ *   Automations  /automations
  *
  * Props:
  *   mobileOpen   {boolean}   — whether the mobile drawer is visible
@@ -50,12 +55,10 @@ const NAV_ITEMS = [
   { label: 'Data',        to: '/data',        Icon: Table2 },
   { label: 'Queries',     to: '/queries',     Icon: FileCode2 },
   { label: 'Dashboards',  to: '/dashboards',  Icon: LayoutDashboard },
-  { label: 'Canvases',   to: '/canvases',    Icon: PanelTop },
+  { label: 'Canvases',    to: '/canvases',    Icon: PanelTop },
   { label: 'Flows',       to: '/flows',       Icon: Workflow },
   { label: 'Watches',     to: '/watches',     Icon: BellRing },
   { label: 'Automations', to: '/automations', Icon: CalendarClock },
-  // Secrets are flow-scoped (referenced by flow tasks via {{ secrets.NAME }}),
-  // so they live inside the Flows workspace (/flows/secrets), not the global nav.
 ]
 
 // ---------------------------------------------------------------------------
@@ -64,48 +67,53 @@ const NAV_ITEMS = [
 
 function SidebarNavItem({ to, label, Icon: IconComponent, collapsed }) {
   const isActive = !!useMatch({ path: to, end: false })
-  // Alias to a locally declared const so ESLint recognises the JSX usage.
   const NavItemIcon = IconComponent
   return (
     <NavLink
       to={to}
       aria-current={isActive ? 'page' : undefined}
-      // `relative` anchors the active rail; the focus ring is INSET so the
-      // overflow-y-auto scroll parent (which also clips overflow-x) can never
-      // slice it — the cause of the old "cut-off lines" on the top/edge items.
-      className={`
-        group relative flex items-center gap-3 px-3 rounded-lg
-        min-h-[40px] text-sm font-medium
-        outline-none transition-[color,background-color] duration-150
-        focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring
-        ${collapsed ? 'justify-center w-10 mx-auto' : 'w-full'}
-        ${
-          isActive
-            ? 'bg-primary/10 text-primary dark:bg-primary/15'
-            : 'text-muted hover:text-fg hover:bg-surface-2/70'
-        }
-      `}
+      aria-label={collapsed ? label : undefined}
       title={collapsed ? label : undefined}
-      aria-label={label}
+      className={[
+        // Base: relative for the rail indicator, flex layout, inset focus ring
+        'group relative flex items-center gap-2.5 rounded-lg',
+        'min-h-[2.25rem] text-[0.8125rem] font-medium leading-none',
+        'outline-none select-none',
+        'transition-[color,background-color] duration-120',
+        'focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring',
+        // Collapsed: icon-only square centred
+        collapsed ? 'justify-center w-9 h-9 mx-auto px-0' : 'w-full px-3',
+        // Active vs rest
+        isActive
+          ? 'bg-primary/10 text-primary font-semibold dark:bg-primary/15'
+          : 'text-muted hover:text-fg hover:bg-surface-2/70',
+      ].join(' ')}
     >
-      {/* Active rail — a vertical accent bar pinned inside the left edge. Sits
-          inside the rounded pill so nothing overhangs the clipping scroll area;
-          animates in/out so switching routes feels intentional, not jumpy. */}
-      <span
-        aria-hidden="true"
-        className={`
-          absolute left-[3px] top-1/2 -translate-y-1/2 w-[3px] rounded-full bg-primary
-          transition-all duration-200 ease-out
-          ${isActive && !collapsed ? 'h-5 opacity-100' : 'h-0 opacity-0'}
-        `}
-      />
-      <NavItemIcon
-        size={18}
-        strokeWidth={isActive ? 2.2 : 1.8}
-        className={`shrink-0 transition-colors ${isActive ? 'text-primary' : 'text-muted group-hover:text-fg'}`}
-      />
+      {/* Active left-rail indicator — animated height */}
       {!collapsed && (
-        <span className="truncate leading-none">{label}</span>
+        <span
+          aria-hidden="true"
+          className="absolute left-0 top-1/2 -translate-y-1/2 w-[3px] rounded-full bg-primary"
+          style={{
+            height: isActive ? '1.125rem' : '0',
+            opacity: isActive ? 1 : 0,
+            transition: 'height 200ms cubic-bezier(0.22,1,0.36,1), opacity 200ms',
+          }}
+        />
+      )}
+
+      <NavItemIcon
+        size={16}
+        strokeWidth={isActive ? 2.25 : 1.85}
+        aria-hidden="true"
+        className={[
+          'shrink-0 transition-colors duration-120',
+          isActive ? 'text-primary' : 'text-muted group-hover:text-fg',
+        ].join(' ')}
+      />
+
+      {!collapsed && (
+        <span className="truncate leading-none tracking-[-0.005em]">{label}</span>
       )}
     </NavLink>
   )
@@ -117,58 +125,73 @@ function SidebarNavItem({ to, label, Icon: IconComponent, collapsed }) {
 
 function SidebarContent({ collapsed, showToggle = true }) {
   const { toggleSidebar } = useUi()
-  // Superadmin flag may not exist on older user payloads — code defensively.
   const { user } = useAuth()
   const isSuperadmin = Boolean(user?.is_superadmin)
 
   return (
-    <div className="flex flex-col h-full py-3">
-      {/* Logo area */}
+    <div className="flex flex-col h-full">
+      {/* Logo + collapse toggle */}
       <div
-        className={`flex items-center mb-5 px-3 ${
-          collapsed ? 'justify-center' : 'justify-between'
-        }`}
+        className={[
+          'flex items-center shrink-0 px-3 pt-3 pb-2',
+          collapsed ? 'justify-center' : 'justify-between',
+        ].join(' ')}
       >
-        {/* Logo links back to the public landing page */}
         <Link
           to="/"
           aria-label="Nubi — back to landing page"
-          className="rounded-lg focus:outline-none focus:ring-2 focus:ring-ring"
+          className="rounded-lg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
         >
-          {collapsed ? <Logo size={26} showName={false} /> : <Logo size={26} showName={true} />}
+          {collapsed
+            ? <Logo size={24} showName={false} />
+            : <Logo size={24} showName={true} />}
         </Link>
 
-        {showToggle && (
+        {showToggle && !collapsed && (
           <button
             onClick={toggleSidebar}
-            aria-label={collapsed ? 'Expand sidebar' : 'Collapse sidebar'}
-            className={`
-              flex items-center justify-center rounded-lg
-              w-8 h-8 shrink-0
+            aria-label="Collapse sidebar"
+            className="
+              flex items-center justify-center w-7 h-7 rounded-lg shrink-0
               text-muted hover:text-fg hover:bg-surface-2
               border border-border
-              transition-colors duration-150
-              focus:outline-none focus:ring-2 focus:ring-ring
-              ${collapsed ? 'mt-0' : ''}
-            `}
+              transition-colors duration-100
+              focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring
+            "
           >
-            {collapsed ? <ChevronRight size={14} /> : <ChevronLeft size={14} />}
+            <ChevronLeft size={13} aria-hidden="true" />
+          </button>
+        )}
+
+        {showToggle && collapsed && (
+          <button
+            onClick={toggleSidebar}
+            aria-label="Expand sidebar"
+            className="
+              mt-2 flex items-center justify-center w-7 h-7 rounded-lg shrink-0
+              text-muted hover:text-fg hover:bg-surface-2
+              border border-border
+              transition-colors duration-100
+              focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring
+            "
+          >
+            <ChevronRight size={13} aria-hidden="true" />
           </button>
         )}
       </div>
 
-      {/* Workspace switcher — one integrated unit: org › project (rich popover)
-          plus a secondary environment pill (its own popover). Replaces the
-          three previously-stacked dropdowns. */}
-      <div className="mb-3">
+      {/* Workspace switcher */}
+      <div className={collapsed ? 'mx-1 mb-2' : 'mx-2 mb-2'}>
         <WorkspaceSwitcher collapsed={collapsed} />
       </div>
 
-      {/* Nav items — scroll internally so a long list never clips the pinned
-          Settings/Docs nav below (selectors stay pinned above). */}
+      {/* Primary nav — scrolls internally */}
       <nav
-        className={`nubi-sidebar-scroll flex flex-col gap-1 flex-1 min-h-0 overflow-y-auto py-1 ${collapsed ? 'items-center px-1.5' : 'px-2'}`}
         aria-label="App navigation"
+        className={[
+          'nubi-sidebar-scroll flex flex-col gap-0.5 flex-1 min-h-0 overflow-y-auto py-1',
+          collapsed ? 'items-center px-1' : 'px-2',
+        ].join(' ')}
       >
         {NAV_ITEMS.map(({ label, to, Icon }) => (
           <SidebarNavItem
@@ -181,25 +204,26 @@ function SidebarContent({ collapsed, showToggle = true }) {
         ))}
       </nav>
 
-      {/* Footer / version — sits above the Settings divider */}
+      {/* Version label */}
       {!collapsed && (
-        <div className="px-4 pb-2">
-          <p className="text-[10px] text-muted/50 font-mono tracking-wide">
+        <div className="px-4 pb-1.5">
+          <p className="text-[10px] text-muted/45 font-mono tracking-wide select-none">
             nubi · beta
           </p>
         </div>
       )}
 
-      {/* Secondary nav — pinned below the primary nav */}
+      {/* Secondary nav — pinned at bottom */}
       <nav
-        className={`flex flex-col gap-1 mt-1 pt-2 border-t border-border ${collapsed ? 'items-center px-1.5' : 'px-2'}`}
         aria-label="Settings navigation"
+        className={[
+          'flex flex-col gap-0.5 pt-2 pb-2.5 border-t border-border',
+          collapsed ? 'items-center px-1' : 'px-2',
+        ].join(' ')}
       >
-        {/* Docs — public documentation, available to every user */}
-        <SidebarNavItem to="/docs" label="Docs" Icon={BookOpen} collapsed={collapsed} />
-        {/* Superadmin-only link to the admin console (/admin) */}
+        <SidebarNavItem to="/docs"     label="Docs"     Icon={BookOpen} collapsed={collapsed} />
         {isSuperadmin && (
-          <SidebarNavItem to="/admin" label="Admin" Icon={Shield} collapsed={collapsed} />
+          <SidebarNavItem to="/admin"  label="Admin"    Icon={Shield}   collapsed={collapsed} />
         )}
         <SidebarNavItem to="/settings" label="Settings" Icon={Settings} collapsed={collapsed} />
       </nav>
@@ -216,12 +240,12 @@ export function AppSidebarDesktop() {
 
   return (
     <aside
-      className={`
-        hidden md:flex flex-col shrink-0
-        bg-surface border-r border-border
-        transition-all duration-200 ease-in-out
-        ${sidebarCollapsed ? 'w-[60px]' : 'w-[220px]'}
-      `}
+      className={[
+        'hidden md:flex flex-col shrink-0',
+        'bg-surface border-r border-border',
+        'transition-[width] duration-200 ease-in-out',
+        sidebarCollapsed ? 'w-[56px]' : 'w-[216px]',
+      ].join(' ')}
       aria-label="Main sidebar"
     >
       <SidebarContent collapsed={sidebarCollapsed} showToggle={true} />
@@ -238,26 +262,27 @@ export function AppSidebarMobile({ open, onClose }) {
     <>
       {/* Backdrop */}
       <div
-        className={`
-          md:hidden fixed inset-0 z-40
-          bg-black/40 backdrop-blur-sm
-          transition-opacity duration-200
-          ${open ? 'opacity-100 pointer-events-auto' : 'opacity-0 pointer-events-none'}
-        `}
+        className={[
+          'md:hidden fixed inset-0 z-40',
+          'bg-black/40 backdrop-blur-sm',
+          'transition-opacity duration-200',
+          open ? 'opacity-100 pointer-events-auto' : 'opacity-0 pointer-events-none',
+        ].join(' ')}
         onClick={onClose}
         aria-hidden="true"
       />
 
       {/* Drawer panel */}
       <aside
-        className={`
-          md:hidden fixed inset-y-0 left-0 z-50
-          w-[240px] bg-surface border-r border-border
-          transition-transform duration-250 ease-in-out
-          ${open ? 'translate-x-0' : '-translate-x-full'}
-          shadow-xl
-        `}
+        className={[
+          'md:hidden fixed inset-y-0 left-0 z-50',
+          'w-[240px] bg-surface border-r border-border',
+          'transition-transform duration-250 ease-in-out',
+          open ? 'translate-x-0' : '-translate-x-full',
+          'shadow-nubi-xl',
+        ].join(' ')}
         aria-label="Mobile navigation"
+        aria-modal="true"
       >
         <SidebarContent collapsed={false} showToggle={false} />
       </aside>

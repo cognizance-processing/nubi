@@ -37,13 +37,6 @@ import Logo from '../Logo.jsx'
 
 // ---------------------------------------------------------------------------
 // TopbarActions — the global panel switcher (Notifications / Git / Chat).
-//
-// A horizontal cluster of square icon toggles living in the topbar's right
-// zone, present on EVERY authed surface at ALL breakpoints — the single,
-// consistent home for the shell-level RHS panels. Replaces the former
-// full-height right-edge rail; the panels themselves still slide in from the
-// right (full-width on mobile, max-w-md on desktop). Items are filtered by
-// their `hidden` flag (e.g. Chat hides when a page owns its own chat UI).
 // ---------------------------------------------------------------------------
 
 function TopbarActions({ items }) {
@@ -67,17 +60,14 @@ function TopbarActions({ items }) {
           title={label}
           data-testid={`rail-toggle-${id}`}
           className={[
-            'relative w-9 h-9 flex items-center justify-center rounded-lg border transition-colors duration-150',
-            'focus:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1',
-            active
-              ? 'bg-primary text-primary-fg border-primary shadow-sm'
-              : 'bg-surface text-muted border-border hover:text-fg hover:bg-surface-2',
+            'nubi-topbar-action',
+            active ? 'active' : '',
           ].join(' ')}
         >
-          <Icon size={16} strokeWidth={2} />
+          <Icon size={15} strokeWidth={2} aria-hidden="true" />
           {badge > 0 && (
             <span
-              className="absolute -top-1 -right-1 min-w-[16px] h-4 px-1 flex items-center justify-center rounded-full bg-red-500 text-white text-[10px] font-bold leading-none shadow"
+              className="absolute -top-1 -right-1 min-w-[1rem] h-4 px-1 flex items-center justify-center rounded-full bg-red-500 text-white text-[9px] font-bold leading-none shadow-sm"
               aria-hidden="true"
             >
               {formatBadgeCount(badge)}
@@ -131,12 +121,15 @@ function UserMenu() {
         onClick={() => setOpen(v => !v)}
         aria-label="User account menu"
         aria-expanded={open}
+        aria-haspopup="menu"
         className="
           flex items-center justify-center overflow-hidden
-          w-9 h-9 rounded-full
+          w-8 h-8 rounded-full
           text-xs font-bold text-white
-          transition-opacity duration-150 hover:opacity-85
-          focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2 focus:ring-offset-surface
+          ring-2 ring-transparent
+          transition-[opacity,box-shadow] duration-150
+          hover:opacity-85
+          focus-visible:outline-none focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-surface
           select-none shrink-0
         "
         style={user.avatar_url ? undefined : { background: 'linear-gradient(135deg, #1b2363, #2456a6, #17b3a3)' }}
@@ -153,62 +146,61 @@ function UserMenu() {
             onClick={() => setOpen(false)}
             aria-hidden="true"
           />
-          <div className="
-            absolute right-0 top-full mt-1.5 z-40
-            w-52 p-1.5 rounded-xl
-            bg-surface border border-border shadow-lg shadow-black/10
-          ">
+          <div
+            role="menu"
+            className="
+              absolute right-0 top-full mt-2 z-40
+              w-52 rounded-nubi-xl
+              bg-surface border border-border
+              shadow-nubi-lg
+              overflow-hidden
+              nubi-animate-scale-in origin-top-right
+            "
+          >
             {/* User info */}
-            <div className="px-2 pt-1 pb-2 mb-1 border-b border-border">
+            <div className="px-3 pt-2.5 pb-2.5 border-b border-border">
               {user.name && (
-                <p className="text-sm font-semibold text-fg truncate">{user.name}</p>
+                <p className="text-sm font-semibold text-fg truncate leading-tight">{user.name}</p>
               )}
-              <p className="text-xs text-muted truncate">{user.email}</p>
+              <p className="text-xs text-muted truncate leading-tight mt-0.5">{user.email}</p>
             </div>
 
-            {/* Theme toggle */}
-            <button
-              onClick={toggleTheme}
-              className="
-                flex items-center gap-2.5 w-full px-2 py-2.5 rounded-lg text-sm text-fg
-                hover:bg-surface-2 transition-colors text-left min-h-[40px]
-              "
-            >
-              {theme === 'dark'
-                ? <Sun size={14} className="text-muted shrink-0" />
-                : <Moon size={14} className="text-muted shrink-0" />}
-              {theme === 'dark' ? 'Light mode' : 'Dark mode'}
-            </button>
+            <div className="p-1">
+              {/* Theme toggle */}
+              <button
+                onClick={toggleTheme}
+                role="menuitem"
+                className="nubi-dropdown-item"
+              >
+                {theme === 'dark'
+                  ? <Sun size={14} className="shrink-0 text-muted" aria-hidden="true" />
+                  : <Moon size={14} className="shrink-0 text-muted" aria-hidden="true" />}
+                {theme === 'dark' ? 'Light mode' : 'Dark mode'}
+              </button>
 
-            {/* Settings link */}
-            <Link
-              to="/settings"
-              onClick={() => setOpen(false)}
-              className="
-                flex items-center gap-2.5 w-full px-2 py-2.5 rounded-lg text-sm text-fg
-                hover:bg-surface-2 transition-colors min-h-[40px]
-              "
-            >
-              <Settings size={14} className="text-muted shrink-0" />
-              Settings
-            </Link>
+              {/* Settings link */}
+              <Link
+                to="/settings"
+                onClick={() => setOpen(false)}
+                role="menuitem"
+                className="nubi-dropdown-item"
+              >
+                <Settings size={14} className="shrink-0 text-muted" aria-hidden="true" />
+                Settings
+              </Link>
 
-            {/* Divider */}
-            <div className="border-t border-border my-1" />
+              <div className="nubi-dropdown-divider" />
 
-            {/* Sign out */}
-            <button
-              onClick={handleLogout}
-              className="
-                flex items-center gap-2.5 w-full px-2 py-2.5 rounded-lg text-sm
-                text-red-500 dark:text-red-400
-                hover:bg-red-50 dark:hover:bg-red-950/30
-                transition-colors text-left min-h-[40px]
-              "
-            >
-              <LogOut size={14} className="shrink-0" />
-              Sign out
-            </button>
+              {/* Sign out */}
+              <button
+                onClick={handleLogout}
+                role="menuitem"
+                className="nubi-dropdown-item danger"
+              >
+                <LogOut size={14} className="shrink-0" aria-hidden="true" />
+                Sign out
+              </button>
+            </div>
           </div>
         </>
       )}
@@ -233,10 +225,13 @@ export default function AppTopbar({ onMobileMenuOpen, actions = [] }) {
     <header className="
       sticky top-0 z-30
       flex items-center gap-3
-      px-3 h-14 shrink-0
-      bg-surface/90 backdrop-blur-sm
+      px-3 sm:px-4 h-13 shrink-0
+      bg-surface/90 backdrop-blur-md
       border-b border-border
-    ">
+      shadow-[0_1px_0_var(--border)]
+    "
+    style={{ height: '3.25rem' }}
+    >
       {/* ── Far left: mobile hamburger / logo ── */}
       <div className="flex items-center gap-2 shrink-0">
         {/* Mobile hamburger */}
@@ -244,18 +239,22 @@ export default function AppTopbar({ onMobileMenuOpen, actions = [] }) {
           onClick={onMobileMenuOpen}
           aria-label="Open navigation menu"
           className="
-            md:hidden flex items-center justify-center w-9 h-9 rounded-lg
+            md:hidden flex items-center justify-center w-8 h-8 rounded-lg
             text-muted hover:text-fg hover:bg-surface-2
-            transition-colors duration-150
-            focus:outline-none focus:ring-2 focus:ring-ring
+            transition-colors duration-100
+            focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring
           "
         >
-          <Menu size={18} />
+          <Menu size={17} aria-hidden="true" />
         </button>
 
         {/* Logo — mobile only (sidebar hidden); links to the landing page */}
-        <Link to="/" aria-label="Nubi — back to landing page" className="md:hidden shrink-0">
-          <Logo size={24} showName={false} />
+        <Link
+          to="/"
+          aria-label="Nubi — back to landing page"
+          className="md:hidden shrink-0 rounded focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+        >
+          <Logo size={22} showName={false} />
         </Link>
       </div>
 
@@ -266,13 +265,15 @@ export default function AppTopbar({ onMobileMenuOpen, actions = [] }) {
       />
 
       {/* ── Right: global panel switcher + user avatar (far right) ── */}
-      <div className="flex items-center gap-1 shrink-0">
+      <div className="flex items-center gap-1.5 shrink-0">
         {/* Notifications / Git / Chat — the single home for shell RHS panels,
             on every page at every breakpoint. */}
         <TopbarActions items={actions} />
 
         {/* Divider between the panel switcher and the account menu. */}
-        <div className="w-px h-6 bg-border mx-1" aria-hidden="true" />
+        {actions.filter(a => !a.hidden).length > 0 && (
+          <div className="w-px h-5 bg-border mx-0.5" aria-hidden="true" />
+        )}
 
         <UserMenu />
       </div>

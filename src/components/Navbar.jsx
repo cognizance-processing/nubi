@@ -1,12 +1,12 @@
 /**
- * Navbar — sticky app shell header.
+ * Navbar — sticky marketing/app shell header.
  *
  * Left:   Logo (links to /)
- * Center: nav links — Docs, Compare, Pricing, and Portal (auth-only; the /home app hub)
- * Right:  theme toggle (Sun/Moon) + user menu (avatar+logout) or login/register
+ * Center: nav links — Docs, Reporting, Compare, Pricing, Portal (auth-only)
+ * Right:  GitHub, CurrencySelector, ThemeToggle, Login/Register (or UserMenu)
  *
- * Responsive: collapses to a hamburger menu on mobile/tablet (< lg).
- * Mobile drawer slides down with CSS transition; tap targets ≥ 44px.
+ * Polished: backdrop-blur glass effect, scroll-aware shadow, refined active
+ * states, smooth mobile drawer with staggered link reveals.
  */
 
 import { useState, useEffect, useRef } from 'react'
@@ -19,51 +19,39 @@ import CurrencySelector from './CurrencySelector.jsx'
 
 const GITHUB_URL = 'https://github.com/nu-bi/nubi'
 
-// ── Nav link data ─────────────────────────────────────────────────────────────
-// scrollTo: if set, clicking the link smooth-scrolls to that section ID on the
-//           landing page (or navigates to /#id if not already on /).
 const NAV_LINKS = [
   { label: 'Docs',      to: '/docs' },
   { label: 'Reporting', to: '/reporting' },
   { label: 'Compare',   to: '/compare' },
   { label: 'Pricing',   to: '/pricing' },
-  // One entry into the authenticated app (Playground / Editor / Dashboard all
-  // live inside it) — the /home hub.
   { label: 'Portal',    to: '/home', authOnly: true },
 ]
 
-// ── Theme toggle button ───────────────────────────────────────────────────────
+// ── Theme toggle ──────────────────────────────────────────────────────────────
+
 function ThemeToggle() {
   const { theme, toggleTheme } = useTheme()
   const isDark = theme === 'dark'
-
   return (
     <button
       onClick={toggleTheme}
       aria-label={isDark ? 'Switch to light mode' : 'Switch to dark mode'}
-      className="
-        flex items-center justify-center w-11 h-11 rounded-lg
-        text-muted hover:text-fg
-        bg-surface-2 hover:bg-surface
-        border border-border
-        transition-colors duration-150
-        focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-1
-      "
+      className="nubi-btn-icon nubi-btn nubi-btn-secondary focus-visible:ring-2 focus-visible:ring-ring"
     >
       {isDark
-        ? <Sun size={16} strokeWidth={2} />
-        : <Moon size={16} strokeWidth={2} />
+        ? <Sun size={15} strokeWidth={2} aria-hidden="true" />
+        : <Moon size={15} strokeWidth={2} aria-hidden="true" />
       }
     </button>
   )
 }
 
 // ── User avatar / menu ────────────────────────────────────────────────────────
+
 function UserMenu({ user, logout }) {
   const [open, setOpen] = useState(false)
   const navigate = useNavigate()
   const menuRef = useRef(null)
-
   const initial = (user.name || user.email || '?')[0].toUpperCase()
 
   async function handleLogout() {
@@ -72,7 +60,6 @@ function UserMenu({ user, logout }) {
     navigate('/')
   }
 
-  // Close on outside click
   useEffect(() => {
     if (!open) return
     function onDown(e) {
@@ -86,60 +73,48 @@ function UserMenu({ user, logout }) {
     <div className="relative" ref={menuRef}>
       <button
         onClick={() => setOpen(v => !v)}
-        className="
-          flex items-center gap-1.5 px-2 py-1 rounded-lg
-          text-sm text-fg hover:bg-surface-2
-          border border-border
-          min-h-[44px]
-          transition-colors duration-150
-          focus:outline-none focus:ring-2 focus:ring-ring
-        "
+        className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-xl border border-border bg-surface text-sm text-fg hover:bg-surface-2 min-h-[36px] transition-colors focus:outline-none focus:ring-2 focus:ring-ring"
         aria-label="User menu"
         aria-expanded={open}
+        aria-haspopup="true"
       >
-        {/* Avatar circle */}
         <span
-          className="flex items-center justify-center w-6 h-6 rounded-full text-xs font-semibold text-primary-fg shrink-0"
+          className="flex items-center justify-center w-6 h-6 rounded-full text-[11px] font-bold text-white shrink-0"
           style={{ background: 'linear-gradient(135deg, #1b2363, #2456a6, #17b3a3)' }}
           aria-hidden="true"
         >
           {initial}
         </span>
-        <span className="hidden sm:inline max-w-[100px] truncate">{user.name || user.email}</span>
-        <ChevronDown size={12} className="text-muted" />
+        <span className="hidden sm:inline max-w-[100px] truncate text-sm">{user.name || user.email}</span>
+        <ChevronDown size={11} className="text-muted" aria-hidden="true" />
       </button>
 
       {open && (
         <>
-          {/* Backdrop */}
+          <div className="fixed inset-0 z-30" onClick={() => setOpen(false)} aria-hidden="true" />
           <div
-            className="fixed inset-0 z-30"
-            onClick={() => setOpen(false)}
-            aria-hidden="true"
-          />
-          {/* Dropdown */}
-          <div className="
-            absolute right-0 top-full mt-1 z-40
-            w-48 p-1 rounded-xl
-            bg-surface border border-border shadow-lg
-          ">
-            <div className="px-2 py-2 mb-0.5 border-b border-border">
+            className="absolute right-0 top-full mt-1.5 z-40 w-52 p-1 rounded-xl nubi-card nubi-animate-scale-in"
+            role="menu"
+          >
+            <div className="px-3 py-2 mb-1 border-b border-border">
               <p className="text-xs text-muted truncate">{user.email}</p>
             </div>
             <Link
               to="/home"
               onClick={() => setOpen(false)}
-              className="flex items-center gap-2 w-full px-2 py-2.5 rounded-lg text-sm text-fg hover:bg-surface-2 transition-colors min-h-[44px]"
+              role="menuitem"
+              className="flex items-center gap-2 w-full px-3 py-2.5 rounded-lg text-sm text-fg hover:bg-surface-2 transition-colors min-h-[40px]"
             >
-              <LayoutDashboard size={14} className="text-muted" />
+              <LayoutDashboard size={14} className="text-muted" aria-hidden="true" />
               Portal
             </Link>
             <button
               onClick={handleLogout}
-              className="flex items-center gap-2 w-full px-2 py-2.5 rounded-lg text-sm text-fg hover:bg-surface-2 transition-colors text-left min-h-[44px]"
+              role="menuitem"
+              className="flex items-center gap-2 w-full px-3 py-2.5 rounded-lg text-sm text-fg hover:bg-surface-2 transition-colors text-left min-h-[40px]"
             >
-              <LogOut size={14} className="text-muted" />
-              Log out
+              <LogOut size={14} className="text-muted" aria-hidden="true" />
+              Sign out
             </button>
           </div>
         </>
@@ -148,9 +123,8 @@ function UserMenu({ user, logout }) {
   )
 }
 
-// ── Scroll-aware nav link ─────────────────────────────────────────────────────
-// For links with scrollTo, clicking while on "/" scrolls to the section.
-// If not on "/", navigates to "/" then the browser follows the hash.
+// ── Desktop nav link ──────────────────────────────────────────────────────────
+
 function DesktopNavLink({ to, label, scrollTo }) {
   const location = useLocation()
 
@@ -161,14 +135,12 @@ function DesktopNavLink({ to, label, scrollTo }) {
         const el = document.getElementById(scrollTo)
         if (el) el.scrollIntoView({ behavior: 'smooth', block: 'start' })
       }
-      // else let the link navigate to /#scrollTo naturally
     }
-
     return (
       <a
         href={`/#${scrollTo}`}
         onClick={handleClick}
-        className="text-sm font-medium transition-colors duration-150 px-2 py-1 rounded-md text-muted hover:text-fg hover:bg-surface-2"
+        className="relative text-sm font-medium px-3 py-1.5 rounded-lg text-muted hover:text-fg hover:bg-surface-2 transition-colors"
       >
         {label}
       </a>
@@ -179,34 +151,52 @@ function DesktopNavLink({ to, label, scrollTo }) {
     <NavLink
       to={to}
       className={({ isActive }) =>
-        `text-sm font-medium transition-colors duration-150 px-2 py-1 rounded-md
+        `relative text-sm font-medium px-3 py-1.5 rounded-lg transition-colors
          ${isActive
-           ? 'text-primary bg-surface-2'
+           ? 'text-fg bg-surface-2'
            : 'text-muted hover:text-fg hover:bg-surface-2'
          }`
       }
     >
-      {label}
+      {({ isActive }) => (
+        <>
+          {label}
+          {isActive && (
+            <span
+              className="absolute inset-x-3 bottom-0 h-0.5 rounded-full"
+              style={{ background: 'linear-gradient(90deg, #2456a6, #17b3a3)' }}
+              aria-hidden="true"
+            />
+          )}
+        </>
+      )}
     </NavLink>
   )
 }
 
 // ── Main Navbar ───────────────────────────────────────────────────────────────
+
 export default function Navbar() {
   const [mobileOpen, setMobileOpen] = useState(false)
+  const [scrolled, setScrolled] = useState(false)
   const { user, logout } = useAuth()
   const location = useLocation()
   const navigate = useNavigate()
 
-  // Close mobile menu on route change — "adjust state during render" pattern
-  // (no effect, no cascading re-render).
+  // Close mobile menu on route change
   const [lastPath, setLastPath] = useState(location.pathname)
   if (lastPath !== location.pathname) {
     setLastPath(location.pathname)
     setMobileOpen(false)
   }
 
-  // Filter links based on auth
+  // Scroll-aware shadow
+  useEffect(() => {
+    function onScroll() { setScrolled(window.scrollY > 8) }
+    window.addEventListener('scroll', onScroll, { passive: true })
+    return () => window.removeEventListener('scroll', onScroll)
+  }, [])
+
   const visibleLinks = NAV_LINKS.filter(l => !l.authOnly || user)
 
   function handleMobileScrollLink(e, scrollTo) {
@@ -216,61 +206,42 @@ export default function Navbar() {
       const el = document.getElementById(scrollTo)
       if (el) el.scrollIntoView({ behavior: 'smooth', block: 'start' })
     }
-    // else navigate to /#id naturally
   }
 
   return (
-    <header
-      className="
-        sticky top-0 z-50
-        bg-surface
-        border-b border-border
-        shadow-sm
-      "
-    >
+    <header className={`nubi-navbar${scrolled ? ' scrolled' : ''}`}>
       <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 h-14 flex items-center justify-between gap-3">
 
-        {/* ── Left: Logo ────────────────────────────────────────────────── */}
-        {/* flex (not inline) so the logo doesn't sit on a text baseline —
-            the line-box descender space pushed it ~3px above center */}
-        <Link to="/" aria-label="Nubi home" className="shrink-0 flex items-center">
+        {/* ── Logo ─────────────────────────────────────────────────────── */}
+        <Link to="/" aria-label="Nubi home" className="shrink-0 flex items-center nubi-focus-ring rounded-lg">
           <Logo size={30} showName={true} />
         </Link>
 
-        {/* ── Center: Desktop nav ───────────────────────────────────────── */}
-        <nav className="hidden lg:flex items-center gap-1 flex-1 justify-center" aria-label="Main navigation">
+        {/* ── Desktop nav ──────────────────────────────────────────────── */}
+        <nav className="hidden lg:flex items-center gap-0.5 flex-1 justify-center" aria-label="Main navigation">
           {visibleLinks.map(link => (
             <DesktopNavLink key={link.label} to={link.to} label={link.label} scrollTo={link.scrollTo} />
           ))}
         </nav>
 
-        {/* ── Right: actions ────────────────────────────────────────────── */}
-        <div className="flex items-center gap-1.5 sm:gap-2 shrink-0">
-          {/* GitHub — open core, wear it on the topbar */}
+        {/* ── Right actions ─────────────────────────────────────────────── */}
+        <div className="flex items-center gap-1.5 shrink-0">
+          {/* GitHub */}
           <a
             href={GITHUB_URL}
             target="_blank"
             rel="noopener noreferrer"
             aria-label="Nubi on GitHub"
             title="Star Nubi on GitHub"
-            className="
-              flex items-center justify-center w-11 h-11 rounded-lg
-              text-muted hover:text-fg
-              bg-surface-2 hover:bg-surface
-              border border-border
-              transition-colors duration-150
-              focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-1
-            "
+            className="nubi-btn-icon nubi-btn nubi-btn-secondary"
           >
-            <Github size={16} strokeWidth={2} />
+            <Github size={15} strokeWidth={2} aria-hidden="true" />
           </a>
 
-          {/* Display-currency picker (prices shown in chosen currency; billed in ZAR) */}
           <CurrencySelector />
-
           <ThemeToggle />
 
-          {/* Auth controls — desktop only */}
+          {/* Auth controls — desktop */}
           <div className="hidden lg:flex items-center gap-2">
             {user ? (
               <UserMenu user={user} logout={logout} />
@@ -278,19 +249,13 @@ export default function Navbar() {
               <>
                 <Link
                   to="/login"
-                  className="text-sm font-medium text-muted hover:text-fg transition-colors px-3 py-1.5 rounded-lg hover:bg-surface-2"
+                  className="text-sm font-medium text-muted hover:text-fg transition-colors px-3 py-1.5 rounded-lg hover:bg-surface-2 min-h-[36px] flex items-center nubi-focus-ring"
                 >
                   Log in
                 </Link>
                 <Link
                   to="/register"
-                  className="
-                    text-sm font-medium px-3 py-2 rounded-lg
-                    bg-primary text-primary-fg
-                    hover:opacity-90
-                    transition-opacity
-                    shadow-sm min-h-[36px] flex items-center
-                  "
+                  className="nubi-btn nubi-btn-primary nubi-btn-sm"
                 >
                   Get started
                 </Link>
@@ -298,53 +263,42 @@ export default function Navbar() {
             )}
           </div>
 
-          {/* Hamburger — visible below lg ── */}
+          {/* Hamburger — mobile */}
           <button
-            className="
-              lg:hidden flex items-center justify-center
-              w-11 h-11 rounded-lg
-              text-muted hover:text-fg hover:bg-surface-2
-              transition-colors duration-150
-              focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-1
-            "
+            className="lg:hidden nubi-btn nubi-btn-ghost nubi-btn-icon"
             onClick={() => setMobileOpen(v => !v)}
             aria-label={mobileOpen ? 'Close menu' : 'Open menu'}
             aria-expanded={mobileOpen}
             aria-controls="mobile-nav"
           >
-            {mobileOpen ? <X size={20} /> : <Menu size={20} />}
+            {mobileOpen
+              ? <X size={18} aria-hidden="true" />
+              : <Menu size={18} aria-hidden="true" />
+            }
           </button>
         </div>
       </div>
 
-      {/* ── Mobile menu drawer ──────────────────────────────────────────── */}
-      {/*  CSS max-height transition for open/close animation              */}
+      {/* ── Mobile drawer ────────────────────────────────────────────────── */}
       <div
         id="mobile-nav"
         role="region"
         aria-label="Mobile navigation"
         className={`
-          lg:hidden
-          overflow-hidden
-          bg-surface border-t border-border
+          lg:hidden overflow-hidden bg-surface border-t border-border
           transition-all duration-300 ease-in-out
           ${mobileOpen ? 'max-h-[600px] opacity-100' : 'max-h-0 opacity-0'}
         `}
       >
-        <div className="px-4 py-3 flex flex-col gap-1">
-          {visibleLinks.map(link =>
+        <div className="px-4 py-3 flex flex-col gap-0.5">
+          {visibleLinks.map((link, i) =>
             link.scrollTo ? (
               <a
                 key={link.label}
                 href={`/#${link.scrollTo}`}
                 onClick={(e) => handleMobileScrollLink(e, link.scrollTo)}
-                className="
-                  flex items-center px-3 py-3 rounded-lg
-                  text-sm font-medium
-                  text-fg hover:bg-surface-2
-                  transition-colors duration-150
-                  min-h-[44px]
-                "
+                className="flex items-center px-3 py-3 rounded-xl text-sm font-medium text-fg hover:bg-surface-2 transition-colors min-h-[44px]"
+                style={{ animationDelay: `${i * 40}ms` }}
               >
                 {link.label}
               </a>
@@ -354,47 +308,47 @@ export default function Navbar() {
                 to={link.to}
                 onClick={() => setMobileOpen(false)}
                 className={({ isActive }) =>
-                  `flex items-center px-3 py-3 rounded-lg text-sm font-medium transition-colors duration-150 min-h-[44px]
+                  `flex items-center px-3 py-3 rounded-xl text-sm font-medium transition-colors min-h-[44px]
                    ${isActive
-                     ? 'bg-surface-2 text-primary'
+                     ? 'bg-surface-2 text-primary font-semibold'
                      : 'text-fg hover:bg-surface-2'
                    }`
                 }
+                style={{ animationDelay: `${i * 40}ms` }}
               >
                 {link.label}
               </NavLink>
             )
           )}
 
-          {/* Mobile auth actions */}
-          <div className="mt-2 pt-3 border-t border-border flex flex-col gap-2">
+          {/* Mobile auth */}
+          <div className="mt-3 pt-3 border-t border-border flex flex-col gap-2">
             {user ? (
               <>
-                <div className="px-3 py-2 text-xs text-muted truncate">
-                  Signed in as {user.name || user.email}
+                <div className="px-3 py-2 flex items-center gap-2.5">
+                  <span
+                    className="flex items-center justify-center w-7 h-7 rounded-full text-[11px] font-bold text-white shrink-0"
+                    style={{ background: 'linear-gradient(135deg, #1b2363, #2456a6, #17b3a3)' }}
+                    aria-hidden="true"
+                  >
+                    {(user.name || user.email || '?')[0].toUpperCase()}
+                  </span>
+                  <span className="text-xs text-muted truncate">{user.name || user.email}</span>
                 </div>
                 <Link
                   to="/home"
                   onClick={() => setMobileOpen(false)}
-                  className="
-                    flex items-center gap-2 px-3 py-3 rounded-lg
-                    text-sm font-medium text-fg hover:bg-surface-2
-                    transition-colors duration-150 min-h-[44px]
-                  "
+                  className="flex items-center gap-2 px-3 py-3 rounded-xl text-sm font-medium text-fg hover:bg-surface-2 transition-colors min-h-[44px]"
                 >
-                  <LayoutDashboard size={15} className="text-muted" />
+                  <LayoutDashboard size={15} className="text-muted" aria-hidden="true" />
                   Portal
                 </Link>
                 <button
                   onClick={async () => { setMobileOpen(false); await logout(); navigate('/') }}
-                  className="
-                    flex items-center gap-2 px-3 py-3 rounded-lg
-                    text-sm font-medium text-fg hover:bg-surface-2
-                    transition-colors duration-150 text-left min-h-[44px] w-full
-                  "
+                  className="flex items-center gap-2 px-3 py-3 rounded-xl text-sm font-medium text-fg hover:bg-surface-2 transition-colors text-left min-h-[44px] w-full"
                 >
-                  <LogOut size={15} className="text-muted" />
-                  Log out
+                  <LogOut size={15} className="text-muted" aria-hidden="true" />
+                  Sign out
                 </button>
               </>
             ) : (
@@ -402,25 +356,14 @@ export default function Navbar() {
                 <Link
                   to="/login"
                   onClick={() => setMobileOpen(false)}
-                  className="
-                    flex items-center justify-center px-4 py-3 rounded-lg
-                    text-sm font-medium text-fg
-                    border border-border hover:bg-surface-2
-                    transition-colors duration-150 min-h-[44px]
-                  "
+                  className="nubi-btn nubi-btn-secondary nubi-btn-lg w-full justify-center"
                 >
                   Log in
                 </Link>
                 <Link
                   to="/register"
                   onClick={() => setMobileOpen(false)}
-                  className="
-                    flex items-center justify-center px-4 py-3 rounded-lg
-                    text-sm font-semibold
-                    bg-primary text-primary-fg
-                    hover:opacity-90 transition-opacity
-                    min-h-[44px]
-                  "
+                  className="nubi-btn nubi-btn-primary nubi-btn-lg w-full justify-center"
                 >
                   Get started free
                 </Link>

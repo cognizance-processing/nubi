@@ -115,11 +115,34 @@ const MarketingStyles = () => (
 
     /* ── CTA button pulse ── */
     @keyframes lp-pulse-primary {
-      0%, 100% { box-shadow: 0 0 0 0 rgba(36, 86, 166, 0.4); }
-      50%       { box-shadow: 0 0 0 10px rgba(36, 86, 166, 0); }
+      0%, 100% { box-shadow: 0 0 0 0 rgba(23, 179, 163, 0.35), 0 8px 28px -8px rgba(23,179,163,0.5), 0 4px 14px rgba(36,86,166,0.4); }
+      50%       { box-shadow: 0 0 0 10px rgba(23, 179, 163, 0), 0 8px 28px -8px rgba(23,179,163,0.5), 0 4px 14px rgba(36,86,166,0.4); }
     }
-    .lp-cta-pulse { animation: lp-pulse-primary 3s ease-in-out infinite; }
+    .lp-cta-pulse { animation: lp-pulse-primary 3.5s ease-in-out infinite; }
     .lp-cta-pulse:hover { animation: none; }
+
+    /* ── Section eyebrow pill ── */
+    .lp-eyebrow {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.5rem;
+      font-family: var(--font-mono, 'JetBrains Mono', monospace);
+      font-size: 0.6875rem;
+      font-weight: 600;
+      letter-spacing: 0.18em;
+      text-transform: uppercase;
+      color: #17b3a3;
+      border: 1px solid rgba(23, 179, 163, 0.25);
+      background: rgba(23, 179, 163, 0.07);
+      border-radius: 9999px;
+      padding: 0.375rem 0.875rem;
+      margin-bottom: 1rem;
+    }
+    .dark .lp-eyebrow {
+      border-color: rgba(45, 212, 191, 0.22);
+      background: rgba(45, 212, 191, 0.08);
+      color: #2dd4bf;
+    }
 
     /* ── Diff card hover lift ── */
     .lp-diff-card {

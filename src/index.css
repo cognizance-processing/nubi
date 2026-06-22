@@ -37,6 +37,43 @@
     --accent:     #0f9e90;
     --ring:       #17b3a3;
 
+    /* ── Extended token scale (light) ── */
+    --surface-3:   #e4eaf3;
+    --text-subtle: #8496ae;
+    --shadow-sm:   0 1px 2px rgba(14,23,41,0.06), 0 1px 1px rgba(14,23,41,0.04);
+    --shadow-md:   0 4px 8px rgba(14,23,41,0.08), 0 2px 4px rgba(14,23,41,0.05);
+    --shadow-lg:   0 12px 28px rgba(14,23,41,0.10), 0 4px 10px rgba(14,23,41,0.07);
+    --shadow-xl:   0 24px 48px rgba(14,23,41,0.14), 0 8px 20px rgba(14,23,41,0.08);
+    --radius-sm:   0.375rem;  /* 6px  */
+    --radius-md:   0.625rem;  /* 10px */
+    --radius-lg:   0.875rem;  /* 14px */
+    --radius-xl:   1.125rem;  /* 18px */
+    --radius-2xl:  1.5rem;    /* 24px */
+    /* Focus ring */
+    --ring-width:  2px;
+    --ring-offset: 2px;
+    /* Success / warning / danger semantic */
+    --success:      #059669;
+    --success-bg:   #ecfdf5;
+    --success-fg:   #065f46;
+    --warning:      #d97706;
+    --warning-bg:   #fffbeb;
+    --warning-fg:   #92400e;
+    --danger:       #dc2626;
+    --danger-bg:    #fef2f2;
+    --danger-fg:    #991b1b;
+    --info:         #2456a6;
+    --info-bg:      #eff6ff;
+    --info-fg:      #1e40af;
+    /* Z-index scale */
+    --z-dropdown:  100;
+    --z-sticky:    200;
+    --z-overlay:   300;
+    --z-modal:     400;
+    --z-popover:   500;
+    --z-toast:     600;
+    --z-tooltip:   700;
+
     color-scheme: light;
   }
 
@@ -52,6 +89,26 @@
     --primary-fg: #06101f;
     --accent:     #2dd4bf;
     --ring:       #2dd4bf;
+
+    /* ── Extended token scale (dark) ── */
+    --surface-3:   #1c2d47;
+    --text-subtle: #5f7694;
+    --shadow-sm:   0 1px 2px rgba(0,0,0,0.30), 0 1px 1px rgba(0,0,0,0.20);
+    --shadow-md:   0 4px 8px rgba(0,0,0,0.35), 0 2px 4px rgba(0,0,0,0.25);
+    --shadow-lg:   0 12px 28px rgba(0,0,0,0.45), 0 4px 10px rgba(0,0,0,0.30);
+    --shadow-xl:   0 24px 48px rgba(0,0,0,0.55), 0 8px 20px rgba(0,0,0,0.35);
+    --success:      #10b981;
+    --success-bg:   rgba(16,185,129,0.12);
+    --success-fg:   #6ee7b7;
+    --warning:      #f59e0b;
+    --warning-bg:   rgba(245,158,11,0.12);
+    --warning-fg:   #fcd34d;
+    --danger:       #f87171;
+    --danger-bg:    rgba(248,113,113,0.12);
+    --danger-fg:    #fca5a5;
+    --info:         #60a5fa;
+    --info-bg:      rgba(96,165,250,0.12);
+    --info-fg:      #93c5fd;
 
     color-scheme: dark;
   }
@@ -105,6 +162,717 @@
   input, textarea, select, button, a {
     transition-duration: 100ms;
   }
+}
+
+/* ── Design-system component layer ─────────────────────────────────────────────
+   Reusable class-based API for UI primitives. Consumed by src/components/ui/*.
+   All classes are nubi-prefixed to avoid collisions with Tailwind utilities.
+   Usage comments are in the individual component files.
+   ──────────────────────────────────────────────────────────────────────────── */
+
+@layer components {
+
+  /* ── BUTTON ──────────────────────────────────────────────────────────────── */
+
+  /* Base — apply to every button; then layer a variant */
+  .nubi-btn {
+    @apply inline-flex items-center justify-center gap-1.5 font-medium
+           select-none whitespace-nowrap rounded-xl
+           transition-all duration-150 ease-out
+           disabled:pointer-events-none disabled:opacity-50;
+    -webkit-tap-highlight-color: transparent;
+  }
+  .nubi-btn:focus-visible {
+    outline: none;
+    box-shadow: 0 0 0 2px var(--bg), 0 0 0 4px var(--ring);
+  }
+
+  /* Size variants */
+  .nubi-btn-xs  { @apply h-7  px-2.5 text-xs  gap-1; }
+  .nubi-btn-sm  { @apply h-8  px-3   text-sm  gap-1.5; }
+  .nubi-btn-md  { @apply h-9  px-4   text-sm  gap-1.5; }
+  .nubi-btn-lg  { @apply h-10 px-5   text-sm  gap-2; }
+  .nubi-btn-xl  { @apply h-12 px-6   text-base gap-2; }
+
+  /* Primary — brand blue fill */
+  .nubi-btn-primary {
+    background: var(--primary);
+    color: var(--primary-fg);
+    box-shadow: 0 1px 2px rgba(0,0,0,0.06);
+  }
+  .nubi-btn-primary:hover:not(:disabled)  { opacity: 0.90; }
+  .nubi-btn-primary:active:not(:disabled) { transform: scale(0.97); }
+
+  /* Secondary — subtle bordered */
+  .nubi-btn-secondary {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    color: var(--text);
+    box-shadow: 0 1px 2px rgba(0,0,0,0.06);
+  }
+  .nubi-btn-secondary:hover:not(:disabled)  { background: var(--surface-2); }
+  .nubi-btn-secondary:active:not(:disabled) { transform: scale(0.97); }
+
+  /* Ghost — no chrome, hover surface */
+  .nubi-btn-ghost {
+    color: var(--text);
+    background: transparent;
+  }
+  .nubi-btn-ghost:hover:not(:disabled)  { background: var(--surface-2); }
+  .nubi-btn-ghost:active:not(:disabled) { transform: scale(0.97); }
+
+  /* Danger — destructive red */
+  .nubi-btn-danger {
+    background: #dc2626;
+    color: #fff;
+    box-shadow: 0 1px 2px rgba(0,0,0,0.06);
+  }
+  .nubi-btn-danger:hover:not(:disabled)  { background: #b91c1c; }
+  .nubi-btn-danger:active:not(:disabled) { transform: scale(0.97); }
+
+  /* Outline primary */
+  .nubi-btn-outline {
+    border: 1px solid var(--primary);
+    color: var(--primary);
+    background: transparent;
+  }
+  .nubi-btn-outline:hover:not(:disabled)  { background: color-mix(in srgb, var(--primary) 10%, transparent); }
+  .nubi-btn-outline:active:not(:disabled) { transform: scale(0.97); }
+
+  /* Accent teal */
+  .nubi-btn-accent {
+    background: var(--accent);
+    color: #fff;
+    box-shadow: 0 1px 2px rgba(0,0,0,0.06);
+  }
+  .nubi-btn-accent:hover:not(:disabled)  { opacity: 0.90; }
+  .nubi-btn-accent:active:not(:disabled) { transform: scale(0.97); }
+
+  /* Icon-only button (square) */
+  .nubi-btn-icon    { @apply nubi-btn aspect-square px-0 w-9  h-9  text-sm; }
+  .nubi-btn-icon-sm { @apply nubi-btn aspect-square px-0 w-8  h-8  text-sm; }
+  .nubi-btn-icon-lg { @apply nubi-btn aspect-square px-0 w-10 h-10 text-sm; }
+
+  /* Loading spinner wrapper inside a button (replaces icon+label) */
+  .nubi-btn-spinner {
+    @apply animate-spin opacity-70;
+  }
+
+  /* ── FORM FIELDS ─────────────────────────────────────────────────────────── */
+
+  /* Base input chrome */
+  .nubi-input {
+    display: block;
+    width: 100%;
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: 0.75rem;
+    font-size: 0.875rem;
+    color: var(--text);
+    padding: 0.5rem 0.75rem;
+    transition: border-color 100ms, box-shadow 100ms;
+  }
+  .nubi-input::placeholder { color: var(--text-muted); }
+  .nubi-input:focus {
+    outline: none;
+    border-color: color-mix(in srgb, var(--ring) 60%, transparent);
+    box-shadow: 0 0 0 3px color-mix(in srgb, var(--ring) 20%, transparent);
+  }
+  .nubi-input:disabled { opacity: 0.5; cursor: not-allowed; }
+
+  .nubi-input-sm { @apply nubi-input; font-size: 0.75rem; padding: 0.375rem 0.625rem; border-radius: 0.5rem; }
+  .nubi-input-lg { @apply nubi-input; font-size: 1rem;    padding: 0.75rem 1rem; }
+
+  /* Error state override */
+  .nubi-input-error { border-color: #f87171; }
+  .nubi-input-error:focus {
+    border-color: #f87171;
+    box-shadow: 0 0 0 3px rgba(248, 113, 113, 0.20);
+  }
+
+  /* Field wrapper (label + input + hint/error) */
+  .nubi-field       { display: flex; flex-direction: column; gap: 0.375rem; }
+  .nubi-label       { display: block; font-size: 0.875rem; font-weight: 500; color: var(--text); }
+  .nubi-label-muted { display: block; font-size: 0.75rem;  font-weight: 500; color: var(--text-muted); }
+  .nubi-hint        { font-size: 0.75rem; color: var(--text-muted); }
+  .nubi-field-error { font-size: 0.75rem; color: #dc2626; }
+  .dark .nubi-field-error { color: #f87171; }
+
+  /* Select */
+  .nubi-select {
+    @apply nubi-input;
+    appearance: none;
+    cursor: pointer;
+    padding-right: 2rem;
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%2393a4bd' stroke-width='2.5' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpolyline points='6 9 12 15 18 9'/%3E%3C/svg%3E");
+    background-repeat: no-repeat;
+    background-position: right 10px center;
+  }
+
+  /* Textarea */
+  .nubi-textarea {
+    @apply nubi-input;
+    resize: vertical;
+    min-height: 80px;
+    padding-top: 0.625rem;
+    padding-bottom: 0.625rem;
+  }
+
+  /* ── CARD ────────────────────────────────────────────────────────────────── */
+
+  .nubi-card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 1rem;
+    box-shadow: var(--shadow-sm);
+  }
+  .nubi-card-raised {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 1rem;
+    box-shadow: var(--shadow-md);
+  }
+  .nubi-card-interactive {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 1rem;
+    cursor: pointer;
+    transition: transform 200ms ease, box-shadow 200ms ease;
+    box-shadow: var(--shadow-sm);
+  }
+  .nubi-card-interactive:hover {
+    transform: translateY(-2px);
+    box-shadow: var(--shadow-md);
+  }
+  .nubi-card-body { padding: 1.25rem; }
+  @media (min-width: 640px) { .nubi-card-body { padding: 1.5rem; } }
+  .nubi-card-header {
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+    padding: 1.25rem 1.25rem 1rem;
+    border-bottom: 1px solid var(--border);
+  }
+  @media (min-width: 640px) {
+    .nubi-card-header { padding: 1.5rem 1.5rem 1rem; }
+  }
+  .nubi-card-footer {
+    display: flex;
+    align-items: center;
+    justify-content: flex-end;
+    gap: 0.75rem;
+    padding: 1rem 1.25rem 1.25rem;
+    border-top: 1px solid var(--border);
+  }
+  @media (min-width: 640px) {
+    .nubi-card-footer { padding: 1rem 1.5rem 1.5rem; }
+  }
+
+  /* ── BADGE / CHIP ────────────────────────────────────────────────────────── */
+
+  .nubi-badge {
+    display: inline-flex; align-items: center; gap: 0.25rem;
+    font-weight: 500; border-radius: 9999px;
+    padding: 0.125rem 0.625rem;
+    font-size: 0.75rem; line-height: 1; white-space: nowrap;
+  }
+  .nubi-badge-sm { @apply nubi-badge; font-size: 0.625rem; padding: 0.0625rem 0.5rem; }
+  .nubi-badge-lg { @apply nubi-badge; font-size: 0.875rem; padding: 0.25rem 0.75rem; }
+
+  .nubi-badge-default {
+    @apply nubi-badge;
+    background: var(--surface-2); color: var(--text-muted); border: 1px solid var(--border);
+  }
+  .nubi-badge-primary {
+    @apply nubi-badge;
+    background: color-mix(in srgb, var(--primary) 10%, transparent);
+    color: var(--primary);
+    border: 1px solid color-mix(in srgb, var(--primary) 25%, transparent);
+  }
+  .nubi-badge-success {
+    @apply nubi-badge;
+    background: var(--success-bg); color: var(--success-fg);
+    border: 1px solid color-mix(in srgb, var(--success) 30%, transparent);
+  }
+  .nubi-badge-warning {
+    @apply nubi-badge;
+    background: var(--warning-bg); color: var(--warning-fg);
+    border: 1px solid color-mix(in srgb, var(--warning) 30%, transparent);
+  }
+  .nubi-badge-danger {
+    @apply nubi-badge;
+    background: var(--danger-bg); color: var(--danger-fg);
+    border: 1px solid color-mix(in srgb, var(--danger) 30%, transparent);
+  }
+  .nubi-badge-info {
+    @apply nubi-badge;
+    background: var(--info-bg); color: var(--info-fg);
+    border: 1px solid color-mix(in srgb, var(--info) 30%, transparent);
+  }
+  .nubi-badge-accent {
+    @apply nubi-badge;
+    background: color-mix(in srgb, var(--accent) 10%, transparent);
+    color: var(--accent);
+    border: 1px solid color-mix(in srgb, var(--accent) 25%, transparent);
+  }
+
+  .nubi-badge-dot {
+    width: 0.375rem; height: 0.375rem; border-radius: 9999px;
+    flex-shrink: 0; background: currentColor;
+  }
+
+  /* ── SKELETON ────────────────────────────────────────────────────────────── */
+
+  .nubi-skeleton {
+    border-radius: 0.5rem;
+    background: var(--surface-2);
+    animation: pulse 2s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+  }
+  @keyframes pulse {
+    0%, 100% { opacity: 1; }
+    50%       { opacity: 0.5; }
+  }
+
+  .nubi-skeleton-text   { @apply nubi-skeleton; height: 1rem; }
+  .nubi-skeleton-title  { @apply nubi-skeleton; height: 1.5rem; }
+  .nubi-skeleton-avatar { @apply nubi-skeleton; border-radius: 9999px; }
+
+  /* ── SPINNER ─────────────────────────────────────────────────────────────── */
+
+  .nubi-spinner {
+    @apply rounded-full animate-spin;
+    border: 2.5px solid var(--border);
+    border-top-color: var(--primary);
+  }
+  .nubi-spinner-xs { @apply nubi-spinner w-3.5 h-3.5; }
+  .nubi-spinner-sm { @apply nubi-spinner w-4 h-4; }
+  .nubi-spinner-md { @apply nubi-spinner w-5 h-5; }
+  .nubi-spinner-lg { @apply nubi-spinner w-7 h-7; }
+  .nubi-spinner-xl { @apply nubi-spinner w-10 h-10; }
+
+  /* Accent variant */
+  .nubi-spinner-accent {
+    border-top-color: var(--accent);
+  }
+
+  /* ── TABLE ───────────────────────────────────────────────────────────────── */
+
+  .nubi-table-wrap {
+    width: 100%; overflow-x: auto;
+    border-radius: 0.75rem; border: 1px solid var(--border);
+  }
+  .nubi-table {
+    width: 100%; font-size: 0.875rem; color: var(--text);
+    border-collapse: collapse;
+  }
+  .nubi-table thead tr {
+    border-bottom: 1px solid var(--border);
+    background: var(--surface-2);
+  }
+  .nubi-table th {
+    padding: 0.625rem 1rem;
+    text-align: left; font-size: 0.75rem; font-weight: 600;
+    text-transform: uppercase; letter-spacing: 0.05em;
+    color: var(--text-muted);
+  }
+  .nubi-table th.sortable {
+    cursor: pointer; user-select: none;
+    transition: color 150ms;
+  }
+  .nubi-table th.sortable:hover { color: var(--text); }
+  .nubi-table td {
+    padding: 0.75rem 1rem; vertical-align: top; color: var(--text);
+  }
+  .nubi-table tbody tr {
+    border-bottom: 1px solid var(--border);
+    transition: background 150ms;
+  }
+  .nubi-table tbody tr:last-child { border-bottom: 0; }
+  .nubi-table-zebra tbody tr:nth-child(even) {
+    background: color-mix(in srgb, var(--surface-2) 50%, transparent);
+  }
+  .nubi-table tbody tr:hover {
+    background: color-mix(in srgb, var(--primary) 3.5%, transparent);
+  }
+  .nubi-table-sticky thead { position: sticky; top: 0; z-index: 10; }
+
+  /* ── TABS ────────────────────────────────────────────────────────────────── */
+
+  .nubi-tablist {
+    display: flex; align-items: stretch; gap: 0.125rem;
+    border-bottom: 1px solid var(--border);
+  }
+  .nubi-tab {
+    position: relative;
+    display: inline-flex; align-items: center; gap: 0.375rem;
+    padding: 0.625rem 1rem;
+    font-size: 0.875rem; font-weight: 500; color: var(--text-muted);
+    transition: color 150ms; cursor: pointer; user-select: none;
+    border: none; background: none;
+  }
+  .nubi-tab:hover { color: var(--text); }
+  .nubi-tab:focus-visible { outline: none; box-shadow: inset 0 0 0 2px var(--ring); }
+  .nubi-tab[aria-selected="true"] { color: var(--text); }
+  .nubi-tab[aria-selected="true"]::after {
+    content: ''; position: absolute; bottom: 0; left: 0; right: 0;
+    height: 2px; border-radius: 2px 2px 0 0;
+    background: var(--primary);
+  }
+
+  .nubi-tablist-pills {
+    display: flex; align-items: center; gap: 0.25rem;
+    border-bottom: none; padding: 0;
+  }
+  .nubi-tab-pill {
+    display: inline-flex; align-items: center; gap: 0.375rem;
+    padding: 0.375rem 0.875rem; border-radius: 0.5rem;
+    font-size: 0.875rem; font-weight: 500; color: var(--text-muted);
+    transition: color 150ms, background 150ms; cursor: pointer; user-select: none;
+    border: none; background: none;
+  }
+  .nubi-tab-pill:hover { color: var(--text); background: var(--surface-2); }
+  .nubi-tab-pill:focus-visible { outline: none; box-shadow: 0 0 0 2px var(--bg), 0 0 0 4px var(--ring); }
+  .nubi-tab-pill[aria-selected="true"] {
+    background: var(--surface-2); color: var(--text);
+    box-shadow: var(--shadow-sm);
+  }
+
+  /* ── SEGMENTED CONTROL ───────────────────────────────────────────────────── */
+
+  .nubi-segmented {
+    display: inline-flex; align-items: stretch; gap: 1px;
+    background: var(--surface-2); border: 1px solid var(--border);
+    border-radius: 0.75rem; padding: 0.125rem;
+  }
+  .nubi-segment {
+    position: relative;
+    display: flex; align-items: center; gap: 0.375rem;
+    padding: 0.375rem 0.75rem; border-radius: 0.625rem;
+    font-size: 0.875rem; font-weight: 500; color: var(--text-muted);
+    transition: color 150ms, background 150ms; cursor: pointer; user-select: none;
+    border: none; background: none;
+  }
+  .nubi-segment:hover { color: var(--text); }
+  .nubi-segment:focus-visible { outline: none; box-shadow: 0 0 0 2px var(--bg), 0 0 0 4px var(--ring); }
+  .nubi-segment[aria-selected="true"],
+  .nubi-segment[aria-pressed="true"],
+  .nubi-segment.active {
+    background: var(--surface); color: var(--text);
+    box-shadow: var(--shadow-sm);
+  }
+
+  /* ── DIVIDER ─────────────────────────────────────────────────────────────── */
+
+  .nubi-divider {
+    border: none; border-top: 1px solid var(--border); margin: 1rem 0;
+  }
+  .nubi-divider-label {
+    display: flex; align-items: center; gap: 0.75rem;
+    font-size: 0.75rem; color: var(--text-muted);
+  }
+  .nubi-divider-label::before,
+  .nubi-divider-label::after {
+    content: ''; flex: 1; border-top: 1px solid var(--border);
+  }
+
+  /* ── EMPTY STATE ─────────────────────────────────────────────────────────── */
+
+  .nubi-empty {
+    display: flex; flex-direction: column; align-items: center;
+    justify-content: center; text-align: center;
+    gap: 0.75rem; padding: 4rem 1.5rem;
+  }
+  .nubi-empty-icon {
+    width: 3rem; height: 3rem; border-radius: 1rem;
+    display: flex; align-items: center; justify-content: center;
+    background: var(--surface-2); color: var(--text-muted);
+  }
+  .nubi-empty-title { font-size: 0.875rem; font-weight: 600; color: var(--text); }
+  .nubi-empty-body  { font-size: 0.875rem; color: var(--text-muted); max-width: 20rem; line-height: 1.625; }
+
+  /* ── FOCUS RING ──────────────────────────────────────────────────────────── */
+
+  /* Applied to interactive elements that need an explicit ring not handled by
+     Tailwind's focus-visible ring utilities */
+  .nubi-focus-ring:focus-visible {
+    outline: none;
+    box-shadow: 0 0 0 2px var(--bg), 0 0 0 4px var(--ring);
+  }
+
+  /* ── OVERLAY BACKDROP ────────────────────────────────────────────────────── */
+
+  .nubi-backdrop {
+    position: fixed; inset: 0;
+    background: rgba(0,0,0,0.5);
+    backdrop-filter: blur(2px);
+    z-index: var(--z-overlay);
+  }
+
+  /* ── SURFACE PANEL (used by modals, drawers) ─────────────────────────────── */
+  .nubi-panel {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 1rem;
+    box-shadow: var(--shadow-xl);
+  }
+
+  /* ── TOOLTIP BUBBLE ──────────────────────────────────────────────────────── */
+  .nubi-tooltip-bubble {
+    display: inline-block; max-width: 13.75rem;
+    border-radius: 0.5rem; padding: 0.375rem 0.625rem;
+    font-size: 0.75rem; line-height: 1.35; font-weight: 500;
+    background: var(--text); color: var(--surface);
+    pointer-events: none;
+    box-shadow: 0 4px 12px rgba(0,0,0,0.15);
+    z-index: var(--z-tooltip);
+  }
+
+  /* ── TOAST ────────────────────────────────────────────────────────────────── */
+  .nubi-toast {
+    display: flex; align-items: flex-start; gap: 0.75rem;
+    width: 100%;
+    padding: 0.875rem 1rem;
+    background: var(--surface); border: 1px solid var(--border);
+    border-radius: 1rem;
+    box-shadow: var(--shadow-xl);
+  }
+  .nubi-toast-icon-wrap {
+    flex-shrink: 0; width: 2rem; height: 2rem;
+    border-radius: 0.75rem;
+    display: flex; align-items: center; justify-content: center;
+  }
+  .nubi-toast-success .nubi-toast-icon-wrap {
+    background: var(--success-bg);
+    color: var(--success);
+  }
+  .nubi-toast-warning .nubi-toast-icon-wrap {
+    background: var(--warning-bg);
+    color: var(--warning);
+  }
+  .nubi-toast-error .nubi-toast-icon-wrap {
+    background: var(--danger-bg);
+    color: var(--danger);
+  }
+  .nubi-toast-info .nubi-toast-icon-wrap {
+    background: var(--info-bg);
+    color: var(--info);
+  }
+
+  /* ── AUTH LAYOUT ─────────────────────────────────────────────────────────── */
+
+  /* Social OAuth button (Google, etc.) */
+  .nubi-auth-social-btn {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 0.75rem;
+    width: 100%;
+    min-height: 48px;
+    padding: 0.75rem 1rem;
+    border: 1px solid var(--border);
+    border-radius: 0.875rem;
+    background: var(--surface);
+    color: var(--text);
+    font-size: 0.875rem;
+    font-weight: 500;
+    cursor: pointer;
+    transition: background 120ms, box-shadow 120ms, transform 80ms;
+  }
+  .nubi-auth-social-btn:hover {
+    background: var(--surface-2);
+    box-shadow: var(--shadow-sm);
+  }
+  .nubi-auth-social-btn:active { transform: scale(0.98); }
+  .nubi-auth-social-btn:focus-visible {
+    outline: none;
+    box-shadow: 0 0 0 2px var(--bg), 0 0 0 4px var(--ring);
+  }
+
+  /* Divider "or" separator */
+  .nubi-auth-divider {
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+    margin: 1.25rem 0;
+    font-size: 0.75rem;
+    color: var(--text-muted);
+  }
+  .nubi-auth-divider::before,
+  .nubi-auth-divider::after {
+    content: '';
+    flex: 1;
+    border-top: 1px solid var(--border);
+  }
+
+  /* Error alert banner */
+  .nubi-auth-error {
+    display: flex;
+    align-items: flex-start;
+    gap: 0.625rem;
+    margin-bottom: 1.25rem;
+    padding: 0.75rem 1rem;
+    border-radius: 0.75rem;
+    border: 1px solid color-mix(in srgb, var(--danger) 30%, transparent);
+    background: var(--danger-bg);
+    color: var(--danger-fg);
+    font-size: 0.8125rem;
+    line-height: 1.5;
+  }
+
+  /* Success alert banner */
+  .nubi-auth-success {
+    display: flex;
+    align-items: flex-start;
+    gap: 0.625rem;
+    margin-bottom: 1.25rem;
+    padding: 0.75rem 1rem;
+    border-radius: 0.75rem;
+    border: 1px solid color-mix(in srgb, var(--success) 30%, transparent);
+    background: var(--success-bg);
+    color: var(--success-fg);
+    font-size: 0.8125rem;
+    line-height: 1.5;
+  }
+
+  /* Demo/info checkbox card */
+  .nubi-auth-checkbox-card {
+    display: flex;
+    align-items: flex-start;
+    gap: 0.75rem;
+    padding: 0.875rem 1rem;
+    border-radius: 0.875rem;
+    border: 1px solid var(--border);
+    background: var(--bg);
+    cursor: pointer;
+    transition: background 120ms, border-color 120ms;
+  }
+  .nubi-auth-checkbox-card:hover {
+    background: var(--surface-2);
+    border-color: color-mix(in srgb, var(--primary) 30%, transparent);
+  }
+
+  /* Input wrapper with icon (relative container) */
+  .nubi-input-icon-wrap {
+    position: relative;
+    display: block;
+  }
+  .nubi-input-icon-wrap .nubi-input-icon-left {
+    position: absolute;
+    left: 0.875rem;
+    top: 50%;
+    transform: translateY(-50%);
+    pointer-events: none;
+    color: var(--text-muted);
+  }
+  .nubi-input-icon-wrap .nubi-input-icon-right {
+    position: absolute;
+    right: 0.75rem;
+    top: 50%;
+    transform: translateY(-50%);
+    color: var(--text-muted);
+    cursor: pointer;
+    padding: 0.25rem;
+    border-radius: 0.375rem;
+    transition: color 100ms;
+  }
+  .nubi-input-icon-wrap .nubi-input-icon-right:hover { color: var(--text); }
+  .nubi-input-icon-wrap .nubi-input-icon-right:focus-visible {
+    outline: none;
+    box-shadow: 0 0 0 2px var(--ring);
+  }
+  .nubi-input-icon-wrap .nubi-input { padding-left: 2.5rem; }
+  .nubi-input-icon-wrap .nubi-input-has-right { padding-right: 2.75rem; }
+
+  /* Password strength bar */
+  .nubi-pw-strength {
+    display: flex;
+    gap: 0.25rem;
+    height: 3px;
+    margin-top: 0.375rem;
+  }
+  .nubi-pw-strength-seg {
+    flex: 1;
+    border-radius: 9999px;
+    background: var(--border);
+    transition: background 200ms;
+  }
+  .nubi-pw-strength-seg.filled-1 { background: #ef4444; }
+  .nubi-pw-strength-seg.filled-2 { background: #f97316; }
+  .nubi-pw-strength-seg.filled-3 { background: #eab308; }
+  .nubi-pw-strength-seg.filled-4 { background: #22c55e; }
+
+  /* ── SWITCH / TOGGLE ──────────────────────────────────────────────────────── */
+  .nubi-switch {
+    position: relative;
+    display: inline-flex; height: 1.25rem; width: 2.25rem;
+    flex-shrink: 0; cursor: pointer; border-radius: 9999px;
+    border: 2px solid transparent;
+    transition: background 200ms; background: var(--surface-2);
+  }
+  .nubi-switch:disabled { pointer-events: none; opacity: 0.5; }
+  .nubi-switch:focus-visible { outline: none; box-shadow: 0 0 0 2px var(--bg), 0 0 0 4px var(--ring); }
+  .nubi-switch[aria-checked="true"] { background: var(--primary); }
+  .nubi-switch-thumb {
+    pointer-events: none;
+    display: inline-block; height: 1rem; width: 1rem;
+    border-radius: 9999px; background: #fff;
+    box-shadow: 0 1px 2px rgba(0,0,0,0.2);
+    transition: transform 200ms;
+    transform: translateX(0);
+  }
+  .nubi-switch[aria-checked="true"] .nubi-switch-thumb { transform: translateX(1rem); }
+
+}
+
+/* ── Design-system animations (outside @layer so they're always available) ─────
+   Used by Modal, Toast, Tooltip, Drawer primitives in src/components/ui. */
+
+@keyframes nubi-fade-in       { from { opacity: 0 }                                to { opacity: 1 } }
+@keyframes nubi-fade-out      { from { opacity: 1 }                                to { opacity: 0 } }
+@keyframes nubi-scale-in      { from { opacity: 0; transform: scale(0.95) }        to { opacity: 1; transform: scale(1) } }
+@keyframes nubi-scale-out     { from { opacity: 1; transform: scale(1) }           to { opacity: 0; transform: scale(0.95) } }
+@keyframes nubi-slide-up      { from { opacity: 0; transform: translateY(8px) }    to { opacity: 1; transform: translateY(0) } }
+@keyframes nubi-slide-down    { from { opacity: 0; transform: translateY(-8px) }   to { opacity: 1; transform: translateY(0) } }
+@keyframes nubi-slide-right   { from { opacity: 0; transform: translateX(-8px) }   to { opacity: 1; transform: translateX(0) } }
+@keyframes nubi-toast-in      { from { opacity: 0; transform: translateX(100%) }   to { opacity: 1; transform: translateX(0) } }
+@keyframes nubi-toast-out     { from { opacity: 1; transform: translateX(0); max-height: 120px; margin-bottom: 0.5rem }
+                                 to   { opacity: 0; transform: translateX(100%); max-height: 0; margin-bottom: 0 } }
+
+.nubi-animate-fade-in    { animation: nubi-fade-in    150ms ease forwards; }
+.nubi-animate-scale-in   { animation: nubi-scale-in   160ms cubic-bezier(0.34, 1.2, 0.64, 1) forwards; }
+.nubi-animate-slide-up   { animation: nubi-slide-up   180ms cubic-bezier(0.22, 1, 0.36, 1) forwards; }
+.nubi-animate-toast-in   { animation: nubi-toast-in   280ms cubic-bezier(0.22, 1, 0.36, 1) forwards; }
+.nubi-animate-toast-out  { animation: nubi-toast-out  240ms ease forwards; }
+
+@media (prefers-reduced-motion: reduce) {
+  .nubi-animate-fade-in, .nubi-animate-scale-in,
+  .nubi-animate-slide-up, .nubi-animate-toast-in { animation: none; }
+}
+
+/* ── Navbar (src/components/Navbar.jsx) ────────────────────────────────────────
+   Backdrop blur + smooth mobile drawer. */
+.nubi-navbar {
+  position: sticky;
+  top: 0;
+  z-index: var(--z-sticky);
+  background: color-mix(in srgb, var(--surface) 88%, transparent);
+  border-bottom: 1px solid var(--border);
+  backdrop-filter: blur(14px) saturate(180%);
+  -webkit-backdrop-filter: blur(14px) saturate(180%);
+  transition: background 200ms ease, border-color 200ms ease, box-shadow 200ms ease;
+}
+.nubi-navbar.scrolled {
+  box-shadow: 0 1px 0 var(--border), 0 4px 16px -4px rgba(14,23,41,0.06);
+}
+.dark .nubi-navbar.scrolled {
+  box-shadow: 0 1px 0 var(--border), 0 4px 20px -4px rgba(0,0,0,0.3);
+}
+
+/* ── Footer (src/components/Footer.jsx) ────────────────────────────────────── */
+.nubi-footer-brand-rule {
+  height: 1px;
+  background: linear-gradient(90deg, transparent 0%, #17b3a3 30%, #2456a6 70%, transparent 100%);
+  opacity: 0.5;
 }
 
 /* ── Sidebar scroll area (src/components/app/AppSidebar.jsx) ───────────────────
@@ -248,3 +1016,392 @@
 .prose-chat .my-5, .prose-chat .my-6 { margin: 0.6rem 0; }
 .prose-chat table { font-size: 0.75rem; }
 .prose-chat th, .prose-chat td { padding: 0.4rem 0.6rem; }
+
+/* ── App shell — page-level layout classes ──────────────────────────────────
+   Stripe-grade spacing, consistent page anatomy, reduces utility soup.
+   ─────────────────────────────────────────────────────────────────────────── */
+
+/* Page root — constrains width, owns vertical padding */
+.nubi-page {
+  min-height: 100%;
+  padding: 1.5rem 1rem;
+}
+@media (min-width: 640px)  { .nubi-page { padding: 1.75rem 1.5rem; } }
+@media (min-width: 1024px) { .nubi-page { padding: 2rem 2rem; } }
+
+/* Page header row — title + CTA */
+.nubi-page-header {
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+  margin-bottom: 1.5rem;
+}
+@media (min-width: 640px) {
+  .nubi-page-header {
+    flex-direction: row;
+    align-items: center;
+    justify-content: space-between;
+  }
+}
+
+.nubi-page-title {
+  font-family: 'Space Grotesk', system-ui, sans-serif;
+  font-size: 1.375rem;
+  font-weight: 600;
+  color: var(--text);
+  line-height: 1.2;
+  letter-spacing: -0.01em;
+}
+@media (min-width: 640px) { .nubi-page-title { font-size: 1.5rem; } }
+
+.nubi-page-subtitle {
+  font-size: 0.8125rem;
+  color: var(--text-muted);
+  margin-top: 0.1875rem;
+  line-height: 1.4;
+}
+
+/* Toolbar row — search + sort + view toggle */
+.nubi-toolbar {
+  display: flex;
+  flex-direction: column;
+  gap: 0.625rem;
+  margin-bottom: 1.25rem;
+}
+@media (min-width: 640px) {
+  .nubi-toolbar {
+    flex-direction: row;
+    align-items: center;
+  }
+}
+
+/* Search input wrapper with icon */
+.nubi-search-wrap {
+  position: relative;
+  flex: 1;
+}
+.nubi-search-icon {
+  position: absolute;
+  left: 0.75rem;
+  top: 50%;
+  transform: translateY(-50%);
+  pointer-events: none;
+  color: var(--text-muted);
+}
+.nubi-search-input {
+  display: block;
+  width: 100%;
+  height: 2.375rem;
+  padding: 0 2.25rem 0 2.25rem;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 0.75rem;
+  font-size: 0.875rem;
+  color: var(--text);
+  transition: border-color 100ms, box-shadow 100ms;
+}
+.nubi-search-input::placeholder { color: var(--text-muted); }
+.nubi-search-input:focus {
+  outline: none;
+  border-color: color-mix(in srgb, var(--ring) 60%, transparent);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--ring) 18%, transparent);
+}
+.nubi-search-clear {
+  position: absolute;
+  right: 0.625rem;
+  top: 50%;
+  transform: translateY(-50%);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.5rem;
+  height: 1.5rem;
+  border-radius: 0.375rem;
+  color: var(--text-muted);
+  background: transparent;
+  transition: color 100ms, background 100ms;
+  cursor: pointer;
+  border: none;
+}
+.nubi-search-clear:hover { color: var(--text); background: var(--surface-2); }
+
+/* Sort / filter pill button */
+.nubi-sort-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.375rem;
+  height: 2.375rem;
+  padding: 0 0.875rem;
+  border-radius: 0.75rem;
+  border: 1px solid var(--border);
+  background: var(--surface);
+  font-size: 0.8125rem;
+  font-weight: 500;
+  color: var(--text);
+  cursor: pointer;
+  transition: background 100ms, border-color 100ms;
+  white-space: nowrap;
+  user-select: none;
+}
+.nubi-sort-btn:hover { background: var(--surface-2); }
+.nubi-sort-btn:focus-visible { outline: none; box-shadow: 0 0 0 2px var(--bg), 0 0 0 4px var(--ring); }
+
+/* Sort dropdown menu */
+.nubi-sort-menu {
+  position: absolute;
+  right: 0;
+  top: calc(100% + 0.375rem);
+  z-index: var(--z-dropdown);
+  min-width: 9rem;
+  padding: 0.25rem;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 0.875rem;
+  box-shadow: var(--shadow-lg);
+}
+.nubi-sort-option {
+  display: flex;
+  align-items: center;
+  width: 100%;
+  padding: 0.5rem 0.75rem;
+  border-radius: 0.625rem;
+  font-size: 0.8125rem;
+  color: var(--text);
+  background: transparent;
+  border: none;
+  cursor: pointer;
+  text-align: left;
+  transition: background 100ms;
+}
+.nubi-sort-option:hover  { background: var(--surface-2); }
+.nubi-sort-option.active { color: var(--primary); font-weight: 600; }
+
+/* View toggle (grid/list) */
+.nubi-view-toggle {
+  display: flex;
+  height: 2.375rem;
+  border: 1px solid var(--border);
+  border-radius: 0.75rem;
+  overflow: hidden;
+  flex-shrink: 0;
+}
+.nubi-view-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 2.375rem;
+  border: none;
+  cursor: pointer;
+  transition: background 100ms, color 100ms;
+}
+.nubi-view-btn + .nubi-view-btn { border-left: 1px solid var(--border); }
+.nubi-view-btn.active { background: var(--primary); color: var(--primary-fg); }
+.nubi-view-btn:not(.active) { background: var(--surface); color: var(--text-muted); }
+.nubi-view-btn:not(.active):hover { background: var(--surface-2); color: var(--text); }
+.nubi-view-btn:focus-visible { outline: none; box-shadow: inset 0 0 0 2px var(--ring); }
+
+/* Card grid */
+.nubi-card-grid {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 0.875rem;
+}
+@media (min-width: 640px)  { .nubi-card-grid { grid-template-columns: repeat(2, 1fr); } }
+@media (min-width: 1024px) { .nubi-card-grid { grid-template-columns: repeat(3, 1fr); } }
+
+/* Resource card — thumbnail + body */
+.nubi-resource-card {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 0.875rem;
+  overflow: hidden;
+  transition: border-color 160ms ease, box-shadow 160ms ease, transform 160ms ease;
+}
+.nubi-resource-card:hover {
+  border-color: color-mix(in srgb, var(--primary) 40%, transparent);
+  box-shadow: var(--shadow-md);
+  transform: translateY(-1px);
+}
+.nubi-resource-card-body {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  padding: 0.875rem 1rem 1rem;
+  gap: 0.75rem;
+}
+
+/* List container */
+.nubi-list-wrap {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 0.875rem;
+  overflow: hidden;
+}
+.nubi-list-header {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  padding: 0.5rem 1rem;
+  border-bottom: 1px solid var(--border);
+  background: color-mix(in srgb, var(--surface-2) 50%, transparent);
+}
+.nubi-list-header-label {
+  font-size: 0.6875rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.07em;
+  color: var(--text-muted);
+}
+.nubi-list-row {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  padding: 0.625rem 1rem;
+  border-bottom: 1px solid var(--border);
+  transition: background 100ms;
+}
+.nubi-list-row:last-child { border-bottom: 0; }
+.nubi-list-row:hover { background: color-mix(in srgb, var(--surface-2) 60%, transparent); }
+.nubi-list-row.selected { background: color-mix(in srgb, var(--primary) 5%, transparent); }
+
+/* Notice banner (success/info) */
+.nubi-notice {
+  display: flex;
+  align-items: center;
+  gap: 0.625rem;
+  padding: 0.625rem 1rem;
+  border-radius: 0.75rem;
+  font-size: 0.8125rem;
+  margin-bottom: 1rem;
+}
+.nubi-notice-success {
+  background: var(--success-bg);
+  border: 1px solid color-mix(in srgb, var(--success) 30%, transparent);
+  color: var(--success-fg);
+}
+.nubi-notice-error {
+  background: var(--danger-bg);
+  border: 1px solid color-mix(in srgb, var(--danger) 30%, transparent);
+  color: var(--danger-fg);
+}
+
+/* Selection action bar */
+.nubi-selection-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.625rem;
+  padding: 0.5rem 1rem;
+  margin-bottom: 0.875rem;
+  border-radius: 0.875rem;
+  background: color-mix(in srgb, var(--primary) 5%, transparent);
+  border: 1px solid color-mix(in srgb, var(--primary) 25%, transparent);
+  font-size: 0.8125rem;
+}
+
+/* Error state box */
+.nubi-error-state {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+  padding: 4rem 1.5rem;
+  gap: 1rem;
+}
+.nubi-error-icon {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 3rem;
+  height: 3rem;
+  border-radius: 1rem;
+  background: var(--danger-bg);
+  color: var(--danger);
+  flex-shrink: 0;
+}
+
+/* Skeleton shimmer — richer shimmer than the plain pulse */
+@keyframes nubi-shimmer {
+  0%   { background-position: -600px 0; }
+  100% { background-position:  600px 0; }
+}
+.nubi-shimmer {
+  background: linear-gradient(
+    90deg,
+    var(--surface-2) 25%,
+    var(--surface-3) 50%,
+    var(--surface-2) 75%
+  );
+  background-size: 1200px 100%;
+  animation: nubi-shimmer 1.6s ease-in-out infinite;
+  border-radius: 0.5rem;
+}
+@media (prefers-reduced-motion: reduce) { .nubi-shimmer { animation: none; } }
+
+/* Topbar action button — used by AppTopbar rail items */
+.nubi-topbar-action {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 2.125rem;
+  height: 2.125rem;
+  border-radius: 0.5rem;
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--text-muted);
+  cursor: pointer;
+  transition: color 100ms, background 100ms, border-color 100ms, box-shadow 100ms;
+}
+.nubi-topbar-action:hover {
+  color: var(--text);
+  background: var(--surface-2);
+  border-color: color-mix(in srgb, var(--border) 80%, var(--primary));
+}
+.nubi-topbar-action.active {
+  background: var(--primary);
+  color: var(--primary-fg);
+  border-color: var(--primary);
+  box-shadow: 0 1px 4px color-mix(in srgb, var(--primary) 30%, transparent);
+}
+.nubi-topbar-action:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 2px var(--bg), 0 0 0 4px var(--ring);
+}
+
+/* Dropdown menu shared chrome */
+.nubi-dropdown {
+  position: absolute;
+  z-index: var(--z-dropdown);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 0.875rem;
+  box-shadow: var(--shadow-lg);
+  padding: 0.25rem;
+  min-width: 10rem;
+}
+.nubi-dropdown-item {
+  display: flex;
+  align-items: center;
+  gap: 0.625rem;
+  width: 100%;
+  padding: 0.5rem 0.75rem;
+  border-radius: 0.625rem;
+  font-size: 0.8125rem;
+  color: var(--text);
+  background: transparent;
+  border: none;
+  cursor: pointer;
+  text-align: left;
+  text-decoration: none;
+  transition: background 100ms;
+  min-height: 2.25rem;
+}
+.nubi-dropdown-item:hover { background: var(--surface-2); }
+.nubi-dropdown-item.danger { color: var(--danger); }
+.nubi-dropdown-item.danger:hover { background: var(--danger-bg); }
+.nubi-dropdown-divider { height: 1px; background: var(--border); margin: 0.25rem 0; }
