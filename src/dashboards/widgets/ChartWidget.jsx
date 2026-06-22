@@ -43,6 +43,8 @@ import EChart from '../../viz/EChart.jsx'
 import { useResolvedParams, useSetVariable } from '../VariableStore.jsx'
 import { useCrossFilter } from '../CrossFilterContext.jsx'
 import { useRefreshEpoch } from '../RefreshContext.jsx'
+import Skeleton from '../../components/ui/Skeleton.jsx'
+import EmptyState from '../../components/ui/EmptyState.jsx'
 
 /**
  * @param {{ widget: object, providerTable?: import('apache-arrow').Table | null }} props
@@ -196,8 +198,18 @@ export default function ChartWidget({ widget, providerTable = null }) {
 
   if (loading) {
     return (
-      <div className="flex items-center justify-center h-full text-sm text-muted">
-        <span className="animate-pulse">Loading chart…</span>
+      <div className="flex flex-col h-full p-3 gap-2" aria-busy="true" aria-label="Loading chart">
+        {/* Mimic a bar-chart skeleton: axis area + bars */}
+        <div className="flex-1 min-h-0 flex items-end gap-1.5 px-2 pb-2">
+          {[55, 80, 40, 90, 65, 75, 50, 85].map((h, i) => (
+            <Skeleton
+              key={i}
+              className="flex-1 rounded-sm"
+              style={{ height: `${h}%` }}
+            />
+          ))}
+        </div>
+        <Skeleton className="h-2.5 w-32 mx-auto rounded" />
       </div>
     )
   }
@@ -205,8 +217,16 @@ export default function ChartWidget({ widget, providerTable = null }) {
   return (
     <div className="flex flex-col h-full overflow-hidden">
       {error && (
-        <div className="px-3 py-1.5 text-xs border-b shrink-0"
-          style={{ background: 'color-mix(in srgb, #f59e0b 8%, transparent)', color: '#d97706', borderColor: 'color-mix(in srgb, #f59e0b 20%, transparent)' }}>
+        <div
+          className="px-3 py-1.5 text-xs border-b shrink-0 flex items-center gap-1.5"
+          style={{
+            background: 'color-mix(in srgb, #f59e0b 8%, transparent)',
+            color: '#d97706',
+            borderColor: 'color-mix(in srgb, #f59e0b 20%, transparent)',
+          }}
+          role="status"
+        >
+          <span aria-hidden="true">&#9888;</span>
           {error}
         </div>
       )}
@@ -214,9 +234,11 @@ export default function ChartWidget({ widget, providerTable = null }) {
         {option
           ? <EChart option={option} height={height} onEvents={onEvents} />
           : (
-            <div className="flex items-center justify-center h-full text-sm text-gray-400" style={{ height }}>
-              No data — select columns to render the chart.
-            </div>
+            <EmptyState
+              title="No data"
+              description="Select columns to render the chart."
+              compact
+            />
           )
         }
       </div>

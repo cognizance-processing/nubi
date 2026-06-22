@@ -53,7 +53,7 @@ const SURFACE_TABS = [
 function SurfaceSwitch({ activeSurface, onChange }) {
   return (
     <div
-      className="flex items-center gap-0.5 px-2 h-9 border-b border-border bg-surface shrink-0 z-10"
+      className="flex items-center gap-0.5 px-2 h-9 border-b border-border bg-surface-2/30 shrink-0 z-10"
       data-testid="surface-switch"
       role="tablist"
       aria-label="Editor surface"
@@ -68,8 +68,9 @@ function SurfaceSwitch({ activeSurface, onChange }) {
             data-testid={`surface-tab-${tab.id}`}
             onClick={() => onChange(tab.id)}
             className={[
-              'flex items-center gap-1.5 h-7 px-3 rounded-lg text-xs font-medium transition-colors',
-              'focus:outline-none focus:ring-2 focus:ring-ring/60',
+              'flex items-center gap-1.5 h-7 px-3 rounded-lg text-xs font-medium',
+              'transition-all duration-150',
+              'focus:outline-none focus-visible:ring-2 focus-visible:ring-ring/60',
               active
                 ? 'bg-primary text-primary-fg shadow-sm'
                 : 'text-muted hover:text-fg hover:bg-surface-2',

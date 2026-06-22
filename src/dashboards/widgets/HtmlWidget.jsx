@@ -58,8 +58,12 @@ export default function HtmlWidget({ widget }) {
 
   if (error) {
     return (
-      <div className="px-3 py-1.5 text-xs h-full overflow-auto"
-        style={{ color: '#d97706' }}>
+      <div
+        className="px-3 py-1.5 text-xs h-full overflow-auto flex items-start gap-1.5"
+        style={{ color: 'var(--warning)' }}
+        role="status"
+      >
+        <span aria-hidden="true" className="shrink-0 mt-0.5">&#9888;</span>
         {error}
       </div>
     )

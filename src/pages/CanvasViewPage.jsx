@@ -19,6 +19,7 @@ import { get } from '../lib/api.js'
 import CanvasRenderer from '../dashboards/CanvasRenderer.jsx'
 import { extractVarsFromURL, applyVarToSearchParams } from '../dashboards/urlSync.js'
 import { useCanWrite } from '../contexts/OrgContext.jsx'
+import Skeleton from '../components/ui/Skeleton.jsx'
 
 // ---------------------------------------------------------------------------
 // Sample canvas fallback (shown when no backend / canvas not found)
@@ -165,9 +166,14 @@ export default function CanvasViewPage() {
 
   if (loading) {
     return (
-      <div className="max-w-5xl mx-auto px-4 sm:px-6 lg:px-8 py-12">
-        <div className="flex items-center justify-center py-24 text-sm text-muted animate-pulse">
-          Loading canvas…
+      <div className="max-w-[110rem] mx-auto px-4 sm:px-6 lg:px-8 py-8" aria-busy="true" aria-label="Loading canvas">
+        <Skeleton className="h-8 w-64 rounded-lg mb-6" />
+        <div className="space-y-4">
+          <Skeleton className="h-32 w-full rounded-xl" />
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+            <Skeleton className="h-40 rounded-xl" />
+            <Skeleton className="h-40 rounded-xl" />
+          </div>
         </div>
       </div>
     )
@@ -179,15 +185,16 @@ export default function CanvasViewPage() {
       {/* Fallback / error notice */}
       {error && (
         <div
-          className="mb-4 px-4 py-3 rounded-lg text-sm flex items-start gap-2 border"
+          className="mb-4 px-4 py-3 rounded-xl text-sm flex items-start gap-2 border"
           data-testid="canvas-view-error"
           style={{
-            background: 'color-mix(in srgb, #f59e0b 8%, transparent)',
-            color: '#d97706',
-            borderColor: 'color-mix(in srgb, #f59e0b 25%, transparent)',
+            background: 'var(--warning-bg)',
+            color: 'var(--warning)',
+            borderColor: 'color-mix(in srgb, var(--warning) 25%, transparent)',
           }}
+          role="status"
         >
-          <span className="shrink-0 mt-0.5" aria-hidden="true">&#9888;</span>
+          <span className="shrink-0 mt-0.5 text-base leading-none" aria-hidden="true">&#9888;</span>
           <span>{error}</span>
         </div>
       )}
@@ -206,7 +213,7 @@ export default function CanvasViewPage() {
 
       {/* Canvas title */}
       {doc?.title && (
-        <h1 className="text-2xl font-bold font-display text-fg mb-4">{doc.title}</h1>
+        <h1 className="text-2xl font-bold font-display text-fg mb-4 leading-tight">{doc.title}</h1>
       )}
 
       {/* Canvas content */}

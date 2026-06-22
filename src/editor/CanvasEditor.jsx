@@ -66,6 +66,8 @@ import {
   QueryPicker,
   ParamBindingSection,
 } from './shared/index.js'
+import Spinner from '../components/ui/Spinner.jsx'
+import { toast } from '../components/ui/Toast.jsx'
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -133,11 +135,13 @@ function TopBtn({ onClick, disabled, title, children, active = false }) {
       disabled={disabled}
       title={title}
       className={[
-        'inline-flex items-center gap-1.5 h-8 px-3 text-xs font-medium rounded-lg border transition-all focus:outline-none focus:ring-2 focus:ring-ring/50',
+        'inline-flex items-center gap-1.5 h-8 px-3 text-xs font-medium rounded-lg border',
+        'transition-all duration-150 focus:outline-none focus-visible:ring-2 focus-visible:ring-ring/60',
+        'whitespace-nowrap shrink-0',
         active
-          ? 'bg-primary text-primary-fg border-primary'
-          : 'bg-surface text-fg border-border hover:bg-surface-2 hover:border-border/80',
-        disabled ? 'opacity-40 cursor-not-allowed' : '',
+          ? 'bg-primary text-primary-fg border-primary shadow-sm'
+          : 'bg-surface text-muted border-border hover:bg-surface-2 hover:text-fg hover:border-border/80',
+        disabled ? 'opacity-40 cursor-not-allowed pointer-events-none' : '',
       ].join(' ')}
     >
       {children}
@@ -155,51 +159,84 @@ function VariableManager({ variables, onChange, onClose }) {
   const remove = (i) => onChange(variables.filter((_, idx) => idx !== i))
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40" onClick={onClose}>
-      <div className="bg-surface rounded-xl border border-border shadow-2xl w-full max-w-lg mx-4 p-5"
-        onClick={e => e.stopPropagation()}>
-        <div className="flex items-center justify-between mb-4">
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-[2px]"
+      onClick={onClose}
+    >
+      <div
+        className="bg-surface rounded-2xl border border-border shadow-2xl w-full max-w-lg mx-4 overflow-hidden"
+        onClick={e => e.stopPropagation()}
+      >
+        {/* Header */}
+        <div className="flex items-center justify-between px-5 py-4 border-b border-border bg-surface-2/20">
           <h2 className="text-sm font-semibold text-fg flex items-center gap-2">
             <Variable size={15} className="text-primary" />
             Variable Manager
           </h2>
-          <button onClick={onClose} className="text-muted hover:text-fg transition-colors">
-            <X size={16} />
+          <button
+            onClick={onClose}
+            className="w-7 h-7 flex items-center justify-center rounded-lg text-muted hover:text-fg hover:bg-surface-2 transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-ring/60"
+            aria-label="Close"
+          >
+            <X size={15} />
           </button>
         </div>
 
-        <div className="space-y-2 max-h-80 overflow-y-auto mb-3">
+        {/* Body */}
+        <div className="p-5 space-y-2 max-h-80 overflow-y-auto">
           {variables.length === 0 && (
-            <p className="text-xs text-muted/70 text-center py-4 border border-dashed border-border rounded-lg">
+            <div className="text-xs text-muted/70 text-center py-6 border border-dashed border-border/80 rounded-xl bg-surface-2/20">
               No variables defined.
-            </p>
+            </div>
           )}
           {variables.map((v, i) => (
-            <div key={i} className="flex items-center gap-2 rounded-lg border border-border bg-surface-2 px-2 py-1.5">
-              <input type="text" placeholder="name" className={`${inputCls} flex-1`}
-                value={v.name} onChange={e => update(i, { name: e.target.value })} />
-              <select className={`${selectCls} w-28`} value={v.type ?? 'text'}
-                onChange={e => update(i, { type: e.target.value })}>
+            <div key={i} className="flex items-center gap-2 rounded-xl border border-border bg-surface-2/30 px-2.5 py-2">
+              <input
+                type="text"
+                placeholder="name"
+                className={`${inputCls} flex-1 font-mono text-xs`}
+                value={v.name}
+                onChange={e => update(i, { name: e.target.value })}
+              />
+              <select
+                className={`${selectCls} w-28`}
+                value={v.type ?? 'text'}
+                onChange={e => update(i, { type: e.target.value })}
+              >
                 {['text', 'number', 'date', 'daterange', 'select', 'multiselect'].map(t => (
                   <option key={t} value={t}>{t}</option>
                 ))}
               </select>
-              <input type="text" placeholder="default" className={`${inputCls} w-28`}
-                value={v.default ?? ''} onChange={e => update(i, { default: e.target.value })} />
-              <button onClick={() => remove(i)} className="text-muted hover:text-red-500 transition-colors shrink-0">
+              <input
+                type="text"
+                placeholder="default"
+                className={`${inputCls} w-28`}
+                value={v.default ?? ''}
+                onChange={e => update(i, { default: e.target.value })}
+              />
+              <button
+                onClick={() => remove(i)}
+                className="w-7 h-7 flex items-center justify-center rounded-lg text-muted hover:text-red-500 hover:bg-red-50 dark:hover:bg-red-950/30 transition-colors shrink-0"
+                aria-label="Remove variable"
+              >
                 <Trash2 size={13} />
               </button>
             </div>
           ))}
         </div>
 
-        <div className="flex items-center justify-between">
-          <button onClick={add}
-            className="inline-flex items-center gap-1.5 text-xs font-medium px-3 h-7 rounded-lg border border-dashed border-border text-muted hover:border-primary hover:text-primary transition-colors">
+        {/* Footer */}
+        <div className="flex items-center justify-between px-5 py-4 border-t border-border bg-surface-2/10">
+          <button
+            onClick={add}
+            className="inline-flex items-center gap-1.5 text-xs font-medium px-3 h-8 rounded-lg border border-dashed border-border text-muted hover:border-primary hover:text-primary transition-all duration-150 focus:outline-none focus-visible:ring-2 focus-visible:ring-ring/60"
+          >
             <Plus size={12} /> Add variable
           </button>
-          <button onClick={onClose}
-            className="inline-flex items-center gap-1.5 text-xs font-medium px-3 h-7 rounded-lg bg-primary text-primary-fg hover:opacity-90 transition-opacity">
+          <button
+            onClick={onClose}
+            className="inline-flex items-center gap-1.5 text-xs font-medium px-4 h-8 rounded-lg bg-primary text-primary-fg hover:opacity-90 transition-opacity active:scale-[0.97] focus:outline-none focus-visible:ring-2 focus-visible:ring-ring/60"
+          >
             Done
           </button>
         </div>
@@ -255,42 +292,63 @@ function CanvasAskAIPanel({ doc, onApply, onClose }) {
   }
 
   return (
-    <div className="absolute right-0 top-full mt-2 z-50 w-96 rounded-xl border border-border bg-surface shadow-2xl"
-      onClick={e => e.stopPropagation()}>
-      <div className="flex items-center justify-between px-4 pt-4 pb-3 border-b border-border">
+    <div
+      className="absolute right-0 top-full mt-2 z-50 w-96 rounded-2xl border border-border bg-surface shadow-2xl"
+      onClick={e => e.stopPropagation()}
+    >
+      <div className="flex items-center justify-between px-4 pt-4 pb-3 border-b border-border bg-surface-2/20 rounded-t-2xl">
         <h3 className="text-sm font-semibold text-fg flex items-center gap-1.5">
           <Sparkles size={14} className="text-primary" />
           Ask AI
         </h3>
-        <button onClick={onClose} className="text-muted hover:text-fg transition-colors">
-          <X size={14} />
+        <button
+          onClick={onClose}
+          className="w-7 h-7 flex items-center justify-center rounded-lg text-muted hover:text-fg hover:bg-surface-2 transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-ring/60"
+          aria-label="Close"
+        >
+          <X size={13} />
         </button>
       </div>
       <div className="p-4 space-y-3">
         <textarea
           rows={3}
-          placeholder="Describe what you want to add or change..."
-          className="w-full text-sm border border-border rounded-lg px-3 py-2 resize-none focus:outline-none focus:ring-2 focus:ring-ring bg-surface text-fg placeholder:text-muted"
+          placeholder="Describe what you want to add or change…"
+          className={[
+            'w-full text-sm border border-border rounded-xl px-3 py-2.5 resize-none',
+            'focus:outline-none focus-visible:ring-2 focus-visible:ring-ring/60',
+            'bg-surface text-fg placeholder:text-muted/60',
+            'transition-all duration-150',
+          ].join(' ')}
           value={prompt}
           onChange={e => setPrompt(e.target.value)}
           onKeyDown={e => { if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') handleGenerate() }}
           disabled={loading}
         />
-        <button onClick={handleGenerate} disabled={loading || !prompt.trim()}
-          className="w-full flex items-center justify-center gap-2 px-4 py-2 text-sm font-medium bg-primary text-primary-fg rounded-lg hover:opacity-90 disabled:opacity-50 disabled:cursor-not-allowed transition-opacity">
-          {loading ? <><Loader2 size={14} className="animate-spin" /> Generating...</> : <><Sparkles size={14} /> Generate</>}
+        <button
+          onClick={handleGenerate}
+          disabled={loading || !prompt.trim()}
+          className="w-full flex items-center justify-center gap-2 px-4 py-2.5 text-sm font-medium bg-primary text-primary-fg rounded-xl hover:opacity-90 disabled:opacity-50 disabled:cursor-not-allowed transition-all active:scale-[0.97] focus:outline-none focus-visible:ring-2 focus-visible:ring-ring/60"
+        >
+          {loading
+            ? <><Loader2 size={14} className="animate-spin" /> Generating…</>
+            : <><Sparkles size={14} /> Generate</>
+          }
         </button>
         {error && (
-          <div className="text-xs rounded-lg px-3 py-2 border"
-            style={{ background: 'color-mix(in srgb,#ef4444 8%,transparent)', color: '#ef4444', borderColor: 'color-mix(in srgb,#ef4444 25%,transparent)' }}>
+          <div
+            className="text-xs rounded-xl px-3 py-2 border"
+            style={{ background: 'color-mix(in srgb,#ef4444 8%,transparent)', color: '#ef4444', borderColor: 'color-mix(in srgb,#ef4444 25%,transparent)' }}
+          >
             {error}
           </div>
         )}
         {result && (
-          <div className="space-y-2 bg-surface-2 rounded-lg border border-border p-3">
-            <p className="text-xs text-muted">AI result ready</p>
-            <button onClick={handleApply}
-              className="w-full px-3 py-1.5 text-xs font-medium bg-primary text-primary-fg rounded-lg hover:opacity-90 transition-opacity">
+          <div className="space-y-2 bg-surface-2/50 rounded-xl border border-border p-3">
+            <p className="text-[11px] text-muted/70 font-medium uppercase tracking-wider">AI result ready</p>
+            <button
+              onClick={handleApply}
+              className="w-full px-3 py-2 text-xs font-medium bg-primary text-primary-fg rounded-lg hover:opacity-90 transition-opacity active:scale-[0.97] focus:outline-none focus-visible:ring-2 focus-visible:ring-ring/60"
+            >
               Apply changes
             </button>
           </div>
@@ -325,31 +383,60 @@ function ScheduleDialog({ canvasId, onClose }) {
   }
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40" onClick={onClose}>
-      <div className="bg-surface rounded-xl border border-border shadow-2xl w-full max-w-sm mx-4 p-5"
-        onClick={e => e.stopPropagation()}>
-        <div className="flex items-center justify-between mb-4">
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-[2px]"
+      onClick={onClose}
+    >
+      <div
+        className="bg-surface rounded-2xl border border-border shadow-2xl w-full max-w-sm mx-4 overflow-hidden"
+        onClick={e => e.stopPropagation()}
+      >
+        <div className="flex items-center justify-between px-5 py-4 border-b border-border bg-surface-2/20">
           <h2 className="text-sm font-semibold text-fg flex items-center gap-2">
             <Calendar size={15} className="text-primary" /> Schedule
           </h2>
-          <button onClick={onClose} className="text-muted hover:text-fg"><X size={16} /></button>
+          <button
+            onClick={onClose}
+            className="w-7 h-7 flex items-center justify-center rounded-lg text-muted hover:text-fg hover:bg-surface-2 transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-ring/60"
+          >
+            <X size={15} />
+          </button>
         </div>
-        <div className="space-y-3">
+        <div className="p-5 space-y-3">
           <div>
             <FieldLabel>Cron expression</FieldLabel>
-            <input type="text" className={inputCls} value={cron} onChange={e => setCron(e.target.value)}
-              placeholder="0 9 * * 1 (Mon 9am)" />
-            <p className="text-[10px] text-muted/70 mt-1">Standard 5-field cron (UTC).</p>
+            <input
+              type="text"
+              className={inputCls}
+              value={cron}
+              onChange={e => setCron(e.target.value)}
+              placeholder="0 9 * * 1 (Mon 9am)"
+            />
+            <p className="text-[10px] text-muted/70 mt-1 leading-relaxed">Standard 5-field cron (UTC).</p>
           </div>
-          {error && <p className="text-xs text-red-500">{error}</p>}
-          <div className="flex gap-2">
-            <button onClick={onClose}
-              className="flex-1 px-3 py-1.5 text-xs font-medium bg-surface text-fg border border-border rounded-lg hover:bg-surface-2">
+          {error && (
+            <p className="text-xs text-red-500 rounded-lg px-3 py-2 bg-red-50 dark:bg-red-950/30 border border-red-200 dark:border-red-800/50">
+              {error}
+            </p>
+          )}
+          <div className="flex gap-2 pt-1">
+            <button
+              onClick={onClose}
+              className="flex-1 px-3 py-2 text-xs font-medium bg-surface text-muted border border-border rounded-xl hover:bg-surface-2 hover:text-fg transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-ring/60"
+            >
               Cancel
             </button>
-            <button onClick={handleSave} disabled={saving || saved}
-              className="flex-1 px-3 py-1.5 text-xs font-medium bg-primary text-primary-fg rounded-lg hover:opacity-90 disabled:opacity-50 flex items-center justify-center gap-1.5">
-              {saved ? <><Check size={13} /> Saved</> : saving ? <><Loader2 size={13} className="animate-spin" /> Saving...</> : 'Save schedule'}
+            <button
+              onClick={handleSave}
+              disabled={saving || saved}
+              className="flex-1 px-3 py-2 text-xs font-medium bg-primary text-primary-fg rounded-xl hover:opacity-90 disabled:opacity-50 flex items-center justify-center gap-1.5 transition-all active:scale-[0.97] focus:outline-none focus-visible:ring-2 focus-visible:ring-ring/60"
+            >
+              {saved
+                ? <><Check size={13} /> Saved</>
+                : saving
+                ? <><Loader2 size={13} className="animate-spin" /> Saving…</>
+                : 'Save schedule'
+              }
             </button>
           </div>
         </div>
@@ -408,12 +495,20 @@ function BindingInspector({ elId, binding, onChange, variables }) {
       {/* Binding-kind switch */}
       <div>
         <SectionLabel>Binding kind</SectionLabel>
-        <div className="grid grid-cols-4 gap-1 mt-1">
+        <div className="flex rounded-xl border border-border bg-surface-2/50 p-0.5 mt-1.5 gap-0.5">
           {BINDING_KINDS.map(k => (
-            <button key={k} onClick={() => setKind(k)} data-testid={`binding-kind-${k}`}
-              className={`h-7 text-[11px] font-medium rounded-lg border capitalize transition-all focus:outline-none focus:ring-2 focus:ring-ring/50 ${
-                kind === k ? 'bg-primary text-primary-fg border-primary' : 'bg-surface text-muted border-border hover:border-primary hover:text-primary'
-              }`}>
+            <button
+              key={k}
+              onClick={() => setKind(k)}
+              data-testid={`binding-kind-${k}`}
+              className={[
+                'flex-1 h-7 text-[11px] font-medium rounded-lg capitalize transition-all duration-150',
+                'focus:outline-none focus-visible:ring-2 focus-visible:ring-ring/60',
+                kind === k
+                  ? 'bg-surface text-fg shadow-sm border border-border/60'
+                  : 'text-muted hover:text-fg',
+              ].join(' ')}
+            >
               {k}
             </button>
           ))}
@@ -526,12 +621,24 @@ function InsertPalette({ onInsert }) {
   return (
     <div>
       <SectionLabel>Insert element</SectionLabel>
-      <div className="grid grid-cols-3 gap-1.5 mt-1.5">
+      <div className="grid grid-cols-3 gap-1.5 mt-2">
         {PALETTE_ITEMS.map(({ type, label, icon: Icon }) => (
-          <button key={type} onClick={() => onInsert(type)}
+          <button
+            key={type}
+            onClick={() => onInsert(type)}
             data-testid={`insert-palette-${type}`}
-            className="flex flex-col items-center justify-center gap-1 h-14 px-1 text-[11px] font-medium rounded-lg border border-border bg-surface text-muted hover:border-primary hover:text-primary transition-all focus:outline-none focus:ring-2 focus:ring-ring/50">
-            <Icon size={16} />
+            className={[
+              'flex flex-col items-center justify-center gap-1.5 h-14 px-1',
+              'text-[11px] font-medium rounded-xl border border-border bg-surface',
+              'text-muted hover:border-primary/60 hover:text-primary hover:bg-surface-2/60',
+              'transition-all duration-150 group',
+              'focus:outline-none focus-visible:ring-2 focus-visible:ring-ring/60',
+              'active:scale-[0.96]',
+            ].join(' ')}
+          >
+            <span className="w-7 h-7 rounded-lg bg-surface-2 flex items-center justify-center group-hover:bg-primary/10 transition-colors duration-150">
+              <Icon size={14} />
+            </span>
             {label}
           </button>
         ))}
@@ -637,9 +744,11 @@ export default function CanvasEditor() {
       await put(`/canvases/${id}`, { doc })
       dirty.current = false
       setSaveStatus('saved')
+      toast.success('Canvas saved')
       setTimeout(() => setSaveStatus(null), 2000)
     } catch {
       setSaveStatus('error')
+      toast.error('Save failed')
       setTimeout(() => setSaveStatus(null), 3000)
     } finally {
       setSaving(false)
@@ -791,9 +900,9 @@ export default function CanvasEditor() {
 
   if (loading) {
     return (
-      <div className="flex items-center justify-center min-h-screen bg-bg text-muted text-sm">
-        <Loader2 size={20} className="animate-spin mr-2" />
-        Loading canvas…
+      <div className="flex flex-col items-center justify-center min-h-screen bg-bg gap-3">
+        <Spinner size="lg" label="Loading canvas" />
+        <p className="text-sm text-muted">Loading canvas…</p>
       </div>
     )
   }
@@ -803,20 +912,30 @@ export default function CanvasEditor() {
   return (
     <div className="flex flex-col h-screen bg-bg overflow-hidden" data-testid="canvas-editor">
       {/* ── TOP BAR ───────────────────────────────────────────────────────── */}
-      <div className="h-12 shrink-0 flex items-center gap-2 px-3 border-b border-border bg-surface z-20">
+      <div className="h-12 shrink-0 flex items-center gap-1.5 px-3 border-b border-border bg-surface z-20">
         {/* Back */}
-        <button onClick={() => navigate('/canvases')}
-          className="text-muted hover:text-fg transition-colors p-1 rounded"
-          title="Back to canvases">
-          <ChevronRight size={16} className="rotate-180" />
+        <button
+          onClick={() => navigate('/canvases')}
+          className="w-8 h-8 flex items-center justify-center rounded-lg text-muted hover:text-fg hover:bg-surface-2 transition-all duration-150 focus:outline-none focus-visible:ring-2 focus-visible:ring-ring/60"
+          title="Back to canvases"
+          aria-label="Back to canvases"
+        >
+          <ChevronRight size={15} className="rotate-180" />
         </button>
+
+        <div className="w-px h-4 bg-border/60 shrink-0" />
 
         {/* Title */}
         <input
           type="text"
           value={doc.title ?? ''}
           onChange={e => handleTitleChange(e.target.value)}
-          className="h-8 text-sm font-medium bg-transparent border-0 text-fg focus:outline-none focus:ring-1 focus:ring-ring rounded px-1 min-w-0 max-w-xs"
+          className={[
+            'h-8 text-sm font-semibold bg-transparent border border-transparent rounded-lg px-2',
+            'text-fg focus:outline-none focus-visible:ring-2 focus-visible:ring-ring/60 focus-visible:border-border focus-visible:bg-surface',
+            'min-w-0 max-w-[180px] sm:max-w-xs transition-all duration-150',
+            'placeholder:text-muted/50',
+          ].join(' ')}
           placeholder="Canvas title…"
           aria-label="Canvas title"
         />
@@ -824,26 +943,40 @@ export default function CanvasEditor() {
         <div className="flex-1" />
 
         {/* Undo / redo */}
-        <TopBtn onClick={handleUndo} disabled={!undoAvailable} title="Undo (Ctrl+Z)">
-          <Undo2 size={13} />
-        </TopBtn>
-        <TopBtn onClick={handleRedo} disabled={!redoAvailable} title="Redo (Ctrl+Y)">
-          <Redo2 size={13} />
-        </TopBtn>
+        <div className="flex items-center gap-0.5">
+          <button
+            onClick={handleUndo}
+            disabled={!undoAvailable}
+            title="Undo (Ctrl+Z)"
+            aria-label="Undo"
+            className="w-8 h-8 flex items-center justify-center rounded-lg border border-transparent text-muted hover:border-border hover:bg-surface-2 hover:text-fg disabled:opacity-30 disabled:cursor-not-allowed transition-all duration-150 focus:outline-none focus-visible:ring-2 focus-visible:ring-ring/60"
+          >
+            <Undo2 size={13} />
+          </button>
+          <button
+            onClick={handleRedo}
+            disabled={!redoAvailable}
+            title="Redo (Ctrl+Y)"
+            aria-label="Redo"
+            className="w-8 h-8 flex items-center justify-center rounded-lg border border-transparent text-muted hover:border-border hover:bg-surface-2 hover:text-fg disabled:opacity-30 disabled:cursor-not-allowed transition-all duration-150 focus:outline-none focus-visible:ring-2 focus-visible:ring-ring/60"
+          >
+            <Redo2 size={13} />
+          </button>
+        </div>
 
-        <div className="w-px h-5 bg-border" />
+        <div className="w-px h-4 bg-border/60 shrink-0" />
 
         {/* Variables */}
         <TopBtn onClick={() => setShowVariables(true)} title="Manage variables">
           <Variable size={13} />
-          Variables
+          <span className="hidden sm:inline">Variables</span>
         </TopBtn>
 
         {/* Ask AI */}
         <div className="relative">
           <TopBtn onClick={() => setShowAI(o => !o)} title="Ask AI to edit canvas" active={showAI}>
             <Sparkles size={13} />
-            Ask AI
+            <span className="hidden sm:inline">Ask AI</span>
           </TopBtn>
           {showAI && (
             <CanvasAskAIPanel
@@ -857,19 +990,23 @@ export default function CanvasEditor() {
         {/* Schedule */}
         <TopBtn onClick={() => setShowSchedule(true)} title="Schedule canvas refresh">
           <Calendar size={13} />
-          Schedule
+          <span className="hidden md:inline">Schedule</span>
         </TopBtn>
 
         {/* Share */}
-        <TopBtn onClick={() => {
-          const url = `${window.location.origin}/c/${id}`
-          navigator.clipboard?.writeText(url).catch(() => {})
-        }} title="Copy share link">
+        <TopBtn
+          onClick={() => {
+            const url = `${window.location.origin}/c/${id}`
+            navigator.clipboard?.writeText(url).catch(() => {})
+            toast.success('Share link copied')
+          }}
+          title="Copy share link"
+        >
           <Share2 size={13} />
-          Share
+          <span className="hidden md:inline">Share</span>
         </TopBtn>
 
-        <div className="w-px h-5 bg-border" />
+        <div className="w-px h-4 bg-border/60 shrink-0" />
 
         {/* Save */}
         <button
@@ -877,18 +1014,25 @@ export default function CanvasEditor() {
           disabled={saving}
           title="Save (Ctrl+S)"
           className={[
-            'inline-flex items-center gap-1.5 h-8 px-3 text-xs font-medium rounded-lg border transition-all focus:outline-none focus:ring-2 focus:ring-ring/50',
-            saveStatus === 'saved' ? 'bg-green-500 text-white border-green-500' :
-            saveStatus === 'error' ? 'bg-red-500 text-white border-red-500' :
-            'bg-primary text-primary-fg border-primary hover:opacity-90',
+            'inline-flex items-center gap-1.5 h-8 px-3 text-xs font-medium rounded-lg border',
+            'transition-all duration-150 focus:outline-none focus-visible:ring-2 focus-visible:ring-ring/60',
+            'whitespace-nowrap active:scale-[0.97]',
+            saveStatus === 'saved'
+              ? 'bg-emerald-500 text-white border-emerald-500'
+              : saveStatus === 'error'
+              ? 'bg-red-500 text-white border-red-500'
+              : 'bg-primary text-primary-fg border-primary hover:opacity-90',
             saving ? 'opacity-70 cursor-not-allowed' : '',
           ].join(' ')}
         >
-          {saving ? <Loader2 size={13} className="animate-spin" /> :
-           saveStatus === 'saved' ? <Check size={13} /> :
-           saveStatus === 'error' ? <AlertCircle size={13} /> :
-           <Save size={13} />}
-          {saving ? 'Saving…' : saveStatus === 'saved' ? 'Saved' : saveStatus === 'error' ? 'Error' : 'Save'}
+          {saving
+            ? <><Loader2 size={13} className="animate-spin" /> Saving…</>
+            : saveStatus === 'saved'
+            ? <><Check size={13} /> Saved</>
+            : saveStatus === 'error'
+            ? <><AlertCircle size={13} /> Error</>
+            : <><Save size={13} /> Save</>
+          }
         </button>
       </div>
 
@@ -902,20 +1046,28 @@ export default function CanvasEditor() {
               { id: 'code', label: 'HTML', icon: Code2 },
               { id: 'preview', label: 'Preview', icon: Eye },
             ].map(({ id: tid, label, icon: Icon }) => (
-              <button key={tid} onClick={() => setActiveTab(tid)}
+              <button
+                key={tid}
+                onClick={() => setActiveTab(tid)}
+                role="tab"
+                aria-selected={activeTab === tid}
                 className={[
-                  'inline-flex items-center gap-1.5 h-9 px-4 text-xs font-medium border-b-2 transition-colors',
+                  'inline-flex items-center gap-1.5 h-9 px-4 text-xs font-medium border-b-2',
+                  'transition-all duration-150',
+                  'focus:outline-none focus-visible:ring-inset focus-visible:ring-2 focus-visible:ring-ring/60',
                   activeTab === tid
-                    ? 'border-primary text-primary bg-surface'
+                    ? 'border-primary text-primary bg-primary/5'
                     : 'border-transparent text-muted hover:text-fg hover:bg-surface-2',
-                ].join(' ')}>
+                ].join(' ')}
+              >
                 <Icon size={13} />
                 {label}
               </button>
             ))}
             {loadError && (
-              <span className="ml-auto mr-3 text-xs text-yellow-600 flex items-center gap-1">
-                <AlertCircle size={12} /> {loadError}
+              <span className="ml-auto mr-3 text-xs flex items-center gap-1 px-2 py-0.5 rounded-md"
+                style={{ color: '#d97706', background: 'color-mix(in srgb, #f59e0b 8%, transparent)' }}>
+                <AlertCircle size={11} /> {loadError}
               </span>
             )}
           </div>
@@ -974,11 +1126,12 @@ export default function CanvasEditor() {
 
         {/* ── RIGHT INSPECTOR ────────────────────────────────────────────── */}
         <div
-          className="w-72 shrink-0 border-l border-border bg-surface flex flex-col overflow-y-auto"
+          className="w-72 shrink-0 border-l border-border bg-surface flex flex-col overflow-hidden"
           data-testid="canvas-inspector"
         >
-          <div className="px-3 pt-3 pb-2 border-b border-border shrink-0">
-            <p className="text-[11px] font-semibold text-muted uppercase tracking-wider flex items-center gap-1.5">
+          {/* Inspector header */}
+          <div className="px-3 h-10 border-b border-border shrink-0 flex items-center bg-surface-2/30">
+            <p className="text-[11px] font-semibold text-muted/80 uppercase tracking-wider flex items-center gap-1.5">
               <Settings2 size={12} />
               Inspector
             </p>
@@ -995,9 +1148,13 @@ export default function CanvasEditor() {
                 variables={doc.variables ?? []}
               />
             ) : (
-              <div className="rounded-lg border border-dashed border-border bg-surface-2/30 px-3 py-4 text-center">
-                <p className="text-xs text-muted/70">
-                  Click an element in the Preview to inspect it, or select one below.
+              <div className="rounded-xl border border-dashed border-border/80 bg-surface-2/20 px-3 py-5 text-center space-y-1.5">
+                <div className="w-8 h-8 rounded-lg bg-surface-2 flex items-center justify-center mx-auto">
+                  <Settings2 size={15} className="text-muted/40" />
+                </div>
+                <p className="text-xs font-medium text-fg/70">No element selected</p>
+                <p className="text-[11px] text-muted/60 leading-relaxed">
+                  Click an element in Preview to inspect it.
                 </p>
               </div>
             )}
@@ -1006,17 +1163,24 @@ export default function CanvasEditor() {
             {knownElIds.length > 0 && (
               <div>
                 <SectionLabel>Elements in HTML</SectionLabel>
-                <div className="mt-1 space-y-0.5 max-h-32 overflow-y-auto">
+                <div className="mt-1.5 space-y-0.5 max-h-36 overflow-y-auto rounded-lg border border-border bg-bg p-1">
                   {knownElIds.map(eid => (
-                    <button key={eid} onClick={() => { setSelectedElId(eid); setActiveTab('preview') }}
-                      className={`w-full text-left px-2 py-1 text-xs rounded-lg font-mono transition-colors ${
+                    <button
+                      key={eid}
+                      onClick={() => { setSelectedElId(eid); setActiveTab('preview') }}
+                      className={[
+                        'w-full text-left px-2 py-1 text-xs rounded-md font-mono transition-all duration-150',
+                        'focus:outline-none focus-visible:ring-2 focus-visible:ring-ring/60',
                         selectedElId === eid
                           ? 'bg-primary/10 text-primary'
-                          : 'text-muted hover:text-fg hover:bg-surface-2'
-                      }`}>
+                          : 'text-muted hover:text-fg hover:bg-surface-2',
+                      ].join(' ')}
+                    >
                       {eid}
                       {doc.bindings?.[eid] && (
-                        <span className="ml-1 text-[10px] text-primary/70">({doc.bindings[eid].kind})</span>
+                        <span className="ml-1.5 text-[9px] font-semibold text-primary/70 uppercase tracking-wide">
+                          {doc.bindings[eid].kind}
+                        </span>
                       )}
                     </button>
                   ))}

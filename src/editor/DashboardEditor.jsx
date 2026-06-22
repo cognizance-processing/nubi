@@ -46,8 +46,11 @@ import {
   BarChartHorizontal, Table2, Hash, Filter as FilterIcon, Type, Heading,
   Monitor, Tablet, Smartphone, ChevronDown, Settings, LayoutGrid, MessageSquare,
   ZoomIn, ZoomOut, Maximize2, Menu, ChevronUp, Sigma, FileCode2, LayoutDashboard,
-  Undo2, Redo2, Eye, Pencil, Save, Loader2,
+  Undo2, Redo2, Eye, Pencil, Save, Loader2, CheckCircle2,
 } from 'lucide-react'
+import Button from '../components/ui/Button.jsx'
+import Spinner from '../components/ui/Spinner.jsx'
+import { toast } from '../components/ui/Toast.jsx'
 
 // Device viewport presets for the editor's responsive preview/edit switcher.
 const DEVICES = [
@@ -884,12 +887,17 @@ function DashboardPanel({ spec, onSpecChange }) {
 function ConfigPanel({ widget, onChange, onRemove, extraQueryIds, spec, activeBreakpoint = 'lg', onLayoutCommit, onMoveToTab }) {
   if (!widget) {
     return (
-      <div className="flex flex-col items-center justify-center h-full text-sm text-muted py-8 px-4 text-center">
-        <svg className="w-8 h-8 text-muted/40 mb-3" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2" />
-        </svg>
-        <p className="text-xs">Select a widget to configure it.</p>
-        <p className="text-xs text-muted/60 mt-1">Background, grid &amp; variables live in the <span className="text-fg font-medium">Dashboard</span> tab.</p>
+      <div className="flex flex-col items-center justify-center h-full text-sm text-muted py-10 px-5 text-center gap-3">
+        <div className="w-10 h-10 rounded-xl bg-surface-2 flex items-center justify-center">
+          <Settings2 size={18} className="text-muted/50" />
+        </div>
+        <div>
+          <p className="text-sm font-medium text-fg/80">Nothing selected</p>
+          <p className="text-xs text-muted/70 mt-1 leading-relaxed">Click a widget on the canvas to configure it.</p>
+        </div>
+        <p className="text-[11px] text-muted/50 leading-relaxed">
+          Background, grid &amp; variables live in the <span className="text-fg/70 font-medium">Dashboard</span> tab.
+        </p>
       </div>
     )
   }
@@ -898,15 +906,24 @@ function ConfigPanel({ widget, onChange, onRemove, extraQueryIds, spec, activeBr
   const setQueryId = qid => onChange({ ...widget, query_id: qid })
 
   return (
-    <div className="p-4 space-y-4 overflow-y-auto h-full">
-      <div className="flex items-center justify-between gap-2">
+    <div className="p-3 space-y-4 overflow-y-auto h-full">
+      {/* Widget header */}
+      <div className="flex items-center justify-between gap-2 pb-1 border-b border-border/60">
         <h3 className="flex items-center gap-2 text-sm font-semibold text-fg capitalize">
-          {(() => { const I = WIDGET_ICONS[widget.type]; return I ? <I size={15} className="text-primary" /> : null })()}
+          {(() => { const I = WIDGET_ICONS[widget.type]; return I ? <I size={14} className="text-primary" /> : null })()}
           {widget.type} widget
         </h3>
-        <button onClick={onRemove} title="Remove widget"
-          className="flex items-center gap-1 text-xs px-2 h-7 rounded-lg border border-transparent text-muted hover:text-red-500 hover:border-red-300 hover:bg-red-50 transition-colors">
-          <Trash2 size={13} /> Remove
+        <button
+          onClick={onRemove}
+          title="Remove widget"
+          className={[
+            'flex items-center gap-1 text-xs px-2 h-7 rounded-lg border border-transparent',
+            'text-muted hover:text-red-500 hover:border-red-200 hover:bg-red-50/80',
+            'transition-all duration-150 focus:outline-none focus-visible:ring-2 focus-visible:ring-red-400/60',
+            'dark:hover:bg-red-950/40',
+          ].join(' ')}
+        >
+          <Trash2 size={12} /> Remove
         </button>
       </div>
 
@@ -987,24 +1004,39 @@ const PALETTE_ITEMS = [
 function AddPanel({ onAdd }) {
   return (
     <div className="p-3 space-y-3 overflow-y-auto h-full">
-      <p className="text-xs text-muted/80 leading-relaxed">
-        Pick a widget to drop onto the canvas. You'll jump straight to its settings.
+      <p className="text-xs text-muted/70 leading-relaxed px-0.5">
+        Pick a widget type to add it to the canvas.
       </p>
-      <div className="space-y-2">
+      <div className="space-y-1.5">
         {PALETTE_ITEMS.map(item => {
           const Icon = item.icon
           return (
-          <button key={item.type} onClick={() => onAdd(item.type)} data-testid={`palette-add-${item.type}`}
-            className="w-full flex items-center gap-3 px-3 py-2.5 rounded-xl border border-border bg-surface hover:bg-surface-2 hover:border-primary text-fg transition-all group text-left focus:outline-none focus:ring-2 focus:ring-ring/60">
-            <span className="w-8 h-8 shrink-0 flex items-center justify-center rounded-lg bg-surface-2 text-muted group-hover:text-primary group-hover:bg-primary/10 transition-colors"><Icon size={16} /></span>
-            <div className="min-w-0">
-              <p className="text-sm font-medium text-fg group-hover:text-primary transition-colors">{item.label}</p>
-              <p className="text-[11px] text-muted truncate">{item.desc}</p>
-            </div>
-            <svg className="w-3.5 h-3.5 ml-auto shrink-0 text-muted/40 group-hover:text-primary transition-colors" viewBox="0 0 14 14" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round">
-              <path d="M7 3v8M3 7h8" />
-            </svg>
-          </button>
+            <button
+              key={item.type}
+              onClick={() => onAdd(item.type)}
+              data-testid={`palette-add-${item.type}`}
+              className={[
+                'w-full flex items-center gap-3 px-3 py-2.5 rounded-xl border border-border',
+                'bg-surface hover:bg-surface-2/70 hover:border-primary/60 text-fg',
+                'transition-all duration-150 group text-left',
+                'focus:outline-none focus-visible:ring-2 focus-visible:ring-ring/60',
+                'active:scale-[0.98]',
+              ].join(' ')}
+            >
+              <span className="w-8 h-8 shrink-0 flex items-center justify-center rounded-lg bg-surface-2 text-muted group-hover:text-primary group-hover:bg-primary/10 transition-all duration-150 shadow-sm">
+                <Icon size={15} />
+              </span>
+              <div className="min-w-0 flex-1">
+                <p className="text-sm font-medium text-fg group-hover:text-primary transition-colors duration-150 leading-tight">{item.label}</p>
+                <p className="text-[11px] text-muted/80 truncate mt-0.5">{item.desc}</p>
+              </div>
+              <svg
+                className="w-3.5 h-3.5 ml-auto shrink-0 text-muted/30 group-hover:text-primary/60 transition-all duration-150 translate-x-0 group-hover:translate-x-0.5"
+                viewBox="0 0 14 14" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round"
+              >
+                <path d="M7 3v8M3 7h8" />
+              </svg>
+            </button>
           )
         })}
       </div>
@@ -2173,9 +2205,12 @@ export default function DashboardEditor({ boardId = null, onSaved, onSpecChange,
         setSavedBoardId(board.id)
       }
       savedSpecRef.current = spec  // mark clean
+      toast.success('Dashboard saved')
       onSaved?.(board)
     } catch (err) {
-      setSaveError(err.message ?? 'Save failed.')
+      const msg = err.message ?? 'Save failed.'
+      setSaveError(msg)
+      toast.error(msg)
     } finally {
       setSaving(false)
     }
@@ -2235,8 +2270,9 @@ export default function DashboardEditor({ boardId = null, onSaved, onSpecChange,
   // ── Loading state ─────────────────────────────────────────────────────────
   if (loading) {
     return (
-      <div className="flex items-center justify-center flex-1 min-h-0 text-sm text-muted animate-pulse bg-bg">
-        Loading board…
+      <div className="flex flex-col items-center justify-center flex-1 min-h-0 gap-3 bg-bg">
+        <Spinner size="lg" label="Loading board" />
+        <p className="text-sm text-muted">Loading board…</p>
       </div>
     )
   }
@@ -2256,24 +2292,45 @@ export default function DashboardEditor({ boardId = null, onSaved, onSpecChange,
   }
 
   // Zoom controls (out / fit / in) + Reset — moved out of the floating canvas bar
-  // into the app top bar. `compact` renders the same controls inside the mobile
-  // slide-out menu. Pinch / ctrl+wheel zoom still works via the canvas effect.
-  const zoomControls = (compact = false) => (
-    <div className={`flex items-center gap-0.5 ${compact ? '' : ''}`} data-testid="zoom-control">
-      <button onClick={() => setZoomMode(z => Math.max(MIN_ZOOM, (z === 'fit' ? fitZoom : z) - 0.1))}
+  // into the app top bar. Also rendered in the mobile slide-out menu via the same
+  // function. Pinch / ctrl+wheel zoom still works via the canvas effect.
+  const zoomControls = () => (
+    <div className="flex items-center gap-0.5" data-testid="zoom-control">
+      <button
+        onClick={() => setZoomMode(z => Math.max(MIN_ZOOM, (z === 'fit' ? fitZoom : z) - 0.1))}
         title="Zoom out" aria-label="Zoom out"
-        className="w-8 h-8 flex items-center justify-center rounded-lg border border-border bg-surface text-muted hover:text-fg transition-colors"><ZoomOut size={14} /></button>
-      <button onClick={() => setZoomMode('fit')}
+        className="w-8 h-8 flex items-center justify-center rounded-lg border border-border bg-surface text-muted hover:text-fg hover:bg-surface-2 transition-all duration-150 focus:outline-none focus-visible:ring-2 focus-visible:ring-ring/60"
+      >
+        <ZoomOut size={14} />
+      </button>
+      <button
+        onClick={() => setZoomMode('fit')}
         title="Fit to screen"
-        className={`text-[11px] font-medium px-2 h-8 rounded-lg border transition-colors whitespace-nowrap ${
-          zoomMode === 'fit' ? 'bg-primary text-primary-fg border-primary' : 'bg-surface text-muted border-border hover:text-fg'
-        }`}>{zoomMode === 'fit' ? `Fit · ${Math.round(effectiveZoom * 100)}%` : `${Math.round(effectiveZoom * 100)}%`}</button>
-      <button onClick={() => setZoomMode(z => Math.min(MAX_ZOOM, (z === 'fit' ? fitZoom : z) + 0.1))}
+        className={[
+          'text-[11px] font-medium px-2 h-8 rounded-lg border transition-all duration-150 whitespace-nowrap',
+          'focus:outline-none focus-visible:ring-2 focus-visible:ring-ring/60',
+          zoomMode === 'fit'
+            ? 'bg-primary text-primary-fg border-primary'
+            : 'bg-surface text-muted border-border hover:text-fg hover:bg-surface-2',
+        ].join(' ')}
+      >
+        {zoomMode === 'fit' ? `Fit · ${Math.round(effectiveZoom * 100)}%` : `${Math.round(effectiveZoom * 100)}%`}
+      </button>
+      <button
+        onClick={() => setZoomMode(z => Math.min(MAX_ZOOM, (z === 'fit' ? fitZoom : z) + 0.1))}
         title="Zoom in" aria-label="Zoom in"
-        className="w-8 h-8 flex items-center justify-center rounded-lg border border-border bg-surface text-muted hover:text-fg transition-colors"><ZoomIn size={14} /></button>
-      <button onClick={resetView} title="Reset view (fit zoom + default widths)" aria-label="Reset view"
+        className="w-8 h-8 flex items-center justify-center rounded-lg border border-border bg-surface text-muted hover:text-fg hover:bg-surface-2 transition-all duration-150 focus:outline-none focus-visible:ring-2 focus-visible:ring-ring/60"
+      >
+        <ZoomIn size={14} />
+      </button>
+      <button
+        onClick={resetView}
+        title="Reset view (fit zoom + default widths)" aria-label="Reset view"
         data-testid="reset-view"
-        className="w-8 h-8 flex items-center justify-center rounded-lg border border-border bg-surface text-muted hover:text-fg transition-colors"><Maximize2 size={13} /></button>
+        className="w-8 h-8 flex items-center justify-center rounded-lg border border-border bg-surface text-muted hover:text-fg hover:bg-surface-2 transition-all duration-150 focus:outline-none focus-visible:ring-2 focus-visible:ring-ring/60"
+      >
+        <Maximize2 size={13} />
+      </button>
     </div>
   )
 
@@ -2349,7 +2406,7 @@ export default function DashboardEditor({ boardId = null, onSaved, onSpecChange,
       <input
         type="text"
         data-testid="editor-title"
-        className="min-w-[80px] max-w-[180px] sm:max-w-[260px] flex-shrink h-8 text-sm font-semibold border border-border rounded-lg px-2.5 bg-surface text-fg placeholder:text-muted/60 focus:outline-none focus:ring-2 focus:ring-ring/60 focus:border-transparent transition-colors font-display"
+        className="min-w-[80px] max-w-[180px] sm:max-w-[260px] flex-shrink h-8 text-sm font-semibold border border-transparent rounded-lg px-2.5 bg-transparent text-fg placeholder:text-muted/50 focus:outline-none focus:ring-2 focus:ring-ring/60 focus:border-border focus:bg-surface transition-all duration-150"
         value={spec.title}
         onChange={e => setSpec(prev => ({ ...prev, title: e.target.value }))}
         placeholder="Dashboard title…"
@@ -2363,21 +2420,38 @@ export default function DashboardEditor({ boardId = null, onSaved, onSpecChange,
       )}
 
       <div className="flex items-center gap-1 ml-auto shrink-0">
+        {/* Dirty pill — subtle amber indicator */}
         {dirty && !saving && (
-          <span className="hidden sm:inline text-[11px] px-2 h-7 leading-7 rounded-lg border whitespace-nowrap"
-            style={{ background: 'color-mix(in srgb, #f59e0b 8%, transparent)', color: '#d97706', borderColor: 'color-mix(in srgb, #f59e0b 20%, transparent)' }}
-            title="You have unsaved changes">
+          <span
+            className="hidden sm:inline-flex items-center gap-1 text-[11px] px-2 h-6 rounded-md border whitespace-nowrap"
+            style={{ background: 'color-mix(in srgb, #f59e0b 8%, transparent)', color: '#b45309', borderColor: 'color-mix(in srgb, #f59e0b 25%, transparent)' }}
+            title="You have unsaved changes"
+          >
+            <span className="w-1.5 h-1.5 rounded-full bg-amber-400" />
             Unsaved
           </span>
         )}
-        {saveError && <span className="hidden lg:inline text-xs whitespace-nowrap" style={{ color: '#ef4444' }}>{saveError}</span>}
 
         {!preview && (
-          <div className="flex items-center gap-1">
-            <button onClick={handleUndo} disabled={!canUndo(hist)} title="Undo (⌘Z / Ctrl+Z)" aria-label="Undo"
-              className="w-8 h-8 flex items-center justify-center rounded-lg border border-border bg-surface text-fg hover:bg-surface-2 disabled:opacity-40 disabled:cursor-not-allowed transition-all"><Undo2 size={14} /></button>
-            <button onClick={handleRedo} disabled={!canRedo(hist)} title="Redo (⇧⌘Z / Ctrl+Y)" aria-label="Redo"
-              className="w-8 h-8 flex items-center justify-center rounded-lg border border-border bg-surface text-fg hover:bg-surface-2 disabled:opacity-40 disabled:cursor-not-allowed transition-all"><Redo2 size={14} /></button>
+          <div className="flex items-center gap-0.5">
+            <button
+              onClick={handleUndo}
+              disabled={!canUndo(hist)}
+              title="Undo (⌘Z / Ctrl+Z)"
+              aria-label="Undo"
+              className="w-8 h-8 flex items-center justify-center rounded-lg border border-transparent text-muted hover:border-border hover:bg-surface-2 hover:text-fg disabled:opacity-30 disabled:cursor-not-allowed transition-all duration-150 focus:outline-none focus-visible:ring-2 focus-visible:ring-ring/60"
+            >
+              <Undo2 size={14} />
+            </button>
+            <button
+              onClick={handleRedo}
+              disabled={!canRedo(hist)}
+              title="Redo (⇧⌘Z / Ctrl+Y)"
+              aria-label="Redo"
+              className="w-8 h-8 flex items-center justify-center rounded-lg border border-transparent text-muted hover:border-border hover:bg-surface-2 hover:text-fg disabled:opacity-30 disabled:cursor-not-allowed transition-all duration-150 focus:outline-none focus-visible:ring-2 focus-visible:ring-ring/60"
+            >
+              <Redo2 size={14} />
+            </button>
           </div>
         )}
 
@@ -2394,19 +2468,24 @@ export default function DashboardEditor({ boardId = null, onSaved, onSpecChange,
         </div>
 
         {/* Hamburger (<md): opens the slide-out with the whole toolbar cluster. */}
-        <button onClick={() => setMobileMenu(true)} title="Menu" aria-label="Open editor menu"
+        <button
+          onClick={() => setMobileMenu(true)}
+          title="Menu"
+          aria-label="Open editor menu"
           data-testid="editor-hamburger"
-          className="md:hidden flex items-center justify-center w-9 h-8 rounded-lg border border-border bg-surface text-muted hover:text-fg hover:bg-surface-2 transition-colors focus:outline-none focus:ring-2 focus:ring-ring/60">
+          className="md:hidden flex items-center justify-center w-9 h-8 rounded-lg border border-border bg-surface text-muted hover:text-fg hover:bg-surface-2 transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-ring/60"
+        >
           <Menu size={16} />
         </button>
 
-        {/* View switcher — Canvas / Code (VS Code-style files view) — mirrors
-            the flows view switcher. Code view replaces the canvas with the
-            dashboard.json editor. Preview keeps its own toggle (below). */}
-        <div className="flex h-8 rounded-lg border border-border overflow-hidden shrink-0" data-testid="dashboard-view-switcher">
+        {/* View switcher — Canvas / Code */}
+        <div
+          className="flex h-8 rounded-lg border border-border bg-surface overflow-hidden shrink-0"
+          data-testid="dashboard-view-switcher"
+        >
           {[
             { id: 'canvas', Icon: LayoutDashboard, title: 'Canvas / grid view' },
-            { id: 'code', Icon: FileCode2, title: 'Code / Files view (dashboard.json)' },
+            { id: 'code', Icon: FileCode2, title: 'Code view (dashboard.json)' },
           ].map((v, i) => {
             const active = v.id === 'code' ? codeView : (!codeView && !preview)
             return (
@@ -2417,9 +2496,12 @@ export default function DashboardEditor({ boardId = null, onSaved, onSpecChange,
                 aria-label={v.title}
                 aria-pressed={active}
                 className={[
-                  'flex items-center justify-center w-8 transition-colors',
+                  'flex items-center justify-center w-8 transition-all duration-150',
+                  'focus:outline-none focus-visible:ring-inset focus-visible:ring-2 focus-visible:ring-ring/60',
                   i > 0 ? 'border-l border-border' : '',
-                  active ? 'bg-primary text-primary-fg' : 'bg-surface text-muted hover:text-fg hover:bg-surface-2',
+                  active
+                    ? 'bg-primary text-primary-fg'
+                    : 'text-muted hover:text-fg hover:bg-surface-2',
                 ].join(' ')}
               >
                 <v.Icon size={14} />
@@ -2429,13 +2511,19 @@ export default function DashboardEditor({ boardId = null, onSaved, onSpecChange,
         </div>
 
         {!codeView && (
-          <button onClick={() => setPreview(p => !p)}
+          <button
+            onClick={() => setPreview(p => !p)}
             title={preview ? 'Back to editing' : 'Preview dashboard'}
             aria-label={preview ? 'Back to editing' : 'Preview dashboard'}
             aria-pressed={preview}
-            className={`w-8 h-8 flex items-center justify-center rounded-lg border transition-all focus:outline-none ${
-              preview ? 'bg-primary text-primary-fg border-primary hover:opacity-90' : 'bg-surface text-fg border-border hover:bg-surface-2'
-            }`}>
+            className={[
+              'w-8 h-8 flex items-center justify-center rounded-lg border transition-all duration-150',
+              'focus:outline-none focus-visible:ring-2 focus-visible:ring-ring/60',
+              preview
+                ? 'bg-primary text-primary-fg border-primary hover:opacity-90'
+                : 'bg-surface text-muted border-border hover:text-fg hover:bg-surface-2',
+            ].join(' ')}
+          >
             {preview ? <Pencil size={14} /> : <Eye size={14} />}
           </button>
         )}
@@ -2444,11 +2532,23 @@ export default function DashboardEditor({ boardId = null, onSaved, onSpecChange,
           <ExportShareMenu board={savedBoardId} spec={spec} />
         </div>
 
-        <button onClick={handleSave} disabled={saving} data-testid="editor-save-btn"
-          title={savedBoardId ? 'Save dashboard' : 'Create dashboard'}
-          className="px-3 h-8 inline-flex items-center gap-1.5 text-xs font-medium bg-primary text-primary-fg rounded-lg hover:opacity-90 disabled:opacity-60 transition-opacity focus:outline-none whitespace-nowrap">
-          {saving ? <Loader2 size={13} className="animate-spin" /> : <Save size={13} />}
-          {saving ? 'Saving…' : savedBoardId ? 'Save' : 'Create'}
+        <button
+          onClick={handleSave}
+          disabled={saving}
+          data-testid="editor-save-btn"
+          title={savedBoardId ? 'Save dashboard (⌘S)' : 'Create dashboard'}
+          className={[
+            'px-3 h-8 inline-flex items-center gap-1.5 text-xs font-medium rounded-lg transition-all duration-150',
+            'focus:outline-none focus-visible:ring-2 focus-visible:ring-ring/60 whitespace-nowrap',
+            saving
+              ? 'bg-primary/70 text-primary-fg cursor-not-allowed'
+              : 'bg-primary text-primary-fg hover:opacity-90 active:scale-[0.97]',
+          ].join(' ')}
+        >
+          {saving
+            ? <><Loader2 size={13} className="animate-spin" /> Saving…</>
+            : <><Save size={13} /> {savedBoardId ? 'Save' : 'Create'}</>
+          }
         </button>
       </div>
     </div>
@@ -2612,23 +2712,42 @@ export default function DashboardEditor({ boardId = null, onSaved, onSpecChange,
             </div>
 
             {tabWidgets.length === 0 ? (
-              <div className="flex flex-col items-center justify-center py-16 sm:py-24 text-center bg-surface/60 border-2 border-dashed border-border rounded-2xl mx-2 h-full min-h-[50vh]">
-                <svg className="w-12 h-12 text-muted/25 mb-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1} d="M4 5a1 1 0 011-1h4a1 1 0 011 1v4a1 1 0 01-1 1H5a1 1 0 01-1-1V5zM14 5a1 1 0 011-1h4a1 1 0 011 1v4a1 1 0 01-1 1h-4a1 1 0 01-1-1V5zM4 15a1 1 0 011-1h4a1 1 0 011 1v4a1 1 0 01-1 1H5a1 1 0 01-1-1v-4zM14 15a1 1 0 011-1h4a1 1 0 011 1v4a1 1 0 01-1 1h-4a1 1 0 01-1-1v-4z" />
-                </svg>
-                <p className="text-sm font-medium text-fg mb-1">{hasTabs ? 'This tab is empty' : 'Your dashboard is empty'}</p>
-                <p className="text-xs text-muted/70 mb-5 px-4">
-                  <span className="md:hidden">Tap <strong>Add</strong> below, or </span>
-                  <span className="hidden md:inline">Use the <strong>Add</strong> panel, or </span>
-                  ask <span className="text-fg font-medium">Chat</span> to build one.
+              <div className="flex flex-col items-center justify-center py-16 sm:py-24 text-center rounded-2xl mx-2 min-h-[50vh] border-2 border-dashed border-border/60 bg-surface/30 transition-colors">
+                {/* Grid icon */}
+                <div className="w-14 h-14 rounded-2xl bg-surface-2 flex items-center justify-center mb-4 shadow-sm">
+                  <svg className="w-7 h-7 text-muted/40" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.2}
+                      d="M4 5a1 1 0 011-1h4a1 1 0 011 1v4a1 1 0 01-1 1H5a1 1 0 01-1-1V5zM14 5a1 1 0 011-1h4a1 1 0 011 1v4a1 1 0 01-1 1h-4a1 1 0 01-1-1V5zM4 15a1 1 0 011-1h4a1 1 0 011 1v4a1 1 0 01-1 1H5a1 1 0 01-1-1v-4zM14 15a1 1 0 011-1h4a1 1 0 011 1v4a1 1 0 01-1 1h-4a1 1 0 01-1-1v-4z" />
+                  </svg>
+                </div>
+                <p className="text-sm font-semibold text-fg mb-1.5">
+                  {hasTabs ? 'This tab is empty' : 'Your dashboard is empty'}
+                </p>
+                <p className="text-xs text-muted/70 mb-6 px-6 leading-relaxed max-w-xs">
+                  <span className="md:hidden">Tap <strong className="text-fg/80">Add</strong> below, or </span>
+                  <span className="hidden md:inline">Use the <strong className="text-fg/80">Add</strong> panel on the right, or </span>
+                  ask <strong className="text-fg/80">Chat</strong> to build one for you.
                 </p>
                 <div className="flex flex-wrap gap-2 justify-center px-4">
-                  {['kpi', 'table', 'chart', 'text'].map(t => (
-                    <button key={t} onClick={() => addWidget(t)}
-                      className="px-3 py-1.5 min-h-[44px] sm:min-h-0 text-xs font-medium rounded-lg border border-border bg-surface hover:border-primary hover:text-primary text-muted transition-all focus:outline-none focus:ring-2 focus:ring-ring/50">
-                      + {t.toUpperCase()}
-                    </button>
-                  ))}
+                  {PALETTE_ITEMS.filter(p => ['kpi','table','chart','text'].includes(p.type)).map(p => {
+                    const Icon = p.icon
+                    return (
+                      <button
+                        key={p.type}
+                        onClick={() => addWidget(p.type)}
+                        className={[
+                          'flex items-center gap-1.5 px-3 py-1.5 min-h-[40px] sm:min-h-0',
+                          'text-xs font-medium rounded-lg border border-border bg-surface',
+                          'hover:border-primary/60 hover:text-primary hover:bg-surface-2/60',
+                          'text-muted transition-all duration-150',
+                          'focus:outline-none focus-visible:ring-2 focus-visible:ring-ring/60',
+                        ].join(' ')}
+                      >
+                        <Icon size={13} />
+                        {p.label}
+                      </button>
+                    )
+                  })}
                 </div>
               </div>
             ) : (
@@ -2702,6 +2821,7 @@ export default function DashboardEditor({ boardId = null, onSaved, onSpecChange,
                     const isSelected = selectedId === widget.id
                     const isHovered = hoveredId === widget.id
                     const reorder = gridMode === 'reorder'
+                    const WidgetIcon = WIDGET_ICONS[widget.type]
                     return (
                       // Note: NO overflow-hidden here — the hover toolbar uses position:absolute
                       // and must not be clipped. Inner areas handle their own overflow.
@@ -2711,12 +2831,14 @@ export default function DashboardEditor({ boardId = null, onSaved, onSpecChange,
                         onMouseEnter={() => setHoveredId(widget.id)}
                         onMouseLeave={() => setHoveredId(null)}
                         style={styleToCss(widget.style)}
-                        className={`h-full w-full rounded-xl border-2 bg-surface transition-all relative flex flex-col ${
-                          isSelected ? 'border-primary shadow-lg' : 'border-border hover:border-primary/40'
-                        }`}
+                        className={[
+                          'h-full w-full rounded-xl border-2 bg-surface transition-all duration-150 relative flex flex-col',
+                          isSelected
+                            ? 'border-primary shadow-lg shadow-primary/10'
+                            : 'border-border hover:border-primary/30 hover:shadow-sm',
+                        ].join(' ')}
                       >
-                        {/* Hover toolbar: duplicate + delete (+ a height stepper on
-                            mobile, where corner resize handles are disabled). */}
+                        {/* Hover toolbar: duplicate + delete (+ height stepper on mobile). */}
                         <WidgetHoverToolbar
                           widget={widget}
                           onDuplicate={duplicateWidget}
@@ -2728,25 +2850,43 @@ export default function DashboardEditor({ boardId = null, onSaved, onSpecChange,
 
                         {/* Drag handle — top strip */}
                         <div
-                          className="drag-handle h-6 shrink-0 bg-surface-2 hover:bg-primary/10 cursor-grab active:cursor-grabbing flex items-center gap-1.5 px-3 border-b border-border transition-colors select-none rounded-t-xl"
+                          className={[
+                            'drag-handle h-7 shrink-0 cursor-grab active:cursor-grabbing',
+                            'flex items-center gap-1.5 px-2.5 border-b border-border/80',
+                            'transition-colors duration-150 select-none rounded-t-[10px]',
+                            isSelected
+                              ? 'bg-primary/8 hover:bg-primary/12'
+                              : 'bg-surface-2/50 hover:bg-surface-2',
+                          ].join(' ')}
                           title={reorder ? 'Drag to reorder' : 'Drag to move'}
                         >
-                          <svg width="12" height="12" viewBox="0 0 12 12" fill="none" className="text-muted/60 shrink-0">
-                            <circle cx="3" cy="3" r="1.2" fill="currentColor"/>
-                            <circle cx="9" cy="3" r="1.2" fill="currentColor"/>
-                            <circle cx="3" cy="6" r="1.2" fill="currentColor"/>
-                            <circle cx="9" cy="6" r="1.2" fill="currentColor"/>
-                            <circle cx="3" cy="9" r="1.2" fill="currentColor"/>
-                            <circle cx="9" cy="9" r="1.2" fill="currentColor"/>
+                          {/* Grip dots */}
+                          <svg width="10" height="10" viewBox="0 0 10 10" fill="none" className="text-muted/40 shrink-0">
+                            <circle cx="2.5" cy="2.5" r="1" fill="currentColor"/>
+                            <circle cx="7.5" cy="2.5" r="1" fill="currentColor"/>
+                            <circle cx="2.5" cy="5" r="1" fill="currentColor"/>
+                            <circle cx="7.5" cy="5" r="1" fill="currentColor"/>
+                            <circle cx="2.5" cy="7.5" r="1" fill="currentColor"/>
+                            <circle cx="7.5" cy="7.5" r="1" fill="currentColor"/>
                           </svg>
-                          <span className="text-xs text-muted/70 truncate flex-1 capitalize">{widget.type}</span>
+                          {WidgetIcon && (
+                            <WidgetIcon size={11} className={isSelected ? 'text-primary/70' : 'text-muted/50'} />
+                          )}
+                          <span className={[
+                            'text-[11px] font-medium truncate flex-1 capitalize',
+                            isSelected ? 'text-primary' : 'text-muted/70',
+                          ].join(' ')}>
+                            {widget.props?.label || widget.type}
+                          </span>
                           {isSelected && (
-                            <span className="text-[10px] text-primary font-medium">selected</span>
+                            <span className="shrink-0 text-[9px] font-semibold text-primary/80 uppercase tracking-wider">
+                              selected
+                            </span>
                           )}
                         </div>
 
                         {/* Live widget preview — scrolls/clips independently */}
-                        <div className="flex-1 min-h-0 overflow-hidden rounded-b-xl">
+                        <div className="flex-1 min-h-0 overflow-hidden rounded-b-[10px]">
                           <WidgetPreview widget={widget} />
                         </div>
                       </div>
@@ -2764,27 +2904,30 @@ export default function DashboardEditor({ boardId = null, onSaved, onSpecChange,
               Tablet (md–lg): slide-over drawer (fixed, z-30), toggled by the top-bar buttons.
               Mobile (<md): hidden — uses the bottom sheet instead. */}
           {!rightCollapsed && (
-            <aside className={`
-              border-l border-border bg-surface flex flex-col overflow-hidden
-              hidden md:flex
-              lg:static lg:w-80 lg:shrink-0
-              md:fixed md:inset-y-0 md:right-0 md:z-30 md:w-80 md:shadow-2xl
-              lg:shadow-none
-            `}>
-              <div className="flex items-center justify-between px-3 h-9 border-b border-border shrink-0">
-                <span className="text-[11px] font-semibold uppercase tracking-wider text-muted">
+            <aside
+              className={[
+                'border-l border-border bg-surface flex flex-col overflow-hidden',
+                'hidden md:flex',
+                'lg:static lg:w-80 lg:shrink-0',
+                'md:fixed md:inset-y-0 md:right-0 md:z-30 md:w-80 md:shadow-2xl',
+                'lg:shadow-none',
+              ].join(' ')}
+            >
+              {/* Panel header */}
+              <div className="flex items-center justify-between px-3 h-10 border-b border-border shrink-0 bg-surface-2/30">
+                <span className="text-[11px] font-semibold uppercase tracking-wider text-muted/80">
                   {RIGHT_PANEL_TITLES[rightPanel] ?? 'Configure'}
                 </span>
                 <button
                   onClick={() => setRightCollapsed(true)}
                   title="Collapse panel"
                   aria-label="Collapse side panel"
-                  className="flex items-center justify-center w-7 h-7 rounded-lg text-muted hover:text-fg hover:bg-surface-2 transition-colors focus:outline-none focus:ring-2 focus:ring-ring"
+                  className="flex items-center justify-center w-7 h-7 rounded-lg text-muted hover:text-fg hover:bg-surface-2 transition-colors duration-150 focus:outline-none focus-visible:ring-2 focus-visible:ring-ring/60"
                 >
-                  <PanelRightClose size={16} />
+                  <PanelRightClose size={15} />
                 </button>
               </div>
-              {/* Body scrolls WITHIN the fixed-width sidebar; the sidebar itself is static. */}
+              {/* Body scrolls WITHIN the fixed-width sidebar */}
               <div className="flex-1 min-h-0 overflow-y-auto flex flex-col">
                 {renderRightPanelBody()}
               </div>
@@ -2800,28 +2943,34 @@ export default function DashboardEditor({ boardId = null, onSaved, onSpecChange,
           the right; tap the backdrop or × to dismiss. */}
       {mobileMenu && (
         <div className="md:hidden fixed inset-0 z-50 flex justify-end" data-testid="editor-mobile-menu">
-          <div className="absolute inset-0 bg-black/40" onClick={() => setMobileMenu(false)} />
-          <div className="relative w-72 max-w-[85vw] h-full bg-surface border-l border-border shadow-2xl flex flex-col">
-            <div className="flex items-center justify-between px-4 h-12 border-b border-border shrink-0">
-              <span className="text-sm font-semibold text-fg">Editor</span>
-              <button onClick={() => setMobileMenu(false)} aria-label="Close menu"
-                className="w-8 h-8 flex items-center justify-center rounded-lg text-muted hover:text-fg hover:bg-surface-2 transition-colors">
+          <div
+            className="absolute inset-0 bg-black/50 backdrop-blur-[2px] transition-opacity"
+            onClick={() => setMobileMenu(false)}
+          />
+          <div className="relative w-72 max-w-[85vw] h-full bg-surface border-l border-border shadow-2xl flex flex-col animate-in slide-in-from-right duration-200">
+            <div className="flex items-center justify-between px-4 h-12 border-b border-border shrink-0 bg-surface-2/30">
+              <span className="text-sm font-semibold text-fg">Editor options</span>
+              <button
+                onClick={() => setMobileMenu(false)}
+                aria-label="Close menu"
+                className="w-8 h-8 flex items-center justify-center rounded-lg text-muted hover:text-fg hover:bg-surface-2 transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-ring/60"
+              >
                 <X size={16} />
               </button>
             </div>
-            <div className="flex-1 min-h-0 overflow-y-auto p-4 space-y-4">
-              <div className="space-y-1.5">
+            <div className="flex-1 min-h-0 overflow-y-auto p-4 space-y-5">
+              <div className="space-y-2">
                 <SectionLabel>Device</SectionLabel>
                 {deviceSwitcher}
               </div>
               {!preview && (
-                <div className="space-y-1.5">
+                <div className="space-y-2">
                   <SectionLabel>Zoom</SectionLabel>
-                  {zoomControls(true)}
+                  {zoomControls()}
                 </div>
               )}
               {!preview && (
-                <div className="space-y-1.5">
+                <div className="space-y-2">
                   <SectionLabel>Panels</SectionLabel>
                   {panelToggles(true)}
                 </div>
@@ -2838,21 +2987,24 @@ export default function DashboardEditor({ boardId = null, onSaved, onSpecChange,
         <div className="md:hidden fixed inset-0 z-40 flex flex-col justify-end" style={{ pointerEvents: 'auto' }}>
           {/* Backdrop */}
           <div
-            className="absolute inset-0 bg-black/40"
+            className="absolute inset-0 bg-black/50 backdrop-blur-[2px]"
             onClick={() => setMobileSheet(null)}
           />
           {/* Sheet */}
-          <div className="relative bg-surface rounded-t-2xl border-t border-border flex flex-col max-h-[75vh] shadow-2xl">
-            {/* Sheet handle + header */}
-            <div className="flex items-center justify-between px-4 py-3 border-b border-border shrink-0">
-              <div className="w-10 h-1 rounded-full bg-border mx-auto absolute left-1/2 -translate-x-1/2 top-2" />
-              <span className="text-sm font-semibold text-fg mt-1">
+          <div className="relative bg-surface rounded-t-2xl border-t border-border flex flex-col max-h-[80vh] shadow-2xl">
+            {/* Drag pill */}
+            <div className="flex justify-center pt-2 shrink-0">
+              <div className="w-8 h-1 rounded-full bg-border/60" />
+            </div>
+            {/* Sheet header */}
+            <div className="flex items-center justify-between px-4 py-2.5 border-b border-border shrink-0">
+              <span className="text-sm font-semibold text-fg">
                 {SHEET_TITLES[mobileSheet] ?? 'Panel'}
               </span>
               <button
                 onClick={() => setMobileSheet(null)}
                 aria-label="Close sheet"
-                className="w-8 h-8 flex items-center justify-center rounded-lg text-muted hover:text-fg hover:bg-surface-2 transition-colors"
+                className="w-8 h-8 flex items-center justify-center rounded-lg text-muted hover:text-fg hover:bg-surface-2 transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-ring/60"
               >
                 <X size={16} />
               </button>

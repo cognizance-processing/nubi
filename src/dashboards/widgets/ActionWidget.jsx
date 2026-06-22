@@ -51,31 +51,28 @@ import { runArrowQueryById } from '../../lib/wasmRuntime.js'
 import { useResolvedParams } from '../VariableStore.jsx'
 import { useRefreshEpoch } from '../RefreshContext.jsx'
 import { applySignal } from '../../viz/signals.js'
+import Button from '../../components/ui/Button.jsx'
+import Badge from '../../components/ui/Badge.jsx'
+import Skeleton from '../../components/ui/Skeleton.jsx'
+import EmptyState from '../../components/ui/EmptyState.jsx'
 
 // ---------------------------------------------------------------------------
 // Status colours — signal-coloured per state
 // ---------------------------------------------------------------------------
 
 const STATUS_CONFIG = {
-  pending_approval: { label: 'Pending',   color: '#f59e0b', bg: 'rgba(245,158,11,0.12)'  },
-  committed:        { label: 'Approved',  color: '#10b981', bg: 'rgba(16,185,129,0.12)'  },
-  rejected:         { label: 'Rejected',  color: '#ef4444', bg: 'rgba(239,68,68,0.12)'   },
-  failed:           { label: 'Failed',    color: '#ef4444', bg: 'rgba(239,68,68,0.12)'   },
-  preview:          { label: 'Preview',   color: '#6366f1', bg: 'rgba(99,102,241,0.12)'  },
-  idle:             { label: '',          color: null,      bg: 'transparent'             },
+  pending_approval: { label: 'Pending',  variant: 'warning' },
+  committed:        { label: 'Approved', variant: 'success' },
+  rejected:         { label: 'Rejected', variant: 'danger'  },
+  failed:           { label: 'Failed',   variant: 'danger'  },
+  preview:          { label: 'Preview',  variant: 'primary' },
+  idle:             { label: '',         variant: 'default' },
 }
 
 function StatusBadge({ state }) {
   const cfg = STATUS_CONFIG[state] ?? STATUS_CONFIG.idle
   if (!cfg.label) return null
-  return (
-    <span
-      className="inline-flex items-center px-2 py-0.5 rounded text-xs font-semibold"
-      style={{ color: cfg.color, background: cfg.bg }}
-    >
-      {cfg.label}
-    </span>
-  )
+  return <Badge variant={cfg.variant} size="sm">{cfg.label}</Badge>
 }
 
 // ---------------------------------------------------------------------------
@@ -203,37 +200,34 @@ function EditModal({ row, columns, onConfirm, onCancel }) {
       aria-modal="true"
       aria-label="Edit row before approving"
     >
-      <div className="absolute inset-0 bg-black/40" onClick={onCancel} />
-      <div className="relative bg-bg border border-border rounded-xl shadow-2xl w-full max-w-md mx-4 p-5">
-        <h4 className="text-sm font-semibold text-fg mb-4">Edit before approving</h4>
+      <div className="absolute inset-0 bg-black/40 backdrop-blur-sm" onClick={onCancel} />
+      <div className="relative bg-surface border border-border rounded-2xl shadow-2xl w-full max-w-md mx-4 p-5 flex flex-col gap-4">
+        <div className="flex items-center justify-between">
+          <h4 className="text-sm font-semibold text-fg">Edit before approving</h4>
+          <button
+            type="button"
+            onClick={onCancel}
+            className="rounded-lg w-7 h-7 flex items-center justify-center text-muted hover:text-fg hover:bg-surface-2 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+            aria-label="Close"
+          >
+            ×
+          </button>
+        </div>
         <div className="space-y-3 max-h-72 overflow-y-auto">
           {cols.map(col => (
             <div key={col} className="flex flex-col gap-1">
-              <label className="text-xs font-medium text-muted">{col}</label>
+              <label className="text-xs font-medium text-muted uppercase tracking-wide">{col}</label>
               <input
-                className="w-full px-2.5 py-1.5 text-sm bg-surface border border-border rounded-lg text-fg focus:outline-none focus:ring-2 focus:ring-primary/40"
+                className="w-full px-2.5 py-1.5 text-sm bg-bg border border-border rounded-lg text-fg focus:outline-none focus:ring-2 focus:ring-ring/40 transition-colors"
                 value={draft[col] == null ? '' : String(draft[col])}
                 onChange={e => setDraft(prev => ({ ...prev, [col]: e.target.value }))}
               />
             </div>
           ))}
         </div>
-        <div className="flex justify-end gap-2 mt-5">
-          <button
-            type="button"
-            onClick={onCancel}
-            className="px-3 py-1.5 text-sm rounded-lg border border-border text-muted hover:text-fg hover:bg-border/30 transition-colors"
-          >
-            Cancel
-          </button>
-          <button
-            type="button"
-            onClick={() => onConfirm(draft)}
-            className="px-4 py-1.5 text-sm rounded-lg font-medium text-white transition-colors"
-            style={{ background: '#10b981' }}
-          >
-            Approve with edits
-          </button>
+        <div className="flex justify-end gap-2">
+          <Button variant="secondary" size="sm" onClick={onCancel}>Cancel</Button>
+          <Button variant="accent" size="sm" onClick={() => onConfirm(draft)}>Approve with edits</Button>
         </div>
       </div>
     </div>
@@ -253,31 +247,44 @@ function DryRunPreview({ diff, columns, onConfirm, onCancel }) {
       aria-modal="true"
       aria-label="Dry-run preview"
     >
-      <div className="absolute inset-0 bg-black/40" onClick={onCancel} />
-      <div className="relative bg-bg border border-border rounded-xl shadow-2xl w-full max-w-lg mx-4 p-5">
-        <div className="flex items-center justify-between mb-3">
-          <h4 className="text-sm font-semibold text-fg">Preview — {diff.row_count} row{diff.row_count !== 1 ? 's' : ''} to write</h4>
-          <StatusBadge state="preview" />
+      <div className="absolute inset-0 bg-black/40 backdrop-blur-sm" onClick={onCancel} />
+      <div className="relative bg-surface border border-border rounded-2xl shadow-2xl w-full max-w-lg mx-4 p-5 flex flex-col gap-4">
+        <div className="flex items-center justify-between">
+          <div className="flex items-center gap-2">
+            <h4 className="text-sm font-semibold text-fg">
+              Preview — {diff.row_count} row{diff.row_count !== 1 ? 's' : ''} to write
+            </h4>
+            <StatusBadge state="preview" />
+          </div>
+          <button
+            type="button"
+            onClick={onCancel}
+            className="rounded-lg w-7 h-7 flex items-center justify-center text-muted hover:text-fg hover:bg-surface-2 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+            aria-label="Close"
+          >
+            ×
+          </button>
         </div>
-        <p className="text-xs text-muted mb-3">
-          Target: <strong>{diff.target_object}</strong> · Mode: <strong>{diff.mode}</strong>
+        <p className="text-xs text-muted -mt-2">
+          Target: <strong className="text-fg">{diff.target_object}</strong>
+          {' · '}Mode: <strong className="text-fg">{diff.mode}</strong>
           {' '}<span className="italic">(no data committed yet)</span>
         </p>
         {diff.rows && diff.rows.length > 0 && (
-          <div className="overflow-auto max-h-48 rounded-lg border border-border">
+          <div className="overflow-auto max-h-48 rounded-xl border border-border">
             <table className="w-full text-xs border-collapse">
-              <thead className="sticky top-0 bg-surface">
+              <thead className="sticky top-0 bg-surface-2">
                 <tr>
                   {cols.map(c => (
-                    <th key={c} className="px-2 py-1 text-left font-semibold text-muted border-b border-border whitespace-nowrap">{c}</th>
+                    <th key={c} className="px-2.5 py-1.5 text-left font-semibold text-muted border-b border-border whitespace-nowrap">{c}</th>
                   ))}
                 </tr>
               </thead>
               <tbody>
                 {diff.rows.map((row, i) => (
-                  <tr key={i} className="border-b border-border/40 last:border-0">
+                  <tr key={i} className="border-b border-border/40 last:border-0 hover:bg-surface-2/50 transition-colors">
                     {cols.map(c => (
-                      <td key={c} className="px-2 py-1 text-fg">{displayValue(row[c])}</td>
+                      <td key={c} className="px-2.5 py-1.5 text-fg">{displayValue(row[c])}</td>
                     ))}
                   </tr>
                 ))}
@@ -285,22 +292,9 @@ function DryRunPreview({ diff, columns, onConfirm, onCancel }) {
             </table>
           </div>
         )}
-        <div className="flex justify-end gap-2 mt-5">
-          <button
-            type="button"
-            onClick={onCancel}
-            className="px-3 py-1.5 text-sm rounded-lg border border-border text-muted hover:text-fg hover:bg-border/30 transition-colors"
-          >
-            Cancel
-          </button>
-          <button
-            type="button"
-            onClick={onConfirm}
-            className="px-4 py-1.5 text-sm rounded-lg font-medium text-white transition-colors"
-            style={{ background: '#10b981' }}
-          >
-            Confirm &amp; approve
-          </button>
+        <div className="flex justify-end gap-2">
+          <Button variant="secondary" size="sm" onClick={onCancel}>Cancel</Button>
+          <Button variant="accent" size="sm" onClick={onConfirm}>Confirm &amp; approve</Button>
         </div>
       </div>
     </div>
@@ -474,18 +468,18 @@ function ActionRow({ row, index, columns, target, mode, approvalRequired, idempo
       )}
 
       <div
-        className="flex flex-col gap-2 p-3 rounded-lg border border-border transition-colors"
+        className="flex flex-col gap-2.5 p-3.5 rounded-xl border border-border transition-colors"
         style={{ background: rowSignalBg ?? undefined }}
         data-testid="action-row"
         data-state={wbRecord?.state ?? 'idle'}
       >
         {/* Row data cells */}
-        <div className="flex flex-wrap gap-x-4 gap-y-1 text-sm">
+        <div className="flex flex-wrap gap-x-5 gap-y-1.5 text-sm">
           {rowCols.map(col => (
             <div key={col} className="flex flex-col min-w-[5rem]">
-              <span className="text-xs font-medium text-muted leading-none mb-0.5">{col}</span>
+              <span className="text-[10px] font-semibold text-muted uppercase tracking-wider leading-none mb-0.5">{col}</span>
               <span
-                className="text-fg font-medium tabular-nums"
+                className="text-fg font-medium tabular-nums text-sm"
                 style={signal.matched && signal.color ? { color: signal.color } : undefined}
               >
                 {displayValue(effectiveRow[col])}
@@ -495,45 +489,43 @@ function ActionRow({ row, index, columns, target, mode, approvalRequired, idempo
         </div>
 
         {/* Action controls + status */}
-        <div className="flex items-center justify-between flex-wrap gap-2 mt-1">
+        <div className="flex items-center justify-between flex-wrap gap-2">
           <div className="flex items-center gap-2">
             {wbRecord && <StatusBadge state={wbRecord.state} />}
             {phase === 'submitting' && (
-              <span className="text-xs text-muted animate-pulse">Processing…</span>
+              <span className="text-xs text-muted italic">Processing…</span>
             )}
             {error && (
-              <span className="text-xs" style={{ color: '#ef4444' }} role="alert">{error}</span>
+              <span className="text-xs text-danger" role="alert">{error}</span>
             )}
           </div>
 
           {!isDone && phase !== 'submitting' && (
-            <div className="flex items-center gap-2">
-              <button
-                type="button"
+            <div className="flex items-center gap-1.5">
+              <Button
+                variant="ghost"
+                size="xs"
                 onClick={handleEdit}
                 data-testid="action-edit"
-                className="px-2.5 py-1 text-xs rounded-md border border-border text-muted hover:text-fg hover:bg-border/30 transition-colors"
               >
                 Edit
-              </button>
-              <button
-                type="button"
+              </Button>
+              <Button
+                variant="danger"
+                size="xs"
                 onClick={handleReject}
                 data-testid="action-reject"
-                className="px-2.5 py-1 text-xs rounded-md border font-medium transition-colors"
-                style={{ borderColor: '#ef444440', color: '#ef4444', background: 'rgba(239,68,68,0.06)' }}
               >
                 Reject
-              </button>
-              <button
-                type="button"
+              </Button>
+              <Button
+                variant="accent"
+                size="xs"
                 onClick={handleApprove}
                 data-testid="action-approve"
-                className="px-3 py-1 text-xs rounded-md font-semibold text-white transition-colors"
-                style={{ background: '#10b981' }}
               >
                 Approve
-              </button>
+              </Button>
             </div>
           )}
         </div>
@@ -637,27 +629,34 @@ export default function ActionWidget({ widget }) {
       {/* Body */}
       <div className="flex-1 min-h-0 overflow-y-auto px-4 pb-4 space-y-2">
         {loading && (
-          <div className="space-y-2 animate-pulse py-3">
+          <div className="space-y-2 py-2" aria-busy="true" aria-label="Loading recommendations">
             {[1, 2, 3].map(i => (
-              <div key={i} className="h-16 rounded-lg bg-surface-2" />
+              <Skeleton key={i} className="h-[4.5rem] w-full rounded-xl" />
             ))}
           </div>
         )}
 
         {!loading && fetchError && (
           <div
-            className="px-3 py-2 text-xs rounded-lg"
-            style={{ color: '#d97706', background: 'rgba(245,158,11,0.08)' }}
+            className="px-3 py-2.5 text-xs rounded-xl border flex items-center gap-1.5"
+            style={{
+              color: 'var(--warning)',
+              background: 'var(--warning-bg)',
+              borderColor: 'color-mix(in srgb, var(--warning) 20%, transparent)',
+            }}
             role="alert"
           >
+            <span aria-hidden="true">&#9888;</span>
             {fetchError}
           </div>
         )}
 
         {!loading && !fetchError && rows.length === 0 && (
-          <div className="flex items-center justify-center py-10 text-sm text-muted">
-            No recommendations.
-          </div>
+          <EmptyState
+            title="No recommendations"
+            description="There are no pending actions to review."
+            compact
+          />
         )}
 
         {!loading && rows.map((row, idx) => (

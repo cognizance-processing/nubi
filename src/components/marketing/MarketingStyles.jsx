@@ -92,12 +92,15 @@ const MarketingStyles = () => (
       background-clip: text;
       -webkit-text-fill-color: transparent;
     }
-    /* primary CTA glow */
+    /* primary CTA glow — used by hero "Start free" across all marketing pages */
     .lp-cta-glow {
-      box-shadow: 0 12px 44px -10px rgba(23, 179, 163, 0.55), 0 4px 16px rgba(36, 86, 166, 0.45);
+      background: linear-gradient(135deg, #1b2363 0%, #2456a6 50%, #17b3a3 100%) !important;
+      box-shadow: 0 8px 28px -8px rgba(23, 179, 163, 0.55), 0 4px 14px rgba(36, 86, 166, 0.4);
+      transition: transform 150ms ease, box-shadow 150ms ease, opacity 150ms ease !important;
     }
     .lp-cta-glow:hover {
-      box-shadow: 0 16px 56px -10px rgba(23, 179, 163, 0.7), 0 6px 20px rgba(36, 86, 166, 0.55);
+      opacity: 0.92;
+      box-shadow: 0 14px 40px -8px rgba(23, 179, 163, 0.65), 0 6px 18px rgba(36, 86, 166, 0.5);
     }
     /* glassy floating stat chips over the product frame */
     .lp-hero-chip {

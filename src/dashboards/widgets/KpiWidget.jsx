@@ -41,6 +41,8 @@ import { useResolvedParams } from '../VariableStore.jsx'
 import EChart from '../../viz/EChart.jsx'
 import { applySignal } from '../../viz/signals.js'
 import { useRefreshEpoch } from '../RefreshContext.jsx'
+import Skeleton from '../../components/ui/Skeleton.jsx'
+import Badge from '../../components/ui/Badge.jsx'
 
 /** Format a raw value for display. */
 function formatValue(raw, format) {
@@ -259,46 +261,51 @@ export default function KpiWidget({ widget, providerTable = null }) {
   const valueColor = signal.matched ? signal.color : undefined
 
   return (
-    <div className="flex flex-col justify-center h-full px-5 py-4">
+    <div className="flex flex-col justify-center h-full px-5 py-4 gap-1">
       {loading ? (
-        <div className="space-y-2 animate-pulse">
-          <div className="h-8 w-24 bg-surface-2 rounded-lg" />
-          <div className="h-4 w-16 bg-surface-2 rounded" />
+        <div className="space-y-3" aria-busy="true" aria-label="Loading KPI">
+          <Skeleton className="h-9 w-28 rounded-lg" />
+          <Skeleton className="h-3.5 w-20 rounded" />
         </div>
       ) : (
         <>
           <div className="flex items-baseline gap-2 flex-wrap">
             <p
-              className="text-3xl font-bold font-display tabular-nums leading-none"
+              className="text-3xl font-bold font-display tabular-nums leading-none tracking-tight"
               style={{ color: valueColor ?? undefined }}
             >
               {formatValue(value, format)}
             </p>
             {signal.matched && signal.label && (
-              <span
-                className="text-xs font-semibold px-1.5 py-0.5 rounded"
-                style={{
-                  background: signal.color ? `${signal.color}20` : undefined,
-                  color: signal.color ?? undefined,
-                }}
+              <Badge
+                variant={
+                  signal.color === DELTA_COLORS.up ? 'success'
+                  : signal.color === DELTA_COLORS.down ? 'danger'
+                  : 'warning'
+                }
+                size="sm"
               >
                 {signal.label}
-              </span>
+              </Badge>
             )}
             {delta && (
-              <span className="text-sm font-semibold tabular-nums" style={{ color: DELTA_COLORS[delta.direction] }}>
+              <span
+                className="text-sm font-semibold tabular-nums"
+                style={{ color: DELTA_COLORS[delta.direction] }}
+                aria-label={`Change: ${delta.text}`}
+              >
                 {delta.text}
               </span>
             )}
           </div>
-          <p className="mt-2 text-sm font-medium text-muted">{label}</p>
+          <p className="mt-1 text-sm font-medium text-muted leading-snug">{label}</p>
           {spark && (
             <div className="mt-2 -mx-1">
               <EChart option={spark} height={36} />
             </div>
           )}
           {error && (
-            <p className="mt-1 text-xs" style={{ color: '#d97706' }}>{error}</p>
+            <p className="mt-1 text-xs text-warning" role="status">{error}</p>
           )}
         </>
       )}

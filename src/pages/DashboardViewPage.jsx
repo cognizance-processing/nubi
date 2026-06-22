@@ -41,6 +41,7 @@ import DashboardView from '../dashboards/DashboardView.jsx'
 import SpecRenderer from '../dashboards/SpecRenderer.jsx'
 import { extractVarsFromURL, applyVarToSearchParams } from '../dashboards/urlSync.js'
 import { useCanWrite } from '../contexts/OrgContext.jsx'
+import Skeleton from '../components/ui/Skeleton.jsx'
 
 // ---------------------------------------------------------------------------
 // Built-in sample dashboard HTML
@@ -275,9 +276,22 @@ export default function DashboardViewPage() {
 
   if (loading) {
     return (
-      <div className="max-w-5xl mx-auto px-4 sm:px-6 lg:px-8 py-12">
-        <div className="flex items-center justify-center py-24 text-sm text-muted animate-pulse">
-          Loading dashboard…
+      <div className="max-w-[110rem] mx-auto px-4 sm:px-6 lg:px-8 py-8" aria-busy="true" aria-label="Loading dashboard">
+        {/* Page chrome skeleton */}
+        <div className="flex items-center justify-between mb-6">
+          <Skeleton className="h-7 w-48 rounded-lg" />
+          <Skeleton className="h-8 w-24 rounded-lg" />
+        </div>
+        {/* Widget grid skeleton */}
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
+          {[1,2,3,4,5,6].map(i => (
+            <div key={i} className="rounded-xl border border-border bg-surface overflow-hidden" style={{ height: 160 }}>
+              <div className="p-4 space-y-3">
+                <Skeleton className="h-9 w-28 rounded-lg" />
+                <Skeleton className="h-3 w-20 rounded" />
+              </div>
+            </div>
+          ))}
         </div>
       </div>
     )
@@ -288,10 +302,17 @@ export default function DashboardViewPage() {
 
       {/* Fallback / error notice */}
       {error && (
-        <div className="mb-4 px-4 py-3 rounded-lg text-sm flex items-start gap-2 border"
+        <div
+          className="mb-4 px-4 py-3 rounded-xl text-sm flex items-start gap-2 border"
           data-testid="dashboard-view-error"
-          style={{ background: 'color-mix(in srgb, #f59e0b 8%, transparent)', color: '#d97706', borderColor: 'color-mix(in srgb, #f59e0b 25%, transparent)' }}>
-          <span className="shrink-0 mt-0.5" aria-hidden="true">&#9888;</span>
+          style={{
+            background: 'var(--warning-bg)',
+            color: 'var(--warning)',
+            borderColor: 'color-mix(in srgb, var(--warning) 25%, transparent)',
+          }}
+          role="status"
+        >
+          <span className="shrink-0 mt-0.5 text-base leading-none" aria-hidden="true">&#9888;</span>
           <span>{error}</span>
         </div>
       )}

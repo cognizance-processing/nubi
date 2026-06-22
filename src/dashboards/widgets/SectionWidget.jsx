@@ -24,16 +24,18 @@ export default function SectionWidget({ widget }) {
     : 'items-start text-left'
 
   return (
-    <div className={`flex flex-col justify-center h-full w-full px-4 py-2 ${alignCls}`}>
+    <div className={`flex flex-col justify-center h-full w-full px-4 py-2.5 ${alignCls}`}>
       {title && (
-        <h3 className="text-lg font-bold font-display text-fg leading-tight truncate w-full">
+        <h3 className="text-base font-bold font-display text-fg leading-tight truncate w-full tracking-tight">
           {title}
         </h3>
       )}
       {subtitle && (
-        <p className="text-xs text-muted mt-0.5 w-full">{subtitle}</p>
+        <p className="text-xs text-muted mt-1 w-full leading-relaxed">{subtitle}</p>
       )}
-      {showDivider && <div className="mt-2 h-px w-full bg-border" />}
+      {showDivider && (
+        <div className="mt-2.5 h-px w-full" style={{ background: 'var(--border)' }} aria-hidden="true" />
+      )}
     </div>
   )
 }

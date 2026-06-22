@@ -24,14 +24,14 @@ export default function TextWidget({ widget }) {
 
   if (!content.trim()) {
     return (
-      <div className="flex items-center justify-center h-full px-5 py-4 text-sm text-muted italic">
+      <div className="flex items-center justify-center h-full px-5 py-4 text-sm text-muted italic opacity-60">
         (empty text widget)
       </div>
     )
   }
 
   return (
-    <div className="h-full overflow-y-auto px-5 py-4 bg-surface text-fg">
+    <div className="h-full overflow-y-auto px-5 py-4 text-fg prose-sm">
       <MarkdownRenderer content={content} />
     </div>
   )

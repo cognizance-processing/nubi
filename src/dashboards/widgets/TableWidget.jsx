@@ -47,6 +47,7 @@ import { useResolvedParams } from '../VariableStore.jsx'
 import { useRefreshEpoch } from '../RefreshContext.jsx'
 import DataGrid from '../../components/DataGrid.jsx'
 import { arrowTypeToColumnType } from '../../components/dataTableUtils.js'
+import Skeleton from '../../components/ui/Skeleton.jsx'
 
 // ---------------------------------------------------------------------------
 // DetailPanel — lazy child grid rendered when a row is expanded
@@ -113,21 +114,26 @@ function DetailPanel({ parentRow, detailQueryId, detailParam, detailColumns, det
 
   if (loading) {
     return (
-      <div className="px-6 py-3 text-xs text-muted animate-pulse">
-        Loading detail…
+      <div className="px-6 py-3 space-y-1.5" aria-busy="true">
+        {[1,2,3].map(i => <Skeleton key={i} className="h-5 w-full rounded" />)}
       </div>
     )
   }
   if (error) {
     return (
-      <div className="px-6 py-2 text-xs" style={{ color: '#d97706' }}>
+      <div
+        className="px-6 py-2 text-xs flex items-center gap-1.5"
+        style={{ color: 'var(--warning)' }}
+        role="status"
+      >
+        <span aria-hidden="true">&#9888;</span>
         {error}
       </div>
     )
   }
   if (!detailData || detailData.rows.length === 0) {
     return (
-      <div className="px-6 py-2 text-xs text-muted">No detail rows.</div>
+      <div className="px-6 py-2 text-xs text-muted italic">No detail rows.</div>
     )
   }
 
@@ -384,13 +390,15 @@ export default function TableWidget({ widget, providerTable = null }) {
       <div className="flex flex-col h-full overflow-hidden">
         {error && (
           <div
-            className="px-3 py-1.5 text-xs border border-b-0 rounded-t-xl shrink-0"
+            className="px-3 py-1.5 text-xs border border-b-0 rounded-t-xl shrink-0 flex items-center gap-1.5"
             style={{
-              background: 'color-mix(in srgb, #f59e0b 8%, transparent)',
-              color: '#d97706',
-              borderColor: 'color-mix(in srgb, #f59e0b 20%, transparent)',
+              background: 'var(--warning-bg)',
+              color: 'var(--warning)',
+              borderColor: 'color-mix(in srgb, var(--warning) 20%, transparent)',
             }}
+            role="status"
           >
+            <span aria-hidden="true">&#9888;</span>
             {error}
           </div>
         )}

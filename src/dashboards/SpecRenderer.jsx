@@ -52,6 +52,8 @@ import { runArrowQueryById } from '../lib/wasmRuntime.js'
 import { backgroundToCss, styleToCss } from './widgetHtml.js'
 import { buildResponsiveLayouts, isHiddenAt } from './responsiveLayout.js'
 import { useProviderData } from './useProviderData.js'
+import Button from '../components/ui/Button.jsx'
+import EmptyState from '../components/ui/EmptyState.jsx'
 
 // ---------------------------------------------------------------------------
 // Placement (SHARED CONTRACT)
@@ -195,11 +197,11 @@ function WidgetComponent({ widget, onOpenDrawer, editMode = false, providerTable
       <button
         type="button"
         onClick={() => onOpenDrawer?.(w.props.drilldown_group)}
-        className="flex items-center justify-center gap-2 w-full h-full px-3 text-sm font-medium text-fg bg-surface hover:bg-border/40 transition-colors"
+        className="flex items-center justify-center gap-2 w-full h-full px-3 text-sm font-medium text-fg bg-surface hover:bg-surface-2 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring rounded-xl group"
       >
-        <span className="i">⤢</span>
+        <span className="opacity-60 group-hover:opacity-100 transition-opacity" aria-hidden="true">⤢</span>
         {w.props.title || 'Drill down'}
-        <span className="text-muted text-xs">▸</span>
+        <span className="text-muted text-xs group-hover:translate-x-0.5 transition-transform" aria-hidden="true">▸</span>
       </button>
     )
   }
@@ -219,8 +221,12 @@ function WidgetComponent({ widget, onOpenDrawer, editMode = false, providerTable
     case 'action':  return <ActionWidget  widget={w} />
     default:
       return (
-        <div className="flex items-center justify-center h-full text-sm text-muted">
-          Unknown widget type: {w.type}
+        <div className="flex items-center justify-center h-full px-4">
+          <EmptyState
+            title={`Unknown widget type`}
+            description={`"${w.type}" is not recognised.`}
+            compact
+          />
         </div>
       )
   }
@@ -240,25 +246,40 @@ function SlideOver({ open, title, widgets, onClose, wide }) {
   if (!open) return null
   const sorted = [...widgets].sort((a, b) => (a.order ?? 0) - (b.order ?? 0))
   return (
-    <div className="fixed inset-0 z-50 flex justify-end" role="dialog" aria-modal="true">
-      <div className="absolute inset-0 bg-black/30" onClick={onClose} />
+    <div className="fixed inset-0 z-50 flex justify-end" role="dialog" aria-modal="true" aria-label={title}>
+      {/* Backdrop */}
       <div
-        className="relative h-full bg-bg border-l border-border shadow-xl overflow-y-auto"
+        className="absolute inset-0 bg-black/40 backdrop-blur-sm"
+        onClick={onClose}
+        aria-hidden="true"
+      />
+      {/* Panel */}
+      <div
+        className="relative h-full bg-surface border-l border-border shadow-2xl overflow-y-auto flex flex-col"
         style={{ width: wide ? 'min(880px, 92vw)' : 'min(420px, 92vw)' }}
       >
-        <div className="sticky top-0 z-10 flex items-center justify-between px-4 py-3 bg-surface border-b border-border">
+        {/* Header */}
+        <div className="sticky top-0 z-10 flex items-center justify-between px-5 py-3.5 bg-surface/90 backdrop-blur border-b border-border shrink-0">
           <h3 className="text-sm font-semibold text-fg">{title}</h3>
-          <button type="button" onClick={onClose} className="text-muted hover:text-fg text-lg leading-none">×</button>
+          <button
+            type="button"
+            onClick={onClose}
+            className="w-8 h-8 flex items-center justify-center rounded-lg text-muted hover:text-fg hover:bg-surface-2 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+            aria-label="Close panel"
+          >
+            <span aria-hidden="true" className="text-base leading-none">×</span>
+          </button>
         </div>
-        <div className="p-4 space-y-4">
+        {/* Content */}
+        <div className="flex-1 p-4 space-y-3">
           {sorted.length === 0 ? (
-            <div className="text-sm text-muted py-8 text-center">Nothing to show.</div>
+            <EmptyState title="Nothing to show." compact />
           ) : sorted.map(w => (
             <div
               key={w.id}
               // Filter widgets: overflow-visible so dropdown popovers inside the
               // drawer panel are not clipped by the card boundary.
-              className={`rounded-lg border border-border bg-surface ${w.type === 'filter' ? 'overflow-visible' : 'overflow-hidden'}`}
+              className={`rounded-xl border border-border bg-bg ${w.type === 'filter' ? 'overflow-visible' : 'overflow-hidden'}`}
               style={{ minHeight: w.type === 'filter' ? undefined : 280 }}
             >
               <WidgetComponent widget={w} />
@@ -655,7 +676,11 @@ function SpecRendererInner({ spec, boardId: boardIdProp, initialVariables = {}, 
     const providerTable = widgetProviderTableMap[widget.id] ?? null
     return (
       <div
-        className={`w-full h-full rounded-xl ${isFilter ? 'overflow-visible' : 'overflow-hidden'} ${hasCustomBg ? '' : 'bg-surface border border-border shadow-sm'}`}
+        className={[
+          'w-full h-full rounded-xl transition-shadow duration-200',
+          isFilter ? 'overflow-visible' : 'overflow-hidden',
+          !hasCustomBg && 'bg-surface border border-border shadow-sm hover:shadow-md',
+        ].filter(Boolean).join(' ')}
         style={customStyle}
       >
         <WidgetComponent widget={widget} onOpenDrawer={setOpenDrawer} editMode={editMode} providerTable={providerTable} />
@@ -675,17 +700,20 @@ function SpecRendererInner({ spec, boardId: boardIdProp, initialVariables = {}, 
         {(spec.title || hasFilters) && (
           <div className="flex items-center justify-between px-1 mb-4 gap-3">
             {spec.title && (
-              <h2 className="text-xl font-bold font-display text-fg">{spec.title}</h2>
+              <h2 className="text-xl font-bold font-display text-fg leading-tight">{spec.title}</h2>
             )}
             {hasFilters && (
-              <button
-                type="button"
+              <Button
+                variant="secondary"
+                size="sm"
                 onClick={() => setOpenDrawer('filters')}
-                className="shrink-0 inline-flex items-center gap-1.5 px-3 py-1.5 text-sm font-medium rounded-lg border border-border bg-surface text-fg hover:bg-border/40 transition-colors"
+                className="shrink-0"
+                aria-label={`Open ${spec.drawer?.title || 'Filters'} panel`}
               >
-                <span aria-hidden>⚲</span> {spec.drawer?.title || 'Filters'}
-                <span className="text-xs text-muted">({drawerGroups.filters.length})</span>
-              </button>
+                <span aria-hidden="true" className="text-xs">⚲</span>
+                {spec.drawer?.title || 'Filters'}
+                <span className="text-xs opacity-60">({drawerGroups.filters.length})</span>
+              </Button>
             )}
           </div>
         )}
@@ -714,8 +742,12 @@ function SpecRendererInner({ spec, boardId: boardIdProp, initialVariables = {}, 
           </div>
         )}
         {tabbedWidgets.length === 0 ? (
-          <div className="flex items-center justify-center py-16 text-sm text-muted border-2 border-dashed border-border rounded-xl bg-surface">
-            No widgets in this dashboard.
+          <div className="border-2 border-dashed border-border rounded-2xl bg-surface/50">
+            <EmptyState
+              title="No widgets"
+              description="This dashboard has no widgets to display."
+              compact
+            />
           </div>
         ) : (
           <GridCanvas
@@ -758,8 +790,8 @@ function SpecRendererInner({ spec, boardId: boardIdProp, initialVariables = {}, 
 export default function SpecRenderer(props) {
   if (!props.spec) {
     return (
-      <div className="flex items-center justify-center py-16 text-sm text-muted">
-        No spec provided.
+      <div className="py-16 border-2 border-dashed border-border rounded-2xl">
+        <EmptyState title="No spec provided." description="A dashboard spec is required to render this view." compact />
       </div>
     )
   }
