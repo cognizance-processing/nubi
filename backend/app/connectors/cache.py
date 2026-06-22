@@ -41,6 +41,27 @@ Design (in-memory backend)
 - A tag→keys index (``dict[str, set[str]]``) is maintained on put / evict /
   expire so ``invalidate(tag)`` is O(members of that tag).
 - Thread-safe via a simple ``threading.Lock``.
+
+Redis tag-set growth prevention
+---------------------------------
+When value keys expire (TTL), their ids remain in the tag SET unless
+explicitly removed — causing tag sets to grow without bound over time and
+making invalidation scans progressively slower.  Two mitigations are applied:
+
+1. **Tag-set TTL**: after every ``SADD``, ``EXPIRE`` is called on the tag SET
+   with a lifetime of ``_REDIS_TAG_SET_TTL_MULTIPLIER * ttl`` seconds.  This
+   means a tag set that receives no new members is automatically reaped by
+   Redis well after all its entries have expired, putting a hard upper bound
+   on how long stale member ids can linger.
+2. **Stale-member pruning on invalidate**: ``invalidate(tag)`` checks which
+   member value-keys actually exist in Redis (``EXISTS``), removes stale
+   members from the set via ``SREM``, and only counts/deletes live keys.
+   This keeps the count accurate and avoids spurious DELETE calls for
+   already-expired entries.
+
+The in-memory backend is unaffected (it maintains an exact tag→keys mapping
+via ``_deindex_key`` on every eviction path, so it never accumulates stale
+members).
 """
 
 from __future__ import annotations
@@ -62,6 +83,12 @@ _DEFAULT_TTL_SECONDS: float = 300.0  # 5 minutes
 # tag, used to fan out an invalidate(tag)).
 _REDIS_KEY_PREFIX: str = "nubi:cache:"
 _REDIS_TAG_PREFIX: str = "nubi:cache:tag:"
+
+# Tag sets are given a TTL of this multiple of the entry TTL so that they are
+# automatically reaped by Redis if no new members are added.  A multiplier of
+# 2 means the set lives up to 2× the entry TTL after the last SADD, ensuring
+# the set is gone well after all its entries have expired.
+_REDIS_TAG_SET_TTL_MULTIPLIER: int = 2
 
 
 class _CacheEntry(NamedTuple):
@@ -406,6 +433,14 @@ class RedisCacheBackend:
 
         A Redis failure is a no-op (logged at WARNING) — the request proceeds
         uncached rather than erroring.
+
+        Tag-set TTL (growth prevention)
+        --------------------------------
+        After each ``SADD`` we call ``EXPIRE`` on the tag SET with a lifetime
+        of ``_REDIS_TAG_SET_TTL_MULTIPLIER * ttl_seconds``.  This resets the
+        set's expiry on every write so active tag sets stay alive, while idle
+        (fully-expired-member) sets are reaped automatically by Redis within
+        ``2 * ttl`` seconds of the last write — preventing unbounded growth.
         """
         client = self._client()
         if client is None:
@@ -414,16 +449,35 @@ class RedisCacheBackend:
             client.setex(self._value_key(key), self._ttl_seconds, value)
             if tags:
                 value_key = self._value_key(key)
+                tag_set_ttl = self._ttl_seconds * _REDIS_TAG_SET_TTL_MULTIPLIER
                 for tag in tags:
-                    client.sadd(self._tag_key(tag), value_key)
+                    tag_key = self._tag_key(tag)
+                    client.sadd(tag_key, value_key)
+                    # Refresh the tag set's own TTL so it is reaped automatically
+                    # once all its value entries have expired.
+                    try:
+                        client.expire(tag_key, tag_set_ttl)
+                    except Exception:  # noqa: BLE001 — EXPIRE is best-effort
+                        pass
         except Exception as exc:  # noqa: BLE001 — caching is best-effort
             logger.warning("redis cache: put(%s) failed, skipping cache: %s", key, exc)
 
     def invalidate(self, tag: str) -> int:
         """Evict every entry carrying *tag*.  Return the number evicted.
 
-        Reads the tag's member set, deletes each member value key, then deletes
-        the tag set.  Redis errors yield 0 (logged at WARNING).
+        Reads the tag's member set, prunes stale (already-expired) members,
+        deletes each live member value key, then deletes the tag set.  Redis
+        errors yield 0 (logged at WARNING).
+
+        Stale-member pruning
+        --------------------
+        When value keys expire (TTL) Redis removes them automatically, but
+        their ids remain in the tag SET indefinitely, causing the set to grow
+        without bound.  During invalidation we call ``EXISTS`` on all candidate
+        keys and ``SREM`` any that have already expired before deleting the
+        remaining live ones.  This prevents the tag set from accumulating
+        unbounded stale member ids between invalidation calls, and ensures the
+        returned count reflects only entries that were actually deleted.
         """
         client = self._client()
         if client is None:
@@ -436,13 +490,35 @@ class RedisCacheBackend:
                 return 0
             # smembers returns bytes (decode_responses=False); they are the
             # already-namespaced value keys we wrote in put().
-            value_keys = [
+            all_value_keys = [
                 m if isinstance(m, (bytes, bytearray)) else str(m).encode()
                 for m in members
             ]
-            client.delete(*value_keys)
+            # Prune stale members — keys whose value has already expired.
+            # ``EXISTS`` returns the count of keys that exist; we check each
+            # key individually so we know which ones are live vs stale.
+            live_keys: list[bytes] = []
+            stale_keys: list[bytes] = []
+            for vk in all_value_keys:
+                try:
+                    exists_fn = getattr(client, "exists", None)
+                    key_str = vk.decode("utf-8", "replace") if isinstance(vk, (bytes, bytearray)) else vk
+                    if callable(exists_fn) and exists_fn(key_str):
+                        live_keys.append(vk)
+                    else:
+                        stale_keys.append(vk)
+                except Exception:  # noqa: BLE001 — treat as stale on error
+                    stale_keys.append(vk)
+            # Remove stale member ids from the set so it doesn't grow unbounded.
+            if stale_keys:
+                try:
+                    client.srem(tag_key, *stale_keys)
+                except Exception:  # noqa: BLE001 — pruning is best-effort
+                    pass
+            if live_keys:
+                client.delete(*live_keys)
             client.delete(tag_key)
-            return len(value_keys)
+            return len(live_keys)
         except Exception as exc:  # noqa: BLE001 — degrade to no-op
             logger.warning("redis cache: invalidate(%s) failed: %s", tag, exc)
             return 0

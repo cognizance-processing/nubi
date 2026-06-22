@@ -1811,6 +1811,144 @@ class TestApiBindingPathValidation:
         assert "error" not in entry, f"Valid path should not error: {entry}"
         assert entry.get("columns") == ["id"]
 
+    # ---------------------------------------------------------------------------
+    # NEW: [LOW] validate_canvas_doc rejects malicious assets.css at SAVE TIME
+    # ---------------------------------------------------------------------------
+
+    def test_css_with_style_close_tag_is_rejected(self):
+        """assets.css containing </style> is rejected as a hard error at save time.
+
+        Without this check an attacker could store </style><script>... in the
+        CSS field and break out of a style block when the canvas is rendered.
+        """
+        doc = CanvasDoc.model_validate(
+            {
+                "html": "<div><p>safe</p></div>",
+                "bindings": {},
+                "assets": {"css": "body { color: red; } </style><script>alert(1)</script>"},
+            }
+        )
+        ok, issues = validate_canvas_doc(doc)
+        assert ok is False, f"Expected hard error for </style> in CSS, issues: {issues}"
+        hard = [i for i in issues if not i.lstrip().lower().startswith("[warn]")]
+        assert any("</style>" in i.lower() or "style" in i.lower() for i in hard), hard
+
+    def test_css_with_script_tag_is_rejected(self):
+        """assets.css containing <script is rejected as a hard error."""
+        doc = CanvasDoc.model_validate(
+            {
+                "html": "<div></div>",
+                "bindings": {},
+                "assets": {"css": "<script>alert(1)</script>"},
+            }
+        )
+        ok, issues = validate_canvas_doc(doc)
+        assert ok is False, f"Expected hard error for <script in CSS, issues: {issues}"
+        hard = [i for i in issues if not i.lstrip().lower().startswith("[warn]")]
+        assert any("script" in i.lower() for i in hard), hard
+
+    def test_css_with_import_javascript_is_rejected(self):
+        """assets.css containing @import javascript: is rejected as a hard error."""
+        doc = CanvasDoc.model_validate(
+            {
+                "html": "<div></div>",
+                "bindings": {},
+                "assets": {"css": '@import "javascript:alert(1)";'},
+            }
+        )
+        ok, issues = validate_canvas_doc(doc)
+        assert ok is False, f"Expected hard error for @import javascript: in CSS, issues: {issues}"
+        hard = [i for i in issues if not i.lstrip().lower().startswith("[warn]")]
+        assert any("import" in i.lower() or "javascript" in i.lower() for i in hard), hard
+
+    def test_css_with_import_data_text_is_rejected(self):
+        """assets.css containing @import data:text is rejected as a hard error."""
+        doc = CanvasDoc.model_validate(
+            {
+                "html": "<div></div>",
+                "bindings": {},
+                "assets": {"css": "@import 'data:text/html,<h1>XSS</h1>';"},
+            }
+        )
+        ok, issues = validate_canvas_doc(doc)
+        assert ok is False, f"Expected hard error for @import data:text in CSS, issues: {issues}"
+        hard = [i for i in issues if not i.lstrip().lower().startswith("[warn]")]
+        assert any("import" in i.lower() or "data" in i.lower() for i in hard), hard
+
+    def test_css_with_url_javascript_is_rejected(self):
+        """assets.css containing url(javascript:...) is rejected as a hard error."""
+        doc = CanvasDoc.model_validate(
+            {
+                "html": "<div></div>",
+                "bindings": {},
+                "assets": {"css": "body { background: url(javascript:alert(1)); }"},
+            }
+        )
+        ok, issues = validate_canvas_doc(doc)
+        assert ok is False, f"Expected hard error for url(javascript:) in CSS, issues: {issues}"
+        hard = [i for i in issues if not i.lstrip().lower().startswith("[warn]")]
+        assert any("url" in i.lower() or "javascript" in i.lower() for i in hard), hard
+
+    def test_css_with_url_vbscript_is_rejected(self):
+        """assets.css containing url(vbscript:...) is rejected as a hard error."""
+        doc = CanvasDoc.model_validate(
+            {
+                "html": "<div></div>",
+                "bindings": {},
+                "assets": {"css": "body { background: url(vbscript:MsgBox('XSS')); }"},
+            }
+        )
+        ok, issues = validate_canvas_doc(doc)
+        assert ok is False, f"Expected hard error for url(vbscript:) in CSS, issues: {issues}"
+        hard = [i for i in issues if not i.lstrip().lower().startswith("[warn]")]
+        assert any("url" in i.lower() or "vbscript" in i.lower() for i in hard), hard
+
+    def test_safe_css_is_accepted(self):
+        """Normal, safe CSS in assets.css passes validation without hard errors."""
+        doc = CanvasDoc.model_validate(
+            {
+                "html": "<div><p>hello</p></div>",
+                "bindings": {},
+                "assets": {
+                    "css": (
+                        ".canvas { color: red; font-size: 14px; }\n"
+                        "body { margin: 0; padding: 0; }\n"
+                        "@media (max-width: 768px) { .canvas { width: 100%; } }"
+                    )
+                },
+            }
+        )
+        ok, issues = validate_canvas_doc(doc)
+        hard = [i for i in issues if not i.lstrip().lower().startswith("[warn]")]
+        assert hard == [], f"Safe CSS should not produce hard errors: {hard}"
+
+    def test_no_assets_css_field_is_accepted(self):
+        """Canvas doc with no assets.css key passes validation without errors."""
+        doc = CanvasDoc.model_validate(
+            {
+                "html": "<div></div>",
+                "bindings": {},
+                "assets": {},
+            }
+        )
+        ok, issues = validate_canvas_doc(doc)
+        hard = [i for i in issues if not i.lstrip().lower().startswith("[warn]")]
+        assert hard == [], f"Empty assets should not produce hard errors: {hard}"
+
+    def test_css_import_vbscript_is_rejected(self):
+        """assets.css with @import vbscript: is rejected as a hard error."""
+        doc = CanvasDoc.model_validate(
+            {
+                "html": "<div></div>",
+                "bindings": {},
+                "assets": {"css": "@import 'vbscript:alert(1)';"},
+            }
+        )
+        ok, issues = validate_canvas_doc(doc)
+        assert ok is False, f"Expected hard error for @import vbscript:, issues: {issues}"
+        hard = [i for i in issues if not i.lstrip().lower().startswith("[warn]")]
+        assert any("import" in i.lower() or "vbscript" in i.lower() for i in hard), hard
+
     @pytest.mark.asyncio
     async def test_empty_path_is_accepted(self):
         """An empty path (binding with no 'path') uses the base URL as-is.

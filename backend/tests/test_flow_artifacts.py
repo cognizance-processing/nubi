@@ -676,6 +676,80 @@ def test_oversized_dataframe_rejected_pre_serialise():
         assert is_handle(handle)
 
 
+# ---------------------------------------------------------------------------
+# 17–19. HMAC integrity — tampered blob, round-trip, missing signature
+# ---------------------------------------------------------------------------
+
+
+def test_hmac_tampered_blob_rejected():
+    """A blob tampered after upload must be rejected before pickle.loads.
+
+    SECURITY (MED RCE-surface): without HMAC, an attacker who can write to
+    the object store can supply a crafted pickle payload that executes
+    arbitrary code on deserialization.  With HMAC the verify step raises
+    ValueError before _deserialise is ever called.
+    """
+    art_store = _mem_store()
+    obj = {"safe": "payload"}
+    handle = put_artifact(obj, kind="pickle", org_id=ORG_A, store=art_store)
+
+    artifact_id = handle["artifact_id"]
+    key = f"orgs/{ORG_A}/artifacts/{artifact_id}"
+
+    # Directly corrupt the stored bytes (simulates attacker write to object store).
+    original_blob = art_store._blobs[key]
+    # Flip a byte in the payload region (after the 71-byte NUBI1:<64hex>: header).
+    tampered = bytearray(original_blob)
+    tampered[-1] ^= 0xFF  # flip last byte
+    art_store._blobs[key] = bytes(tampered)
+
+    # get_artifact must detect the tampering and refuse to deserialise.
+    with pytest.raises(ValueError, match="HMAC mismatch|integrity check failed"):
+        get_artifact(handle, org_id=ORG_A, store=art_store)
+
+
+def test_hmac_legitimate_round_trip():
+    """A legitimately-written artifact survives the HMAC check and round-trips.
+
+    Covers all four supported kinds.
+    """
+    for kind, obj in [
+        ("pickle", {"nested": [1, 2, 3]}),
+        ("json", {"scores": [0.1, 0.2]}),
+        ("bytes", b"\x00\x01\x02\x03"),
+    ]:
+        art_store = _mem_store()
+        handle = put_artifact(obj, kind=kind, org_id=ORG_A, store=art_store)
+        loaded = get_artifact(handle, org_id=ORG_A, store=art_store)
+        assert loaded == obj, f"Round-trip failed for kind={kind!r}: {loaded!r} != {obj!r}"
+
+
+def test_hmac_missing_signature_rejected():
+    """A blob with no HMAC envelope (e.g. legacy / externally-written) is rejected.
+
+    This prevents an attacker from bypassing the HMAC by writing a raw pickle
+    blob directly to the object store without the NUBI1: envelope.
+    """
+    art_store = _mem_store()
+    # Write a raw pickle blob directly — no HMAC envelope.
+    raw_pickle = pickle.dumps({"evil": "payload"})
+    artifact_id = "unsigned-artifact"
+    key = f"orgs/{ORG_A}/artifacts/{artifact_id}"
+    art_store._blobs[key] = raw_pickle
+
+    # Craft a handle that points at the unsigned blob.
+    handle = make_handle(
+        artifact_id=artifact_id,
+        kind="pickle",
+        uri=f"mem://{key}",
+        org_id=ORG_A,
+        produced_by_run=None,
+    )
+
+    with pytest.raises(ValueError, match="missing HMAC envelope|integrity check failed"):
+        get_artifact(handle, org_id=ORG_A, store=art_store)
+
+
 def test_oversized_ndarray_pre_serialise_cap_disabled():
     """When cap is disabled (=0), even a large ndarray must pass through."""
     import unittest.mock  # noqa: PLC0415

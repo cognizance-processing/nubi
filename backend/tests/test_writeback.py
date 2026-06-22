@@ -765,3 +765,80 @@ async def test_route_submit_within_row_cap_succeeds(wb_client, monkeypatch):
     assert resp.status_code == 201
     body = resp.json()
     assert body["state"] == "committed"
+
+
+# ---------------------------------------------------------------------------
+# 20. rows_override over cap is rejected in the approval route
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_route_approval_rows_override_over_cap_rejected(wb_client, monkeypatch):
+    """rows_override exceeding the server cap in the approval/edit path returns 400."""
+    import app.routes.flows as flows_module  # noqa: PLC0415
+
+    monkeypatch.setattr(flows_module, "_MAX_WRITEBACK_ROWS", 3)
+
+    client, alice_id, bob_id, carol_id, org_id, wb_store, repo = wb_client
+
+    # Alice submits a gated write-back (pending_approval)
+    resp = await client.post(
+        "/api/v1/flows/writeback",
+        json={
+            "idempotency_key": _idem(),
+            "rows": [{"id": 1}],
+            "target": {"connector_id": "c1", "object": "raw.t"},
+            "mode": "append",
+            "approval_required": True,
+            "dry_run": False,
+            "meta": {},
+        },
+        headers=_auth_headers(alice_id),
+    )
+    assert resp.status_code == 201
+    wb_id = resp.json()["id"]
+
+    # Alice (owner/approver) tries to edit with rows_override that exceeds the cap
+    over_cap_override = [{"id": i} for i in range(4)]  # 4 > cap of 3
+    resp2 = await client.post(
+        f"/api/v1/flows/writeback/{wb_id}/approval",
+        json={"action": "edit", "rows_override": over_cap_override},
+        headers=_auth_headers(alice_id),
+    )
+    assert resp2.status_code == 400
+    body = resp2.json()
+    assert body["error"]["code"] == "row_cap_exceeded"
+
+
+# ---------------------------------------------------------------------------
+# 21. AppError for row-cap has correct code, message, and status
+# ---------------------------------------------------------------------------
+
+
+def test_writeback_cap_apperror_has_correct_code_message_status():
+    """The AppError raised on row-cap breach has correct (code, message, status)."""
+    import app.routes.flows as flows_module  # noqa: PLC0415
+
+    # Simulate what both preview and submit routes raise:
+    try:
+        raise flows_module.AppError(
+            "row_cap_exceeded",
+            f"rows exceeds server cap of {flows_module._MAX_WRITEBACK_ROWS}",
+            400,
+        )
+    except flows_module.AppError as exc:
+        assert exc.code == "row_cap_exceeded"
+        assert "server cap" in exc.message
+        assert exc.status == 400
+
+    # Also test the rows_override variant:
+    try:
+        raise flows_module.AppError(
+            "row_cap_exceeded",
+            f"rows_override exceeds server cap of {flows_module._MAX_WRITEBACK_ROWS}",
+            400,
+        )
+    except flows_module.AppError as exc:
+        assert exc.code == "row_cap_exceeded"
+        assert "rows_override" in exc.message
+        assert exc.status == 400

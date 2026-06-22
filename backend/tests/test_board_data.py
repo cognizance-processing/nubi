@@ -1229,3 +1229,153 @@ async def test_embed_token_skip_metering_does_not_call_enforce_quota(
         f"enforce_quota was called for an embed token — viewers are never metered. "
         f"Calls: {quota_calls}"
     )
+
+
+# ---------------------------------------------------------------------------
+# NEW: [MED resource] provider result cardinality cap (Fix 1)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_provider_too_many_result_tables_raises(repo: InMemoryRepo) -> None:
+    """Provider returning more tables than _PROVIDER_MAX_TABLES raises AppError.
+
+    A DataProvider returning many named result sets would produce an unbounded
+    Arrow IPC payload cached in memory.  The fix caps the number of result tables
+    and raises provider_result_too_large (422) when exceeded.
+    """
+    import app.dashboards.board_data as _bd_mod
+
+    original_max = _bd_mod._PROVIDER_MAX_TABLES
+    small_cap = 2
+    _bd_mod._PROVIDER_MAX_TABLES = small_cap
+
+    try:
+        over_cap_tables = {f"result_{i}": pa.table({"x": [i]}) for i in range(small_cap + 1)}
+
+        async def _fake_enforce_quota(org_id: str, dimension: str, amount: float = 1.0) -> None:
+            pass
+
+        await repo.update(
+            "boards",
+            _ORG,
+            _BOARD_ID,
+            {"config": {"spec": _make_spec_with_flow_provider()}},
+        )
+        with (
+            patch("app.features.enforce_quota", side_effect=_fake_enforce_quota),
+            patch(
+                "app.dashboards.board_data._resolve_flow_provider",
+                new=AsyncMock(return_value=over_cap_tables),
+            ),
+            pytest.raises(AppError) as exc_info,
+        ):
+            await resolve_provider_data(
+                board_id=_BOARD_ID,
+                provider_id=_PROVIDER_ID,
+                params={},
+                org_id=_ORG,
+                claims={"policies": {}},
+                repo=repo,
+            )
+        assert exc_info.value.code == "provider_result_too_large"
+        assert exc_info.value.status == 422
+    finally:
+        _bd_mod._PROVIDER_MAX_TABLES = original_max
+
+
+@pytest.mark.asyncio
+async def test_provider_result_within_table_cap_succeeds(repo: InMemoryRepo) -> None:
+    """Provider returning tables at or below _PROVIDER_MAX_TABLES succeeds."""
+    import app.dashboards.board_data as _bd_mod
+
+    original_max = _bd_mod._PROVIDER_MAX_TABLES
+    cap = 3
+    _bd_mod._PROVIDER_MAX_TABLES = cap
+
+    try:
+        # Exactly at the cap.
+        at_cap_tables = {f"result_{i}": pa.table({"x": [i]}) for i in range(cap)}
+
+        async def _fake_enforce_quota(org_id: str, dimension: str, amount: float = 1.0) -> None:
+            pass
+
+        await repo.update(
+            "boards",
+            _ORG,
+            _BOARD_ID,
+            {"config": {"spec": _make_spec_with_flow_provider()}},
+        )
+        with (
+            patch("app.features.enforce_quota", side_effect=_fake_enforce_quota),
+            patch(
+                "app.dashboards.board_data._resolve_flow_provider",
+                new=AsyncMock(return_value=at_cap_tables),
+            ),
+        ):
+            tables = await resolve_provider_data(
+                board_id=_BOARD_ID,
+                provider_id=_PROVIDER_ID,
+                params={},
+                org_id=_ORG,
+                claims={"policies": {}},
+                repo=repo,
+            )
+        assert len(tables) == cap
+    finally:
+        _bd_mod._PROVIDER_MAX_TABLES = original_max
+
+
+@pytest.mark.asyncio
+async def test_provider_bytes_cap_raises(repo: InMemoryRepo) -> None:
+    """Provider serialised result exceeding _PROVIDER_MAX_BYTES raises AppError.
+
+    The fix checks the serialised byte size before caching and raises
+    provider_result_too_large (422) when exceeded.
+    """
+    import app.dashboards.board_data as _bd_mod
+
+    original_max_bytes = _bd_mod._PROVIDER_MAX_BYTES
+    # 1 byte is smaller than any real Arrow IPC stream.
+    _bd_mod._PROVIDER_MAX_BYTES = 1
+
+    try:
+        async def _fake_enforce_quota(org_id: str, dimension: str, amount: float = 1.0) -> None:
+            pass
+
+        async def _fake_run(query_id, org_id, _repo, policies):
+            return ["x"], [[1], [2], [3]]
+
+        with (
+            patch("app.features.enforce_quota", side_effect=_fake_enforce_quota),
+            patch("app.dashboards.collect.run_query_rows", side_effect=_fake_run),
+            pytest.raises(AppError) as exc_info,
+        ):
+            await resolve_provider_data(
+                board_id=_BOARD_ID,
+                provider_id=_PROVIDER_ID,
+                params={},
+                org_id=_ORG,
+                claims={"policies": {}},
+                repo=repo,
+            )
+        assert exc_info.value.code == "provider_result_too_large"
+        assert exc_info.value.status == 422
+    finally:
+        _bd_mod._PROVIDER_MAX_BYTES = original_max_bytes
+
+
+def test_provider_max_tables_cap_is_configurable() -> None:
+    """_PROVIDER_MAX_TABLES is a positive integer (env-overridable cap)."""
+    import app.dashboards.board_data as _bd_mod
+
+    assert isinstance(_bd_mod._PROVIDER_MAX_TABLES, int)
+    assert _bd_mod._PROVIDER_MAX_TABLES > 0
+
+
+def test_provider_max_bytes_cap_is_configurable() -> None:
+    """_PROVIDER_MAX_BYTES is a non-negative integer (env-overridable cap)."""
+    import app.dashboards.board_data as _bd_mod
+
+    assert isinstance(_bd_mod._PROVIDER_MAX_BYTES, int)
+    assert _bd_mod._PROVIDER_MAX_BYTES >= 0

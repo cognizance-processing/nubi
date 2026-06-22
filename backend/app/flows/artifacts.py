@@ -48,6 +48,8 @@ Artifact kinds
 
 from __future__ import annotations
 
+import hashlib
+import hmac
 import io
 import json
 import os
@@ -63,6 +65,93 @@ from typing import Any, Literal
 # ---------------------------------------------------------------------------
 
 _ARTIFACT_MAX_BYTES: int = int(os.environ.get("NUBI_ARTIFACT_MAX_BYTES", 500 * 1024 * 1024))
+
+
+# ---------------------------------------------------------------------------
+# HMAC integrity protection for stored artifact blobs
+#
+# Every blob written to the object store is prefixed with a compact envelope:
+#
+#   b"NUBI1:" + <hmac-sha256-hex-64-chars> + b":" + <payload>
+#
+# The HMAC is computed over the raw *payload* bytes using a secret key
+# resolved from the environment (NUBI_ARTIFACT_HMAC_KEY, or NUBI_SECRET_KEY
+# as a fallback).  On get_artifact the envelope is parsed and the HMAC is
+# verified *before* any pickle/joblib deserialisation occurs so a forged or
+# tampered blob can never trigger arbitrary code execution.
+#
+# Key resolution order:
+#   1. NUBI_ARTIFACT_HMAC_KEY   (dedicated, highest priority)
+#   2. NUBI_SECRET_KEY          (shared app secret, dev fallback)
+#   3. A hard-coded dev sentinel (local dev only — logs a warning)
+# ---------------------------------------------------------------------------
+
+_HMAC_ENVELOPE_PREFIX = b"NUBI1:"
+_HMAC_DIGEST_LEN = 64  # hex chars for SHA-256
+
+
+def _get_hmac_key() -> bytes:
+    """Return the HMAC signing key as bytes.
+
+    Precedence: NUBI_ARTIFACT_HMAC_KEY > NUBI_SECRET_KEY > dev sentinel.
+    The dev sentinel is only used when neither env var is set; it logs a
+    warning so operators notice in non-development environments.
+    """
+    key = os.environ.get("NUBI_ARTIFACT_HMAC_KEY") or os.environ.get("NUBI_SECRET_KEY")
+    if key:
+        return key.encode("utf-8") if isinstance(key, str) else key
+    # Dev sentinel — not secret, but safe for local tests.
+    import warnings  # noqa: PLC0415
+    warnings.warn(
+        "NUBI_ARTIFACT_HMAC_KEY (or NUBI_SECRET_KEY) is not set. "
+        "Artifact HMAC will use an insecure dev-only key. "
+        "Set NUBI_ARTIFACT_HMAC_KEY in production.",
+        stacklevel=3,
+    )
+    return b"nubi-dev-hmac-sentinel-NOT-FOR-PRODUCTION"
+
+
+def _hmac_sign(payload: bytes) -> bytes:
+    """Return the full envelope: prefix + hex-digest + colon + payload."""
+    key = _get_hmac_key()
+    digest = hmac.new(key, payload, hashlib.sha256).hexdigest().encode("ascii")
+    return _HMAC_ENVELOPE_PREFIX + digest + b":" + payload
+
+
+def _hmac_verify_and_strip(blob: bytes) -> bytes:
+    """Verify the HMAC envelope and return the inner payload bytes.
+
+    Raises
+    ------
+    ValueError
+        When the blob lacks the NUBI1 envelope (missing signature) or the
+        HMAC does not match (tampered blob).  Either condition is treated as
+        an integrity failure — the caller must not proceed to deserialise.
+    """
+    if not blob.startswith(_HMAC_ENVELOPE_PREFIX):
+        raise ValueError(
+            "Artifact integrity check failed: missing HMAC envelope. "
+            "The blob was not produced by this system or the signature was stripped."
+        )
+    # Structure: b"NUBI1:<64-hex-chars>:<payload>"
+    rest = blob[len(_HMAC_ENVELOPE_PREFIX):]  # "<64-hex-chars>:<payload>"
+    sep_pos = _HMAC_DIGEST_LEN  # the colon is right after the 64 hex chars
+    if len(rest) <= sep_pos or rest[sep_pos:sep_pos + 1] != b":":
+        raise ValueError(
+            "Artifact integrity check failed: malformed HMAC envelope."
+        )
+    stored_digest = rest[:sep_pos]  # 64 ascii bytes
+    payload = rest[sep_pos + 1:]    # the actual serialised object bytes
+
+    key = _get_hmac_key()
+    expected_digest = hmac.new(key, payload, hashlib.sha256).hexdigest().encode("ascii")
+
+    if not hmac.compare_digest(stored_digest, expected_digest):
+        raise ValueError(
+            "Artifact integrity check failed: HMAC mismatch. "
+            "The blob may have been tampered with or produced with a different key."
+        )
+    return payload
 
 
 # ---------------------------------------------------------------------------
@@ -430,8 +519,12 @@ def put_artifact(
 
     artifact_id = str(uuid.uuid4())
 
+    # Sign the serialised bytes before uploading so any tampering can be
+    # detected at load time before pickle/joblib deserialisation.
+    signed_data = _hmac_sign(data)
+
     _store = store or get_artifact_store()
-    uri = _store.upload(artifact_id, org_id, data)
+    uri = _store.upload(artifact_id, org_id, signed_data)
 
     return make_handle(
         artifact_id=artifact_id,
@@ -496,5 +589,10 @@ def get_artifact(
     kind = handle["kind"]
 
     _store = store or get_artifact_store()
-    data = _store.download(artifact_id, org_id)
+    blob = _store.download(artifact_id, org_id)
+
+    # Verify HMAC *before* deserialising — rejects tampered/forged blobs so
+    # a compromised object store cannot trigger pickle RCE.
+    data = _hmac_verify_and_strip(blob)
+
     return _deserialise(data, kind)

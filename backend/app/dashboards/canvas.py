@@ -332,6 +332,37 @@ def validate_canvas_doc(doc: CanvasDoc, *, org_id: str | None = None) -> tuple[b
                 # For sync validate_canvas_doc, we skip the async repo lookup.
                 pass
 
+    # ── 7. [LOW] CSS safety — reject malicious assets.css at SAVE TIME ──────────
+    # The render path strips dangerous CSS, but we add a defence-in-depth hard
+    # error at save time so attackers cannot persist XSS/CSRF payloads in the
+    # stored doc.  We reject the three canonical CSS injection vectors:
+    #   a) </style>  — breaks out of a <style> block.
+    #   b) <script   — injects a script element via CSS content.
+    #   c) @import with javascript:, vbscript:, or data:text payloads — loads
+    #      external scripts or data URIs via CSS @import rules.
+    css_value = doc.assets.get("css") if isinstance(doc.assets, dict) else None
+    if css_value and isinstance(css_value, str):
+        _css_hard_patterns = [
+            (r"</\s*style", "</style> tag in assets.css breaks out of a <style> block"),
+            (r"<\s*script", "<script in assets.css injects a script element"),
+            (
+                r"@import\s+['\"]?\s*(javascript:|vbscript:|data:\s*text)",
+                "@import with javascript:, vbscript:, or data:text in assets.css "
+                "loads a malicious payload",
+            ),
+            (
+                r"url\s*\(\s*['\"]?\s*(javascript:|vbscript:|data:\s*text)",
+                "url(javascript:), url(vbscript:), or url(data:text) in assets.css "
+                "executes a script via CSS url()",
+            ),
+        ]
+        for _pattern, _description in _css_hard_patterns:
+            if re.search(_pattern, css_value, re.IGNORECASE):
+                issues.append(
+                    f"assets.css contains disallowed content: {_description}. "
+                    "Remove the offending rule before saving."
+                )
+
     # Hard errors = any issue NOT prefixed with [warn]
     hard = [i for i in issues if not i.lstrip().lower().startswith("[warn]")]
     ok = len(hard) == 0

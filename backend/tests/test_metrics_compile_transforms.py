@@ -2696,3 +2696,245 @@ def test_ytd_partition_quoted_executes_in_duckdb() -> None:
     assert row_by_ym[(2024, 3)][3] == 600.0, (
         f"YTD at 2024-03 should be 600, got {row_by_ym[(2024, 3)][3]}"
     )
+
+
+# ---------------------------------------------------------------------------
+# 15. SIXTH-WAVE REGRESSION TESTS — top_n.other compiler regressions (HIGH)
+#
+# HARD RULE: these tests go through planner.plan() + execute on in-memory
+# DuckDB and assert EXACT RESULT ROWS.
+#
+# Regression 1 [HIGH]: _apply_top_n_other used .set("with", None) instead of
+#   .set("with_", None) — a NO-OP — so the WITH survived in the top-N arm,
+#   producing nested double "WITH __base AS (...) (WITH __base AS (...) SELECT
+#   ...) UNION ALL (...)".  Fix: .set("with_", None).
+#
+# Regression 2 [HIGH]: Other-bucket NOT IN used rls_keys=() (non-correlated,
+#   global top-N) while the IN arm used rls_keys=tuple(metric.rls_keys) (per-
+#   tenant).  A dim in tenant X's top-N but not the global top-N → DOUBLE-
+#   COUNTED; a dim in global but not tenant X's top-N → MISSING.
+#   Fix: correlate Other arm's NOT IN on rls_keys too via __other_outer alias.
+# ---------------------------------------------------------------------------
+
+
+def _duckdb_conn6():
+    """Fresh in-memory DuckDB connection for wave-6 tests."""
+    try:
+        import duckdb
+        return duckdb.connect(":memory:")
+    except ImportError:
+        pytest.skip("duckdb not installed")
+
+
+def _plan6(sql: str, claims=None):
+    """Run SQL through plan() (dialect=duckdb) and return PhysicalPlan."""
+    from app.connectors.planner import plan as _plan
+    return _plan(sql, claims=claims or {}, dialect="duckdb")
+
+
+# ── Regression 1 [HIGH]: no nested double WITH ───────────────────────────────
+
+def test_top_n_other_no_nested_double_with() -> None:
+    """[HIGH] _apply_top_n_other must NOT produce a nested double WITH __base.
+
+    The bug: .set("with", None) was a no-op (sqlglot uses "with_" as the key),
+    so the WITH clause survived in the top-N arm, producing:
+        WITH __base AS (...) (WITH __base AS (...) SELECT ...) UNION ALL (...)
+    Fix: .set("with_", None).
+
+    This test asserts:
+    1. The compiled SQL contains exactly ONE "WITH __BASE AS" token.
+    2. The SQL parses cleanly via sqlglot.
+    3. The SQL executes on in-memory DuckDB without error.
+    """
+    import sqlglot as _sg
+
+    con = _duckdb_conn6()
+    con.execute("""
+        CREATE TABLE topn_no_double_with (
+            tenant  VARCHAR,
+            cat     VARCHAR,
+            amount  DOUBLE,
+            sale_date DATE
+        )
+    """)
+    con.execute("""
+        INSERT INTO topn_no_double_with VALUES
+            ('X', 'apple',  200, '2024-01-15'),
+            ('X', 'banana',  50, '2024-01-20'),
+            ('X', 'cherry',  30, '2024-01-25')
+    """)
+
+    m = MetricDefinition(
+        id="no_dbl_with",
+        name="No Double WITH",
+        measure=Measure(name="amount", agg="sum", expr="amount"),
+        base_table="topn_no_double_with",
+        dimensions=(Dimension(name="cat"),),
+        time_dimension=TimeDimension(
+            column="sale_date",
+            grains=("month",),
+            default_grain="month",
+        ),
+        rls_keys=("tenant",),
+    )
+    mq = MetricQuery(
+        metric_id="no_dbl_with",
+        dimensions=("cat",),
+        time_grain="month",
+        top_n=TopN(dimension="cat", n=1, other=True),
+    )
+    sql, named_params = compile_metric(m, mq)
+
+    # Assert: exactly ONE "WITH __BASE AS" token.
+    count_with = sql.upper().count("WITH __BASE AS")
+    assert count_with == 1, (
+        f"Expected exactly 1 'WITH __BASE AS' token but found {count_with}.\n"
+        f"This indicates the top-N arm still carries its own WITH clause (nested "
+        f"double-WITH regression).\nSQL:\n{sql[:800]}"
+    )
+
+    # Assert: SQL parses cleanly via sqlglot.
+    parsed = _sg.parse_one(sql, dialect="duckdb")
+    assert parsed is not None, f"SQL failed to parse:\n{sql[:600]}"
+
+    # Assert: SQL executes without error through plan().
+    p = _plan6(sql, claims={"policies": {"tenant": "X"}})
+    rows = con.execute(p.sql).fetchall()
+    assert rows, f"Expected rows from tenant X; got none.\nSQL:\n{p.sql}"
+
+
+# ── Regression 2 [HIGH]: Other arm correlated on rls_keys (per-tenant) ───────
+
+def test_top_n_other_per_tenant_no_double_count_no_missing() -> None:
+    """[HIGH] Other bucket must use per-tenant top-N exclusion, not global.
+
+    Setup: two tenants whose per-tenant top-1 cat DIFFERS.
+      Tenant A: apple=200 (top-1), banana=50, cherry=30
+                → Other should = banana+cherry = 80
+      Tenant B: banana=300 (top-1), apple=100, cherry=70
+                → Other should = apple+cherry = 170
+
+    With the buggy non-correlated NOT IN (rls_keys=()):
+      - The global top-N is banana (300+50=350 > apple 200+100=300).
+      - Tenant A's Other arm excludes banana (global top) but includes apple
+        (not global top-1) → apple appears in BOTH arms: DOUBLE-COUNTED.
+      - Tenant A's Other sum = apple(200) + cherry(30) = 230 ≠ 80 (wrong).
+
+    With the fix (correlated NOT IN on rls_keys=('tenant',)):
+      - Tenant A's Other arm excludes apple (A's top-1) → Other = 80.
+      - Tenant B's Other arm excludes banana (B's top-1) → Other = 170.
+
+    This test asserts EXACT rows for EACH tenant through plan().
+    """
+    import sqlglot as _sg
+    from app.connectors.planner import resolve_named_params
+
+    con = _duckdb_conn6()
+    con.execute("""
+        CREATE TABLE topn_other_pertenant (
+            tenant    VARCHAR,
+            cat       VARCHAR,
+            amount    DOUBLE,
+            sale_date DATE
+        )
+    """)
+    # Tenant A: apple=200 (top-1), banana=50, cherry=30
+    # Tenant B: banana=300 (top-1), apple=100, cherry=70
+    con.execute("""
+        INSERT INTO topn_other_pertenant VALUES
+            ('A', 'apple',  200, '2024-01-15'),
+            ('A', 'banana',  50, '2024-01-20'),
+            ('A', 'cherry',  30, '2024-01-25'),
+            ('B', 'apple',  100, '2024-01-10'),
+            ('B', 'banana', 300, '2024-01-12'),
+            ('B', 'cherry',  70, '2024-01-18')
+    """)
+
+    m = MetricDefinition(
+        id="pertenant_other",
+        name="Per-Tenant Other",
+        measure=Measure(name="amount", agg="sum", expr="amount"),
+        base_table="topn_other_pertenant",
+        dimensions=(Dimension(name="cat"),),
+        time_dimension=TimeDimension(
+            column="sale_date",
+            grains=("month",),
+            default_grain="month",
+        ),
+        rls_keys=("tenant",),
+    )
+    mq = MetricQuery(
+        metric_id="pertenant_other",
+        dimensions=("cat",),
+        time_grain="month",
+        top_n=TopN(dimension="cat", n=1, other=True, other_label="Other"),
+    )
+
+    sql, named_params = compile_metric(m, mq)
+    pos_sql, pos_params = resolve_named_params(sql, named_params)
+
+    # SQL must parse cleanly.
+    parsed = _sg.parse_one(pos_sql, dialect="duckdb")
+    assert parsed is not None, f"SQL failed to parse:\n{pos_sql[:600]}"
+
+    # SQL must contain exactly ONE WITH __BASE AS (no nested double-WITH).
+    count_with = pos_sql.upper().count("WITH __BASE AS")
+    assert count_with == 1, (
+        f"Nested double-WITH detected (regression 1): count={count_with}\n"
+        f"SQL:\n{pos_sql[:800]}"
+    )
+
+    # ── Tenant A ─────────────────────────────────────────────────────────────
+    p_a = _plan6(pos_sql, claims={"policies": {"tenant": "A"}})
+    rows_a = con.execute(p_a.sql, p_a.params).fetchall()
+
+    # Columns order: cat, tenant, sale_date_month, amount
+    by_cat_a = {r[0]: r for r in rows_a}
+
+    assert "apple" in by_cat_a, (
+        f"Tenant A: top-1 'apple' missing; rows={rows_a}"
+    )
+    assert "Other" in by_cat_a, (
+        f"Tenant A: 'Other' bucket missing; rows={rows_a}"
+    )
+    # No cross-tenant rows.
+    assert "B" not in {r[1] for r in rows_a}, (
+        f"Tenant A: cross-tenant rows from B leaked; rows={rows_a}"
+    )
+    # apple = 200, Other = banana(50) + cherry(30) = 80
+    assert by_cat_a["apple"][3] == 200.0, (
+        f"Tenant A apple amount: expected 200, got {by_cat_a['apple'][3]}"
+    )
+    other_a = by_cat_a["Other"][3]
+    assert other_a == 80.0, (
+        f"Tenant A Other amount: expected 80 (banana=50 + cherry=30), got {other_a}.\n"
+        f"If 230: apple is DOUBLE-COUNTED (regression 2: non-correlated NOT IN).\n"
+        f"rows={rows_a}"
+    )
+
+    # ── Tenant B ─────────────────────────────────────────────────────────────
+    p_b = _plan6(pos_sql, claims={"policies": {"tenant": "B"}})
+    rows_b = con.execute(p_b.sql, p_b.params).fetchall()
+
+    by_cat_b = {r[0]: r for r in rows_b}
+
+    assert "banana" in by_cat_b, (
+        f"Tenant B: top-1 'banana' missing; rows={rows_b}"
+    )
+    assert "Other" in by_cat_b, (
+        f"Tenant B: 'Other' bucket missing; rows={rows_b}"
+    )
+    # No cross-tenant rows.
+    assert "A" not in {r[1] for r in rows_b}, (
+        f"Tenant B: cross-tenant rows from A leaked; rows={rows_b}"
+    )
+    # banana = 300, Other = apple(100) + cherry(70) = 170
+    assert by_cat_b["banana"][3] == 300.0, (
+        f"Tenant B banana amount: expected 300, got {by_cat_b['banana'][3]}"
+    )
+    other_b = by_cat_b["Other"][3]
+    assert other_b == 170.0, (
+        f"Tenant B Other amount: expected 170 (apple=100 + cherry=70), got {other_b}.\n"
+        f"rows={rows_b}"
+    )

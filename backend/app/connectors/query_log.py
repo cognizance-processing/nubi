@@ -230,10 +230,21 @@ def _measure_str(func: str, col: str | None) -> str:
 
 
 def _agg_func_name(node: exp.Expression) -> str | None:
-    """Return the lower-case aggregate function name for *node*, or None."""
+    """Return the lower-case aggregate function name for *node*, or None.
+
+    COUNT(DISTINCT col) is returned as ``'count_distinct'`` (NOT ``'count'``)
+    so that the routing logic can distinguish it from plain COUNT(col).
+    COUNT(DISTINCT …) is NOT re-aggregable from partial counts, so it must
+    never be mapped to the re-aggregable ``'count'`` key.
+    """
     if isinstance(node, exp.Anonymous):
         name = node.name.upper()
         return name.lower() if name in _AGG_FUNC_NAMES else None
+    if isinstance(node, exp.Count):
+        # COUNT(DISTINCT col) → sqlglot models this as exp.Count(this=exp.Distinct(…))
+        if isinstance(node.this, exp.Distinct):
+            return "count_distinct"
+        return "count"
     if isinstance(node, _AGG_TYPED_CLASSES):
         # Map the typed class to a canonical SQL function name.
         return type(node).__name__.lower()

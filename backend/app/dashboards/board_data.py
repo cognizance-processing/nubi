@@ -53,6 +53,21 @@ import pyarrow as pa
 _DEFAULT_ROW_CAP = 100_000
 _ROW_CAP: int = int(os.environ.get("NUBI_COLLECT_ROW_CAP", _DEFAULT_ROW_CAP))
 
+# [MED resource] Cap: max number of result tables per provider response.
+# A provider returning huge numbers of named result sets would produce an
+# unbounded Arrow IPC payload cached in memory.  Override via env var.
+_DEFAULT_PROVIDER_MAX_TABLES = 50
+_PROVIDER_MAX_TABLES: int = int(
+    os.environ.get("NUBI_PROVIDER_MAX_TABLES", _DEFAULT_PROVIDER_MAX_TABLES)
+)
+
+# [MED resource] Cap: max total serialised bytes across all result tables in a
+# single provider response.  0 = unlimited.  Default 64 MiB.
+_DEFAULT_PROVIDER_MAX_BYTES = 64 * 1024 * 1024  # 64 MiB
+_PROVIDER_MAX_BYTES: int = int(
+    os.environ.get("NUBI_PROVIDER_MAX_BYTES", _DEFAULT_PROVIDER_MAX_BYTES)
+)
+
 from app.errors import AppError
 
 logger = logging.getLogger(__name__)
@@ -566,14 +581,39 @@ async def resolve_provider_data(
             400,
         )
 
+    # ── [MED resource] Cardinality cap: reject provider responses with too many
+    # result tables or too many serialised bytes.  This prevents an unbounded
+    # Arrow IPC payload from being materialised in memory and cached.
+    if _PROVIDER_MAX_TABLES > 0 and len(tables) > _PROVIDER_MAX_TABLES:
+        raise AppError(
+            "provider_result_too_large",
+            f"Provider {provider_id!r} returned {len(tables)} result tables; "
+            f"maximum allowed is {_PROVIDER_MAX_TABLES} "
+            f"(set NUBI_PROVIDER_MAX_TABLES to raise the limit).",
+            422,
+        )
+
     # ── Cache store ──────────────────────────────────────────────────────────
     try:
         serialised = _tables_to_bytes(tables)
+        # [MED resource] Byte-size cap: reject oversized serialised payloads
+        # before writing them to the cache.
+        if _PROVIDER_MAX_BYTES > 0 and len(serialised) > _PROVIDER_MAX_BYTES:
+            raise AppError(
+                "provider_result_too_large",
+                f"Provider {provider_id!r} serialised result is "
+                f"{len(serialised):,} bytes; maximum allowed is "
+                f"{_PROVIDER_MAX_BYTES:,} bytes "
+                f"(set NUBI_PROVIDER_MAX_BYTES to raise the limit).",
+                422,
+            )
         put_base_scan(
             cache_key,
             serialised,
             tags=[f"org:{org_id}", f"board:{board_id}"],
         )
+    except AppError:
+        raise
     except Exception as exc:  # noqa: BLE001
         logger.warning("provider cache put failed for key %s: %s", cache_key, exc)
 

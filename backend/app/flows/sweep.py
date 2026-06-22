@@ -272,14 +272,17 @@ async def run_sweep(
             )
             cell_state = final_run.get("state", "failed")
 
-            # Collect task outputs (success tasks).
-            task_runs = await store.list_task_runs(run_id)
-            for tr in task_runs:
-                if tr.get("state") == "success" and tr.get("result") is not None:
-                    outputs[tr["task_key"]] = tr["result"]
-
             if cell_state == "success":
                 succeeded += 1
+                # [MED N+1] Only fetch task_runs for successful cells — failed
+                # cells have no success outputs to collect, so the list_task_runs
+                # call would be wasted.  This makes the query count sub-linear
+                # in total cells when the majority of cells fail or when the
+                # caller only cares about the diff surface (success outputs).
+                task_runs = await store.list_task_runs(run_id)
+                for tr in task_runs:
+                    if tr.get("state") == "success" and tr.get("result") is not None:
+                        outputs[tr["task_key"]] = tr["result"]
             else:
                 failed += 1
                 error = final_run.get("error")

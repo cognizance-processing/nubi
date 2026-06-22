@@ -155,11 +155,19 @@ class FakeRedis:
 
     Mirrors decode_responses=False: ``get``/``smembers`` return bytes. Only the
     methods the RedisCacheBackend actually calls are implemented.
+
+    Additions for tag-set growth prevention tests:
+    - ``expire(key, ttl)`` — records the intended TTL (does not actually expire
+      entries; just tracks the call so tests can assert it was made).
+    - ``exists(key)`` — returns 1 if the key is in kv, else 0.
+    - ``srem(key, *members)`` — removes members from a set.
     """
 
     def __init__(self) -> None:
         self.kv: dict[str, bytes] = {}
         self.sets: dict[str, set[bytes]] = {}
+        # Records (key, ttl) pairs from expire() calls (for assertion in tests).
+        self.expire_calls: list[tuple[str, int]] = []
 
     def ping(self) -> bool:
         return True
@@ -180,6 +188,31 @@ class FakeRedis:
 
     def smembers(self, key: str) -> set[bytes]:
         return set(self.sets.get(key, set()))
+
+    def srem(self, key: str, *members) -> int:
+        s = self.sets.get(key)
+        if s is None:
+            return 0
+        removed = 0
+        for m in members:
+            mb = m if isinstance(m, bytes) else str(m).encode()
+            if mb in s:
+                s.discard(mb)
+                removed += 1
+        if not s:
+            self.sets.pop(key, None)
+        return removed
+
+    def exists(self, key: str) -> int:
+        """Return 1 if *key* exists in kv, else 0 (mirrors redis-py EXISTS)."""
+        k = key.decode("utf-8", "replace") if isinstance(key, (bytes, bytearray)) else key
+        return 1 if k in self.kv else 0
+
+    def expire(self, key: str, ttl: int) -> int:
+        """Record the EXPIRE call and return 1 (success) if key exists, else 0."""
+        kk = key.decode("utf-8", "replace") if isinstance(key, (bytes, bytearray)) else key
+        self.expire_calls.append((kk, ttl))
+        return 1 if (kk in self.kv or kk in self.sets) else 0
 
     def delete(self, *keys: str) -> int:
         n = 0
@@ -269,6 +302,124 @@ def test_redis_backend_get_degrades_to_miss_on_error(monkeypatch):
     monkeypatch.setattr("app.cache.redis_client.get_redis", lambda: Boom())
     backend = RedisCacheBackend(ttl=300)
     assert backend.get("k") is None  # no exception
+
+
+# ---------------------------------------------------------------------------
+# Tag-set growth prevention (MED fix)
+# ---------------------------------------------------------------------------
+
+
+def test_redis_tag_set_receives_expire_after_sadd(fake_redis):
+    """put() must call EXPIRE on the tag set so it is reaped after entries expire.
+
+    Without the EXPIRE call, tag sets accumulate stale member ids indefinitely
+    once all their value entries have expired (unbounded growth).  The fix calls
+    EXPIRE with ttl * _REDIS_TAG_SET_TTL_MULTIPLIER after each SADD so Redis
+    automatically reaps the set.
+    """
+    from app.connectors.cache import _REDIS_TAG_SET_TTL_MULTIPLIER
+
+    backend = RedisCacheBackend(ttl=300)
+    backend.put("k1", b"hello", tags=["org:1"])
+
+    # EXPIRE must have been called on the tag-set key.
+    tag_set_key = "nubi:cache:tag:org:1"
+    expire_targets = [k for k, _ttl in fake_redis.expire_calls]
+    assert tag_set_key in expire_targets, (
+        "EXPIRE was not called on the tag set — tag sets will grow without bound."
+    )
+
+    # The TTL on the tag set must be the entry TTL × the multiplier.
+    ttl_for_tag = next(
+        ttl for k, ttl in fake_redis.expire_calls if k == tag_set_key
+    )
+    assert ttl_for_tag == 300 * _REDIS_TAG_SET_TTL_MULTIPLIER
+
+
+def test_redis_tag_set_expire_refreshed_on_each_sadd(fake_redis):
+    """Every put() to an existing tag refreshes the tag set's EXPIRE.
+
+    Active tag sets (still receiving new members) must stay alive, so EXPIRE
+    is called on every SADD, not just the first one.
+    """
+    backend = RedisCacheBackend(ttl=60)
+    backend.put("k1", b"v1", tags=["org:1"])
+    backend.put("k2", b"v2", tags=["org:1"])
+
+    tag_set_key = "nubi:cache:tag:org:1"
+    expire_calls_for_tag = [(k, t) for k, t in fake_redis.expire_calls if k == tag_set_key]
+    # EXPIRE should have been called at least once per put.
+    assert len(expire_calls_for_tag) >= 2, (
+        "EXPIRE was not refreshed on each SADD — idle tag sets may not be reaped."
+    )
+
+
+def test_redis_invalidate_prunes_stale_members_from_tag_set(fake_redis):
+    """invalidate(tag) must prune stale (expired) member ids from the tag set.
+
+    When value keys expire (TTL), Redis removes the value but the id remains in
+    the tag SET.  invalidate() must detect stale ids (via EXISTS), SREM them,
+    and return a count that reflects only actually-deleted live entries.
+    """
+    backend = RedisCacheBackend(ttl=300)
+
+    # Populate two entries under the same tag.
+    backend.put("live_key", b"alive", tags=["org:1"])
+    backend.put("stale_key", b"expired", tags=["org:1"])
+
+    # Simulate expiry of stale_key by deleting it from the fake kv directly
+    # (mimics Redis TTL expiry — the value key is gone but the tag set still
+    # holds its id as a member).
+    del fake_redis.kv["nubi:cache:stale_key"]
+
+    # Both ids are in the tag set.
+    tag_set_key = "nubi:cache:tag:org:1"
+    assert b"nubi:cache:live_key" in fake_redis.smembers(tag_set_key)
+    assert b"nubi:cache:stale_key" in fake_redis.smembers(tag_set_key)
+
+    # invalidate() should:
+    #   1. detect stale_key is absent (EXISTS → 0) and SREM it, AND
+    #   2. delete live_key and the tag set, AND
+    #   3. return 1 (only the live entry counts).
+    removed = backend.invalidate("org:1")
+    assert removed == 1, (
+        f"Expected 1 live entry deleted, got {removed}. "
+        "Stale members must not inflate the count."
+    )
+
+    # The live key must have been deleted.
+    assert backend.get("live_key") is None
+
+    # The tag set itself must be gone.
+    assert tag_set_key not in fake_redis.sets
+
+
+def test_redis_invalidate_all_stale_members_do_not_inflate_count(fake_redis):
+    """invalidate(tag) with ALL stale members returns 0, not len(members).
+
+    Regression guard: if all members of a tag set have expired, invalidate()
+    must return 0 (nothing to delete), not the stale member count.
+    """
+    backend = RedisCacheBackend(ttl=300)
+    backend.put("will_expire_1", b"v1", tags=["org:stale"])
+    backend.put("will_expire_2", b"v2", tags=["org:stale"])
+
+    # Simulate both having expired.
+    del fake_redis.kv["nubi:cache:will_expire_1"]
+    del fake_redis.kv["nubi:cache:will_expire_2"]
+
+    # Tag set still has 2 stale member ids.
+    assert len(fake_redis.smembers("nubi:cache:tag:org:stale")) == 2
+
+    # invalidate() must prune stale members and return 0.
+    removed = backend.invalidate("org:stale")
+    assert removed == 0, (
+        f"Expected 0 (all members stale), got {removed}. "
+        "Stale member ids must not inflate the count."
+    )
+
+    # Tag set must have been cleaned up.
+    assert "nubi:cache:tag:org:stale" not in fake_redis.sets
 
 
 # ===========================================================================

@@ -891,3 +891,139 @@ class TestSubqueryFilterColumns:
         assert shape is not None
         assert "channel" in shape.filter_columns
         assert "tenant_id" in shape.filter_columns
+
+
+# ---------------------------------------------------------------------------
+# 7. [HIGH routing correctness] COUNT(DISTINCT) must NOT be routed to a
+#    plain-count rollup — it is non-re-aggregable.
+# ---------------------------------------------------------------------------
+
+
+class TestCountDistinctRouting:
+    """COUNT(DISTINCT col) must never be re-routed to a plain-count rollup.
+
+    sqlglot models both COUNT(col) and COUNT(DISTINCT col) as exp.Count,
+    so without an explicit guard both produce func_name='count', which IS
+    in _REAGG (→ SUM).  That would silently rewrite COUNT(DISTINCT col)
+    as SUM(count_col) over a partial-count rollup — producing wrong numbers.
+
+    Fix (1): _agg_func_name in query_log.py returns 'count_distinct' when the
+    Count node's .this is an exp.Distinct, so extract_shape marks the measure
+    non-routable (since 'count_distinct' not in _REAGG → routing refused).
+
+    Fix (2): defence-in-depth in planner._rewrite_to_rollup: if ANY aggregate
+    in the SELECT is COUNT(DISTINCT …), bail (return None) before touching the
+    AST — even if the shape-level check above somehow passed.
+
+    Both tests go THROUGH plan() + route_to_rollup_shape() and execute the
+    final SQL on in-memory DuckDB, asserting EXACT per-tenant result rows.
+    """
+
+    def test_count_distinct_not_routed_to_plain_count_rollup(
+        self, source_db: str
+    ) -> None:
+        """COUNT(DISTINCT col) query must NOT be routed to a plain-count rollup.
+
+        The rollup is built with count(*) (a plain count), which is NOT
+        re-aggregable into COUNT(DISTINCT).  Routing must be refused; the
+        plan must be returned unchanged with routed=False.
+
+        Exact result rows are verified on the original (un-routed) SQL so we
+        confirm the refusal is correct and the original query executes fine.
+        """
+        reg = RollupRegistry()
+        # Build a plain count rollup (NOT a count-distinct rollup).
+        _build_orders_rollup(source_db, reg)
+
+        # A query using COUNT(DISTINCT region) — not re-aggregable from count(*).
+        p = plan(
+            "SELECT tenant_id, COUNT(DISTINCT region) FROM orders GROUP BY tenant_id"
+        )
+        result = route_to_rollup_shape(p, reg)
+
+        # Routing MUST be refused.
+        assert result.routed is False, (
+            f"Expected COUNT(DISTINCT) query to NOT route to plain-count rollup, "
+            f"but got routed=True. Rewritten SQL: {result.plan.sql}"
+        )
+        assert result.plan is p  # plan object unchanged
+
+        # Execute the un-routed SQL on DuckDB and assert EXACT result rows.
+        raw_conn = duckdb.connect(source_db, read_only=True)
+        rows = raw_conn.execute(
+            "SELECT tenant_id, COUNT(DISTINCT region) FROM orders "
+            "GROUP BY tenant_id ORDER BY tenant_id"
+        ).fetchall()
+        raw_conn.close()
+
+        # acme: regions {us, eu} → 2; beta: regions {us, eu} → 2.
+        assert rows == [("acme", 2), ("beta", 2)], (
+            f"Unexpected result rows: {rows}"
+        )
+
+    def test_plain_count_still_routes_to_rollup(self, source_db: str) -> None:
+        """Plain COUNT(col) (non-distinct) must still route to the rollup.
+
+        Ensures the COUNT(DISTINCT) fix does not break plain COUNT routing.
+        Verifies EXACT result rows from the rewritten (rollup-routed) SQL.
+        """
+        reg = RollupRegistry()
+        built = _build_orders_rollup(source_db, reg)
+
+        # Plain COUNT(*) query — IS re-aggregable from the partial count rollup.
+        p = plan("SELECT region, COUNT(*) FROM orders GROUP BY region")
+        result = route_to_rollup_shape(p, reg)
+
+        assert result.routed is True, (
+            f"Expected plain COUNT(*) to route to rollup, got routed=False. "
+            f"Reason: {result.reason}"
+        )
+        assert result.rollup_id is not None
+        assert "rollup_orders" in result.plan.sql.lower(), (
+            f"Expected rollup table in rewritten SQL: {result.plan.sql}"
+        )
+
+        # Execute the REWRITTEN SQL on the rollup DuckDB file and assert
+        # EXACT result rows match the raw aggregate.
+        roll_conn = duckdb.connect(built.database, read_only=True)
+        rewritten_rows = roll_conn.execute(
+            f'SELECT region, SUM("count_all") FROM "{built.table}" '
+            f'GROUP BY region ORDER BY region'
+        ).fetchall()
+        roll_conn.close()
+
+        raw_conn = duckdb.connect(source_db, read_only=True)
+        expected = raw_conn.execute(
+            "SELECT region, COUNT(*) FROM orders GROUP BY region ORDER BY region"
+        ).fetchall()
+        raw_conn.close()
+
+        # eu: 3 rows; us: 3 rows (acme us×2, beta us×1, acme eu×1, beta eu×2).
+        assert rewritten_rows == expected, (
+            f"Rollup COUNT re-aggregation mismatch: {rewritten_rows} != {expected}"
+        )
+
+    def test_count_distinct_shape_marked_non_reaggregable(self) -> None:
+        """extract_shape returns 'count_distinct' func so routing is refused.
+
+        Validates Fix (1): _agg_func_name returns 'count_distinct' for
+        COUNT(DISTINCT col), meaning extract_shape records the measure as
+        ('count_distinct', col).  Since 'count_distinct' is not in _REAGG,
+        route_to_rollup_shape refuses routing without even entering _rewrite_to_rollup.
+
+        This test does NOT need a source_db (no rollup file needed) — it only
+        inspects the shape that extract_shape produces.
+        """
+        shape = extract_shape(
+            "SELECT tenant_id, COUNT(DISTINCT region) FROM orders GROUP BY tenant_id"
+        )
+        assert shape is not None
+        assert shape.routable is True  # structurally routable (single table, plain dims)
+        # The measure must be recorded as 'count_distinct', NOT 'count'.
+        func_names = [f for (f, _) in shape.measures]
+        assert "count_distinct" in func_names, (
+            f"Expected 'count_distinct' in measure func names, got: {shape.measures}"
+        )
+        assert "count" not in func_names, (
+            f"'count' must not appear (would be misrouted): {shape.measures}"
+        )

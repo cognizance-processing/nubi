@@ -812,6 +812,14 @@ def _rewrite_to_rollup(plan: PhysicalPlan, rollup: Any) -> str | None:
     #    measure column with the roll-up function (SUM(sum_amount), etc.).
     for node in list(tree.find_all(exp.AggFunc)):
         func_name = type(node).__name__.lower()
+        # Defence-in-depth: COUNT(DISTINCT col) is NOT re-aggregable from partial
+        # counts. sqlglot models it as exp.Count(this=exp.Distinct(…)), which
+        # means func_name == 'count' — the same as plain COUNT(col).  Without this
+        # guard, _REAGG['count'] == 'SUM' would be applied to a COUNT(DISTINCT)
+        # node, silently producing wrong results.  Bail the entire rewrite so the
+        # caller falls through to the un-routed path.
+        if isinstance(node, exp.Count) and isinstance(node.this, exp.Distinct):
+            return None  # COUNT(DISTINCT …) is non-re-aggregable — abort.
         # Determine source column / star.
         col = _agg_source_col(node)
         if func_name not in _REAGG or col is None:

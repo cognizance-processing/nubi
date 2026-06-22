@@ -1246,7 +1246,7 @@ async def preview_cell(
             "cache_ttl_s": task.cache_ttl_s,
         }
 
-        exec_result = execute_task(task_dict, ctx, claims)
+        exec_result = await asyncio.to_thread(execute_task, task_dict, ctx, claims)
 
         if task.key == cell_key:
             target_logs = exec_result.get("logs") or []
@@ -2456,7 +2456,7 @@ async def writeback_preview(
     _require_writer_role(role)
 
     if len(body.rows) > _MAX_WRITEBACK_ROWS:
-        raise AppError(400, f"rows exceeds server cap of {_MAX_WRITEBACK_ROWS}")
+        raise AppError("row_cap_exceeded", f"rows exceeds server cap of {_MAX_WRITEBACK_ROWS}", 400)
 
     return dry_run_writeback(
         rows=body.rows,
@@ -2498,7 +2498,7 @@ async def submit_writeback_route(
     _require_writer_role(role)
 
     if len(body.rows) > _MAX_WRITEBACK_ROWS:
-        raise AppError(400, f"rows exceeds server cap of {_MAX_WRITEBACK_ROWS}")
+        raise AppError("row_cap_exceeded", f"rows exceeds server cap of {_MAX_WRITEBACK_ROWS}", 400)
 
     if body.dry_run:
         return dry_run_writeback(
@@ -2565,6 +2565,13 @@ async def writeback_approval_route(
     org_id = await _get_user_org(user_id, repo)
     role = await get_org_role(user_id, org_id, repo)
     _require_approver_role(role)
+
+    if body.rows_override is not None and len(body.rows_override) > _MAX_WRITEBACK_ROWS:
+        raise AppError(
+            "row_cap_exceeded",
+            f"rows_override exceeds server cap of {_MAX_WRITEBACK_ROWS}",
+            400,
+        )
 
     def _noop_write(rows: list, target: dict, mode: str) -> dict:
         return {

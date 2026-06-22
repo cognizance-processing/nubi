@@ -828,22 +828,45 @@ def _apply_top_n_other(
         top_n_tree = top_n_tree.qualify(qualify_cond)
 
     # Extract just the outer SELECT from top_n_tree by stripping the WITH clause.
-    # AST approach: copy and set the 'with' slot to None, then render.
+    # AST approach: copy and set the 'with_' slot to None, then render.
+    # NOTE: sqlglot's Select node stores the WITH clause under the key "with_"
+    # (trailing underscore) NOT "with".  Using set("with", None) is a no-op and
+    # the WITH clause survives, producing a nested double-WITH.
     top_n_no_with = top_n_tree.copy()
-    top_n_no_with.set("with", None)
+    top_n_no_with.set("with_", None)
     top_n_outer_sql = top_n_no_with.sql(dialect=dialect)
 
     # ── Build the "Other" bucket SELECT from __base ───────────────────────────
     # Subquery to identify top-N members (used in NOT IN exclusion).
-    # The "Other" bucket is a standalone GROUP BY aggregation, not a per-row
-    # correlated query, so the NOT IN subquery is non-correlated (no __outer
-    # alias available here).  RLS isolation for both UNION arms is enforced
-    # at the UNION wrapper level by plan()'s RLS injection.
-    top_members_subquery = _top_n_membership_sql(
-        dim_col, rank_measure,
-        "DESC" if tn.order == "desc" else "ASC",
-        tn.n, rls_keys=(),  # non-correlated; RLS applied by plan() on wrapper
-    )
+    # REGRESSION FIX: when rls_keys is non-empty the NOT IN membership subquery
+    # MUST be correlated on the same rls_keys as the IN arm — otherwise the
+    # Other arm uses the GLOBAL top-N set, not the per-tenant top-N set:
+    #   - A dim in tenant X's top-N but not the global top-N → DOUBLE-COUNTED
+    #     (appears in both the IN arm and passes the global NOT IN exclusion).
+    #   - A dim in the global top-N but not tenant X's top-N → MISSING
+    #     (excluded by the NOT IN even though it's not in tenant X's top-N).
+    # Fix: use _top_n_membership_sql with rls_keys=tuple(metric.rls_keys) and
+    # an __other_outer alias; alias the Other arm's FROM as "__other_outer" so
+    # the correlated subquery can resolve the outer alias.  When rls_keys is
+    # empty (no RLS), fall back to the non-correlated form (no FROM alias needed).
+    _other_outer_alias = "__other_outer"
+    _other_rls_keys = tuple(metric.rls_keys)
+    if _other_rls_keys:
+        top_members_subquery = _top_n_membership_sql(
+            dim_col, rank_measure,
+            "DESC" if tn.order == "desc" else "ASC",
+            tn.n,
+            rls_keys=_other_rls_keys,
+            outer_alias=_other_outer_alias,
+        )
+        _other_from_clause = f"__base AS {_other_outer_alias}"
+    else:
+        top_members_subquery = _top_n_membership_sql(
+            dim_col, rank_measure,
+            "DESC" if tn.order == "desc" else "ASC",
+            tn.n, rls_keys=(),
+        )
+        _other_from_clause = "__base"
 
     # Group by: time alias (if present) + all non-ranked dims EXCEPT the ranked dim.
     other_group_cols = []
@@ -939,7 +962,7 @@ def _apply_top_n_other(
 
     other_sql = (
         f"SELECT {', '.join(other_select_parts)} "
-        f"FROM __base "
+        f"FROM {_other_from_clause} "
         f"{where_clause} "
         f"{group_by_clause}"
     ).strip()
