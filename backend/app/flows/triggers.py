@@ -40,6 +40,7 @@ exceeded the expected duration.  Called in the run-history serializer.
 from __future__ import annotations
 
 import logging
+import os
 import uuid
 from copy import deepcopy
 from dataclasses import dataclass, field
@@ -47,6 +48,11 @@ from datetime import datetime, timezone
 from typing import Any
 
 logger = logging.getLogger(__name__)
+
+# B6 — Cycle / depth guard for downstream trigger chains.
+# A trigger chain A→B→A would loop indefinitely without a depth cap.
+# Default 8; override with the FLOWS_TRIGGER_MAX_DEPTH environment variable.
+_FLOWS_TRIGGER_MAX_DEPTH: int = int(os.environ.get("FLOWS_TRIGGER_MAX_DEPTH", "8"))
 
 
 # ---------------------------------------------------------------------------
@@ -349,6 +355,57 @@ async def fire_event(
 
 
 # ---------------------------------------------------------------------------
+# RLS helper for downstream triggers
+# ---------------------------------------------------------------------------
+
+
+# Key under which the owner's RLS policy snapshot is stored in the flow spec's
+# runtime_config.  Mirrors ``_OWNER_POLICIES_KEY`` in runtime.py (kept as a
+# local literal to avoid a runtime→triggers import cycle).
+_OWNER_POLICIES_KEY = "__owner_policies__"
+
+
+def _downstream_claims_with_owner_policies(
+    claims: dict[str, Any],
+    upstream_flow: dict[str, Any] | None,
+    flow_run_id: str,
+) -> dict[str, Any] | None:
+    """Return claims augmented with the upstream flow's owner-policy snapshot.
+
+    Mirrors ``_claims_with_owner_policies`` in runtime.py for the trigger path.
+
+    Returns
+    -------
+    dict
+        Merged claims dict with ``policies`` filled from the snapshot, OR the
+        original *claims* if they already carry ``policies`` (interactive path).
+    None
+        When no snapshot exists AND *claims* has no ``policies`` — signals that
+        the downstream trigger must be skipped (fail-closed).
+    """
+    # Interactive path: caller already supplied policies — leave unchanged.
+    if "policies" in claims:
+        return claims
+
+    # Extract the owner-policy snapshot from the upstream flow's spec.
+    spec = (upstream_flow or {}).get("spec")
+    runtime_config = spec.get("runtime_config") if isinstance(spec, dict) else None
+    policies = (
+        runtime_config.get(_OWNER_POLICIES_KEY)
+        if isinstance(runtime_config, dict)
+        else None
+    )
+
+    if not isinstance(policies, dict) or not policies:
+        # No snapshot available — fail-closed: return None so the caller skips.
+        return None
+
+    merged = dict(claims)
+    merged["policies"] = policies
+    return merged
+
+
+# ---------------------------------------------------------------------------
 # Completion hook: on_flow_run_complete
 # ---------------------------------------------------------------------------
 
@@ -359,6 +416,8 @@ async def on_flow_run_complete(
     state: str,
     now: datetime,
     claims: dict[str, Any] | None = None,
+    _trigger_depth: int = 0,
+    _trigger_chain: frozenset[str] | None = None,
 ) -> None:
     """COMPLETION HOOK — fired when a flow_run finalises (best-effort).
 
@@ -375,6 +434,12 @@ async def on_flow_run_complete(
       re-entrant calls produce duplicate params but not duplicate logic).
     - **Error-isolated**: a failing downstream trigger does NOT roll back the
       parent run or block other triggers.
+    - **RLS-safe**: downstream runs carry the OWNER's snapshotted policies
+      from the upstream flow's spec ``runtime_config.__owner_policies__``,
+      so they apply the same row-level security as a scheduled run.  If no
+      snapshot exists the downstream trigger is SKIPPED (fail-closed).
+    - **Cycle-safe**: a trigger chain is capped at ``_FLOWS_TRIGGER_MAX_DEPTH``
+      and will not revisit a flow_id already in the current chain.
 
     Parameters
     ----------
@@ -387,12 +452,23 @@ async def on_flow_run_complete(
     now:
         Injected clock datetime.
     claims:
-        Optional auth claims for the downstream run.
+        Optional auth claims for the downstream run.  When the upstream run
+        was materialised from a scheduled context these may be empty; in that
+        case the owner-policy snapshot on the upstream flow is used instead
+        (same approach as ``_claims_with_owner_policies`` in runtime.py).
+    _trigger_depth:
+        Internal: current depth in the downstream trigger chain.  Callers
+        must NOT pass this — it is threaded recursively by the hook itself.
+    _trigger_chain:
+        Internal: frozenset of flow_ids already in the current chain.
+        Prevents cycles (A→B→A ...).
     """
     from app.flows.runtime import materialize_flow_run  # noqa: PLC0415
 
     if claims is None:
         claims = {}
+    if _trigger_chain is None:
+        _trigger_chain = frozenset()
 
     try:
         flow_run = await store.get_flow_run(flow_run_id)
@@ -402,6 +478,34 @@ async def on_flow_run_complete(
         org_id = flow_run.get("org_id", "")
         if not upstream_flow_id or not org_id:
             return
+
+        # ── Cycle / depth guard ───────────────────────────────────────────────
+        if _trigger_depth >= _FLOWS_TRIGGER_MAX_DEPTH:
+            logger.warning(
+                "on_flow_run_complete: trigger chain depth %d reached for flow %s "
+                "(run %s); stopping to prevent infinite chain (FLOWS_TRIGGER_MAX_DEPTH=%d).",
+                _trigger_depth, upstream_flow_id, flow_run_id, _FLOWS_TRIGGER_MAX_DEPTH,
+            )
+            return
+
+        # ── RLS: get the upstream flow to read its owner-policy snapshot ──────
+        upstream_flow = await store.get_flow(upstream_flow_id)
+
+        # Build child claims with the upstream flow's owner-policy snapshot.
+        # _claims_with_owner_policies is pure (no store IO) so we replicate
+        # its logic here rather than importing from runtime (avoids a cycle).
+        child_claims = _downstream_claims_with_owner_policies(claims, upstream_flow, flow_run_id)
+        # child_claims is None when the snapshot is missing AND we should fail-closed.
+        if child_claims is None:
+            logger.warning(
+                "on_flow_run_complete: upstream flow %s (run %s) has no owner-policy "
+                "snapshot; skipping all downstream triggers (fail-closed for RLS safety).",
+                upstream_flow_id, flow_run_id,
+            )
+            return
+
+        # ── Build the new chain (parent flow now in visited set) ─────────────
+        new_chain = _trigger_chain | {upstream_flow_id}
 
         registry = get_trigger_registry()
         triggers = await registry.list_by_upstream(upstream_flow_id, org_id)
@@ -431,11 +535,21 @@ async def on_flow_run_complete(
                     )
                     continue
 
+                # ── Cycle guard: skip if the downstream flow is already in the chain ──
+                if trigger.flow_id in new_chain:
+                    logger.warning(
+                        "on_flow_run_complete: trigger %s would create a cycle "
+                        "(flow %s already in chain %s); skipping.",
+                        trigger.id, trigger.flow_id, new_chain,
+                    )
+                    continue
+
                 run_params: dict[str, Any] = {
                     "__upstream_flow_id__": upstream_flow_id,
                     "__upstream_run_id__": flow_run_id,
                     "__upstream_state__": state,
                     "__trigger_id__": trigger.id,
+                    "__trigger_depth__": _trigger_depth + 1,
                 }
                 # Merge any static params from the trigger's extra dict.
                 if isinstance(trigger.extra.get("params"), dict):
@@ -445,8 +559,10 @@ async def on_flow_run_complete(
                     store, downstream_flow, run_params, "event", now
                 )
                 logger.info(
-                    "on_flow_run_complete: downstream trigger %s (flow %s) fired → run %s",
+                    "on_flow_run_complete: downstream trigger %s (flow %s) fired → run %s "
+                    "(depth=%d, chain=%s)",
                     trigger.id, trigger.flow_id, flow_run_new["id"],
+                    _trigger_depth + 1, new_chain,
                 )
 
             except Exception as exc:  # noqa: BLE001

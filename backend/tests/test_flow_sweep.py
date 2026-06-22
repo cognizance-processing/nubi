@@ -700,3 +700,70 @@ def test_backfill_body_max_windows_field_bounds():
         BackfillIn(start="2025-01-01T00:00:00Z", end="2025-02-01T00:00:00Z", window="1d", max_windows=0)
     with pytest.raises(ValidationError):
         BackfillIn(start="2025-01-01T00:00:00Z", end="2025-02-01T00:00:00Z", window="1d", max_windows=10001)
+
+
+# ---------------------------------------------------------------------------
+# REGRESSION: [MED resource] expand_grid cap fires DURING expansion
+# ---------------------------------------------------------------------------
+
+
+def test_expand_grid_cap_fires_during_expansion():
+    """expand_grid must raise BEFORE materialising the full product.
+
+    Bug: the old implementation built the entire Cartesian product first, then
+    run_sweep checked the length.  A huge grid (e.g. 100×100×100 = 1 000 000
+    cells) would exhaust memory before the guard could fire.
+
+    With the fix, expand_grid raises as soon as it would produce the (cap+1)th
+    cell, so the full product is never allocated.
+    """
+    # 10 × 10 × 10 = 1 000 product; cap at 5 → must raise well before 1 000 items.
+    big_grid = {
+        "a": list(range(10)),
+        "b": list(range(10)),
+        "c": list(range(10)),
+    }
+    with pytest.raises(ValueError, match="max_cells"):
+        expand_grid(big_grid, max_cells=5)
+
+
+def test_expand_grid_cap_at_exact_boundary_passes():
+    """A grid that produces exactly max_cells cells must succeed."""
+    grid = {"a": [1, 2], "b": ["x", "y"]}  # 2×2 = 4 cells
+    result = expand_grid(grid, max_cells=4)
+    assert len(result) == 4
+
+
+def test_expand_grid_one_over_cap_raises():
+    """A grid that produces max_cells+1 cells must raise."""
+    grid = {"a": [1, 2], "b": ["x", "y", "z"]}  # 2×3 = 6 cells
+    with pytest.raises(ValueError, match="max_cells"):
+        expand_grid(grid, max_cells=5)
+
+
+async def test_run_sweep_grid_cap_fires_during_expansion():
+    """run_sweep with a huge grid must raise before the product is materialised.
+
+    Passes grid= (not param_sets=) so expand_grid is called with the effective
+    max_cells, triggering the in-loop guard instead of the post-hoc length check.
+    """
+    reset_for_tests()
+    store = InMemoryFlowStore()
+    flow = await _make_flow(store)
+
+    # 50×50 = 2 500 cells; default max_cells=200 → must raise during expansion.
+    big_grid = {
+        "region": [f"R{i}" for i in range(50)],
+        "period": [f"2025-{m:02d}" for m in range(1, 51)],
+    }
+    with pytest.raises(ValueError, match="max_cells"):
+        await run_sweep(
+            store=store,
+            flow=flow,
+            param_sets=None,
+            trigger="sweep",
+            now=NOW,
+            claims=CLAIMS,
+            grid=big_grid,
+            max_cells=200,
+        )

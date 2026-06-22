@@ -318,9 +318,13 @@ def extract_shape(sql: str, dialect: str = "postgres") -> QueryShape | None:
             has_non_agg_non_dim = True
 
     # ── Filter columns (WHERE clause bare columns) ───────────────────────────
+    # Recurse into the entire SELECT tree so that columns referenced inside a
+    # subquery WHERE (e.g. "SELECT … FROM (SELECT … WHERE channel = 'web') sq
+    # GROUP BY …") are also captured.  Without recursion the outer WHERE is
+    # None and the subquery's WHERE predicate column is silently missed,
+    # making the routing soundness check too weak.
     filter_cols: set[str] = set()
-    where_node = tree.args.get("where")
-    if where_node is not None:
+    for where_node in tree.find_all(exp.Where):
         for col in where_node.find_all(exp.Column):
             filter_cols.add(col.name.lower())
 

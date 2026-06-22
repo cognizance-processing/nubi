@@ -121,8 +121,23 @@ class BackfillResult:
 # ---------------------------------------------------------------------------
 
 
-def expand_grid(grid: dict[str, list[Any]]) -> list[dict[str, Any]]:
+def expand_grid(
+    grid: dict[str, list[Any]],
+    *,
+    max_cells: int | None = None,
+) -> list[dict[str, Any]]:
     """Expand a param grid dict into a full Cartesian product of param sets.
+
+    Parameters
+    ----------
+    grid:
+        Mapping of param name → list of values to combine.
+    max_cells:
+        Optional cap on the number of cells.  When supplied the function raises
+        ``ValueError`` as soon as the running product would exceed the cap,
+        so the full Cartesian product is **never materialised** if it would be
+        too large.  ``run_sweep`` always passes its effective cap here so the
+        memory guard fires *before* the post-expansion length check.
 
     Example
     -------
@@ -136,10 +151,19 @@ def expand_grid(grid: dict[str, list[Any]]) -> list[dict[str, Any]]:
     """
     if not grid:
         return [{}]
+
+    # Enforce the cap *during* expansion so a huge grid never materialises.
+    # We track the running count and raise as soon as it would exceed the cap.
     keys = list(grid.keys())
     value_lists = [grid[k] for k in keys]
     result: list[dict[str, Any]] = []
     for combo in itertools.product(*value_lists):
+        if max_cells is not None and len(result) >= max_cells:
+            raise ValueError(
+                f"Sweep matrix too large: grid would produce more than "
+                f"{max_cells} cells (max_cells={max_cells}). "
+                "Reduce the grid dimensions or raise max_cells."
+            )
         result.append(dict(zip(keys, combo)))
     return result
 
@@ -198,7 +222,9 @@ async def run_sweep(
     if param_sets is not None:
         resolved_sets = list(param_sets)
     elif grid:
-        resolved_sets = expand_grid(grid)
+        # Pass max_cells so the cap fires DURING expansion, not after a
+        # potentially enormous list has already been materialised.
+        resolved_sets = expand_grid(grid, max_cells=max_cells)
     else:
         resolved_sets = [{}]  # single run with default params
 

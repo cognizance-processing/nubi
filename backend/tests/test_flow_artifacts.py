@@ -615,3 +615,81 @@ def test_concurrent_log_capture_no_cross_contamination():
         f"Cross-contamination: sentinel A found in B's captured logs.\n"
         f"captured_a={captured_a}\ncaptured_b={captured_b}"
     )
+
+
+# ---------------------------------------------------------------------------
+# 16. Oversized ndarray / DataFrame rejected PRE-serialisation (LOW resource)
+# ---------------------------------------------------------------------------
+
+
+def test_oversized_ndarray_rejected_pre_serialise():
+    """A numpy ndarray that exceeds the cap is rejected before pickle.dumps.
+
+    Before the fix, _serialise (pickle.dumps) was called unconditionally,
+    which could OOM on a multi-GB array.  The fix checks .nbytes first.
+    """
+    import unittest.mock  # noqa: PLC0415
+    from app.flows import artifacts as _art_mod  # noqa: PLC0415
+
+    try:
+        import numpy as np  # noqa: PLC0415
+    except ImportError:
+        pytest.skip("numpy not available")
+
+    art_store = _mem_store()
+    # 1 000 float64 values = 8 000 bytes; cap at 1 000 bytes → must reject pre-serialize.
+    big_arr = np.zeros(1_000, dtype=np.float64)  # 8 000 bytes
+
+    with unittest.mock.patch.object(_art_mod, "_ARTIFACT_MAX_BYTES", 1_000):
+        with pytest.raises(ValueError, match="pre-serialisation size estimate|exceeds the maximum"):
+            put_artifact(big_arr, kind="pickle", org_id=ORG_A, store=art_store)
+
+    # A small array under the cap must succeed.
+    small_arr = np.zeros(10, dtype=np.float64)  # 80 bytes
+    with unittest.mock.patch.object(_art_mod, "_ARTIFACT_MAX_BYTES", 1_000):
+        handle = put_artifact(small_arr, kind="pickle", org_id=ORG_A, store=art_store)
+        assert is_handle(handle)
+
+
+def test_oversized_dataframe_rejected_pre_serialise():
+    """A pandas DataFrame that exceeds the cap is rejected before pickle.dumps."""
+    import unittest.mock  # noqa: PLC0415
+    from app.flows import artifacts as _art_mod  # noqa: PLC0415
+
+    try:
+        import pandas as pd  # noqa: PLC0415
+    except ImportError:
+        pytest.skip("pandas not available")
+
+    art_store = _mem_store()
+    # DataFrame with 10 000 int64 rows × 2 cols ≈ 160 000+ bytes; cap at 1 000.
+    big_df = pd.DataFrame({"a": range(10_000), "b": range(10_000)})
+
+    with unittest.mock.patch.object(_art_mod, "_ARTIFACT_MAX_BYTES", 1_000):
+        with pytest.raises(ValueError, match="pre-serialisation size estimate|exceeds the maximum"):
+            put_artifact(big_df, kind="pickle", org_id=ORG_A, store=art_store)
+
+    # A small DataFrame under the cap must succeed.
+    small_df = pd.DataFrame({"a": [1, 2], "b": [3, 4]})
+    with unittest.mock.patch.object(_art_mod, "_ARTIFACT_MAX_BYTES", 500 * 1024 * 1024):
+        handle = put_artifact(small_df, kind="pickle", org_id=ORG_A, store=art_store)
+        assert is_handle(handle)
+
+
+def test_oversized_ndarray_pre_serialise_cap_disabled():
+    """When cap is disabled (=0), even a large ndarray must pass through."""
+    import unittest.mock  # noqa: PLC0415
+    from app.flows import artifacts as _art_mod  # noqa: PLC0415
+
+    try:
+        import numpy as np  # noqa: PLC0415
+    except ImportError:
+        pytest.skip("numpy not available")
+
+    art_store = _mem_store()
+    arr = np.zeros(1_000, dtype=np.float64)
+
+    with unittest.mock.patch.object(_art_mod, "_ARTIFACT_MAX_BYTES", 0):
+        # Cap disabled — must not raise.
+        handle = put_artifact(arr, kind="pickle", org_id=ORG_A, store=art_store)
+        assert is_handle(handle)

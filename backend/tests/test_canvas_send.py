@@ -1078,3 +1078,183 @@ class TestValidateDashboardHtmlForbiddenTags:
         # Should not produce duplicate errors for the same tag.
         link_issues = [i for i in issues if "link" in i.lower()]
         assert len(link_issues) >= 1
+
+
+# ---------------------------------------------------------------------------
+# CSS @import and url() injection (MED finding — assets.css sanitization)
+# ---------------------------------------------------------------------------
+
+
+class TestAssetsCssInjection:
+    """Regression tests for the MED CSS injection finding.
+
+    Previous sanitization (~line 432-434) stripped </style> and <script> but
+    NOT CSS @import rules or url() with dangerous schemes.  A Canvas author
+    could inject:
+      @import url('//evil/x.css')
+      background: url(javascript:evil())
+      background: url(data:text/html,<script>evil()</script>)
+
+    Fix: _sanitize_assets_css() now removes ALL @import rules and neutralises
+    dangerous url() targets, while leaving benign CSS intact.
+    """
+
+    def _render_with_css(self, css: str) -> str:
+        doc = _make_doc(html="<p>ok</p>", assets={"css": css})
+        return render_canvas_html(doc, {})
+
+    # ── @import stripping ────────────────────────────────────────────────────
+
+    def test_at_import_bare_url_stripped(self):
+        """@import 'url' is stripped entirely from assets.css."""
+        result = self._render_with_css("@import '//evil.example/x.css'; .ok{color:red}")
+        assert "@import" not in result, "@import survived assets.css sanitization"
+
+    def test_at_import_url_function_stripped(self):
+        """@import url('...') is stripped entirely from assets.css."""
+        result = self._render_with_css("@import url('//evil.example/x.css'); .ok{}")
+        assert "@import" not in result, "@import url() survived assets.css sanitization"
+
+    def test_at_import_double_slash_external(self):
+        """@import with protocol-relative URL is stripped."""
+        result = self._render_with_css("@import url(//evil/x.css);")
+        assert "@import" not in result
+
+    def test_at_import_https_stripped(self):
+        """@import with https:// URL is stripped."""
+        result = self._render_with_css("@import url('https://evil.example/x.css');")
+        assert "@import" not in result
+
+    def test_at_import_case_insensitive(self):
+        """@IMPORT (uppercase) is also stripped."""
+        result = self._render_with_css("@IMPORT 'https://evil.example/x.css';")
+        assert "@import" not in result.lower()
+
+    # ── url() with javascript: / vbscript: ───────────────────────────────────
+
+    def test_url_javascript_scheme_neutralized(self):
+        """url(javascript:...) is replaced with url(none)."""
+        result = self._render_with_css("body{background:url(javascript:evil())}")
+        assert "javascript:" not in result, "url(javascript:) survived assets.css sanitization"
+        # The property declaration itself must still be present (neutralised, not absent).
+        assert "url(none)" in result or "background" in result
+
+    def test_url_javascript_quoted_neutralized(self):
+        """url('javascript:...') with quotes is also neutralised."""
+        result = self._render_with_css("div{background:url('javascript:alert(1)')}")
+        assert "javascript:" not in result
+
+    def test_url_vbscript_neutralized(self):
+        """url(vbscript:...) is replaced with url(none)."""
+        result = self._render_with_css("body{background:url(vbscript:MsgBox(1))}")
+        assert "vbscript:" not in result
+
+    # ── url() with data: ─────────────────────────────────────────────────────
+
+    def test_url_data_text_html_neutralized(self):
+        """url(data:text/html,...) is neutralised — only image data: URIs are allowed."""
+        result = self._render_with_css(
+            "body{background:url('data:text/html,<script>evil()</script>')}"
+        )
+        assert "data:text/html" not in result, (
+            "url(data:text/html,...) survived — dangerous data: URI in CSS"
+        )
+
+    def test_url_data_application_neutralized(self):
+        """url(data:application/...) is neutralised."""
+        result = self._render_with_css(
+            "body{background:url(data:application/javascript,evil())}"
+        )
+        assert "data:application/" not in result
+
+    def test_url_data_image_png_allowed(self):
+        """url(data:image/png;base64,...) — safe inline image — is kept unchanged."""
+        safe_data = "data:image/png;base64,iVBORw0KGgo="
+        css = f".logo{{background:url('{safe_data}')}}"
+        result = self._render_with_css(css)
+        # The data URI must survive (it's a safe inline image).
+        assert safe_data in result, (
+            "Safe data:image/png URI was incorrectly stripped from assets.css"
+        )
+
+    def test_url_data_image_jpeg_allowed(self):
+        """url(data:image/jpeg;base64,...) is allowed."""
+        safe_data = "data:image/jpeg;base64,/9j/4AAQ="
+        css = f".img{{background-image:url('{safe_data}')}}"
+        result = self._render_with_css(css)
+        assert safe_data in result
+
+    def test_url_data_image_webp_allowed(self):
+        """url(data:image/webp;base64,...) is allowed."""
+        safe_data = "data:image/webp;base64,UklGRg=="
+        css = f".bg{{background:url('{safe_data}')}}"
+        result = self._render_with_css(css)
+        assert safe_data in result
+
+    # ── url() with protocol-relative // ──────────────────────────────────────
+
+    def test_url_protocol_relative_neutralized(self):
+        """url(//evil.example/x.css) — protocol-relative — is neutralised."""
+        result = self._render_with_css("body{background:url(//evil.example/x.css)}")
+        assert "//evil.example" not in result, (
+            "Protocol-relative url() survived assets.css sanitization"
+        )
+
+    def test_url_https_external_neutralized(self):
+        """url('https://evil.example/x.css') — external absolute URL — is neutralised."""
+        result = self._render_with_css(
+            "body{background:url('https://evil.example/x.css')}"
+        )
+        assert "https://evil.example" not in result, (
+            "External https url() survived assets.css sanitization"
+        )
+
+    # ── Benign CSS must pass through unchanged ────────────────────────────────
+
+    def test_benign_css_property_values_pass(self):
+        """Normal CSS property declarations without url() are left unchanged."""
+        safe_css = (
+            ".brand { font-family: 'Inter', sans-serif; color: #0d1527; font-size: 14px; }"
+            " .title { font-weight: 700; margin: 0; padding: 8px 16px; }"
+        )
+        result = self._render_with_css(safe_css)
+        assert ".brand" in result
+        assert "font-family" in result
+        assert "#0d1527" in result
+
+    def test_benign_url_relative_path_passes(self):
+        """url(relative/path.png) without scheme is kept unchanged."""
+        css = ".icon { background: url(images/logo.png); }"
+        result = self._render_with_css(css)
+        assert "url(images/logo.png)" in result, (
+            "Relative url() path was incorrectly neutralised"
+        )
+
+    def test_benign_url_hash_fragment_passes(self):
+        """url(#fragment) — SVG fragment reference — is kept unchanged."""
+        css = ".icon { fill: url(#gradient1); }"
+        result = self._render_with_css(css)
+        assert "url(#gradient1)" in result, "SVG fragment url() was incorrectly neutralised"
+
+    def test_empty_assets_css_no_error(self):
+        """Empty assets.css string produces no errors and no extra style content."""
+        doc = _make_doc(html="<p>ok</p>", assets={"css": ""})
+        result = render_canvas_html(doc, {})
+        # Must still be a valid document.
+        assert "<!DOCTYPE html>" in result
+
+    def test_combined_attack_all_vectors_neutralized(self):
+        """Combined attack with @import, javascript:url(), and data:text/html is neutralised."""
+        malicious = (
+            "@import url('https://evil.example/steal.css');"
+            " body { background: url(javascript:evil()); }"
+            " div { content: url('data:text/html,<h1>phish</h1>'); }"
+            " .ok { color: red; }"
+        )
+        result = self._render_with_css(malicious)
+        assert "@import" not in result
+        assert "javascript:" not in result
+        assert "data:text/html" not in result
+        # Benign declaration must survive.
+        assert ".ok" in result
+        assert "color: red" in result or "color:red" in result

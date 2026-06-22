@@ -626,13 +626,19 @@ def _expand_map_children(
     Non-root body tasks are always ``state='pending'`` with ``depends_on``
     set to the composite keys of their upstream body tasks.
 
-    B1 — Map fan-out concurrency cap
-    ---------------------------------
+    B1 — Map fan-out concurrency cap (sliding-window)
+    --------------------------------------------------
     The effective cap is ``min(max_concurrency, MAP_MAX_CONCURRENCY)`` when both
     are > 0, or whichever single value is > 0, or unlimited (0) when neither
-    specifies a limit.  Items beyond the cap start as ``'pending'`` rather than
-    ``'ready'`` — ``advance_readiness`` will promote them as earlier items
-    complete (standard pending→ready flow via their synthetic depends_on).
+    specifies a limit.
+
+    Items beyond the cap start as ``'pending'`` with synthetic ``depends_on``
+    entries pointing to the *terminal* body tasks of item ``i - effective_cap``
+    (the terminal tasks are those with no successors within the body sub-DAG).
+    This creates a sliding-window dependency chain so ``advance_readiness``
+    cannot promote item ``i`` until item ``i - effective_cap`` is fully done,
+    enforcing the per-flow concurrency cap at the DAG level without relying on
+    the global semaphore alone.
 
     The item value is injected into each task_run's config as
     ``config["__item__"]`` so the python handler can expose it as a local
@@ -680,6 +686,27 @@ def _expand_map_children(
     else:
         effective_cap = 0  # unlimited
 
+    # B1-sliding-window: pre-compute the terminal body task keys (no successors).
+    # These are the tasks whose keys are NOT referenced in any other body task's
+    # 'needs'.  For a throttled item i (i >= effective_cap), we inject synthetic
+    # depends_on pointing to the terminal tasks of item (i - effective_cap), so
+    # advance_readiness cannot promote item i until item (i - effective_cap) is
+    # fully done — enforcing the per-flow concurrency window at the DAG level.
+    if effective_cap > 0 and len(items) > effective_cap:
+        _all_needed: set[str] = set()
+        for bt in body_tasks:
+            for need in (bt.get("needs") or []):
+                _all_needed.add(need)
+        _terminal_body_keys: list[str] = [
+            bt["key"] for bt in body_tasks if bt["key"] not in _all_needed
+        ]
+        # Fallback: if every task has a successor (cyclic or degenerate spec),
+        # use the last body task as the gate.
+        if not _terminal_body_keys:
+            _terminal_body_keys = [body_tasks[-1]["key"]]
+    else:
+        _terminal_body_keys = []
+
     child_runs: list[dict[str, Any]] = []
     ready_item_count = 0  # number of items whose root body tasks are already 'ready'
 
@@ -687,6 +714,16 @@ def _expand_map_children(
         # Determine whether this item's root-body tasks start as 'ready' or
         # 'pending' (throttled).  Non-root body tasks are always 'pending'.
         throttle_this_item = (effective_cap > 0 and ready_item_count >= effective_cap)
+
+        # B1-sliding-window: synthetic gate keys for throttled items.
+        # Item i (throttled) must wait for item (i - effective_cap)'s terminal tasks.
+        _gate_keys: list[str] = []
+        if throttle_this_item and _terminal_body_keys:
+            gate_item_idx = i - effective_cap
+            _gate_keys = [
+                f"{map_task_key}[{gate_item_idx}].{tk}"
+                for tk in _terminal_body_keys
+            ]
 
         for body_task in body_tasks:
             child_key = f"{map_task_key}[{i}].{body_task['key']}"
@@ -699,9 +736,14 @@ def _expand_map_children(
 
             is_root = len(child_depends_on) == 0
 
+            # B1-sliding-window: inject synthetic gate dependencies on root tasks
+            # of throttled items so advance_readiness enforces the cap.
+            if is_root and throttle_this_item and _gate_keys:
+                child_depends_on = list(_gate_keys)
+
             # A root task starts 'ready' unless the concurrency cap is hit.
-            # Throttled root tasks start 'pending'; the advance_readiness loop
-            # will unblock them once prior items complete (standard DAG mechanics).
+            # Throttled root tasks start 'pending' with synthetic depends_on;
+            # advance_readiness promotes them only once their gate deps complete.
             initial_state = "pending"
             if is_root and not throttle_this_item:
                 initial_state = "ready"

@@ -132,6 +132,42 @@ def is_handle(obj: Any) -> bool:
 # ---------------------------------------------------------------------------
 
 
+def _estimate_obj_bytes(obj: Any) -> int | None:
+    """Return a best-effort in-memory byte size estimate for *obj*, or ``None``.
+
+    Only handles types where we can compute a cheap, reliable upper-bound
+    without serialising the object.  Returns ``None`` for all other types so
+    the caller can fall through to the post-serialise cap.
+
+    Supported types
+    ---------------
+    - ``numpy.ndarray``     — ``ndarray.nbytes``
+    - ``pandas.DataFrame``  — ``df.memory_usage(deep=True).sum()``
+    - ``pandas.Series``     — ``series.memory_usage(deep=True)``
+    """
+    # numpy — available without pandas
+    try:
+        import numpy as np  # noqa: PLC0415
+
+        if isinstance(obj, np.ndarray):
+            return int(obj.nbytes)
+    except ImportError:
+        pass
+
+    # pandas DataFrame / Series
+    try:
+        import pandas as pd  # noqa: PLC0415
+
+        if isinstance(obj, pd.DataFrame):
+            return int(obj.memory_usage(deep=True).sum())
+        if isinstance(obj, pd.Series):
+            return int(obj.memory_usage(deep=True))
+    except ImportError:
+        pass
+
+    return None
+
+
 def _serialise(obj: Any, kind: str) -> bytes:
     """Serialise *obj* according to *kind*.
 
@@ -365,9 +401,26 @@ def put_artifact(
     if not org_id:
         raise ValueError("org_id is required for artifact.put_artifact().")
 
+    # [LOW resource] Best-effort pre-serialisation size estimate for known
+    # large types (numpy ndarray, pandas DataFrame).  This avoids OOMing
+    # inside pickle.dumps/joblib on objects we can already see are too big.
+    # We only check when the cap is active to preserve the fast path for
+    # small objects.  The post-serialise cap below is the definitive backstop
+    # for all other types.
+    if _ARTIFACT_MAX_BYTES > 0:
+        _pre_size = _estimate_obj_bytes(obj)
+        if _pre_size is not None and _pre_size > _ARTIFACT_MAX_BYTES:
+            raise ValueError(
+                f"Artifact pre-serialisation size estimate {_pre_size:,} bytes "
+                f"exceeds the maximum allowed {_ARTIFACT_MAX_BYTES:,} bytes "
+                "(NUBI_ARTIFACT_MAX_BYTES). Reduce the artifact size or raise "
+                "the limit."
+            )
+
     data = _serialise(obj, kind)
 
-    # FIX [MED resource]: guard against runaway uploads.
+    # Definitive post-serialise cap — catches all other types not covered by
+    # the pre-serialisation estimate above.
     if _ARTIFACT_MAX_BYTES > 0 and len(data) > _ARTIFACT_MAX_BYTES:
         raise ValueError(
             f"Artifact size {len(data):,} bytes exceeds the maximum allowed "

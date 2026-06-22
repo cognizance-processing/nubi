@@ -188,7 +188,10 @@ def test_pop_pct() -> None:
 
 
 def test_prior_year_lag_by_grain_month() -> None:
-    """YoY uses LAG(12) for month grain."""
+    """YoY (month grain) uses a date-correct correlated subquery, not positional LAG.
+    Positional LAG is wrong for sparse series; the new implementation matches
+    by date (bucket - 1 year interval), which is correct regardless of row density.
+    """
     m = _simple_metric()
     mq = MetricQuery(
         metric_id="revenue",
@@ -200,8 +203,12 @@ def test_prior_year_lag_by_grain_month() -> None:
     )
     sql, _ = compile_metric(m, mq)
     up = sql.upper()
-    assert "LAG" in up
-    assert "12" in sql  # 12 months/year
+    # Must use a correlated subquery on __base, not positional LAG.
+    assert "SELECT __PY.REVENUE FROM __BASE AS __PY" in up
+    # Must shift by exactly 1 year (INTERVAL '1 year').
+    assert "INTERVAL" in up
+    assert "1" in up
+    assert "YEAR" in up
     assert "revenue_prior_year" in sql.lower()
 
 
@@ -1634,3 +1641,191 @@ def test_derived_rank_measure_without_time_grain_ok() -> None:
     parsed = sqlglot.parse_one(sql, dialect="duckdb")
     assert parsed is not None
     assert "pvd" in sql.lower()
+
+
+# ---------------------------------------------------------------------------
+# 12. THIRD-WAVE REGRESSION TESTS — audited fixes with DuckDB execution
+# ---------------------------------------------------------------------------
+
+# ── Fix (Issue 1): Other-bucket derived ratio correct in DuckDB ──────────────
+
+def test_top_n_other_derived_ratio_correct_in_duckdb() -> None:
+    """[HIGH] Other-bucket derived measure (delivered/ordered ratio) must NOT
+    Binder-Error and must compute the correct aggregate ratio in DuckDB.
+
+    The Other arm is a GROUP BY SELECT; bare measure names (e.g. 'delivered')
+    are not in GROUP BY and must be replaced with their aggregate forms
+    (e.g. SUM(delivered)) before the derived formula is emitted.
+    """
+    con = _duckdb_conn()
+    con.execute("""
+        CREATE TABLE pvd_orders (
+            region  VARCHAR,
+            delivered_qty DOUBLE,
+            ordered_qty   DOUBLE
+        )
+    """)
+    # Regions A (top-1), B and C (Other).
+    # A: delivered=800, ordered=1000  -> pvd=0.8
+    # B: delivered=100, ordered=200   \
+    # C: delivered=50,  ordered=100   / Other: delivered=150, ordered=300 -> pvd=0.5
+    con.execute("""
+        INSERT INTO pvd_orders VALUES
+            ('A', 800, 1000),
+            ('B', 100,  200),
+            ('C',  50,  100)
+    """)
+    m = MetricDefinition(
+        id="pvd_test",
+        name="PvD Test",
+        measure=Measure(name="delivered", agg="sum", expr="delivered_qty"),
+        base_table="pvd_orders",
+        extra_measures=(
+            Measure(name="ordered", agg="sum", expr="ordered_qty"),
+        ),
+        derived_measures=(
+            DerivedMeasure(name="pvd", formula="delivered / ordered"),
+        ),
+        dimensions=(Dimension(name="region"),),
+    )
+    mq = MetricQuery(
+        metric_id="pvd_test",
+        dimensions=("region",),
+        top_n=TopN(dimension="region", n=1, order="desc", other=True, other_label="Other"),
+    )
+    sql, _ = compile_metric(m, mq)
+    # Must parse cleanly (would previously fail with bare name in aggregate SELECT).
+    sqlglot.parse_one(sql, dialect="duckdb")
+    # Must execute without Binder Error.
+    rows = con.execute(sql).fetchall()
+    # Columns: region, delivered, ordered, pvd
+    row_by_region = {r[0]: r for r in rows}
+    assert "A" in row_by_region, f"Top region A missing; rows={rows}"
+    assert "Other" in row_by_region, f"Other bucket missing; rows={rows}"
+    other = row_by_region["Other"]
+    # delivered=150, ordered=300 -> pvd = 0.5
+    assert other[1] == 150.0, f"Other delivered={other[1]}, expected 150"
+    assert other[2] == 300.0, f"Other ordered={other[2]}, expected 300"
+    assert abs(other[3] - 0.5) < 1e-9, f"Other pvd={other[3]}, expected 0.5"
+
+
+# ── Fix (Issue 2): date-correct prior-year on SPARSE series ─────────────────
+
+def test_prior_year_sparse_series_matches_by_date_not_position() -> None:
+    """[MED] YoY prior_year must match by date, not by row offset.
+
+    A sparse series (missing months) would cause positional LAG to pick the
+    wrong row.  The date-correct correlated subquery must return the value at
+    exactly (bucket - 1 year), or NULL when no matching bucket exists.
+    """
+    con = _duckdb_conn()
+    con.execute("""
+        CREATE TABLE sparse_revenue (
+            region    VARCHAR,
+            amount    DOUBLE,
+            sale_date DATE
+        )
+    """)
+    # Current year buckets: 2024-01, 2024-03, 2024-06  (gaps at 2024-02, etc.)
+    # Prior year buckets:  2023-01, 2023-06             (gap at 2023-03)
+    # Expected prior-year values:
+    #   2024-01 -> 2023-01 = 100
+    #   2024-03 -> 2023-03 = NULL (no matching bucket)
+    #   2024-06 -> 2023-06 = 200
+    con.execute("""
+        INSERT INTO sparse_revenue VALUES
+            ('A', 100,  '2023-01-01'),
+            ('A', 200,  '2023-06-01'),
+            ('A', 300,  '2024-01-01'),
+            ('A', 400,  '2024-03-01'),
+            ('A', 500,  '2024-06-01')
+    """)
+    m = MetricDefinition(
+        id="sparse_rev",
+        name="Sparse Revenue",
+        measure=Measure(name="revenue", agg="sum", expr="amount"),
+        base_table="sparse_revenue",
+        dimensions=(Dimension(name="region"),),
+        time_dimension=TimeDimension(
+            column="sale_date",
+            grains=("month",),
+            default_grain="month",
+        ),
+    )
+    mq = MetricQuery(
+        metric_id="sparse_rev",
+        dimensions=("region",),
+        time_grain="month",
+        time_comparisons=(
+            TimeComparison(measure="revenue", kind="prior_year"),
+        ),
+    )
+    sql, _ = compile_metric(m, mq)
+    # Must parse.
+    sqlglot.parse_one(sql, dialect="duckdb")
+    # Must execute.
+    rows = con.execute(sql).fetchall()
+    # Columns: region, sale_date_month, revenue, revenue_prior_year
+    # DuckDB returns DATE_TRUNC results as datetime.datetime; normalise to
+    # (year, month) tuples for comparison so we don't depend on the exact type.
+    row_by_ym = {(r[1].year, r[1].month): r for r in rows}
+    assert (2024, 1) in row_by_ym, f"Missing 2024-01; rows={rows}"
+    assert (2024, 3) in row_by_ym, f"Missing 2024-03; rows={rows}"
+    assert (2024, 6) in row_by_ym, f"Missing 2024-06; rows={rows}"
+    # 2024-01 -> prior year 2023-01 = 100
+    assert row_by_ym[(2024, 1)][3] == 100.0, (
+        f"2024-01 prior_year should be 100 (2023-01 value), got {row_by_ym[(2024, 1)][3]}"
+    )
+    # 2024-03 -> prior year 2023-03 = NULL (no row for 2023-03)
+    assert row_by_ym[(2024, 3)][3] is None, (
+        f"2024-03 prior_year should be NULL (2023-03 missing), got {row_by_ym[(2024, 3)][3]}"
+    )
+    # 2024-06 -> prior year 2023-06 = 200
+    assert row_by_ym[(2024, 6)][3] == 200.0, (
+        f"2024-06 prior_year should be 200 (2023-06 value), got {row_by_ym[(2024, 6)][3]}"
+    )
+
+
+# ── Fix (Issue 3): default LIMIT applied when mq.limit is None ───────────────
+
+def test_flat_query_has_default_limit_when_none() -> None:
+    """[MED] mq.limit=None on the FLAT path must emit a LIMIT clause (default cap)."""
+    m = _simple_metric()
+    mq = MetricQuery(metric_id="revenue", dimensions=("region",))  # limit=None
+    sql, _ = compile_metric(m, mq)
+    sqlglot.parse_one(sql, dialect="duckdb")
+    assert "LIMIT" in sql.upper(), "Flat query must emit a LIMIT when mq.limit is None"
+
+
+def test_layered_query_has_default_limit_when_none() -> None:
+    """[MED] mq.limit=None on the LAYERED path must emit a LIMIT clause (default cap)."""
+    m = _orders_metric(
+        derived_measures=(
+            DerivedMeasure(name="pvd", formula="delivered / ordered"),
+        )
+    )
+    mq = MetricQuery(metric_id="orders", dimensions=("region",))  # limit=None
+    sql, _ = compile_metric(m, mq)
+    sqlglot.parse_one(sql, dialect="duckdb")
+    assert "LIMIT" in sql.upper(), "Layered query must emit a LIMIT when mq.limit is None"
+
+
+def test_explicit_limit_overrides_default() -> None:
+    """[MED] An explicit mq.limit is used verbatim (not overridden by the default cap)."""
+    m = _simple_metric()
+    mq = MetricQuery(metric_id="revenue", dimensions=("region",), limit=42)
+    sql, _ = compile_metric(m, mq)
+    sqlglot.parse_one(sql, dialect="duckdb")
+    assert "42" in sql, "Explicit limit=42 must appear in the emitted SQL"
+
+
+def test_default_limit_value_from_env() -> None:
+    """[MED] The default LIMIT is NUBI_METRIC_DEFAULT_LIMIT (default 100000)."""
+    import os
+    expected = int(os.environ.get("NUBI_METRIC_DEFAULT_LIMIT", 100_000))
+    m = _simple_metric()
+    mq = MetricQuery(metric_id="revenue", dimensions=("region",))  # limit=None
+    sql, _ = compile_metric(m, mq)
+    assert str(expected) in sql, (
+        f"Default limit {expected} must appear in SQL when mq.limit is None"
+    )

@@ -658,6 +658,208 @@ async def test_map_concurrency_cap_enforced_at_runtime():
 
 
 # ---------------------------------------------------------------------------
+# HIGH-CONCURRENCY: per-flow cap enforced via sliding-window depends_on
+# (not just fan-out time — survives advance_readiness cycles)
+# ---------------------------------------------------------------------------
+
+
+def test_sliding_window_depends_on_injected():
+    """Throttled items receive synthetic depends_on pointing to item (i-cap)'s terminal tasks.
+
+    With cap=2 and 5 items, items 2,3,4 are throttled.  Their root task
+    depends_on must point to item (i-2)'s terminal task, not be empty.
+    """
+    items = [{"n": i} for i in range(5)]
+    # Single-task body: "step" has no needs, so it is both root and terminal.
+    child_runs = _expand_map_children(
+        flow_run_id="run-sw",
+        org_id="org-test",
+        map_task_run_id="map-tr-sw",
+        map_task_key="fan",
+        items=items,
+        body_tasks=[{"key": "step", "kind": "noop", "needs": [], "config": {}}],
+        item_var="item",
+        now=NOW,
+        max_concurrency=2,
+    )
+    by_key = {tr["task_key"]: tr for tr in child_runs}
+
+    # Items 0,1 start ready with no synthetic deps.
+    assert by_key["fan[0].step"]["state"] == "ready"
+    assert by_key["fan[0].step"]["depends_on"] == []
+    assert by_key["fan[1].step"]["state"] == "ready"
+    assert by_key["fan[1].step"]["depends_on"] == []
+
+    # Item 2: throttled, must depend on item 0's terminal task.
+    assert by_key["fan[2].step"]["state"] == "pending"
+    assert "fan[0].step" in by_key["fan[2].step"]["depends_on"], (
+        f"fan[2].step should depend on fan[0].step, got {by_key['fan[2].step']['depends_on']}"
+    )
+
+    # Item 3: throttled, must depend on item 1's terminal task.
+    assert by_key["fan[3].step"]["state"] == "pending"
+    assert "fan[1].step" in by_key["fan[3].step"]["depends_on"], (
+        f"fan[3].step should depend on fan[1].step, got {by_key['fan[3].step']['depends_on']}"
+    )
+
+    # Item 4: throttled, must depend on item 2's terminal task.
+    assert by_key["fan[4].step"]["state"] == "pending"
+    assert "fan[2].step" in by_key["fan[4].step"]["depends_on"], (
+        f"fan[4].step should depend on fan[2].step, got {by_key['fan[4].step']['depends_on']}"
+    )
+
+
+def test_sliding_window_multi_task_body_terminal_only():
+    """With a multi-task body (step_a -> step_b), the gate must be step_b (terminal).
+
+    Body: step_a (root) -> step_b (terminal, needs=[step_a]).
+    Cap=2, 4 items.  Items 0,1 start ready (step_a=ready, step_b=pending with
+    normal deps).  Item 2's root (step_a) must depend on item 0's terminal
+    (step_b), NOT on step_a.
+    """
+    body_tasks = [
+        {"key": "step_a", "kind": "noop", "needs": [], "config": {}},
+        {"key": "step_b", "kind": "noop", "needs": ["step_a"], "config": {}},
+    ]
+    items = [{"n": i} for i in range(4)]
+    child_runs = _expand_map_children(
+        flow_run_id="run-mt",
+        org_id="org-test",
+        map_task_run_id="map-tr-mt",
+        map_task_key="fan",
+        items=items,
+        body_tasks=body_tasks,
+        item_var="item",
+        now=NOW,
+        max_concurrency=2,
+    )
+    by_key = {tr["task_key"]: tr for tr in child_runs}
+
+    # Items 0,1: step_a is ready, step_b is pending with normal dep on step_a.
+    assert by_key["fan[0].step_a"]["state"] == "ready"
+    assert by_key["fan[0].step_a"]["depends_on"] == []
+    assert by_key["fan[0].step_b"]["state"] == "pending"
+    assert by_key["fan[0].step_b"]["depends_on"] == ["fan[0].step_a"]
+
+    # Item 2 (throttled): step_a (root) must gate on item 0's TERMINAL (step_b).
+    assert by_key["fan[2].step_a"]["state"] == "pending"
+    assert "fan[0].step_b" in by_key["fan[2].step_a"]["depends_on"], (
+        f"fan[2].step_a should gate on fan[0].step_b (terminal), got "
+        f"{by_key['fan[2].step_a']['depends_on']}"
+    )
+    # step_b of item 2 should NOT have synthetic gate (it's not a root task).
+    assert by_key["fan[2].step_b"]["depends_on"] == ["fan[2].step_a"]
+
+    # Item 3 (throttled): step_a must gate on item 1's terminal (step_b).
+    assert by_key["fan[3].step_a"]["state"] == "pending"
+    assert "fan[1].step_b" in by_key["fan[3].step_a"]["depends_on"], (
+        f"fan[3].step_a should gate on fan[1].step_b, got "
+        f"{by_key['fan[3].step_a']['depends_on']}"
+    )
+
+
+async def test_advance_readiness_enforces_per_flow_cap():
+    """Cap=2, 10 items: advance_readiness must never yield >2 ready/running simultaneously.
+
+    This is the critical regression test: before the fix, all 10 items would be
+    promoted to 'ready' in the first advance_readiness call because throttled
+    items had depends_on=[] and the no-dep path unconditionally promoted them.
+    With the sliding-window fix, items are gated on their predecessor's terminal
+    task and the cap is enforced at the DAG level.
+    """
+    from app.flows.runtime import advance_readiness
+
+    reset_for_tests()
+    store = InMemoryFlowStore()
+
+    cap = 2
+    n_items = 10
+    items = [{"n": i} for i in range(n_items)]
+    body_tasks = [{"key": "work", "kind": "noop", "needs": [], "config": {}}]
+
+    # Build child_runs via the fixed _expand_map_children.
+    child_runs = _expand_map_children(
+        flow_run_id="run-ar",
+        org_id="org-test",
+        map_task_run_id="map-tr-ar",
+        map_task_key="fan",
+        items=items,
+        body_tasks=body_tasks,
+        item_var="item",
+        now=NOW,
+        max_concurrency=cap,
+    )
+
+    # Seed a minimal flow_run + task_runs in the store.
+    flow = await store.create_flow(
+        org_id="org-test",
+        created_by="user-test",
+        name="cap_test",
+        spec={"version": 1, "name": "cap_test",
+              "tasks": [{"key": "fan", "kind": "noop", "needs": [], "config": {}}]},
+    )
+    run = await store.create_flow_run(
+        flow_id=flow["id"], org_id="org-test", params={}, trigger="manual"
+    )
+    flow_run_id = run["id"]
+
+    # Replace the single "fan" task_run with our map children.
+    init_trs = await store.list_task_runs(flow_run_id)
+    for tr in init_trs:
+        await store.update_task_run(tr["id"], {"state": "upstream_failed"})
+
+    await store.add_task_runs(flow_run_id, child_runs)
+
+    def _count_active(task_runs: list[dict]) -> int:
+        return sum(1 for tr in task_runs if tr["state"] in ("ready", "running"))
+
+    # After fan-out (before any advance_readiness), check initial state.
+    trs = await store.list_task_runs(flow_run_id)
+    map_children = [tr for tr in trs if "[" in tr["task_key"]]
+    initial_active = _count_active(map_children)
+    assert initial_active <= cap, (
+        f"After fan-out, {initial_active} items active (cap={cap}). "
+        f"Expected <= {cap}."
+    )
+
+    # Simulate the scheduling loop: call advance_readiness, then mark one
+    # 'ready' task as 'success', repeat — verifying the cap holds throughout.
+    for cycle in range(n_items + 2):
+        await advance_readiness(store, flow_run_id, NOW)
+
+        trs = await store.list_task_runs(flow_run_id)
+        map_children = [tr for tr in trs if "[" in tr["task_key"]]
+        active = _count_active(map_children)
+
+        assert active <= cap, (
+            f"Cycle {cycle}: cap violated — {active} items ready/running (cap={cap}). "
+            f"States: {[(tr['task_key'], tr['state']) for tr in map_children]}"
+        )
+
+        # Simulate one ready task completing per cycle.
+        ready_ones = [tr for tr in map_children if tr["state"] == "ready"]
+        if not ready_ones:
+            break  # all done
+        await store.update_task_run(ready_ones[0]["id"], {
+            "state": "success",
+            "finished_at": NOW,
+            "result": {"ok": True},
+        })
+
+    # All children must be terminal when we're done.
+    trs = await store.list_task_runs(flow_run_id)
+    map_children = [tr for tr in trs if "[" in tr["task_key"]]
+    non_terminal = [tr for tr in map_children if tr["state"] not in ("success", "failed", "upstream_failed", "skipped", "cancelled", "timed_out")]
+    assert not non_terminal, (
+        f"Non-terminal children remain: {[(tr['task_key'], tr['state']) for tr in non_terminal]}"
+    )
+    success_count = sum(1 for tr in map_children if tr["state"] == "success")
+    assert success_count == n_items, (
+        f"Expected {n_items} successes, got {success_count}"
+    )
+
+
+# ---------------------------------------------------------------------------
 # REGRESSION: [MED RBAC] viewer must receive 403 on POST /flows/compile
 # ---------------------------------------------------------------------------
 

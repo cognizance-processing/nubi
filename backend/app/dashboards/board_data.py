@@ -39,12 +39,19 @@ Security invariants
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 import logging
+import os
 from typing import Any
 
 import pyarrow as pa
+
+# Maximum rows materialised per inline-provider result into Arrow IPC.
+# Mirrors the cap used by collect.py (NUBI_COLLECT_ROW_CAP).  0 = unlimited.
+_DEFAULT_ROW_CAP = 100_000
+_ROW_CAP: int = int(os.environ.get("NUBI_COLLECT_ROW_CAP", _DEFAULT_ROW_CAP))
 
 from app.errors import AppError
 
@@ -320,7 +327,22 @@ async def _resolve_inline_provider(
 
                 physical_plan = planner_plan(sql=sql, claims={"policies": policies}, params=[])
                 connector = _get_demo_connector()
-                arrow_table = connector.execute(physical_plan)
+                # FIX [LOW async]: connector.execute is a synchronous (blocking)
+                # DuckDB call.  Wrap it in asyncio.to_thread so it does not
+                # block the event loop on a cache miss.
+                arrow_table = await asyncio.to_thread(connector.execute, physical_plan)
+                # FIX [MED resource]: cap rows to _ROW_CAP to prevent unbounded
+                # Arrow IPC payloads from inline providers.
+                if _ROW_CAP > 0 and arrow_table.num_rows > _ROW_CAP:
+                    logger.warning(
+                        "inline provider %r result %r: truncating %d rows to %d "
+                        "(set NUBI_COLLECT_ROW_CAP to raise limit)",
+                        provider.id,
+                        r.name,
+                        arrow_table.num_rows,
+                        _ROW_CAP,
+                    )
+                    arrow_table = arrow_table.slice(0, _ROW_CAP)
                 tables[r.name] = arrow_table
             except Exception as exc:  # noqa: BLE001
                 logger.warning(
@@ -487,13 +509,14 @@ async def resolve_provider_data(
             )
 
     # ── Execute provider ──────────────────────────────────────────────────────
+    # FIX [MED metering]: enforce quota for ALL provider kinds on a cache miss —
+    # not just flow.  Inline providers also execute warehouse SQL and must be
+    # metered so embed viewers cannot trigger unmetered compute.
+    from app.features import enforce_quota  # noqa: PLC0415
+
+    await enforce_quota(org_id, "compute_units", amount=1.0)
+
     if provider.kind == "flow":
-        # FIX [LOW metering]: enforce quota before executing the flow so embed
-        # viewers cannot trigger unmetered warehouse compute on a cache miss.
-        from app.features import enforce_quota  # noqa: PLC0415
-
-        await enforce_quota(org_id, "compute_units", amount=1.0)
-
         # FIX [MED N+1]: pre-fetch the org's flows once and pass the lookup
         # dict into _resolve_flow_provider so it does NOT call list_flows per
         # provider.  A single board load with N flow providers now issues at

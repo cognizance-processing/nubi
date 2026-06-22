@@ -1090,7 +1090,7 @@ async def compile_code(
     }
 
 
-@router.post("/preview", status_code=200)
+@router.post("/preview", status_code=200, dependencies=[Depends(require_writer_default)])
 async def preview_cell(
     body: PreviewCellIn,
     user: dict[str, Any] = Depends(current_user),
@@ -1282,7 +1282,7 @@ async def preview_cell(
     }
 
 
-@router.post("/run-cell", status_code=200)
+@router.post("/run-cell", status_code=200, dependencies=[Depends(require_writer_default)])
 async def run_cell(
     body: RunCellIn,
     user: dict[str, Any] = Depends(current_user),
@@ -1436,6 +1436,7 @@ async def run_cell(
 async def save_notebook(
     body: NotebookSaveIn,
     user: dict[str, Any] = Depends(current_user),
+    identity: VerifiedIdentity = Depends(verified_identity),
     repo: Repo = Depends(get_repo),
     x_project_id: str | None = Header(default=None, alias="X-Project-Id"),
 ) -> dict[str, Any]:
@@ -1481,19 +1482,31 @@ async def save_notebook(
     if notebook_id:
         existing = await store.get_flow(notebook_id)
         if existing and str(existing["org_id"]) == str(org_id):
+            compiled_spec = spec.model_dump() if spec else spec_data
+            # SECURITY (B2): if the existing notebook flow is scheduled/enabled,
+            # re-snapshot the owner's RLS policies onto the new spec so the
+            # scheduler always runs under the policies of whoever last saved it.
+            # Mirrors the behaviour of create_flow / update_flow.
+            if existing.get("schedule") or existing.get("enabled"):
+                compiled_spec = _snapshot_owner_policies(compiled_spec, identity)
             updated = await store.update_flow(
                 notebook_id,
-                {"name": nb.name, "spec": spec.model_dump() if spec else spec_data},
+                {"name": nb.name, "spec": compiled_spec},
             )
             if updated is not None:
                 return _serialize_flow(updated)
 
     # Create new.
+    # Always snapshot owner policies on create so any future schedule activation
+    # has a valid RLS baseline from the start.
+    spec_to_store = _snapshot_owner_policies(
+        spec.model_dump() if spec is not None else spec_data, identity
+    )
     flow = await store.create_flow(
         org_id=org_id,
         created_by=str(user["id"]),
         name=nb.name,
-        spec=spec.model_dump() if spec is not None else spec_data,
+        spec=spec_to_store,
         enabled=True,
         schedule=None,
         next_run_at=None,

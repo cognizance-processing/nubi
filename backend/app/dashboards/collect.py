@@ -152,18 +152,18 @@ async def run_query_rows(
 
     try:
         arrow_table = connector.execute(physical_plan)
-        columns = list(arrow_table.schema.names)
-        raw_records = arrow_table.to_pylist()
         cap = _ROW_CAP
-        if cap > 0 and len(raw_records) > cap:
+        if cap > 0 and len(arrow_table) > cap:
             logger.warning(
                 "collect: widget query_id=%r returned %d rows, truncating to %d "
                 "(set NUBI_COLLECT_ROW_CAP to raise limit)",
                 query_id,
-                len(raw_records),
+                len(arrow_table),
                 cap,
             )
-            raw_records = raw_records[:cap]
+            arrow_table = arrow_table.slice(0, cap)
+        columns = list(arrow_table.schema.names)
+        raw_records = arrow_table.to_pylist()
         rows: list[list[Any]] = [[record.get(c) for c in columns] for record in raw_records]
         return columns, rows
     finally:
@@ -454,50 +454,62 @@ async def collect_canvas_data(
                     )
 
             elif kind == "api":
-                # HTTP_JSON connector resolution via _resolve_connector.
+                # HTTP_JSON connector — resolve the datastore config, merge the
+                # binding's 'path' onto the base URL, and use 'select' as
+                # record_path so the connector fetches the correct endpoint.
                 connector_id = binding.get("connector_id") or ""
-                from app.queries.registry import get_query_registry  # noqa: PLC0415
                 from app.connectors import plan as planner_plan  # noqa: PLC0415
+                from app.connectors.http_json import HttpJsonConnector  # noqa: PLC0415
 
-                # Build a minimal stub registered object so _resolve_connector
-                # can look up the datastore.
-                class _ApiStub:
-                    datastore_id = connector_id
-                    params: list = []
-                    sql: str = ""
+                ds = await repo.get("datastores", org_id, connector_id)
+                if ds is None:
+                    raise AppError(
+                        "datastore_not_found",
+                        f"API datastore {connector_id!r} not found.",
+                        404,
+                    )
+                base_cfg: dict[str, Any] = dict(ds.get("config") or {})
 
-                stub = _ApiStub()
-                physical_plan = planner_plan(
-                    sql="SELECT 1", claims={"policies": policies}, params=[]
-                )
-                connector, connector_owned = await _resolve_connector(
-                    stub, org_id, repo, physical_plan
-                )
+                # Merge binding's path onto the base URL (strip trailing slash
+                # from the base URL and leading slash from the path so we always
+                # get exactly one slash at the join point).
+                binding_path: str = binding.get("path") or ""
+                binding_select: str | None = binding.get("select") or None
+
+                merged_cfg: dict[str, Any] = dict(base_cfg)
+                if binding_path:
+                    base_url: str = str(merged_cfg.get("url") or "").rstrip("/")
+                    path_suffix: str = binding_path.lstrip("/")
+                    merged_cfg["url"] = f"{base_url}/{path_suffix}" if path_suffix else base_url
+
+                # 'select' is a JSONPath-style selector; the HTTP_JSON connector
+                # exposes this as 'record_path' (dot-separated key traversal).
+                if binding_select is not None:
+                    # Strip the leading "$." prefix that JSONPath uses, since
+                    # record_path expects bare dot-separated keys (e.g. "data.items").
+                    record_path_val = binding_select.lstrip("$").lstrip(".")
+                    if record_path_val:
+                        merged_cfg["record_path"] = record_path_val
+
+                connector = HttpJsonConnector(merged_cfg)
+                connector_owned = True
                 try:
-                    # Build a simple fetch using the connector's execute path.
-                    # For HTTP_JSON connectors, append the configured path.
-                    path = binding.get("path") or "/"
-                    # Construct a minimal SQL-like request understood by the
-                    # HTTP_JSON connector (GET {path}).
-                    from app.connectors import plan as _plan  # noqa: PLC0415
-                    api_plan = _plan(
-                        sql=f"GET {path}",
-                        claims={"policies": policies},
-                        params=[],
+                    api_plan = planner_plan(
+                        sql="SELECT *", claims={"policies": policies}, params=[]
                     )
                     result_table = connector.execute(api_plan)
-                    columns = list(result_table.schema.names)
-                    rows_raw = result_table.to_pylist()
                     cap = _ROW_CAP
-                    if cap > 0 and len(rows_raw) > cap:
+                    if cap > 0 and len(result_table) > cap:
                         logger.warning(
                             "collect_canvas: api binding el_id=%r returned %d rows, "
                             "truncating to %d (set NUBI_COLLECT_ROW_CAP to raise limit)",
                             el_id,
-                            len(rows_raw),
+                            len(result_table),
                             cap,
                         )
-                        rows_raw = rows_raw[:cap]
+                        result_table = result_table.slice(0, cap)
+                    columns = list(result_table.schema.names)
+                    rows_raw = result_table.to_pylist()
                     rows = [[r.get(c) for c in columns] for r in rows_raw]
                     entry["columns"] = columns
                     entry["rows"] = rows

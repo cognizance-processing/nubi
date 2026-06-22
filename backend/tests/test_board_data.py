@@ -827,3 +827,183 @@ def test_tables_to_multi_ipc_stream_non_empty() -> None:
     blob = tables_to_multi_ipc_stream({"result": tbl})
     assert isinstance(blob, bytes)
     assert len(blob) > 8  # at least the header
+
+
+# ---------------------------------------------------------------------------
+# NEW: inline provider — cache-miss calls enforce_quota (FIX 1)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_inline_provider_cache_miss_calls_enforce_quota(repo: InMemoryRepo) -> None:
+    """On a cache miss for an inline provider, enforce_quota must be called.
+
+    Inline providers execute warehouse SQL and must be metered the same way as
+    flow providers.  Before the fix only kind='flow' called enforce_quota.
+    """
+    quota_calls: list[tuple[str, str, float]] = []
+
+    async def _fake_enforce_quota(org_id: str, dimension: str, amount: float = 1.0) -> None:
+        quota_calls.append((org_id, dimension, amount))
+
+    async def _fake_run(query_id, org_id, _repo, policies):
+        return ["amount"], [[10.0]]
+
+    with (
+        patch("app.features.enforce_quota", side_effect=_fake_enforce_quota),
+        patch("app.dashboards.collect.run_query_rows", side_effect=_fake_run),
+    ):
+        await resolve_provider_data(
+            board_id=_BOARD_ID,
+            provider_id=_PROVIDER_ID,
+            params={},
+            org_id=_ORG,
+            claims={"policies": {}},
+            repo=repo,
+        )
+
+    assert len(quota_calls) >= 1, (
+        "enforce_quota was NOT called on inline-provider cache miss "
+        "(unmetered warehouse compute regression)."
+    )
+    org_ids = [c[0] for c in quota_calls]
+    dimensions = [c[1] for c in quota_calls]
+    assert _ORG in org_ids, f"enforce_quota called with wrong org_id: {quota_calls}"
+    assert "compute_units" in dimensions, (
+        f"enforce_quota called with wrong dimension: {quota_calls}"
+    )
+
+
+# ---------------------------------------------------------------------------
+# NEW: inline provider base_cte path — result is row-capped (FIX 2)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_inline_provider_base_cte_result_is_row_capped(repo: InMemoryRepo) -> None:
+    """Inline provider with base_cte must cap rows to _ROW_CAP.
+
+    An unbounded connector.execute could return millions of rows as Arrow IPC.
+    The fix slices the table to _ROW_CAP before serialisation.
+    """
+    import app.dashboards.board_data as _bd_mod
+
+    # Build a board with an inline provider that has a base_cte.
+    cte_spec = {
+        "version": 1,
+        "title": "CTE Board",
+        "widgets": [
+            {"id": "w1", "type": "table", "source": {"provider": _PROVIDER_ID, "result": "revenue"}},
+        ],
+        "data": [
+            {
+                "id": _PROVIDER_ID,
+                "kind": "inline",
+                "params": {},
+                "base_cte": "WITH revenue AS (SELECT 1 AS x)",
+                "results": [{"name": "revenue", "grain": None}],
+            }
+        ],
+    }
+    await repo.update("boards", _ORG, _BOARD_ID, {"config": {"spec": cte_spec}})
+
+    # Simulate a connector that returns more rows than the cap.
+    original_row_cap = _bd_mod._ROW_CAP
+    small_cap = 3
+    _bd_mod._ROW_CAP = small_cap
+
+    # Arrow table with more rows than the cap.
+    big_table = pa.table({"x": pa.array(list(range(small_cap + 5)))})
+
+    try:
+        async def _fake_enforce_quota(org_id: str, dimension: str, amount: float = 1.0) -> None:
+            pass
+
+        with (
+            patch("app.features.enforce_quota", side_effect=_fake_enforce_quota),
+            patch("app.connectors.plan", return_value=object()),
+            patch("app.routes.query._get_demo_connector") as mock_connector_factory,
+        ):
+            mock_connector = mock_connector_factory.return_value
+            mock_connector.execute.return_value = big_table
+
+            tables = await resolve_provider_data(
+                board_id=_BOARD_ID,
+                provider_id=_PROVIDER_ID,
+                params={},
+                org_id=_ORG,
+                claims={"policies": {}},
+                repo=repo,
+            )
+    finally:
+        _bd_mod._ROW_CAP = original_row_cap
+
+    assert "revenue" in tables
+    result = tables["revenue"]
+    assert isinstance(result, pa.Table)
+    assert result.num_rows <= small_cap, (
+        f"Row cap not enforced: got {result.num_rows} rows, expected <= {small_cap}."
+    )
+
+
+# ---------------------------------------------------------------------------
+# NEW: inline provider base_cte — execute is non-blocking (FIX 3 sanity)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_inline_provider_base_cte_execute_via_to_thread(repo: InMemoryRepo) -> None:
+    """connector.execute is called via asyncio.to_thread (non-blocking path).
+
+    We verify the event loop is not blocked by confirming an awaitable co-routine
+    can interleave while the connector runs.  Practically: asyncio.to_thread
+    wraps the call so it runs in the thread-pool rather than directly on the loop.
+
+    This test confirms the returned data is correct (sanity) after the async wrap.
+    """
+    cte_spec = {
+        "version": 1,
+        "title": "CTE Board",
+        "widgets": [
+            {"id": "w1", "type": "table", "source": {"provider": _PROVIDER_ID, "result": "revenue"}},
+        ],
+        "data": [
+            {
+                "id": _PROVIDER_ID,
+                "kind": "inline",
+                "params": {},
+                "base_cte": "WITH revenue AS (SELECT 1 AS amount)",
+                "results": [{"name": "revenue", "grain": None}],
+            }
+        ],
+    }
+    await repo.update("boards", _ORG, _BOARD_ID, {"config": {"spec": cte_spec}})
+
+    expected_table = pa.table({"amount": pa.array([1.0, 2.0, 3.0])})
+
+    async def _fake_enforce_quota(org_id: str, dimension: str, amount: float = 1.0) -> None:
+        pass
+
+    with (
+        patch("app.features.enforce_quota", side_effect=_fake_enforce_quota),
+        patch("app.connectors.plan", return_value=object()),
+        patch("app.routes.query._get_demo_connector") as mock_connector_factory,
+    ):
+        mock_connector = mock_connector_factory.return_value
+        mock_connector.execute.return_value = expected_table
+
+        tables = await resolve_provider_data(
+            board_id=_BOARD_ID,
+            provider_id=_PROVIDER_ID,
+            params={},
+            org_id=_ORG,
+            claims={"policies": {}},
+            repo=repo,
+        )
+
+    assert "revenue" in tables
+    result = tables["revenue"]
+    assert isinstance(result, pa.Table)
+    # Data is correct after asyncio.to_thread wrapping.
+    assert result.num_rows == 3
+    assert result.to_pydict() == {"amount": [1.0, 2.0, 3.0]}

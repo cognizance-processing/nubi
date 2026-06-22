@@ -1080,25 +1080,36 @@ class TestCanvasSecurityRegressions:
 class TestCanvasCapRegression:
     """Regression tests for the OOM row-cap and binding-count-cap fixes."""
 
-    # ── 7a. API binding result is row-capped (HIGH OOM fix) ─────────────────
+    # ── 7a. API binding result is row-capped + path resolves (regression) ────
 
     @pytest.mark.asyncio
     async def test_api_binding_result_is_row_capped(self):
-        """API/flow-provider binding: to_pylist() result is truncated to _ROW_CAP rows.
+        """API binding: Arrow table is sliced to _ROW_CAP BEFORE to_pylist().
 
-        Regression for the HIGH OOM finding: the api branch in collect_canvas_data
-        previously called result_table.to_pylist() with NO row cap, unlike the
-        query/metric branches which go through run_query_rows (which enforces
-        _ROW_CAP).  The fix truncates rows_raw to _ROW_CAP after to_pylist().
+        Regression for the MED resource finding: the api branch previously called
+        result_table.to_pylist() with NO row cap and then truncated the Python
+        list, materialising the full result in memory first.  The fix calls
+        result_table.slice(0, cap) before to_pylist() so memory stays bounded.
         """
-        import types
+        import pyarrow as pa
 
         from app.dashboards.collect import collect_canvas_data, _ROW_CAP  # noqa: PLC0415
 
         repo = InMemoryRepo()
         org_id = str(uuid.uuid4())
         user_id = str(uuid.uuid4())
+        conn_id = str(uuid.uuid4())
         repo.seed_org_member(org_id=org_id, user_id=user_id)
+
+        # Seed a datastore record so collect_canvas_data can look it up.
+        await repo.create(
+            "datastores",
+            org_id=org_id,
+            created_by=user_id,
+            name="Test API DS",
+            id=conn_id,
+            config={"type": "http_json", "url": "http://api.example.com"},
+        )
 
         canvas = await repo.create(
             "canvases",
@@ -1112,7 +1123,7 @@ class TestCanvasCapRegression:
                     "bindings": {
                         "el_api": {
                             "kind": "api",
-                            "connector_id": "conn-xyz",
+                            "connector_id": conn_id,
                             "path": "/data",
                         },
                     },
@@ -1120,37 +1131,55 @@ class TestCanvasCapRegression:
             },
         )
 
-        # Build a fake Arrow-like table with _ROW_CAP + 10 rows.
-        over_cap = (_ROW_CAP if _ROW_CAP > 0 else 100_000) + 10
-        fake_rows = [{"value": i} for i in range(over_cap)]
+        # Build a real PyArrow table with _ROW_CAP + 10 rows.
+        cap = _ROW_CAP if _ROW_CAP > 0 else 100_000
+        over_cap = cap + 10
+        big_table = pa.table({"value": list(range(over_cap))})
 
-        class _FakeTable:
-            schema = types.SimpleNamespace(names=["value"])
+        # Track whether slice was called before to_pylist by wrapping the table.
+        slice_called_before_pylist: list[bool] = []
+
+        class _TrackingTable:
+            """Wraps big_table, recording whether slice() was called first.
+
+            ``_was_produced_by_slice`` is True only on instances returned by
+            ``slice()``, so that ``to_pylist()`` can record whether it is being
+            called on the sliced result (correct) vs. the raw result (bug).
+            """
+
+            def __init__(self, inner: pa.Table, *, was_produced_by_slice: bool = False) -> None:
+                self._inner = inner
+                self._was_produced_by_slice = was_produced_by_slice
+
+            def __len__(self) -> int:
+                return len(self._inner)
+
+            @property
+            def schema(self):
+                return self._inner.schema
+
+            def slice(self, offset: int, length: int) -> "_TrackingTable":
+                return _TrackingTable(self._inner.slice(offset, length), was_produced_by_slice=True)
 
             def to_pylist(self):
-                return list(fake_rows)
+                slice_called_before_pylist.append(self._was_produced_by_slice)
+                return self._inner.to_pylist()
 
-        class _FakeConnector:
+        tracking_table = _TrackingTable(big_table)
+
+        class _FakeHttpConnector:
             def execute(self, plan):
-                return _FakeTable()
+                return tracking_table
 
             def capabilities(self):
-                return {}
+                return {"predicate_rls": True}
 
             def close(self):
                 pass
 
-        fake_connector = _FakeConnector()
-
-        with (
-            patch(
-                "app.dashboards.collect._resolve_connector",
-                new=AsyncMock(return_value=(fake_connector, False)),
-            ),
-            patch(
-                "app.connectors.plan",
-                return_value=types.SimpleNamespace(rls_claims={}),
-            ),
+        with patch(
+            "app.connectors.http_json.HttpJsonConnector",
+            return_value=_FakeHttpConnector(),
         ):
             result = await collect_canvas_data(
                 canvas_id=canvas["id"],
@@ -1162,9 +1191,199 @@ class TestCanvasCapRegression:
         assert "el_api" in result
         entry = result["el_api"]
         assert "error" not in entry, f"Unexpected error: {entry.get('error')}"
-        cap = _ROW_CAP if _ROW_CAP > 0 else 100_000
         assert len(entry["rows"]) == cap, (
             f"Expected rows truncated to {cap}, got {len(entry['rows'])}"
+        )
+        # Verify slice() was called before to_pylist() (memory bounded).
+        assert slice_called_before_pylist, "to_pylist() was never called"
+        assert slice_called_before_pylist[0] is True, (
+            "slice() must be called BEFORE to_pylist() to bound memory"
+        )
+
+    @pytest.mark.asyncio
+    async def test_api_binding_with_path_resolves(self):
+        """API binding 'path' is appended to the base URL, 'select' sets record_path.
+
+        Regression for the MED correctness finding: the api branch previously
+        ignored binding['path'] and binding['select'], so every HTTP_JSON binding
+        fetched the bare base URL and always got UNSUPPORTED_QUERY or wrong data.
+        The fix merges the binding path onto the datastore URL before constructing
+        the HttpJsonConnector, and maps 'select' to 'record_path'.
+        """
+        from app.dashboards.collect import collect_canvas_data  # noqa: PLC0415
+        import pyarrow as pa
+
+        repo = InMemoryRepo()
+        org_id = str(uuid.uuid4())
+        user_id = str(uuid.uuid4())
+        conn_id = str(uuid.uuid4())
+        repo.seed_org_member(org_id=org_id, user_id=user_id)
+
+        base_url = "http://api.example.com"
+
+        await repo.create(
+            "datastores",
+            org_id=org_id,
+            created_by=user_id,
+            name="API Path DS",
+            id=conn_id,
+            config={"type": "http_json", "url": base_url},
+        )
+
+        canvas = await repo.create(
+            "canvases",
+            org_id=org_id,
+            created_by=user_id,
+            name="Path Canvas",
+            config={
+                "doc": {
+                    "version": 1,
+                    "html": '<nubi-value data-el-id="el_path"></nubi-value>',
+                    "bindings": {
+                        "el_path": {
+                            "kind": "api",
+                            "connector_id": conn_id,
+                            "path": "/v1/users",
+                            "select": "$.data.items",
+                        },
+                    },
+                }
+            },
+        )
+
+        captured_config: dict = {}
+
+        def _capture_connector(config: dict):
+            captured_config.update(config)
+
+            class _MockConn:
+                def execute(self, plan):
+                    return pa.table({"id": [1, 2], "name": ["Alice", "Bob"]})
+
+                def capabilities(self):
+                    return {"predicate_rls": True}
+
+                def close(self):
+                    pass
+
+            return _MockConn()
+
+        with patch(
+            "app.connectors.http_json.HttpJsonConnector",
+            side_effect=_capture_connector,
+        ):
+            result = await collect_canvas_data(
+                canvas_id=canvas["id"],
+                org_id=org_id,
+                claims={},
+                repo=repo,
+            )
+
+        # The connector must have been constructed with the merged URL.
+        assert captured_config.get("url") == f"{base_url}/v1/users", (
+            f"Expected URL with path appended, got: {captured_config.get('url')!r}"
+        )
+        # 'select' = '$.data.items' → record_path = 'data.items'
+        assert captured_config.get("record_path") == "data.items", (
+            f"Expected record_path='data.items', got: {captured_config.get('record_path')!r}"
+        )
+
+        assert "el_path" in result
+        entry = result["el_path"]
+        assert "error" not in entry, f"Unexpected error: {entry.get('error')}"
+        assert entry["columns"] == ["id", "name"]
+        assert len(entry["rows"]) == 2
+
+    # ── 7b. run_query_rows truncates Arrow table BEFORE to_pylist ────────────
+
+    @pytest.mark.asyncio
+    async def test_run_query_rows_truncates_arrow_before_to_pylist(self):
+        """run_query_rows slices the Arrow table to _ROW_CAP before to_pylist().
+
+        Regression for the MED resource finding: the original code called
+        to_pylist() first (materialising the full result) then sliced the Python
+        list.  The fix calls arrow_table.slice(0, cap) first so only _ROW_CAP
+        rows are ever held in Python memory as dicts.
+        """
+        import pyarrow as pa
+
+        from app.dashboards.collect import run_query_rows, _ROW_CAP  # noqa: PLC0415
+        from app.queries.registry import get_query_registry  # noqa: PLC0415
+
+        cap = _ROW_CAP if _ROW_CAP > 0 else 100_000
+        over_cap = cap + 5
+
+        # Register a temporary query so run_query_rows can find it.
+        reg = get_query_registry()
+        import types as _types  # noqa: PLC0415
+
+        fake_query_id = f"_test_cap_{uuid.uuid4().hex}"
+        fake_query = _types.SimpleNamespace(
+            id=fake_query_id,
+            sql="SELECT 1",
+            params=[],
+            datastore_id=None,
+        )
+
+        def _patched_get(qid):
+            if qid == fake_query_id:
+                return fake_query
+            return reg._store.get(qid)
+
+        # Track Arrow slice vs to_pylist call order.
+        slice_before_pylist: list[bool] = []
+
+        class _TrackingTable:
+            def __init__(self, inner: pa.Table, was_sliced: bool = False) -> None:
+                self._inner = inner
+                self._sliced = was_sliced
+
+            def __len__(self) -> int:
+                return len(self._inner)
+
+            @property
+            def schema(self):
+                return self._inner.schema
+
+            def slice(self, offset: int, length: int) -> "_TrackingTable":
+                return _TrackingTable(self._inner.slice(offset, length), was_sliced=True)
+
+            def to_pylist(self):
+                slice_before_pylist.append(self._sliced)
+                return self._inner.to_pylist()
+
+        big_inner = pa.table({"n": list(range(over_cap))})
+        tracking_table = _TrackingTable(big_inner)
+
+        class _FakeConnector:
+            def execute(self, plan):
+                return tracking_table
+
+            def close(self):
+                pass
+
+        repo = InMemoryRepo()
+        org_id = str(uuid.uuid4())
+
+        with (
+            patch.object(reg, "get", side_effect=_patched_get),
+            patch(
+                "app.dashboards.collect._resolve_connector",
+                new=AsyncMock(return_value=(_FakeConnector(), False)),
+            ),
+        ):
+            columns, rows = await run_query_rows(
+                query_id=fake_query_id,
+                org_id=org_id,
+                repo=repo,
+                policies={},
+            )
+
+        assert len(rows) == cap, f"Expected {cap} rows, got {len(rows)}"
+        assert slice_before_pylist, "to_pylist() was never called"
+        assert slice_before_pylist[0] is True, (
+            "slice() must be called BEFORE to_pylist() so large results "
+            "are never fully materialised into Python memory"
         )
 
     # ── 7b. Canvas with >500 bindings is rejected at parse (max_length=500) ─

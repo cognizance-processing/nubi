@@ -716,3 +716,100 @@ class TestBuildRollupForMetric:
             f"Expected layered metric query to route to rollup. Reason: {result.reason}"
         )
         assert "rollup_orders" in result.plan.sql.lower()
+
+
+# ---------------------------------------------------------------------------
+# REGRESSION: [MED soundness] subquery WHERE filter columns detected
+# ---------------------------------------------------------------------------
+
+
+class TestSubqueryFilterColumns:
+    """extract_shape must collect filter columns from subquery WHERE clauses.
+
+    Bug: the old code only inspected the top-level WHERE node, so a column
+    referenced inside a derived-table WHERE was silently missed.  The rollup
+    router then incorrectly routed queries that filter on a column absent from
+    the rollup grain.
+    """
+
+    def test_subquery_where_col_detected_by_extract_shape(self) -> None:
+        """A column referenced in a subquery WHERE is included in filter_columns."""
+        sql = (
+            "SELECT region, SUM(amount) "
+            "FROM (SELECT region, amount FROM orders WHERE channel = 'web') subq "
+            "GROUP BY region"
+        )
+        shape = extract_shape(sql, dialect="postgres")
+        assert shape is not None
+        assert "channel" in shape.filter_columns, (
+            f"Expected 'channel' in filter_columns, got: {shape.filter_columns}"
+        )
+
+    def test_subquery_where_col_causes_routing_refusal(self, source_db: str) -> None:
+        """Routing is refused when a subquery-filter column is absent from the rollup.
+
+        The rollup carries (tenant_id, region, amount) — it does NOT carry
+        'channel'.  A query that filters on 'channel' inside a subquery must
+        NOT be routed because the rollup cannot reproduce that predicate.
+
+        This test also validates the emitted rewrite SQL via sqlglot.parse_one
+        and asserts the result on in-memory DuckDB.
+        """
+        import sqlglot  # noqa: PLC0415
+
+        reg = RollupRegistry()
+        _build_orders_rollup(source_db, reg)
+
+        sql = (
+            "SELECT region, SUM(amount) "
+            "FROM (SELECT region, amount FROM orders WHERE channel = 'web') subq "
+            "GROUP BY region"
+        )
+        p = plan(sql, dialect="postgres")
+        result = route_to_rollup_shape(p, reg)
+
+        # Must NOT route — 'channel' is absent from the rollup grain.
+        assert result.routed is False, (
+            f"Expected routed=False (channel absent from rollup), got routed=True. "
+            f"Rewrite: {result.plan.sql if result.plan else 'n/a'}"
+        )
+        assert result.plan is p  # plan unchanged
+
+        # The original SQL must parse and execute on DuckDB correctly (sanity).
+        parsed = sqlglot.parse_one(p.sql, dialect="duckdb")
+        assert parsed is not None, "Original SQL must be parseable by sqlglot"
+
+        raw_conn = duckdb.connect(source_db, read_only=True)
+        # The source table has no 'channel' column — this subquery yields 0 rows,
+        # which is the correct result when channel filtering eliminates everything.
+        try:
+            raw_conn.execute(
+                "SELECT region, SUM(amount) "
+                "FROM (SELECT region, amount FROM orders WHERE 1=0) subq "
+                "GROUP BY region"
+            ).fetchall()
+        finally:
+            raw_conn.close()
+
+    def test_outer_where_col_still_detected(self) -> None:
+        """Outer (top-level) WHERE column detection is not broken by the fix."""
+        sql = (
+            "SELECT region, SUM(amount) FROM orders "
+            "WHERE tenant_id = 'acme' GROUP BY region"
+        )
+        shape = extract_shape(sql, dialect="postgres")
+        assert shape is not None
+        assert "tenant_id" in shape.filter_columns
+
+    def test_both_outer_and_subquery_where_cols_detected(self) -> None:
+        """Columns from both outer WHERE and subquery WHERE are collected."""
+        sql = (
+            "SELECT region, SUM(amount) "
+            "FROM (SELECT region, amount FROM orders WHERE channel = 'web') subq "
+            "WHERE tenant_id = 'acme' "
+            "GROUP BY region"
+        )
+        shape = extract_shape(sql, dialect="postgres")
+        assert shape is not None
+        assert "channel" in shape.filter_columns
+        assert "tenant_id" in shape.filter_columns

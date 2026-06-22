@@ -119,6 +119,9 @@ from app.metrics.models import (
 _MAX_TC_PERIODS: int = int(os.environ.get("NUBI_MAX_TC_PERIODS", 3650))
 _MAX_TOP_N: int = int(os.environ.get("NUBI_MAX_TOP_N", 1000))
 _MAX_QUERY_LIMIT: int = int(os.environ.get("NUBI_MAX_QUERY_LIMIT", 100_000))
+# Default row cap applied when mq.limit is None (callers wanting all rows must
+# set an explicit high limit, up to NUBI_MAX_QUERY_LIMIT).
+_DEFAULT_LIMIT: int = int(os.environ.get("NUBI_METRIC_DEFAULT_LIMIT", 100_000))
 
 # Valid SQL identifier pattern (for entity/time columns in latest_snapshot)
 _IDENT_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
@@ -249,12 +252,14 @@ def _compile_flat(
         select = select.where(where_node)
 
     # 2h. ORDER BY (alias refs are fine) and LIMIT.
+    # When mq.limit is None we apply a default cap to prevent unbounded scans.
+    # Callers wanting all rows must set an explicit high limit (up to
+    # NUBI_MAX_QUERY_LIMIT).
     for field, direction in mq.order_by:
         select = select.order_by(
             exp.Ordered(this=exp.column(field), desc=(direction == "desc"))
         )
-    if mq.limit is not None:
-        select = select.limit(mq.limit)
+    select = select.limit(mq.limit if mq.limit is not None else _DEFAULT_LIMIT)
 
     # ── 3. Render, then swap sentinels for the real {{name}} placeholders. ───
     sql = select.sql(dialect=dialect)
@@ -423,16 +428,28 @@ def _compile_layered(
                 outer_select_exprs.append(exp.alias_(pct_expr, out_name))
 
         elif tc.kind in ("prior_year", "yoy_abs", "yoy_pct"):
-            lag_periods = YEAR_LAG_BY_GRAIN.get(mq.time_grain or "day", 365)
-            lag_expr = _window_lag(m_col, lag_periods, partition_cols, order_col)
+            # Date-correct prior-year lookup via correlated scalar subquery on
+            # __base.  Positional LAG(measure, N) is WRONG for sparse (non-dense)
+            # time series because missing buckets shift the row offset.
+            # Instead we look up the value at exactly (bucket - 1 year/period)
+            # using a correlated subquery that matches on date + all dimensions.
+            # This is correct for any grain and any sparsity pattern.
+            py_expr_sql = _prior_year_subquery_sql(
+                tc.measure, mq.time_grain or "day", time_alias, all_dim_names, dialect
+            )
+            py_expr = sqlglot.parse_one(py_expr_sql, dialect=dialect)
+            m_col_sql = m_col.sql(dialect=dialect)
             if tc.kind == "prior_year":
-                outer_select_exprs.append(exp.alias_(lag_expr, out_name))
+                outer_select_exprs.append(exp.alias_(py_expr, out_name))
             elif tc.kind == "yoy_abs":
-                diff = exp.Sub(this=m_col.copy(), expression=lag_expr)
-                outer_select_exprs.append(exp.alias_(diff, out_name))
+                diff_sql = f"({m_col_sql} - ({py_expr_sql}))"
+                diff_expr = sqlglot.parse_one(diff_sql, dialect=dialect)
+                outer_select_exprs.append(exp.alias_(diff_expr, out_name))
             else:  # yoy_pct
-                lag2 = _window_lag(m_col, lag_periods, partition_cols, order_col)
-                pct_sql = f"({m_col.sql(dialect=dialect)} - {lag2.sql(dialect=dialect)}) / NULLIF({lag2.sql(dialect=dialect)}, 0)"
+                pct_sql = (
+                    f"({m_col_sql} - ({py_expr_sql})) "
+                    f"/ NULLIF(({py_expr_sql}), 0)"
+                )
                 pct_expr = sqlglot.parse_one(pct_sql, dialect=dialect)
                 outer_select_exprs.append(exp.alias_(pct_expr, out_name))
 
@@ -480,17 +497,28 @@ def _compile_layered(
             outer_select_exprs.append(exp.alias_(win_expr, out_name))
 
     # ── Assemble the outer SELECT ────────────────────────────────────────────
+    # Use "__base AS __outer" so that correlated subqueries (e.g. prior-year)
+    # can unambiguously qualify the outer row's columns as "__outer.<col>",
+    # avoiding the DuckDB binding ambiguity when both the outer and inner CTEs
+    # are named "__base".
     outer_select = exp.Select().select(*outer_select_exprs).from_(
-        exp.Table(this=exp.to_identifier("__base"))
+        exp.alias_(
+            exp.Table(this=exp.to_identifier("__base")),
+            "__outer",
+        )
     )
 
-    # ORDER BY and LIMIT (on the outer)
+    # ORDER BY and LIMIT (on the outer).
+    # When mq.limit is None we apply a default cap to prevent unbounded scans
+    # and window-function materialisation over the full table.  Callers wanting
+    # all rows must set an explicit high limit (up to NUBI_MAX_QUERY_LIMIT).
     for field, direction in mq.order_by:
         outer_select = outer_select.order_by(
             exp.Ordered(this=exp.column(field), desc=(direction == "desc"))
         )
-    if mq.limit is not None:
-        outer_select = outer_select.limit(mq.limit)
+    outer_select = outer_select.limit(
+        mq.limit if mq.limit is not None else _DEFAULT_LIMIT
+    )
 
     # ── Top-N (outermost QUALIFY/RANK layer) ─────────────────────────────────
     if mq.top_n is not None and not mq.top_n.other:
@@ -726,10 +754,38 @@ def _apply_top_n_other(
             base_measure_sums[m.name] = f"NULL AS {m.name}"
         other_select_parts.append(base_measure_sums[m.name])
 
-    # (d) Derived measures: recomputed from the summed base measures.
-    base_measure_names = set(metric.measure_names())
+    # (d) Derived measures: recomputed from the re-aggregated base measures.
+    # The Other-bucket SELECT is a GROUP BY aggregate query; bare measure names
+    # (e.g. "delivered") are NOT in the GROUP BY and would cause a Binder Error.
+    # Strategy: compile the formula with _compile_derived_formula first (which
+    # applies NULLIF-guarding and returns SQL like
+    #   "delivered / NULLIF(ordered, 0)"
+    # ), then substitute each bare base-measure name with its aggregate SQL
+    # expression (e.g. "delivered" → "SUM(delivered)", "min_sale" → "MIN(min_sale)")
+    # via whole-word regex.  This order is safe because:
+    #   1. _compile_derived_formula does not validate NAME tokens against base_names
+    #      (governance already ran in _govern); it only applies NULLIF guards.
+    #   2. Whole-word substitution cannot accidentally match inside aggregate
+    #      function names because measure names are plain identifiers.
+    bare_name_to_agg: dict[str, str] = {}
+    for m in metric.measures():
+        # Extract the aggregate SQL fragment (without the " AS <name>" suffix).
+        entry = base_measure_sums[m.name]
+        agg_expr = entry.split(" AS ")[0]  # e.g. "SUM(delivered)" or "NULL"
+        bare_name_to_agg[m.name] = agg_expr
+
+    base_measure_names_set = set(metric.measure_names())
     for dm in metric.derived_measures:
-        formula_sql = _compile_derived_formula(dm, base_measure_names)
+        # Step 1: compile formula → SQL with NULLIF guards on bare names.
+        formula_sql = _compile_derived_formula(dm, base_measure_names_set)
+        # Step 2: substitute each bare base-measure name with its aggregate form.
+        # Use whole-word regex to avoid substring collisions.
+        for bare_name, agg_expr in bare_name_to_agg.items():
+            formula_sql = re.sub(
+                r"\b" + re.escape(bare_name) + r"\b",
+                agg_expr,
+                formula_sql,
+            )
         other_select_parts.append(f"{formula_sql} AS {dm.name}")
 
     # (e) FIX #4: time-comparison window columns — emit NULL AS <out_name> in the
@@ -788,10 +844,12 @@ def _apply_top_n_other(
         pos2 += 1
     top_n_outer_sql = top_n_sql[pos2:].strip()
 
+    # Wrap both UNION arms in parentheses so that ORDER BY / QUALIFY / LIMIT
+    # inside each arm are unambiguous (required by DuckDB and standard SQL).
     result = (
         f"WITH __base AS ({base_cte_body}) "
-        f"{top_n_outer_sql} "
-        f"UNION ALL SELECT * FROM ({other_sql})"
+        f"({top_n_outer_sql}) "
+        f"UNION ALL ({other_sql})"
     )
     return result
 
@@ -1323,4 +1381,71 @@ def _window_lag(
         this=lag_fn,
         partition_by=partition_cols,
         order=exp.Order(expressions=[exp.Ordered(this=order_col.copy())]) if order_col else None,
+    )
+
+
+# Interval subtraction SQL per grain for the date-correct prior-year lookup.
+# These produce the date exactly one year/period earlier, regardless of row
+# density (unlike positional LAG which shifts on sparse series).
+_PRIOR_YEAR_INTERVAL: dict[str, str] = {
+    "month": "INTERVAL '1 year'",
+    "quarter": "INTERVAL '1 year'",
+    "year": "INTERVAL '1 year'",
+    "week": "INTERVAL '52 weeks'",
+    "day": "INTERVAL '365 days'",
+    "hour": "INTERVAL '8760 hours'",
+}
+
+
+def _prior_year_subquery_sql(
+    measure_name: str,
+    grain: str,
+    time_alias: str | None,
+    all_dim_names: list[str],
+    dialect: str,
+) -> str:
+    """Build a correlated scalar subquery that returns the prior-year value of
+    *measure_name* for the current row's dimension combination and date bucket.
+
+    Unlike positional LAG(measure, N), this is correct for sparse time series
+    because it matches by DATE, not by row offset.
+
+    The outer SELECT uses ``FROM __base AS __outer`` so the outer row's columns
+    are unambiguously qualified as ``__outer.<col>`` — without this, DuckDB
+    can mis-bind column references to the inner ``__base AS __py`` alias when
+    both sides use the same CTE.
+
+    Emits:
+        (SELECT __py.{measure} FROM __base AS __py
+         WHERE __py.{dim1} = __outer.{dim1} [AND ...]
+         AND __py.{time_alias} = DATE_TRUNC('{grain}',
+                                            __outer.{time_alias} - {interval}))
+
+    When there is no time_alias (no grain) or no dims to join on, we degrade
+    gracefully by omitting the respective WHERE clause components.
+    """
+    interval = _PRIOR_YEAR_INTERVAL.get(grain, "INTERVAL '365 days'")
+
+    # Qualify outer-row column references with __outer. to avoid ambiguity.
+    dim_conditions = " AND ".join(
+        f"__py.{d} = __outer.{d}" for d in all_dim_names
+    )
+
+    if time_alias is not None:
+        time_condition = (
+            f"__py.{time_alias} = "
+            f"DATE_TRUNC('{grain}', __outer.{time_alias} - {interval})"
+        )
+        if dim_conditions:
+            where_clause = f"WHERE {dim_conditions} AND {time_condition}"
+        else:
+            where_clause = f"WHERE {time_condition}"
+    else:
+        if dim_conditions:
+            where_clause = f"WHERE {dim_conditions}"
+        else:
+            where_clause = ""
+
+    return (
+        f"(SELECT __py.{measure_name} FROM __base AS __py {where_clause})"
     )

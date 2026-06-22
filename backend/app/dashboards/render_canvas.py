@@ -359,6 +359,120 @@ def _sanitize_for_render(html: str) -> str:
 
 
 # ---------------------------------------------------------------------------
+# CSS injection sanitizer
+# ---------------------------------------------------------------------------
+
+# Matches a CSS @import rule in any of its forms:
+#   @import "url"; / @import url("..."); / @import url('...'); / @import url(...);
+_CSS_IMPORT_RE = re.compile(
+    r"@import\b[^;]*;?",
+    re.IGNORECASE,
+)
+
+# Matches url(...) values in CSS, capturing the inner content.
+# Three alternatives in one regex to handle single-quoted, double-quoted, and
+# unquoted url() forms.  Named groups: sq (single-quoted), dq (double-quoted),
+# uq (unquoted).  The unquoted form stops at the first ')' character, which is
+# safe for typical CSS values without parentheses inside.
+_CSS_URL_RE = re.compile(
+    r"""url\(\s*(?:'(?P<sq>[^']*)'|"(?P<dq>[^"]*)"|\s*(?P<uq>[^)'"]*?))\s*\)""",
+    re.IGNORECASE,
+)
+
+# Safe data: sub-schemes allowed inside url() — only inline image types.
+_SAFE_DATA_MIME_RE = re.compile(
+    r"^data:image/(png|jpeg|gif|webp|svg\+xml)\s*;",
+    re.IGNORECASE,
+)
+
+
+def _is_safe_css_url(target: str) -> bool:
+    """Return True if a CSS url() target is safe to keep in assets.css.
+
+    Permitted:
+    - Empty string (harmless).
+    - data:image/(png|jpeg|gif|webp|svg+xml);... — inline images only.
+    - Relative paths with no scheme (no ``://``, no ``//``, no scheme prefix).
+
+    Rejected (neutralized → replaced with ``none``):
+    - javascript: / vbscript: — code execution.
+    - data: with any MIME type that is not a safe image type.
+    - Protocol-relative URLs (starting with ``//``).
+    - Absolute URLs with any scheme (http, https, ftp, file, ...).
+    - Any other string that contains a URL scheme (``word:``).
+    """
+    t = target.strip()
+    if not t:
+        return True
+
+    tl = t.lower()
+
+    # Block: javascript: / vbscript:
+    if tl.startswith(("javascript:", "vbscript:")):
+        return False
+
+    # Block: protocol-relative URLs (//evil.example/...)
+    if t.startswith("//"):
+        return False
+
+    # Block: data: URIs — only safe image MIME types are allowed.
+    if tl.startswith("data:"):
+        return bool(_SAFE_DATA_MIME_RE.match(t))
+
+    # Block: any other absolute URL with a scheme (http, https, ftp, file, etc.)
+    # Matches the pattern: one or more ASCII letters/digits/+/-/. followed by ://
+    if re.match(r"[a-zA-Z][a-zA-Z0-9+\-.]*://", t):
+        return False
+
+    # Block: any bare scheme reference without // (e.g. "javascript:" already caught
+    # above, but catch anything else: "vbscript:", "mailto:", etc.)
+    # Pattern: word characters followed immediately by ':'
+    if re.match(r"[a-zA-Z][a-zA-Z0-9+\-.]*:", t):
+        return False
+
+    # Everything else is a relative path — safe.
+    return True
+
+
+def _neutralize_css_url(m: re.Match) -> str:
+    """Replace a dangerous url() value with url(none), keep safe ones unchanged."""
+    # Extract the target from whichever named group matched.
+    target = m.group("sq") or m.group("dq") or m.group("uq") or ""
+    if _is_safe_css_url(target):
+        return m.group(0)  # original unchanged
+    return "url(none)"
+
+
+def _sanitize_assets_css(css: str) -> str:
+    """Sanitize user-authored CSS before inlining into the emailed HTML document.
+
+    Defenses applied (in order):
+
+    1. Strip HTML tag breakout attempts — remove any ``</style`` and ``<script``
+       sequences so the CSS cannot escape the enclosing ``<style>`` block.
+    2. Remove all CSS ``@import`` rules entirely — these can pull in arbitrary
+       external stylesheets.
+    3. Neutralize dangerous ``url()`` values — replace ``url()`` whose target is a
+       dangerous scheme (javascript:, vbscript:, data: non-image, protocol-relative
+       ``//``, absolute http/https) with ``url(none)``.
+
+    Benign CSS (inline styles, relative paths, safe data:image/... URLs, normal
+    class/property declarations) is left unchanged.
+    """
+    # 1. Strip HTML tag breakout sequences.
+    sanitized = re.sub(r"</\s*style", "", css, flags=re.IGNORECASE)
+    sanitized = re.sub(r"<\s*script", "", sanitized, flags=re.IGNORECASE)
+
+    # 2. Remove all @import rules.
+    sanitized = _CSS_IMPORT_RE.sub("", sanitized)
+
+    # 3. Neutralize dangerous url() values.
+    sanitized = _CSS_URL_RE.sub(_neutralize_css_url, sanitized)
+
+    return sanitized
+
+
+# ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
 
@@ -424,14 +538,7 @@ def render_canvas_html(
     if include_assets_css:
         assets_raw = (doc.assets or {}).get("css") or ""
         if assets_raw:
-            # Sanitize user-authored CSS: remove any attempt to break out of the
-            # <style> block (closing style tags) or inject script tags.
-            # This prevents an org member from setting assets.css to a value like:
-            #   </style><script>evil()</script><style>
-            # and having it execute in the emailed HTML.
-            sanitized_css = re.sub(r"</\s*style", "", assets_raw, flags=re.IGNORECASE)
-            sanitized_css = re.sub(r"<\s*script", "", sanitized_css, flags=re.IGNORECASE)
-            assets_css = "\n" + sanitized_css
+            assets_css = "\n" + _sanitize_assets_css(assets_raw)
 
     doc_html = (
         "<!DOCTYPE html>\n"
