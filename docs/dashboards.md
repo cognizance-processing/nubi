@@ -12,7 +12,7 @@ Under the hood every dashboard is a single JSON document — a `DashboardSpec`. 
 
 Open **Dashboards** from the sidebar to see all boards in the active project.
 
-![The dashboards page — a responsive card grid with search, sort, and per-board actions](/docs/screenshots/dashboards.png)
+![The dashboards page — a responsive card grid with search, sort, and per-board actions](screenshots/dashboard.png)
 
 - Boards render as a responsive **card grid** — one column on phones, two on small screens, three on desktop. Each card shows the board name plus a meta line: the widget count, or **HTML board** for legacy HTML boards.
 - **New dashboard** (top-right) opens a blank editor.
@@ -27,7 +27,7 @@ If you have read-only access to the organisation, create/edit/delete actions are
 
 ## The editor at a glance
 
-![The dashboard editor — board canvas on the left, Add widget panel on the right, toolbar in the top bar](/docs/screenshots/dashboard-editor.png)
+![The dashboard editor — board canvas on the left, Add widget panel on the right, toolbar in the top bar](screenshots/editor.png)
 
 The editor is a single full-height workspace. Its toolbar lives in the app's top bar:
 

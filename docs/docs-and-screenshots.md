@@ -115,6 +115,24 @@ check to fail CI.
 
 Screenshots are stored at `public/docs/screenshots/<name>.png`.
 
+> **Note:** A subset of real screenshots captured from the live dev stack (port 5280) are
+> already committed to `docs/screenshots/` and wired into docs as `screenshots/<name>.png`
+> relative references. Run `node scripts/capture-screenshots.mjs` to regenerate those, or
+> `node scripts/docs-screenshots.mjs` (full pipeline) to regenerate everything including
+> the `public/docs/screenshots/` outputs. See `scripts/capture-screenshots.mjs` for the
+> standalone no-full-pipeline capture script.
+
+### Marketing pages (public — no auth)
+
+These are committed to `docs/screenshots/` and served as GitHub-relative paths.
+
+| File | Page / route | Viewport | What to show |
+|---|---|---|---|
+| `landing.png` | `/` | 1440×900 | Hero section — "BI that runs in your browser" |
+| `landing-mobile.png` | `/` | 375×812 | Landing hero on a narrow screen |
+| `pricing.png` | `/pricing` | 1440×900 | Pricing tier cards and "Pricing that doesn't tax your viewers" headline |
+| `compare.png` | `/compare` | 1440×900 | Competitor comparison hero with "How Nubi compares" |
+
 ### Getting Started / Quickstart
 
 | File | Page / route | Viewport | What to show |
@@ -157,6 +175,10 @@ Screenshots are stored at `public/docs/screenshots/<name>.png`.
 | `dashboard-editor.png` | `/dashboards/:id/edit` | 1440×900 | Editor — canvas with widgets, toolbar, configure panel |
 | `dashboard-view.png` | `/d/:id` | 1440×900 | Published dashboard — KPI row + chart + table |
 
+> **Captured (standalone):** `dashboard.png` (dashboard list, 13 seeded boards) and
+> `editor.png` (Retail Sales Overview in the editor with Add widget panel) are committed to
+> `docs/screenshots/` from the live dev stack and wired into `dashboards.md` and `ui-tour.md`.
+
 ### Flows
 
 | File | Page / route | Viewport | What to show |
@@ -164,6 +186,11 @@ Screenshots are stored at `public/docs/screenshots/<name>.png`.
 | `flows-notebook.png` | `/flows` (Notebook view) | 1440×900 | Note, SQL, Python cells in order with Run buttons |
 | `flows-canvas.png` | `/flows` (Canvas view) | 1440×900 | DAG canvas — nodes, dependency arrows, minimap |
 | `flows-code.png` | `/flows` (Code view) | 1440×900 | File explorer with flow.py and cell files in Monaco |
+
+> **Captured (standalone):** `flows.png` (Retail Monthly Summary DAG — pull_sales →
+> pull_budget → blend_variance with React Flow minimap) is committed to `docs/screenshots/`
+> and wired into `flows.md`. The `/canvases` backend returned 500 on this stack, so
+> `canvas.png` was not captured.
 | `automations.png` | `/automations` | 1440×900 | Scheduled flows list — name, schedule, next/last run |
 | `flows-sweep.png` | `/flows` (Runs tab, sweep) | 1440×900 | Sweep results — diff surface table |
 | `flows-writeback-preview.png` | Swagger or app | 1440×900 | Write-back dry-run diff |

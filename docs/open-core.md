@@ -212,6 +212,14 @@ In an OSS build where `src/ee/` is absent the dynamic import rejects silently; O
 
 ---
 
+## Competitive overview
+
+![How Nubi compares — competitor comparison table](screenshots/compare.png)
+
+The [Compare page](/compare) gives a full breakdown of how Nubi differs from Hex, Cube, Metabase, Looker, Sigma, Tableau, Power BI, and Apache Superset.
+
+---
+
 ## See also
 
 - [Architecture: Open-Core](/docs/architecture-open-core) — CE vs EE feature table, Docker build, tier mapping

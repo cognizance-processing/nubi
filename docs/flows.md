@@ -63,7 +63,7 @@ Cells share data. A downstream cell can reference an upstream cell's result by i
 
 ### Canvas view
 
-![Canvas view — each cell is a node, arrows are dependencies, with minimap and zoom controls](/docs/screenshots/flows-canvas.png)
+![Canvas view — each cell is a node, arrows are dependencies, with minimap and zoom controls](screenshots/flows.png)
 
 The canvas renders the flow as a visual graph. Each cell is a node; arrows show dependencies. It is the clearest way to see and shape the structure of a branching or fan-out pipeline.
 

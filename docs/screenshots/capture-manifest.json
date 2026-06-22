@@ -1,0 +1,15 @@
+{
+  "generatedAt": "2026-06-22T17:28:54.381Z",
+  "app": "http://localhost:5280",
+  "captured": [
+    "landing.png",
+    "landing-mobile.png",
+    "pricing.png",
+    "compare.png",
+    "dashboard.png",
+    "editor.png",
+    "flows.png",
+    "canvas.png"
+  ],
+  "failed": []
+}

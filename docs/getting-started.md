@@ -4,6 +4,8 @@
 
 Welcome to Nubi. This guide takes you from a fresh account to a live dashboard: sign up, connect a data source, run your first query, and build your first board. It also covers the Free plan limits and where to go next.
 
+![Nubi landing — BI that runs in your browser, viewers are free](screenshots/landing.png)
+
 If you want to poke around first, every new workspace includes a built-in **Demo data** connector — no configuration needed.
 
 ---
@@ -241,6 +243,8 @@ The **Free** plan never expires and is genuinely usable for real projects. All p
 | Embedded sessions | Not included (Nubi branding on embeds) |
 
 When you outgrow these limits — more connectors, larger result sets, scheduled AI, or embedding dashboards in another app — move to a paid plan. See the [pricing page](/pricing) for the full tier comparison, or [Billing & usage](/docs/billing-and-usage) for Nubi Cloud billing details.
+
+![Pricing page — tier cards and calculator](screenshots/pricing.png)
 
 > Free workspaces are abuse-capped (request rate and a hard compute ceiling). Storage for an inactive workspace may be reclaimed after a long period of inactivity; active workspaces are unaffected.
 

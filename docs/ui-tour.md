@@ -23,6 +23,8 @@ Every authenticated screen shares the same frame. Three regions are always visib
 
 On mobile the sidebar is hidden behind an off-canvas drawer (hamburger in the top bar), and the chat panel becomes a full-screen overlay.
 
+![Nubi on mobile — 375px landing page view](screenshots/landing-mobile.png)
+
 ---
 
 ## The left sidebar
@@ -192,7 +194,7 @@ Navigate there via **Flows → Secrets** (a link inside the Flows page) or direc
 
 ## Dashboard full-screen view (`/d/:id`)
 
-![The Dashboards list — search and open any live dashboard](/docs/screenshots/dashboards.png)
+![The Dashboards list — search and open any live dashboard](screenshots/dashboard.png)
 
 Opening a dashboard from the Dashboards list or from a Recent card on Home navigates to `/d/<id>` — a clean full-viewport view with no app-shell chrome. This mode is ideal for presenting or embedding via the `<iframe>` embed pattern. Use your browser's back button or the close control to return to the shell.
 
