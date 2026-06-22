@@ -1461,3 +1461,200 @@ async def test_sweep_output_collection_calls_match_successful_cells():
         f"{count_success} for successful sweep. "
         "Failed cells must not add sweep-layer output-collection calls."
     )
+
+
+# ---------------------------------------------------------------------------
+# FIX: [MED] diff_surface result blob cap
+# ---------------------------------------------------------------------------
+
+
+def _large_result_task(size_bytes: int = 200_000) -> list[dict[str, Any]]:
+    """A python task that returns a large result dict (> default 64 KiB cap)."""
+    # Build a string of 'x' characters to pad the result to `size_bytes` bytes.
+    padding = "x" * size_bytes
+    return [
+        {
+            "key": "big_output",
+            "kind": "python",
+            "needs": [],
+            "config": {
+                "code": (
+                    f"result = {{'data': 'x' * {size_bytes}, 'value': 42}}\n"
+                )
+            },
+            "timeout_s": 0,
+        }
+    ]
+
+
+async def test_diff_surface_large_blobs_are_capped():
+    """diff_surface must cap per-cell result blobs that exceed the byte limit.
+
+    A sweep whose cells produce large results (> cap) must return a bounded
+    diff_surface where oversized task results are replaced with a truncation
+    summary containing __truncated__, size_bytes, and cap_bytes.
+    """
+    reset_for_tests()
+    store = InMemoryFlowStore()
+    flow = await _make_flow(store, _large_result_task(200_000))
+
+    result = await run_sweep(
+        store=store,
+        flow=flow,
+        param_sets=[{"i": 0}, {"i": 1}],
+        trigger="sweep",
+        now=NOW,
+        claims=CLAIMS,
+    )
+
+    assert result.succeeded == 2, "Both cells must succeed"
+
+    # Use a small cap (1 KiB) — well below the ~200 KiB result.
+    small_cap = 1024
+    surface = result.diff_surface(result_bytes_cap=small_cap)
+
+    assert len(surface) == 2, "Both successful cells must appear in the surface"
+
+    for entry in surface:
+        task_result = entry["outputs"].get("big_output")
+        assert task_result is not None, "'big_output' task must appear in outputs"
+        assert task_result.get("__truncated__") is True, (
+            f"Large result must be replaced with truncation summary, got: {task_result!r}"
+        )
+        assert task_result["size_bytes"] > small_cap, (
+            f"size_bytes ({task_result['size_bytes']}) must exceed cap ({small_cap})"
+        )
+        assert task_result["cap_bytes"] == small_cap
+
+
+async def test_diff_surface_small_results_pass_through():
+    """diff_surface must NOT cap results that fit within the byte limit."""
+    reset_for_tests()
+    store = InMemoryFlowStore()
+    flow = await _make_flow(store, _output_task())  # returns {'value': N*10}
+
+    result = await run_sweep(
+        store=store,
+        flow=flow,
+        param_sets=[{"multiplier": 1}, {"multiplier": 3}],
+        trigger="sweep",
+        now=NOW,
+        claims=CLAIMS,
+    )
+
+    assert result.succeeded == 2
+
+    # Default cap (64 KiB) — the small {'value': 10} result must pass through.
+    surface = result.diff_surface()
+    assert len(surface) == 2
+
+    values = [entry["outputs"].get("compute", {}).get("value") for entry in surface]
+    assert 10 in values
+    assert 30 in values
+
+    # Confirm no truncation markers on small results.
+    for entry in surface:
+        compute_result = entry["outputs"].get("compute", {})
+        assert "__truncated__" not in compute_result, (
+            f"Small result must NOT be truncated, got: {compute_result!r}"
+        )
+
+
+async def test_diff_surface_default_cap_is_64kib():
+    """diff_surface default cap must be 64 KiB (consistent with run-history budget)."""
+    import app.flows.sweep as sweep_mod
+
+    assert sweep_mod._SWEEP_DIFF_RESULT_BYTES_CAP == 64 * 1024, (
+        f"Default cap must be 64 KiB (65536 bytes), "
+        f"got {sweep_mod._SWEEP_DIFF_RESULT_BYTES_CAP}"
+    )
+
+
+async def test_diff_surface_cap_env_overridable(monkeypatch):
+    """_SWEEP_DIFF_RESULT_BYTES_CAP must be patchable (env-overridable by convention)."""
+    import app.flows.sweep as sweep_mod
+
+    monkeypatch.setattr(sweep_mod, "_SWEEP_DIFF_RESULT_BYTES_CAP", 100)
+    assert sweep_mod._SWEEP_DIFF_RESULT_BYTES_CAP == 100
+
+    monkeypatch.undo()
+    assert sweep_mod._SWEEP_DIFF_RESULT_BYTES_CAP == 64 * 1024
+
+
+async def test_diff_surface_cap_zero_disables_capping():
+    """Passing result_bytes_cap=0 must disable capping and return raw results."""
+    reset_for_tests()
+    store = InMemoryFlowStore()
+    flow = await _make_flow(store, _output_task())
+
+    result = await run_sweep(
+        store=store,
+        flow=flow,
+        param_sets=[{"multiplier": 5}],
+        trigger="sweep",
+        now=NOW,
+        claims=CLAIMS,
+    )
+
+    assert result.succeeded == 1
+
+    surface = result.diff_surface(result_bytes_cap=0)
+    assert len(surface) == 1
+    compute_result = surface[0]["outputs"].get("compute", {})
+    assert compute_result.get("value") == 50, (
+        "Raw result must be returned when cap is disabled"
+    )
+    assert "__truncated__" not in compute_result
+
+
+async def test_diff_surface_payload_bounded_with_many_large_cells():
+    """Payload size of diff_surface must be O(N * cap), not O(N * result_size).
+
+    With N cells each returning a ~200 KiB result, the total payload without
+    capping would be N * 200 KiB.  With a 1 KiB cap, it must be at most
+    N * (1 KiB + overhead), demonstrating the bounded guarantee.
+    """
+    import json as _json
+
+    reset_for_tests()
+    store = InMemoryFlowStore()
+    N = 3
+    RESULT_SIZE = 200_000  # ~200 KiB per cell
+    CAP = 1024             # 1 KiB cap
+
+    flow = await _make_flow(store, _large_result_task(RESULT_SIZE))
+
+    result = await run_sweep(
+        store=store,
+        flow=flow,
+        param_sets=[{"i": i} for i in range(N)],
+        trigger="sweep",
+        now=NOW,
+        claims=CLAIMS,
+    )
+
+    assert result.succeeded == N
+
+    surface = result.diff_surface(result_bytes_cap=CAP)
+    assert len(surface) == N
+
+    # Serialise the surface to measure actual payload size.
+    payload = _json.dumps(surface, default=str)
+    payload_bytes = len(payload.encode("utf-8"))
+
+    # Without capping: ~N * RESULT_SIZE = ~600 KiB.
+    # With capping: each cell's result is replaced by a ~100-byte summary.
+    # Generous upper bound: N * (CAP + 512 bytes overhead per entry).
+    max_allowed = N * (CAP + 512)
+    assert payload_bytes <= max_allowed, (
+        f"diff_surface payload ({payload_bytes} bytes) exceeds bounded budget "
+        f"({max_allowed} bytes = {N} cells * ({CAP} cap + 512 overhead)). "
+        "Large result blobs are not being capped."
+    )
+
+    # Every entry must have the truncation marker.
+    for entry in surface:
+        result_val = entry["outputs"].get("big_output", {})
+        assert result_val.get("__truncated__") is True, (
+            f"Cell {entry['index']}: large result not truncated in surface."
+        )

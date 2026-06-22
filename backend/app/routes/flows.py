@@ -92,6 +92,22 @@ _MAX_RESULT_BLOB_BYTES: int = int(
     os.environ.get("NUBI_MAX_RESULT_BLOB_BYTES", str(64 * 1024))
 )
 
+# ---------------------------------------------------------------------------
+# Task-run row cap (HIGH resource — unbounded task_run count in run-detail)
+# ---------------------------------------------------------------------------
+# GET /flows/runs/{run_id} calls store.list_task_runs(run_id) and serialises
+# EVERY task_run.  For map fan-out flows this can return thousands of rows in
+# one response.
+#
+# NUBI_MAX_TASK_RUNS_DEFAULT — default number of task_run rows returned inline
+#                              (default 2 000).  When the actual count exceeds
+#                              this, the response includes
+#                              ``task_runs_truncated: true``.
+# NUBI_MAX_TASK_RUNS_CEILING — hard upper bound callers may request via
+#                              ``?task_runs_limit=N`` (default 10 000).
+_MAX_TASK_RUNS_DEFAULT: int = int(os.environ.get("NUBI_MAX_TASK_RUNS_DEFAULT", "2000"))
+_MAX_TASK_RUNS_CEILING: int = int(os.environ.get("NUBI_MAX_TASK_RUNS_CEILING", "10000"))
+
 
 def _cap_task_logs(
     logs: list[str],
@@ -962,6 +978,7 @@ async def flows_tick(
 async def get_flow_run_by_id(
     run_id: str,
     include_results: int = Query(default=0, ge=0, le=1),
+    task_runs_limit: int = Query(default=0, ge=0),
     user: dict[str, Any] = Depends(current_user),
     repo: Repo = Depends(get_repo),
 ) -> dict[str, Any]:
@@ -981,6 +998,18 @@ async def get_flow_run_by_id(
     Small results (≤ ``NUBI_MAX_RESULT_BLOB_BYTES``, default 64 KiB) are
     included verbatim.  Pass ``?include_results=1`` to receive the full
     blob regardless of size (useful for debugging / CLI tooling).
+
+    Task-run row cap
+    ----------------
+    The response includes at most ``NUBI_MAX_TASK_RUNS_DEFAULT`` (default
+    2 000) task_run rows.  When the total count exceeds the cap the response
+    includes ``task_runs_truncated: true`` and ``task_runs_total`` so the
+    caller can decide whether to paginate.  Pass ``?task_runs_limit=N``
+    (bounded by ``NUBI_MAX_TASK_RUNS_CEILING``, default 10 000) to raise the
+    cap for this request.
+
+    Each task_run's ``logs`` field is also capped via the existing
+    ``_cap_task_logs`` helper.
     """
     org_id = await _get_user_org(str(user["id"]), repo)
     store = get_flow_store()
@@ -988,12 +1017,36 @@ async def get_flow_run_by_id(
     if run is None or str(run["org_id"]) != str(org_id):
         raise AppError("not_found", "Flow run not found.", 404)
 
+    # Resolve the effective task-run limit for this request.
+    # ?task_runs_limit=0 (default) → use the server default cap.
+    # ?task_runs_limit=N (N > 0)  → use min(N, ceiling).
+    if task_runs_limit > 0:
+        effective_limit = min(task_runs_limit, _MAX_TASK_RUNS_CEILING)
+    else:
+        effective_limit = _MAX_TASK_RUNS_DEFAULT
+
     _include_results: bool = bool(include_results)
-    task_runs = await store.list_task_runs(run_id)
+    # Fetch up to ceiling+1 rows so we can detect truncation without a
+    # separate COUNT query.
+    raw_task_runs = await store.list_task_runs(run_id, limit=_MAX_TASK_RUNS_CEILING + 1)
+    task_runs_total = len(raw_task_runs)
+    truncated = task_runs_total > effective_limit
+    task_runs_page = raw_task_runs[:effective_limit]
+
+    def _serialize_with_log_cap(tr: dict[str, Any]) -> dict[str, Any]:
+        serialised = _serialize_task_run(tr, include_results=_include_results)
+        raw_logs: list[str] = serialised.get("logs") or []
+        if raw_logs:
+            capped_logs, logs_truncated = _cap_task_logs(raw_logs)
+            serialised["logs"] = capped_logs
+            if logs_truncated:
+                serialised["logs_truncated"] = True
+        return serialised
+
     result = _serialize_flow_run(run)
-    result["task_runs"] = [
-        _serialize_task_run(tr, include_results=_include_results) for tr in task_runs
-    ]
+    result["task_runs"] = [_serialize_with_log_cap(tr) for tr in task_runs_page]
+    result["task_runs_truncated"] = truncated
+    result["task_runs_total"] = task_runs_total
     return result
 
 

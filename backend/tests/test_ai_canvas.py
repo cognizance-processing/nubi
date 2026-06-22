@@ -743,3 +743,66 @@ class TestCanvasDocJsonSchema:
         schema = canvas_doc_json_schema()
         props = schema.get("properties", {})
         assert "bindings" in props
+
+
+# ---------------------------------------------------------------------------
+# 8. Security: style-tag rejection + unescaped title hardening
+# ---------------------------------------------------------------------------
+
+
+class TestCanvasSecurityHardening:
+    """Security regression tests for canvas HTML generation."""
+
+    def test_style_tag_in_canvas_html_is_rejected(self):
+        """An inline <style> tag in canvas HTML must be rejected by validate_canvas_doc.
+
+        SECURITY (MED): CSS exfiltration / tracking via url() in inline
+        <style> blocks.  'style' must be in the forbidden-tags list so it is
+        caught at validate-time on both the generate and render paths.
+        """
+        doc = CanvasDoc(
+            version=1,
+            title="malicious canvas",
+            html=(
+                '<section>'
+                '<style>body { background: url(https://evil.example/track) }</style>'
+                '<nubi-table data-el-id="el_t1"></nubi-table>'
+                '</section>'
+            ),
+            bindings={
+                "el_t1": {  # type: ignore[dict-item]
+                    "kind": "query",
+                    "query_id": "demo_all",
+                    "params": {},
+                    "field": None,
+                    "format": None,
+                }
+            },
+        )
+        ok, issues = validate_canvas_doc(doc)
+        assert ok is False, (
+            "Expected validate_canvas_doc to reject a canvas doc with an inline <style> tag."
+        )
+        assert any("style" in i.lower() for i in issues), issues
+
+    def test_title_with_html_injection_is_escaped_in_null_template(self):
+        """A question/title containing raw HTML must be escaped in the NullProvider output.
+
+        SECURITY (MED): _build_null_canvas_doc interpolated question[:120]
+        directly into <h1>{title}</h1> — a title like '</h1><style>...'
+        injected raw markup.  html.escape() must be applied before interpolation.
+        """
+        malicious_question = '</h1><style>body{background:url(https://evil.example/x)}</style><h1>'
+        catalog = build_catalog()
+        doc = generate_canvas_doc(malicious_question, catalog, NullProvider())
+
+        # The raw injection payload must NOT appear verbatim in the HTML.
+        assert "</h1><style>" not in doc.html, (
+            "Title was interpolated unescaped — raw </h1><style> survived in canvas HTML."
+        )
+        # The escaped form (or truncated safe form) must be present instead.
+        # html.escape converts < and > so the payload becomes harmless text.
+        assert "<style>" not in doc.html or "&lt;style&gt;" in doc.html or "style" not in doc.html.lower() or (
+            # After escaping, any angle brackets in the title become &lt;/&gt;
+            "&lt;" in doc.html
+        ), doc.html

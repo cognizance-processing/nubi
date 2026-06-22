@@ -546,7 +546,7 @@ class _CountingStore:
 
 
 async def test_advance_readiness_query_count_reduced():
-    """advance_readiness must call list_task_runs fewer than 4 times per invocation.
+    """advance_readiness must call list_task_runs at most 2 times per invocation.
 
     The original code unconditionally called list_task_runs 4 times on every
     invocation.  The fix reduces this to at most 2 calls (1 initial load +
@@ -578,11 +578,113 @@ async def test_advance_readiness_query_count_reduced():
 
     await advance_readiness(store, run["id"], NOW)
 
-    # The original implementation would have called list_task_runs 4 times.
     # The fixed implementation calls it at most 2 (usually 1 for no-map flows).
-    assert store.list_task_runs_count < 4, (
+    # The original bug was 4 unconditional calls; the prior fix reduced to < 4;
+    # this test now enforces the tighter correct bound of at most 2.
+    assert store.list_task_runs_count <= 2, (
         f"advance_readiness called list_task_runs {store.list_task_runs_count} times; "
-        f"expected fewer than 4 (N+1 regression)."
+        f"expected at most 2 (1 initial load + at most 1 conditional map/branch reload)."
+    )
+
+
+async def test_advance_readiness_no_snapshot_bounded_per_call():
+    """advance_readiness without a preloaded snapshot issues a bounded (small
+    constant) number of list_task_runs per call even over a multi-step drain.
+
+    For a linear chain of N tasks drained one by one, each advance_readiness
+    invocation (called without _preloaded_task_runs) must make at most 2
+    list_task_runs calls.  This ensures the no-snapshot path is O(N) in total
+    round-trips, not O(N^2).
+    """
+    reset_for_tests()
+    N = 8  # enough tasks for the O(N^2) pattern to be visible
+
+    inner = InMemoryFlowStore()
+    store = _CountingStore(inner)
+
+    # Build an N-task linear chain: T0 → T1 → ... → T(N-1).
+    tasks = [{"key": f"T{i}", "kind": "noop", "needs": [f"T{i - 1}"] if i > 0 else [], "config": {}}
+             for i in range(N)]
+    flow = await inner.create_flow(
+        org_id="org-test",
+        created_by="user-test",
+        name="long_chain",
+        spec={"version": 1, "name": "long_chain", "tasks": tasks},
+    )
+    run = await materialize_flow_run(inner, flow, {}, "manual", NOW)
+
+    # Simulate draining: for each step, mark one task success and call
+    # advance_readiness WITHOUT a preloaded snapshot (the no-snapshot path).
+    trs = await inner.list_task_runs(run["id"])
+    tr_by_key = {tr["task_key"]: tr for tr in trs}
+
+    for i in range(N):
+        key = f"T{i}"
+        tr = tr_by_key[key]
+        # Claim / mark running.
+        await inner.update_task_run(tr["id"], {"state": "running"})
+        # Mark success.
+        await inner.update_task_run(tr["id"], {"state": "success", "result": {}, "finished_at": NOW})
+
+        count_before = store.list_task_runs_count
+        # Call advance_readiness WITHOUT a preloaded snapshot (the targeted path).
+        await advance_readiness(store, run["id"], NOW)
+        calls_this_step = store.list_task_runs_count - count_before
+
+        assert calls_this_step <= 2, (
+            f"advance_readiness (no snapshot) made {calls_this_step} list_task_runs calls "
+            f"at step {i} (task {key}); expected at most 2.  "
+            f"This indicates an O(N^2) N+1 regression on the no-snapshot path."
+        )
+
+        # Refresh tr_by_key for next iteration.
+        trs = await inner.list_task_runs(run["id"])
+        tr_by_key = {tr["task_key"]: tr for tr in trs}
+
+
+async def test_advance_readiness_no_snapshot_total_queries_linear():
+    """For a drain of N tasks, the total list_task_runs calls across all
+    advance_readiness invocations (no snapshot path) must be at most 2*N.
+
+    This is the O(N) bound test: if each call makes at most 2 queries,
+    N calls make at most 2N total — linear, not quadratic.
+    """
+    reset_for_tests()
+    N = 10
+
+    inner = InMemoryFlowStore()
+    store = _CountingStore(inner)
+
+    tasks = [{"key": f"T{i}", "kind": "noop", "needs": [f"T{i - 1}"] if i > 0 else [], "config": {}}
+             for i in range(N)]
+    flow = await inner.create_flow(
+        org_id="org-test",
+        created_by="user-test",
+        name="linear_chain",
+        spec={"version": 1, "name": "linear_chain", "tasks": tasks},
+    )
+    run = await materialize_flow_run(inner, flow, {}, "manual", NOW)
+
+    trs = await inner.list_task_runs(run["id"])
+    tr_by_key = {tr["task_key"]: tr for tr in trs}
+
+    store.list_task_runs_count = 0  # reset after setup
+
+    for i in range(N):
+        key = f"T{i}"
+        tr = tr_by_key[key]
+        await inner.update_task_run(tr["id"], {"state": "running"})
+        await inner.update_task_run(tr["id"], {"state": "success", "result": {}, "finished_at": NOW})
+        await advance_readiness(store, run["id"], NOW)
+
+        # Refresh for next step.
+        trs = await inner.list_task_runs(run["id"])
+        tr_by_key = {tr["task_key"]: tr for tr in trs}
+
+    assert store.list_task_runs_count <= 2 * N, (
+        f"Total list_task_runs across {N} advance_readiness calls (no snapshot): "
+        f"{store.list_task_runs_count}; expected at most {2 * N} (at most 2 per call).  "
+        f"N+1 / O(N^2) regression detected."
     )
 
 

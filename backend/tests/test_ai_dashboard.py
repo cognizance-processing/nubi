@@ -424,6 +424,26 @@ class TestValidateDashboardHtml:
         assert ok is False
         assert len(issues) >= 2
 
+    def test_style_tag_rejected(self):
+        """Inline <style> tags must be rejected — CSS exfiltration via url().
+
+        SECURITY (MED): a <style> block can load remote resources via url()
+        and track users or exfiltrate page content.  'style' must be in
+        _FORBIDDEN_TAGS_RE so it is blocked at validate-time on both the
+        generate and render paths.
+        """
+        html = (
+            '<div class="nubi-dashboard">'
+            '<style>body { background: url(https://evil.example/track) }</style>'
+            '<nubi-table query-id="demo_all"></nubi-table>'
+            "</div>"
+        )
+        ok, issues = validate_dashboard_html(html)
+        assert ok is False, (
+            "Expected validate_dashboard_html to reject an inline <style> tag."
+        )
+        assert any("style" in i.lower() for i in issues), issues
+
 
 # ---------------------------------------------------------------------------
 # 3. POST /ai/dashboard endpoint

@@ -424,8 +424,21 @@ class InMemoryFlowStore:
             stored.append(deepcopy(record))
         return stored
 
-    async def list_task_runs(self, flow_run_id: str) -> list[TaskRun]:
-        """Return all task_runs for *flow_run_id*, ordered by created_at then task_key."""
+    async def list_task_runs(
+        self, flow_run_id: str, limit: int | None = None
+    ) -> list[TaskRun]:
+        """Return task_runs for *flow_run_id*, ordered by created_at then task_key.
+
+        Parameters
+        ----------
+        flow_run_id:
+            The flow run whose task_runs are listed.
+        limit:
+            Maximum number of rows to return.  When ``None`` (default) ALL
+            rows are returned — callers should supply a bound when using this
+            in a response path to avoid unbounded serialization.  SQL-level
+            LIMIT equivalent for the in-memory store.
+        """
         tr_ids = self._task_run_index.get(str(flow_run_id), [])
         rows = [
             deepcopy(self._task_runs[tid])
@@ -433,6 +446,8 @@ class InMemoryFlowStore:
             if tid in self._task_runs
         ]
         rows.sort(key=lambda r: (r["created_at"], r["task_key"]))
+        if limit is not None:
+            return rows[:limit]
         return rows
 
     async def get_task_run(self, task_run_id: str) -> TaskRun | None:
@@ -1262,18 +1277,43 @@ class PgFlowStore:
             stored.append(_row_to_task_run(row))
         return stored
 
-    async def list_task_runs(self, flow_run_id: str) -> list[TaskRun]:
-        """Return all task_runs for *flow_run_id*, ordered by created_at then task_key."""
+    async def list_task_runs(
+        self, flow_run_id: str, limit: int | None = None
+    ) -> list[TaskRun]:
+        """Return task_runs for *flow_run_id*, ordered by created_at then task_key.
+
+        Parameters
+        ----------
+        flow_run_id:
+            The flow run whose task_runs are listed.
+        limit:
+            Maximum number of rows to return.  When ``None`` (default) ALL
+            rows are returned — callers should supply a bound when using this
+            in a response path to avoid unbounded serialization.  Applied as
+            a SQL LIMIT so the DB never sends an unbounded result set.
+        """
         from app.db import fetch as db_fetch  # noqa: PLC0415
 
-        rows = await db_fetch(
-            """
-            SELECT * FROM task_runs
-            WHERE flow_run_id = $1::uuid
-            ORDER BY created_at ASC, task_key ASC
-            """,
-            flow_run_id,
-        )
+        if limit is not None:
+            rows = await db_fetch(
+                """
+                SELECT * FROM task_runs
+                WHERE flow_run_id = $1::uuid
+                ORDER BY created_at ASC, task_key ASC
+                LIMIT $2
+                """,
+                flow_run_id,
+                limit,
+            )
+        else:
+            rows = await db_fetch(
+                """
+                SELECT * FROM task_runs
+                WHERE flow_run_id = $1::uuid
+                ORDER BY created_at ASC, task_key ASC
+                """,
+                flow_run_id,
+            )
         return [_row_to_task_run(r) for r in rows]
 
     async def get_task_run(self, task_run_id: str) -> TaskRun | None:

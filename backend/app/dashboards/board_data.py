@@ -471,6 +471,20 @@ async def _resolve_inline_provider(
             # Treat the result name as a registered query id.
             try:
                 columns, rows = await run_query_rows(r.name, org_id, repo, policies)
+                # FIX [LOW row cap]: cap rows BEFORE building the Arrow table so
+                # an unbounded run_query_rows result cannot materialise a huge
+                # pa.array in memory.  Mirror the same DB-level LIMIT + post-fetch
+                # slice pattern used by the base_cte branch above.
+                if _ROW_CAP > 0 and len(rows) > _ROW_CAP:
+                    logger.warning(
+                        "inline provider %r result %r (non-base_cte): truncating "
+                        "%d rows to %d (set NUBI_COLLECT_ROW_CAP to raise limit)",
+                        provider.id,
+                        r.name,
+                        len(rows),
+                        _ROW_CAP,
+                    )
+                    rows = rows[:_ROW_CAP]
                 arrays = [pa.array([row[i] for row in rows]) for i in range(len(columns))]
                 tables[r.name] = pa.table(dict(zip(columns, arrays)))
             except AppError as exc:

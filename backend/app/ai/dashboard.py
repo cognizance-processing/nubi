@@ -142,14 +142,15 @@ def _is_safe_data_uri(value: str) -> bool:
     return mime in _SAFE_DATA_IMAGE_TYPES
 
 # Tags that must never appear in a dashboard or canvas document — they can be
-# used for phishing (iframe/form), plugin execution (object/embed), or
-# redirecting base URLs (base/meta/link).  Any one of these is a hard error.
+# used for phishing (iframe/form), plugin execution (object/embed),
+# redirecting base URLs (base/meta/link), or CSS exfiltration/tracking via
+# url() in inline stylesheets (style).  Any one of these is a hard error.
 _FORBIDDEN_TAGS_RE = re.compile(
-    r"<\s*(iframe|object|embed|form|meta|base|link)[\s>/>]",
+    r"<\s*(iframe|object|embed|form|meta|base|link|style)[\s>/>]",
     re.IGNORECASE,
 )
 _FORBIDDEN_TAG_NAMES: tuple[str, ...] = (
-    "iframe", "object", "embed", "form", "meta", "base", "link"
+    "iframe", "object", "embed", "form", "meta", "base", "link", "style"
 )
 
 

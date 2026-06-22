@@ -2496,6 +2496,11 @@ async def _execute_claimed_task_run_inner(
     )
 
     # Build TaskContext.
+    # ── N+1 fix: load task_runs ONCE for inputs; reuse the patched snapshot for
+    # advance_readiness on non-map paths so advance_readiness can skip its own
+    # initial list_task_runs call (its _preloaded_task_runs != None path).
+    # Map fan-out inserts new child task_runs after this fetch, so that path lets
+    # advance_readiness do its own fresh load (no _preloaded_task_runs passed).
     all_task_runs = await store.list_task_runs(flow_run_id)
     inputs: dict[str, Any] = {}
     for tr in all_task_runs:
@@ -2580,6 +2585,19 @@ async def _execute_claimed_task_run_inner(
     outcome_state = outcome["state"]
     outcome_logs = outcome.get("logs") or []
 
+    # ── Snapshot-patch helper ─────────────────────────────────────────────────
+    # Returns a copy of all_task_runs with the just-updated task_run entry
+    # replaced by updated_tr.  Used to thread a preloaded snapshot into
+    # advance_readiness (skipping its own initial list_task_runs call) on paths
+    # that make exactly ONE update_task_run call (no child-task insertions).
+    # Map fan-out (add_task_runs) invalidates the snapshot; that path passes no
+    # preloaded snapshot so advance_readiness loads fresh.
+    def _patch_snapshot(updated_tr: dict[str, Any]) -> list[dict[str, Any]]:
+        return [
+            (updated_tr if tr["id"] == task_run_id else tr)
+            for tr in all_task_runs
+        ]
+
     if outcome_state == "skipped":
         # run_when gate evaluated False — terminal, no retry, no watermark.
         result_tr = await store.update_task_run(
@@ -2593,7 +2611,11 @@ async def _execute_claimed_task_run_inner(
             },
         )
         _emit_task_event("task_skipped", flow_run_id, task_key, "skipped", None, attempt, now)
-        await advance_readiness(store, flow_run_id, now)
+        # Pass patched snapshot so advance_readiness skips its own initial load.
+        await advance_readiness(
+            store, flow_run_id, now,
+            _preloaded_task_runs=_patch_snapshot(result_tr or task_run),
+        )
         return result_tr or task_run
 
     if outcome_state == "success":
@@ -2639,6 +2661,8 @@ async def _execute_claimed_task_run_inner(
                 },
             )
             _emit_task_event("task_started", flow_run_id, task_key, "waiting_children", None, attempt, now)
+            # Map fan-out: new child task_runs were inserted — snapshot is stale.
+            # Let advance_readiness do its own fresh load (no _preloaded_task_runs).
             await advance_readiness(store, flow_run_id, now)
             result_tr = await store.get_task_run(task_run_id)
             return result_tr or task_run
@@ -2666,7 +2690,11 @@ async def _execute_claimed_task_run_inner(
         # B4: record artifact lineage (best-effort).
         await _record_artifact_handles(store, flow_run, task_run, outcome["result"])
         _emit_task_event("task_success", flow_run_id, task_key, "success", None, attempt, now)
-        await advance_readiness(store, flow_run_id, now)
+        # Pass patched snapshot so advance_readiness skips its own initial load.
+        await advance_readiness(
+            store, flow_run_id, now,
+            _preloaded_task_runs=_patch_snapshot(result_tr or task_run),
+        )
         return result_tr or task_run
 
     elif outcome_state == "timed_out":
@@ -2681,7 +2709,11 @@ async def _execute_claimed_task_run_inner(
             },
         )
         _emit_task_event("task_timed_out", flow_run_id, task_key, "timed_out", outcome["error"], attempt, now)
-        await advance_readiness(store, flow_run_id, now)
+        # Pass patched snapshot so advance_readiness skips its own initial load.
+        await advance_readiness(
+            store, flow_run_id, now,
+            _preloaded_task_runs=_patch_snapshot(result_tr or task_run),
+        )
         return result_tr or task_run
 
     else:
@@ -2701,7 +2733,11 @@ async def _execute_claimed_task_run_inner(
             _emit_task_event("task_retrying", flow_run_id, task_key, "retrying", outcome["error"], attempt + 1, now,
                              extra={"retries_left": retries - attempt - 1})
             result_tr = await store.get_task_run(task_run_id)
-            await advance_readiness(store, flow_run_id, now)
+            # Pass patched snapshot so advance_readiness skips its own initial load.
+            await advance_readiness(
+                store, flow_run_id, now,
+                _preloaded_task_runs=_patch_snapshot(result_tr or task_run),
+            )
             return result_tr or task_run
         else:
             result_tr = await store.update_task_run(
@@ -2714,7 +2750,11 @@ async def _execute_claimed_task_run_inner(
                 },
             )
             _emit_task_event("task_failed", flow_run_id, task_key, "failed", outcome["error"], attempt, now)
-            await advance_readiness(store, flow_run_id, now)
+            # Pass patched snapshot so advance_readiness skips its own initial load.
+            await advance_readiness(
+                store, flow_run_id, now,
+                _preloaded_task_runs=_patch_snapshot(result_tr or task_run),
+            )
             return result_tr or task_run
 
 

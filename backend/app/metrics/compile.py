@@ -658,7 +658,9 @@ def _compile_layered(
     # top_n.other      → the top-N arm of a UNION (membership/QUALIFY) UNIONed
     #                    with an Other-bucket arm; both share the one __base CTE.
     if mq.top_n is not None:
-        outer_select = _apply_top_n(outer_select, mq, metric, time_alias, dialect)
+        outer_select = _apply_top_n(
+            outer_select, mq, metric, time_alias, all_dim_names, dialect
+        )
 
     # ── Choose the top-level statement (outer SELECT or UNION) ───────────────
     top_stmt: exp.Expression
@@ -696,6 +698,48 @@ def _compile_layered(
 # ---------------------------------------------------------------------------
 
 
+def _membership_correlation_keys(
+    metric: MetricDefinition,
+    all_dim_names: list[str],
+    dim_col: str,
+) -> tuple[str, ...]:
+    """Columns the top-N membership subquery must correlate on for RLS soundness.
+
+    The layered top-N MEMBERSHIP subquery (``SELECT dim FROM __base GROUP BY dim
+    ORDER BY SUM(measure) LIMIT N``) reads ``FROM __base`` and is correlated on
+    these columns to the outer row so the top-N set is computed PER TENANT, not
+    globally across all tenants.
+
+    CRITICAL (MED tenant-correctness): the downstream planner injects its RLS
+    predicate (``WHERE <policy_col> = val``) ONLY on the OUTERMOST select — it
+    does NOT recurse into the ``__base`` CTE or this membership subquery.  So the
+    membership reflects the RLS scope ONLY via the correlation we emit here.
+
+    * When ``metric.rls_keys`` is DECLARED we correlate on exactly those keys
+      (the proven, byte-stable behaviour): they are the columns the planner is
+      contracted to filter on, and __base projects them.
+
+    * When ``metric.rls_keys`` is EMPTY the metric declares no tenant scoping,
+      yet a request may still carry RLS policies.  For a policy to LAND on the
+      outer select its column must be projected there — and in the layered form
+      the only non-measure, non-time projected columns are the requested
+      DIMENSIONS.  So any RLS policy that can actually filter this query must
+      target one of the projected dimensions.  We therefore correlate the
+      membership on EVERY projected non-ranked dimension (the ranked dim itself
+      is the GROUP BY key and must remain free to vary).  This makes the
+      membership tenant-scoped whenever the planner filters on a dimension,
+      eliminating the cross-tenant top-N leak — while remaining a no-op for the
+      single-dimension (ranked-dim-only) global queries that carry no policy.
+
+    The ranked ``dim_col`` is always excluded (it is the membership's GROUP BY
+    key); the time bucket is never a correlation target and is not in
+    ``all_dim_names``.
+    """
+    if metric.rls_keys:
+        return tuple(metric.rls_keys)
+    return tuple(d for d in all_dim_names if d != dim_col)
+
+
 def _top_n_membership_sql(
     dim_col: str,
     rank_measure: str,
@@ -706,16 +750,17 @@ def _top_n_membership_sql(
 ) -> str:
     """Build the per-tenant top-N membership subquery SQL.
 
-    When rls_keys is non-empty the subquery is correlated on every rls_key
-    column so the top-N set is computed per-tenant (per RLS policy value),
-    not globally across all tenants.
+    When ``rls_keys`` (here: the membership *correlation columns*, see
+    :func:`_membership_correlation_keys`) is non-empty the subquery is correlated
+    on every such column so the top-N set is computed per-tenant (per RLS policy
+    value), not globally across all tenants.
 
     The outer SELECT already uses ``FROM __base AS <outer_alias>`` so each
-    RLS key is unambiguously qualified as ``<outer_alias>.<rls_key>``.
+    correlation column is unambiguously qualified as ``<outer_alias>.<col>``.
 
     Emits:
         SELECT <dim_col> FROM __base
-        [WHERE __base.<rls_key1> = <outer_alias>.<rls_key1> [AND ...]]
+        [WHERE __base.<col1> = <outer_alias>.<col1> [AND ...]]
         GROUP BY <dim_col>
         ORDER BY SUM(<rank_measure>) <order_dir>, <dim_col> ASC
         LIMIT <n>
@@ -747,6 +792,7 @@ def _apply_top_n(
     mq: MetricQuery,
     metric: MetricDefinition,
     time_alias: str | None,
+    all_dim_names: list[str],
     dialect: str,
 ) -> exp.Select:
     """Wrap the outer select with a top-N filter.
@@ -771,13 +817,16 @@ def _apply_top_n(
 
     rank_measure = tn.measure or metric.measure.name
     dim_col = tn.dimension
+    # Membership/ranking correlation columns (rls_keys when declared; otherwise
+    # the projected non-ranked dimensions — see _membership_correlation_keys).
+    corr_keys = _membership_correlation_keys(metric, all_dim_names, dim_col)
 
     if time_alias is not None:
         # With time grain: use membership filter via correlated subquery on __base.
         order_dir = "DESC" if tn.order == "desc" else "ASC"
         membership_sql = _top_n_membership_sql(
             dim_col, rank_measure, order_dir, tn.n,
-            tuple(metric.rls_keys), outer_alias="__outer",
+            corr_keys, outer_alias="__outer",
         )
         membership_expr = sqlglot.parse_one(membership_sql, dialect=dialect)
         # wrap in exp.Subquery so sqlglot renders "IN (SELECT ...)" not "IN SELECT ...".
@@ -799,7 +848,7 @@ def _apply_top_n(
         # select (WHERE before window), so the partition is a harmless no-op
         # (a single partition per tenant).
         rank_m_col = exp.column(rank_measure)
-        rank_partition = [exp.column(k) for k in metric.rls_keys]
+        rank_partition = [exp.column(k) for k in corr_keys]
         rank_over = exp.Window(
             this=exp.func("RANK", dialect=dialect),
             partition_by=rank_partition or None,
@@ -876,7 +925,12 @@ def _build_other_select(
     # both sides.  The time-grain path keeps the correlated membership subquery
     # (the outer SELECT there has one row per (dim, bucket) so a per-bucket RANK
     # would not match the per-dim top-N semantics).
-    _other_rls_keys = tuple(metric.rls_keys)
+    # Correlation columns MUST be identical to the TOP arm (_apply_top_n) so the
+    # two arms partition every __base row into exactly one bucket — see
+    # _membership_correlation_keys (rls_keys when declared; otherwise the
+    # projected non-ranked dims, so an empty-rls_keys metric queried with a
+    # dimension-targeted RLS policy still gets a per-tenant Other bucket).
+    _other_rls_keys = _membership_correlation_keys(metric, all_dim_names, dim_col)
     not_in_cond: exp.Expression | None = None
     complement_qualify: exp.Expression | None = None
 

@@ -37,6 +37,7 @@ Design notes
 
 from __future__ import annotations
 
+import html as _html
 import json
 import logging
 from typing import Any
@@ -260,7 +261,7 @@ def _build_null_canvas_doc(
 
     html = (
         f'<section class="nubi-canvas">'
-        f'<h1>{title}</h1>'
+        f'<h1>{_html.escape(title)}</h1>'
         f'<nubi-kpi data-el-id="el_kpi_1"></nubi-kpi>'
         f'<nubi-table data-el-id="el_table_1"></nubi-table>'
         f"</section>"

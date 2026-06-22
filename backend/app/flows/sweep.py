@@ -36,6 +36,7 @@ from __future__ import annotations
 
 import asyncio
 import itertools
+import json
 import logging
 import os
 import uuid
@@ -55,6 +56,23 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 _SWEEP_CELL_DRAIN_MAX_STEPS: int = int(
     os.environ.get("NUBI_SWEEP_CELL_DRAIN_MAX_STEPS", "50")
+)
+
+# ---------------------------------------------------------------------------
+# Diff-surface result blob cap.
+#
+# diff_surface() ships per-cell task results across the wire.  A sweep over N
+# param sets each producing large result dicts would return an unbounded payload
+# — O(N * result_size).  This cap limits the JSON-serialised size of each
+# per-task result dict included in the surface.  Results that exceed the cap are
+# replaced with a compact summary containing the size and a truncation flag so
+# consumers can still diff structural metadata without pulling megabyte blobs.
+#
+# Override via NUBI_SWEEP_DIFF_RESULT_BYTES_CAP (bytes).  Default: 64 KiB per
+# task result, consistent with the run-history blob budget.
+# ---------------------------------------------------------------------------
+_SWEEP_DIFF_RESULT_BYTES_CAP: int = int(
+    os.environ.get("NUBI_SWEEP_DIFF_RESULT_BYTES_CAP", str(64 * 1024))
 )
 
 
@@ -86,23 +104,72 @@ class SweepResult:
     failed: int
     cells: list[SweepCellResult] = field(default_factory=list)
 
-    def diff_surface(self) -> list[dict[str, Any]]:
+    def diff_surface(
+        self,
+        result_bytes_cap: int | None = None,
+    ) -> list[dict[str, Any]]:
         """Return the comparison surface — one entry per successful cell.
 
-        Each entry is ``{index, params, outputs}`` where *outputs* is a dict of
-        task_key → result dict.  Consumers diff the outputs across param sets
-        to see how different inputs affect each task's output.
-        """
-        return [
+        Each entry is ``{index, params, run_id, outputs}`` where *outputs* is a
+        dict of task_key → capped result.  Results whose JSON representation
+        exceeds *result_bytes_cap* bytes are replaced with a compact summary::
+
             {
-                "index": c.index,
-                "params": c.params,
-                "run_id": c.run_id,
-                "outputs": c.outputs,
+                "__truncated__": True,
+                "size_bytes": <original size>,
+                "cap_bytes": <cap>,
             }
-            for c in self.cells
-            if c.state == "success"
-        ]
+
+        This keeps the payload bounded (O(N * cap) not O(N * result_size)) while
+        preserving enough metadata for consumers to diff structural information
+        across param sets without shipping raw megabyte blobs.
+
+        Parameters
+        ----------
+        result_bytes_cap:
+            Per-task-result byte cap for JSON serialisation.  Defaults to
+            ``_SWEEP_DIFF_RESULT_BYTES_CAP`` (64 KiB, env-overridable via
+            ``NUBI_SWEEP_DIFF_RESULT_BYTES_CAP``).  Pass ``0`` or a negative
+            value to disable capping entirely (useful in tests that need raw
+            results).
+        """
+        cap = result_bytes_cap if result_bytes_cap is not None else _SWEEP_DIFF_RESULT_BYTES_CAP
+
+        def _cap_result(result: Any) -> Any:
+            """Return result as-is or replace with a truncation summary."""
+            if cap <= 0:
+                # Capping disabled — return raw value.
+                return result
+            try:
+                serialised = json.dumps(result, default=str)
+            except Exception:  # noqa: BLE001
+                serialised = str(result)
+            size = len(serialised.encode("utf-8"))
+            if size <= cap:
+                return result
+            return {
+                "__truncated__": True,
+                "size_bytes": size,
+                "cap_bytes": cap,
+            }
+
+        surface = []
+        for c in self.cells:
+            if c.state != "success":
+                continue
+            capped_outputs = {
+                task_key: _cap_result(result)
+                for task_key, result in c.outputs.items()
+            }
+            surface.append(
+                {
+                    "index": c.index,
+                    "params": c.params,
+                    "run_id": c.run_id,
+                    "outputs": capped_outputs,
+                }
+            )
+        return surface
 
 
 @dataclass

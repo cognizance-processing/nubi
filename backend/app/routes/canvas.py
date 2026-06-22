@@ -228,10 +228,52 @@ async def list_canvases(
 async def create_canvas(
     body: CanvasCreateRequest,
     user: dict[str, Any] = Depends(current_user),
+    identity: VerifiedIdentity = Depends(verified_identity),
     repo: Repo = Depends(get_repo),
 ) -> dict[str, Any]:
-    """Create a new canvas resource."""
+    """Create a new canvas resource.
+
+    Embed tokens are explicitly blocked — embed identities are read-only by
+    design and must never be able to create, mutate, or delete resources.
+
+    When ``config`` contains a ``doc``, the doc is parsed as a :class:`CanvasDoc`
+    and validated.  Hard validation failures (non-``[warn]`` issues) are rejected
+    with 400 ``invalid_canvas_doc`` to prevent persisting XSS payloads.
+    """
+    from app.dashboards.canvas import (  # noqa: PLC0415
+        CanvasDoc,
+        validate_canvas_doc_with_repo,
+    )
+
+    # SECURITY: embed tokens must never create resources.
+    if identity.kind == "embed":
+        raise AppError("forbidden", "Embed tokens cannot create canvases.", 403)
+
     org_id = await _get_org(user)
+
+    # SECURITY: validate any embedded CanvasDoc before persisting — prevents
+    # XSS payloads (e.g. <script> tags) from reaching the canvas store, AND
+    # enforces Rule 6 API-connector ownership so a canvas create cannot bind
+    # an 'api' element to a connector_id the org does NOT own.
+    doc_raw = body.config.get("doc")
+    if doc_raw is not None:
+        try:
+            doc = CanvasDoc.model_validate(doc_raw)
+        except Exception as exc:  # noqa: BLE001
+            raise AppError(
+                "invalid_canvas_doc",
+                f"Canvas doc parse error: {exc}",
+                400,
+            ) from exc
+        _ok, issues = await validate_canvas_doc_with_repo(doc, org_id=org_id, repo=repo)
+        hard = [i for i in issues if not i.lstrip().lower().startswith("[warn]")]
+        if hard:
+            raise AppError(
+                "invalid_canvas_doc",
+                "; ".join(hard),
+                400,
+            )
+
     return await repo.create(
         "canvases",
         org_id=org_id,
@@ -270,9 +312,13 @@ async def update_canvas(
     canvas_id: str,
     body: CanvasUpdateRequest,
     user: dict[str, Any] = Depends(current_user),
+    identity: VerifiedIdentity = Depends(verified_identity),
     repo: Repo = Depends(get_repo),
 ) -> dict[str, Any]:
     """Update a canvas's name and/or config (org-scoped).
+
+    Embed tokens are explicitly blocked — embed identities are read-only by
+    design and must never be able to create, mutate, or delete resources.
 
     When ``config`` contains a ``doc``, the doc is parsed as a :class:`CanvasDoc`
     and validated.  Hard validation failures (non-``[warn]`` issues) are rejected
@@ -282,6 +328,10 @@ async def update_canvas(
         CanvasDoc,
         validate_canvas_doc_with_repo,
     )
+
+    # SECURITY: embed tokens must never update resources.
+    if identity.kind == "embed":
+        raise AppError("forbidden", "Embed tokens cannot update canvases.", 403)
 
     org_id = await _get_org(user)
     fields: dict[str, Any] = {}
@@ -365,6 +415,10 @@ async def schedule_canvas(
         When ``format`` or ``recipients`` are invalid.
     """
     from app.flows.store import get_flow_store  # noqa: PLC0415
+
+    # SECURITY: embed tokens must never schedule resources.
+    if identity.kind == "embed":
+        raise AppError("forbidden", "Embed tokens cannot schedule canvases.", 403)
 
     org_id = await _get_org(user)
 
@@ -474,9 +528,18 @@ async def schedule_canvas(
 async def delete_canvas(
     canvas_id: str,
     user: dict[str, Any] = Depends(current_user),
+    identity: VerifiedIdentity = Depends(verified_identity),
     repo: Repo = Depends(get_repo),
 ) -> None:
-    """Delete a canvas (org-scoped)."""
+    """Delete a canvas (org-scoped).
+
+    Embed tokens are explicitly blocked — embed identities are read-only by
+    design and must never be able to create, mutate, or delete resources.
+    """
+    # SECURITY: embed tokens must never delete resources.
+    if identity.kind == "embed":
+        raise AppError("forbidden", "Embed tokens cannot delete canvases.", 403)
+
     org_id = await _get_org(user)
     deleted = await repo.delete("canvases", org_id, canvas_id)
     if not deleted:

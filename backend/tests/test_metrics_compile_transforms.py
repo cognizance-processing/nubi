@@ -4722,3 +4722,215 @@ def test_top_n_other_time_grain_tie_both_arms_same_membership_sql() -> None:
         f"Expected the stable tiebreaker in both membership subqueries; "
         f"found {up.count(needle)} in:\n{sql}"
     )
+
+
+# ---------------------------------------------------------------------------
+# THIRTEENTH AUDIT — MED: top_n membership RLS-correctness when rls_keys is
+# UNDECLARED (empty) but the QUERY still carries RLS policies.
+#
+# The layered top-N MEMBERSHIP subquery (SELECT dim FROM __base GROUP BY dim
+# ORDER BY SUM(measure) LIMIT N) reads FROM __base and is correlated on the
+# membership-correlation columns so the top-N set is per-tenant.  The downstream
+# planner injects RLS ONLY on the OUTERMOST select (verified: app.connectors.
+# planner.plan does tree.where(pred) on the top-level tree, NOT inside __base).
+# So with EMPTY metric.rls_keys the membership was GLOBAL while the result was
+# RLS-filtered -> WRONG per-tenant member set.
+#
+# FIX (compile.py _membership_correlation_keys): when rls_keys is empty,
+# correlate the membership on the projected non-ranked DIMENSIONS — the only
+# non-measure/non-time columns a policy can land on in the layered form.  These
+# tests prove per-tenant correctness through plan() + DuckDB with a metric that
+# declares NO rls_keys and a query that carries RLS policies.
+# ---------------------------------------------------------------------------
+
+
+def _duckdb_conn_audit13():
+    try:
+        import duckdb
+        return duckdb.connect(":memory:")
+    except ImportError:
+        pytest.skip("duckdb not installed")
+
+
+def test_top_n_time_grain_per_tenant_correct_when_rls_keys_undeclared() -> None:
+    """[MED tenant-correctness] 2 tenants, metric with NO declared rls_keys,
+    query carrying RLS policies on a DIMENSION → each tenant's top-N is its OWN.
+
+    org_id is a queried DIMENSION (so the planner's policy predicate can land)
+    but is NOT declared in metric.rls_keys.  Per-tenant top-1 region differs:
+        org_A: X=1500, Y=300, Z=50   → top-1 = X
+        org_B: Y=1300, X=150, Z=10   → top-1 = Y
+    The GLOBAL top-1 across both tenants is X (1650 = 1500+150).  With the buggy
+    non-correlated membership, org_B would be shown X (its 4th-ranked region)
+    instead of its real top-1 Y.  With the fix the membership is correlated on
+    org_id (the projected dimension), so each tenant sees its own top-1.
+    """
+    from app.connectors.planner import plan as _plan
+    con = _duckdb_conn_audit13()
+    con.execute("""
+        CREATE TABLE topn_norls (
+            region     VARCHAR,
+            amount     DOUBLE,
+            org_id     VARCHAR,
+            created_at DATE
+        )
+    """)
+    con.execute("""
+        INSERT INTO topn_norls VALUES
+            ('X', 1000, 'org_A', '2024-01-01'),
+            ('X',  500, 'org_A', '2024-02-01'),
+            ('Y',  200, 'org_A', '2024-01-01'),
+            ('Y',  100, 'org_A', '2024-02-01'),
+            ('Z',   50, 'org_A', '2024-01-01'),
+            ('Y',  900, 'org_B', '2024-01-01'),
+            ('Y',  400, 'org_B', '2024-02-01'),
+            ('X',  100, 'org_B', '2024-01-01'),
+            ('X',   50, 'org_B', '2024-02-01'),
+            ('Z',   10, 'org_B', '2024-01-01')
+    """)
+    m = MetricDefinition(
+        id="topn_norls",
+        name="TopN NoRLS",
+        measure=Measure(name="revenue", agg="sum", expr="amount"),
+        base_table="topn_norls",
+        # org_id is a DIMENSION but NOT an rls_key.
+        dimensions=(Dimension(name="region"), Dimension(name="org_id")),
+        time_dimension=TimeDimension(
+            column="created_at", grains=("month",), default_grain="month",
+        ),
+        rls_keys=(),  # ── DELIBERATELY EMPTY ──
+        derived_measures=(
+            DerivedMeasure(name="rev_ratio", formula="revenue / revenue"),
+        ),
+    )
+    mq = MetricQuery(
+        metric_id="topn_norls",
+        dimensions=("region", "org_id"),
+        time_grain="month",
+        top_n=TopN(dimension="region", n=1, order="desc"),
+    )
+    sql, _ = compile_metric(m, mq)
+
+    # The membership subquery must now be correlated on the projected org_id
+    # dimension (the leak fix), even though rls_keys is empty.
+    assert "__base.org_id = __outer.org_id".lower() in sql.lower(), (
+        f"Expected per-tenant membership correlation on the org_id dimension "
+        f"when rls_keys is empty:\n{sql[:700]}"
+    )
+
+    # org_A → top-1 = X (1500); must NOT see Y.
+    p_a = _plan(sql, claims={"policies": {"org_id": "org_A"}}, dialect="duckdb")
+    regions_a = {r[0] for r in con.execute(p_a.sql).fetchall()}
+    assert regions_a == {"X"}, (
+        f"org_A top-1 should be exactly {{X}} (X=1500 > Y=300); got {regions_a}"
+    )
+
+    # org_B → top-1 = Y (1300); must NOT see the GLOBAL top member X.
+    p_b = _plan(sql, claims={"policies": {"org_id": "org_B"}}, dialect="duckdb")
+    regions_b = {r[0] for r in con.execute(p_b.sql).fetchall()}
+    assert regions_b == {"Y"}, (
+        f"org_B top-1 should be exactly {{Y}} (Y=1300 > X=150); got {regions_b}. "
+        f"Seeing the global top member X would be the cross-tenant leak."
+    )
+
+
+def test_top_n_other_no_grain_per_tenant_correct_when_rls_keys_undeclared() -> None:
+    """[MED tenant-correctness] Same leak via the top_n.other (no time_grain)
+    complement-RANK path: metric with NO rls_keys, RLS policy on a dimension.
+
+    Per-tenant top-1 region differs; the OTHER bucket must roll up only the
+    NON-top members OF THE SAME TENANT (not the global complement).
+        org_A: X=1500 (top-1), Y=300, Z=50  → Other = 350
+        org_B: Y=1300 (top-1), X=150, Z=10  → Other = 160
+    """
+    from app.connectors.planner import plan as _plan
+    con = _duckdb_conn_audit13()
+    con.execute("""
+        CREATE TABLE topn_other_norls (
+            region VARCHAR,
+            amount DOUBLE,
+            org_id VARCHAR
+        )
+    """)
+    con.execute("""
+        INSERT INTO topn_other_norls VALUES
+            ('X', 1500, 'org_A'),
+            ('Y',  300, 'org_A'),
+            ('Z',   50, 'org_A'),
+            ('Y', 1300, 'org_B'),
+            ('X',  150, 'org_B'),
+            ('Z',   10, 'org_B')
+    """)
+    m = MetricDefinition(
+        id="topn_other_norls",
+        name="TopN Other NoRLS",
+        measure=Measure(name="revenue", agg="sum", expr="amount"),
+        base_table="topn_other_norls",
+        dimensions=(Dimension(name="region"), Dimension(name="org_id")),
+        rls_keys=(),  # ── DELIBERATELY EMPTY ──
+        # Trigger the layered path with a derived measure.
+        derived_measures=(
+            DerivedMeasure(name="rev_ratio", formula="revenue / revenue"),
+        ),
+    )
+    mq = MetricQuery(
+        metric_id="topn_other_norls",
+        dimensions=("region", "org_id"),
+        top_n=TopN(dimension="region", n=1, order="desc",
+                   other=True, other_label="Other"),
+    )
+    sql, _ = compile_metric(m, mq)
+
+    # Both arms' RANK windows must PARTITION BY the org_id dimension so the
+    # top/other split is per-tenant.
+    assert "partition by" in sql.lower() and "org_id" in sql.lower(), (
+        f"Expected per-tenant RANK partition on org_id when rls_keys is empty:\n{sql[:700]}"
+    )
+
+    def _rev_by_region(org: str) -> dict[str, float]:
+        p = _plan(sql, claims={"policies": {"org_id": org}}, dialect="duckdb")
+        rows = con.execute(p.sql).fetchall()
+        # columns: region, org_id, revenue, rev_ratio
+        return {r[0]: r[2] for r in rows}
+
+    a = _rev_by_region("org_A")
+    assert a.get("X") == 1500, f"org_A top-1 X should be 1500; got {a}"
+    assert a.get("Other") == 350, (
+        f"org_A Other should be Y+Z = 350 (per-tenant complement); got {a}"
+    )
+    assert "Y" not in a and "Z" not in a, f"non-top regions must be rolled up; got {a}"
+
+    b = _rev_by_region("org_B")
+    assert b.get("Y") == 1300, f"org_B top-1 Y should be 1300; got {b}"
+    assert b.get("Other") == 160, (
+        f"org_B Other should be X+Z = 160 (per-tenant complement); got {b}"
+    )
+    assert "X" not in b and "Z" not in b, f"non-top regions must be rolled up; got {b}"
+
+
+def test_declared_rls_keys_membership_byte_stable_single_dim() -> None:
+    """Regression guard: when rls_keys IS declared the membership correlation is
+    UNCHANGED (correlated on the rls_key, not on other dims) — the fix only
+    broadens correlation for the EMPTY-rls_keys case."""
+    m = MetricDefinition(
+        id="declared",
+        name="Declared",
+        measure=Measure(name="revenue", agg="sum", expr="amount"),
+        base_table="orders",
+        dimensions=(Dimension(name="region"),),
+        time_dimension=TimeDimension(
+            column="created_at", grains=("month",), default_grain="month",
+        ),
+        rls_keys=("org_id",),
+        derived_measures=(
+            DerivedMeasure(name="rev_ratio", formula="revenue / revenue"),
+        ),
+    )
+    mq = MetricQuery(
+        metric_id="declared",
+        dimensions=("region",),
+        time_grain="month",
+        top_n=TopN(dimension="region", n=2, order="desc"),
+    )
+    sql, _ = compile_metric(m, mq)
+    assert "__base.org_id = __outer.org_id".lower() in sql.lower(), sql[:500]

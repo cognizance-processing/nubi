@@ -1761,6 +1761,62 @@ async def test_concurrent_inline_base_cte_executions_are_thread_safe(
     )
 
 
+# ---------------------------------------------------------------------------
+# NEW: [LOW row cap] inline provider non-base_cte path — result is row-capped
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_inline_provider_non_base_cte_result_is_row_capped(repo: InMemoryRepo) -> None:
+    """Inline provider without base_cte (run_query_rows path) must cap rows to _ROW_CAP.
+
+    Before the fix, the non-base_cte branch called run_query_rows and built an
+    Arrow table from the full result without applying _ROW_CAP.  An unbounded
+    result from a registered query could materialise millions of rows in memory.
+
+    The fix slices the rows list to _ROW_CAP before constructing the pa.table so
+    both the non-base_cte and base_cte paths are consistently bounded.
+    """
+    import app.dashboards.board_data as _bd_mod
+
+    original_row_cap = _bd_mod._ROW_CAP
+    small_cap = 3
+    _bd_mod._ROW_CAP = small_cap
+
+    # run_query_rows returns more rows than the cap.
+    oversized_rows = [[float(i)] for i in range(small_cap + 10)]
+
+    async def _fake_run(query_id, org_id, _repo, policies):
+        return ["amount"], oversized_rows
+
+    async def _fake_enforce_quota(org_id: str, dimension: str, amount: float = 1.0) -> None:
+        pass
+
+    try:
+        with (
+            patch("app.features.enforce_quota", side_effect=_fake_enforce_quota),
+            patch("app.dashboards.collect.run_query_rows", side_effect=_fake_run),
+        ):
+            tables = await resolve_provider_data(
+                board_id=_BOARD_ID,
+                provider_id=_PROVIDER_ID,
+                params={},
+                org_id=_ORG,
+                claims={"policies": {}},
+                repo=repo,
+            )
+    finally:
+        _bd_mod._ROW_CAP = original_row_cap
+
+    assert "revenue" in tables
+    result = tables["revenue"]
+    assert isinstance(result, pa.Table)
+    assert result.num_rows <= small_cap, (
+        f"Non-base_cte row cap not enforced: got {result.num_rows} rows, "
+        f"expected <= {small_cap} (NUBI_COLLECT_ROW_CAP not applied to non-base_cte inline results)."
+    )
+
+
 @pytest.mark.asyncio
 async def test_concurrent_inline_base_cte_many_workers_no_crash(
     repo: InMemoryRepo,
