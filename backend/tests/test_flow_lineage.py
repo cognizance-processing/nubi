@@ -584,3 +584,177 @@ async def test_advance_readiness_query_count_reduced():
         f"advance_readiness called list_task_runs {store.list_task_runs_count} times; "
         f"expected fewer than 4 (N+1 regression)."
     )
+
+
+# ---------------------------------------------------------------------------
+# REGRESSION Fix 4: run_one_ready_task issues list_task_runs at most ONCE
+# ---------------------------------------------------------------------------
+
+
+async def test_run_one_ready_task_single_list_task_runs():
+    """run_one_ready_task must issue list_task_runs at most 1 time per task.
+
+    The bug: list_task_runs was called twice — once inside the cache-TTL block
+    and again unconditionally for the TaskContext inputs.  The fix fetches the
+    list once before the cache block and reuses it for both purposes.
+    """
+    from app.flows.runtime import run_one_ready_task
+
+    reset_for_tests()
+    inner = InMemoryFlowStore()
+    store = _CountingStore(inner)
+
+    # Simple one-task flow (noop, no cache).
+    flow = await inner.create_flow(
+        org_id="org-test",
+        created_by="user-test",
+        name="single_task_flow",
+        spec={
+            "version": 1,
+            "name": "single_task",
+            "tasks": [
+                {"key": "T1", "kind": "noop", "needs": [], "config": {}},
+            ],
+        },
+    )
+    run = await materialize_flow_run(inner, flow, {}, "manual", NOW)
+    await advance_readiness(inner, run["id"], NOW)
+
+    # Reset counter after setup so only the run_one_ready_task call is counted.
+    store.list_task_runs_count = 0
+
+    result = await run_one_ready_task(store, NOW, claims=CLAIMS)
+
+    assert result is not None, "Expected a task to be executed"
+    # The function body itself must issue at most 1 list_task_runs call (down
+    # from 2 before the fix).  advance_readiness adds 1 more call for the
+    # simple single-task flow (no map/branch reload needed), so the total
+    # is at most 2.  We assert <= 2 to allow for the advance_readiness call
+    # while ruling out the pre-fix N+1 of 3+ calls.
+    assert store.list_task_runs_count <= 2, (
+        f"run_one_ready_task called list_task_runs {store.list_task_runs_count} times; "
+        f"expected at most 2 (1 in body + 1 in advance_readiness); N+1 regression was 3+."
+    )
+
+
+async def test_run_one_ready_task_single_list_task_runs_with_cache():
+    """run_one_ready_task must still issue list_task_runs at most 2 times when
+    cache_ttl_s > 0 and there is no cache hit (the task executes normally).
+
+    Before the fix the cache-miss path issued list_task_runs TWICE in the
+    function body alone (once for the cache scan, once for inputs) plus 1 more
+    in advance_readiness = 3 total.  After the fix the single pre-fetched list
+    is shared so the body contributes only 1, giving at most 2 total.
+    """
+    from app.flows.runtime import run_one_ready_task
+
+    reset_for_tests()
+    inner = InMemoryFlowStore()
+    store = _CountingStore(inner)
+
+    flow = await inner.create_flow(
+        org_id="org-test",
+        created_by="user-test",
+        name="cached_task_flow",
+        spec={
+            "version": 1,
+            "name": "cached_task",
+            "tasks": [
+                {
+                    "key": "C1",
+                    "kind": "noop",
+                    "needs": [],
+                    "config": {},
+                    "cache_ttl_s": 300,
+                    "cache_key": "ck-fixed",
+                },
+            ],
+        },
+    )
+    run = await materialize_flow_run(inner, flow, {}, "manual", NOW)
+    await advance_readiness(inner, run["id"], NOW)
+
+    store.list_task_runs_count = 0
+
+    result = await run_one_ready_task(store, NOW, claims=CLAIMS)
+
+    assert result is not None, "Expected a task to be executed"
+    assert store.list_task_runs_count <= 2, (
+        f"run_one_ready_task called list_task_runs {store.list_task_runs_count} times "
+        f"(cache-miss path); expected at most 2 (1 body + 1 advance_readiness)."
+    )
+
+
+# ---------------------------------------------------------------------------
+# REGRESSION Fix 5: admin explicit empty-{} owner snapshot is respected
+# ---------------------------------------------------------------------------
+
+
+def test_admin_empty_owner_snapshot_applied_not_skipped():
+    """An owner-policy snapshot of {} (admin, no row-filter) must be APPLIED,
+    not silently skipped with a warning.
+
+    The bug: _claims_with_owner_policies used `if not owner_policies:` which
+    is truthy for {}, so an admin whose snapshot is {} was treated the same as
+    "no snapshot at all" and the warning path was taken instead of merging the
+    (empty) policies.  With the fix, key-presence / `is None` is used so an
+    explicit empty {} snapshot is merged into claims.
+    """
+    from app.flows.runtime import _claims_with_owner_policies
+
+    # Flow whose owner is an admin — explicit empty snapshot.
+    admin_owner_flow = {
+        "id": "flow-admin-owner",
+        "org_id": "org-test",
+        "spec": {
+            "tasks": [],
+            "runtime_config": {
+                "__owner_policies__": {},  # explicit empty — admin owner
+            },
+        },
+    }
+
+    # Scheduled run: no 'policies' key in claims.
+    sched_claims: dict = {"org_id": "org-test"}
+
+    result = _claims_with_owner_policies(sched_claims, admin_owner_flow, flow_run_id="run-admin")
+
+    assert "policies" in result, (
+        "Scheduled run against an admin-owner flow must receive 'policies' key "
+        "(even when the snapshot is {}); got: " + repr(result)
+    )
+    assert result["policies"] == {}, (
+        f"Admin empty-snapshot must set policies={{}}, not something else; got {result['policies']!r}"
+    )
+
+
+def test_no_snapshot_key_triggers_warning_not_empty_policy_merge():
+    """A flow with NO __owner_policies__ key at all (pre-B2) must NOT get a
+    policies={} merged — it should leave claims unchanged (and log a warning).
+
+    This distinguishes the two cases that were previously collapsed by the
+    truthiness check: 'no snapshot' vs 'explicit empty snapshot'.
+    """
+    from app.flows.runtime import _claims_with_owner_policies
+
+    # Pre-B2 flow: runtime_config exists but has NO __owner_policies__ key.
+    pre_b2_flow = {
+        "id": "flow-pre-b2",
+        "org_id": "org-test",
+        "spec": {
+            "tasks": [],
+            "runtime_config": {
+                "some_other_key": "value",
+            },
+        },
+    }
+
+    sched_claims: dict = {"org_id": "org-test"}
+
+    result = _claims_with_owner_policies(sched_claims, pre_b2_flow, flow_run_id="run-pre-b2")
+
+    # No snapshot → claims returned unchanged (no 'policies' key injected).
+    assert "policies" not in result, (
+        "Pre-B2 flow with no __owner_policies__ key must NOT inject a 'policies' key; "
+        "got: " + repr(result)
+    )

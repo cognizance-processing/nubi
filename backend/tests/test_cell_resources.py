@@ -979,3 +979,119 @@ async def test_member_can_reach_compile_endpoint(compile_client_writer):
     assert resp.status_code != 403, (
         f"Writer should not receive 403 on /compile, got {resp.status_code}: {resp.text}"
     )
+
+
+# ---------------------------------------------------------------------------
+# HIGH: Map fan-out server ceiling (_SERVER_MAX_MAP_SIZE)
+# ---------------------------------------------------------------------------
+
+
+def test_map_handler_raises_when_items_exceed_server_ceiling(monkeypatch):
+    """handle_map raises ValueError when items exceed _SERVER_MAX_MAP_SIZE.
+
+    Even if the author sets max_map_size > ceiling (or omits it), the server
+    ceiling is the hard limit.  A flow author cannot bypass it via config.
+    """
+    import app.flows.handlers.map as map_mod
+    from app.flows.handlers.map import handle_map
+
+    # Patch the server ceiling to a small value so the test stays fast.
+    monkeypatch.setattr(map_mod, "_SERVER_MAX_MAP_SIZE", 5)
+
+    # Build a minimal TaskContext substitute.
+    class _FakeCtx:
+        flow_params: dict = {}
+        inputs: dict = {}
+
+    ctx = _FakeCtx()
+
+    # 6 items > ceiling of 5 → must raise.
+    config = {
+        "item_expr": "{{ params.items }}",
+        "body": [{"key": "step", "kind": "noop"}],
+        # author tries to set a higher limit — server ceiling wins
+        "max_map_size": 100,
+    }
+
+    # Patch the resolve so we return a direct list (bypass template engine).
+    monkeypatch.setattr(map_mod, "_resolve_native", lambda expr, ctx: list(range(6)))
+
+    with pytest.raises(ValueError, match="max_map_size"):
+        handle_map(config, ctx, claims={})
+
+
+def test_map_handler_server_ceiling_clamps_author_limit(monkeypatch):
+    """The effective ceiling is min(author_limit, server_ceiling).
+
+    With server ceiling=10 and author limit=5, items=6 should still raise
+    (author limit wins when it's lower).
+    """
+    import app.flows.handlers.map as map_mod
+    from app.flows.handlers.map import handle_map
+
+    monkeypatch.setattr(map_mod, "_SERVER_MAX_MAP_SIZE", 10)
+
+    class _FakeCtx:
+        flow_params: dict = {}
+        inputs: dict = {}
+
+    ctx = _FakeCtx()
+    config = {
+        "item_expr": "{{ params.items }}",
+        "body": [{"key": "step", "kind": "noop"}],
+        "max_map_size": 5,
+    }
+    monkeypatch.setattr(map_mod, "_resolve_native", lambda expr, ctx: list(range(6)))
+
+    with pytest.raises(ValueError, match="max_map_size"):
+        handle_map(config, ctx, claims={})
+
+
+def test_map_handler_within_ceiling_succeeds(monkeypatch):
+    """Items at or below the server ceiling do not raise."""
+    import app.flows.handlers.map as map_mod
+    from app.flows.handlers.map import handle_map
+
+    monkeypatch.setattr(map_mod, "_SERVER_MAX_MAP_SIZE", 10)
+
+    class _FakeCtx:
+        flow_params: dict = {}
+        inputs: dict = {}
+
+    ctx = _FakeCtx()
+    config = {
+        "item_expr": "{{ params.items }}",
+        "body": [{"key": "step", "kind": "noop"}],
+    }
+    monkeypatch.setattr(map_mod, "_resolve_native", lambda expr, ctx: list(range(10)))
+
+    result = handle_map(config, ctx, claims={})
+    assert result["item_count"] == 10
+    assert len(result["__map_items__"]) == 10
+
+
+def test_map_handler_author_above_ceiling_clamped(monkeypatch):
+    """Author sets max_map_size=1000000; server ceiling=10; 8 items must succeed.
+
+    The author's absurd limit is silently clamped to the server ceiling.
+    Items (8) < ceiling (10) → no error.
+    """
+    import app.flows.handlers.map as map_mod
+    from app.flows.handlers.map import handle_map
+
+    monkeypatch.setattr(map_mod, "_SERVER_MAX_MAP_SIZE", 10)
+
+    class _FakeCtx:
+        flow_params: dict = {}
+        inputs: dict = {}
+
+    ctx = _FakeCtx()
+    config = {
+        "item_expr": "{{ params.items }}",
+        "body": [{"key": "step", "kind": "noop"}],
+        "max_map_size": 1_000_000,
+    }
+    monkeypatch.setattr(map_mod, "_resolve_native", lambda expr, ctx: list(range(8)))
+
+    result = handle_map(config, ctx, claims={})
+    assert result["item_count"] == 8

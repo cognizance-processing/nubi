@@ -1209,10 +1209,17 @@ async def run_one_ready_task(
     cache_key: str | None = task_run.get("cache_key")
     _is_stochastic: bool = bool(task_run.get("stochastic", False))
 
+    # ── Fetch all task_runs ONCE (reused for cache check + TaskContext inputs) ──
+    # Fetching here — before the cache block — means a single list_task_runs
+    # covers both the cache-hit scan and the upstream-inputs collection below,
+    # avoiding the N+1 that previously issued a second unconditional fetch at
+    # the TaskContext build step.  On a cache hit we return early; the list is
+    # only built once regardless.
+    all_task_runs = await store.list_task_runs(flow_run_id)
+
     if cache_ttl_s > 0 and cache_key and not _is_stochastic:
         # Look through all task_runs for this flow_run (or could be org-wide in prod).
-        all_trs = await store.list_task_runs(flow_run_id)
-        for other in all_trs:
+        for other in all_task_runs:
             if (
                 other["id"] != task_run_id
                 and other.get("cache_key") == cache_key
@@ -1243,7 +1250,7 @@ async def run_one_ready_task(
 
     # ── Build TaskContext ──────────────────────────────────────────────────────
     # Collect upstream results: task_key → result dict.
-    all_task_runs = await store.list_task_runs(flow_run_id)
+    # all_task_runs was already fetched above (shared with the cache check).
     inputs: dict[str, Any] = {}
     for tr in all_task_runs:
         if tr["state"] == "success" and tr.get("result") is not None:
@@ -2211,24 +2218,32 @@ def _maybe_persist_materialized_cell(
     result.update(manifest)
 
 
-def _owner_policies_from_flow(flow: dict[str, Any] | None) -> dict[str, Any]:
+def _owner_policies_from_flow(flow: dict[str, Any] | None) -> dict[str, Any] | None:
     """Extract the OWNER's snapshotted RLS policies from a flow dict (B2).
 
-    Returns the policy dict stashed at
-    ``flow['spec']['runtime_config'][_OWNER_POLICIES_KEY]`` by the create/enable
-    path in ``routes/flows.py``, or ``{}`` when the flow has no snapshot (older
-    flows created before B2, inline/transient flows).  An empty dict means "no
-    extra row filter" — i.e. current/legacy behaviour.
+    Returns:
+    - The policy dict stashed at
+      ``flow['spec']['runtime_config'][_OWNER_POLICIES_KEY]`` when the key is
+      explicitly present (including an explicit empty ``{}`` for admin owners
+      with no row-filter restrictions).
+    - ``None`` when no snapshot key is present at all (older flows created
+      before B2, inline/transient flows, or flows with no runtime_config).
+
+    Callers MUST use ``is None`` to distinguish "no snapshot" from "explicit
+    empty-policy snapshot" — do NOT use truthiness checks, which collapse both
+    cases to the same branch and break admin empty-policy sets.
     """
     if not flow:
-        return {}
+        return None
     spec = flow.get("spec")
     if not isinstance(spec, dict):
-        return {}
+        return None
     runtime_config = spec.get("runtime_config")
     if not isinstance(runtime_config, dict):
-        return {}
-    policies = runtime_config.get(_OWNER_POLICIES_KEY)
+        return None
+    if _OWNER_POLICIES_KEY not in runtime_config:
+        return None
+    policies = runtime_config[_OWNER_POLICIES_KEY]
     return dict(policies) if isinstance(policies, dict) else {}
 
 
@@ -2243,17 +2258,23 @@ def _claims_with_owner_policies(
     Scheduled / worker-pool execution claims carry no ``policies`` (the
     scheduler drains with ``claims=None`` → ``{}``), so a flow query cell would
     apply NO RLS — every tenant's rows would leak through.  When the incoming
-    claims lack a non-empty ``policies`` dict, we substitute the OWNER snapshot
-    captured at create/enable time (see ``_owner_policies_from_flow``), so a
-    scheduled run row-filters exactly as the flow's owner does interactively.
+    claims lack a ``policies`` key, we substitute the OWNER snapshot captured
+    at create/enable time (see ``_owner_policies_from_flow``), so a scheduled
+    run row-filters exactly as the flow's owner does interactively.
 
     Interactive runs (``run_flow`` / preview / run-cell) already thread the
     VERIFIED caller's policies into ``claims`` — those are left UNCHANGED; we
     only fill in policies when none were supplied.
 
-    Backward-compat: a flow with no snapshot yields empty policies — the
-    pre-B2 behaviour — but we LOG it so the gap is observable (a scheduled flow
-    that should be RLS-scoped but predates the snapshot).
+    Backward-compat: a flow with no snapshot (``_owner_policies_from_flow``
+    returns ``None``) yields no change — the pre-B2 behaviour — but we LOG it
+    so the gap is observable (a scheduled flow that should be RLS-scoped but
+    predates the snapshot).
+
+    Key-presence vs truthiness: both the ``claims`` guard and the snapshot
+    guard use key-presence / ``is None`` checks (NOT truthiness) so an
+    explicitly-supplied or explicitly-snapshotted empty dict ``{}`` (admin
+    with no row-filter restrictions) is respected and NOT treated as "missing".
     """
     if "policies" in claims:
         # Caller already supplied policies (interactive path) — never override.
@@ -2263,7 +2284,8 @@ def _claims_with_owner_policies(
         # incorrectly fall through to the scheduled-run branch.
         return claims
     owner_policies = _owner_policies_from_flow(flow)
-    if not owner_policies:
+    if owner_policies is None:
+        # No snapshot present at all (pre-B2 flow or inline/transient flow).
         logger.warning(
             "Flow run %s executing with EMPTY RLS policies (no owner-policy "
             "snapshot on the flow). Scheduled query cells apply no row filter; "
@@ -2271,6 +2293,8 @@ def _claims_with_owner_policies(
             flow_run_id or (flow or {}).get("id") or "?",
         )
         return claims
+    # owner_policies is a dict (possibly {}) — always apply it.  An explicit {}
+    # means the owner has no row-filter restrictions (admin), which is correct.
     merged = dict(claims)
     merged["policies"] = owner_policies
     return merged

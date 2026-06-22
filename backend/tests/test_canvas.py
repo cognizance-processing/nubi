@@ -896,6 +896,94 @@ class TestCanvasSecurityRegressions:
         # The snapshot value must be a dict (even if empty for an unscoped owner).
         assert isinstance(runtime_config[OWNER_POLICIES_KEY], dict)
 
+    # ── Finding 4 (MED): schedule sets top-level schedule + next_run_at ────────
+
+    @pytest.mark.asyncio
+    async def test_scheduled_canvas_flow_has_schedule_and_next_run_at(
+        self, canvas_client_with_viewer, fake_db
+    ):
+        """POST /canvases/{id}/schedule with cron sets top-level schedule + next_run_at.
+
+        Regression for MED functional bug: previously create_flow was called
+        WITHOUT schedule= / next_run_at= kwargs so the cron lived only inside
+        flow_spec['trigger']['cron'], but list_due_scheduled_flows checks the
+        top-level flow.schedule / flow.next_run_at columns — meaning the
+        scheduled report silently never fired (201 success, no send).
+        """
+        from app.flows.store import get_flow_store
+        from datetime import datetime, timezone
+
+        client, owner_id, _owner_org, *_ = canvas_client_with_viewer
+
+        # Create a canvas.
+        create_resp = await client.post(
+            "/api/v1/canvases",
+            json={"name": "Cron Canvas"},
+            headers=_auth_headers(owner_id),
+        )
+        assert create_resp.status_code == 201, create_resp.text
+        canvas_id = create_resp.json()["id"]
+
+        cron_expr = "0 8 * * MON"
+
+        # Schedule the canvas with a cron.
+        sched_resp = await client.post(
+            f"/api/v1/canvases/{canvas_id}/schedule",
+            json={
+                "recipients": ["bob@example.com"],
+                "format": "html",
+                "cron": cron_expr,
+            },
+            headers=_auth_headers(owner_id),
+        )
+        assert sched_resp.status_code == 201, sched_resp.text
+        flow_id = sched_resp.json()["flow_id"]
+
+        # Retrieve the flow from the store and check top-level schedule fields.
+        store = get_flow_store()
+        flow = await store.get_flow(flow_id)
+        assert flow is not None, "Flow not found in store."
+
+        # Top-level schedule must match the cron expression.
+        assert flow.get("schedule") == cron_expr, (
+            f"Expected top-level schedule={cron_expr!r}, got {flow.get('schedule')!r}"
+        )
+
+        # Top-level next_run_at must be a datetime in the future (not None).
+        next_run_at = flow.get("next_run_at")
+        assert next_run_at is not None, (
+            "next_run_at must be set so list_due_scheduled_flows can discover this flow"
+        )
+        now = datetime.now(timezone.utc)
+        if getattr(next_run_at, "tzinfo", None) is None:
+            next_run_at = next_run_at.replace(tzinfo=timezone.utc)
+        assert next_run_at > now, (
+            f"next_run_at {next_run_at} should be in the future for a weekly cron"
+        )
+
+        # The flow must be enabled so the scheduler picks it up.
+        assert flow.get("enabled") is True, (
+            f"Scheduled canvas flow must be enabled, got enabled={flow.get('enabled')!r}"
+        )
+
+        # Verify list_due_scheduled_flows does NOT include it yet (future run time).
+        due = await store.list_due_scheduled_flows(now)
+        due_ids = [str(f["id"]) for f in due]
+        assert flow_id not in due_ids, (
+            "Flow should not be due yet — next_run_at is in the future"
+        )
+
+        # Backdate next_run_at in the store's internal dict so the flow is discoverable.
+        # (get_flow returns a deepcopy, so we must mutate the canonical entry directly.)
+        from datetime import timedelta
+        past = now - timedelta(seconds=1)
+        store._flows[flow_id]["next_run_at"] = past
+        due_after_backdate = await store.list_due_scheduled_flows(now)
+        due_ids_after = [str(f["id"]) for f in due_after_backdate]
+        assert flow_id in due_ids_after, (
+            "Flow should be discoverable by list_due_scheduled_flows once next_run_at is past"
+        )
+
     # ── Finding 2: Viewer is 403 on all mutating endpoints ───────────────────
 
     @pytest.mark.asyncio

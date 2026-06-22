@@ -697,6 +697,24 @@ def validate_flow_spec(data: Any) -> tuple[FlowSpec | None, list[str]]:
                 issues.append(
                     f"Task {task.key!r} (map): config must include 'item_expr'."
                 )
+            # Validate max_map_size does not exceed the server ceiling at save time
+            # (fail-fast: prevents O(N*body) task_run materialization attacks).
+            _map_max_size_raw = cfg.get("max_map_size")
+            if _map_max_size_raw is not None:
+                try:
+                    _map_max_size_val = int(_map_max_size_raw)
+                except (TypeError, ValueError):
+                    issues.append(
+                        f"Task {task.key!r} (map): 'max_map_size' must be an integer."
+                    )
+                else:
+                    from app.flows.handlers.map import _SERVER_MAX_MAP_SIZE  # noqa: PLC0415
+                    if _map_max_size_val > _SERVER_MAX_MAP_SIZE:
+                        issues.append(
+                            f"Task {task.key!r} (map): 'max_map_size' {_map_max_size_val} "
+                            f"exceeds the server ceiling of {_SERVER_MAX_MAP_SIZE} "
+                            f"(set via FLOWS_MAP_MAX_SIZE env var)."
+                        )
             body = cfg.get("body")
             if not body or not isinstance(body, list):
                 issues.append(

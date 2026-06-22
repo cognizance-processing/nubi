@@ -34,6 +34,7 @@ Trigger strings used by the engine
 
 from __future__ import annotations
 
+import asyncio
 import itertools
 import logging
 import os
@@ -252,13 +253,18 @@ async def run_sweep(
     succeeded = 0
     failed = 0
 
+    # Phase 1: drain each cell sequentially; record outcomes but defer output
+    # collection for successful cells until after the loop.  This lets us batch
+    # all list_task_runs calls into a single asyncio.gather in Phase 2 instead
+    # of issuing one blocking query per successful cell inside the loop (N+1).
+    _pending_output_cells: list[int] = []  # indices of successful cells needing outputs
+
     for idx, params in enumerate(resolved_sets):
         # Tag params with the sweep_id so ops UI can group runs.
         tagged_params = {**params, "__sweep_id__": sweep_id, "__sweep_index__": idx}
 
         run_id = "?"
         cell_state = "error"
-        outputs: dict[str, Any] = {}
         error: str | None = None
 
         try:
@@ -274,15 +280,6 @@ async def run_sweep(
 
             if cell_state == "success":
                 succeeded += 1
-                # [MED N+1] Only fetch task_runs for successful cells — failed
-                # cells have no success outputs to collect, so the list_task_runs
-                # call would be wasted.  This makes the query count sub-linear
-                # in total cells when the majority of cells fail or when the
-                # caller only cares about the diff surface (success outputs).
-                task_runs = await store.list_task_runs(run_id)
-                for tr in task_runs:
-                    if tr.get("state") == "success" and tr.get("result") is not None:
-                        outputs[tr["task_key"]] = tr["result"]
             else:
                 failed += 1
                 error = final_run.get("error")
@@ -302,9 +299,27 @@ async def run_sweep(
             params=dict(params),
             run_id=run_id,
             state=cell_state,
-            outputs=outputs,
+            outputs={},  # populated in Phase 2 for successful cells
             error=error,
         ))
+        if cell_state == "success":
+            _pending_output_cells.append(idx)
+
+    # Phase 2: batch-collect outputs for all successful cells in one gather.
+    # A single asyncio.gather issues all list_task_runs calls concurrently so
+    # the per-cell output read is bounded to a single concurrent round-trip
+    # rather than O(cells) sequential blocking queries.
+    if _pending_output_cells:
+        run_ids_to_fetch = [cells[i].run_id for i in _pending_output_cells]
+        task_run_lists = await asyncio.gather(
+            *(store.list_task_runs(rid) for rid in run_ids_to_fetch)
+        )
+        for cell_idx, task_runs in zip(_pending_output_cells, task_run_lists):
+            outputs: dict[str, Any] = {}
+            for tr in task_runs:
+                if tr.get("state") == "success" and tr.get("result") is not None:
+                    outputs[tr["task_key"]] = tr["result"]
+            cells[cell_idx].outputs = outputs
 
     return SweepResult(
         sweep_id=sweep_id,

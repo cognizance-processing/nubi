@@ -22,11 +22,25 @@ handle_map(config, ctx, claims) -> dict
 
 from __future__ import annotations
 
+import os
 import re
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from app.flows.executor import TaskContext
+
+# ---------------------------------------------------------------------------
+# Server-side ceiling for map fan-out size
+# ---------------------------------------------------------------------------
+
+#: Hard server ceiling for map fan-out.  A flow author/agent setting a larger
+#: ``max_map_size`` in the spec is clamped to this value, and any items list
+#: that exceeds the effective ceiling raises ``ValueError`` at runtime.
+#:
+#: Override via the ``FLOWS_MAP_MAX_SIZE`` environment variable (e.g.
+#: ``FLOWS_MAP_MAX_SIZE=500`` to tighten, ``FLOWS_MAP_MAX_SIZE=5000`` to
+#: loosen).  Companion to ``FLOWS_MAP_MAX_CONCURRENCY``.
+_SERVER_MAX_MAP_SIZE: int = int(os.environ.get("FLOWS_MAP_MAX_SIZE", "1000") or "1000")
 
 
 # ---------------------------------------------------------------------------
@@ -167,11 +181,12 @@ def handle_map(
         )
 
     items = list(resolved)
-    max_map_size: int = int(config.get("max_map_size", 1000) or 1000)
+    author_limit: int = int(config.get("max_map_size", _SERVER_MAX_MAP_SIZE) or _SERVER_MAX_MAP_SIZE)
+    max_map_size: int = min(author_limit, _SERVER_MAX_MAP_SIZE)
     if len(items) > max_map_size:
         raise ValueError(
             f"map handler: fan-out of {len(items)} items exceeds "
-            f"max_map_size={max_map_size}."
+            f"max_map_size={max_map_size} (server ceiling: {_SERVER_MAX_MAP_SIZE})."
         )
 
     return {"__map_items__": items, "item_count": len(items)}

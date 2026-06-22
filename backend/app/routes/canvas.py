@@ -28,6 +28,7 @@ resolved from the token; cross-org access is impossible by design.
 from __future__ import annotations
 
 import logging
+from datetime import datetime, timezone
 from typing import Any
 
 from fastapi import Depends
@@ -425,9 +426,19 @@ async def schedule_canvas(
     # rather than an empty policy set (which would leak all tenant rows).
     # Mirrors the pattern used by create_flow / update_flow / create_scheduled_query
     # in routes/flows.py.
-    from app.routes.flows import _snapshot_owner_policies  # noqa: PLC0415
+    from app.routes.flows import _snapshot_owner_policies, _compute_next_run_at  # noqa: PLC0415
 
     flow_spec_to_store = _snapshot_owner_policies(flow_spec, identity)
+
+    # Mirror create_scheduled_query in routes/flows.py: compute next_run_at from
+    # the cron expression and pass schedule + next_run_at so that
+    # list_due_scheduled_flows can discover this flow at tick time.
+    # Without these kwargs the cron lives only inside flow_spec['trigger']['cron']
+    # but the scheduler checks the top-level flow.schedule / flow.next_run_at
+    # columns — meaning the scheduled report would silently never fire.
+    now = datetime.now(timezone.utc)
+    schedule = body.cron or None
+    next_run_at = _compute_next_run_at(schedule, now)
 
     # Persist the flow via the flow store.
     store = get_flow_store()
@@ -436,6 +447,9 @@ async def schedule_canvas(
         created_by=str(user["id"]),
         name=flow_name,
         spec=flow_spec_to_store,
+        enabled=True,
+        schedule=schedule,
+        next_run_at=next_run_at,
     )
 
     return CanvasScheduleResponse(

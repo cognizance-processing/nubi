@@ -1118,3 +1118,99 @@ class TestBranchNodeValidation:
         hard = [i for i in issues if not i.startswith("[warn]")]
         assert spec is not None
         assert hard == []
+
+
+# ---------------------------------------------------------------------------
+# HIGH: validate_flow_spec rejects map tasks with max_map_size > server ceiling
+# ---------------------------------------------------------------------------
+
+
+def _map_spec_with_max_size(max_map_size: int | None) -> dict[str, Any]:
+    """Return a minimal map task spec with optional max_map_size."""
+    task: dict[str, Any] = {
+        "key": "fan",
+        "kind": "map",
+        "needs": [],
+        "config": {
+            "item_expr": "{{ params.rows }}",
+            "body": [{"key": "step", "kind": "noop", "needs": [], "config": {}}],
+        },
+    }
+    if max_map_size is not None:
+        task["config"]["max_map_size"] = max_map_size
+    return {
+        "version": 1,
+        "name": "fanout_flow",
+        "tasks": [task],
+    }
+
+
+class TestMapSpecServerCeilingValidation:
+    """validate_flow_spec rejects max_map_size above the server ceiling at save time."""
+
+    def test_map_spec_without_max_map_size_is_valid(self):
+        """A map task without max_map_size is valid (defaults to server ceiling)."""
+        data = _map_spec_with_max_size(None)
+        spec, issues = validate_flow_spec(data)
+        hard = [i for i in issues if not i.startswith("[warn]")]
+        assert spec is not None, f"Expected valid spec; hard: {hard}"
+        assert hard == [], f"Unexpected hard issues: {hard}"
+
+    def test_map_spec_max_map_size_at_ceiling_is_valid(self, monkeypatch):
+        """max_map_size == server ceiling is accepted."""
+        import app.flows.handlers.map as map_mod
+        monkeypatch.setattr(map_mod, "_SERVER_MAX_MAP_SIZE", 50)
+
+        data = _map_spec_with_max_size(50)
+        spec, issues = validate_flow_spec(data)
+        hard = [i for i in issues if not i.startswith("[warn]")]
+        assert spec is not None, f"Expected valid spec; hard: {hard}"
+        assert hard == [], f"Unexpected hard issues: {hard}"
+
+    def test_map_spec_max_map_size_below_ceiling_is_valid(self, monkeypatch):
+        """max_map_size < server ceiling is accepted."""
+        import app.flows.handlers.map as map_mod
+        monkeypatch.setattr(map_mod, "_SERVER_MAX_MAP_SIZE", 50)
+
+        data = _map_spec_with_max_size(25)
+        spec, issues = validate_flow_spec(data)
+        hard = [i for i in issues if not i.startswith("[warn]")]
+        assert spec is not None, f"Expected valid spec; hard: {hard}"
+        assert hard == [], f"Unexpected hard issues: {hard}"
+
+    def test_map_spec_max_map_size_above_ceiling_is_rejected(self, monkeypatch):
+        """max_map_size > server ceiling is a hard error at save time."""
+        import app.flows.handlers.map as map_mod
+        monkeypatch.setattr(map_mod, "_SERVER_MAX_MAP_SIZE", 50)
+
+        data = _map_spec_with_max_size(51)
+        _, issues = validate_flow_spec(data)
+        hard = [i for i in issues if not i.startswith("[warn]")]
+        assert any("max_map_size" in i and "51" in i for i in hard), (
+            f"Expected hard error mentioning max_map_size=51 and ceiling; got: {hard}"
+        )
+
+    def test_map_spec_absurd_max_map_size_is_rejected(self, monkeypatch):
+        """max_map_size=100000 (well above any reasonable ceiling) is rejected."""
+        import app.flows.handlers.map as map_mod
+        monkeypatch.setattr(map_mod, "_SERVER_MAX_MAP_SIZE", 1000)
+
+        data = _map_spec_with_max_size(100_000)
+        _, issues = validate_flow_spec(data)
+        hard = [i for i in issues if not i.startswith("[warn]")]
+        assert any("max_map_size" in i for i in hard), (
+            f"Expected hard error mentioning max_map_size; got: {hard}"
+        )
+        assert any("ceiling" in i or "1000" in i for i in hard), (
+            f"Expected error to mention the server ceiling (1000); got: {hard}"
+        )
+
+    def test_map_spec_non_integer_max_map_size_is_rejected(self):
+        """max_map_size with a non-integer value is a hard error."""
+        data = _map_spec_with_max_size(None)
+        data["tasks"][0]["config"]["max_map_size"] = "lots"  # type: ignore[assignment]
+        _, issues = validate_flow_spec(data)
+        hard = [i for i in issues if not i.startswith("[warn]")]
+        assert any("max_map_size" in i for i in hard), (
+            f"Expected hard error for non-integer max_map_size; got: {hard}"
+        )

@@ -1559,9 +1559,16 @@ _PRIOR_YEAR_INTERVAL: dict[str, str] = {
     "month": "INTERVAL '1 year'",
     "quarter": "INTERVAL '1 year'",
     "year": "INTERVAL '1 year'",
-    "week": "INTERVAL '52 weeks'",
-    "day": "INTERVAL '365 days'",
-    "hour": "INTERVAL '8760 hours'",
+    # 52 weeks = 364 days, which is calendar-incorrect for the same weekday one
+    # year back across a leap year boundary.  INTERVAL '1 year' in DuckDB/PG is
+    # calendar-correct (subtracts 365 or 366 days as needed), so use it here.
+    "week": "INTERVAL '1 year'",
+    # '365 days' is wrong in leap years (2024-03-01 - 365 days = 2023-03-02).
+    # INTERVAL '1 year' is calendar-correct: DuckDB/PG subtract exactly one
+    # calendar year, handling leap-year boundary dates correctly.
+    "day": "INTERVAL '1 year'",
+    # '8760 hours' = 365 * 24 hours — wrong in leap years for the same reason.
+    "hour": "INTERVAL '1 year'",
 }
 
 
@@ -1592,7 +1599,7 @@ def _prior_year_subquery_sql(
     When there is no time_alias (no grain) or no dims to join on, we degrade
     gracefully by omitting the respective WHERE clause components.
     """
-    interval = _PRIOR_YEAR_INTERVAL.get(grain, "INTERVAL '365 days'")
+    interval = _PRIOR_YEAR_INTERVAL.get(grain, "INTERVAL '1 year'")
 
     # Qualify outer-row column references with __outer. to avoid ambiguity.
     dim_conditions = " AND ".join(

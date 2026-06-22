@@ -2938,3 +2938,80 @@ def test_top_n_other_per_tenant_no_double_count_no_missing() -> None:
         f"Tenant B Other amount: expected 170 (apple=100 + cherry=70), got {other_b}.\n"
         f"rows={rows_b}"
     )
+
+
+# ── Leap-year-aware prior_year date arithmetic ────────────────────────────────
+
+
+def test_prior_year_leap_year_day_grain_correct_bucket() -> None:
+    """[MED] prior_year with day grain must be leap-year-aware.
+
+    2024-03-01 - INTERVAL '365 days' = 2023-03-02 (WRONG — skips the leap day).
+    2024-03-01 - INTERVAL '1 year'   = 2023-03-01 (CORRECT — calendar subtraction).
+
+    We insert a row for 2023-03-01 (prior year) and a row for 2024-03-01
+    (current year, crossing the 2024 leap-year boundary).  The prior_year
+    lookup must return the 2023-03-01 value, not NULL.
+    """
+    con = _duckdb_conn()
+    con.execute("""
+        CREATE TABLE leap_sales (
+            amount DOUBLE,
+            sale_date DATE
+        )
+    """)
+    # 2024 is a leap year; 2024-03-01 is the day after the leap day (2024-02-29).
+    # INTERVAL '365 days' back from 2024-03-01 lands on 2023-03-02, missing the
+    # 2023-03-01 bucket.  INTERVAL '1 year' lands on 2023-03-01 — correct.
+    con.execute("""
+        INSERT INTO leap_sales VALUES
+            (999, '2023-03-01'),
+            (111, '2024-03-01')
+    """)
+    m = MetricDefinition(
+        id="leap_rev",
+        name="Leap Revenue",
+        measure=Measure(name="revenue", agg="sum", expr="amount"),
+        base_table="leap_sales",
+        dimensions=(),
+        time_dimension=TimeDimension(
+            column="sale_date",
+            grains=("day",),
+            default_grain="day",
+        ),
+    )
+    mq = MetricQuery(
+        metric_id="leap_rev",
+        dimensions=(),
+        time_grain="day",
+        time_comparisons=(
+            TimeComparison(measure="revenue", kind="prior_year"),
+        ),
+    )
+    import sqlglot  # noqa: PLC0415
+    sql, _ = compile_metric(m, mq)
+    sqlglot.parse_one(sql, dialect="duckdb")
+    rows = con.execute(sql).fetchall()
+
+    # Columns: sale_date_day, revenue, revenue_prior_year
+    row_by_date = {r[0]: r for r in rows}
+
+    # Normalise key — DuckDB may return datetime.datetime or datetime.date
+    import datetime  # noqa: PLC0415
+    def _date_key(k):
+        if hasattr(k, "date"):
+            return k.date()
+        return k
+
+    row_by_date = {_date_key(k): v for k, v in row_by_date.items()}
+
+    target = datetime.date(2024, 3, 1)
+    assert target in row_by_date, (
+        f"Expected row for 2024-03-01; rows={rows}"
+    )
+    prior_year_val = row_by_date[target][2]
+    assert prior_year_val == 999.0, (
+        f"2024-03-01 prior_year should be 999 (2023-03-01 bucket); "
+        f"got {prior_year_val!r} — likely INTERVAL '365 days' landed on 2023-03-02 "
+        f"(off-by-one due to leap year). rows={rows}"
+    )
