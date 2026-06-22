@@ -22,6 +22,36 @@ TimeGrain = Literal["hour", "day", "week", "month", "quarter", "year"]
 DimType = Literal["text", "number", "bool", "date", "timestamp"]
 FilterOp = Literal["=", "!=", "<", "<=", ">", ">=", "in", "not_in"]
 
+# Time-intelligence transforms requestable per query (require a time_grain).
+#   prior_period / pop_abs / pop_pct  — vs the immediately preceding bucket
+#   prior_year / yoy_abs / yoy_pct    — vs the same bucket one year earlier
+#   ytd / qtd / mtd                   — running total within year / quarter / month
+#   rolling_sum / rolling_avg         — trailing window of ``periods`` buckets
+TimeCompareKind = Literal[
+    "prior_period",
+    "pop_abs",
+    "pop_pct",
+    "prior_year",
+    "yoy_abs",
+    "yoy_pct",
+    "ytd",
+    "qtd",
+    "mtd",
+    "rolling_sum",
+    "rolling_avg",
+]
+
+# How many prior buckets one calendar year spans, per grain — used to offset the
+# LAG window for year-over-year comparisons on an evenly-bucketed time series.
+YEAR_LAG_BY_GRAIN: dict[str, int] = {
+    "month": 12,
+    "quarter": 4,
+    "week": 52,
+    "day": 365,
+    "year": 1,
+    "hour": 8760,
+}
+
 ALL_TIME_GRAINS: tuple[TimeGrain, ...] = (
     "hour",
     "day",
@@ -54,6 +84,31 @@ class Measure:
     agg: AggFunc = "sum"
     expr: str = "*"
     type: MeasureType = "additive"
+    format: str | None = None
+
+
+@dataclass(frozen=True)
+class DerivedMeasure:
+    """A measure computed from OTHER measures, e.g. ``margin = profit / revenue``.
+
+    A derived measure is post-aggregation arithmetic over the metric's base
+    measures (the primary measure + ``extra_measures``), referenced by name. It
+    is NOT aggregated itself, so it composes correctly over any grain a rollup
+    serves (the base measures re-aggregate; the ratio is recomputed from them).
+
+    Attributes
+    ----------
+    name:    output column name (e.g. ``"margin"``).
+    formula: an arithmetic expression over base-measure names and numeric
+             literals using ``+ - * / ( )`` only, e.g. ``"profit / revenue"`` or
+             ``"(revenue - cost) / revenue"``. Division is guarded with
+             ``NULLIF(<denominator>, 0)`` by the compiler. Governance rejects any
+             identifier that is not a declared base measure.
+    format:  optional display hint (``"percent"``, ``"currency"``, ``"number"``).
+    """
+
+    name: str
+    formula: str = ""
     format: str | None = None
 
 
@@ -121,6 +176,8 @@ class MetricDefinition:
     # Additional measures requestable at the same grain (v1 callers usually use
     # the single primary ``measure``; this leaves room without a schema change).
     extra_measures: tuple[Measure, ...] = ()
+    # Ratio / derived measures computed from the base measures (post-aggregation).
+    derived_measures: tuple[DerivedMeasure, ...] = ()
 
     def dimension(self, name: str) -> Dimension | None:
         """Return the allowed :class:`Dimension` named *name*, or ``None``."""
@@ -132,6 +189,18 @@ class MetricDefinition:
     def measures(self) -> tuple[Measure, ...]:
         """The primary measure followed by any extra measures."""
         return (self.measure, *self.extra_measures)
+
+    def measure_names(self) -> tuple[str, ...]:
+        """Names of all base measures (primary + extras) — the derived/compare
+        vocabulary."""
+        return tuple(m.name for m in self.measures())
+
+    def derived_measure(self, name: str) -> DerivedMeasure | None:
+        """Return the :class:`DerivedMeasure` named *name*, or ``None``."""
+        for dm in self.derived_measures:
+            if dm.name == name:
+                return dm
+        return None
 
     # ── serialization (JSONB <-> definition) ────────────────────────────────
 
@@ -147,6 +216,9 @@ class MetricDefinition:
         td_raw = data.get("time_dimension")
         time_dim = _time_dimension_from(td_raw) if td_raw else None
         extra = tuple(_measure_from(m) for m in (data.get("extra_measures") or ()))
+        derived = tuple(
+            _derived_measure_from(m) for m in (data.get("derived_measures") or ())
+        )
         return cls(
             id=str(data["id"]),
             name=str(data.get("name") or data["id"]),
@@ -162,6 +234,7 @@ class MetricDefinition:
             owner=data.get("owner"),
             required_scope=data.get("required_scope"),
             extra_measures=extra,
+            derived_measures=derived,
         )
 
 
@@ -182,13 +255,69 @@ class MetricFilter:
 
 
 @dataclass(frozen=True)
+class TimeComparison:
+    """A requested time-intelligence transform of a base measure.
+
+    Requires the query to carry a ``time_grain`` (so there is an ordered time
+    series to window over). Computed as window functions over the base time
+    series, partitioned by the query's non-time dimensions.
+
+    Attributes
+    ----------
+    measure: the base measure to transform (must be a declared base measure).
+    kind:    the transform (see :data:`TimeCompareKind`).
+    periods: trailing window size for ``rolling_*`` / offset for ``prior_period``
+             (defaults to 1; ignored by ``yoy_*`` / ``ytd`` / ``qtd`` / ``mtd``).
+    name:    output column name (defaults to ``"<measure>_<kind>"``).
+    """
+
+    measure: str
+    kind: TimeCompareKind
+    periods: int = 1
+    name: str | None = None
+
+    def out_name(self) -> str:
+        return self.name or f"{self.measure}_{self.kind}"
+
+
+@dataclass(frozen=True)
+class TopN:
+    """A dynamic top-N restriction: keep the *n* top *dimension* members by *measure*.
+
+    Ranking is by the named measure (a base or derived measure) over the whole
+    result. When ``other`` is set, members beyond the top *n* are collapsed into a
+    single bucket labelled ``other_label`` (the base measures are re-aggregated;
+    derived measures recomputed from them). With a ``time_grain`` the top-*n*
+    members are chosen by their grand total and their full time series is kept.
+
+    Attributes
+    ----------
+    dimension:   the dimension to rank + restrict (must be a queried dimension).
+    measure:     the measure to rank by (base or derived; defaults to primary).
+    n:           how many members to keep (dynamic — supplied per query).
+    order:       ``"desc"`` (top) or ``"asc"`` (bottom).
+    other:       roll the remaining members into one ``other_label`` bucket.
+    other_label: the label for the rolled-up bucket (default ``"Other"``).
+    """
+
+    dimension: str
+    n: int
+    measure: str | None = None
+    order: str = "desc"
+    other: bool = False
+    other_label: str = "Other"
+
+
+@dataclass(frozen=True)
 class MetricQuery:
     """A request against a metric: group by *dimensions* at *time_grain*, filtered.
 
     ``dimensions`` must be a subset of the metric's allowed dimensions;
     ``time_grain`` requires the metric to declare a ``time_dimension`` and must be
     one of its allowed grains; ``filters`` reference allowed dims / the time col.
-    ``order_by`` entries are ``(field, "asc"|"desc")``.
+    ``order_by`` entries are ``(field, "asc"|"desc")``. ``time_comparisons`` and
+    ``top_n`` add the time-intelligence / dynamic-top-N transforms (compiled as an
+    outer layer over the base aggregation so pre-agg rollups still serve them).
     """
 
     metric_id: str
@@ -197,6 +326,13 @@ class MetricQuery:
     filters: tuple[MetricFilter, ...] = ()
     order_by: tuple[tuple[str, str], ...] = ()
     limit: int | None = None
+    time_comparisons: tuple[TimeComparison, ...] = ()
+    top_n: TopN | None = None
+
+    def has_transforms(self) -> bool:
+        """True when the query needs the outer transform layer (derived measures
+        are definition-level and handled separately)."""
+        return bool(self.time_comparisons) or self.top_n is not None
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> MetricQuery:
@@ -214,6 +350,28 @@ class MetricQuery:
             else (str(o.get("field")), str(o.get("dir", "asc")).lower())
             for o in (data.get("order_by") or ())
         )
+        comparisons = tuple(
+            TimeComparison(
+                measure=str(c["measure"]),
+                kind=c["kind"],
+                periods=int(c.get("periods", 1) or 1),
+                name=c.get("name"),
+            )
+            for c in (data.get("time_comparisons") or ())
+        )
+        top_n_raw = data.get("top_n")
+        top_n = (
+            TopN(
+                dimension=str(top_n_raw["dimension"]),
+                n=int(top_n_raw["n"]),
+                measure=top_n_raw.get("measure"),
+                order=str(top_n_raw.get("order", "desc")).lower(),
+                other=bool(top_n_raw.get("other", False)),
+                other_label=str(top_n_raw.get("other_label", "Other")),
+            )
+            if isinstance(top_n_raw, dict)
+            else None
+        )
         return cls(
             metric_id=str(data["metric_id"]),
             dimensions=tuple(str(d) for d in (data.get("dimensions") or ())),
@@ -221,6 +379,8 @@ class MetricQuery:
             filters=filters,
             order_by=order_by,
             limit=data.get("limit"),
+            time_comparisons=comparisons,
+            top_n=top_n,
         )
 
 
@@ -233,6 +393,14 @@ def _measure_from(d: dict[str, Any]) -> Measure:
         agg=d.get("agg", "sum"),
         expr=str(d.get("expr") or "*"),
         type=d.get("type", "additive"),
+        format=d.get("format"),
+    )
+
+
+def _derived_measure_from(d: dict[str, Any]) -> DerivedMeasure:
+    return DerivedMeasure(
+        name=str(d.get("name") or "derived"),
+        formula=str(d.get("formula") or ""),
         format=d.get("format"),
     )
 
@@ -272,14 +440,19 @@ __all__ = [
     "AggFunc",
     "MeasureType",
     "TimeGrain",
+    "TimeCompareKind",
+    "YEAR_LAG_BY_GRAIN",
     "DimType",
     "FilterOp",
     "ALL_TIME_GRAINS",
     "Measure",
+    "DerivedMeasure",
     "Dimension",
     "TimeDimension",
     "MetricDefinition",
     "MetricFilter",
+    "TimeComparison",
+    "TopN",
     "MetricQuery",
     "MetricError",
     "field",
