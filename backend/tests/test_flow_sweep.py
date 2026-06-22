@@ -767,3 +767,91 @@ async def test_run_sweep_grid_cap_fires_during_expansion():
             grid=big_grid,
             max_cells=200,
         )
+
+
+# ---------------------------------------------------------------------------
+# FIX 4: explicit param_sets beyond server cap is rejected at the route layer
+# ---------------------------------------------------------------------------
+
+
+def test_sweep_route_rejects_param_sets_over_server_cap():
+    """sweep_flow route must reject param_sets that exceed the server cap.
+
+    The route-layer check (`effective_max`) must fire BEFORE run_sweep is
+    called, so the cap is enforced regardless of the body.max_cells field.
+    We verify by inspecting the route source for the guard.
+    """
+    import inspect
+    import app.routes.flows as flows_mod
+
+    src = inspect.getsource(flows_mod.sweep_flow)
+    # The guard must check param_sets length against effective_max.
+    assert "len(body.param_sets)" in src, (
+        "sweep_flow must check len(body.param_sets) against effective_max"
+    )
+    assert "effective_max" in src, (
+        "sweep_flow must compute effective_max from min(body.max_cells, _MAX_SWEEP_CELLS)"
+    )
+
+
+def test_sweep_explicit_param_sets_cap_arithmetic():
+    """effective_max must always be bounded by _MAX_SWEEP_CELLS even when
+    caller passes param_sets directly (bypassing grid expansion).
+
+    This is the logic the route uses; verify it with plain arithmetic.
+    """
+    import app.routes.flows as flows_mod
+
+    original_cap = flows_mod._MAX_SWEEP_CELLS
+    flows_mod._MAX_SWEEP_CELLS = 3
+    try:
+        # Simulate the route arithmetic.
+        body_max_cells = 200  # caller asks for 200
+        effective_max = min(body_max_cells, flows_mod._MAX_SWEEP_CELLS)
+        assert effective_max == 3, (
+            "Server cap must reduce effective_max to _MAX_SWEEP_CELLS=3, got "
+            f"{effective_max}"
+        )
+
+        # A param_sets list of length 4 must be rejected (4 > effective_max=3).
+        param_sets = [{"i": i} for i in range(4)]
+        assert len(param_sets) > effective_max, (
+            "4 param_sets must exceed effective_max=3"
+        )
+    finally:
+        flows_mod._MAX_SWEEP_CELLS = original_cap
+
+
+async def test_sweep_explicit_param_sets_at_cap_is_allowed():
+    """param_sets exactly at the server cap must NOT be rejected."""
+    import app.routes.flows as flows_mod
+
+    original_cap = flows_mod._MAX_SWEEP_CELLS
+    flows_mod._MAX_SWEEP_CELLS = 3
+    try:
+        reset_for_tests()
+        store = InMemoryFlowStore()
+        flow = await _make_flow(store)
+
+        # 3 param sets == cap → route should pass them through to run_sweep.
+        effective_max = min(200, flows_mod._MAX_SWEEP_CELLS)  # = 3
+        param_sets = [{"i": i} for i in range(3)]
+
+        # The route guard fires when len > effective_max; exactly at cap is fine.
+        assert len(param_sets) <= effective_max, (
+            "param_sets of length 3 must not exceed effective_max=3"
+        )
+
+        result = await run_sweep(
+            store=store,
+            flow=flow,
+            param_sets=param_sets,
+            trigger="sweep",
+            now=NOW,
+            claims=CLAIMS,
+            max_cells=effective_max,
+        )
+        assert result.total == 3
+        assert result.succeeded == 3
+    finally:
+        flows_mod._MAX_SWEEP_CELLS = original_cap

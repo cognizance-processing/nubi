@@ -392,6 +392,7 @@ async def resolve_provider_data(
     repo: Any,
     *,
     mode: str = "ephemeral",
+    is_embed: bool = False,
 ) -> dict[str, pa.Table]:
     """Resolve a single DataProvider and return named Arrow tables.
 
@@ -416,6 +417,12 @@ async def resolve_provider_data(
         ``'ephemeral'`` (default) — resolve in-process with TTL cache.
         ``'materialized'`` — reserved for a later scheduling wave (raises
         ``NotImplementedError``).
+    is_embed:
+        When ``True`` the caller is an embed/viewer token.  Quota enforcement is
+        SKIPPED for embed callers because viewers are never metered — compute is
+        charged to the org only on first-party (non-embed) cache misses.  The
+        cache still serves embed callers: a first-party miss populates the cache
+        and subsequent embed requests are served from it at zero marginal cost.
 
     Returns
     -------
@@ -509,12 +516,14 @@ async def resolve_provider_data(
             )
 
     # ── Execute provider ──────────────────────────────────────────────────────
-    # FIX [MED metering]: enforce quota for ALL provider kinds on a cache miss —
-    # not just flow.  Inline providers also execute warehouse SQL and must be
-    # metered so embed viewers cannot trigger unmetered compute.
-    from app.features import enforce_quota  # noqa: PLC0415
+    # FIX [MED metering]: enforce quota on a cache miss, but ONLY for first-party
+    # (non-embed) callers.  Embed/viewer tokens are NEVER metered — they may
+    # benefit from a cache entry that a first-party caller already paid for, but
+    # they must not trigger metering themselves.  is_embed=True skips this block.
+    if not is_embed:
+        from app.features import enforce_quota  # noqa: PLC0415
 
-    await enforce_quota(org_id, "compute_units", amount=1.0)
+        await enforce_quota(org_id, "compute_units", amount=1.0)
 
     if provider.kind == "flow":
         # FIX [MED N+1]: pre-fetch the org's flows once and pass the lookup

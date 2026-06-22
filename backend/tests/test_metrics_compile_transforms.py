@@ -142,6 +142,10 @@ def test_flat_path_unchanged_without_transforms() -> None:
 
 
 def test_prior_period_lag() -> None:
+    """prior_period uses date-correct correlated subquery (not positional LAG).
+    Positional LAG is wrong for sparse time series — this fix mirrors the
+    existing prior_year implementation which already used the subquery approach.
+    """
     m = _simple_metric()
     mq = MetricQuery(
         metric_id="revenue",
@@ -154,7 +158,9 @@ def test_prior_period_lag() -> None:
     sql, _ = compile_metric(m, mq)
     up = sql.upper()
     assert "WITH __BASE AS" in up
-    assert "LAG" in up
+    # Must use a date-correct correlated subquery, NOT positional LAG.
+    assert "SELECT __PP.REVENUE FROM __BASE AS __PP" in up
+    assert "INTERVAL" in up
     assert "revenue_prior_period".upper() in up
 
 
@@ -1828,4 +1834,430 @@ def test_default_limit_value_from_env() -> None:
     sql, _ = compile_metric(m, mq)
     assert str(expected) in sql, (
         f"Default limit {expected} must appear in SQL when mq.limit is None"
+    )
+
+
+# ---------------------------------------------------------------------------
+# 13. FOURTH-WAVE REGRESSION TESTS — through plan() with DuckDB execution
+#
+# HARD RULE: metric/compiler tests MUST go through plan() — not just
+# sqlglot.parse_one — and execute representative cases on in-memory DuckDB
+# asserting RESULTS.  plan() is the real gate every metric request hits.
+# ---------------------------------------------------------------------------
+
+from app.connectors.planner import plan  # noqa: E402
+
+
+def _plan_and_run(sql: str, con, claims=None):
+    """Run compile output through plan() and execute on DuckDB, returning rows."""
+    p = plan(sql, claims=claims or {}, dialect="duckdb")
+    return con.execute(p.sql).fetchall()
+
+
+# ── Issue 1: top_n.other UNION ALL through plan() ────────────────────────────
+
+def test_top_n_other_plan_accepts_union_all() -> None:
+    """[CRITICAL] plan() must accept the UNION ALL emitted by top_n.other=True.
+
+    Previously plan() raised UNSUPPORTED_QUERY(400) for exp.Union.  The fix
+    wraps the Union in SELECT * FROM (...) before RLS injection.
+    """
+    m = _simple_metric()
+    mq = MetricQuery(
+        metric_id="revenue",
+        dimensions=("region",),
+        top_n=TopN(dimension="region", n=2, order="desc", other=True, other_label="Other"),
+    )
+    sql, _ = compile_metric(m, mq)
+    # Must NOT raise UNSUPPORTED_QUERY.
+    p = plan(sql, claims={}, dialect="duckdb")
+    assert p.sql  # plan produced a non-empty SQL
+
+
+def test_top_n_other_plan_executes_correct_values_in_duckdb() -> None:
+    """[CRITICAL] top_n.other through plan() executes on DuckDB with correct Other values."""
+    con = _duckdb_conn()
+    con.execute("""
+        CREATE TABLE rev_union (
+            region  VARCHAR,
+            amount  DOUBLE
+        )
+    """)
+    # A: 1000, B: 200, C: 50 → top-1 = A; Other = B+C = 250
+    con.execute("""
+        INSERT INTO rev_union VALUES
+            ('A', 1000),
+            ('B', 200),
+            ('C', 50)
+    """)
+    m = MetricDefinition(
+        id="rev_u",
+        name="Rev Union",
+        measure=Measure(name="revenue", agg="sum", expr="amount"),
+        base_table="rev_union",
+        dimensions=(Dimension(name="region"),),
+    )
+    mq = MetricQuery(
+        metric_id="rev_u",
+        dimensions=("region",),
+        top_n=TopN(dimension="region", n=1, order="desc", other=True, other_label="Other"),
+    )
+    sql, _ = compile_metric(m, mq)
+    rows = _plan_and_run(sql, con, claims={})
+    row_by_region = {r[0]: r for r in rows}
+    assert "A" in row_by_region, f"Top region A missing; rows={rows}"
+    assert "Other" in row_by_region, f"Other bucket missing; rows={rows}"
+    # The wrapper SELECT * strips the LIMIT from the inner query; just check values.
+    other = row_by_region["Other"]
+    assert other[1] == 250.0, f"Other revenue should be 250 (B+C), got {other[1]}"
+
+
+def test_top_n_other_plan_rls_predicate_injected() -> None:
+    """[CRITICAL] RLS predicate is injected by plan() into the Union wrapper.
+
+    The top_n.other compiler MUST carry rls_keys through BOTH union arms so
+    the wrapper's WHERE rls_key=claim lands correctly.  We verify by checking
+    the plan SQL contains the injected predicate AND that querying with a wrong
+    org_id returns no rows.
+    """
+    con = _duckdb_conn()
+    con.execute("""
+        CREATE TABLE rev_rls (
+            region  VARCHAR,
+            amount  DOUBLE,
+            org_id  VARCHAR
+        )
+    """)
+    con.execute("""
+        INSERT INTO rev_rls VALUES
+            ('A', 1000, 'org1'),
+            ('B', 200,  'org1'),
+            ('C', 50,   'org2')
+    """)
+    m = MetricDefinition(
+        id="rev_rls",
+        name="Rev RLS",
+        measure=Measure(name="revenue", agg="sum", expr="amount"),
+        base_table="rev_rls",
+        dimensions=(Dimension(name="region"),),
+        rls_keys=("org_id",),
+    )
+    mq = MetricQuery(
+        metric_id="rev_rls",
+        dimensions=("region",),
+        top_n=TopN(dimension="region", n=2, order="desc", other=True, other_label="Other"),
+    )
+    sql, _ = compile_metric(m, mq)
+    claims = {"policies": {"org_id": "org1"}}
+    p = plan(sql, claims=claims, dialect="duckdb")
+    # The plan SQL must contain the RLS predicate.
+    assert "org_id" in p.sql.lower(), "RLS predicate missing from plan SQL"
+    assert "org1" in p.sql.lower(), "RLS value missing from plan SQL"
+    # Execute: only org1 rows → A (1000) and B (200); C (org2) excluded.
+    rows = con.execute(p.sql).fetchall()
+    regions = {r[0] for r in rows}
+    assert "C" not in regions, f"org2 row C leaked through RLS; rows={rows}"
+    # A or Other must be present (union arms may merge depending on n=2).
+    assert len(rows) >= 1, f"Expected rows for org1; rows={rows}"
+
+
+# ── Issue 2: non-additive rank measure + time_grain rejected ─────────────────
+
+def test_non_additive_avg_rank_time_grain_raises() -> None:
+    """[HIGH] avg rank measure + time_grain must raise MetricError."""
+    m = MetricDefinition(
+        id="avg_m",
+        name="Avg Metric",
+        measure=Measure(name="avg_val", agg="avg", expr="val"),
+        base_table="t",
+        dimensions=(Dimension(name="region"),),
+        time_dimension=TimeDimension(
+            column="created_at",
+            grains=("month",),
+            default_grain="month",
+        ),
+    )
+    mq = MetricQuery(
+        metric_id="avg_m",
+        dimensions=("region",),
+        time_grain="month",
+        top_n=TopN(dimension="region", n=3, measure="avg_val", order="desc"),
+    )
+    with pytest.raises(MetricError) as ei:
+        compile_metric(m, mq)
+    assert ei.value.code == "bad_top_n"
+
+
+def test_non_additive_count_distinct_rank_time_grain_raises() -> None:
+    """[HIGH] count_distinct rank measure + time_grain must raise MetricError."""
+    m = MetricDefinition(
+        id="cd_m",
+        name="CD Metric",
+        measure=Measure(name="unique_users", agg="count_distinct", expr="user_id"),
+        base_table="t",
+        dimensions=(Dimension(name="region"),),
+        time_dimension=TimeDimension(
+            column="created_at",
+            grains=("month",),
+            default_grain="month",
+        ),
+    )
+    mq = MetricQuery(
+        metric_id="cd_m",
+        dimensions=("region",),
+        time_grain="month",
+        top_n=TopN(dimension="region", n=3, measure="unique_users", order="desc"),
+    )
+    with pytest.raises(MetricError) as ei:
+        compile_metric(m, mq)
+    assert ei.value.code == "bad_top_n"
+
+
+def test_non_additive_percentile_rank_time_grain_raises() -> None:
+    """[HIGH] percentile_cont rank measure + time_grain must raise MetricError."""
+    m = MetricDefinition(
+        id="pct_m",
+        name="Pct Metric",
+        measure=Measure(name="p50", agg="percentile_cont", expr="latency", format="p50"),
+        base_table="t",
+        dimensions=(Dimension(name="region"),),
+        time_dimension=TimeDimension(
+            column="created_at",
+            grains=("month",),
+            default_grain="month",
+        ),
+    )
+    mq = MetricQuery(
+        metric_id="pct_m",
+        dimensions=("region",),
+        time_grain="month",
+        top_n=TopN(dimension="region", n=3, measure="p50", order="desc"),
+    )
+    with pytest.raises(MetricError) as ei:
+        compile_metric(m, mq)
+    assert ei.value.code == "bad_top_n"
+
+
+def test_additive_sum_rank_time_grain_ok() -> None:
+    """[HIGH] additive (sum) rank measure + time_grain compiles fine (no regression)."""
+    m = _simple_metric()
+    mq = MetricQuery(
+        metric_id="revenue",
+        dimensions=("region",),
+        time_grain="month",
+        top_n=TopN(dimension="region", n=3, measure="revenue", order="desc"),
+    )
+    sql, _ = compile_metric(m, mq)
+    assert sql  # compiled without error
+
+
+# ── Issue 3: identifier injection rejected ────────────────────────────────────
+
+def test_dimension_name_with_sqli_rejected() -> None:
+    """[MED injection] A dimension name containing SQL injection must be rejected at compile time."""
+    m = MetricDefinition(
+        id="bad_dim",
+        name="Bad Dim",
+        measure=Measure(name="revenue", agg="sum", expr="amount"),
+        base_table="t",
+        dimensions=(Dimension(name="region; DROP TABLE t --"),),
+    )
+    # compile_metric governs the identifier in _govern; it must reject.
+    with pytest.raises(MetricError) as ei:
+        compile_metric(m, MetricQuery(metric_id="bad_dim", dimensions=()))
+    assert ei.value.code == "bad_dimension_name"
+
+
+def test_dimension_name_sqli_rejected_via_compile() -> None:
+    """[MED injection] Dimension name SQL injection is caught at compile time."""
+    m = MetricDefinition(
+        id="inj_dim",
+        name="Inj Dim",
+        measure=Measure(name="revenue", agg="sum", expr="amount"),
+        base_table="t",
+        dimensions=(Dimension(name="region; DROP TABLE t --"),),
+    )
+    with pytest.raises(MetricError) as ei:
+        compile_metric(m, MetricQuery(metric_id="inj_dim", dimensions=()))
+    assert ei.value.code in ("bad_dimension_name",)
+
+
+def test_derived_measure_name_sqli_rejected() -> None:
+    """[MED injection] A derived-measure name containing SQL chars must be rejected."""
+    m = MetricDefinition(
+        id="inj_dm",
+        name="Inj DM",
+        measure=Measure(name="revenue", agg="sum", expr="amount"),
+        base_table="t",
+        derived_measures=(
+            DerivedMeasure(name="bad'; DROP TABLE --", formula="revenue / revenue"),
+        ),
+    )
+    with pytest.raises(MetricError) as ei:
+        compile_metric(m, MetricQuery(metric_id="inj_dm"))
+    assert ei.value.code in ("bad_derived_measure_name", "bad_formula_identifier")
+
+
+def test_valid_identifier_names_accepted() -> None:
+    """[MED injection] Valid identifiers compile without error (no regression)."""
+    m = MetricDefinition(
+        id="ok_ids",
+        name="OK IDs",
+        measure=Measure(name="total_revenue", agg="sum", expr="amount"),
+        base_table="t",
+        dimensions=(Dimension(name="region_code"), Dimension(name="store_id")),
+        derived_measures=(
+            DerivedMeasure(name="revenue_ratio", formula="total_revenue / total_revenue"),
+        ),
+    )
+    sql, _ = compile_metric(m, MetricQuery(metric_id="ok_ids", dimensions=("region_code",)))
+    assert sql
+
+
+# ── Issue 4: prior_period correct on sparse series through plan() ─────────────
+
+def test_prior_period_sparse_series_date_correct_through_plan() -> None:
+    """[MED correctness] prior_period uses date-correct subquery, NOT positional LAG.
+
+    A sparse series (missing months) would cause positional LAG to return the
+    wrong prior period.  The date-correct correlated subquery matches by date
+    arithmetic, returning NULL when no matching bucket exists.
+
+    This test goes through plan() on in-memory DuckDB and asserts results.
+    """
+    con = _duckdb_conn()
+    con.execute("""
+        CREATE TABLE pp_sparse (
+            region    VARCHAR,
+            amount    DOUBLE,
+            sale_date DATE
+        )
+    """)
+    # 2024-01 and 2024-03 (gap at 2024-02); prior months:
+    #   2024-01 -> 2023-12 = NULL (no row for 2023-12)
+    #   2024-03 -> 2024-02 = NULL (no row for 2024-02)
+    # Also add 2024-02 for one region to verify the correct match works.
+    con.execute("""
+        INSERT INTO pp_sparse VALUES
+            ('A', 100, '2024-02-01'),
+            ('A', 200, '2024-03-01')
+    """)
+    m = MetricDefinition(
+        id="pp_sparse",
+        name="PP Sparse",
+        measure=Measure(name="revenue", agg="sum", expr="amount"),
+        base_table="pp_sparse",
+        dimensions=(Dimension(name="region"),),
+        time_dimension=TimeDimension(
+            column="sale_date",
+            grains=("month",),
+            default_grain="month",
+        ),
+    )
+    mq = MetricQuery(
+        metric_id="pp_sparse",
+        dimensions=("region",),
+        time_grain="month",
+        time_comparisons=(
+            TimeComparison(measure="revenue", kind="prior_period", periods=1),
+        ),
+    )
+    sql, _ = compile_metric(m, mq)
+    # Must use date-correct subquery not LAG.
+    assert "SELECT __PP.REVENUE FROM __BASE AS __PP".lower() in sql.lower()
+    # Through plan().
+    p = plan(sql, claims={}, dialect="duckdb")
+    rows = con.execute(p.sql).fetchall()
+    # Columns: region, sale_date_month, revenue, revenue_prior_period
+    row_by_ym = {(r[1].year, r[1].month): r for r in rows}
+    # 2024-02: revenue=100, prior_period (2024-01) = NULL (no row for Jan)
+    assert (2024, 2) in row_by_ym, f"Missing 2024-02; rows={rows}"
+    assert row_by_ym[(2024, 2)][3] is None, (
+        f"2024-02 prior_period should be NULL (2024-01 missing), got {row_by_ym[(2024, 2)][3]}"
+    )
+    # 2024-03: revenue=200, prior_period (2024-02) = 100 (row exists)
+    assert (2024, 3) in row_by_ym, f"Missing 2024-03; rows={rows}"
+    assert row_by_ym[(2024, 3)][3] == 100.0, (
+        f"2024-03 prior_period should be 100 (2024-02 value), got {row_by_ym[(2024, 3)][3]}"
+    )
+
+
+def test_pop_abs_sparse_series_date_correct_through_plan() -> None:
+    """[MED correctness] pop_abs uses date-correct subquery through plan()."""
+    con = _duckdb_conn()
+    con.execute("""
+        CREATE TABLE pop_abs_sparse (
+            region    VARCHAR,
+            amount    DOUBLE,
+            sale_date DATE
+        )
+    """)
+    con.execute("""
+        INSERT INTO pop_abs_sparse VALUES
+            ('A', 100, '2024-01-01'),
+            ('A', 150, '2024-03-01')
+    """)
+    m = MetricDefinition(
+        id="pop_abs_test",
+        name="Pop Abs Test",
+        measure=Measure(name="revenue", agg="sum", expr="amount"),
+        base_table="pop_abs_sparse",
+        dimensions=(Dimension(name="region"),),
+        time_dimension=TimeDimension(
+            column="sale_date",
+            grains=("month",),
+            default_grain="month",
+        ),
+    )
+    mq = MetricQuery(
+        metric_id="pop_abs_test",
+        dimensions=("region",),
+        time_grain="month",
+        time_comparisons=(
+            TimeComparison(measure="revenue", kind="pop_abs", periods=1),
+        ),
+    )
+    sql, _ = compile_metric(m, mq)
+    p = plan(sql, claims={}, dialect="duckdb")
+    rows = con.execute(p.sql).fetchall()
+    row_by_ym = {(r[1].year, r[1].month): r for r in rows}
+    # 2024-01: revenue=100, pop_abs (vs 2023-12) = NULL
+    assert (2024, 1) in row_by_ym
+    assert row_by_ym[(2024, 1)][3] is None, (
+        f"2024-01 pop_abs should be NULL (2023-12 missing), got {row_by_ym[(2024, 1)][3]}"
+    )
+    # 2024-03: revenue=150, pop_abs (vs 2024-02) = NULL (no 2024-02 row)
+    assert (2024, 3) in row_by_ym
+    assert row_by_ym[(2024, 3)][3] is None, (
+        f"2024-03 pop_abs should be NULL (2024-02 missing), got {row_by_ym[(2024, 3)][3]}"
+    )
+
+
+def test_yoy_pct_emits_single_prior_year_subquery() -> None:
+    """[MED perf] yoy_pct must NOT emit the same prior-year subquery twice.
+
+    Previously yoy_pct computed py_expr_sql independently inside the pct_sql
+    f-string, producing two identical correlated scalar subqueries.  The fix
+    reuses py_expr_sql (computed once) so the output SQL contains exactly
+    2 occurrences of the correlated subquery (one for numerator, one for
+    NULLIF denominator) — not 4.
+    """
+    m = _simple_metric()
+    mq = MetricQuery(
+        metric_id="revenue",
+        dimensions=("region",),
+        time_grain="month",
+        time_comparisons=(
+            TimeComparison(measure="revenue", kind="yoy_pct"),
+        ),
+    )
+    sql, _ = compile_metric(m, mq)
+    # Count how many times the prior-year inner SELECT appears.
+    # It should appear exactly twice (numerator and NULLIF denominator),
+    # not four times (old code computed py_expr_sql twice, each appearing twice).
+    inner = "SELECT __PY.REVENUE FROM __BASE AS __PY"
+    count = sql.upper().count(inner)
+    assert count == 2, (
+        f"yoy_pct should emit exactly 2 prior-year subqueries (1 for diff, "
+        f"1 for NULLIF denom), found {count}. SQL fragment: {sql[:500]}"
     )

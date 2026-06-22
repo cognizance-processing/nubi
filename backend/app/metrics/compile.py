@@ -148,6 +148,14 @@ _AGG_SQL: dict[str, str] = {
     "approx_count_distinct": "APPROX_COUNT_DISTINCT",
 }
 
+# Non-additive aggregation functions: these cannot be safely re-aggregated by
+# SUM() across time buckets, so using them as a top_n rank measure with a
+# time_grain (which requires SUM(rank_measure) in the membership subquery) is
+# semantically wrong.  We block them in _govern with a MetricError.
+_NON_ADDITIVE_AGGS: frozenset[str] = frozenset({
+    "avg", "count_distinct", "percentile_cont", "approx_count_distinct",
+})
+
 # Allowed token types in a derived-measure formula (post-parse check).
 _FORMULA_ALLOWED_TOKTYPE = frozenset({
     tokenize.OP, tokenize.NUMBER, tokenize.NAME, tokenize.NEWLINE,
@@ -415,15 +423,29 @@ def _compile_layered(
         out_name = tc.out_name()
 
         if tc.kind in ("prior_period", "pop_abs", "pop_pct"):
-            lag_expr = _window_lag(m_col, tc.periods, partition_cols, order_col)
+            # FIX issue 4: use date-correct correlated subquery instead of
+            # positional LAG.  Positional LAG(measure, N) is wrong for sparse
+            # (non-dense) time series because missing buckets shift the row offset.
+            # We match by DATE arithmetic (bucket - N periods) instead.
+            # This requires time_grain to be set (governance already enforces it).
+            pp_expr_sql = _prior_period_subquery_sql(
+                tc.measure, mq.time_grain or "day", tc.periods,
+                time_alias, all_dim_names, dialect
+            )
+            pp_expr = sqlglot.parse_one(pp_expr_sql, dialect=dialect)
+            m_col_sql = m_col.sql(dialect=dialect)
             if tc.kind == "prior_period":
-                outer_select_exprs.append(exp.alias_(lag_expr, out_name))
+                outer_select_exprs.append(exp.alias_(pp_expr, out_name))
             elif tc.kind == "pop_abs":
-                diff = exp.Sub(this=m_col.copy(), expression=lag_expr)
-                outer_select_exprs.append(exp.alias_(diff, out_name))
+                diff_sql = f"({m_col_sql} - ({pp_expr_sql}))"
+                diff_expr = sqlglot.parse_one(diff_sql, dialect=dialect)
+                outer_select_exprs.append(exp.alias_(diff_expr, out_name))
             else:  # pop_pct
-                lag2 = _window_lag(m_col, tc.periods, partition_cols, order_col)
-                pct_sql = f"({m_col.sql(dialect=dialect)} - {lag2.sql(dialect=dialect)}) / NULLIF({lag2.sql(dialect=dialect)}, 0)"
+                # Compute pp once to avoid two identical correlated subqueries.
+                pct_sql = (
+                    f"({m_col_sql} - ({pp_expr_sql})) "
+                    f"/ NULLIF(({pp_expr_sql}), 0)"
+                )
                 pct_expr = sqlglot.parse_one(pct_sql, dialect=dialect)
                 outer_select_exprs.append(exp.alias_(pct_expr, out_name))
 
@@ -434,6 +456,8 @@ def _compile_layered(
             # Instead we look up the value at exactly (bucket - 1 year/period)
             # using a correlated subquery that matches on date + all dimensions.
             # This is correct for any grain and any sparsity pattern.
+            # FIX issue 5: compute the prior-year subquery SQL ONCE and reuse it
+            # — avoids emitting N identical correlated subqueries for yoy_pct.
             py_expr_sql = _prior_year_subquery_sql(
                 tc.measure, mq.time_grain or "day", time_alias, all_dim_names, dialect
             )
@@ -445,7 +469,7 @@ def _compile_layered(
                 diff_sql = f"({m_col_sql} - ({py_expr_sql}))"
                 diff_expr = sqlglot.parse_one(diff_sql, dialect=dialect)
                 outer_select_exprs.append(exp.alias_(diff_expr, out_name))
-            else:  # yoy_pct
+            else:  # yoy_pct — FIX issue 5: reuse py_expr_sql (not recomputed)
                 pct_sql = (
                     f"({m_col_sql} - ({py_expr_sql})) "
                     f"/ NULLIF(({py_expr_sql}), 0)"
@@ -973,6 +997,32 @@ def _govern(metric: MetricDefinition, mq: MetricQuery) -> str | None:
             "Metric must declare exactly one of base_table or base_sql.",
         )
 
+    # FIX issue 3: validate all dimension names and derived-measure names are
+    # safe SQL identifiers.  These names are interpolated into f-strings in the
+    # membership subquery, Other-bucket SELECT, prior_period subquery, etc.
+    # A name like "region; DROP TABLE t --" would be a SQL injection vector.
+    for dim in metric.dimensions:
+        if not _IDENT_RE.fullmatch(dim.name):
+            raise MetricError(
+                "bad_dimension_name",
+                f"Dimension name {dim.name!r} is not a valid SQL identifier "
+                f"(must match [A-Za-z_][A-Za-z0-9_]*).",
+            )
+    for dm in metric.derived_measures:
+        if not _IDENT_RE.fullmatch(dm.name):
+            raise MetricError(
+                "bad_derived_measure_name",
+                f"DerivedMeasure name {dm.name!r} is not a valid SQL identifier "
+                f"(must match [A-Za-z_][A-Za-z0-9_]*).",
+            )
+    for m in metric.measures():
+        if not _IDENT_RE.fullmatch(m.name):
+            raise MetricError(
+                "bad_measure_name",
+                f"Measure name {m.name!r} is not a valid SQL identifier "
+                f"(must match [A-Za-z_][A-Za-z0-9_]*).",
+            )
+
     # requested dimensions must be allowed.
     for dim_name in mq.dimensions:
         if metric.dimension(dim_name) is None:
@@ -1138,6 +1188,23 @@ def _govern(metric: MetricDefinition, mq: MetricQuery) -> str | None:
                 f"cannot be used as the top_n rank measure when time_grain is set "
                 f"(the membership subquery references __base which only contains base measures).",
             )
+        # FIX issue 2: non-additive base measure as rank measure with time_grain is
+        # wrong — the membership subquery ranks by SUM(rank_measure) across time
+        # buckets, but SUM(avg(...)) / SUM(count_distinct(...)) / etc. is not the
+        # correct total.  Raise MetricError to prevent silent wrong results.
+        if mq.time_grain is not None and rank_measure in base_measure_names:
+            # Find the agg of the rank measure.
+            rank_agg = next(
+                (m.agg for m in metric.measures() if m.name == rank_measure), None
+            )
+            if rank_agg in _NON_ADDITIVE_AGGS:
+                raise MetricError(
+                    "bad_top_n",
+                    f"top_n.measure {rank_measure!r} uses aggregation {rank_agg!r} which "
+                    f"is non-additive; it cannot be used as the rank measure when "
+                    f"time_grain is set (the membership subquery ranks by "
+                    f"SUM(rank_measure) which is incorrect for non-additive aggs).",
+                )
         # FIX #1: validate other_label contains no single-quote or backslash.
         if tn.other and ("'" in tn.other_label or "\\" in tn.other_label):
             raise MetricError(
@@ -1448,4 +1515,65 @@ def _prior_year_subquery_sql(
 
     return (
         f"(SELECT __py.{measure_name} FROM __base AS __py {where_clause})"
+    )
+
+
+# Interval subtraction SQL per grain for the date-correct prior-period lookup.
+# For a single period back: month->1 month, quarter->1 quarter, etc.
+# This is used for prior_period / pop_abs / pop_pct to avoid positional-LAG
+# errors on sparse time series.
+_PRIOR_PERIOD_INTERVAL_BY_N: dict[str, str] = {
+    "month": "INTERVAL '{n} month'",
+    "quarter": "INTERVAL '{n} quarter'",
+    "year": "INTERVAL '{n} year'",
+    "week": "INTERVAL '{n} week'",
+    "day": "INTERVAL '{n} day'",
+    "hour": "INTERVAL '{n} hour'",
+}
+
+
+def _prior_period_subquery_sql(
+    measure_name: str,
+    grain: str,
+    periods: int,
+    time_alias: str | None,
+    all_dim_names: list[str],
+    dialect: str,
+) -> str:
+    """Build a date-correct correlated scalar subquery for prior-period lookup.
+
+    This returns the value of *measure_name* N periods prior to the current
+    row's time bucket.  Unlike positional LAG(measure, N), this is correct for
+    sparse time series because it matches by DATE arithmetic, not row offset.
+
+    Emits (analogous to _prior_year_subquery_sql but with per-grain intervals):
+        (SELECT __pp.{measure} FROM __base AS __pp
+         WHERE __pp.{dim1} = __outer.{dim1} [AND ...]
+         AND __pp.{time_alias} = DATE_TRUNC('{grain}',
+                                            __outer.{time_alias} - <interval>))
+    """
+    interval_tmpl = _PRIOR_PERIOD_INTERVAL_BY_N.get(grain, "INTERVAL '{n} day'")
+    interval = interval_tmpl.replace("{n}", str(periods))
+
+    dim_conditions = " AND ".join(
+        f"__pp.{d} = __outer.{d}" for d in all_dim_names
+    )
+
+    if time_alias is not None:
+        time_condition = (
+            f"__pp.{time_alias} = "
+            f"DATE_TRUNC('{grain}', __outer.{time_alias} - {interval})"
+        )
+        if dim_conditions:
+            where_clause = f"WHERE {dim_conditions} AND {time_condition}"
+        else:
+            where_clause = f"WHERE {time_condition}"
+    else:
+        if dim_conditions:
+            where_clause = f"WHERE {dim_conditions}"
+        else:
+            where_clause = ""
+
+    return (
+        f"(SELECT __pp.{measure_name} FROM __base AS __pp {where_clause})"
     )

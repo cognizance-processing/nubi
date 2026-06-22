@@ -1007,3 +1007,90 @@ async def test_inline_provider_base_cte_execute_via_to_thread(repo: InMemoryRepo
     # Data is correct after asyncio.to_thread wrapping.
     assert result.num_rows == 3
     assert result.to_pydict() == {"amount": [1.0, 2.0, 3.0]}
+
+
+# ---------------------------------------------------------------------------
+# NEW: [MED metering INVARIANT] embed-token cache miss MUST NOT call enforce_quota
+# First-party cache miss MUST call enforce_quota
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_embed_token_cache_miss_does_not_call_enforce_quota(repo: InMemoryRepo) -> None:
+    """[MED metering INVARIANT] Embed/viewer tokens must NEVER trigger quota enforcement.
+
+    resolve_provider_data(is_embed=True) on a cache miss must execute the
+    provider (so the result can be cached for subsequent callers) but must NOT
+    call enforce_quota.  Viewers are never metered.
+    """
+    quota_calls: list[tuple] = []
+
+    async def _fake_enforce_quota(org_id: str, dimension: str, amount: float = 1.0) -> None:
+        quota_calls.append((org_id, dimension, amount))
+
+    async def _fake_run(query_id, org_id, _repo, policies):
+        return ["amount"], [[99.0]]
+
+    with (
+        patch("app.features.enforce_quota", side_effect=_fake_enforce_quota),
+        patch("app.dashboards.collect.run_query_rows", side_effect=_fake_run),
+    ):
+        tables = await resolve_provider_data(
+            board_id=_BOARD_ID,
+            provider_id=_PROVIDER_ID,
+            params={},
+            org_id=_ORG,
+            claims={"policies": {}},
+            repo=repo,
+            is_embed=True,  # embed/viewer token
+        )
+
+    # Provider must still execute and return data.
+    assert "revenue" in tables
+    assert tables["revenue"].num_rows == 1
+
+    # But quota must NOT have been called for an embed token.
+    assert len(quota_calls) == 0, (
+        f"enforce_quota was called for an embed token — viewers are never metered. "
+        f"Calls: {quota_calls}"
+    )
+
+
+@pytest.mark.asyncio
+async def test_first_party_cache_miss_calls_enforce_quota(repo: InMemoryRepo) -> None:
+    """[MED metering] First-party (non-embed) cache miss MUST call enforce_quota.
+
+    When is_embed=False (default), a cache miss must meter the org before
+    executing the provider.  This is the inverse of the embed check above.
+    """
+    quota_calls: list[tuple] = []
+
+    async def _fake_enforce_quota(org_id: str, dimension: str, amount: float = 1.0) -> None:
+        quota_calls.append((org_id, dimension, amount))
+
+    async def _fake_run(query_id, org_id, _repo, policies):
+        return ["amount"], [[42.0]]
+
+    with (
+        patch("app.features.enforce_quota", side_effect=_fake_enforce_quota),
+        patch("app.dashboards.collect.run_query_rows", side_effect=_fake_run),
+    ):
+        tables = await resolve_provider_data(
+            board_id=_BOARD_ID,
+            provider_id=_PROVIDER_ID,
+            params={},
+            org_id=_ORG,
+            claims={"policies": {}},
+            repo=repo,
+            is_embed=False,  # first-party token (default)
+        )
+
+    # Provider must execute and return data.
+    assert "revenue" in tables
+
+    # Quota must be enforced for a first-party cache miss.
+    assert len(quota_calls) >= 1, (
+        "enforce_quota was NOT called for a first-party cache miss — metering regression."
+    )
+    org_ids = [c[0] for c in quota_calls]
+    assert _ORG in org_ids, f"enforce_quota called with wrong org_id: {quota_calls}"

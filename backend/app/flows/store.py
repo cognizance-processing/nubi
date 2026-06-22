@@ -308,7 +308,9 @@ class InMemoryFlowStore:
         run = self._flow_runs.get(str(run_id))
         return deepcopy(run) if run is not None else None
 
-    async def list_flow_runs(self, flow_id: str, limit: int = 500) -> list[FlowRun]:
+    async def list_flow_runs(
+        self, flow_id: str, limit: int = 500, offset: int = 0
+    ) -> list[FlowRun]:
         """Return flow_runs for *flow_id*, newest first, bounded by *limit*.
 
         Parameters
@@ -320,11 +322,13 @@ class InMemoryFlowStore:
             pass a tighter bound (e.g. the route's ``?limit`` query param)
             so the result set is always bounded DB-side rather than
             post-hoc in Python.
+        offset:
+            Number of rows to skip (for pagination, default 0).
         """
         run_ids = self._flow_run_index.get(str(flow_id), [])
         rows = [deepcopy(self._flow_runs[rid]) for rid in run_ids if rid in self._flow_runs]
         rows.sort(key=lambda r: r["created_at"], reverse=True)
-        return rows[:limit]
+        return rows[offset : offset + limit]
 
     async def list_run_outputs_for_runs(
         self, run_ids: list[str]
@@ -1131,7 +1135,9 @@ class PgFlowStore:
         )
         return _row_to_flow_run(row) if row is not None else None
 
-    async def list_flow_runs(self, flow_id: str, limit: int = 500) -> list[FlowRun]:
+    async def list_flow_runs(
+        self, flow_id: str, limit: int = 500, offset: int = 0
+    ) -> list[FlowRun]:
         """Return flow_runs for *flow_id*, newest first, bounded by *limit*.
 
         Parameters
@@ -1141,14 +1147,17 @@ class PgFlowStore:
         limit:
             Maximum rows returned.  Applied in SQL so the DB never sends
             an unbounded result set.
+        offset:
+            Number of rows to skip (for pagination, default 0).
         """
         from app.db import fetch as db_fetch  # noqa: PLC0415
 
         rows = await db_fetch(
             "SELECT * FROM flow_runs WHERE flow_id = $1::uuid "
-            "ORDER BY created_at DESC LIMIT $2",
+            "ORDER BY created_at DESC LIMIT $2 OFFSET $3",
             flow_id,
             limit,
+            offset,
         )
         return [_row_to_flow_run(r) for r in rows]
 

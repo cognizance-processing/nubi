@@ -910,3 +910,131 @@ async def test_cyclic_trigger_chain_visited_set_blocks_revisit():
     assert len(runs_a) == 1, (
         f"Expected flow_a to appear exactly once (initial run), got {len(runs_a)}"
     )
+
+
+# ---------------------------------------------------------------------------
+# [LOW RLS] Admin flow (explicitly-empty owner-policy snapshot) still triggers
+# ---------------------------------------------------------------------------
+
+
+async def test_downstream_trigger_fires_for_admin_flow_with_empty_policies():
+    """[LOW RLS] Admin-created flows with explicitly-empty owner policies still fire downstream.
+
+    Before the fix, ``_downstream_claims_with_owner_policies`` used ``if not policies``
+    (truthiness) which treated an explicit empty dict (``{}``) the same as a missing
+    snapshot key — causing downstream triggers to be silently dropped for admin flows
+    that legitimately have no per-tenant RLS predicates.
+
+    After the fix, the function checks for **key presence** rather than truthiness:
+    - ``_OWNER_POLICIES_KEY in runtime_config`` with value ``{}`` → ALLOW (admin, no RLS)
+    - ``_OWNER_POLICIES_KEY`` absent from ``runtime_config`` → SKIP (fail-closed)
+    """
+    from app.flows.runtime import materialize_flow_run  # noqa: PLC0415
+
+    store = InMemoryFlowStore()
+
+    # Admin/service flow: owner-policy snapshot key IS PRESENT but value is empty dict.
+    # This is the "no per-tenant RLS" (admin) case — should still fire downstream.
+    upstream = await store.create_flow(
+        org_id="org-test",
+        created_by="admin-user",
+        name="admin_upstream",
+        spec={
+            "version": 1,
+            "name": "admin_upstream",
+            "tasks": [{"key": "t1", "kind": "noop", "needs": [], "config": {}}],
+            "runtime_config": {
+                "__owner_policies__": {},  # explicitly empty — admin/no-RLS
+            },
+        },
+    )
+    downstream = await _make_flow(store, name="admin_downstream")
+
+    registry = get_trigger_registry()
+    await registry.register(
+        flow_id=downstream["id"],
+        kind="downstream",
+        source=upstream["id"],
+        org_id="org-test",
+        extra={"on_states": ["success"]},
+    )
+
+    flow_run = await materialize_flow_run(store, upstream, {}, "manual", NOW)
+    await store.update_flow_run(flow_run["id"], {"state": "success"})
+
+    # Fire with empty claims — no policies on caller, relies on snapshot.
+    await on_flow_run_complete(
+        store=store,
+        flow_run_id=flow_run["id"],
+        state="success",
+        now=NOW,
+        claims={},  # no policies on claims
+    )
+
+    # The downstream trigger MUST fire: empty-dict snapshot is an explicit admin signal.
+    downstream_runs = await store.list_flow_runs(downstream["id"])
+    assert len(downstream_runs) == 1, (
+        "Downstream trigger must fire for an admin flow with an explicitly-empty "
+        "owner-policy snapshot (key present, value={}).  "
+        f"Got {len(downstream_runs)} runs — fail-closed logic wrongly dropped it."
+    )
+    # The downstream run should carry empty policies (not fail, not skip).
+    run_params = downstream_runs[0]["params"]
+    assert run_params.get("__trigger_depth__") == 1, (
+        f"Expected __trigger_depth__=1 in downstream run params, got: {run_params}"
+    )
+
+
+async def test_downstream_trigger_skipped_when_snapshot_key_absent():
+    """[LOW RLS] Downstream trigger must be skipped when snapshot KEY is absent (fail-closed).
+
+    Distinguishes 'key absent' (unknown RLS context → skip) from
+    'key present, value empty' (admin, no RLS → allow).
+    """
+    from app.flows.runtime import materialize_flow_run  # noqa: PLC0415
+
+    store = InMemoryFlowStore()
+
+    # Flow with runtime_config but WITHOUT __owner_policies__ key at all.
+    upstream = await store.create_flow(
+        org_id="org-test",
+        created_by="user-test",
+        name="no_snapshot_key_upstream",
+        spec={
+            "version": 1,
+            "name": "no_snapshot_key_upstream",
+            "tasks": [{"key": "t1", "kind": "noop", "needs": [], "config": {}}],
+            "runtime_config": {
+                "some_other_key": "value",
+                # __owner_policies__ key is intentionally absent
+            },
+        },
+    )
+    downstream = await _make_flow(store, name="no_snapshot_downstream")
+
+    registry = get_trigger_registry()
+    await registry.register(
+        flow_id=downstream["id"],
+        kind="downstream",
+        source=upstream["id"],
+        org_id="org-test",
+        extra={"on_states": ["success"]},
+    )
+
+    flow_run = await materialize_flow_run(store, upstream, {}, "manual", NOW)
+    await store.update_flow_run(flow_run["id"], {"state": "success"})
+
+    await on_flow_run_complete(
+        store=store,
+        flow_run_id=flow_run["id"],
+        state="success",
+        now=NOW,
+        claims={},  # no policies
+    )
+
+    # Must be skipped — key is absent, RLS context is unknown.
+    downstream_runs = await store.list_flow_runs(downstream["id"])
+    assert len(downstream_runs) == 0, (
+        "Downstream trigger must be skipped when snapshot key is absent (fail-closed). "
+        f"Got {len(downstream_runs)} runs."
+    )

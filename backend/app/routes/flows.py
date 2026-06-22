@@ -1860,17 +1860,23 @@ async def run_flow(
 @router.get("/{flow_id}/runs", status_code=200)
 async def list_flow_runs(
     flow_id: str,
+    limit: int = Query(default=50, ge=1, le=500),
+    offset: int = Query(default=0, ge=0),
     user: dict[str, Any] = Depends(current_user),
     repo: Repo = Depends(get_repo),
 ) -> list[dict[str, Any]]:
-    """List all runs for a flow (newest first).
+    """List runs for a flow (newest first), with pagination.
+
+    Query params:
+    - ``limit``: max rows returned (1–500, default 50)
+    - ``offset``: number of rows to skip for pagination (default 0)
 
     Returns 404 if the flow does not exist or belongs to a different org.
     """
     org_id = await _get_user_org(str(user["id"]), repo)
     store = get_flow_store()
     await _require_flow_in_org(flow_id, org_id, store)
-    runs = await store.list_flow_runs(flow_id)
+    runs = await store.list_flow_runs(flow_id, limit=limit, offset=offset)
     return [_serialize_flow_run(r) for r in runs]
 
 
@@ -2013,6 +2019,18 @@ async def sweep_flow(
 
     # Enforce a hard server cap so callers cannot bypass it via the request body.
     effective_max = min(body.max_cells, _MAX_SWEEP_CELLS)
+
+    # When param_sets is supplied directly the grid-expansion path (and its
+    # in-loop cap) is bypassed.  Apply the same server ceiling here so an
+    # explicit list cannot exceed the cap either.
+    if body.param_sets is not None and len(body.param_sets) > effective_max:
+        raise AppError(
+            "bad_request",
+            f"param_sets length {len(body.param_sets)} exceeds the server cap "
+            f"of {effective_max} cells (MAX_SWEEP_CELLS={_MAX_SWEEP_CELLS}). "
+            "Reduce the number of param_sets or use the grid path.",
+            400,
+        )
 
     try:
         result = await asyncio.wait_for(
@@ -2559,46 +2577,6 @@ async def writeback_approval_route(
         store=store,
         rows_override=body.rows_override,
     )
-    return record
-
-
-@router.get("/writeback", status_code=200)
-async def list_writebacks_route(
-    limit: int = 50,
-    user: dict[str, Any] = Depends(current_user),
-    repo: Repo = Depends(get_repo),
-) -> dict[str, Any]:
-    """List write-back requests for the caller's org (newest first).
-
-    Returns up to *limit* records.  Org-scoped from the verified token.
-    """
-    from app.connectors.writeback import get_writeback_store  # noqa: PLC0415
-
-    user_id = str(user["id"])
-    org_id = await _get_user_org(user_id, repo)
-    store = get_writeback_store()
-    records = await store.list(org_id, limit=limit)
-    return {"writebacks": records, "count": len(records)}
-
-
-@router.get("/writeback/{wb_id}", status_code=200)
-async def get_writeback_route(
-    wb_id: str,
-    user: dict[str, Any] = Depends(current_user),
-    repo: Repo = Depends(get_repo),
-) -> dict[str, Any]:
-    """Return a single write-back request by id.
-
-    Returns 404 when the record does not exist or belongs to a different org.
-    """
-    from app.connectors.writeback import get_writeback_store  # noqa: PLC0415
-
-    user_id = str(user["id"])
-    org_id = await _get_user_org(user_id, repo)
-    store = get_writeback_store()
-    record = await store.get(org_id, wb_id)
-    if record is None:
-        raise AppError("not_found", f"Write-back {wb_id!r} not found.", 404)
     return record
 
 

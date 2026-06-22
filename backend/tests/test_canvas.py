@@ -1496,3 +1496,350 @@ class TestCanvasCapRegression:
         assert call_count == max_b, (
             f"Expected exactly {max_b} run_query_rows calls, got {call_count}"
         )
+
+
+# ---------------------------------------------------------------------------
+# 8. Async offload: connector.execute is called off the event loop
+# ---------------------------------------------------------------------------
+
+
+class TestRunQueryRowsAsyncOffload:
+    """run_query_rows must offload connector.execute to a worker thread.
+
+    The sync execute() call used to block the event loop for the full query
+    duration, stalling all concurrent requests.  The fix wraps it in
+    asyncio.to_thread() so it runs in the default ThreadPoolExecutor.
+    """
+
+    @pytest.mark.asyncio
+    async def test_execute_runs_in_worker_thread(self):
+        """connector.execute is NOT called on the event loop thread.
+
+        We verify this by capturing the thread identity inside execute() and
+        comparing it to the event loop thread identity.  They must differ.
+        """
+        import threading
+        import types as _types
+        import pyarrow as pa
+
+        from app.dashboards.collect import run_query_rows  # noqa: PLC0415
+        from app.queries.registry import get_query_registry  # noqa: PLC0415
+
+        loop_thread_id = threading.current_thread().ident
+        execute_thread_ids: list[int] = []
+
+        class _ThreadTrackingConnector:
+            def execute(self, plan):
+                execute_thread_ids.append(threading.current_thread().ident)
+                return pa.table({"x": [1, 2, 3]})
+
+            def close(self):
+                pass
+
+        reg = get_query_registry()
+        fake_query_id = f"_test_thread_{uuid.uuid4().hex}"
+        fake_query = _types.SimpleNamespace(
+            id=fake_query_id,
+            sql="SELECT 1",
+            params=[],
+            datastore_id=None,
+        )
+
+        def _patched_get(qid):
+            if qid == fake_query_id:
+                return fake_query
+            return reg._store.get(qid)
+
+        repo = InMemoryRepo()
+        org_id = str(uuid.uuid4())
+
+        with (
+            patch.object(reg, "get", side_effect=_patched_get),
+            patch(
+                "app.dashboards.collect._resolve_connector",
+                new=AsyncMock(return_value=(_ThreadTrackingConnector(), False)),
+            ),
+        ):
+            columns, rows = await run_query_rows(
+                query_id=fake_query_id,
+                org_id=org_id,
+                repo=repo,
+                policies={},
+            )
+
+        assert columns == ["x"]
+        assert rows == [[1], [2], [3]]
+        assert execute_thread_ids, "execute() was never called"
+        assert execute_thread_ids[0] != loop_thread_id, (
+            "connector.execute() ran on the event loop thread — it must run "
+            "in a worker thread via asyncio.to_thread()"
+        )
+
+    @pytest.mark.asyncio
+    async def test_api_execute_runs_in_worker_thread(self):
+        """API binding connector.execute is NOT called on the event loop thread.
+
+        This covers the second execute() call in collect_canvas_data's 'api'
+        branch (~line 521 after the fix).  The same asyncio.to_thread() fix
+        applies there independently of run_query_rows.
+        """
+        import threading
+        import pyarrow as pa
+
+        from app.dashboards.collect import collect_canvas_data  # noqa: PLC0415
+
+        loop_thread_id = threading.current_thread().ident
+        execute_thread_ids: list[int] = []
+
+        repo = InMemoryRepo()
+        org_id = str(uuid.uuid4())
+        user_id = str(uuid.uuid4())
+        conn_id = str(uuid.uuid4())
+        repo.seed_org_member(org_id=org_id, user_id=user_id)
+
+        await repo.create(
+            "datastores",
+            org_id=org_id,
+            created_by=user_id,
+            name="Thread Check DS",
+            id=conn_id,
+            config={"type": "http_json", "url": "http://api.example.com"},
+        )
+
+        canvas = await repo.create(
+            "canvases",
+            org_id=org_id,
+            created_by=user_id,
+            name="Thread Check Canvas",
+            config={
+                "doc": {
+                    "version": 1,
+                    "html": '<nubi-value data-el-id="el_t"></nubi-value>',
+                    "bindings": {
+                        "el_t": {
+                            "kind": "api",
+                            "connector_id": conn_id,
+                            "path": "/data",
+                        },
+                    },
+                }
+            },
+        )
+
+        class _ThreadTrackingHttpConn:
+            def execute(self, plan):
+                execute_thread_ids.append(threading.current_thread().ident)
+                return pa.table({"v": [42]})
+
+            def capabilities(self):
+                return {"predicate_rls": True}
+
+            def close(self):
+                pass
+
+        with patch(
+            "app.connectors.http_json.HttpJsonConnector",
+            return_value=_ThreadTrackingHttpConn(),
+        ):
+            result = await collect_canvas_data(
+                canvas_id=canvas["id"],
+                org_id=org_id,
+                claims={},
+                repo=repo,
+            )
+
+        assert "el_t" in result
+        assert "error" not in result["el_t"], result["el_t"]
+        assert execute_thread_ids, "execute() was never called"
+        assert execute_thread_ids[0] != loop_thread_id, (
+            "API connector.execute() ran on the event loop thread — it must "
+            "run in a worker thread via asyncio.to_thread()"
+        )
+
+
+# ---------------------------------------------------------------------------
+# 9. Path-traversal rejection for API binding paths
+# ---------------------------------------------------------------------------
+
+
+class TestApiBindingPathValidation:
+    """collect_canvas_data rejects unsafe paths in API bindings.
+
+    A path like '../', '../../admin', 'http://evil.example/', or
+    '//evil.example' must be refused before being joined onto the
+    connector base URL.  The entry should get an 'error' key
+    ('invalid_binding_path') via the best-effort handler, NOT raise.
+    """
+
+    async def _make_canvas_with_path(
+        self, path: str
+    ) -> tuple["InMemoryRepo", str, str, str]:
+        """Helper: seed a repo + canvas with a single API binding at *path*."""
+        repo = InMemoryRepo()
+        org_id = str(uuid.uuid4())
+        user_id = str(uuid.uuid4())
+        conn_id = str(uuid.uuid4())
+        repo.seed_org_member(org_id=org_id, user_id=user_id)
+
+        await repo.create(
+            "datastores",
+            org_id=org_id,
+            created_by=user_id,
+            name="Path Test DS",
+            id=conn_id,
+            config={"type": "http_json", "url": "http://api.example.com"},
+        )
+
+        canvas = await repo.create(
+            "canvases",
+            org_id=org_id,
+            created_by=user_id,
+            name="Path Test Canvas",
+            config={
+                "doc": {
+                    "version": 1,
+                    "html": '<nubi-value data-el-id="el_p"></nubi-value>',
+                    "bindings": {
+                        "el_p": {
+                            "kind": "api",
+                            "connector_id": conn_id,
+                            "path": path,
+                        },
+                    },
+                }
+            },
+        )
+        return repo, org_id, canvas["id"]
+
+    @pytest.mark.asyncio
+    async def test_dotdot_path_is_rejected(self):
+        """Path containing '..' segment is rejected as invalid_binding_path."""
+        from app.dashboards.collect import collect_canvas_data  # noqa: PLC0415
+
+        repo, org_id, canvas_id = await self._make_canvas_with_path("../../admin")
+
+        result = await collect_canvas_data(
+            canvas_id=canvas_id, org_id=org_id, claims={}, repo=repo
+        )
+
+        assert "el_p" in result
+        entry = result["el_p"]
+        assert "error" in entry, f"Expected error for '..' path, got: {entry}"
+        assert entry["error"] == "invalid_binding_path", entry
+
+    @pytest.mark.asyncio
+    async def test_single_dotdot_segment_is_rejected(self):
+        """Path that IS exactly '..' is rejected."""
+        from app.dashboards.collect import collect_canvas_data  # noqa: PLC0415
+
+        repo, org_id, canvas_id = await self._make_canvas_with_path("../")
+
+        result = await collect_canvas_data(
+            canvas_id=canvas_id, org_id=org_id, claims={}, repo=repo
+        )
+
+        entry = result.get("el_p", {})
+        assert "error" in entry, f"Expected error for '../' path, got: {entry}"
+        assert entry["error"] == "invalid_binding_path", entry
+
+    @pytest.mark.asyncio
+    async def test_absolute_url_scheme_is_rejected(self):
+        """Path containing a URL scheme ('http://...') is rejected."""
+        from app.dashboards.collect import collect_canvas_data  # noqa: PLC0415
+
+        repo, org_id, canvas_id = await self._make_canvas_with_path(
+            "http://evil.example/steal"
+        )
+
+        result = await collect_canvas_data(
+            canvas_id=canvas_id, org_id=org_id, claims={}, repo=repo
+        )
+
+        entry = result.get("el_p", {})
+        assert "error" in entry, f"Expected error for absolute URL path, got: {entry}"
+        assert entry["error"] == "invalid_binding_path", entry
+
+    @pytest.mark.asyncio
+    async def test_protocol_relative_url_is_rejected(self):
+        """Path starting with '//' (protocol-relative) is rejected."""
+        from app.dashboards.collect import collect_canvas_data  # noqa: PLC0415
+
+        repo, org_id, canvas_id = await self._make_canvas_with_path(
+            "//evil.example/steal"
+        )
+
+        result = await collect_canvas_data(
+            canvas_id=canvas_id, org_id=org_id, claims={}, repo=repo
+        )
+
+        entry = result.get("el_p", {})
+        assert "error" in entry, f"Expected error for protocol-relative path, got: {entry}"
+        assert entry["error"] == "invalid_binding_path", entry
+
+    @pytest.mark.asyncio
+    async def test_valid_relative_path_is_accepted(self):
+        """A normal relative path like '/v1/users' passes validation.
+
+        We stub the HttpJsonConnector so no real HTTP call is made — only the
+        path validation is exercised here; path-merging correctness is covered
+        by test_api_binding_with_path_resolves above.
+        """
+        import pyarrow as pa
+        from app.dashboards.collect import collect_canvas_data  # noqa: PLC0415
+
+        repo, org_id, canvas_id = await self._make_canvas_with_path("/v1/users")
+
+        class _FakeConn:
+            def execute(self, plan):
+                return pa.table({"id": [1]})
+
+            def capabilities(self):
+                return {"predicate_rls": True}
+
+            def close(self):
+                pass
+
+        with patch(
+            "app.connectors.http_json.HttpJsonConnector",
+            return_value=_FakeConn(),
+        ):
+            result = await collect_canvas_data(
+                canvas_id=canvas_id, org_id=org_id, claims={}, repo=repo
+            )
+
+        entry = result.get("el_p", {})
+        assert "error" not in entry, f"Valid path should not error: {entry}"
+        assert entry.get("columns") == ["id"]
+
+    @pytest.mark.asyncio
+    async def test_empty_path_is_accepted(self):
+        """An empty path (binding with no 'path') uses the base URL as-is.
+
+        The validation block is skipped for empty paths so we just verify no
+        rejection error is returned.
+        """
+        import pyarrow as pa
+        from app.dashboards.collect import collect_canvas_data  # noqa: PLC0415
+
+        repo, org_id, canvas_id = await self._make_canvas_with_path("")
+
+        class _FakeConn:
+            def execute(self, plan):
+                return pa.table({"ok": [True]})
+
+            def capabilities(self):
+                return {"predicate_rls": True}
+
+            def close(self):
+                pass
+
+        with patch(
+            "app.connectors.http_json.HttpJsonConnector",
+            return_value=_FakeConn(),
+        ):
+            result = await collect_canvas_data(
+                canvas_id=canvas_id, org_id=org_id, claims={}, repo=repo
+            )
+
+        entry = result.get("el_p", {})
+        assert "error" not in entry, f"Empty path should not error: {entry}"

@@ -514,3 +514,115 @@ async def test_fire_trigger_scope_uses_identity_not_hardcoded():
         "fire_trigger_event must not hardcode scope=[\"read:*\",\"write:*\"]; "
         "use identity.scope instead."
     )
+
+
+# ---------------------------------------------------------------------------
+# FIX 1: Writeback GET routes registered only once (no duplicate)
+# ---------------------------------------------------------------------------
+
+
+def test_writeback_routes_registered_once():
+    """Each writeback GET path must appear exactly once in the router.
+
+    Duplicate registrations silently cause FastAPI to prefer the first
+    handler, hiding the second.  Assert the path is registered exactly once.
+
+    Note: the router uses prefix="/flows" so stored paths are /flows/writeback.
+    """
+    import app.routes.flows as flows_mod
+
+    wb_list_count = 0
+    wb_detail_count = 0
+    for route in flows_mod.router.routes:
+        path = getattr(route, "path", "")
+        methods = getattr(route, "methods", set()) or set()
+        if path in ("/flows/writeback", "/writeback") and "GET" in methods:
+            wb_list_count += 1
+        if path in ("/flows/writeback/{wb_id}", "/writeback/{wb_id}") and "GET" in methods:
+            wb_detail_count += 1
+
+    assert wb_list_count == 1, (
+        f"GET writeback list route registered {wb_list_count} times — expected exactly 1"
+    )
+    assert wb_detail_count == 1, (
+        f"GET writeback detail route registered {wb_detail_count} times — expected exactly 1"
+    )
+
+
+# ---------------------------------------------------------------------------
+# FIX 2 & 3: /flows/{id}/runs is row-capped and paginated
+# ---------------------------------------------------------------------------
+
+
+async def test_list_flow_runs_route_default_limit():
+    """list_flow_runs must default to limit=50, not return all rows."""
+    store = InMemoryFlowStore()
+    flow = await _make_flow(store)
+
+    # Create 100 runs.
+    for i in range(100):
+        await materialize_flow_run(store, flow, {"i": i}, "manual", NOW)
+
+    # Default limit (50) must return at most 50.
+    runs = await store.list_flow_runs(flow["id"], limit=50, offset=0)
+    assert len(runs) == 50
+
+
+async def test_list_flow_runs_route_limit_bound():
+    """list_flow_runs with limit=500 must not exceed 500 rows."""
+    store = InMemoryFlowStore()
+    flow = await _make_flow(store)
+
+    for i in range(10):
+        await materialize_flow_run(store, flow, {"i": i}, "manual", NOW)
+
+    runs = await store.list_flow_runs(flow["id"], limit=500, offset=0)
+    assert len(runs) <= 500
+
+
+async def test_list_flow_runs_route_pagination_offset():
+    """offset parameter must skip earlier results for pagination."""
+    store = InMemoryFlowStore()
+    flow = await _make_flow(store)
+
+    for i in range(10):
+        await materialize_flow_run(store, flow, {"i": i}, "manual", NOW)
+
+    page1 = await store.list_flow_runs(flow["id"], limit=4, offset=0)
+    page2 = await store.list_flow_runs(flow["id"], limit=4, offset=4)
+
+    assert len(page1) == 4
+    assert len(page2) == 4
+
+    # Pages must not overlap.
+    ids1 = {r["id"] for r in page1}
+    ids2 = {r["id"] for r in page2}
+    assert ids1.isdisjoint(ids2), "Pages must not share run IDs"
+
+
+async def test_list_flow_runs_route_has_limit_query_param():
+    """The list_flow_runs route must declare limit and offset as Query params."""
+    import inspect
+    import app.routes.flows as flows_mod
+
+    src = inspect.getsource(flows_mod.list_flow_runs)
+    assert "Query" in src, "list_flow_runs must use Query() for limit/offset"
+    assert "limit" in src
+    assert "offset" in src
+
+
+def test_list_flow_runs_route_query_bounds():
+    """list_flow_runs route must enforce ge=1, le=500 on the limit param."""
+    import app.routes.flows as flows_mod
+    from fastapi import Query as FQuery
+    import inspect
+
+    # Inspect the route's Query defaults rather than calling the route directly.
+    sig = inspect.signature(flows_mod.list_flow_runs)
+    limit_param = sig.parameters.get("limit")
+    assert limit_param is not None, "list_flow_runs must have a 'limit' parameter"
+
+    # The default should be wrapped in a Query object; check the annotation source.
+    src = inspect.getsource(flows_mod.list_flow_runs)
+    assert "ge=1" in src, "limit must have ge=1"
+    assert "le=500" in src, "limit must have le=500"

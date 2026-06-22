@@ -151,7 +151,7 @@ async def run_query_rows(
     connector, connector_owned = await _resolve_connector(registered, org_id, repo, physical_plan)
 
     try:
-        arrow_table = connector.execute(physical_plan)
+        arrow_table = await asyncio.to_thread(connector.execute, physical_plan)
         cap = _ROW_CAP
         if cap > 0 and len(arrow_table) > cap:
             logger.warning(
@@ -476,6 +476,27 @@ async def collect_canvas_data(
                 binding_path: str = binding.get("path") or ""
                 binding_select: str | None = binding.get("select") or None
 
+                # [LOW path-traversal] Validate that binding_path is a safe
+                # relative path before joining it onto the connector base URL.
+                # Reject: URL schemes (contains "://"), protocol-relative URLs
+                # ("//"), and paths containing ".." segments that could escape
+                # the base URL's path hierarchy.
+                if binding_path:
+                    _path_norm = binding_path.strip()
+                    if (
+                        "://" in _path_norm
+                        or _path_norm.startswith("//")
+                        or ".." in _path_norm.split("/")
+                    ):
+                        raise AppError(
+                            "invalid_binding_path",
+                            f"Canvas API binding el_id={el_id!r} has an unsafe path: "
+                            f"{binding_path!r}. Paths must be relative, must not contain "
+                            f"'..' segments, and must not include a URL scheme or '//'. "
+                            "They are joined under the connector's base URL only.",
+                            400,
+                        )
+
                 merged_cfg: dict[str, Any] = dict(base_cfg)
                 if binding_path:
                     base_url: str = str(merged_cfg.get("url") or "").rstrip("/")
@@ -497,7 +518,7 @@ async def collect_canvas_data(
                     api_plan = planner_plan(
                         sql="SELECT *", claims={"policies": policies}, params=[]
                     )
-                    result_table = connector.execute(api_plan)
+                    result_table = await asyncio.to_thread(connector.execute, api_plan)
                     cap = _ROW_CAP
                     if cap > 0 and len(result_table) > cap:
                         logger.warning(

@@ -274,6 +274,8 @@ async def get_provider_data(
     }
 
     # ── Resolve provider data ─────────────────────────────────────────────────
+    # Pass is_embed so resolve_provider_data can skip quota enforcement for
+    # embed/viewer callers (viewers are never metered — invariant).
     tables = await resolve_provider_data(
         board_id=board_id,
         provider_id=provider_id,
@@ -281,6 +283,7 @@ async def get_provider_data(
         org_id=org_id,
         claims=claims,
         repo=repo,
+        is_embed=(identity.kind == "embed"),
     )
 
     # ── Serialise to multi-table IPC stream ───────────────────────────────────

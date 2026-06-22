@@ -380,8 +380,27 @@ def _downstream_claims_with_owner_policies(
         Merged claims dict with ``policies`` filled from the snapshot, OR the
         original *claims* if they already carry ``policies`` (interactive path).
     None
-        When no snapshot exists AND *claims* has no ``policies`` — signals that
-        the downstream trigger must be skipped (fail-closed).
+        When the snapshot **key is absent** AND *claims* has no ``policies`` —
+        signals that the downstream trigger must be skipped (fail-closed for RLS
+        safety).
+
+    Key-presence distinction
+    ------------------------
+    The function distinguishes two semantically different situations:
+
+    1. **Key absent** (``_OWNER_POLICIES_KEY`` not in ``runtime_config``):
+       The upstream flow was created before policy snapshotting was introduced, or
+       the snapshot was never written.  We cannot know what policies should apply,
+       so we fail-closed (return ``None`` → caller skips the trigger).
+
+    2. **Key present but value is empty dict** (``{}``):
+       An admin-created flow where RLS is legitimately disabled (no per-tenant
+       predicates needed).  The empty dict is an *explicit* signal that no
+       row-level filtering applies.  The downstream run is ALLOWED with an empty
+       ``policies`` dict — it must not be dropped.
+
+    This mirrors the behaviour of ``_claims_with_owner_policies`` in runtime.py
+    which uses the same ``key in runtime_config`` check rather than truthiness.
     """
     # Interactive path: caller already supplied policies — leave unchanged.
     if "policies" in claims:
@@ -390,14 +409,18 @@ def _downstream_claims_with_owner_policies(
     # Extract the owner-policy snapshot from the upstream flow's spec.
     spec = (upstream_flow or {}).get("spec")
     runtime_config = spec.get("runtime_config") if isinstance(spec, dict) else None
-    policies = (
-        runtime_config.get(_OWNER_POLICIES_KEY)
-        if isinstance(runtime_config, dict)
-        else None
-    )
 
-    if not isinstance(policies, dict) or not policies:
-        # No snapshot available — fail-closed: return None so the caller skips.
+    # Distinguish key-absent (fail-closed) from key-present-but-empty (admin/no-RLS).
+    if not isinstance(runtime_config, dict) or _OWNER_POLICIES_KEY not in runtime_config:
+        # Snapshot key is absent — fail-closed: return None so the caller skips
+        # the downstream trigger to prevent running with unknown RLS context.
+        return None
+
+    # Key is present; the value may legitimately be an empty dict (admin flow,
+    # no per-tenant RLS).  Accept any dict value, including {}.
+    policies = runtime_config[_OWNER_POLICIES_KEY]
+    if not isinstance(policies, dict):
+        # Malformed snapshot value (not a dict at all) — fail-closed.
         return None
 
     merged = dict(claims)

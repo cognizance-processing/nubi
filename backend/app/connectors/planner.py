@@ -269,8 +269,18 @@ def plan(
     except sqlglot.errors.SqlglotError as exc:
         raise AppError("INVALID_SQL", f"Failed to parse SQL: {exc}", status=400) from exc
 
-    # ── 2. Reject non-SELECT ─────────────────────────────────────────────────
-    if not isinstance(tree, exp.Select):
+    # ── 2. Reject non-SELECT (but allow Union by wrapping it) ───────────────
+    # The metric compiler emits UNION ALL for top_n.other queries.  A bare
+    # exp.Union cannot have WHERE predicates added to it (there is no single
+    # WHERE to inject into), so we wrap it in a SELECT * FROM (...) subquery
+    # first.  RLS predicates then land on the wrapper SELECT, which is correct:
+    # the wrapper filters after the union, equivalent to filtering both arms.
+    # We still reject any non-Select that is NOT a Union (no DML/DDL/etc).
+    if isinstance(tree, exp.Union):
+        tree = exp.select("*").from_(
+            exp.Subquery(this=tree, alias=exp.TableAlias(this=exp.to_identifier("_union_wrapper")))
+        )
+    elif not isinstance(tree, exp.Select):
         raise AppError(
             "UNSUPPORTED_QUERY",
             "Only SELECT statements are supported by the Nubi planner.",
