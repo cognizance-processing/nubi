@@ -55,7 +55,7 @@ from app.auth.verify import VerifiedIdentity
 from app.connectors import plan as planner_plan
 from app.connectors.arrow_io import ipc_stream_from_bytes, table_to_ipc_bytes
 from app.connectors.cache import get_base_scan, get_cache, put_base_scan
-from app.connectors.cache_key import compute_base_scan_key
+from app.connectors.cache_key import compute_base_scan_key, scope_cache_key
 from app.connectors.planner import resolve_named_params
 from app.errors import AppError
 from app.metrics.compile import compile_metric
@@ -755,9 +755,24 @@ async def query_metric(
     except Exception:  # noqa: BLE001 — routing must never break the query path.
         pass
 
-    # ── 6. Cache lookup (per-tenant isolation: RLS claims are in the key) ────
+    # ── 6a. Org attribution (must precede the scoped cache lookup) ──────────
+    # Resolve org_id for quota, metering, and scoped cache key derivation.
+    # SECURITY: the cache key must be scoped by org_id + effective_datastore_id
+    # to prevent cross-tenant collisions when two orgs have policies={} and run
+    # the same metric SQL.  effective_datastore_id is known here (metric binding).
+    repo = get_repo()
+    org_id, org_lookup_error = await _resolve_caller_org(identity, repo)
+
+    effective_datastore_id = metric.datastore_id or None
+
+    # ── 6. Cache lookup (org+datastore-scoped key) ────────────────────────────
+    # SECURITY: use scope_cache_key so two orgs running the same metric SQL with
+    # policies={} produce DIFFERENT cache keys and never share result bytes.
     cache = get_cache()
-    cached_bytes = cache.get(physical_plan.cache_key)
+    _scoped_cache_key = scope_cache_key(
+        physical_plan.cache_key, org_id, effective_datastore_id
+    )
+    cached_bytes = cache.get(_scoped_cache_key)
     if cached_bytes is not None:
         return StreamingResponse(
             ipc_stream_from_bytes(cached_bytes),
@@ -778,10 +793,7 @@ async def query_metric(
     # _base_scan_key computed for future use / observability but NOT used to
     # serve or store results.
 
-    # ── 7. Org attribution + compute quota (mirror /query) ───────────────────
-    repo = get_repo()
-    org_id, org_lookup_error = await _resolve_caller_org(identity, repo)
-
+    # ── 7. Compute quota (mirror /query) ─────────────────────────────────────
     from app.features import enforce_quota as _enforce_quota
 
     await _enforce_quota(org_id, "compute_units", amount=1.0)
@@ -790,7 +802,6 @@ async def query_metric(
     # Honours the metric's bound datastore_id (org-scoped), secret injection,
     # network mode, and the capability-gated RLS refusal (source_unsupported_rls
     # 501). datastore_id=None → the built-in demo connector.
-    effective_datastore_id = metric.datastore_id or None
     connector, conn_kind, net_cleanup = await _build_connector_for_plan(
         physical_plan,
         effective_datastore_id,
@@ -846,7 +857,10 @@ async def query_metric(
     _cache_tags: list[str] = [f"org:{org_id}"]
     if effective_datastore_id:
         _cache_tags.append(f"datastore:{effective_datastore_id}")
-    cache.put(physical_plan.cache_key, full_bytes, tags=_cache_tags)
+    # SECURITY: use _scoped_cache_key (org+datastore-scoped) — never the raw
+    # plan key — so two orgs with identical metric SQL and policies={} cannot
+    # share a cache entry.  _scoped_cache_key was computed before the lookup.
+    cache.put(_scoped_cache_key, full_bytes, tags=_cache_tags)
 
     # NOTE: Base-scan fusion write (BET 2b) is DISABLED.
     # put_base_scan intentionally not called — see cache_key.py for rationale.

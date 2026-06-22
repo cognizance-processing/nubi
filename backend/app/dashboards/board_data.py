@@ -162,7 +162,10 @@ def _provider_cache_key(
 # ---------------------------------------------------------------------------
 
 
-def _tables_to_bytes(tables: dict[str, pa.Table]) -> bytes:
+def _tables_to_bytes(
+    tables: dict[str, pa.Table],
+    max_bytes: int = 0,
+) -> bytes:
     """Serialise *tables* to a simple JSON-framed IPC byte blob.
 
     Format:
@@ -175,6 +178,16 @@ def _tables_to_bytes(tables: dict[str, pa.Table]) -> bytes:
 
     This format is trivially parseable without Arrow on the other end and
     survives the cache round-trip as raw bytes.
+
+    Parameters
+    ----------
+    max_bytes:
+        When > 0, raises ``AppError("provider_result_too_large", 422)`` as soon
+        as the running serialised total would exceed this limit — BEFORE
+        serialising further tables.  This prevents materialising GiBs of Arrow
+        IPC when a provider returns many large tables.  Pass
+        ``_PROVIDER_MAX_BYTES`` here so the cap fires early rather than after
+        full materialisation.
     """
     import io
     import struct
@@ -182,17 +195,28 @@ def _tables_to_bytes(tables: dict[str, pa.Table]) -> bytes:
     buf = io.BytesIO()
     n = len(tables)
     buf.write(struct.pack(">I", n))
+    running_bytes = 4  # the count header we just wrote
     for name, tbl in tables.items():
         name_b = name.encode("utf-8")
-        buf.write(struct.pack(">I", len(name_b)))
-        buf.write(name_b)
         ipc_buf = io.BytesIO()
         writer = pa.ipc.new_stream(ipc_buf, tbl.schema)
         writer.write_table(tbl)
         writer.close()
         ipc_bytes = ipc_buf.getvalue()
+        # 4 (name_len) + len(name_b) + 4 (ipc_len) + len(ipc_bytes)
+        frame_size = 4 + len(name_b) + 4 + len(ipc_bytes)
+        if max_bytes > 0 and running_bytes + frame_size > max_bytes:
+            raise AppError(
+                "provider_result_too_large",
+                f"Provider serialised result exceeds {max_bytes:,} bytes limit "
+                f"(set NUBI_PROVIDER_MAX_BYTES to raise the limit).",
+                422,
+            )
+        buf.write(struct.pack(">I", len(name_b)))
+        buf.write(name_b)
         buf.write(struct.pack(">I", len(ipc_bytes)))
         buf.write(ipc_bytes)
+        running_bytes += frame_size
     return buf.getvalue()
 
 
@@ -333,6 +357,20 @@ async def _resolve_flow_provider(
                                if not k.startswith("__")}
                 if scalar_cols:
                     tables[key] = pa.table(scalar_cols)
+
+        # [MED resource] Apply per-table row cap — mirrors the inline path.
+        # Each flow result table is row-capped here so downstream serialisation
+        # never materialises unbounded Arrow IPC from a single oversized table.
+        if key in tables and _ROW_CAP > 0 and tables[key].num_rows > _ROW_CAP:
+            logger.warning(
+                "flow provider %r result %r: truncating %d rows to %d "
+                "(set NUBI_COLLECT_ROW_CAP to raise limit)",
+                provider.id,
+                key,
+                tables[key].num_rows,
+                _ROW_CAP,
+            )
+            tables[key] = tables[key].slice(0, _ROW_CAP)
 
     # Fill in empty tables for declared results that produced nothing.
     for r in provider.results:
@@ -647,19 +685,11 @@ async def resolve_provider_data(
         )
 
     # ── Cache store ──────────────────────────────────────────────────────────
+    # _tables_to_bytes raises AppError("provider_result_too_large", 422) EARLY
+    # — as soon as the running serialised total would exceed _PROVIDER_MAX_BYTES
+    # — so we never fully materialise an oversized payload before the check fires.
     try:
-        serialised = _tables_to_bytes(tables)
-        # [MED resource] Byte-size cap: reject oversized serialised payloads
-        # before writing them to the cache.
-        if _PROVIDER_MAX_BYTES > 0 and len(serialised) > _PROVIDER_MAX_BYTES:
-            raise AppError(
-                "provider_result_too_large",
-                f"Provider {provider_id!r} serialised result is "
-                f"{len(serialised):,} bytes; maximum allowed is "
-                f"{_PROVIDER_MAX_BYTES:,} bytes "
-                f"(set NUBI_PROVIDER_MAX_BYTES to raise the limit).",
-                422,
-            )
+        serialised = _tables_to_bytes(tables, max_bytes=_PROVIDER_MAX_BYTES)
         put_base_scan(
             cache_key,
             serialised,

@@ -309,6 +309,129 @@ async def test_approval_edit_replaces_rows_then_commits():
 
 
 # ---------------------------------------------------------------------------
+# 7b. Edit without rows_override is rejected (LOW fix)
+# ---------------------------------------------------------------------------
+
+
+async def test_edit_without_rows_override_is_rejected():
+    """approve_writeback(action='edit') MUST be rejected with 400 when
+    rows_override is absent.  An edit that provides no rows is semantically
+    identical to 'approve' but would mislead the audit trail — the caller
+    must explicitly pass rows_override or switch to action='approve'.
+    """
+    store = InMemoryWritebackStore()
+
+    record = await submit_writeback(
+        org_id="orgA",
+        idempotency_key=_idem(),
+        rows=[{"id": 1, "value": "original"}],
+        target=_target(),
+        mode="append",
+        created_by="user1",
+        approval_required=True,
+        connector_write_fn=_noop_write,
+        store=store,
+    )
+    assert record["state"] == "pending_approval"
+
+    with pytest.raises(AppError) as exc_info:
+        await approve_writeback(
+            org_id="orgA",
+            wb_id=record["id"],
+            action="edit",
+            approver_id="approver1",
+            connector_write_fn=_noop_write,
+            store=store,
+            rows_override=None,  # explicitly absent
+        )
+    err = exc_info.value
+    assert err.status == 400
+    assert err.code == "rows_override_required"
+
+
+async def test_edit_with_rows_override_commits_new_rows():
+    """approve_writeback(action='edit', rows_override=...) commits the new
+    rows (not the original ones) and transitions to 'committed'.
+    """
+    store = InMemoryWritebackStore()
+    written: list[list] = []
+
+    def write_fn(r, t, m):
+        written.append(list(r))
+        return {"rows_written": len(r)}
+
+    record = await submit_writeback(
+        org_id="orgA",
+        idempotency_key=_idem(),
+        rows=[{"id": 1, "value": "original"}],
+        target=_target(),
+        mode="append",
+        created_by="user1",
+        approval_required=True,
+        connector_write_fn=write_fn,
+        store=store,
+    )
+
+    new_rows = [{"id": 1, "value": "corrected"}, {"id": 2, "value": "added"}]
+    committed = await approve_writeback(
+        org_id="orgA",
+        wb_id=record["id"],
+        action="edit",
+        approver_id="approver1",
+        connector_write_fn=write_fn,
+        store=store,
+        rows_override=new_rows,
+    )
+
+    assert committed["state"] == "committed"
+    # connector must have been called with the NEW rows only
+    assert len(written) == 1
+    assert written[0] == new_rows
+    # record stores the new rows
+    assert committed["rows"] == new_rows
+
+
+async def test_approve_commits_original_rows():
+    """approve_writeback(action='approve') commits the original rows exactly
+    as submitted — rows_override is not required and must not alter the rows.
+    """
+    store = InMemoryWritebackStore()
+    written: list[list] = []
+
+    original_rows = [{"id": 10, "value": "original"}]
+
+    def write_fn(r, t, m):
+        written.append(list(r))
+        return {"rows_written": len(r)}
+
+    record = await submit_writeback(
+        org_id="orgA",
+        idempotency_key=_idem(),
+        rows=original_rows,
+        target=_target(),
+        mode="append",
+        created_by="user1",
+        approval_required=True,
+        connector_write_fn=write_fn,
+        store=store,
+    )
+
+    committed = await approve_writeback(
+        org_id="orgA",
+        wb_id=record["id"],
+        action="approve",
+        approver_id="approver1",
+        connector_write_fn=write_fn,
+        store=store,
+        # no rows_override — should use original
+    )
+
+    assert committed["state"] == "committed"
+    assert len(written) == 1
+    assert written[0] == original_rows
+
+
+# ---------------------------------------------------------------------------
 # 8. Cross-org isolation: org B cannot see org A's write-back
 # ---------------------------------------------------------------------------
 
@@ -1097,3 +1220,117 @@ def test_enforce_approval_policy_unit():
         assert flows_module._enforce_approval_policy(True) is True
     finally:
         flows_module._WRITEBACK_REQUIRE_APPROVAL = original
+
+
+# ---------------------------------------------------------------------------
+# 25. [LOW authz] POST /flows/writeback and POST /flows/writeback/preview must
+#     carry require_writer_default as a FastAPI dependency (defense-in-depth).
+#
+# The routes also have an in-handler _require_writer_role check, but the
+# dependency gate is the canonical guard that prevents viewers from reaching
+# any part of the handler at all — consistent with all other mutating routes
+# in this file.
+# ---------------------------------------------------------------------------
+
+
+def test_writeback_post_has_require_writer_default_dependency():
+    """POST /flows/writeback must declare require_writer_default as a dependency.
+
+    This is the defense-in-depth gate that runs before any handler code,
+    consistent with every other mutating route in the file.  Without it a
+    viewer can reach the in-handler _require_writer_role check, which is a
+    single point of failure.
+    """
+    import app.routes.flows as flows_mod
+    from app.auth.roles import require_writer_default
+
+    submit_route = None
+    for route in flows_mod.router.routes:
+        path = getattr(route, "path", "")
+        methods = getattr(route, "methods", set()) or set()
+        # Match /writeback exactly (not /writeback/preview or /writeback/{id})
+        if path in ("/flows/writeback", "/writeback") and "POST" in methods:
+            # Prefer the non-preview route (status_code 201)
+            if getattr(route, "status_code", None) == 201:
+                submit_route = route
+                break
+
+    assert submit_route is not None, "POST /writeback route (status 201) not found"
+    dep_callables = [d.dependency for d in (submit_route.dependencies or [])]
+    assert require_writer_default in dep_callables, (
+        "POST /flows/writeback must have require_writer_default in dependencies "
+        "— viewers can reach the handler and attempt writes!"
+    )
+
+
+def test_writeback_preview_post_has_require_writer_default_dependency():
+    """POST /flows/writeback/preview must declare require_writer_default as a dependency."""
+    import app.routes.flows as flows_mod
+    from app.auth.roles import require_writer_default
+
+    preview_route = None
+    for route in flows_mod.router.routes:
+        path = getattr(route, "path", "")
+        methods = getattr(route, "methods", set()) or set()
+        if path in ("/flows/writeback/preview", "/writeback/preview") and "POST" in methods:
+            preview_route = route
+            break
+
+    assert preview_route is not None, "POST /writeback/preview route not found"
+    dep_callables = [d.dependency for d in (preview_route.dependencies or [])]
+    assert require_writer_default in dep_callables, (
+        "POST /flows/writeback/preview must have require_writer_default in dependencies"
+    )
+
+
+@pytest.mark.asyncio
+async def test_route_writeback_preview_viewer_forbidden(wb_client):
+    """POST /flows/writeback/preview must return 403 for viewers (dependency gate).
+
+    The require_writer_default dependency must fire before the handler and
+    block viewers — this is the defense-in-depth guard required by the audit.
+    """
+    client, alice_id, bob_id, carol_id, org_id, wb_store, repo = wb_client
+
+    resp = await client.post(
+        "/api/v1/flows/writeback/preview",
+        json={
+            "idempotency_key": _idem(),
+            "rows": [{"id": 1}],
+            "target": {"connector_id": "c1", "object": "raw.t"},
+            "mode": "append",
+            "approval_required": False,
+            "dry_run": False,
+            "meta": {},
+        },
+        headers=_auth_headers(carol_id),  # carol is viewer
+    )
+    assert resp.status_code == 403, (
+        f"Viewer must be blocked at the dependency gate (expected 403, got {resp.status_code})"
+    )
+
+
+@pytest.mark.asyncio
+async def test_route_writeback_submit_viewer_blocked_by_dependency(wb_client):
+    """POST /flows/writeback must return 403 for viewers via the dependency gate.
+
+    Verifies that the require_writer_default *dependency* (not just the
+    in-handler _require_writer_role check) is what blocks the viewer — the
+    response must arrive before any handler body executes.
+    """
+    client, alice_id, bob_id, carol_id, org_id, wb_store, repo = wb_client
+
+    resp = await client.post(
+        "/api/v1/flows/writeback",
+        json={
+            "idempotency_key": _idem(),
+            "rows": [{"id": 42}],
+            "target": {"connector_id": "c1", "object": "raw.t"},
+            "mode": "append",
+            "approval_required": False,
+            "dry_run": False,
+            "meta": {},
+        },
+        headers=_auth_headers(carol_id),  # carol is viewer
+    )
+    assert resp.status_code == 403

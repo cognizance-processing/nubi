@@ -379,9 +379,11 @@ _CSS_URL_RE = re.compile(
     re.IGNORECASE,
 )
 
-# Safe data: sub-schemes allowed inside url() — only inline image types.
+# Safe data: sub-schemes allowed inside url() — only safe raster image types.
+# svg+xml is intentionally excluded: inline SVG can carry <script> payloads,
+# matching the HTML validator's _is_safe_data_uri logic which also blocks svg.
 _SAFE_DATA_MIME_RE = re.compile(
-    r"^data:image/(png|jpeg|gif|webp|svg\+xml)\s*;",
+    r"^data:image/(png|jpeg|gif|webp)\s*;",
     re.IGNORECASE,
 )
 

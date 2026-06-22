@@ -164,6 +164,8 @@ async def run_query_rows(
     org_id: str,
     repo: Repo,
     policies: dict[str, Any],
+    *,
+    ds_cache: dict[str, Any] | None = None,
 ) -> tuple[list[str], list[list[Any]]]:
     """Run a registered query and return ``(columns, rows)``.
 
@@ -174,6 +176,15 @@ async def run_query_rows(
         string-concatenated);
       * a datastore-bound query executes against its datastore via the
         connector registry, otherwise the built-in demo DuckDB connector runs.
+
+    Parameters
+    ----------
+    ds_cache:
+        Optional request-scoped ``{ds_id: row}`` mapping.  Forwarded to
+        :func:`_resolve_connector` so that a board/canvas collector can
+        pre-fetch all referenced datastores once and avoid N identical
+        ``repo.get("datastores", …)`` round-trips for N widgets that share a
+        single datastore.
 
     Raises ``AppError`` with a descriptive code on any failure so the caller can
     decide whether to skip the widget or surface the error.
@@ -197,7 +208,9 @@ async def run_query_rows(
 
     physical_plan = planner_plan(sql=sql, claims={"policies": policies}, params=params)
 
-    connector, connector_owned = await _resolve_connector(registered, org_id, repo, physical_plan)
+    connector, connector_owned = await _resolve_connector(
+        registered, org_id, repo, physical_plan, ds_cache=ds_cache
+    )
 
     try:
         # [HIGH concurrency] Use _execute_with_lock so at most one thread
@@ -230,7 +243,12 @@ async def run_query_rows(
 
 
 async def _resolve_connector(
-    registered: Any, org_id: str, repo: Repo, physical_plan: Any
+    registered: Any,
+    org_id: str,
+    repo: Repo,
+    physical_plan: Any,
+    *,
+    ds_cache: dict[str, Any] | None = None,
 ) -> tuple[Any, bool]:
     """Pick the connector for a registered query (datastore-bound or demo).
 
@@ -239,6 +257,14 @@ async def _resolve_connector(
     Secret injection and network bridges are intentionally out of scope here —
     if a datastore needs them, the connector construction will raise and the
     caller skips that widget (best-effort collection).
+
+    Parameters
+    ----------
+    ds_cache:
+        Optional request-scoped ``{ds_id: row}`` mapping pre-fetched by the
+        board/canvas collector.  When provided, a datastore lookup is served
+        from the cache without an extra repo round-trip.  The cache is
+        populated by :func:`_prefetch_datastores`.
 
     Returns
     -------
@@ -255,7 +281,11 @@ async def _resolve_connector(
 
         return _get_demo_connector(), False  # singleton — caller must not close
 
-    ds = await repo.get("datastores", org_id, datastore_id)
+    # Use the pre-fetched cache when available to avoid an extra repo round-trip.
+    if ds_cache is not None and datastore_id in ds_cache:
+        ds = ds_cache[datastore_id]
+    else:
+        ds = await repo.get("datastores", org_id, datastore_id)
     if ds is None:
         raise AppError("datastore_not_found", f"Datastore {datastore_id!r} not found.", 404)
 
@@ -299,6 +329,38 @@ async def _resolve_connector(
             501,
         )
     return connector, True
+
+
+# ---------------------------------------------------------------------------
+# Datastore pre-fetch helper (N+1 elimination)
+# ---------------------------------------------------------------------------
+
+
+async def _prefetch_datastores(
+    ds_ids: set[str], org_id: str, repo: Repo
+) -> dict[str, Any]:
+    """Fetch *ds_ids* in a single ``asyncio.gather`` and return a cache dict.
+
+    Returns a ``{ds_id: row}`` mapping for all datastore ids that were found.
+    Ids that resolve to ``None`` (not found / cross-org) are omitted from the
+    cache so that downstream code falls through to the normal
+    ``datastore_not_found`` error path inside :func:`_resolve_connector`.
+
+    This is called once at the start of :func:`collect_board_data` and
+    :func:`collect_canvas_data` to eliminate N identical ``repo.get`` calls
+    when N widgets/bindings share the same datastore.
+    """
+    if not ds_ids:
+        return {}
+
+    results = await asyncio.gather(
+        *(repo.get("datastores", org_id, ds_id) for ds_id in ds_ids)
+    )
+    return {
+        ds_id: row
+        for ds_id, row in zip(ds_ids, results)
+        if row is not None
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -371,10 +433,25 @@ async def collect_board_data(
     # RLS comes from the verified token's policies claim only.
     policies: dict[str, Any] = dict((claims or {}).get("policies") or {})
 
+    # Pre-fetch the unique datastores referenced by all widget queries in one
+    # asyncio.gather so N widgets sharing one datastore cost exactly 1 lookup,
+    # not N.  We resolve query registrations to find their datastore_id first.
+    registry = get_query_registry()
+    unique_ds_ids: set[str] = set()
+    for t in targets:
+        reg = registry.get(t["query_id"])
+        if reg is not None:
+            ds_id = getattr(reg, "datastore_id", None)
+            if ds_id:
+                unique_ds_ids.add(ds_id)
+    ds_cache = await _prefetch_datastores(unique_ds_ids, org_id, repo)
+
     async def _fetch_one(t: dict[str, str]) -> dict[str, Any]:
         entry: dict[str, Any] = {"widget_id": t["widget_id"], "query_id": t["query_id"]}
         try:
-            columns, rows = await run_query_rows(t["query_id"], org_id, repo, policies)
+            columns, rows = await run_query_rows(
+                t["query_id"], org_id, repo, policies, ds_cache=ds_cache
+            )
             entry["columns"] = columns
             entry["rows"] = rows
         except AppError as exc:
@@ -469,13 +546,39 @@ async def collect_canvas_data(
     # RLS comes from the verified token's policies claim only.
     policies: dict[str, Any] = dict((claims or {}).get("policies") or {})
 
+    # Pre-fetch the unique datastores referenced by all bindings in one
+    # asyncio.gather so N bindings sharing one datastore cost exactly 1 lookup.
+    # "api" bindings carry the datastore id directly (connector_id); "query"
+    # bindings need a registry lookup to find their datastore_id.
+    registry = get_query_registry()
+    unique_ds_ids: set[str] = set()
+    for _el_id, binding in bindings_raw.items():
+        kind = binding.get("kind")
+        if kind == "api":
+            cid = binding.get("connector_id") or ""
+            if cid:
+                unique_ds_ids.add(cid)
+        elif kind in ("query", "metric"):
+            qid = binding.get("query_id") or (
+                # metric bindings back onto queries via source_query_id
+                binding.get("metric_id") or ""
+            )
+            reg = registry.get(qid) if qid else None
+            if reg is not None:
+                ds_id = getattr(reg, "datastore_id", None)
+                if ds_id:
+                    unique_ds_ids.add(ds_id)
+    ds_cache = await _prefetch_datastores(unique_ds_ids, org_id, repo)
+
     async def _fetch_binding(el_id: str, binding: dict[str, Any]) -> dict[str, Any]:
         entry: dict[str, Any] = {"el_id": el_id}
         kind = binding.get("kind")
         try:
             if kind == "query":
                 query_id = binding.get("query_id") or ""
-                columns, rows = await run_query_rows(query_id, org_id, repo, policies)
+                columns, rows = await run_query_rows(
+                    query_id, org_id, repo, policies, ds_cache=ds_cache
+                )
                 entry["columns"] = columns
                 entry["rows"] = rows
 
@@ -496,7 +599,7 @@ async def collect_canvas_data(
                     # the metric definition (the source query_id).
                     source_query_id = getattr(mdef, "query_id", None) or metric_id
                     columns, rows = await run_query_rows(
-                        source_query_id, org_id, repo, policies
+                        source_query_id, org_id, repo, policies, ds_cache=ds_cache
                     )
                     entry["columns"] = columns
                     entry["rows"] = rows
@@ -515,7 +618,11 @@ async def collect_canvas_data(
                 from app.connectors import plan as planner_plan  # noqa: PLC0415
                 from app.connectors.http_json import HttpJsonConnector  # noqa: PLC0415
 
-                ds = await repo.get("datastores", org_id, connector_id)
+                # Use the pre-fetched cache to avoid a per-binding repo round-trip.
+                if ds_cache is not None and connector_id in ds_cache:
+                    ds = ds_cache[connector_id]
+                else:
+                    ds = await repo.get("datastores", org_id, connector_id)
                 if ds is None:
                     raise AppError(
                         "datastore_not_found",

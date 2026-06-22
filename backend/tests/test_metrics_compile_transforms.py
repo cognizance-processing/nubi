@@ -4427,3 +4427,127 @@ def test_unary_minus_denominator_divide_guard_executes_in_duckdb() -> None:
     assert by_grp["X"][idx["r"]] is None, by_grp["X"]
     # Y: 10 / -5 == -2.0.
     assert by_grp["Y"][idx["r"]] == -2.0, by_grp["Y"]
+
+
+# ---------------------------------------------------------------------------
+# LOW-severity edge fixes: QUALIFY/LIMIT interaction + per-tenant truncation
+#
+# HARD RULE: through plan() + execute on in-memory DuckDB asserting RESULTS.
+# ---------------------------------------------------------------------------
+
+
+def test_top_n_no_grain_exact_n_rows_with_default_limit_present() -> None:
+    """[LOW #1] No-time-grain top_n=N returns EXACTLY N rows (N+ties), and the
+    bare default outer LIMIT does NOT truncate the QUALIFY result.
+
+    QUALIFY RANK() <= N is logically applied BEFORE the outer LIMIT in DuckDB,
+    so the top-N is selected first and only then capped.  With 10 candidate
+    rows and N=3 we must get exactly 3 rows even though the compiled SQL also
+    carries the _DEFAULT_LIMIT outer cap.
+    """
+    con = _duckdb_conn()
+    con.execute("CREATE TABLE tn_nograin (region VARCHAR, amount DOUBLE)")
+    con.executemany(
+        "INSERT INTO tn_nograin VALUES (?, ?)",
+        [(f"r{i}", float((i + 1) * 100)) for i in range(10)],
+    )
+    m = MetricDefinition(
+        id="tn_nograin",
+        name="TN NoGrain",
+        measure=Measure(name="revenue", agg="sum", expr="amount"),
+        base_table="tn_nograin",
+        dimensions=(Dimension(name="region"),),
+    )
+    mq = MetricQuery(
+        metric_id="tn_nograin",
+        dimensions=("region",),
+        top_n=TopN(dimension="region", n=3, measure="revenue", order="desc"),
+        # NOTE: limit is None → the compiler applies the default outer LIMIT.
+    )
+    sql, _ = compile_metric(m, mq)
+    up = sql.upper()
+    # Sanity: the default cap is present AND it is >= N (never truncates top-N).
+    assert "QUALIFY" in up
+    assert "LIMIT" in up
+    rows = _plan_and_run(sql, con, claims={})
+    # Exactly N=3 rows — the top three by revenue (r9, r8, r7).
+    assert len(rows) == 3, f"Expected exactly 3 top-N rows, got {len(rows)}: {rows}"
+    regions = {r[0] for r in rows}
+    assert regions == {"r9", "r8", "r7"}, f"Wrong top-N membership: {regions}"
+
+
+def test_top_n_no_grain_not_truncated_when_default_limit_below_n(monkeypatch) -> None:
+    """[LOW #1] Even if a deployment lowers NUBI_METRIC_DEFAULT_LIMIT BELOW N,
+    the compiler floors the effective default LIMIT at N so the QUALIFY top-N
+    result is never silently truncated by the default cap.
+    """
+    import app.metrics.compile as compile_mod
+
+    # Force a pathological default limit (2) that is smaller than N (3).
+    monkeypatch.setattr(compile_mod, "_DEFAULT_LIMIT", 2)
+
+    con = _duckdb_conn()
+    con.execute("CREATE TABLE tn_lowlim (region VARCHAR, amount DOUBLE)")
+    con.executemany(
+        "INSERT INTO tn_lowlim VALUES (?, ?)",
+        [(f"r{i}", float((i + 1) * 100)) for i in range(10)],
+    )
+    m = MetricDefinition(
+        id="tn_lowlim",
+        name="TN LowLim",
+        measure=Measure(name="revenue", agg="sum", expr="amount"),
+        base_table="tn_lowlim",
+        dimensions=(Dimension(name="region"),),
+    )
+    mq = MetricQuery(
+        metric_id="tn_lowlim",
+        dimensions=("region",),
+        top_n=TopN(dimension="region", n=3, measure="revenue", order="desc"),
+    )
+    sql, _ = compile_metric(m, mq)
+    # The emitted LIMIT must be floored at N (3), NOT the pathological default (2).
+    assert "LIMIT 3" in sql.upper(), f"Default LIMIT not floored at N: {sql}"
+    rows = _plan_and_run(sql, con, claims={})
+    assert len(rows) == 3, f"Top-N truncated by default LIMIT: {rows}"
+
+
+def test_single_tenant_request_returns_full_top_n_through_plan() -> None:
+    """[LOW #2] A single-tenant request (RLS injected by plan()) returns its
+    FULL per-tenant top-N — the default outer LIMIT does not starve the tenant.
+
+    Two tenants each have 5 regions.  The query asks top_n=4 with no grain.
+    plan() injects WHERE org_id = <claim>, scoping the request to ONE tenant
+    BEFORE the LIMIT applies, so we get exactly that tenant's top 4.
+    """
+    con = _duckdb_conn()
+    con.execute("CREATE TABLE tn_multi (org_id VARCHAR, region VARCHAR, amount DOUBLE)")
+    rows = []
+    for org in ("orgA", "orgB"):
+        for i in range(5):
+            rows.append((org, f"{org}_r{i}", float((i + 1) * 10)))
+    con.executemany("INSERT INTO tn_multi VALUES (?, ?, ?)", rows)
+    m = MetricDefinition(
+        id="tn_multi",
+        name="TN Multi",
+        measure=Measure(name="revenue", agg="sum", expr="amount"),
+        base_table="tn_multi",
+        dimensions=(Dimension(name="region"),),
+        rls_keys=("org_id",),
+    )
+    mq = MetricQuery(
+        metric_id="tn_multi",
+        dimensions=("region",),
+        top_n=TopN(dimension="region", n=4, measure="revenue", order="desc"),
+    )
+    sql, _ = compile_metric(m, mq)
+    claims = {"policies": {"org_id": "orgA"}}
+    p = plan(sql, claims=claims, dialect="duckdb")
+    # RLS scopes to one tenant before the LIMIT.
+    assert "org_id" in p.sql.lower()
+    result = con.execute(p.sql).fetchall()
+    # Exactly orgA's top 4 regions (r4..r1), none from orgB.
+    region_idx = [d[0] for d in con.description].index("region")
+    regions = {r[region_idx] for r in result}
+    assert len(result) == 4, f"Single-tenant top-N not full: {result}"
+    assert regions == {"orgA_r4", "orgA_r3", "orgA_r2", "orgA_r1"}, regions
+    assert all(r.startswith("orgA_") for r in regions), f"Cross-tenant leak: {regions}"

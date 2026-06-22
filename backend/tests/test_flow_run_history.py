@@ -626,3 +626,81 @@ def test_list_flow_runs_route_query_bounds():
     src = inspect.getsource(flows_mod.list_flow_runs)
     assert "ge=1" in src, "limit must have ge=1"
     assert "le=500" in src, "limit must have le=500"
+
+
+# ---------------------------------------------------------------------------
+# FIX [MED resource]: task-log endpoint must cap + truncate oversized logs
+# ---------------------------------------------------------------------------
+
+
+def test_cap_task_logs_under_limit_not_truncated():
+    """Logs under both caps must be returned intact with truncated=False."""
+    import app.routes.flows as flows_mod
+
+    lines = [f"line {i}" for i in range(10)]
+    capped, truncated = flows_mod._cap_task_logs(lines, max_lines=100, max_bytes=1024 * 1024)
+    assert capped == lines
+    assert truncated is False
+
+
+def test_cap_task_logs_line_limit_truncates():
+    """Logs exceeding max_lines must be truncated with truncated=True."""
+    import app.routes.flows as flows_mod
+
+    lines = [f"line {i}" for i in range(50)]
+    capped, truncated = flows_mod._cap_task_logs(lines, max_lines=20, max_bytes=1024 * 1024)
+    assert len(capped) == 20
+    assert truncated is True
+    assert capped == lines[:20]
+
+
+def test_cap_task_logs_byte_limit_truncates():
+    """Logs exceeding max_bytes must be truncated with truncated=True."""
+    import app.routes.flows as flows_mod
+
+    # Each line is 100 bytes; byte cap is 250 bytes → only 2 lines fit.
+    lines = ["x" * 100 for _ in range(10)]
+    capped, truncated = flows_mod._cap_task_logs(lines, max_lines=1000, max_bytes=250)
+    assert len(capped) == 2
+    assert truncated is True
+
+
+def test_cap_task_logs_empty_logs_not_truncated():
+    """Empty log list must return empty list with truncated=False."""
+    import app.routes.flows as flows_mod
+
+    capped, truncated = flows_mod._cap_task_logs([])
+    assert capped == []
+    assert truncated is False
+
+
+def test_cap_task_logs_exactly_at_line_limit_not_truncated():
+    """Logs exactly at max_lines must NOT be flagged as truncated."""
+    import app.routes.flows as flows_mod
+
+    lines = [f"line {i}" for i in range(10)]
+    capped, truncated = flows_mod._cap_task_logs(lines, max_lines=10, max_bytes=1024 * 1024)
+    assert len(capped) == 10
+    assert truncated is False
+
+
+def test_get_task_run_logs_response_has_truncated_field():
+    """get_task_run_logs must return a 'truncated' field in its response."""
+    import inspect
+    import app.routes.flows as flows_mod
+
+    src = inspect.getsource(flows_mod.get_task_run_logs)
+    assert '"truncated"' in src or "'truncated'" in src, (
+        "get_task_run_logs response must include a 'truncated' field"
+    )
+
+
+def test_get_task_run_logs_response_has_total_log_lines_field():
+    """get_task_run_logs must return 'total_log_lines' so callers know full extent."""
+    import inspect
+    import app.routes.flows as flows_mod
+
+    src = inspect.getsource(flows_mod.get_task_run_logs)
+    assert "total_log_lines" in src, (
+        "get_task_run_logs must include 'total_log_lines' in response"
+    )

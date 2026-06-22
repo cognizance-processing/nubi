@@ -1562,7 +1562,7 @@ class TestCanvasCapRegression:
 
         call_count = 0
 
-        async def _mock_run_query_rows(query_id, org_id, repo, policies):
+        async def _mock_run_query_rows(query_id, org_id, repo, policies, **_kwargs):
             nonlocal call_count
             call_count += 1
             return (["v"], [[call_count]])

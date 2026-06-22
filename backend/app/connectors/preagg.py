@@ -40,9 +40,30 @@ RollupRegistry / get_registry()
 
 from __future__ import annotations
 
-from collections import Counter
+import os
+from collections import Counter, OrderedDict
 from dataclasses import asdict, dataclass, field
 from typing import Any
+
+# ---------------------------------------------------------------------------
+# Registry size cap (env-overridable).
+# ---------------------------------------------------------------------------
+
+_DEFAULT_REGISTRY_MAX_ENTRIES = 1_000
+
+
+def _registry_max_entries() -> int:
+    """Return the max number of :class:`BuiltRollup` entries the registry keeps.
+
+    Reads ``NUBI_ROLLUP_REGISTRY_MAX`` from the environment; falls back to
+    :data:`_DEFAULT_REGISTRY_MAX_ENTRIES` (1000 entries).
+    """
+    raw = os.environ.get("NUBI_ROLLUP_REGISTRY_MAX", "")
+    try:
+        v = int(raw) if raw.strip() else _DEFAULT_REGISTRY_MAX_ENTRIES
+        return max(1, v)  # always keep at least 1
+    except ValueError:
+        return _DEFAULT_REGISTRY_MAX_ENTRIES
 
 from app.connectors.query_log import (
     QueryLog,
@@ -333,11 +354,27 @@ class RollupRegistry:
     - :meth:`lookup` — legacy exact ``groupby_sig`` match (M2-C compatibility).
     - :meth:`candidates_for_table` — structured superset routing: return all
       built rollups for a base table so the router can pick a sound one.
+
+    Size cap / LRU eviction
+    -----------------------
+    The registry uses an :class:`~collections.OrderedDict` to track
+    least-recently-used order.  When the number of entries exceeds
+    ``max_entries`` the oldest (least-recently-used) entry is evicted so the
+    registry cannot grow without bound in a long-running process.
+
+    ``max_entries`` defaults to :func:`_registry_max_entries` (which reads
+    ``NUBI_ROLLUP_REGISTRY_MAX`` from the environment, falling back to
+    :data:`_DEFAULT_REGISTRY_MAX_ENTRIES` = 1000).
     """
 
-    def __init__(self) -> None:
+    def __init__(self, max_entries: int | None = None) -> None:
         self._by_sig: dict[str, str] = {}  # legacy: sig -> table name
-        self._rollups: dict[str, BuiltRollup] = {}  # rollup_id -> BuiltRollup
+        # OrderedDict gives O(1) move-to-end (LRU touch) and O(1) popitem(last=False)
+        # (evict oldest).
+        self._rollups: OrderedDict[str, BuiltRollup] = OrderedDict()
+        self._max_entries: int = (
+            max_entries if max_entries is not None else _registry_max_entries()
+        )
 
     # ── Legacy sig API (kept for existing tests / exact-match path) ──────────
 
@@ -356,8 +393,24 @@ class RollupRegistry:
     # ── Structured rollup API (superset routing) ────────────────────────────
 
     def add_rollup(self, rollup: BuiltRollup) -> None:
-        """Register a built rollup (also indexes its legacy sig if present)."""
-        self._rollups[rollup.rollup_id] = rollup
+        """Register a built rollup (also indexes its legacy sig if present).
+
+        If the entry already exists it is refreshed (moved to most-recently-used
+        position).  When the registry is at capacity the least-recently-used
+        entry is evicted first (LRU eviction).
+        """
+        if rollup.rollup_id in self._rollups:
+            # Refresh position — move to end (most-recently-used).
+            self._rollups.move_to_end(rollup.rollup_id)
+            self._rollups[rollup.rollup_id] = rollup
+        else:
+            # Evict the oldest entry if we are at (or over) the cap.
+            while len(self._rollups) >= self._max_entries:
+                evicted_id, evicted = self._rollups.popitem(last=False)
+                # Clean up the legacy sig index for the evicted entry.
+                if evicted.rewrite_sig and self._by_sig.get(evicted.rewrite_sig) == evicted.table:
+                    del self._by_sig[evicted.rewrite_sig]
+            self._rollups[rollup.rollup_id] = rollup
         if rollup.rewrite_sig:
             self._by_sig[rollup.rewrite_sig] = rollup.table
 
@@ -389,13 +442,22 @@ class RollupRegistry:
         return list(self._rollups.values())
 
     def get_rollup(self, rollup_id: str) -> BuiltRollup | None:
-        return self._rollups.get(rollup_id)
+        """Return the rollup by id and mark it as recently used."""
+        r = self._rollups.get(rollup_id)
+        if r is not None:
+            self._rollups.move_to_end(rollup_id)
+        return r
 
     def record_hit(self, rollup_id: str) -> None:
-        """Increment the routed-query (HIT) counter for *rollup_id*."""
+        """Increment the routed-query (HIT) counter for *rollup_id*.
+
+        Also marks the rollup as recently used so frequently-hit rollups are
+        less likely to be evicted.
+        """
         r = self._rollups.get(rollup_id)
         if r is not None:
             r.hits += 1
+            self._rollups.move_to_end(rollup_id)
 
 
 # ---------------------------------------------------------------------------

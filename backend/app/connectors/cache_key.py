@@ -17,6 +17,24 @@ CACHE_KEY_VERSION is embedded for future algorithm migrations; it is NOT part of
 the hash input (the algorithm itself encodes the version implicitly via the dict
 structure).  Bump it if the algorithm changes; old keys are then invalid.
 
+SECURITY — Exact-result cache MUST be org+datastore scoped at the call site
+----------------------------------------------------------------------------
+``compute_cache_key`` is intentionally a pure content-hash over
+``(sql, params, rls_policies)``.  It does NOT incorporate ``org_id`` or
+``datastore_id`` because those are routing concerns, not plan-content concerns.
+
+HOWEVER, this means two tenants whose admins have set ``policies={}`` (no
+row-level predicate) running the same SQL would produce an identical
+``compute_cache_key`` digest — and one org could be served the other's cached
+result bytes.  This is a cross-tenant data leak.
+
+The fix is applied AT THE CALL SITE (``routes/query.py`` and
+``routes/metrics.py``) using :func:`scope_cache_key`, which appends
+``org_id`` and ``effective_datastore_id`` to the plan's content-hash before
+hashing again.  All ``cache.get`` and ``cache.put`` invocations in those
+routes MUST use the scoped key returned by this helper, never the raw
+``physical_plan.cache_key`` directly.
+
 Base-scan cache key (BET 2b) — DISABLED
 -----------------------------------------
 :func:`compute_base_scan_key` derives a COARSER key from
@@ -46,6 +64,8 @@ the future correct implementation.
 
 SECURITY: the rls_hash component incorporates the full ``policies`` dict so
 different tenants NEVER share a base-scan entry even for identical SQL shapes.
+Base-scan keys MUST also be org+datastore scoped at the call site using
+:func:`scope_cache_key` if base-scan fusion is ever re-enabled.
 """
 
 from __future__ import annotations
@@ -58,6 +78,50 @@ from typing import Any
 # version skew.  The version is NOT hashed — the algorithm structure is the
 # version.  Annotated here for operators and the conformance suite.
 CACHE_KEY_VERSION: str = "1"
+
+#: Sentinel used when no real datastore id is available (demo/no-datastore path).
+_DEMO_DATASTORE_SENTINEL: str = "__demo__"
+
+
+def scope_cache_key(
+    plan_cache_key: str,
+    org_id: str | None,
+    effective_datastore_id: str | None,
+) -> str:
+    """Return an org+datastore-scoped cache key for exact-result cache access.
+
+    SECURITY: ``compute_cache_key`` is a pure content-hash over
+    ``(sql, params, rls_policies)``.  Two tenants whose admins have configured
+    ``policies={}`` (no row-level predicate) running the same SQL will therefore
+    produce the same ``plan_cache_key``.  Without additional scoping the exact-
+    result cache would serve org A's Arrow bytes to org B — a cross-tenant data
+    leak.
+
+    This function appends ``org_id`` and ``effective_datastore_id`` to the plan
+    key before re-hashing so that the result cache namespace is always both
+    org- and datastore-scoped, regardless of whether RLS policies differ.
+
+    Parameters
+    ----------
+    plan_cache_key:
+        The SHA-256 hex digest returned by :func:`compute_cache_key` (or stored
+        on ``PhysicalPlan.cache_key``).
+    org_id:
+        The verified org identifier from the identity token.  ``None`` is
+        accepted (maps to the empty string) so the demo path keeps working.
+    effective_datastore_id:
+        The resolved datastore id for this request.  ``None`` maps to the
+        ``__demo__`` sentinel so the demo path produces a stable, distinct key.
+
+    Returns
+    -------
+    str
+        64-character lowercase hex string (SHA-256 digest of the scoped input).
+    """
+    ds = effective_datastore_id if effective_datastore_id is not None else _DEMO_DATASTORE_SENTINEL
+    org = org_id if org_id is not None else ""
+    raw = f"{plan_cache_key}:{org}:{ds}"
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()
 
 
 def compute_cache_key(

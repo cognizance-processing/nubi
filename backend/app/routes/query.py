@@ -67,12 +67,12 @@ Security (M3-B + M3-SEC)
 - ORIGIN: ``verify_token`` (called inside ``verified_identity``) already
   enforces ``embed_origin`` vs the ``Origin`` request header when the claim is
   present.  No additional origin check is needed here.
-- CACHE ISOLATION: the cache key is computed from the FINAL rewritten SQL +
-  params + RLS claims dict (see ``cache_key.compute_cache_key``).  Because RLS
-  policies come from the token (and thus differ per tenant), two tenants with
-  different ``tenant_id`` policies will have different cache keys, so their
-  cached Arrow results are always isolated.  This is the embedded-analytics
-  cache-isolation safety property: per-tenant RLS → per-tenant cache namespace.
+- CACHE ISOLATION: the exact-result cache key is derived by
+  ``cache_key.scope_cache_key(plan.cache_key, org_id, effective_datastore_id)``
+  — a SHA-256 re-hash of the plan content-hash with the org_id and datastore id
+  appended.  This guarantees that two orgs with identical SQL AND policies={} (no
+  RLS predicates) can never collide in the cache, preventing cross-tenant data
+  leaks even when there are no row-level policies in play.
 
 Demo dataset (local-parquet fallback)
 --------------------------------------
@@ -112,7 +112,7 @@ from app.auth.verify import VerifiedIdentity
 from app.connectors import plan as planner_plan
 from app.connectors.arrow_io import ipc_stream_from_bytes, table_to_ipc_bytes
 from app.connectors.cache import get_base_scan, get_cache, put_base_scan
-from app.connectors.cache_key import compute_base_scan_key
+from app.connectors.cache_key import compute_base_scan_key, scope_cache_key
 from app.connectors.duckdb_conn import DuckDBConnector
 from app.connectors.planner import resolve_named_params
 from app.connectors.query_log import get_query_log
@@ -1147,13 +1147,42 @@ async def query(
     # unconditionally in the finally block around execute().
     _net_cleanup = lambda: None  # noqa: E731
 
-    # ── 2. Cache lookup (exact plan key) ─────────────────────────────────────
-    # CACHE ISOLATION: because claims (and therefore cache_key) derive from the
-    # verified token, two different tenants will always produce different cache
-    # keys even for the same SQL string.  This is the embedded-analytics
-    # cache-isolation safety property: per-tenant RLS → per-tenant cache namespace.
+    # ── 2b. Org attribution (must precede the scoped cache lookup) ───────────
+    # Resolve the caller's org BEFORE the cache lookup so we can scope the cache
+    # key by (org_id, effective_datastore_id).  This is required to prevent
+    # cross-tenant cache collisions: two tenants with policies={} running the
+    # same SQL would otherwise produce an identical plan cache_key and one org
+    # could be served the other's cached result bytes.
+    #
+    # Embed tokens carry the org in the token claim; first-party tokens require
+    # a DB lookup.  Demo-path callers without an org membership keep working
+    # (org_id=None → scoped under the empty-string sentinel, quota allows,
+    # metering logs a warning); the datastore path re-raises the original
+    # lookup error below to preserve its error contract.
+    from app.routes.resources import get_user_org as _get_user_org
+
+    repo = get_repo()
+    org_id: str | None
+    _org_lookup_error: Exception | None = None
+    if identity.kind == "embed" and identity.org:
+        org_id = identity.org
+    else:
+        try:
+            org_id = await _get_user_org(identity.user_id, repo)
+        except Exception as exc:  # noqa: BLE001 — demo path tolerates no-org callers
+            org_id = None
+            _org_lookup_error = exc
+
+    # ── 2. Cache lookup (org+datastore-scoped key) ────────────────────────────
+    # SECURITY: use scope_cache_key to ensure two orgs with policies={} running
+    # the same SQL do NOT share a cache entry.  The scoped key is derived from
+    # sha256(plan_cache_key + ':' + org_id + ':' + effective_datastore_id).
+    # Same org + same datastore + same plan still hits the cache (deterministic).
     cache = get_cache()
-    cached_bytes = cache.get(physical_plan.cache_key)
+    _scoped_cache_key = scope_cache_key(
+        physical_plan.cache_key, org_id, effective_datastore_id
+    )
+    cached_bytes = cache.get(_scoped_cache_key)
 
     if cached_bytes is not None:
         # Cache HIT: stream the pre-serialised bytes directly.
@@ -1195,28 +1224,6 @@ async def query(
     # id we resolve is fetched via repo.get(..., org_id, ...) — a query can
     # never reference another org's datastore.
 
-    # ── 2b. Org attribution + usage quota (billing) ──────────────────────────
-    # Resolve the caller's org BEFORE building a connector so (a) the EE quota
-    # checker can gate compute up front and (b) the post-execute metering
-    # event is org-attributable.  Embed tokens carry the org in the token
-    # claim; first-party tokens require a DB lookup.  Demo-path callers
-    # without an org membership keep working (org_id=None → quota allows,
-    # metering logs a warning); the datastore path re-raises the original
-    # lookup error below to preserve its error contract.
-    from app.routes.resources import get_user_org as _get_user_org
-
-    repo = get_repo()
-    org_id: str | None
-    _org_lookup_error: Exception | None = None
-    if identity.kind == "embed" and identity.org:
-        org_id = identity.org
-    else:
-        try:
-            org_id = await _get_user_org(identity.user_id, repo)
-        except Exception as exc:  # noqa: BLE001 — demo path tolerates no-org callers
-            org_id = None
-            _org_lookup_error = exc
-
     from app.features import enforce_quota as _enforce_quota
 
     await _enforce_quota(org_id, "compute_units", amount=1.0)
@@ -1255,7 +1262,7 @@ async def query(
             if _pool_resp is not None:
                 if _pool_resp.status_code == 200:
                     cache.put(
-                        physical_plan.cache_key,
+                        _scoped_cache_key,
                         _pool_resp.content,
                         tags=[f"org:{org_id}", f"datastore:{effective_datastore_id}"],
                     )
@@ -1615,7 +1622,10 @@ async def query(
     _cache_tags = [f"org:{org_id}"]
     if effective_datastore_id is not None:
         _cache_tags.append(f"datastore:{effective_datastore_id}")
-    cache.put(physical_plan.cache_key, full_bytes, tags=_cache_tags)
+    # SECURITY: use _scoped_cache_key (org+datastore-scoped) — never the raw
+    # plan key — so two orgs with identical SQL but policies={} cannot share
+    # a cache entry.  _scoped_cache_key was computed before the cache.get above.
+    cache.put(_scoped_cache_key, full_bytes, tags=_cache_tags)
 
     # NOTE: Base-scan fusion write (BET 2b) is DISABLED.
     # put_base_scan is intentionally NOT called here — storing aggregated result

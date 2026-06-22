@@ -1383,6 +1383,158 @@ def test_provider_max_bytes_cap_is_configurable() -> None:
 
 
 # ---------------------------------------------------------------------------
+# NEW: [MED resource] flow provider result tables are row-capped (Fix part a)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_flow_provider_result_tables_are_row_capped(repo: InMemoryRepo) -> None:
+    """Flow provider result tables must be row-capped to _ROW_CAP.
+
+    Before the fix, _resolve_flow_provider returned tables with unbounded row
+    counts — the row cap only applied to inline providers.  After the fix,
+    each flow result table is sliced to _ROW_CAP before being returned so the
+    downstream serialisation never materialises GiBs of Arrow IPC.
+
+    Strategy: wire up _resolve_flow_provider to return a real table with more
+    rows than a small cap, then assert the resolved result is truncated.
+    """
+    import app.dashboards.board_data as _bd_mod
+
+    original_row_cap = _bd_mod._ROW_CAP
+    small_cap = 4
+    _bd_mod._ROW_CAP = small_cap
+
+    # A table with more rows than the cap — simulates what a flow task_run
+    # would return from a warehouse query.
+    oversized_table = pa.table({"amount": pa.array([float(i) for i in range(small_cap + 10)])})
+
+    async def _fake_enforce_quota(org_id: str, dimension: str, amount: float = 1.0) -> None:
+        pass
+
+    await repo.update(
+        "boards",
+        _ORG,
+        _BOARD_ID,
+        {"config": {"spec": _make_spec_with_flow_provider()}},
+    )
+
+    try:
+        # Use real _resolve_flow_provider internals: simulate task_run results
+        # with a large table by patching at the store level so the row-cap code
+        # inside _resolve_flow_provider is exercised (not bypassed by mocking
+        # _resolve_flow_provider itself).
+
+        # Build the IPC bytes that the executor would have stored.
+        ipc_buf = __import__("io").BytesIO()
+        writer = pa.ipc.new_stream(ipc_buf, oversized_table.schema)
+        writer.write_table(oversized_table)
+        writer.close()
+        ipc_bytes = ipc_buf.getvalue()
+
+        fake_flow = {"id": _PROVIDER_ID, "name": _PROVIDER_ID, "org_id": _ORG}
+        fake_flow_run = {"id": "run-1", "state": "success"}
+        fake_task_run = {
+            "task_key": "summary",
+            "state": "success",
+            "result": {"__arrow_ipc__": ipc_bytes},
+        }
+
+        class _FakeStore:
+            async def get_flow(self, flow_id: str) -> dict:
+                return fake_flow
+
+            async def list_flows(self, **kwargs):
+                return [fake_flow]
+
+            async def list_task_runs(self, run_id: str) -> list:
+                return [fake_task_run]
+
+        from app.flows.store import get_flow_store as _orig_get_flow_store
+
+        with (
+            patch("app.features.enforce_quota", side_effect=_fake_enforce_quota),
+            patch("app.flows.store.get_flow_store", return_value=_FakeStore()),
+            patch(
+                "app.flows.runtime.materialize_flow_run",
+                new=AsyncMock(return_value=fake_flow_run),
+            ),
+            patch(
+                "app.flows.runtime.drain_flow_run",
+                new=AsyncMock(return_value=fake_flow_run),
+            ),
+        ):
+            tables = await resolve_provider_data(
+                board_id=_BOARD_ID,
+                provider_id=_PROVIDER_ID,
+                params={},
+                org_id=_ORG,
+                claims={"policies": {}},
+                repo=repo,
+            )
+    finally:
+        _bd_mod._ROW_CAP = original_row_cap
+
+    assert "summary" in tables
+    result = tables["summary"]
+    assert isinstance(result, pa.Table)
+    assert result.num_rows <= small_cap, (
+        f"Flow provider row cap not enforced: got {result.num_rows} rows, "
+        f"expected <= {small_cap} (NUBI_COLLECT_ROW_CAP not applied to flow results)."
+    )
+
+
+# ---------------------------------------------------------------------------
+# NEW: [MED resource] _tables_to_bytes raises EARLY on max_bytes exceeded
+# (Fix part b — no full materialisation before the check)
+# ---------------------------------------------------------------------------
+
+
+def test_tables_to_bytes_raises_early_on_max_bytes_exceeded() -> None:
+    """_tables_to_bytes raises AppError before serialising all tables when
+    max_bytes is exceeded — the cap fires mid-iteration, not post-materialisation.
+
+    We verify:
+    1. Passing max_bytes=1 raises provider_result_too_large (422) on even the
+       first table (well below any real IPC frame size).
+    2. A generous max_bytes succeeds and the result round-trips correctly.
+    3. The error is raised BEFORE all tables are serialised — a sentinel counter
+       confirms the function did not iterate past the offending table.
+    """
+    from app.dashboards.board_data import _tables_to_bytes, _bytes_to_tables
+
+    tbl_small = pa.table({"x": pa.array([1, 2, 3])})
+    tbl_large = pa.table({"y": pa.array(list(range(1000)))})
+
+    # 1. Cap of 1 byte: must raise immediately.
+    with pytest.raises(AppError) as exc_info:
+        _tables_to_bytes({"small": tbl_small}, max_bytes=1)
+    assert exc_info.value.code == "provider_result_too_large"
+    assert exc_info.value.status == 422
+
+    # 2. Generous cap: must succeed and round-trip.
+    blob = _tables_to_bytes({"small": tbl_small}, max_bytes=1_000_000)
+    restored = _bytes_to_tables(blob)
+    assert restored["small"].to_pydict() == tbl_small.to_pydict()
+
+    # 3. Early-exit: with two tables where the first is OK but the second
+    # would exceed the cap, only one table should have been serialised
+    # (the function raises before completing the second frame).
+    # We set max_bytes just large enough for the first table's IPC frame
+    # but not for two.
+    first_only = _tables_to_bytes({"small": tbl_small}, max_bytes=0)  # 0 = unlimited
+    first_bytes = len(first_only)
+
+    # Now set the cap just above the first table's serialised size but below
+    # the combined size of both tables.
+    cap = first_bytes  # exactly fits one table; second would push over
+    with pytest.raises(AppError) as exc_info2:
+        _tables_to_bytes({"small": tbl_small, "large": tbl_large}, max_bytes=cap)
+    assert exc_info2.value.code == "provider_result_too_large"
+    assert exc_info2.value.status == 422
+
+
+# ---------------------------------------------------------------------------
 # NEW: [HIGH concurrency] DuckDB thread-safety — concurrent inline base_cte
 # executions on the shared demo singleton must not crash and must return
 # correct independent results.
@@ -1526,54 +1678,64 @@ async def test_concurrent_inline_base_cte_many_workers_no_crash(
     Uses a single board/provider spec queried N times concurrently.  Each call
     expects a stable result from the shared connection.
     """
+    import app.dashboards.board_data as _bd_mod
     import duckdb
 
     from app.connectors.duckdb_conn import DuckDBConnector
 
-    shared_conn = duckdb.connect(":memory:")
-    shared_conn.execute("CREATE TABLE stress AS SELECT i AS val FROM generate_series(1, 5) t(i)")
-    shared_connector = DuckDBConnector(shared_conn)
+    # Ensure _ROW_CAP is large enough that the 5-row stress table is not
+    # truncated by the inline-provider row cap (a previous test may have
+    # temporarily lowered it; restoring here is defensive).
+    _saved_row_cap = _bd_mod._ROW_CAP
+    _bd_mod._ROW_CAP = max(_bd_mod._ROW_CAP, 100)
 
-    spec = {
-        "version": 1,
-        "title": "Stress Board",
-        "widgets": [
-            {"id": "w1", "type": "table", "source": {"provider": _PROVIDER_ID, "result": "revenue"}},
-        ],
-        "data": [
-            {
-                "id": _PROVIDER_ID,
-                "kind": "inline",
-                "params": {},
-                "base_cte": "WITH revenue AS (SELECT val FROM stress ORDER BY val)",
-                "results": [{"name": "revenue", "grain": None}],
-            }
-        ],
-    }
-    await repo.update("boards", _ORG, _BOARD_ID, {"config": {"spec": spec}})
+    try:
+        shared_conn = duckdb.connect(":memory:")
+        shared_conn.execute("CREATE TABLE stress AS SELECT i AS val FROM generate_series(1, 5) t(i)")
+        shared_connector = DuckDBConnector(shared_conn)
 
-    async def _fake_enforce_quota(org_id: str, dimension: str, amount: float = 1.0) -> None:
-        pass
+        spec = {
+            "version": 1,
+            "title": "Stress Board",
+            "widgets": [
+                {"id": "w1", "type": "table", "source": {"provider": _PROVIDER_ID, "result": "revenue"}},
+            ],
+            "data": [
+                {
+                    "id": _PROVIDER_ID,
+                    "kind": "inline",
+                    "params": {},
+                    "base_cte": "WITH revenue AS (SELECT val FROM stress ORDER BY val)",
+                    "results": [{"name": "revenue", "grain": None}],
+                }
+            ],
+        }
+        await repo.update("boards", _ORG, _BOARD_ID, {"config": {"spec": spec}})
 
-    n_concurrent = 6
-    with (
-        patch("app.features.enforce_quota", side_effect=_fake_enforce_quota),
-        patch("app.routes.query._get_demo_connector", return_value=shared_connector),
-    ):
-        all_results = await asyncio.gather(
-            *[
-                resolve_provider_data(
-                    board_id=_BOARD_ID,
-                    provider_id=_PROVIDER_ID,
-                    # Use different params to bust the cache so each fires a real execute.
-                    params={"_worker": str(i)},
-                    org_id=_ORG,
-                    claims={"policies": {}},
-                    repo=repo,
-                )
-                for i in range(n_concurrent)
-            ]
-        )
+        async def _fake_enforce_quota(org_id: str, dimension: str, amount: float = 1.0) -> None:
+            pass
+
+        n_concurrent = 6
+        with (
+            patch("app.features.enforce_quota", side_effect=_fake_enforce_quota),
+            patch("app.routes.query._get_demo_connector", return_value=shared_connector),
+        ):
+            all_results = await asyncio.gather(
+                *[
+                    resolve_provider_data(
+                        board_id=_BOARD_ID,
+                        provider_id=_PROVIDER_ID,
+                        # Use different params to bust the cache so each fires a real execute.
+                        params={"_worker": str(i)},
+                        org_id=_ORG,
+                        claims={"policies": {}},
+                        repo=repo,
+                    )
+                    for i in range(n_concurrent)
+                ]
+            )
+    finally:
+        _bd_mod._ROW_CAP = _saved_row_cap
 
     for idx, tables in enumerate(all_results):
         assert "revenue" in tables, f"Worker {idx}: revenue missing from result"

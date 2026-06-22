@@ -297,7 +297,7 @@ async def test_parallel_collect_one_error_does_not_abort_others(
     original_run = None
 
     async def _patched_run_query_rows(
-        query_id: str, org_id: str, repo_arg, policies
+        query_id: str, org_id: str, repo_arg, policies, **_kwargs
     ):
         if query_id == "q-fail":
             raise AppError("deliberate_fail", "deliberate test failure", 500)

@@ -1211,6 +1211,7 @@ class TestOrgScopedRegistry:
         assert candidates_b[0].rollup_id == built_b.rollup_id
 
     def test_unscoped_rollup_not_visible_to_org_query(self, source_db: str) -> None:
+
         """A rollup with no org tag (org_id=None) is only visible to None queries.
 
         An unscoped rollup must not be routed to a query carrying an explicit
@@ -1242,3 +1243,170 @@ class TestOrgScopedRegistry:
         # None (unscoped) can still see it.
         unscoped = reg.candidates_for_table("orders", org_id=None)
         assert len(unscoped) == 1
+
+
+# ---------------------------------------------------------------------------
+# 10. [LOW resource] RollupRegistry LRU eviction / bounded size
+# ---------------------------------------------------------------------------
+
+
+class TestRollupRegistryEviction:
+    """RollupRegistry must not grow without bound.
+
+    With max_entries=N, adding the (N+1)-th entry evicts the oldest (LRU)
+    entry.  Entries that are recently used (via get_rollup or record_hit) are
+    retained in preference to untouched older entries.
+    """
+
+    def _make_rollup(self, rollup_id: str) -> "BuiltRollup":
+        from app.connectors.preagg import BuiltRollup  # noqa: PLC0415
+
+        return BuiltRollup(
+            rollup_id=rollup_id,
+            table=f"rollup_{rollup_id}",
+            source_table="orders",
+        )
+
+    def test_evicts_oldest_beyond_cap(self) -> None:
+        """Adding beyond max_entries evicts the oldest inserted entry."""
+        from app.connectors.preagg import RollupRegistry  # noqa: PLC0415
+
+        reg = RollupRegistry(max_entries=3)
+
+        r1 = self._make_rollup("r1")
+        r2 = self._make_rollup("r2")
+        r3 = self._make_rollup("r3")
+        r4 = self._make_rollup("r4")
+
+        reg.add_rollup(r1)
+        reg.add_rollup(r2)
+        reg.add_rollup(r3)
+        # Registry is exactly at cap — all three present.
+        assert len(reg.all_rollups()) == 3
+
+        # Adding r4 should evict r1 (oldest / least-recently-used).
+        reg.add_rollup(r4)
+        assert len(reg.all_rollups()) == 3
+        ids = {r.rollup_id for r in reg.all_rollups()}
+        assert "r1" not in ids, f"r1 (oldest) should have been evicted; ids={ids}"
+        assert "r4" in ids, f"r4 (newest) must be present; ids={ids}"
+
+    def test_recently_used_rollup_retained(self) -> None:
+        """A rollup touched via get_rollup is moved to MRU position and kept."""
+        from app.connectors.preagg import RollupRegistry  # noqa: PLC0415
+
+        reg = RollupRegistry(max_entries=3)
+
+        r1 = self._make_rollup("r1")
+        r2 = self._make_rollup("r2")
+        r3 = self._make_rollup("r3")
+        r4 = self._make_rollup("r4")
+
+        reg.add_rollup(r1)
+        reg.add_rollup(r2)
+        reg.add_rollup(r3)
+
+        # Touch r1 (oldest) via get_rollup — moves it to MRU position.
+        assert reg.get_rollup("r1") is not None
+
+        # Now add r4: r2 is now the oldest (r1 was refreshed), so r2 is evicted.
+        reg.add_rollup(r4)
+        assert len(reg.all_rollups()) == 3
+        ids = {r.rollup_id for r in reg.all_rollups()}
+        assert "r1" in ids, f"r1 (recently used) must be retained; ids={ids}"
+        assert "r2" not in ids, f"r2 (oldest after r1 touch) should be evicted; ids={ids}"
+        assert "r4" in ids, f"r4 (newest) must be present; ids={ids}"
+
+    def test_record_hit_refreshes_lru(self) -> None:
+        """record_hit moves the entry to MRU so it is not evicted before others."""
+        from app.connectors.preagg import RollupRegistry  # noqa: PLC0415
+
+        reg = RollupRegistry(max_entries=3)
+
+        r1 = self._make_rollup("r1")
+        r2 = self._make_rollup("r2")
+        r3 = self._make_rollup("r3")
+        r4 = self._make_rollup("r4")
+
+        reg.add_rollup(r1)
+        reg.add_rollup(r2)
+        reg.add_rollup(r3)
+
+        # Record a hit on r1 — moves it to MRU; r2 becomes the new LRU.
+        reg.record_hit("r1")
+
+        reg.add_rollup(r4)
+        ids = {r.rollup_id for r in reg.all_rollups()}
+        assert "r1" in ids, f"r1 (hit → MRU) must be retained; ids={ids}"
+        assert "r2" not in ids, f"r2 (new LRU) should be evicted; ids={ids}"
+
+    def test_size_never_exceeds_cap(self) -> None:
+        """Inserting many rollups never pushes size above max_entries."""
+        from app.connectors.preagg import RollupRegistry  # noqa: PLC0415
+
+        cap = 5
+        reg = RollupRegistry(max_entries=cap)
+        for i in range(50):
+            reg.add_rollup(self._make_rollup(f"r{i}"))
+            assert len(reg.all_rollups()) <= cap, (
+                f"Registry exceeded cap {cap} at iteration {i}: "
+                f"size={len(reg.all_rollups())}"
+            )
+
+        # After 50 inserts the newest 5 entries (r45..r49) should be present.
+        ids = {r.rollup_id for r in reg.all_rollups()}
+        for i in range(45, 50):
+            assert f"r{i}" in ids, f"r{i} (recent) must be retained; ids={ids}"
+
+    def test_env_override_sets_cap(self, monkeypatch) -> None:
+        """NUBI_ROLLUP_REGISTRY_MAX env var controls the default cap."""
+        import importlib  # noqa: PLC0415
+        import app.connectors.preagg as preagg_mod  # noqa: PLC0415
+
+        monkeypatch.setenv("NUBI_ROLLUP_REGISTRY_MAX", "2")
+        # Re-read the env via the helper function directly.
+        cap = preagg_mod._registry_max_entries()
+        assert cap == 2
+
+        reg = preagg_mod.RollupRegistry()  # uses _registry_max_entries()
+        assert reg._max_entries == 2
+
+        reg.add_rollup(self._make_rollup("r1"))
+        reg.add_rollup(self._make_rollup("r2"))
+        reg.add_rollup(self._make_rollup("r3"))  # evicts r1
+
+        ids = {r.rollup_id for r in reg.all_rollups()}
+        assert len(ids) == 2
+        assert "r1" not in ids
+
+    def test_org_scoping_preserved_after_eviction(self) -> None:
+        """candidates_for_table still returns correct org-scoped results after eviction."""
+        from app.connectors.preagg import BuiltRollup, RollupRegistry  # noqa: PLC0415
+
+        reg = RollupRegistry(max_entries=2)
+
+        # Add 2 rollups for org_a.
+        r_a1 = BuiltRollup(
+            rollup_id="ra1", table="rollup_orders", source_table="orders", org_id="org_a"
+        )
+        r_a2 = BuiltRollup(
+            rollup_id="ra2", table="rollup_orders", source_table="orders", org_id="org_a"
+        )
+        r_b1 = BuiltRollup(
+            rollup_id="rb1", table="rollup_orders", source_table="orders", org_id="org_b"
+        )
+
+        reg.add_rollup(r_a1)
+        reg.add_rollup(r_a2)
+        # r_a1 is now evicted when r_b1 is added (cap=2).
+        reg.add_rollup(r_b1)
+
+        # Only r_a2 remains for org_a; r_a1 was evicted.
+        cands_a = reg.candidates_for_table("orders", org_id="org_a")
+        assert len(cands_a) == 1
+        assert cands_a[0].rollup_id == "ra2"
+
+        # org_b sees its rollup.
+        cands_b = reg.candidates_for_table("orders", org_id="org_b")
+        assert len(cands_b) == 1
+        assert cands_b[0].rollup_id == "rb1"

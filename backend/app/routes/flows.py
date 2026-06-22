@@ -60,6 +60,45 @@ _MAX_BACKFILL_WINDOWS: int = int(os.environ.get("MAX_BACKFILL_WINDOWS", "500"))
 _MAX_WRITEBACK_ROWS: int = int(os.environ.get("NUBI_MAX_WRITEBACK_ROWS", "10000"))
 
 # ---------------------------------------------------------------------------
+# Task-log response cap (MED resource — unbounded log response)
+# ---------------------------------------------------------------------------
+# GET /flows/runs/{run_id}/tasks/{task_key}/logs returns the captured task log
+# lines.  Without a cap a single long-running task can accumulate megabytes of
+# logs and return them in one unbounded response.
+#
+# NUBI_MAX_TASK_LOG_LINES  — max number of log lines returned (default 1 000).
+# NUBI_MAX_TASK_LOG_BYTES  — max total byte length of all lines joined
+#                            (default 512 KiB).  Whichever limit is hit first
+#                            triggers truncation; the response includes a
+#                            ``truncated: true`` field and a ``truncated_at``
+#                            indicator so callers can detect partial output.
+_MAX_TASK_LOG_LINES: int = int(os.environ.get("NUBI_MAX_TASK_LOG_LINES", "1000"))
+_MAX_TASK_LOG_BYTES: int = int(os.environ.get("NUBI_MAX_TASK_LOG_BYTES", str(512 * 1024)))
+
+
+def _cap_task_logs(
+    logs: list[str],
+    max_lines: int = _MAX_TASK_LOG_LINES,
+    max_bytes: int = _MAX_TASK_LOG_BYTES,
+) -> tuple[list[str], bool]:
+    """Return ``(capped_lines, truncated)`` applying line and byte caps.
+
+    Whichever limit is exhausted first terminates the output.  The returned
+    bool is ``True`` when at least one line was dropped due to either cap.
+    """
+    capped: list[str] = []
+    total_bytes = 0
+    for line in logs:
+        if len(capped) >= max_lines:
+            return capped, True
+        line_bytes = len(line.encode("utf-8", errors="replace"))
+        if total_bytes + line_bytes > max_bytes:
+            return capped, True
+        capped.append(line)
+        total_bytes += line_bytes
+    return capped, False
+
+# ---------------------------------------------------------------------------
 # Writeback governance — server-side approval policy
 # ---------------------------------------------------------------------------
 # When NUBI_WRITEBACK_REQUIRE_APPROVAL=true (or "1"/"yes"), every writeback
@@ -879,11 +918,17 @@ async def get_task_run_logs(
         raise AppError("not_found", f"Task '{task_key}' not found in this flow run.", 404)
 
     tr = matching[-1]  # most recent (last inserted) by created_at ordering
+
+    raw_logs: list[str] = tr.get("logs") or []
+    capped_logs, truncated = _cap_task_logs(raw_logs)
+
     return {
         "task_key": tr["task_key"],
         "state": tr["state"],
         "attempt": tr.get("attempt", 0),
-        "logs": tr.get("logs") or [],
+        "logs": capped_logs,
+        "truncated": truncated,
+        "total_log_lines": len(raw_logs),
         "error": tr.get("error"),
     }
 
@@ -2489,7 +2534,7 @@ def _get_caller_role(user_id: str, org_id: str, repo: Any) -> str | None:
     return None
 
 
-@router.post("/writeback/preview", status_code=200)
+@router.post("/writeback/preview", status_code=200, dependencies=[Depends(require_writer_default)])
 async def writeback_preview(
     body: WritebackSubmitIn,
     user: dict[str, Any] = Depends(current_user),
@@ -2522,7 +2567,7 @@ async def writeback_preview(
     )
 
 
-@router.post("/writeback", status_code=201)
+@router.post("/writeback", status_code=201, dependencies=[Depends(require_writer_default)])
 async def submit_writeback_route(
     body: WritebackSubmitIn,
     user: dict[str, Any] = Depends(current_user),

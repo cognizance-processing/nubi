@@ -484,8 +484,13 @@ async def approve_writeback(
         Write-back record id.
     action:
         ``'approve'`` | ``'reject'`` | ``'edit'``.
-        ``'edit'`` replaces the rows (``rows_override`` required) and
-        then automatically approves (commits).
+
+        * ``'approve'`` — commit the original rows as submitted.
+        * ``'reject'`` — mark the request rejected; no write is performed.
+        * ``'edit'`` — replace the rows with ``rows_override`` and then
+          commit.  **``rows_override`` is required** when using this action;
+          omitting it raises ``AppError("rows_override_required", 400)``.
+          To commit the original rows unchanged, use ``'approve'`` instead.
     approver_id:
         User id of the approver.
     connector_write_fn:
@@ -507,6 +512,8 @@ async def approve_writeback(
         When the record does not exist or belongs to a different org.
     AppError("invalid_approval_action", 400)
         When *action* is not one of the valid values.
+    AppError("rows_override_required", 400)
+        When ``action='edit'`` and ``rows_override`` is ``None``.
     AppError("invalid_state_transition", 409)
         When the record is not in ``pending_approval`` state.
     """
@@ -518,6 +525,19 @@ async def approve_writeback(
         raise AppError(
             "invalid_approval_action",
             f"Invalid action {action!r}. Valid actions: {sorted(_VALID_ACTIONS)}.",
+            400,
+        )
+
+    # 'edit' semantics: the approver MUST supply the edited rows.
+    # An edit that provides no rows is indistinguishable from a plain 'approve'
+    # — which is misleading for the human-in-the-loop audit trail and risks
+    # silently committing the original rows when the approver intended to
+    # modify them.  To commit the original rows unchanged, use action='approve'.
+    if action == "edit" and rows_override is None:
+        raise AppError(
+            "rows_override_required",
+            "action='edit' requires rows_override to be provided. "
+            "To commit the original rows unchanged, use action='approve'.",
             400,
         )
 

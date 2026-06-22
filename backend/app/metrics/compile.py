@@ -622,13 +622,36 @@ def _compile_layered(
     # When mq.limit is None we apply a default cap to prevent unbounded scans
     # and window-function materialisation over the full table.  Callers wanting
     # all rows must set an explicit high limit (up to NUBI_MAX_QUERY_LIMIT).
+    #
+    # FIX (LOW #1 — QUALIFY/LIMIT interaction): the no-time-grain top_n path adds
+    # a ``QUALIFY RANK() <= N`` to THIS outer SELECT.  Standard/DuckDB semantics
+    # evaluate QUALIFY (a window-stage filter) BEFORE the outer LIMIT, so the
+    # top-N rows are selected first and only then capped.  That is correct ONLY
+    # if the default LIMIT is >= the QUALIFY result size; if a deployment lowered
+    # NUBI_METRIC_DEFAULT_LIMIT below N the LIMIT would truncate the legitimate
+    # top-N.  We therefore floor the default LIMIT at N for any top_n request so
+    # the QUALIFY result can never be silently truncated by the default cap.
+    #
+    # FIX (LOW #2 — per-tenant truncation): the default LIMIT is a bare outer cap.
+    # The compiler emits per-tenant window/RANK partitions (PARTITION BY rls_keys)
+    # and the downstream planner injects ``WHERE <rls_key> = <claim>`` so each
+    # REQUEST is scoped to exactly ONE tenant before this LIMIT applies.  Under
+    # that invariant the limit only ever caps a single tenant's rows, so it can
+    # never starve one tenant in favour of another within a request.  The default
+    # is a per-request row cap, not a cross-tenant cap; callers wanting more rows
+    # for a single tenant must paginate or raise mq.limit (up to NUBI_MAX_QUERY_LIMIT).
     for field, direction in mq.order_by:
         outer_select = outer_select.order_by(
             exp.Ordered(this=exp.column(field), desc=(direction == "desc"))
         )
-    outer_select = outer_select.limit(
-        mq.limit if mq.limit is not None else _DEFAULT_LIMIT
-    )
+    if mq.limit is not None:
+        effective_limit = mq.limit
+    else:
+        effective_limit = _DEFAULT_LIMIT
+        if mq.top_n is not None:
+            # Never let the default cap fall below the requested top-N size.
+            effective_limit = max(effective_limit, mq.top_n.n)
+    outer_select = outer_select.limit(effective_limit)
 
     # ── Top-N restriction on the outer SELECT ────────────────────────────────
     # top_n (no Other) → WHERE dim IN (membership) or QUALIFY RANK() <= N.

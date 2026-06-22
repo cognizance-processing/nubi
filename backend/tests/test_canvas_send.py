@@ -1236,6 +1236,56 @@ class TestAssetsCssInjection:
         result = self._render_with_css(css)
         assert "url(#gradient1)" in result, "SVG fragment url() was incorrectly neutralised"
 
+    # ── url() with data:image/svg+xml — must be neutralized ──────────────────
+
+    def test_url_data_svg_xml_neutralized(self):
+        """url(data:image/svg+xml,...) is neutralised — SVG can carry inline script.
+
+        Inline SVG data URIs must be blocked to stay consistent with the HTML
+        validator's _is_safe_data_uri logic which also rejects svg+xml.
+        """
+        svg_payload = "data:image/svg+xml,<svg><script>alert(1)</script></svg>"
+        css = f".icon{{background:url('{svg_payload}')}}"
+        result = self._render_with_css(css)
+        assert "data:image/svg+xml" not in result, (
+            "url(data:image/svg+xml,...) survived assets.css sanitization — "
+            "inconsistent with HTML validator which blocks svg data URIs."
+        )
+        assert "url(none)" in result
+
+    def test_url_data_svg_xml_base64_neutralized(self):
+        """url(data:image/svg+xml;base64,...) is also neutralised."""
+        b64_svg = "data:image/svg+xml;base64,PHN2Zyg8c2NyaXB0PmV2aWwoKTwvc2NyaXB0Pjwvc3ZnPg=="
+        css = f".logo{{background-image:url('{b64_svg}')}}"
+        result = self._render_with_css(css)
+        assert "data:image/svg+xml" not in result, (
+            "url(data:image/svg+xml;base64,...) survived — inline SVG can carry <script>."
+        )
+
+    def test_url_data_svg_xml_unquoted_neutralized(self):
+        """url(data:image/svg+xml,...) without quotes is also neutralised."""
+        css = ".x{background:url(data:image/svg+xml,<svg/>)}"
+        result = self._render_with_css(css)
+        assert "data:image/svg+xml" not in result
+
+    def test_url_data_image_png_still_allowed_after_svg_fix(self):
+        """url(data:image/png;...) is still allowed after the svg+xml fix."""
+        safe_data = "data:image/png;base64,iVBORw0KGgo="
+        css = f".logo{{background:url('{safe_data}')}}"
+        result = self._render_with_css(css)
+        assert safe_data in result, (
+            "Safe data:image/png URI was incorrectly stripped after svg+xml fix."
+        )
+
+    def test_url_data_image_gif_still_allowed_after_svg_fix(self):
+        """url(data:image/gif;...) is still allowed after the svg+xml fix."""
+        safe_data = "data:image/gif;base64,R0lGODlh"
+        css = f".anim{{background:url('{safe_data}')}}"
+        result = self._render_with_css(css)
+        assert safe_data in result, (
+            "Safe data:image/gif URI was incorrectly stripped after svg+xml fix."
+        )
+
     def test_empty_assets_css_no_error(self):
         """Empty assets.css string produces no errors and no extra style content."""
         doc = _make_doc(html="<p>ok</p>", assets={"css": ""})
