@@ -1038,3 +1038,90 @@ async def test_downstream_trigger_skipped_when_snapshot_key_absent():
         "Downstream trigger must be skipped when snapshot key is absent (fail-closed). "
         f"Got {len(downstream_runs)} runs."
     )
+
+
+# ---------------------------------------------------------------------------
+# 19. [Width cap] fire_event fans out only up to FLOWS_TRIGGER_MAX_FANOUT
+# ---------------------------------------------------------------------------
+
+
+async def test_fire_event_fanout_cap_limits_fires(caplog):
+    """[Width cap] An event matching > cap triggers fires only up to the cap (+ warning)."""
+    import app.flows.triggers as triggers_module  # noqa: PLC0415
+
+    store = InMemoryFlowStore()
+    cap = 3  # Use a small cap so the test stays fast
+
+    original_cap = triggers_module._FLOWS_TRIGGER_MAX_FANOUT
+    triggers_module._FLOWS_TRIGGER_MAX_FANOUT = cap
+    try:
+        # Register cap+2 flows, each with an event trigger for the same key.
+        flow_ids = []
+        for i in range(cap + 2):
+            flow = await _make_flow(store, name=f"fanout_flow_{i}")
+            flow_ids.append(flow["id"])
+            await register_trigger(
+                flow_id=flow["id"],
+                kind="event",
+                source="fanout.event",
+                org_id="org-test",
+            )
+
+        import logging
+        with caplog.at_level(logging.WARNING, logger="app.flows.triggers"):
+            run_ids = await fire_event(
+                event_key="fanout.event",
+                payload={},
+                org_id="org-test",
+                store=store,
+                now=NOW,
+                claims=CLAIMS,
+            )
+    finally:
+        triggers_module._FLOWS_TRIGGER_MAX_FANOUT = original_cap
+
+    # Only cap flows must have been fired.
+    assert len(run_ids) == cap, (
+        f"Expected exactly {cap} run_ids (fan-out cap), got {len(run_ids)}"
+    )
+    # A warning must have been logged about the skipped triggers.
+    warning_msgs = [r.message for r in caplog.records if r.levelno >= logging.WARNING]
+    assert any("FLOWS_TRIGGER_MAX_FANOUT" in m for m in warning_msgs), (
+        "Expected a warning mentioning FLOWS_TRIGGER_MAX_FANOUT when cap is exceeded"
+    )
+
+
+async def test_fire_event_within_fanout_cap_all_fire():
+    """[Width cap] When triggers are within the cap, every trigger fires normally."""
+    import app.flows.triggers as triggers_module  # noqa: PLC0415
+
+    store = InMemoryFlowStore()
+    cap = 5
+
+    original_cap = triggers_module._FLOWS_TRIGGER_MAX_FANOUT
+    triggers_module._FLOWS_TRIGGER_MAX_FANOUT = cap
+    try:
+        # Register exactly cap-1 triggers (all within cap).
+        for i in range(cap - 1):
+            flow = await _make_flow(store, name=f"within_cap_flow_{i}")
+            await register_trigger(
+                flow_id=flow["id"],
+                kind="event",
+                source="within.event",
+                org_id="org-test",
+            )
+
+        run_ids = await fire_event(
+            event_key="within.event",
+            payload={},
+            org_id="org-test",
+            store=store,
+            now=NOW,
+            claims=CLAIMS,
+        )
+    finally:
+        triggers_module._FLOWS_TRIGGER_MAX_FANOUT = original_cap
+
+    assert len(run_ids) == cap - 1, (
+        f"Expected all {cap - 1} triggers to fire (within cap), got {len(run_ids)}"
+    )

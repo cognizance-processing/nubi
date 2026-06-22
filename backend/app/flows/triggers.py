@@ -54,6 +54,13 @@ logger = logging.getLogger(__name__)
 # Default 8; override with the FLOWS_TRIGGER_MAX_DEPTH environment variable.
 _FLOWS_TRIGGER_MAX_DEPTH: int = int(os.environ.get("FLOWS_TRIGGER_MAX_DEPTH", "8"))
 
+# B6 — Fan-out width cap for event/downstream triggers.
+# A single event firing N matching flows (each potentially triggering more) can
+# amplify resource consumption without bound.  Cap the number of flows that any
+# one event (or one downstream completion) may fan-out to.
+# Default 50; override with the FLOWS_TRIGGER_MAX_FANOUT environment variable.
+_FLOWS_TRIGGER_MAX_FANOUT: int = int(os.environ.get("FLOWS_TRIGGER_MAX_FANOUT", "50"))
+
 
 # ---------------------------------------------------------------------------
 # Trigger data-class
@@ -308,6 +315,16 @@ async def fire_event(
     registry = get_trigger_registry()
     triggers = await registry.list_by_event(event_key, org_id)
 
+    # ── Fan-out width cap ─────────────────────────────────────────────────────
+    if len(triggers) > _FLOWS_TRIGGER_MAX_FANOUT:
+        logger.warning(
+            "fire_event: event '%s' (org %s) matched %d triggers which exceeds "
+            "FLOWS_TRIGGER_MAX_FANOUT=%d; firing only the first %d and skipping %d.",
+            event_key, org_id, len(triggers), _FLOWS_TRIGGER_MAX_FANOUT,
+            _FLOWS_TRIGGER_MAX_FANOUT, len(triggers) - _FLOWS_TRIGGER_MAX_FANOUT,
+        )
+        triggers = triggers[:_FLOWS_TRIGGER_MAX_FANOUT]
+
     run_ids: list[str] = []
 
     for trigger in triggers:
@@ -532,6 +549,17 @@ async def on_flow_run_complete(
 
         registry = get_trigger_registry()
         triggers = await registry.list_by_upstream(upstream_flow_id, org_id)
+
+        # ── Fan-out width cap ─────────────────────────────────────────────────
+        if len(triggers) > _FLOWS_TRIGGER_MAX_FANOUT:
+            logger.warning(
+                "on_flow_run_complete: flow %s (run %s) matched %d downstream triggers "
+                "which exceeds FLOWS_TRIGGER_MAX_FANOUT=%d; firing only the first %d "
+                "and skipping %d.",
+                upstream_flow_id, flow_run_id, len(triggers), _FLOWS_TRIGGER_MAX_FANOUT,
+                _FLOWS_TRIGGER_MAX_FANOUT, len(triggers) - _FLOWS_TRIGGER_MAX_FANOUT,
+            )
+            triggers = triggers[:_FLOWS_TRIGGER_MAX_FANOUT]
 
         for trigger in triggers:
             try:

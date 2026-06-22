@@ -605,9 +605,20 @@ def _handle_python(
     os.makedirs(artifact_spool_dir, exist_ok=True)
 
     def _pre_fetch_artifacts() -> None:
-        """Best-effort: download artifact bytes from ctx.inputs into the spool."""
+        """Best-effort: download artifact bytes from ctx.inputs into the spool.
+
+        SECURITY: the parent verifies the HMAC envelope and writes only the
+        inner payload (already-verified bytes) to the spool file.  The
+        subprocess therefore deserialises clean bytes and never sees the raw
+        signed envelope — closing the deserialization gap where the subprocess
+        would otherwise pickle.loads an unverified blob.
+        """
         try:
-            from app.flows.artifacts import get_artifact_store, is_handle  # noqa: PLC0415
+            from app.flows.artifacts import (  # noqa: PLC0415
+                get_artifact_store,
+                is_handle,
+                _hmac_verify_and_strip,
+            )
         except Exception:
             return
         art_store = getattr(ctx, "_artifact_store", None) or get_artifact_store()
@@ -632,11 +643,17 @@ def _handle_python(
                 if os.path.exists(dest):
                     continue
                 try:
-                    data = art_store.download(artifact_id, executing_org)
+                    signed_blob = art_store.download(artifact_id, executing_org)
+                    # Verify HMAC and strip the envelope BEFORE writing to the
+                    # spool so the subprocess only ever reads already-verified
+                    # inner payload bytes.  A tampered or unsigned blob raises
+                    # ValueError here; we catch it and skip (subprocess will
+                    # raise FileNotFoundError on access — safe fail-closed).
+                    inner_payload = _hmac_verify_and_strip(signed_blob)
                     with open(dest, "wb") as fh:
-                        fh.write(data)
+                        fh.write(inner_payload)
                 except Exception:  # noqa: BLE001
-                    pass  # artifact may not exist yet; subprocess will raise on access
+                    pass  # artifact may not exist yet / HMAC failed; subprocess will raise on access
 
     _pre_fetch_artifacts()
 
@@ -1095,7 +1112,7 @@ def _promote_python_artifacts(
     _log = _logging.getLogger(__name__)
 
     try:
-        from app.flows.artifacts import get_artifact_store  # noqa: PLC0415
+        from app.flows.artifacts import get_artifact_store, _hmac_sign  # noqa: PLC0415
     except Exception:
         return
 
@@ -1119,7 +1136,11 @@ def _promote_python_artifacts(
                 continue
             with open(spool_path, "rb") as fh:
                 data = fh.read()
-            uri = art_store.upload(artifact_id, org_id, data)
+            # Sign the payload before uploading so the HMAC envelope is
+            # present in the store — _pre_fetch_artifacts verifies it before
+            # writing to the spool for downstream subprocess cells.
+            signed_data = _hmac_sign(data)
+            uri = art_store.upload(artifact_id, org_id, signed_data)
         except Exception as exc:  # noqa: BLE001
             _log.debug("Failed to upload artifact %s: %s", artifact_id, exc)
             continue

@@ -2070,6 +2070,119 @@ class TestApiBindingPathValidation:
         entry = result.get("el_p", {})
         assert "error" not in entry, f"Empty path should not error: {entry}"
 
+    # ── URL-encoded path-traversal regression (MED finding) ──────────────────
+
+    @pytest.mark.asyncio
+    async def test_percent_encoded_dotdot_rejected_at_runtime(self):
+        """Path '%2e%2e/admin' is rejected at runtime after URL-decoding.
+
+        Regression for MED path-traversal: the original check compared literal
+        '..' segments only; %2e%2e/%2e./etc. bypassed it.  After the fix,
+        collect.py unquotes the path before checking, so the encoded form is
+        caught too.
+        """
+        from app.dashboards.collect import collect_canvas_data  # noqa: PLC0415
+
+        repo, org_id, canvas_id = await self._make_canvas_with_path("%2e%2e/admin")
+
+        result = await collect_canvas_data(
+            canvas_id=canvas_id, org_id=org_id, claims={}, repo=repo
+        )
+
+        entry = result.get("el_p", {})
+        assert "error" in entry, f"Expected error for '%2e%2e/admin' path, got: {entry}"
+        assert entry["error"] == "invalid_binding_path", entry
+
+    @pytest.mark.asyncio
+    async def test_dot_percent2e_rejected_at_runtime(self):
+        """Path '.%2e/admin' (mixed dot + encoded dot) is rejected at runtime."""
+        from app.dashboards.collect import collect_canvas_data  # noqa: PLC0415
+
+        repo, org_id, canvas_id = await self._make_canvas_with_path(".%2e/admin")
+
+        result = await collect_canvas_data(
+            canvas_id=canvas_id, org_id=org_id, claims={}, repo=repo
+        )
+
+        entry = result.get("el_p", {})
+        assert "error" in entry, f"Expected error for '.%2e/admin' path, got: {entry}"
+        assert entry["error"] == "invalid_binding_path", entry
+
+    @pytest.mark.asyncio
+    async def test_percent2e_dot_rejected_at_runtime(self):
+        """Path '%2e./admin' (encoded dot + literal dot) is rejected at runtime."""
+        from app.dashboards.collect import collect_canvas_data  # noqa: PLC0415
+
+        repo, org_id, canvas_id = await self._make_canvas_with_path("%2e./admin")
+
+        result = await collect_canvas_data(
+            canvas_id=canvas_id, org_id=org_id, claims={}, repo=repo
+        )
+
+        entry = result.get("el_p", {})
+        assert "error" in entry, f"Expected error for '%2e./admin' path, got: {entry}"
+        assert entry["error"] == "invalid_binding_path", entry
+
+    # ── ApiBinding Pydantic validator (save-time defense-in-depth) ───────────
+
+    def test_api_binding_rejects_percent_encoded_dotdot_at_save(self):
+        """%2e%2e/admin is rejected by the ApiBinding field_validator at parse time."""
+        from pydantic import ValidationError  # noqa: PLC0415
+
+        with pytest.raises(ValidationError) as exc_info:
+            ApiBinding(
+                kind="api",
+                connector_id="some-id",
+                path="%2e%2e/admin",
+            )
+        assert "unsafe" in str(exc_info.value).lower() or "path" in str(exc_info.value).lower()
+
+    def test_api_binding_rejects_dot_percent2e_at_save(self):
+        """.%2e/admin is rejected by the ApiBinding field_validator at parse time."""
+        from pydantic import ValidationError  # noqa: PLC0415
+
+        with pytest.raises(ValidationError) as exc_info:
+            ApiBinding(
+                kind="api",
+                connector_id="some-id",
+                path=".%2e/admin",
+            )
+        assert "unsafe" in str(exc_info.value).lower() or "path" in str(exc_info.value).lower()
+
+    def test_api_binding_rejects_dotdot_literal_at_save(self):
+        """Literal '../admin' is also rejected by the ApiBinding field_validator."""
+        from pydantic import ValidationError  # noqa: PLC0415
+
+        with pytest.raises(ValidationError) as exc_info:
+            ApiBinding(
+                kind="api",
+                connector_id="some-id",
+                path="../admin",
+            )
+        assert "unsafe" in str(exc_info.value).lower() or "path" in str(exc_info.value).lower()
+
+    def test_api_binding_rejects_scheme_at_save(self):
+        """http://evil.example/ is rejected by the ApiBinding field_validator."""
+        from pydantic import ValidationError  # noqa: PLC0415
+
+        with pytest.raises(ValidationError) as exc_info:
+            ApiBinding(
+                kind="api",
+                connector_id="some-id",
+                path="http://evil.example/steal",
+            )
+        assert "unsafe" in str(exc_info.value).lower() or "path" in str(exc_info.value).lower()
+
+    def test_api_binding_accepts_normal_relative_path_at_save(self):
+        """A normal relative path '/v1/data' is accepted by the ApiBinding field_validator."""
+        b = ApiBinding(kind="api", connector_id="some-id", path="/v1/data")
+        assert b.path == "/v1/data"
+
+    def test_api_binding_accepts_empty_path_at_save(self):
+        """An empty string path is accepted (uses base URL as-is)."""
+        b = ApiBinding(kind="api", connector_id="some-id", path="")
+        assert b.path == ""
+
 
 # ---------------------------------------------------------------------------
 # 10. [HIGH concurrency] Demo DuckDB connector thread-safety
@@ -2279,3 +2392,119 @@ class TestRunQueryRowsConcurrentThreadSafety:
             assert "error" not in entry, f"Canvas {i}: unexpected error {entry.get('error')}"
             assert entry.get("columns") == ["value"], f"Canvas {i}: columns={entry.get('columns')}"
             assert entry.get("rows") == [[42]], f"Canvas {i}: rows={entry.get('rows')}"
+
+
+# ---------------------------------------------------------------------------
+# 11. [LOW] PUT /canvases API-connector ownership check (Rule 6)
+# ---------------------------------------------------------------------------
+
+
+class TestPutCanvasApiConnectorOwnership:
+    """PUT /canvases/{id} must enforce Rule 6: api bindings only to owned connectors.
+
+    Regression for LOW finding: the PUT path previously called the sync
+    validate_canvas_doc() which skips the async repo-backed ownership check,
+    allowing a canvas update to bind an 'api' element to a connector_id the
+    org does NOT own.  The fix replaces the sync call with
+    validate_canvas_doc_with_repo() so the same ownership gate that
+    POST/validate enforce is also applied on PUT.
+    """
+
+    @pytest.mark.asyncio
+    async def test_put_with_non_owned_connector_is_rejected(self, canvas_client):
+        """PUT /canvases/{id} with api binding to a non-owned connector_id → 400.
+
+        The connector_id used in the binding does NOT exist in the org's datastore,
+        so the ownership check must reject it with invalid_canvas_doc.
+        """
+        client, user_id, org_id, repo = canvas_client
+
+        # Create a canvas to update.
+        create_resp = await client.post(
+            "/api/v1/canvases",
+            json={"name": "API Canvas"},
+            headers=_auth_headers(user_id),
+        )
+        assert create_resp.status_code == 201, create_resp.text
+        canvas_id = create_resp.json()["id"]
+
+        # Use a connector_id that is NOT in this org's datastores.
+        non_owned_connector_id = str(uuid.uuid4())
+
+        bad_doc = {
+            "version": 1,
+            "title": "Bad API binding",
+            "html": '<nubi-value data-el-id="el_api"></nubi-value>',
+            "bindings": {
+                "el_api": {
+                    "kind": "api",
+                    "connector_id": non_owned_connector_id,
+                    "path": "/v1/data",
+                },
+            },
+        }
+
+        resp = await client.put(
+            f"/api/v1/canvases/{canvas_id}",
+            json={"config": {"doc": bad_doc}},
+            headers=_auth_headers(user_id),
+        )
+        assert resp.status_code == 400, (
+            f"Expected 400 for non-owned connector_id, got {resp.status_code}: {resp.text}"
+        )
+        body = resp.json()
+        error_code = body.get("code") or (body.get("error") or {}).get("code")
+        assert error_code == "invalid_canvas_doc", (
+            f"Expected invalid_canvas_doc error code, got: {body}"
+        )
+
+    @pytest.mark.asyncio
+    async def test_put_with_owned_http_json_connector_succeeds(self, canvas_client):
+        """PUT /canvases/{id} with api binding to an owned HTTP_JSON connector → 200.
+
+        Seeds a datastore owned by the org, then PUTs a canvas doc that binds
+        to it via connector_id — the ownership check must pass and return 200.
+        """
+        client, user_id, org_id, repo = canvas_client
+
+        # Seed an HTTP_JSON datastore owned by this org.
+        owned_connector_id = str(uuid.uuid4())
+        await repo.create(
+            "datastores",
+            org_id=org_id,
+            created_by=user_id,
+            name="Owned HTTP connector",
+            id=owned_connector_id,
+            config={"type": "http_json", "url": "http://api.example.com"},
+        )
+
+        # Create a canvas to update.
+        create_resp = await client.post(
+            "/api/v1/canvases",
+            json={"name": "API Canvas"},
+            headers=_auth_headers(user_id),
+        )
+        assert create_resp.status_code == 201, create_resp.text
+        canvas_id = create_resp.json()["id"]
+
+        good_doc = {
+            "version": 1,
+            "title": "Owned API binding",
+            "html": '<nubi-value data-el-id="el_api"></nubi-value>',
+            "bindings": {
+                "el_api": {
+                    "kind": "api",
+                    "connector_id": owned_connector_id,
+                    "path": "/v1/data",
+                },
+            },
+        }
+
+        resp = await client.put(
+            f"/api/v1/canvases/{canvas_id}",
+            json={"config": {"doc": good_doc}},
+            headers=_auth_headers(user_id),
+        )
+        assert resp.status_code == 200, (
+            f"Expected 200 for owned connector_id, got {resp.status_code}: {resp.text}"
+        )

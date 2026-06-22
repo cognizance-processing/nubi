@@ -1027,3 +1027,218 @@ class TestCountDistinctRouting:
         assert "count" not in func_names, (
             f"'count' must not appear (would be misrouted): {shape.measures}"
         )
+
+
+# ---------------------------------------------------------------------------
+# 8. [MED resource] Row-cap guard on build_rollup
+# ---------------------------------------------------------------------------
+
+
+class TestRollupRowCap:
+    """build_rollup must refuse to materialise a rollup that exceeds
+    NUBI_ROLLUP_MAX_ROWS, raising AppError('rollup_too_large')."""
+
+    def test_oversized_rollup_refused(self, source_db: str, monkeypatch) -> None:
+        """Setting NUBI_ROLLUP_MAX_ROWS=1 causes build_rollup to raise when the
+        aggregated result has more than 1 row."""
+        from app.errors import AppError  # noqa: PLC0415
+
+        monkeypatch.setenv("NUBI_ROLLUP_MAX_ROWS", "1")
+
+        reg = RollupRegistry()
+        # The orders table has 2 regions (us, eu) × 2 tenants → 4 rollup rows.
+        # Any cap <= 3 triggers the guard.
+        candidate = RollupCandidate(
+            table="orders",
+            dimensions=["region"],
+            measures=["sum(amount)"],
+        )
+        with pytest.raises(AppError) as exc_info:
+            build_rollup(
+                candidate,
+                rls_keys=["tenant_id"],
+                source_database=source_db,
+                registry=reg,
+                register_query=False,
+            )
+
+        err = exc_info.value
+        assert err.code == "rollup_too_large", f"Unexpected error code: {err.code}"
+        assert "NUBI_ROLLUP_MAX_ROWS" in str(err), (
+            f"Expected env var name in error message: {err}"
+        )
+
+        # No partial rollup must be registered after a failed build.
+        assert reg.all_rollups() == [], (
+            f"Oversized rollup leaked into registry: {reg.all_rollups()}"
+        )
+
+    def test_rollup_within_cap_succeeds(self, source_db: str, monkeypatch) -> None:
+        """A rollup that fits within NUBI_ROLLUP_MAX_ROWS builds normally."""
+        monkeypatch.setenv("NUBI_ROLLUP_MAX_ROWS", "1000000")
+
+        reg = RollupRegistry()
+        candidate = RollupCandidate(
+            table="orders",
+            dimensions=["region"],
+            measures=["sum(amount)"],
+        )
+        built = build_rollup(
+            candidate,
+            rls_keys=["tenant_id"],
+            source_database=source_db,
+            registry=reg,
+            register_query=False,
+        )
+        assert built is not None
+        assert len(reg.all_rollups()) == 1
+
+    def test_default_cap_is_large_enough_for_normal_data(
+        self, source_db: str, monkeypatch
+    ) -> None:
+        """Without NUBI_ROLLUP_MAX_ROWS set, the default cap allows normal builds."""
+        monkeypatch.delenv("NUBI_ROLLUP_MAX_ROWS", raising=False)
+
+        reg = RollupRegistry()
+        candidate = RollupCandidate(
+            table="orders",
+            dimensions=["region"],
+            measures=["sum(amount)"],
+        )
+        built = build_rollup(
+            candidate,
+            rls_keys=["tenant_id"],
+            source_database=source_db,
+            registry=reg,
+            register_query=False,
+        )
+        assert built is not None
+
+
+# ---------------------------------------------------------------------------
+# 9. [LOW tenant-isolation] Org-scoped rollup registry
+# ---------------------------------------------------------------------------
+
+
+class TestOrgScopedRegistry:
+    """BuiltRollup is tagged with org_id; candidates_for_table filters by org.
+
+    A rollup built for org A must NEVER appear in routing candidates for
+    org B's queries, even when the source table and shape are identical.
+    """
+
+    def test_rollup_for_org_a_not_visible_to_org_b(self, source_db: str) -> None:
+        """candidates_for_table(org_id='org_b') must not return org_a's rollup."""
+        reg = RollupRegistry()
+        candidate = RollupCandidate(
+            table="orders",
+            dimensions=["region"],
+            measures=["sum(amount)"],
+        )
+        # Build rollup for org_a.
+        build_rollup(
+            candidate,
+            rls_keys=["tenant_id"],
+            source_database=source_db,
+            registry=reg,
+            register_query=False,
+            org_id="org_a",
+        )
+
+        # Querying with org_b must return nothing.
+        candidates_b = reg.candidates_for_table("orders", org_id="org_b")
+        assert candidates_b == [], (
+            f"org_b should see no rollups (built for org_a), got: {candidates_b}"
+        )
+
+    def test_rollup_for_org_a_visible_to_org_a(self, source_db: str) -> None:
+        """candidates_for_table(org_id='org_a') returns org_a's rollup."""
+        reg = RollupRegistry()
+        candidate = RollupCandidate(
+            table="orders",
+            dimensions=["region"],
+            measures=["sum(amount)"],
+        )
+        build_rollup(
+            candidate,
+            rls_keys=["tenant_id"],
+            source_database=source_db,
+            registry=reg,
+            register_query=False,
+            org_id="org_a",
+        )
+
+        candidates_a = reg.candidates_for_table("orders", org_id="org_a")
+        assert len(candidates_a) == 1, (
+            f"org_a should see its own rollup, got: {candidates_a}"
+        )
+        assert candidates_a[0].org_id == "org_a"
+
+    def test_two_orgs_each_see_only_their_rollup(self, source_db: str) -> None:
+        """With rollups for both org_a and org_b, each org only sees its own."""
+        reg = RollupRegistry()
+        candidate = RollupCandidate(
+            table="orders",
+            dimensions=["region"],
+            measures=["sum(amount)"],
+        )
+
+        built_a = build_rollup(
+            candidate,
+            rls_keys=["tenant_id"],
+            source_database=source_db,
+            registry=reg,
+            register_query=False,
+            org_id="org_a",
+        )
+        built_b = build_rollup(
+            candidate,
+            rls_keys=["tenant_id"],
+            source_database=source_db,
+            registry=reg,
+            register_query=False,
+            org_id="org_b",
+        )
+
+        # org_a sees only its rollup.
+        candidates_a = reg.candidates_for_table("orders", org_id="org_a")
+        assert len(candidates_a) == 1
+        assert candidates_a[0].rollup_id == built_a.rollup_id
+
+        # org_b sees only its rollup.
+        candidates_b = reg.candidates_for_table("orders", org_id="org_b")
+        assert len(candidates_b) == 1
+        assert candidates_b[0].rollup_id == built_b.rollup_id
+
+    def test_unscoped_rollup_not_visible_to_org_query(self, source_db: str) -> None:
+        """A rollup with no org tag (org_id=None) is only visible to None queries.
+
+        An unscoped rollup must not be routed to a query carrying an explicit
+        org_id — that would allow a shared/legacy rollup to serve scoped tenants,
+        which violates isolation.
+        """
+        reg = RollupRegistry()
+        candidate = RollupCandidate(
+            table="orders",
+            dimensions=["region"],
+            measures=["sum(amount)"],
+        )
+        # Build with no org (legacy / unscoped).
+        build_rollup(
+            candidate,
+            rls_keys=["tenant_id"],
+            source_database=source_db,
+            registry=reg,
+            register_query=False,
+            org_id=None,
+        )
+
+        # org_a must NOT see the unscoped rollup.
+        candidates_a = reg.candidates_for_table("orders", org_id="org_a")
+        assert candidates_a == [], (
+            f"org_a must not see an unscoped rollup, got: {candidates_a}"
+        )
+
+        # None (unscoped) can still see it.
+        unscoped = reg.candidates_for_table("orders", org_id=None)
+        assert len(unscoped) == 1

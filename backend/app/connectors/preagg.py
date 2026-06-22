@@ -274,6 +274,10 @@ class BuiltRollup:
     rls_keys:
         RLS-key columns preserved in the rollup so read-time predicate
         injection (``WHERE <key> = <claim>``) still works.
+    org_id:
+        The organisation that owns this rollup.  Routing MUST only consider
+        rollups whose ``org_id`` matches the query's org/identity to prevent
+        cross-tenant misrouting (defense-in-depth on top of RLS).
     database / datastore_id / query_id:
         Wiring for the read path (materialized dataset served like any other).
     rewrite_sig (legacy):
@@ -289,6 +293,7 @@ class BuiltRollup:
     dimensions: list[str] = field(default_factory=list)
     measures: list[str] = field(default_factory=list)
     rls_keys: list[str] = field(default_factory=list)
+    org_id: str | None = None
     database: str | None = None
     datastore_id: str | None = None
     query_id: str | None = None
@@ -356,10 +361,28 @@ class RollupRegistry:
         if rollup.rewrite_sig:
             self._by_sig[rollup.rewrite_sig] = rollup.table
 
-    def candidates_for_table(self, table: str) -> list[BuiltRollup]:
-        """Return all built rollups whose source table matches *table*."""
+    def candidates_for_table(
+        self, table: str, *, org_id: str | None = None
+    ) -> list[BuiltRollup]:
+        """Return built rollups whose source table matches *table*.
+
+        Parameters
+        ----------
+        table:
+            Base fact table name (case-insensitive match).
+        org_id:
+            When provided, only rollups built for this org are returned.
+            This is the primary tenant-isolation guard for routing: a rollup
+            built for org A must never be considered when routing org B's query.
+            When ``None`` only rollups that have no org tag are returned (i.e.
+            unscoped / legacy rollups without an org_id), to avoid accidentally
+            mixing tagged and untagged results.
+        """
         t = table.lower()
-        return [r for r in self._rollups.values() if r.source_table.lower() == t]
+        return [
+            r for r in self._rollups.values()
+            if r.source_table.lower() == t and r.org_id == org_id
+        ]
 
     def all_rollups(self) -> list[BuiltRollup]:
         """Return all built rollups (insertion order)."""
@@ -415,6 +438,7 @@ def build_rollup_for_metric(
     registry: "RollupRegistry | None" = None,
     register_query: bool = True,
     datastore_id: str | None = None,
+    org_id: str | None = None,
 ) -> "BuiltRollup":
     """Materialize a rollup that covers a MetricDefinition's base measures.
 
@@ -517,6 +541,7 @@ def build_rollup_for_metric(
         registry=registry,
         register_query=register_query,
         datastore_id=datastore_id,
+        org_id=org_id,
     )
 
 
@@ -577,6 +602,24 @@ def build_rollup_sql(
     return sql
 
 
+_DEFAULT_ROLLUP_MAX_ROWS = 5_000_000
+
+
+def _rollup_max_rows() -> int:
+    """Return the maximum number of rows a materialised rollup may contain.
+
+    Reads ``NUBI_ROLLUP_MAX_ROWS`` from the environment; falls back to
+    :data:`_DEFAULT_ROLLUP_MAX_ROWS` (5 million rows).
+    """
+    import os  # noqa: PLC0415
+
+    raw = os.environ.get("NUBI_ROLLUP_MAX_ROWS", "")
+    try:
+        return int(raw) if raw.strip() else _DEFAULT_ROLLUP_MAX_ROWS
+    except ValueError:
+        return _DEFAULT_ROLLUP_MAX_ROWS
+
+
 def build_rollup(
     candidate: RollupCandidate | dict[str, Any],
     *,
@@ -586,6 +629,7 @@ def build_rollup(
     registry: RollupRegistry | None = None,
     register_query: bool = True,
     datastore_id: str | None = None,
+    org_id: str | None = None,
 ) -> BuiltRollup:
     """Materialize a rollup table for *candidate* and register it.
 
@@ -614,11 +658,22 @@ def build_rollup(
     register_query:
         When ``True`` (default) register a runtime ``SELECT * FROM <rollup>``
         query so reads resolve without a restart.
+    org_id:
+        Organisation that owns this rollup.  Stored on the :class:`BuiltRollup`
+        so the registry can enforce org-scoped candidate filtering: a rollup
+        built for org A will never be routed to org B's queries.
 
     Returns
     -------
     BuiltRollup
         The materialization manifest, also recorded in the registry.
+
+    Raises
+    ------
+    AppError (``rollup_too_large``)
+        When the aggregated rollup exceeds the ``NUBI_ROLLUP_MAX_ROWS`` limit
+        (default: :data:`_DEFAULT_ROLLUP_MAX_ROWS`).  Prevents OOM on
+        pathologically un-selective aggregations.
     """
     import os  # noqa: PLC0415
     import uuid  # noqa: PLC0415
@@ -647,6 +702,8 @@ def build_rollup(
     database = _rollup_database_path(rollup_id)
     os.makedirs(os.path.dirname(os.path.abspath(database)), exist_ok=True)
 
+    max_rows = _rollup_max_rows()
+
     src = duckdb.connect(database=source_database or ":memory:", read_only=False)
     try:
         rel = src.execute(rollup_sql)
@@ -655,6 +712,17 @@ def build_rollup(
             result = result.read_all()
     finally:
         src.close()
+
+    # ── Row-cap guard: refuse to materialise an oversized rollup ─────────────
+    row_count = result.num_rows
+    if row_count > max_rows:
+        raise AppError(
+            "rollup_too_large",
+            f"Rollup for {table!r} produced {row_count:,} rows which exceeds the "
+            f"NUBI_ROLLUP_MAX_ROWS limit of {max_rows:,}. Reduce the rollup grain "
+            "or raise the limit via the NUBI_ROLLUP_MAX_ROWS environment variable.",
+            400,
+        )
 
     columns = list(result.schema.names)
     missing = [k for k in rls_keys if k not in columns]
@@ -683,6 +751,7 @@ def build_rollup(
         dimensions=sorted(dimensions),
         measures=sorted(measures),
         rls_keys=rls_keys,
+        org_id=org_id,
         database=database,
         datastore_id=datastore_id,
         query_id=rollup_id,

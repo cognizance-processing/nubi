@@ -460,62 +460,68 @@ def _compile_layered(
             # LAG(measure, N) is wrong for sparse time series (missing buckets
             # shift the row offset).  We match by DATE arithmetic instead.
             # Governance already enforces time_grain is set for these kinds.
+            #
+            # FIX (perf): ALL of prior_period / pop_abs / pop_pct now materialise
+            # the prior-period value EXACTLY ONCE via a CROSS JOIN LATERAL.
+            # Previously prior_period / pop_abs emitted the correlated scalar
+            # subquery directly in the outer SELECT (and pop_abs emitted it inside
+            # `m_col - (subquery)`), so the planner re-scanned __base once per
+            # outer row — O(rows x TC).  Routing through the same LATERAL pattern
+            # as pop_pct makes the subquery text appear once and the DB evaluate
+            # it once per outer row.  Unique alias per (measure, periods, index).
             pp_expr_sql = _prior_period_subquery_sql(
                 tc.measure, mq.time_grain or "day", tc.periods,
                 time_alias, all_dim_names, dialect
             )
-            pp_expr = sqlglot.parse_one(pp_expr_sql, dialect=dialect)
             m_col_sql = m_col.sql(dialect=dialect)
+            lat_alias = f"__pp_{tc.measure}_{tc.periods}_{_tc_index}__"
+            lat_col = f"{lat_alias}.pp_val"
+            lateral_joins.append((lat_alias, pp_expr_sql))
             if tc.kind == "prior_period":
-                outer_select_exprs.append(exp.alias_(pp_expr, out_name))
+                pp_ref_expr = sqlglot.parse_one(lat_col, dialect=dialect)
+                outer_select_exprs.append(exp.alias_(pp_ref_expr, out_name))
             elif tc.kind == "pop_abs":
-                diff_sql = f"({m_col_sql} - ({pp_expr_sql}))"
+                diff_sql = f"({m_col_sql} - {lat_col})"
                 diff_expr = sqlglot.parse_one(diff_sql, dialect=dialect)
                 outer_select_exprs.append(exp.alias_(diff_expr, out_name))
-            else:  # pop_pct — FIX (Issue 3): compute pp once via LATERAL
-                # The prior-period subquery is correlated and can be expensive.
-                # Wrap it in a LATERAL so it executes once per row and is
-                # referenced (not re-executed) for both the numerator and the
-                # NULLIF denominator.
-                # Include _tc_index to prevent duplicate aliases when the same
-                # measure+kind combo appears more than once in time_comparisons.
-                lat_alias = f"__pp_{tc.measure}_{tc.periods}_{_tc_index}__"
-                lat_col = f"{lat_alias}.pp_val"
+            else:  # pop_pct
                 pct_sql = (
                     f"({m_col_sql} - {lat_col}) "
                     f"/ NULLIF({lat_col}, 0)"
                 )
                 pct_expr = sqlglot.parse_one(pct_sql, dialect=dialect)
                 outer_select_exprs.append(exp.alias_(pct_expr, out_name))
-                lateral_joins.append((lat_alias, pp_expr_sql))
 
         elif tc.kind in ("prior_year", "yoy_abs", "yoy_pct"):
             # Date-correct prior-year lookup via correlated scalar subquery.
             # Positional LAG is WRONG for sparse time series; the correlated
             # subquery matches by date (bucket - 1 year), correct for any sparsity.
+            #
+            # FIX (perf): ALL of prior_year / yoy_abs / yoy_pct now materialise
+            # the prior-year value EXACTLY ONCE via a CROSS JOIN LATERAL (same
+            # rationale as the prior_period block above).  Unique alias per
+            # (measure, index).
             py_expr_sql = _prior_year_subquery_sql(
                 tc.measure, mq.time_grain or "day", time_alias, all_dim_names, dialect
             )
-            py_expr = sqlglot.parse_one(py_expr_sql, dialect=dialect)
             m_col_sql = m_col.sql(dialect=dialect)
+            lat_alias = f"__py_{tc.measure}_{_tc_index}__"
+            lat_col = f"{lat_alias}.py_val"
+            lateral_joins.append((lat_alias, py_expr_sql))
             if tc.kind == "prior_year":
-                outer_select_exprs.append(exp.alias_(py_expr, out_name))
+                py_ref_expr = sqlglot.parse_one(lat_col, dialect=dialect)
+                outer_select_exprs.append(exp.alias_(py_ref_expr, out_name))
             elif tc.kind == "yoy_abs":
-                diff_sql = f"({m_col_sql} - ({py_expr_sql}))"
+                diff_sql = f"({m_col_sql} - {lat_col})"
                 diff_expr = sqlglot.parse_one(diff_sql, dialect=dialect)
                 outer_select_exprs.append(exp.alias_(diff_expr, out_name))
-            else:  # yoy_pct — FIX (Issue 3): compute py once via LATERAL
-                # Include _tc_index to prevent duplicate aliases when the same
-                # measure+kind combo appears more than once in time_comparisons.
-                lat_alias = f"__py_{tc.measure}_{_tc_index}__"
-                lat_col = f"{lat_alias}.py_val"
+            else:  # yoy_pct
                 pct_sql = (
                     f"({m_col_sql} - {lat_col}) "
                     f"/ NULLIF({lat_col}, 0)"
                 )
                 pct_expr = sqlglot.parse_one(pct_sql, dialect=dialect)
                 outer_select_exprs.append(exp.alias_(pct_expr, out_name))
-                lateral_joins.append((lat_alias, py_expr_sql))
 
         elif tc.kind in ("ytd", "qtd", "mtd"):
             trunc_unit = {"ytd": "year", "qtd": "quarter", "mtd": "month"}[tc.kind]
@@ -1054,6 +1060,22 @@ def _collect_atom(
     """
     if start >= len(tokens):
         return [], 0
+
+    # FIX (NULLIF unary-minus): a division denominator may be a unary-signed
+    # atom, e.g. ``a / -b``, ``a / -(b)``, ``a / +b``, or even ``a / - -b``.
+    # Tokenization yields the sign as a separate OP token, so collecting only the
+    # next single atom would mis-wrap (``NULLIF(-, 0) b``).  Consume any run of
+    # leading unary +/- signs FIRST, then the atom they apply to, and return the
+    # whole signed expression so NULLIF wraps the full denominator.
+    sign_tokens: list[tuple[int, str]] = []
+    i = start
+    while i < len(tokens) and tokens[i][1] in ("-", "+"):
+        sign_tokens.append(tokens[i])
+        i += 1
+    if sign_tokens:
+        atom_tokens, atom_advance = _collect_atom(tokens, i)
+        return sign_tokens + atom_tokens, len(sign_tokens) + atom_advance
+
     tok_type, tok_str = tokens[start]
     if tok_str == "(":
         # Collect until matching close paren — return raw (type, str) tuples so

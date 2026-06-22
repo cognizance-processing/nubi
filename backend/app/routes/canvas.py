@@ -278,7 +278,10 @@ async def update_canvas(
     and validated.  Hard validation failures (non-``[warn]`` issues) are rejected
     with 400 ``invalid_canvas_doc`` to prevent persisting XSS payloads.
     """
-    from app.dashboards.canvas import CanvasDoc, validate_canvas_doc  # noqa: PLC0415
+    from app.dashboards.canvas import (  # noqa: PLC0415
+        CanvasDoc,
+        validate_canvas_doc_with_repo,
+    )
 
     org_id = await _get_org(user)
     fields: dict[str, Any] = {}
@@ -286,7 +289,9 @@ async def update_canvas(
         fields["name"] = body.name
     if body.config is not None:
         # SECURITY: validate any embedded CanvasDoc before persisting — prevents
-        # XSS payloads (e.g. <script> tags) from reaching the canvas store.
+        # XSS payloads (e.g. <script> tags) from reaching the canvas store, AND
+        # enforces Rule 6 API-connector ownership so a canvas update cannot bind
+        # an 'api' element to a connector_id the org does NOT own.
         doc_raw = body.config.get("doc")
         if doc_raw is not None:
             try:
@@ -297,7 +302,7 @@ async def update_canvas(
                     f"Canvas doc parse error: {exc}",
                     400,
                 ) from exc
-            _ok, issues = validate_canvas_doc(doc, org_id=org_id)
+            _ok, issues = await validate_canvas_doc_with_repo(doc, org_id=org_id, repo=repo)
             hard = [i for i in issues if not i.lstrip().lower().startswith("[warn]")]
             if hard:
                 raise AppError(

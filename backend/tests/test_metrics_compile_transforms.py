@@ -4113,3 +4113,317 @@ def test_filters_at_cap_accepted() -> None:
     sql, params = compile_metric(m, mq)
     assert sql
     assert len(params) == max_f
+
+
+# ---------------------------------------------------------------------------
+# 15. TENTH-WAVE — non-LATERAL time-comparisons now materialise via LATERAL
+#     (perf) + unary-minus denominator NULLIF guard (correctness).
+#
+#     HARD RULE: results verified through plan() + in-memory DuckDB.
+# ---------------------------------------------------------------------------
+
+
+def _pp_inner(measure: str = "revenue") -> str:
+    """The prior-PERIOD correlated subquery text (uppercased) — appears once
+    inside the LATERAL after the fix."""
+    return f'SELECT __PP."{measure.upper()}" FROM __BASE AS __PP'
+
+
+def _py_inner(measure: str = "revenue") -> str:
+    """The prior-YEAR correlated subquery text (uppercased)."""
+    return f'SELECT __PY."{measure.upper()}" FROM __BASE AS __PY'
+
+
+def test_prior_period_uses_lateral_subquery_appears_once() -> None:
+    """[MED perf] prior_period materialises the prior value via CROSS JOIN LATERAL.
+
+    The correlated subquery text must appear EXACTLY ONCE (inside the lateral),
+    and the outer SELECT references the lateral alias column ``pp_val`` — it no
+    longer emits the correlated scalar subquery inline in the SELECT (which made
+    the planner re-scan __base per outer row).
+    """
+    m = _simple_metric()
+    mq = MetricQuery(
+        metric_id="revenue",
+        dimensions=("region",),
+        time_grain="month",
+        time_comparisons=(
+            TimeComparison(measure="revenue", kind="prior_period", periods=1),
+        ),
+    )
+    sql, _ = compile_metric(m, mq)
+    up = sql.upper()
+    assert up.count(_pp_inner()) == 1, (
+        f"prior_period subquery should appear once (inside LATERAL), "
+        f"found {up.count(_pp_inner())}:\n{sql[:600]}"
+    )
+    assert "LATERAL" in up
+    assert "PP_VAL" in up
+    assert "revenue_prior_period" in sql.lower()
+
+
+def test_pop_abs_uses_lateral_subquery_appears_once() -> None:
+    """[MED perf] pop_abs materialises the prior value once via LATERAL.
+
+    Previously pop_abs emitted ``revenue - (<subquery>)`` — the subquery text
+    inline in the SELECT, re-scanning __base per outer row.  Now it references
+    the lateral column once.
+    """
+    m = _simple_metric()
+    mq = MetricQuery(
+        metric_id="revenue",
+        dimensions=("region",),
+        time_grain="month",
+        time_comparisons=(
+            TimeComparison(measure="revenue", kind="pop_abs", periods=1),
+        ),
+    )
+    sql, _ = compile_metric(m, mq)
+    up = sql.upper()
+    assert up.count(_pp_inner()) == 1, (
+        f"pop_abs subquery should appear once (inside LATERAL), "
+        f"found {up.count(_pp_inner())}:\n{sql[:600]}"
+    )
+    assert "LATERAL" in up
+    assert "PP_VAL" in up
+
+
+def test_prior_year_uses_lateral_subquery_appears_once() -> None:
+    """[MED perf] prior_year materialises the prior-year value once via LATERAL."""
+    m = _simple_metric()
+    mq = MetricQuery(
+        metric_id="revenue",
+        dimensions=("region",),
+        time_grain="month",
+        time_comparisons=(
+            TimeComparison(measure="revenue", kind="prior_year"),
+        ),
+    )
+    sql, _ = compile_metric(m, mq)
+    up = sql.upper()
+    assert up.count(_py_inner()) == 1, (
+        f"prior_year subquery should appear once (inside LATERAL), "
+        f"found {up.count(_py_inner())}:\n{sql[:600]}"
+    )
+    assert "LATERAL" in up
+    assert "PY_VAL" in up
+    assert "revenue_prior_year" in sql.lower()
+
+
+def test_yoy_abs_uses_lateral_subquery_appears_once() -> None:
+    """[MED perf] yoy_abs materialises the prior-year value once via LATERAL."""
+    m = _simple_metric()
+    mq = MetricQuery(
+        metric_id="revenue",
+        dimensions=("region",),
+        time_grain="month",
+        time_comparisons=(
+            TimeComparison(measure="revenue", kind="yoy_abs"),
+        ),
+    )
+    sql, _ = compile_metric(m, mq)
+    up = sql.upper()
+    assert up.count(_py_inner()) == 1, (
+        f"yoy_abs subquery should appear once (inside LATERAL), "
+        f"found {up.count(_py_inner())}:\n{sql[:600]}"
+    )
+    assert "LATERAL" in up
+    assert "PY_VAL" in up
+    assert "revenue_yoy_abs" in sql.lower()
+
+
+def test_lateral_time_comparisons_correct_values_through_plan() -> None:
+    """[MED perf+correctness] prior_period / pop_abs / prior_year / yoy_abs through
+    LATERAL produce CORRECT values when executed on DuckDB via plan().
+
+    Data (region A):
+      2023-02: 80
+      2024-01: 100
+      2024-02: 150
+    Checks for 2024-02:
+      prior_period (2024-01) = 100
+      pop_abs      = 150 - 100 = 50
+      prior_year   (2023-02)  = 80
+      yoy_abs      = 150 - 80  = 70
+    """
+    con = _duckdb_conn()
+    con.execute("""
+        CREATE TABLE lat_tc (
+            region    VARCHAR,
+            amount    DOUBLE,
+            sale_date DATE
+        )
+    """)
+    con.execute("""
+        INSERT INTO lat_tc VALUES
+            ('A',  80, '2023-02-01'),
+            ('A', 100, '2024-01-01'),
+            ('A', 150, '2024-02-01')
+    """)
+    m = MetricDefinition(
+        id="lat_tc",
+        name="Lateral TC",
+        measure=Measure(name="revenue", agg="sum", expr="amount"),
+        base_table="lat_tc",
+        dimensions=(Dimension(name="region"),),
+        time_dimension=TimeDimension(
+            column="sale_date",
+            grains=("month",),
+            default_grain="month",
+        ),
+    )
+    mq = MetricQuery(
+        metric_id="lat_tc",
+        dimensions=("region",),
+        time_grain="month",
+        time_comparisons=(
+            TimeComparison(measure="revenue", kind="prior_period", periods=1),
+            TimeComparison(measure="revenue", kind="pop_abs", periods=1),
+            TimeComparison(measure="revenue", kind="prior_year"),
+            TimeComparison(measure="revenue", kind="yoy_abs"),
+        ),
+    )
+    sql, _ = compile_metric(m, mq)
+    # Each comparison materialises its prior value once inside its OWN LATERAL,
+    # so the prior-period text appears twice (prior_period + pop_abs) and the
+    # prior-year text twice (prior_year + yoy_abs) — once per lateral, never
+    # inline-duplicated within a single comparison.
+    up = sql.upper()
+    assert up.count(_pp_inner()) == 2
+    assert up.count(_py_inner()) == 2
+    assert "LATERAL" in up
+    p = plan(sql, claims={}, dialect="duckdb")
+    rows = con.execute(p.sql).fetchall()
+    # Columns: region, sale_date_month, revenue, prior_period, pop_abs,
+    #          prior_year, yoy_abs (order matches the outer SELECT projection).
+    cols = [d[0] for d in con.description]
+    idx = {name: i for i, name in enumerate(cols)}
+    row_by_ym = {(r[idx["sale_date_month"]].year, r[idx["sale_date_month"]].month): r
+                 for r in rows}
+    feb = row_by_ym[(2024, 2)]
+    assert feb[idx["revenue"]] == 150.0
+    assert feb[idx["revenue_prior_period"]] == 100.0, feb
+    assert feb[idx["revenue_pop_abs"]] == 50.0, feb
+    assert feb[idx["revenue_prior_year"]] == 80.0, feb
+    assert feb[idx["revenue_yoy_abs"]] == 70.0, feb
+
+
+def test_duplicate_lateral_kinds_get_unique_aliases() -> None:
+    """Two prior_period entries for the same measure with different periods must
+    get distinct LATERAL aliases (no alias collision) and both compile + parse."""
+    m = _simple_metric()
+    mq = MetricQuery(
+        metric_id="revenue",
+        dimensions=("region",),
+        time_grain="month",
+        time_comparisons=(
+            TimeComparison(measure="revenue", kind="prior_period", periods=1,
+                           name="rev_pp1"),
+            TimeComparison(measure="revenue", kind="prior_period", periods=2,
+                           name="rev_pp2"),
+        ),
+    )
+    sql, _ = compile_metric(m, mq)
+    # Both subqueries appear (different intervals), one per LATERAL.
+    assert sql.upper().count(_pp_inner()) == 2
+    # Distinct lateral aliases.
+    assert "__pp_revenue_1_0__" in sql.lower()
+    assert "__pp_revenue_2_1__" in sql.lower()
+    parsed = sqlglot.parse_one(sql, dialect="duckdb")
+    assert parsed is not None
+
+
+# ── Unary-minus denominator NULLIF guard ─────────────────────────────────────
+
+def test_unary_minus_denominator_compiles_and_guards() -> None:
+    """[LOW correctness] a derived formula with a unary-minus denominator must
+    wrap the FULL signed denominator in NULLIF, not just the bare '-' token.
+
+    ``a / -b`` -> ``a / NULLIF(- b, 0)`` (valid SQL), not ``a / NULLIF(-, 0) b``.
+    """
+    m = MetricDefinition(
+        id="neg_denom",
+        name="Neg Denom",
+        measure=Measure(name="a", agg="sum", expr="col_a"),
+        base_table="t",
+        extra_measures=(Measure(name="b", agg="sum", expr="col_b"),),
+        derived_measures=(
+            DerivedMeasure(name="r", formula="a / -b"),
+        ),
+    )
+    mq = MetricQuery(metric_id="neg_denom")
+    sql, _ = compile_metric(m, mq)
+    up = sql.upper()
+    assert "NULLIF" in up
+    # The minus sign must be INSIDE the NULLIF, applying to b.
+    assert "NULLIF(- B" in up or "NULLIF(-B" in up, (
+        f"unary minus must be inside NULLIF over the denominator:\n{sql}"
+    )
+    # Must be valid SQL.
+    parsed = sqlglot.parse_one(sql, dialect="duckdb")
+    assert parsed is not None
+
+
+def test_unary_minus_paren_denominator_compiles() -> None:
+    """``a / -(b)`` and ``a / (-b)`` both wrap the full signed/parenthesised
+    denominator in NULLIF and parse cleanly."""
+    for formula in ("a / -(b)", "a / (-b)"):
+        m = MetricDefinition(
+            id="neg_paren",
+            name="Neg Paren",
+            measure=Measure(name="a", agg="sum", expr="col_a"),
+            base_table="t",
+            extra_measures=(Measure(name="b", agg="sum", expr="col_b"),),
+            derived_measures=(
+                DerivedMeasure(name="r", formula=formula),
+            ),
+        )
+        mq = MetricQuery(metric_id="neg_paren")
+        sql, _ = compile_metric(m, mq)
+        assert "NULLIF" in sql.upper(), f"missing NULLIF for {formula!r}:\n{sql}"
+        parsed = sqlglot.parse_one(sql, dialect="duckdb")
+        assert parsed is not None, f"failed to parse for {formula!r}"
+
+
+def test_unary_minus_denominator_divide_guard_executes_in_duckdb() -> None:
+    """[LOW correctness] the NULLIF guard for a unary-minus denominator still
+    prevents divide-by-zero: when -b evaluates to 0 the result is NULL (not an
+    error), verified through plan() on DuckDB."""
+    con = _duckdb_conn()
+    con.execute("""
+        CREATE TABLE neg_div (
+            grp    VARCHAR,
+            a_val  DOUBLE,
+            b_val  DOUBLE
+        )
+    """)
+    # grp X: b sums to 0  -> -b = 0 -> NULLIF makes the ratio NULL (no error).
+    # grp Y: a sums to 10, b sums to 5 -> -b = -5 -> ratio = 10 / -5 = -2.
+    con.execute("""
+        INSERT INTO neg_div VALUES
+            ('X', 10,  3),
+            ('X', 20, -3),
+            ('Y', 10,  5)
+    """)
+    m = MetricDefinition(
+        id="neg_div",
+        name="Neg Div",
+        measure=Measure(name="a", agg="sum", expr="a_val"),
+        base_table="neg_div",
+        dimensions=(Dimension(name="grp"),),
+        extra_measures=(Measure(name="b", agg="sum", expr="b_val"),),
+        derived_measures=(
+            DerivedMeasure(name="r", formula="a / -b"),
+        ),
+    )
+    mq = MetricQuery(metric_id="neg_div", dimensions=("grp",))
+    sql, _ = compile_metric(m, mq)
+    p = plan(sql, claims={}, dialect="duckdb")
+    rows = con.execute(p.sql).fetchall()
+    cols = [d[0] for d in con.description]
+    idx = {name: i for i, name in enumerate(cols)}
+    by_grp = {r[idx["grp"]]: r for r in rows}
+    # X: -b == 0 -> guarded to NULL (no divide-by-zero error).
+    assert by_grp["X"][idx["r"]] is None, by_grp["X"]
+    # Y: 10 / -5 == -2.0.
+    assert by_grp["Y"][idx["r"]] == -2.0, by_grp["Y"]

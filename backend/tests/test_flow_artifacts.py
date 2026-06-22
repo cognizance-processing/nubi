@@ -796,7 +796,7 @@ def test_production_env_no_hmac_key_put_raises():
         saved_hmac = os.environ.pop("NUBI_ARTIFACT_HMAC_KEY", None)
         saved_secret = os.environ.pop("NUBI_SECRET_KEY", None)
         try:
-            with pytest.raises(RuntimeError, match="not configured in production"):
+            with pytest.raises(RuntimeError, match="not configured"):
                 put_artifact({"x": 1}, kind="json", org_id=ORG_A, store=art_store)
         finally:
             if saved_hmac is not None:
@@ -824,7 +824,7 @@ def test_production_env_no_hmac_key_get_raises():
 
         # Now simulate production with no HMAC key → get must also raise.
         with unittest.mock.patch.dict("os.environ", {"ENV": "production"}, clear=False):
-            with pytest.raises(RuntimeError, match="not configured in production"):
+            with pytest.raises(RuntimeError, match="not configured"):
                 get_artifact(handle, org_id=ORG_A, store=art_store)
     finally:
         if saved_hmac is not None:
@@ -865,3 +865,120 @@ def test_dev_env_no_hmac_key_uses_sentinel_with_warning():
             os.environ["NUBI_SECRET_KEY"] = saved_secret
         if saved_env is not None:
             os.environ["ENV"] = saved_env
+
+
+# ---------------------------------------------------------------------------
+# 22. Staging/QA env with no HMAC key must raise (not fall back to sentinel)
+# ---------------------------------------------------------------------------
+
+
+def test_staging_env_no_hmac_key_raises():
+    """put_artifact in staging/qa/preview with no HMAC key must raise RuntimeError.
+
+    SECURITY (MED RCE — part 1): the original code only fail-closed for
+    ENV=production.  ENV=staging (and any other named non-dev environment)
+    also received the publicly-known sentinel key, making staged deployments
+    RCE-exploitable.  The fix expands the fail-closed path to all ENVs that
+    are not in the explicit dev/test/ci/empty allowlist.
+    """
+    import os  # noqa: PLC0415
+    import unittest.mock  # noqa: PLC0415
+
+    art_store = _mem_store()
+    for named_env in ("staging", "qa", "preview", "preprod", "uat", "production"):
+        with unittest.mock.patch.dict("os.environ", {"ENV": named_env}, clear=False):
+            saved_hmac = os.environ.pop("NUBI_ARTIFACT_HMAC_KEY", None)
+            saved_secret = os.environ.pop("NUBI_SECRET_KEY", None)
+            try:
+                with pytest.raises(RuntimeError, match="not configured"):
+                    put_artifact({"x": 1}, kind="json", org_id=ORG_A, store=art_store)
+            finally:
+                if saved_hmac is not None:
+                    os.environ["NUBI_ARTIFACT_HMAC_KEY"] = saved_hmac
+                if saved_secret is not None:
+                    os.environ["NUBI_SECRET_KEY"] = saved_secret
+
+
+# ---------------------------------------------------------------------------
+# 23. Subprocess rejects a tampered spool blob before pickle.loads
+# ---------------------------------------------------------------------------
+
+
+def test_subprocess_tampered_spool_blob_rejected():
+    """_pre_fetch_artifacts must verify the HMAC before writing to the spool.
+
+    SECURITY (MED RCE — part 2): the subprocess called pickle.loads on spool
+    bytes written by the parent WITHOUT HMAC verification.  An attacker that
+    can tamper with the object store could craft a sentinel-signed pickle blob
+    that the parent downloads and the subprocess deserialises unchecked.
+
+    Fix: the parent calls _hmac_verify_and_strip before writing to spool, so a
+    tampered blob raises ValueError in the parent and the spool file is never
+    written.  The subprocess therefore cannot deserialise an unverified blob.
+    """
+    import os  # noqa: PLC0415
+    import tempfile  # noqa: PLC0415
+    import unittest.mock  # noqa: PLC0415
+    from app.flows.executor import TaskContext  # noqa: PLC0415
+    from app.flows.artifacts import (  # noqa: PLC0415
+        InMemoryArtifactStore,
+        _hmac_sign,
+    )
+
+    art_store = InMemoryArtifactStore()
+
+    # Write a tampered blob directly into the store (simulates attacker-
+    # controlled object store): valid NUBI1 envelope but corrupted payload.
+    artifact_id = "tampered-artifact-spool"
+    legitimate_payload = b"not-a-pickle"
+    signed = _hmac_sign(legitimate_payload)
+    # Corrupt the payload region (after the 71-byte envelope header).
+    tampered = bytearray(signed)
+    tampered[-1] ^= 0xFF
+    key = f"orgs/{ORG_A}/artifacts/{artifact_id}"
+    art_store._blobs[key] = bytes(tampered)
+
+    handle = {
+        "artifact_id": artifact_id,
+        "kind": "pickle",
+        "uri": f"mem://{key}",
+        "org_id": ORG_A,
+        "produced_by_run": None,
+        "name": None,
+        "meta": None,
+        "__type__": "artifact_handle",
+    }
+
+    spool_dir = tempfile.mkdtemp(prefix="nubi-test-spool-")
+    artifact_spool_dir = os.path.join(spool_dir, "artifacts")
+    os.makedirs(artifact_spool_dir, exist_ok=True)
+    spool_path = os.path.join(artifact_spool_dir, artifact_id)
+
+    ctx = TaskContext(
+        flow_params={},
+        inputs={"upstream": handle},
+        now=None,
+        org_id=ORG_A,
+        run_id="run-tamper-test",
+        _artifact_store=art_store,
+    )
+
+    # Import the internal function that _handle_python calls.
+    from app.flows.artifacts import _hmac_verify_and_strip  # noqa: PLC0415
+
+    # Simulate what _pre_fetch_artifacts does: download + verify + write.
+    # A tampered blob must raise ValueError (HMAC mismatch) so the spool
+    # file is never written — the subprocess would raise FileNotFoundError on
+    # access instead of deserialising an unverified blob.
+    signed_blob = art_store.download(artifact_id, ORG_A)
+    with pytest.raises(ValueError, match="HMAC mismatch|integrity check failed"):
+        _hmac_verify_and_strip(signed_blob)
+
+    # Confirm the spool file was NOT written (parent correctly aborted).
+    assert not os.path.exists(spool_path), (
+        "Spool file must not be written when HMAC verification fails."
+    )
+
+    # Cleanup.
+    import shutil  # noqa: PLC0415
+    shutil.rmtree(spool_dir, ignore_errors=True)

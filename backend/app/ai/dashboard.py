@@ -82,6 +82,65 @@ _ON_HANDLER_RE = re.compile(r"\bon\w+\s*=", re.IGNORECASE)
 _JAVASCRIPT_URI_RE = re.compile(r"javascript\s*:", re.IGNORECASE)
 _DATA_HTML_RE = re.compile(r"data\s*:\s*text/html", re.IGNORECASE)
 
+# Safe raster image data URI prefixes (case-insensitive after whitespace
+# normalisation).  Everything else (including svg+xml) is rejected.
+_SAFE_DATA_IMAGE_TYPES: frozenset[str] = frozenset(
+    {"image/png", "image/jpeg", "image/gif", "image/webp"}
+)
+
+# Matches any data: URI so we can inspect the MIME type.
+_DATA_URI_RE = re.compile(r"data\s*:", re.IGNORECASE)
+
+# HTML numeric/named entity patterns used to obfuscate scheme characters.
+_HTML_ENTITY_RE = re.compile(r"&#?\w+;")
+
+
+def _normalize_scheme(text: str) -> str:
+    """Return *text* with whitespace and HTML entities removed.
+
+    Used to defeat bypass attempts such as ``java&#10;script:`` or
+    ``java\nscript:`` where control characters / entities are embedded
+    inside the URI scheme to fool simple regex matching.
+    """
+    # Strip HTML entities (&#10; / &amp; etc.)
+    stripped = _HTML_ENTITY_RE.sub("", text)
+    # Strip all ASCII whitespace including \n, \t, \r, space.
+    stripped = re.sub(r"[\s\x00-\x1f]", "", stripped)
+    return stripped
+
+
+def _has_dangerous_scheme(value: str) -> bool:
+    """Return True when *value* contains a dangerous URI scheme.
+
+    Normalises the value first (removes whitespace + HTML entities) so that
+    bypass variants like ``java\\nscript:``, ``vbs\\tcript:``, or
+    ``java&#10;script:`` are all caught.
+    """
+    normalized = _normalize_scheme(value).lower()
+    for scheme in ("javascript:", "vbscript:", "data:"):
+        if scheme in normalized:
+            return True
+    return False
+
+
+def _is_safe_data_uri(value: str) -> bool:
+    """Return True when *value* is a ``data:`` URI with a safe raster MIME type.
+
+    Only ``data:image/png``, ``data:image/jpeg``, ``data:image/gif``, and
+    ``data:image/webp`` are considered safe.  Everything else (including
+    ``data:image/svg+xml``, ``data:text/html``, bare ``data:`` URIs, etc.)
+    returns False.
+    """
+    # Normalise whitespace within the scheme/type section only (up to the
+    # first comma or semicolon).
+    lower = value.lower()
+    # Find "data:" allowing whitespace between characters.
+    m = re.search(r"data\s*:\s*([^\s;,]+)", lower)
+    if not m:
+        return False
+    mime = re.sub(r"\s", "", m.group(1))  # strip any residual whitespace
+    return mime in _SAFE_DATA_IMAGE_TYPES
+
 # Tags that must never appear in a dashboard or canvas document — they can be
 # used for phishing (iframe/form), plugin execution (object/embed), or
 # redirecting base URLs (base/meta/link).  Any one of these is a hard error.
@@ -668,11 +727,49 @@ def validate_dashboard_html(html: str) -> tuple[bool, list[str]]:
             "HTML contains inline event handler (on*=) — forbidden in dashboard documents."
         )
 
-    # 3. No javascript: or data:text/html URIs.
+    # 3. No dangerous URI schemes (javascript:, vbscript:, data:) — including
+    #    obfuscated variants with embedded whitespace or HTML entities in the
+    #    scheme (e.g. 'java\nscript:', 'javas\tcript:', 'java&#10;script:').
+    #    We extract all href/src/action/style attribute values plus any quoted
+    #    string that starts with a scheme-like prefix and normalise them before
+    #    matching, so bypass variants are caught.
+    #
+    #    Strategy: pull every attribute value from the HTML and check for
+    #    dangerous schemes in the normalised form.  We also keep the fast-path
+    #    regex checks for plain (un-obfuscated) matches so existing payloads
+    #    are still caught immediately.
     if _JAVASCRIPT_URI_RE.search(html):
         issues.append("HTML contains javascript: URI — forbidden.")
+    elif _has_dangerous_scheme(html):
+        # Catches obfuscated variants (java\nscript:, etc.).
+        issues.append("HTML contains dangerous URI scheme — forbidden.")
+
     if _DATA_HTML_RE.search(html):
         issues.append("HTML contains data:text/html URI — forbidden.")
+
+    # 3a. Block data: URIs that are not safe raster images.
+    #     data:image/svg+xml URIs are blocked because SVG can carry inline
+    #     <script> tags.  Only data:image/png|jpeg|gif|webp are permitted.
+    _attr_value_re = re.compile(
+        r"""(?:href|src|action|data|style|content)\s*=\s*["']([^"']*)["']""",
+        re.IGNORECASE,
+    )
+    for m in _attr_value_re.finditer(html):
+        val = m.group(1)
+        # Normalise to catch obfuscated scheme prefixes.
+        if _has_dangerous_scheme(val):
+            # Avoid double-reporting javascript:/vbscript: already caught above.
+            normalized = _normalize_scheme(val).lower()
+            if not normalized.startswith("javascript:") and not normalized.startswith("vbscript:"):
+                issues.append(
+                    f"HTML attribute contains dangerous URI scheme: {val[:80]!r} — forbidden."
+                )
+        elif _DATA_URI_RE.search(val) and not _is_safe_data_uri(val):
+            issues.append(
+                f"HTML attribute contains unsafe data: URI (only "
+                f"image/png, image/jpeg, image/gif, image/webp are permitted): "
+                f"{val[:80]!r}"
+            )
 
     # 3b. Forbidden structural tags (iframe, object, embed, form, meta, base, link).
     # These are blocked at save time so they can never reach the renderer.

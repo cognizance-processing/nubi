@@ -33,6 +33,7 @@ import asyncio
 import logging
 import os
 import threading
+import urllib.parse
 import weakref
 from typing import Any
 
@@ -529,13 +530,15 @@ async def collect_canvas_data(
                 binding_path: str = binding.get("path") or ""
                 binding_select: str | None = binding.get("select") or None
 
-                # [LOW path-traversal] Validate that binding_path is a safe
+                # [MED path-traversal] Validate that binding_path is a safe
                 # relative path before joining it onto the connector base URL.
+                # URL-decode the path first so %2e%2e, .%2e, %2e. bypass attempts
+                # are normalised to '..' before the segment check.
                 # Reject: URL schemes (contains "://"), protocol-relative URLs
                 # ("//"), and paths containing ".." segments that could escape
                 # the base URL's path hierarchy.
                 if binding_path:
-                    _path_norm = binding_path.strip()
+                    _path_norm = urllib.parse.unquote(binding_path).strip()
                     if (
                         "://" in _path_norm
                         or _path_norm.startswith("//")

@@ -303,6 +303,108 @@ class TestValidateDashboardHtml:
         ok4, issues4 = validate_dashboard_html(html_nospace)
         assert ok4 is False, "Expected validate_dashboard_html to reject 'onclick=' (no space)"
 
+    # ── data: URI hardening (LOW XSS) ─────────────────────────────────────────
+
+    def test_data_image_svg_xml_is_rejected(self):
+        """data:image/svg+xml URIs must be rejected — SVG can embed <script>.
+
+        SECURITY (LOW XSS): SVG data URIs can contain inline <script> tags that
+        execute in the browser when the URI is set as an src/href attribute.
+        Only safe raster image types (png/jpeg/gif/webp) are permitted.
+        """
+        html = (
+            '<img src="data:image/svg+xml;base64,PHN2ZyB4bWxucz0naHR0cDovL3d3dy53'
+            'My5vcmcvMjAwMC9zdmcnPjxzY3JpcHQ+YWxlcnQoMSk8L3NjcmlwdD48L3N2Zz4=">'
+        )
+        ok, issues = validate_dashboard_html(html)
+        assert ok is False, (
+            "Expected validate_dashboard_html to reject data:image/svg+xml URI"
+        )
+        assert any("svg" in i.lower() or "unsafe data" in i.lower() or "data:" in i.lower() for i in issues), issues
+
+    def test_data_image_png_is_permitted(self):
+        """data:image/png URIs must be allowed — safe raster images are OK."""
+        # A minimal valid 1x1 transparent PNG base64-encoded.
+        html = (
+            '<img src="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJ'
+            'AAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==">'
+        )
+        ok, issues = validate_dashboard_html(html)
+        # data:image/png is on the safe list — must not produce a data-URI issue.
+        data_uri_issues = [i for i in issues if "unsafe data" in i.lower() or "svg" in i.lower()]
+        assert data_uri_issues == [], (
+            f"data:image/png should be permitted but got: {data_uri_issues}"
+        )
+
+    def test_data_image_jpeg_is_permitted(self):
+        """data:image/jpeg URIs must be allowed."""
+        html = '<img src="data:image/jpeg;base64,/9j/4AAQSkZJRg==">'
+        ok, issues = validate_dashboard_html(html)
+        data_uri_issues = [i for i in issues if "unsafe data" in i.lower() or "svg" in i.lower()]
+        assert data_uri_issues == [], (
+            f"data:image/jpeg should be permitted but got: {data_uri_issues}"
+        )
+
+    def test_data_image_gif_is_permitted(self):
+        """data:image/gif URIs must be allowed."""
+        html = '<img src="data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7">'
+        ok, issues = validate_dashboard_html(html)
+        data_uri_issues = [i for i in issues if "unsafe data" in i.lower() or "svg" in i.lower()]
+        assert data_uri_issues == [], (
+            f"data:image/gif should be permitted but got: {data_uri_issues}"
+        )
+
+    def test_data_image_webp_is_permitted(self):
+        """data:image/webp URIs must be allowed."""
+        html = '<img src="data:image/webp;base64,UklGRiQAAABXRUJQVlA4IBgAAAAwAQCdASoBAAEAAUAmJZACdAEO/gHOAAA=">'
+        ok, issues = validate_dashboard_html(html)
+        data_uri_issues = [i for i in issues if "unsafe data" in i.lower() or "svg" in i.lower()]
+        assert data_uri_issues == [], (
+            f"data:image/webp should be permitted but got: {data_uri_issues}"
+        )
+
+    # ── Obfuscated scheme detection (LOW XSS) ─────────────────────────────────
+
+    def test_javascript_with_embedded_newline_is_rejected(self):
+        r"""'java\nscript:' must be caught — whitespace inside scheme is stripped.
+
+        SECURITY (LOW XSS): the original regex r'javascript\s*:' only strips
+        whitespace between the scheme name and the colon.  Embedding a newline
+        or tab *inside* the scheme name (e.g. 'java\nscript:') bypassed it.
+        The fix normalises the full value before matching.
+        """
+        html = '<a href="java\nscript:alert(1)">click</a>'
+        ok, issues = validate_dashboard_html(html)
+        assert ok is False, (
+            r"Expected validate_dashboard_html to reject 'java\nscript:' URI"
+        )
+        assert any("javascript" in i.lower() or "dangerous" in i.lower() for i in issues), issues
+
+    def test_javascript_with_embedded_tab_is_rejected(self):
+        r"""'javas\tcript:' must be caught."""
+        html = '<a href="javas\tcript:alert(1)">click</a>'
+        ok, issues = validate_dashboard_html(html)
+        assert ok is False, (
+            r"Expected validate_dashboard_html to reject 'javas\tcript:' URI"
+        )
+        assert any("javascript" in i.lower() or "dangerous" in i.lower() for i in issues), issues
+
+    def test_javascript_with_embedded_carriage_return_is_rejected(self):
+        r"""'java\rscript:' must be caught."""
+        html = '<a href="java\rscript:alert(1)">click</a>'
+        ok, issues = validate_dashboard_html(html)
+        assert ok is False, (
+            r"Expected validate_dashboard_html to reject 'java\rscript:' URI"
+        )
+        assert any("javascript" in i.lower() or "dangerous" in i.lower() for i in issues), issues
+
+    def test_plain_javascript_uri_still_rejected(self):
+        """Plain 'javascript:' (no obfuscation) must still be rejected."""
+        html = '<a href="javascript:alert(1)">click</a>'
+        ok, issues = validate_dashboard_html(html)
+        assert ok is False
+        assert any("javascript" in i.lower() for i in issues), issues
+
     def test_empty_html_is_valid(self):
         ok, issues = validate_dashboard_html("")
         assert ok is True

@@ -52,9 +52,10 @@ Security model (unchanged from dashboards)
 from __future__ import annotations
 
 import re
+import urllib.parse
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 # ---------------------------------------------------------------------------
 # Canonical Canvas element vocabulary (nubi-* client convention)
@@ -116,6 +117,33 @@ class ApiBinding(BaseModel):
     select: str | None = None
     """JSONPath selector applied to the HTTP response JSON."""
     format: str | None = None
+
+    @field_validator("path", mode="before")
+    @classmethod
+    def _validate_path(cls, v: Any) -> Any:
+        """Reject unsafe paths at save time (defense-in-depth).
+
+        URL-decodes the path first (%2e%2e, .%2e, %2e. etc.) so encoded
+        traversal sequences are caught before the segment check.  Rejects:
+        - Paths containing '..' segments after URL-decoding.
+        - Paths containing a URL scheme ('://').
+        - Protocol-relative paths starting with '//'.
+        """
+        if not v or not isinstance(v, str):
+            return v
+        decoded = urllib.parse.unquote(v).strip()
+        if (
+            "://" in decoded
+            or decoded.startswith("//")
+            or ".." in decoded.split("/")
+        ):
+            raise ValueError(
+                f"ApiBinding.path {v!r} is unsafe: paths must be relative, must not "
+                "contain '..' segments (including URL-encoded forms such as %2e%2e, "
+                ".%2e, or %2e.), and must not include a URL scheme or '//'. "
+                "They are joined under the connector's base URL only."
+            )
+        return v
 
 
 # Union type for a single binding entry (discriminated by ``kind``).

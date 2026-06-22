@@ -105,13 +105,16 @@ def _get_hmac_key() -> bytes:
     key = os.environ.get("NUBI_ARTIFACT_HMAC_KEY") or os.environ.get("NUBI_SECRET_KEY")
     if key:
         return key.encode("utf-8") if isinstance(key, str) else key
-    # No real key configured.  In production this is a hard failure — using
-    # a known sentinel key would allow anyone to forge valid HMAC signatures
-    # and trigger pickle RCE via a crafted blob in the object store.
+    # No real key configured.  In any named/deployed environment this is a
+    # hard failure — using a known sentinel key allows anyone to forge valid
+    # HMAC signatures and trigger pickle RCE via a crafted blob in the object
+    # store.  Only local dev / CI / test / empty ENV values are safe to fall
+    # through to the insecure sentinel.
+    _DEV_ALLOWLIST = {"", "dev", "development", "test", "testing", "ci"}
     env = os.environ.get("ENV", "").strip().lower()
-    if env == "production":
+    if env not in _DEV_ALLOWLIST:
         raise RuntimeError(
-            "Artifact HMAC key is not configured in production. "
+            f"Artifact HMAC key is not configured (ENV={env!r}). "
             "Set NUBI_ARTIFACT_HMAC_KEY (or NUBI_SECRET_KEY) before starting "
             "the server. Refusing to sign/verify artifacts with an insecure "
             "dev-only sentinel key."
