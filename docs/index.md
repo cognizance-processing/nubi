@@ -30,6 +30,8 @@ Nubi is a batteries-included BI and embedded-analytics platform. The kernel runs
 | [**Dashboards**](/docs/dashboards) | DashboardSpec, widget types (kpi/metric/chart/table/pivot/filter/text/section), 9 chart types, variables, `/d/:id?var=` route params |
 | [**Exports & Scheduled Reports**](/docs/exports-and-jobs) | CSV/PDF exports, cron jobs, per-recipient locked params |
 | [**Flows**](/docs/flows) | Cell-based orchestrator with 3 cell types (SQL, Python, Note); notebook and canvas (DAG) views; retries, durable run history, scheduling, cross-cell data references |
+| [**Semantic layer, data apps & close-the-loop**](/docs/semantic-and-data-apps) | Governed metric definitions; derived/ratio measures; time intelligence; dynamic top-N; pre-agg rollups; Flows as a data-app engine (per-cell resources, stochastic seeds, artifact channel, sweep/backfill, triggers, write-back); Canvas (HTML-native sibling to Dashboards); the close-the-loop architecture |
+| [**Metrics reference**](/docs/metrics-reference) | Agent/MCP reference for declaring and querying governed metrics via `POST /metrics/{id}/query` |
 | [**AI, Chat & MCP**](/docs/ai-and-mcp) | Grounded ask, agentic chat, 14 agent tools, MCP server (15 tools), Slack/WhatsApp gateway |
 | [**Embedding**](/docs/embedding) | JWT minting (RS256/ES256), per-viewer RLS, token-locked params, `<nubi-dashboard>` |
 | [**Organization & Settings**](/docs/organization-settings) | Members, roles and invites; integrations; usage; project settings and the Git connection |
