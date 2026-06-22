@@ -2024,3 +2024,68 @@ async def test_concurrent_inline_base_cte_many_workers_no_crash(
             f"Worker {idx}: incorrect data — DuckDB thread-safety violation? "
             f"Got {tbl.to_pydict()}"
         )
+
+
+# ---------------------------------------------------------------------------
+# NEW: [LOW injection] inline provider base_cte result-name validation
+# ---------------------------------------------------------------------------
+
+
+def test_validate_result_name_rejects_sql_payload() -> None:
+    """_validate_result_name rejects a result-name containing a SQL injection payload.
+
+    An attacker who can influence the result-name in a DashboardSpec could
+    otherwise inject arbitrary SQL via the ``SELECT * FROM {r.name}``
+    interpolation in _resolve_inline_provider.  The validator must raise
+    AppError("invalid_result_name", 400) before such a name reaches the SQL
+    string.
+    """
+    from app.dashboards.board_data import _validate_result_name
+
+    malicious_names = [
+        "revenue; DROP TABLE orders--",
+        "revenue UNION SELECT * FROM secrets",
+        "x' OR '1'='1",
+        "foo bar",
+        "foo-bar",
+        "123starts_with_digit",
+        "",
+        "a" * 0,  # empty string
+        "revenue\n--",
+        "revenue/*comment*/",
+    ]
+    for bad_name in malicious_names:
+        with pytest.raises(AppError) as exc_info:
+            _validate_result_name(bad_name)
+        assert exc_info.value.code == "invalid_result_name", (
+            f"Expected invalid_result_name for {bad_name!r}, "
+            f"got {exc_info.value.code!r}"
+        )
+        assert exc_info.value.status == 400, (
+            f"Expected HTTP 400 for {bad_name!r}, got {exc_info.value.status}"
+        )
+
+
+def test_validate_result_name_accepts_valid_identifiers() -> None:
+    """_validate_result_name accepts well-formed SQL identifiers without raising.
+
+    Valid identifiers (``[A-Za-z_][A-Za-z0-9_]*``) must pass through without
+    raising so legitimate provider result names are not falsely rejected.
+    """
+    from app.dashboards.board_data import _validate_result_name
+
+    valid_names = [
+        "revenue",
+        "revenue_by_day",
+        "RevenueByDay",
+        "_private",
+        "a",
+        "A1",
+        "result_1",
+        "my_cte_result",
+        "SUMMARY",
+        "x123",
+    ]
+    for good_name in valid_names:
+        # Must not raise.
+        _validate_result_name(good_name)

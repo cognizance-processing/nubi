@@ -912,14 +912,21 @@ async def create_blend(
     flow_run = await materialize_flow_run(store, flow, {}, "manual", now)
     flow_run = await drain_flow_run(store, flow_run["id"], now, claims=claims)
 
-    task_runs = await store.list_task_runs(flow_run["id"])
+    # Cap task_runs in the response (mirrors GET /flows/runs/{run_id}).
+    raw_task_runs = await store.list_task_runs(flow_run["id"], limit=_MAX_TASK_RUNS_CEILING + 1)
+    task_runs_total = len(raw_task_runs)
+    task_runs_truncated = task_runs_total > _MAX_TASK_RUNS_DEFAULT
+    task_runs_page = raw_task_runs[:_MAX_TASK_RUNS_DEFAULT]
     # Surface a hard materialize failure (e.g. rls_key_dropped) to the caller.
-    for tr in task_runs:
+    # Check in the capped page; blend is a single task so it always falls within the cap.
+    for tr in task_runs_page:
         if tr.get("task_key") == "blend" and tr.get("state") == "failed":
             raise AppError("blend_materialize_failed", tr.get("error") or "Materialize failed.", 400)
 
     result = _serialize_flow_run(flow_run)
-    result["task_runs"] = [_serialize_task_run(tr) for tr in task_runs]
+    result["task_runs"] = [_serialize_task_run(tr) for tr in task_runs_page]
+    result["task_runs_truncated"] = task_runs_truncated
+    result["task_runs_total"] = task_runs_total
 
     return {
         "flow": _serialize_flow(flow),
@@ -1069,13 +1076,10 @@ async def get_task_run_logs(
     if run is None or str(run["org_id"]) != str(org_id):
         raise AppError("not_found", "Flow run not found.", 404)
 
-    task_runs = await store.list_task_runs(run_id)
-    # Find the task_run with the matching key (there may be only one per key per run).
-    matching = [tr for tr in task_runs if tr["task_key"] == task_key]
-    if not matching:
+    # O(1) targeted lookup — avoids fetching ALL task_runs when we only need one.
+    tr = await store.get_task_run_by_key(run_id, task_key)
+    if tr is None:
         raise AppError("not_found", f"Task '{task_key}' not found in this flow run.", 404)
-
-    tr = matching[-1]  # most recent (last inserted) by created_at ordering
 
     raw_logs: list[str] = tr.get("logs") or []
     capped_logs, truncated = _cap_task_logs(raw_logs)
@@ -2112,9 +2116,15 @@ async def run_flow(
     )
     flow_run = await drain_flow_run(store, flow_run["id"], now, claims=claims)
 
-    task_runs = await store.list_task_runs(flow_run["id"])
+    # Cap task_runs in the response (mirrors GET /flows/runs/{run_id}).
+    raw_task_runs = await store.list_task_runs(flow_run["id"], limit=_MAX_TASK_RUNS_CEILING + 1)
+    task_runs_total = len(raw_task_runs)
+    task_runs_truncated = task_runs_total > _MAX_TASK_RUNS_DEFAULT
+    task_runs_page = raw_task_runs[:_MAX_TASK_RUNS_DEFAULT]
     result = _serialize_flow_run(flow_run)
-    result["task_runs"] = [_serialize_task_run(tr) for tr in task_runs]
+    result["task_runs"] = [_serialize_task_run(tr) for tr in task_runs_page]
+    result["task_runs_truncated"] = task_runs_truncated
+    result["task_runs_total"] = task_runs_total
     return result
 
 
@@ -2802,7 +2812,7 @@ async def submit_writeback_route(
     return record
 
 
-@router.post("/writeback/{wb_id}/approval", status_code=200)
+@router.post("/writeback/{wb_id}/approval", status_code=200, dependencies=[Depends(require_writer_default)])
 async def writeback_approval_route(
     wb_id: str,
     body: WritebackApprovalIn,

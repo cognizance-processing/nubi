@@ -1289,6 +1289,65 @@ async def test_map_items_byte_cap_raises_on_oversized_payload(monkeypatch):
         await drain_flow_run(store, flow_run["id"], NOW, claims={})
 
 
+async def test_map_items_byte_cap_inserts_zero_children_on_oversized_payload(monkeypatch):
+    """Oversized map payload inserts ZERO child task_runs — cap prevents fan-out.
+
+    The byte-cap check must fire BEFORE _add_task_runs_batched so no child
+    task_runs are ever persisted when the payload exceeds the limit.
+    """
+    import app.flows.runtime as rt
+    from app.flows.runtime import materialize_flow_run, drain_flow_run
+    from app.flows.registry import reset_for_tests
+    from app.flows.store import InMemoryFlowStore
+
+    reset_for_tests()
+
+    # Patch cap to 1 byte — any real payload will exceed it.
+    monkeypatch.setattr(rt, "_MAP_ITEMS_MAX_BYTES", 1)
+
+    store = InMemoryFlowStore()
+    spec = {
+        "version": 1,
+        "name": "cap_zero_children_test",
+        "tasks": [
+            {
+                "key": "fan",
+                "kind": "map",
+                "needs": [],
+                "config": {
+                    "item_expr": "{{ params.items }}",
+                    "item_var": "item",
+                    "body": [{"key": "work", "kind": "noop", "needs": [], "config": {}}],
+                },
+            }
+        ],
+    }
+    flow = await store.create_flow(
+        org_id="org-test", created_by="user-test", name="cap_zero_children_test", spec=spec
+    )
+    flow_run = await materialize_flow_run(
+        store, flow, {"items": [{"x": 1}, {"x": 2}]}, "manual", NOW
+    )
+
+    with pytest.raises(ValueError, match="map_items payload too large"):
+        await drain_flow_run(store, flow_run["id"], NOW, claims={})
+
+    # No child task_runs should have been inserted — cap blocked fan-out.
+    all_trs = await store.list_task_runs(flow_run["id"])
+    child_trs = [tr for tr in all_trs if tr.get("parent_task_run_id") is not None]
+    assert len(child_trs) == 0, (
+        f"Expected 0 child task_runs after byte-cap block, got {len(child_trs)}: "
+        f"{[tr['task_key'] for tr in child_trs]}"
+    )
+
+    # The parent map task_run must be 'failed', not 'running'/'waiting_children'.
+    map_tr = next((tr for tr in all_trs if tr["task_key"] == "fan"), None)
+    assert map_tr is not None, "map task_run 'fan' not found"
+    assert map_tr["state"] == "failed", (
+        f"Expected map task_run state 'failed', got {map_tr['state']!r}"
+    )
+
+
 async def test_map_items_byte_cap_passes_within_limit(monkeypatch):
     """map fan-out succeeds when serialised __map_items__ is within the cap.
 

@@ -44,6 +44,7 @@ import hashlib
 import json
 import logging
 import os
+import re
 import threading
 from typing import Any
 
@@ -117,6 +118,43 @@ def _execute_with_lock(connector: object, physical_plan: object) -> "pa.Table":
     lock = _get_connector_lock(connector)
     with lock:
         return connector.execute(physical_plan)  # type: ignore[attr-defined]
+
+
+# ---------------------------------------------------------------------------
+# SQL identifier validation
+# ---------------------------------------------------------------------------
+
+# Strict identifier pattern: must start with a letter or underscore, followed
+# by letters, digits, or underscores only.  This matches the SQL standard for
+# unquoted identifiers and makes it safe to interpolate into SQL without
+# quoting.  Any other character (spaces, semicolons, dashes, quotes, etc.)
+# would indicate an attacker-influenced or mis-configured result name.
+_IDENTIFIER_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+
+
+def _validate_result_name(name: str) -> None:
+    """Raise ``AppError`` if *name* is not a safe SQL identifier.
+
+    Called before interpolating a provider result-name into inline SQL
+    (``SELECT * FROM {name}``).  An attacker who can influence the result-name
+    — e.g. via a crafted DashboardSpec payload — could otherwise inject
+    arbitrary SQL.
+
+    Accepts: letters, digits, and underscores; must start with a letter or
+    underscore (``[A-Za-z_][A-Za-z0-9_]*``).
+
+    Raises
+    ------
+    AppError("invalid_result_name", 400)
+        When *name* contains characters outside the allowed set.
+    """
+    if not _IDENTIFIER_RE.match(name):
+        raise AppError(
+            "invalid_result_name",
+            f"Provider result name {name!r} is not a valid SQL identifier "
+            "(must match [A-Za-z_][A-Za-z0-9_]*).",
+            400,
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -424,6 +462,9 @@ async def _resolve_inline_provider(
             # The post-fetch slice below is kept as a backstop but the heavy
             # lifting now happens inside the DB engine before any data is
             # transferred to the Python process.
+            # FIX [LOW injection]: validate result-name before interpolation
+            # into SQL so an attacker-influenced name cannot inject SQL.
+            _validate_result_name(r.name)
             inner_sql = f"{provider.base_cte.rstrip(';')} SELECT * FROM {r.name}"
             if _ROW_CAP > 0:
                 sql = f"SELECT * FROM ({inner_sql}) AS _nubi_inline_capped LIMIT {_ROW_CAP}"

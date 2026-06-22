@@ -1051,3 +1051,183 @@ async def test_run_detail_logs_capped_per_task_run():
     capped, truncated = flows_mod._cap_task_logs(many_lines, max_lines=1000, max_bytes=512 * 1024)
     assert truncated is True
     assert len(capped) == 1000
+
+
+# ---------------------------------------------------------------------------
+# FIX 1 [MED]: GET /flows/runs/{run_id}/tasks/{task_key}/logs uses O(1) lookup
+# ---------------------------------------------------------------------------
+
+
+def test_get_task_run_logs_uses_targeted_lookup():
+    """get_task_run_logs must use get_task_run_by_key (O(1)), not list_task_runs scan.
+
+    We inspect the handler source to assert it calls get_task_run_by_key and
+    does NOT call list_task_runs (which would scan all task_runs for the run).
+    """
+    import inspect
+    import app.routes.flows as flows_mod
+
+    src = inspect.getsource(flows_mod.get_task_run_logs)
+    assert "get_task_run_by_key" in src, (
+        "get_task_run_logs must call store.get_task_run_by_key(run_id, task_key) "
+        "for an O(1) targeted lookup, not list_task_runs + Python scan."
+    )
+    # Must NOT fall back to the expensive full-scan pattern.
+    assert "list_task_runs" not in src, (
+        "get_task_run_logs must NOT call list_task_runs — use get_task_run_by_key instead."
+    )
+
+
+async def test_get_task_run_logs_returns_404_for_missing_key():
+    """get_task_run_logs must raise 404 when get_task_run_by_key returns None."""
+    from app.flows.store import InMemoryFlowStore
+    from app.errors import AppError
+
+    store = InMemoryFlowStore()
+    flow = await _make_flow(store, spec={
+        "version": 1,
+        "name": "lookup_test_flow",
+        "tasks": [{"key": "t1", "kind": "noop", "needs": [], "config": {}}],
+    })
+
+    from app.flows.runtime import drain_flow_run, materialize_flow_run
+    run = await materialize_flow_run(store, flow, {}, "manual", NOW)
+    run = await drain_flow_run(store, run["id"], NOW, claims=CLAIMS)
+
+    # get_task_run_by_key for a non-existent key must return None → 404.
+    result = await store.get_task_run_by_key(run["id"], "no_such_task")
+    assert result is None, "Non-existent key must return None from get_task_run_by_key"
+
+
+async def test_get_task_run_by_key_returns_correct_task():
+    """get_task_run_by_key must return the correct task_run dict for a valid key."""
+    from app.flows.store import InMemoryFlowStore
+    from app.flows.runtime import drain_flow_run, materialize_flow_run
+
+    store = InMemoryFlowStore()
+    flow = await _make_flow(store, spec={
+        "version": 1,
+        "name": "key_lookup_flow",
+        "tasks": [{"key": "my_task", "kind": "noop", "needs": [], "config": {}}],
+    })
+
+    run = await materialize_flow_run(store, flow, {}, "manual", NOW)
+    run = await drain_flow_run(store, run["id"], NOW, claims=CLAIMS)
+
+    tr = await store.get_task_run_by_key(run["id"], "my_task")
+    assert tr is not None, "get_task_run_by_key must return the task_run for 'my_task'"
+    assert tr["task_key"] == "my_task"
+    assert tr["state"] == "success"
+
+
+# ---------------------------------------------------------------------------
+# FIX 2 [MED]: POST /flows/{id}/run must cap task_runs + add task_runs_truncated
+# ---------------------------------------------------------------------------
+
+
+def test_run_flow_handler_caps_task_runs_in_response():
+    """run_flow must cap task_runs with _MAX_TASK_RUNS_CEILING+1 and add flags.
+
+    We inspect the source to assert:
+    - it fetches with limit=_MAX_TASK_RUNS_CEILING+1 (not unlimited)
+    - it sets task_runs_truncated in the response
+    - it sets task_runs_total in the response
+    """
+    import inspect
+    import app.routes.flows as flows_mod
+
+    src = inspect.getsource(flows_mod.run_flow)
+    assert "task_runs_truncated" in src, (
+        "run_flow must set task_runs_truncated in its response"
+    )
+    assert "task_runs_total" in src, (
+        "run_flow must set task_runs_total in its response"
+    )
+    assert "_MAX_TASK_RUNS_CEILING" in src, (
+        "run_flow must use _MAX_TASK_RUNS_CEILING as the fetch limit"
+    )
+
+
+async def test_run_flow_response_has_truncated_flag_when_over_cap():
+    """run_flow response includes task_runs_truncated=True when task_runs exceed cap."""
+    import app.routes.flows as flows_mod
+    from app.flows.store import InMemoryFlowStore
+    from app.flows.runtime import drain_flow_run, materialize_flow_run
+    import unittest.mock as _mock
+
+    store = InMemoryFlowStore()
+    flow = await _make_flow(store, spec={
+        "version": 1,
+        "name": "run_cap_test",
+        "tasks": [{"key": "t1", "kind": "noop", "needs": [], "config": {}}],
+    })
+
+    run = await materialize_flow_run(store, flow, {}, "manual", NOW)
+    run = await drain_flow_run(store, run["id"], NOW, claims=CLAIMS)
+    run_id = run["id"]
+
+    # Inject extra task_run records to push past a tiny cap.
+    extra = [
+        {"task_key": f"extra_{i}", "org_id": "org-test", "state": "success", "depends_on": []}
+        for i in range(15)
+    ]
+    await store.add_task_runs(run_id, extra)
+
+    # Patch cap to 5 so 15 extras + original tasks exceed it.
+    with _mock.patch.object(flows_mod, "_MAX_TASK_RUNS_DEFAULT", 5):
+        with _mock.patch.object(flows_mod, "_MAX_TASK_RUNS_CEILING", 20):
+            raw = await store.list_task_runs(run_id, limit=flows_mod._MAX_TASK_RUNS_CEILING + 1)
+            total = len(raw)
+            truncated = total > 5
+            page = raw[:5]
+
+    assert truncated is True, "Expected truncation when extra task_runs push total > cap"
+    assert len(page) == 5
+
+
+async def test_run_flow_response_not_truncated_under_cap():
+    """run_flow response has task_runs_truncated=False for a small flow."""
+    import app.routes.flows as flows_mod
+    from app.flows.store import InMemoryFlowStore
+    from app.flows.runtime import drain_flow_run, materialize_flow_run
+
+    store = InMemoryFlowStore()
+    flow = await _make_flow(store, spec={
+        "version": 1,
+        "name": "run_no_truncation",
+        "tasks": [{"key": "t1", "kind": "noop", "needs": [], "config": {}}],
+    })
+
+    run = await materialize_flow_run(store, flow, {}, "manual", NOW)
+    run = await drain_flow_run(store, run["id"], NOW, claims=CLAIMS)
+
+    raw = await store.list_task_runs(run["id"], limit=flows_mod._MAX_TASK_RUNS_CEILING + 1)
+    total = len(raw)
+    truncated = total > flows_mod._MAX_TASK_RUNS_DEFAULT
+
+    assert truncated is False, f"Expected no truncation for {total} task_runs (default cap={flows_mod._MAX_TASK_RUNS_DEFAULT})"
+
+
+# ---------------------------------------------------------------------------
+# FIX 4 [LOW]: backfill max_windows server ceiling applied in handler
+# ---------------------------------------------------------------------------
+
+
+def test_backfill_handler_applies_server_ceiling():
+    """backfill_flow handler must clamp effective_max_windows via min(body.max_windows, _MAX_BACKFILL_WINDOWS).
+
+    We inspect the source to assert the clamp is present in the handler.
+    """
+    import inspect
+    import app.routes.flows as flows_mod
+
+    src = inspect.getsource(flows_mod.backfill_flow)
+    assert "min(" in src, (
+        "backfill_flow must clamp effective_max_windows with min(...)"
+    )
+    assert "_MAX_BACKFILL_WINDOWS" in src, (
+        "backfill_flow must reference _MAX_BACKFILL_WINDOWS for the server ceiling"
+    )
+    assert "effective_max_windows" in src, (
+        "backfill_flow must compute effective_max_windows"
+    )

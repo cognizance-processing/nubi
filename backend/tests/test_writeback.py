@@ -1337,6 +1337,80 @@ async def test_route_writeback_submit_viewer_blocked_by_dependency(wb_client):
 
 
 # ---------------------------------------------------------------------------
+# FIX 3 [LOW authz]: POST /flows/writeback/{wb_id}/approval must have
+#     require_writer_default dependency so viewers are blocked at the gate.
+# ---------------------------------------------------------------------------
+
+
+def test_writeback_approval_has_require_writer_default_dependency():
+    """POST /flows/writeback/{id}/approval must carry require_writer_default.
+
+    The in-handler _require_approver_role check elevates to admin/owner, but
+    the outer dependency gate must also be present so viewers are rejected
+    before any handler code runs (defense-in-depth).
+    """
+    import app.routes.flows as flows_mod
+    from app.auth.roles import require_writer_default
+
+    approval_route = None
+    for route in flows_mod.router.routes:
+        path = getattr(route, "path", "")
+        methods = getattr(route, "methods", set()) or set()
+        if (
+            path in ("/flows/writeback/{wb_id}/approval", "/writeback/{wb_id}/approval")
+            and "POST" in methods
+        ):
+            approval_route = route
+            break
+
+    assert approval_route is not None, "POST /writeback/{wb_id}/approval route not found"
+    dep_callables = [d.dependency for d in (approval_route.dependencies or [])]
+    assert require_writer_default in dep_callables, (
+        "POST /flows/writeback/{wb_id}/approval must have require_writer_default "
+        "in dependencies — viewers can reach the handler and attempt approval!"
+    )
+
+
+@pytest.mark.asyncio
+async def test_route_approval_viewer_forbidden(wb_client):
+    """POST /flows/writeback/{id}/approval must return 403 for viewers.
+
+    Before the fix, the approval route lacked require_writer_default, meaning
+    viewers could reach the in-handler role check.  With the fix the dependency
+    gate fires first and returns 403.
+    """
+    client, alice_id, bob_id, carol_id, org_id, wb_store, repo = wb_client
+
+    # Alice (owner) submits a gated write-back.
+    resp = await client.post(
+        "/api/v1/flows/writeback",
+        json={
+            "idempotency_key": str(uuid.uuid4()),
+            "rows": [{"id": 1}],
+            "target": {"connector_id": "c1", "object": "raw.t"},
+            "mode": "append",
+            "approval_required": True,
+            "dry_run": False,
+            "meta": {},
+        },
+        headers=_auth_headers(alice_id),
+    )
+    assert resp.status_code == 201
+    wb_id = resp.json()["id"]
+
+    # Carol (viewer) attempts to approve — must be blocked at the dependency gate.
+    resp2 = await client.post(
+        f"/api/v1/flows/writeback/{wb_id}/approval",
+        json={"action": "approve"},
+        headers=_auth_headers(carol_id),
+    )
+    assert resp2.status_code == 403, (
+        f"Viewer must be blocked by require_writer_default dependency (expected 403, "
+        f"got {resp2.status_code})"
+    )
+
+
+# ---------------------------------------------------------------------------
 # PG integration tests (only active when RUN_PG_TESTS=1 + DATABASE_URL set)
 #
 # These tests exercise PgWritebackStore against a real Postgres database.

@@ -827,8 +827,24 @@ def _rollup_partition_cols(rollup: Any) -> set[str]:
     return set()
 
 
+def _agg_is_inside_subquery(node: exp.Expression, root: exp.Expression) -> bool:
+    """Return True if *node* is nested inside an ``exp.Subquery`` within *root*."""
+    p = node.parent
+    while p is not None and p is not root:
+        if isinstance(p, exp.Subquery):
+            return True
+        p = getattr(p, "parent", None)
+    return False
+
+
 def _rewrite_to_rollup(plan: PhysicalPlan, rollup: Any) -> str | None:
     """Rewrite ``plan.sql`` to read *rollup* (re-aggregating measures).
+
+    Only aggregates in the TOP-LEVEL SELECT projection are rewritten.
+    Aggregates nested inside WHERE/HAVING subqueries are left untouched —
+    but if any such subquery-aggregate exists the rewrite is refused
+    (return ``None``) because we cannot guarantee the subquery will still
+    evaluate correctly against the rollup table.
 
     Returns the rewritten SQL string, or ``None`` if the rewrite could not be
     performed safely (caller then leaves the plan untouched).
@@ -840,33 +856,52 @@ def _rewrite_to_rollup(plan: PhysicalPlan, rollup: Any) -> str | None:
     if not isinstance(tree, exp.Select):
         return None
 
-    # 1. Rewrite each aggregate in the SELECT list to read the rollup's partial
-    #    measure column with the roll-up function (SUM(sum_amount), etc.).
-    for node in list(tree.find_all(exp.AggFunc)):
-        func_name = type(node).__name__.lower()
-        # Defence-in-depth: COUNT(DISTINCT col) is NOT re-aggregable from partial
-        # counts. sqlglot models it as exp.Count(this=exp.Distinct(…)), which
-        # means func_name == 'count' — the same as plain COUNT(col).  Without this
-        # guard, _REAGG['count'] == 'SUM' would be applied to a COUNT(DISTINCT)
-        # node, silently producing wrong results.  Bail the entire rewrite so the
-        # caller falls through to the un-routed path.
-        if isinstance(node, exp.Count) and isinstance(node.this, exp.Distinct):
-            return None  # COUNT(DISTINCT …) is non-re-aggregable — abort.
-        # Determine source column / star.
-        col = _agg_source_col(node)
-        if func_name not in _REAGG or col is None:
-            return None  # measure not derivable — abort (sound by omission).
-        reagg = _REAGG[func_name]
-        partial_col = _measure_alias(func_name, col)
-        new_node = sqlglot.parse_one(
-            f'{reagg}("{partial_col}")', dialect=plan.dialect
-        )
-        # Preserve any alias the original aggregate carried.
-        parent = node.parent
-        if isinstance(parent, exp.Alias):
-            node.replace(new_node)
-        else:
-            node.replace(new_node)
+    # Guard: if any aggregate exists inside a Subquery within the WHERE or
+    # HAVING clauses, we cannot safely rewrite — the subquery may reference
+    # raw source columns that no longer exist in the rollup.  Refuse to route.
+    for clause_key in ("where", "having"):
+        clause_node = tree.args.get(clause_key)
+        if clause_node is None:
+            continue
+        for agg in clause_node.find_all(exp.AggFunc):
+            if _agg_is_inside_subquery(agg, clause_node):
+                return None  # subquery aggregate in WHERE/HAVING — refuse routing.
+
+    # 1. Rewrite each aggregate in the TOP-LEVEL SELECT projection only.
+    #    We iterate over tree.expressions (the SELECT list), collecting every
+    #    AggFunc that is NOT nested inside a Subquery within that projection
+    #    item.  Subquery-level aggregates in the SELECT (e.g. scalar subqueries)
+    #    are also refused — they cannot be safely rewritten.
+    for sel_expr in list(tree.expressions):
+        for node in list(sel_expr.find_all(exp.AggFunc)):
+            if _agg_is_inside_subquery(node, sel_expr):
+                # An aggregate inside a scalar subquery in the SELECT list —
+                # we cannot rewrite it safely; refuse routing.
+                return None
+            func_name = type(node).__name__.lower()
+            # Defence-in-depth: COUNT(DISTINCT col) is NOT re-aggregable from
+            # partial counts. sqlglot models it as exp.Count(this=exp.Distinct(…)),
+            # which means func_name == 'count' — the same as plain COUNT(col).
+            # Without this guard, _REAGG['count'] == 'SUM' would be applied to a
+            # COUNT(DISTINCT) node, silently producing wrong results.  Bail the
+            # entire rewrite so the caller falls through to the un-routed path.
+            if isinstance(node, exp.Count) and isinstance(node.this, exp.Distinct):
+                return None  # COUNT(DISTINCT …) is non-re-aggregable — abort.
+            # Determine source column / star.
+            col = _agg_source_col(node)
+            if func_name not in _REAGG or col is None:
+                return None  # measure not derivable — abort (sound by omission).
+            reagg = _REAGG[func_name]
+            partial_col = _measure_alias(func_name, col)
+            new_node = sqlglot.parse_one(
+                f'{reagg}("{partial_col}")', dialect=plan.dialect
+            )
+            # Preserve any alias the original aggregate carried.
+            parent = node.parent
+            if isinstance(parent, exp.Alias):
+                node.replace(new_node)
+            else:
+                node.replace(new_node)
 
     # 2. Swap the FROM target to the rollup table.
     replaced = False

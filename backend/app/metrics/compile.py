@@ -157,10 +157,26 @@ _AGG_SQL: dict[str, str] = {
     "approx_count_distinct": "APPROX_COUNT_DISTINCT",
 }
 
-# Non-additive aggregation functions: these cannot be safely re-aggregated by
-# SUM() across time buckets, so using them as a top_n rank measure with a
-# time_grain (which requires SUM(rank_measure) in the membership subquery) is
-# semantically wrong.  We block them in _govern with a MetricError.
+# Non-additive aggregation functions: these cannot be safely re-aggregated
+# across arbitrary row groups.
+#
+# Two consequences, both intentional:
+#
+# 1. top_n rank measure governance: using them as a top_n rank measure with a
+#    time_grain (which requires SUM(rank_measure) in the membership subquery) is
+#    semantically wrong.  We block them in _govern with a MetricError.
+#
+# 2. top_n.other re-aggregation: the Other bucket rolls up the non-top-N rows
+#    of the ranked dimension.  For additive aggs (sum, count, min, max) we can
+#    re-aggregate the pre-computed __base values directly; for non-additive aggs
+#    there is no correct re-aggregation (AVG of AVGs is wrong without row counts,
+#    COUNT(DISTINCT …) across groups double-counts shared values, percentiles
+#    require the full micro-data).  The Other bucket therefore emits NULL for
+#    every non-additive measure — callers must treat NULL in the Other bucket for
+#    these measure types as "not available / undefined", not as a data error.
+#    This is INTENTIONAL and documented behaviour; see the tests in
+#    test_metrics_compile_transforms.py (test_other_bucket_avg_emits_null,
+#    test_other_bucket_non_additive_measures_emit_null).
 _NON_ADDITIVE_AGGS: frozenset[str] = frozenset({
     "avg", "count_distinct", "percentile_cont", "approx_count_distinct",
 })
@@ -997,8 +1013,16 @@ def _build_other_select(
         select_exprs.append(exp.alias_(exp.column(time_alias), time_alias))
 
     # (c) base measures: re-aggregate per agg type (build via AST).
-    #   sum/count → SUM(name); min → MIN(name); max → MAX(name);
-    #   avg/count_distinct/percentile/approx → NULL (not re-aggregable).
+    #   sum/count → SUM(name)   — additive: rolling up partials is exact.
+    #   min       → MIN(name)   — additive: min-of-mins is still the global min.
+    #   max       → MAX(name)   — additive: max-of-maxes is still the global max.
+    #   _NON_ADDITIVE_AGGS      → NULL     — INTENTIONAL: these aggs (avg,
+    #       count_distinct, percentile_cont, approx_count_distinct) cannot be
+    #       correctly re-aggregated from pre-computed bucket values.  Emitting
+    #       NULL makes the "not available" semantics explicit to callers rather
+    #       than returning a silently wrong number.  Callers should surface this
+    #       as "N/A" or omit the column for the Other bucket.
+    #       See _NON_ADDITIVE_AGGS docstring and test_other_bucket_avg_emits_null.
     bare_name_to_agg_node: dict[str, exp.Expression] = {}
     for m in metric.measures():
         if m.agg == "min":
@@ -1008,6 +1032,10 @@ def _build_other_select(
         elif m.agg in ("sum", "count"):
             agg_node = exp.func("SUM", exp.column(m.name), dialect=dialect)
         else:
+            # Non-additive agg (member of _NON_ADDITIVE_AGGS): emit NULL.
+            # Re-aggregation is mathematically undefined for this agg type;
+            # NULL is the correct sentinel for "Other bucket value unavailable".
+            assert m.agg in _NON_ADDITIVE_AGGS, f"Unexpected agg {m.agg!r} not in _NON_ADDITIVE_AGGS"
             agg_node = exp.Null()
         bare_name_to_agg_node[m.name] = agg_node
         select_exprs.append(exp.alias_(agg_node.copy(), m.name))

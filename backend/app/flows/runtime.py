@@ -1442,6 +1442,28 @@ async def run_one_ready_task(
             item_var = full_task.get("config", {}).get("item_var", "item")
             max_concurrency = int(full_task.get("config", {}).get("max_concurrency", 0) or 0)
 
+            # Guard: byte-cap check BEFORE building/inserting children so an
+            # oversized payload never fans out any child task_runs.
+            _items_payload = {"item_count": len(map_items), "__map_items__": map_items, "item_var": item_var}
+            _items_bytes = len(json.dumps(_items_payload).encode())
+            if _items_bytes > _MAP_ITEMS_MAX_BYTES:
+                _cap_err = (
+                    f"map_items payload too large: {_items_bytes} bytes "
+                    f"(limit {_MAP_ITEMS_MAX_BYTES} bytes / {_MAP_ITEMS_MAX_BYTES // 1024} KiB). "
+                    "Reduce item count or item size, or raise NUBI_MAP_ITEMS_MAX_BYTES."
+                )
+                await store.update_task_run(
+                    task_run_id,
+                    {
+                        "state": "failed",
+                        "error": _cap_err,
+                        "finished_at": now,
+                        "logs": outcome_logs,
+                    },
+                )
+                await advance_readiness(store, flow_run_id, now)
+                raise ValueError(_cap_err)
+
             child_runs = _expand_map_children(
                 flow_run_id=flow_run_id,
                 org_id=org_id,
@@ -1454,17 +1476,6 @@ async def run_one_ready_task(
                 max_concurrency=max_concurrency,
             )
             await _add_task_runs_batched(store, flow_run_id, child_runs)
-
-            # Guard: reject map_items payloads that exceed the write-time byte cap
-            # before persisting into task_runs.result JSONB.
-            _items_payload = {"item_count": len(map_items), "__map_items__": map_items, "item_var": item_var}
-            _items_bytes = len(json.dumps(_items_payload).encode())
-            if _items_bytes > _MAP_ITEMS_MAX_BYTES:
-                raise ValueError(
-                    f"map_items payload too large: {_items_bytes} bytes "
-                    f"(limit {_MAP_ITEMS_MAX_BYTES} bytes / {_MAP_ITEMS_MAX_BYTES // 1024} KiB). "
-                    "Reduce item count or item size, or raise NUBI_MAP_ITEMS_MAX_BYTES."
-                )
 
             # Transition map task_run to waiting_children (NOT terminal).
             # Store items in result so _get_task_spec can look up item values for children.
@@ -2644,6 +2655,32 @@ async def _execute_claimed_task_run_inner(
             item_var = full_task.get("config", {}).get("item_var", "item")
             max_concurrency = int(full_task.get("config", {}).get("max_concurrency", 0) or 0)
 
+            # Guard: byte-cap check BEFORE building/inserting children so an
+            # oversized payload never fans out any child task_runs.
+            _items_payload = {"item_count": len(map_items), "__map_items__": map_items, "item_var": item_var}
+            _items_bytes = len(json.dumps(_items_payload).encode())
+            if _items_bytes > _MAP_ITEMS_MAX_BYTES:
+                _cap_err = (
+                    f"map_items payload too large: {_items_bytes} bytes "
+                    f"(limit {_MAP_ITEMS_MAX_BYTES} bytes / {_MAP_ITEMS_MAX_BYTES // 1024} KiB). "
+                    "Reduce item count or item size, or raise NUBI_MAP_ITEMS_MAX_BYTES."
+                )
+                result_tr = await store.update_task_run(
+                    task_run_id,
+                    {
+                        "state": "failed",
+                        "error": _cap_err,
+                        "finished_at": now,
+                        "logs": outcome_logs,
+                    },
+                )
+                _emit_task_event("task_failed", flow_run_id, task_key, "failed", _cap_err, attempt, now)
+                await advance_readiness(
+                    store, flow_run_id, now,
+                    _preloaded_task_runs=_patch_snapshot(result_tr or task_run),
+                )
+                raise ValueError(_cap_err)
+
             # Build child task_runs for all item × body-task combinations.
             child_runs = _expand_map_children(
                 flow_run_id=flow_run_id,
@@ -2657,17 +2694,6 @@ async def _execute_claimed_task_run_inner(
                 max_concurrency=max_concurrency,
             )
             await _add_task_runs_batched(store, flow_run_id, child_runs)
-
-            # Guard: reject map_items payloads that exceed the write-time byte cap
-            # before persisting into task_runs.result JSONB.
-            _items_payload = {"item_count": len(map_items), "__map_items__": map_items, "item_var": item_var}
-            _items_bytes = len(json.dumps(_items_payload).encode())
-            if _items_bytes > _MAP_ITEMS_MAX_BYTES:
-                raise ValueError(
-                    f"map_items payload too large: {_items_bytes} bytes "
-                    f"(limit {_MAP_ITEMS_MAX_BYTES} bytes / {_MAP_ITEMS_MAX_BYTES // 1024} KiB). "
-                    "Reduce item count or item size, or raise NUBI_MAP_ITEMS_MAX_BYTES."
-                )
 
             # Transition map task_run to waiting_children (NOT yet terminal).
             # Store the items list in the result so _get_task_spec can resolve

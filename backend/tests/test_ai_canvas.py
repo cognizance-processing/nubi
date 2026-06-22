@@ -65,6 +65,8 @@ from app.ai.provider import LLMProvider, NullProvider
 from app.auth.jwt import mint_access_token
 from app.dashboards.canvas import CanvasDoc, validate_canvas_doc
 from app.errors import AppError
+from app.repos.memory import InMemoryRepo
+from app.repos.provider import set_repo
 
 
 # ---------------------------------------------------------------------------
@@ -200,9 +202,19 @@ def _make_user(user_id: str) -> dict[str, Any]:
 
 @pytest_asyncio.fixture
 async def canvas_client(app, fake_db):
-    """HTTPX async client with a pre-seeded user for canvas endpoint tests."""
+    """HTTPX async client with a pre-seeded owner user in an org for canvas endpoint tests.
+
+    The user is seeded as an org owner so that require_writer_default passes —
+    canvas endpoints are metered (AI quota) and must be write-gated.
+    """
     user_id = str(uuid.uuid4())
+    org_id = str(uuid.uuid4())
     fake_db.users[user_id] = _make_user(user_id)
+
+    repo = InMemoryRepo()
+    repo.seed_org_member(org_id=org_id, user_id=user_id, role="owner")
+    set_repo(repo)
+
     transport = ASGITransport(app=app)
     async with AsyncClient(
         transport=transport,
@@ -210,6 +222,8 @@ async def canvas_client(app, fake_db):
         follow_redirects=False,
     ) as ac:
         yield ac, user_id
+
+    set_repo(None)
 
 
 # ---------------------------------------------------------------------------

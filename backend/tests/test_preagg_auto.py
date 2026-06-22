@@ -1807,3 +1807,114 @@ class TestTimeGrainedRouting:
         result = route_to_rollup_shape(p, reg)
         assert result.routed is False
         assert result.plan is p
+
+
+# ---------------------------------------------------------------------------
+# 13. [LOW] _rewrite_to_rollup only rewrites top-level SELECT aggregates;
+#     aggregates inside WHERE subqueries must NOT be mis-rewritten or cause
+#     an unsound route.
+# ---------------------------------------------------------------------------
+
+
+class TestRollupRewriteNoOverwalk:
+    """_rewrite_to_rollup must not walk WHERE/HAVING subquery aggregates.
+
+    Bug: the old code called tree.find_all(exp.AggFunc) which walked the FULL
+    SQL tree.  An aggregate inside a WHERE subquery (e.g. a correlated
+    ``WHERE amount > (SELECT AVG(price) FROM …)``) was treated as a top-level
+    measure and either wrongly rewritten (producing incorrect SQL) or wrongly
+    caused an abort (AVG is non-re-aggregable, so the otherwise-sound top-level
+    SUM/COUNT query was refused even though it should route).
+
+    Fix: only rewrite aggregates in the top-level SELECT projection;
+    refuse routing when any aggregate is found inside a WHERE/HAVING subquery.
+    """
+
+    def test_where_subquery_aggregate_refuses_routing(self, source_db: str) -> None:
+        """A query with an aggregate in a WHERE subquery must NOT be routed.
+
+        The rollup cannot reproduce the scalar subquery (it references the raw
+        source table), so routing must be refused and the plan returned unchanged.
+        """
+        reg = RollupRegistry()
+        _build_orders_rollup(source_db, reg)
+
+        # The WHERE clause contains a subquery with an aggregate.
+        # The top-level SELECT is structurally routable (SUM on a dimension),
+        # but the WHERE subquery aggregate makes the rewrite UNSOUND.
+        sql = (
+            "SELECT region, SUM(amount) FROM orders "
+            "WHERE amount > (SELECT AVG(amount) FROM orders) "
+            "GROUP BY region"
+        )
+        p = plan(sql, dialect="postgres")
+        result = route_to_rollup_shape(p, reg)
+
+        # Must NOT route — the WHERE subquery aggregate is not safely rewritable.
+        assert result.routed is False, (
+            f"Expected routed=False (WHERE subquery aggregate makes rewrite unsound), "
+            f"got routed=True. Rewritten SQL: {result.plan.sql}"
+        )
+        assert result.plan is p  # plan is returned unchanged
+
+    def test_sound_top_level_agg_still_routes_without_subquery(
+        self, source_db: str
+    ) -> None:
+        """A query without a WHERE subquery aggregate still routes normally.
+
+        Ensures the fix does not break the common (no-subquery) path.
+        """
+        reg = RollupRegistry()
+        _build_orders_rollup(source_db, reg)
+
+        sql = (
+            "SELECT region, SUM(amount) FROM orders "
+            "WHERE tenant_id = 'acme' "
+            "GROUP BY region"
+        )
+        p = plan(sql, claims={"policies": {"tenant_id": "acme"}}, dialect="postgres")
+        result = route_to_rollup_shape(p, reg)
+
+        # This is a sound rewrite (plain WHERE equality, no subquery aggregates).
+        assert result.routed is True, (
+            f"Expected routed=True for plain WHERE + top-level SUM, "
+            f"got routed=False. Reason: {result.reason}"
+        )
+        assert "rollup_orders" in result.plan.sql.lower()
+
+    def test_where_subquery_agg_not_mistakenly_rewritten_in_sql(
+        self, source_db: str
+    ) -> None:
+        """The WHERE subquery aggregate must appear verbatim (not rewritten) or
+        the query must be refused — never silently rewritten to a rollup column.
+
+        When routing is refused the original SQL must still be parseable and
+        must reference the original table (not the rollup table).
+        """
+        import sqlglot  # noqa: PLC0415
+
+        reg = RollupRegistry()
+        _build_orders_rollup(source_db, reg)
+
+        sql = (
+            "SELECT region, SUM(amount) FROM orders "
+            "WHERE amount > (SELECT AVG(amount) FROM orders) "
+            "GROUP BY region"
+        )
+        p = plan(sql, dialect="postgres")
+        result = route_to_rollup_shape(p, reg)
+
+        # The plan must be refused (not routed).
+        assert result.routed is False
+
+        # The SQL in the returned (unchanged) plan must NOT reference the rollup
+        # table — it must still reference the original source table.
+        returned_sql = result.plan.sql.lower()
+        assert "rollup_orders" not in returned_sql, (
+            f"WHERE subquery aggregate caused a partial/wrong rewrite: {result.plan.sql}"
+        )
+        assert "orders" in returned_sql  # original table still present
+
+        # The original SQL must parse cleanly (sanity check).
+        parsed = sqlglot.parse_one(result.plan.sql, dialect="postgres")
+        assert parsed is not None

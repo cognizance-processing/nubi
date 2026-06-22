@@ -181,7 +181,7 @@ class DashboardResponse(BaseModel):
 # ---------------------------------------------------------------------------
 
 
-@api_router.post("/ai/ask", response_model=AskResponse, tags=["ai"])
+@api_router.post("/ai/ask", response_model=AskResponse, tags=["ai"], dependencies=[Depends(require_writer_default)])
 async def ask(
     body: AskRequest,
     _user: dict[str, Any] = Depends(current_user),
@@ -250,7 +250,7 @@ async def ask(
 # ---------------------------------------------------------------------------
 
 
-@api_router.post("/ai/dashboard", response_model=DashboardResponse, tags=["ai"])
+@api_router.post("/ai/dashboard", response_model=DashboardResponse, tags=["ai"], dependencies=[Depends(require_writer_default)])
 async def create_dashboard(
     body: DashboardRequest,
     _user: dict[str, Any] = Depends(current_user),
@@ -656,7 +656,7 @@ class ChatResponse(BaseModel):
     """
 
 
-@api_router.post("/ai/chat", response_model=ChatResponse, tags=["ai"])
+@api_router.post("/ai/chat", response_model=ChatResponse, tags=["ai"], dependencies=[Depends(require_writer_default)])
 async def ai_chat(
     body: ChatRequest,
     _user: dict[str, Any] = Depends(current_user),
@@ -729,7 +729,7 @@ async def ai_chat(
     )
 
 
-@api_router.post("/ai/chat/stream", tags=["ai"])
+@api_router.post("/ai/chat/stream", tags=["ai"], dependencies=[Depends(require_writer_default)])
 async def ai_chat_stream(
     body: ChatRequest,
     _user: dict[str, Any] = Depends(current_user),
@@ -1237,7 +1237,7 @@ class CanvasGenerateResponse(BaseModel):
     issues: list[str]
 
 
-@api_router.post("/ai/canvas", response_model=CanvasGenerateResponse, tags=["ai", "canvas"])
+@api_router.post("/ai/canvas", response_model=CanvasGenerateResponse, tags=["ai", "canvas"], dependencies=[Depends(require_writer_default)])
 async def generate_canvas(
     body: CanvasGenerateRequest,
     _user: dict[str, Any] = Depends(current_user),
@@ -1315,7 +1315,7 @@ class CanvasEditResponse(BaseModel):
     issues: list[str]
 
 
-@api_router.post("/ai/canvas/edit", response_model=CanvasEditResponse, tags=["ai", "canvas"])
+@api_router.post("/ai/canvas/edit", response_model=CanvasEditResponse, tags=["ai", "canvas"], dependencies=[Depends(require_writer_default)])
 async def edit_canvas(
     body: CanvasEditRequest,
     _user: dict[str, Any] = Depends(current_user),

@@ -1525,7 +1525,13 @@ def test_other_bucket_max_uses_max_not_sum() -> None:
 
 
 def test_other_bucket_avg_emits_null() -> None:
-    """The Other bucket emits NULL for avg measures (not re-aggregable without weights)."""
+    """The Other bucket emits NULL for avg measures (not re-aggregable without weights).
+
+    DOCUMENTED BEHAVIOUR: AVG(AVGs) is mathematically wrong without row counts.
+    The Other bucket deliberately emits NULL so callers see an explicit signal
+    ("not available") rather than a silently incorrect number.
+    See _NON_ADDITIVE_AGGS in compile.py for the full rationale.
+    """
     m = _make_multi_agg_metric()
     mq = MetricQuery(
         metric_id="sales",
@@ -1538,6 +1544,51 @@ def test_other_bucket_avg_emits_null() -> None:
     other_arm = parts[1].upper()
     assert "NULL AS AVG_SALE" in other_arm or "NULL AS \"AVG_SALE\"" in other_arm, (
         f"Expected NULL AS avg_sale in Other arm:\n{other_arm[:500]}"
+    )
+
+
+def test_other_bucket_non_additive_measures_emit_null() -> None:
+    """The Other bucket emits NULL for all non-additive agg types.
+
+    DOCUMENTED BEHAVIOUR (see _NON_ADDITIVE_AGGS in compile.py):
+    avg, count_distinct, percentile_cont, and approx_count_distinct cannot be
+    re-aggregated across arbitrary groups of pre-computed bucket values.  The
+    Other bucket emits NULL for each such measure — an explicit "not available"
+    sentinel rather than a silently wrong number.  Callers should treat NULL in
+    the Other bucket for these measure types as "N/A", not as a data error.
+    """
+    m = MetricDefinition(
+        id="multi_nonadd",
+        name="MultiNonAdd",
+        measure=Measure(name="total_sales", agg="sum", expr="amount"),
+        base_table="sales",
+        extra_measures=(
+            Measure(name="avg_sale", agg="avg", expr="amount"),
+            Measure(name="uniq_customers", agg="count_distinct", expr="customer_id"),
+        ),
+        dimensions=(Dimension(name="region"),),
+    )
+    mq = MetricQuery(
+        metric_id="multi_nonadd",
+        dimensions=("region",),
+        top_n=TopN(dimension="region", n=1, order="desc", other=True),
+    )
+    sql, _ = compile_metric(m, mq)
+    sqlglot.parse_one(sql, dialect="duckdb")
+    parts = sql.split("UNION ALL", 1)
+    other_arm = parts[1].upper()
+
+    # avg → NULL (weighted average is undefined without row counts)
+    assert "NULL AS AVG_SALE" in other_arm or 'NULL AS "AVG_SALE"' in other_arm, (
+        f"Expected NULL AS avg_sale in Other arm:\n{other_arm[:500]}"
+    )
+    # count_distinct → NULL (UNION of pre-counted distinct sets may overlap)
+    assert "NULL AS UNIQ_CUSTOMERS" in other_arm or 'NULL AS "UNIQ_CUSTOMERS"' in other_arm, (
+        f"Expected NULL AS uniq_customers in Other arm:\n{other_arm[:500]}"
+    )
+    # The additive measure must still use SUM (regression guard)
+    assert "SUM(TOTAL_SALES)" in other_arm, (
+        f"Expected SUM(TOTAL_SALES) for the additive measure:\n{other_arm[:500]}"
     )
 
 
