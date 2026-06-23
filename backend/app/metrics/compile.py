@@ -743,16 +743,30 @@ def _compile_layered(
     # top_n (no Other) → WHERE dim IN (membership) or QUALIFY RANK() <= N.
     # top_n.other      → the top-N arm of a UNION (membership/QUALIFY) UNIONed
     #                    with an Other-bucket arm; both share the one __base CTE.
+    # PERF FIX (LOW): the ``top_n.other`` + ``time_grain`` arm previously built
+    # TWO correlated membership subqueries (one in _apply_top_n for the top arm's
+    # ``dim IN (...)``, one in _build_other_select for the Other arm's
+    # ``dim NOT IN (...)``) — each re-aggregating __base.  When BOTH arms exist
+    # (other=True) AND there is a time_grain, compute the per-tenant top-N
+    # membership ONCE in a shared __topn_members CTE and have both arms do a cheap
+    # correlated lookup into it.  Single-arm (other=False) and no-time-grain
+    # (complement-RANK) paths are unchanged — they never built two subqueries.
+    share_members = (
+        mq.top_n is not None and mq.top_n.other and time_alias is not None
+    )
+
     if mq.top_n is not None:
         outer_select = _apply_top_n(
-            outer_select, mq, metric, time_alias, all_dim_names, dialect
+            outer_select, mq, metric, time_alias, all_dim_names, dialect,
+            use_shared_members=share_members,
         )
 
     # ── Choose the top-level statement (outer SELECT or UNION) ───────────────
     top_stmt: exp.Expression
     if mq.top_n is not None and mq.top_n.other:
         other_select = _build_other_select(
-            mq, metric, time_alias, all_dim_names, dialect
+            mq, metric, time_alias, all_dim_names, dialect,
+            use_shared_members=share_members,
         )
         # Wrap each arm in parentheses (exp.Subquery) so per-arm ORDER BY / QUALIFY
         # / LIMIT are unambiguous — required by DuckDB / standard SQL for a UNION
@@ -788,6 +802,30 @@ def _compile_layered(
     # at the union level so BOTH arms can reference __base.  Either way the whole
     # statement renders with exactly one ``WITH __base AS (...)``.
     top_stmt = top_stmt.with_("__base", as_=base_select, dialect=dialect)
+
+    # PERF FIX (LOW): when the top arm + Other arm share the membership, attach
+    # the per-tenant top-N membership CTE (after __base, which it reads from).
+    # Both arms' correlated lookups reference __topn_members instead of each
+    # re-aggregating __base — the redundant per-bucket membership is computed
+    # ONCE, not twice.
+    if share_members:
+        tn = mq.top_n
+        assert tn is not None
+        members_corr_keys = _membership_correlation_keys(
+            metric, all_dim_names, tn.dimension
+        )
+        members_sql = _shared_members_cte_sql(
+            tn.dimension,
+            tn.measure or metric.measure.name,
+            "DESC" if tn.order == "desc" else "ASC",
+            tn.n,
+            members_corr_keys,
+            dialect,
+        )
+        members_select = sqlglot.parse_one(members_sql, dialect=dialect)
+        top_stmt = top_stmt.with_(
+            _MEMBERS_CTE, as_=members_select, dialect=dialect
+        )
 
     # ── Render ONCE, substitute sentinels ONCE ───────────────────────────────
     sql = top_stmt.sql(dialect=dialect)
@@ -842,6 +880,113 @@ def _membership_correlation_keys(
     if metric.rls_keys:
         return tuple(metric.rls_keys)
     return tuple(d for d in all_dim_names if d != dim_col)
+
+
+# Name of the shared per-tenant top-N membership CTE used by the
+# ``top_n.other`` + ``time_grain`` path (see _shared_members_cte_sql).
+_MEMBERS_CTE = "__topn_members"
+
+
+def _shared_members_cte_sql(
+    dim_col: str,
+    rank_measure: str,
+    order_dir: str,
+    n: int,
+    corr_keys: tuple[str, ...],
+    dialect: str,
+) -> str:
+    """Build the shared per-tenant top-N membership CTE body (``top_n.other`` + grain).
+
+    PERF FIX (LOW): the ``top_n.other`` + ``time_grain`` path previously emitted
+    TWO separate correlated membership subqueries against ``__base`` — one for the
+    top-N arm's ``dim IN (...)`` and one for the Other arm's ``dim NOT IN (...)``.
+    Each re-scanned and re-aggregated ``__base`` (``GROUP BY corr_keys, dim`` +
+    ``SUM(rank_measure)``) once PER OUTER ROW — redundant work computed twice.
+
+    This helper computes the per-tenant top-N membership set EXACTLY ONCE as a
+    small CTE.  Both arms then do a cheap correlated lookup into this tiny
+    pre-computed set (n rows per tenant) instead of re-aggregating ``__base``.
+
+    Correctness (must stay byte-identical in RESULT to the prior two subqueries):
+
+    * The membership computed here is the SAME set the prior
+      ``_top_n_membership_sql`` produced — ``GROUP BY [corr_keys,] dim`` ordered
+      by ``SUM(rank_measure) <dir>, dim ASC`` keeping the first ``n`` PER TENANT.
+      We use ``ROW_NUMBER() OVER (PARTITION BY corr_keys ORDER BY
+      SUM(rank_measure) <dir>, dim ASC) <= n``.  Because ``dim`` is the GROUP BY
+      key (unique within each tenant partition) the ``..., dim ASC`` tiebreaker
+      is a TOTAL order, so ROW_NUMBER ≤ n selects the IDENTICAL n rows the prior
+      ``ORDER BY ... LIMIT n`` did — same tie semantics, same per-tenant scope.
+    * NULL-dim rows are excluded here (``dim IS NOT NULL``), exactly as the prior
+      membership did, so NULL never becomes a member and the Other arm's
+      ``OR dim IS NULL`` continues to route NULL-dim rows into Other.
+    * ``corr_keys`` carries the per-tenant correlation columns (rls_keys when
+      declared; otherwise the projected non-ranked dims — see
+      _membership_correlation_keys).  When empty (single-tenant) there is no
+      PARTITION BY, matching the prior uncorrelated ``LIMIT n``.
+
+    The CTE projects ``corr_keys`` + ``dim_col`` so each arm can correlate its
+    lookup on the tenant columns.
+
+    SQLi defense-in-depth: dim_col, rank_measure and every corr_key are
+    interpolated UNQUOTED here; all are _IDENT_RE-validated upstream (see
+    _top_n_membership_sql for the provenance chain; corr_keys come from
+    metric.rls_keys / projected dimensions / _IDENT_RE-filtered policy_cols).
+    Assert defensively so this build site fails closed.
+    """
+    if not _IDENT_RE.fullmatch(dim_col):
+        raise MetricError(
+            "bad_dimension_name",
+            f"top_n dimension {dim_col!r} is not a valid SQL identifier.",
+        )
+    if not _IDENT_RE.fullmatch(rank_measure):
+        raise MetricError(
+            "bad_measure_name",
+            f"top_n rank measure {rank_measure!r} is not a valid SQL identifier.",
+        )
+    for k in corr_keys:
+        if not _IDENT_RE.fullmatch(k):
+            raise MetricError(
+                "bad_dimension_name",
+                f"top_n correlation column {k!r} is not a valid SQL identifier.",
+            )
+    select_cols = ", ".join([*corr_keys, dim_col])
+    partition_clause = (
+        f"PARTITION BY {', '.join(corr_keys)} " if corr_keys else ""
+    )
+    # Inner aggregation: one row per (corr_keys, dim) with the ranked sum, then
+    # rank within each tenant partition and keep the top n.
+    return (
+        f"SELECT {select_cols} FROM ("
+        f"SELECT {select_cols}, "
+        f"ROW_NUMBER() OVER ({partition_clause}"
+        f"ORDER BY SUM({rank_measure}) {order_dir}, {dim_col} ASC) AS __rn "
+        f"FROM __base "
+        f"WHERE {dim_col} IS NOT NULL "
+        f"GROUP BY {select_cols}"
+        f") AS __ranked WHERE __rn <= {n}"
+    )
+
+
+def _members_lookup_sql(
+    dim_col: str, corr_keys: tuple[str, ...], outer_alias: str
+) -> str:
+    """Correlated lookup of dim members from the shared ``__topn_members`` CTE.
+
+    Replaces the per-arm re-aggregating membership subquery: instead of scanning
+    ``__base`` it reads the tiny pre-ranked CTE, correlated on the tenant columns
+    to the outer row (so the per-tenant scoping is identical).  When there are no
+    correlation columns the lookup is uncorrelated (global membership), matching
+    the prior uncorrelated ``LIMIT n``.
+    """
+    if corr_keys:
+        preds = " AND ".join(
+            f"{_MEMBERS_CTE}.{k} = {outer_alias}.{k}" for k in corr_keys
+        )
+        return (
+            f"SELECT {dim_col} FROM {_MEMBERS_CTE} WHERE {preds}"
+        )
+    return f"SELECT {dim_col} FROM {_MEMBERS_CTE}"
 
 
 def _top_n_membership_sql(
@@ -929,6 +1074,7 @@ def _apply_top_n(
     time_alias: str | None,
     all_dim_names: list[str],
     dialect: str,
+    use_shared_members: bool = False,
 ) -> exp.Select:
     """Wrap the outer select with a top-N filter.
 
@@ -959,10 +1105,17 @@ def _apply_top_n(
     if time_alias is not None:
         # With time grain: use membership filter via correlated subquery on __base.
         order_dir = "DESC" if tn.order == "desc" else "ASC"
-        membership_sql = _top_n_membership_sql(
-            dim_col, rank_measure, order_dir, tn.n,
-            corr_keys, outer_alias="__outer",
-        )
+        if use_shared_members:
+            # PERF FIX (LOW): reference the shared per-tenant membership CTE
+            # (computed ONCE in _compile_layered) instead of re-aggregating
+            # __base here.  The lookup is correlated on corr_keys to __outer so
+            # the per-tenant scope is identical to the prior subquery.
+            membership_sql = _members_lookup_sql(dim_col, corr_keys, "__outer")
+        else:
+            membership_sql = _top_n_membership_sql(
+                dim_col, rank_measure, order_dir, tn.n,
+                corr_keys, outer_alias="__outer",
+            )
         membership_expr = sqlglot.parse_one(membership_sql, dialect=dialect)
         # wrap in exp.Subquery so sqlglot renders "IN (SELECT ...)" not "IN SELECT ...".
         where_cond = exp.In(
@@ -1015,6 +1168,7 @@ def _build_other_select(
     time_alias: str | None,
     all_dim_names: list[str],
     dialect: str,
+    use_shared_members: bool = False,
 ) -> exp.Select:
     """Build the Other-bucket arm of a ``top_n.other`` UNION as a single AST node.
 
@@ -1092,18 +1246,32 @@ def _build_other_select(
         from_node: exp.Expression = exp.Table(this=exp.to_identifier("__base"))
     else:
         # Time-grain path: per-tenant correlated membership subquery (NOT IN).
+        # PERF FIX (LOW): when use_shared_members is set the membership has
+        # already been computed ONCE in the shared __topn_members CTE; this arm
+        # does a cheap correlated lookup into it instead of re-aggregating
+        # __base a SECOND time.  The membership SET is identical to the top-N
+        # arm's (both read the same CTE), so the TOP/NOT-IN partition, the
+        # per-tenant scope and the tie semantics are byte-identical in RESULT.
         if _other_rls_keys:
-            membership_sql = _top_n_membership_sql(
-                dim_col, rank_measure, order_dir, tn.n,
-                rls_keys=_other_rls_keys, outer_alias="__other_outer",
-            )
+            if use_shared_members:
+                membership_sql = _members_lookup_sql(
+                    dim_col, _other_rls_keys, "__other_outer"
+                )
+            else:
+                membership_sql = _top_n_membership_sql(
+                    dim_col, rank_measure, order_dir, tn.n,
+                    rls_keys=_other_rls_keys, outer_alias="__other_outer",
+                )
             from_node = exp.alias_(
                 exp.Table(this=exp.to_identifier("__base")), "__other_outer"
             )
         else:
-            membership_sql = _top_n_membership_sql(
-                dim_col, rank_measure, order_dir, tn.n, rls_keys=(),
-            )
+            if use_shared_members:
+                membership_sql = _members_lookup_sql(dim_col, (), "__other_outer")
+            else:
+                membership_sql = _top_n_membership_sql(
+                    dim_col, rank_measure, order_dir, tn.n, rls_keys=(),
+                )
             from_node = exp.Table(this=exp.to_identifier("__base"))
         membership_expr = sqlglot.parse_one(membership_sql, dialect=dialect)
         # NULL-soundness: the membership subquery now excludes NULL-dim rows

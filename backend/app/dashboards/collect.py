@@ -182,7 +182,12 @@ _DEFAULT_ROW_CAP = 100_000
 _ROW_CAP: int = int(os.environ.get("NUBI_COLLECT_ROW_CAP", _DEFAULT_ROW_CAP))
 
 # Maximum concurrent widget queries per board collection run.
-_WIDGET_CONCURRENCY = 8
+# Override via NUBI_WIDGET_CONCURRENCY env-var (integer, >=1).
+_DEFAULT_WIDGET_CONCURRENCY = 8
+_WIDGET_CONCURRENCY: int = max(
+    1,
+    int(os.environ.get("NUBI_WIDGET_CONCURRENCY", _DEFAULT_WIDGET_CONCURRENCY)),
+)
 
 # Maximum number of Canvas bindings processed per collect call.
 # Override via NUBI_MAX_CANVAS_BINDINGS env-var (integer).  0 = unlimited.

@@ -1705,6 +1705,10 @@ async def test_rollback_then_retry_after_rejected_terminal_proceeds():
     assert len(calls) == 0  # write never happened
 
     # Re-submit with the same key after rejection — must create a fresh record.
+    # NOTE: the original attempt required approval, so the strictness ratchet
+    # forces approval on the retry too even though the caller passes
+    # approval_required=False (approval strictness can only INCREASE).  The
+    # retry therefore lands in pending_approval, not auto-committed.
     r2 = await submit_writeback(
         org_id="orgA",
         idempotency_key=key,
@@ -1712,13 +1716,29 @@ async def test_rollback_then_retry_after_rejected_terminal_proceeds():
         target=_target(),
         mode="append",
         created_by="user1",
-        approval_required=False,
+        approval_required=False,  # caller tries to downgrade — must be ignored
         connector_write_fn=write_fn,
         store=store,
     )
     assert r2["id"] != r1["id"], "Retry must produce a new record, not the rejected one"
-    assert r2["state"] == "committed"
-    assert len(calls) == 1  # write ran once for the retry
+    assert r2["state"] == "pending_approval", (
+        "Strictness ratchet: retry of an approval-required rejected record must "
+        "stay gated even when the caller passes approval_required=False"
+    )
+    assert r2["approval_required"] is True
+    assert len(calls) == 0  # still gated — no write yet
+
+    # Approving the retry commits it through the connector.
+    committed = await approve_writeback(
+        org_id="orgA",
+        wb_id=r2["id"],
+        action="approve",
+        approver_id="approver1",
+        connector_write_fn=write_fn,
+        store=store,
+    )
+    assert committed["state"] == "committed"
+    assert len(calls) == 1  # write ran once on approval
 
 
 @pytest.mark.asyncio
@@ -1814,6 +1834,125 @@ async def test_pending_approval_record_is_not_superseded():
     assert r2["id"] == r1["id"], "Pending record must be returned as-is on retry"
     assert r2["state"] == "pending_approval"
     assert len(calls) == 0  # write never triggered
+
+
+# ---------------------------------------------------------------------------
+# 26b. [MED authz] Strictness ratchet on supersede: a rejected
+#      approval_required=True writeback CANNOT be re-submitted as
+#      approval_required=False to bypass the approver (downgrade attack).
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_rejected_approval_required_cannot_downgrade_on_resubmit():
+    """A member whose approval_required=True writeback was REJECTED must not be
+    able to re-submit the same idempotency_key with approval_required=False and
+    auto-commit with no approver.  Approval strictness can only INCREASE.
+    """
+    store = InMemoryWritebackStore()
+    key = _idem()
+    calls: list[int] = []
+
+    def write_fn(r, t, m):
+        calls.append(len(r))
+        return {"rows_written": len(r)}
+
+    # Submit gated, then reject.
+    r1 = await submit_writeback(
+        org_id="orgA",
+        idempotency_key=key,
+        rows=[{"id": 1}],
+        target=_target(),
+        mode="append",
+        created_by="member1",
+        approval_required=True,
+        connector_write_fn=write_fn,
+        store=store,
+    )
+    rejected = await approve_writeback(
+        org_id="orgA",
+        wb_id=r1["id"],
+        action="reject",
+        approver_id="approver1",
+        connector_write_fn=write_fn,
+        store=store,
+    )
+    assert rejected["state"] == "rejected"
+
+    # Attempt the downgrade: re-submit with approval_required=False.
+    r2 = await submit_writeback(
+        org_id="orgA",
+        idempotency_key=key,
+        rows=[{"id": 1}],
+        target=_target(),
+        mode="append",
+        created_by="member1",
+        approval_required=False,  # downgrade attempt — must be ignored
+        connector_write_fn=write_fn,
+        store=store,
+    )
+    # The retry stays GATED (no auto-commit, no write).
+    assert r2["state"] == "pending_approval"
+    assert r2["approval_required"] is True
+    assert calls == [], "Downgraded retry must NOT auto-commit (no approver)"
+
+
+@pytest.mark.asyncio
+async def test_superseded_rejected_record_is_retained_for_audit():
+    """The rejected/failed record is RETAINED (marked 'superseded'), NOT deleted,
+    after a retry supersedes it — the audit trail of the prior attempt survives.
+    """
+    store = InMemoryWritebackStore()
+    key = _idem()
+
+    # Submit gated, then reject (non-committed terminal attempt).
+    r1 = await submit_writeback(
+        org_id="orgA",
+        idempotency_key=key,
+        rows=[{"id": 1}],
+        target=_target(),
+        mode="append",
+        created_by="member1",
+        approval_required=True,
+        connector_write_fn=_noop_write,
+        store=store,
+    )
+    rejected = await approve_writeback(
+        org_id="orgA",
+        wb_id=r1["id"],
+        action="reject",
+        approver_id="approver1",
+        connector_write_fn=_noop_write,
+        store=store,
+    )
+    assert rejected["state"] == "rejected"
+
+    # Retry supersedes it.
+    r2 = await submit_writeback(
+        org_id="orgA",
+        idempotency_key=key,
+        rows=[{"id": 1}],
+        target=_target(),
+        mode="append",
+        created_by="member1",
+        approval_required=True,
+        connector_write_fn=_noop_write,
+        store=store,
+    )
+    assert r2["id"] != r1["id"]
+
+    # The OLD record is still retrievable by id (NOT deleted) and now carries
+    # the 'superseded' terminal state + an audit link to its successor.
+    old = await store.get(org_id="orgA", wb_id=r1["id"])
+    assert old is not None, "Superseded record must be retained for audit, not deleted"
+    assert old["state"] == "superseded"
+    assert old["superseded_by"] == r2["id"]
+    assert old["superseded_at"] is not None
+
+    # The live (org, idempotency_key) slot now points at the NEW record.
+    live = await store.get_by_idempotency_key(org_id="orgA", idempotency_key=key)
+    assert live is not None
+    assert live["id"] == r2["id"]
 
 
 # ---------------------------------------------------------------------------

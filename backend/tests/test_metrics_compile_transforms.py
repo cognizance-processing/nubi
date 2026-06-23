@@ -4998,8 +4998,17 @@ def test_top_n_other_time_grain_tie_boundary_deterministic() -> None:
 
 def test_top_n_other_time_grain_tie_both_arms_same_membership_sql() -> None:
     """[MED] The TOP arm's membership IN-subquery and the OTHER arm's NOT-IN
-    membership subquery use the SAME deterministic ORDER BY (with the stable
-    {dim} tiebreaker), so both arms agree on the member set at a tie."""
+    membership subquery agree on the SAME deterministic member set at a tie.
+
+    PERF FIX (LOW): the membership is now computed ONCE in a shared
+    ``__topn_members`` CTE (ranked with the stable ``ORDER BY SUM(measure) <dir>,
+    {dim} ASC`` tiebreaker) and BOTH arms do a cheap correlated lookup into that
+    single CTE — instead of each arm re-aggregating __base with its own membership
+    subquery.  Sharing one CTE makes the two arms agree on the member set *by
+    construction* (strictly stronger than two textually-identical subqueries):
+      * the deterministic tiebreaker appears EXACTLY ONCE (in the shared CTE);
+      * both arms reference ``__topn_members`` exactly once each.
+    """
     m = _simple_metric()
     mq = MetricQuery(
         metric_id="revenue",
@@ -5010,13 +5019,17 @@ def test_top_n_other_time_grain_tie_both_arms_same_membership_sql() -> None:
     )
     sql, _ = compile_metric(m, mq)
     up = sql.upper()
-    # The membership ORDER BY must carry the stable secondary tiebreaker on the
-    # dimension column (region ASC) in BOTH arms.
-    # Count occurrences of "ORDER BY SUM(REVENUE) DESC, REGION" — one per arm.
-    needle = "SUM(REVENUE) DESC, REGION"
-    assert up.count(needle) == 2, (
-        f"Expected the stable tiebreaker in both membership subqueries; "
-        f"found {up.count(needle)} in:\n{sql}"
+    # The deterministic membership ranking (with the stable {dim} tiebreaker) is
+    # now computed ONCE in the shared __topn_members CTE — not duplicated per arm.
+    needle = "SUM(REVENUE) DESC, REGION ASC"
+    assert up.count(needle) == 1, (
+        f"Expected the stable tiebreaker exactly once in the shared membership "
+        f"CTE; found {up.count(needle)} in:\n{sql}"
+    )
+    # Both arms must reference the shared membership CTE (top arm IN, Other arm
+    # NOT IN) so they agree on the member set by construction.
+    assert up.count("FROM __TOPN_MEMBERS") == 2, (
+        f"Expected both arms to look up the shared membership CTE; SQL:\n{sql}"
     )
 
 

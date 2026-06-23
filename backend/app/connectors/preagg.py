@@ -431,6 +431,12 @@ class RollupRegistry:
                 # already points to the newer table and must not be removed.
                 if evicted.rewrite_sig and self._by_sig.get(evicted.rewrite_sig) == evicted.table:
                     del self._by_sig[evicted.rewrite_sig]
+                # [HIGH disk leak] Evicting from memory must ALSO delete the
+                # on-disk DuckDB file the rollup materialized into — otherwise
+                # seed_data/rollups/<id>.duckdb accumulates forever and fills
+                # the disk.  Only unlink a real file path (skip None / :memory:
+                # / files shared by another live rollup at the same path).
+                _unlink_rollup_database(evicted, keep=self._rollups)
             self._rollups[rollup.rollup_id] = rollup
         if rollup.rewrite_sig:
             # Use register() so _by_sig stays bounded at max_entries too.
@@ -480,6 +486,102 @@ class RollupRegistry:
         if r is not None:
             r.hits += 1
             self._rollups.move_to_end(rollup_id)
+
+
+# ---------------------------------------------------------------------------
+# On-disk rollup file lifecycle helpers
+# ---------------------------------------------------------------------------
+
+
+def _unlink_rollup_database(
+    rollup: BuiltRollup, *, keep: "OrderedDict[str, BuiltRollup] | None" = None
+) -> None:
+    """Best-effort delete the on-disk DuckDB file backing *rollup*.
+
+    Called on LRU eviction so the materialized ``seed_data/rollups/<id>.duckdb``
+    file does not outlive its registry entry (the [HIGH disk leak] fix).
+
+    Guards:
+    - ``database`` must be a real on-disk path (skip ``None`` / ``:memory:``).
+    - The path must not still be referenced by another live rollup in *keep*
+      (two rollups can share a path after shape-dedup reuse — never unlink a
+      file a surviving rollup still reads from).
+
+    Swallows :class:`OSError` (already gone / permission) — best-effort cleanup
+    must never break eviction.
+    """
+    path = rollup.database
+    if not path or path == ":memory:":
+        return
+    if keep is not None:
+        for other in keep.values():
+            if other.database == path:
+                return  # another live rollup shares this file — keep it
+    try:
+        if os.path.isfile(path):
+            os.unlink(path)
+    except OSError:
+        pass
+
+
+def _rollup_shape_hash(
+    table: str,
+    dimensions: list[str],
+    measures: list[str],
+    rls_keys: list[str],
+    org_id: str | None = None,
+) -> str:
+    """Stable hash of a rollup's materialized shape.
+
+    Two builds with the same ``(table, sorted dims, sorted measures, sorted
+    rls_keys, org_id)`` produce the SAME hash, so :func:`build_rollup` can reuse
+    the existing rollup_id/path instead of minting a fresh UUID each time —
+    eliminating scheduler/rebuild churn that would otherwise create a new
+    on-disk file per build.
+    """
+    import hashlib  # noqa: PLC0415
+
+    payload = "|".join(
+        [
+            table,
+            ",".join(sorted(dimensions)),
+            ",".join(sorted(measures)),
+            ",".join(sorted(rls_keys)),
+            org_id or "",
+        ]
+    )
+    digest = hashlib.sha1(payload.encode("utf-8")).hexdigest()[:12]
+    return f"rollup_{table}_{digest}"
+
+
+def sweep_orphan_rollups(registry: "RollupRegistry | None" = None) -> int:
+    """Delete on-disk rollup files not referenced by any live registry entry.
+
+    Globs ``seed_data/rollups/*.duckdb`` and unlinks every file whose absolute
+    path is not the ``database`` of a rollup currently in *registry*.  This
+    reclaims orphans left behind before the eviction-unlink fix (and any file
+    leaked by a crash mid-build).  Best-effort: :class:`OSError` per-file is
+    swallowed.  Returns the number of files removed.
+    """
+    import glob  # noqa: PLC0415
+
+    registry = registry or get_registry()
+    referenced = {
+        os.path.abspath(r.database)
+        for r in registry.all_rollups()
+        if r.database and r.database != ":memory:"
+    }
+    rollups_dir = os.path.dirname(_rollup_database_path("_"))
+    removed = 0
+    for path in glob.glob(os.path.join(rollups_dir, "*.duckdb")):
+        if os.path.abspath(path) in referenced:
+            continue
+        try:
+            os.unlink(path)
+            removed += 1
+        except OSError:
+            pass
+    return removed
 
 
 # ---------------------------------------------------------------------------
@@ -760,7 +862,6 @@ def build_rollup(
         pathologically un-selective aggregations.
     """
     import os  # noqa: PLC0415
-    import uuid  # noqa: PLC0415
 
     import duckdb  # noqa: PLC0415
 
@@ -776,9 +877,22 @@ def build_rollup(
         measures = list(candidate.measures)
 
     rls_keys = list(rls_keys or [])
-    rollup_id = rollup_id or f"rollup_{table}_{uuid.uuid4().hex[:8]}"
-    rollup_table = f"rollup_{table}"
     registry = registry or get_registry()
+
+    # ── Shape-hash DEDUP ──────────────────────────────────────────────────────
+    # A rollup_id derived from the materialized shape (table, sorted dims,
+    # sorted measures, sorted rls_keys, org) means repeated builds of the SAME
+    # shape reuse one stable id/path instead of minting a fresh UUID — so the
+    # scheduler / periodic rebuilds do not spawn a new on-disk DuckDB file each
+    # run.  An explicit rollup_id (caller override) wins; otherwise we hash.
+    if rollup_id is None:
+        rollup_id = _rollup_shape_hash(table, dimensions, measures, rls_keys, org_id)
+        # If a rollup with this exact shape is already registered, reuse it
+        # outright — no rebuild, no new file.  (Scheduler churn elimination.)
+        existing = registry.get_rollup(rollup_id)
+        if existing is not None:
+            return existing
+    rollup_table = f"rollup_{table}"
 
     rollup_sql = build_rollup_sql(table, dimensions, measures, rls_keys)
 

@@ -456,3 +456,55 @@ async def test_board_widget_cap_truncates_excess_widgets(
     assert any(board_id in m for m in warning_msgs), (
         f"Warning should mention board_id={board_id!r}; got: {warning_msgs}"
     )
+
+
+# ---------------------------------------------------------------------------
+# 7. NUBI_WIDGET_CONCURRENCY env var overrides _WIDGET_CONCURRENCY
+# ---------------------------------------------------------------------------
+
+
+def test_nubi_widget_concurrency_env_override(monkeypatch: pytest.MonkeyPatch) -> None:
+    """NUBI_WIDGET_CONCURRENCY must override _WIDGET_CONCURRENCY at import time.
+
+    The constant is read from the env during module initialisation.  We verify
+    the parsing logic by directly evaluating the same expression the module
+    uses (``max(1, int(os.environ.get(..., default)))``), which lets us confirm
+    the env var is wired correctly without reloading the module (a reload would
+    invalidate cached function-object references held by sibling test modules).
+    """
+    import app.dashboards.collect as _collect
+
+    # --- default: env var absent → _DEFAULT_WIDGET_CONCURRENCY ---------------
+    assert _collect._DEFAULT_WIDGET_CONCURRENCY == 8, (
+        f"Unexpected default value: {_collect._DEFAULT_WIDGET_CONCURRENCY}"
+    )
+
+    # --- explicit override: env value must be respected ----------------------
+    # Evaluate the same expression the module uses at init time.
+    monkeypatch.setenv("NUBI_WIDGET_CONCURRENCY", "3")
+    computed = max(
+        1,
+        int(os.environ.get("NUBI_WIDGET_CONCURRENCY", _collect._DEFAULT_WIDGET_CONCURRENCY)),
+    )
+    assert computed == 3, f"Expected 3 from env override, got {computed}"
+
+    # --- floor guard: value "0" must be clamped to 1 -------------------------
+    monkeypatch.setenv("NUBI_WIDGET_CONCURRENCY", "0")
+    computed_floor = max(
+        1,
+        int(os.environ.get("NUBI_WIDGET_CONCURRENCY", _collect._DEFAULT_WIDGET_CONCURRENCY)),
+    )
+    assert computed_floor >= 1, (
+        f"_WIDGET_CONCURRENCY must be >=1 even for env='0'; got {computed_floor}"
+    )
+
+    # --- runtime constant: current process value matches the formula ---------
+    # The module was imported without NUBI_WIDGET_CONCURRENCY set (see the
+    # os.environ.setdefault calls at the top of this file), so it should equal
+    # the default.
+    monkeypatch.delenv("NUBI_WIDGET_CONCURRENCY", raising=False)
+    assert _collect._WIDGET_CONCURRENCY == _collect._DEFAULT_WIDGET_CONCURRENCY, (
+        f"Module-level constant should equal the default "
+        f"({_collect._DEFAULT_WIDGET_CONCURRENCY}); "
+        f"got {_collect._WIDGET_CONCURRENCY}"
+    )

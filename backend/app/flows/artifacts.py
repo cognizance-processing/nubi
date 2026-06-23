@@ -417,8 +417,8 @@ class _LimitedWriter:
         self._written += n
         if self._max_bytes > 0 and self._written > self._max_bytes:
             raise ValueError(
-                f"Artifact size exceeded {self._max_bytes:,} bytes during "
-                "serialization (NUBI_ARTIFACT_MAX_BYTES). The object was too "
+                f"Artifact size exceeds the maximum allowed {self._max_bytes:,} bytes "
+                "(NUBI_ARTIFACT_MAX_BYTES) during serialization. The object was too "
                 "large; reduce the artifact size or raise the limit."
             )
         self._buf.write(data)
@@ -479,16 +479,18 @@ def _serialise(obj: Any, kind: str) -> bytes:
             )
         return bytes(obj)
     if kind == "json":
-        # [LOW memory/robustness] Apply the same best-effort pre-estimate guard
-        # used for pickle/joblib: if the object is a known large type (numpy
-        # ndarray, pandas DataFrame/Series) whose byte size can be cheaply
-        # estimated, reject it early before json.dumps ever runs.  For all
-        # other types json.dumps still builds the full string in memory (there
-        # is no streaming JSON encoder in the stdlib), so the in-line
-        # encoded-length check below acts as the mid-serialise cap, and the
-        # definitive post-serialise check in put_artifact() remains the
-        # backstop.  Circular-reference / unsupported-type errors are wrapped
-        # into a clear ValueError to avoid cryptic tracebacks.
+        # [MED memory] Stream JSON into a _LimitedWriter via
+        # json.JSONEncoder().iterencode(obj) so we abort mid-stream the moment
+        # the running byte count exceeds the cap — identical strategy to pickle
+        # and joblib.  The old approach (json.dumps(obj).encode()) built the
+        # full JSON string in one shot and only checked the size AFTER the
+        # entire encoded object was already in memory (2× peak: Python string +
+        # UTF-8 bytes object).  With iterencode each chunk is written to
+        # _LimitedWriter, which raises as soon as the running total exceeds the
+        # cap so no full oversized buffer is ever constructed.
+        #
+        # Circular-reference / non-serializable errors are still caught and
+        # wrapped into a clear ValueError (same contract as before).
         if _ARTIFACT_MAX_BYTES > 0:
             _pre = _estimate_obj_bytes(obj)
             if _pre is not None and _pre > _ARTIFACT_MAX_BYTES:
@@ -498,21 +500,30 @@ def _serialise(obj: Any, kind: str) -> bytes:
                     "(NUBI_ARTIFACT_MAX_BYTES). Reduce the artifact size or raise "
                     "the limit."
                 )
+        writer = _LimitedWriter(_ARTIFACT_MAX_BYTES)
         try:
-            encoded = json.dumps(obj).encode("utf-8")
-        except (TypeError, ValueError) as exc:
+            for chunk in json.JSONEncoder().iterencode(obj):
+                writer.write(chunk.encode("utf-8"))
+        except ValueError as exc:
+            # Two distinct sources of ValueError:
+            #   1. _LimitedWriter.write() — cap exceeded; message contains
+            #      "exceeded" / "NUBI_ARTIFACT_MAX_BYTES".  Re-raise verbatim.
+            #   2. json.JSONEncoder.iterencode() — circular reference detected.
+            #      Wrap into a friendlier message (same as the old dumps path).
+            if "NUBI_ARTIFACT_MAX_BYTES" in str(exc):
+                raise  # cap error — leave the message intact
             raise ValueError(
                 f"Artifact kind='json': object is not JSON-serializable "
                 f"(circular reference or unsupported type). "
                 f"Original error: {exc}"
             ) from exc
-        if _ARTIFACT_MAX_BYTES > 0 and len(encoded) > _ARTIFACT_MAX_BYTES:
+        except TypeError as exc:
             raise ValueError(
-                f"Artifact size {len(encoded):,} bytes exceeds the maximum allowed "
-                f"{_ARTIFACT_MAX_BYTES:,} bytes (NUBI_ARTIFACT_MAX_BYTES). "
-                "Reduce the artifact size or raise the limit."
-            )
-        return encoded
+                f"Artifact kind='json': object is not JSON-serializable "
+                f"(circular reference or unsupported type). "
+                f"Original error: {exc}"
+            ) from exc
+        return writer.getvalue()
     raise ValueError(
         f"Unsupported artifact kind {kind!r}. "
         "Supported: 'pickle', 'joblib', 'bytes', 'json'."

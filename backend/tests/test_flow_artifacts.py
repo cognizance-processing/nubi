@@ -1424,6 +1424,56 @@ def test_joblib_large_object_aborts_mid_serialization():
 
 
 # ---------------------------------------------------------------------------
+# 27d. MED memory: json kind streams via iterencode → mid-stream abort
+# ---------------------------------------------------------------------------
+
+
+def test_json_large_object_aborts_mid_serialization():
+    """An oversized json artifact raises mid-serialization; no 2× full-buffer allocation.
+
+    MED memory fix: the old code called json.dumps(obj).encode() in one shot,
+    which built the entire JSON string before the cap was checked (2× peak RAM:
+    Python str + encoded bytes object).  The fix streams via
+    json.JSONEncoder().iterencode(obj) into _LimitedWriter, so serialization
+    aborts as soon as the running byte count exceeds the cap — no full oversized
+    buffer is ever allocated.
+
+    Assertions
+    ----------
+    - put_artifact raises ValueError containing "exceeded" before returning.
+    - _total_bytes on the store is 0 (no oversized blob was stored).
+    """
+    import unittest.mock  # noqa: PLC0415
+    from app.flows import artifacts as _art_mod  # noqa: PLC0415
+
+    art_store = _mem_store()
+
+    # A plain Python dict that JSON-encodes to well over 50 bytes.
+    big_obj = {"data": "x" * 500}  # > 500 bytes encoded
+    cap = 50  # tiny cap so no large allocation is needed
+
+    with unittest.mock.patch.object(_art_mod, "_ARTIFACT_MAX_BYTES", cap):
+        with pytest.raises(ValueError, match="exceeded|exceeds the maximum"):
+            put_artifact(big_obj, kind="json", org_id=ORG_A, store=art_store)
+
+    # Confirm no artifact was written to the store.
+    assert art_store._total_bytes == 0, (
+        f"Oversized json blob was stored ({art_store._total_bytes} bytes); "
+        "expected nothing to be stored after mid-stream abort."
+    )
+
+
+def test_json_normal_round_trip_mid_stream_fix():
+    """A normal json artifact still round-trips correctly after the iterencode fix."""
+    art_store = _mem_store()
+    obj = {"scores": [0.1, 0.2, 0.3], "label": "ok", "nested": {"a": 1}}
+    handle = put_artifact(obj, kind="json", org_id=ORG_A, store=art_store)
+    assert is_handle(handle)
+    loaded = get_artifact(handle, org_id=ORG_A, store=art_store)
+    assert loaded == obj
+
+
+# ---------------------------------------------------------------------------
 # 27. Org-bound HMAC: a blob signed for org A fails verify under org B
 # ---------------------------------------------------------------------------
 

@@ -257,7 +257,8 @@ CREATE TABLE IF NOT EXISTS writeback_requests (
                                      'pending_approval',
                                      'committed',
                                      'rejected',
-                                     'failed'
+                                     'failed',
+                                     'superseded'
                                  )),
     result           jsonb,
     error            text,
@@ -265,8 +266,22 @@ CREATE TABLE IF NOT EXISTS writeback_requests (
     meta             jsonb       NOT NULL DEFAULT '{}'::jsonb,
     created_at       timestamptz NOT NULL DEFAULT now(),
     updated_at       timestamptz NOT NULL DEFAULT now(),
-    UNIQUE (org_id, idempotency_key)
+    -- Audit trail for the rollback-then-retry (supersede) path.  When a
+    -- failed/rejected attempt is superseded by a fresh retry, the OLD record
+    -- is retained (state='superseded') rather than deleted, so the prior
+    -- non-committed attempt stays in the audit log.  superseded_by points at
+    -- the new record that reclaimed the (org_id, idempotency_key) slot.
+    superseded_by    uuid,
+    superseded_at    timestamptz
 );
+
+-- Idempotency uniqueness only applies to LIVE (non-superseded) records.  A
+-- record in the 'superseded' terminal state has released its claim on the
+-- (org_id, idempotency_key) slot, so the new retry record can reuse the key
+-- while the old attempt is retained for audit.
+CREATE UNIQUE INDEX IF NOT EXISTS writeback_requests_org_idem_live_uidx
+    ON writeback_requests (org_id, idempotency_key)
+    WHERE state <> 'superseded';
 
 CREATE INDEX IF NOT EXISTS writeback_requests_org_id_idx
     ON writeback_requests (org_id);

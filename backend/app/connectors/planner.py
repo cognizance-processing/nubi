@@ -547,6 +547,60 @@ def _extract_layered_cte(
     return inner_sql, outer_sql
 
 
+def _outer_filter_columns(outer_sql: str, dialect: str) -> set[str]:
+    """Columns referenced in the OUTER SELECT's WHERE clause(s), lower-cased.
+
+    For a layered ``WITH __base AS (<inner>) <outer>`` query the RLS predicate
+    injected by ``plan()`` lands on the OUTER SELECT (``WHERE policy_col = val``),
+    NOT on the inner aggregation.  When the inner is re-pointed at a rollup, the
+    outer filter only resolves correctly if ``policy_col`` is a column produced by
+    the rollup-backed ``__base`` — i.e. it must be present in the rollup grain.
+
+    This helper extracts exactly those outer filter columns so the router can
+    GUARANTEE the rollup grain carries them before routing (fix-22 RLS-soundness
+    extended to the layered outer-RLS case).  Any parse failure returns an empty
+    set, but callers must treat an *unparseable* outer as non-routable separately
+    (here we conservatively fall back via the caller's own guard).
+    """
+    try:
+        tree = parse_sql_cached(outer_sql, dialect=dialect)
+    except Exception:
+        return set()
+    cols: set[str] = set()
+    for where_node in tree.find_all(exp.Where):
+        for col in where_node.find_all(exp.Column):
+            cols.add(col.name.lower())
+    return cols
+
+
+def _inner_output_columns(inner_sql: str, dialect: str) -> set[str]:
+    """Output column names the inner ``__base`` SELECT exposes, lower-cased.
+
+    These are the ONLY columns the rollup-backed ``__base`` can offer to the
+    outer SELECT after the rewrite: each SELECT-list item's output name (its
+    alias when present, else the bare column name).  An aggregate without an
+    alias has no stable output name and is ignored (it cannot be the target of
+    an outer RLS predicate anyway).
+
+    Used to GUARANTEE the outer RLS/policy column is actually produced by
+    ``__base`` (not merely present in the rollup grain): a grain column that the
+    inner SELECT never projects is invisible to the outer WHERE.
+    """
+    try:
+        tree = parse_sql_cached(inner_sql, dialect=dialect)
+    except Exception:
+        return set()
+    if not isinstance(tree, exp.Select):
+        return set()
+    out: set[str] = set()
+    for sel_item in tree.expressions:
+        if isinstance(sel_item, exp.Alias):
+            out.add(sel_item.alias_or_name.lower())
+        elif isinstance(sel_item, exp.Column):
+            out.add(sel_item.name.lower())
+    return out
+
+
 def route_to_rollup_shape(
     plan: PhysicalPlan,
     registry: Any,
@@ -668,6 +722,24 @@ def route_to_rollup_shape(
             for col in (plan.rls_claims.get("policies") or {})
         } & {d.lower() for d in inner_shape.dimensions}
 
+        # ── Outer-RLS soundness (fix-22, layered case) ───────────────────────
+        # The RLS predicate that plan() injects for a layered query lands on the
+        # OUTER SELECT (WHERE policy_col = val), filtering the rollup-backed
+        # __base.  That outer filter only resolves if policy_col is a column the
+        # rollup grain produces.  policy_hoisted_dims above only covers policy
+        # columns that ALSO appear in the inner GROUP BY; an outer RLS column
+        # that is NOT an inner dim (so policy_hoisted_dims stays empty) would
+        # slip through and reference a column absent from the rollup-backed
+        # __base.  Collect every column the outer WHERE filters on so we can
+        # GUARANTEE the rollup grain carries each one before routing.
+        outer_filter_cols = _outer_filter_columns(outer_sql, dialect=plan.dialect)
+        # Columns the rollup-backed __base will actually expose to the outer
+        # SELECT (its projected output names).  The outer RLS column must be in
+        # BOTH this set AND the rollup grain — grain-membership alone is not
+        # enough because a grain column the inner never projects is invisible to
+        # the outer WHERE.
+        inner_output_cols = _inner_output_columns(inner_sql, dialect=plan.dialect)
+
         # Build a temporary inner plan to reuse _rewrite_to_rollup.
         inner_plan = PhysicalPlan(
             dialect=plan.dialect,
@@ -694,6 +766,18 @@ def route_to_rollup_shape(
             # tenants in the top-N membership subquery.
             roll_all_dims_lc = {d.lower() for d in roll_all_dims}
             if not policy_hoisted_dims.issubset(roll_all_dims_lc):
+                continue
+            # fix-22 (layered outer-RLS): every column the OUTER SELECT filters
+            # on — which includes the RLS/policy column hoisted onto the outer
+            # WHERE by plan() — MUST be carried by the rollup grain.  Otherwise
+            # the rollup-backed __base would not expose that column and the outer
+            # RLS predicate would reference a missing column (or, worse, be
+            # silently dropped), leaking rows across tenants.  Refuse to route
+            # (fall back to base) when any outer filter column is absent from the
+            # rollup grain OR is not projected by the rollup-backed __base.
+            if not outer_filter_cols.issubset(roll_all_dims_lc):
+                continue
+            if not outer_filter_cols.issubset(inner_output_cols):
                 continue
             roll_measures = rollup.measure_funcs
             ok_measures = True

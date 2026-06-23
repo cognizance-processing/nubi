@@ -137,10 +137,13 @@ _VALID_STATES = {
     "committed",
     "rejected",
     "failed",
+    "superseded",
 }
 
 #: Terminal states — once in these, no further transitions are allowed.
-_TERMINAL_STATES = {"committed", "rejected", "failed"}
+#: 'superseded' is terminal: the record is retained purely for audit after a
+#: rollback-then-retry replaced it; it must never transition again.
+_TERMINAL_STATES = {"committed", "rejected", "failed", "superseded"}
 
 #: Transient lock state used during the approval CAS sequence.
 #: A record in 'committing' is owned by exactly one concurrent approver that
@@ -301,6 +304,8 @@ class InMemoryWritebackStore(WritebackStore):
             "error": None,
             "approved_by": None,
             "meta": deepcopy(meta or {}),
+            "superseded_by": None,
+            "superseded_at": None,
             "created_at": now,
             "updated_at": now,
         }
@@ -376,8 +381,9 @@ class InMemoryWritebackStore(WritebackStore):
         # can reclaim the same (org_id, idempotency_key) slot.
         idem_key = (org_id, idempotency_key)
         self._idem_index.pop(idem_key, None)
-        # Old record stays in _records for audit; its idem slot is vacated.
-        return await self.create(
+        # Create the fresh retry record FIRST so we can record the audit link
+        # (superseded_by) on the old record.
+        new_record = await self.create(
             org_id=org_id,
             idempotency_key=idempotency_key,
             rows=rows,
@@ -387,6 +393,17 @@ class InMemoryWritebackStore(WritebackStore):
             approval_required=approval_required,
             meta=meta,
         )
+        # Audit trail: mark the OLD record 'superseded' (retained, NOT deleted)
+        # so the rejected/failed attempt is preserved while its idem slot is
+        # freed for the new record.
+        old = self._records.get(str(old_wb_id))
+        if old is not None and str(old["org_id"]) == str(org_id):
+            now = datetime.now(timezone.utc).isoformat()
+            old["state"] = "superseded"
+            old["superseded_by"] = new_record["id"]
+            old["superseded_at"] = now
+            old["updated_at"] = now
+        return new_record
 
     async def list(
         self, org_id: str, limit: int = 50
@@ -603,19 +620,25 @@ class PgWritebackStore(WritebackStore):
         meta: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         from app.db import execute as db_execute  # noqa: PLC0415
-        from app.db import fetchrow as db_fetchrow  # noqa: PLC0415
 
-        # Delete the superseded row to release the unique (org_id, idempotency_key)
-        # slot, then insert a fresh record.  The old row is gone from the DB but
-        # callers that held its wb_id will simply get a 404 on subsequent lookups —
-        # acceptable for the rollback-then-retry path.
+        # Mark the old row 'superseded' (audit trail RETAINED — NOT deleted) to
+        # release its claim on the partial-unique (org_id, idempotency_key) slot
+        # (the UNIQUE index only covers state <> 'superseded'), then insert a
+        # fresh record.  The rejected/failed attempt is preserved for audit and
+        # linked to its successor via superseded_by.
         await db_execute(
-            "DELETE FROM writeback_requests WHERE id = $1::uuid AND org_id = $2::uuid",
+            """
+            UPDATE writeback_requests
+               SET state         = 'superseded',
+                   superseded_at = now(),
+                   updated_at    = now()
+             WHERE id = $1::uuid AND org_id = $2::uuid
+            """,
             old_wb_id,
             org_id,
         )
         # Now create the fresh record via the normal INSERT path.
-        return await self.create(
+        new_record = await self.create(
             org_id=org_id,
             idempotency_key=idempotency_key,
             rows=rows,
@@ -625,6 +648,18 @@ class PgWritebackStore(WritebackStore):
             approval_required=approval_required,
             meta=meta,
         )
+        # Backfill the audit link now that the successor id is known.
+        await db_execute(
+            """
+            UPDATE writeback_requests
+               SET superseded_by = $1::uuid
+             WHERE id = $2::uuid AND org_id = $3::uuid
+            """,
+            new_record["id"],
+            old_wb_id,
+            org_id,
+        )
+        return new_record
 
     async def list(
         self, org_id: str, limit: int = 50
@@ -783,6 +818,16 @@ async def submit_writeback(
         # A new logical attempt is allowed to supersede it so the retry
         # can proceed safely.  "committed" is NOT supersedable — that path
         # is handled above and guards against double-commit.
+        #
+        # STRICTNESS RATCHET (authz): approval strictness can only INCREASE on
+        # retry, never decrease.  If the superseded attempt required approval,
+        # the retry MUST also require approval — otherwise a member whose
+        # approval_required=True writeback was REJECTED could re-submit the same
+        # idempotency_key with approval_required=False and auto-commit with no
+        # approver (when the server default does not mandate approval).  Mirrors
+        # _enforce_approval_policy: caller may raise the bar, never lower it.
+        if existing.get("approval_required"):
+            approval_required = True
         record = await store.supersede(
             org_id=org_id,
             old_wb_id=existing["id"],

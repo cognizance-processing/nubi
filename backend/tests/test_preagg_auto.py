@@ -569,6 +569,138 @@ class TestLayeredCTERouting:
         assert result.plan is p or result.routed is False
 
 
+class TestLayeredOuterRLSSoundness:
+    """[LOW RLS] fix-22 extended to the layered outer-RLS case.
+
+    For a layered ``WITH __base AS (<inner>) <outer>`` query, plan() injects the
+    RLS predicate onto the OUTER SELECT (``WHERE policy_col = val``).  That outer
+    filter only resolves when ``policy_col`` is a column the rollup-backed
+    ``__base`` actually exposes — i.e. it is BOTH in the rollup grain AND
+    projected by the inner SELECT.  If either is missing the router MUST fall
+    back to the base (refuse routing) rather than re-point ``__base`` at a rollup
+    whose grain/projection cannot carry the per-tenant RLS predicate.
+    """
+
+    def test_outer_rls_col_absent_from_rollup_grain_not_routed(
+        self, source_db: str
+    ) -> None:
+        """Outer RLS column NOT in the rollup grain → must NOT route (fall back).
+
+        The rollup grain is {region, tenant_id}.  Here the outer SELECT filters
+        on ``channel`` (absent from the rollup grain entirely), simulating an
+        RLS/policy hoisted onto the outer that the rollup cannot reproduce.
+        Routing must be refused; the plan is returned untouched.
+        """
+        reg = RollupRegistry()
+        _build_orders_rollup(source_db, reg)
+
+        # Inner projects region + tenant_id; outer filters on a column ('channel')
+        # that the rollup grain does NOT carry.
+        layered_sql = (
+            "WITH __base AS ("
+            "SELECT region, tenant_id, SUM(amount) AS amount FROM orders "
+            "GROUP BY region, tenant_id"
+            ") "
+            "SELECT region, amount FROM __base WHERE channel = 'web'"
+        )
+        p = plan(layered_sql, dialect="postgres")
+        result = route_to_rollup_shape(p, reg)
+
+        assert result.routed is False, (
+            f"Outer RLS/filter column 'channel' is absent from the rollup grain; "
+            f"expected routed=False, got routed=True. Rewrite: {result.plan.sql}"
+        )
+        assert result.plan is p  # untouched
+
+    def test_outer_rls_col_in_grain_but_not_projected_not_routed(
+        self, source_db: str
+    ) -> None:
+        """Outer RLS column in grain but NOT projected by __base → must NOT route.
+
+        ``tenant_id`` IS in the rollup grain (it is an rls_key), but the inner
+        SELECT only projects {region, amount}, so the rollup-backed ``__base``
+        would not expose ``tenant_id`` to the outer WHERE.  Grain-membership
+        alone is insufficient; routing must be refused.
+        """
+        reg = RollupRegistry()
+        _build_orders_rollup(source_db, reg)
+
+        layered_sql = (
+            "WITH __base AS ("
+            "SELECT region, SUM(amount) AS amount FROM orders GROUP BY region"
+            ") "
+            "SELECT region, amount FROM __base WHERE tenant_id = 'acme'"
+        )
+        p = plan(layered_sql, dialect="postgres")
+        result = route_to_rollup_shape(p, reg)
+
+        assert result.routed is False, (
+            f"Outer RLS column 'tenant_id' is in grain but not projected by "
+            f"__base; expected routed=False, got routed=True. "
+            f"Rewrite: {result.plan.sql}"
+        )
+        assert result.plan is p  # untouched
+
+    def test_outer_rls_col_present_in_grain_and_projected_routes(
+        self, source_db: str
+    ) -> None:
+        """Outer RLS column in grain AND projected by __base → routes correctly.
+
+        The inner GROUPs BY (region, tenant_id) so ``tenant_id`` is both in the
+        rollup grain and projected by ``__base``.  The outer RLS filter on
+        ``tenant_id`` is therefore satisfiable post-rollup → routing proceeds,
+        and the rewritten SQL reads the rollup while preserving the outer WHERE.
+        """
+        reg = RollupRegistry()
+        built = _build_orders_rollup(source_db, reg)
+
+        layered_sql = (
+            "WITH __base AS ("
+            "SELECT region, tenant_id, SUM(amount) AS amount FROM orders "
+            "GROUP BY region, tenant_id"
+            ") "
+            "SELECT region, tenant_id, amount FROM __base WHERE tenant_id = 'acme'"
+        )
+        p = plan(layered_sql, dialect="postgres")
+        result = route_to_rollup_shape(p, reg)
+
+        assert result.routed is True, (
+            f"Outer RLS column 'tenant_id' is in grain AND projected by __base; "
+            f"expected routed=True. Reason: {result.reason}"
+        )
+        assert result.rollup_id is not None
+        rewritten = result.plan.sql.lower()
+        assert "rollup_orders" in rewritten, (
+            f"Expected rollup table in rewritten SQL: {result.plan.sql}"
+        )
+        assert "with __base as" in rewritten, "Expected layered CTE preserved"
+        # The outer RLS predicate must survive verbatim.
+        assert "tenant_id" in rewritten
+
+        # Execute the rewritten inner against the rollup and confirm the outer
+        # RLS filter resolves to the correct per-tenant total (acme region sums).
+        import duckdb  # noqa: PLC0415
+
+        roll_conn = duckdb.connect(built.database, read_only=True)
+        rewritten_rows = roll_conn.execute(
+            f'SELECT region, SUM("sum_amount") FROM "{built.table}" '
+            f"WHERE tenant_id = 'acme' GROUP BY region ORDER BY region"
+        ).fetchall()
+        roll_conn.close()
+
+        raw_conn = duckdb.connect(source_db, read_only=True)
+        expected = raw_conn.execute(
+            "SELECT region, SUM(amount) FROM orders WHERE tenant_id = 'acme' "
+            "GROUP BY region ORDER BY region"
+        ).fetchall()
+        raw_conn.close()
+
+        # acme: eu=7, us=15.
+        assert rewritten_rows == expected, (
+            f"Rollup re-aggregation under RLS mismatch: {rewritten_rows} != {expected}"
+        )
+
+
 # ---------------------------------------------------------------------------
 # 6. build_rollup_for_metric
 # ---------------------------------------------------------------------------
@@ -2254,3 +2386,143 @@ class TestLayeredRLSHoistedDimSoundness:
         assert "tenant_id" in rewritten
         # RLS claims preserved through the rewrite.
         assert result.plan.rls_claims == {"policies": {"tenant_id": "acme"}}
+
+
+# ---------------------------------------------------------------------------
+# 12. [HIGH disk leak] On-disk rollup file lifecycle
+# ---------------------------------------------------------------------------
+
+
+class TestRollupFileLifecycle:
+    """The on-disk DuckDB file for a rollup must not outlive its registry entry.
+
+    Covers the [HIGH disk leak] fix:
+    - LRU eviction unlinks the evicted rollup's DuckDB file.
+    - Rebuilding the same shape reuses the existing id/path (no new file).
+    - sweep_orphan_rollups removes unreferenced files left on disk.
+    """
+
+    def _candidate(self) -> RollupCandidate:
+        return RollupCandidate(
+            table="orders",
+            dimensions=["region"],
+            measures=["sum(amount)", "count(*)"],
+        )
+
+    def test_eviction_unlinks_on_disk_file(self, source_db: str) -> None:
+        """Evicting a rollup from the registry deletes its DuckDB file."""
+        reg = RollupRegistry(max_entries=1)
+
+        built_a = build_rollup(
+            self._candidate(),
+            rls_keys=["tenant_id"],
+            source_database=source_db,
+            registry=reg,
+            register_query=False,
+            rollup_id="lifecycle_a",
+        )
+        assert os.path.isfile(built_a.database)
+
+        # Adding a second rollup (cap=1) evicts built_a → its file must be gone.
+        built_b = build_rollup(
+            self._candidate(),
+            rls_keys=["tenant_id"],
+            source_database=source_db,
+            registry=reg,
+            register_query=False,
+            rollup_id="lifecycle_b",
+        )
+        assert built_b.database != built_a.database
+        assert not os.path.exists(built_a.database), (
+            "evicted rollup's on-disk DuckDB file must be deleted"
+        )
+        assert os.path.isfile(built_b.database), "live rollup file must survive"
+
+        # cleanup
+        if os.path.exists(built_b.database):
+            os.unlink(built_b.database)
+
+    def test_rebuild_same_shape_reuses_path_no_new_file(self, source_db: str) -> None:
+        """Rebuilding an identical shape reuses the rollup_id/path — no new file."""
+        import glob  # noqa: PLC0415
+        from app.connectors.preagg import _rollup_database_path  # noqa: PLC0415
+
+        reg = RollupRegistry()
+        rollups_dir = os.path.dirname(_rollup_database_path("_"))
+
+        built_1 = build_rollup(
+            self._candidate(),
+            rls_keys=["tenant_id"],
+            source_database=source_db,
+            registry=reg,
+            register_query=False,
+        )
+        try:
+            files_after_1 = {
+                os.path.abspath(p)
+                for p in glob.glob(os.path.join(rollups_dir, "*.duckdb"))
+            }
+            assert os.path.abspath(built_1.database) in files_after_1
+
+            # Same (table, dims, measures, rls_keys) → same shape hash → reuse.
+            built_2 = build_rollup(
+                self._candidate(),
+                rls_keys=["tenant_id"],
+                source_database=source_db,
+                registry=reg,
+                register_query=False,
+            )
+            assert built_2.rollup_id == built_1.rollup_id, "same shape must reuse id"
+            assert built_2.database == built_1.database, "same shape must reuse path"
+            assert len(reg.all_rollups()) == 1, "no duplicate registry entry"
+
+            files_after_2 = {
+                os.path.abspath(p)
+                for p in glob.glob(os.path.join(rollups_dir, "*.duckdb"))
+            }
+            # No NEW file was created for the rebuild (shared file may remain).
+            new_files = files_after_2 - files_after_1
+            assert not new_files, f"rebuild of same shape created new file(s): {new_files}"
+        finally:
+            if os.path.exists(built_1.database):
+                os.unlink(built_1.database)
+
+    def test_sweep_removes_orphan_files(self, source_db: str) -> None:
+        """sweep_orphan_rollups unlinks files not referenced by the registry."""
+        from app.connectors.preagg import (  # noqa: PLC0415
+            _rollup_database_path,
+            sweep_orphan_rollups,
+        )
+
+        reg = RollupRegistry()
+
+        # A live, registered rollup — its file must be preserved by the sweep.
+        live = build_rollup(
+            self._candidate(),
+            rls_keys=["tenant_id"],
+            source_database=source_db,
+            registry=reg,
+            register_query=False,
+        )
+        orphan_path = _rollup_database_path("orphan_test_xyz")
+        try:
+            assert os.path.isfile(live.database)
+
+            # An orphan file: on disk but not referenced by any registry entry.
+            os.makedirs(os.path.dirname(orphan_path), exist_ok=True)
+            import duckdb  # noqa: PLC0415
+
+            oc = duckdb.connect(orphan_path)
+            oc.execute("CREATE TABLE t (x INTEGER)")
+            oc.close()
+            assert os.path.isfile(orphan_path)
+
+            removed = sweep_orphan_rollups(reg)
+
+            assert not os.path.exists(orphan_path), "orphan file must be removed"
+            assert os.path.isfile(live.database), "referenced (live) file must survive"
+            assert removed >= 1
+        finally:
+            for p in (live.database, orphan_path):
+                if p and os.path.exists(p):
+                    os.unlink(p)
