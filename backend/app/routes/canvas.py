@@ -448,7 +448,17 @@ async def schedule_canvas(
     flow_name: str = body.flow_name or f"canvas_report_{canvas_id[:8]}"
     subject: str = body.subject or f"Nubi Report: {canvas_name}"
 
-    # Build the report_send task config.
+    # SECURITY (RLS): Do NOT store a 'policies' field in task_config.
+    # Owner RLS is NOT sourced from task_config at render time.  It is
+    # snapshotted into flow_spec['runtime_config'][OWNER_POLICIES_KEY]
+    # (see _snapshot_owner_policies below) and injected into exec_claims
+    # by the flow runtime at tick time (_claims_with_owner_policies in
+    # flows/runtime.py).  Any 'policies' key in task_config is ignored by
+    # _handle_canvas when it is empty/absent (the falsy guard on line 724 of
+    # report_send.py), but its presence here would be a trap: a developer
+    # might 'fix' the empty field by populating it from the request body,
+    # which would let an untrusted client value override the verified owner
+    # snapshot — an RLS bypass.  Keep this field absent.
     task_config: dict[str, Any] = {
         "canvas_id": canvas_id,
         "org_id": org_id,
@@ -459,7 +469,6 @@ async def schedule_canvas(
         "params": dict(body.params or {}),
         "locked_params": dict(body.locked_params or {}),
         "notify_channels": list(body.notify_channels or []),
-        "policies": {},  # populated at tick time from owner claims
     }
 
     # Build the flow spec.

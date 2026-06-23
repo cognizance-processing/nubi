@@ -50,6 +50,29 @@ _NUBI_MAX_FLOWS: int = int(os.environ.get("NUBI_MAX_FLOWS", _MAX_FLOWS_DEFAULT))
 # ---------------------------------------------------------------------------
 _MAX_TASK_RUNS_PER_RUN: int = int(os.environ.get("NUBI_MAX_TASK_RUNS_PER_RUN", 50_000))
 
+# ---------------------------------------------------------------------------
+# Byte budget for list_task_run_results — defense-in-depth alongside the COUNT
+# limit above.  A fan-in step bulk-loads every success result into a single
+# `inputs` dict; even within the count limit, pre-existing/oversized blobs
+# could total tens of GB.  Accumulate serialized result bytes while building
+# the list and RAISE once the running total exceeds this budget so the drain
+# step fails loudly instead of OOMing the worker.
+# Override via NUBI_MAX_INPUTS_BYTES env var (default 256 MiB).
+# ---------------------------------------------------------------------------
+_MAX_INPUTS_BYTES: int = int(
+    os.environ.get("NUBI_MAX_INPUTS_BYTES", str(256 * 1024 * 1024))
+)
+
+
+def _inputs_budget_error(total_bytes: int) -> RuntimeError:
+    """Build the RuntimeError raised when the inputs byte budget is exceeded."""
+    return RuntimeError(
+        f"task_run results exceed the inputs byte budget of "
+        f"{_MAX_INPUTS_BYTES} bytes (NUBI_MAX_INPUTS_BYTES); aborting fan-in "
+        f"load. Store large objects via ctx.put_artifact() instead of "
+        f"returning them inline."
+    )
+
 
 def _seed_from_run_id(run_id: str) -> int:
     """Derive a deterministic integer seed from a UUID run_id string.
@@ -506,11 +529,23 @@ class InMemoryFlowStore:
             if tid in self._task_runs
         ]
         rows.sort(key=lambda r: (r["created_at"], r["task_key"]))
-        return [
-            (r["task_key"], deepcopy(r["result"]))
-            for r in rows
-            if r["state"] == "success" and r.get("result") is not None
-        ][:_MAX_TASK_RUNS_PER_RUN]
+        import json  # noqa: PLC0415
+
+        out: list[tuple[str, dict[str, Any] | None]] = []
+        total_bytes = 0
+        for r in rows:
+            if r["state"] != "success" or r.get("result") is None:
+                continue
+            if len(out) >= _MAX_TASK_RUNS_PER_RUN:
+                break
+            result = r["result"]
+            # Defense-in-depth: bound the cumulative serialized size so a fan-in
+            # load of many (or pre-existing oversized) results cannot OOM.
+            total_bytes += len(json.dumps(result, default=str).encode("utf-8"))
+            if total_bytes > _MAX_INPUTS_BYTES:
+                raise _inputs_budget_error(total_bytes)
+            out.append((r["task_key"], deepcopy(result)))
+        return out
 
     async def get_task_run(self, task_run_id: str) -> TaskRun | None:
         """Return a copy of the task_run, or ``None`` if not found."""
@@ -1532,13 +1567,25 @@ class PgFlowStore:
             flow_run_id,
             _MAX_TASK_RUNS_PER_RUN,
         )
+        import json  # noqa: PLC0415
+
         out: list[tuple[str, dict[str, Any] | None]] = []
+        total_bytes = 0
         for r in rows:
             d = dict(r)
             result = d.get("result")
+            raw = result
             if result is not None and not isinstance(result, dict):
-                import json  # noqa: PLC0415
                 result = json.loads(result)
+            # Defense-in-depth: bound the cumulative serialized size so a fan-in
+            # load of many (or pre-existing oversized) results cannot OOM.  Use
+            # the raw jsonb string when available to avoid a re-serialize.
+            if isinstance(raw, str):
+                total_bytes += len(raw.encode("utf-8"))
+            elif result is not None:
+                total_bytes += len(json.dumps(result, default=str).encode("utf-8"))
+            if total_bytes > _MAX_INPUTS_BYTES:
+                raise _inputs_budget_error(total_bytes)
             out.append((d["task_key"], result))
         return out
 

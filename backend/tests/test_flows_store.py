@@ -1069,3 +1069,94 @@ class TestListTaskRunResultsCeiling:
         assert cap in args, (
             f"cap={cap} not found in SQL args {args}"
         )
+
+
+# ---------------------------------------------------------------------------
+# 8b. list_task_run_results byte budget (defense-in-depth)
+# ---------------------------------------------------------------------------
+
+
+class TestListTaskRunResultsByteBudget:
+    """list_task_run_results aborts once accumulated result bytes exceed budget.
+
+    Both the InMemory and Pg implementations must enforce the byte budget;
+    normal-size aggregate results must be unaffected.
+    """
+
+    async def test_inmemory_raises_over_budget(self, monkeypatch):
+        """InMemory: cumulative result bytes over the budget raise RuntimeError."""
+        import app.flows.store as store_mod
+
+        monkeypatch.setattr(store_mod, "_MAX_INPUTS_BYTES", 4096)
+
+        store = InMemoryFlowStore()
+        flow = await _make_flow(store)
+        flow_run = await _make_flow_run(store, flow["id"])
+        run_id = flow_run["id"]
+
+        # Two ~3KB results -> ~6KB total, over the 4KB budget.
+        trs = [
+            {
+                "task_key": f"t{i}",
+                "org_id": "org-1",
+                "state": "success",
+                "depends_on": [],
+                "result": {"blob": "x" * 3000},
+            }
+            for i in range(2)
+        ]
+        await store.add_task_runs(run_id, trs)
+
+        with pytest.raises(RuntimeError, match="inputs byte budget"):
+            await store.list_task_run_results(run_id)
+
+    async def test_inmemory_under_budget_unaffected(self, monkeypatch):
+        """InMemory: normal-size aggregate results return normally."""
+        import app.flows.store as store_mod
+
+        monkeypatch.setattr(store_mod, "_MAX_INPUTS_BYTES", 1024 * 1024)
+
+        store = InMemoryFlowStore()
+        flow = await _make_flow(store)
+        flow_run = await _make_flow_run(store, flow["id"])
+        run_id = flow_run["id"]
+
+        trs = [
+            {
+                "task_key": f"t{i}",
+                "org_id": "org-1",
+                "state": "success",
+                "depends_on": [],
+                "result": {"v": i},
+            }
+            for i in range(3)
+        ]
+        await store.add_task_runs(run_id, trs)
+
+        pairs = await store.list_task_run_results(run_id)
+        assert len(pairs) == 3
+
+    async def test_pg_raises_over_budget(self, monkeypatch):
+        """Pg: cumulative jsonb result bytes over the budget raise RuntimeError."""
+        import json
+
+        import app.db as app_db
+        from app.flows.store import PgFlowStore
+        import app.flows.store as store_mod
+
+        monkeypatch.setattr(store_mod, "_MAX_INPUTS_BYTES", 4096)
+
+        big = json.dumps({"blob": "x" * 3000})
+
+        async def fake_fetch(query: str, *args: Any):
+            # asyncpg returns jsonb as a string; two ~3KB rows exceed 4KB.
+            return [
+                {"task_key": "t0", "result": big},
+                {"task_key": "t1", "result": big},
+            ]
+
+        monkeypatch.setattr(app_db, "fetch", fake_fetch)
+
+        pg = PgFlowStore()
+        with pytest.raises(RuntimeError, match="inputs byte budget"):
+            await pg.list_task_run_results(str(uuid.uuid4()))

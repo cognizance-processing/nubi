@@ -3265,3 +3265,115 @@ async def test_embed_semaphore_registry_does_not_evict_in_use_semaphore() -> Non
         _bd_mod._EMBED_SEM_REGISTRY_CAP = original_cap
         _bd_mod._EMBED_FLOW_CONCURRENCY = original_concurrency
         _bd_mod._embed_semaphores.clear()
+
+
+# ---------------------------------------------------------------------------
+# NEW (fix-21): [LOW resource-safety] semaphore LRU eviction private-API fallback
+# ---------------------------------------------------------------------------
+
+
+def test_embed_semaphore_is_idle_treats_missing_value_as_idle() -> None:
+    """[LOW resource-safety] _embed_semaphore_is_idle treats an object whose
+    _value is absent as IDLE (conservative fallback = safe to evict).
+
+    Before the fix, getattr(sem, '_value', 0) defaulted to 0, which is always
+    < _EMBED_FLOW_CONCURRENCY, so every semaphore without _value was classified
+    as "in use" — LRU eviction would then remove nothing and the registry would
+    grow past its cap.
+
+    After the fix, the default is _EMBED_FLOW_CONCURRENCY so an inaccessible
+    _value is treated as fully idle (all tokens free).
+    """
+    import app.dashboards.board_data as _bd_mod
+
+    class _NoValueSem:
+        """Stub without _value — simulates a Python upgrade / alt runtime."""
+        pass
+
+    stub = _NoValueSem()
+    assert not hasattr(stub, "_value"), "Stub must not have _value attribute"
+
+    # Must be classified as IDLE so the LRU eviction can remove it.
+    assert _bd_mod._embed_semaphore_is_idle(stub), (
+        "_embed_semaphore_is_idle returned False for a semaphore without _value — "
+        "the default 0 fallback is active, which prevents LRU eviction "
+        "(resource-safety regression)."
+    )
+
+
+def test_flow_provider_semaphore_is_idle_treats_missing_value_as_idle() -> None:
+    """[LOW resource-safety] _flow_provider_semaphore_is_idle treats an object whose
+    _value is absent as IDLE (conservative fallback = safe to evict).
+
+    Before the fix, getattr(sem, '_value', 0) defaulted to 0, which is always
+    < _FLOW_PROVIDER_CONCURRENCY, so every semaphore without _value was classified
+    as "in use" — LRU eviction would then remove nothing and the registry would
+    grow past its cap, AND the per-(org,provider) concurrency cap could be
+    silently unenforced.
+
+    After the fix, the default is _FLOW_PROVIDER_CONCURRENCY so an inaccessible
+    _value is treated as fully idle (all tokens free).
+    """
+    import app.dashboards.board_data as _bd_mod
+
+    class _NoValueSem:
+        """Stub without _value — simulates a Python upgrade / alt runtime."""
+        pass
+
+    stub = _NoValueSem()
+    assert not hasattr(stub, "_value"), "Stub must not have _value attribute"
+
+    # Must be classified as IDLE so the LRU eviction can remove it.
+    assert _bd_mod._flow_provider_semaphore_is_idle(stub), (
+        "_flow_provider_semaphore_is_idle returned False for a semaphore without _value — "
+        "the default 0 fallback is active, which prevents LRU eviction "
+        "(resource-safety regression)."
+    )
+
+
+def test_embed_semaphore_registry_bounded_when_value_absent() -> None:
+    """[LOW resource-safety] _embed_semaphores registry is bounded by LRU eviction
+    even when entries lack the _value attribute.
+
+    If the idle-check always returned False (wrong default), the registry would
+    grow beyond its cap because no entry would ever be evictable.  This test
+    injects stub semaphores (no _value) into the registry and verifies that
+    _get_embed_semaphore still bounds the registry to <= cap.
+
+    Because the fixed idle-check conservatively treats absent _value as idle,
+    those stubs ARE evictable and the registry stays bounded.
+    """
+    import app.dashboards.board_data as _bd_mod
+
+    original_cap = _bd_mod._EMBED_SEM_REGISTRY_CAP
+    original_concurrency = _bd_mod._EMBED_FLOW_CONCURRENCY
+    cap = 5
+    _bd_mod._EMBED_SEM_REGISTRY_CAP = cap
+    _bd_mod._EMBED_FLOW_CONCURRENCY = 2
+    _bd_mod._embed_semaphores.clear()
+
+    class _NoValueSem:
+        """Stub asyncio.Semaphore lookalike without _value."""
+        pass
+
+    try:
+        # Pre-populate the registry with stubs that have no _value.
+        # These must be treated as idle so they are evictable.
+        for i in range(cap):
+            _bd_mod._embed_semaphores[("stub-org", f"stub-provider-{i}")] = _NoValueSem()  # type: ignore[assignment]
+
+        # Now insert additional real keys — each _get_embed_semaphore call must
+        # evict one stub (idle) entry to stay within the cap.
+        for i in range(cap * 2):
+            _bd_mod._get_embed_semaphore(f"real-org-{i}", f"real-provider-{i}")
+
+        registry_size = len(_bd_mod._embed_semaphores)
+        assert registry_size <= cap, (
+            f"_embed_semaphores grew to {registry_size} entries with cap={cap} "
+            "when stub entries (no _value) are present — the wrong default prevented "
+            "LRU eviction of those stubs (resource-safety regression)."
+        )
+    finally:
+        _bd_mod._EMBED_SEM_REGISTRY_CAP = original_cap
+        _bd_mod._EMBED_FLOW_CONCURRENCY = original_concurrency
+        _bd_mod._embed_semaphores.clear()

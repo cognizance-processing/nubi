@@ -358,6 +358,39 @@ class TestExecuteTask:
         assert out["state"] == "success", f"error: {out.get('error')}"
         assert out["result"].get("region") == "eu"
 
+    async def test_python_oversized_result_fails_not_written(self, monkeypatch):
+        """A python result over the inline byte cap FAILS before being stored."""
+        import app.flows.executor as _executor  # noqa: PLC0415
+
+        monkeypatch.setattr(_executor, "_MAX_INLINE_RESULT_BYTES", 1024)
+        ctx = self._ctx()
+        task = {
+            "kind": "python",
+            # ~5KB string payload, well over the 1KB test cap.
+            "config": {"code": "result = {'blob': 'x' * 5000}"},
+            "timeout_s": 0,
+        }
+        out = execute_task(task, ctx, CLAIMS)
+        assert out["state"] == "failed", f"expected failure, got {out}"
+        assert out["result"] is None
+        assert "inline limit" in (out.get("error") or "")
+        assert "ctx.put_artifact()" in (out.get("error") or "")
+
+    async def test_python_normal_result_under_cap_unaffected(self, monkeypatch):
+        """A normal-size python result is unaffected by the byte cap."""
+        import app.flows.executor as _executor  # noqa: PLC0415
+
+        monkeypatch.setattr(_executor, "_MAX_INLINE_RESULT_BYTES", 1024)
+        ctx = self._ctx()
+        task = {
+            "kind": "python",
+            "config": {"code": "result = {'answer': 42}"},
+            "timeout_s": 0,
+        }
+        out = execute_task(task, ctx, CLAIMS)
+        assert out["state"] == "success", f"error: {out.get('error')}"
+        assert out["result"].get("answer") == 42
+
     async def test_template_params_resolved_in_config(self):
         """{{ params.x }} in config string should be resolved before dispatch."""
         ctx = self._ctx(flow_params={"greeting": "hello"})

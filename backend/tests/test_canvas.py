@@ -896,6 +896,68 @@ class TestCanvasSecurityRegressions:
         # The snapshot value must be a dict (even if empty for an unscoped owner).
         assert isinstance(runtime_config[OWNER_POLICIES_KEY], dict)
 
+    @pytest.mark.asyncio
+    async def test_schedule_task_config_does_not_contain_policies_field(
+        self, canvas_client_with_viewer, fake_db
+    ):
+        """POST /canvases/{id}/schedule must NOT store a 'policies' key in task_config.
+
+        RLS robustness: owner policies must only live in
+        flow_spec['runtime_config'][__owner_policies__] (snapshotted from the
+        verified JWT at schedule-definition time).  A 'policies' field in
+        task_config is a trap — a future developer could 'fix' the empty value
+        by populating it from the request body, letting an untrusted client value
+        override the verified owner snapshot (RLS bypass).
+
+        This test asserts the stored task config contains NO 'policies' key,
+        confirming that client-supplied values cannot influence the applied RLS.
+        """
+        from app.flows.store import get_flow_store
+
+        client, owner_id, _owner_org, *_ = canvas_client_with_viewer
+
+        # Create a canvas.
+        create_resp = await client.post(
+            "/api/v1/canvases",
+            json={"name": "RLS Policy Trap Canvas"},
+            headers=_auth_headers(owner_id),
+        )
+        assert create_resp.status_code == 201, create_resp.text
+        canvas_id = create_resp.json()["id"]
+
+        # Schedule the canvas.  Note: CanvasScheduleRequest has no 'policies'
+        # field (intentionally); we verify the stored config has none either.
+        sched_resp = await client.post(
+            f"/api/v1/canvases/{canvas_id}/schedule",
+            json={"recipients": ["auditor@example.com"], "format": "html"},
+            headers=_auth_headers(owner_id),
+        )
+        assert sched_resp.status_code == 201, sched_resp.text
+        flow_id = sched_resp.json()["flow_id"]
+
+        # Retrieve the persisted flow and inspect the task config.
+        store = get_flow_store()
+        flow = await store.get_flow(flow_id)
+        assert flow is not None, "Flow not found in store."
+
+        spec = flow.get("spec") or {}
+        tasks = spec.get("tasks") or []
+        assert tasks, "Flow spec must contain at least one task."
+        task_config = tasks[0].get("config") or {}
+
+        # SECURITY assertion: task_config must NOT carry a 'policies' key.
+        # Owner RLS is in runtime_config.__owner_policies__ (verified snapshot),
+        # not in the user-influenced task_config dict.
+        assert "policies" not in task_config, (
+            "task_config must NOT contain a 'policies' field — owner RLS is "
+            "snapshotted into runtime_config.__owner_policies__ at schedule time "
+            "and injected by the flow runtime at tick time.  A 'policies' key "
+            "in task_config is a code trap: a developer could populate it from "
+            "the request body, letting untrusted client values override the "
+            "verified owner snapshot (RLS bypass).  "
+            f"Offending task_config keys: {list(task_config.keys())}"
+        )
+
     # ── Finding 4 (MED): schedule sets top-level schedule + next_run_at ────────
 
     @pytest.mark.asyncio

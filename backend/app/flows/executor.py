@@ -90,6 +90,19 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 _FLOW_QUERY_ROW_CAP: int = int(os.environ.get("NUBI_FLOW_QUERY_ROW_CAP", "100000"))
 
+# ---------------------------------------------------------------------------
+# Inline-result byte cap: a python cell returns an arbitrary dict that is
+# stored verbatim in task_run.result (jsonb, no DB-side size limit).  Without
+# a byte cap a large fan-out (e.g. 50k tasks each returning a 200KB dict)
+# writes ~10GB of jsonb and is later bulk-loaded into the fan-in `inputs`
+# dict.  fix-26 bounded the COUNT of results; this bounds the BYTE size of
+# each individual result so the oversized blob is never written.
+# Override via NUBI_MAX_INLINE_RESULT_BYTES env var (default 512 KiB).
+# ---------------------------------------------------------------------------
+_MAX_INLINE_RESULT_BYTES: int = int(
+    os.environ.get("NUBI_MAX_INLINE_RESULT_BYTES", str(512 * 1024))
+)
+
 
 # ---------------------------------------------------------------------------
 # TaskContext
@@ -985,6 +998,26 @@ def execute_task(
         # Ensure result is a dict.
         if not isinstance(result, dict):
             result = {"value": result}
+
+        # SECURITY/RESOURCE: cap the byte size of a python cell's inline result
+        # BEFORE it is written to task_run.result (jsonb, no DB size limit).
+        # A large fan-out where each task returns a multi-hundred-KB dict would
+        # otherwise write gigabytes of jsonb and later be bulk-deserialized into
+        # the fan-in `inputs` dict.  Fail the task here so the oversized blob is
+        # never persisted; large objects belong in ctx.put_artifact().
+        if kind == "python":
+            import json as _result_json  # noqa: PLC0415
+
+            _result_bytes = len(
+                _result_json.dumps(result, default=str).encode("utf-8")
+            )
+            if _result_bytes > _MAX_INLINE_RESULT_BYTES:
+                raise ValueError(
+                    f"python task result is {_result_bytes} bytes, exceeding the "
+                    f"inline limit of {_MAX_INLINE_RESULT_BYTES} bytes "
+                    f"(NUBI_MAX_INLINE_RESULT_BYTES). Store large objects via "
+                    f"ctx.put_artifact() and return a reference instead."
+                )
 
         _meter(result)
         # set_var (A5): a python cell publishes vars under the reserved

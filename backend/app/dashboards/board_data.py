@@ -202,12 +202,18 @@ def _embed_semaphore_is_idle(sem: asyncio.Semaphore) -> bool:
     """
     # _value is the remaining token count; when equal to the concurrency cap all
     # tokens are free.  When < cap at least one caller holds a token or is waiting.
-    return getattr(sem, "_value", 0) >= _EMBED_FLOW_CONCURRENCY
+    #
+    # Safety: if _value is absent (Python upgrade / alternate runtime), default to
+    # the concurrency cap so the semaphore is conservatively treated as IDLE (safe
+    # to evict).  The wrong default (0) would classify every semaphore as "in use",
+    # preventing LRU eviction and silently un-enforcing the per-(org,provider) cap.
+    return getattr(sem, "_value", _EMBED_FLOW_CONCURRENCY) >= _EMBED_FLOW_CONCURRENCY
 
 
 def _flow_provider_semaphore_is_idle(sem: asyncio.Semaphore) -> bool:
     """Return True when *sem* (non-embed flow registry) has no in-flight callers."""
-    return getattr(sem, "_value", 0) >= _FLOW_PROVIDER_CONCURRENCY
+    # Same conservative fallback: absent _value -> treat as idle (safe to evict).
+    return getattr(sem, "_value", _FLOW_PROVIDER_CONCURRENCY) >= _FLOW_PROVIDER_CONCURRENCY
 
 
 def _evict_idle_embed_semaphores() -> None:
