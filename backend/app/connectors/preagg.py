@@ -789,31 +789,33 @@ def build_rollup(
     max_rows = _rollup_max_rows()
 
     # Wrap rollup SQL with a LIMIT of max_rows+1 so DuckDB stops streaming at
-    # the cap — Arrow allocation is bounded and we never materialize a full
-    # over-cap result into memory (OOM prevention).
+    # the cap — this bounds the counting query too.
     capped_sql = (
         f"SELECT * FROM ({rollup_sql}) __rollup_check LIMIT {max_rows + 1}"
     )
 
+    # ── Row-cap guard: COUNT first, materialize only when within the cap ──────
+    # COUNT on the capped query is O(min(actual_rows, max_rows+1)) — DuckDB
+    # stops at LIMIT so we never scan the full result for an over-cap rollup.
+    count_sql = f"SELECT COUNT(*) FROM ({capped_sql}) __rollup_count"
+
     src = duckdb.connect(database=source_database or ":memory:", read_only=False)
     try:
-        rel = src.execute(capped_sql)
-        result = rel.arrow()
+        row_count = src.execute(count_sql).fetchone()[0]
+        if row_count > max_rows:
+            raise AppError(
+                "rollup_too_large",
+                f"Rollup for {table!r} produced {row_count:,} rows which exceeds the "
+                f"NUBI_ROLLUP_MAX_ROWS limit of {max_rows:,}. Reduce the rollup grain "
+                "or raise the limit via the NUBI_ROLLUP_MAX_ROWS environment variable.",
+                400,
+            )
+        # Within cap: materialize the (already-bounded) capped result.
+        result = src.execute(capped_sql).arrow()
         if hasattr(result, "read_all"):
             result = result.read_all()
     finally:
         src.close()
-
-    # ── Row-cap guard: refuse to materialise an oversized rollup ─────────────
-    row_count = result.num_rows
-    if row_count > max_rows:
-        raise AppError(
-            "rollup_too_large",
-            f"Rollup for {table!r} produced {row_count:,} rows which exceeds the "
-            f"NUBI_ROLLUP_MAX_ROWS limit of {max_rows:,}. Reduce the rollup grain "
-            "or raise the limit via the NUBI_ROLLUP_MAX_ROWS environment variable.",
-            400,
-        )
 
     columns = list(result.schema.names)
     missing = [k for k in rls_keys if k not in columns]

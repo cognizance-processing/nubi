@@ -152,6 +152,17 @@ class ApiBinding(BaseModel):
                 ".%2e, or %2e.), and must not include a URL scheme or '//'. "
                 "They are joined under the connector's base URL only."
             )
+        # [MED injection] Reject query strings and fragments — a path like
+        # 'endpoint?tenant_id=other' injects arbitrary query params into the
+        # outbound HTTP request, potentially defeating API-level tenant scoping.
+        # Static query params belong on the connector base URL, not the path.
+        parsed = urllib.parse.urlsplit(decoded)
+        if parsed.query or parsed.fragment:
+            raise ValueError(
+                f"ApiBinding.path {v!r} is unsafe: paths must not contain a query "
+                "string ('?') or fragment ('#'). Static query parameters belong on "
+                "the connector's base URL, not the binding path."
+            )
         return v
 
 

@@ -706,13 +706,27 @@ async def collect_canvas_data(
     # RLS comes from the verified token's policies claim only.
     policies: dict[str, Any] = dict((claims or {}).get("policies") or {})
 
-    # Pre-fetch the unique datastores referenced by all bindings in one
+    # [LOW prefetch-before-cap] Cap bindings BEFORE prefetch so a 5000-binding
+    # document cannot create 5000 prefetch coroutines before the cap fires.
+    bindings_items = list(bindings_raw.items())
+    max_bindings = _MAX_CANVAS_BINDINGS
+    if max_bindings > 0 and len(bindings_items) > max_bindings:
+        logger.warning(
+            "collect_canvas: canvas_id=%r has %d bindings, truncating to %d "
+            "(set NUBI_MAX_CANVAS_BINDINGS to raise limit)",
+            canvas_id,
+            len(bindings_items),
+            max_bindings,
+        )
+        bindings_items = bindings_items[:max_bindings]
+
+    # Pre-fetch the unique datastores referenced by all (capped) bindings in one
     # asyncio.gather so N bindings sharing one datastore cost exactly 1 lookup.
     # "api" bindings carry the datastore id directly (connector_id); "query"
     # bindings need a registry lookup to find their datastore_id.
     registry = get_query_registry()
     unique_ds_ids: set[str] = set()
-    for _el_id, binding in bindings_raw.items():
+    for _el_id, binding in bindings_items:
         kind = binding.get("kind")
         if kind == "api":
             cid = binding.get("connector_id") or ""
@@ -831,6 +845,19 @@ async def collect_canvas_data(
                             "They are joined under the connector's base URL only.",
                             400,
                         )
+                    # [MED injection] Reject query strings and fragments — a path like
+                    # 'endpoint?tenant_id=other' injects arbitrary query params into
+                    # the outbound HTTP request, defeating API-level tenant scoping.
+                    _parsed_path = urllib.parse.urlsplit(_path_norm)
+                    if _parsed_path.query or _parsed_path.fragment:
+                        raise AppError(
+                            "invalid_binding_path",
+                            f"Canvas API binding el_id={el_id!r} has an unsafe path: "
+                            f"{binding_path!r}. Paths must not contain a query string "
+                            "('?') or fragment ('#'). Static query parameters belong "
+                            "on the connector's base URL, not the binding path.",
+                            400,
+                        )
 
                 merged_cfg: dict[str, Any] = dict(base_cfg)
                 if binding_path:
@@ -885,19 +912,7 @@ async def collect_canvas_data(
 
         return entry
 
-    # Cap the number of bindings to prevent excessive resource consumption.
-    bindings_items = list(bindings_raw.items())
-    max_bindings = _MAX_CANVAS_BINDINGS
-    if max_bindings > 0 and len(bindings_items) > max_bindings:
-        logger.warning(
-            "collect_canvas: canvas_id=%r has %d bindings, truncating to %d "
-            "(set NUBI_MAX_CANVAS_BINDINGS to raise limit)",
-            canvas_id,
-            len(bindings_items),
-            max_bindings,
-        )
-        bindings_items = bindings_items[:max_bindings]
-
+    # bindings_items is already capped above (before prefetch).
     # Run binding fetches concurrently (bounded by the same semaphore as boards).
     semaphore = asyncio.Semaphore(_WIDGET_CONCURRENCY)
 

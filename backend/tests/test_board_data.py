@@ -4472,3 +4472,84 @@ async def test_resolve_provider_data_prefetch_passes_limit_to_list_flows(
         f"_FLOWS_PREFETCH_LIMIT={_bd_mod._FLOWS_PREFETCH_LIMIT}. "
         "The bounded prefetch limit is not being forwarded correctly."
     )
+
+
+# ---------------------------------------------------------------------------
+# [LOW DoS] ProviderDataRequest.params bounds enforcement
+# ---------------------------------------------------------------------------
+
+
+def test_provider_data_request_too_many_keys_raises_app_error() -> None:
+    """ProviderDataRequest with more than _MAX_PARAMS_KEYS keys raises AppError(400)."""
+    from app.errors import AppError
+    from app.routes.dashboards import ProviderDataRequest, _MAX_PARAMS_KEYS
+
+    oversized = {str(i): i for i in range(_MAX_PARAMS_KEYS + 1)}
+    with pytest.raises(AppError) as exc_info:
+        ProviderDataRequest(params=oversized)
+    assert exc_info.value.code == "params_too_large"
+    assert exc_info.value.status == 400
+
+
+def test_provider_data_request_too_large_bytes_raises_app_error() -> None:
+    """ProviderDataRequest whose params serialise to more than _MAX_PARAMS_BYTES
+    raises AppError(400)."""
+    from app.errors import AppError
+    from app.routes.dashboards import ProviderDataRequest, _MAX_PARAMS_BYTES
+
+    # One key whose value pushes the serialized size over the byte cap.
+    oversized = {"k": "x" * (_MAX_PARAMS_BYTES + 1)}
+    with pytest.raises(AppError) as exc_info:
+        ProviderDataRequest(params=oversized)
+    assert exc_info.value.code == "params_too_large"
+    assert exc_info.value.status == 400
+
+
+def test_provider_data_request_normal_params_accepted() -> None:
+    """ProviderDataRequest with a small, well-formed params dict is accepted."""
+    from app.routes.dashboards import ProviderDataRequest
+
+    req = ProviderDataRequest(params={"date": "2024-01", "region": "ZA"})
+    assert req.params == {"date": "2024-01", "region": "ZA"}
+
+
+def test_provider_data_request_empty_params_accepted() -> None:
+    """ProviderDataRequest with an empty params dict is accepted."""
+    from app.routes.dashboards import ProviderDataRequest
+
+    req = ProviderDataRequest(params={})
+    assert req.params == {}
+
+
+@pytest.mark.asyncio
+async def test_route_rejects_too_many_params_keys(route_client) -> None:
+    """POST /boards/{id}/providers/{pid}/data returns 400 when params has too many keys."""
+    from app.routes.dashboards import _MAX_PARAMS_KEYS
+
+    ac, user_id, _, _ = route_client
+    oversized = {str(i): i for i in range(_MAX_PARAMS_KEYS + 1)}
+    resp = await ac.post(
+        f"/api/v1/boards/{_BOARD_ID}/providers/{_PROVIDER_ID}/data",
+        json={"params": oversized},
+        headers=_auth_headers(user_id),
+    )
+    assert resp.status_code == 400
+    body = resp.json()
+    assert body["error"]["code"] == "params_too_large"
+
+
+@pytest.mark.asyncio
+async def test_route_rejects_params_too_large_bytes(route_client) -> None:
+    """POST /boards/{id}/providers/{pid}/data returns 400 when params exceed byte cap."""
+    from app.routes.dashboards import _MAX_PARAMS_BYTES
+
+    ac, user_id, _, _ = route_client
+    oversized = {"k": "x" * (_MAX_PARAMS_BYTES + 1)}
+    resp = await ac.post(
+        f"/api/v1/boards/{_BOARD_ID}/providers/{_PROVIDER_ID}/data",
+        json={"params": oversized},
+        headers=_auth_headers(user_id),
+    )
+    assert resp.status_code == 400
+    body = resp.json()
+    assert body["error"]["code"] == "params_too_large"

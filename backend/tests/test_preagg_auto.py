@@ -1215,6 +1215,135 @@ class TestRollupRowCap:
             f"Oversized rollup leaked into registry: {reg.all_rollups()}"
         )
 
+    def test_overcap_raises_without_materializing_arrow_table(
+        self, source_db: str, monkeypatch
+    ) -> None:
+        """Over-cap rollup raises rollup_too_large WITHOUT materializing the full
+        Arrow table.
+
+        Fix: build_rollup now runs SELECT COUNT(*) FROM (<capped_sql>) first.
+        When count > max_rows the AppError is raised immediately; the Arrow
+        table (rel.arrow() / read_all()) is never called.  Peak memory is
+        O(COUNT query) not O(materialized rows).
+
+        We validate this by:
+        1. Patching duckdb.DuckDBPyConnection.arrow to a sentinel that raises
+           if called — confirming the fast path never reaches materialization.
+        2. Asserting AppError('rollup_too_large') is raised.
+        3. Asserting no partial rollup was registered.
+        """
+        import duckdb  # noqa: PLC0415
+        from unittest.mock import patch  # noqa: PLC0415
+
+        from app.connectors.preagg import build_rollup_sql  # noqa: PLC0415
+        from app.errors import AppError  # noqa: PLC0415
+
+        monkeypatch.setenv("NUBI_ROLLUP_MAX_ROWS", "1")
+
+        # Confirm source has >cap rows so the LIMIT is actually doing work.
+        rollup_sql = build_rollup_sql(
+            "orders", ["region"], ["sum(amount)"], ["tenant_id"]
+        )
+        con = duckdb.connect(database=source_db, read_only=False)
+        try:
+            full_rows = con.execute(rollup_sql).fetchall()
+        finally:
+            con.close()
+        assert len(full_rows) > 1, (
+            f"Source needs >1 aggregated rows to validate; got {len(full_rows)}"
+        )
+
+        materialized = []
+
+        original_arrow = duckdb.DuckDBPyRelation.arrow
+
+        def _spy_arrow(self, *args, **kwargs):
+            materialized.append(True)
+            return original_arrow(self, *args, **kwargs)
+
+        reg = RollupRegistry()
+        candidate = RollupCandidate(
+            table="orders",
+            dimensions=["region"],
+            measures=["sum(amount)"],
+        )
+
+        with patch.object(duckdb.DuckDBPyRelation, "arrow", _spy_arrow):
+            with pytest.raises(AppError) as exc_info:
+                build_rollup(
+                    candidate,
+                    rls_keys=["tenant_id"],
+                    source_database=source_db,
+                    registry=reg,
+                    register_query=False,
+                )
+
+        err = exc_info.value
+        assert err.code == "rollup_too_large", f"Unexpected error code: {err.code}"
+
+        # The Arrow table must NOT have been materialized.
+        assert materialized == [], (
+            f"build_rollup called .arrow() before the count check — "
+            f"Arrow table was materialized despite rollup being over-cap "
+            f"(peak ~2x dataset memory, should be bounded). "
+            f"arrow() was called {len(materialized)} time(s)."
+        )
+
+        # Registry must be clean.
+        assert reg.all_rollups() == [], (
+            f"Oversized rollup leaked into registry: {reg.all_rollups()}"
+        )
+
+    def test_within_cap_rollup_builds_correctly_with_count_first(
+        self, source_db: str, monkeypatch
+    ) -> None:
+        """Within-cap rollup: COUNT-first path builds correct result.
+
+        Ensures the two-scan approach (COUNT + materialize) does not break
+        rollup correctness: the final rollup data must match the raw aggregate.
+        """
+        import duckdb  # noqa: PLC0415
+
+        # Set a cap well above the 4-row source aggregate.
+        monkeypatch.setenv("NUBI_ROLLUP_MAX_ROWS", "100")
+
+        reg = RollupRegistry()
+        candidate = RollupCandidate(
+            table="orders",
+            dimensions=["region"],
+            measures=["sum(amount)"],
+        )
+        built = build_rollup(
+            candidate,
+            rls_keys=["tenant_id"],
+            source_database=source_db,
+            registry=reg,
+            register_query=False,
+        )
+
+        assert built is not None
+        assert len(reg.all_rollups()) == 1
+
+        # Re-aggregate the rollup and compare against the raw source.
+        roll_conn = duckdb.connect(built.database, read_only=True)
+        rolled = roll_conn.execute(
+            f'SELECT tenant_id, SUM("sum_amount") AS total '
+            f'FROM "{built.table}" GROUP BY tenant_id ORDER BY tenant_id'
+        ).fetchall()
+        roll_conn.close()
+
+        raw_conn = duckdb.connect(source_db, read_only=True)
+        expected = raw_conn.execute(
+            "SELECT tenant_id, SUM(amount) FROM orders "
+            "GROUP BY tenant_id ORDER BY tenant_id"
+        ).fetchall()
+        raw_conn.close()
+
+        # acme: 10+5+7=22; beta: 100+3+4=107.
+        assert rolled == expected, (
+            f"Count-first rollup result mismatch: {rolled} != {expected}"
+        )
+
 
 # ---------------------------------------------------------------------------
 # 9. [LOW tenant-isolation] Org-scoped rollup registry

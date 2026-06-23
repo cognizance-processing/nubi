@@ -61,11 +61,12 @@ Each StructuredIssue is::
 
 from __future__ import annotations
 
+import json
 from typing import Any
 
 from fastapi import Depends, Request
 from fastapi.responses import Response
-from pydantic import BaseModel
+from pydantic import BaseModel, model_validator
 
 from app.auth.deps import current_user, verified_identity
 from app.auth.verify import VerifiedIdentity
@@ -163,10 +164,44 @@ async def validate_dashboard(
 # ---------------------------------------------------------------------------
 
 
+# Bounds for ProviderDataRequest.params to prevent CPU-amplification DoS via
+# the json.dumps + sha256 hash performed on every cache-miss in resolve_provider_data.
+_MAX_PARAMS_KEYS = 50
+_MAX_PARAMS_BYTES = 8192
+
+
 class ProviderDataRequest(BaseModel):
     """Request body for POST /boards/{id}/providers/{pid}/data."""
 
     params: dict[str, Any] = {}
+
+    @model_validator(mode="after")
+    def _check_params_size(self) -> "ProviderDataRequest":
+        """Cap params key count and serialized byte size.
+
+        This validator enforces the bounds when ProviderDataRequest is
+        instantiated directly (e.g. in unit tests or service code).  The HTTP
+        route re-enforces via ``AppError`` to guarantee a 400 — not a 422 —
+        reaches the client when the limit is exceeded.
+        """
+        from app.errors import AppError  # noqa: PLC0415
+
+        if len(self.params) > _MAX_PARAMS_KEYS:
+            raise AppError(
+                "params_too_large",
+                f"params must not exceed {_MAX_PARAMS_KEYS} keys "
+                f"(got {len(self.params)}).",
+                400,
+            )
+        serialized = json.dumps(self.params, separators=(",", ":"), sort_keys=True)
+        if len(serialized.encode()) > _MAX_PARAMS_BYTES:
+            raise AppError(
+                "params_too_large",
+                f"params serialized size must not exceed {_MAX_PARAMS_BYTES} bytes "
+                f"(got {len(serialized.encode())}).",
+                400,
+            )
+        return self
 
 
 @api_router.post(

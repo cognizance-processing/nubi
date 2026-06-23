@@ -3589,3 +3589,273 @@ class TestBakeTokensInlineStyleSanitization:
             f"Static style= attribute must not be modified: {result!r}"
         )
         assert "World" in result, result
+
+
+# ---------------------------------------------------------------------------
+# Security: ApiBinding path injection (MED) + canvas prefetch-before-cap (LOW)
+# ---------------------------------------------------------------------------
+
+
+class TestApiBindingPathInjection:
+    """[MED] ApiBinding._validate_path must reject query strings and fragments.
+
+    A path like 'endpoint?tenant_id=other' would be appended to the connector
+    base URL and inject arbitrary query params into the outbound HTTP request,
+    potentially bypassing API-level tenant scoping.
+    """
+
+    def test_path_with_query_string_rejected_at_model(self):
+        """ApiBinding with '?' in path raises ValueError at model validation."""
+        import pytest
+        with pytest.raises((ValueError, Exception)) as exc_info:
+            ApiBinding.model_validate(
+                {
+                    "kind": "api",
+                    "connector_id": "c1",
+                    "path": "/endpoint?tenant_id=other&bypass=1",
+                }
+            )
+        assert "?" in str(exc_info.value) or "query" in str(exc_info.value).lower(), (
+            f"Expected rejection mentioning '?' or 'query', got: {exc_info.value}"
+        )
+
+    def test_path_with_fragment_rejected_at_model(self):
+        """ApiBinding with '#' in path raises ValueError at model validation."""
+        import pytest
+        with pytest.raises((ValueError, Exception)) as exc_info:
+            ApiBinding.model_validate(
+                {
+                    "kind": "api",
+                    "connector_id": "c1",
+                    "path": "/endpoint#section",
+                }
+            )
+        assert "#" in str(exc_info.value) or "fragment" in str(exc_info.value).lower(), (
+            f"Expected rejection mentioning '#' or 'fragment', got: {exc_info.value}"
+        )
+
+    def test_path_with_url_encoded_query_rejected_at_model(self):
+        """ApiBinding with percent-encoded '?' (%3F) is also rejected."""
+        import pytest
+        with pytest.raises((ValueError, Exception)):
+            ApiBinding.model_validate(
+                {
+                    "kind": "api",
+                    "connector_id": "c1",
+                    "path": "/endpoint%3Ftenant_id=other",
+                }
+            )
+
+    def test_legitimate_relative_path_accepted(self):
+        """A safe relative path like '/v1/data' passes validation."""
+        binding = ApiBinding.model_validate(
+            {"kind": "api", "connector_id": "c1", "path": "/v1/data"}
+        )
+        assert binding.path == "/v1/data"
+
+    def test_root_path_accepted(self):
+        """A bare '/' path passes validation."""
+        binding = ApiBinding.model_validate(
+            {"kind": "api", "connector_id": "c1", "path": "/"}
+        )
+        assert binding.path == "/"
+
+    @pytest.mark.asyncio
+    async def test_runtime_rejects_query_string_in_path(self):
+        """collect_canvas_data rejects an api binding path containing '?' at runtime.
+
+        This is the defense-in-depth runtime re-validation; the model validator
+        already catches it at save time, but the runtime guard protects against
+        data persisted before the fix or manipulated directly in the store.
+        """
+        from app.dashboards.collect import collect_canvas_data  # noqa: PLC0415
+
+        repo = InMemoryRepo()
+        org_id = str(uuid.uuid4())
+        user_id = str(uuid.uuid4())
+        conn_id = str(uuid.uuid4())
+        repo.seed_org_member(org_id=org_id, user_id=user_id)
+
+        # Seed a datastore so the prefetch doesn't fail.
+        await repo.create(
+            "datastores",
+            org_id=org_id,
+            created_by=user_id,
+            name="Injection DS",
+            id=conn_id,
+            config={"type": "http_json", "url": "https://api.example.com"},
+        )
+
+        # Store a canvas with an injected path bypassing the model validator
+        # (simulates a row written directly or persisted before the fix).
+        canvas = await repo.create(
+            "canvases",
+            org_id=org_id,
+            created_by=user_id,
+            name="Injection Canvas",
+            config={
+                "doc": {
+                    "version": 1,
+                    "html": '<nubi-value data-el-id="el_inj"></nubi-value>',
+                    "bindings": {
+                        "el_inj": {
+                            "kind": "api",
+                            "connector_id": conn_id,
+                            # Injected directly into raw dict, bypassing Pydantic
+                            "path": "/data?tenant_id=other&bypass=1",
+                        },
+                    },
+                }
+            },
+        )
+
+        result = await collect_canvas_data(
+            canvas_id=canvas["id"],
+            org_id=org_id,
+            claims={},
+            repo=repo,
+        )
+
+        # The binding must fail with an error (not silently forward the injected params).
+        assert "el_inj" in result
+        entry = result["el_inj"]
+        assert "error" in entry, (
+            f"Expected runtime rejection of query-string injection in path, "
+            f"got: {entry}"
+        )
+        assert entry["error"] == "invalid_binding_path", (
+            f"Expected error code 'invalid_binding_path', got: {entry['error']!r}"
+        )
+
+    @pytest.mark.asyncio
+    async def test_runtime_rejects_fragment_in_path(self):
+        """collect_canvas_data rejects an api binding path containing '#' at runtime."""
+        from app.dashboards.collect import collect_canvas_data  # noqa: PLC0415
+
+        repo = InMemoryRepo()
+        org_id = str(uuid.uuid4())
+        user_id = str(uuid.uuid4())
+        conn_id = str(uuid.uuid4())
+        repo.seed_org_member(org_id=org_id, user_id=user_id)
+
+        await repo.create(
+            "datastores",
+            org_id=org_id,
+            created_by=user_id,
+            name="Frag DS",
+            id=conn_id,
+            config={"type": "http_json", "url": "https://api.example.com"},
+        )
+
+        canvas = await repo.create(
+            "canvases",
+            org_id=org_id,
+            created_by=user_id,
+            name="Fragment Canvas",
+            config={
+                "doc": {
+                    "version": 1,
+                    "html": '<nubi-value data-el-id="el_frag"></nubi-value>',
+                    "bindings": {
+                        "el_frag": {
+                            "kind": "api",
+                            "connector_id": conn_id,
+                            "path": "/data#section",
+                        },
+                    },
+                }
+            },
+        )
+
+        result = await collect_canvas_data(
+            canvas_id=canvas["id"],
+            org_id=org_id,
+            claims={},
+            repo=repo,
+        )
+
+        assert "el_frag" in result
+        entry = result["el_frag"]
+        assert "error" in entry, f"Expected fragment-path to be rejected, got: {entry}"
+        assert entry["error"] == "invalid_binding_path", entry["error"]
+
+
+class TestCanvasPrefetchBeforeCap:
+    """[LOW] collect_canvas_data must cap bindings BEFORE the prefetch loop.
+
+    A document with > _MAX_CANVAS_BINDINGS bindings must not create more than
+    _MAX_CANVAS_BINDINGS prefetch coroutines; the cap must fire before the
+    unique-datastore-id collection loop, not after it.
+    """
+
+    @pytest.mark.asyncio
+    async def test_prefetch_respects_cap(self):
+        """A canvas with > _MAX_CANVAS_BINDINGS bindings prefetches at most the cap."""
+        from app.dashboards.collect import collect_canvas_data, _MAX_CANVAS_BINDINGS  # noqa: PLC0415
+        from unittest.mock import patch, AsyncMock
+
+        repo = InMemoryRepo()
+        org_id = str(uuid.uuid4())
+        user_id = str(uuid.uuid4())
+        repo.seed_org_member(org_id=org_id, user_id=user_id)
+
+        cap = _MAX_CANVAS_BINDINGS if _MAX_CANVAS_BINDINGS > 0 else 500
+        # Build cap + 50 bindings, all query bindings (no API connector needed).
+        over_cap = cap + 50
+        bindings = {
+            f"el_{i}": {"kind": "query", "query_id": "demo_all"}
+            for i in range(over_cap)
+        }
+
+        canvas = await repo.create(
+            "canvases",
+            org_id=org_id,
+            created_by=user_id,
+            name="Big Canvas",
+            config={
+                "doc": {
+                    "version": 1,
+                    "html": "<div></div>",
+                    "bindings": bindings,
+                }
+            },
+        )
+
+        # Track how many binding el_ids _fetch_binding is called with.
+        fetched_el_ids: list[str] = []
+        original_run_query_rows = None
+
+        async def _tracking_run_query_rows(query_id, org_id, repo, policies, **kwargs):
+            # This will be called once per binding that reaches execution.
+            raise AppError("query_not_found", "test stub", 404)
+
+        with patch(
+            "app.dashboards.collect.run_query_rows",
+            new=AsyncMock(side_effect=_tracking_run_query_rows),
+        ):
+            # Also intercept _prefetch_datastores to count unique_ds_ids passed.
+            prefetch_calls: list[set] = []
+            from app.dashboards import collect as _collect_mod
+            _orig_prefetch = _collect_mod._prefetch_datastores
+
+            async def _tracking_prefetch(ds_ids, org_id, repo):
+                prefetch_calls.append(set(ds_ids))
+                return await _orig_prefetch(ds_ids, org_id, repo)
+
+            with patch.object(_collect_mod, "_prefetch_datastores", side_effect=_tracking_prefetch):
+                result = await collect_canvas_data(
+                    canvas_id=canvas["id"],
+                    org_id=org_id,
+                    claims={},
+                    repo=repo,
+                )
+
+        # Only the capped number of el_ids should appear in the result.
+        assert len(result) == cap, (
+            f"Expected exactly {cap} results (capped), got {len(result)}"
+        )
+        # The over-cap bindings must not appear in the result at all.
+        for i in range(cap, over_cap):
+            assert f"el_{i}" not in result, (
+                f"Binding el_{i} (beyond cap={cap}) must not be prefetched or executed"
+            )
