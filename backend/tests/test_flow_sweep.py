@@ -28,6 +28,7 @@ from app.flows.sweep import (
     SweepResult,
     _iter_windows,
     _parse_window,
+    _reset_global_gather_sem,
     expand_grid,
     run_backfill,
     run_sweep,
@@ -2819,3 +2820,333 @@ async def test_phase2_sentinel_distinct_from_diff_surface_truncation(monkeypatch
         "Phase 2 sentinel must NOT use diff_surface's '__truncated__' key — "
         "the two markers must be distinct"
     )
+
+
+# ---------------------------------------------------------------------------
+# FIX [LOW concurrency]: Phase 2 cross-sweep global semaphore bound
+# ---------------------------------------------------------------------------
+
+
+async def test_phase2_global_semaphore_constant_exists_and_is_positive():
+    """_SWEEP_GATHER_GLOBAL_CONCURRENCY must exist and be a positive integer."""
+    import app.flows.sweep as sweep_mod
+
+    assert hasattr(sweep_mod, "_SWEEP_GATHER_GLOBAL_CONCURRENCY"), (
+        "_SWEEP_GATHER_GLOBAL_CONCURRENCY constant missing from sweep.py"
+    )
+    assert isinstance(sweep_mod._SWEEP_GATHER_GLOBAL_CONCURRENCY, int)
+    assert sweep_mod._SWEEP_GATHER_GLOBAL_CONCURRENCY > 0, (
+        "_SWEEP_GATHER_GLOBAL_CONCURRENCY must be a positive integer"
+    )
+
+
+async def test_phase2_global_semaphore_env_overridable(monkeypatch):
+    """_SWEEP_GATHER_GLOBAL_CONCURRENCY must be patchable (env-overridable by convention)."""
+    import app.flows.sweep as sweep_mod
+
+    original = sweep_mod._SWEEP_GATHER_GLOBAL_CONCURRENCY
+    monkeypatch.setattr(sweep_mod, "_SWEEP_GATHER_GLOBAL_CONCURRENCY", 7)
+    assert sweep_mod._SWEEP_GATHER_GLOBAL_CONCURRENCY == 7
+    monkeypatch.undo()
+    assert sweep_mod._SWEEP_GATHER_GLOBAL_CONCURRENCY == original
+
+
+async def test_phase2_cross_sweep_concurrency_globally_bounded():
+    """Phase 2 list_task_runs calls across MULTIPLE CONCURRENT sweeps must
+    never exceed _SWEEP_GATHER_GLOBAL_CONCURRENCY in-flight simultaneously.
+
+    This is the cross-sweep fix: each sweep already has its own per-gather
+    semaphore (_SWEEP_GATHER_CONCURRENCY), but N concurrent sweeps each running
+    that semaphore independently can issue N × cap calls at once.  The process-
+    global semaphore caps the cross-sweep total so total in-flight is always
+    bounded by _SWEEP_GATHER_GLOBAL_CONCURRENCY, regardless of sweep count.
+
+    Test strategy:
+    - Set GLOBAL_CAP = 3, PER_GATHER_CAP = 5 (> GLOBAL so global is the tighter bound).
+    - Run 3 concurrent sweeps, each with 4 successful cells = 12 total Phase 2 calls.
+    - Without the global semaphore: peak in-flight could be up to 3 × 5 = 15.
+    - With the fix: peak in-flight must never exceed GLOBAL_CAP = 3.
+    - All cells must still be processed correctly (no deadlock, no dropped output).
+    """
+    import app.flows.sweep as sweep_mod
+
+    GLOBAL_CAP = 3
+    PER_GATHER_CAP = 5   # larger than GLOBAL_CAP so global is the tighter bound
+    N_CELLS_PER_SWEEP = 4
+    N_SWEEPS = 3
+
+    original_global = sweep_mod._SWEEP_GATHER_GLOBAL_CONCURRENCY
+    original_per = sweep_mod._SWEEP_GATHER_CONCURRENCY
+    # Reset the cached semaphore so it picks up the new GLOBAL_CAP.
+    _reset_global_gather_sem()
+    sweep_mod._SWEEP_GATHER_GLOBAL_CONCURRENCY = GLOBAL_CAP
+    sweep_mod._SWEEP_GATHER_CONCURRENCY = PER_GATHER_CAP
+    # Re-reset after patching the constant so the new value takes effect.
+    _reset_global_gather_sem()
+    try:
+        # Shared tracking across all concurrent sweeps.
+        in_flight: list[int] = [0]
+        peak_in_flight: list[int] = [0]
+        all_results: list[Any] = []
+
+        # We need independent stores but a shared list_task_runs wrapper that
+        # tracks global in-flight count.  We patch each store independently but
+        # point the tracking at shared counters.
+        stores = []
+        flows = []
+
+        reset_for_tests()
+        for _ in range(N_SWEEPS):
+            st = InMemoryFlowStore()
+            fl = await _make_flow(st, _output_task())
+            stores.append(st)
+            flows.append(fl)
+
+        def _wrap_store_ltr(st: InMemoryFlowStore):
+            """Replace st.list_task_runs with a version that updates global counters."""
+            original_ltr = st.list_task_runs
+
+            async def _tracking_ltr(run_id, limit=None):
+                in_flight[0] += 1
+                if in_flight[0] > peak_in_flight[0]:
+                    peak_in_flight[0] = in_flight[0]
+                try:
+                    return await original_ltr(run_id, limit=limit)
+                finally:
+                    in_flight[0] -= 1
+
+            st.list_task_runs = _tracking_ltr
+
+        for st in stores:
+            _wrap_store_ltr(st)
+
+        # Launch all sweeps concurrently.
+        async def _do_sweep(st, fl):
+            return await run_sweep(
+                store=st,
+                flow=fl,
+                param_sets=[{"multiplier": i} for i in range(N_CELLS_PER_SWEEP)],
+                trigger="sweep",
+                now=NOW,
+                claims=CLAIMS,
+            )
+
+        results = await asyncio.gather(*(_do_sweep(st, fl) for st, fl in zip(stores, flows)))
+
+        # Correctness: all sweeps succeeded, all cells have outputs.
+        for r in results:
+            assert r.total == N_CELLS_PER_SWEEP, (
+                f"Expected {N_CELLS_PER_SWEEP} cells, got {r.total}"
+            )
+            assert r.succeeded == N_CELLS_PER_SWEEP, (
+                f"Expected {N_CELLS_PER_SWEEP} successes, got {r.succeeded}; failed={r.failed}"
+            )
+            for cell in r.cells:
+                assert cell.state == "success"
+                assert "compute" in cell.outputs, (
+                    f"Cell {cell.index} missing 'compute' output"
+                )
+
+        # Bounded concurrency: peak in-flight across ALL sweeps must not exceed GLOBAL_CAP.
+        # (drain's sequential internal calls also go through the patched ltr but
+        #  they run one at a time, so they only contribute 1 to in_flight at a time.
+        #  The asyncio.gather in Phase 2 is what would spike without the global sem.)
+        assert peak_in_flight[0] <= GLOBAL_CAP, (
+            f"Peak concurrent list_task_runs calls across {N_SWEEPS} sweeps "
+            f"({peak_in_flight[0]}) exceeded _SWEEP_GATHER_GLOBAL_CONCURRENCY "
+            f"({GLOBAL_CAP}).  The process-global semaphore is not bounding "
+            "cross-sweep Phase 2 concurrency correctly."
+        )
+
+    finally:
+        sweep_mod._SWEEP_GATHER_GLOBAL_CONCURRENCY = original_global
+        sweep_mod._SWEEP_GATHER_CONCURRENCY = original_per
+        # Restore the global semaphore to the original cap for subsequent tests.
+        _reset_global_gather_sem()
+
+
+# ---------------------------------------------------------------------------
+# FIX [LOW memory]: LRU-capped _backfill_sems / _sweep_sems
+# ---------------------------------------------------------------------------
+
+
+def test_lru_sem_registry_constants_exist():
+    """_MAX_ORG_SEMAPHORES must exist as a positive int in routes/flows."""
+    import app.routes.flows as flows_mod
+
+    assert hasattr(flows_mod, "_MAX_ORG_SEMAPHORES"), (
+        "_MAX_ORG_SEMAPHORES constant missing from routes/flows.py"
+    )
+    assert isinstance(flows_mod._MAX_ORG_SEMAPHORES, int)
+    assert flows_mod._MAX_ORG_SEMAPHORES > 0
+
+
+def test_lru_sem_registry_is_ordered_dict():
+    """_backfill_sems and _sweep_sems must be OrderedDicts (LRU registries)."""
+    from collections import OrderedDict
+    import app.routes.flows as flows_mod
+
+    assert isinstance(flows_mod._backfill_sems, OrderedDict), (
+        "_backfill_sems must be an OrderedDict for LRU eviction"
+    )
+    assert isinstance(flows_mod._sweep_sems, OrderedDict), (
+        "_sweep_sems must be an OrderedDict for LRU eviction"
+    )
+
+
+def test_lru_idle_eviction_backfill(monkeypatch):
+    """Idle entries are evicted when the backfill registry exceeds the cap.
+
+    Strategy: set cap=3, create 3 idle orgs, then request a 4th.
+    The LRU idle entry (first inserted) must be evicted, keeping size == 3.
+    """
+    import asyncio as _asyncio
+    import app.routes.flows as flows_mod
+    from collections import OrderedDict
+
+    # Save and restore state around this test.
+    original_cap = flows_mod._MAX_ORG_SEMAPHORES
+    original_reg = flows_mod._backfill_sems
+    try:
+        monkeypatch.setattr(flows_mod, "_MAX_ORG_SEMAPHORES", 3)
+        flows_mod._backfill_sems = OrderedDict()
+
+        # Create 3 idle orgs (all slots free, no waiters).
+        flows_mod._get_backfill_sem("org-1")
+        flows_mod._get_backfill_sem("org-2")
+        flows_mod._get_backfill_sem("org-3")
+        assert len(flows_mod._backfill_sems) == 3
+
+        # Request a 4th: org-1 (LRU) should be evicted (it is idle).
+        flows_mod._get_backfill_sem("org-4")
+        assert len(flows_mod._backfill_sems) <= 3, (
+            f"Expected registry size ≤ 3 after eviction, got {len(flows_mod._backfill_sems)}"
+        )
+        assert "org-4" in flows_mod._backfill_sems, "New org must be present after insertion"
+        assert "org-1" not in flows_mod._backfill_sems, (
+            "LRU idle org-1 must have been evicted to make room for org-4"
+        )
+    finally:
+        flows_mod._MAX_ORG_SEMAPHORES = original_cap
+        flows_mod._backfill_sems = original_reg
+
+
+def test_lru_idle_eviction_sweep(monkeypatch):
+    """Same eviction invariant holds for the sweep registry."""
+    import app.routes.flows as flows_mod
+    from collections import OrderedDict
+
+    original_cap = flows_mod._MAX_ORG_SEMAPHORES
+    original_reg = flows_mod._sweep_sems
+    try:
+        monkeypatch.setattr(flows_mod, "_MAX_ORG_SEMAPHORES", 3)
+        flows_mod._sweep_sems = OrderedDict()
+
+        flows_mod._get_sweep_sem("org-a")
+        flows_mod._get_sweep_sem("org-b")
+        flows_mod._get_sweep_sem("org-c")
+        assert len(flows_mod._sweep_sems) == 3
+
+        flows_mod._get_sweep_sem("org-d")
+        assert len(flows_mod._sweep_sems) <= 3
+        assert "org-d" in flows_mod._sweep_sems
+        assert "org-a" not in flows_mod._sweep_sems, (
+            "LRU idle org-a must have been evicted"
+        )
+    finally:
+        flows_mod._MAX_ORG_SEMAPHORES = original_cap
+        flows_mod._sweep_sems = original_reg
+
+
+async def test_in_use_semaphore_not_evicted(monkeypatch):
+    """An in-use semaphore (acquired slot) must NEVER be evicted.
+
+    Set cap=2, create 2 orgs, acquire a slot in org-1 (making it non-idle),
+    then request org-3.  org-1 must survive because it is in-use; org-2
+    (idle) must be evicted instead.  After releasing org-1's slot the
+    registry is back to holding exactly the two most recent entries.
+    """
+    import asyncio as _asyncio
+    import app.routes.flows as flows_mod
+    from collections import OrderedDict
+
+    original_cap = flows_mod._MAX_ORG_SEMAPHORES
+    original_reg = flows_mod._backfill_sems
+    original_max = flows_mod._MAX_CONCURRENT_BACKFILLS_PER_ORG
+    try:
+        monkeypatch.setattr(flows_mod, "_MAX_ORG_SEMAPHORES", 2)
+        flows_mod._backfill_sems = OrderedDict()
+
+        sem1 = flows_mod._get_backfill_sem("org-x")
+        _sem2 = flows_mod._get_backfill_sem("org-y")  # noqa: F841 — org-y is idle
+        assert len(flows_mod._backfill_sems) == 2
+
+        # Acquire a slot in org-x to mark it in-use (non-idle).
+        await sem1.acquire()
+        assert sem1._value == original_max - 1, "One slot must be acquired"
+
+        # Request org-z: at cap=2, one entry must be evicted.
+        # org-x is non-idle → must NOT be evicted.
+        # org-y is idle   → must BE evicted.
+        flows_mod._get_backfill_sem("org-z")
+
+        assert "org-x" in flows_mod._backfill_sems, (
+            "org-x (in-use) must NOT have been evicted"
+        )
+        assert "org-z" in flows_mod._backfill_sems, (
+            "org-z (new) must be present"
+        )
+        assert "org-y" not in flows_mod._backfill_sems, (
+            "org-y (idle, LRU) must have been evicted instead"
+        )
+
+        # Release the slot so the semaphore is clean for GC.
+        sem1.release()
+    finally:
+        flows_mod._MAX_ORG_SEMAPHORES = original_cap
+        flows_mod._backfill_sems = original_reg
+
+
+def test_many_distinct_orgs_bounded(monkeypatch):
+    """Inserting far more distinct orgs than the cap must not grow the dict unboundedly.
+
+    This is the core monotonic-growth regression test: with a cap of 10,
+    creating 100 distinct IDLE orgs one by one must result in a registry of
+    size exactly 10 (cap), not 100.
+    """
+    import app.routes.flows as flows_mod
+    from collections import OrderedDict
+
+    CAP = 10
+    N_ORGS = 100
+
+    original_cap = flows_mod._MAX_ORG_SEMAPHORES
+    original_backfill_reg = flows_mod._backfill_sems
+    original_sweep_reg = flows_mod._sweep_sems
+    try:
+        monkeypatch.setattr(flows_mod, "_MAX_ORG_SEMAPHORES", CAP)
+        flows_mod._backfill_sems = OrderedDict()
+        flows_mod._sweep_sems = OrderedDict()
+
+        for i in range(N_ORGS):
+            flows_mod._get_backfill_sem(f"backfill-org-{i}")
+            flows_mod._get_sweep_sem(f"sweep-org-{i}")
+
+        # Both registries must be capped, not at N_ORGS.
+        assert len(flows_mod._backfill_sems) <= CAP, (
+            f"_backfill_sems grew to {len(flows_mod._backfill_sems)} "
+            f"after inserting {N_ORGS} orgs with cap={CAP}. "
+            "Idle entries are not being evicted (unbounded growth regression)."
+        )
+        assert len(flows_mod._sweep_sems) <= CAP, (
+            f"_sweep_sems grew to {len(flows_mod._sweep_sems)} "
+            f"after inserting {N_ORGS} orgs with cap={CAP}. "
+            "Idle entries are not being evicted (unbounded growth regression)."
+        )
+        # The most-recently-inserted org must still be present.
+        assert f"backfill-org-{N_ORGS - 1}" in flows_mod._backfill_sems
+        assert f"sweep-org-{N_ORGS - 1}" in flows_mod._sweep_sems
+    finally:
+        flows_mod._MAX_ORG_SEMAPHORES = original_cap
+        flows_mod._backfill_sems = original_backfill_reg
+        flows_mod._sweep_sems = original_sweep_reg

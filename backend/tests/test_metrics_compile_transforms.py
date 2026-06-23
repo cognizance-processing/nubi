@@ -5874,3 +5874,113 @@ def test_topn_other_no_time_grain_path_unchanged_keeps_limit() -> None:
     rows = _plan_and_run(sql, con, claims={})
     row_by_region = {r[0]: r for r in rows}
     assert "A" in row_by_region and "Other" in row_by_region, rows
+
+
+# ---------------------------------------------------------------------------
+# Governance: derived rank measure on the extra-non-ranked-dims membership path
+# (fix-47 third membership path) + dimension-count cap.
+# ---------------------------------------------------------------------------
+
+
+def _derived_rank_metric() -> MetricDefinition:
+    """Metric with a declared rls_key and a derived measure usable as a rank."""
+    return MetricDefinition(
+        id="margin",
+        name="Margin",
+        measure=Measure(name="revenue", agg="sum", expr="amount"),
+        base_table="orders",
+        dimensions=(
+            Dimension(name="category"),
+            Dimension(name="region"),
+            Dimension(name="status"),
+        ),
+        time_dimension=TimeDimension(
+            column="created_at", grains=("day", "month"), default_grain="day"
+        ),
+        extra_measures=(Measure(name="cost", agg="sum", expr="cost_amount"),),
+        derived_measures=(
+            DerivedMeasure(name="margin_pct", formula="(revenue - cost) / revenue"),
+        ),
+        rls_keys=("org_id",),
+    )
+
+
+def test_derived_rank_with_extra_non_ranked_dim_raises_not_500() -> None:
+    """fix-47 third path: ranked dim + declared rls_key + an EXTRA projected dim
+    (no time_grain, other=False) routes through the __base membership subquery,
+    which references the derived rank measure absent from __base -> would be a
+    runtime binder 500.  _govern must reject it at compile time with bad_top_n.
+    """
+    m = _derived_rank_metric()
+    # ranked = category; corr_keys = rls_keys = (org_id); region is the EXTRA
+    # non-ranked, non-corr dim -> _has_extra_non_ranked_dims True.
+    mq = MetricQuery(
+        metric_id="margin",
+        dimensions=("category", "region"),
+        top_n=TopN(dimension="category", n=3, measure="margin_pct", order="desc"),
+    )
+    with pytest.raises(MetricError) as ei:
+        compile_metric(m, mq)
+    assert ei.value.code == "bad_top_n"
+
+
+def test_derived_rank_no_extra_dim_compiles() -> None:
+    """Valid: ranked dim + only the corr_key (rls_key) projected, no time_grain,
+    other=False -> QUALIFY RANK() path, derived rank measure is fine (it lives in
+    the outer SELECT, not the membership subquery).  Must compile."""
+    m = _derived_rank_metric()
+    # Only the ranked dim projected; corr_keys default to rls_keys (org_id, added
+    # by the compiler), so no extra non-ranked dim -> no membership subquery.
+    mq = MetricQuery(
+        metric_id="margin",
+        dimensions=("category",),
+        top_n=TopN(dimension="category", n=3, measure="margin_pct", order="desc"),
+    )
+    sql, _ = compile_metric(m, mq)
+    assert sql  # compiles without raising
+
+
+def test_derived_rank_extra_dim_base_measure_still_compiles() -> None:
+    """Control: same extra-dim shape but ranking by a BASE measure must STILL
+    compile (the govern gap fix is scoped to DERIVED rank measures only)."""
+    m = _derived_rank_metric()
+    mq = MetricQuery(
+        metric_id="margin",
+        dimensions=("category", "region"),
+        top_n=TopN(dimension="category", n=3, measure="revenue", order="desc"),
+    )
+    sql, _ = compile_metric(m, mq)
+    assert sql
+
+
+def test_too_many_dimensions_raises() -> None:
+    """>NUBI_MAX_DIMS (default 20) requested dimensions -> too_many_dimensions 400."""
+    dims = tuple(Dimension(name=f"d{i}") for i in range(25))
+    m = MetricDefinition(
+        id="manydim",
+        name="ManyDim",
+        measure=Measure(name="revenue", agg="sum", expr="amount"),
+        base_table="orders",
+        dimensions=dims,
+    )
+    mq = MetricQuery(metric_id="manydim", dimensions=tuple(f"d{i}" for i in range(21)))
+    with pytest.raises(MetricError) as ei:
+        compile_metric(m, mq)
+    assert ei.value.code == "too_many_dimensions"
+
+
+def test_max_dimensions_boundary_compiles() -> None:
+    """Exactly NUBI_MAX_DIMS (20) requested dimensions compiles (boundary, not >)."""
+    dims = tuple(Dimension(name=f"d{i}") for i in range(20))
+    m = MetricDefinition(
+        id="boundarydim",
+        name="BoundaryDim",
+        measure=Measure(name="revenue", agg="sum", expr="amount"),
+        base_table="orders",
+        dimensions=dims,
+    )
+    mq = MetricQuery(
+        metric_id="boundarydim", dimensions=tuple(f"d{i}" for i in range(20))
+    )
+    sql, _ = compile_metric(m, mq)
+    assert sql

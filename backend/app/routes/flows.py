@@ -48,6 +48,7 @@ from __future__ import annotations
 import asyncio
 import hmac
 import os
+from collections import OrderedDict
 from datetime import datetime, timezone
 from typing import Any
 
@@ -80,27 +81,95 @@ _MAX_CONCURRENT_SWEEPS_PER_ORG: int = int(
     os.environ.get("MAX_CONCURRENT_SWEEPS_PER_ORG", "2")
 )
 
-# Module-level dicts; keyed by org_id.  Populated lazily — no lock needed
-# because asyncio is single-threaded and dict access is GIL-protected.
-_backfill_sems: dict[str, asyncio.Semaphore] = {}
-_sweep_sems: dict[str, asyncio.Semaphore] = {}
+# ---------------------------------------------------------------------------
+# LRU-capped semaphore registries (LOW memory fix)
+# ---------------------------------------------------------------------------
+# Plain dict[str, Semaphore] keyed by org_id grows monotonically — one entry
+# per distinct org, forever.  In multi-tenant deployments with many short-lived
+# trial orgs this is a slow but unbounded memory leak.
+#
+# Fix: use an LRU-capped OrderedDict (insertion/access order = LRU order).
+# When the dict is at capacity and a NEW org_id arrives, we evict the
+# least-recently-used entry that is currently IDLE (value == max AND no
+# waiters) so an in-use semaphore is never dropped mid-operation.
+#
+# asyncio is single-threaded so no lock is needed here; all mutations happen
+# on the event loop thread.
+_MAX_ORG_SEMAPHORES: int = int(os.environ.get("NUBI_MAX_ORG_SEMAPHORES", "4096"))
+
+# OrderedDict preserves LRU order: least-recently-used at the left (first),
+# most-recently-used at the right (last).  move_to_end(key) promotes on access.
+_backfill_sems: OrderedDict[str, asyncio.Semaphore] = OrderedDict()
+_sweep_sems: OrderedDict[str, asyncio.Semaphore] = OrderedDict()
+
+
+def _sem_is_idle(sem: asyncio.Semaphore, max_value: int) -> bool:
+    """Return True when *sem* is fully idle (no slots acquired, no waiters).
+
+    A semaphore is idle when:
+    - ``_value == max_value`` (all slots returned)
+    - ``_waiters`` is empty or None (no coroutine blocked on acquire)
+
+    We NEVER evict a non-idle semaphore: dropping it while a task holds a slot
+    would silently free the slot, letting a second task exceed the per-org cap
+    and breaking the 429-on-contention invariant.
+    """
+    if sem._value != max_value:
+        return False
+    waiters = getattr(sem, "_waiters", None)
+    return not waiters
+
+
+def _evict_idle_lru(
+    registry: "OrderedDict[str, asyncio.Semaphore]",
+    max_value: int,
+) -> None:
+    """Evict the least-recently-used IDLE entry from *registry* (in-place).
+
+    Iterates from the LRU end (left / first) and removes the first idle entry
+    found.  If no idle entry exists (all in use) the registry is left unchanged
+    — the new entry will still be inserted, temporarily exceeding *_MAX_ORG_SEMAPHORES*
+    by one.  This is intentional: we never drop a live semaphore.
+    """
+    for key in list(registry):  # iterate LRU→MRU
+        if _sem_is_idle(registry[key], max_value):
+            del registry[key]
+            return
 
 
 def _get_backfill_sem(org_id: str) -> asyncio.Semaphore:
-    """Return (creating if needed) the per-org backfill concurrency semaphore."""
+    """Return (creating if needed) the per-org backfill concurrency semaphore.
+
+    On a cache hit the entry is promoted to MRU so recently-active orgs are
+    retained longest.  On a cache miss the LRU idle entry is evicted first when
+    the registry is at capacity before the new semaphore is inserted.
+    """
     sem = _backfill_sems.get(org_id)
-    if sem is None:
-        sem = asyncio.Semaphore(_MAX_CONCURRENT_BACKFILLS_PER_ORG)
-        _backfill_sems[org_id] = sem
+    if sem is not None:
+        _backfill_sems.move_to_end(org_id)  # promote to MRU
+        return sem
+    # Cache miss: evict LRU idle entry if at cap, then insert new semaphore.
+    if len(_backfill_sems) >= _MAX_ORG_SEMAPHORES:
+        _evict_idle_lru(_backfill_sems, _MAX_CONCURRENT_BACKFILLS_PER_ORG)
+    sem = asyncio.Semaphore(_MAX_CONCURRENT_BACKFILLS_PER_ORG)
+    _backfill_sems[org_id] = sem
     return sem
 
 
 def _get_sweep_sem(org_id: str) -> asyncio.Semaphore:
-    """Return (creating if needed) the per-org sweep concurrency semaphore."""
+    """Return (creating if needed) the per-org sweep concurrency semaphore.
+
+    Same LRU eviction policy as :func:`_get_backfill_sem`.
+    """
     sem = _sweep_sems.get(org_id)
-    if sem is None:
-        sem = asyncio.Semaphore(_MAX_CONCURRENT_SWEEPS_PER_ORG)
-        _sweep_sems[org_id] = sem
+    if sem is not None:
+        _sweep_sems.move_to_end(org_id)  # promote to MRU
+        return sem
+    # Cache miss: evict LRU idle entry if at cap, then insert new semaphore.
+    if len(_sweep_sems) >= _MAX_ORG_SEMAPHORES:
+        _evict_idle_lru(_sweep_sems, _MAX_CONCURRENT_SWEEPS_PER_ORG)
+    sem = asyncio.Semaphore(_MAX_CONCURRENT_SWEEPS_PER_ORG)
+    _sweep_sems[org_id] = sem
     return sem
 
 # ---------------------------------------------------------------------------

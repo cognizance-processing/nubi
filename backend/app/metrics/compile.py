@@ -131,6 +131,11 @@ _MAX_TC_ENTRIES: int = int(os.environ.get("NUBI_MAX_TC_ENTRIES", 20))
 _MAX_IN_LIST: int = int(os.environ.get("NUBI_MAX_IN_LIST", 1000))
 # Cap on the total number of filters in a single MetricQuery.
 _MAX_FILTERS: int = int(os.environ.get("NUBI_MAX_FILTERS", 50))
+# Cap on the number of requested dimensions in a single MetricQuery.
+# Each dimension is an extra GROUP BY column AND (on the layered path) an extra
+# PARTITION BY / LATERAL fan-out term, so an unbounded count is an
+# O(N_dims × N_tc) resource + cardinality-explosion risk BEFORE the LIMIT lands.
+_MAX_DIMS: int = int(os.environ.get("NUBI_MAX_DIMS", 20))
 
 # Valid SQL identifier pattern (for entity/time columns in latest_snapshot)
 _IDENT_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
@@ -1684,6 +1689,19 @@ def _govern(metric: MetricDefinition, mq: MetricQuery) -> str | None:
                     f"{', '.join(sorted(_TIME_GRAINS))}).",
                 )
 
+    # FIX (MED resource — unbounded mq.dimensions): cap the COUNT of requested
+    # dimensions.  Each requested dim becomes an extra GROUP BY column and, on the
+    # layered path, an extra PARTITION BY term and LATERAL correlation column —
+    # so an unbounded list is an O(N_dims × N_tc) fan-out + GROUP BY cardinality
+    # explosion that compiles and executes BEFORE the LIMIT can cap anything.
+    # Reject at compile time with a structured 400 (never a runtime blow-up).
+    if len(mq.dimensions) > _MAX_DIMS:
+        raise MetricError(
+            "too_many_dimensions",
+            f"MetricQuery requests {len(mq.dimensions)} dimensions, exceeding the "
+            f"maximum of {_MAX_DIMS} (NUBI_MAX_DIMS).",
+        )
+
     # requested dimensions must be allowed.
     for dim_name in mq.dimensions:
         if metric.dimension(dim_name) is None:
@@ -1937,16 +1955,39 @@ def _govern(metric: MetricDefinition, mq: MetricQuery) -> str | None:
         # NOT IN membership query rank by ORDER BY SUM(<rank_measure>) against
         # __base, which only contains BASE measures — a derived rank column is not
         # present there and would produce a runtime SQL (Binder) error.
+        #
+        # FIX (MED compiler — derived-top-N governance gap): fix-47 added a THIRD
+        # membership path.  _apply_top_n / _build_other_select take the correlated
+        # __base membership subquery (not the QUALIFY RANK() path) ALSO when
+        # ``use_membership`` is True via _has_extra_non_ranked_dims — i.e. a
+        # projected dimension exists beyond {ranked dim} ∪ correlation keys, even
+        # with time_grain=None and other=False.  In that path the membership ranks
+        # by SUM(<rank_measure>) against __base too, so a DERIVED rank measure is
+        # likewise absent from __base and would raise a runtime binder 500.
+        # Detect that case here using the SAME correlation-key derivation as
+        # _membership_correlation_keys: corr_keys = metric.rls_keys when declared,
+        # else every projected non-ranked dim; _has_extra = any projected dim that
+        # is neither the ranked dim nor a corr_key.
+        corr_keys_govern: tuple[str, ...] = (
+            tuple(metric.rls_keys)
+            if metric.rls_keys
+            else tuple(d for d in mq.dimensions if d != tn.dimension)
+        )
+        _corr_set = set(corr_keys_govern)
+        has_extra_non_ranked = any(
+            d != tn.dimension and d not in _corr_set for d in mq.dimensions
+        )
         if (
-            (mq.time_grain is not None or tn.other)
+            (mq.time_grain is not None or tn.other or has_extra_non_ranked)
             and rank_measure in derived_measure_names
         ):
             raise MetricError(
                 "bad_top_n",
                 f"top_n.measure {rank_measure!r} is a derived measure; derived measures "
-                f"cannot be used as the top_n rank measure when time_grain is set or "
-                f"top_n.other is True (the membership subquery references __base which "
-                f"only contains base measures).",
+                f"cannot be used as the top_n rank measure when time_grain is set, "
+                f"top_n.other is True, or an extra non-ranked dimension is projected "
+                f"(the membership subquery references __base which only contains base "
+                f"measures).",
             )
         # FIX issue 2: non-additive base measure as rank measure with time_grain is
         # wrong — the membership subquery ranks by SUM(rank_measure) across time

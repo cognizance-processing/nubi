@@ -811,11 +811,34 @@ async def on_flow_run_complete(
         child_claims = _downstream_claims_with_owner_policies(claims, upstream_flow, flow_run_id)
         # child_claims is None when the snapshot is missing AND we should fail-closed.
         if child_claims is None:
+            _suppression_msg = (
+                "downstream triggers suppressed: upstream flow has no owner-policy "
+                "snapshot; re-save the flow to enable"
+            )
             logger.warning(
                 "on_flow_run_complete: upstream flow %s (run %s) has no owner-policy "
-                "snapshot; skipping all downstream triggers (fail-closed for RLS safety).",
-                upstream_flow_id, flow_run_id,
+                "snapshot; skipping all downstream triggers (fail-closed for RLS safety). "
+                "%s",
+                upstream_flow_id, flow_run_id, _suppression_msg,
             )
+            # Make suppression VISIBLE on the upstream flow_run so operators can
+            # detect the silent skip via queries / dashboards.  We stamp a
+            # structured field (downstream_triggers_suppressed) and, when the
+            # run already has a terminal state that permits it, we set the
+            # human-readable `error` field if it is currently empty.
+            try:
+                _suppression_fields: dict[str, Any] = {
+                    "downstream_triggers_suppressed": _suppression_msg,
+                }
+                _current_run = await store.get_flow_run(flow_run_id)
+                if _current_run is not None and not _current_run.get("error"):
+                    _suppression_fields["error"] = _suppression_msg
+                await store.update_flow_run(flow_run_id, _suppression_fields)
+            except Exception as _stamp_exc:  # noqa: BLE001
+                logger.warning(
+                    "on_flow_run_complete: could not stamp suppression record on run %s: %s",
+                    flow_run_id, _stamp_exc,
+                )
             return
 
         # ── Build the new chain (parent flow now in visited set) ─────────────

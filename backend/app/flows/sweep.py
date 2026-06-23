@@ -39,6 +39,7 @@ import itertools
 import json
 import logging
 import os
+import threading
 import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
@@ -120,6 +121,69 @@ _SWEEP_TASK_RUNS_LIMIT: int = int(
 _SWEEP_GATHER_CONCURRENCY: int = int(
     os.environ.get("NUBI_SWEEP_GATHER_CONCURRENCY", "10")
 )
+
+# ---------------------------------------------------------------------------
+# Phase 2 PROCESS-GLOBAL gather concurrency cap.
+#
+# _SWEEP_GATHER_CONCURRENCY caps Phase 2 concurrency PER GATHER (i.e. per
+# run_sweep invocation).  With N concurrent sweeps each fan-out independently,
+# the total number of in-flight list_task_runs calls can reach
+# N × _SWEEP_GATHER_CONCURRENCY — the same per-call-vs-global gap seen in
+# fix-49/50.
+#
+# This module-level semaphore provides an additional PROCESS-WIDE cap that
+# bounds the cross-sweep total regardless of how many sweeps run in parallel.
+# It is acquired INSIDE _fetch_task_runs in ADDITION to the per-gather
+# semaphore so both limits are enforced simultaneously (the tighter one wins).
+#
+# The semaphore is lazily initialised under a threading.Lock the first time
+# _get_global_gather_sem() is called.  This ensures it is always created on
+# the running asyncio event loop (important for tests that spin up their own
+# loops) while remaining safe across threads (the threading.Lock serialises
+# concurrent first-callers).
+#
+# Override via NUBI_SWEEP_GATHER_GLOBAL_CONCURRENCY.  Default: 20 (generous
+# enough for a single sweep at full per-gather cap while still bounding two
+# concurrent sweeps combined).
+# ---------------------------------------------------------------------------
+_SWEEP_GATHER_GLOBAL_CONCURRENCY: int = int(
+    os.environ.get("NUBI_SWEEP_GATHER_GLOBAL_CONCURRENCY", "20")
+)
+
+# Module-level cache + lock for the lazy-init global semaphore.
+_global_gather_sem: asyncio.Semaphore | None = None
+_global_gather_sem_lock: threading.Lock = threading.Lock()
+
+
+def _get_global_gather_sem() -> asyncio.Semaphore:
+    """Return (or lazily create) the process-global Phase 2 gather semaphore.
+
+    Thread-safe lazy init under ``_global_gather_sem_lock``.  The semaphore is
+    created on the first call and reused for the lifetime of the process.
+    Calling ``_reset_global_gather_sem()`` (test helper) clears it so the next
+    call rebuilds it with the current ``_SWEEP_GATHER_GLOBAL_CONCURRENCY`` value.
+    """
+    global _global_gather_sem  # noqa: PLW0603
+    if _global_gather_sem is None:
+        with _global_gather_sem_lock:
+            if _global_gather_sem is None:
+                _global_gather_sem = asyncio.Semaphore(_SWEEP_GATHER_GLOBAL_CONCURRENCY)
+    return _global_gather_sem
+
+
+def _reset_global_gather_sem() -> None:
+    """Reset the cached global semaphore (test helper only).
+
+    Clears the module-level cache so the next call to ``_get_global_gather_sem``
+    creates a fresh semaphore reflecting the current
+    ``_SWEEP_GATHER_GLOBAL_CONCURRENCY`` value.  Never call this in production
+    code; it is exported solely so tests can re-initialise after monkeypatching
+    the constant.
+    """
+    global _global_gather_sem  # noqa: PLW0603
+    with _global_gather_sem_lock:
+        _global_gather_sem = None
+
 
 # ---------------------------------------------------------------------------
 # Phase 2 per-result byte cap (load-time OOM guard).
@@ -549,10 +613,12 @@ async def run_sweep(
     if _pending_output_cells:
         run_ids_to_fetch = [cells[i].run_id for i in _pending_output_cells]
         _sem = asyncio.Semaphore(_SWEEP_GATHER_CONCURRENCY)
+        _global_sem = _get_global_gather_sem()
 
         async def _fetch_task_runs(rid: str) -> list:
-            async with _sem:
-                return await store.list_task_runs(rid, limit=_SWEEP_TASK_RUNS_LIMIT)
+            async with _global_sem:
+                async with _sem:
+                    return await store.list_task_runs(rid, limit=_SWEEP_TASK_RUNS_LIMIT)
 
         task_run_lists = await asyncio.gather(
             *(_fetch_task_runs(rid) for rid in run_ids_to_fetch)

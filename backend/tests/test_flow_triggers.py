@@ -834,6 +834,127 @@ async def test_downstream_trigger_skipped_without_owner_policies():
     )
 
 
+async def test_downstream_trigger_suppression_is_visible_on_flow_run():
+    """[LOW visibility] Completing a snapshot-less flow with a registered downstream trigger
+    leaves a visible suppression record on the upstream flow_run and does NOT run the trigger.
+
+    The suppression must be stamped as the structured field
+    ``downstream_triggers_suppressed`` on the upstream flow_run, and the
+    human-readable ``error`` field must also reflect it (when not already set),
+    so operators can detect the silent skip via queries / dashboards.
+    """
+    from app.flows.runtime import materialize_flow_run  # noqa: PLC0415
+
+    store = InMemoryFlowStore()
+    # Upstream flow WITHOUT any owner-policy snapshot.
+    upstream = await _make_flow(store, name="suppression_upstream")
+    downstream = await _make_flow(store, name="suppression_downstream")
+
+    registry = get_trigger_registry()
+    await registry.register(
+        flow_id=downstream["id"],
+        kind="downstream",
+        source=upstream["id"],
+        org_id="org-test",
+        extra={"on_states": ["success"]},
+    )
+
+    # Create and mark the upstream run as success.
+    flow_run = await materialize_flow_run(store, upstream, {}, "manual", NOW)
+    await store.update_flow_run(flow_run["id"], {"state": "success"})
+
+    # Fire the hook with empty claims (no policies AND no snapshot on flow).
+    await on_flow_run_complete(
+        store=store,
+        flow_run_id=flow_run["id"],
+        state="success",
+        now=NOW,
+        claims={},
+    )
+
+    # 1. Downstream trigger must NOT have fired (fail-closed RLS semantics preserved).
+    downstream_runs = await store.list_flow_runs(downstream["id"])
+    assert len(downstream_runs) == 0, (
+        "Downstream trigger must be skipped when upstream has no owner-policy snapshot"
+    )
+
+    # 2. The suppression MUST be visible on the upstream flow_run.
+    updated_run = await store.get_flow_run(flow_run["id"])
+    assert updated_run is not None
+
+    suppression = updated_run.get("downstream_triggers_suppressed")
+    assert suppression, (
+        "upstream flow_run must have a non-empty 'downstream_triggers_suppressed' field "
+        "so operators can see why triggers stopped firing"
+    )
+    assert "owner-policy snapshot" in suppression, (
+        f"suppression message must mention 'owner-policy snapshot'; got: {suppression!r}"
+    )
+    assert "re-save" in suppression.lower(), (
+        f"suppression message must include remediation hint ('re-save'); got: {suppression!r}"
+    )
+
+    # 3. The human-readable 'error' field must also carry the suppression message.
+    error_field = updated_run.get("error")
+    assert error_field, (
+        "upstream flow_run 'error' field must be set to surface the suppression "
+        "to operators when it was previously empty"
+    )
+    assert "owner-policy snapshot" in error_field, (
+        f"'error' field must mention 'owner-policy snapshot'; got: {error_field!r}"
+    )
+
+
+async def test_downstream_trigger_suppression_does_not_overwrite_existing_error():
+    """[LOW visibility] If the upstream run already has an error set, the suppression
+    record stamps 'downstream_triggers_suppressed' but does NOT overwrite the existing error.
+    """
+    from app.flows.runtime import materialize_flow_run  # noqa: PLC0415
+
+    store = InMemoryFlowStore()
+    upstream = await _make_flow(store, name="suppression_no_overwrite_upstream")
+    downstream = await _make_flow(store, name="suppression_no_overwrite_downstream")
+
+    registry = get_trigger_registry()
+    await registry.register(
+        flow_id=downstream["id"],
+        kind="downstream",
+        source=upstream["id"],
+        org_id="org-test",
+        extra={"on_states": ["failed"]},
+    )
+
+    flow_run = await materialize_flow_run(store, upstream, {}, "manual", NOW)
+    original_error = "task t1 raised ValueError: bad input"
+    await store.update_flow_run(flow_run["id"], {"state": "failed", "error": original_error})
+
+    await on_flow_run_complete(
+        store=store,
+        flow_run_id=flow_run["id"],
+        state="failed",
+        now=NOW,
+        claims={},
+    )
+
+    # Downstream must still be suppressed.
+    downstream_runs = await store.list_flow_runs(downstream["id"])
+    assert len(downstream_runs) == 0
+
+    updated_run = await store.get_flow_run(flow_run["id"])
+    assert updated_run is not None
+
+    # Structured suppression field must be present.
+    assert updated_run.get("downstream_triggers_suppressed"), (
+        "'downstream_triggers_suppressed' must be set even when run already has an error"
+    )
+
+    # Original error must NOT have been overwritten.
+    assert updated_run.get("error") == original_error, (
+        f"existing 'error' must not be overwritten by suppression; "
+        f"expected {original_error!r}, got {updated_run.get('error')!r}"
+    )
+
+
 async def test_downstream_trigger_skipped_when_downstream_lacks_snapshot():
     """[RLS] Trigger is skipped when the DOWNSTREAM flow lacks an owner-policy snapshot.
 
