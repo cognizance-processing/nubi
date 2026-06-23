@@ -189,6 +189,44 @@ _WIDGET_CONCURRENCY: int = max(
     int(os.environ.get("NUBI_WIDGET_CONCURRENCY", _DEFAULT_WIDGET_CONCURRENCY)),
 )
 
+# Process-global widget concurrency semaphore.
+# Without a global cap, N concurrent canvas/board loads each fan out up to
+# _WIDGET_CONCURRENCY coroutines → N × _WIDGET_CONCURRENCY simultaneous DB
+# queries.  This semaphore is shared across ALL canvas/board loads in the
+# process so total concurrent widget execution is bounded to
+# _GLOBAL_WIDGET_CONCURRENCY regardless of how many concurrent loads are in
+# flight.
+#
+# The default is 4 × _WIDGET_CONCURRENCY, giving headroom for a few concurrent
+# canvas loads at full width while still capping the global total.  Set
+# NUBI_WIDGET_GLOBAL_CONCURRENCY to tune the limit (must be >=1).
+_DEFAULT_GLOBAL_WIDGET_CONCURRENCY_MULTIPLIER = 4
+_DEFAULT_GLOBAL_WIDGET_CONCURRENCY: int = (
+    _WIDGET_CONCURRENCY * _DEFAULT_GLOBAL_WIDGET_CONCURRENCY_MULTIPLIER
+)
+_GLOBAL_WIDGET_CONCURRENCY: int = max(
+    1,
+    int(
+        os.environ.get("NUBI_WIDGET_GLOBAL_CONCURRENCY", _DEFAULT_GLOBAL_WIDGET_CONCURRENCY)
+    ),
+)
+# The asyncio.Semaphore must be created inside a running event loop on Python
+# 3.10+.  We use a lazy-init pattern: the module-level variable holds None
+# until first use, at which point _get_global_widget_sem() creates it under a
+# threading.Lock so only one Semaphore object is ever created per process.
+_global_widget_sem: "asyncio.Semaphore | None" = None
+_global_widget_sem_lock = threading.Lock()
+
+
+def _get_global_widget_sem() -> "asyncio.Semaphore":
+    """Return (creating if needed) the process-global widget semaphore."""
+    global _global_widget_sem  # noqa: PLW0603
+    if _global_widget_sem is None:
+        with _global_widget_sem_lock:
+            if _global_widget_sem is None:
+                _global_widget_sem = asyncio.Semaphore(_GLOBAL_WIDGET_CONCURRENCY)
+    return _global_widget_sem
+
 # Maximum number of Canvas bindings processed per collect call.
 # Override via NUBI_MAX_CANVAS_BINDINGS env-var (integer).  0 = unlimited.
 _DEFAULT_MAX_CANVAS_BINDINGS = 500
@@ -615,13 +653,20 @@ async def collect_board_data(
             entry["error"] = f"export_failed: {exc.__class__.__name__}"
         return entry
 
-    # Run widget queries concurrently (bounded by _WIDGET_CONCURRENCY) while
-    # preserving the original target order in the returned list.
-    semaphore = asyncio.Semaphore(_WIDGET_CONCURRENCY)
+    # Run widget queries concurrently bounded by two semaphores:
+    # 1. per-call semaphore (_WIDGET_CONCURRENCY) — limits widgets within this
+    #    single canvas/board load so one load cannot monopolise all slots.
+    # 2. process-global semaphore (_GLOBAL_WIDGET_CONCURRENCY) — limits total
+    #    concurrent widget execution across ALL simultaneous canvas/board loads
+    #    so N concurrent loads do not fan out to N × _WIDGET_CONCURRENCY DB
+    #    queries.  Both must be held before a widget query runs.
+    per_call_sem = asyncio.Semaphore(_WIDGET_CONCURRENCY)
+    global_sem = _get_global_widget_sem()
 
     async def _fetch_guarded(t: dict[str, str]) -> dict[str, Any]:
-        async with semaphore:
-            return await _fetch_one(t)
+        async with per_call_sem:
+            async with global_sem:
+                return await _fetch_one(t)
 
     out: list[dict[str, Any]] = list(
         await asyncio.gather(*(_fetch_guarded(t) for t in targets))
@@ -918,12 +963,15 @@ async def collect_canvas_data(
         return entry
 
     # bindings_items is already capped above (before prefetch).
-    # Run binding fetches concurrently (bounded by the same semaphore as boards).
-    semaphore = asyncio.Semaphore(_WIDGET_CONCURRENCY)
+    # Run binding fetches concurrently bounded by two semaphores (same pattern
+    # as collect_board_data — see comment there for rationale).
+    per_call_sem = asyncio.Semaphore(_WIDGET_CONCURRENCY)
+    global_sem = _get_global_widget_sem()
 
     async def _fetch_guarded(el_id: str, binding: dict[str, Any]) -> dict[str, Any]:
-        async with semaphore:
-            return await _fetch_binding(el_id, binding)
+        async with per_call_sem:
+            async with global_sem:
+                return await _fetch_binding(el_id, binding)
 
     results = list(
         await asyncio.gather(

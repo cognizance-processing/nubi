@@ -2010,6 +2010,13 @@ def _govern_formula(dm: DerivedMeasure, base_names: set[str]) -> None:
             f"DerivedMeasure {dm.name!r} formula parse error: {e}",
         ) from e
 
+    # Binary operators that cannot legally appear as the first or last meaningful
+    # token in a formula (unary minus/plus as a leading token is unusual here and
+    # is also rejected — the formula language is arithmetic over named measures).
+    _BINARY_OPS = frozenset({"+", "-", "*", "/"})
+
+    _meaningful_tokens: list[tuple[int, str]] = []
+
     for tok in tokens:
         if tok.type == tokenize.ERRORTOKEN:
             raise MetricError(
@@ -2042,6 +2049,29 @@ def _govern_formula(dm: DerivedMeasure, base_names: set[str]) -> None:
                 "bad_formula",
                 f"DerivedMeasure {dm.name!r} formula contains unexpected token "
                 f"type {tokenize.tok_name[tok.type]!r}: {tok.string!r}.",
+            )
+        _meaningful_tokens.append((tok.type, tok.string))
+
+    # Syntactic completeness check: a formula that ends on a binary operator
+    # (e.g. "profit /") would pass the per-token type checks above but then fail
+    # inside sqlglot.parse_one with an unhandled exception -> 500.  Catch it here
+    # and return a governed 400 instead.
+    if _meaningful_tokens:
+        last_type, last_string = _meaningful_tokens[-1]
+        if last_type == tokenize.OP and last_string in _BINARY_OPS:
+            raise MetricError(
+                "bad_formula",
+                f"DerivedMeasure {dm.name!r} formula ends with an operator "
+                f"{last_string!r}; incomplete expression.",
+            )
+        # Leading binary operator check: a formula starting with a binary op
+        # (e.g. "/ profit") is also syntactically invalid.
+        first_type, first_string = _meaningful_tokens[0]
+        if first_type == tokenize.OP and first_string in _BINARY_OPS:
+            raise MetricError(
+                "bad_formula",
+                f"DerivedMeasure {dm.name!r} formula starts with an operator "
+                f"{first_string!r}; incomplete expression.",
             )
 
 

@@ -5271,3 +5271,80 @@ async def test_flow_provider_fill_empty_table_count_cap_fires() -> None:
         assert exc_info.value.status == 422
     finally:
         _bd_mod._PROVIDER_MAX_TABLES = original_cap
+
+
+# ---------------------------------------------------------------------------
+# [LOW] inline provider base_cte concat safety (fix-N)
+# ---------------------------------------------------------------------------
+
+
+def test_validate_base_cte_rejects_stacked_statement() -> None:
+    """_validate_base_cte raises AppError(400) for a base_cte with a stacked statement.
+
+    A base_cte like ``WITH foo AS (...); DROP TABLE users`` contains a semicolon
+    that introduces a second SQL statement after the CTE block.  The validation
+    guard must reject this with a structured 400 (not a 500 from the planner or
+    the connector) so the attacker gets no information about which statement
+    failed at the DB layer.
+
+    Two sub-cases are tested:
+    a) CTE followed by a stacked DDL statement via a semicolon.
+    b) Stacked SELECT statements via a semicolon (also prohibited).
+    """
+    from app.dashboards.board_data import _validate_base_cte
+
+    # (a) CTE + DDL stacked via semicolon.
+    with pytest.raises(AppError) as exc_info:
+        _validate_base_cte("WITH foo AS (SELECT 1 AS x); DROP TABLE users")
+    assert exc_info.value.code == "invalid_base_cte", (
+        f"Expected invalid_base_cte, got {exc_info.value.code!r}"
+    )
+    assert exc_info.value.status == 400, (
+        f"Expected HTTP 400, got {exc_info.value.status}"
+    )
+    # Error message must mention the semicolon prohibition.
+    assert "semicolon" in str(exc_info.value).lower(), (
+        f"Error message should mention semicolon: {exc_info.value}"
+    )
+
+    # (b) Two SELECT statements stacked via semicolon.
+    with pytest.raises(AppError) as exc_info2:
+        _validate_base_cte("SELECT 1; SELECT 2")
+    assert exc_info2.value.code == "invalid_base_cte"
+    assert exc_info2.value.status == 400
+
+
+def test_validate_base_cte_rejects_ddl_preamble() -> None:
+    """_validate_base_cte raises AppError(400) for a base_cte that is DDL.
+
+    A base_cte like ``CREATE TABLE foo (id INT)`` is not a SELECT-preamble CTE;
+    it is a DDL statement that could modify the database schema.  The validation
+    guard must reject it with a structured 400 before the planner or connector
+    ever sees the SQL.
+
+    Also tests that a valid CTE preamble is accepted without error.
+    """
+    from app.dashboards.board_data import _validate_base_cte
+
+    # DDL-only base_cte must be rejected.
+    with pytest.raises(AppError) as exc_info:
+        _validate_base_cte("CREATE TABLE foo (id INT)")
+    assert exc_info.value.code == "invalid_base_cte", (
+        f"Expected invalid_base_cte, got {exc_info.value.code!r}"
+    )
+    assert exc_info.value.status == 400, (
+        f"Expected HTTP 400, got {exc_info.value.status}"
+    )
+
+    # Non-parseable / junk SQL must also be rejected.
+    with pytest.raises(AppError) as exc_info2:
+        _validate_base_cte("THIS IS NOT @VALID SQL ###")
+    assert exc_info2.value.code == "invalid_base_cte"
+    assert exc_info2.value.status == 400
+
+    # Valid CTE preamble must be accepted (no exception).
+    _validate_base_cte("WITH revenue AS (SELECT id, amount FROM orders WHERE org_id = 1)")
+
+    # Empty string is also accepted (caller is responsible for skipping falsy inputs,
+    # but the function itself is safe to call with an empty string).
+    _validate_base_cte("")

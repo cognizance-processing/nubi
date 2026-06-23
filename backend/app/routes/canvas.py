@@ -27,13 +27,14 @@ resolved from the token; cross-org access is impossible by design.
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 from datetime import datetime, timezone
 from typing import Any
 
 from fastapi import Depends
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 from app.auth.deps import current_user, verified_identity
 from app.auth.roles import require_writer_default
@@ -49,6 +50,13 @@ logger = logging.getLogger("nubi.routes.canvas")
 # ---------------------------------------------------------------------------
 
 _MAX_RECIPIENTS: int = int(os.environ.get("NUBI_MAX_REPORT_RECIPIENTS", "500"))
+
+# Bounds for CanvasScheduleRequest.locked_params and .params to prevent
+# megabyte-per-schedule-row writes (each recipient can carry a large param
+# dict → unbounded DB row size / worker memory amplification).
+_MAX_LOCKED_PARAMS_INNER_KEYS: int = 50
+_MAX_LOCKED_PARAMS_BYTES: int = 65536  # 64 KiB total serialized size
+_MAX_PARAMS_BYTES: int = 65536  # 64 KiB for the base params dict
 
 
 # ---------------------------------------------------------------------------
@@ -145,6 +153,65 @@ class CanvasScheduleRequest(BaseModel):
 
     flow_name: str | None = None
     """Optional human-readable name for the created flow."""
+
+    @model_validator(mode="after")
+    def _check_locked_params_size(self) -> "CanvasScheduleRequest":
+        """Cap locked_params and params sizes to prevent unbounded DB row writes.
+
+        Enforces:
+        - outer keys (recipients) in locked_params <= _MAX_RECIPIENTS
+        - inner keys per recipient  <= _MAX_LOCKED_PARAMS_INNER_KEYS (50)
+        - total json-serialized bytes of locked_params <= _MAX_LOCKED_PARAMS_BYTES (64 KiB)
+        - total json-serialized bytes of params        <= _MAX_PARAMS_BYTES (64 KiB)
+        """
+        from app.errors import AppError  # noqa: PLC0415
+
+        # Outer key count (mirrors the recipients list cap already enforced by
+        # Field(max_length=...) but locked_params is a separate dict).
+        if len(self.locked_params) > _MAX_RECIPIENTS:
+            raise AppError(
+                "locked_params_too_large",
+                f"locked_params must not exceed {_MAX_RECIPIENTS} recipient keys "
+                f"(got {len(self.locked_params)}).",
+                400,
+            )
+
+        # Inner key count per recipient.
+        for email, inner in self.locked_params.items():
+            if len(inner) > _MAX_LOCKED_PARAMS_INNER_KEYS:
+                raise AppError(
+                    "locked_params_too_large",
+                    f"locked_params[{email!r}] must not exceed "
+                    f"{_MAX_LOCKED_PARAMS_INNER_KEYS} keys "
+                    f"(got {len(inner)}).",
+                    400,
+                )
+
+        # Total serialized byte size of locked_params.
+        locked_bytes = len(
+            json.dumps(self.locked_params, separators=(",", ":"), sort_keys=True).encode()
+        )
+        if locked_bytes > _MAX_LOCKED_PARAMS_BYTES:
+            raise AppError(
+                "locked_params_too_large",
+                f"locked_params serialized size must not exceed "
+                f"{_MAX_LOCKED_PARAMS_BYTES} bytes (got {locked_bytes}).",
+                400,
+            )
+
+        # Total serialized byte size of base params dict.
+        params_bytes = len(
+            json.dumps(self.params, separators=(",", ":"), sort_keys=True).encode()
+        )
+        if params_bytes > _MAX_PARAMS_BYTES:
+            raise AppError(
+                "locked_params_too_large",
+                f"params serialized size must not exceed "
+                f"{_MAX_PARAMS_BYTES} bytes (got {params_bytes}).",
+                400,
+            )
+
+        return self
 
 
 class CanvasScheduleResponse(BaseModel):

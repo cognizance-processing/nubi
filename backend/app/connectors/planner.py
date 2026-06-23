@@ -547,6 +547,62 @@ def _extract_layered_cte(
     return inner_sql, outer_sql
 
 
+def _detect_union_wrapper_topn_other(sql: str, dialect: str) -> bool:
+    """Detect the ``SELECT * FROM (WITH __base AS (...), __topn_members AS (...) ... UNION ALL ...) _union_wrapper`` form.
+
+    This is the structure emitted by the metric compiler for ``top_n.other`` +
+    ``time_grain`` queries.  The planner wraps the raw ``exp.Union`` in a
+    ``SELECT * FROM (...)`` subquery (in ``plan()``'s step 2) so RLS predicates
+    can be added.  The result is a ``Select`` whose single FROM is a ``Subquery``
+    wrapping a ``Union`` that carries a 2-CTE WITH clause (``__base`` +
+    ``__topn_members``).
+
+    ``_extract_layered_cte`` correctly returns ``None`` for this form (the WITH
+    lives on the inner Union, not the outer Select; and it has 2 CTEs, not 1).
+    Without this detector the query silently falls through to
+    ``"not a routable aggregation"`` — mis-attributing the skip reason and hiding
+    it from observability dashboards.
+
+    Returns ``True`` when the SQL matches this specific union-wrapper form so
+    the caller can emit an explicit, actionable skip reason.
+    """
+    try:
+        tree = parse_sql_cached(sql, dialect=dialect)
+    except Exception:
+        return False
+    if not isinstance(tree, exp.Select):
+        return False
+
+    # Must be a bare SELECT * (no GROUP BY, no WHERE on the outer).
+    if tree.args.get("group") is not None or tree.args.get("where") is not None:
+        return False
+
+    # The FROM must be a single Subquery.
+    from_node = tree.args.get("from_") or tree.args.get("from")
+    if from_node is None:
+        return False
+    subq = from_node.this
+    if not isinstance(subq, exp.Subquery):
+        return False
+
+    # The subquery body must be a Union.
+    inner = subq.this
+    if not isinstance(inner, exp.Union):
+        return False
+
+    # The Union must carry a WITH clause (attached by the compiler).
+    with_node = inner.args.get("with_") or inner.args.get("with")
+    if with_node is None:
+        return False
+
+    # Require exactly 2 CTEs: __base and __topn_members (in any order).
+    ctes = with_node.expressions
+    if len(ctes) != 2:
+        return False
+    cte_names = {c.alias_or_name.lower() for c in ctes}
+    return "__base" in cte_names and "__topn_members" in cte_names
+
+
 def _outer_filter_columns(outer_sql: str, dialect: str) -> set[str]:
     """Columns referenced in the OUTER SELECT's WHERE/HAVING predicate, lower-cased.
 
@@ -882,6 +938,21 @@ def route_to_rollup_shape(
             )
 
         return RollupRouteResult(plan, False, reason="layered: no sound rollup match")
+
+    # ── Union-wrapper (top_n.other + time_grain) — explicit skip reason ───────
+    # The metric compiler emits a UNION ALL under a WITH __base + __topn_members
+    # pair for top_n.other + time_grain queries.  plan() wraps the raw Union in a
+    # SELECT * FROM (...) so RLS predicates can land on the outer SELECT.
+    # _extract_layered_cte returns None for this form (WITH is on the inner Union,
+    # not the outer Select; 2 CTEs instead of 1), and extract_shape returns None
+    # too (no GROUP BY on the wrapper).  Without this guard the skip was silently
+    # mis-attributed to "not a routable aggregation", hiding the perf miss from
+    # observability.  Emit an explicit, actionable reason instead.
+    if _detect_union_wrapper_topn_other(plan.sql, dialect=plan.dialect):
+        return RollupRouteResult(
+            plan, False,
+            reason="union-wrapper: top_n.other routing not yet supported",
+        )
 
     # ── Flat path ────────────────────────────────────────────────────────────
     shape = extract_shape(plan.sql, dialect=plan.dialect)

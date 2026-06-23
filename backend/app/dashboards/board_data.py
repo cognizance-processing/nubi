@@ -563,6 +563,98 @@ def _validate_result_name(name: str) -> None:
         )
 
 
+def _validate_base_cte(base_cte: str) -> None:
+    """Validate that *base_cte* is a safe, single SELECT-preamble CTE block.
+
+    ``base_cte`` is user-supplied SQL that is f-string concatenated with a
+    validated result name to form the full inline query.  Even though the
+    combined SQL always flows through ``planner_plan`` (sqlglot parses and
+    rewrites it before any connector sees it), an explicit up-front validation
+    guard provides defence-in-depth by:
+
+    * Failing FAST (400, before any connector or planner work) on clearly
+      malformed or dangerous inputs.
+    * Blocking stacked statements (e.g. ``WITH foo AS (...); DROP TABLE users``)
+      that could confuse a future planner implementation or bypass the planner
+      via a code-path regression.
+    * Making the security invariant explicit and testable independently of the
+      planner pipeline.
+
+    Rules
+    -----
+    1. *base_cte* must contain no semicolons — a semicolon inside a CTE block
+       would introduce a second SQL statement that bypasses the planner's
+       single-statement parsing assumption.  (Semicolons inside string literals
+       are technically allowed by the SQL spec, but a valid CTE preamble has no
+       need for them and we reject them defensively.)
+    2. When *base_cte* is appended with a dummy ``SELECT 1`` and parsed via
+       sqlglot (with error_level=RAISE), the parse must succeed and produce
+       **exactly one** statement.  A stacked statement (e.g.
+       ``WITH foo AS (...); DROP TABLE users``) would produce two statements or
+       a parse error.
+    3. That one statement must be a ``SELECT`` expression — not a DDL
+       ``CREATE``, ``DROP``, ``ALTER``, ``INSERT``, ``UPDATE``, ``DELETE``,
+       or any other non-SELECT command.  A plain DDL preamble like
+       ``CREATE TABLE foo AS SELECT 1`` would otherwise form a ``Command``
+       or ``Create`` AST node, not a ``Select``.
+
+    Empty / None inputs are accepted silently (no preamble → nothing to validate;
+    the caller is responsible for skipping this call when ``base_cte`` is falsy).
+
+    Raises
+    ------
+    AppError("invalid_base_cte", 400)
+        When *base_cte* fails any of the three rules above.
+    """
+    import sqlglot  # noqa: PLC0415
+    import sqlglot.errors as _sqlglot_errors  # noqa: PLC0415
+
+    # Rule 1: no semicolons.
+    try:
+        tokens = list(sqlglot.tokens.Tokenizer().tokenize(base_cte))
+    except Exception:  # noqa: BLE001
+        raise AppError(
+            "invalid_base_cte",
+            "base_cte could not be tokenized; it must be valid SQL.",
+            400,
+        )
+    if any(t.token_type == sqlglot.tokens.TokenType.SEMICOLON for t in tokens):
+        raise AppError(
+            "invalid_base_cte",
+            "base_cte must not contain a semicolon (stacked statements are not allowed).",
+            400,
+        )
+
+    # Rule 2 + 3: append a dummy SELECT and verify a single Select statement results.
+    combined = base_cte.rstrip() + " SELECT 1 AS _nubi_validate"
+    try:
+        stmts = sqlglot.parse(combined, error_level=_sqlglot_errors.ErrorLevel.RAISE)
+    except _sqlglot_errors.ParseError as exc:
+        raise AppError(
+            "invalid_base_cte",
+            f"base_cte is not a valid SELECT preamble (parse error): {exc}",
+            400,
+        )
+
+    if len(stmts) != 1:
+        raise AppError(
+            "invalid_base_cte",
+            f"base_cte produced {len(stmts)} SQL statements; exactly 1 is required "
+            "(stacked statements / trailing DDL are not allowed).",
+            400,
+        )
+
+    stmt = stmts[0]
+    if not isinstance(stmt, sqlglot.exp.Select):
+        raise AppError(
+            "invalid_base_cte",
+            f"base_cte produced a {type(stmt).__name__} statement; "
+            "only SELECT-preamble CTEs (WITH ... SELECT) are allowed — "
+            "DDL, DML, and other non-SELECT statements are rejected.",
+            400,
+        )
+
+
 # ---------------------------------------------------------------------------
 # Cache key helpers
 # ---------------------------------------------------------------------------
@@ -1107,6 +1199,17 @@ async def _resolve_inline_provider(
 
     policies: dict[str, Any] = dict((claims or {}).get("policies") or {})
     tables: dict[str, pa.Table] = {}
+
+    # FIX [LOW base_cte concat safety]: validate base_cte BEFORE any connector
+    # work or SQL construction.  Even though the combined SQL always flows through
+    # planner_plan (sqlglot), an explicit upfront guard:
+    # (a) fails fast with a clear 400 on obviously dangerous inputs (stacked
+    #     statements, DDL, non-parseable SQL) before any connector is resolved;
+    # (b) provides defence-in-depth against a future regression where a new code
+    #     path skips the planner step.
+    # The validation is a no-op for falsy (None / empty) base_cte values.
+    if provider.base_cte:
+        _validate_base_cte(provider.base_cte)
 
     # FIX [LOW N+1 — regression from fix-19]: resolve the org connector ONCE per
     # provider call and reuse it for every result iteration.  The previous code

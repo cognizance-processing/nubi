@@ -584,6 +584,47 @@ def test_derived_formula_empty_rejected() -> None:
     assert ei.value.code == "empty_formula"
 
 
+def test_derived_formula_trailing_div_raises_400() -> None:
+    """'profit /' ends with a trailing operator -> MetricError/400, not 500."""
+    m = _orders_metric(
+        derived_measures=(DerivedMeasure(name="bad", formula="delivered /"),)
+    )
+    with pytest.raises(MetricError) as ei:
+        compile_metric(m, MetricQuery(metric_id="orders"))
+    assert ei.value.code == "bad_formula"
+
+
+def test_derived_formula_trailing_mul_raises_400() -> None:
+    """'profit *' ends with a trailing operator -> MetricError/400, not 500."""
+    m = _orders_metric(
+        derived_measures=(DerivedMeasure(name="bad", formula="delivered *"),)
+    )
+    with pytest.raises(MetricError) as ei:
+        compile_metric(m, MetricQuery(metric_id="orders"))
+    assert ei.value.code == "bad_formula"
+
+
+def test_derived_formula_leading_op_raises_400() -> None:
+    """A formula starting with a binary operator -> MetricError/400, not 500."""
+    m = _orders_metric(
+        derived_measures=(DerivedMeasure(name="bad", formula="/ delivered"),)
+    )
+    with pytest.raises(MetricError) as ei:
+        compile_metric(m, MetricQuery(metric_id="orders"))
+    assert ei.value.code == "bad_formula"
+
+
+def test_derived_formula_valid_still_compiles() -> None:
+    """Valid formula 'delivered / ordered' still compiles without error."""
+    m = _orders_metric(
+        derived_measures=(
+            DerivedMeasure(name="fill_rate", formula="delivered / ordered"),
+        )
+    )
+    sql, _ = compile_metric(m, MetricQuery(metric_id="orders"))
+    assert "fill_rate" in sql
+
+
 def test_time_comparison_unknown_measure_rejected() -> None:
     m = _simple_metric()
     with pytest.raises(MetricError) as ei:

@@ -2867,3 +2867,172 @@ class TestOuterFilterColumnsOrderBy:
             f"Got routed=True. Rewrite: {result.plan.sql}"
         )
         assert result.plan is p  # plan untouched
+
+
+# ---------------------------------------------------------------------------
+# [LOW perf/observability] Union-wrapper top_n.other + time_grain explicit skip
+# ---------------------------------------------------------------------------
+
+
+class TestUnionWrapperTopNOtherSkipReason:
+    """route_to_rollup_shape must emit an explicit, actionable skip reason for
+    the ``top_n.other + time_grain`` union-wrapper query form instead of the
+    generic ``"not a routable aggregation"`` that mis-attributes the miss.
+
+    The metric compiler emits:
+        SELECT * FROM (
+          WITH __base AS (...), __topn_members AS (...)
+          (top-N arm) UNION ALL (other-bucket arm)
+        ) _union_wrapper
+
+    plan() wraps the raw Union in SELECT * FROM (...) so RLS predicates can land
+    on the outer SELECT.  _extract_layered_cte returns None (WITH is on the inner
+    Union; 2 CTEs, not 1), and extract_shape returns None (no GROUP BY on the
+    wrapper).  Without the explicit guard the skip reason is silently recorded as
+    ``"not a routable aggregation"``, hiding the actual perf miss from dashboards.
+
+    FIX: detect the union-wrapper/2-CTE form and emit
+    ``"union-wrapper: top_n.other routing not yet supported"`` so operators can
+    see it in observability instead of a misleading generic reason.
+
+    CORRECTNESS INVARIANT: routed is always False for this form — the raw query
+    (with the union-wrapper intact) is always returned unchanged.
+    """
+
+    @staticmethod
+    def _make_union_wrapper_sql(dialect: str = "duckdb") -> str:
+        """Build a representative top_n.other + time_grain union-wrapper SQL.
+
+        This mirrors what the metric compiler emits:
+          - __base aggregates the fact table
+          - __topn_members computes the membership set (reads __base)
+          - top-N arm: WHERE dim IN (SELECT dim FROM __topn_members ...)
+          - other arm: WHERE dim NOT IN (SELECT dim FROM __topn_members ...)
+          - UNION ALL of both arms under the shared WITH clause
+        After plan() wraps the Union in SELECT * FROM (...) to allow RLS injection.
+        """
+        return (
+            "SELECT * FROM ("
+            "WITH __base AS ("
+            "SELECT region, SUM(amount) AS amount FROM orders GROUP BY region"
+            "), "
+            "__topn_members AS ("
+            "SELECT region FROM __base GROUP BY region ORDER BY SUM(amount) DESC LIMIT 3"
+            ") "
+            "(SELECT region, amount FROM __base "
+            " WHERE region IN (SELECT region FROM __topn_members)) "
+            "UNION ALL "
+            "(SELECT '(other)', SUM(amount) FROM __base "
+            " WHERE region NOT IN (SELECT region FROM __topn_members))"
+            ") _union_wrapper"
+        )
+
+    def test_explicit_skip_reason_emitted(self, source_db: str) -> None:
+        """route_to_rollup_shape emits the explicit union-wrapper skip reason.
+
+        The SQL is a union-wrapper with __base + __topn_members CTEs (the exact
+        form emitted by the metric compiler for top_n.other + time_grain).
+
+        After the fix the reason must be the actionable string
+        ``"union-wrapper: top_n.other routing not yet supported"`` — not the
+        generic ``"not a routable aggregation"`` that previously mis-attributed
+        the skip.
+        """
+        reg = RollupRegistry()
+        _build_orders_rollup(source_db, reg)
+
+        union_sql = self._make_union_wrapper_sql()
+        p = plan(union_sql, dialect="duckdb")
+        result = route_to_rollup_shape(p, reg, org_id=_TEST_ORG)
+
+        assert result.routed is False, (
+            "union-wrapper top_n.other form must never be routed (not yet supported); "
+            f"got routed=True. Rewritten SQL: {result.plan.sql}"
+        )
+        assert result.plan is p, "plan must be returned unchanged (same object)"
+        assert result.plan.cache_key == p.cache_key, (
+            "cache_key must be unchanged for a non-routed plan"
+        )
+        assert "union-wrapper" in result.reason, (
+            f"Expected explicit 'union-wrapper' skip reason, got: {result.reason!r}"
+        )
+        assert "top_n.other" in result.reason, (
+            f"Expected 'top_n.other' in skip reason, got: {result.reason!r}"
+        )
+        # Must NOT be mis-attributed to the generic aggregation refusal.
+        assert result.reason != "not a routable aggregation", (
+            "Skip reason must not be the generic 'not a routable aggregation' — "
+            "that mis-attributes the perf miss in observability dashboards."
+        )
+
+    def test_non_routed_plan_unchanged(self, source_db: str) -> None:
+        """The plan returned for the union-wrapper form is the exact input object.
+
+        Ensures no partial rewrite or cache-key change occurs on the non-routed path.
+        """
+        reg = RollupRegistry()
+        _build_orders_rollup(source_db, reg)
+
+        union_sql = self._make_union_wrapper_sql()
+        p = plan(union_sql, dialect="duckdb")
+        result = route_to_rollup_shape(p, reg, org_id=_TEST_ORG)
+
+        assert result.plan is p
+        assert result.routed is False
+        assert result.rollup_id is None
+
+    def test_no_rollup_registered_still_emits_union_wrapper_reason(self) -> None:
+        """Even with an empty registry the union-wrapper form gets the explicit reason.
+
+        The union-wrapper check fires AFTER the early ``no rollups registered``
+        short-circuit only when a rollup EXISTS for this table, but it must also
+        fire even when no rollup is registered (i.e. the check is layout-agnostic).
+
+        Actually, with an empty registry the early ``no rollups registered`` path
+        fires FIRST and returns before the union-wrapper check is reached — which
+        is fine for perf.  This test documents that baseline so any future
+        refactoring of the check order has an explicit assertion to update.
+        """
+        reg = RollupRegistry()  # empty
+
+        union_sql = self._make_union_wrapper_sql()
+        p = plan(union_sql, dialect="duckdb")
+        result = route_to_rollup_shape(p, reg, org_id=_TEST_ORG)
+
+        assert result.routed is False
+        assert result.plan is p
+        # With an empty registry the early-exit fires first.
+        assert result.reason in (
+            "no rollups registered",
+            "union-wrapper: top_n.other routing not yet supported",
+        ), (
+            f"Unexpected reason with empty registry: {result.reason!r}"
+        )
+
+    def test_single_cte_base_not_mis_detected(self, source_db: str) -> None:
+        """A normal single-CTE layered query is NOT mis-detected as a union-wrapper.
+
+        Ensures the _detect_union_wrapper_topn_other helper is conservative and
+        only fires on the exact 2-CTE / UNION ALL / union-wrapper form, not on
+        ordinary WITH __base AS (...) SELECT ... layered queries.
+        """
+        reg = RollupRegistry()
+        _build_orders_rollup(source_db, reg)
+
+        # A plain layered query (single CTE, no UNION ALL) must still route normally.
+        layered_sql = (
+            "WITH __base AS ("
+            "SELECT region, SUM(amount) AS amount FROM orders GROUP BY region"
+            ") "
+            "SELECT region, amount FROM __base"
+        )
+        p = plan(layered_sql, dialect="postgres")
+        result = route_to_rollup_shape(p, reg, org_id=_TEST_ORG)
+
+        assert result.routed is True, (
+            f"Normal single-CTE layered query must still route; "
+            f"got routed=False. Reason: {result.reason}"
+        )
+        assert "union-wrapper" not in result.reason, (
+            f"Single-CTE query mis-detected as union-wrapper: {result.reason!r}"
+        )

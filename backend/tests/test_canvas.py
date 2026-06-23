@@ -3859,3 +3859,231 @@ class TestCanvasPrefetchBeforeCap:
             assert f"el_{i}" not in result, (
                 f"Binding el_{i} (beyond cap={cap}) must not be prefetched or executed"
             )
+
+
+# ---------------------------------------------------------------------------
+# 8. CanvasScheduleRequest.locked_params size caps (MED resource finding)
+# ---------------------------------------------------------------------------
+
+
+class TestCanvasScheduleLockedParamsCaps:
+    """CanvasScheduleRequest.locked_params and .params must be bounded.
+
+    The model_validator enforces:
+    - outer recipient keys <= _MAX_RECIPIENTS  -> 400 locked_params_too_large
+    - inner keys per recipient <= 50            -> 400 locked_params_too_large
+    - total serialized bytes <= 65536           -> 400 locked_params_too_large
+    - params bytes <= 65536                     -> 400 locked_params_too_large
+
+    Tests hit the HTTP endpoint (POST /canvases/{id}/schedule) so the 400 flows
+    through the FastAPI exception handler exactly as it does in production.
+    """
+
+    # ------------------------------------------------------------------
+    # Helpers
+    # ------------------------------------------------------------------
+
+    async def _create_canvas(self, client, user_id: str) -> str:
+        """Create a minimal canvas and return its id."""
+        resp = await client.post(
+            "/api/v1/canvases",
+            json={"name": "Cap Test Canvas"},
+            headers=_auth_headers(user_id),
+        )
+        assert resp.status_code == 201, resp.text
+        return resp.json()["id"]
+
+    def _schedule_payload(self, **overrides) -> dict:
+        """Return a minimal valid schedule payload with optional overrides."""
+        base = {
+            "recipients": ["alice@example.com"],
+            "format": "html",
+        }
+        base.update(overrides)
+        return base
+
+    # ------------------------------------------------------------------
+    # Oversized locked_params — too many recipient keys
+    # ------------------------------------------------------------------
+
+    @pytest.mark.asyncio
+    async def test_locked_params_too_many_recipients_returns_400(
+        self, canvas_client_with_viewer
+    ):
+        """locked_params with more than _MAX_RECIPIENTS keys -> 400."""
+        from app.routes.canvas import _MAX_RECIPIENTS
+
+        client, owner_id, _owner_org, *_ = canvas_client_with_viewer
+        canvas_id = await self._create_canvas(client, owner_id)
+
+        # Build locked_params with _MAX_RECIPIENTS + 1 keys.
+        oversized_locked_params = {
+            f"user{i}@example.com": {"k": "v"}
+            for i in range(_MAX_RECIPIENTS + 1)
+        }
+        # Also supply a matching recipients list (capped at _MAX_RECIPIENTS by
+        # Field but locked_params check fires first via the validator).
+        payload = {
+            "recipients": ["alice@example.com"],
+            "format": "html",
+            "locked_params": oversized_locked_params,
+        }
+        resp = await client.post(
+            f"/api/v1/canvases/{canvas_id}/schedule",
+            json=payload,
+            headers=_auth_headers(owner_id),
+        )
+        assert resp.status_code == 400, resp.text
+        body = resp.json()
+        code = body.get("code") or (body.get("error") or {}).get("code")
+        assert code == "locked_params_too_large", body
+
+    # ------------------------------------------------------------------
+    # Oversized locked_params — too many inner keys per recipient
+    # ------------------------------------------------------------------
+
+    @pytest.mark.asyncio
+    async def test_locked_params_too_many_inner_keys_returns_400(
+        self, canvas_client_with_viewer
+    ):
+        """locked_params with > 50 inner keys for one recipient -> 400."""
+        from app.routes.canvas import _MAX_LOCKED_PARAMS_INNER_KEYS
+
+        client, owner_id, _owner_org, *_ = canvas_client_with_viewer
+        canvas_id = await self._create_canvas(client, owner_id)
+
+        # Build inner dict with _MAX_LOCKED_PARAMS_INNER_KEYS + 1 entries.
+        fat_inner = {f"param_{i}": "v" for i in range(_MAX_LOCKED_PARAMS_INNER_KEYS + 1)}
+        payload = self._schedule_payload(
+            locked_params={"alice@example.com": fat_inner},
+        )
+        resp = await client.post(
+            f"/api/v1/canvases/{canvas_id}/schedule",
+            json=payload,
+            headers=_auth_headers(owner_id),
+        )
+        assert resp.status_code == 400, resp.text
+        body = resp.json()
+        code = body.get("code") or (body.get("error") or {}).get("code")
+        assert code == "locked_params_too_large", body
+
+    # ------------------------------------------------------------------
+    # Oversized locked_params — total serialized bytes exceed 64 KiB
+    # ------------------------------------------------------------------
+
+    @pytest.mark.asyncio
+    async def test_locked_params_too_many_bytes_returns_400(
+        self, canvas_client_with_viewer
+    ):
+        """locked_params whose JSON serialization exceeds 65536 bytes -> 400."""
+        import json as _json
+
+        from app.routes.canvas import _MAX_LOCKED_PARAMS_BYTES
+
+        client, owner_id, _owner_org, *_ = canvas_client_with_viewer
+        canvas_id = await self._create_canvas(client, owner_id)
+
+        # Build a locked_params that is just over the byte cap.
+        # Use a long string value to stay within 50 inner keys per recipient
+        # but exceed the total byte budget.
+        long_val = "x" * 1000
+        oversized: dict = {}
+        for i in range(100):
+            email = f"user{i:04d}@example.com"
+            oversized[email] = {"data": long_val}
+            serialized = _json.dumps(oversized, separators=(",", ":"), sort_keys=True)
+            if len(serialized.encode()) > _MAX_LOCKED_PARAMS_BYTES:
+                break
+
+        payload = {
+            "recipients": ["alice@example.com"],
+            "format": "html",
+            "locked_params": oversized,
+        }
+        resp = await client.post(
+            f"/api/v1/canvases/{canvas_id}/schedule",
+            json=payload,
+            headers=_auth_headers(owner_id),
+        )
+        assert resp.status_code == 400, resp.text
+        body = resp.json()
+        code = body.get("code") or (body.get("error") or {}).get("code")
+        assert code == "locked_params_too_large", body
+
+    # ------------------------------------------------------------------
+    # Oversized params — total serialized bytes exceed 64 KiB
+    # ------------------------------------------------------------------
+
+    @pytest.mark.asyncio
+    async def test_params_too_many_bytes_returns_400(
+        self, canvas_client_with_viewer
+    ):
+        """params whose JSON serialization exceeds 65536 bytes -> 400."""
+        import json as _json
+
+        from app.routes.canvas import _MAX_PARAMS_BYTES
+
+        client, owner_id, _owner_org, *_ = canvas_client_with_viewer
+        canvas_id = await self._create_canvas(client, owner_id)
+
+        # Build a params dict that just exceeds the byte cap.
+        fat_params: dict = {}
+        long_val = "y" * 1000
+        for i in range(100):
+            fat_params[f"param_{i}"] = long_val
+            if len(_json.dumps(fat_params, separators=(",", ":")).encode()) > _MAX_PARAMS_BYTES:
+                break
+
+        payload = self._schedule_payload(params=fat_params)
+        resp = await client.post(
+            f"/api/v1/canvases/{canvas_id}/schedule",
+            json=payload,
+            headers=_auth_headers(owner_id),
+        )
+        assert resp.status_code == 400, resp.text
+        body = resp.json()
+        code = body.get("code") or (body.get("error") or {}).get("code")
+        assert code == "locked_params_too_large", body
+
+    # ------------------------------------------------------------------
+    # Normal (within limits) — passes through
+    # ------------------------------------------------------------------
+
+    @pytest.mark.asyncio
+    async def test_normal_locked_params_within_limits_passes(
+        self, canvas_client_with_viewer
+    ):
+        """A small locked_params dict within all limits succeeds (201)."""
+        client, owner_id, _owner_org, *_ = canvas_client_with_viewer
+        canvas_id = await self._create_canvas(client, owner_id)
+
+        payload = self._schedule_payload(
+            locked_params={
+                "alice@example.com": {"region": "EU", "tenant_id": "acme"},
+                "bob@example.com": {"region": "US", "tenant_id": "globex"},
+            },
+        )
+        resp = await client.post(
+            f"/api/v1/canvases/{canvas_id}/schedule",
+            json=payload,
+            headers=_auth_headers(owner_id),
+        )
+        assert resp.status_code == 201, resp.text
+
+    @pytest.mark.asyncio
+    async def test_normal_params_within_limits_passes(
+        self, canvas_client_with_viewer
+    ):
+        """A small params dict within all limits succeeds (201)."""
+        client, owner_id, _owner_org, *_ = canvas_client_with_viewer
+        canvas_id = await self._create_canvas(client, owner_id)
+
+        payload = self._schedule_payload(
+            params={"region": "EU", "fiscal_year": "2025"},
+        )
+        resp = await client.post(
+            f"/api/v1/canvases/{canvas_id}/schedule",
+            json=payload,
+            headers=_auth_headers(owner_id),
+        )
+        assert resp.status_code == 201, resp.text
