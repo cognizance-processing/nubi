@@ -394,3 +394,81 @@ async def test_explain_breach_deterministic_under_nullprovider(app, fake_db):
     assert text1 == text2  # deterministic
     assert "revenue" in text1
     assert "16.5" in text1 or "16" in text1
+
+
+# ---------------------------------------------------------------------------
+# (8) Layered metric + active RLS policy → no DuckDB binder error
+# ---------------------------------------------------------------------------
+# Regression for: _run_metric called compile_metric without policy_cols, so a
+# layered (derived_measures) metric with rls_keys=[] and active RLS claims
+# would compile __base WITHOUT the policy column, then the planner injected
+# WHERE <policy_col>=<val> on the outer SELECT and DuckDB raised a Binder Error
+# ("column <policy_col> not found").
+#
+# Fix: policy_cols = tuple((claims or {}).get("policies") or {})
+#      compile_metric(metric, mq, policy_cols=policy_cols)
+
+
+@pytest.mark.asyncio
+async def test_evaluate_watch_layered_metric_with_rls_policy_no_binder_error(app, fake_db):
+    """A watch on a layered metric with an active policy compiles+executes cleanly.
+
+    Before the fix, _run_metric called compile_metric(metric, mq) without
+    policy_cols.  A layered path (derived_measures present) with rls_keys=[]
+    did not hoist the policy column into __base, so the planner's injected
+    WHERE active=True hit a DuckDB Binder Error.  After the fix the policy
+    column is hoisted and the query executes without error.
+    """
+    from app.ai.watch import Watch, evaluate_watch
+    from app.metrics.models import DerivedMeasure, Dimension, Measure, MetricDefinition
+    from app.metrics.registry import get_metric_registry
+
+    # Register a layered metric (derived_measures → layered compile path)
+    # backed by the in-process demo table.  rls_keys=[] means the compiler
+    # will NOT auto-hoist 'active'; it MUST arrive via policy_cols from claims.
+    slug = f"test_watch_layered_{uuid.uuid4().hex[:8]}"
+    get_metric_registry().register(
+        MetricDefinition(
+            id=slug,
+            name="Watch Layered Ratio",
+            measure=Measure(name="total_value", agg="sum", expr="value", type="additive"),
+            base_table="demo",
+            dimensions=(
+                Dimension(name="name", type="text"),
+                Dimension(name="active", type="bool"),
+            ),
+            time_dimension=None,
+            derived_measures=(
+                DerivedMeasure(
+                    name="value_ratio",
+                    formula="total_value / total_value",
+                    format="number",
+                ),
+            ),
+            rls_keys=(),  # empty → policy_cols must come from claims
+            description="Test-only layered metric for watch policy_cols regression.",
+        )
+    )
+
+    metric = get_metric_registry().get(slug)
+    assert metric is not None
+
+    watch = Watch.from_config(
+        id="layered-rls-watch",
+        name="Layered RLS Watch",
+        metric_id=slug,
+        config={"dimensions": ["name"], "threshold": {"op": ">", "value": 0}},
+    )
+
+    # Claims carry an RLS policy on 'active' — the planner will inject
+    # WHERE active = True on the outer SELECT over __base.  Without the fix
+    # this would raise a DuckDB Binder Error.
+    claims = {"policies": {"active": True}}
+
+    result = await evaluate_watch(watch, metric, claims)
+
+    # The key assertion: no binder error — the query compiled and ran cleanly.
+    assert result.error is None, f"Expected no error but got: {result.error}"
+    # active=True rows: 10+20+40 = 70 (rows with active=True in the demo table)
+    # Threshold > 0 → breached.
+    assert result.breached is True

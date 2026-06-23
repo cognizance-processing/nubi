@@ -963,8 +963,14 @@ async def _add_task_runs_batched(
     flow_run_id: str,
     task_runs: list[dict[str, Any]],
     batch_size: int | None = None,
-) -> None:
+) -> list[dict[str, Any]]:
     """Insert *task_runs* into the store in bounded batches.
+
+    Returns the concatenation of every batch's stored rows (as returned by
+    ``store.add_task_runs``), in input order.  These rows carry the
+    store-assigned ``id`` and the normalised column set — they are
+    byte-equivalent to what ``list_task_runs`` would return for the same rows,
+    so callers can extend an existing snapshot with them without a full reload.
 
     A large map fan-out can produce thousands of child task_run dicts in one
     go.  Passing them all to ``store.add_task_runs`` in a single call creates a
@@ -992,12 +998,15 @@ async def _add_task_runs_batched(
 
     if batch_size <= 0 or len(task_runs) <= batch_size:
         # Either batching disabled, or the list fits in one call.
-        await store.add_task_runs(flow_run_id, task_runs)
-        return
+        stored = await store.add_task_runs(flow_run_id, task_runs)
+        return [dict(r) for r in (stored or [])]
 
+    stored_all: list[dict[str, Any]] = []
     for offset in range(0, len(task_runs), batch_size):
         chunk = task_runs[offset : offset + batch_size]
-        await store.add_task_runs(flow_run_id, chunk)
+        stored = await store.add_task_runs(flow_run_id, chunk)
+        stored_all.extend(dict(r) for r in (stored or []))
+    return stored_all
 
 
 async def _enforce_task_run_ceiling(
@@ -1657,11 +1666,18 @@ async def run_one_ready_task(
                 )
                 raise
 
-            await _add_task_runs_batched(store, flow_run_id, child_runs)
+            # Pin the PRE-children snapshot before inserting, so the later
+            # _patch_snapshot reuses this memoised (children-free) row set and we
+            # never double-count: base (no children) + stored_children = exact
+            # post-insert set.  If the lazy load were deferred until after the
+            # insert, list_task_runs would already include the children and
+            # appending stored_children would duplicate them.
+            await _load_all_task_runs()
+            stored_children = await _add_task_runs_batched(store, flow_run_id, child_runs)
 
             # Transition map task_run to waiting_children (NOT terminal).
             # Store items in result so _get_task_spec can look up item values for children.
-            await store.update_task_run(
+            waiting_tr = await store.update_task_run(
                 task_run_id,
                 {
                     "state": "waiting_children",
@@ -1671,9 +1687,21 @@ async def run_one_ready_task(
                     "logs": outcome_logs,
                 },
             )
-            # Map fan-out: new child task_runs were inserted — snapshot is stale.
-            # Let advance_readiness do its own fresh load (no _preloaded_task_runs).
-            await advance_readiness(store, flow_run_id, now)
+            # Map fan-out: new child task_runs were inserted, so the original
+            # snapshot is stale.  Rather than force advance_readiness into a full
+            # 50k-row reload on EVERY child completion (the N+1), rebuild the
+            # snapshot in-process: take the already-loaded all_task_runs (patched
+            # with this map node's waiting_children row) and EXTEND it with the
+            # freshly-inserted children returned by the store.  Those stored rows
+            # carry the assigned id + normalised columns (parent_task_run_id,
+            # state, depends_on, result), so the snapshot is complete and
+            # advance_readiness sees the new children without re-querying.
+            await advance_readiness(
+                store, flow_run_id, now,
+                _preloaded_task_runs=(
+                    await _patch_snapshot(waiting_tr or task_run) + stored_children
+                ),
+            )
             result_tr = await store.get_task_run(task_run_id)
             return result_tr
 
@@ -3011,13 +3039,20 @@ async def _execute_claimed_task_run_inner(
                 )
                 raise
 
-            await _add_task_runs_batched(store, flow_run_id, child_runs)
+            # Pin the PRE-children snapshot before inserting, so the later
+            # _patch_snapshot reuses this memoised (children-free) row set and we
+            # never double-count: base (no children) + stored_children = exact
+            # post-insert set.  If the lazy load were deferred until after the
+            # insert, list_task_runs would already include the children and
+            # appending stored_children would duplicate them.
+            await _load_all_task_runs()
+            stored_children = await _add_task_runs_batched(store, flow_run_id, child_runs)
 
             # Transition map task_run to waiting_children (NOT yet terminal).
             # Store the items list in the result so _get_task_spec can resolve
             # item values for child tasks (InMemoryFlowStore does not persist
             # the config column on child task_runs).
-            await store.update_task_run(
+            waiting_tr = await store.update_task_run(
                 task_run_id,
                 {
                     "state": "waiting_children",
@@ -3028,9 +3063,20 @@ async def _execute_claimed_task_run_inner(
                 },
             )
             _emit_task_event("task_started", flow_run_id, task_key, "waiting_children", None, attempt, now)
-            # Map fan-out: new child task_runs were inserted — snapshot is stale.
-            # Let advance_readiness do its own fresh load (no _preloaded_task_runs).
-            await advance_readiness(store, flow_run_id, now)
+            # Map fan-out: new child task_runs were inserted, so the original
+            # snapshot is stale.  Instead of forcing advance_readiness into a
+            # full 50k-row reload on EVERY child completion (the N+1), rebuild
+            # the snapshot in-process: the already-loaded all_task_runs (patched
+            # with this map node's waiting_children row) EXTENDED with the
+            # freshly-inserted children returned by the store.  Those stored rows
+            # carry the assigned id + normalised columns, so the snapshot is
+            # complete and advance_readiness skips the reload.
+            await advance_readiness(
+                store, flow_run_id, now,
+                _preloaded_task_runs=(
+                    await _patch_snapshot(waiting_tr or task_run) + stored_children
+                ),
+            )
             result_tr = await store.get_task_run(task_run_id)
             return result_tr or task_run
 

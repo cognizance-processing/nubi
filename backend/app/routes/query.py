@@ -1563,32 +1563,38 @@ async def query(
     # running loop and swallows any exception, so the request can never crash on
     # a metering failure). The event fields (kind, units, org, tier, …) are
     # IDENTICAL to before — only the timing relative to the response changes.
+    # INVARIANT: embed tokens and first-party viewer-role users are NEVER
+    # metered — neither the pre-flight quota gate (above) NOR the post-execution
+    # usage_events writes here. Without this guard, viewer/embed CACHE MISSES
+    # would still INSERT compute + query_scan rows that reconcile sums into
+    # billable overage. ``_skip_metering`` was already computed for the gate.
     _elapsed_ms = int((_time.perf_counter() - _t0) * 1000)
-    try:
-        from app.compute.metering import record_usage_safe as _record_usage_safe
-
-        _cu_multiplier = 1.0
+    if not _skip_metering:
         try:
-            _cu_multiplier = max(float(os.getenv("NUBI_CU_MULTIPLIER", "1")), 1.0)
-        except ValueError:
-            pass
-        _meter_tier = _conn_kind
-        if os.getenv("NUBI_QUERY_POOL", "").strip().lower() == "heavy":
-            _meter_tier = f"{_conn_kind}:warehouse"
+            from app.compute.metering import record_usage_safe as _record_usage_safe
 
-        # Fire-and-forget: not awaited, so the response is not delayed by the
-        # compute INSERT. Identical fields to the previous awaited call.
-        _record_usage_safe(
-            kind="compute",
-            user_id=str(identity.user_id or "embed"),
-            org_id=org_id,
-            units=(_elapsed_ms / 1000.0) * _cu_multiplier,
-            tier=_meter_tier,
-            elapsed_ms=_elapsed_ms,
-            output_bytes=len(full_bytes),
-        )
-    except Exception:  # noqa: BLE001 — telemetry must never break the caller
-        pass
+            _cu_multiplier = 1.0
+            try:
+                _cu_multiplier = max(float(os.getenv("NUBI_CU_MULTIPLIER", "1")), 1.0)
+            except ValueError:
+                pass
+            _meter_tier = _conn_kind
+            if os.getenv("NUBI_QUERY_POOL", "").strip().lower() == "heavy":
+                _meter_tier = f"{_conn_kind}:warehouse"
+
+            # Fire-and-forget: not awaited, so the response is not delayed by the
+            # compute INSERT. Identical fields to the previous awaited call.
+            _record_usage_safe(
+                kind="compute",
+                user_id=str(identity.user_id or "embed"),
+                org_id=org_id,
+                units=(_elapsed_ms / 1000.0) * _cu_multiplier,
+                tier=_meter_tier,
+                elapsed_ms=_elapsed_ms,
+                output_bytes=len(full_bytes),
+            )
+        except Exception:  # noqa: BLE001 — telemetry must never break the caller
+            pass
 
     # ── 5c. Meter bytes scanned (billing: query_scan — W4-A) ─────────────────
     # The Wave-4 billed metric is BYTES SCANNED (BigQuery-comparable), captured
@@ -1604,31 +1610,34 @@ async def query(
     # used until W4-D/W4-F wire the real lakehouse counters through the plan.
     # ``units`` is the scanned-byte count; reconcile (W4-B) sums query_scan
     # units into the TiB-scanned line. Best-effort: never breaks the query path.
-    try:
-        from app.compute.metering import record_usage_safe as _record_usage_scan_safe
+    # INVARIANT (see compute block above): viewer/embed callers are NEVER
+    # metered — skip the query_scan write too, not just the quota gate.
+    if not _skip_metering:
+        try:
+            from app.compute.metering import record_usage_safe as _record_usage_scan_safe
 
-        # SCALABILITY (LOW): use the already-serialised Arrow IPC length
-        # (``full_bytes``, computed above for the response/cache) as the
-        # scanned-bytes proxy instead of ``arrow_table.get_total_buffer_size()``,
-        # which would re-walk/materialise the whole Arrow table on the hot path
-        # purely to produce a metering number. ``len(full_bytes)`` was already
-        # the fallback here, so no new work is done. It remains an UNDER-counting
-        # proxy (wide scans that aggregate down to a small result are
-        # under-counted) pending W4-D/W4-F real lakehouse byte counters.
-        _scanned_bytes = len(full_bytes)
+            # SCALABILITY (LOW): use the already-serialised Arrow IPC length
+            # (``full_bytes``, computed above for the response/cache) as the
+            # scanned-bytes proxy instead of ``arrow_table.get_total_buffer_size()``,
+            # which would re-walk/materialise the whole Arrow table on the hot path
+            # purely to produce a metering number. ``len(full_bytes)`` was already
+            # the fallback here, so no new work is done. It remains an UNDER-counting
+            # proxy (wide scans that aggregate down to a small result are
+            # under-counted) pending W4-D/W4-F real lakehouse byte counters.
+            _scanned_bytes = len(full_bytes)
 
-        # Fire-and-forget: not awaited, so the response (and ``cache.put`` below)
-        # is not delayed by the query_scan INSERT. Identical fields to before.
-        _record_usage_scan_safe(
-            kind="query_scan",
-            user_id=str(identity.user_id or "embed"),
-            org_id=org_id,
-            units=float(_scanned_bytes),
-            tier=_conn_kind,
-            output_bytes=_scanned_bytes,
-        )
-    except Exception:  # noqa: BLE001 — telemetry must never break the caller
-        pass
+            # Fire-and-forget: not awaited, so the response (and ``cache.put`` below)
+            # is not delayed by the query_scan INSERT. Identical fields to before.
+            _record_usage_scan_safe(
+                kind="query_scan",
+                user_id=str(identity.user_id or "embed"),
+                org_id=org_id,
+                units=float(_scanned_bytes),
+                tier=_conn_kind,
+                output_bytes=_scanned_bytes,
+            )
+        except Exception:  # noqa: BLE001 — telemetry must never break the caller
+            pass
 
     # ── 6. Cache the result ───────────────────────────────────────────────────
     # Tag the entry so the explicit /cache/invalidate endpoint can flush a

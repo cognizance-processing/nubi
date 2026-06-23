@@ -63,6 +63,15 @@ _MAX_INPUTS_BYTES: int = int(
     os.environ.get("NUBI_MAX_INPUTS_BYTES", str(256 * 1024 * 1024))
 )
 
+# ---------------------------------------------------------------------------
+# Per-run output cap for list_run_outputs_for_runs.
+# Without a cap the batch query can return run_ids x N rows (e.g. 500 x 50 000
+# = 25 M rows) for an unbounded table.  The ROW_NUMBER() window in PgFlowStore
+# and the slice in InMemoryFlowStore both enforce this limit.
+# Override via NUBI_MAX_OUTPUTS_PER_RUN env var (default 200).
+# ---------------------------------------------------------------------------
+_MAX_OUTPUTS_PER_RUN: int = int(os.environ.get("NUBI_MAX_OUTPUTS_PER_RUN", 200))
+
 
 def _inputs_budget_error(total_bytes: int) -> RuntimeError:
     """Build the RuntimeError raised when the inputs byte budget is exceeded."""
@@ -405,7 +414,7 @@ class InMemoryFlowStore:
             ]
             if rows:
                 rows.sort(key=lambda r: r["created_at"])
-                result[rid] = rows
+                result[rid] = rows[:_MAX_OUTPUTS_PER_RUN]
         return result
 
     async def update_flow_run(self, run_id: str, fields: dict[str, Any]) -> FlowRun | None:
@@ -1326,18 +1335,31 @@ class PgFlowStore:
         if not run_ids:
             return {}
 
-        # asyncpg supports passing a list as an ANY array parameter.
+        # Use a windowed ROW_NUMBER() to cap outputs per run at _MAX_OUTPUTS_PER_RUN.
+        # Without this cap a batch of 500 run_ids against a table with 50 000
+        # outputs per run could return 25 M rows from a single query.
         rows = await db_fetch(
             """
-            SELECT * FROM flow_run_outputs
-            WHERE flow_run_id = ANY($1::uuid[])
+            SELECT * FROM (
+                SELECT *,
+                    ROW_NUMBER() OVER (
+                        PARTITION BY flow_run_id
+                        ORDER BY created_at ASC
+                    ) AS _rn
+                FROM flow_run_outputs
+                WHERE flow_run_id = ANY($1::uuid[])
+            ) _ranked
+            WHERE _rn <= $2
             ORDER BY flow_run_id, created_at ASC
             """,
             [str(rid) for rid in run_ids],
+            _MAX_OUTPUTS_PER_RUN,
         )
         result: dict[str, list[dict[str, Any]]] = {}
         for row in rows:
             rec = _row_to_run_output(row)
+            # Strip the helper column added by the window function.
+            rec.pop("_rn", None)
             rid = str(rec["flow_run_id"])
             result.setdefault(rid, []).append(rec)
         return result

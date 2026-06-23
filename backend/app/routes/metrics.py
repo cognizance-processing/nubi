@@ -875,34 +875,41 @@ async def query_metric(
             pass
 
     # ── 10. Meter (compute + query_scan) — best-effort, fire-and-forget ──────
+    # INVARIANT: embed tokens and first-party viewer-role users are NEVER
+    # metered — neither the pre-flight quota gate (above) NOR these
+    # post-execution usage_events writes. Without this guard, viewer/embed
+    # CACHE MISSES would still INSERT compute + query_scan rows that reconcile
+    # sums into billable overage. ``_skip_metering`` was already computed for
+    # the gate.
     _elapsed_ms = int((_time.perf_counter() - _t0) * 1000)
-    try:
-        from app.compute.metering import record_usage_safe as _record_usage_safe
-
-        _cu_multiplier = 1.0
+    if not _skip_metering:
         try:
-            _cu_multiplier = max(float(os.getenv("NUBI_CU_MULTIPLIER", "1")), 1.0)
-        except ValueError:
+            from app.compute.metering import record_usage_safe as _record_usage_safe
+
+            _cu_multiplier = 1.0
+            try:
+                _cu_multiplier = max(float(os.getenv("NUBI_CU_MULTIPLIER", "1")), 1.0)
+            except ValueError:
+                pass
+            _record_usage_safe(
+                kind="compute",
+                user_id=str(identity.user_id or "embed"),
+                org_id=org_id,
+                units=(_elapsed_ms / 1000.0) * _cu_multiplier,
+                tier=conn_kind,
+                elapsed_ms=_elapsed_ms,
+                output_bytes=len(full_bytes),
+            )
+            _record_usage_safe(
+                kind="query_scan",
+                user_id=str(identity.user_id or "embed"),
+                org_id=org_id,
+                units=float(len(full_bytes)),
+                tier=conn_kind,
+                output_bytes=len(full_bytes),
+            )
+        except Exception:  # noqa: BLE001 — telemetry must never break the caller.
             pass
-        _record_usage_safe(
-            kind="compute",
-            user_id=str(identity.user_id or "embed"),
-            org_id=org_id,
-            units=(_elapsed_ms / 1000.0) * _cu_multiplier,
-            tier=conn_kind,
-            elapsed_ms=_elapsed_ms,
-            output_bytes=len(full_bytes),
-        )
-        _record_usage_safe(
-            kind="query_scan",
-            user_id=str(identity.user_id or "embed"),
-            org_id=org_id,
-            units=float(len(full_bytes)),
-            tier=conn_kind,
-            output_bytes=len(full_bytes),
-        )
-    except Exception:  # noqa: BLE001 — telemetry must never break the caller.
-        pass
 
     # ── 11. Cache + stream the MISS response ─────────────────────────────────
     _cache_tags: list[str] = [f"org:{org_id}"]

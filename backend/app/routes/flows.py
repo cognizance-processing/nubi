@@ -109,6 +109,15 @@ _MAX_RESULT_BLOB_BYTES: int = int(
 _MAX_TASK_RUNS_DEFAULT: int = int(os.environ.get("NUBI_MAX_TASK_RUNS_DEFAULT", "2000"))
 _MAX_TASK_RUNS_CEILING: int = int(os.environ.get("NUBI_MAX_TASK_RUNS_CEILING", "10000"))
 
+# ---------------------------------------------------------------------------
+# Per-run output cap (MED resource — unbounded outputs in run-history)
+# ---------------------------------------------------------------------------
+# The run-history endpoint batch-fetches flow_run_outputs for up to 500 runs.
+# Without a per-run cap this could return 500 x N rows (e.g. 25 M rows when
+# N = 50 000).  This constant mirrors store._MAX_OUTPUTS_PER_RUN — both read
+# the same env var so they stay in sync without a cross-import.
+_MAX_OUTPUTS_PER_RUN: int = int(os.environ.get("NUBI_MAX_OUTPUTS_PER_RUN", "200"))
+
 
 def _cap_task_logs(
     logs: list[str],
@@ -2754,7 +2763,10 @@ async def get_flow_run_history(
         serialized = _serialize_flow_run(run)
 
         # Attach lineage outputs (already fetched in single batch query).
-        run_outputs = outputs_by_run.get(run["id"], [])
+        # Defensive slice: store already caps via ROW_NUMBER()/list slice but
+        # apply _MAX_OUTPUTS_PER_RUN here too in case of an injected store or
+        # a future store implementation that lacks the cap.
+        run_outputs = outputs_by_run.get(run["id"], [])[:_MAX_OUTPUTS_PER_RUN]
         serialized["outputs"] = [
             {
                 "output_key": o["output_key"],

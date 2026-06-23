@@ -171,7 +171,8 @@ async def _run_metric(
     from app.repos.provider import get_repo
     from app.routes.query import _build_connector_for_plan
 
-    sql, named_params = compile_metric(metric, mq)
+    policy_cols = tuple((claims or {}).get("policies") or {})
+    sql, named_params = compile_metric(metric, mq, policy_cols=policy_cols)
     effective_sql, effective_params = resolve_named_params(sql, named_params)
 
     physical_plan = planner_plan(

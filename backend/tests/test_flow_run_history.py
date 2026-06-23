@@ -1321,3 +1321,42 @@ async def test_run_cell_task_runs_not_truncated_under_cap():
     assert truncated is False, (
         f"Expected no truncation for {total} task_runs (default cap={flows_mod._MAX_TASK_RUNS_DEFAULT})"
     )
+
+
+# ---------------------------------------------------------------------------
+# REGRESSION: [MED unbounded] list_run_outputs_for_runs per-run cap
+# ---------------------------------------------------------------------------
+
+
+async def test_list_run_outputs_for_runs_cap():
+    """list_run_outputs_for_runs must return at most _MAX_OUTPUTS_PER_RUN outputs per run.
+
+    Create a run with N > cap outputs and assert only cap entries come back.
+    """
+    import app.flows.store as store_mod
+
+    cap = store_mod._MAX_OUTPUTS_PER_RUN
+    # Use cap + 10 to ensure we exceed the limit regardless of its exact value.
+    n_outputs = cap + 10
+
+    store = InMemoryFlowStore()
+    flow = await _make_flow(store)
+    run = await _run_flow(store, flow, params={"test": "cap"})
+
+    for i in range(n_outputs):
+        await store.add_run_output(
+            flow_run_id=run["id"],
+            org_id="org-test",
+            task_key="t1",
+            output_key=f"out_{i:04d}",
+            output_type="table",
+        )
+
+    batch = await store.list_run_outputs_for_runs([run["id"]])
+
+    assert run["id"] in batch, "run_id missing from batch result"
+    returned = batch[run["id"]]
+    assert len(returned) == cap, (
+        f"Expected at most {cap} outputs but got {len(returned)} "
+        f"(n_outputs={n_outputs})"
+    )

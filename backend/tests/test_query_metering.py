@@ -111,6 +111,10 @@ def _compute_events(sink: InMemorySink) -> list[dict]:
     return [e for e in sink.get_events() if e["kind"] == "compute"]
 
 
+def _scan_events(sink: InMemorySink) -> list[dict]:
+    return [e for e in sink.get_events() if e["kind"] == "query_scan"]
+
+
 # ---------------------------------------------------------------------------
 # (1) Demo path records one org-attributed compute event
 # ---------------------------------------------------------------------------
@@ -241,6 +245,68 @@ async def test_datastore_query_metered_with_connector_tier(conn_client, _fresh_s
 # ---------------------------------------------------------------------------
 # (5) No org membership → demo path still works, event unattributed
 # ---------------------------------------------------------------------------
+
+
+# ---------------------------------------------------------------------------
+# (6) INVARIANT: first-party VIEWER-role users are NEVER metered — a cache
+#     MISS writes ZERO usage_events (neither compute NOR query_scan), while a
+#     writer/owner on the same query DOES write both.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_viewer_role_query_writes_no_usage_events(conn_app, fake_db, _fresh_sink):
+    app, repo = conn_app
+    user_id = str(uuid.uuid4())
+    org_id = str(uuid.uuid4())
+    fake_db.users[user_id] = {
+        "id": user_id,
+        "email": "viewer@example.com",
+        "name": "Viewer",
+        "avatar_url": None,
+        "email_verified": True,
+        "created_at": "2024-01-01T00:00:00+00:00",
+    }
+    # Seed the caller as a VIEWER — read-only, must never be metered.
+    repo.seed_org_member(org_id=org_id, user_id=user_id, role="viewer")
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(
+        transport=transport, base_url="http://testserver", follow_redirects=False
+    ) as client:
+        resp = await client.post(
+            "/api/v1/query",
+            json={"sql": "SELECT * FROM demo"},
+            headers=_auth_headers(user_id),
+        )
+    assert resp.status_code == 200, resp.text
+    # Cache MISS — execution happened …
+    assert resp.headers.get("x-nubi-cache") == "MISS"
+    # … but the viewer is NEVER metered: zero compute AND zero query_scan rows.
+    assert _compute_events(_fresh_sink) == []
+    assert _scan_events(_fresh_sink) == []
+
+
+@pytest.mark.asyncio
+async def test_writer_role_query_writes_both_usage_events(conn_client, _fresh_sink):
+    # The default seeded role in conn_client is "owner" (a writer).
+    client, user_id, org_id, _repo = conn_client
+
+    resp = await client.post(
+        "/api/v1/query",
+        json={"sql": "SELECT * FROM demo"},
+        headers=_auth_headers(user_id),
+    )
+    assert resp.status_code == 200, resp.text
+    assert resp.headers.get("x-nubi-cache") == "MISS"
+
+    # A writer/owner cache MISS writes BOTH the compute and the query_scan event.
+    compute = _compute_events(_fresh_sink)
+    scan = _scan_events(_fresh_sink)
+    assert len(compute) == 1
+    assert len(scan) == 1
+    assert compute[0]["org_id"] == org_id
+    assert scan[0]["org_id"] == org_id
 
 
 @pytest.mark.asyncio
