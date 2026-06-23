@@ -1096,6 +1096,33 @@ async def _resolve_materialized_flow_provider(
     """
     from app.flows.store import get_flow_store  # noqa: PLC0415
 
+    # ── 0. RLS fail-closed gate. ──────────────────────────────────────────────
+    # Materialized task_run results were computed by the latest SUCCESSFUL
+    # SCHEDULED flow run, executed under the OWNER policy snapshot — frequently
+    # policies={} (no RLS filter), i.e. an admin/full-scope result containing
+    # every tenant's rows.  The materialized fast-path serves those stored bytes
+    # verbatim; it CANNOT row-filter them to the current caller's RLS scope.
+    #
+    # Therefore: if the CURRENT caller carries any non-empty RLS policies, we
+    # MUST NOT serve the materialized result — doing so would leak other tenants'
+    # rows (cross-tenant disclosure) and would also poison the per-caller cache
+    # key with unfiltered data.  Fail closed: return None so resolve_provider_data
+    # falls back to the ephemeral path, which applies the caller's RLS correctly
+    # via the planner.
+    #
+    # Only no-RLS / admin-scope callers (policies empty/absent) get the
+    # materialized fast-path.
+    caller_policies = dict((claims or {}).get("policies") or {})
+    if caller_policies:
+        logger.debug(
+            "materialized flow provider %r: caller has non-empty RLS policies "
+            "(%s) — skipping materialized fast-path, falling back to "
+            "RLS-enforced ephemeral execution.",
+            getattr(provider, "id", "?"),
+            sorted(caller_policies.keys()),
+        )
+        return None
+
     store = get_flow_store()
 
     # ── 1. Locate the flow for this provider (same logic as ephemeral path). ──

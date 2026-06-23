@@ -354,9 +354,22 @@ def extract_shape(sql: str, dialect: str = "postgres") -> QueryShape | None:
     if group_node is None:
         return None
 
-    # ── Base table(s): only a single table is routable. ──────────────────────
+    # ── Base table(s): only a single bare-table FROM is routable. ─────────────
+    # ``find_all(exp.Table)`` recurses INTO subqueries (e.g. a latest_snapshot
+    # QUALIFY dedup wraps the base in ``FROM (SELECT * FROM orders QUALIFY …)``),
+    # surfacing the inner table and falsely reporting a single routable base.
+    # Require the DIRECT FROM to be a bare table so any derived-table FROM
+    # (QUALIFY dedup, etc.) is treated as non-routable and left untouched.
     table_names = sorted({t.name.lower() for t in tree.find_all(exp.Table)})
-    base_table = table_names[0] if len(table_names) == 1 else None
+    # The FROM arg key varies across sqlglot versions ("from" vs "from_"); fall
+    # back so ``from_is_bare_table`` is computed from the real direct FROM node.
+    from_node = tree.args.get("from") or tree.args.get("from_")
+    from_is_bare_table = isinstance(getattr(from_node, "this", None), exp.Table)
+    base_table = (
+        table_names[0]
+        if len(table_names) == 1 and from_is_bare_table
+        else None
+    )
 
     # ── Dimensions ───────────────────────────────────────────────────────────
     dims: list[str] = []
@@ -415,9 +428,11 @@ def extract_shape(sql: str, dialect: str = "postgres") -> QueryShape | None:
         for col in where_node.find_all(exp.Column):
             filter_cols.add(col.name.lower())
 
-    # A shape is routable only when it is a clean single-table aggregation.
+    # A shape is routable only when it is a clean single-table aggregation
+    # whose direct FROM is a bare table (never a subquery / derived table).
     routable = (
         base_table is not None
+        and from_is_bare_table
         and not dim_exprs
         and not has_bad_measure
         and not has_non_agg_non_dim

@@ -169,6 +169,17 @@ def _make_arrow_table(n: int = 3) -> pa.Table:
     return pa.table({"amount": pa.array([float(i * 10) for i in range(n)])})
 
 
+def _board_flow_provider() -> DataProvider:
+    """A flow-backed DataProvider matching ``_make_spec_with_flow_provider``."""
+    return DataProvider(
+        id=_PROVIDER_ID,
+        kind="flow",
+        params={},
+        base_cte=None,
+        results=[ProviderResult(name="summary", grain=None)],
+    )
+
+
 # ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------
@@ -1174,6 +1185,186 @@ async def test_materialized_mode_falls_back_to_ephemeral_when_absent(
     assert tables["summary"].num_rows == 3, (
         f"Expected 3 rows from ephemeral fallback, got {tables['summary'].num_rows}"
     )
+
+
+# ---------------------------------------------------------------------------
+# SECURITY: materialized fast-path must fail closed for RLS-scoped callers
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_materialized_rls_caller_does_not_get_materialized_data(
+    repo: InMemoryRepo,
+) -> None:
+    """[HIGH RLS cross-tenant] A caller with non-empty RLS policies MUST NOT be
+    served the materialized (scheduled, owner-scope) result.
+
+    The materialized task_run bytes were computed under the OWNER policy snapshot
+    (often policies={} = no filter), i.e. they contain EVERY tenant's rows. The
+    fast-path cannot row-filter those bytes, so a tenant-scoped caller must fall
+    back to the RLS-enforced ephemeral path instead of receiving the full,
+    unfiltered admin-scope result.
+
+    This test proves:
+      1. _resolve_materialized_flow_provider returns None when claims carry
+         non-empty policies (fail-closed gate).
+      2. resolve_provider_data therefore falls back to the ephemeral path and
+         the caller gets the (distinctly-shaped) ephemeral result, NOT the
+         materialized one — i.e. no cross-tenant rows leak.
+    """
+    import io as _io
+    import pyarrow as pa
+    from app.dashboards.board_data import _resolve_materialized_flow_provider
+    import app.flows.store as _fs_mod
+
+    await repo.update(
+        "boards",
+        _ORG,
+        _BOARD_ID,
+        {"config": {"spec": _make_spec_with_flow_provider()}},
+    )
+
+    # Materialized (owner-scope) result: 7 rows — the "leaky" full dataset.
+    materialized_table = _make_arrow_table(7)
+    ipc_buf = _io.BytesIO()
+    writer = pa.ipc.new_stream(ipc_buf, materialized_table.schema)
+    writer.write_table(materialized_table)
+    writer.close()
+    ipc_bytes = ipc_buf.getvalue()
+
+    fake_flow = {"id": _PROVIDER_ID, "name": _PROVIDER_ID, "org_id": _ORG}
+    fake_flow_run = {"id": "mat-run-1", "state": "success"}
+    fake_task_run = {
+        "task_key": "summary",
+        "state": "success",
+        "result": {"__arrow_ipc__": ipc_bytes},
+    }
+
+    class _FakeStore:
+        async def get_flow(self, flow_id: str) -> dict:
+            return fake_flow
+
+        async def list_flows(self, **kwargs: Any) -> list:
+            return [fake_flow]
+
+        async def list_flow_runs(self, flow_id: str, limit: int = 10, **kwargs: Any) -> list:
+            return [fake_flow_run]
+
+        async def list_task_runs(self, run_id: str, limit: int | None = None) -> list:
+            result = [fake_task_run]
+            return result[:limit] if limit is not None else result
+
+    # RLS-scoped caller (tenant 'acme').
+    rls_claims = {"policies": {"tenant_id": "acme"}}
+
+    # ── 1. Direct: the resolver fails closed for an RLS-scoped caller. ────────
+    with patch.object(_fs_mod, "get_flow_store", return_value=_FakeStore()):
+        direct = await _resolve_materialized_flow_provider(
+            _board_flow_provider(),
+            {},
+            _ORG,
+            rls_claims,
+        )
+    assert direct is None, (
+        "RLS-scoped caller must NOT receive materialized data; expected None "
+        "(fail-closed), got a result — cross-tenant leak."
+    )
+
+    # ── 2. End-to-end: resolve_provider_data falls back to ephemeral (RLS). ──
+    # The ephemeral result is distinctly shaped (3 rows) so we can prove the
+    # caller did NOT get the 7-row materialized (full-scope) dataset.
+    ephemeral_table = _make_arrow_table(3)
+
+    async def _fake_enforce_quota(org_id: str, dimension: str, amount: float = 1.0) -> None:
+        pass
+
+    with (
+        patch("app.features.enforce_quota", side_effect=_fake_enforce_quota),
+        patch.object(_fs_mod, "get_flow_store", return_value=_FakeStore()),
+        patch(
+            "app.dashboards.board_data._resolve_flow_provider",
+            new=AsyncMock(return_value={"summary": ephemeral_table}),
+        ),
+    ):
+        tables = await resolve_provider_data(
+            board_id=_BOARD_ID,
+            provider_id=_PROVIDER_ID,
+            params={},
+            org_id=_ORG,
+            claims=rls_claims,
+            repo=repo,
+            mode="materialized",
+        )
+
+    assert "summary" in tables
+    assert tables["summary"].num_rows == 3, (
+        "RLS-scoped caller must get the RLS-enforced ephemeral result (3 rows), "
+        f"not the materialized full-scope result (7 rows); got "
+        f"{tables['summary'].num_rows} rows."
+    )
+
+
+@pytest.mark.asyncio
+async def test_materialized_no_policy_caller_still_gets_fast_path(
+    repo: InMemoryRepo,
+) -> None:
+    """A caller with empty/absent RLS policies (admin / no-RLS scope) STILL gets
+    the materialized fast-path — the fail-closed gate only blocks RLS-scoped
+    callers, it must not regress the no-RLS case.
+    """
+    import io as _io
+    import pyarrow as pa
+    from app.dashboards.board_data import _resolve_materialized_flow_provider
+    import app.flows.store as _fs_mod
+
+    materialized_table = _make_arrow_table(7)
+    ipc_buf = _io.BytesIO()
+    writer = pa.ipc.new_stream(ipc_buf, materialized_table.schema)
+    writer.write_table(materialized_table)
+    writer.close()
+    ipc_bytes = ipc_buf.getvalue()
+
+    fake_flow = {"id": _PROVIDER_ID, "name": _PROVIDER_ID, "org_id": _ORG}
+    fake_flow_run = {"id": "mat-run-1", "state": "success"}
+    fake_task_run = {
+        "task_key": "summary",
+        "state": "success",
+        "result": {"__arrow_ipc__": ipc_bytes},
+    }
+
+    class _FakeStore:
+        async def get_flow(self, flow_id: str) -> dict:
+            return fake_flow
+
+        async def list_flows(self, **kwargs: Any) -> list:
+            return [fake_flow]
+
+        async def list_flow_runs(self, flow_id: str, limit: int = 10, **kwargs: Any) -> list:
+            return [fake_flow_run]
+
+        async def list_task_runs(self, run_id: str, limit: int | None = None) -> list:
+            result = [fake_task_run]
+            return result[:limit] if limit is not None else result
+
+    with patch.object(_fs_mod, "get_flow_store", return_value=_FakeStore()):
+        # Empty policies dict.
+        empty = await _resolve_materialized_flow_provider(
+            _board_flow_provider(), {}, _ORG, {"policies": {}}
+        )
+        # Absent policies key entirely.
+        absent = await _resolve_materialized_flow_provider(
+            _board_flow_provider(), {}, _ORG, {}
+        )
+
+    for label, tables in (("empty-policies", empty), ("absent-policies", absent)):
+        assert tables is not None, (
+            f"{label}: no-RLS caller must still get the materialized fast-path, "
+            "got None."
+        )
+        assert tables["summary"].num_rows == 7, (
+            f"{label}: expected 7-row materialized result, got "
+            f"{tables['summary'].num_rows}."
+        )
 
 
 # ---------------------------------------------------------------------------

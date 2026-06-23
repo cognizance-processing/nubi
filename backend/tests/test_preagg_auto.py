@@ -100,6 +100,33 @@ class TestExtractShape:
         assert shape is not None
         assert ("avg", "amount") in shape.measures
 
+    def test_subquery_from_not_routable(self) -> None:
+        # [engine-correctness] A latest_snapshot TimeComparison wraps the base in
+        # a QUALIFY dedup subquery: the DIRECT FROM is a derived table, not a bare
+        # ``orders``.  ``find_all(exp.Table)`` recurses into the subquery and
+        # surfaces a single ``orders`` table, which previously made the shape look
+        # routable → the router rewrote the inner table to a rollup that lacks the
+        # dedup dims (entity_id/created_at) → runtime error OR silently WRONG
+        # SUM-over-rollup totals.  Requiring a bare-table direct FROM makes any
+        # subquery FROM non-routable so the plan is left untouched.
+        shape = extract_shape(
+            "SELECT region, SUM(amount) FROM ("
+            "SELECT * FROM orders "
+            "QUALIFY ROW_NUMBER() OVER "
+            "(PARTITION BY entity_id ORDER BY created_at DESC) = 1"
+            ") AS __snap GROUP BY region"
+        )
+        assert shape is not None
+        assert shape.routable is False  # subquery FROM → not routable
+        assert shape.base_table is None
+        # A normal flat aggregation over the same table still routes.
+        flat = extract_shape(
+            "SELECT region, SUM(amount) FROM orders GROUP BY region"
+        )
+        assert flat is not None
+        assert flat.routable is True
+        assert flat.base_table == "orders"
+
 
 # ---------------------------------------------------------------------------
 # 2. Miner
