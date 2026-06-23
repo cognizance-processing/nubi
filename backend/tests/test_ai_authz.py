@@ -179,12 +179,16 @@ class TestSqlAuthz:
             f"Expected 200 for owner on /ai/sql with save_as, got {resp.status_code}: {resp.text}"
         )
         body = resp.json()
-        assert body["registered_id"] == save_id
+        # registered_id is org-scoped ("{org}:{save_as}") for tenant isolation;
+        # it ends with the human id the caller supplied.
+        assert body["registered_id"].endswith(save_id)
 
         # The SQL is actually registered (not just a string match on the response).
         registry = get_query_registry()
-        rq = registry.get(save_id)
-        assert rq is not None, f"Query '{save_id}' not found in registry after owner save_as"
+        rq = registry.get(body["registered_id"])
+        assert rq is not None, (
+            f"Query '{body['registered_id']}' not found in registry after owner save_as"
+        )
         # Verify it's parseable SQL — real SQL check via sqlglot, not just substring.
         import sqlglot
         parsed = sqlglot.parse_one(rq.sql)
@@ -338,15 +342,22 @@ async def two_org_clients(app, fake_db, monkeypatch):
 
 
 class TestCrossTenantSaveAs:
-    """POST /ai/sql save_as must NOT allow org B to overwrite org A's registered id."""
+    """POST /ai/sql save_as must org-scope the registry key so one org cannot
+    squat a human id (and so the other org never gets a permanent 409), while
+    still never overwriting/leaking the other org's registered SQL."""
 
     @pytest.mark.asyncio
-    async def test_org_b_cannot_overwrite_org_a_save_as(self, two_org_clients):
-        """Org B's save_as with an id already registered by org A → 409."""
+    async def test_org_b_can_reuse_org_a_save_as_human_id(self, two_org_clients):
+        """Org B's save_as with the SAME human id org A used → 200, distinct entry.
+
+        Anti-squatting: the registry key is namespaced by org (``{org}:{id}``), so
+        org B reusing the human id does NOT collide with org A and does NOT get a
+        409. Each org gets its own distinct, org-owned registry entry.
+        """
         ac, writer_a, org_a, writer_b, org_b = two_org_clients
         shared_id = f"shared_query_{uuid.uuid4().hex[:8]}"
 
-        # Org A registers the id first.
+        # Org A registers the human id first.
         resp_a = await ac.post(
             "/api/v1/ai/sql",
             json={"question": "show orders", "save_as": shared_id},
@@ -355,21 +366,25 @@ class TestCrossTenantSaveAs:
         assert resp_a.status_code == 200, (
             f"Org A save_as failed unexpectedly: {resp_a.status_code} {resp_a.text}"
         )
-        assert resp_a.json()["registered_id"] == shared_id
+        assert resp_a.json()["registered_id"].endswith(shared_id)
 
-        # Org B tries to overwrite the same id → must be rejected (409).
+        # Org B uses the same human id → succeeds (no squatting-induced 409).
         resp_b = await ac.post(
             "/api/v1/ai/sql",
             json={"question": "different question", "save_as": shared_id},
             headers=_auth_headers(writer_b),
         )
-        assert resp_b.status_code == 409, (
-            f"Expected 409 (cross-tenant collision) but got {resp_b.status_code}: {resp_b.text}"
+        assert resp_b.status_code == 200, (
+            f"Expected 200 (org-scoped keys, no squatting) but got "
+            f"{resp_b.status_code}: {resp_b.text}"
         )
+        # Distinct keys, both ending with the human id.
+        assert resp_a.json()["registered_id"] != resp_b.json()["registered_id"]
+        assert resp_b.json()["registered_id"].endswith(shared_id)
 
     @pytest.mark.asyncio
-    async def test_registry_retains_org_a_sql_after_collision_attempt(self, two_org_clients):
-        """After a rejected collision attempt the registry still holds org A's SQL."""
+    async def test_registry_retains_org_a_sql_after_org_b_reuses_id(self, two_org_clients):
+        """Org B reusing the human id must NOT alter org A's registered entry."""
         from app.queries.registry import get_query_registry
 
         ac, writer_a, org_a, writer_b, org_b = two_org_clients
@@ -383,16 +398,18 @@ class TestCrossTenantSaveAs:
         )
         assert resp_a.status_code == 200
         original_sql = resp_a.json()["sql"]
+        id_a = resp_a.json()["registered_id"]
 
-        # Org B collides → rejected.
-        await ac.post(
+        # Org B reuses the human id (distinct scoped key) → 200.
+        resp_b = await ac.post(
             "/api/v1/ai/sql",
             json={"question": "totally different", "save_as": shared_id},
             headers=_auth_headers(writer_b),
         )
+        assert resp_b.status_code == 200
 
-        # The registry must still hold org A's SQL unchanged.
-        rq = get_query_registry().get(shared_id)
+        # Org A's entry (its own scoped key) is unchanged and still org A's.
+        rq = get_query_registry().get(id_a)
         assert rq is not None, "Org A's query was removed from registry"
         assert rq.sql == original_sql, (
             f"Registry SQL was silently overwritten: expected {original_sql!r}, "
@@ -424,8 +441,8 @@ class TestCrossTenantSaveAs:
         )
         assert resp_b.status_code == 200, resp_b.text
 
-        assert resp_a.json()["registered_id"] == id_a
-        assert resp_b.json()["registered_id"] == id_b
+        assert resp_a.json()["registered_id"].endswith(id_a)
+        assert resp_b.json()["registered_id"].endswith(id_b)
 
     @pytest.mark.asyncio
     async def test_same_org_can_overwrite_its_own_save_as(self, two_org_clients):
@@ -441,7 +458,7 @@ class TestCrossTenantSaveAs:
         )
         assert r1.status_code == 200, r1.text
 
-        # Same org registers again (upsert) — must succeed.
+        # Same org registers again (upsert) — must succeed under the SAME key.
         r2 = await ac.post(
             "/api/v1/ai/sql",
             json={"question": "updated orders", "save_as": my_id},
@@ -450,7 +467,8 @@ class TestCrossTenantSaveAs:
         assert r2.status_code == 200, (
             f"Same-org upsert failed: {r2.status_code} {r2.text}"
         )
-        assert r2.json()["registered_id"] == my_id
+        assert r2.json()["registered_id"].endswith(my_id)
+        assert r1.json()["registered_id"] == r2.json()["registered_id"]
 
     @pytest.mark.asyncio
     async def test_system_builtin_ids_not_blocked(self, two_org_clients):

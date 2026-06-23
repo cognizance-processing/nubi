@@ -2009,3 +2009,113 @@ async def test_evict_run_artifact_count_on_run_finalize():
 
     set_artifact_store(None)
     set_flow_store(None)
+
+
+# ---------------------------------------------------------------------------
+# 34. LOW resource: drain_flow_run evicts _run_artifact_counts on aborted runs
+# ---------------------------------------------------------------------------
+
+
+async def test_drain_aborted_evicts_run_artifact_count():
+    """drain_flow_run must evict _run_artifact_counts even when it raises.
+
+    fix-44 calls evict_run_artifact_count from advance_readiness (normal
+    completion), but when drain_flow_run is aborted mid-run (TimeoutError,
+    CancelledError, or any other exception) advance_readiness for the final
+    terminal transition may not execute, leaving the counter entry in
+    _run_artifact_counts forever.
+
+    This test verifies the try/finally guard in drain_flow_run: after any
+    aborted exit the counter entry must be gone.
+
+    Verify:
+    1. put_artifact during the partial run seeds _run_artifact_counts[run_id].
+    2. drain_flow_run raises (simulated via asyncio.TimeoutError / CancelledError).
+    3. After the raise, run_id is NOT in _run_artifact_counts (no leak).
+    """
+    import asyncio  # noqa: PLC0415 — already imported at top but be explicit
+    import unittest.mock  # noqa: PLC0415
+
+    from app.flows import artifacts as _art_mod  # noqa: PLC0415
+
+    reset_for_tests()
+    art_store = _mem_store()
+    set_artifact_store(art_store)
+    flow_store = InMemoryFlowStore()
+    set_flow_store(flow_store)
+
+    # A flow with one task that stores an artifact.  We will forcibly inject a
+    # counter entry to simulate the state after put_artifact fired.
+    spec = {
+        "version": 1,
+        "name": "abort_evict_test",
+        "tasks": [
+            {
+                "key": "step",
+                "kind": "python",
+                "needs": [],
+                "config": {
+                    "code": (
+                        "handle = ctx.put_artifact({'x': 1}, kind='json', name='t')\n"
+                        "result = {'handle': handle}\n"
+                    )
+                },
+                "timeout_s": 30,
+            }
+        ],
+    }
+
+    flow = await _make_flow(flow_store, spec, org_id="org-test")
+
+    # --- scenario A: TimeoutError raised by drain_flow_run itself ---
+    run_a = await materialize_flow_run(flow_store, flow, {}, "manual", NOW)
+    run_id_a = run_a["id"]
+
+    # Seed the counter as-if put_artifact had already incremented it.
+    with _art_mod._run_artifact_counts_lock:
+        _art_mod._run_artifact_counts[run_id_a] = 1
+
+    # Make _execute_claimed_task_run raise TimeoutError to abort drain mid-run.
+    import app.flows.runtime as _rt_mod  # noqa: PLC0415
+
+    _orig_execute = _rt_mod._execute_claimed_task_run
+
+    async def _raise_timeout(*_args: Any, **_kwargs: Any) -> None:
+        raise asyncio.TimeoutError("injected timeout")
+
+    with unittest.mock.patch.object(_rt_mod, "_execute_claimed_task_run", _raise_timeout):
+        with pytest.raises(asyncio.TimeoutError):
+            await drain_flow_run(
+                flow_store, run_id_a, NOW, {"org_id": "org-test", "sub": "u1"}
+            )
+
+    with _art_mod._run_artifact_counts_lock:
+        assert run_id_a not in _art_mod._run_artifact_counts, (
+            f"_run_artifact_counts still contains run {run_id_a!r} after "
+            "drain_flow_run raised TimeoutError; expected it to be evicted."
+        )
+
+    # --- scenario B: CancelledError raised by drain_flow_run ---
+    run_b = await materialize_flow_run(flow_store, flow, {}, "manual", NOW)
+    run_id_b = run_b["id"]
+
+    with _art_mod._run_artifact_counts_lock:
+        _art_mod._run_artifact_counts[run_id_b] = 1
+
+    async def _raise_cancelled(*_args: Any, **_kwargs: Any) -> None:
+        raise asyncio.CancelledError("injected cancellation")
+
+    with unittest.mock.patch.object(_rt_mod, "_execute_claimed_task_run", _raise_cancelled):
+        with pytest.raises((asyncio.CancelledError, BaseException)):
+            await drain_flow_run(
+                flow_store, run_id_b, NOW, {"org_id": "org-test", "sub": "u1"}
+            )
+
+    with _art_mod._run_artifact_counts_lock:
+        assert run_id_b not in _art_mod._run_artifact_counts, (
+            f"_run_artifact_counts still contains run {run_id_b!r} after "
+            "drain_flow_run raised CancelledError; expected it to be evicted."
+        )
+
+    set_artifact_store(None)
+    set_flow_store(None)

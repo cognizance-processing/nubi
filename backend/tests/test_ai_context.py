@@ -37,6 +37,8 @@ from app.queries.registry import (
     QueryParam,
     get_query_registry,
 )
+from app.repos.memory import InMemoryRepo
+from app.repos.provider import set_repo
 
 
 # ---------------------------------------------------------------------------
@@ -426,3 +428,88 @@ class TestContextMetricsBlock:
         # Core fields remain accurate.
         assert entry["measure"]["agg"] == "sum"
         assert entry["dimensions"] == ["region"]
+
+
+# ---------------------------------------------------------------------------
+# 4. GET /ai/context — tenant isolation (MED)
+# ---------------------------------------------------------------------------
+
+
+class TestContextTenantIsolation:
+    """Org B's /ai/context must NOT leak org A's runtime-registered query."""
+
+    @pytest.mark.asyncio
+    async def test_org_b_does_not_see_org_a_save_as(self, app, fake_db, monkeypatch):
+        """A query org A registers via POST /ai/sql save_as must be invisible to org B.
+
+        registry.all() is process-global, so without org scoping org B's
+        /ai/context would expose org A's query id / name / params / output schema.
+        We register a uniquely-named query owned by org A and assert it is absent
+        from org B's context (and present for org A).
+        """
+        # No LLM keys → NullProvider (offline, deterministic).
+        for key in (
+            "ANTHROPIC_API_KEY",
+            "OPENAI_API_KEY",
+            "GEMINI_API_KEY",
+            "LLM_PROVIDER",
+        ):
+            monkeypatch.delenv(key, raising=False)
+        from app.config import get_settings
+
+        get_settings.cache_clear()
+
+        repo = InMemoryRepo()
+        set_repo(repo)
+        try:
+            user_a = str(uuid.uuid4())
+            user_b = str(uuid.uuid4())
+            org_a = str(uuid.uuid4())
+            org_b = str(uuid.uuid4())
+            fake_db.users[user_a] = _make_user(user_a)
+            fake_db.users[user_b] = _make_user(user_b)
+            repo.seed_org_member(org_id=org_a, user_id=user_a, role="owner")
+            repo.seed_org_member(org_id=org_b, user_id=user_b, role="owner")
+
+            secret_human_id = f"org_a_secret_{uuid.uuid4().hex[:8]}"
+            secret_name = "ORG A CONFIDENTIAL REVENUE BREAKDOWN"
+
+            from httpx import ASGITransport, AsyncClient
+
+            transport = ASGITransport(app=app)
+            async with AsyncClient(
+                transport=transport,
+                base_url="http://testserver",
+                follow_redirects=False,
+            ) as ac:
+                # Org A registers a private query via save_as.
+                save = await ac.post(
+                    "/api/v1/ai/sql",
+                    json={"question": secret_name, "save_as": secret_human_id},
+                    headers=_auth_headers(user_a),
+                )
+                assert save.status_code == 200, save.text
+                registered_id = save.json()["registered_id"]
+                assert registered_id.endswith(secret_human_id)
+
+                # Org B's context must NOT contain org A's query (id, name, ...).
+                ctx_b = await ac.get(
+                    "/api/v1/ai/context", headers=_auth_headers(user_b)
+                )
+                assert ctx_b.status_code == 200
+                body_b = ctx_b.json()
+                ids_b = {q["id"] for q in body_b["queries"]}
+                names_b = {q["name"] for q in body_b["queries"]}
+                assert registered_id not in ids_b
+                assert secret_human_id not in ids_b
+                assert secret_name not in names_b
+
+                # Sanity: org A DOES see its own query.
+                ctx_a = await ac.get(
+                    "/api/v1/ai/context", headers=_auth_headers(user_a)
+                )
+                assert ctx_a.status_code == 200
+                ids_a = {q["id"] for q in ctx_a.json()["queries"]}
+                assert registered_id in ids_a
+        finally:
+            set_repo(None)

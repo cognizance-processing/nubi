@@ -374,12 +374,16 @@ class TestSqlEndpoint:
         )
         assert resp.status_code == 200
         body = resp.json()
-        assert body["registered_id"] == save_id
+        # registered_id is the org-scoped key ("{org}:{save_as}") so two orgs can
+        # save_as the same human id without colliding; it ends with the human id.
+        assert body["registered_id"].endswith(save_id)
 
-        # Verify the query is retrievable from the registry.
+        # Verify the query is retrievable from the registry by the returned id.
         registry = get_query_registry()
-        rq = registry.get(save_id)
-        assert rq is not None, f"Query '{save_id}' not found in registry after save_as"
+        rq = registry.get(body["registered_id"])
+        assert rq is not None, (
+            f"Query '{body['registered_id']}' not found in registry after save_as"
+        )
 
     @pytest.mark.asyncio
     async def test_save_as_registered_sql_matches_response(self, sql_client, monkeypatch):
@@ -398,7 +402,7 @@ class TestSqlEndpoint:
         returned_sql = body["sql"]
 
         registry = get_query_registry()
-        rq = registry.get(save_id)
+        rq = registry.get(body["registered_id"])
         assert rq is not None
         assert rq.sql == returned_sql
 
@@ -443,7 +447,7 @@ class TestSqlEndpoint:
 
         assert resp.status_code == 200
         registry = get_query_registry()
-        rq = registry.get(save_id)
+        rq = registry.get(resp.json()["registered_id"])
         assert rq is not None
         param_names = [p.name for p in rq.params]
         assert "tenant" in param_names, (
@@ -501,3 +505,75 @@ class TestSqlEndpoint:
         body = resp.json()
         assert body["valid"] is True
         assert body["issues"] == []
+
+
+# ---------------------------------------------------------------------------
+# 3. POST /ai/sql save_as — tenant isolation / anti-squatting
+# ---------------------------------------------------------------------------
+
+
+class TestSaveAsTenantIsolation:
+    """save_as must not let one org squat a human id so another org gets 409."""
+
+    @pytest.mark.asyncio
+    async def test_two_orgs_same_save_as_no_409(self, app, fake_db, monkeypatch):
+        """Two different orgs can save_as the SAME human id without colliding.
+
+        The registry is a process-global, bare-string-keyed singleton. Before the
+        fix, org A registering ``save_as=report`` stamped ``owner_org_id=orgA`` on
+        the bare key ``report`` so org B's ``save_as=report`` hit the cross-org
+        guard -> permanent 409. With org-scoped keys (``{org}:report``) both
+        succeed and resolve to DISTINCT registry entries.
+        """
+        _clear_llm_env(monkeypatch)
+
+        repo = InMemoryRepo()
+        set_repo(repo)
+        try:
+            user_a = str(uuid.uuid4())
+            user_b = str(uuid.uuid4())
+            org_a = str(uuid.uuid4())
+            org_b = str(uuid.uuid4())
+            fake_db.users[user_a] = _make_user(user_a)
+            fake_db.users[user_b] = _make_user(user_b)
+            repo.seed_org_member(org_id=org_a, user_id=user_a, role="owner")
+            repo.seed_org_member(org_id=org_b, user_id=user_b, role="owner")
+
+            human_id = "shared_report"
+
+            transport = ASGITransport(app=app)
+            async with AsyncClient(
+                transport=transport,
+                base_url="http://testserver",
+                follow_redirects=False,
+            ) as ac:
+                resp_a = await ac.post(
+                    "/api/v1/ai/sql",
+                    json={"question": "org A report", "save_as": human_id},
+                    headers=_auth_headers(user_a),
+                )
+                resp_b = await ac.post(
+                    "/api/v1/ai/sql",
+                    json={"question": "org B report", "save_as": human_id},
+                    headers=_auth_headers(user_b),
+                )
+
+            assert resp_a.status_code == 200, resp_a.text
+            # The whole point: org B does NOT get a 409 for reusing the id.
+            assert resp_b.status_code == 200, resp_b.text
+
+            id_a = resp_a.json()["registered_id"]
+            id_b = resp_b.json()["registered_id"]
+            assert id_a != id_b
+            assert id_a.endswith(human_id)
+            assert id_b.endswith(human_id)
+
+            # Each org's entry is a distinct, org-owned registry row.
+            registry = get_query_registry()
+            rq_a = registry.get(id_a)
+            rq_b = registry.get(id_b)
+            assert rq_a is not None and rq_b is not None
+            assert rq_a.owner_org_id == org_a
+            assert rq_b.owner_org_id == org_b
+        finally:
+            set_repo(None)

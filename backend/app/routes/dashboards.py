@@ -61,6 +61,7 @@ Each StructuredIssue is::
 
 from __future__ import annotations
 
+import asyncio
 import json
 from typing import Any
 
@@ -337,7 +338,9 @@ async def get_provider_data(
     )
 
     # ── Serialise to multi-table IPC stream ───────────────────────────────────
-    ipc_bytes = tables_to_multi_ipc_stream(tables)
+    # Offload to a thread pool to avoid blocking the async event loop on
+    # CPU-bound Arrow IPC serialisation (can be tens–hundreds of ms near cap).
+    ipc_bytes = await asyncio.to_thread(tables_to_multi_ipc_stream, tables)
 
     return Response(
         content=ipc_bytes,

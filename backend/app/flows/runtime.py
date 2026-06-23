@@ -1851,83 +1851,102 @@ async def drain_flow_run(
     if claims is None:
         claims = {}
 
-    # Layer 2 wall-clock deadline (see fix: _resolve_flow_provider drain timeout).
-    # Only armed when an explicit budget is passed; 0 keeps legacy behaviour.
-    _deadline: float | None = (
-        time.monotonic() + wall_timeout_s if wall_timeout_s and wall_timeout_s > 0 else None
-    )
-
-    steps = 0
-    # Run-scoped variable overlay (A5): a python cell's set_var values flow to
-    # later cells in THIS synchronous run (value-only; persist=True also hits
-    # the store). In-process only — the distributed claim path does not share it.
-    run_var_overlay: dict[str, Any] = {}
-    # N+1 fix: cache the task_run snapshot and reuse it across the step where
-    # safe.  We only re-query after a state mutation (_execute_claimed_task_run
-    # calls advance_readiness which writes new states).  On the first iteration
-    # we have no snapshot yet (sentinel None); after execution we invalidate.
-    _cached_task_runs: list[dict[str, Any]] | None = None
-    _snapshot_stale: bool = True  # True → must re-query at top of next step
-    while steps < max_steps:
-        # Layer 2: enforce the optional wall-clock budget at the top of each
-        # iteration so a slow flow cannot run unbounded (and thus hold a shared
-        # per-(org, provider) semaphore slot) for minutes.  Raising here lets the
-        # provider path surface a 504 and release its slot in finally.
-        if _deadline is not None and time.monotonic() >= _deadline:
-            raise asyncio.TimeoutError(
-                f"drain_flow_run exceeded wall_timeout_s={wall_timeout_s} for "
-                f"flow_run {flow_run_id}"
-            )
-
-        # Check if the flow_run itself is already terminal (advance may have done this).
-        flow_run = await store.get_flow_run(flow_run_id)
-        if flow_run and flow_run.get("state") in ("success", "failed", "cancelled"):
-            return flow_run
-
-        # Re-query task_runs only when the snapshot is stale (i.e. a mutation
-        # occurred in the previous step).  This reduces list_task_runs calls from
-        # O(steps) to O(mutations) — in the common single-flow-run sweep/backfill
-        # path each step is one mutation so the count stays bounded, but we never
-        # skip a re-query after state changes.
-        if _snapshot_stale or _cached_task_runs is None:
-            _cached_task_runs = await store.list_task_runs(flow_run_id)
-            _snapshot_stale = False
-
-        task_runs = _cached_task_runs
-        # "retrying" tasks with scheduled_at <= now are also eligible (claimed as 'ready').
-        ready = [tr for tr in task_runs if tr["state"] == "ready"]
-        retrying_due = [
-            tr for tr in task_runs
-            if tr["state"] == "retrying"
-            and (tr.get("scheduled_at") is None or tr["scheduled_at"] <= now)
-        ]
-        if not ready and not retrying_due:
-            break
-
-        # Promote retrying tasks that are due back to ready so claim_ready_task_run picks them up.
-        if retrying_due:
-            for tr in retrying_due:
-                await store.update_task_run(tr["id"], {"state": "ready"})
-            # Snapshot is now stale — promotions changed state.
-            _snapshot_stale = True
-
-        # Run one.  Note: claim_ready_task_run is global across the store;
-        # we loop until we get one from this flow_run or exhaust ready tasks.
-        task_run = await _claim_for_flow_run(store, flow_run_id, now)
-        if task_run is None:
-            break
-
-        await _execute_claimed_task_run(
-            store, task_run, now, claims, run_var_overlay=run_var_overlay
+    try:
+        # Layer 2 wall-clock deadline (see fix: _resolve_flow_provider drain timeout).
+        # Only armed when an explicit budget is passed; 0 keeps legacy behaviour.
+        _deadline: float | None = (
+            time.monotonic() + wall_timeout_s if wall_timeout_s and wall_timeout_s > 0 else None
         )
-        # Execution calls advance_readiness which mutates task_run states —
-        # invalidate the snapshot so the next iteration re-queries.
-        _snapshot_stale = True
-        steps += 1
 
-    # Re-fetch and return the final state.
-    flow_run = await store.get_flow_run(flow_run_id)
-    return flow_run or {}
+        steps = 0
+        # Run-scoped variable overlay (A5): a python cell's set_var values flow to
+        # later cells in THIS synchronous run (value-only; persist=True also hits
+        # the store). In-process only — the distributed claim path does not share it.
+        run_var_overlay: dict[str, Any] = {}
+        # N+1 fix: cache the task_run snapshot and reuse it across the step where
+        # safe.  We only re-query after a state mutation (_execute_claimed_task_run
+        # calls advance_readiness which writes new states).  On the first iteration
+        # we have no snapshot yet (sentinel None); after execution we invalidate.
+        _cached_task_runs: list[dict[str, Any]] | None = None
+        _snapshot_stale: bool = True  # True → must re-query at top of next step
+        while steps < max_steps:
+            # Layer 2: enforce the optional wall-clock budget at the top of each
+            # iteration so a slow flow cannot run unbounded (and thus hold a shared
+            # per-(org, provider) semaphore slot) for minutes.  Raising here lets the
+            # provider path surface a 504 and release its slot in finally.
+            if _deadline is not None and time.monotonic() >= _deadline:
+                raise asyncio.TimeoutError(
+                    f"drain_flow_run exceeded wall_timeout_s={wall_timeout_s} for "
+                    f"flow_run {flow_run_id}"
+                )
+
+            # Check if the flow_run itself is already terminal (advance may have done this).
+            flow_run = await store.get_flow_run(flow_run_id)
+            if flow_run and flow_run.get("state") in ("success", "failed", "cancelled"):
+                return flow_run
+
+            # Re-query task_runs only when the snapshot is stale (i.e. a mutation
+            # occurred in the previous step).  This reduces list_task_runs calls from
+            # O(steps) to O(mutations) — in the common single-flow-run sweep/backfill
+            # path each step is one mutation so the count stays bounded, but we never
+            # skip a re-query after state changes.
+            if _snapshot_stale or _cached_task_runs is None:
+                _cached_task_runs = await store.list_task_runs(flow_run_id)
+                _snapshot_stale = False
+
+            task_runs = _cached_task_runs
+            # "retrying" tasks with scheduled_at <= now are also eligible (claimed as 'ready').
+            ready = [tr for tr in task_runs if tr["state"] == "ready"]
+            retrying_due = [
+                tr for tr in task_runs
+                if tr["state"] == "retrying"
+                and (tr.get("scheduled_at") is None or tr["scheduled_at"] <= now)
+            ]
+            if not ready and not retrying_due:
+                break
+
+            # Promote retrying tasks that are due back to ready so claim_ready_task_run picks them up.
+            if retrying_due:
+                for tr in retrying_due:
+                    await store.update_task_run(tr["id"], {"state": "ready"})
+                # Snapshot is now stale — promotions changed state.
+                _snapshot_stale = True
+
+            # Run one.  Note: claim_ready_task_run is global across the store;
+            # we loop until we get one from this flow_run or exhaust ready tasks.
+            task_run = await _claim_for_flow_run(store, flow_run_id, now)
+            if task_run is None:
+                break
+
+            await _execute_claimed_task_run(
+                store, task_run, now, claims, run_var_overlay=run_var_overlay
+            )
+            # Execution calls advance_readiness which mutates task_run states —
+            # invalidate the snapshot so the next iteration re-queries.
+            _snapshot_stale = True
+            steps += 1
+
+        # Re-fetch and return the final state.
+        flow_run = await store.get_flow_run(flow_run_id)
+        return flow_run or {}
+    finally:
+        # [LOW resource] Evict the per-run artifact count on EVERY exit path —
+        # success, TimeoutError, CancelledError, or any other exception — so
+        # _run_artifact_counts does not leak when drain_flow_run is aborted by an
+        # outer asyncio.wait_for or cancelled by the sweep/backfill orchestrator
+        # before advance_readiness has a chance to call evict_run_artifact_count.
+        # advance_readiness also evicts on terminal state (normal completion path),
+        # so this is an idempotent safety-net for the abnormal exit paths only.
+        # Best-effort: never mask the original exception.
+        try:
+            from app.flows.artifacts import evict_run_artifact_count  # noqa: PLC0415
+            evict_run_artifact_count(flow_run_id)
+        except Exception:  # noqa: BLE001
+            logger.debug(
+                "drain_flow_run: evict_run_artifact_count failed for flow_run %s",
+                flow_run_id,
+                exc_info=True,
+            )
 
 
 def preview_cell(

@@ -511,6 +511,85 @@ def _context_metric_entry(md: Any, *, compact: bool) -> dict[str, Any]:
     }
 
 
+async def _visible_query_row_ids(user: dict[str, Any], org_id: str | None) -> set[str] | None:
+    """Return the caller's org+project ``queries`` row-ids, or ``None`` if unscopable.
+
+    Mirrors GET /query/registry's scoping (routes/query.py): the registry is a
+    process-global singleton spanning EVERY org, so the visible set is gated by
+    the caller's persisted ``queries`` rows.  ``None`` means scoping was
+    unavailable (no org / no repo / no queries table) — the caller should then
+    fall back to the ``owner_org_id``-only filter rather than hiding everything,
+    so the persistence-free demo/test path keeps working.
+    """
+    if org_id is None:
+        return None
+    try:
+        from app.repos.provider import get_repo  # noqa: PLC0415
+        from app.routes._org import resolve_org_default_project_id  # noqa: PLC0415
+
+        repo = get_repo()
+        # No Request on the current_user path → scope to the org's default
+        # project (best-effort; None leaves the org list unfiltered by project).
+        try:
+            project_id = await resolve_org_default_project_id(org_id)
+        except Exception:  # noqa: BLE001 — project resolution is best-effort.
+            project_id = None
+        rows = await repo.list("queries", org_id, project_id)
+        return {str(r["id"]) for r in rows}
+    except Exception:  # noqa: BLE001 — scoping unavailable → caller falls back.
+        return None
+
+
+def _query_visible_to_org(
+    rq: Any, *, caller_org: str | None, row_ids: set[str] | None
+) -> bool:
+    """Tenant-isolation gate for a registry entry in GET /ai/context.
+
+    An entry is visible to the caller when ANY of:
+    - ``rq.system`` — built-in/seed queries (demo_*) are globally shared;
+    - ``rq.owner_org_id`` is ``None`` — unowned (seeds, slug-only, demo);
+    - ``rq.owner_org_id == caller_org`` — the caller's own runtime query;
+    - ``rq.id`` is in the caller's persisted ``queries`` row-ids.
+
+    A query saved by another org via POST /ai/sql carries that org's
+    ``owner_org_id`` and matches NONE of these for a different caller, so org B
+    never sees org A's query id / name / params / output schema.
+    """
+    if getattr(rq, "system", False):
+        return True
+    owner = getattr(rq, "owner_org_id", None)
+    if owner is None or owner == caller_org:
+        return True
+    if row_ids is not None and rq.id in row_ids:
+        return True
+    return False
+
+
+async def _visible_metric_slugs(org_id: str | None) -> set[str] | None:
+    """Return the slugs of the caller's org's query-backed metrics, or ``None``.
+
+    Mirrors GET /metrics' org scoping (routes/metrics.py): metrics live in a
+    process-global registry, so the visible set is the slugs exposed by THIS
+    org's queries-with-``config.metric``.  In-code seeds (``SEED_METRIC_IDS``,
+    e.g. ``demo_revenue``) belong to no tenant and are layered in by the caller.
+    ``None`` means scoping was unavailable (no org / no DB) — the caller then
+    leaves the metric list unfiltered (demo/test path).
+    """
+    if org_id is None:
+        return None
+    try:
+        from app.db import fetch  # noqa: PLC0415
+
+        rows = await fetch(
+            "SELECT config->'metric'->>'slug' AS slug FROM queries "
+            "WHERE org_id = $1::uuid AND config ? 'metric'",
+            org_id,
+        )
+        return {str(r["slug"]) for r in rows if r.get("slug")}
+    except Exception:  # noqa: BLE001 — scoping unavailable → unfiltered.
+        return None
+
+
 def _metric_matches(md: Any, q: str) -> bool:
     """Cheap relevance filter: token overlap on a metric's name/description/id.
 
@@ -581,8 +660,21 @@ async def ai_context(
     """
     from app.queries.registry import get_query_registry  # noqa: PLC0415
 
+    # ── TENANT ISOLATION ──────────────────────────────────────────────────────
+    # registry.all() / metric_registry.all() span EVERY org (process-global
+    # singletons). Without scoping, org B's GET /ai/context would leak org A's
+    # registered query ids / names / param names+types / output schemas (and the
+    # governed metric definitions). Resolve the caller's org and gate both lists
+    # the SAME way GET /query/registry and GET /metrics do.
+    caller_org = await _resolve_org_id(_user)
+    row_ids = await _visible_query_row_ids(_user, caller_org)
+
     registry = get_query_registry()
-    all_queries = registry.all()
+    all_queries = [
+        rq
+        for rq in registry.all()
+        if _query_visible_to_org(rq, caller_org=caller_org, row_ids=row_ids)
+    ]
 
     if q:
         # Rank + filter via the deterministic grounding scorer so the response
@@ -604,6 +696,16 @@ async def ai_context(
     # governed semantic-layer definitions it can query via POST /metrics/{id}/query.
     metric_registry = _get_metric_registry()
     all_metrics = _metrics_from(metric_registry)
+    # TENANT ISOLATION: keep only this org's query-backed metrics (by slug) plus
+    # the in-code seeds (which belong to no tenant). Unscopable (no org / no DB)
+    # leaves the list unfiltered — same fallback as GET /metrics.
+    metric_slugs = await _visible_metric_slugs(caller_org)
+    if metric_slugs is not None:
+        from app.metrics.registry import SEED_METRIC_IDS  # noqa: PLC0415
+
+        all_metrics = [
+            md for md in all_metrics if md.id in metric_slugs or md.id in SEED_METRIC_IDS
+        ]
     if q:
         all_metrics = [md for md in all_metrics if _metric_matches(md, q)]
     metrics = [_context_metric_entry(md, compact=compact) for md in all_metrics]
@@ -908,10 +1010,19 @@ async def generate_sql_endpoint(
             QueryParam(name=name, type="text", required=False)
             for name in placeholder_names
         ]
+        # TENANT ISOLATION (anti-squatting): the registry is a process-global,
+        # bare-string-keyed singleton. Registering under the raw human id lets
+        # org A squat any id so org B gets a permanent 409. Namespace the key by
+        # the caller's org (``{org}:{save_as}``) so two orgs can save_as the SAME
+        # human id without colliding. The scoped id is what we return + what the
+        # caller resolves by. ``owner_org_id`` + the cross-org-overwrite guard are
+        # kept as defence-in-depth. When the org is unknown (org-less demo path)
+        # we fall back to the bare id.
+        scoped_id = f"{org_id}:{body.save_as}" if org_id else body.save_as
         registry = get_query_registry()
         try:
             registry.register(
-                id=body.save_as,
+                id=scoped_id,
                 sql=sql,
                 name=body.question[:200],
                 params=params if params else None,
@@ -924,7 +1035,7 @@ async def generate_sql_endpoint(
                 str(_exc),
                 409,
             ) from _exc
-        registered_id = body.save_as
+        registered_id = scoped_id
 
     await _record_ai_call(_user, org_id, endpoint="ai_sql")
 

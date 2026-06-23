@@ -1611,7 +1611,9 @@ async def resolve_provider_data(
     cached = get_base_scan(cache_key)
     if cached is not None:
         try:
-            return _bytes_to_tables(cached)
+            # Offload CPU-bound Arrow IPC deserialisation to a thread pool so
+            # cache-hits near the 64 MiB cap do not block the async event loop.
+            return await asyncio.to_thread(_bytes_to_tables, cached)
         except Exception as exc:  # noqa: BLE001
             logger.warning(
                 "provider cache deserialise failed for key %s: %s — re-executing",
@@ -1663,7 +1665,10 @@ async def resolve_provider_data(
             # Materialized result found — cache + return; no quota charge because
             # no compute was triggered (reads from stored task_run data only).
             try:
-                serialised = _tables_to_bytes(tables, max_bytes=_PROVIDER_MAX_BYTES)
+                # Offload CPU-bound Arrow IPC serialisation to a thread pool.
+                serialised = await asyncio.to_thread(
+                    _tables_to_bytes, tables, _PROVIDER_MAX_BYTES
+                )
                 put_base_scan(
                     cache_key,
                     serialised,
@@ -1819,8 +1824,12 @@ async def resolve_provider_data(
     # _tables_to_bytes raises AppError("provider_result_too_large", 422) EARLY
     # — as soon as the running serialised total would exceed _PROVIDER_MAX_BYTES
     # — so we never fully materialise an oversized payload before the check fires.
+    # Offload CPU-bound Arrow IPC serialisation to a thread pool so the async
+    # event loop is not blocked for tens–hundreds of ms near the 64 MiB cap.
     try:
-        serialised = _tables_to_bytes(tables, max_bytes=_PROVIDER_MAX_BYTES)
+        serialised = await asyncio.to_thread(
+            _tables_to_bytes, tables, _PROVIDER_MAX_BYTES
+        )
         put_base_scan(
             cache_key,
             serialised,

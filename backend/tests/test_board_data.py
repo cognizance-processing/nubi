@@ -2180,6 +2180,125 @@ async def test_first_party_viewer_role_cache_miss_does_not_call_enforce_quota(
     )
 
 
+# ---------------------------------------------------------------------------
+# [MED event-loop] IPC serialisation/deserialisation is offloaded to a thread
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_ipc_serialise_cache_put_uses_to_thread(repo: InMemoryRepo) -> None:
+    """Arrow IPC serialisation (cache-put path) is offloaded via asyncio.to_thread.
+
+    board_data.resolve_provider_data must call _tables_to_bytes inside
+    asyncio.to_thread so the CPU-bound IPC work does not block the event loop.
+
+    We verify this by spying on asyncio.to_thread: at least one call must target
+    _tables_to_bytes.  We also verify the returned tables are correct (sanity
+    check that the offloaded path produces the same data as a direct call).
+    """
+    import app.dashboards.board_data as _bd_mod
+
+    to_thread_calls: list[Any] = []
+    original_to_thread = asyncio.to_thread
+
+    async def _spy_to_thread(func: Any, *args: Any, **kwargs: Any) -> Any:
+        to_thread_calls.append(func)
+        return await original_to_thread(func, *args, **kwargs)
+
+    async def _fake_run(query_id, org_id, _repo, policies):
+        return ["amount"], [[10.0], [20.0]]
+
+    async def _fake_enforce_quota(org_id: str, dimension: str, amount: float = 1.0) -> None:
+        pass
+
+    with (
+        patch("app.features.enforce_quota", side_effect=_fake_enforce_quota),
+        patch("app.dashboards.collect.run_query_rows", side_effect=_fake_run),
+        patch.object(_bd_mod.asyncio, "to_thread", side_effect=_spy_to_thread),
+    ):
+        tables = await resolve_provider_data(
+            board_id=_BOARD_ID,
+            provider_id=_PROVIDER_ID,
+            params={"__ipc_thread_test": "1"},  # unique params → guaranteed cache miss
+            org_id=_ORG,
+            claims={"policies": {}},
+            repo=repo,
+        )
+
+    # Returned data is correct.
+    assert "revenue" in tables
+    assert tables["revenue"].num_rows == 2
+
+    # _tables_to_bytes must have been called via to_thread (cache-put path).
+    assert _bd_mod._tables_to_bytes in to_thread_calls, (
+        "resolve_provider_data must offload _tables_to_bytes to asyncio.to_thread "
+        "(event-loop blocking regression). "
+        f"to_thread was called with: {[getattr(f, '__name__', repr(f)) for f in to_thread_calls]}"
+    )
+
+
+@pytest.mark.asyncio
+async def test_ipc_deserialise_cache_hit_uses_to_thread(repo: InMemoryRepo) -> None:
+    """Arrow IPC deserialisation (cache-hit path) is offloaded via asyncio.to_thread.
+
+    On a cache hit, board_data.resolve_provider_data must call _bytes_to_tables
+    inside asyncio.to_thread.  We prime the cache with one call, then spy on
+    asyncio.to_thread during the second (cache-hit) call to confirm offloading.
+    """
+    import app.dashboards.board_data as _bd_mod
+
+    async def _fake_run(query_id, org_id, _repo, policies):
+        return ["amount"], [[5.0]]
+
+    async def _fake_enforce_quota(org_id: str, dimension: str, amount: float = 1.0) -> None:
+        pass
+
+    _unique_params = {"__ipc_deser_test": "1"}
+
+    # Prime the cache (first call — no spy yet).
+    with (
+        patch("app.features.enforce_quota", side_effect=_fake_enforce_quota),
+        patch("app.dashboards.collect.run_query_rows", side_effect=_fake_run),
+    ):
+        await resolve_provider_data(
+            board_id=_BOARD_ID,
+            provider_id=_PROVIDER_ID,
+            params=_unique_params,
+            org_id=_ORG,
+            claims={"policies": {}},
+            repo=repo,
+        )
+
+    # Second call — spy on to_thread to catch the deserialisation.
+    to_thread_calls: list[Any] = []
+    original_to_thread = asyncio.to_thread
+
+    async def _spy_to_thread(func: Any, *args: Any, **kwargs: Any) -> Any:
+        to_thread_calls.append(func)
+        return await original_to_thread(func, *args, **kwargs)
+
+    with patch.object(_bd_mod.asyncio, "to_thread", side_effect=_spy_to_thread):
+        tables = await resolve_provider_data(
+            board_id=_BOARD_ID,
+            provider_id=_PROVIDER_ID,
+            params=_unique_params,
+            org_id=_ORG,
+            claims={"policies": {}},
+            repo=repo,
+        )
+
+    # Data returned correctly from cache.
+    assert "revenue" in tables
+    assert tables["revenue"].num_rows == 1
+
+    # _bytes_to_tables must have been called via to_thread (cache-hit path).
+    assert _bd_mod._bytes_to_tables in to_thread_calls, (
+        "resolve_provider_data must offload _bytes_to_tables to asyncio.to_thread "
+        "on a cache hit (event-loop blocking regression). "
+        f"to_thread was called with: {[getattr(f, '__name__', repr(f)) for f in to_thread_calls]}"
+    )
+
+
 @pytest.mark.asyncio
 async def test_first_party_writer_role_cache_miss_calls_enforce_quota(
     repo: InMemoryRepo,
