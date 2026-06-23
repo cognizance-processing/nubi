@@ -158,9 +158,36 @@ def _get_hmac_key() -> bytes:
     # and a BLANK/whitespace-only ENV both normalise to '' after .strip(), which
     # is NOT in the allowlist: a docker/helm deployment that forgets to set ENV
     # must not silently fall back to the public sentinel — it must fail closed.
-    _DEV_ALLOWLIST = {"dev", "development", "test", "testing", "ci"}
+    # Environments where the dev sentinel is ALWAYS safe (no extra checks needed).
+    _UNCONDITIONAL_DEV_ALLOWLIST = {"dev", "development", "ci"}
+    # Environments where the sentinel is only safe when actually running under
+    # pytest — a real server (e.g. CD staging) may set ENV=test, which would
+    # expose the publicly-known sentinel key and allow pickle-RCE via a crafted
+    # blob.  Gate these on the presence of pytest runtime signals.
+    _PYTEST_GATED_ALLOWLIST = {"test", "testing"}
     env = os.environ.get("ENV", "").strip().lower()
-    if env not in _DEV_ALLOWLIST:
+    if env in _UNCONDITIONAL_DEV_ALLOWLIST:
+        pass  # fall through to sentinel
+    elif env in _PYTEST_GATED_ALLOWLIST:
+        # Only allow the sentinel when we are genuinely running under pytest.
+        # Two reliable signals: the env var pytest sets on every test item, and
+        # the presence of the 'pytest' module in sys.modules (set at collection).
+        import sys  # noqa: PLC0415
+        _under_pytest = (
+            "PYTEST_CURRENT_TEST" in os.environ
+            or "pytest" in sys.modules
+        )
+        if not _under_pytest:
+            raise RuntimeError(
+                f"Artifact HMAC key is not configured (ENV={env!r}) and the "
+                "process does not appear to be running under pytest. "
+                "Set NUBI_ARTIFACT_HMAC_KEY (or NUBI_SECRET_KEY) before "
+                "starting the server. Refusing to sign/verify artifacts with "
+                "an insecure dev-only sentinel key — a staging/CD server with "
+                "ENV=test and no key set is exploitable for pickle RCE."
+            )
+        # Under pytest with ENV=test/testing: fall through to sentinel.
+    else:
         raise RuntimeError(
             f"Artifact HMAC key is not configured (ENV={env!r}). "
             "Set NUBI_ARTIFACT_HMAC_KEY (or NUBI_SECRET_KEY) before starting "

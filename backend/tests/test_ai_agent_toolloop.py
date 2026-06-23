@@ -364,7 +364,7 @@ class TestQueryMetricTool:
 
 import uuid
 
-from app.metrics.models import Dimension, Measure, MetricDefinition
+from app.metrics.models import Dimension, DerivedMeasure, Measure, MetricDefinition
 from app.metrics import registry as _reg
 
 
@@ -459,3 +459,157 @@ class TestQueryMetricTenantIsolation:
         )
         assert "error" not in result
         assert result["row_count"] > 0
+
+
+# ---------------------------------------------------------------------------
+# 6. Tool: query_metric — policy_cols hoisted on layered (derived) metric
+# ---------------------------------------------------------------------------
+#
+# [MED engine-correctness] compile_metric must receive policy_cols derived from
+# claims when the metric uses the layered path (derived_measures present) and
+# rls_keys=[].  Without it the __base CTE omits the policy column from its
+# GROUP BY / SELECT, so the planner's injected WHERE policy_col=val hits a
+# column-not-found at runtime.
+#
+# Test strategy:
+#   1. Register a layered metric (derived_measures present, rls_keys=[]) backed
+#      by the in-process demo table.
+#   2. Monkeypatch metric_belongs_to_org → True so the ownership gate passes.
+#   3. Execute query_metric with claims that carry a policy {"active": True}.
+#   4. Assert: no "error" in result, row_count > 0, the derived column is present.
+#      (proves the layered compile + plan + DuckDB execute all succeeded without
+#      a column-not-found error that would have manifested as an exception before
+#      the fix.)
+
+
+class TestQueryMetricLayeredPolicyCols:
+    """Regression test for the missing policy_cols on the layered compile path."""
+
+    def _layered_metric_slug(self) -> str:
+        return "test_layered_active_ratio"
+
+    def _register_layered_metric(self, slug: str) -> None:
+        """Register a metric with derived_measures and rls_keys=[] on demo table."""
+        _reg.get_metric_registry().register(
+            MetricDefinition(
+                id=slug,
+                name="Active ratio (layered)",
+                # Primary base measure (value sum).
+                measure=Measure(name="total_value", agg="sum", expr="value", type="additive"),
+                base_table="demo",
+                dimensions=(
+                    Dimension(name="name", type="text"),
+                    # 'active' column exists on the demo table — it will be used as
+                    # an RLS policy column in claims so the planner tries to inject
+                    # WHERE active = True on the outer SELECT over __base.
+                    Dimension(name="active", type="bool"),
+                ),
+                time_dimension=None,
+                # derived_measures present → compile_metric takes the LAYERED path.
+                derived_measures=(
+                    DerivedMeasure(
+                        name="value_ratio",
+                        formula="total_value / total_value",
+                        format="number",
+                    ),
+                ),
+                # rls_keys=[] → the compiler won't auto-hoist 'active'; it MUST
+                # come from policy_cols derived from claims.
+                rls_keys=(),
+                description="Test-only layered metric for policy_cols regression.",
+            )
+        )
+
+    def test_layered_metric_with_active_rls_policy_executes_correctly(
+        self, monkeypatch
+    ) -> None:
+        """Layered metric + rls_keys=[] + active RLS policy → no column-not-found.
+
+        Before the fix, compile_metric was called without policy_cols, so the
+        'active' column was absent from __base's GROUP BY/SELECT.  The planner's
+        injected WHERE active = True on the outer SELECT would have raised a
+        column-not-found at DuckDB execution time.  After the fix, policy_cols is
+        derived from claims and threaded into compile_metric, which hoists 'active'
+        into __base — the query compiles and executes correctly.
+        """
+        slug = self._layered_metric_slug()
+        self._register_layered_metric(slug)
+
+        # Bypass tenant ownership gate — this test is about compile correctness,
+        # not about multi-tenant isolation.
+        async def _always_owned(*_args, **_kwargs) -> bool:
+            return True
+
+        monkeypatch.setattr("app.metrics.registry.metric_belongs_to_org", _always_owned)
+
+        # Claims carry an RLS policy on 'active' — the planner will inject
+        # WHERE active = True on the outer SELECT over __base.
+        claims = {
+            "kind": "access",
+            "sub": "test-user",
+            "org": str(uuid.uuid4()),
+            "policies": {"active": True},
+            "scope": ["read:*"],
+        }
+
+        result = execute_tool(
+            "query_metric",
+            {
+                "metric_id": slug,
+                "dimensions": ["name"],
+            },
+            claims,
+        )
+
+        # Must succeed — no column-not-found error.
+        assert "error" not in result, f"Unexpected error: {result.get('error')}"
+        assert result["row_count"] > 0
+        # The derived measure column must be present in the output.
+        assert "value_ratio" in result["columns"]
+
+    def test_layered_metric_policy_cols_passed_to_compile(self, monkeypatch) -> None:
+        """Assert policy_cols is derived from claims and forwarded to compile_metric.
+
+        We spy on compile_metric to capture the kwargs it was called with, so this
+        test does NOT depend on DuckDB execution — it purely verifies the fix is in
+        place (the correct argument is forwarded).
+        """
+        from app.metrics import compile as _compile_mod
+
+        slug = self._layered_metric_slug()
+        self._register_layered_metric(slug)
+
+        async def _always_owned(*_args, **_kwargs) -> bool:
+            return True
+
+        monkeypatch.setattr("app.metrics.registry.metric_belongs_to_org", _always_owned)
+
+        captured: list[tuple] = []
+        _orig_compile = _compile_mod.compile_metric
+
+        def _spy_compile(metric, mq, **kwargs):
+            captured.append((metric, mq, kwargs))
+            return _orig_compile(metric, mq, **kwargs)
+
+        monkeypatch.setattr(_compile_mod, "compile_metric", _spy_compile)
+
+        claims = {
+            "kind": "access",
+            "sub": "test-user",
+            "org": str(uuid.uuid4()),
+            "policies": {"active": True},
+            "scope": ["read:*"],
+        }
+
+        execute_tool(
+            "query_metric",
+            {"metric_id": slug, "dimensions": ["name"]},
+            claims,
+        )
+
+        # compile_metric must have been called exactly once.
+        assert len(captured) == 1
+        _, _, kwargs = captured[0]
+        # policy_cols must be derived from claims["policies"] keys.
+        assert "policy_cols" in kwargs
+        assert "active" in kwargs["policy_cols"]

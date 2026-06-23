@@ -1563,3 +1563,134 @@ def test_normal_json_round_trip_after_fix():
     assert is_handle(handle)
     loaded = get_artifact(handle, org_id=ORG_A, store=art_store)
     assert loaded == obj
+
+
+# ---------------------------------------------------------------------------
+# 29. LOW deser: ENV=test without pytest signals must fail-closed (not use sentinel)
+# ---------------------------------------------------------------------------
+
+
+def test_env_test_without_pytest_signals_raises():
+    """ENV=test on a real server (no pytest runtime signals) must raise RuntimeError.
+
+    SECURITY (LOW deser): ENV=test is common in CD/staging pipelines.  Before
+    this fix, a staging server with ENV=test and no NUBI_ARTIFACT_HMAC_KEY would
+    silently use the public dev sentinel key, making pickle RCE trivial for any
+    attacker with object-store write access.
+
+    The fix gates the 'test'/'testing' sentinel allowlist on ACTUALLY running
+    under pytest (PYTEST_CURRENT_TEST env var or 'pytest' in sys.modules).
+    Simulating the non-pytest case requires temporarily removing both signals.
+    """
+    import os  # noqa: PLC0415
+    import sys  # noqa: PLC0415
+    import unittest.mock  # noqa: PLC0415
+
+    art_store = _mem_store()
+
+    # Build an env that has ENV=test but no HMAC keys and no pytest signals.
+    env_without_keys = {
+        k: v for k, v in os.environ.items()
+        if k not in ("NUBI_ARTIFACT_HMAC_KEY", "NUBI_SECRET_KEY", "PYTEST_CURRENT_TEST")
+    }
+    env_without_keys["ENV"] = "test"
+
+    # Also temporarily remove 'pytest' from sys.modules so the code cannot
+    # detect the pytest runtime via sys.modules.
+    pytest_mod = sys.modules.pop("pytest", None)
+    try:
+        with unittest.mock.patch.dict("os.environ", env_without_keys, clear=True):
+            with pytest.raises(RuntimeError, match="not configured|does not appear to be running under pytest"):
+                put_artifact({"x": 1}, kind="json", org_id=ORG_A, store=art_store)
+    finally:
+        # Restore pytest in sys.modules so subsequent tests work normally.
+        if pytest_mod is not None:
+            sys.modules["pytest"] = pytest_mod
+
+
+def test_env_test_under_pytest_sentinel_allowed():
+    """ENV=test when genuinely running under pytest allows the dev sentinel (with a warning).
+
+    This preserves the existing test-suite behaviour: pytest tests with ENV=test
+    and no HMAC key set can still sign/verify artifacts using the dev sentinel.
+    The sentinel is only blocked for non-pytest processes (e.g. a CD server).
+    """
+    import os  # noqa: PLC0415
+    import warnings  # noqa: PLC0415
+    import unittest.mock  # noqa: PLC0415
+
+    art_store = _mem_store()
+
+    # Build an env that has ENV=test but no HMAC keys.
+    # We intentionally do NOT remove PYTEST_CURRENT_TEST so the guard can detect
+    # we are under pytest via that signal (set automatically by pytest for each test).
+    env_test = {
+        k: v for k, v in os.environ.items()
+        if k not in ("NUBI_ARTIFACT_HMAC_KEY", "NUBI_SECRET_KEY")
+    }
+    env_test["ENV"] = "test"
+
+    with unittest.mock.patch.dict("os.environ", env_test, clear=True):
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            handle = put_artifact({"sentinel_test": True}, kind="json", org_id=ORG_A, store=art_store)
+            loaded = get_artifact(handle, org_id=ORG_A, store=art_store)
+
+    assert is_handle(handle)
+    assert loaded == {"sentinel_test": True}
+    # A warning about the insecure sentinel key must have been emitted.
+    sentinel_warnings = [
+        w for w in caught
+        if "insecure" in str(w.message).lower()
+        or "sentinel" in str(w.message).lower()
+        or "not set" in str(w.message).lower()
+    ]
+    assert len(sentinel_warnings) >= 1, (
+        f"Expected at least one sentinel warning for ENV=test under pytest; "
+        f"got: {[str(w.message) for w in caught]}"
+    )
+
+
+def test_env_dev_no_hmac_key_sentinel_allowed_no_pytest_check():
+    """ENV=dev never requires pytest signals — it always allows the dev sentinel.
+
+    Confirms that the pytest-gate only applies to ENV=test/testing, not to
+    ENV=dev/development/ci which are unconditionally in the safe allowlist.
+    """
+    import os  # noqa: PLC0415
+    import sys  # noqa: PLC0415
+    import warnings  # noqa: PLC0415
+    import unittest.mock  # noqa: PLC0415
+
+    art_store = _mem_store()
+
+    env_dev = {
+        k: v for k, v in os.environ.items()
+        if k not in ("NUBI_ARTIFACT_HMAC_KEY", "NUBI_SECRET_KEY", "PYTEST_CURRENT_TEST")
+    }
+    env_dev["ENV"] = "dev"
+
+    # Remove pytest from sys.modules to confirm the gate is not applied for dev.
+    pytest_mod = sys.modules.pop("pytest", None)
+    try:
+        with unittest.mock.patch.dict("os.environ", env_dev, clear=True):
+            with warnings.catch_warnings(record=True) as caught:
+                warnings.simplefilter("always")
+                handle = put_artifact({"dev_test": 1}, kind="json", org_id=ORG_A, store=art_store)
+                loaded = get_artifact(handle, org_id=ORG_A, store=art_store)
+    finally:
+        if pytest_mod is not None:
+            sys.modules["pytest"] = pytest_mod
+
+    assert is_handle(handle)
+    assert loaded == {"dev_test": 1}
+    # Sentinel warning must have been emitted.
+    sentinel_warnings = [
+        w for w in caught
+        if "insecure" in str(w.message).lower()
+        or "sentinel" in str(w.message).lower()
+        or "not set" in str(w.message).lower()
+    ]
+    assert len(sentinel_warnings) >= 1, (
+        f"Expected sentinel warning for ENV=dev; got: {[str(w.message) for w in caught]}"
+    )

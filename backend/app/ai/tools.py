@@ -412,6 +412,13 @@ def _tool_query_metric(
             }
 
     # ── Build the MetricQuery + compile to (sql, params) — governance here ──
+    # CORRECTNESS (RLS top-N): derive policy_cols from claims so the layered
+    # __base CTE hoists the policy column into its GROUP BY/SELECT before the
+    # planner injects WHERE policy_col=val on the outer query.  Without this,
+    # a metric with derived_measures (layered path) and rls_keys=[] would emit
+    # a __base that omits the policy column — causing a column-not-found at
+    # runtime.  Mirrors routes/metrics.py (~740-742).
+    policy_cols = tuple((claims.get("policies") or {}).keys())
     try:
         mq = MetricQuery.from_dict(
             {
@@ -422,7 +429,7 @@ def _tool_query_metric(
                 "limit": limit,
             }
         )
-        sql, named_params = compile_metric(metric, mq)
+        sql, named_params = compile_metric(metric, mq, policy_cols=policy_cols)
     except MetricError as exc:
         return {"error": {"code": exc.code, "message": exc.message}}
 
