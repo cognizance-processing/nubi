@@ -716,6 +716,16 @@ async def advance_readiness(
         except Exception:  # noqa: BLE001
             logger.debug("Downstream trigger hook failed for flow_run %s", flow_run_id, exc_info=True)
 
+        # [LOW resource] Evict the per-run artifact count entry so
+        # _run_artifact_counts does not accumulate one entry per completed run
+        # forever in long-lived workers (only reset_run_artifact_counts() existed
+        # before, which is test-only and clears the entire dict).
+        try:
+            from app.flows.artifacts import evict_run_artifact_count  # noqa: PLC0415
+            evict_run_artifact_count(flow_run_id)
+        except Exception:  # noqa: BLE001
+            logger.debug("evict_run_artifact_count failed for flow_run %s", flow_run_id, exc_info=True)
+
 
 # ---------------------------------------------------------------------------
 # Map fan-out helpers

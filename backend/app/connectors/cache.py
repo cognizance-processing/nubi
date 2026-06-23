@@ -677,10 +677,26 @@ class RedisCacheBackend:
         When value keys expire (TTL) Redis removes them automatically, but
         their ids remain in the tag SET indefinitely, causing the set to grow
         without bound.  During invalidation we call ``EXISTS`` on all candidate
-        keys and ``SREM`` any that have already expired before deleting the
-        remaining live ones.  This prevents the tag set from accumulating
-        unbounded stale member ids between invalidation calls, and ensures the
-        returned count reflects only entries that were actually deleted.
+        keys via a **pipeline** (single round-trip) and ``SREM`` any that have
+        already expired before deleting the remaining live ones.  This prevents
+        the tag set from accumulating unbounded stale member ids between
+        invalidation calls, and ensures the returned count reflects only
+        entries that were actually deleted.
+
+        Round-trip complexity
+        ---------------------
+        The previous implementation called ``EXISTS`` once per tag member (N
+        round-trips for a tag with N members).  The batched implementation
+        uses a Redis pipeline so the entire EXISTS fan-out is a single
+        round-trip regardless of tag set size.  Total round-trips per
+        ``invalidate`` call:
+
+        1. ``SMEMBERS tag_key``  — fetch all member ids
+        2. ``pipeline(EXISTS key1, EXISTS key2, ...).execute()``  — single
+           round-trip for all liveness checks
+        3. ``DEL live_key1 live_key2 ... tag_key``  — single bulk delete
+
+        = O(1) round-trips (3 regardless of N).
         """
         client = self._client()
         if client is None:
@@ -697,20 +713,42 @@ class RedisCacheBackend:
                 m if isinstance(m, (bytes, bytearray)) else str(m).encode()
                 for m in members
             ]
-            # Prune stale members — keys whose value has already expired.
-            # ``EXISTS`` returns the count of keys that exist; we check each
-            # key individually so we know which ones are live vs stale.
+            # Batch-check liveness of all member keys in a single pipeline
+            # round-trip instead of N individual EXISTS calls.
+            key_strs = [
+                vk.decode("utf-8", "replace") if isinstance(vk, (bytes, bytearray)) else vk
+                for vk in all_value_keys
+            ]
+            exists_results: list[int] = []
+            pipeline = getattr(client, "pipeline", None)
+            if callable(pipeline):
+                # Preferred path: batch via pipeline (O(1) round-trips).
+                pipe = pipeline()
+                for ks in key_strs:
+                    pipe.exists(ks)
+                try:
+                    exists_results = pipe.execute()
+                except Exception:  # noqa: BLE001 — fall back to scalar path
+                    exists_results = []
+            if not exists_results:
+                # Fallback: scalar EXISTS per key (legacy / no-pipeline client).
+                exists_fn = getattr(client, "exists", None)
+                if callable(exists_fn):
+                    for ks in key_strs:
+                        try:
+                            exists_results.append(1 if exists_fn(ks) else 0)
+                        except Exception:  # noqa: BLE001
+                            exists_results.append(0)
+                else:
+                    # No exists at all — treat all keys as live (safe: spurious
+                    # DEL on an absent key is a no-op in Redis).
+                    exists_results = [1] * len(all_value_keys)
             live_keys: list[bytes] = []
             stale_keys: list[bytes] = []
-            for vk in all_value_keys:
-                try:
-                    exists_fn = getattr(client, "exists", None)
-                    key_str = vk.decode("utf-8", "replace") if isinstance(vk, (bytes, bytearray)) else vk
-                    if callable(exists_fn) and exists_fn(key_str):
-                        live_keys.append(vk)
-                    else:
-                        stale_keys.append(vk)
-                except Exception:  # noqa: BLE001 — treat as stale on error
+            for vk, alive in zip(all_value_keys, exists_results):
+                if alive:
+                    live_keys.append(vk)
+                else:
                     stale_keys.append(vk)
             # Remove stale member ids from the set so it doesn't grow unbounded.
             if stale_keys:

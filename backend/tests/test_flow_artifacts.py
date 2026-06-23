@@ -30,6 +30,7 @@ import pytest
 from app.flows.artifacts import (
     InMemoryArtifactStore,
     ObjectStoreArtifactStore,
+    evict_run_artifact_count,
     get_artifact,
     get_artifact_store,
     is_handle,
@@ -1935,3 +1936,76 @@ def test_per_run_artifact_count_no_run_id_skips_cap():
                 assert is_handle(h)
     finally:
         reset_run_artifact_counts()
+
+
+# ---------------------------------------------------------------------------
+# 33. LOW resource: evict_run_artifact_count removes the entry on run finalize
+# ---------------------------------------------------------------------------
+
+
+async def test_evict_run_artifact_count_on_run_finalize():
+    """After a flow run finalizes, its _run_artifact_counts entry must be evicted.
+
+    LOW resource fix: _run_artifact_counts accumulated one entry per completed
+    run forever in long-lived workers (only reset_run_artifact_counts() existed,
+    which is test-only).  The fix adds evict_run_artifact_count(run_id) called
+    from advance_readiness when a flow run reaches a terminal state.
+
+    Verify:
+    1. put_artifact during the run increments the counter.
+    2. After drain_flow_run completes (terminal state), the entry is gone.
+    3. evict_run_artifact_count is idempotent (second call is a no-op).
+    """
+    import unittest.mock  # noqa: PLC0415
+    from app.flows import artifacts as _art_mod  # noqa: PLC0415
+
+    reset_for_tests()
+    art_store = _mem_store()
+    set_artifact_store(art_store)
+
+    flow_store = InMemoryFlowStore()
+    set_flow_store(flow_store)
+
+    spec = {
+        "version": 1,
+        "name": "evict_test_flow",
+        "tasks": [
+            {
+                "key": "produce",
+                "kind": "python",
+                "needs": [],
+                "config": {
+                    "code": (
+                        "handle = ctx.put_artifact({'v': 1}, kind='json', name='x')\n"
+                        "result = {'handle': handle}\n"
+                    )
+                },
+                "timeout_s": 30,
+            }
+        ],
+    }
+
+    flow = await _make_flow(flow_store, spec, org_id="org-test")
+    run = await materialize_flow_run(flow_store, flow, {}, "manual", NOW)
+    run_id = run["id"]
+
+    # Seed a counter so we can confirm it exists before finalization.
+    with unittest.mock.patch.object(_art_mod, "_ARTIFACT_MAX_PER_RUN", 100):
+        final = await drain_flow_run(
+            flow_store, run_id, NOW, {"org_id": "org-test", "sub": "u1"}
+        )
+
+    assert final["state"] == "success", f"Flow failed: {final}"
+
+    # After finalization the counter must have been evicted.
+    with _art_mod._run_artifact_counts_lock:
+        assert run_id not in _art_mod._run_artifact_counts, (
+            f"_run_artifact_counts still contains run {run_id!r} after finalization; "
+            "expected it to be evicted when the flow run reached a terminal state."
+        )
+
+    # evict_run_artifact_count is idempotent — calling again must not raise.
+    evict_run_artifact_count(run_id)
+
+    set_artifact_store(None)
+    set_flow_store(None)

@@ -790,6 +790,20 @@ def reset_run_artifact_counts() -> None:
         _run_artifact_counts.clear()
 
 
+def evict_run_artifact_count(run_id: str) -> None:
+    """Remove the per-run artifact counter for *run_id* (if present).
+
+    Called by the runtime when a flow run reaches a terminal state so that
+    the ``_run_artifact_counts`` dict does not accumulate one entry per
+    completed run forever in long-lived workers.
+
+    Thread-safe (acquires ``_run_artifact_counts_lock``).  No-op when
+    *run_id* is not in the dict (idempotent — safe to call multiple times).
+    """
+    with _run_artifact_counts_lock:
+        _run_artifact_counts.pop(run_id, None)
+
+
 # ---------------------------------------------------------------------------
 # High-level helpers used by TaskContext
 # ---------------------------------------------------------------------------

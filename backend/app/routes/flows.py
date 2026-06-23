@@ -61,6 +61,24 @@ _MAX_BACKFILL_WINDOWS: int = int(os.environ.get("MAX_BACKFILL_WINDOWS", "500"))
 _MAX_WRITEBACK_ROWS: int = int(os.environ.get("NUBI_MAX_WRITEBACK_ROWS", "10000"))
 
 # ---------------------------------------------------------------------------
+# Single-run wall-clock cap (HIGH resource — unbounded drain on request path)
+# ---------------------------------------------------------------------------
+# POST /flows/{id}/run, /flows/blend, and /flows/run-cell call drain_flow_run
+# on the REQUEST coroutine.  Without a wall-clock bound a pathological flow
+# (deep DAG, slow tasks, hot retry loops) pins the worker for thousands of
+# seconds.  We mirror the sweep/backfill/provider paths: pass
+# ``wall_timeout_s=_RUN_TIMEOUT_S`` into the engine AND wrap the call in an
+# outer ``asyncio.wait_for`` as a hard belt-and-braces ceiling.  Either bound
+# firing surfaces as ``AppError('run_timeout', 504)``.
+_RUN_TIMEOUT_S: float = float(os.environ.get("RUN_TIMEOUT_S", "300"))
+
+# Max byte size of a single sweep param_sets entry (echoed back uncapped in the
+# sweep response).  Enforced at parse time by a SweepIn validator -> 422.
+_MAX_PARAM_SET_BYTES: int = int(
+    os.environ.get("NUBI_MAX_PARAM_SET_BYTES", str(64 * 1024))
+)
+
+# ---------------------------------------------------------------------------
 # Task-log response cap (MED resource — unbounded log response)
 # ---------------------------------------------------------------------------
 # GET /flows/runs/{run_id}/tasks/{task_key}/logs returns the captured task log
@@ -550,6 +568,29 @@ def _snapshot_owner_policies(
     return spec_copy
 
 
+def _strip_owner_policies(spec: Any) -> Any:
+    """Return *spec* with ``OWNER_POLICIES_KEY`` removed from runtime_config.
+
+    SECURITY (B2 — single source of truth): the owner's RLS predicate snapshot
+    is stashed under ``spec.runtime_config[OWNER_POLICIES_KEY]`` so the
+    scheduler tick can run flows under the owner's policies.  That snapshot must
+    NEVER reach an API client on ANY path (``_serialize_flow``, the pinned-spec
+    branch of ``GET /flows/{id}?env=…``, etc.).  This helper is the ONE place
+    that performs the strip; all outbound paths route through it.
+
+    Returns *spec* unchanged when it is not a dict or carries no snapshot.  Does
+    NOT mutate the input — a shallow copy is made only when a strip is needed,
+    so the live store value is left intact.
+    """
+    if not spec or not isinstance(spec, dict):
+        return spec
+    rc = spec.get("runtime_config")
+    if rc and isinstance(rc, dict) and OWNER_POLICIES_KEY in rc:
+        rc_copy = {k: v for k, v in rc.items() if k != OWNER_POLICIES_KEY}
+        return {**spec, "runtime_config": rc_copy}
+    return spec
+
+
 def _serialize_flow(flow: dict[str, Any]) -> dict[str, Any]:
     """Convert a flow dict to a JSON-serialisable form.
 
@@ -558,13 +599,7 @@ def _serialize_flow(flow: dict[str, Any]) -> dict[str, Any]:
     viewer-role org members).  The stored DB value is intentionally left intact
     so the scheduler tick can still read the snapshot at run time.
     """
-    spec = flow["spec"]
-    if spec and isinstance(spec, dict):
-        rc = spec.get("runtime_config")
-        if rc and OWNER_POLICIES_KEY in rc:
-            # Shallow-copy only what we need to avoid mutating the live store.
-            rc_copy = {k: v for k, v in rc.items() if k != OWNER_POLICIES_KEY}
-            spec = {**spec, "runtime_config": rc_copy}
+    spec = _strip_owner_policies(flow["spec"])
 
     return {
         "id": flow["id"],
@@ -724,6 +759,41 @@ async def _pinned_version_for_env(
     if version is None:
         return None, None
     return version["config"] or {}, {"id": version["id"], "version": version["version"]}
+
+
+async def _drain_with_timeout(
+    store: Any,
+    flow_run_id: str,
+    now: datetime,
+    claims: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """Drain *flow_run_id* under a hard wall-clock bound.
+
+    SECURITY/RESOURCE (HIGH): every request-path ``drain_flow_run`` call MUST
+    route through here so a pathological flow cannot pin the worker.  We mirror
+    the sweep/backfill/provider paths: pass ``wall_timeout_s=_RUN_TIMEOUT_S``
+    into the engine (so the drain loop self-aborts between steps) AND wrap the
+    coroutine in an outer ``asyncio.wait_for`` as a belt-and-braces ceiling for
+    a single task that blocks past the loop check.  Either bound firing →
+    ``AppError('run_timeout', 504)``.
+    """
+    try:
+        return await asyncio.wait_for(
+            drain_flow_run(
+                store,
+                flow_run_id,
+                now,
+                claims=claims,
+                wall_timeout_s=_RUN_TIMEOUT_S,
+            ),
+            timeout=_RUN_TIMEOUT_S,
+        )
+    except asyncio.TimeoutError:
+        raise AppError(
+            "run_timeout",
+            f"Flow run exceeded the server wall-clock limit of {_RUN_TIMEOUT_S}s.",
+            504,
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -983,7 +1053,7 @@ async def create_blend(
         "scope": ["read:*", "write:*"],
     }
     flow_run = await materialize_flow_run(store, flow, {}, "manual", now)
-    flow_run = await drain_flow_run(store, flow_run["id"], now, claims=claims)
+    flow_run = await _drain_with_timeout(store, flow_run["id"], now, claims=claims)
 
     # Cap task_runs in the response (mirrors GET /flows/runs/{run_id}).
     raw_task_runs = await store.list_task_runs(flow_run["id"], limit=_MAX_TASK_RUNS_CEILING + 1)
@@ -1760,7 +1830,7 @@ async def run_cell(
 
     try:
         flow_run = await materialize_flow_run(store, transient_flow, body.params, "manual", now)
-        flow_run = await drain_flow_run(store, flow_run["id"], now, claims=claims)
+        flow_run = await _drain_with_timeout(store, flow_run["id"], now, claims=claims)
 
         # Cap task_runs in the response (mirrors GET /flows/runs/{run_id}).
         raw_task_runs = await store.list_task_runs(flow_run["id"], limit=_MAX_TASK_RUNS_CEILING + 1)
@@ -2064,7 +2134,10 @@ async def get_flow(
     if env_key:
         pinned_spec, resolved = await _pinned_version_for_env(flow, org_id, env_key)
         if pinned_spec is not None:
-            result["spec"] = pinned_spec
+            # SECURITY (B2): the pinned snapshot is the RAW version['config'] and
+            # may carry the owner's RLS policy snapshot — strip it on this path
+            # too so NO route exposes OWNER_POLICIES_KEY (single source of truth).
+            result["spec"] = _strip_owner_policies(pinned_spec)
         result["resolved_version"] = resolved
     return result
 
@@ -2221,7 +2294,7 @@ async def run_flow(
     flow_run = await materialize_flow_run(
         store, flow, body.params, "manual", now, env=body.env
     )
-    flow_run = await drain_flow_run(store, flow_run["id"], now, claims=claims)
+    flow_run = await _drain_with_timeout(store, flow_run["id"], now, claims=claims)
 
     # Cap task_runs in the response (mirrors GET /flows/runs/{run_id}).
     raw_task_runs = await store.list_task_runs(flow_run["id"], limit=_MAX_TASK_RUNS_CEILING + 1)
@@ -2331,6 +2404,37 @@ class SweepIn(BaseModel):
     grid: dict[str, list[Any]] | None = None
     max_cells: int = Field(default=200, ge=1, le=10000)
 
+    @field_validator("param_sets")
+    @classmethod
+    def _cap_param_set_size(
+        cls, v: list[dict[str, Any]] | None
+    ) -> list[dict[str, Any]] | None:
+        """Reject oversized param_sets entries at parse time (-> 422).
+
+        RESOURCE (MED): the sweep response echoes each cell's ``params`` back to
+        the caller VERBATIM and uncapped.  A caller could stuff megabytes into a
+        single param dict and have it reflected (amplified per cell).  Cap each
+        entry's serialised size at ``_MAX_PARAM_SET_BYTES`` (64 KiB default).
+        """
+        if not v:
+            return v
+        import json as _json  # noqa: PLC0415
+
+        for idx, entry in enumerate(v):
+            try:
+                size = len(_json.dumps(entry, default=str).encode("utf-8", "replace"))
+            except Exception as exc:  # noqa: BLE001
+                raise ValueError(
+                    f"param_sets[{idx}] is not JSON-serialisable: {exc}"
+                ) from exc
+            if size > _MAX_PARAM_SET_BYTES:
+                raise ValueError(
+                    f"param_sets[{idx}] serialised size ({size} bytes) exceeds the "
+                    f"server cap of {_MAX_PARAM_SET_BYTES} bytes "
+                    "(NUBI_MAX_PARAM_SET_BYTES)."
+                )
+        return v
+
     @field_validator("grid", mode="before")
     @classmethod
     def _cap_grid_product(cls, v: Any) -> Any:
@@ -2369,7 +2473,12 @@ class BackfillIn(BaseModel):
     start: str  # ISO-8601 datetime string
     end: str  # ISO-8601 datetime string
     window: str  # e.g. '1d', 'daily', 'PT1H'
-    max_windows: int = Field(default=500, ge=1, le=10000)
+    # Schema ceiling mirrors the server cap (_MAX_BACKFILL_WINDOWS) so the
+    # Pydantic bound never exceeds what the route enforces (the route still
+    # clamps via min(...) as defence-in-depth).
+    max_windows: int = Field(
+        default=min(500, _MAX_BACKFILL_WINDOWS), ge=1, le=_MAX_BACKFILL_WINDOWS
+    )
     params: dict[str, Any] = {}
 
 

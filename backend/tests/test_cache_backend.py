@@ -242,6 +242,37 @@ def test_purge_correctness_multi_tag_key_eviction():
 # ===========================================================================
 
 
+class FakePipeline:
+    """Minimal pipeline stub for FakeRedis.
+
+    Records queued commands and executes them against the parent FakeRedis
+    when ``execute()`` is called.  Tracks the number of ``execute()`` calls
+    so tests can assert that batching (not per-key round-trips) was used.
+    """
+
+    def __init__(self, parent: "FakeRedis") -> None:
+        self._parent = parent
+        self._queue: list[tuple[str, tuple]] = []
+
+    def exists(self, key: str) -> "FakePipeline":
+        self._queue.append(("exists", (key,)))
+        return self
+
+    def execute(self) -> list:
+        results = []
+        for cmd, args in self._queue:
+            if cmd == "exists":
+                # Access the kv store directly — do NOT call parent.exists()
+                # so that exists_call_count stays at 0 for the pipeline path.
+                k = args[0]
+                if isinstance(k, (bytes, bytearray)):
+                    k = k.decode("utf-8", "replace")
+                results.append(1 if k in self._parent.kv else 0)
+        self._queue.clear()
+        self._parent.pipeline_execute_count += 1
+        return results
+
+
 class FakeRedis:
     """A tiny dict-backed stand-in for redis.Redis (subset of the API used).
 
@@ -253,6 +284,11 @@ class FakeRedis:
       entries; just tracks the call so tests can assert it was made).
     - ``exists(key)`` — returns 1 if the key is in kv, else 0.
     - ``srem(key, *members)`` — removes members from a set.
+    - ``pipeline()`` — returns a ``FakePipeline`` for batched command testing.
+    - ``pipeline_execute_count`` — tracks how many pipeline.execute() calls were
+      made so tests can assert O(1) round-trips rather than O(N).
+    - ``exists_call_count`` — tracks direct (non-pipeline) exists() calls so
+      tests can assert the N+1 path is NOT taken.
     """
 
     def __init__(self) -> None:
@@ -260,6 +296,9 @@ class FakeRedis:
         self.sets: dict[str, set[bytes]] = {}
         # Records (key, ttl) pairs from expire() calls (for assertion in tests).
         self.expire_calls: list[tuple[str, int]] = []
+        # Counters for asserting batched vs scalar access patterns.
+        self.pipeline_execute_count: int = 0
+        self.exists_call_count: int = 0
 
     def ping(self) -> bool:
         return True
@@ -297,6 +336,7 @@ class FakeRedis:
 
     def exists(self, key: str) -> int:
         """Return 1 if *key* exists in kv, else 0 (mirrors redis-py EXISTS)."""
+        self.exists_call_count += 1
         k = key.decode("utf-8", "replace") if isinstance(key, (bytes, bytearray)) else key
         return 1 if k in self.kv else 0
 
@@ -323,6 +363,10 @@ class FakeRedis:
         prefix = pattern[:-1] if pattern.endswith("*") else pattern
         all_keys = list(self.kv.keys()) + list(self.sets.keys())
         return [k.encode() for k in all_keys if k.startswith(prefix)]
+
+    def pipeline(self) -> FakePipeline:
+        """Return a FakePipeline that batches commands against this store."""
+        return FakePipeline(self)
 
 
 @pytest.fixture
@@ -512,6 +556,107 @@ def test_redis_invalidate_all_stale_members_do_not_inflate_count(fake_redis):
 
     # Tag set must have been cleaned up.
     assert "nubi:cache:tag:org:stale" not in fake_redis.sets
+
+
+# ---------------------------------------------------------------------------
+# Batched invalidation — O(1) round-trips, not O(N) [LOW perf fix]
+# ---------------------------------------------------------------------------
+
+
+def test_redis_invalidate_uses_pipeline_not_per_key_exists(fake_redis):
+    """invalidate(tag) must batch EXISTS checks via a pipeline, not N scalar calls.
+
+    Before the fix: invalidate() called EXISTS once per tag member in a loop —
+    N Redis round-trips for a tag with N members (O(N) network cost).
+
+    After the fix: a single pipeline.execute() issues all EXISTS commands in
+    one round-trip regardless of N.
+
+    This test:
+    1. Puts N=50 entries under a common tag.
+    2. Calls invalidate(tag).
+    3. Asserts pipeline.execute() was called exactly once (O(1) round-trips),
+       NOT 50 individual exists() calls.
+    4. Asserts ALL 50 entries were actually invalidated (correctness preserved).
+    """
+    N = 50
+    backend = RedisCacheBackend(ttl=300)
+    for i in range(N):
+        backend.put(f"batch_key_{i}", f"v{i}".encode(), tags=["org:batch"])
+
+    # All N entries are live in the fake store.
+    assert len(fake_redis.smembers("nubi:cache:tag:org:batch")) == N
+
+    # Reset counters to measure only the invalidate() call.
+    fake_redis.pipeline_execute_count = 0
+    fake_redis.exists_call_count = 0
+
+    removed = backend.invalidate("org:batch")
+
+    # --- Correctness: all N entries must have been evicted ---
+    assert removed == N, (
+        f"Expected {N} entries invalidated, got {removed}. "
+        "Batch invalidation must still evict every tagged key."
+    )
+    for i in range(N):
+        assert backend.get(f"batch_key_{i}") is None, (
+            f"batch_key_{i} should have been invalidated but get() returned a value."
+        )
+    assert "nubi:cache:tag:org:batch" not in fake_redis.sets, (
+        "Tag set must be deleted after full invalidation."
+    )
+
+    # --- Perf: pipeline.execute() called once, not N scalar exists() calls ---
+    assert fake_redis.pipeline_execute_count == 1, (
+        f"Expected exactly 1 pipeline.execute() call (O(1) round-trips), "
+        f"got {fake_redis.pipeline_execute_count}. "
+        "invalidate() must batch EXISTS checks via a pipeline."
+    )
+    # Direct (non-pipeline) exists() calls should be 0 — the pipeline path
+    # handles all liveness checks internally via FakePipeline.exists().
+    assert fake_redis.exists_call_count == 0, (
+        f"Expected 0 direct exists() calls (pipeline handles liveness checks), "
+        f"got {fake_redis.exists_call_count}. "
+        "The N+1 scalar EXISTS loop must not be taken when pipeline is available."
+    )
+
+
+def test_redis_invalidate_pipeline_mixed_live_and_stale(fake_redis):
+    """Pipeline-based invalidation correctly separates live vs stale keys.
+
+    With N entries where half have expired, invalidate() via pipeline must:
+    - Return the count of LIVE (non-expired) entries only.
+    - SREM the stale ids from the tag set.
+    - DEL only the live value keys.
+    All in O(1) round-trips.
+    """
+    N = 20
+    backend = RedisCacheBackend(ttl=300)
+    for i in range(N):
+        backend.put(f"mix_key_{i}", f"v{i}".encode(), tags=["org:mix"])
+
+    # Simulate half expiring (odd-indexed keys removed from kv).
+    stale_indices = list(range(1, N, 2))  # 1, 3, 5, ... 19
+    live_indices = list(range(0, N, 2))   # 0, 2, 4, ... 18
+    for i in stale_indices:
+        del fake_redis.kv[f"nubi:cache:mix_key_{i}"]
+
+    fake_redis.pipeline_execute_count = 0
+    removed = backend.invalidate("org:mix")
+
+    # Only live entries count.
+    assert removed == len(live_indices), (
+        f"Expected {len(live_indices)} live entries deleted, got {removed}."
+    )
+    # Live keys must be gone.
+    for i in live_indices:
+        assert backend.get(f"mix_key_{i}") is None
+    # Tag set cleaned up.
+    assert "nubi:cache:tag:org:mix" not in fake_redis.sets
+    # Still batched.
+    assert fake_redis.pipeline_execute_count == 1, (
+        "Mixed live/stale invalidation must still use a single pipeline.execute()."
+    )
 
 
 # ===========================================================================

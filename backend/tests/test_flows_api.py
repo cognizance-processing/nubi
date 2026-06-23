@@ -853,3 +853,126 @@ class TestOwnerPoliciesNotExposed:
         assert OWNER_POLICIES_KEY in stored_rc, (
             "Stored spec must retain __owner_policies__ for the scheduler tick"
         )
+
+
+# ---------------------------------------------------------------------------
+# FIX [HIGH resource] audit-43 #1: request-path runs are wall-clock bounded
+# ---------------------------------------------------------------------------
+
+
+class TestRunWallClockTimeout:
+    """A pathological/slow drain must 504 at _RUN_TIMEOUT_S — never pin the worker."""
+
+    @pytest.mark.asyncio
+    async def test_run_flow_504_on_timeout(self, flows_client, monkeypatch):
+        import asyncio as _asyncio
+
+        import app.routes.flows as flows_mod
+
+        client, alice_id, org_id, store, repo = flows_client
+
+        create_resp = await client.post(
+            "/api/v1/flows",
+            json={"name": "Slow Flow", "spec": _VALID_SPEC},
+            headers=_auth_headers(alice_id),
+        )
+        assert create_resp.status_code == 201, create_resp.text
+        flow_id = create_resp.json()["id"]
+
+        # Tighten the bound and make the underlying drain hang past it.
+        monkeypatch.setattr(flows_mod, "_RUN_TIMEOUT_S", 0.05, raising=True)
+
+        async def _hang(*_a, **_k):
+            await _asyncio.sleep(5)
+            return {}  # pragma: no cover — never reached
+
+        monkeypatch.setattr(flows_mod, "drain_flow_run", _hang, raising=True)
+
+        run_resp = await client.post(
+            f"/api/v1/flows/{flow_id}/run",
+            json={},
+            headers=_auth_headers(alice_id),
+        )
+        assert run_resp.status_code == 504, run_resp.text
+        assert run_resp.json()["error"]["code"] == "run_timeout"
+
+    @pytest.mark.asyncio
+    async def test_run_cell_504_on_timeout(self, flows_client, monkeypatch):
+        import asyncio as _asyncio
+
+        import app.routes.flows as flows_mod
+
+        client, alice_id, org_id, store, repo = flows_client
+
+        monkeypatch.setattr(flows_mod, "_RUN_TIMEOUT_S", 0.05, raising=True)
+
+        async def _hang(*_a, **_k):
+            await _asyncio.sleep(5)
+            return {}  # pragma: no cover
+
+        monkeypatch.setattr(flows_mod, "drain_flow_run", _hang, raising=True)
+
+        resp = await client.post(
+            "/api/v1/flows/run-cell",
+            json={
+                "spec": {
+                    "version": 1,
+                    "name": "rc",
+                    "params": [],
+                    "tasks": [{"key": "step1", "kind": "noop", "needs": [], "config": {}}],
+                },
+                "cell_key": "step1",
+            },
+            headers=_auth_headers(alice_id),
+        )
+        assert resp.status_code == 504, resp.text
+        assert resp.json()["error"]["code"] == "run_timeout"
+
+
+# ---------------------------------------------------------------------------
+# FIX [MED RLS] audit-43 #2: pinned-spec path also strips owner policies
+# ---------------------------------------------------------------------------
+
+
+class TestPinnedSpecStripsOwnerPolicies:
+    @pytest.mark.asyncio
+    async def test_env_pinned_spec_omits_owner_policies(self, flows_client, monkeypatch):
+        """GET /flows/{id}?env=<key> serving a pinned snapshot must NOT leak the key."""
+        import app.routes.flows as flows_mod
+        from app.routes.flows import OWNER_POLICIES_KEY
+
+        client, alice_id, org_id, store, repo = flows_client
+
+        create_resp = await client.post(
+            "/api/v1/flows",
+            json={"name": "Pinned RLS", "spec": _VALID_SPEC},
+            headers=_auth_headers(alice_id),
+        )
+        assert create_resp.status_code == 201, create_resp.text
+        flow_id = create_resp.json()["id"]
+
+        # Simulate a pinned version whose RAW config carries the owner snapshot
+        # (this is exactly what version['config'] looks like in storage).
+        pinned = {
+            "version": 1,
+            "name": "Pinned RLS",
+            "params": [],
+            "tasks": [{"key": "step1", "kind": "noop", "needs": [], "config": {}}],
+            "runtime_config": {OWNER_POLICIES_KEY: {"tenant_id": "acme"}},
+        }
+
+        async def _fake_pinned(_flow, _org_id, _env_key):
+            return pinned, {"id": "v1", "version": 1}
+
+        monkeypatch.setattr(flows_mod, "_pinned_version_for_env", _fake_pinned, raising=True)
+
+        resp = await client.get(
+            f"/api/v1/flows/{flow_id}?env=prod", headers=_auth_headers(alice_id)
+        )
+        assert resp.status_code == 200, resp.text
+        body = resp.json()
+        rc = (body.get("spec") or {}).get("runtime_config") or {}
+        assert OWNER_POLICIES_KEY not in rc, (
+            f"pinned-spec path must not expose {OWNER_POLICIES_KEY}"
+        )
+        assert body.get("resolved_version") == {"id": "v1", "version": 1}

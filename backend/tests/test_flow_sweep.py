@@ -760,23 +760,29 @@ def test_sweep_body_max_cells_field_bounds():
 
 
 def test_backfill_body_max_windows_field_bounds():
-    """BackfillIn.max_windows must reject values outside [1, 10000]."""
+    """BackfillIn.max_windows must reject values outside [1, _MAX_BACKFILL_WINDOWS].
+
+    The schema ceiling now mirrors the server cap (audit-43 #4): the Pydantic
+    ``le`` bound never exceeds what the route enforces, so an over-cap value is
+    rejected at parse time (422) rather than silently clamped.
+    """
     from pydantic import ValidationError
     import app.routes.flows as flows_mod
 
     BackfillIn = flows_mod.BackfillIn  # type: ignore[attr-defined]
+    cap = flows_mod._MAX_BACKFILL_WINDOWS  # type: ignore[attr-defined]
 
     # Valid boundary values.
     b = BackfillIn(start="2025-01-01T00:00:00Z", end="2025-02-01T00:00:00Z", window="1d", max_windows=1)
     assert b.max_windows == 1
-    b = BackfillIn(start="2025-01-01T00:00:00Z", end="2025-02-01T00:00:00Z", window="1d", max_windows=10000)
-    assert b.max_windows == 10000
+    b = BackfillIn(start="2025-01-01T00:00:00Z", end="2025-02-01T00:00:00Z", window="1d", max_windows=cap)
+    assert b.max_windows == cap
 
     # Out-of-bound values must fail validation.
     with pytest.raises(ValidationError):
         BackfillIn(start="2025-01-01T00:00:00Z", end="2025-02-01T00:00:00Z", window="1d", max_windows=0)
     with pytest.raises(ValidationError):
-        BackfillIn(start="2025-01-01T00:00:00Z", end="2025-02-01T00:00:00Z", window="1d", max_windows=10001)
+        BackfillIn(start="2025-01-01T00:00:00Z", end="2025-02-01T00:00:00Z", window="1d", max_windows=cap + 1)
 
 
 # ---------------------------------------------------------------------------
@@ -2175,6 +2181,39 @@ def test_sweep_in_grid_empty_is_valid():
     SweepIn = flows_mod.SweepIn  # type: ignore[attr-defined]
     s = SweepIn(grid={})
     assert s.grid == {}
+
+
+# ---------------------------------------------------------------------------
+# FIX [MED resource] audit-43 #3: param_sets entry size capped at parse time
+# ---------------------------------------------------------------------------
+
+
+def test_sweep_in_oversized_param_set_rejected_at_parse_time():
+    """A single oversized param_sets entry must 422 at parse (echoed uncapped).
+
+    The sweep response reflects each cell's params verbatim; without a cap a
+    caller could amplify a multi-MiB param dict per cell.  The SweepIn validator
+    rejects any entry whose serialised size exceeds _MAX_PARAM_SET_BYTES.
+    """
+    from pydantic import ValidationError
+    import app.routes.flows as flows_mod
+
+    SweepIn = flows_mod.SweepIn  # type: ignore[attr-defined]
+    cap = flows_mod._MAX_PARAM_SET_BYTES  # type: ignore[attr-defined]
+
+    # A string just over the byte cap → the serialised entry exceeds the cap.
+    huge = {"blob": "x" * (cap + 1)}
+    with pytest.raises(ValidationError):
+        SweepIn(param_sets=[{"i": 1}, huge])
+
+
+def test_sweep_in_param_set_within_cap_is_valid():
+    """A param_sets entry at/under the cap must be accepted."""
+    import app.routes.flows as flows_mod
+
+    SweepIn = flows_mod.SweepIn  # type: ignore[attr-defined]
+    s = SweepIn(param_sets=[{"i": 1}, {"region": "eu"}])
+    assert s.param_sets is not None and len(s.param_sets) == 2
 
 
 # ---------------------------------------------------------------------------
