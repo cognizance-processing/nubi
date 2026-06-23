@@ -1415,3 +1415,88 @@ def test_cross_org_blob_smuggled_to_other_org_key_fails_get():
     # org A → integrity failure, no deserialise.
     with pytest.raises(ValueError, match="HMAC mismatch|integrity check failed|missing HMAC envelope"):
         get_artifact(handle_b, org_id=ORG_B, store=art_store)
+
+
+# ---------------------------------------------------------------------------
+# 28. LOW memory/robustness: bytes pre-check and json error handling
+# ---------------------------------------------------------------------------
+
+
+def test_oversized_bytes_raises_before_copy():
+    """kind='bytes': an oversized bytes/bytearray raises ValueError before bytes() copy.
+
+    LOW memory/robustness fix: bytes(obj) on a large bytearray copies the full
+    payload (peak RSS = 2× size).  The fix checks len(obj) against the cap
+    BEFORE calling bytes(), so the copy never happens for oversized inputs.
+    """
+    import unittest.mock  # noqa: PLC0415
+    from app.flows import artifacts as _art_mod  # noqa: PLC0415
+
+    art_store = _mem_store()
+    cap = 20
+
+    with unittest.mock.patch.object(_art_mod, "_ARTIFACT_MAX_BYTES", cap):
+        # 21 bytes of bytearray: must raise before bytes() copy.
+        with pytest.raises(ValueError, match="exceeds the maximum"):
+            put_artifact(bytearray(21), kind="bytes", org_id=ORG_A, store=art_store)
+
+        # Exactly at the cap: must succeed.
+        handle = put_artifact(bytes(20), kind="bytes", org_id=ORG_A, store=art_store)
+        assert is_handle(handle)
+
+    # Cap disabled (=0): no restriction.
+    with unittest.mock.patch.object(_art_mod, "_ARTIFACT_MAX_BYTES", 0):
+        handle2 = put_artifact(bytes(100_000), kind="bytes", org_id=ORG_A, store=art_store)
+        assert is_handle(handle2)
+
+
+def test_json_circular_reference_raises_clear_error():
+    """kind='json': a circular-reference object raises a clear ValueError.
+
+    LOW memory/robustness fix: before the fix, json.dumps on a circular-reference
+    object raised a ValueError deep in the stdlib with a cryptic message.  After
+    the fix, _serialise wraps the call and re-raises as a clear ValueError
+    mentioning 'not JSON-serializable / circular reference'.
+    """
+    art_store = _mem_store()
+    # Build a circular reference.
+    circ: list = []
+    circ.append(circ)
+
+    with pytest.raises(ValueError, match="not JSON-serializable|circular reference"):
+        put_artifact(circ, kind="json", org_id=ORG_A, store=art_store)
+
+
+def test_json_non_serializable_raises_clear_error():
+    """kind='json': a non-serializable type (e.g. a set) raises a clear ValueError.
+
+    json.dumps raises TypeError for unsupported types; the fix re-raises as a
+    clear ValueError so callers get a useful message rather than an unhandled
+    TypeError propagating up.
+    """
+    art_store = _mem_store()
+    # sets are not JSON-serializable.
+    bad_obj = {"data": {1, 2, 3}}
+
+    with pytest.raises(ValueError, match="not JSON-serializable|circular reference"):
+        put_artifact(bad_obj, kind="json", org_id=ORG_A, store=art_store)
+
+
+def test_normal_bytes_round_trip_after_fix():
+    """kind='bytes': a normal bytes object still round-trips correctly after the fix."""
+    art_store = _mem_store()
+    raw = b"hello world " * 5
+    handle = put_artifact(raw, kind="bytes", org_id=ORG_A, store=art_store)
+    assert is_handle(handle)
+    loaded = get_artifact(handle, org_id=ORG_A, store=art_store)
+    assert loaded == raw
+
+
+def test_normal_json_round_trip_after_fix():
+    """kind='json': a normal serializable dict still round-trips correctly after the fix."""
+    art_store = _mem_store()
+    obj = {"key": "value", "nums": [1, 2, 3], "flag": True}
+    handle = put_artifact(obj, kind="json", org_id=ORG_A, store=art_store)
+    assert is_handle(handle)
+    loaded = get_artifact(handle, org_id=ORG_A, store=art_store)
+    assert loaded == obj

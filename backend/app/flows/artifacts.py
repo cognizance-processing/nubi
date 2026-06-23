@@ -434,9 +434,40 @@ def _serialise(obj: Any, kind: str) -> bytes:
                 f"Artifact kind='bytes' requires a bytes/bytearray object, "
                 f"got {type(obj).__name__}."
             )
+        # [LOW memory/robustness] Check length BEFORE bytes(obj) copy so we
+        # never allocate a full oversized buffer only to discard it.  bytes()
+        # on a large bytearray copies the full payload into a new object
+        # (peak RSS = 2× size); reject early when the cap is active.
+        if _ARTIFACT_MAX_BYTES > 0 and len(obj) > _ARTIFACT_MAX_BYTES:
+            raise ValueError(
+                f"Artifact size {len(obj):,} bytes exceeds the maximum allowed "
+                f"{_ARTIFACT_MAX_BYTES:,} bytes (NUBI_ARTIFACT_MAX_BYTES). "
+                "Reduce the artifact size or raise the limit."
+            )
         return bytes(obj)
     if kind == "json":
-        return json.dumps(obj).encode("utf-8")
+        # [LOW memory/robustness] Wrap json.dumps so non-serializable objects
+        # (circular references, custom types) produce a clear ValueError rather
+        # than an unhandled TypeError or json.JSONDecodeError deep in the call
+        # stack.  Note: json builds the full string before we can cap it, so
+        # the length check here is best-effort (the string is already in memory
+        # by the time we encode it).  The definitive post-serialise cap in
+        # put_artifact() remains the backstop for all kinds.
+        try:
+            encoded = json.dumps(obj).encode("utf-8")
+        except (TypeError, ValueError) as exc:
+            raise ValueError(
+                f"Artifact kind='json': object is not JSON-serializable "
+                f"(circular reference or unsupported type). "
+                f"Original error: {exc}"
+            ) from exc
+        if _ARTIFACT_MAX_BYTES > 0 and len(encoded) > _ARTIFACT_MAX_BYTES:
+            raise ValueError(
+                f"Artifact size {len(encoded):,} bytes exceeds the maximum allowed "
+                f"{_ARTIFACT_MAX_BYTES:,} bytes (NUBI_ARTIFACT_MAX_BYTES). "
+                "Reduce the artifact size or raise the limit."
+            )
+        return encoded
     raise ValueError(
         f"Unsupported artifact kind {kind!r}. "
         "Supported: 'pickle', 'joblib', 'bytes', 'json'."

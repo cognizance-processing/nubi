@@ -37,7 +37,7 @@ _USER_ID = str(uuid.uuid4())
 _CLAIMS: dict[str, Any] = {
     "kind": "access",
     "sub": _USER_ID,
-    "org_id": _ORG_ID,
+    "org": _ORG_ID,
     "policies": {},
     "scope": ["read:*", "write:*"],
 }
@@ -277,6 +277,76 @@ class TestGenerateFlowTool:
         assert "provider" in result
         # NullProvider is the default in tests.
         assert result["provider"] == "null"
+
+
+# ---------------------------------------------------------------------------
+# 5b. Tenant isolation — tools resolve org from claims['org']
+# ---------------------------------------------------------------------------
+
+
+class TestFlowToolsTenantIsolation:
+    """Verify that list_flows and create_flow read the org from claims['org'],
+    not from a missing/wrong key, so they always operate on the correct tenant.
+    """
+
+    async def test_list_flows_uses_claims_org(self, _inject_flow_store):
+        """list_flows must only return flows for the org in claims['org']."""
+        store = _inject_flow_store
+        other_org = str(uuid.uuid4())
+
+        # Seed flows in two different orgs.
+        await store.create_flow(
+            org_id=_ORG_ID,
+            created_by=_USER_ID,
+            name="Caller Org Flow",
+            spec=_VALID_SPEC,
+        )
+        await store.create_flow(
+            org_id=other_org,
+            created_by=_USER_ID,
+            name="Other Org Flow",
+            spec=_VALID_SPEC,
+        )
+
+        # Invoke with claims that carry 'org' (not 'org_id').
+        result = _invoke("list_flows")
+        names = [f["name"] for f in result["flows"]]
+        assert "Caller Org Flow" in names
+        assert "Other Org Flow" not in names
+
+    async def test_list_flows_missing_org_key_returns_empty(self, _inject_flow_store):
+        """If claims use a wrong key ('org_id') instead of 'org', the tool must
+        return an empty list rather than silently cross-tenant data.
+        This documents the contract: callers MUST set claims['org'].
+        """
+        store = _inject_flow_store
+        await store.create_flow(
+            org_id=_ORG_ID,
+            created_by=_USER_ID,
+            name="Should Not Appear",
+            spec=_VALID_SPEC,
+        )
+
+        from app.ai.tools import execute_tool  # noqa: PLC0415
+
+        # Deliberately use the old wrong key.
+        bad_claims = {**_CLAIMS, "org": None, "org_id": _ORG_ID}
+        # Remove 'org' entirely to simulate missing key.
+        bad_claims_no_org = {k: v for k, v in bad_claims.items() if k != "org"}
+        result = execute_tool("list_flows", {}, bad_claims_no_org)
+        # org defaults to '' → no flows match '' → safe empty list.
+        assert result["flows"] == []
+
+    async def test_create_flow_uses_claims_org(self, _inject_flow_store):
+        """create_flow must persist the flow under the org from claims['org']."""
+        store = _inject_flow_store
+        result = _invoke("create_flow", name="Tenant Flow", spec=_VALID_SPEC)
+        assert result["valid"] is True
+
+        flow = await store.get_flow(result["id"])
+        assert flow is not None
+        # The stored org_id must match the 'org' value from claims.
+        assert flow["org_id"] == _ORG_ID
 
 
 # ---------------------------------------------------------------------------

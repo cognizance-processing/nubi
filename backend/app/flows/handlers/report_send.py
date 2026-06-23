@@ -102,12 +102,22 @@ captured RLS view at schedule-definition time (no user JWT at tick time).
 from __future__ import annotations
 
 import logging
+import os
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from app.flows.executor import TaskContext
 
 logger = logging.getLogger("nubi.flows.report_send")
+
+# ---------------------------------------------------------------------------
+# Defensive recipient cap — same env var as the route-layer guards so a single
+# env override applies everywhere.  This cap is a last-resort safety net for
+# configs stored before the route-layer cap existed; it does NOT replace the
+# Pydantic+route guards (those reject at schedule-definition time).
+# ---------------------------------------------------------------------------
+
+_MAX_RECIPIENTS: int = int(os.environ.get("NUBI_MAX_REPORT_RECIPIENTS", "500"))
 
 
 # ---------------------------------------------------------------------------
@@ -208,6 +218,18 @@ def handle(
             "report_send task requires at least one recipient in config['recipients'].",
             400,
         )
+    if len(recipients) > _MAX_RECIPIENTS:
+        # Defensive cap: silently truncate to avoid O(N) loop on stale configs
+        # stored before the route-layer cap existed.  Log a warning so operators
+        # are aware that stored configs need updating.
+        logger.warning(
+            "report_send: recipients list truncated from %d to %d (cap=%d). "
+            "Update the stored flow config to remove excess recipients.",
+            len(recipients),
+            _MAX_RECIPIENTS,
+            _MAX_RECIPIENTS,
+        )
+        recipients = recipients[:_MAX_RECIPIENTS]
 
     base_params: dict[str, Any] = dict(config.get("params") or {})
     subject: str = config.get("subject") or ""
@@ -697,6 +719,16 @@ def _handle_canvas(
             "report_send task requires at least one recipient in config['recipients'].",
             400,
         )
+    if len(recipients) > _MAX_RECIPIENTS:
+        logger.warning(
+            "report_send(canvas): recipients list truncated from %d to %d (cap=%d). "
+            "Update the stored flow config to remove excess recipients.",
+            len(recipients),
+            _MAX_RECIPIENTS,
+            _MAX_RECIPIENTS,
+        )
+        recipients = recipients[:_MAX_RECIPIENTS]
+
     subject: str = config.get("subject") or ""
     body: str = config.get("body") or ""
     apply_rls: bool = bool(config.get("apply_user_permissions", False))

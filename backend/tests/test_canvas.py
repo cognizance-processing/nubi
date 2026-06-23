@@ -3390,3 +3390,202 @@ class TestBakeTokensPartialUrlInjection:
             f"http:// URL with token path suffix must be preserved: {result!r}"
         )
         assert 'href="#"' not in result, result
+
+
+# ---------------------------------------------------------------------------
+# Recipients cap tests (MED: unbounded recipients -> worker saturation)
+# ---------------------------------------------------------------------------
+
+
+class TestCanvasScheduleRecipientsCap:
+    """POST /canvases/{id}/schedule rejects requests exceeding _MAX_RECIPIENTS."""
+
+    @pytest.mark.asyncio
+    async def test_over_cap_recipients_rejected_at_schedule_time(
+        self, canvas_client_with_viewer, monkeypatch
+    ):
+        """Sending > cap recipients to schedule endpoint must return 400."""
+        import app.routes.canvas as canvas_module
+
+        monkeypatch.setattr(canvas_module, "_MAX_RECIPIENTS", 3)
+
+        client, owner_id, _owner_org, *_ = canvas_client_with_viewer
+
+        # Create a canvas.
+        create_resp = await client.post(
+            "/api/v1/canvases",
+            json={"name": "Cap Canvas"},
+            headers=_auth_headers(owner_id),
+        )
+        assert create_resp.status_code == 201, create_resp.text
+        canvas_id = create_resp.json()["id"]
+
+        # Submit 4 recipients (> cap of 3).
+        too_many = [f"r{i}@example.com" for i in range(4)]
+        sched_resp = await client.post(
+            f"/api/v1/canvases/{canvas_id}/schedule",
+            json={"recipients": too_many, "format": "html"},
+            headers=_auth_headers(owner_id),
+        )
+        assert sched_resp.status_code == 400, sched_resp.text
+        body = sched_resp.json()
+        error_code = body.get("code") or (body.get("error") or {}).get("code")
+        assert error_code == "invalid_task_config", body
+
+    @pytest.mark.asyncio
+    async def test_at_cap_recipients_accepted_at_schedule_time(
+        self, canvas_client_with_viewer, monkeypatch
+    ):
+        """Sending exactly cap recipients to schedule endpoint must return 201."""
+        import app.routes.canvas as canvas_module
+
+        monkeypatch.setattr(canvas_module, "_MAX_RECIPIENTS", 3)
+
+        client, owner_id, _owner_org, *_ = canvas_client_with_viewer
+
+        # Create a canvas.
+        create_resp = await client.post(
+            "/api/v1/canvases",
+            json={"name": "Cap Canvas OK"},
+            headers=_auth_headers(owner_id),
+        )
+        assert create_resp.status_code == 201, create_resp.text
+        canvas_id = create_resp.json()["id"]
+
+        # Submit exactly 3 recipients (== cap).
+        at_cap = [f"r{i}@example.com" for i in range(3)]
+        sched_resp = await client.post(
+            f"/api/v1/canvases/{canvas_id}/schedule",
+            json={"recipients": at_cap, "format": "html"},
+            headers=_auth_headers(owner_id),
+        )
+        assert sched_resp.status_code == 201, sched_resp.text
+        assert sched_resp.json()["recipients_count"] == 3
+
+# ---------------------------------------------------------------------------
+# 16. [LOW XSS] CSS expression() / dangerous url() via {{token}} in style=
+# ---------------------------------------------------------------------------
+
+
+class TestBakeTokensInlineStyleSanitization:
+    """Layer 4: tokens resolving to dangerous CSS inside inline style= must be neutralized.
+
+    Layers 1–3 in _bake_tokens cover URL-scheme attributes (href/src/…) and
+    on*= event-handler composition, but NOT inline style= attribute values.
+    A token that resolves to ``expression(alert(1))`` or
+    ``color:red;background:url(javascript:...)`` lands in style= with no
+    < > & characters — HTML-escaping alone does not protect against CSS XSS
+    in IE/Outlook (expression()) or in modern browsers (url(javascript:...)).
+
+    Fix: Layer 4 scans every inline style= attribute value post-substitution
+    and strips expression(...) / neutralizes dangerous url() values.
+    """
+
+    def _bake(self, html: str, token_name: str, token_value: str) -> str:
+        """Helper: run _bake_tokens with a single token binding."""
+        from app.dashboards.render_canvas import _bake_tokens  # noqa: PLC0415
+
+        element_data = {
+            "el_test": {
+                "columns": [token_name],
+                "rows": [[token_value]],
+            }
+        }
+        return _bake_tokens(html, element_data)
+
+    # ── expression() is stripped ─────────────────────────────────────────────
+
+    def test_expression_in_style_attr_is_neutralized(self):
+        """Token resolving to expression(alert(1)) inside style= is stripped.
+
+        Without Layer 4 the rendered HTML would contain:
+          <div style="color:expression(alert(1))">
+        which is a live JS execution vector in IE/Outlook.  After the fix the
+        expression() call must not appear in the rendered output.
+        """
+        html = '<div style="color:{{color}}">hello</div>'
+        result = self._bake(html, "color", "expression(alert(1))")
+        assert "expression(" not in result.lower(), (
+            f"expression() must be stripped from inline style= after token substitution: {result!r}"
+        )
+
+    def test_expression_uppercase_in_style_attr_is_neutralized(self):
+        """EXPRESSION() (uppercase) inside style= is also stripped."""
+        html = '<div style="color:{{color}}">hello</div>'
+        result = self._bake(html, "color", "EXPRESSION(alert(1))")
+        assert "expression(" not in result.lower(), (
+            f"Uppercase EXPRESSION() must be stripped from inline style=: {result!r}"
+        )
+
+    def test_expression_with_whitespace_in_style_attr_is_neutralized(self):
+        """e x p r e s s i o n() with internal whitespace inside style= is stripped."""
+        html = '<div style="color:{{color}}">hello</div>'
+        result = self._bake(html, "color", "e x p r e s s i o n(alert(1))")
+        assert "expression(" not in result.lower(), (
+            f"Whitespace-split expression() must be stripped from inline style=: {result!r}"
+        )
+
+    def test_expression_as_full_style_value_is_neutralized(self):
+        """Token is the entire style= value and resolves to expression(...)."""
+        html = '<span style="{{style}}">text</span>'
+        result = self._bake(html, "style", "width:expression(document.body.clientWidth)")
+        assert "expression(" not in result.lower(), (
+            f"expression() in full style= token must be stripped: {result!r}"
+        )
+
+    # ── url(javascript:...) inside style= is neutralized ─────────────────────
+
+    def test_url_javascript_in_style_background_is_neutralized(self):
+        """Token resolving to url(javascript:...) inside style= background is neutralized."""
+        html = '<div style="background:{{bg}}">hello</div>'
+        result = self._bake(html, "bg", "url(javascript:alert(1))")
+        assert "javascript:" not in result.lower(), (
+            f"url(javascript:) must be neutralized in inline style=: {result!r}"
+        )
+        assert "url(none)" in result.lower(), (
+            f"Dangerous url() must become url(none) in style=: {result!r}"
+        )
+
+    def test_url_vbscript_in_style_is_neutralized(self):
+        """url(vbscript:...) in style= is neutralized to url(none)."""
+        html = '<div style="background-image:{{bg}}">hello</div>'
+        result = self._bake(html, "bg", "url(vbscript:MsgBox('xss'))")
+        assert "vbscript:" not in result.lower(), (
+            f"url(vbscript:) must be neutralized in inline style=: {result!r}"
+        )
+        assert "url(none)" in result.lower(), result
+
+    # ── Legitimate style values pass through unchanged ────────────────────────
+
+    def test_legitimate_color_style_is_preserved(self):
+        """A normal color: red style value is left unchanged."""
+        html = '<div style="color:{{color}}">hello</div>'
+        result = self._bake(html, "color", "red")
+        assert "color:red" in result or "color: red" in result, (
+            f"Legitimate color:red style must be preserved: {result!r}"
+        )
+
+    def test_legitimate_display_style_is_preserved(self):
+        """display:flex is left unchanged."""
+        html = '<div style="{{style}}">hello</div>'
+        result = self._bake(html, "style", "display:flex;gap:8px")
+        assert "display:flex" in result, (
+            f"Legitimate display:flex style must be preserved: {result!r}"
+        )
+
+    def test_legitimate_background_image_data_uri_is_preserved(self):
+        """url(data:image/png;...) in style= is a safe data URI and is kept."""
+        html = '<div style="background:{{bg}}">hello</div>'
+        result = self._bake(html, "bg", "url(data:image/png;base64,abc123)")
+        assert "url(data:image/png;base64,abc123)" in result, (
+            f"Safe data:image/png url() in style= must be preserved: {result!r}"
+        )
+
+    def test_static_style_attr_with_no_token_is_unchanged(self):
+        """A style= attribute with no token placeholder is not modified."""
+        html = '<div style="color:blue;font-size:14px">hello {{name}}</div>'
+        result = self._bake(html, "name", "World")
+        assert 'style="color:blue;font-size:14px"' in result, (
+            f"Static style= attribute must not be modified: {result!r}"
+        )
+        assert "World" in result, result

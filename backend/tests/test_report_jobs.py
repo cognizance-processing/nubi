@@ -760,3 +760,77 @@ class TestReportJobRoute:
             },
         )
         assert resp.status_code == 401
+
+
+# ---------------------------------------------------------------------------
+# Recipients cap tests (MED: unbounded recipients -> worker saturation)
+# ---------------------------------------------------------------------------
+
+
+class TestReportJobRecipientsCap:
+    """POST /jobs with kind='report' rejects requests exceeding _MAX_RECIPIENTS."""
+
+    @pytest.mark.asyncio
+    async def test_over_cap_recipients_rejected_at_create_time(
+        self, report_jobs_client, monkeypatch
+    ):
+        """Sending > cap recipients for a report job must return 422 (Pydantic validation)."""
+        import app.routes.jobs as jobs_module
+
+        monkeypatch.setattr(jobs_module, "_MAX_RECIPIENTS", 3)
+
+        client, alice_id, org_id, store, repo = report_jobs_client
+        board_id = str(uuid.uuid4())
+
+        too_many = [f"r{i}@example.com" for i in range(4)]
+        resp = await client.post(
+            "/api/v1/jobs",
+            json={
+                "name": "Capped Report",
+                "kind": "report",
+                "target": {
+                    "board_id": board_id,
+                    "format": "csv",
+                    "recipients": too_many,
+                    "subject": "Test",
+                    "body": "",
+                    "apply_user_permissions": False,
+                },
+                "schedule": "interval:1h",
+            },
+            headers=_auth_headers(alice_id),
+        )
+        # Pydantic field_validator raises ValueError -> FastAPI returns 422
+        assert resp.status_code == 422, resp.text
+
+    @pytest.mark.asyncio
+    async def test_at_cap_recipients_accepted_at_create_time(
+        self, report_jobs_client, monkeypatch
+    ):
+        """Sending exactly cap recipients for a report job must return 201."""
+        import app.routes.jobs as jobs_module
+
+        monkeypatch.setattr(jobs_module, "_MAX_RECIPIENTS", 3)
+
+        client, alice_id, org_id, store, repo = report_jobs_client
+        board_id = str(uuid.uuid4())
+
+        at_cap = [f"r{i}@example.com" for i in range(3)]
+        resp = await client.post(
+            "/api/v1/jobs",
+            json={
+                "name": "At-Cap Report",
+                "kind": "report",
+                "target": {
+                    "board_id": board_id,
+                    "format": "csv",
+                    "recipients": at_cap,
+                    "subject": "Test",
+                    "body": "",
+                    "apply_user_permissions": False,
+                },
+                "schedule": "interval:1h",
+            },
+            headers=_auth_headers(alice_id),
+        )
+        assert resp.status_code == 201, resp.text

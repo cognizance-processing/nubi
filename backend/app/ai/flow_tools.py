@@ -8,7 +8,7 @@ Five ``ToolDef`` entries:
   generate_flow   → NL → FlowSpec; with NullProvider returns a deterministic demo
 
 Each tool callable accepts ``claims`` plus named kwargs.  Org is resolved from
-``claims["org_id"]`` (the same pattern used in ``routes/ai.py`` + ``routes/flows.py``).
+``claims["org"]`` (the same key set by ``routes/ai.py`` ai_chat/ai_chat_stream routes).
 """
 
 from __future__ import annotations
@@ -66,11 +66,11 @@ def _tool_list_flows(claims: dict[str, Any]) -> dict[str, Any]:
     Parameters
     ----------
     claims:
-        Caller claims — must include ``org_id``.
+        Caller claims — must include ``org``.
     """
     from app.flows.store import get_flow_store  # noqa: PLC0415
 
-    org_id = claims.get("org_id", "")
+    org_id = claims.get("org", "")
     store = get_flow_store()
     flows = _run_sync(store.list_flows(org_id))
     return {"flows": [{"id": f["id"], "name": f["name"]} for f in flows]}
@@ -90,12 +90,12 @@ def _tool_create_flow(
     spec:
         Raw FlowSpec dict.
     claims:
-        Caller claims — must include ``org_id`` and ``sub``.
+        Caller claims — must include ``org`` and ``sub``.
     """
     from app.flows.spec import flow_spec_is_valid, validate_flow_spec  # noqa: PLC0415
     from app.flows.store import get_flow_store  # noqa: PLC0415
 
-    org_id = claims.get("org_id", "")
+    org_id = claims.get("org", "")
     created_by = claims.get("sub", "")
 
     flow_spec, issues = validate_flow_spec(spec)

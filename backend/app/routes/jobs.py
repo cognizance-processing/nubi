@@ -31,11 +31,12 @@ from __future__ import annotations
 
 import inspect
 import json
+import os
 from datetime import datetime, timezone
 from typing import Any
 
 from fastapi import APIRouter, Depends, Response
-from pydantic import BaseModel, EmailStr, field_validator, model_validator
+from pydantic import BaseModel, EmailStr, Field, field_validator, model_validator
 
 from app.auth.deps import current_user
 from app.auth.roles import require_writer_default
@@ -46,6 +47,12 @@ from app.jobs.schedule import next_run
 from app.jobs.store import InMemoryJobStore, get_job_store
 from app.repos.provider import Repo, get_repo
 from app.routes import api_router
+
+# ---------------------------------------------------------------------------
+# Recipient cap — prevents O(N) per-tick work and worker saturation
+# ---------------------------------------------------------------------------
+
+_MAX_RECIPIENTS: int = int(os.environ.get("NUBI_MAX_REPORT_RECIPIENTS", "500"))
 
 # ---------------------------------------------------------------------------
 # Sub-router
@@ -121,7 +128,7 @@ class ReportTarget(BaseModel):
     board_id: str
     params: dict[str, Any] = {}
     format: str = "csv"
-    recipients: list[str]
+    recipients: list[str] = Field(max_length=_MAX_RECIPIENTS)
     subject: str = "Nubi Report"
     body: str = ""
     apply_user_permissions: bool = False
@@ -139,6 +146,10 @@ class ReportTarget(BaseModel):
     def _validate_recipients(cls, v: list[str]) -> list[str]:
         if not v:
             raise ValueError("recipients must contain at least one email address")
+        if len(v) > _MAX_RECIPIENTS:
+            raise ValueError(
+                f"too many recipients ({len(v)}); maximum allowed is {_MAX_RECIPIENTS}"
+            )
         return v
 
 
@@ -303,6 +314,18 @@ async def create_job(
     # Validate the schedule up front; raises AppError("bad_schedule", 400) on failure.
     now = datetime.now(timezone.utc)
     first_next = next_run(body.schedule, now)
+
+    # Explicit recipient-cap guard for report jobs (defence-in-depth on top of
+    # the Pydantic Field max_length, which applies at parse time).
+    if body.kind == "report" and isinstance(body.target, dict):
+        recipients = body.target.get("recipients") or []
+        if len(recipients) > _MAX_RECIPIENTS:
+            raise AppError(
+                "invalid_task_config",
+                f"report: too many recipients ({len(recipients)}); "
+                f"maximum allowed is {_MAX_RECIPIENTS}.",
+                400,
+            )
 
     # For report jobs, embed org_id into the target dict so the executor can
     # resolve the board without needing an async context (the executor is sync).

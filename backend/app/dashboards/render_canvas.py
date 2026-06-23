@@ -192,6 +192,113 @@ def _reject_on_handlers_post_substitution(html: str) -> str:
 
 
 # ---------------------------------------------------------------------------
+# Post-substitution inline style= sanitizer (Layer 4)
+# ---------------------------------------------------------------------------
+
+# Matches an inline style= attribute and captures its full value.
+# Named groups:
+#   q     – the quote character (' or ")
+#   value – the attribute value (everything between the quotes)
+#
+# NOTE: We deliberately do NOT attempt to match unquoted style= values
+# because the pre-substitution HTML validator rejects unquoted attribute
+# values containing dangerous content, and the token escaper always produces
+# properly quoted attribute values.
+_INLINE_STYLE_ATTR_RE = re.compile(
+    r"""style\s*=\s*(?P<q>['"])(?P<value>[^'"<>]*)(?P=q)""",
+    re.IGNORECASE,
+)
+
+# Matches CSS expression() calls — the IE/legacy-Outlook JS execution vector.
+# Tolerates arbitrary whitespace between every character of the keyword
+# (matching the _sanitize_assets_css implementation) and between the keyword
+# and the opening parenthesis.  Also strips comment fragments that may be
+# embedded to split the keyword (e.g. "expre/**/ssion(...)") — comments are
+# stripped first so the pattern sees the plain form.
+_STYLE_EXPRESSION_RE = re.compile(
+    r"e\s*x\s*p\s*r\s*e\s*s\s*s\s*i\s*o\s*n\s*\([^)]*\)",
+    re.IGNORECASE,
+)
+
+# Matches url() values inside a style= attribute value, capturing the inner
+# content so we can validate the scheme.  Covers single-quoted, double-quoted,
+# and unquoted url() forms.
+_STYLE_CSS_URL_RE = re.compile(
+    r"""url\(\s*(?:'(?P<sq>[^']*)'|"(?P<dq>[^"]*)"|\s*(?P<uq>[^)'"]*?))\s*\)""",
+    re.IGNORECASE,
+)
+
+
+def _sanitize_inline_style_value(value: str) -> str:
+    """Sanitize a single inline style= attribute value.
+
+    Defenses applied (in order):
+
+    1. Strip CSS block comments — prevents ``expre/**/ssion(alert(1))``
+       bypasses (same as _sanitize_assets_css step 0b).
+    2. Strip ``expression(...)`` calls — IE/Outlook XSS vector.
+    3. Neutralize dangerous ``url()`` values — replace any url() whose
+       target is not a safe relative path or safe data:image/... with
+       ``url(none)``.
+    4. Strip ``javascript:`` bare occurrences — belt-and-suspenders for
+       any remaining ``background: javascript:...`` or similar.
+
+    Returns the sanitized style value string.
+    """
+    # 1. Strip CSS block comments to defeat comment-splitting bypasses.
+    sanitized = re.sub(r"/\*.*?\*/", "", value, flags=re.DOTALL)
+
+    # 2. Strip expression() — IE legacy JS execution vector.
+    sanitized = _STYLE_EXPRESSION_RE.sub("", sanitized)
+
+    # 3. Neutralize dangerous url() values (reuse _is_safe_css_url logic).
+    def _neutralize_style_url(m: re.Match) -> str:
+        target = m.group("sq") or m.group("dq") or m.group("uq") or ""
+        if _is_safe_css_url(target):
+            return m.group(0)
+        return "url(none)"
+
+    sanitized = _STYLE_CSS_URL_RE.sub(_neutralize_style_url, sanitized)
+
+    # 4. Strip bare javascript: occurrences (belt-and-suspenders).
+    sanitized = re.sub(r"javascript\s*:", "", sanitized, flags=re.IGNORECASE)
+
+    return sanitized
+
+
+def _sanitize_inline_style_attrs_post_substitution(html: str) -> str:
+    """Post-substitution pass: sanitize dangerous CSS in inline style= attribute values.
+
+    After ``{{token}}`` substitution an inline ``style=`` attribute value may
+    now contain a dangerous CSS expression if a token resolved to e.g.
+    ``expression(alert(1))`` or ``color:red;background:url(javascript:...)``.
+
+    The existing Layers 1–3 do NOT inspect ``style=`` values:
+    - Layer 1 / Layer 2 only scan URL-typed attributes (href, src, action, …).
+    - Layer 3 only rejects ``on*=`` event-handler attribute *names*.
+
+    This Layer 4 pass scans every inline ``style=`` attribute value in the
+    rendered HTML and applies :func:`_sanitize_inline_style_value`, which:
+    - Strips ``expression(...)`` (whitespace/comment-tolerant).
+    - Neutralizes dangerous ``url()`` values.
+    - Strips bare ``javascript:`` occurrences.
+
+    Legitimate style values (``color:red``, ``display:flex``, valid
+    ``background-image:url(data:image/png;...)`` etc.) are left unchanged.
+    """
+
+    def _sanitize_style_attr(m: re.Match) -> str:
+        q = m.group("q")
+        value = m.group("value")
+        sanitized = _sanitize_inline_style_value(value)
+        if sanitized == value:
+            return m.group(0)  # unchanged
+        return f"style={q}{sanitized}{q}"
+
+    return _INLINE_STYLE_ATTR_RE.sub(_sanitize_style_attr, html)
+
+
+# ---------------------------------------------------------------------------
 # nubi-* custom element tags recognised by the renderer.
 # The renderer replaces these with static HTML equivalents.
 # ---------------------------------------------------------------------------
@@ -485,6 +592,13 @@ def _bake_tokens(html: str, element_data: dict[str, Any]) -> str:
     # <div on{{x}}=> where token resolves to "click" → "onclick=").
     # This mirrors the pre-substitution validator but runs on the baked HTML.
     rendered = _reject_on_handlers_post_substitution(rendered)
+
+    # Layer 4: post-substitution inline style= sanitization — strip
+    # expression(...) and neutralize dangerous url()/javascript: in any
+    # inline style= attribute values, covering the case where a token
+    # resolved to e.g. expression(alert(1)) or url(javascript:...).
+    # Layers 1–3 do NOT inspect style= values, so this pass is required.
+    rendered = _sanitize_inline_style_attrs_post_substitution(rendered)
 
     return rendered
 

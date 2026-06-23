@@ -28,11 +28,12 @@ resolved from the token; cross-org access is impossible by design.
 from __future__ import annotations
 
 import logging
+import os
 from datetime import datetime, timezone
 from typing import Any
 
 from fastapi import Depends
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from app.auth.deps import current_user, verified_identity
 from app.auth.roles import require_writer_default
@@ -42,6 +43,12 @@ from app.repos.provider import Repo, get_repo
 from app.routes import api_router
 
 logger = logging.getLogger("nubi.routes.canvas")
+
+# ---------------------------------------------------------------------------
+# Recipient cap — prevents O(N) per-tick work and worker saturation
+# ---------------------------------------------------------------------------
+
+_MAX_RECIPIENTS: int = int(os.environ.get("NUBI_MAX_REPORT_RECIPIENTS", "500"))
 
 
 # ---------------------------------------------------------------------------
@@ -115,8 +122,8 @@ class CanvasScheduleRequest(BaseModel):
     format: str = "html"
     """Render format: ``'html'`` (default) or ``'pdf'``."""
 
-    recipients: list[str]
-    """Email addresses to deliver the report to."""
+    recipients: list[str] = Field(max_length=_MAX_RECIPIENTS)
+    """Email addresses to deliver the report to (capped at _MAX_RECIPIENTS)."""
 
     subject: str | None = None
     """Email subject.  Defaults to the canvas name."""
@@ -441,6 +448,13 @@ async def schedule_canvas(
         raise AppError(
             "invalid_task_config",
             "schedule requires at least one recipient.",
+            400,
+        )
+    if len(body.recipients) > _MAX_RECIPIENTS:
+        raise AppError(
+            "invalid_task_config",
+            f"schedule: too many recipients ({len(body.recipients)}); "
+            f"maximum allowed is {_MAX_RECIPIENTS}.",
             400,
         )
 
