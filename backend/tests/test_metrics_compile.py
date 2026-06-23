@@ -26,6 +26,7 @@ import pytest
 
 from app.metrics.compile import compile_metric, compile_metric_sql
 from app.metrics.models import (
+    DerivedMeasure,
     Dimension,
     Measure,
     MetricDefinition,
@@ -33,6 +34,7 @@ from app.metrics.models import (
     MetricFilter,
     MetricQuery,
     TimeDimension,
+    TopN,
 )
 
 
@@ -396,3 +398,128 @@ def test_dimension_with_custom_expr() -> None:
     assert "DATE_PART('HOUR', TS) AS HOUR" in up
     # Grouped by the underlying expression, not the alias.
     assert "GROUP BY DATE_PART('HOUR', TS)" in up
+
+
+# ---------------------------------------------------------------------------
+# Symmetric time-bound guard for the OTHER layered paths
+# (top_n-only + derived-measures-only; time_comparisons is EMPTY so the
+# original time_comparisons guard never fires — see _govern symmetric guard).
+# ---------------------------------------------------------------------------
+
+
+def _ratio_metric(**overrides) -> MetricDefinition:
+    """Revenue metric with a derived measure (forces the layered path)."""
+    kwargs = dict(
+        id="ratio",
+        name="Ratio",
+        measure=Measure(name="revenue", agg="sum", expr="amount"),
+        extra_measures=(Measure(name="cost", agg="sum", expr="cost"),),
+        derived_measures=(DerivedMeasure(name="margin", formula="revenue / cost"),),
+        base_table="orders",
+        dimensions=(Dimension(name="region"),),
+        time_dimension=TimeDimension(
+            column="created_at", grains=("day", "month"), default_grain="day"
+        ),
+        # NOTE: default_filters do NOT bound the time column, so the guard
+        # is driven purely by the request filters.
+        default_filters=("is_test = FALSE",),
+    )
+    kwargs.update(overrides)
+    return MetricDefinition(**kwargs)
+
+
+@pytest.fixture(autouse=True)
+def _guard_enabled_by_default(monkeypatch):
+    """Ensure the production-default ON state regardless of ambient env."""
+    monkeypatch.delenv("NUBI_METRIC_REQUIRE_TIME_BOUND", raising=False)
+
+
+def test_top_n_with_time_grain_no_filter_raises_time_range_required() -> None:
+    m = _revenue_metric()
+    mq = MetricQuery(
+        metric_id="revenue",
+        dimensions=("region",),
+        time_grain="day",
+        top_n=TopN(dimension="region", n=10, order="desc"),
+    )
+    with pytest.raises(MetricError) as ei:
+        compile_metric(m, mq)
+    assert ei.value.code == "time_range_required", ei.value.code
+
+
+def test_top_n_with_time_grain_with_filter_compiles() -> None:
+    m = _revenue_metric()
+    mq = MetricQuery(
+        metric_id="revenue",
+        dimensions=("region",),
+        time_grain="day",
+        top_n=TopN(dimension="region", n=10, order="desc"),
+        filters=(MetricFilter(field="created_at", op=">=", value="2024-01-01"),),
+    )
+    sql, _ = compile_metric(m, mq)
+    assert "__BASE" in sql.upper()
+
+
+def test_top_n_without_time_grain_is_not_gated() -> None:
+    """The common 'top 10 overall' case (no time_grain) must NOT be gated."""
+    m = _revenue_metric()
+    mq = MetricQuery(
+        metric_id="revenue",
+        dimensions=("region",),
+        top_n=TopN(dimension="region", n=10, order="desc"),
+    )
+    sql, _ = compile_metric(m, mq)  # must not raise
+    assert "__BASE" in sql.upper()
+
+
+def test_derived_measure_with_time_grain_no_filter_raises() -> None:
+    m = _ratio_metric()
+    mq = MetricQuery(
+        metric_id="ratio",
+        dimensions=("region",),
+        time_grain="day",
+    )
+    with pytest.raises(MetricError) as ei:
+        compile_metric(m, mq)
+    assert ei.value.code == "time_range_required", ei.value.code
+
+
+def test_derived_measure_with_time_grain_with_filter_compiles() -> None:
+    m = _ratio_metric()
+    mq = MetricQuery(
+        metric_id="ratio",
+        dimensions=("region",),
+        time_grain="day",
+        filters=(MetricFilter(field="created_at", op="<=", value="2024-12-31"),),
+    )
+    sql, _ = compile_metric(m, mq)
+    assert "MARGIN" in sql.upper()
+
+
+def test_derived_measure_without_time_grain_is_not_gated() -> None:
+    m = _ratio_metric()
+    mq = MetricQuery(metric_id="ratio", dimensions=("region",))
+    sql, _ = compile_metric(m, mq)  # must not raise
+    assert "MARGIN" in sql.upper()
+
+
+def test_author_default_filter_bounding_time_satisfies_guard() -> None:
+    """An author default_filter that bounds the time column skips the guard."""
+    m = _ratio_metric(default_filters=("created_at >= '2024-01-01'",))
+    mq = MetricQuery(metric_id="ratio", dimensions=("region",), time_grain="day")
+    sql, _ = compile_metric(m, mq)  # must not raise
+    assert "MARGIN" in sql.upper()
+
+
+def test_env_opt_out_restores_open_ended_layered_behaviour(monkeypatch) -> None:
+    """NUBI_METRIC_REQUIRE_TIME_BOUND=0 disables the symmetric guard."""
+    monkeypatch.setenv("NUBI_METRIC_REQUIRE_TIME_BOUND", "0")
+    m = _revenue_metric()
+    mq = MetricQuery(
+        metric_id="revenue",
+        dimensions=("region",),
+        time_grain="day",
+        top_n=TopN(dimension="region", n=10, order="desc"),
+    )
+    sql, _ = compile_metric(m, mq)  # must not raise
+    assert "__BASE" in sql.upper()

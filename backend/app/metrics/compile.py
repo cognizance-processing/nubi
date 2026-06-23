@@ -2012,6 +2012,56 @@ def _govern(metric: MetricDefinition, mq: MetricQuery) -> str | None:
                     f"measure for 'rolling_avg'.",
                 )
 
+    # ── SYMMETRIC time-bound guard for the OTHER layered paths ───────────────
+    # FIX (HIGH OOM — unbounded __base for top_n-only + derived-measures-only
+    # layered paths): the time_comparisons block above requires a date bound on
+    # the time column, but it ONLY fires when mq.time_comparisons is non-empty.
+    # The layered path (needs_layer = bool(metric.derived_measures) or
+    # mq.has_transforms()) is ALSO entered for:
+    #   (1) top_n queries (mq.top_n is not None), and
+    #   (2) derived-measures-only metrics,
+    # both of which can have EMPTY time_comparisons — so the guard above never
+    # fires.  When such a query ALSO sets a time_grain over a large fact table,
+    # __base is materialised as a GROUP BY over (dims × EVERY time bucket) before
+    # the outer LIMIT / QUALIFY / membership prune lands — the same unbounded
+    # __base explosion the time_comparisons guard was added to prevent.
+    #
+    # We therefore require the SAME bounding/equality filter on the time column
+    # for these layered paths, reusing the identical mechanism
+    # (_require_time_bound_enabled / _TIME_BOUND_OPS / _default_filters_bound_time).
+    #
+    # Scoping (deliberately narrow):
+    #   * Only when a time_grain IS SET — a top_n WITHOUT a time grain (the common
+    #     "top 10 overall" case) groups by dims only, has no time-bucket axis, and
+    #     is NOT gated.
+    #   * Only when NOT mq.time_comparisons — the block above already handles that
+    #     case; this avoids a double-raise / redundant check.
+    #   * Same author-default-filter and env opt-out exceptions as above.
+    _will_layer = bool(metric.derived_measures) or mq.top_n is not None
+    if (
+        _will_layer
+        and not mq.time_comparisons
+        and mq.time_grain is not None
+        and time_col is not None
+        and _require_time_bound_enabled()
+    ):
+        has_request_bound = any(
+            f.field == time_col and f.op in _TIME_BOUND_OPS
+            for f in mq.filters
+        )
+        if not has_request_bound and not _default_filters_bound_time(
+            metric, time_col, _DEFAULT_DIALECT
+        ):
+            raise MetricError(
+                "time_range_required",
+                f"Layered query on metric {metric.id!r} (top_n / derived "
+                f"measures) with a time_grain requires an explicit date-range "
+                f"filter on the time column {time_col!r} (e.g. >=/<= bounds, = a "
+                f"single bucket, or IN an explicit set) to bound the number of "
+                f"time buckets materialised in __base. Set "
+                f"NUBI_METRIC_REQUIRE_TIME_BOUND=0 to disable this guard.",
+            )
+
     # ── top_n governance ────────────────────────────────────────────────────
     if mq.top_n is not None:
         tn = mq.top_n

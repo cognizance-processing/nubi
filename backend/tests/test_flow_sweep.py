@@ -2823,6 +2823,223 @@ async def test_phase2_sentinel_distinct_from_diff_surface_truncation(monkeypatch
 
 
 # ---------------------------------------------------------------------------
+# FIX [MED memory]: Phase 2 aggregate in-process bytes bounded
+# ---------------------------------------------------------------------------
+
+
+def test_phase2_aggregate_bytes_cap_constant_exists():
+    """_SWEEP_PHASE2_AGGREGATE_BYTES_CAP must exist in sweep module as a positive int."""
+    import app.flows.sweep as sweep_mod
+
+    assert hasattr(sweep_mod, "_SWEEP_PHASE2_AGGREGATE_BYTES_CAP"), (
+        "_SWEEP_PHASE2_AGGREGATE_BYTES_CAP constant missing from sweep.py"
+    )
+    assert isinstance(sweep_mod._SWEEP_PHASE2_AGGREGATE_BYTES_CAP, int)
+    assert sweep_mod._SWEEP_PHASE2_AGGREGATE_BYTES_CAP > 0, (
+        "_SWEEP_PHASE2_AGGREGATE_BYTES_CAP must be a positive integer"
+    )
+
+
+def test_phase2_aggregate_bytes_cap_default_is_256mib():
+    """_SWEEP_PHASE2_AGGREGATE_BYTES_CAP default must be 256 MiB."""
+    import app.flows.sweep as sweep_mod
+
+    assert sweep_mod._SWEEP_PHASE2_AGGREGATE_BYTES_CAP == 256 * 1024 * 1024, (
+        f"Default aggregate cap must be 256 MiB (268435456 bytes), "
+        f"got {sweep_mod._SWEEP_PHASE2_AGGREGATE_BYTES_CAP}"
+    )
+
+
+async def test_phase2_aggregate_accumulation_is_bounded(monkeypatch):
+    """Phase 2 aggregate result accumulation must be bounded by
+    _SWEEP_PHASE2_AGGREGATE_BYTES_CAP.
+
+    A sweep over several cells each returning a result that is well within the
+    per-result cap but causes the aggregate total to exceed the aggregate cap
+    must replace the later results with '__phase2_aggregate_truncated__'
+    sentinels.  Earlier results (admitted before the cap was hit) must remain
+    intact.
+
+    Invariant:
+    - The total serialised bytes stored in cells[].outputs across ALL cells
+      must not exceed _SWEEP_PHASE2_AGGREGATE_BYTES_CAP + (sentinel overhead).
+    - At least one cell must have its result sentinel-ized (the cap must fire).
+    - The sentinel key is '__phase2_aggregate_truncated__' (distinct from the
+      per-result sentinel '__phase2_truncated__').
+    - cells[].state remains 'success' — truncation does NOT mark the cell failed.
+    """
+    import json as _json
+    import app.flows.sweep as sweep_mod
+
+    # Each _output_task result is ~15 bytes ({"value": N}).
+    # Set the aggregate cap to 1 byte so the first result already exceeds it —
+    # this guarantees at least one sentinel regardless of timing.
+    monkeypatch.setattr(sweep_mod, "_SWEEP_PHASE2_AGGREGATE_BYTES_CAP", 1)
+    # Disable per-result cap so results reach the aggregate check unmodified.
+    monkeypatch.setattr(sweep_mod, "_SWEEP_PHASE2_RESULT_BYTES_CAP", 0)
+
+    reset_for_tests()
+    store = InMemoryFlowStore()
+    N_CELLS = 5
+    flow = await _make_flow(store, _output_task())
+
+    result = await run_sweep(
+        store=store,
+        flow=flow,
+        param_sets=[{"multiplier": i} for i in range(N_CELLS)],
+        trigger="sweep",
+        now=NOW,
+        claims=CLAIMS,
+    )
+
+    assert result.total == N_CELLS
+    assert result.succeeded == N_CELLS, (
+        "All cells must still succeed — aggregate truncation does not fail a cell"
+    )
+
+    # Count sentinel-ized results across all cells.
+    sentinel_count = 0
+    real_count = 0
+    for cell in result.cells:
+        assert cell.state == "success", (
+            f"Cell {cell.index} must remain 'success' after aggregate truncation, "
+            f"got {cell.state!r}"
+        )
+        for task_key, stored in cell.outputs.items():
+            if isinstance(stored, dict) and stored.get("__phase2_aggregate_truncated__"):
+                sentinel_count += 1
+                # Sentinel must carry the cap_bytes field.
+                assert "cap_bytes" in stored, (
+                    f"Aggregate sentinel for cell {cell.index} / {task_key} must "
+                    f"include 'cap_bytes', got: {stored!r}"
+                )
+                assert stored["cap_bytes"] == 1
+            else:
+                real_count += 1
+
+    # With a cap of 1 byte, the aggregate is exceeded immediately — almost all
+    # results must be sentinel-ized.
+    assert sentinel_count > 0, (
+        "At least one result must be replaced with the aggregate sentinel "
+        "when _SWEEP_PHASE2_AGGREGATE_BYTES_CAP=1"
+    )
+
+    # Measure total stored bytes (counting sentinel as its own size).
+    total_bytes = 0
+    for cell in result.cells:
+        for stored in cell.outputs.values():
+            try:
+                total_bytes += len(_json.dumps(stored, default=str).encode("utf-8"))
+            except Exception:  # noqa: BLE001
+                total_bytes += len(str(stored).encode("utf-8"))
+
+    # Total stored bytes must be bounded: no more than
+    # cap (1) + N_CELLS * sentinel_overhead.
+    # Each sentinel is a small dict (~50 bytes); a very generous upper bound is
+    # N_CELLS * 200 bytes total.
+    generous_bound = N_CELLS * 200
+    assert total_bytes <= generous_bound, (
+        f"Total stored bytes ({total_bytes}) exceeded generous bound "
+        f"({generous_bound} = {N_CELLS} cells × 200 bytes). "
+        "Phase 2 aggregate accumulation is not bounded correctly."
+    )
+
+
+async def test_phase2_aggregate_sentinel_key_is_distinct_from_per_result_sentinel(monkeypatch):
+    """'__phase2_aggregate_truncated__' must be distinct from '__phase2_truncated__'.
+
+    Consumers need to distinguish:
+    - '__phase2_truncated__': a single result was too large (per-result cap).
+    - '__phase2_aggregate_truncated__': the running total exceeded the aggregate cap.
+    """
+    import app.flows.sweep as sweep_mod
+
+    # Force aggregate cap to fire immediately (1 byte) while per-result cap is disabled.
+    monkeypatch.setattr(sweep_mod, "_SWEEP_PHASE2_AGGREGATE_BYTES_CAP", 1)
+    monkeypatch.setattr(sweep_mod, "_SWEEP_PHASE2_RESULT_BYTES_CAP", 0)
+
+    reset_for_tests()
+    store = InMemoryFlowStore()
+    flow = await _make_flow(store, _output_task())
+
+    result = await run_sweep(
+        store=store,
+        flow=flow,
+        param_sets=[{"multiplier": 1}, {"multiplier": 2}],
+        trigger="sweep",
+        now=NOW,
+        claims=CLAIMS,
+    )
+
+    assert result.succeeded == 2
+
+    found_agg_sentinel = False
+    for cell in result.cells:
+        for stored in cell.outputs.values():
+            if isinstance(stored, dict):
+                if stored.get("__phase2_aggregate_truncated__"):
+                    found_agg_sentinel = True
+                    # Must NOT also carry the per-result sentinel key.
+                    assert "__phase2_truncated__" not in stored, (
+                        "Aggregate sentinel must NOT carry '__phase2_truncated__' — "
+                        "the two sentinels must be distinct"
+                    )
+
+    assert found_agg_sentinel, (
+        "Expected at least one '__phase2_aggregate_truncated__' sentinel "
+        "when aggregate cap=1 and two cells are run"
+    )
+
+
+async def test_phase2_aggregate_cap_does_not_truncate_when_under_budget(monkeypatch):
+    """Results well within the aggregate cap must be stored verbatim.
+
+    With a generous cap (100 MiB) and small results, no aggregate sentinel
+    must appear.
+    """
+    import app.flows.sweep as sweep_mod
+
+    # 100 MiB cap — small results should never approach it.
+    monkeypatch.setattr(sweep_mod, "_SWEEP_PHASE2_AGGREGATE_BYTES_CAP", 100 * 1024 * 1024)
+
+    reset_for_tests()
+    store = InMemoryFlowStore()
+    flow = await _make_flow(store, _output_task())  # returns {'value': N*10}
+
+    result = await run_sweep(
+        store=store,
+        flow=flow,
+        param_sets=[{"multiplier": i} for i in range(3)],
+        trigger="sweep",
+        now=NOW,
+        claims=CLAIMS,
+    )
+
+    assert result.succeeded == 3
+
+    for cell in result.cells:
+        for task_key, stored in cell.outputs.items():
+            assert not (isinstance(stored, dict) and stored.get("__phase2_aggregate_truncated__")), (
+                f"Cell {cell.index} / {task_key}: unexpected aggregate sentinel "
+                f"when cap is generous: {stored!r}"
+            )
+        # Real values must be present.
+        assert "compute" in cell.outputs, f"Cell {cell.index} missing 'compute' output"
+        assert cell.outputs["compute"].get("value") == cell.params["multiplier"] * 10
+
+
+async def test_phase2_aggregate_cap_env_overridable(monkeypatch):
+    """_SWEEP_PHASE2_AGGREGATE_BYTES_CAP must be patchable (env-overridable by convention)."""
+    import app.flows.sweep as sweep_mod
+
+    original = sweep_mod._SWEEP_PHASE2_AGGREGATE_BYTES_CAP
+    monkeypatch.setattr(sweep_mod, "_SWEEP_PHASE2_AGGREGATE_BYTES_CAP", 1024)
+    assert sweep_mod._SWEEP_PHASE2_AGGREGATE_BYTES_CAP == 1024
+    monkeypatch.undo()
+    assert sweep_mod._SWEEP_PHASE2_AGGREGATE_BYTES_CAP == original
+
+
+# ---------------------------------------------------------------------------
 # FIX [LOW concurrency]: Phase 2 cross-sweep global semaphore bound
 # ---------------------------------------------------------------------------
 

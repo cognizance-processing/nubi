@@ -3036,3 +3036,132 @@ class TestUnionWrapperTopNOtherSkipReason:
         assert "union-wrapper" not in result.reason, (
             f"Single-CTE query mis-detected as union-wrapper: {result.reason!r}"
         )
+
+
+# ---------------------------------------------------------------------------
+# [MED OOM] build_rollup: both DuckDB connections must be hardened
+# ---------------------------------------------------------------------------
+
+
+class TestBuildRollupHardenedConnections:
+    """Assert that build_rollup calls harden_connection on BOTH its DuckDB
+    connections (src and out) so every connection gets a memory_limit ceiling.
+
+    Strategy: patch harden_connection inside preagg and verify it is called
+    at least twice — once for the source read connection and once for the
+    output write connection.
+    """
+
+    def test_harden_connection_called_on_both_conns(
+        self, source_db: str
+    ) -> None:
+        from unittest.mock import call, patch
+
+        import app.connectors.preagg as preagg_mod
+
+        calls: list = []
+
+        # Wrap harden_connection to record calls without breaking behaviour.
+        original_harden = preagg_mod.build_rollup.__globals__.get(
+            "harden_connection"
+        )
+
+        def _spy(*args, **kwargs):
+            calls.append((args, kwargs))
+            # Delegate to the real function so hardening actually takes effect.
+            from app.connectors.duckdb_conn import harden_connection as _real
+            _real(*args, **kwargs)
+
+        with patch(
+            "app.connectors.preagg.harden_connection",
+            side_effect=_spy,
+        ):
+            reg = RollupRegistry()
+            candidate = RollupCandidate(
+                table="orders",
+                dimensions=["region"],
+                measures=["sum(amount)"],
+            )
+            build_rollup(
+                candidate,
+                rls_keys=["tenant_id"],
+                source_database=source_db,
+                registry=reg,
+                register_query=False,
+                org_id=_TEST_ORG,
+            )
+
+        assert len(calls) >= 2, (
+            f"Expected harden_connection to be called at least twice "
+            f"(src conn + out conn), but got {len(calls)} call(s): {calls!r}"
+        )
+
+        # src conn: disable_external_access=True (source_database is not None)
+        src_kwargs = [kw for _, kw in calls]
+        assert any(kw.get("disable_external_access") is True for kw in src_kwargs), (
+            "Expected at least one harden_connection call with "
+            "disable_external_access=True (src connection)"
+        )
+
+    def test_harden_connection_called_on_in_memory_src(self) -> None:
+        """When source_database=None (in-memory), src is hardened with
+        disable_external_access=False (no path means no read-only isolation),
+        and out is always hardened with disable_external_access=True.
+        """
+        from unittest.mock import patch
+
+        import duckdb
+
+        calls: list = []
+
+        def _spy(*args, **kwargs):
+            calls.append((args, kwargs))
+            from app.connectors.duckdb_conn import harden_connection as _real
+            _real(*args, **kwargs)
+
+        with patch(
+            "app.connectors.preagg.harden_connection",
+            side_effect=_spy,
+        ):
+            reg = RollupRegistry()
+            # Build against an in-memory connection by registering the table
+            # via a source Arrow table (build_rollup accepts None for source_database).
+            # We need the orders table to exist: build it in a temp file.
+            import tempfile
+            fd, tmppath = tempfile.mkstemp(suffix=".duckdb")
+            import os as _os
+            _os.close(fd)
+            _os.remove(tmppath)
+            conn = duckdb.connect(tmppath)
+            conn.execute(
+                "CREATE TABLE orders (tenant_id VARCHAR, region VARCHAR, amount INTEGER)"
+            )
+            conn.execute(
+                "INSERT INTO orders VALUES ('a','us',1),('a','eu',2),('b','us',3)"
+            )
+            conn.close()
+
+            candidate = RollupCandidate(
+                table="orders",
+                dimensions=["region"],
+                measures=["sum(amount)"],
+            )
+            build_rollup(
+                candidate,
+                rls_keys=["tenant_id"],
+                source_database=tmppath,
+                registry=reg,
+                register_query=False,
+                org_id=_TEST_ORG,
+            )
+            if _os.path.exists(tmppath):
+                _os.remove(tmppath)
+
+        assert len(calls) >= 2, (
+            f"Expected harden_connection to be called at least twice, got {len(calls)}"
+        )
+        # out conn always hardened with disable_external_access=True
+        out_calls = [kw for _, kw in calls if kw.get("disable_external_access") is True]
+        assert len(out_calls) >= 1, (
+            "Expected at least one harden_connection(out, disable_external_access=True) call"
+        )

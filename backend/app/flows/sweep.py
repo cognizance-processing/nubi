@@ -210,6 +210,31 @@ _SWEEP_PHASE2_RESULT_BYTES_CAP: int = int(
 )
 
 # ---------------------------------------------------------------------------
+# Phase 2 aggregate byte cap (in-process OOM guard).
+#
+# Phase 2 stores task-run results into cells[].outputs BEFORE diff_surface()
+# applies its response-time caps.  Even with _SWEEP_PHASE2_RESULT_BYTES_CAP
+# guarding each individual result, the aggregate in-process footprint can still
+# be enormous: _MAX_SWEEP_CELLS(50) × _SWEEP_TASK_RUNS_LIMIT(500) × 512 KiB
+# per-result cap ≈ 12.8 GiB held in one SweepResult.cells list.
+#
+# This aggregate cap tracks the running total of bytes stored across ALL cells
+# and ALL task-run results in the Phase 2 loop.  Once the cap is exceeded,
+# every further result for that cell (and all subsequent cells) is replaced with
+# the compact aggregate-truncation sentinel:
+#
+#     {'__phase2_aggregate_truncated__': True, 'cap_bytes': ...}
+#
+# The sentinel is stored in cells[].outputs so the structure remains valid and
+# diff_surface() can still process it; truncation is visible to consumers.
+#
+# Override via NUBI_SWEEP_PHASE2_AGGREGATE_BYTES_CAP (bytes).  Default: 256 MiB.
+# ---------------------------------------------------------------------------
+_SWEEP_PHASE2_AGGREGATE_BYTES_CAP: int = int(
+    os.environ.get("NUBI_SWEEP_PHASE2_AGGREGATE_BYTES_CAP", str(256 * 1024 * 1024))
+)
+
+# ---------------------------------------------------------------------------
 # Per-cell / per-window wall-clock execution timeout.
 #
 # run_sweep calls drain_flow_run once per CELL; run_backfill calls it once per
@@ -623,10 +648,27 @@ async def run_sweep(
         task_run_lists = await asyncio.gather(
             *(_fetch_task_runs(rid) for rid in run_ids_to_fetch)
         )
+        # Running aggregate byte counter across all cells and task-run results.
+        # Once this exceeds _SWEEP_PHASE2_AGGREGATE_BYTES_CAP every further result
+        # is replaced with a compact sentinel to bound in-process memory usage.
+        _phase2_aggregate_bytes: int = 0
+        _phase2_aggregate_cap = _SWEEP_PHASE2_AGGREGATE_BYTES_CAP
+        _phase2_aggregate_hit: bool = False
+
+        _AGG_SENTINEL: dict[str, Any] = {
+            "__phase2_aggregate_truncated__": True,
+            "cap_bytes": _phase2_aggregate_cap,
+        }
+
         for cell_idx, task_runs in zip(_pending_output_cells, task_run_lists):
             outputs: dict[str, Any] = {}
             for tr in task_runs:
                 if tr.get("state") == "success" and tr.get("result") is not None:
+                    # If the aggregate cap has already been hit, sentinel-ize immediately.
+                    if _phase2_aggregate_hit:
+                        outputs[tr["task_key"]] = _AGG_SENTINEL
+                        continue
+
                     result_val = tr["result"]
                     if _SWEEP_PHASE2_RESULT_BYTES_CAP > 0:
                         try:
@@ -640,6 +682,25 @@ async def run_sweep(
                                 "size_bytes": size_bytes,
                                 "cap_bytes": _SWEEP_PHASE2_RESULT_BYTES_CAP,
                             }
+                            # Charge only the sentinel size for the aggregate counter.
+                            size_bytes = len(json.dumps(result_val).encode("utf-8"))
+                    else:
+                        try:
+                            serialised = json.dumps(result_val, default=str)
+                        except Exception:  # noqa: BLE001
+                            serialised = str(result_val)
+                        size_bytes = len(serialised.encode("utf-8"))
+
+                    # Check aggregate cap BEFORE storing this result.
+                    if (
+                        _phase2_aggregate_cap > 0
+                        and _phase2_aggregate_bytes + size_bytes > _phase2_aggregate_cap
+                    ):
+                        _phase2_aggregate_hit = True
+                        outputs[tr["task_key"]] = _AGG_SENTINEL
+                        continue
+
+                    _phase2_aggregate_bytes += size_bytes
                     outputs[tr["task_key"]] = result_val
             cells[cell_idx].outputs = outputs
 

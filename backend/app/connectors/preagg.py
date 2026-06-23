@@ -45,6 +45,8 @@ from collections import Counter, OrderedDict
 from dataclasses import asdict, dataclass, field
 from typing import Any
 
+from app.connectors.duckdb_conn import harden_connection
+
 # ---------------------------------------------------------------------------
 # Registry size cap (env-overridable).
 # ---------------------------------------------------------------------------
@@ -933,6 +935,7 @@ def build_rollup(
         database=source_database or ":memory:",
         read_only=(source_database is not None),
     )
+    harden_connection(src, disable_external_access=(source_database is not None))
     try:
         row_count = src.execute(count_sql).fetchone()[0]
         if row_count > max_rows:
@@ -962,6 +965,7 @@ def build_rollup(
         )
 
     out = duckdb.connect(database=database)
+    harden_connection(out, disable_external_access=True)
     try:
         out.register("_rollup_src", result)
         out.execute(f'DROP TABLE IF EXISTS "{rollup_table}"')
