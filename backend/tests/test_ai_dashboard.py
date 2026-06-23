@@ -551,6 +551,84 @@ class TestValidateDashboardHtml:
                 f"Expected a template-composition issue for {label!r}, got: {issues}"
             )
 
+    # ── CSS expression() in inline style= (LOW XSS fix) ──────────────────────
+
+    def test_css_expression_in_style_attr_rejected(self):
+        """style='color:expression(alert(1))' must be rejected at save time.
+
+        SECURITY (LOW XSS): CSS expression() is an IE/legacy XSS vector.
+        validate_dashboard_html must reject it in any inline style= attribute
+        value so the payload is never persisted, even though render-time
+        Layer 4 (DOMPurify) and the assets.css hardening would also strip it.
+        """
+        html = (
+            '<div class="nubi-dashboard">'
+            '<nubi-table query-id="demo_all" '
+            'style="color:expression(alert(1))"></nubi-table>'
+            "</div>"
+        )
+        ok, issues = validate_dashboard_html(html)
+        assert ok is False, (
+            "Expected validate_dashboard_html to reject style='color:expression(alert(1))' "
+            "(CSS expression() XSS vector)."
+        )
+        assert any("expression" in i.lower() for i in issues), issues
+
+    def test_css_expression_comment_obfuscated_rejected(self):
+        """style='color:expre/**/ssion(alert(1))' (comment-split) must be rejected.
+
+        SECURITY (LOW XSS): CSS comment insertion between the function name and
+        opening paren is a classic bypass technique.  The validator must strip
+        block comments before matching, mirroring the assets.css hardening.
+        """
+        html = (
+            '<div class="nubi-dashboard">'
+            '<nubi-kpi query-id="demo_all" value-col="id" '
+            r'style="color:expre/**/ssion(alert(1))"></nubi-kpi>'
+            "</div>"
+        )
+        ok, issues = validate_dashboard_html(html)
+        assert ok is False, (
+            "Expected validate_dashboard_html to reject 'expre/**/ssion(' "
+            "(CSS comment-obfuscated expression() XSS)."
+        )
+        assert any("expression" in i.lower() for i in issues), issues
+
+    def test_css_expression_whitespace_obfuscated_rejected(self):
+        """style='color:expression  (alert(1))' (whitespace before paren) must be rejected."""
+        html = (
+            '<div style="color:expression  (alert(1))">'
+            '<nubi-table query-id="demo_all"></nubi-table>'
+            "</div>"
+        )
+        ok, issues = validate_dashboard_html(html)
+        assert ok is False, (
+            "Expected validate_dashboard_html to reject 'expression  (' "
+            "(CSS expression() with whitespace before paren)."
+        )
+        assert any("expression" in i.lower() for i in issues), issues
+
+    def test_legitimate_style_attr_is_allowed(self):
+        """Legitimate inline style= values must NOT be rejected.
+
+        Ensures the expression() check does not produce false positives for
+        common CSS properties like display:grid, color:#333, etc.
+        """
+        html = (
+            '<div class="nubi-dashboard" style="display:grid;gap:8px;">'
+            '<nubi-kpi query-id="demo_all" value-col="id" label="Count" '
+            'style="color:#333;font-size:14px;"></nubi-kpi>'
+            '<nubi-table query-id="demo_all" limit="50" '
+            'style="overflow:auto;"></nubi-table>'
+            "</div>"
+        )
+        ok, issues = validate_dashboard_html(html)
+        # Filter to expression-specific issues only.
+        expr_issues = [i for i in issues if "expression" in i.lower()]
+        assert expr_issues == [], (
+            f"Legitimate style= should not be flagged for expression(), got: {expr_issues}"
+        )
+
 
 # ---------------------------------------------------------------------------
 # 3. POST /ai/dashboard endpoint

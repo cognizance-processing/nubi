@@ -121,6 +121,33 @@ _SWEEP_GATHER_CONCURRENCY: int = int(
     os.environ.get("NUBI_SWEEP_GATHER_CONCURRENCY", "10")
 )
 
+# ---------------------------------------------------------------------------
+# Per-cell / per-window wall-clock execution timeout.
+#
+# run_sweep calls drain_flow_run once per CELL; run_backfill calls it once per
+# WINDOW.  Without a per-unit wall-clock budget a single runaway cell or window
+# can monopolise the entire sweep/backfill step budget while the outer route
+# timeout (_SWEEP_TIMEOUT_S / _BACKFILL_TIMEOUT_S) ticks down.
+#
+# These constants set the wall_timeout_s passed to drain_flow_run for each
+# individual unit.  They act as a fraction of the outer timeout — a reasonable
+# default is enough time for typical cells (30 s) while leaving room for the
+# rest of the matrix.
+#
+# Override via env var:
+#   NUBI_SWEEP_CELL_TIMEOUT_S      — per-cell budget for run_sweep (default: 30 s)
+#   NUBI_BACKFILL_WINDOW_TIMEOUT_S — per-window budget for run_backfill (default: 30 s)
+#
+# Set to 0 to disable the per-unit timeout (reverts to the outer-only cap,
+# which was the pre-fix behaviour).
+# ---------------------------------------------------------------------------
+_SWEEP_CELL_TIMEOUT_S: float = float(
+    os.environ.get("NUBI_SWEEP_CELL_TIMEOUT_S", "30")
+)
+_BACKFILL_WINDOW_TIMEOUT_S: float = float(
+    os.environ.get("NUBI_BACKFILL_WINDOW_TIMEOUT_S", "30")
+)
+
 
 # ---------------------------------------------------------------------------
 # Data-classes for structured results
@@ -447,6 +474,7 @@ async def run_sweep(
             final_run = await drain_flow_run(
                 store, run_id, now, claims=claims,
                 max_steps=_SWEEP_CELL_DRAIN_MAX_STEPS,
+                wall_timeout_s=_SWEEP_CELL_TIMEOUT_S,
             )
             cell_state = final_run.get("state", "failed")
 
@@ -730,6 +758,7 @@ async def run_backfill(
             final_run = await drain_flow_run(
                 store, run_id, now, claims=claims,
                 max_steps=_SWEEP_CELL_DRAIN_MAX_STEPS,
+                wall_timeout_s=_BACKFILL_WINDOW_TIMEOUT_S,
             )
             win_state = final_run.get("state", "failed")
 

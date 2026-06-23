@@ -657,6 +657,151 @@ def test_cross_board_cache_key_no_collision() -> None:
     assert "board-beta" in key_board_b
 
 
+# ---------------------------------------------------------------------------
+# AUDIT-36: cross-org provider cache collision (end-to-end integration test)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_same_board_id_and_provider_different_orgs_get_distinct_cache_entries() -> None:
+    """[LOW] Audit-36: two orgs sharing the same board_id + provider_id + params
+    MUST get DISTINCT cache entries — no cross-org cache collision.
+
+    Scenario: org-A and org-B each own a board with the SAME board_id string
+    (possible in multi-tenant setups using fixed/deterministic IDs) and a
+    provider with the same provider_id and the same params dict.  Org-A calls
+    resolve_provider_data first; its result is cached.  Org-B then calls with
+    the same arguments against its own repo.  Org-B must NOT hit org-A's cache
+    entry — it must re-execute and produce its own independent result.
+
+    This verifies that _provider_cache_key includes org_id as a discriminating
+    component (fix-22 added board_id; this test confirms org_id is also present
+    in every provider cache get/put path, including the inline ephemeral path).
+    """
+    _SHARED_BOARD_ID = "board-shared-id"
+    _SHARED_PROVIDER_ID = "shared-provider"
+    _ORG_A = "org-cross-a"
+    _ORG_B = "org-cross-b"
+
+    # Shared board spec used by both orgs — same board_id, same provider_id.
+    shared_spec = {
+        "version": 1,
+        "title": "Shared Spec Board",
+        "widgets": [
+            {
+                "id": "w1",
+                "type": "table",
+                "source": {"provider": _SHARED_PROVIDER_ID, "result": "revenue"},
+            }
+        ],
+        "data": [
+            {
+                "id": _SHARED_PROVIDER_ID,
+                "kind": "inline",
+                "params": {},
+                "base_cte": None,
+                "results": [{"name": "revenue", "grain": None}],
+            }
+        ],
+    }
+
+    # Build a separate InMemoryRepo for each org, each seeded with the same
+    # board_id but different org_id — simulating two isolated org namespaces.
+    repo_a = InMemoryRepo()
+    set_repo(repo_a)
+    await repo_a.create(
+        "boards",
+        org_id=_ORG_A,
+        created_by="test",
+        name="Org A Board",
+        config={"spec": shared_spec},
+        id=_SHARED_BOARD_ID,
+    )
+
+    repo_b = InMemoryRepo()
+    await repo_b.create(
+        "boards",
+        org_id=_ORG_B,
+        created_by="test",
+        name="Org B Board",
+        config={"spec": shared_spec},
+        id=_SHARED_BOARD_ID,
+    )
+
+    # Track how many times the provider executes — if org-B hits org-A's cache
+    # the count will be 1 instead of 2 (cross-org collision).
+    call_count = 0
+
+    async def _fake_run(query_id, org_id, _repo, policies):
+        nonlocal call_count
+        call_count += 1
+        # Return a distinct value per call so we can distinguish org-A from org-B.
+        return ["val"], [[float(call_count * 100)]]
+
+    async def _fake_enforce_quota(org_id: str, dimension: str, amount: float = 1.0) -> None:
+        pass
+
+    try:
+        with (
+            patch("app.features.enforce_quota", side_effect=_fake_enforce_quota),
+            patch("app.dashboards.collect.run_query_rows", side_effect=_fake_run),
+        ):
+            # Org-A executes first and populates the cache.
+            set_repo(repo_a)
+            tables_a = await resolve_provider_data(
+                board_id=_SHARED_BOARD_ID,
+                provider_id=_SHARED_PROVIDER_ID,
+                params={},
+                org_id=_ORG_A,
+                claims={"policies": {}},
+                repo=repo_a,
+            )
+
+            # Org-B executes with the SAME board_id + provider_id + params.
+            # If org_id is not part of the cache key, org-B will incorrectly
+            # receive org-A's cached result and run_query_rows will NOT be called
+            # a second time (call_count stays at 1 — collision detected).
+            set_repo(repo_b)
+            tables_b = await resolve_provider_data(
+                board_id=_SHARED_BOARD_ID,
+                provider_id=_SHARED_PROVIDER_ID,
+                params={},
+                org_id=_ORG_B,
+                claims={"policies": {}},
+                repo=repo_b,
+            )
+    finally:
+        set_repo(None)
+
+    # run_query_rows must have been called TWICE — once per org.
+    # If it was called only once, org-B got org-A's cached result (cross-org leak).
+    assert call_count == 2, (
+        f"Cross-org provider cache collision: run_query_rows called {call_count} time(s) "
+        "but expected 2 (once per org). Org-B incorrectly hit org-A's cache entry — "
+        "org_id is missing from the provider cache key."
+    )
+
+    # Both results must exist and be structurally independent.
+    assert "revenue" in tables_a, f"revenue missing from org-A result: {list(tables_a)}"
+    assert "revenue" in tables_b, f"revenue missing from org-B result: {list(tables_b)}"
+
+    # The values differ because each call produced a unique counter value.
+    val_a = tables_a["revenue"].to_pydict()["val"][0]
+    val_b = tables_b["revenue"].to_pydict()["val"][0]
+    assert val_a != val_b, (
+        f"Org-A and org-B returned identical values ({val_a!r}) — "
+        "cross-org provider cache collision: org_id must be part of the cache key."
+    )
+
+    # Sanity: confirm org_id is the first discriminating component of the key format.
+    from app.dashboards.board_data import _provider_cache_key as _pck
+    key_a = _pck(_ORG_A, _SHARED_PROVIDER_ID, {}, {}, _SHARED_BOARD_ID)
+    key_b = _pck(_ORG_B, _SHARED_PROVIDER_ID, {}, {}, _SHARED_BOARD_ID)
+    assert key_a != key_b, "Cache key function itself must differ by org_id."
+    assert f":{_ORG_A}:" in key_a, f"org_id not embedded in key: {key_a}"
+    assert f":{_ORG_B}:" in key_b, f"org_id not embedded in key: {key_b}"
+
+
 @pytest.mark.asyncio
 async def test_same_provider_id_different_boards_get_distinct_cache_entries(
     repo: InMemoryRepo,

@@ -524,6 +524,17 @@ async def advance_readiness(
             # (N children × large per-task results) would otherwise write one
             # unbounded JSONB row → OOM.  When over cap, FAIL the map task and
             # do NOT write the oversized blob.
+            #
+            # Memory note: this is a SINGLE serialization done purely to measure
+            # the size — the resulting JSON string is never bound to a name, so it
+            # is released immediately after ``len()`` and never co-resident with
+            # the store's own serialization of ``_fanin_result``.  We measure the
+            # encoded byte length (not ``len(str)``) so the cap reflects on-disk
+            # JSONB bytes, and we do it before the store write so an oversized blob
+            # is rejected without ever persisting it.  The under-cap success path
+            # below hands the *dict* to the store, which serializes once for
+            # storage; that is the only other serialization and it does not
+            # overlap with this measurement.
             _fanin_bytes = len(json.dumps(_fanin_result).encode())
             if _fanin_bytes > _MAP_FANIN_MAX_BYTES:
                 _fanin_err = (
@@ -556,6 +567,21 @@ async def advance_readiness(
     # downstream pending tasks based on __branch_next__ in the result.
     # Branch task_runs are identified by the presence of '__branch_next__' in
     # their result (since InMemoryFlowStore does not persist the 'kind' column).
+    #
+    # Perf: build a reverse index (dep_task_key → pending dependents) ONCE up
+    # front instead of re-scanning the full task_runs set for every branch node
+    # (which was O(branches × N)).  Branch activation then walks only the
+    # already-pending dependents of each branch — O(N + edges).  We re-check the
+    # authoritative ``state_by_key`` before mutating, so dependents that were
+    # promoted earlier in this same activation pass (a task depending on two
+    # branches) are skipped correctly.
+    _pending_dependents_by_dep: dict[str, list[dict[str, Any]]] = {}
+    for dep_tr in task_runs:
+        if dep_tr["state"] != "pending":
+            continue
+        for dep in dep_tr.get("depends_on") or []:
+            _pending_dependents_by_dep.setdefault(dep, []).append(dep_tr)
+
     for tr in task_runs:
         if tr["state"] != "success":
             continue
@@ -567,15 +593,14 @@ async def advance_readiness(
         branch_result = tr.get("result") or {}
         active_next: list[str] = branch_result.get("__branch_next__") or []
 
-        # Find all pending task_runs that have this branch key in their depends_on.
-        for dep_tr in task_runs:
-            if dep_tr["state"] != "pending":
+        # Walk only the pending task_runs that depend on this branch key.
+        for dep_tr in _pending_dependents_by_dep.get(branch_key, ()):
+            dep_task_key = dep_tr["task_key"]
+            # The dependent may already have been advanced earlier in this pass
+            # (e.g. it depends on two branch nodes); use the authoritative map.
+            if state_by_key.get(dep_task_key) != "pending":
                 continue
             dep_depends_on: list[str] = dep_tr.get("depends_on") or []
-            if branch_key not in dep_depends_on:
-                continue
-
-            dep_task_key = dep_tr["task_key"]
 
             if dep_task_key in active_next:
                 # Active branch path: check if all other deps also succeeded.
@@ -1498,7 +1523,10 @@ async def run_one_ready_task(
     # identity — fill in the flow OWNER's snapshotted RLS policies so query
     # cells row-filter exactly as the owner does.  No-op when claims already
     # carry policies (the synchronous interactive path).
-    exec_claims = _claims_with_owner_policies(claims, flow_dict, flow_run_id=flow_run_id)
+    exec_claims = _claims_with_owner_policies(
+        claims, flow_dict, flow_run_id=flow_run_id,
+        requires_rls=_task_requires_rls(task_spec),
+    )
     # Merge task_run with task_spec so execute_task sees kind/config/timeout.
     full_task = {**task_run, **task_spec}
     # for_each cells are rewritten into a legacy 'map' task so the existing
@@ -2538,11 +2566,27 @@ def _owner_policies_from_flow(flow: dict[str, Any] | None) -> dict[str, Any] | N
     return dict(policies) if isinstance(policies, dict) else {}
 
 
+def _task_requires_rls(task_spec: dict[str, Any] | None) -> bool:
+    """Return True when *task_spec* is a cell whose execution applies RLS.
+
+    Only ``query`` cells issue row-filtered SQL against tenant data, so they are
+    the ONLY cells where missing RLS policies cause a cross-tenant row leak.
+    ``noop`` / ``python`` / ``agent`` cells do not consult the policy set, so a
+    legacy flow with no owner-policy snapshot can drain those harmlessly.  We
+    scope the fail-closed guard (below) to query cells so the security control is
+    precise — it blocks exactly the unsafe case without breaking non-query flows.
+    """
+    if not isinstance(task_spec, dict):
+        return False
+    return task_spec.get("kind") == "query"
+
+
 def _claims_with_owner_policies(
     claims: dict[str, Any],
     flow: dict[str, Any] | None,
     *,
     flow_run_id: str | None = None,
+    requires_rls: bool = True,
 ) -> dict[str, Any]:
     """Return *claims* augmented with the flow OWNER's RLS policies (B2).
 
@@ -2557,15 +2601,30 @@ def _claims_with_owner_policies(
     VERIFIED caller's policies into ``claims`` — those are left UNCHANGED; we
     only fill in policies when none were supplied.
 
-    Backward-compat: a flow with no snapshot (``_owner_policies_from_flow``
-    returns ``None``) yields no change — the pre-B2 behaviour — but we LOG it
-    so the gap is observable (a scheduled flow that should be RLS-scoped but
-    predates the snapshot).
+    Fail-closed (no snapshot): when the caller supplied NO ``policies`` AND the
+    flow carries no owner snapshot (``_owner_policies_from_flow`` returns
+    ``None`` — a pre-B2 / inline / transient flow), proceeding would run a query
+    cell with ``policies={}`` = NO row filter = cross-tenant leak.  We REFUSE by
+    raising ``RuntimeError`` rather than silently returning empty claims.
+    Re-save / re-enable the flow to capture the owner snapshot, after which
+    scheduled runs row-filter correctly.
+
+    The fail-closed raise is SCOPED to cells that actually apply RLS via the
+    ``requires_rls`` flag (callers pass ``_task_requires_rls(task_spec)``): a
+    legacy flow's ``python`` / ``agent`` / ``noop`` cells never consult the
+    policy set, so blocking them would be a false positive.  Only a ``query``
+    cell that would silently run UN-row-filtered triggers the raise.  When
+    ``requires_rls`` is False and no snapshot exists, claims are returned
+    unchanged (no ``policies`` key injected — the non-query cell cannot leak).
 
     Key-presence vs truthiness: both the ``claims`` guard and the snapshot
     guard use key-presence / ``is None`` checks (NOT truthiness) so an
     explicitly-supplied or explicitly-snapshotted empty dict ``{}`` (admin
     with no row-filter restrictions) is respected and NOT treated as "missing".
+    A flow legitimately created with empty ``{}`` policies has the
+    ``__owner_policies__`` key PRESENT (= ``{}``), so it is distinguishable from
+    "no snapshot at all" and is allowed through; only an ABSENT snapshot
+    combined with caller-supplied-no-policies (for a query cell) raises.
     """
     if "policies" in claims:
         # Caller already supplied policies (interactive path) — never override.
@@ -2576,14 +2635,29 @@ def _claims_with_owner_policies(
         return claims
     owner_policies = _owner_policies_from_flow(flow)
     if owner_policies is None:
-        # No snapshot present at all (pre-B2 flow or inline/transient flow).
-        logger.warning(
-            "Flow run %s executing with EMPTY RLS policies (no owner-policy "
-            "snapshot on the flow). Scheduled query cells apply no row filter; "
-            "edit/enable the flow to capture the owner's policies.",
-            flow_run_id or (flow or {}).get("id") or "?",
+        # No snapshot present at all (pre-B2 flow or inline/transient flow) AND the
+        # caller supplied no policies.
+        if not requires_rls:
+            # Non-query cell (python/agent/noop) — it does not consult the policy
+            # set, so running it without a snapshot cannot leak rows.  Leave claims
+            # unchanged (do NOT inject a 'policies' key).
+            return claims
+        # A query cell would run with NO row filter → cross-tenant leak.
+        # FAIL CLOSED: refuse and force a re-save to capture the owner snapshot.
+        _flow_id = flow_run_id or (flow or {}).get("id") or "?"
+        logger.error(
+            "Flow run %s has NO owner-policy snapshot and the scheduled claims "
+            "carry no policies; refusing to run a query cell with no RLS row "
+            "filter (cross-tenant leak). Re-save / re-enable the flow to capture "
+            "the owner's policy snapshot.",
+            _flow_id,
         )
-        return claims
+        raise RuntimeError(
+            f"Flow {_flow_id} has no owner-policy snapshot (__owner_policies__); "
+            "scheduled execution cannot apply RLS to a query cell and would leak "
+            "rows across tenants. Re-save or re-enable the flow to capture the "
+            "owner's policy snapshot, then retry."
+        )
     # owner_policies is a dict (possibly {}) — always apply it.  An explicit {}
     # means the owner has no row-filter restrictions (admin), which is correct.
     merged = dict(claims)
@@ -2782,7 +2856,10 @@ async def _execute_claimed_task_run_inner(
     # scheduled drain → claims has no policies), substitute the flow OWNER's
     # snapshotted RLS policies so query cells still row-filter.  Interactive
     # drains (run_flow / run-cell) already pass the caller's policies — kept.
-    exec_claims = _claims_with_owner_policies(claims, flow_dict, flow_run_id=flow_run_id)
+    exec_claims = _claims_with_owner_policies(
+        claims, flow_dict, flow_run_id=flow_run_id,
+        requires_rls=_task_requires_rls(task_spec),
+    )
 
     # ── Offload to a thread ────────────────────────────────────────────────────
     # execute_task is synchronous (and enforces timeout_s internally via a

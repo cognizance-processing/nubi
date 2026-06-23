@@ -830,12 +830,18 @@ def test_admin_empty_owner_snapshot_applied_not_skipped():
     )
 
 
-def test_no_snapshot_key_triggers_warning_not_empty_policy_merge():
-    """A flow with NO __owner_policies__ key at all (pre-B2) must NOT get a
-    policies={} merged — it should leave claims unchanged (and log a warning).
+def test_no_snapshot_key_fails_closed_for_scheduled_run():
+    """A scheduled run (no 'policies' in claims) against a flow with NO
+    __owner_policies__ key at all (pre-B2) must FAIL CLOSED.
 
-    This distinguishes the two cases that were previously collapsed by the
-    truthiness check: 'no snapshot' vs 'explicit empty snapshot'.
+    Previously this returned claims unchanged → query cells ran with policies={}
+    = no RLS row filter = cross-tenant leak.  The fix raises RuntimeError so the
+    flow must be re-saved/re-enabled to capture the owner snapshot, rather than
+    silently leaking rows.
+
+    This still distinguishes the two cases that were previously collapsed by the
+    truthiness check: 'no snapshot' (raises) vs 'explicit empty snapshot'
+    (allowed, applies {}).
     """
     from app.flows.runtime import _claims_with_owner_policies
 
@@ -853,13 +859,8 @@ def test_no_snapshot_key_triggers_warning_not_empty_policy_merge():
 
     sched_claims: dict = {"org_id": "org-test"}
 
-    result = _claims_with_owner_policies(sched_claims, pre_b2_flow, flow_run_id="run-pre-b2")
-
-    # No snapshot → claims returned unchanged (no 'policies' key injected).
-    assert "policies" not in result, (
-        "Pre-B2 flow with no __owner_policies__ key must NOT inject a 'policies' key; "
-        "got: " + repr(result)
-    )
+    with pytest.raises(RuntimeError, match="owner-policy snapshot"):
+        _claims_with_owner_policies(sched_claims, pre_b2_flow, flow_run_id="run-pre-b2")
 
 
 # ---------------------------------------------------------------------------

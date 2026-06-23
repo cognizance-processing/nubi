@@ -160,3 +160,81 @@ def test_derived_rank_with_other_raises() -> None:
     with pytest.raises(MetricError) as ei:
         compile_metric(m, mq)
     assert ei.value.code == "bad_top_n", ei.value.code
+
+
+def test_no_grain_top_n_not_truncated_by_dialect_boundary() -> None:
+    """[CRITICAL] No-time-grain top-N via plan(duckdb) returns EXACTLY the top N.
+
+    Proves the engine-correctness fix at the compile→plan dialect boundary:
+    compile_metric emits DuckDB ``QUALIFY RANK() <= N`` for a no-time-grain
+    top-N and the outer SELECT carries a default LIMIT.  When the planner parses
+    that SQL as its DEFAULT 'postgres' dialect, QUALIFY is rewritten into a
+    derived table with ``WHERE _w <= N`` AND the outer LIMIT is moved INSIDE the
+    derived table — so LIMIT truncates __base BEFORE the rank filter and the true
+    top members can be silently dropped.  Parsing/emitting 'duckdb' (what the
+    routes now thread) preserves QUALIFY natively → no truncation.
+
+    Dataset has MANY members (> N) and RLS is active (single tenant scoped); we
+    assert the duckdb plan returns exactly the top N highest-ranked members.
+    """
+    con = _duckdb_conn()
+    con.execute(
+        "CREATE TABLE rev (region VARCHAR, amount DOUBLE, org_id VARCHAR)"
+    )
+    # org1: 10 distinct members with strictly increasing amounts (no ties), so
+    # the true top-3 is unambiguous: J(1000) > I(900) > H(800).
+    rows_in = []
+    for i, ch in enumerate("ABCDEFGHIJ"):
+        rows_in.append(f"('{ch}', {(i + 1) * 100}, 'org1')")
+    # org2 has a HUGE member that would dominate a GLOBAL top-N / poison a
+    # mis-parsed truncation — it must never appear under org1's RLS.
+    rows_in.append("('Z', 99999, 'org2')")
+    con.execute("INSERT INTO rev VALUES " + ", ".join(rows_in))
+
+    m = MetricDefinition(
+        id="rev",
+        name="Rev",
+        measure=Measure(name="revenue", agg="sum", expr="amount"),
+        base_table="rev",
+        dimensions=(Dimension(name="region"),),
+        rls_keys=("org_id",),
+    )
+    mq = MetricQuery(
+        metric_id="rev",
+        dimensions=("region",),
+        top_n=TopN(dimension="region", n=3, order="desc"),
+    )
+    sql, _ = compile_metric(m, mq)
+    assert "QUALIFY" in sql.upper(), f"expected QUALIFY in compiled SQL: {sql}"
+
+    claims = {"policies": {"org_id": "org1"}}
+
+    # ── Correct boundary: parse/emit duckdb → QUALIFY preserved, no truncation ─
+    p_duck = plan(sql, claims=claims, dialect="duckdb")
+    cur = con.execute(p_duck.sql)
+    cols = [d[0] for d in cur.description]
+    ri = cols.index("region")
+    mi = cols.index("revenue")
+    duck_rows = cur.fetchall()
+
+    regions = {r[ri] for r in duck_rows}
+    assert "Z" not in regions, f"org2 leaked under RLS: {duck_rows}"
+    # EXACTLY the top-3 highest members — no truncation of high-rankers.
+    assert len(duck_rows) == 3, f"expected exactly 3 rows, got {duck_rows}"
+    assert regions == {"J", "I", "H"}, (
+        f"top-N truncated/wrong at dialect boundary: {duck_rows}"
+    )
+    vals = {r[ri]: r[mi] for r in duck_rows}
+    assert vals == {"J": 1000.0, "I": 900.0, "H": 800.0}, duck_rows
+
+    # ── Regression lock: the OLD default ('postgres') WOULD truncate ──────────
+    # Parsing the DuckDB QUALIFY as postgres moves the outer LIMIT inside the
+    # derived table; with a tiny default cap the membership is truncated before
+    # the rank filter.  We assert the postgres-parsed plan SQL is materially
+    # different (QUALIFY no longer survives as native QUALIFY) so the boundary
+    # bug can never silently reappear.
+    p_pg = plan(sql, claims=claims, dialect="postgres")
+    assert "QUALIFY" not in p_pg.sql.upper(), (
+        "postgres parse unexpectedly preserved QUALIFY — boundary assumption "
+        f"changed; revisit the dialect fix. sql={p_pg.sql}"
+    )

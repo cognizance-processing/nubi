@@ -121,6 +121,13 @@ _SAFE_DATA_IMAGE_TYPES: frozenset[str] = frozenset(
     {"image/png", "image/jpeg", "image/gif", "image/webp"}
 )
 
+# CSS expression() IE/legacy XSS — matched AFTER stripping CSS block comments
+# (/* ... */) and collapsing whitespace, so that obfuscated variants such as
+# ``expre/**/ssion(`` and ``expression  (`` are also caught.
+_CSS_EXPRESSION_RE = re.compile(r"expression\s*\(", re.IGNORECASE)
+# CSS block comment pattern (non-greedy).
+_CSS_COMMENT_RE = re.compile(r"/\*.*?\*/", re.DOTALL)
+
 # Matches any data: URI so we can inspect the MIME type.
 _DATA_URI_RE = re.compile(r"data\s*:", re.IGNORECASE)
 
@@ -173,6 +180,23 @@ def _is_safe_data_uri(value: str) -> bool:
         return False
     mime = re.sub(r"\s", "", m.group(1))  # strip any residual whitespace
     return mime in _SAFE_DATA_IMAGE_TYPES
+
+def _css_style_has_expression(style_value: str) -> bool:
+    """Return True when *style_value* contains a CSS expression() call.
+
+    Strips CSS block comments (``/* ... */``) first, then collapses all
+    whitespace, so obfuscated variants like ``expre/**/ssion(`` or
+    ``expression  (`` are also caught.
+
+    This matches the comment/whitespace-tolerant approach used in the
+    assets.css hardening layer.
+    """
+    # 1. Remove CSS block comments (handles expre/**/ssion variant).
+    stripped = _CSS_COMMENT_RE.sub("", style_value)
+    # 2. Collapse all remaining whitespace (handles expression  ( variant).
+    stripped = re.sub(r"\s+", "", stripped)
+    return bool(_CSS_EXPRESSION_RE.search(stripped))
+
 
 # Tags that must never appear in a dashboard or canvas document — they can be
 # used for phishing (iframe/form), plugin execution (object/embed),
@@ -841,6 +865,23 @@ def validate_dashboard_html(html: str) -> tuple[bool, list[str]]:
             "iframe/object/embed/form/meta/base/link are not permitted in "
             "dashboard or canvas documents."
         )
+
+    # 3c. CSS expression() in inline style= attributes (IE/legacy XSS).
+    #
+    #     The render-time Layer 4 DOMPurify strips expression() at render, but we
+    #     must ALSO reject it at SAVE time so the payload is never persisted.
+    #     We scan each style= attribute value, strip CSS block comments first
+    #     (handles expre/**/ssion obfuscation), then collapse whitespace, then
+    #     match expression\s*\( — mirroring the assets.css hardening approach.
+    _style_attr_re = re.compile(r"""style\s*=\s*["']([^"']*)["']""", re.IGNORECASE)
+    for style_m in _style_attr_re.finditer(html):
+        style_val = style_m.group(1)
+        if _css_style_has_expression(style_val):
+            issues.append(
+                "HTML contains CSS expression() in inline style= attribute — "
+                "forbidden (IE/legacy XSS vector)."
+            )
+            break  # one report is enough
 
     # 4. Check that all custom elements (tag names with a hyphen) are nubi-*.
     custom_tag_re = re.compile(r"<([a-z][a-z0-9]*-[a-z0-9-]+)", re.IGNORECASE)

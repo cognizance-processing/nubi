@@ -27,7 +27,7 @@ from app.flows.runtime import (
 from app.flows.store import InMemoryFlowStore
 
 NOW = datetime(2025, 1, 1, 12, 0, 0, tzinfo=timezone.utc)
-CLAIMS: dict[str, Any] = {}
+CLAIMS: dict[str, Any] = {"policies": {}}
 
 
 async def _make_flow(store: InMemoryFlowStore, spec: dict[str, Any]) -> dict[str, Any]:

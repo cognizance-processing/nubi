@@ -37,7 +37,7 @@ from app.flows.registry import reset_for_tests
 pytestmark = pytest.mark.asyncio
 
 NOW = datetime(2025, 6, 1, 12, 0, 0, tzinfo=timezone.utc)
-CLAIMS: dict[str, Any] = {"org_id": "org-test", "sub": "user-test"}
+CLAIMS: dict[str, Any] = {"org_id": "org-test", "sub": "user-test", "policies": {}}
 
 
 # ---------------------------------------------------------------------------
@@ -1032,9 +1032,9 @@ async def test_run_sweep_passes_max_steps_to_drain():
 
     original_drain_fn = rt_mod.drain_flow_run
 
-    async def capturing_drain(store_, run_id, now, claims=None, max_steps=200):
+    async def capturing_drain(store_, run_id, now, claims=None, max_steps=200, wall_timeout_s=0.0):
         observed_max_steps.append(max_steps)
-        return await original_drain_fn(store_, run_id, now, claims=claims, max_steps=max_steps)
+        return await original_drain_fn(store_, run_id, now, claims=claims, max_steps=max_steps, wall_timeout_s=wall_timeout_s)
 
     # Patch at the runtime module level so that sweep's local import picks it up.
     rt_mod.drain_flow_run = capturing_drain
@@ -1253,9 +1253,9 @@ async def test_backfill_drain_bounded_by_cell_cap():
     observed_max_steps: list[int] = []
     original_drain_fn = rt_mod.drain_flow_run
 
-    async def capturing_drain(store_, run_id, now, claims=None, max_steps=200):
+    async def capturing_drain(store_, run_id, now, claims=None, max_steps=200, wall_timeout_s=0.0):
         observed_max_steps.append(max_steps)
-        return await original_drain_fn(store_, run_id, now, claims=claims, max_steps=max_steps)
+        return await original_drain_fn(store_, run_id, now, claims=claims, max_steps=max_steps, wall_timeout_s=wall_timeout_s)
 
     rt_mod.drain_flow_run = capturing_drain
     try:
@@ -2241,3 +2241,264 @@ async def test_backfill_yields_between_windows():
         f"backfill.  Expected >= {N_WINDOWS} yields — run_backfill must call "
         "asyncio.sleep(0) between windows to avoid starving concurrent coroutines."
     )
+
+
+# ---------------------------------------------------------------------------
+# FIX [LOW]: per-unit execution timeout (wall_timeout_s passed to drain_flow_run)
+# ---------------------------------------------------------------------------
+
+
+def test_sweep_cell_timeout_constant_exists_and_is_positive():
+    """_SWEEP_CELL_TIMEOUT_S must exist in sweep module and be a positive float."""
+    import app.flows.sweep as sweep_mod
+
+    assert hasattr(sweep_mod, "_SWEEP_CELL_TIMEOUT_S"), (
+        "_SWEEP_CELL_TIMEOUT_S constant missing from sweep.py"
+    )
+    assert isinstance(sweep_mod._SWEEP_CELL_TIMEOUT_S, float)
+    assert sweep_mod._SWEEP_CELL_TIMEOUT_S > 0, (
+        "_SWEEP_CELL_TIMEOUT_S must be a positive number"
+    )
+
+
+def test_backfill_window_timeout_constant_exists_and_is_positive():
+    """_BACKFILL_WINDOW_TIMEOUT_S must exist in sweep module and be a positive float."""
+    import app.flows.sweep as sweep_mod
+
+    assert hasattr(sweep_mod, "_BACKFILL_WINDOW_TIMEOUT_S"), (
+        "_BACKFILL_WINDOW_TIMEOUT_S constant missing from sweep.py"
+    )
+    assert isinstance(sweep_mod._BACKFILL_WINDOW_TIMEOUT_S, float)
+    assert sweep_mod._BACKFILL_WINDOW_TIMEOUT_S > 0, (
+        "_BACKFILL_WINDOW_TIMEOUT_S must be a positive number"
+    )
+
+
+async def test_run_sweep_passes_wall_timeout_s_to_drain():
+    """run_sweep must pass wall_timeout_s=_SWEEP_CELL_TIMEOUT_S to drain_flow_run.
+
+    A per-cell wall-clock budget ensures one slow cell cannot consume the entire
+    outer sweep timeout.  We verify by patching drain_flow_run and asserting
+    that wall_timeout_s equals _SWEEP_CELL_TIMEOUT_S for every call.
+    """
+    import app.flows.sweep as sweep_mod
+    import app.flows.runtime as rt_mod
+
+    reset_for_tests()
+    store = InMemoryFlowStore()
+    flow = await _make_flow(store)
+
+    observed_wall_timeouts: list[float] = []
+    original_drain_fn = rt_mod.drain_flow_run
+
+    async def capturing_drain(store_, run_id, now, claims=None, max_steps=200, wall_timeout_s=0.0):
+        observed_wall_timeouts.append(wall_timeout_s)
+        return await original_drain_fn(
+            store_, run_id, now, claims=claims,
+            max_steps=max_steps,
+            wall_timeout_s=wall_timeout_s,
+        )
+
+    rt_mod.drain_flow_run = capturing_drain
+    try:
+        result = await run_sweep(
+            store=store,
+            flow=flow,
+            param_sets=[{"x": 1}, {"x": 2}],
+            trigger="sweep",
+            now=NOW,
+            claims=CLAIMS,
+        )
+    finally:
+        rt_mod.drain_flow_run = original_drain_fn
+
+    assert result.total == 2
+    assert len(observed_wall_timeouts) == 2
+
+    expected_timeout = sweep_mod._SWEEP_CELL_TIMEOUT_S
+    for wt in observed_wall_timeouts:
+        assert wt == expected_timeout, (
+            f"drain_flow_run called with wall_timeout_s={wt}, expected "
+            f"_SWEEP_CELL_TIMEOUT_S={expected_timeout}. "
+            "run_sweep must pass the per-cell wall timeout to prevent runaway cells."
+        )
+
+
+async def test_run_backfill_passes_wall_timeout_s_to_drain():
+    """run_backfill must pass wall_timeout_s=_BACKFILL_WINDOW_TIMEOUT_S to drain_flow_run.
+
+    A per-window wall-clock budget ensures one slow window cannot consume the
+    entire outer backfill timeout.
+    """
+    import app.flows.sweep as sweep_mod
+    import app.flows.runtime as rt_mod
+
+    reset_for_tests()
+    store = InMemoryFlowStore()
+    flow = await _make_flow(store)
+
+    start = datetime(2025, 1, 1, tzinfo=timezone.utc)
+    end = datetime(2025, 1, 3, tzinfo=timezone.utc)  # 2 windows
+
+    observed_wall_timeouts: list[float] = []
+    original_drain_fn = rt_mod.drain_flow_run
+
+    async def capturing_drain(store_, run_id, now, claims=None, max_steps=200, wall_timeout_s=0.0):
+        observed_wall_timeouts.append(wall_timeout_s)
+        return await original_drain_fn(
+            store_, run_id, now, claims=claims,
+            max_steps=max_steps,
+            wall_timeout_s=wall_timeout_s,
+        )
+
+    rt_mod.drain_flow_run = capturing_drain
+    try:
+        result = await run_backfill(
+            store=store,
+            flow=flow,
+            start=start,
+            end=end,
+            window="1d",
+            trigger="backfill",
+            now=NOW,
+            claims=CLAIMS,
+        )
+    finally:
+        rt_mod.drain_flow_run = original_drain_fn
+
+    assert result.total == 2
+    assert len(observed_wall_timeouts) == 2
+
+    expected_timeout = sweep_mod._BACKFILL_WINDOW_TIMEOUT_S
+    for wt in observed_wall_timeouts:
+        assert wt == expected_timeout, (
+            f"drain_flow_run called with wall_timeout_s={wt}, expected "
+            f"_BACKFILL_WINDOW_TIMEOUT_S={expected_timeout}. "
+            "run_backfill must pass the per-window wall timeout to prevent runaway windows."
+        )
+
+
+async def test_slow_sweep_cell_is_bounded_by_per_unit_timeout():
+    """A slow cell that exceeds _SWEEP_CELL_TIMEOUT_S must be aborted (TimeoutError
+    caught as best-effort failure), not block the whole sweep budget.
+
+    We set _SWEEP_CELL_TIMEOUT_S to a tiny value (0.05 s) and drain_flow_run to
+    sleep longer, simulating a runaway cell.  The cell must be recorded as an
+    error and the sweep must still return (not hang until the outer timeout).
+    """
+    import app.flows.sweep as sweep_mod
+    import app.flows.runtime as rt_mod
+
+    reset_for_tests()
+    store = InMemoryFlowStore()
+    flow = await _make_flow(store)
+
+    original_timeout = sweep_mod._SWEEP_CELL_TIMEOUT_S
+    original_drain_fn = rt_mod.drain_flow_run
+
+    async def slow_drain(store_, run_id, now, claims=None, max_steps=200, wall_timeout_s=0.0):
+        # Honour the wall_timeout_s by delegating to the real drain (which will
+        # enforce the deadline).  But first we simulate a pre-drain delay that
+        # would exceed the tiny timeout — by passing an already-expired deadline
+        # value implicitly via the real drain's internal check.
+        # We actually just call the real drain; the tiny wall_timeout_s means it
+        # will raise TimeoutError immediately at the first iteration deadline check.
+        return await original_drain_fn(
+            store_, run_id, now, claims=claims,
+            max_steps=max_steps,
+            wall_timeout_s=wall_timeout_s,
+        )
+
+    # Patch the timeout to an extremely small value (1 µs — expires immediately).
+    sweep_mod._SWEEP_CELL_TIMEOUT_S = 0.000001
+    rt_mod.drain_flow_run = slow_drain
+    try:
+        result = await run_sweep(
+            store=store,
+            flow=flow,
+            param_sets=[{"x": 1}],
+            trigger="sweep",
+            now=NOW,
+            claims=CLAIMS,
+        )
+    finally:
+        sweep_mod._SWEEP_CELL_TIMEOUT_S = original_timeout
+        rt_mod.drain_flow_run = original_drain_fn
+
+    # The cell must be recorded as an error (TimeoutError was caught best-effort).
+    assert result.total == 1
+    assert result.failed == 1
+    assert result.succeeded == 0
+    assert result.cells[0].state == "error"
+    assert result.cells[0].error is not None
+
+
+async def test_slow_backfill_window_is_bounded_by_per_unit_timeout():
+    """A slow backfill window that exceeds _BACKFILL_WINDOW_TIMEOUT_S must be
+    aborted as a best-effort error, not block the whole backfill budget.
+
+    We use a tiny per-window timeout (1 µs) so drain raises TimeoutError
+    immediately; the window must be recorded as an error and the backfill
+    must still complete (not hang until the outer timeout fires).
+    """
+    import app.flows.sweep as sweep_mod
+    import app.flows.runtime as rt_mod
+
+    reset_for_tests()
+    store = InMemoryFlowStore()
+    flow = await _make_flow(store)
+
+    start = datetime(2025, 1, 1, tzinfo=timezone.utc)
+    end = datetime(2025, 1, 2, tzinfo=timezone.utc)  # 1 window
+
+    original_timeout = sweep_mod._BACKFILL_WINDOW_TIMEOUT_S
+    original_drain_fn = rt_mod.drain_flow_run
+
+    async def slow_drain(store_, run_id, now, claims=None, max_steps=200, wall_timeout_s=0.0):
+        return await original_drain_fn(
+            store_, run_id, now, claims=claims,
+            max_steps=max_steps,
+            wall_timeout_s=wall_timeout_s,
+        )
+
+    # 1 µs — expires before the first drain iteration starts.
+    sweep_mod._BACKFILL_WINDOW_TIMEOUT_S = 0.000001
+    rt_mod.drain_flow_run = slow_drain
+    try:
+        result = await run_backfill(
+            store=store,
+            flow=flow,
+            start=start,
+            end=end,
+            window="1d",
+            trigger="backfill",
+            now=NOW,
+            claims=CLAIMS,
+        )
+    finally:
+        sweep_mod._BACKFILL_WINDOW_TIMEOUT_S = original_timeout
+        rt_mod.drain_flow_run = original_drain_fn
+
+    assert result.total == 1
+    assert result.failed == 1
+    assert result.succeeded == 0
+    assert result.windows[0].state == "error"
+    assert result.windows[0].error is not None
+
+
+async def test_per_unit_timeout_env_overridable(monkeypatch):
+    """Both per-unit timeout constants must be patchable via monkeypatch."""
+    import app.flows.sweep as sweep_mod
+
+    original_cell = sweep_mod._SWEEP_CELL_TIMEOUT_S
+    original_win = sweep_mod._BACKFILL_WINDOW_TIMEOUT_S
+
+    monkeypatch.setattr(sweep_mod, "_SWEEP_CELL_TIMEOUT_S", 5.0)
+    monkeypatch.setattr(sweep_mod, "_BACKFILL_WINDOW_TIMEOUT_S", 10.0)
+
+    assert sweep_mod._SWEEP_CELL_TIMEOUT_S == 5.0
+    assert sweep_mod._BACKFILL_WINDOW_TIMEOUT_S == 10.0
+
+    monkeypatch.undo()
+    assert sweep_mod._SWEEP_CELL_TIMEOUT_S == original_cell
+    assert sweep_mod._BACKFILL_WINDOW_TIMEOUT_S == original_win

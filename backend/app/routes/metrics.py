@@ -59,6 +59,7 @@ from app.connectors.cache_key import compute_base_scan_key, scope_cache_key
 from app.connectors.planner import resolve_named_params
 from app.errors import AppError
 from app.metrics.compile import compile_metric
+from app.metrics.compile import _DEFAULT_DIALECT as _COMPILED_METRIC_DIALECT
 from app.metrics.models import MetricDefinition, MetricError, MetricQuery
 from app.metrics.registry import (
     ensure_persisted_metric,
@@ -682,8 +683,14 @@ async def compile_metric_dry(
     # per-tenant top-N membership correlation the executing /query path uses
     # (see query_metric for the full rationale).
     policy_cols = tuple((identity.policies or {}).keys())
+    # Emit in the compiled-metric dialect (DuckDB) — the SAME dialect query_metric
+    # compiles AND plans in (see the dialect-boundary note there).  This keeps the
+    # dry-run SQL byte-identical to the executed SQL (e.g. native QUALIFY for a
+    # no-time-grain top-N, which the planner preserves rather than truncating).
     try:
-        sql, params = compile_metric(metric, mq, policy_cols=policy_cols)
+        sql, params = compile_metric(
+            metric, mq, dialect=_COMPILED_METRIC_DIALECT, policy_cols=policy_cols
+        )
     except MetricError as exc:
         raise AppError(exc.code, exc.message, 400) from exc
 
@@ -738,8 +745,19 @@ async def query_metric(
     # filter then yields a wrong/empty per-tenant result.  Empty policies (single
     # tenant) → empty policy_cols → byte-stable prior behaviour.
     policy_cols = tuple((identity.policies or {}).keys())
+    # CORRECTNESS (engine dialect boundary): compile_metric emits SQL in the
+    # COMPILED-METRIC dialect (DuckDB by default — e.g. ``QUALIFY RANK() <= N``
+    # for a no-time-grain top-N).  The planner MUST parse/emit that SAME dialect:
+    # parsing DuckDB QUALIFY as the planner's default 'postgres' rewrites it into
+    # a derived table with ``WHERE _w <= N`` AND MOVES the outer LIMIT inside the
+    # derived table, so the LIMIT truncates __base BEFORE the rank filter and
+    # high-ranking members are silently dropped.  Thread the dialect through both
+    # the compile and the plan so the QUALIFY is preserved natively.
+    metric_dialect = _COMPILED_METRIC_DIALECT
     try:
-        sql, named_params = compile_metric(metric, mq, policy_cols=policy_cols)
+        sql, named_params = compile_metric(
+            metric, mq, dialect=metric_dialect, policy_cols=policy_cols
+        )
     except MetricError as exc:
         raise AppError(exc.code, exc.message, 400) from exc
 
@@ -750,10 +768,13 @@ async def query_metric(
     claims = {"policies": identity.policies}
 
     # ── 4. Plan (RLS predicates injected at the AST level) ───────────────────
+    # Parse/emit in the compiled-metric dialect (see metric_dialect note above)
+    # so the planner preserves QUALIFY natively and never truncates a top-N.
     physical_plan = planner_plan(
         sql=effective_sql,
         claims=claims,
         params=effective_params,
+        dialect=metric_dialect,
     )
 
     # ── 5a. Org attribution (must precede routing + the scoped cache lookup) ──

@@ -90,7 +90,7 @@ def _utc(hour: int = 12) -> datetime:
 
 NOW = _utc()
 
-CLAIMS: dict[str, Any] = {"org_id": "org-test", "sub": "user-test"}
+CLAIMS: dict[str, Any] = {"org_id": "org-test", "sub": "user-test", "policies": {}}
 
 
 async def _make_flow(

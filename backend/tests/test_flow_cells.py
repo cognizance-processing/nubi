@@ -39,7 +39,7 @@ from app.flows.store import InMemoryFlowStore
 pytestmark = pytest.mark.asyncio
 
 NOW = datetime(2025, 6, 1, 10, 0, 0, tzinfo=timezone.utc)
-CLAIMS: dict[str, Any] = {"org_id": "org-test", "sub": "user-test"}
+CLAIMS: dict[str, Any] = {"org_id": "org-test", "sub": "user-test", "policies": {}}
 
 
 # ---------------------------------------------------------------------------
