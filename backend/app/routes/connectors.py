@@ -33,10 +33,10 @@ from pydantic import BaseModel, model_validator
 
 from app.auth.deps import current_user
 from app.auth.roles import require_writer_default
-from app.db import fetchrow
 from app.errors import AppError
 from app.repos.provider import get_repo, Repo
 from app.routes import api_router
+from app.routes._org import get_user_org as _get_user_org
 
 # ── Sub-router ────────────────────────────────────────────────────────────────
 
@@ -271,33 +271,9 @@ class UpdateConnectorIn(BaseModel):
         return self
 
 
-# ── Org resolution helper ─────────────────────────────────────────────────────
-
-
-async def _get_user_org(user_id: str, repo: Repo) -> str:
-    """Return the org_id for the user's first membership.
-
-    Mirrors the pattern in routes/resources.py; uses InMemoryRepo's helper
-    when available, falls back to a DB query for PgRepo.
-    """
-    if hasattr(repo, "get_org_for_user"):
-        org_id = repo.get_org_for_user(user_id)  # type: ignore[attr-defined]
-        if org_id:
-            return org_id
-        raise AppError("org_not_found", "User has no org membership.", 404)
-
-    row = await fetchrow(
-        """
-        SELECT org_id FROM org_members
-        WHERE user_id = $1::uuid
-        ORDER BY org_id
-        LIMIT 1
-        """,
-        user_id,
-    )
-    if row is None:
-        raise AppError("org_not_found", "User has no org membership.", 404)
-    return str(row["org_id"])
+# ── Org resolution helper — shared, pin-aware (app.routes._org). Imported at the
+#    top as ``_get_user_org``; the shared helper honours the API-key org pin,
+#    which the old local copy did not (cross-tenant data op for API-key callers).
 
 
 # ── Secret store accessor ─────────────────────────────────────────────────────

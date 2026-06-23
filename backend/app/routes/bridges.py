@@ -57,6 +57,7 @@ from app.bridges.broker import get_broker
 from app.errors import AppError
 from app.repos.provider import Repo, get_repo
 from app.routes import api_router
+from app.routes._org import get_user_org as _get_user_org
 
 # ---------------------------------------------------------------------------
 # In-module bridge store (replaces the DB until the migration ships)
@@ -161,32 +162,10 @@ async def _get_bridge(org_id: str, bridge_id: str, _repo: Repo | None = None) ->
 
 
 # ---------------------------------------------------------------------------
-# Org resolution helper
+# Org resolution helper — shared, pin-aware (app.routes._org). Imported at the
+# top as ``_get_user_org``; the shared helper honours the API-key org pin, which
+# the old local copy did not (cross-tenant data op for API-key callers).
 # ---------------------------------------------------------------------------
-
-
-async def _get_user_org(user_id: str, repo: Repo) -> str:
-    """Return the org_id for the user's first membership (mirrors resources.py)."""
-    if hasattr(repo, "get_org_for_user"):
-        org_id = repo.get_org_for_user(user_id)
-        if org_id:
-            return org_id
-        raise AppError("org_not_found", "User has no org membership.", 404)
-
-    from app.db import fetchrow as _fetchrow  # noqa: PLC0415
-
-    row = await _fetchrow(
-        """
-        SELECT org_id FROM org_members
-        WHERE user_id = $1::uuid
-        ORDER BY org_id
-        LIMIT 1
-        """,
-        user_id,
-    )
-    if row is None:
-        raise AppError("org_not_found", "User has no org membership.", 404)
-    return str(row["org_id"])
 
 
 # ---------------------------------------------------------------------------

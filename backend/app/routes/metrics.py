@@ -41,6 +41,7 @@ errors on create/update map to a structured 400 too.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 from typing import Any
@@ -688,8 +689,12 @@ async def compile_metric_dry(
     # dry-run SQL byte-identical to the executed SQL (e.g. native QUALIFY for a
     # no-time-grain top-N, which the planner preserves rather than truncating).
     try:
-        sql, params = compile_metric(
-            metric, mq, dialect=_COMPILED_METRIC_DIALECT, policy_cols=policy_cols
+        sql, params = await asyncio.to_thread(
+            compile_metric,
+            metric,
+            mq,
+            dialect=_COMPILED_METRIC_DIALECT,
+            policy_cols=policy_cols,
         )
     except MetricError as exc:
         raise AppError(exc.code, exc.message, 400) from exc
@@ -755,8 +760,12 @@ async def query_metric(
     # the compile and the plan so the QUALIFY is preserved natively.
     metric_dialect = _COMPILED_METRIC_DIALECT
     try:
-        sql, named_params = compile_metric(
-            metric, mq, dialect=metric_dialect, policy_cols=policy_cols
+        sql, named_params = await asyncio.to_thread(
+            compile_metric,
+            metric,
+            mq,
+            dialect=metric_dialect,
+            policy_cols=policy_cols,
         )
     except MetricError as exc:
         raise AppError(exc.code, exc.message, 400) from exc
@@ -770,7 +779,9 @@ async def query_metric(
     # ── 4. Plan (RLS predicates injected at the AST level) ───────────────────
     # Parse/emit in the compiled-metric dialect (see metric_dialect note above)
     # so the planner preserves QUALIFY natively and never truncates a top-N.
-    physical_plan = planner_plan(
+    # CPU-bound sqlglot work → offload to a thread to avoid blocking the loop.
+    physical_plan = await asyncio.to_thread(
+        planner_plan,
         sql=effective_sql,
         claims=claims,
         params=effective_params,
@@ -862,11 +873,12 @@ async def query_metric(
     )
 
     # ── 9. Execute + serialise (net_cleanup torn down in finally) ────────────
+    # connector.execute is synchronous and CPU/IO-bound → offload to a thread.
     import time as _time
 
     _t0 = _time.perf_counter()
     try:
-        arrow_table = connector.execute(physical_plan)
+        arrow_table = await asyncio.to_thread(connector.execute, physical_plan)
         full_bytes = table_to_ipc_bytes(arrow_table)
     finally:
         try:

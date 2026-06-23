@@ -304,13 +304,13 @@ from app.auth.deps import current_user, verified_identity
 from app.auth.roles import require_approver_default, require_writer_default
 from app.auth.verify import VerifiedIdentity
 from app.config import get_settings
-from app.db import fetchrow
 from app.errors import AppError
 from app.flows.runtime import drain_flow_run, flow_tick, materialize_flow_run
 from app.flows.spec import flow_spec_is_valid, validate_flow_spec
 from app.flows.store import get_flow_store
 from app.repos.provider import Repo, get_repo
 from app.routes import api_router
+from app.routes._org import get_user_org as _get_user_org
 
 # ---------------------------------------------------------------------------
 # Sub-router
@@ -320,36 +320,10 @@ router = APIRouter(prefix="/flows", tags=["flows"])
 
 
 # ---------------------------------------------------------------------------
-# Org resolution helper (replicated from routes/jobs.py to avoid the
-# circular import that would arise if we imported from resources here, which
-# causes resources.py's module-level api_router.include_router() to fire
-# before our own, putting the generic /{resource} catch-all ahead of /flows).
+# Org resolution helper — shared, pin-aware (app.routes._org). Imported above as
+# ``_get_user_org``; the shared helper honours the API-key org pin, which the
+# old local copy did not (cross-tenant data op for API-key callers).
 # ---------------------------------------------------------------------------
-
-
-async def _get_user_org(user_id: str, repo: Repo) -> str:
-    """Return the org_id for the user's first membership.
-
-    Mirrors ``routes.resources.get_user_org`` without importing it.
-    """
-    if hasattr(repo, "get_org_for_user"):
-        org_id = repo.get_org_for_user(user_id)  # type: ignore[attr-defined]
-        if org_id:
-            return org_id
-        raise AppError("org_not_found", "User has no org membership.", 404)
-
-    row = await fetchrow(
-        """
-        SELECT org_id FROM org_members
-        WHERE user_id = $1::uuid
-        ORDER BY org_id
-        LIMIT 1
-        """,
-        user_id,
-    )
-    if row is None:
-        raise AppError("org_not_found", "User has no org membership.", 404)
-    return str(row["org_id"])
 
 
 async def _resolve_project_id(org_id: str, requested: str | None) -> str | None:

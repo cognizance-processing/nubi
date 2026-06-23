@@ -36,7 +36,6 @@ from pydantic import BaseModel
 from app.auth.deps import current_user
 from app.auth.roles import require_writer_default
 from app.config import get_settings
-from app.db import fetchrow
 from app.errors import AppError
 from app.git.remotes import make_provider
 from app.git.sync import (
@@ -56,6 +55,7 @@ from app.queries.registry import get_query_registry
 from app.repos import projects as projects_repo
 from app.repos.provider import Repo, get_repo
 from app.routes import api_router
+from app.routes._org import get_user_org as _get_user_org
 
 # Project git tokens are stored in the connector secret store keyed by the
 # project's own uuid (the project_id doubles as the secret "datastore" id — a
@@ -95,28 +95,6 @@ def _org_repo(org_id: str) -> GitSync:
 # ---------------------------------------------------------------------------
 # Org resolution helper (mirrors routes/jobs.py to avoid circular imports)
 # ---------------------------------------------------------------------------
-
-async def _get_user_org(user_id: str, repo: Repo) -> str:
-    """Return the org_id for the user's first membership."""
-    if hasattr(repo, "get_org_for_user"):
-        org_id = repo.get_org_for_user(user_id)  # type: ignore[attr-defined]
-        if org_id:
-            return org_id
-        raise AppError("org_not_found", "User has no org membership.", 404)
-
-    row = await fetchrow(
-        """
-        SELECT org_id FROM org_members
-        WHERE user_id = $1::uuid
-        ORDER BY org_id
-        LIMIT 1
-        """,
-        user_id,
-    )
-    if row is None:
-        raise AppError("org_not_found", "User has no org membership.", 404)
-    return str(row["org_id"])
-
 
 # ---------------------------------------------------------------------------
 # Pydantic schemas

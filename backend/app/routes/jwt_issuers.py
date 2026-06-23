@@ -34,10 +34,10 @@ from pydantic import BaseModel, Field
 
 from app.auth.deps import current_user
 from app.auth.roles import require_writer_default
-from app.db import fetchrow
 from app.errors import AppError
 from app.repos.provider import Repo, get_repo
 from app.routes import api_router
+from app.routes._org import get_user_org as _get_user_org
 
 router = APIRouter(prefix="/security/jwt-issuers", tags=["security"])
 
@@ -45,28 +45,6 @@ router = APIRouter(prefix="/security/jwt-issuers", tags=["security"])
 # ---------------------------------------------------------------------------
 # Org-resolution helper (mirrors secrets/flows pattern, avoids circular deps)
 # ---------------------------------------------------------------------------
-
-
-async def _get_user_org(user_id: str, repo: Repo) -> str:
-    """Return the org_id for the user's first membership."""
-    if hasattr(repo, "get_org_for_user"):
-        org_id = repo.get_org_for_user(user_id)  # type: ignore[attr-defined]
-        if org_id:
-            return str(org_id)
-        raise AppError("org_not_found", "User has no org membership.", 404)
-
-    row = await fetchrow(
-        """
-        SELECT org_id FROM org_members
-        WHERE user_id = $1::uuid
-        ORDER BY org_id
-        LIMIT 1
-        """,
-        user_id,
-    )
-    if row is None:
-        raise AppError("org_not_found", "User has no org membership.", 404)
-    return str(row["org_id"])
 
 
 # ---------------------------------------------------------------------------

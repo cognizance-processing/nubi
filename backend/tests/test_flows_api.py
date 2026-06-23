@@ -976,3 +976,60 @@ class TestPinnedSpecStripsOwnerPolicies:
             f"pinned-spec path must not expose {OWNER_POLICIES_KEY}"
         )
         assert body.get("resolved_version") == {"id": "v1", "version": 1}
+
+
+# ---------------------------------------------------------------------------
+# API-key org pin — the flows handler must resolve the PINNED org, not the
+# alphabetically-/insertion-first membership. Regression guard for the
+# tenant-isolation bug where local _get_user_org copies skipped the pin check.
+# ---------------------------------------------------------------------------
+
+
+class TestApiKeyOrgPin:
+    @pytest.mark.asyncio
+    async def test_create_flow_uses_pinned_org_not_first_membership(
+        self, flows_app, fake_db
+    ):
+        """An API-key-pinned caller must write to the PINNED org.
+
+        The user belongs to two orgs. ``get_org_for_user`` would return the
+        first-seeded membership; the pin must override that so the flow is
+        created under the pinned (second) org instead.
+        """
+        from app.routes._org import api_key_org_pin
+
+        app, store, repo = flows_app
+
+        user_id = str(uuid.uuid4())
+        first_org = str(uuid.uuid4())
+        pinned_org = str(uuid.uuid4())
+        fake_db.users[user_id] = _make_user(user_id, "multi@example.com")
+        # Seed first_org FIRST so get_org_for_user would return it absent the pin.
+        repo.seed_org_member(org_id=first_org, user_id=user_id)
+        repo.seed_org_member(org_id=pinned_org, user_id=user_id)
+
+        # Sanity: unpinned resolution returns the first-seeded org.
+        assert repo.get_org_for_user(user_id) == first_org
+
+        token = api_key_org_pin.set(pinned_org)
+        try:
+            transport = ASGITransport(app=app)
+            async with AsyncClient(
+                transport=transport,
+                base_url="http://testserver",
+                follow_redirects=False,
+            ) as client:
+                resp = await client.post(
+                    "/api/v1/flows",
+                    json={"name": "Pinned Flow", "spec": _VALID_SPEC},
+                    headers=_auth_headers(user_id),
+                )
+                assert resp.status_code == 201, resp.text
+                body = resp.json()
+                assert body["org_id"] == pinned_org, (
+                    "API-key-pinned caller must resolve the PINNED org, "
+                    "not the first membership"
+                )
+                assert body["org_id"] != first_org
+        finally:
+            api_key_org_pin.reset(token)

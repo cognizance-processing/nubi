@@ -715,3 +715,55 @@ async def test_metrics_query_serves_org_scoped_rollup_only_to_its_org(
             reg._rollups.pop("audit14-demo-rollup", None)  # type: ignore[attr-defined]
         except Exception:  # noqa: BLE001
             pass
+
+
+# ---------------------------------------------------------------------------
+# (f) [event-loop] compile_metric + planner_plan + connector.execute are
+#     offloaded via asyncio.to_thread (CPU-bound work must not block the loop)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_metrics_query_offloads_cpu_work_to_thread(metering_client):
+    """compile_metric, planner_plan, and connector.execute must be called via
+    asyncio.to_thread so CPU-bound sqlglot work does not block the event loop.
+
+    Strategy: patch asyncio.to_thread to record calls, then assert each of the
+    three expensive operations was scheduled through it.  The real to_thread is
+    still invoked so the response succeeds end-to-end.
+    """
+    import asyncio as _asyncio
+
+    from app.auth.deps import verified_identity
+
+    client, user_id, org_id, _repo, app_ = metering_client
+    writer = _writer_identity(user_id, org_id)
+    app_.dependency_overrides[verified_identity] = lambda: writer
+
+    recorded_fns: list[str] = []
+    real_to_thread = _asyncio.to_thread
+
+    async def _spy_to_thread(fn, *args, **kwargs):
+        recorded_fns.append(getattr(fn, "__name__", repr(fn)))
+        return await real_to_thread(fn, *args, **kwargs)
+
+    try:
+        with patch("app.routes.metrics.asyncio.to_thread", side_effect=_spy_to_thread):
+            resp = await client.post(
+                "/api/v1/metrics/demo_revenue/query",
+                json={"dimensions": ["name"]},
+                headers={"Authorization": "Bearer ignored"},
+            )
+        assert resp.status_code == 200, resp.text
+        # All three CPU-bound callables must appear in recorded_fns.
+        assert "compile_metric" in recorded_fns, (
+            f"compile_metric not offloaded; offloaded: {recorded_fns}"
+        )
+        assert "plan" in recorded_fns, (
+            f"planner_plan not offloaded; offloaded: {recorded_fns}"
+        )
+        assert "execute" in recorded_fns, (
+            f"connector.execute not offloaded; offloaded: {recorded_fns}"
+        )
+    finally:
+        app_.dependency_overrides.pop(verified_identity, None)

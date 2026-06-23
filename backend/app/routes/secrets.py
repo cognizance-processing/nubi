@@ -31,9 +31,9 @@ from pydantic import BaseModel
 
 from app.auth.deps import current_user
 from app.auth.roles import require_writer_default
-from app.db import fetchrow
 from app.errors import AppError
 from app.repos.provider import Repo, get_repo
+from app.routes._org import get_user_org as _get_user_org
 from app.secrets.store import get_secret_store
 
 # ---------------------------------------------------------------------------
@@ -42,36 +42,6 @@ from app.secrets.store import get_secret_store
 
 router = APIRouter(prefix="/secrets", tags=["secrets"])
 
-
-# ---------------------------------------------------------------------------
-# Org resolution helper (replicated from routes/flows.py to avoid circular
-# imports — same approach, same docstring pattern).
-# ---------------------------------------------------------------------------
-
-
-async def _get_user_org(user_id: str, repo: Repo) -> str:
-    """Return the org_id for the user's first membership.
-
-    Mirrors ``routes.flows._get_user_org`` without importing it.
-    """
-    if hasattr(repo, "get_org_for_user"):
-        org_id = repo.get_org_for_user(user_id)  # type: ignore[attr-defined]
-        if org_id:
-            return org_id
-        raise AppError("org_not_found", "User has no org membership.", 404)
-
-    row = await fetchrow(
-        """
-        SELECT org_id FROM org_members
-        WHERE user_id = $1::uuid
-        ORDER BY org_id
-        LIMIT 1
-        """,
-        user_id,
-    )
-    if row is None:
-        raise AppError("org_not_found", "User has no org membership.", 404)
-    return str(row["org_id"])
 
 
 # ---------------------------------------------------------------------------

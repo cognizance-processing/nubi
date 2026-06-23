@@ -40,13 +40,13 @@ from pydantic import BaseModel, EmailStr, Field, field_validator, model_validato
 
 from app.auth.deps import current_user
 from app.auth.roles import require_writer_default
-from app.db import fetchrow
 from app.errors import AppError
 from app.jobs.executor import execute_job
 from app.jobs.schedule import next_run
 from app.jobs.store import InMemoryJobStore, get_job_store
 from app.repos.provider import Repo, get_repo
 from app.routes import api_router
+from app.routes._org import get_user_org as _get_user_org
 
 # ---------------------------------------------------------------------------
 # Recipient cap — prevents O(N) per-tick work and worker saturation
@@ -62,36 +62,10 @@ router = APIRouter(prefix="/jobs", tags=["jobs"])
 
 
 # ---------------------------------------------------------------------------
-# Org resolution helper (replicated from routes/resources.py to avoid the
-# circular import that would arise if we imported from resources here, which
-# causes resources.py's module-level api_router.include_router() to fire
-# before our own, putting the generic /{resource} catch-all ahead of /jobs).
+# Org resolution helper — shared, pin-aware (app.routes._org). Imported above as
+# ``_get_user_org``; the shared helper honours the API-key org pin, which the
+# old local copy did not (cross-tenant data op for API-key callers).
 # ---------------------------------------------------------------------------
-
-
-async def _get_user_org(user_id: str, repo: Repo) -> str:
-    """Return the org_id for the user's first membership.
-
-    Mirrors ``routes.resources.get_user_org`` without importing it.
-    """
-    if hasattr(repo, "get_org_for_user"):
-        org_id = repo.get_org_for_user(user_id)  # type: ignore[attr-defined]
-        if org_id:
-            return org_id
-        raise AppError("org_not_found", "User has no org membership.", 404)
-
-    row = await fetchrow(
-        """
-        SELECT org_id FROM org_members
-        WHERE user_id = $1::uuid
-        ORDER BY org_id
-        LIMIT 1
-        """,
-        user_id,
-    )
-    if row is None:
-        raise AppError("org_not_found", "User has no org membership.", 404)
-    return str(row["org_id"])
 
 
 # ---------------------------------------------------------------------------
