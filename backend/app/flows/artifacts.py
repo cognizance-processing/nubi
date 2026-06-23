@@ -142,15 +142,21 @@ def _get_hmac_key() -> bytes:
     dev sentinel — an HMAC signed with a known, public sentinel key is
     forgeable, which defeats the pickle-RCE protection entirely.
     """
-    key = os.environ.get("NUBI_ARTIFACT_HMAC_KEY") or os.environ.get("NUBI_SECRET_KEY")
+    # Strip whitespace before truthy-testing so that ENV vars set to blank or
+    # whitespace-only values (e.g. NUBI_ARTIFACT_HMAC_KEY="  ") are treated as
+    # absent rather than being used as a known-weak signing key.
+    _raw_hmac = os.environ.get("NUBI_ARTIFACT_HMAC_KEY", "").strip()
+    _raw_secret = os.environ.get("NUBI_SECRET_KEY", "").strip()
+    key: str = _raw_hmac or _raw_secret
     if key:
-        return key.encode("utf-8") if isinstance(key, str) else key
+        return key.encode("utf-8")
     # No real key configured.  In any named/deployed environment this is a
     # hard failure — using a known sentinel key allows anyone to forge valid
     # HMAC signatures and trigger pickle RCE via a crafted blob in the object
     # store.  Only explicitly-named local dev / CI / test environments are safe
-    # to fall through to the insecure sentinel.  An UNSET ENV (empty string) is
-    # NOT in the allowlist: a docker/helm deployment that forgets to set ENV
+    # to fall through to the insecure sentinel.  An UNSET ENV (empty string)
+    # and a BLANK/whitespace-only ENV both normalise to '' after .strip(), which
+    # is NOT in the allowlist: a docker/helm deployment that forgets to set ENV
     # must not silently fall back to the public sentinel — it must fail closed.
     _DEV_ALLOWLIST = {"dev", "development", "test", "testing", "ci"}
     env = os.environ.get("ENV", "").strip().lower()
@@ -446,13 +452,25 @@ def _serialise(obj: Any, kind: str) -> bytes:
             )
         return bytes(obj)
     if kind == "json":
-        # [LOW memory/robustness] Wrap json.dumps so non-serializable objects
-        # (circular references, custom types) produce a clear ValueError rather
-        # than an unhandled TypeError or json.JSONDecodeError deep in the call
-        # stack.  Note: json builds the full string before we can cap it, so
-        # the length check here is best-effort (the string is already in memory
-        # by the time we encode it).  The definitive post-serialise cap in
-        # put_artifact() remains the backstop for all kinds.
+        # [LOW memory/robustness] Apply the same best-effort pre-estimate guard
+        # used for pickle/joblib: if the object is a known large type (numpy
+        # ndarray, pandas DataFrame/Series) whose byte size can be cheaply
+        # estimated, reject it early before json.dumps ever runs.  For all
+        # other types json.dumps still builds the full string in memory (there
+        # is no streaming JSON encoder in the stdlib), so the in-line
+        # encoded-length check below acts as the mid-serialise cap, and the
+        # definitive post-serialise check in put_artifact() remains the
+        # backstop.  Circular-reference / unsupported-type errors are wrapped
+        # into a clear ValueError to avoid cryptic tracebacks.
+        if _ARTIFACT_MAX_BYTES > 0:
+            _pre = _estimate_obj_bytes(obj)
+            if _pre is not None and _pre > _ARTIFACT_MAX_BYTES:
+                raise ValueError(
+                    f"Artifact pre-serialisation size estimate {_pre:,} bytes "
+                    f"exceeds the maximum allowed {_ARTIFACT_MAX_BYTES:,} bytes "
+                    "(NUBI_ARTIFACT_MAX_BYTES). Reduce the artifact size or raise "
+                    "the limit."
+                )
         try:
             encoded = json.dumps(obj).encode("utf-8")
         except (TypeError, ValueError) as exc:

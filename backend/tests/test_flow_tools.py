@@ -154,6 +154,36 @@ class TestCreateFlowTool:
         assert result["id"] is None
         assert len(result["issues"]) > 0
 
+    async def test_create_flow_snapshots_owner_policies(self, _inject_flow_store):
+        """SECURITY (B2): AI create_flow must snapshot the creator's RLS policies
+        into spec.runtime_config['__owner_policies__'] so scheduled ticks (which
+        drain with claims=None) still apply the owner's RLS — no cross-tenant
+        leak."""
+        from app.ai.tools import execute_tool  # noqa: PLC0415
+
+        store = _inject_flow_store
+        owner_claims = {**_CLAIMS, "policies": {"tenant_id": "acme"}}
+        result = execute_tool(
+            "create_flow",
+            {"name": "Scoped Flow", "spec": _VALID_SPEC},
+            owner_claims,
+        )
+        assert result["valid"] is True
+
+        flow = await store.get_flow(result["id"])
+        assert flow is not None
+        runtime_config = flow["spec"].get("runtime_config") or {}
+        assert runtime_config.get("__owner_policies__") == {"tenant_id": "acme"}
+
+    async def test_create_flow_snapshots_empty_policies(self, _inject_flow_store):
+        """An unscoped (admin) owner snapshots an empty policy map — present but
+        empty, mirroring routes/flows.py behaviour."""
+        store = _inject_flow_store
+        result = _invoke("create_flow", name="Admin Flow", spec=_VALID_SPEC)
+        flow = await store.get_flow(result["id"])
+        runtime_config = flow["spec"].get("runtime_config") or {}
+        assert runtime_config.get("__owner_policies__") == {}
+
     async def test_create_flow_cycle_returns_invalid(self):
         cycle_spec = {
             "version": 1,
@@ -216,6 +246,26 @@ class TestRunFlowTool:
             _invoke("run_flow", flow_id=str(uuid.uuid4()))
         assert exc_info.value.status == 404
 
+    async def test_run_other_org_flow_raises_404(self, _inject_flow_store):
+        """SECURITY: running a DIFFERENT org's flow must fail closed with an
+        opaque 404 — and must NOT execute / create any run."""
+        from app.errors import AppError
+
+        store = _inject_flow_store
+        other_flow = await store.create_flow(
+            org_id=str(uuid.uuid4()),  # different org
+            created_by=_USER_ID,
+            name="Other Org Runnable",
+            spec=_VALID_SPEC,
+        )
+
+        with pytest.raises(AppError) as exc_info:
+            _invoke("run_flow", flow_id=other_flow["id"])
+        assert exc_info.value.status == 404
+        # No flow_run should have been created for the cross-org flow.
+        runs = await store.list_flow_runs(other_flow["id"])
+        assert runs == []
+
 
 # ---------------------------------------------------------------------------
 # 4. get_flow_run
@@ -248,6 +298,30 @@ class TestGetFlowRunTool:
         from app.errors import AppError
         with pytest.raises(AppError) as exc_info:
             _invoke("get_flow_run", flow_run_id=str(uuid.uuid4()))
+        assert exc_info.value.status == 404
+
+    async def test_get_other_org_run_raises_404(self, _inject_flow_store):
+        """SECURITY: reading a DIFFERENT org's flow run must fail closed with an
+        opaque 404 — never leak cross-org task_runs."""
+        from app.errors import AppError
+
+        store = _inject_flow_store
+        other_org = str(uuid.uuid4())
+        flow = await store.create_flow(
+            org_id=other_org,
+            created_by=_USER_ID,
+            name="Other Org GFR",
+            spec=_VALID_SPEC,
+        )
+        run = await store.create_flow_run(
+            flow_id=flow["id"],
+            org_id=other_org,
+            params={},
+            trigger="manual",
+        )
+
+        with pytest.raises(AppError) as exc_info:
+            _invoke("get_flow_run", flow_run_id=run["id"])
         assert exc_info.value.status == 404
 
 

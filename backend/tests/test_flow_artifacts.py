@@ -1022,6 +1022,69 @@ def test_unset_env_no_hmac_key_raises():
             put_artifact({"x": 1}, kind="json", org_id=ORG_A, store=art_store)
 
 
+def test_blank_env_no_hmac_key_raises():
+    """When ENV is explicitly set to '' (blank) and no HMAC key is configured,
+    _get_hmac_key must raise RuntimeError (fail-closed).
+
+    SECURITY (MED key-mgmt): '' normalises to '' after .strip().lower() and is
+    NOT in the dev allowlist.  A deployment that sets ENV="" must be treated the
+    same as an unset ENV — both fail closed, never fall back to the sentinel.
+    """
+    import os  # noqa: PLC0415
+    import unittest.mock  # noqa: PLC0415
+
+    art_store = _mem_store()
+    env_blank = {k: v for k, v in os.environ.items()
+                 if k not in ("NUBI_ARTIFACT_HMAC_KEY", "NUBI_SECRET_KEY")}
+    env_blank["ENV"] = ""  # explicitly blank
+    with unittest.mock.patch.dict("os.environ", env_blank, clear=True):
+        with pytest.raises(RuntimeError, match="not configured"):
+            put_artifact({"x": 1}, kind="json", org_id=ORG_A, store=art_store)
+
+
+def test_whitespace_env_no_hmac_key_raises():
+    """When ENV is set to whitespace-only (e.g. ' ') and no HMAC key is configured,
+    _get_hmac_key must raise RuntimeError (fail-closed).
+
+    SECURITY (MED key-mgmt): '  '.strip().lower() == '' which is NOT in the dev
+    allowlist.  Whitespace-only ENV values must never be treated as a dev env.
+    """
+    import os  # noqa: PLC0415
+    import unittest.mock  # noqa: PLC0415
+
+    art_store = _mem_store()
+    for ws_env in (" ", "  ", "\t", "\n"):
+        env_ws = {k: v for k, v in os.environ.items()
+                  if k not in ("NUBI_ARTIFACT_HMAC_KEY", "NUBI_SECRET_KEY")}
+        env_ws["ENV"] = ws_env
+        with unittest.mock.patch.dict("os.environ", env_ws, clear=True):
+            with pytest.raises(RuntimeError, match="not configured"):
+                put_artifact({"x": 1}, kind="json", org_id=ORG_A, store=art_store)
+
+
+def test_whitespace_hmac_key_treated_as_absent():
+    """When NUBI_ARTIFACT_HMAC_KEY is set to whitespace and ENV is not dev,
+    the whitespace key must NOT be used as the signing key — it must be treated
+    as absent (fail-closed: raise RuntimeError).
+
+    SECURITY (MED key-mgmt): using a whitespace-only key (e.g. "   ") would be
+    equivalent to a known-weak constant key.  After stripping, '' is falsy so
+    the code must fall through to the ENV allowlist check and fail closed.
+    """
+    import os  # noqa: PLC0415
+    import unittest.mock  # noqa: PLC0415
+
+    art_store = _mem_store()
+    for ws_key in (" ", "   ", "\t", "  \n  "):
+        env_patch = {k: v for k, v in os.environ.items()
+                     if k not in ("NUBI_ARTIFACT_HMAC_KEY", "NUBI_SECRET_KEY", "ENV")}
+        env_patch["NUBI_ARTIFACT_HMAC_KEY"] = ws_key
+        env_patch["ENV"] = "production"  # non-dev env
+        with unittest.mock.patch.dict("os.environ", env_patch, clear=True):
+            with pytest.raises(RuntimeError, match="not configured"):
+                put_artifact({"x": 1}, kind="json", org_id=ORG_A, store=art_store)
+
+
 def test_dev_env_no_hmac_key_sentinel_allowed():
     """When ENV=dev and no HMAC key is configured, the dev sentinel is accepted
     (with a warning).  This keeps local developer workflows working.

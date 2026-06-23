@@ -4152,3 +4152,178 @@ def test_all_semaphore_idle_checks_safe_when_no_value_attribute() -> None:
         "_CountingSemaphore must NOT expose _value at the wrapper level; "
         "use is_idle() or _holders instead."
     )
+
+
+# ---------------------------------------------------------------------------
+# NEW (fix-34b): [MED event-loop] inline provider planner_plan runs off-loop
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_inline_provider_planner_plan_runs_off_event_loop(repo: InMemoryRepo) -> None:
+    """[MED event-loop] planner_plan() in the inline base_cte path must run via
+    asyncio.to_thread so it does not block the event loop.
+
+    Before the fix, planner_plan(...) was called synchronously on the event loop,
+    starving other coroutines during SQL compilation.  After the fix it is wrapped
+    in ``await asyncio.to_thread(planner_plan, ...)``.
+
+    Verification strategy:
+    * Patch planner_plan with a synchronous spy that records the OS thread ID it
+      runs on.
+    * Run resolve_provider_data and collect the thread ID from the spy.
+    * Assert the thread ID is NOT the event-loop thread (the main thread), proving
+      planner_plan executed in a worker thread — not directly on the loop.
+    """
+    import threading
+
+    cte_spec = {
+        "version": 1,
+        "title": "Off-Loop Planner Test Board",
+        "widgets": [
+            {
+                "id": "w1",
+                "type": "table",
+                "source": {"provider": _PROVIDER_ID, "result": "revenue"},
+            }
+        ],
+        "data": [
+            {
+                "id": _PROVIDER_ID,
+                "kind": "inline",
+                "params": {},
+                "base_cte": "WITH revenue AS (SELECT 1 AS amount)",
+                "results": [{"name": "revenue", "grain": None}],
+            }
+        ],
+    }
+    await repo.update("boards", _ORG, _BOARD_ID, {"config": {"spec": cte_spec}})
+
+    event_loop_thread_id = threading.get_ident()
+    planner_thread_ids: list[int] = []
+
+    def _spy_planner(sql: str, claims: dict, params: list) -> object:
+        planner_thread_ids.append(threading.get_ident())
+        return object()  # dummy plan
+
+    expected_table = pa.table({"amount": pa.array([1])})
+
+    async def _fake_enforce_quota(org_id: str, dimension: str, amount: float = 1.0) -> None:
+        pass
+
+    with (
+        patch("app.features.enforce_quota", side_effect=_fake_enforce_quota),
+        patch("app.connectors.plan", side_effect=_spy_planner),
+        patch("app.routes.query._get_demo_connector") as mock_connector_factory,
+    ):
+        mock_connector = mock_connector_factory.return_value
+        mock_connector.execute.return_value = expected_table
+
+        await resolve_provider_data(
+            board_id=_BOARD_ID,
+            provider_id=_PROVIDER_ID,
+            params={},
+            org_id=_ORG,
+            claims={"policies": {}},
+            repo=repo,
+        )
+
+    assert len(planner_thread_ids) >= 1, (
+        "planner_plan spy was never called — inline base_cte path not reached."
+    )
+
+    for tid in planner_thread_ids:
+        assert tid != event_loop_thread_id, (
+            f"planner_plan ran on the event-loop thread (tid={tid}) — "
+            "it MUST run via asyncio.to_thread to avoid blocking the event loop "
+            "(MED event-loop fix regression)."
+        )
+
+
+# ---------------------------------------------------------------------------
+# NEW (fix-34c): [LOW] provider flow lookup is bounded — list_flows uses a limit
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_resolve_provider_data_prefetch_passes_limit_to_list_flows(
+    repo: InMemoryRepo,
+) -> None:
+    """[LOW bounded prefetch] resolve_provider_data's flow pre-fetch must call
+    list_flows with limit=_FLOWS_PREFETCH_LIMIT (not an unbounded scan of all
+    org flows).
+
+    Before the fix, the pre-fetch called list_flows(org_id=org_id) without a
+    limit, loading up to 1000 flows per provider HTTP request.  After the fix,
+    limit=_FLOWS_PREFETCH_LIMIT (default 200) is passed so the DB query is
+    bounded.
+
+    Verification strategy:
+    * Replace the flow store with a spy whose list_flows records kwargs.
+    * Exercise the flow-provider path (provider.kind == 'flow').
+    * Assert list_flows was called with a finite limit= kwarg and that it
+      equals _FLOWS_PREFETCH_LIMIT.
+    """
+    import app.dashboards.board_data as _bd_mod
+    import app.flows.store as _fs_mod
+
+    await repo.update(
+        "boards",
+        _ORG,
+        _BOARD_ID,
+        {"config": {"spec": _make_spec_with_flow_provider()}},
+    )
+
+    list_flows_kwargs: list[dict] = []
+    fake_flow = {"id": _PROVIDER_ID, "name": _PROVIDER_ID, "org_id": _ORG}
+
+    class _SpyStore:
+        async def get_flow(self, flow_id: str) -> dict:
+            return fake_flow
+
+        async def list_flows(self, **kwargs: Any) -> list:
+            list_flows_kwargs.append(dict(kwargs))
+            return [fake_flow]
+
+        def __getattr__(self, name: str) -> Any:
+            # Fallback for any other store method not exercised here.
+            raise AttributeError(f"_SpyStore has no attribute {name!r}")
+
+    async def _fake_enforce_quota(org_id: str, dimension: str, amount: float = 1.0) -> None:
+        pass
+
+    with (
+        patch("app.features.enforce_quota", side_effect=_fake_enforce_quota),
+        patch.object(_fs_mod, "get_flow_store", return_value=_SpyStore()),
+        patch(
+            "app.dashboards.board_data._resolve_flow_provider",
+            new=AsyncMock(return_value={"summary": pa.table({})}),
+        ),
+    ):
+        await resolve_provider_data(
+            board_id=_BOARD_ID,
+            provider_id=_PROVIDER_ID,
+            params={},
+            org_id=_ORG,
+            claims={"policies": {}},
+            repo=repo,
+        )
+
+    # The pre-fetch in resolve_provider_data must have called list_flows with a
+    # limit= kwarg equal to _FLOWS_PREFETCH_LIMIT.
+    prefetch_calls = [c for c in list_flows_kwargs if "org_id" in c]
+    assert len(prefetch_calls) >= 1, (
+        "list_flows was never called with org_id= — pre-fetch not executed."
+    )
+
+    call = prefetch_calls[0]
+    assert "limit" in call, (
+        "list_flows was called WITHOUT a limit= kwarg — the flow prefetch is "
+        "unbounded (loads up to 1000 flows per request). "
+        "Fix: pass limit=_FLOWS_PREFETCH_LIMIT to list_flows."
+    )
+    assert call["limit"] == _bd_mod._FLOWS_PREFETCH_LIMIT, (
+        f"list_flows called with limit={call['limit']!r} but expected "
+        f"_FLOWS_PREFETCH_LIMIT={_bd_mod._FLOWS_PREFETCH_LIMIT}. "
+        "The bounded prefetch limit is not being forwarded correctly."
+    )

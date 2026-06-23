@@ -82,6 +82,39 @@ _ON_HANDLER_RE = re.compile(r"\bon\w+\s*=", re.IGNORECASE)
 _JAVASCRIPT_URI_RE = re.compile(r"javascript\s*:", re.IGNORECASE)
 _DATA_HTML_RE = re.compile(r"data\s*:\s*text/html", re.IGNORECASE)
 
+# Template-composition XSS: patterns that could compose an event-handler
+# attribute name AFTER token substitution.
+#
+# Pattern 1: 'on' immediately followed by '{{' in an attribute-name position,
+#   e.g. on{{x}}="bad()"  ->  resolves to  onclick="bad()"
+#   We detect `on{{` appearing in a context that looks like an attribute name
+#   (preceded by a word boundary or whitespace).
+#
+# Pattern 2: A bare '{{...}}=' token sitting in attribute-name position where
+#   the entire attribute name is a template token, e.g. {{attr}}="bad()"  ->
+#   resolves to  onclick="bad()".  We flag any '{{...}}=' that appears in
+#   attribute-name position (preceded only by whitespace or start-of-string /
+#   inside a tag context, i.e. after a '<tag' but before the '>').
+#
+# Both patterns are deliberately matched ONLY in attribute-name position to
+# avoid false-positives for {{token}} that appears inside attribute values or
+# text content (those are fine and must not be rejected).
+#
+# Attribute-name-position heuristic: preceded by optional whitespace after
+# either '<', '/', another attribute, or the start of a tag — in practice
+# this means "preceded by a whitespace character or the opening of a tag
+# context".  We require the token to be followed immediately by optional
+# whitespace then '=', which unambiguously marks it as an attribute name.
+_TEMPLATE_ON_ATTR_RE = re.compile(
+    r"""(?:^|[\s<])on\s*\{\{[^}]*\}\}\s*=""",
+    re.IGNORECASE,
+)
+# '{{...}}=' where the token is the entire attribute name (whole-attr-token).
+# We require it to be preceded by whitespace (inside a tag, between attrs).
+_TEMPLATE_WHOLE_ATTR_RE = re.compile(
+    r"""\s\{\{[^}]*\}\}\s*=""",
+)
+
 # Safe raster image data URI prefixes (case-insensitive after whitespace
 # normalisation).  Everything else (including svg+xml) is rejected.
 _SAFE_DATA_IMAGE_TYPES: frozenset[str] = frozenset(
@@ -726,6 +759,32 @@ def validate_dashboard_html(html: str) -> tuple[bool, list[str]]:
     if _ON_HANDLER_RE.search(html):
         issues.append(
             "HTML contains inline event handler (on*=) — forbidden in dashboard documents."
+        )
+
+    # 2a. Template-composition XSS (save-time check for {{token}} patterns).
+    #
+    #   The on*= regex above runs on the RAW html and catches literal handlers,
+    #   but a document may contain template tokens that compose an event-handler
+    #   attribute name only AFTER substitution.  Render-time Layer 3 (fix-30)
+    #   catches these at render, but we also block them at SAVE time so such
+    #   documents can never be persisted.
+    #
+    #   Two blocked patterns (both in attribute-name position only):
+    #     a) 'on{{...}}=' — 'on' followed immediately by a template token and '='.
+    #        After substitution 'on{{eventName}}=' -> 'onclick=', etc.
+    #     b) '{{...}}='   — a token that IS the entire attribute name, which after
+    #        substitution could produce 'onclick=', 'onerror=', etc.
+    if _TEMPLATE_ON_ATTR_RE.search(html):
+        issues.append(
+            "HTML contains template attribute-name pattern 'on{{...}}=' that could "
+            "compose an event-handler after token substitution — forbidden in "
+            "dashboard documents."
+        )
+    if _TEMPLATE_WHOLE_ATTR_RE.search(html):
+        issues.append(
+            "HTML contains template attribute-name pattern '{{...}}=' that could "
+            "compose an arbitrary attribute (including event handlers) after token "
+            "substitution — forbidden in dashboard documents."
         )
 
     # 3. No dangerous URI schemes (javascript:, vbscript:, data:) — including

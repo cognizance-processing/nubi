@@ -104,13 +104,25 @@ def _tool_create_flow(
     if not valid:
         return {"id": None, "valid": False, "issues": issues}
 
+    spec_to_store = flow_spec.model_dump() if flow_spec is not None else dict(spec)
+
+    # SECURITY (B2 — OWNER-POLICY SNAPSHOT): scheduled flow runs drain with
+    # ``claims=None`` (no caller identity), so without a snapshot a flow query
+    # cell would apply NO RLS at tick time -> cross-tenant leak.  Snapshot the
+    # creating identity's RLS policies onto the spec's free-form
+    # ``runtime_config`` (the only field that survives re-validation unchanged),
+    # mirroring ``_snapshot_owner_policies`` in routes/flows.py.
+    runtime_config = dict(spec_to_store.get("runtime_config") or {})
+    runtime_config["__owner_policies__"] = dict(claims.get("policies") or {})
+    spec_to_store["runtime_config"] = runtime_config
+
     store = get_flow_store()
     flow = _run_sync(
         store.create_flow(
             org_id=org_id,
             created_by=created_by,
             name=name,
-            spec=flow_spec.model_dump() if flow_spec is not None else spec,
+            spec=spec_to_store,
         )
     )
     return {"id": flow["id"], "valid": True, "issues": issues}
@@ -140,9 +152,13 @@ def _tool_run_flow(
 
     store = get_flow_store()
 
+    org_id = claims.get("org", "")
+
     async def _run() -> dict[str, Any]:
         flow = await store.get_flow(flow_id)
-        if flow is None:
+        # SECURITY (org-scoping): fail closed with an OPAQUE 404 when the flow
+        # is missing OR belongs to a different org — never run a cross-org flow.
+        if flow is None or str(flow.get("org_id", "")) != str(org_id):
             from app.errors import AppError  # noqa: PLC0415
             raise AppError("not_found", f"Flow {flow_id!r} not found.", 404)
 
@@ -178,9 +194,12 @@ def _tool_get_flow_run(
     """
     from app.flows.store import get_flow_store  # noqa: PLC0415
 
+    org_id = claims.get("org", "")
     store = get_flow_store()
     run = _run_sync(store.get_flow_run(flow_run_id))
-    if run is None:
+    # SECURITY (org-scoping): fail closed with an OPAQUE 404 when the run is
+    # missing OR belongs to a different org — never leak a cross-org run.
+    if run is None or str(run.get("org_id", "")) != str(org_id):
         from app.errors import AppError  # noqa: PLC0415
         raise AppError("not_found", f"Flow run {flow_run_id!r} not found.", 404)
 

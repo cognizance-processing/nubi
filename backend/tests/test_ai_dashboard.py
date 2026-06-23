@@ -458,6 +458,99 @@ class TestValidateDashboardHtml:
         )
         assert any("style" in i.lower() for i in issues), issues
 
+    # ── Template-composition XSS (save-time, LOW XSS fix) ────────────────────
+
+    def test_template_on_token_attr_rejected(self):
+        """'on{{x}}=' in attribute-name position must be rejected at save time.
+
+        SECURITY (LOW XSS): validate_dashboard_html's on*= regex runs on the
+        RAW html and misses 'on{{token}}=' patterns.  After token substitution
+        'on{{eventName}}=' becomes e.g. 'onclick=', which is an event handler.
+        Render-time Layer 3 (fix-30) catches it at render, but the SAVE-time
+        validator must also reject it so the document is never persisted.
+        """
+        html = '<div on{{x}}="bad()"><nubi-table query-id="demo_all"></nubi-table></div>'
+        ok, issues = validate_dashboard_html(html)
+        assert ok is False, (
+            "Expected validate_dashboard_html to reject 'on{{x}}=' pattern "
+            "(template-composition XSS)."
+        )
+        assert any("template" in i.lower() or "on{{" in i for i in issues), issues
+
+    def test_template_whole_attr_token_rejected(self):
+        """'{{attr}}=' in attribute-name position must be rejected at save time.
+
+        SECURITY (LOW XSS): a template token that IS the entire attribute name,
+        e.g. '{{attr}}="bad()"', could resolve to 'onclick="bad()"' after
+        substitution.  This must be blocked at save time.
+        """
+        html = '<div {{attr}}="bad()"><nubi-table query-id="demo_all"></nubi-table></div>'
+        ok, issues = validate_dashboard_html(html)
+        assert ok is False, (
+            "Expected validate_dashboard_html to reject '{{attr}}=' pattern "
+            "(template-composition XSS in attribute-name position)."
+        )
+        assert any("template" in i.lower() or "{{" in i for i in issues), issues
+
+    def test_template_token_in_attr_value_is_allowed(self):
+        """{{token}} inside an attribute VALUE must NOT be rejected (legitimate use).
+
+        Template tokens in values such as label="{{title}}" or
+        query-id="{{qid}}" are legitimate and must pass validation.
+        """
+        html = (
+            '<div class="nubi-dashboard">'
+            '<nubi-kpi query-id="demo_all" value-col="id" label="{{title}}"></nubi-kpi>'
+            '<nubi-table query-id="demo_all" limit="50"></nubi-table>'
+            "</div>"
+        )
+        ok, issues = validate_dashboard_html(html)
+        # Remove any unknown-query-id warning to isolate template-specific issues.
+        template_issues = [
+            i for i in issues
+            if "template" in i.lower() or ("{{" in i and "on{{" not in i)
+        ]
+        assert template_issues == [], (
+            f"{{token}} in attribute VALUE should be allowed, but got: {template_issues}"
+        )
+
+    def test_template_token_in_text_content_is_allowed(self):
+        """{{token}} inside element text content must NOT be rejected."""
+        html = (
+            '<div class="nubi-dashboard">'
+            "<p>Hello {{username}}, your report is ready.</p>"
+            '<nubi-table query-id="demo_all"></nubi-table>'
+            "</div>"
+        )
+        ok, issues = validate_dashboard_html(html)
+        template_issues = [
+            i for i in issues
+            if "template" in i.lower() and "{{" in i
+        ]
+        assert template_issues == [], (
+            f"{{token}} in text content should be allowed, but got: {template_issues}"
+        )
+
+    def test_template_on_token_variants(self):
+        """Various 'on{{...}}=' patterns are all rejected.
+
+        Covers: on{{x}}=, ON{{X}}=, on{{event_name}}=, on{{a}}  =.
+        """
+        cases = [
+            ('<span on{{x}}="bad()">x</span>', "on{{x}}="),
+            ('<span ON{{X}}="bad()">x</span>', "ON{{X}}="),
+            ('<span on{{event_name}}="bad()">x</span>', "on{{event_name}}="),
+            ('<span on{{a}}  ="bad()">x</span>', "on{{a}}  ="),
+        ]
+        for html, label in cases:
+            ok, issues = validate_dashboard_html(html)
+            assert ok is False, (
+                f"Expected validate_dashboard_html to reject {label!r} but got ok=True"
+            )
+            assert any("template" in i.lower() or "{{" in i for i in issues), (
+                f"Expected a template-composition issue for {label!r}, got: {issues}"
+            )
+
 
 # ---------------------------------------------------------------------------
 # 3. POST /ai/dashboard endpoint

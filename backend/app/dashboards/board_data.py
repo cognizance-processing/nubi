@@ -94,6 +94,23 @@ _CONNECTOR_SCAN_LIMIT: int = int(
     os.environ.get("NUBI_CONNECTOR_SCAN_LIMIT", _DEFAULT_CONNECTOR_SCAN_LIMIT)
 )
 
+# [LOW resource] Cap: max flows fetched by the resolve_provider_data pre-fetch
+# when building the org_flows_by_key lookup dict for flow-backed providers.
+# Without a limit, list_flows loads every org flow (up to 1000 by the store
+# default) from the DB on every provider HTTP request.  For an org with many
+# flows the named provider flow is almost always present near the top of the
+# id-sorted result set; a limit of 200 covers any realistic board without
+# loading the entire org catalogue.
+# The per-provider fallback inside _resolve_flow_provider / _resolve_materialized_flow_provider
+# also benefits: when org_flows_by_key is populated here, those fallbacks are
+# never reached (O(1) dict lookup), so the limit only matters if get_flow()
+# misses AND the pre-fetch dict is somehow incomplete (unlikely in practice).
+# Override via env var NUBI_FLOWS_PREFETCH_LIMIT.
+_DEFAULT_FLOWS_PREFETCH_LIMIT = 200
+_FLOWS_PREFETCH_LIMIT: int = int(
+    os.environ.get("NUBI_FLOWS_PREFETCH_LIMIT", _DEFAULT_FLOWS_PREFETCH_LIMIT)
+)
+
 from app.errors import AppError
 
 logger = logging.getLogger(__name__)
@@ -944,8 +961,18 @@ async def _resolve_inline_provider(
                 try:
                     from app.connectors import plan as planner_plan  # noqa: PLC0415
 
-                    physical_plan = planner_plan(
-                        sql=sql, claims={"policies": policies}, params=[]
+                    # FIX [MED event-loop]: planner_plan() is a synchronous
+                    # (CPU-bound) call that parses + transforms SQL.  Calling it
+                    # directly on the event loop blocks all other coroutines for
+                    # the duration of the plan compilation.  Offload it to the
+                    # thread-pool via asyncio.to_thread so the loop stays free.
+                    # Note: planner_plan has no shared mutable state, so calling
+                    # it from multiple threads concurrently is safe.
+                    physical_plan = await asyncio.to_thread(
+                        planner_plan,
+                        sql=sql,
+                        claims={"policies": policies},
+                        params=[],
                     )
                     # Use the connector resolved once above (hoisted out of the loop).
                     # FIX [MED connector]: resolve the org's actual connector rather
@@ -1408,12 +1435,17 @@ async def resolve_provider_data(
     # id.  Building the lookup dict here (once, before the mode branch) means
     # neither path ever calls list_flows again — O(1) lookup per provider instead
     # of O(providers) scans.
+    # FIX [LOW bounded prefetch]: pass limit=_FLOWS_PREFETCH_LIMIT so the DB
+    # query uses LIMIT N instead of loading every org flow (up to 1000) on every
+    # provider HTTP request.  A named provider flow is always identifiable by id
+    # or name within the first _FLOWS_PREFETCH_LIMIT rows; the limit is
+    # configurable via NUBI_FLOWS_PREFETCH_LIMIT (default 200).
     org_flows_by_key: dict[str, Any] = {}
     if provider.kind == "flow":
         from app.flows.store import get_flow_store as _get_flow_store  # noqa: PLC0415
 
         _store = _get_flow_store()
-        _all_org_flows = await _store.list_flows(org_id=org_id)
+        _all_org_flows = await _store.list_flows(org_id=org_id, limit=_FLOWS_PREFETCH_LIMIT)
         for _f in _all_org_flows:
             _fid = str(_f.get("id", ""))
             _fname = _f.get("name", "")
