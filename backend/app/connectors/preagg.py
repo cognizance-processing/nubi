@@ -913,7 +913,10 @@ def build_rollup(
     # stops at LIMIT so we never scan the full result for an over-cap rollup.
     count_sql = f"SELECT COUNT(*) FROM ({capped_sql}) __rollup_count"
 
-    src = duckdb.connect(database=source_database or ":memory:", read_only=False)
+    src = duckdb.connect(
+        database=source_database or ":memory:",
+        read_only=(source_database is not None),
+    )
     try:
         row_count = src.execute(count_sql).fetchone()[0]
         if row_count > max_rows:

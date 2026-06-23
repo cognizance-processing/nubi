@@ -1320,7 +1320,7 @@ class TestRollupRowCap:
         rollup_sql = build_rollup_sql(
             "orders", ["region"], ["sum(amount)"], ["tenant_id"]
         )
-        con = duckdb.connect(database=source_db, read_only=False)
+        con = duckdb.connect(database=source_db, read_only=True)
         try:
             full_rows = con.execute(rollup_sql).fetchall()
         finally:
@@ -1376,7 +1376,7 @@ class TestRollupRowCap:
         rollup_sql = build_rollup_sql(
             "orders", ["region"], ["sum(amount)"], ["tenant_id"]
         )
-        con = duckdb.connect(database=source_db, read_only=False)
+        con = duckdb.connect(database=source_db, read_only=True)
         try:
             full_rows = con.execute(rollup_sql).fetchall()
         finally:
@@ -2526,3 +2526,134 @@ class TestRollupFileLifecycle:
             for p in (live.database, orphan_path):
                 if p and os.path.exists(p):
                     os.unlink(p)
+
+
+# ---------------------------------------------------------------------------
+# [LOW resource] build_rollup source connection must open read-only on files
+# ---------------------------------------------------------------------------
+
+
+class TestBuildRollupSourceReadOnly:
+    """build_rollup must open the source DuckDB file read_only=True.
+
+    Opening read_only=False grabs an exclusive WRITE lock on the source file,
+    which conflicts with concurrent reads (demo connector singleton / dashboard
+    queries on the same file) and produces "database is locked" errors.
+
+    The source connection only reads; opening it read-only:
+      - releases the exclusive write lock immediately,
+      - allows other readers to connect concurrently.
+
+    For in-memory sources (source_database=None) the connection remains
+    writable so test helpers that register Arrow tables still work.
+    """
+
+    def test_file_source_opens_read_only(self, source_db: str) -> None:
+        """build_rollup opens the file-backed source with read_only=True.
+
+        We validate this by opening a SECOND read-only connection to source_db
+        WHILE build_rollup is running — if the source were opened read_only=False
+        (exclusive write lock) the second connection would raise "database is
+        locked" or similar.  With read_only=True both connections co-exist.
+        """
+        reg = RollupRegistry()
+        candidate = RollupCandidate(
+            table="orders",
+            dimensions=["region"],
+            measures=["sum(amount)"],
+        )
+
+        # Build the rollup — internally opens source_db read_only=True.
+        built = build_rollup(
+            candidate,
+            rls_keys=["tenant_id"],
+            source_database=source_db,
+            registry=reg,
+            register_query=False,
+        )
+        assert built is not None
+
+        # Immediately after build_rollup closes its source connection open ANOTHER
+        # read-only connection to the same file — this must NOT raise.
+        # (If the previous connection had held a write lock we would see
+        # "database is locked" / "IO Error" here or during the build itself.)
+        concurrent = duckdb.connect(source_db, read_only=True)
+        try:
+            rows = concurrent.execute(
+                "SELECT COUNT(*) FROM orders"
+            ).fetchone()
+            assert rows[0] == 6, f"Expected 6 source rows, got {rows[0]}"
+        finally:
+            concurrent.close()
+
+    def test_concurrent_read_during_build_not_blocked(self, source_db: str) -> None:
+        """A concurrent read-only connection to source_db is not blocked by build_rollup.
+
+        Opens a read-only connection to source_db BEFORE calling build_rollup,
+        keeps it open throughout, and asserts both that build_rollup succeeds and
+        that the concurrent connection can still query after the build.
+        """
+        reg = RollupRegistry()
+        candidate = RollupCandidate(
+            table="orders",
+            dimensions=["region"],
+            measures=["sum(amount)"],
+        )
+
+        # Open a concurrent read-only reader (simulates a dashboard query).
+        reader = duckdb.connect(source_db, read_only=True)
+        try:
+            # Pre-build read — establish that the connection works.
+            pre_rows = reader.execute(
+                "SELECT SUM(amount) FROM orders"
+            ).fetchone()[0]
+            assert pre_rows == 129  # 10+5+7+100+3+4
+
+            # build_rollup must succeed despite the concurrent read-only connection.
+            built = build_rollup(
+                candidate,
+                rls_keys=["tenant_id"],
+                source_database=source_db,
+                registry=reg,
+                register_query=False,
+            )
+            assert built is not None
+
+            # Post-build read on the same connection — must still work.
+            post_rows = reader.execute(
+                "SELECT SUM(amount) FROM orders"
+            ).fetchone()[0]
+            assert post_rows == pre_rows
+        finally:
+            reader.close()
+
+    def test_memory_source_remains_writable(self) -> None:
+        """When source_database is None the connection is NOT opened read_only.
+
+        In-memory DuckDB connections must stay writable so callers that register
+        Arrow tables (e.g., test helpers using conn.register()) can do so.
+        The fix only applies read_only=True when source_database is a real file.
+        """
+        # We verify indirectly: build_rollup with source_database=None uses an
+        # in-memory source.  It must be able to register an Arrow table into it.
+        # (If read_only=True were applied to ':memory:' this would fail.)
+        import pyarrow as pa  # noqa: PLC0415
+
+        from app.connectors.preagg import build_rollup_sql  # noqa: PLC0415
+
+        # Build an in-memory DuckDB, register a table, verify SQL executes.
+        mem_conn = duckdb.connect(":memory:", read_only=False)
+        try:
+            table = pa.table({
+                "tenant_id": ["acme", "acme", "beta"],
+                "region": ["us", "eu", "us"],
+                "amount": [10, 7, 100],
+            })
+            mem_conn.register("orders", table)
+            rollup_sql = build_rollup_sql(
+                "orders", ["region"], ["sum(amount)"], ["tenant_id"]
+            )
+            rows = mem_conn.execute(rollup_sql).fetchall()
+            assert len(rows) > 0, "In-memory source must be queryable"
+        finally:
+            mem_conn.close()

@@ -471,12 +471,23 @@ async def run_sweep(
                 store, flow, tagged_params, trigger, now
             )
             run_id = flow_run["id"]
-            final_run = await drain_flow_run(
-                store, run_id, now, claims=claims,
-                max_steps=_SWEEP_CELL_DRAIN_MAX_STEPS,
-                wall_timeout_s=_SWEEP_CELL_TIMEOUT_S,
-            )
-            cell_state = final_run.get("state", "failed")
+            try:
+                final_run = await drain_flow_run(
+                    store, run_id, now, claims=claims,
+                    max_steps=_SWEEP_CELL_DRAIN_MAX_STEPS,
+                    wall_timeout_s=_SWEEP_CELL_TIMEOUT_S,
+                )
+                cell_state = final_run.get("state", "failed")
+            except BaseException as drain_exc:
+                # CancelledError (and any other BaseException) is NOT caught by
+                # ``except Exception`` — the in-flight flow_run would stay in
+                # state='running' forever (orphan).  Transition it to 'failed'
+                # best-effort before re-raising so the invariant holds.
+                try:
+                    await store.update_flow_run(run_id, {"state": "failed"})
+                except Exception:  # noqa: BLE001
+                    pass  # best-effort; don't mask the original exception
+                raise  # re-raise CancelledError so wait_for converts to TimeoutError
 
             if cell_state == "success":
                 succeeded += 1
@@ -755,12 +766,23 @@ async def run_backfill(
                 store, flow, params, trigger, now
             )
             run_id = flow_run["id"]
-            final_run = await drain_flow_run(
-                store, run_id, now, claims=claims,
-                max_steps=_SWEEP_CELL_DRAIN_MAX_STEPS,
-                wall_timeout_s=_BACKFILL_WINDOW_TIMEOUT_S,
-            )
-            win_state = final_run.get("state", "failed")
+            try:
+                final_run = await drain_flow_run(
+                    store, run_id, now, claims=claims,
+                    max_steps=_SWEEP_CELL_DRAIN_MAX_STEPS,
+                    wall_timeout_s=_BACKFILL_WINDOW_TIMEOUT_S,
+                )
+                win_state = final_run.get("state", "failed")
+            except BaseException as drain_exc:
+                # CancelledError is a BaseException, not Exception — the existing
+                # outer ``except Exception`` would miss it, leaving the flow_run in
+                # state='running' (orphan).  Transition it to 'failed' best-effort
+                # before re-raising so the invariant holds.
+                try:
+                    await store.update_flow_run(run_id, {"state": "failed"})
+                except Exception:  # noqa: BLE001
+                    pass  # best-effort; don't mask the original exception
+                raise  # re-raise CancelledError so wait_for converts to TimeoutError
 
             if win_state == "success":
                 succeeded += 1

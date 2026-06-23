@@ -551,13 +551,27 @@ def _snapshot_owner_policies(
 
 
 def _serialize_flow(flow: dict[str, Any]) -> dict[str, Any]:
-    """Convert a flow dict to a JSON-serialisable form."""
+    """Convert a flow dict to a JSON-serialisable form.
+
+    SECURITY: strips ``OWNER_POLICIES_KEY`` from the outbound ``spec`` so the
+    owner's RLS predicate snapshot is never exposed to API clients (incl.
+    viewer-role org members).  The stored DB value is intentionally left intact
+    so the scheduler tick can still read the snapshot at run time.
+    """
+    spec = flow["spec"]
+    if spec and isinstance(spec, dict):
+        rc = spec.get("runtime_config")
+        if rc and OWNER_POLICIES_KEY in rc:
+            # Shallow-copy only what we need to avoid mutating the live store.
+            rc_copy = {k: v for k, v in rc.items() if k != OWNER_POLICIES_KEY}
+            spec = {**spec, "runtime_config": rc_copy}
+
     return {
         "id": flow["id"],
         "org_id": flow["org_id"],
         "created_by": flow["created_by"],
         "name": flow["name"],
-        "spec": flow["spec"],
+        "spec": spec,
         "version": flow["version"],
         "enabled": flow["enabled"],
         "schedule": flow.get("schedule"),

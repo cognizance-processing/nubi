@@ -760,3 +760,96 @@ def test_compile_route_maps_timeout_to_compile_error():
     assert "timed_out" in src
     # The timeout branch raises a compile_error AppError.
     assert "compile_error" in src
+
+
+# ---------------------------------------------------------------------------
+# SECURITY: owner RLS policy snapshot must NOT be exposed via GET /flows or
+# GET /flows/{id}.  The stored spec (in the flow store) must still contain the
+# snapshot so the scheduler tick can enforce RLS correctly.
+# ---------------------------------------------------------------------------
+
+
+class TestOwnerPoliciesNotExposed:
+    """[LOW info-disclosure] __owner_policies__ must be stripped from outbound spec."""
+
+    @pytest.mark.asyncio
+    async def test_list_flows_omits_owner_policies(self, flows_client):
+        from app.routes.flows import OWNER_POLICIES_KEY
+
+        client, alice_id, org_id, store, repo = flows_client
+
+        resp = await client.post(
+            "/api/v1/flows",
+            json={"name": "RLS Flow", "spec": _VALID_SPEC},
+            headers=_auth_headers(alice_id),
+        )
+        assert resp.status_code == 201, resp.text
+
+        list_resp = await client.get("/api/v1/flows", headers=_auth_headers(alice_id))
+        assert list_resp.status_code == 200, list_resp.text
+
+        flows = list_resp.json()
+        assert len(flows) >= 1
+        for flow in flows:
+            spec = flow.get("spec") or {}
+            rc = spec.get("runtime_config") or {}
+            assert OWNER_POLICIES_KEY not in rc, (
+                f"GET /flows must not expose {OWNER_POLICIES_KEY} in runtime_config"
+            )
+
+    @pytest.mark.asyncio
+    async def test_get_flow_omits_owner_policies(self, flows_client):
+        from app.routes.flows import OWNER_POLICIES_KEY
+
+        client, alice_id, org_id, store, repo = flows_client
+
+        create_resp = await client.post(
+            "/api/v1/flows",
+            json={"name": "RLS Flow Get", "spec": _VALID_SPEC},
+            headers=_auth_headers(alice_id),
+        )
+        assert create_resp.status_code == 201, create_resp.text
+        flow_id = create_resp.json()["id"]
+
+        get_resp = await client.get(f"/api/v1/flows/{flow_id}", headers=_auth_headers(alice_id))
+        assert get_resp.status_code == 200, get_resp.text
+
+        spec = get_resp.json().get("spec") or {}
+        rc = spec.get("runtime_config") or {}
+        assert OWNER_POLICIES_KEY not in rc, (
+            f"GET /flows/{{id}} must not expose {OWNER_POLICIES_KEY} in runtime_config"
+        )
+
+    @pytest.mark.asyncio
+    async def test_owner_policies_snapshot_intact_in_store(self, flows_client):
+        """Stripping the key from the response must NOT remove it from the store.
+
+        The scheduler tick reads the snapshot from the stored spec, so after
+        a create + GET the store must still hold __owner_policies__.
+        """
+        from app.routes.flows import OWNER_POLICIES_KEY
+
+        client, alice_id, org_id, store, repo = flows_client
+
+        create_resp = await client.post(
+            "/api/v1/flows",
+            json={"name": "RLS Store Check", "spec": _VALID_SPEC},
+            headers=_auth_headers(alice_id),
+        )
+        assert create_resp.status_code == 201, create_resp.text
+        flow_id = create_resp.json()["id"]
+
+        # The API response must NOT expose the key.
+        get_resp = await client.get(f"/api/v1/flows/{flow_id}", headers=_auth_headers(alice_id))
+        assert get_resp.status_code == 200, get_resp.text
+        api_spec = get_resp.json().get("spec") or {}
+        api_rc = api_spec.get("runtime_config") or {}
+        assert OWNER_POLICIES_KEY not in api_rc, "API response must not leak owner policies"
+
+        # The in-memory store must STILL contain the snapshot.
+        stored_flow = await store.get_flow(flow_id=flow_id)
+        assert stored_flow is not None, "Flow should still exist in the store"
+        stored_rc = (stored_flow.get("spec") or {}).get("runtime_config") or {}
+        assert OWNER_POLICIES_KEY in stored_rc, (
+            "Stored spec must retain __owner_policies__ for the scheduler tick"
+        )

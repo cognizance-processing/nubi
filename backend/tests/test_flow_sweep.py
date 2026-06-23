@@ -2502,3 +2502,134 @@ async def test_per_unit_timeout_env_overridable(monkeypatch):
     monkeypatch.undo()
     assert sweep_mod._SWEEP_CELL_TIMEOUT_S == original_cell
     assert sweep_mod._BACKFILL_WINDOW_TIMEOUT_S == original_win
+
+
+# ---------------------------------------------------------------------------
+# FIX [LOW]: cancellation leaves no orphan running flow_runs
+# ---------------------------------------------------------------------------
+
+
+async def test_cancelled_sweep_cell_flow_run_not_left_running():
+    """A CancelledError mid-drain must NOT leave the flow_run in state='running'.
+
+    The outer asyncio.wait_for converts a cancellation/timeout into a
+    TimeoutError (via CancelledError), but CancelledError is a BaseException,
+    not Exception — the existing ``except Exception`` guard in run_sweep's
+    per-cell loop would miss it.  The fix wraps drain_flow_run in a
+    BaseException handler that transitions the flow_run to 'failed' before
+    re-raising.
+
+    Invariant: after run_sweep raises (or is cancelled), every flow_run that
+    was created during the sweep must be in a terminal state (not 'running').
+    """
+    import asyncio as _asyncio
+    import app.flows.runtime as rt_mod
+
+    reset_for_tests()
+    store = InMemoryFlowStore()
+    flow = await _make_flow(store)
+
+    # Track all flow_run IDs created during the sweep so we can inspect them
+    # after cancellation.
+    created_run_ids: list[str] = []
+    original_materialize = rt_mod.materialize_flow_run
+
+    async def recording_materialize(store_, flow_, params_, trigger_, now_):
+        run = await original_materialize(store_, flow_, params_, trigger_, now_)
+        created_run_ids.append(run["id"])
+        return run
+
+    # Make drain_flow_run raise CancelledError immediately to simulate the
+    # outer asyncio.wait_for cancelling mid-cell.
+    original_drain = rt_mod.drain_flow_run
+
+    async def cancelling_drain(store_, run_id, now, claims=None, max_steps=200, wall_timeout_s=0.0):
+        raise _asyncio.CancelledError("simulated timeout cancellation")
+
+    rt_mod.materialize_flow_run = recording_materialize
+    rt_mod.drain_flow_run = cancelling_drain
+    try:
+        with pytest.raises((_asyncio.CancelledError, _asyncio.TimeoutError)):
+            await run_sweep(
+                store=store,
+                flow=flow,
+                param_sets=[{"x": 1}],
+                trigger="sweep",
+                now=NOW,
+                claims=CLAIMS,
+            )
+    finally:
+        rt_mod.materialize_flow_run = original_materialize
+        rt_mod.drain_flow_run = original_drain
+
+    # At least one flow_run must have been created (materialize ran before drain).
+    assert len(created_run_ids) >= 1, "materialize_flow_run must have been called"
+
+    # INVARIANT: no flow_run must remain in state='running'.
+    for run_id in created_run_ids:
+        run = await store.get_flow_run(run_id)
+        assert run is not None
+        assert run["state"] != "running", (
+            f"flow_run {run_id} is still in state='running' after cancellation — "
+            "orphan run_id invariant violated. "
+            "The BaseException handler in run_sweep must transition it to 'failed'."
+        )
+
+
+async def test_cancelled_backfill_window_flow_run_not_left_running():
+    """A CancelledError mid-drain in run_backfill must NOT leave a flow_run in
+    state='running'.
+
+    Mirrors test_cancelled_sweep_cell_flow_run_not_left_running for the
+    backfill path.  The same BaseException-catch fix must be applied to
+    run_backfill's per-window loop.
+    """
+    import asyncio as _asyncio
+    import app.flows.runtime as rt_mod
+
+    reset_for_tests()
+    store = InMemoryFlowStore()
+    flow = await _make_flow(store)
+
+    created_run_ids: list[str] = []
+    original_materialize = rt_mod.materialize_flow_run
+
+    async def recording_materialize(store_, flow_, params_, trigger_, now_):
+        run = await original_materialize(store_, flow_, params_, trigger_, now_)
+        created_run_ids.append(run["id"])
+        return run
+
+    original_drain = rt_mod.drain_flow_run
+
+    async def cancelling_drain(store_, run_id, now, claims=None, max_steps=200, wall_timeout_s=0.0):
+        raise _asyncio.CancelledError("simulated timeout cancellation")
+
+    rt_mod.materialize_flow_run = recording_materialize
+    rt_mod.drain_flow_run = cancelling_drain
+    try:
+        with pytest.raises((_asyncio.CancelledError, _asyncio.TimeoutError)):
+            await run_backfill(
+                store=store,
+                flow=flow,
+                start=datetime(2025, 1, 1, tzinfo=timezone.utc),
+                end=datetime(2025, 1, 2, tzinfo=timezone.utc),
+                window="1d",
+                trigger="backfill",
+                now=NOW,
+                claims=CLAIMS,
+            )
+    finally:
+        rt_mod.materialize_flow_run = original_materialize
+        rt_mod.drain_flow_run = original_drain
+
+    assert len(created_run_ids) >= 1, "materialize_flow_run must have been called"
+
+    # INVARIANT: no flow_run must remain in state='running'.
+    for run_id in created_run_ids:
+        run = await store.get_flow_run(run_id)
+        assert run is not None
+        assert run["state"] != "running", (
+            f"flow_run {run_id} is still in state='running' after cancellation — "
+            "orphan run_id invariant violated. "
+            "The BaseException handler in run_backfill must transition it to 'failed'."
+        )
