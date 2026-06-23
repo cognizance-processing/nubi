@@ -1223,7 +1223,31 @@ async def _resolve_materialized_flow_provider(
             )
             tables[key] = tables[key].slice(0, _ROW_CAP)
 
+        # [LOW resource] Enforce table-count cap WHILE accumulating so a materialized
+        # provider returning thousands of named tables is rejected as soon as the
+        # limit is breached — before further tables are materialised into memory.
+        if _PROVIDER_MAX_TABLES > 0 and len(tables) > _PROVIDER_MAX_TABLES:
+            raise AppError(
+                "provider_result_too_large",
+                f"Provider {provider.id!r} returned more than {_PROVIDER_MAX_TABLES} "
+                f"result tables; aborting accumulation "
+                f"(set NUBI_PROVIDER_MAX_TABLES to raise the limit).",
+                422,
+            )
+
     # ── 4. Fill missing declared results with empty tables. ───────────────────
+    # Guard: if provider.results itself is oversized (e.g. a spec that slipped
+    # through without validation), cap it here to avoid unbounded empty-table
+    # creation — each pa.table({}) is cheap but len(provider.results) is
+    # attacker-controlled.
+    if _PROVIDER_MAX_TABLES > 0 and len(provider.results) > _PROVIDER_MAX_TABLES:
+        raise AppError(
+            "provider_result_too_large",
+            f"Provider {provider.id!r} declared {len(provider.results)} results; "
+            f"maximum allowed is {_PROVIDER_MAX_TABLES} "
+            f"(set NUBI_PROVIDER_MAX_TABLES to raise the limit).",
+            422,
+        )
     for r in provider.results:
         if r.name not in tables:
             logger.warning(

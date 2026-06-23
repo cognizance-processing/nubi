@@ -476,6 +476,11 @@ _DEFAULT_WIDGET_HINTS = WidgetExportHints()
 # DataProvider models (BET-3 — semantic-engine binding contract)
 # ---------------------------------------------------------------------------
 
+# Maximum number of declared results allowed on a single DataProvider in a spec.
+# Mirrors the runtime _PROVIDER_MAX_TABLES cap in board_data.py so oversized
+# provider specs are rejected at validation time, before they reach the resolver.
+_PROVIDER_MAX_RESULTS_SPEC: int = 100
+
 
 class ProviderResult(BaseModel):
     """A single named result-set produced by a :class:`DataProvider`.
@@ -555,7 +560,11 @@ class DataProvider(BaseModel):
     )
     results: list[ProviderResult] = Field(
         default_factory=list,
-        description="Named result-sets emitted by this provider (at least one expected).",
+        max_length=_PROVIDER_MAX_RESULTS_SPEC,
+        description=(
+            "Named result-sets emitted by this provider (at least one expected). "
+            f"Maximum {_PROVIDER_MAX_RESULTS_SPEC} entries."
+        ),
     )
 
 

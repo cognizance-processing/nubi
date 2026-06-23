@@ -1974,7 +1974,7 @@ async def list_flows(
 # does not swallow /writeback as a flow_id parameter.
 @router.get("/writeback", status_code=200, dependencies=[Depends(require_writer_default)])
 async def _list_writebacks_route_early(
-    limit: int = 50,
+    limit: int = Query(default=50, ge=1, le=500),
     user: dict[str, Any] = Depends(current_user),
     repo: Repo = Depends(get_repo),
 ) -> dict[str, Any]:

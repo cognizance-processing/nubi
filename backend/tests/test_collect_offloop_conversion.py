@@ -224,15 +224,18 @@ async def test_run_query_rows_uses_single_to_thread_for_conversion(
     assert columns == ["id"]
     assert rows == [[1], [2]]
 
-    # Must have called asyncio.to_thread exactly once with _execute_and_convert.
-    assert len(to_thread_callables) == 1, (
-        f"Expected exactly 1 asyncio.to_thread call, got {len(to_thread_callables)}: "
-        f"{to_thread_callables}"
-    )
-    assert to_thread_callables[0] is _collect._execute_and_convert, (
-        "The single asyncio.to_thread call must use _execute_and_convert "
+    # Must include _execute_and_convert (execute + to_pylist + row comprehension
+    # all off-loop).  Since the LOW-event-loop fix also offloads planner_plan to
+    # a thread, there are now 2 asyncio.to_thread calls per query: one for the
+    # planner and one for _execute_and_convert.
+    assert _collect._execute_and_convert in to_thread_callables, (
+        "asyncio.to_thread must be called with _execute_and_convert "
         "(which includes both execute + to_pylist + row comprehension), "
-        f"but got: {to_thread_callables[0]!r}"
+        f"but to_thread was called with: {to_thread_callables}"
+    )
+    assert len(to_thread_callables) == 2, (
+        f"Expected exactly 2 asyncio.to_thread calls (planner + execute+convert), "
+        f"got {len(to_thread_callables)}: {to_thread_callables}"
     )
 
 

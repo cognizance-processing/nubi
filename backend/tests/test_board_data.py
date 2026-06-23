@@ -1368,6 +1368,189 @@ async def test_materialized_no_policy_caller_still_gets_fast_path(
 
 
 # ---------------------------------------------------------------------------
+# [LOW resource] materialized provider table-count cap (Fix)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_materialized_provider_exceeds_table_cap_raises() -> None:
+    """_resolve_materialized_flow_provider raises provider_result_too_large (422)
+    when the number of accumulated result tables exceeds _PROVIDER_MAX_TABLES.
+
+    The in-loop cap must fire BEFORE the outer resolve_provider_data cap so
+    the check is enforced even on the materialized fast-path.
+    """
+    import io as _io
+    import app.dashboards.board_data as _bd_mod
+    import app.flows.store as _fs_mod
+    from app.dashboards.board_data import _resolve_materialized_flow_provider
+    from app.dashboards.spec import ProviderResult
+
+    original_cap = _bd_mod._PROVIDER_MAX_TABLES
+    small_cap = 2
+    _bd_mod._PROVIDER_MAX_TABLES = small_cap
+
+    try:
+        # Build a provider that declares small_cap+1 results.
+        extra_result_names = [f"result_{i}" for i in range(small_cap + 1)]
+        provider = DataProvider(
+            id=_PROVIDER_ID,
+            kind="flow",
+            params={},
+            results=[ProviderResult(name=n) for n in extra_result_names],
+        )
+
+        fake_flow = {"id": _PROVIDER_ID, "name": _PROVIDER_ID, "org_id": _ORG}
+        fake_flow_run = {"id": "mat-run-cap-1", "state": "success"}
+
+        # Build a task_run for each declared result so accumulation crosses the cap.
+        def _make_ipc(n: int) -> bytes:
+            tbl = pa.table({"v": pa.array([n])})
+            buf = _io.BytesIO()
+            w = pa.ipc.new_stream(buf, tbl.schema)
+            w.write_table(tbl)
+            w.close()
+            return buf.getvalue()
+
+        fake_task_runs = [
+            {
+                "task_key": name,
+                "state": "success",
+                "result": {"__arrow_ipc__": _make_ipc(i)},
+            }
+            for i, name in enumerate(extra_result_names)
+        ]
+
+        class _FakeStore:
+            async def get_flow(self, flow_id: str) -> dict:
+                return fake_flow
+
+            async def list_flows(self, **kwargs: Any) -> list:
+                return [fake_flow]
+
+            async def list_flow_runs(self, flow_id: str, limit: int = 10, **kwargs: Any) -> list:
+                return [fake_flow_run]
+
+            async def list_task_runs(self, run_id: str, limit: int | None = None) -> list:
+                result = list(fake_task_runs)
+                return result[:limit] if limit is not None else result
+
+        with (
+            patch.object(_fs_mod, "get_flow_store", return_value=_FakeStore()),
+            pytest.raises(AppError) as exc_info,
+        ):
+            await _resolve_materialized_flow_provider(provider, {}, _ORG, {"policies": {}})
+
+        assert exc_info.value.code == "provider_result_too_large", (
+            f"Expected provider_result_too_large, got {exc_info.value.code!r}"
+        )
+        assert exc_info.value.status == 422, (
+            f"Expected HTTP 422, got {exc_info.value.status}"
+        )
+    finally:
+        _bd_mod._PROVIDER_MAX_TABLES = original_cap
+
+
+@pytest.mark.asyncio
+async def test_materialized_provider_fill_missing_cap_raises() -> None:
+    """_resolve_materialized_flow_provider raises provider_result_too_large (422)
+    before the fill-missing-results loop when provider.results alone exceeds the cap.
+
+    This guards against an oversized spec that declares more results than
+    _PROVIDER_MAX_TABLES even when no task_runs produced data, preventing
+    unbounded pa.table({}) creation.
+    """
+    import app.dashboards.board_data as _bd_mod
+    import app.flows.store as _fs_mod
+    from app.dashboards.board_data import _resolve_materialized_flow_provider
+    from app.dashboards.spec import ProviderResult
+
+    original_cap = _bd_mod._PROVIDER_MAX_TABLES
+    small_cap = 2
+    _bd_mod._PROVIDER_MAX_TABLES = small_cap
+
+    try:
+        # Declare small_cap+1 results but produce NO task_run data — so
+        # accumulation loop adds nothing and the fill-missing guard fires.
+        extra_result_names = [f"empty_{i}" for i in range(small_cap + 1)]
+        provider = DataProvider(
+            id=_PROVIDER_ID,
+            kind="flow",
+            params={},
+            results=[ProviderResult(name=n) for n in extra_result_names],
+        )
+
+        fake_flow = {"id": _PROVIDER_ID, "name": _PROVIDER_ID, "org_id": _ORG}
+        fake_flow_run = {"id": "mat-run-cap-2", "state": "success"}
+
+        class _FakeStoreNoData:
+            async def get_flow(self, flow_id: str) -> dict:
+                return fake_flow
+
+            async def list_flows(self, **kwargs: Any) -> list:
+                return [fake_flow]
+
+            async def list_flow_runs(self, flow_id: str, limit: int = 10, **kwargs: Any) -> list:
+                return [fake_flow_run]
+
+            async def list_task_runs(self, run_id: str, limit: int | None = None) -> list:
+                # No task_run results — all declared results will be "missing".
+                return []
+
+        with (
+            patch.object(_fs_mod, "get_flow_store", return_value=_FakeStoreNoData()),
+            pytest.raises(AppError) as exc_info,
+        ):
+            await _resolve_materialized_flow_provider(provider, {}, _ORG, {"policies": {}})
+
+        assert exc_info.value.code == "provider_result_too_large", (
+            f"Expected provider_result_too_large, got {exc_info.value.code!r}"
+        )
+        assert exc_info.value.status == 422, (
+            f"Expected HTTP 422, got {exc_info.value.status}"
+        )
+    finally:
+        _bd_mod._PROVIDER_MAX_TABLES = original_cap
+
+
+def test_spec_data_provider_too_many_results_rejected() -> None:
+    """DataProvider.results with more than _PROVIDER_MAX_RESULTS_SPEC entries
+    is rejected by Pydantic validation with a ValidationError.
+
+    This ensures oversized provider specs are caught at parse/validate time,
+    before they reach the resolver.
+    """
+    from pydantic import ValidationError
+    from app.dashboards.spec import _PROVIDER_MAX_RESULTS_SPEC, ProviderResult
+
+    # Exactly at the cap — must succeed.
+    at_cap = DataProvider(
+        id="p-at-cap",
+        kind="flow",
+        params={},
+        results=[ProviderResult(name=f"r{i}") for i in range(_PROVIDER_MAX_RESULTS_SPEC)],
+    )
+    assert len(at_cap.results) == _PROVIDER_MAX_RESULTS_SPEC
+
+    # One over the cap — must fail.
+    with pytest.raises(ValidationError) as exc_info:
+        DataProvider(
+            id="p-over-cap",
+            kind="flow",
+            params={},
+            results=[
+                ProviderResult(name=f"r{i}") for i in range(_PROVIDER_MAX_RESULTS_SPEC + 1)
+            ],
+        )
+
+    errors = exc_info.value.errors()
+    assert any(
+        "results" in (e.get("loc") or ()) or "results" in str(e.get("loc", ""))
+        for e in errors
+    ), f"Expected ValidationError on 'results' field, got: {errors}"
+
+
+# ---------------------------------------------------------------------------
 # Serialisation round-trip helpers
 # ---------------------------------------------------------------------------
 

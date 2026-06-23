@@ -923,12 +923,10 @@ def _rewrite_to_rollup(plan: PhysicalPlan, rollup: Any) -> str | None:
             new_node = sqlglot.parse_one(
                 f'{reagg}("{partial_col}")', dialect=plan.dialect
             )
-            # Preserve any alias the original aggregate carried.
-            parent = node.parent
-            if isinstance(parent, exp.Alias):
-                node.replace(new_node)
-            else:
-                node.replace(new_node)
+            # sqlglot replace() swaps only this aggregate node in-place;
+            # any surrounding Alias wrapper (e.g. SUM(revenue) AS total)
+            # is preserved automatically — no special-casing needed.
+            node.replace(new_node)
 
     # 2. Swap the FROM target to the rollup table.
     replaced = False

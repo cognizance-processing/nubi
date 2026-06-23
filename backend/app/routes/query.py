@@ -98,6 +98,7 @@ keep working:
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 
@@ -796,7 +797,11 @@ async def _resolve_request_plan(
                 )
 
     # ── Plan (RLS predicates injected at the AST level) ──────────────────────
-    physical_plan = planner_plan(
+    # [LOW event-loop] planner_plan() is pure-Python (sqlglot parse + RLS AST
+    # rewrite); offload to a worker thread so the event loop is never blocked.
+    # parse_sql_cached's lru_cache is GIL-protected (thread-safe).
+    physical_plan = await asyncio.to_thread(
+        planner_plan,
         sql=effective_sql,
         claims=claims,
         params=effective_params,

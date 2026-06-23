@@ -2207,3 +2207,51 @@ async def test_concurrent_approve_writeback_invokes_connector_exactly_once():
     conflicts = [r for r in results if isinstance(r, AppError) and r.status == 409]
     assert len(successes) == 1, f"Expected 1 committed result, got: {results}"
     assert len(conflicts) == 1, f"Expected 1 conflict (409), got: {results}"
+
+
+# ---------------------------------------------------------------------------
+# 28. [LOW] GET /flows/writeback ?limit — unbounded limit fix.
+#     limit=0 and limit=100000000 must return 422 (FastAPI Query validation).
+#     limit=50 (default) must return 200.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_route_list_writebacks_limit_zero_is_422(wb_client):
+    """GET /flows/writeback?limit=0 must return 422 (below ge=1)."""
+    client, alice_id, *_ = wb_client
+    resp = await client.get(
+        "/api/v1/flows/writeback",
+        params={"limit": 0},
+        headers=_auth_headers(alice_id),
+    )
+    assert resp.status_code == 422, (
+        f"limit=0 must be rejected with 422, got {resp.status_code}"
+    )
+
+
+@pytest.mark.asyncio
+async def test_route_list_writebacks_limit_over_max_is_422(wb_client):
+    """GET /flows/writeback?limit=100000000 must return 422 (above le=500)."""
+    client, alice_id, *_ = wb_client
+    resp = await client.get(
+        "/api/v1/flows/writeback",
+        params={"limit": 100_000_000},
+        headers=_auth_headers(alice_id),
+    )
+    assert resp.status_code == 422, (
+        f"limit=100000000 must be rejected with 422, got {resp.status_code}"
+    )
+
+
+@pytest.mark.asyncio
+async def test_route_list_writebacks_default_limit_succeeds(wb_client):
+    """GET /flows/writeback (default limit=50) must return 200."""
+    client, alice_id, *_ = wb_client
+    resp = await client.get(
+        "/api/v1/flows/writeback",
+        headers=_auth_headers(alice_id),
+    )
+    assert resp.status_code == 200, (
+        f"Default limit must succeed with 200, got {resp.status_code}"
+    )

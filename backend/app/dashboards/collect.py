@@ -338,8 +338,15 @@ async def run_query_rows(
     # The post-fetch slice below is kept as a backstop for connectors that
     # ignore the plan's LIMIT node.
     _plan_limit: int | None = (_ROW_CAP + 1) if _ROW_CAP > 0 else None
-    physical_plan = planner_plan(
-        sql=sql, claims={"policies": policies}, params=params, limit=_plan_limit
+    # [LOW event-loop] planner_plan() is pure-Python (sqlglot parse + RLS AST
+    # rewrite) and can block the loop for non-trivial queries.  Run it on a
+    # worker thread; parse_sql_cached's lru_cache is GIL-protected.
+    physical_plan = await asyncio.to_thread(
+        planner_plan,
+        sql=sql,
+        claims={"policies": policies},
+        params=params,
+        limit=_plan_limit,
     )
 
     connector, connector_owned = await _resolve_connector(
@@ -843,8 +850,12 @@ async def collect_canvas_data(
                 connector = HttpJsonConnector(merged_cfg)
                 connector_owned = True
                 try:
-                    api_plan = planner_plan(
-                        sql="SELECT *", claims={"policies": policies}, params=[]
+                    # [LOW event-loop] planner_plan() is pure-Python; run off-loop.
+                    api_plan = await asyncio.to_thread(
+                        planner_plan,
+                        sql="SELECT *",
+                        claims={"policies": policies},
+                        params=[],
                     )
                     # [MED event-loop] _execute_and_convert_api acquires the
                     # per-connector lock, executes the plan, slices to cap, and
