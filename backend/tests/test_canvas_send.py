@@ -531,15 +531,16 @@ class TestCanvasPerRecipientRls:
             # Attacker-crafted locked_params that try to OVERWRITE the owner's
             # RLS slice with a different tenant.
             "locked_params": {"evil@x.com": {"tenant_id": "other_tenant"}},
-            "policies": owner_policies,
         }
+        # The owner's verified RLS arrives via the runtime-stamped claims
+        # (exec_claims from the owner-policy snapshot), NEVER from task config.
         with _patch_canvas(canvas):
             with patch("app.jobs.report.get_default_sender", return_value=sender):
                 with patch(
                     "app.flows.handlers.report_send._render_canvas",
                     side_effect=_capture_render,
                 ):
-                    report_send_handle(config, _ctx(), claims={})
+                    report_send_handle(config, _ctx(), claims={"policies": owner_policies})
 
         assert len(captured_claims) == 1
         applied_policies = captured_claims[0].get("policies") or {}
@@ -749,27 +750,35 @@ class TestCanvasNotifyChannels:
 
 
 class TestCanvasPoliciesPrecedence:
-    def test_task_config_policies_override_flow_snapshot(self):
-        """Task-config policies take precedence over flow-level snapshot."""
+    def test_task_config_policies_do_not_override_owner_snapshot(self):
+        """SECURITY [RLS]: task-config policies must NOT override the owner snapshot.
+
+        The owner's verified RLS arrives via the runtime-stamped claims
+        (exec_claims, built from the owner-policy snapshot before handle() runs).
+        A user-supplied ``config['policies']`` value must be IGNORED — otherwise a
+        writer could store a foreign tenant's policies in the flow spec and
+        exfiltrate cross-tenant data via the scheduled canvas (audit-27 HIGH).
+        """
         canvas = _make_canvas()
         sender = NullSender()
         captured_claims: list[dict] = []
 
-        def _capture_render(cv, fmt, *, org_id="", render_claims=None):
+        def _capture_render(cv, fmt, *, org_id="", render_claims=None, extra_params=None):
             captured_claims.append(dict(render_claims or {}))
             return "<html>ok</html>"
 
-        flow_snapshot = {"row_filter": "tenant = 'shared'"}
-        task_policies = {"row_filter": "tenant = 'acme'"}
+        owner_snapshot = {"row_filter": "tenant = 'shared'"}
+        malicious_task_policies = {"row_filter": "tenant = 'acme'"}
 
         config = {
             "canvas_id": canvas["id"],
             "org_id": canvas["org_id"],
             "format": "html",
             "recipients": ["a@x.com"],
-            "policies": task_policies,
+            # Attacker-supplied policies in the task config must be ignored.
+            "policies": malicious_task_policies,
         }
-        incoming_claims = {"org_id": canvas["org_id"], "policies": flow_snapshot}
+        incoming_claims = {"org_id": canvas["org_id"], "policies": owner_snapshot}
 
         with _patch_canvas(canvas):
             with patch("app.jobs.report.get_default_sender", return_value=sender):
@@ -781,9 +790,10 @@ class TestCanvasPoliciesPrecedence:
 
         assert result["emails_sent"] == 1
         assert len(captured_claims) == 1
-        assert captured_claims[0].get("policies") == task_policies, (
-            f"Expected task-config policies {task_policies!r}, "
-            f"got {captured_claims[0].get('policies')!r}"
+        # The owner snapshot (from verified claims) wins; config policies ignored.
+        assert captured_claims[0].get("policies") == owner_snapshot, (
+            f"Owner snapshot must win — config policies leaked: "
+            f"got {captured_claims[0].get('policies')!r}, expected {owner_snapshot!r}"
         )
 
 
