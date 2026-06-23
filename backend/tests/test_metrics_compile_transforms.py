@@ -5732,6 +5732,93 @@ def test_all_canonical_grains_still_compile() -> None:
 
 
 # ===========================================================================
+# MED resource — unbounded __base time-bucket explosion at the finest grain
+# ===========================================================================
+#
+# At the finest grain ('hour') a time-comparison query with NO date-range
+# filter on the time column materialises O(dim_cardinality × every_hour) rows
+# in __base before the outer LIMIT lands.  _govern requires an explicit bound
+# on the time column for hour-grain + time_comparisons -> MetricError(400).
+# Coarser grains and queries without time_comparisons are NOT gated.
+
+
+def _hourly_tc_metric() -> MetricDefinition:
+    return _simple_metric(
+        time_dimension=TimeDimension(
+            column="created_at",
+            grains=("hour", "day", "week", "month", "quarter", "year"),
+            default_grain="day",
+        )
+    )
+
+
+def test_hourly_tc_without_date_filter_rejected() -> None:
+    """hour grain + time_comparisons + no time bound -> time_range_required."""
+    m = _hourly_tc_metric()
+    mq = MetricQuery(
+        metric_id="revenue",
+        dimensions=("region",),
+        time_grain="hour",
+        time_comparisons=(TimeComparison(measure="revenue", kind="pop_pct"),),
+    )
+    with pytest.raises(MetricError) as ei:
+        compile_metric(m, mq)
+    assert ei.value.code == "time_range_required", ei.value.code
+
+
+def test_hourly_tc_with_date_range_filter_ok() -> None:
+    """An explicit >=/<= bound on the time column satisfies the guard."""
+    m = _hourly_tc_metric()
+    mq = MetricQuery(
+        metric_id="revenue",
+        dimensions=("region",),
+        time_grain="hour",
+        time_comparisons=(TimeComparison(measure="revenue", kind="pop_pct"),),
+        filters=(
+            MetricFilter(field="created_at", op=">=", value="2026-01-01"),
+            MetricFilter(field="created_at", op="<=", value="2026-01-02"),
+        ),
+    )
+    sql, _ = compile_metric(m, mq)
+    assert sql  # compiles without raising
+
+
+def test_hourly_tc_with_equality_time_filter_ok() -> None:
+    """A single-bucket '=' bound on the time column also satisfies the guard."""
+    m = _hourly_tc_metric()
+    mq = MetricQuery(
+        metric_id="revenue",
+        dimensions=("region",),
+        time_grain="hour",
+        time_comparisons=(TimeComparison(measure="revenue", kind="prior_period"),),
+        filters=(MetricFilter(field="created_at", op="=", value="2026-01-01T00:00:00"),),
+    )
+    sql, _ = compile_metric(m, mq)
+    assert sql
+
+
+def test_hourly_without_tc_not_gated() -> None:
+    """hour grain WITHOUT time_comparisons compiles fine (guard is tc-scoped)."""
+    m = _hourly_tc_metric()
+    mq = MetricQuery(metric_id="revenue", dimensions=("region",), time_grain="hour")
+    sql, _ = compile_metric(m, mq)
+    assert sql
+
+
+def test_coarse_grain_tc_without_date_filter_not_gated() -> None:
+    """day grain + time_comparisons without a time bound is NOT gated (coarse)."""
+    m = _hourly_tc_metric()
+    mq = MetricQuery(
+        metric_id="revenue",
+        dimensions=("region",),
+        time_grain="day",
+        time_comparisons=(TimeComparison(measure="revenue", kind="pop_pct"),),
+    )
+    sql, _ = compile_metric(m, mq)
+    assert sql
+
+
+# ===========================================================================
 # audit-24 HIGH #2 — top_n.other + time_grain + explicit limit truncation
 # ===========================================================================
 #

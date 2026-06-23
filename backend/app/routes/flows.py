@@ -48,6 +48,7 @@ from __future__ import annotations
 import asyncio
 import hmac
 import os
+import threading
 from collections import OrderedDict
 from datetime import datetime, timezone
 from typing import Any
@@ -97,32 +98,102 @@ _MAX_CONCURRENT_SWEEPS_PER_ORG: int = int(
 # on the event loop thread.
 _MAX_ORG_SEMAPHORES: int = int(os.environ.get("NUBI_MAX_ORG_SEMAPHORES", "4096"))
 
+
+# ---------------------------------------------------------------------------
+# _CountingSemaphore — thin wrapper that avoids CPython-private ._value access
+# ---------------------------------------------------------------------------
+# asyncio.Semaphore exposes ``_value`` (remaining token count) as a private
+# attribute; using it creates a dependency on CPython internals that may break
+# on Python upgrades or alternate runtimes.
+#
+# Fix [LOW resource-safety]: wrap asyncio.Semaphore in a minimal class that
+# tracks an explicit ``_holders`` counter (current holders + waiters) on every
+# acquire/release.  ``is_idle()`` uses ``_holders == 0`` instead of ``_value``,
+# and ``locked()`` delegates to the underlying semaphore's public API.
+#
+# asyncio is single-threaded, but we protect ``_holders`` with a threading.Lock
+# for correctness in any environment that might call from multiple threads.
+
+
+class _CountingSemaphore:
+    """asyncio.Semaphore wrapper that tracks holder count without ``_value``.
+
+    Parameters
+    ----------
+    value:
+        Initial semaphore value (number of concurrent slots allowed).
+
+    Usage
+    -----
+    * ``await sem.acquire()`` — acquire one slot (blocks when at capacity).
+    * ``sem.release()`` — release one slot.
+    * ``async with sem:`` — context-manager protocol (acquire on enter, release on exit).
+    * ``sem.locked()`` — True when no free slot (delegates to the underlying sem).
+    * ``sem.is_idle()`` — True when no coroutines hold or are waiting on a slot.
+    """
+
+    __slots__ = ("_sem", "_concurrency", "_holders", "_lock")
+
+    def __init__(self, value: int) -> None:
+        self._sem = asyncio.Semaphore(value)
+        self._concurrency = value
+        self._holders: int = 0  # current holders + waiters
+        self._lock = threading.Lock()
+
+    async def acquire(self) -> None:
+        """Increment the holder count then acquire the underlying semaphore."""
+        with self._lock:
+            self._holders += 1
+        try:
+            await self._sem.acquire()
+        except BaseException:
+            # Acquisition was cancelled/interrupted before the slot was granted;
+            # undo the holder increment so we don't leak a phantom count.
+            with self._lock:
+                self._holders -= 1
+            raise
+
+    def release(self) -> None:
+        """Release the underlying semaphore then decrement the holder count."""
+        self._sem.release()
+        with self._lock:
+            self._holders = max(0, self._holders - 1)
+
+    async def __aenter__(self) -> "_CountingSemaphore":
+        await self.acquire()
+        return self
+
+    async def __aexit__(self, *_: object) -> None:
+        self.release()
+
+    def locked(self) -> bool:
+        """Return True when no free slot is available (public semaphore API)."""
+        return self._sem.locked()
+
+    def is_idle(self) -> bool:
+        """Return True when no coroutines hold or are waiting on a slot."""
+        with self._lock:
+            return self._holders == 0
+
+
 # OrderedDict preserves LRU order: least-recently-used at the left (first),
 # most-recently-used at the right (last).  move_to_end(key) promotes on access.
-_backfill_sems: OrderedDict[str, asyncio.Semaphore] = OrderedDict()
-_sweep_sems: OrderedDict[str, asyncio.Semaphore] = OrderedDict()
+_backfill_sems: OrderedDict[str, _CountingSemaphore] = OrderedDict()
+_sweep_sems: OrderedDict[str, _CountingSemaphore] = OrderedDict()
 
 
-def _sem_is_idle(sem: asyncio.Semaphore, max_value: int) -> bool:
+def _sem_is_idle(sem: _CountingSemaphore) -> bool:
     """Return True when *sem* is fully idle (no slots acquired, no waiters).
-
-    A semaphore is idle when:
-    - ``_value == max_value`` (all slots returned)
-    - ``_waiters`` is empty or None (no coroutine blocked on acquire)
 
     We NEVER evict a non-idle semaphore: dropping it while a task holds a slot
     would silently free the slot, letting a second task exceed the per-org cap
     and breaking the 429-on-contention invariant.
     """
-    if sem._value != max_value:
-        return False
-    waiters = getattr(sem, "_waiters", None)
-    return not waiters
+    return sem.is_idle()
 
 
 def _evict_idle_lru(
-    registry: "OrderedDict[str, asyncio.Semaphore]",
-    max_value: int,
+    registry: "OrderedDict[str, _CountingSemaphore]",
 ) -> None:
     """Evict the least-recently-used IDLE entry from *registry* (in-place).
 
@@ -132,12 +203,12 @@ def _evict_idle_lru(
     by one.  This is intentional: we never drop a live semaphore.
     """
     for key in list(registry):  # iterate LRU→MRU
-        if _sem_is_idle(registry[key], max_value):
+        if _sem_is_idle(registry[key]):
             del registry[key]
             return
 
 
-def _get_backfill_sem(org_id: str) -> asyncio.Semaphore:
+def _get_backfill_sem(org_id: str) -> _CountingSemaphore:
     """Return (creating if needed) the per-org backfill concurrency semaphore.
 
     On a cache hit the entry is promoted to MRU so recently-active orgs are
@@ -150,13 +221,13 @@ def _get_backfill_sem(org_id: str) -> asyncio.Semaphore:
         return sem
     # Cache miss: evict LRU idle entry if at cap, then insert new semaphore.
     if len(_backfill_sems) >= _MAX_ORG_SEMAPHORES:
-        _evict_idle_lru(_backfill_sems, _MAX_CONCURRENT_BACKFILLS_PER_ORG)
-    sem = asyncio.Semaphore(_MAX_CONCURRENT_BACKFILLS_PER_ORG)
+        _evict_idle_lru(_backfill_sems)
+    sem = _CountingSemaphore(_MAX_CONCURRENT_BACKFILLS_PER_ORG)
     _backfill_sems[org_id] = sem
     return sem
 
 
-def _get_sweep_sem(org_id: str) -> asyncio.Semaphore:
+def _get_sweep_sem(org_id: str) -> _CountingSemaphore:
     """Return (creating if needed) the per-org sweep concurrency semaphore.
 
     Same LRU eviction policy as :func:`_get_backfill_sem`.
@@ -167,8 +238,8 @@ def _get_sweep_sem(org_id: str) -> asyncio.Semaphore:
         return sem
     # Cache miss: evict LRU idle entry if at cap, then insert new semaphore.
     if len(_sweep_sems) >= _MAX_ORG_SEMAPHORES:
-        _evict_idle_lru(_sweep_sems, _MAX_CONCURRENT_SWEEPS_PER_ORG)
-    sem = asyncio.Semaphore(_MAX_CONCURRENT_SWEEPS_PER_ORG)
+        _evict_idle_lru(_sweep_sems)
+    sem = _CountingSemaphore(_MAX_CONCURRENT_SWEEPS_PER_ORG)
     _sweep_sems[org_id] = sem
     return sem
 
@@ -2648,7 +2719,7 @@ async def sweep_flow(
     # _SWEEP_TIMEOUT_S.  Reject immediately (non-blocking check) when the org
     # has reached its concurrent-sweep limit so other requests keep getting served.
     sweep_sem = _get_sweep_sem(org_id)
-    if not sweep_sem._value:  # fast non-blocking peek (no slot available)
+    if sweep_sem.locked():  # fast non-blocking peek: True when no free slot
         raise AppError(
             "too_many_requests",
             f"Too many concurrent sweeps for this org "
@@ -2767,7 +2838,7 @@ async def backfill_flow(
     # the org has reached its concurrent-backfill limit so interactive requests
     # keep getting served and the worker pool is never fully drained.
     backfill_sem = _get_backfill_sem(org_id)
-    if not backfill_sem._value:  # fast non-blocking peek (no slot available)
+    if backfill_sem.locked():  # fast non-blocking peek: True when no free slot
         raise AppError(
             "too_many_requests",
             f"Too many concurrent backfills for this org "

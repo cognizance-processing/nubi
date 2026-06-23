@@ -558,6 +558,45 @@ class TestSecretScopeAndHardening:
         assert "SET temp_directory='/data/duckdb-tmp'" in sqls
         assert sqls[-1] == "SET lock_configuration=true"
 
+    def test_d4c_harden_default_memory_limit(self, monkeypatch):
+        """D4c: with no env set, harden_connection applies a default memory cap.
+
+        Regression: an unset NUBI_DUCKDB_MEMORY_LIMIT must NOT leave the
+        connection uncapped — every connection gets a hard ceiling.
+        """
+        from app.connectors.duckdb_conn import harden_connection
+
+        monkeypatch.delenv("NUBI_DUCKDB_MEMORY_LIMIT", raising=False)
+        conn = self._make_mock_conn()
+        harden_connection(conn)
+        sqls = self._sqls(conn)
+        assert "SET memory_limit='2GB'" in sqls
+        assert sqls[-1] == "SET lock_configuration=true"
+
+    def test_d4d_harden_env_overrides_default_memory_limit(self, monkeypatch):
+        """D4d: an explicit env value overrides the default cap."""
+        from app.connectors.duckdb_conn import harden_connection
+
+        monkeypatch.setenv("NUBI_DUCKDB_MEMORY_LIMIT", "512MB")
+        conn = self._make_mock_conn()
+        harden_connection(conn)
+        sqls = self._sqls(conn)
+        assert "SET memory_limit='512MB'" in sqls
+        assert "SET memory_limit='2GB'" not in sqls
+
+    def test_d4e_harden_memory_limit_explicit_optout(self, monkeypatch):
+        """D4e: empty/0/none/off explicitly disables the cap (test escape hatch)."""
+        from app.connectors.duckdb_conn import harden_connection
+
+        for sentinel in ("", "0", "none", "OFF"):
+            monkeypatch.setenv("NUBI_DUCKDB_MEMORY_LIMIT", sentinel)
+            conn = self._make_mock_conn()
+            harden_connection(conn)
+            sqls = self._sqls(conn)
+            assert not any("memory_limit" in s for s in sqls), (
+                f"sentinel {sentinel!r} should disable the cap, got {sqls}"
+            )
+
     def test_d4b_harden_failures_are_swallowed(self):
         """D4b: a statement that raises must not break hardening (best-effort)."""
         from app.connectors.duckdb_conn import harden_connection

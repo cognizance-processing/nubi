@@ -3083,7 +3083,7 @@ async def test_in_use_semaphore_not_evicted(monkeypatch):
 
         # Acquire a slot in org-x to mark it in-use (non-idle).
         await sem1.acquire()
-        assert sem1._value == original_max - 1, "One slot must be acquired"
+        assert not sem1.is_idle(), "One slot must be acquired (semaphore is non-idle)"
 
         # Request org-z: at cap=2, one entry must be evicted.
         # org-x is non-idle → must NOT be evicted.

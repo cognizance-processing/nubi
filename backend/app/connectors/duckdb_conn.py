@@ -67,9 +67,16 @@ def harden_connection(
         tables, read-only local DB files).  Mutually exclusive with httpfs
         reads — do not combine with ``block_local_fs``.
 
-    Resource limits are applied from the environment when set:
-    ``NUBI_DUCKDB_MEMORY_LIMIT`` (e.g. ``"2GB"``), ``NUBI_DUCKDB_THREADS``,
-    ``NUBI_DUCKDB_TEMP_DIR`` (spill directory for larger-than-memory queries).
+    Resource limits:
+    ``NUBI_DUCKDB_MEMORY_LIMIT`` DEFAULTS to a safe cap (``"2GB"``) so every
+    connection has a hard memory ceiling even when the operator sets nothing —
+    this bounds queries (e.g. metric ``__base`` materialisations that explode
+    O(dim_cardinality × time_buckets) before the outer LIMIT prunes) so they
+    spill/fail rather than OOM the host. Set the env var to override the cap;
+    set it explicitly to ``""``/``"0"``/``"none"``/``"off"`` to disable the cap
+    entirely (e.g. for tests that need unbounded memory).
+    ``NUBI_DUCKDB_THREADS`` and ``NUBI_DUCKDB_TEMP_DIR`` (spill directory for
+    larger-than-memory queries) are applied from the environment when set.
 
     Every statement is best-effort: settings differ across DuckDB versions and
     a hardening miss must never break the query path.
@@ -78,7 +85,16 @@ def harden_connection(
         "SET autoinstall_known_extensions=false",
         "SET autoload_known_extensions=false",
     ]
-    mem_limit = os.getenv("NUBI_DUCKDB_MEMORY_LIMIT", "")
+    # Default to a hard memory ceiling so an unset env can never leave a
+    # connection uncapped. Allow an explicit opt-out (empty / 0 / none / off).
+    _DEFAULT_MEMORY_LIMIT = "2GB"
+    raw_mem = os.getenv("NUBI_DUCKDB_MEMORY_LIMIT")
+    if raw_mem is None:
+        mem_limit = _DEFAULT_MEMORY_LIMIT
+    elif raw_mem.strip().lower() in ("", "0", "none", "off"):
+        mem_limit = ""  # explicit opt-out — no cap
+    else:
+        mem_limit = raw_mem.strip()
     if mem_limit:
         statements.append(f"SET memory_limit='{mem_limit}'")
     threads = os.getenv("NUBI_DUCKDB_THREADS", "")

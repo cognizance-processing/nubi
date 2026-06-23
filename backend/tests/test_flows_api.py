@@ -1068,12 +1068,14 @@ class TestBackfillConcurrencyCap:
         # Clear stale state from other tests that may have run in the same process.
         flows_mod._backfill_sems.pop(alice_org_id, None)
         sem = flows_mod._get_backfill_sem(alice_org_id)
-        assert sem._value == flows_mod._MAX_CONCURRENT_BACKFILLS_PER_ORG
+        assert sem.is_idle() and not sem.locked(), (
+            "Fresh semaphore must be idle with all slots free"
+        )
 
         # Manually acquire 2 slots to simulate 2 in-flight backfills.
         await sem.acquire()
         await sem.acquire()
-        assert sem._value == 0, "Both slots must be occupied"
+        assert sem.locked(), "Both slots must be occupied (semaphore locked)"
 
         try:
             # The 3rd request must be rejected immediately (no slot available).
@@ -1155,11 +1157,13 @@ class TestSweepConcurrencyCap:
 
         flows_mod._sweep_sems.pop(alice_org_id, None)
         sem = flows_mod._get_sweep_sem(alice_org_id)
-        assert sem._value == flows_mod._MAX_CONCURRENT_SWEEPS_PER_ORG
+        assert sem.is_idle() and not sem.locked(), (
+            "Fresh semaphore must be idle with all slots free"
+        )
 
         await sem.acquire()
         await sem.acquire()
-        assert sem._value == 0
+        assert sem.locked(), "Both slots must be occupied (semaphore locked)"
 
         try:
             resp = await client.post(

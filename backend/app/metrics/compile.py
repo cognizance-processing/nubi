@@ -1821,6 +1821,37 @@ def _govern(metric: MetricDefinition, mq: MetricQuery) -> str | None:
                 f"exceeds the maximum of {_MAX_TC_ENTRIES} "
                 f"(set NUBI_MAX_TC_ENTRIES to override).",
             )
+
+        # FIX (MED resource — unbounded __base time-bucket explosion): the
+        # layered compiler builds __base as a GROUP BY over (dims × time
+        # buckets); time_comparisons then layer window fns / correlated
+        # LATERALs over it, and the outer LIMIT only prunes AFTER that full
+        # materialisation.  At the FINEST grain ('hour') the number of time
+        # buckets is unbounded by anything but the data's time span, so a
+        # time-comparison query at hour grain WITHOUT an explicit bound on the
+        # time column can materialise O(dim_cardinality × every_hour) rows
+        # before the LIMIT lands.  Require a date-range bound on the time column
+        # so the bucket count is governed by the operator's request, not the
+        # full table.  Only the finest grain is gated — coarser grains
+        # (day/week/...) are inherently bounded enough — so this cannot reject
+        # the common day/month time-series + comparison queries.
+        if mq.time_grain == "hour" and time_col is not None:
+            # A "date-range bound" is any bounding/equality op on the time
+            # column: <, <=, >, >= (range), = (single bucket), or in (an
+            # explicit finite set of buckets).
+            _BOUND_OPS = frozenset({"<", "<=", ">", ">=", "=", "in"})
+            has_time_bound = any(
+                f.field == time_col and f.op in _BOUND_OPS for f in mq.filters
+            )
+            if not has_time_bound:
+                raise MetricError(
+                    "time_range_required",
+                    f"Time comparisons at the finest grain ('hour') on metric "
+                    f"{metric.id!r} require an explicit date-range filter on the "
+                    f"time column {time_col!r} (e.g. >=/<= bounds) to bound the "
+                    f"number of time buckets materialised in __base.",
+                )
+
         for tc in mq.time_comparisons:
             # FIX 1: validate tc.name (used as a SQL alias via out_name()) is a safe identifier.
             if tc.name is not None and not _IDENT_RE.fullmatch(tc.name):
