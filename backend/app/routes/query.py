@@ -808,11 +808,19 @@ async def _resolve_request_plan(
     )
 
     # ── Conservative rollup routing (RLS preserved through the rewrite) ──────
+    # SECURITY/TENANT-ISOLATION: resolve the caller's org and pass it into the
+    # router so ONLY this org's rollups are candidates.  Without org-scoping a
+    # rollup built for another org (or an untagged demo rollup built by a
+    # different org under org_id=None) could be reused cross-tenant.  When the
+    # caller has no org (org_id=None) the router refuses to route at all.
     try:
         from app.connectors.planner import route_to_rollup_shape as _route_rollup
         from app.connectors.preagg import get_registry as _get_rollup_registry
 
-        _route = _route_rollup(physical_plan, _get_rollup_registry())
+        _rollup_org_id, _ = await _resolve_caller_org(identity, get_repo())
+        _route = _route_rollup(
+            physical_plan, _get_rollup_registry(), org_id=_rollup_org_id
+        )
         if _route.routed:
             physical_plan = _route.plan
             if _route.rollup_id:

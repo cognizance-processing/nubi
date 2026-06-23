@@ -31,6 +31,12 @@ from app.connectors.preagg import (
 from app.connectors.query_log import QueryLog, extract_shape
 
 
+# Tenant tag used by the soundness/routing tests. The router REFUSES to route
+# for an unscoped (org_id=None) caller, so single-org tests must build AND route
+# under a concrete org tag to exercise the rewrite path.
+_TEST_ORG = "test_org"
+
+
 # ---------------------------------------------------------------------------
 # 1. Shape extraction
 # ---------------------------------------------------------------------------
@@ -247,8 +253,7 @@ class TestBuildRollup:
             rls_keys=["tenant_id"],
             source_database=source_db,
             registry=reg,
-            register_query=False,
-        )
+            register_query=False, org_id=_TEST_ORG)
 
         # RLS key preserved as a column (grouped on, not aggregated away).
         assert "tenant_id" in built.rls_keys
@@ -291,8 +296,7 @@ class TestBuildRollup:
                 rls_keys=["nonexistent_key"],
                 source_database=source_db,
                 registry=reg,
-                register_query=False,
-            )
+                register_query=False, org_id=_TEST_ORG)
         # No partial rollup leaked into the registry on a failed build.
         assert reg.all_rollups() == []
 
@@ -314,8 +318,7 @@ def _build_orders_rollup(source_db: str, reg: RollupRegistry):
         rls_keys=["tenant_id"],
         source_database=source_db,
         registry=reg,
-        register_query=False,
-    )
+        register_query=False, org_id=_TEST_ORG)
 
 
 class TestRouteSoundness:
@@ -325,7 +328,7 @@ class TestRouteSoundness:
 
         # Query groups by region (⊆ rollup dims {region}); SUM is re-aggregable.
         p = plan("SELECT region, SUM(amount) FROM orders GROUP BY region")
-        result = route_to_rollup_shape(p, reg)
+        result = route_to_rollup_shape(p, reg, org_id=_TEST_ORG)
         assert result.routed is True
         assert result.rollup_id is not None
         # Rewritten SQL reads the rollup table and re-aggregates the partial.
@@ -342,7 +345,7 @@ class TestRouteSoundness:
             "SELECT region, SUM(amount) FROM orders GROUP BY region",
             claims={"policies": {"tenant_id": "acme"}},
         )
-        result = route_to_rollup_shape(p, reg)
+        result = route_to_rollup_shape(p, reg, org_id=_TEST_ORG)
         assert result.routed is True
         # The RLS predicate column survives in the rewrite (filter on rollup col).
         assert "tenant_id" in result.plan.sql.lower()
@@ -354,7 +357,7 @@ class TestRouteSoundness:
 
         # Query groups by a column NOT in the rollup dims → not a subset → unsound.
         p = plan("SELECT product, SUM(amount) FROM orders GROUP BY product")
-        result = route_to_rollup_shape(p, reg)
+        result = route_to_rollup_shape(p, reg, org_id=_TEST_ORG)
         assert result.routed is False
         assert result.plan is p  # untouched
         assert result.plan.cache_key == p.cache_key
@@ -365,7 +368,7 @@ class TestRouteSoundness:
 
         # AVG is NOT re-aggregable from partial sums → must NOT route.
         p = plan("SELECT region, AVG(amount) FROM orders GROUP BY region")
-        result = route_to_rollup_shape(p, reg)
+        result = route_to_rollup_shape(p, reg, org_id=_TEST_ORG)
         assert result.routed is False
         assert result.plan is p
 
@@ -376,7 +379,7 @@ class TestRouteSoundness:
         # MAX(amount) is re-aggregable in principle but the rollup never computed
         # it → not derivable → must NOT route.
         p = plan("SELECT region, MAX(amount) FROM orders GROUP BY region")
-        result = route_to_rollup_shape(p, reg)
+        result = route_to_rollup_shape(p, reg, org_id=_TEST_ORG)
         assert result.routed is False
         assert result.plan is p
 
@@ -390,14 +393,14 @@ class TestRouteSoundness:
             "SELECT region, SUM(amount) FROM orders "
             "WHERE channel = 'web' GROUP BY region"
         )
-        result = route_to_rollup_shape(p, reg)
+        result = route_to_rollup_shape(p, reg, org_id=_TEST_ORG)
         assert result.routed is False
         assert result.plan is p
 
     def test_no_rollup_for_table_not_routed(self, source_db: str) -> None:
         reg = RollupRegistry()  # empty
         p = plan("SELECT region, SUM(amount) FROM orders GROUP BY region")
-        result = route_to_rollup_shape(p, reg)
+        result = route_to_rollup_shape(p, reg, org_id=_TEST_ORG)
         assert result.routed is False
         assert result.plan is p
 
@@ -426,7 +429,7 @@ class TestRouteSoundness:
 
         # Query groups by tenant_id (an rls_key, physically in rollup grain).
         p = plan("SELECT tenant_id, SUM(amount) FROM orders GROUP BY tenant_id")
-        result = route_to_rollup_shape(p, reg)
+        result = route_to_rollup_shape(p, reg, org_id=_TEST_ORG)
 
         assert result.routed is True, (
             f"Expected query grouping by rls_key 'tenant_id' to route to rollup. "
@@ -471,7 +474,7 @@ class TestRouteSoundness:
 
         # 'product' is not in the rollup grain at all.
         p = plan("SELECT tenant_id, product, SUM(amount) FROM orders GROUP BY tenant_id, product")
-        result = route_to_rollup_shape(p, reg)
+        result = route_to_rollup_shape(p, reg, org_id=_TEST_ORG)
 
         assert result.routed is False, (
             f"Expected routed=False ('product' not in rollup grain), got routed=True. "
@@ -503,12 +506,13 @@ class TestRouteSoundness:
             dimensions=["Region"],          # mixed-case dim
             measures=["sum(amount)", "count(*)"],
             rls_keys=["TenantId"],          # mixed-case rls_key
+            org_id=_TEST_ORG,
         )
         reg.add_rollup(mixed_rollup)
 
         # Query uses all-lowercase dims (as extract_shape always produces).
         p = plan("SELECT region, SUM(amount) FROM orders GROUP BY region")
-        result = route_to_rollup_shape(p, reg)
+        result = route_to_rollup_shape(p, reg, org_id=_TEST_ORG)
 
         assert result.routed is True, (
             f"Mixed-case rollup dims ('Region', 'TenantId') must route for lowercase query. "
@@ -540,7 +544,7 @@ class TestRouteSoundness:
 
         # 'product' is not in the rollup grain even after lowercasing.
         p = plan("SELECT product, SUM(amount) FROM orders GROUP BY product")
-        result = route_to_rollup_shape(p, reg)
+        result = route_to_rollup_shape(p, reg, org_id=_TEST_ORG)
 
         assert result.routed is False, (
             f"'product' is genuinely absent from the rollup grain; expected routed=False. "
@@ -572,7 +576,7 @@ class TestLayeredCTERouting:
             "FROM __base"
         )
         p = plan(layered_sql, dialect="postgres")
-        result = route_to_rollup_shape(p, reg)
+        result = route_to_rollup_shape(p, reg, org_id=_TEST_ORG)
 
         assert result.routed is True, f"Expected routed=True, got: {result.reason}"
         assert result.rollup_id is not None
@@ -596,7 +600,7 @@ class TestLayeredCTERouting:
             "SELECT product, amount FROM __base"
         )
         p = plan(layered_sql, dialect="postgres")
-        result = route_to_rollup_shape(p, reg)
+        result = route_to_rollup_shape(p, reg, org_id=_TEST_ORG)
         assert result.routed is False
         assert result.plan is p
 
@@ -616,7 +620,7 @@ class TestLayeredCTERouting:
             claims={"policies": {"tenant_id": "acme"}},
             dialect="postgres",
         )
-        result = route_to_rollup_shape(p, reg)
+        result = route_to_rollup_shape(p, reg, org_id=_TEST_ORG)
         # Even with RLS injection on the outer plan the router handles it gracefully.
         # (RLS is injected into the outer SELECT by planner; inner shape is clean.)
         assert result.plan.rls_claims == {"policies": {"tenant_id": "acme"}}
@@ -633,7 +637,7 @@ class TestLayeredCTERouting:
             "SELECT region, amount FROM my_cte"
         )
         p = plan(layered_sql, dialect="postgres")
-        result = route_to_rollup_shape(p, reg)
+        result = route_to_rollup_shape(p, reg, org_id=_TEST_ORG)
         # Router does NOT touch non-__base CTEs.
         assert result.plan is p or result.routed is False
 
@@ -673,7 +677,7 @@ class TestLayeredOuterRLSSoundness:
             "SELECT region, amount FROM __base WHERE channel = 'web'"
         )
         p = plan(layered_sql, dialect="postgres")
-        result = route_to_rollup_shape(p, reg)
+        result = route_to_rollup_shape(p, reg, org_id=_TEST_ORG)
 
         assert result.routed is False, (
             f"Outer RLS/filter column 'channel' is absent from the rollup grain; "
@@ -701,7 +705,7 @@ class TestLayeredOuterRLSSoundness:
             "SELECT region, amount FROM __base WHERE tenant_id = 'acme'"
         )
         p = plan(layered_sql, dialect="postgres")
-        result = route_to_rollup_shape(p, reg)
+        result = route_to_rollup_shape(p, reg, org_id=_TEST_ORG)
 
         assert result.routed is False, (
             f"Outer RLS column 'tenant_id' is in grain but not projected by "
@@ -731,7 +735,7 @@ class TestLayeredOuterRLSSoundness:
             "SELECT region, tenant_id, amount FROM __base WHERE tenant_id = 'acme'"
         )
         p = plan(layered_sql, dialect="postgres")
-        result = route_to_rollup_shape(p, reg)
+        result = route_to_rollup_shape(p, reg, org_id=_TEST_ORG)
 
         assert result.routed is True, (
             f"Outer RLS column 'tenant_id' is in grain AND projected by __base; "
@@ -807,11 +811,10 @@ class TestBuildRollupForMetric:
             grains=None,  # no time column (source_db has no timestamp column)
             source_database=source_db,
             registry=reg,
-            register_query=False,
-        )
+            register_query=False, org_id=_TEST_ORG)
 
         # Rollup registered.
-        rollups = reg.candidates_for_table("orders")
+        rollups = reg.candidates_for_table("orders", org_id=_TEST_ORG)
         assert len(rollups) == 1, f"Expected 1 rollup, got: {rollups}"
 
         # RLS key preserved.
@@ -850,8 +853,7 @@ class TestBuildRollupForMetric:
             grains=None,
             source_database=source_db,
             registry=reg,
-            register_query=False,
-        )
+            register_query=False, org_id=_TEST_ORG)
 
         # Only the additive SUM measure should be present (AVG skipped).
         assert any("sum" in m.lower() for m in built.measures)
@@ -894,8 +896,7 @@ class TestBuildRollupForMetric:
                 grains=None,
                 source_database=source_db,
                 registry=reg,
-                register_query=False,
-            )
+                register_query=False, org_id=_TEST_ORG)
 
         # Confirm the error is about "no additive base measures", not a SQL parse
         # error that would indicate count_distinct was passed to DuckDB.
@@ -941,8 +942,7 @@ class TestBuildRollupForMetric:
             grains=None,
             source_database=source_db,
             registry=reg,
-            register_query=False,
-        )
+            register_query=False, org_id=_TEST_ORG)
 
         # count_distinct must NOT appear in the materialised measures.
         assert not any("count_distinct" in m.lower() for m in built.measures), (
@@ -987,8 +987,7 @@ class TestBuildRollupForMetric:
         with pytest.raises((ValueError, Exception)):
             build_rollup_for_metric(
                 metric, grains=None, source_database=source_db,
-                registry=reg, register_query=False,
-            )
+                registry=reg, register_query=False, org_id=_TEST_ORG)
 
     def test_rollup_routes_layered_metric_query(self, source_db: str) -> None:
         """A rollup built from a MetricDefinition enables routing of layered queries."""
@@ -1020,8 +1019,7 @@ class TestBuildRollupForMetric:
             grains=None,
             source_database=source_db,
             registry=reg,
-            register_query=False,
-        )
+            register_query=False, org_id=_TEST_ORG)
 
         # Compile a derived metric query (produces layered SQL).
         mq = MetricQuery(metric_id="revenue", dimensions=("region",))
@@ -1034,7 +1032,7 @@ class TestBuildRollupForMetric:
 
         # Route the compiled query to the rollup.
         p = plan(sql, dialect="duckdb")
-        result = route_to_rollup_shape(p, reg)
+        result = route_to_rollup_shape(p, reg, org_id=_TEST_ORG)
 
         assert result.routed is True, (
             f"Expected layered metric query to route to rollup. Reason: {result.reason}"
@@ -1090,7 +1088,7 @@ class TestSubqueryFilterColumns:
             "GROUP BY region"
         )
         p = plan(sql, dialect="postgres")
-        result = route_to_rollup_shape(p, reg)
+        result = route_to_rollup_shape(p, reg, org_id=_TEST_ORG)
 
         # Must NOT route — 'channel' is absent from the rollup grain.
         assert result.routed is False, (
@@ -1185,7 +1183,7 @@ class TestCountDistinctRouting:
         p = plan(
             "SELECT tenant_id, COUNT(DISTINCT region) FROM orders GROUP BY tenant_id"
         )
-        result = route_to_rollup_shape(p, reg)
+        result = route_to_rollup_shape(p, reg, org_id=_TEST_ORG)
 
         # Routing MUST be refused.
         assert result.routed is False, (
@@ -1218,7 +1216,7 @@ class TestCountDistinctRouting:
 
         # Plain COUNT(*) query — IS re-aggregable from the partial count rollup.
         p = plan("SELECT region, COUNT(*) FROM orders GROUP BY region")
-        result = route_to_rollup_shape(p, reg)
+        result = route_to_rollup_shape(p, reg, org_id=_TEST_ORG)
 
         assert result.routed is True, (
             f"Expected plain COUNT(*) to route to rollup, got routed=False. "
@@ -1305,8 +1303,7 @@ class TestRollupRowCap:
                 rls_keys=["tenant_id"],
                 source_database=source_db,
                 registry=reg,
-                register_query=False,
-            )
+                register_query=False, org_id=_TEST_ORG)
 
         err = exc_info.value
         assert err.code == "rollup_too_large", f"Unexpected error code: {err.code}"
@@ -1334,8 +1331,7 @@ class TestRollupRowCap:
             rls_keys=["tenant_id"],
             source_database=source_db,
             registry=reg,
-            register_query=False,
-        )
+            register_query=False, org_id=_TEST_ORG)
         assert built is not None
         assert len(reg.all_rollups()) == 1
 
@@ -1356,8 +1352,7 @@ class TestRollupRowCap:
             rls_keys=["tenant_id"],
             source_database=source_db,
             registry=reg,
-            register_query=False,
-        )
+            register_query=False, org_id=_TEST_ORG)
         assert built is not None
 
     def test_oversized_rollup_is_bounded_not_fully_materialized(
@@ -1405,8 +1400,7 @@ class TestRollupRowCap:
                 rls_keys=["tenant_id"],
                 source_database=source_db,
                 registry=reg,
-                register_query=False,
-            )
+                register_query=False, org_id=_TEST_ORG)
 
         err = exc_info.value
         assert err.code == "rollup_too_large", f"Unexpected error code: {err.code}"
@@ -1476,8 +1470,7 @@ class TestRollupRowCap:
                     rls_keys=["tenant_id"],
                     source_database=source_db,
                     registry=reg,
-                    register_query=False,
-                )
+                    register_query=False, org_id=_TEST_ORG)
 
         err = exc_info.value
         assert err.code == "rollup_too_large", f"Unexpected error code: {err.code}"
@@ -1519,8 +1512,7 @@ class TestRollupRowCap:
             rls_keys=["tenant_id"],
             source_database=source_db,
             registry=reg,
-            register_query=False,
-        )
+            register_query=False, org_id=_TEST_ORG)
 
         assert built is not None
         assert len(reg.all_rollups()) == 1
@@ -1878,7 +1870,11 @@ class TestRoutingOrgScoping:
     - A query for org_a routes to org_a's rollup.
     - A query for org_b does NOT route to org_a's rollup even when the shape
       and base table are identical.
-    - Unscoped rollups (org_id=None) still serve unscoped queries (org_id=None).
+    - An unscoped caller (org_id=None) is NEVER served any rollup — not even an
+      unscoped (org_id=None) one. The registry is a process-wide singleton, so
+      serving a None-tagged rollup to a None caller would let two orgs that both
+      built under org_id=None reuse each other's pre-aggregates (cross-tenant
+      leak). Untagged rollups are demo-only and never routed.
     - An org-scoped query (org_id='org_a') is NOT served by an unscoped rollup.
     """
 
@@ -1942,18 +1938,28 @@ class TestRoutingOrgScoping:
         # They must have routed to DIFFERENT rollups.
         assert result_a.rollup_id != result_b.rollup_id
 
-    def test_unscoped_rollup_serves_unscoped_query(self, source_db: str) -> None:
-        """A rollup with org_id=None is served to an unscoped (org_id=None) query."""
+    def test_unscoped_caller_never_routed_even_to_unscoped_rollup(
+        self, source_db: str
+    ) -> None:
+        """An unscoped (org_id=None) caller is NEVER routed — not even to an
+        unscoped (org_id=None) rollup.
+
+        TENANT-ISOLATION: the registry is a process-wide singleton shared by all
+        orgs. If two orgs both build under org_id=None (demo / unscoped) and a
+        None caller were served a None-tagged rollup, org B could reuse org A's
+        pre-aggregate. So the router REFUSES to route for a None caller.
+        """
         reg = RollupRegistry()
         _build_org_scoped_rollup(source_db, reg, org_id=None)
 
         p = plan("SELECT region, SUM(amount) FROM orders GROUP BY region")
         result = route_to_rollup_shape(p, reg, org_id=None)
 
-        assert result.routed is True, (
-            f"Unscoped rollup should serve unscoped query, got routed=False. "
-            f"Reason: {result.reason}"
+        assert result.routed is False, (
+            f"Unscoped caller must NOT be routed to any rollup, got routed=True. "
+            f"Rewritten SQL: {result.plan.sql}"
         )
+        assert result.plan is p
 
     def test_org_scoped_query_not_served_by_unscoped_rollup(
         self, source_db: str
@@ -2017,6 +2023,62 @@ class TestRoutingOrgScoping:
         assert result.routed is False, (
             f"Layered path: org_b must NOT route to org_a's rollup, "
             f"but got routed=True. Rewritten SQL: {result.plan.sql}"
+        )
+        assert result.plan is p
+
+    def test_org_a_rollup_not_routed_for_b_or_none_but_routes_for_a(
+        self, source_db: str
+    ) -> None:
+        """[MED tenant-isolation] Single guard test for the cross-org fix.
+
+        org A builds a rollup. The SAME shape query:
+        - routes for org A (correctly-tagged same-org query DOES route),
+        - does NOT route for org B (cross-org reuse forbidden),
+        - does NOT route for an unscoped (org_id=None) caller (the None bucket
+          must never serve a real org's rollup).
+        """
+        reg = RollupRegistry()
+        built_a = _build_org_scoped_rollup(source_db, reg, org_id="org_a")
+
+        p = plan("SELECT region, SUM(amount) FROM orders GROUP BY region")
+
+        # Same-org → routes.
+        res_a = route_to_rollup_shape(p, reg, org_id="org_a")
+        assert res_a.routed is True
+        assert res_a.rollup_id == built_a.rollup_id
+
+        # Cross-org → refused.
+        res_b = route_to_rollup_shape(p, reg, org_id="org_b")
+        assert res_b.routed is False
+        assert res_b.plan is p
+
+        # Unscoped caller → refused (no leak through the None bucket).
+        res_none = route_to_rollup_shape(p, reg, org_id=None)
+        assert res_none.routed is False
+        assert res_none.plan is p
+
+    def test_two_orgs_building_under_none_do_not_share(
+        self, source_db: str
+    ) -> None:
+        """[MED tenant-isolation] The actual reported bug.
+
+        Two orgs both build rollups with org_id=None (demo / unscoped). Before
+        the fix, a None caller's query would reuse whichever None-tagged rollup
+        happened to be in the shared singleton registry — leaking org A's
+        pre-aggregate to org B. After the fix, a None caller is never routed at
+        all, so neither org's rollup can be reused cross-tenant via the None
+        bucket.
+        """
+        reg = RollupRegistry()
+        _build_org_scoped_rollup(source_db, reg, org_id=None)  # "org A" demo build
+
+        p = plan("SELECT region, SUM(amount) FROM orders GROUP BY region")
+        # "org B" (also unscoped) issues the same query.
+        result = route_to_rollup_shape(p, reg, org_id=None)
+
+        assert result.routed is False, (
+            "Two orgs building under org_id=None must NOT share a rollup via the "
+            f"None bucket, but routing succeeded. Rewritten SQL: {result.plan.sql}"
         )
         assert result.plan is p
 
@@ -2122,8 +2184,7 @@ class TestTimeGrainedRouting:
             grains=["month"],  # include the raw time column as a dimension
             source_database=source_db_ts,
             registry=reg,
-            register_query=False,
-        )
+            register_query=False, org_id=_TEST_ORG)
 
     def test_time_grained_flat_query_routes_to_grain_rollup(
         self, source_db_ts: str
@@ -2144,7 +2205,7 @@ class TestTimeGrainedRouting:
             "FROM events GROUP BY region, DATE_TRUNC('month', created_at)",
             dialect="duckdb",
         )
-        result = route_to_rollup_shape(p, reg)
+        result = route_to_rollup_shape(p, reg, org_id=_TEST_ORG)
 
         assert result.routed is True, (
             f"time-grained query must route to grain rollup. Reason: {result.reason}"
@@ -2197,7 +2258,7 @@ class TestTimeGrainedRouting:
             "FROM __base"
         )
         p = plan(layered_sql, dialect="duckdb")
-        result = route_to_rollup_shape(p, reg)
+        result = route_to_rollup_shape(p, reg, org_id=_TEST_ORG)
 
         assert result.routed is True, (
             f"layered time-grained query must route. Reason: {result.reason}"
@@ -2217,7 +2278,7 @@ class TestTimeGrainedRouting:
             "FROM events GROUP BY DATE_TRUNC('month', created_at)",
             dialect="duckdb",
         )
-        result = route_to_rollup_shape(p, reg)
+        result = route_to_rollup_shape(p, reg, org_id=_TEST_ORG)
         assert result.routed is False
         assert result.plan is p
 
@@ -2261,7 +2322,7 @@ class TestRollupRewriteNoOverwalk:
             "GROUP BY region"
         )
         p = plan(sql, dialect="postgres")
-        result = route_to_rollup_shape(p, reg)
+        result = route_to_rollup_shape(p, reg, org_id=_TEST_ORG)
 
         # Must NOT route — the WHERE subquery aggregate is not safely rewritable.
         assert result.routed is False, (
@@ -2286,7 +2347,7 @@ class TestRollupRewriteNoOverwalk:
             "GROUP BY region"
         )
         p = plan(sql, claims={"policies": {"tenant_id": "acme"}}, dialect="postgres")
-        result = route_to_rollup_shape(p, reg)
+        result = route_to_rollup_shape(p, reg, org_id=_TEST_ORG)
 
         # This is a sound rewrite (plain WHERE equality, no subquery aggregates).
         assert result.routed is True, (
@@ -2315,7 +2376,7 @@ class TestRollupRewriteNoOverwalk:
             "GROUP BY region"
         )
         p = plan(sql, dialect="postgres")
-        result = route_to_rollup_shape(p, reg)
+        result = route_to_rollup_shape(p, reg, org_id=_TEST_ORG)
 
         # The plan must be refused (not routed).
         assert result.routed is False
@@ -2366,8 +2427,7 @@ class TestLayeredRLSHoistedDimSoundness:
             rls_keys=[],  # tenant_id deliberately absent from the grain
             source_database=source_db,
             registry=reg,
-            register_query=False,
-        )
+            register_query=False, org_id=_TEST_ORG)
 
     def _build_tenant_region_rollup(self, source_db: str, reg: RollupRegistry):
         """A rollup whose FULL grain carries tenant_id (as an rls_key) + region —
@@ -2383,8 +2443,7 @@ class TestLayeredRLSHoistedDimSoundness:
             rls_keys=["tenant_id"],  # tenant_id physically present in the grain
             source_database=source_db,
             registry=reg,
-            register_query=False,
-        )
+            register_query=False, org_id=_TEST_ORG)
 
     # The layered query AS fix-21 would emit it: __base GROUPs BY the hoisted
     # policy column (tenant_id) + region; the outer adds a window fn.
@@ -2412,7 +2471,7 @@ class TestLayeredRLSHoistedDimSoundness:
             claims={"policies": {"tenant_id": "acme"}},
             dialect="postgres",
         )
-        result = route_to_rollup_shape(p, reg)
+        result = route_to_rollup_shape(p, reg, org_id=_TEST_ORG)
 
         assert result.routed is False, (
             f"RLS-unsound route accepted: a rollup lacking the policy-hoisted "
@@ -2438,7 +2497,7 @@ class TestLayeredRLSHoistedDimSoundness:
             claims={"policies": {"tenant_id": "acme"}},
             dialect="postgres",
         )
-        result = route_to_rollup_shape(p, reg)
+        result = route_to_rollup_shape(p, reg, org_id=_TEST_ORG)
 
         assert result.routed is True, (
             f"RLS-sound route refused: a rollup whose grain includes the "
@@ -2488,8 +2547,7 @@ class TestRollupFileLifecycle:
             source_database=source_db,
             registry=reg,
             register_query=False,
-            rollup_id="lifecycle_a",
-        )
+            rollup_id="lifecycle_a", org_id=_TEST_ORG)
         assert os.path.isfile(built_a.database)
 
         # Adding a second rollup (cap=1) evicts built_a → its file must be gone.
@@ -2499,8 +2557,7 @@ class TestRollupFileLifecycle:
             source_database=source_db,
             registry=reg,
             register_query=False,
-            rollup_id="lifecycle_b",
-        )
+            rollup_id="lifecycle_b", org_id=_TEST_ORG)
         assert built_b.database != built_a.database
         assert not os.path.exists(built_a.database), (
             "evicted rollup's on-disk DuckDB file must be deleted"
@@ -2524,8 +2581,7 @@ class TestRollupFileLifecycle:
             rls_keys=["tenant_id"],
             source_database=source_db,
             registry=reg,
-            register_query=False,
-        )
+            register_query=False, org_id=_TEST_ORG)
         try:
             files_after_1 = {
                 os.path.abspath(p)
@@ -2539,8 +2595,7 @@ class TestRollupFileLifecycle:
                 rls_keys=["tenant_id"],
                 source_database=source_db,
                 registry=reg,
-                register_query=False,
-            )
+                register_query=False, org_id=_TEST_ORG)
             assert built_2.rollup_id == built_1.rollup_id, "same shape must reuse id"
             assert built_2.database == built_1.database, "same shape must reuse path"
             assert len(reg.all_rollups()) == 1, "no duplicate registry entry"
@@ -2571,8 +2626,7 @@ class TestRollupFileLifecycle:
             rls_keys=["tenant_id"],
             source_database=source_db,
             registry=reg,
-            register_query=False,
-        )
+            register_query=False, org_id=_TEST_ORG)
         orphan_path = _rollup_database_path("orphan_test_xyz")
         try:
             assert os.path.isfile(live.database)
@@ -2638,8 +2692,7 @@ class TestBuildRollupSourceReadOnly:
             rls_keys=["tenant_id"],
             source_database=source_db,
             registry=reg,
-            register_query=False,
-        )
+            register_query=False, org_id=_TEST_ORG)
         assert built is not None
 
         # Immediately after build_rollup closes its source connection open ANOTHER
@@ -2684,8 +2737,7 @@ class TestBuildRollupSourceReadOnly:
                 rls_keys=["tenant_id"],
                 source_database=source_db,
                 registry=reg,
-                register_query=False,
-            )
+                register_query=False, org_id=_TEST_ORG)
             assert built is not None
 
             # Post-build read on the same connection — must still work.
@@ -2771,7 +2823,7 @@ class TestOuterFilterColumnsOrderBy:
             "SELECT region, amount FROM __base ORDER BY amount DESC"
         )
         p = plan(layered_sql, dialect="postgres")
-        result = route_to_rollup_shape(p, reg)
+        result = route_to_rollup_shape(p, reg, org_id=_TEST_ORG)
 
         assert result.routed is True, (
             f"ORDER BY on a non-filter column must not block routing. "
@@ -2808,7 +2860,7 @@ class TestOuterFilterColumnsOrderBy:
             "SELECT region, amount FROM __base WHERE channel = 'web'"
         )
         p = plan(layered_sql, dialect="postgres")
-        result = route_to_rollup_shape(p, reg)
+        result = route_to_rollup_shape(p, reg, org_id=_TEST_ORG)
 
         assert result.routed is False, (
             f"WHERE on absent col 'channel' must refuse routing (not in rollup grain). "

@@ -443,22 +443,38 @@ class RollupRegistry:
             self.register(rollup.rewrite_sig, rollup.table)
 
     def candidates_for_table(
-        self, table: str, *, org_id: str | None = None
+        self, table: str, *, org_id: str | None = None, for_routing: bool = False
     ) -> list[BuiltRollup]:
-        """Return built rollups whose source table matches *table*.
+        """Return built rollups whose source table matches *table* AND org.
 
         Parameters
         ----------
         table:
             Base fact table name (case-insensitive match).
         org_id:
-            When provided, only rollups built for this org are returned.
-            This is the primary tenant-isolation guard for routing: a rollup
-            built for org A must never be considered when routing org B's query.
-            When ``None`` only rollups that have no org tag are returned (i.e.
-            unscoped / legacy rollups without an org_id), to avoid accidentally
-            mixing tagged and untagged results.
+            The caller's resolved org.  ONLY rollups built for this exact org
+            are returned.  This is the primary tenant-isolation guard: a rollup
+            built for org A must never be considered when serving org B.
+        for_routing:
+            When ``True`` this lookup feeds the read-time router, so the
+            TENANT-ISOLATION INVARIANT applies: an unscoped caller
+            (``org_id=None``) is REFUSED outright — an empty list is returned.
+            Untagged (``org_id=None``) rollups are demo-only and are NEVER
+            routed for any caller; serving a ``None``-tagged rollup to a
+            ``None`` caller would let multiple orgs that built under
+            ``org_id=None`` (demo / unscoped) reuse each other's rollups, a
+            cross-tenant leak.  So for routing, ``None`` means "no rollup
+            routing", full stop.
+
+            When ``False`` (default — listing / scheduler dedup) strict
+            equality is used so ``None``-tagged demo rollups are still visible
+            to non-routing callers (idempotent rebuild dedup, admin listing).
         """
+        if for_routing and org_id is None:
+            # Unscoped caller on the ROUTING path — refuse to serve ANY rollup
+            # (including untagged ones) to guarantee no cross-org reuse via the
+            # shared None bucket of the process-wide registry singleton.
+            return []
         t = table.lower()
         return [
             r for r in self._rollups.values()

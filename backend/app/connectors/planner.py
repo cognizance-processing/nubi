@@ -676,9 +676,13 @@ def route_to_rollup_shape(
     query shape.  RLS predicates in the plan act as defence-in-depth, but the
     org-scoped registry lookup is the primary isolation guard.
 
-    When *org_id* is ``None`` (unscoped / legacy path) only rollups that are
-    themselves unscoped (``org_id=None``) are returned — a scoped rollup is
-    never served to an unscoped caller.
+    When *org_id* is ``None`` (unscoped / demo / legacy caller) routing is
+    REFUSED entirely — NO rollup is served, not even an unscoped
+    (``org_id=None``) one.  The rollup registry is a process-wide singleton
+    shared by every org, so matching ``None``-tagged rollups for a ``None``
+    caller would let two orgs that both built under ``org_id=None`` reuse each
+    other's pre-aggregates (a cross-tenant leak).  Untagged rollups are
+    therefore demo-only and never routed; a real caller must pass its org.
 
     Layered (windowed / derived) metric queries
     --------------------------------------------
@@ -735,7 +739,11 @@ def route_to_rollup_shape(
             return RollupRouteResult(plan, False, reason="layered: inner not routable")
 
         # Pass org_id so only this org's rollups are considered (tenant isolation).
-        rollups = registry.candidates_for_table(inner_shape.base_table, org_id=org_id)
+        # for_routing=True: an unscoped caller (org_id=None) is refused outright
+        # so no rollup is ever served across orgs via the shared None bucket.
+        rollups = registry.candidates_for_table(
+            inner_shape.base_table, org_id=org_id, for_routing=True
+        )
         if not rollups:
             return RollupRouteResult(plan, False, reason="layered: no rollup for base table")
 
@@ -881,7 +889,11 @@ def route_to_rollup_shape(
         return RollupRouteResult(plan, False, reason="not a routable aggregation")
 
     # Pass org_id so only this org's rollups are considered (tenant isolation).
-    rollups = registry.candidates_for_table(shape.base_table, org_id=org_id)
+    # for_routing=True: an unscoped caller (org_id=None) is refused outright so
+    # no rollup is ever served across orgs via the shared None bucket.
+    rollups = registry.candidates_for_table(
+        shape.base_table, org_id=org_id, for_routing=True
+    )
     if not rollups:
         return RollupRouteResult(plan, False, reason="no rollup for base table")
 

@@ -85,6 +85,11 @@ _ARTIFACT_MAX_PER_RUN: int = int(os.environ.get("NUBI_MAX_ARTIFACTS_PER_RUN", 20
 _run_artifact_counts: dict[str, int] = {}
 _run_artifact_counts_lock = threading.Lock()
 
+# Thread-safe handle registry: run_id -> list[(artifact_id, org_id)]
+# Populated by put_artifact so evict_run_artifacts can delete each blob.
+_run_artifact_handles: dict[str, list[tuple[str, str]]] = {}
+_run_artifact_handles_lock = threading.Lock()
+
 
 # ---------------------------------------------------------------------------
 # HMAC integrity protection for stored artifact blobs
@@ -681,7 +686,14 @@ class ObjectStoreArtifactStore:
 
     @staticmethod
     def _default_uri() -> str:
-        """Resolve base URI from settings; fall back to a temp directory."""
+        """Resolve base URI from settings; fall back to a temp directory.
+
+        In production (ENV not in dev/development/ci/test/testing) raises
+        ``RuntimeError`` instead of silently using /tmp — mirroring the
+        HMAC-key production guard so misconfigured deployments fail closed
+        rather than quietly accumulating unbounded blobs in a tmp dir with
+        NO TTL, eviction, or quota guard.
+        """
         try:
             from app.config import get_settings  # noqa: PLC0415
 
@@ -690,6 +702,38 @@ class ObjectStoreArtifactStore:
                 return str(uri).strip().rstrip("/")
         except Exception:  # noqa: BLE001
             pass
+
+        # No URI configured.  Mirror the HMAC-key guard: fail-closed in
+        # production; allow the tmpdir fallback only in dev/test/ci.
+        _UNCONDITIONAL_DEV_ALLOWLIST = {"dev", "development", "ci"}
+        _PYTEST_GATED_ALLOWLIST = {"test", "testing"}
+        env = os.environ.get("ENV", "").strip().lower()
+
+        if env not in _UNCONDITIONAL_DEV_ALLOWLIST and env not in _PYTEST_GATED_ALLOWLIST:
+            raise RuntimeError(
+                "ARTIFACTS_BASE_URI is not configured and the environment "
+                f"(ENV={os.environ.get('ENV', '')!r}) is not a recognised dev/test "
+                "environment. Set ARTIFACTS_BASE_URI (e.g. s3://bucket/nubi-artifacts) "
+                "before starting the server. Refusing to silently accumulate artifact "
+                "blobs in /tmp with no TTL, eviction, or quota guard. "
+                "For local development set ENV=dev (or test/ci) in your environment."
+            )
+
+        # In pytest-gated environments (test/testing) require actual pytest signals,
+        # matching the HMAC-key guard behaviour.
+        if env in _PYTEST_GATED_ALLOWLIST:
+            import sys  # noqa: PLC0415
+            _under_pytest = (
+                "PYTEST_CURRENT_TEST" in os.environ
+                or "pytest" in sys.modules
+            )
+            if not _under_pytest:
+                raise RuntimeError(
+                    f"ARTIFACTS_BASE_URI is not configured (ENV={env!r}) and the "
+                    "process does not appear to be running under pytest. "
+                    "Set ARTIFACTS_BASE_URI before starting the server."
+                )
+
         # Fallback: use a well-known temp dir (same across the process lifetime).
         # Warn operators so they notice this in logs — artifacts written here have
         # NO TTL, eviction, or quota guard and will grow unboundedly in production.
@@ -804,6 +848,46 @@ def evict_run_artifact_count(run_id: str) -> None:
         _run_artifact_counts.pop(run_id, None)
 
 
+def evict_run_artifacts(
+    run_id: str,
+    store: "InMemoryArtifactStore | ObjectStoreArtifactStore",
+) -> None:
+    """Delete every blob uploaded during *run_id* from *store*, then evict the counter.
+
+    This is the companion cleanup to ``evict_run_artifact_count``: in addition
+    to removing the count entry it physically deletes each artifact blob from
+    the object store (or in-memory dict) so tmp-dir / object-store blobs do not
+    accumulate forever after a run completes.
+
+    Deletion is best-effort per handle: a failure to delete one blob is logged
+    but does NOT prevent the remaining blobs from being deleted.  The counter
+    entry is always popped regardless of deletion outcomes.
+
+    Thread-safe (acquires ``_run_artifact_handles_lock`` to pop the list, then
+    acquires ``_run_artifact_counts_lock`` to pop the counter).
+
+    Parameters
+    ----------
+    run_id:
+        The flow_run_id whose artifacts should be deleted.
+    store:
+        The artifact store instance that holds the blobs.
+    """
+    with _run_artifact_handles_lock:
+        handles = _run_artifact_handles.pop(run_id, [])
+
+    for artifact_id, org_id in handles:
+        try:
+            store.delete(artifact_id, org_id)
+        except Exception:  # noqa: BLE001 — best-effort per handle
+            logger.debug(
+                "evict_run_artifacts: failed to delete artifact %s for org %s run %s",
+                artifact_id, org_id, run_id, exc_info=True,
+            )
+
+    evict_run_artifact_count(run_id)
+
+
 # ---------------------------------------------------------------------------
 # High-level helpers used by TaskContext
 # ---------------------------------------------------------------------------
@@ -901,6 +985,14 @@ def put_artifact(
 
     _store = store or get_artifact_store()
     uri = _store.upload(artifact_id, org_id, signed_data)
+
+    # Register the (artifact_id, org_id) pair under this run so
+    # evict_run_artifacts can delete the blob when the run finalises.
+    if flow_run_id:
+        with _run_artifact_handles_lock:
+            _run_artifact_handles.setdefault(flow_run_id, []).append(
+                (artifact_id, str(org_id))
+            )
 
     return make_handle(
         artifact_id=artifact_id,

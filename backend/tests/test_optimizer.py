@@ -28,6 +28,11 @@ from app.connectors.planner import plan, route_to_rollup_shape
 from app.connectors.query_log import QueryLog
 from app.lakehouse.optimizer import DEFAULT_BUILD_THRESHOLD, Optimizer, OptimizerPlan, PlannedRollup, LayoutHint
 
+# Tenant tag for build+route tests. The router REFUSES to route for an unscoped
+# (org_id=None) caller, so a single-org test must build AND route under a
+# concrete org tag to exercise the rollup rewrite path.
+_TEST_ORG = "test_org"
+
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -143,11 +148,11 @@ class TestOptimizerBuild:
         candidate = _make_candidate()
         plan_obj = _make_plan_with_candidate(candidate, auto_build=True)
 
-        opt.build(plan_obj, source_database=source_db)
+        opt.build(plan_obj, source_database=source_db, org_id=_TEST_ORG)
 
         # The same query pattern that was materialized should now route.
         p = plan("SELECT region, SUM(amount) FROM orders GROUP BY region")
-        result = route_to_rollup_shape(p, reg)
+        result = route_to_rollup_shape(p, reg, org_id=_TEST_ORG)
 
         assert result.routed is True, f"Expected routed=True, got: {result.reason}"
         assert "rollup_orders" in result.plan.sql.lower()
@@ -332,11 +337,11 @@ class TestOptimizerMaintain:
         candidate = _make_candidate()
         plan_obj = _make_plan_with_candidate(candidate, auto_build=True)
 
-        opt.build(plan_obj, source_database=source_db)
+        opt.build(plan_obj, source_database=source_db, org_id=_TEST_ORG)
         opt.maintain(source_database=source_db)
 
         p = plan("SELECT region, SUM(amount) FROM orders GROUP BY region")
-        result = route_to_rollup_shape(p, reg)
+        result = route_to_rollup_shape(p, reg, org_id=_TEST_ORG)
         assert result.routed is True, f"Expected routed=True after maintain, got: {result.reason}"
         assert "rollup_orders" in result.plan.sql.lower()
 
@@ -459,12 +464,12 @@ class TestOptimizerPipeline:
         assert len(plan_obj.to_build) == 1
 
         # Build → materialize.
-        built_list = opt.build(plan_obj, source_database=source_db)
+        built_list = opt.build(plan_obj, source_database=source_db, org_id=_TEST_ORG)
         assert len(built_list) == 1
 
         # Routing: query matches the built rollup.
         p = plan(sql)
-        result = route_to_rollup_shape(p, reg)
+        result = route_to_rollup_shape(p, reg, org_id=_TEST_ORG)
         assert result.routed is True, f"Pipeline: expected routed=True, got: {result.reason}"
         assert "rollup_orders" in result.plan.sql.lower()
 
@@ -480,7 +485,7 @@ class TestOptimizerPipeline:
 
         candidates = opt.observe(log, min_hits=3)
         plan_obj = opt.decide(candidates)
-        built_list = opt.build(plan_obj, source_database=source_db)
+        built_list = opt.build(plan_obj, source_database=source_db, org_id=_TEST_ORG)
         assert len(built_list) == 1
 
         # Maintain: full rebuild.
@@ -490,5 +495,5 @@ class TestOptimizerPipeline:
 
         # Query still routes.
         p = plan(sql)
-        result = route_to_rollup_shape(p, reg)
+        result = route_to_rollup_shape(p, reg, org_id=_TEST_ORG)
         assert result.routed is True, f"After maintain: expected routed=True, got: {result.reason}"

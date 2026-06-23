@@ -1138,6 +1138,8 @@ def _promote_python_artifacts(
             get_artifact_store,
             is_valid_artifact_id,
             _hmac_sign,
+            _run_artifact_handles,
+            _run_artifact_handles_lock,
         )
     except Exception:
         return
@@ -1146,6 +1148,8 @@ def _promote_python_artifacts(
     org_id: str = str(getattr(ctx, "org_id", "") or "")
     if not org_id:
         return
+
+    run_id: str = str(getattr(ctx, "run_id", "") or "")
 
     for handle in handles_raw:
         artifact_id = handle.get("artifact_id", "")
@@ -1182,6 +1186,19 @@ def _promote_python_artifacts(
         except Exception as exc:  # noqa: BLE001
             _log.debug("Failed to upload artifact %s: %s", artifact_id, exc)
             continue
+
+        # Register the (artifact_id, org_id) pair under this run so
+        # evict_run_artifacts can delete the blob when the run finalises.
+        # (put_artifact is NOT called here — the upload is done directly from
+        # the spool — so we register manually, mirroring what put_artifact does.)
+        if run_id:
+            try:
+                with _run_artifact_handles_lock:
+                    _run_artifact_handles.setdefault(run_id, []).append(
+                        (artifact_id, org_id)
+                    )
+            except Exception:  # noqa: BLE001
+                pass
 
         # Build the final (public) handle — no __spool__ field.
         final_handle: dict[str, Any] = {

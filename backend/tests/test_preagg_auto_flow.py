@@ -137,8 +137,8 @@ class TestRunPreaggRefresh:
         assert len(result["rollup_ids"]) == 1
         assert result["errors"] == []
 
-        # Rollup is registered and discoverable.
-        rollups = registry.candidates_for_table("orders")
+        # Rollup is registered and discoverable (scoped to the org it was built for).
+        rollups = registry.candidates_for_table("orders", org_id="org-001")
         assert len(rollups) == 1
         rollup = rollups[0]
         assert "region" in rollup.dimensions
@@ -289,7 +289,9 @@ class TestQueryRoutingAfterRefresh:
         )
 
         # Route: the planner should transparently rewrite to the rollup.
-        route_result = route_to_rollup_shape(original_plan, registry)
+        # Pass the org the rollup was built for (org-001) — the router refuses to
+        # route for an unscoped/None caller.
+        route_result = route_to_rollup_shape(original_plan, registry, org_id="org-001")
 
         assert route_result.routed is True, f"Not routed: {route_result.reason}"
         assert route_result.rollup_id is not None
@@ -356,13 +358,14 @@ class TestQueryRoutingAfterRefresh:
             source_database=source_db,
             registry=registry,
             register_query=False,
+            org_id="org-001",
         )
 
         p = plan(
             "SELECT region, SUM(amount) FROM orders GROUP BY region",
             claims={"policies": {"tenant_id": "acme"}},
         )
-        result = route_to_rollup_shape(p, registry)
+        result = route_to_rollup_shape(p, registry, org_id="org-001")
         assert result.routed is True, f"Not routed: {result.reason}"
         # RLS claim survives the rewrite.
         assert result.plan.rls_claims == {"policies": {"tenant_id": "acme"}}

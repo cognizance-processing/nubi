@@ -721,7 +721,9 @@ class Optimizer:
 
     # ── REWRITE (read-time hook into route_to_rollup_shape) ─────────────────
 
-    def rewrite(self, plan: "PhysicalPlan") -> "RollupRouteResultLike":
+    def rewrite(
+        self, plan: "PhysicalPlan", *, org_id: str | None = None
+    ) -> "RollupRouteResultLike":
         """Route *plan* to a built rollup when SOUND (§1.1 hook).
 
         Thin pass-through to the existing, connector-agnostic
@@ -735,6 +737,16 @@ class Optimizer:
         extension (§4 "extend route_to_rollup_shape to prune partitions") has an
         obvious home.
 
+        Parameters
+        ----------
+        plan:
+            The ``PhysicalPlan`` to (conditionally) rewrite.
+        org_id:
+            The caller's resolved org.  TENANT-ISOLATION: forwarded to
+            ``route_to_rollup_shape`` so only rollups built for this org are
+            candidates.  When ``None`` the router refuses to route (no rollup
+            is ever served to an unscoped caller).
+
         TODO (deeper): after routing, prune partitions using the
         :class:`LayoutHint` partition key so a filtered query reads only the
         relevant day/month files.
@@ -745,7 +757,7 @@ class Optimizer:
             route_to_rollup_shape,
         )
 
-        result = route_to_rollup_shape(plan, self.registry)
+        result = route_to_rollup_shape(plan, self.registry, org_id=org_id)
         if result.routed and result.rollup_id:
             # Mirror the live router's HIT accounting so optimizer-driven reads
             # show up in rollup usage stats.

@@ -31,6 +31,7 @@ from app.flows.artifacts import (
     InMemoryArtifactStore,
     ObjectStoreArtifactStore,
     evict_run_artifact_count,
+    evict_run_artifacts,
     get_artifact,
     get_artifact_store,
     is_handle,
@@ -2119,3 +2120,158 @@ async def test_drain_aborted_evicts_run_artifact_count():
 
     set_artifact_store(None)
     set_flow_store(None)
+
+
+# ---------------------------------------------------------------------------
+# 35. MED disk: blobs for a run are deleted from the store on finalize
+# ---------------------------------------------------------------------------
+
+
+async def test_blobs_deleted_on_run_finalize():
+    """After drain_flow_run completes, all artifact blobs for the run must be deleted.
+
+    MED disk fix: before this fix ObjectStoreArtifactStore.delete() existed but
+    was never called on run completion — tmp-dir blobs accumulated forever.
+    evict_run_artifacts(run_id, store) is now called from advance_readiness
+    (terminal block) and drain_flow_run (finally), which must delete every blob
+    written during that run.
+
+    Verify:
+    1. put_artifact during the run uploads a blob (store.exists returns True).
+    2. After drain_flow_run completes, store.get for those artifact IDs raises
+       FileNotFoundError (blobs were deleted).
+    """
+    import unittest.mock  # noqa: PLC0415
+    from app.flows import artifacts as _art_mod  # noqa: PLC0415
+
+    reset_for_tests()
+    art_store = _mem_store()
+    set_artifact_store(art_store)
+
+    flow_store = InMemoryFlowStore()
+    set_flow_store(flow_store)
+
+    spec = {
+        "version": 1,
+        "name": "blob_delete_test",
+        "tasks": [
+            {
+                "key": "producer",
+                "kind": "python",
+                "needs": [],
+                "config": {
+                    "code": (
+                        "h1 = ctx.put_artifact({'v': 1}, kind='json', name='a1')\n"
+                        "h2 = ctx.put_artifact({'v': 2}, kind='json', name='a2')\n"
+                        "result = {'h1': h1, 'h2': h2}\n"
+                    )
+                },
+                "timeout_s": 30,
+            }
+        ],
+    }
+
+    flow = await _make_flow(flow_store, spec, org_id="org-test")
+    run = await materialize_flow_run(flow_store, flow, {}, "manual", NOW)
+    run_id = run["id"]
+
+    with unittest.mock.patch.object(_art_mod, "_ARTIFACT_MAX_PER_RUN", 100):
+        final = await drain_flow_run(
+            flow_store, run_id, NOW, {"org_id": "org-test", "sub": "u1"}
+        )
+
+    assert final["state"] == "success", f"Flow failed: {final}"
+
+    # Retrieve the handles from the task_run result so we know the artifact_ids.
+    trs = await flow_store.list_task_runs(run_id)
+    producer_tr = next((t for t in trs if t["task_key"] == "producer"), None)
+    assert producer_tr is not None
+    result = producer_tr.get("result") or {}
+    h1 = result.get("h1")
+    h2 = result.get("h2")
+    assert is_handle(h1), f"h1 is not a handle: {h1}"
+    assert is_handle(h2), f"h2 is not a handle: {h2}"
+
+    # Both blobs must have been deleted — get_artifact raises FileNotFoundError.
+    with pytest.raises(FileNotFoundError):
+        get_artifact(h1, org_id="org-test", store=art_store)
+    with pytest.raises(FileNotFoundError):
+        get_artifact(h2, org_id="org-test", store=art_store)
+
+    # The in-memory store should have no bytes remaining for this run.
+    assert art_store._total_bytes == 0, (
+        f"Expected 0 bytes in store after eviction; got {art_store._total_bytes}"
+    )
+
+    set_artifact_store(None)
+    set_flow_store(None)
+
+
+# ---------------------------------------------------------------------------
+# 36. MED disk: production ENV without ARTIFACTS_BASE_URI raises at construction
+# ---------------------------------------------------------------------------
+
+
+def test_production_env_without_artifacts_uri_raises():
+    """ObjectStoreArtifactStore() in production without ARTIFACTS_BASE_URI raises RuntimeError.
+
+    MED disk fix: before this fix the store silently fell back to /tmp in all
+    environments, accumulating unbounded blobs.  Now in any non-dev/test/ci
+    environment _default_uri() raises RuntimeError (fail-closed), mirroring the
+    HMAC-key prod guard.
+    """
+    import os  # noqa: PLC0415
+    import unittest.mock  # noqa: PLC0415
+
+    for prod_env in ("production", "staging", "qa", "preview"):
+        env_patch = {k: v for k, v in os.environ.items()
+                     if k not in ("ARTIFACTS_BASE_URI",)}
+        env_patch["ENV"] = prod_env
+        with unittest.mock.patch.dict("os.environ", env_patch, clear=True):
+            # Also patch get_settings to raise so the URI lookup falls through.
+            with unittest.mock.patch(
+                "app.config.get_settings",
+                side_effect=RuntimeError("no settings"),
+            ):
+                with pytest.raises(RuntimeError, match="ARTIFACTS_BASE_URI is not configured"):
+                    ObjectStoreArtifactStore()
+
+
+# ---------------------------------------------------------------------------
+# 37. MED disk: dev / test ENV without ARTIFACTS_BASE_URI still uses tmp
+# ---------------------------------------------------------------------------
+
+
+def test_dev_test_env_without_artifacts_uri_uses_tmp():
+    """ObjectStoreArtifactStore() in dev/test/ci without ARTIFACTS_BASE_URI falls back to tmp.
+
+    The production guard must NOT fire for explicitly-named dev environments so
+    local developer and CI workflows are not broken.
+    """
+    import os  # noqa: PLC0415
+    import unittest.mock  # noqa: PLC0415
+    import warnings  # noqa: PLC0415
+
+    for dev_env in ("dev", "development", "ci"):
+        env_patch = {k: v for k, v in os.environ.items()
+                     if k not in ("ARTIFACTS_BASE_URI",)}
+        env_patch["ENV"] = dev_env
+        with unittest.mock.patch.dict("os.environ", env_patch, clear=True):
+            with unittest.mock.patch(
+                "app.config.get_settings",
+                side_effect=RuntimeError("no settings"),
+            ):
+                with warnings.catch_warnings(record=True) as caught:
+                    warnings.simplefilter("always")
+                    store = ObjectStoreArtifactStore()
+        assert store._base_uri.startswith("file://"), (
+            f"Expected file:// URI for ENV={dev_env!r}; got {store._base_uri!r}"
+        )
+        tmpdir_warnings = [
+            w for w in caught
+            if "ARTIFACTS_BASE_URI" in str(w.message)
+            or "temp" in str(w.message).lower()
+        ]
+        assert len(tmpdir_warnings) >= 1, (
+            f"Expected a tmpdir warning for ENV={dev_env!r}; got: {[str(w.message) for w in caught]}"
+        )

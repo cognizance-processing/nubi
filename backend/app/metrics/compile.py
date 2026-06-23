@@ -882,6 +882,53 @@ def _membership_correlation_keys(
     return tuple(d for d in all_dim_names if d != dim_col)
 
 
+def _has_extra_non_ranked_dims(
+    all_dim_names: list[str],
+    dim_col: str,
+    corr_keys: tuple[str, ...],
+) -> bool:
+    """True iff a projected dim is NEITHER the ranked dim NOR a correlation key.
+
+    FIX (MED engine-correctness — no-time-grain multi-dim top_n ranks per-row
+    not per-dim-total): the no-time-grain top_n path normally restricts via
+    ``QUALIFY RANK() OVER (PARTITION BY corr_keys ORDER BY measure) <= N`` (the
+    Other arm uses the complement ``RANK() > N``).  That is correct ONLY when
+    ``__base`` has exactly ONE row per ``(corr_keys, ranked_dim)`` — i.e. the
+    projected dimensions are just the ranked dim plus the rank PARTITION BY
+    columns (``corr_keys``).  Then each per-row measure IS the per-ranked-dim
+    total within its partition, so RANK over rows == RANK over per-dim totals.
+
+    When an ADDITIONAL dimension is projected that is NEITHER the ranked dim NOR
+    in ``corr_keys`` (e.g. ranked dim is ``category``, corr_keys is the declared
+    rls_key ``org_id``, but the query ALSO groups by ``region``), ``__base`` has
+    MULTIPLE rows per ``(corr_keys, ranked_dim)`` — one per (category, region).
+    The RANK window then ranks INDIVIDUAL per-(category, region) rows by their
+    per-row measure, NOT the per-CATEGORY totals.  Result: a category whose
+    per-region rows each rank low individually is wrongly excluded from the top-N
+    even though its TOTAL (summed over regions) is high, and the Other bucket is
+    correspondingly wrong.
+
+    When this returns True the no-time-grain top_n must take the SAME correlated
+    membership-subquery path the time_grain branch uses (``dim IN (SELECT dim
+    FROM __base WHERE corr correlated GROUP BY dim ORDER BY SUM(measure) ...
+    LIMIT N)``), which aggregates per ranked-dim TOTAL before selecting the
+    top-N — correct for any number of extra dims.
+
+    ``corr_keys`` are the rank PARTITION BY columns (see
+    _membership_correlation_keys): the declared rls_keys, or — when rls_keys is
+    empty — EVERY projected non-ranked dim.  In the empty-rls_keys case every
+    non-ranked dim is therefore a corr_key, so this returns False (each
+    (dim_col, corr_keys) tuple is unique → per-row == per-dim-total) and the
+    existing complement-RANK / PARTITION BY path is preserved byte-identically.
+    The bug case only arises when rls_keys IS declared and a further analytical
+    dim is projected beyond ranked + rls_keys.  Returns False for the
+    single-ranked-dim (and ranked-dim + corr_keys-only) shapes, so those stay
+    byte-identical to the prior QUALIFY RANK() emission.
+    """
+    corr = set(corr_keys)
+    return any(d != dim_col and d not in corr for d in all_dim_names)
+
+
 # Name of the shared per-tenant top-N membership CTE used by the
 # ``top_n.other`` + ``time_grain`` path (see _shared_members_cte_sql).
 _MEMBERS_CTE = "__topn_members"
@@ -1102,8 +1149,21 @@ def _apply_top_n(
     # the projected non-ranked dimensions — see _membership_correlation_keys).
     corr_keys = _membership_correlation_keys(metric, all_dim_names, dim_col)
 
-    if time_alias is not None:
-        # With time grain: use membership filter via correlated subquery on __base.
+    # FIX (MED engine-correctness — no-time-grain multi-dim top_n): take the
+    # correlated membership-subquery path (which ranks by per-ranked-dim TOTALS)
+    # whenever there is a time_grain OR a projected non-ranked dim that is not an
+    # rls_key.  In the latter case __base has multiple rows per
+    # (rls_key, ranked_dim), so the QUALIFY RANK() path would rank individual
+    # per-all-dims rows rather than per-ranked-dim totals (wrong membership +
+    # wrong Other bucket).  Single-ranked-dim (and ranked-dim + rls_keys-only)
+    # shapes keep the byte-identical QUALIFY RANK() emission.
+    use_membership = time_alias is not None or _has_extra_non_ranked_dims(
+        all_dim_names, dim_col, corr_keys
+    )
+
+    if use_membership:
+        # With time grain (or extra non-ranked dims): membership filter via
+        # correlated subquery on __base.
         order_dir = "DESC" if tn.order == "desc" else "ASC"
         if use_shared_members:
             # PERF FIX (LOW): reference the shared per-tenant membership CTE
@@ -1223,7 +1283,21 @@ def _build_other_select(
     not_in_cond: exp.Expression | None = None
     complement_qualify: exp.Expression | None = None
 
-    if time_alias is None:
+    # FIX (MED engine-correctness — no-time-grain multi-dim top_n): mirror
+    # _apply_top_n.  When there is a time_grain OR a projected non-ranked dim that
+    # is not an rls_key, the TOP arm uses the correlated membership subquery
+    # (ranking by per-ranked-dim TOTALS), so the OTHER arm MUST use the exact
+    # complement of that SAME membership (``<dim> NOT IN (membership)``), NOT the
+    # per-row complement-RANK window — otherwise the two arms would partition
+    # __base by different criteria (per-dim-total vs per-row) and a row could land
+    # in both or neither.  Only the single-ranked-dim (and ranked-dim +
+    # rls_keys-only) no-time-grain shape keeps the complement-RANK path
+    # (byte-identical to before).
+    use_membership = time_alias is not None or _has_extra_non_ranked_dims(
+        all_dim_names, dim_col, _other_rls_keys
+    )
+
+    if not use_membership:
         # Complement RANK window — mirror _apply_top_n's no-time-grain arm.
         rank_m_col = exp.column(rank_measure)
         rank_partition = [exp.column(k) for k in _other_rls_keys]
@@ -1245,7 +1319,10 @@ def _build_other_select(
         )
         from_node: exp.Expression = exp.Table(this=exp.to_identifier("__base"))
     else:
-        # Time-grain path: per-tenant correlated membership subquery (NOT IN).
+        # Membership path (time-grain OR extra non-ranked dims): per-tenant
+        # correlated membership subquery (NOT IN), ranking by per-ranked-dim
+        # TOTALS so the Other bucket is the exact complement of the TOP arm's
+        # per-dim-total membership.
         # PERF FIX (LOW): when use_shared_members is set the membership has
         # already been computed ONCE in the shared __topn_members CTE; this arm
         # does a cheap correlated lookup into it instead of re-aggregating

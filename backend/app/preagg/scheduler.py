@@ -129,7 +129,10 @@ def run_preagg_refresh(
     for candidate in candidates:
         try:
             # Skip candidates that already have a registered rollup (idempotent).
-            existing = reg.candidates_for_table(candidate.table)
+            # Dedup is per-org: rollups are tagged with org_id, so we must scope
+            # the existence check to this org or it would never find the prior
+            # build (and would rebuild on every refresh).
+            existing = reg.candidates_for_table(candidate.table, org_id=org_id)
             existing_dims = {frozenset(r.dimensions) for r in existing}
             candidate_dims = frozenset(candidate.dimensions)
             if candidate_dims in existing_dims:
@@ -145,6 +148,11 @@ def run_preagg_refresh(
                 source_database=source_database,
                 registry=reg,
                 register_query=True,
+                # TENANT-ISOLATION: tag every scheduler-built rollup with the
+                # org it was refreshed for so the router only ever serves it back
+                # to that org.  An untagged (org_id=None) rollup is demo-only and
+                # is NEVER routed for a real caller.
+                org_id=org_id,
             )
             built_ids.append(built.rollup_id)
             logger.info(

@@ -716,15 +716,16 @@ async def advance_readiness(
         except Exception:  # noqa: BLE001
             logger.debug("Downstream trigger hook failed for flow_run %s", flow_run_id, exc_info=True)
 
-        # [LOW resource] Evict the per-run artifact count entry so
-        # _run_artifact_counts does not accumulate one entry per completed run
-        # forever in long-lived workers (only reset_run_artifact_counts() existed
-        # before, which is test-only and clears the entire dict).
+        # [MED disk] Evict the per-run artifact count entry AND delete every
+        # blob uploaded during this run from the artifact store so tmp-dir /
+        # object-store blobs do not accumulate forever after a run completes.
+        # evict_run_artifacts is best-effort per blob and always pops the
+        # counter entry regardless of deletion outcomes.
         try:
-            from app.flows.artifacts import evict_run_artifact_count  # noqa: PLC0415
-            evict_run_artifact_count(flow_run_id)
+            from app.flows.artifacts import evict_run_artifacts, get_artifact_store  # noqa: PLC0415
+            evict_run_artifacts(flow_run_id, get_artifact_store())
         except Exception:  # noqa: BLE001
-            logger.debug("evict_run_artifact_count failed for flow_run %s", flow_run_id, exc_info=True)
+            logger.debug("evict_run_artifacts failed for flow_run %s", flow_run_id, exc_info=True)
 
 
 # ---------------------------------------------------------------------------
@@ -1930,20 +1931,19 @@ async def drain_flow_run(
         flow_run = await store.get_flow_run(flow_run_id)
         return flow_run or {}
     finally:
-        # [LOW resource] Evict the per-run artifact count on EVERY exit path —
-        # success, TimeoutError, CancelledError, or any other exception — so
-        # _run_artifact_counts does not leak when drain_flow_run is aborted by an
-        # outer asyncio.wait_for or cancelled by the sweep/backfill orchestrator
-        # before advance_readiness has a chance to call evict_run_artifact_count.
+        # [MED disk] Evict artifact blobs AND the per-run artifact count on
+        # EVERY exit path — success, TimeoutError, CancelledError, or any other
+        # exception — so blobs and counters do not leak when drain_flow_run is
+        # aborted before advance_readiness has a chance to run.
         # advance_readiness also evicts on terminal state (normal completion path),
         # so this is an idempotent safety-net for the abnormal exit paths only.
         # Best-effort: never mask the original exception.
         try:
-            from app.flows.artifacts import evict_run_artifact_count  # noqa: PLC0415
-            evict_run_artifact_count(flow_run_id)
+            from app.flows.artifacts import evict_run_artifacts, get_artifact_store  # noqa: PLC0415
+            evict_run_artifacts(flow_run_id, get_artifact_store())
         except Exception:  # noqa: BLE001
             logger.debug(
-                "drain_flow_run: evict_run_artifact_count failed for flow_run %s",
+                "drain_flow_run: evict_run_artifacts failed for flow_run %s",
                 flow_run_id,
                 exc_info=True,
             )

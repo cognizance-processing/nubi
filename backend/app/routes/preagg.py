@@ -159,7 +159,10 @@ async def preagg_build(
     dict
         The :class:`~app.connectors.preagg.BuiltRollup` manifest.
     """
-    await resolve_org_id(str(user["id"]), get_repo(), request)
+    # TENANT-ISOLATION: tag the rollup with the resolved caller org so the
+    # router only ever serves it back to this org.  An untagged (org_id=None)
+    # rollup is demo-only and is NEVER routed for a real caller.
+    resolved_org_id = await resolve_org_id(str(user["id"]), get_repo(), request)
 
     # Resolve the shape: explicit fields take precedence, else pick by cluster_key.
     table = body.table
@@ -207,6 +210,7 @@ async def preagg_build(
             rls_keys=list(body.rls_keys),
             source_database=body.source_database,
             datastore_id=body.datastore_id,
+            org_id=resolved_org_id,
         )
     )
     return built.to_dict()
@@ -262,7 +266,9 @@ async def preagg_build_from_metric(
     metric has no additive base measures (non-additive metrics cannot be
     rolled up).
     """
-    await resolve_org_id(str(user["id"]), get_repo(), request)
+    # TENANT-ISOLATION: tag the rollup with the resolved caller org (see
+    # preagg_build) so the router never serves it across orgs.
+    resolved_org_id = await resolve_org_id(str(user["id"]), get_repo(), request)
 
     # Resolve the metric from the metrics registry.
     try:
@@ -289,6 +295,7 @@ async def preagg_build_from_metric(
                 registry=get_registry(),
                 register_query=True,
                 datastore_id=body.datastore_id,
+                org_id=resolved_org_id,
             )
         )
     except (ValueError, Exception) as exc:
