@@ -1424,3 +1424,270 @@ class TestAssetsCssInjection:
         assert not _re.search(r"<\s*script", result, _re.IGNORECASE), (
             "NUL-byte </style> breakout + <script> survived render-time sanitization."
         )
+
+
+# ---------------------------------------------------------------------------
+# [LOW XSS] on{{token}} composes on*= event handler post-substitution
+# ---------------------------------------------------------------------------
+
+
+class TestOnTokenComposesHandlerPostSubstitution:
+    """Regression tests for the LOW XSS finding: on{{token}}= bypass.
+
+    The pre-substitution validator checks the raw canvas HTML for on*= event
+    handlers.  A token that completes an event-handler attribute name at render
+    time (e.g. ``<div on{{x}}=>`` where the token resolves to ``click``) bypasses
+    the pre-substitution check because the raw HTML has no ``onclick=``.
+
+    Fix: _bake_tokens adds a post-substitution pass via
+    _reject_on_handlers_post_substitution() that re-scans the fully-baked HTML
+    for on*= and javascript: patterns and raises ValueError on detection.
+    """
+
+    def _make_doc_raw(self, html: str, element_data: dict | None = None):
+        """Build a CanvasDoc directly, bypassing the pre-substitution validator."""
+        return _make_doc(html=html), element_data or {}
+
+    def test_on_token_composing_onclick_is_rejected(self):
+        """<div on{{x}}="alert(1)"> where x='click' composes onclick= post-substitution.
+
+        The pre-substitution HTML has no on*= handler (only on{{x}}=) so the
+        validator would approve it.  After substitution the result contains
+        onclick= which must be caught and rejected.
+        """
+        from app.dashboards.render_canvas import _bake_tokens
+
+        # This HTML has no literal on*= handler so the pre-substitution validator
+        # would pass it.  The token 'x' resolves to 'click', composing 'onclick'.
+        html = '<div on{{x}}="alert(1)">click me</div>'
+        element_data = {"el_1": {"columns": ["x"], "rows": [["click"]]}}
+
+        with pytest.raises(ValueError, match="on\\*=|event.handler|post-substitution"):
+            _bake_tokens(html, element_data)
+
+    def test_on_partial_prefix_composing_onerror_is_rejected(self):
+        """<img on{{evt}}='evil()'> where evt='error' composes onerror= post-substitution."""
+        from app.dashboards.render_canvas import _bake_tokens
+
+        html = "<img src='x' on{{evt}}='evil()'>"
+        element_data = {"el_2": {"columns": ["evt"], "rows": [["error"]]}}
+
+        with pytest.raises(ValueError, match="on\\*=|event.handler|post-substitution"):
+            _bake_tokens(html, element_data)
+
+    def test_on_full_handler_in_attr_name_position_is_rejected(self):
+        """<div {{attr}}="steal()"> where attr='onmouseover' composes onmouseover= post-substitution."""
+        from app.dashboards.render_canvas import _bake_tokens
+
+        html = "<div {{attr}}=\"steal()\">hover me</div>"
+        element_data = {"el_3": {"columns": ["attr"], "rows": [["onmouseover"]]}}
+
+        with pytest.raises(ValueError, match="on\\*=|event.handler|post-substitution"):
+            _bake_tokens(html, element_data)
+
+    def test_legitimate_token_in_content_is_not_rejected(self):
+        """{{token}} resolving to a value that contains 'on' in text is NOT rejected.
+
+        A token value like 'online' in text content must not trigger the scanner —
+        the check is specifically for on*= in an attribute name position.
+        """
+        from app.dashboards.render_canvas import _bake_tokens
+
+        html = "<p>Status: {{status}}</p>"
+        element_data = {"el_4": {"columns": ["status"], "rows": [["online"]]}}
+
+        # Must not raise — 'online' in text content is not an event handler.
+        result = _bake_tokens(html, element_data)
+        assert "online" in result
+
+    def test_token_resolving_to_onclick_in_text_is_not_rejected(self):
+        """Token value 'onclick' appearing in text content (not attr position) is safe."""
+        from app.dashboards.render_canvas import _bake_tokens
+
+        html = "<p>The {{word}} attribute is dangerous</p>"
+        element_data = {"el_5": {"columns": ["word"], "rows": [["onclick"]]}}
+
+        # 'onclick' as HTML-escaped text content has no '=' after it — safe.
+        result = _bake_tokens(html, element_data)
+        assert "onclick" in result
+
+    def test_data_attribute_onclick_text_in_value_is_not_rejected(self):
+        """data-label="onclick something" — 'onclick' in an attribute VALUE is fine.
+
+        The scanner checks attribute NAMES (the ``on\\w+=`` pattern anchored at
+        the attribute name position), not attribute values — so 'onclick' appearing
+        as text inside a quoted attribute value must not trigger rejection.
+        """
+        from app.dashboards.render_canvas import _bake_tokens
+
+        html = '<div data-label="{{desc}}">x</div>'
+        element_data = {"el_6": {"columns": ["desc"], "rows": [["onclick handlers are bad"]]}}
+
+        # The value contains 'onclick' but it is inside a quoted attribute value —
+        # the token is HTML-escaped so the resulting output is:
+        # data-label="onclick handlers are bad"
+        # which has onclick inside a value, not as an attribute name followed by =.
+        result = _bake_tokens(html, element_data)
+        assert "onclick" in result
+
+
+# ---------------------------------------------------------------------------
+# End-to-end PROOF: per-recipient locked_params actually NARROW the binding
+# data through the REAL collector (report_send → _collect_canvas_data_sync →
+# collect_canvas_data → run_query_rows).  No mocking of the collector.
+# ---------------------------------------------------------------------------
+
+
+class TestPerRecipientLockedParamsNarrowCollectedData:
+    """Closes the HIGH bug: locked_params now reach the query binding.
+
+    Previously schedule_canvas omitted apply_user_permissions so the
+    per-recipient render loop never ran (locked_params silently dropped), and
+    even when forced collect_canvas_data ignored extra_params so every recipient
+    got the unfiltered owner view.  These tests exercise the FULL path with a
+    real registered query that filters on a {{region}} named param and assert:
+
+      * each recipient's collected rows are NARROWED by their locked region;
+      * RLS policies are untouched (owner snapshot only).
+    """
+
+    @pytest.fixture()
+    def repo_with_region_query(self):
+        from app.queries.registry import (
+            QueryParam,
+            get_query_registry,
+            reset_for_tests as reset_query_registry,
+        )
+        from app.repos.memory import InMemoryRepo
+        from app.repos.provider import set_repo
+
+        reset_query_registry()
+        r = InMemoryRepo()
+        set_repo(r)
+
+        reg = get_query_registry()
+        # Query filters the legacy 5-row demo table on a {{region}} named param.
+        # We reuse the 'name' column as the filterable dimension.  Default
+        # 'alpha' is the owner/unfiltered slice; recipients narrow to other rows.
+        reg.register(
+            id="q-region",
+            sql="SELECT id, name FROM demo WHERE name = {{region}} ORDER BY id",
+            name="RegionQuery",
+            params=[QueryParam(name="region", type="text", default="alpha")],
+        )
+        yield r
+        set_repo(None)
+        reset_query_registry()
+
+    def _seed_canvas(self, repo, org_id: str) -> str:
+        import asyncio
+
+        canvas = {
+            "name": "Region Canvas",
+            "config": {
+                "doc": {
+                    "version": 1,
+                    "title": "Region Canvas",
+                    "html": "<nubi-table el='el_region'></nubi-table>",
+                    "bindings": {
+                        "el_region": {"kind": "query", "query_id": "q-region"},
+                    },
+                }
+            },
+        }
+        created = asyncio.run(
+            repo.create("canvases", org_id=org_id, created_by="owner", **canvas)
+        )
+        return created["id"]
+
+    def test_locked_region_narrows_each_recipients_rows(self, repo_with_region_query):
+        repo = repo_with_region_query
+        org_id = "org-region"
+        canvas_id = self._seed_canvas(repo, org_id)
+
+        # Capture the element_data passed to the renderer for each recipient.
+        captured: list[dict] = []
+
+        def _capture_html(doc, element_data, *, title=None):
+            captured.append(element_data)
+            return "<html>ok</html>"
+
+        sender = NullSender()
+        config = {
+            "canvas_id": canvas_id,
+            "org_id": org_id,
+            "format": "html",
+            "recipients": ["alice@x.com", "bob@x.com"],
+            "apply_user_permissions": True,
+            "locked_params": {
+                "alice@x.com": {"region": "gamma"},
+                "bob@x.com": {"region": "delta"},
+            },
+        }
+
+        with patch("app.jobs.report.get_default_sender", return_value=sender):
+            with patch(
+                "app.dashboards.render_canvas.render_canvas_html",
+                side_effect=_capture_html,
+            ):
+                result = report_send_handle(config, _ctx(org_id), claims={})
+
+        assert result["emails_sent"] == 2, result
+        assert not result["errors"], result["errors"]
+
+        # Two distinct locked slices → two captured renders.
+        assert len(captured) == 2, captured
+
+        rows_by_name = {}
+        for ed in captured:
+            binding = ed["el_region"]
+            assert "error" not in binding, binding
+            names = [row[binding["columns"].index("name")] for row in binding["rows"]]
+            # Each render must contain exactly the recipient's narrowed row.
+            assert len(names) == 1, f"Expected a single narrowed row, got {names!r}"
+            rows_by_name[names[0]] = binding["rows"]
+
+        # PROOF: alice got gamma, bob got delta — NOT the default 'alpha' owner
+        # view.  The locked region named param actually narrowed the data.
+        assert set(rows_by_name) == {"gamma", "delta"}, (
+            f"Per-recipient locked region did not narrow the binding data: "
+            f"{set(rows_by_name)!r}.  Expected {{'gamma', 'delta'}}; got the "
+            "owner/default 'alpha' view instead means extra_params were dropped."
+        )
+
+    def test_collect_canvas_data_extra_params_narrows_directly(
+        self, repo_with_region_query
+    ):
+        """Direct unit proof at the collector layer: extra_params narrows rows."""
+        import asyncio
+
+        from app.dashboards.collect import collect_canvas_data
+
+        repo = repo_with_region_query
+        org_id = "org-region"
+        canvas_id = self._seed_canvas(repo, org_id)
+
+        # Owner view (no extra_params) → default 'alpha'.
+        owner = asyncio.run(
+            collect_canvas_data(canvas_id, org_id, claims={}, repo=repo)
+        )
+        owner_cols = owner["el_region"]["columns"]
+        owner_names = {r[owner_cols.index("name")] for r in owner["el_region"]["rows"]}
+        assert owner_names == {"alpha"}, owner_names
+
+        # Recipient view (extra_params region='epsilon') → narrowed.
+        narrowed = asyncio.run(
+            collect_canvas_data(
+                canvas_id,
+                org_id,
+                claims={},
+                repo=repo,
+                extra_params={"region": "epsilon"},
+            )
+        )
+        n_cols = narrowed["el_region"]["columns"]
+        n_names = {r[n_cols.index("name")] for r in narrowed["el_region"]["rows"]}
+        assert n_names == {"epsilon"}, (
+            f"extra_params did not narrow the binding data: {n_names!r} "
+            "(expected {'epsilon'})."
+        )

@@ -1317,6 +1317,50 @@ def test_pickle_large_object_aborts_mid_serialization():
 
 
 # ---------------------------------------------------------------------------
+# 27c. MED mid-stream cap for joblib: oversized joblib artifact aborts early
+# ---------------------------------------------------------------------------
+
+
+def test_joblib_large_object_aborts_mid_serialization():
+    """An oversized joblib artifact raises mid-serialization; nothing is stored.
+
+    REGRESSION (fix-29): kind='joblib' used to dump to a plain io.BytesIO(),
+    then the post-check backstop fired only AFTER the full serialized bytes were
+    already in memory (and already returned by buf.getvalue()).  The fix routes
+    joblib.dump through _LimitedWriter so it aborts *during* serialization,
+    matching the behaviour of kind='pickle'.
+
+    Assertions
+    ----------
+    - put_artifact raises ValueError before returning.
+    - _total_bytes on the store is 0 (no oversized blob was stored).
+    """
+    import unittest.mock  # noqa: PLC0415
+    from app.flows import artifacts as _art_mod  # noqa: PLC0415
+
+    try:
+        import joblib  # noqa: F401, PLC0415
+    except ImportError:
+        pytest.skip("joblib not available")
+
+    art_store = _mem_store()
+
+    # A plain Python object that joblib serializes to well over 50 bytes.
+    big_obj = {"data": "x" * 500}
+    cap = 50  # tiny cap so no large allocation is needed
+
+    with unittest.mock.patch.object(_art_mod, "_ARTIFACT_MAX_BYTES", cap):
+        with pytest.raises(ValueError, match="exceeded|exceeds the maximum"):
+            put_artifact(big_obj, kind="joblib", org_id=ORG_A, store=art_store)
+
+    # No oversized blob must have been stored.
+    assert art_store._total_bytes == 0, (
+        f"Oversized joblib blob was stored ({art_store._total_bytes} bytes); "
+        "expected nothing to be stored after mid-stream abort."
+    )
+
+
+# ---------------------------------------------------------------------------
 # 27. Org-bound HMAC: a blob signed for org A fails verify under org B
 # ---------------------------------------------------------------------------
 

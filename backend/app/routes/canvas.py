@@ -468,6 +468,13 @@ async def schedule_canvas(
         "body": body.body or "",
         "params": dict(body.params or {}),
         "locked_params": dict(body.locked_params or {}),
+        # Activate the per-recipient render loop in _handle_canvas
+        # (report_send.py) ONLY when locked_params are present.  Without this
+        # flag the gate ``if apply_rls and locked_params`` is never entered and
+        # per-recipient named params would be silently dropped (the single
+        # owner-view render reused for everyone).  When locked_params is empty
+        # this stays False so the single-render fast path is preserved.
+        "apply_user_permissions": bool(body.locked_params),
         "notify_channels": list(body.notify_channels or []),
     }
 

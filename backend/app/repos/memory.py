@@ -90,12 +90,17 @@ class InMemoryRepo:
     # ------------------------------------------------------------------
 
     async def list(
-        self, resource: str, org_id: str, project_id: str | None = None
+        self,
+        resource: str,
+        org_id: str,
+        project_id: str | None = None,
+        limit: int | None = None,
     ) -> list[dict[str, Any]]:
-        """Return all rows in *resource* that belong to *org_id*, sorted by created_at.
+        """Return rows in *resource* that belong to *org_id*, sorted by created_at.
 
         When *project_id* is provided the result is additionally scoped to that
-        project; when ``None`` all of the org's rows are returned.
+        project; when ``None`` all of the org's rows are returned.  When *limit*
+        is provided at most that many rows are returned (mirrors DB LIMIT).
         """
         table = _validate_resource(resource)
         rows = [
@@ -105,6 +110,8 @@ class InMemoryRepo:
             and (project_id is None or str(row.get("project_id")) == str(project_id))
         ]
         rows.sort(key=lambda r: r["created_at"])
+        if limit is not None:
+            rows = rows[:limit]
         return rows
 
     async def get(

@@ -78,3 +78,28 @@ async def require_writer_default(
     user_id = str(user["id"])
     org_id = await get_user_org(user_id, repo)
     _forbid_viewer(await get_org_role(user_id, org_id, repo))
+
+
+def _require_approver_role(role: str | None) -> None:
+    """Raise 403 if *role* is not an approver role (owner/admin)."""
+    if role not in {"owner", "admin"}:
+        raise AppError(
+            "forbidden",
+            "Only members with approver role (owner/admin) may perform this action.",
+            403,
+        )
+
+
+async def require_approver_default(
+    user: dict[str, Any] = Depends(current_user),
+    repo: Repo = Depends(get_repo),
+) -> None:
+    """Default-first-org approver guard (mirrors ``get_user_org``). 403 for non-approvers.
+
+    Approver roles are owner and admin only.  Members, viewers, and unauthenticated
+    callers are rejected with 403.  Use on routes that require elevated approval
+    permission (e.g. POST /flows/writeback/{id}/approval).
+    """
+    user_id = str(user["id"])
+    org_id = await get_user_org(user_id, repo)
+    _require_approver_role(await get_org_role(user_id, org_id, repo))

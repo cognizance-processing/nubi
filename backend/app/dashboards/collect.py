@@ -184,6 +184,7 @@ async def run_query_rows(
     policies: dict[str, Any],
     *,
     ds_cache: dict[str, Any] | None = None,
+    extra_params: dict[str, Any] | None = None,
 ) -> tuple[list[str], list[list[Any]]]:
     """Run a registered query and return ``(columns, rows)``.
 
@@ -203,6 +204,16 @@ async def run_query_rows(
         pre-fetch all referenced datastores once and avoid N identical
         ``repo.get("datastores", …)`` round-trips for N widgets that share a
         single datastore.
+    extra_params:
+        Optional override values for the query's declared named params (e.g.
+        per-recipient locked params on a scheduled canvas send).  These are
+        merged ON TOP of the registered param defaults before the ``{{name}}``
+        placeholders are resolved to positional ``$N`` binds, so a recipient's
+        ``{region: 'X'}`` actually NARROWS that recipient's data via the named
+        query binding.  Values are bound positionally (never string-
+        concatenated) and CANNOT touch the RLS policy slice — RLS comes from
+        *policies* only.  Unknown keys (names not declared by the query) are
+        ignored, mirroring the board path's named-param resolution.
 
     Raises ``AppError`` with a descriptive code on any failure so the caller can
     decide whether to skip the widget or surface the error.
@@ -212,14 +223,23 @@ async def run_query_rows(
     if registered is None:
         raise AppError("query_not_registered", f"No registered query for id={query_id!r}.", 404)
 
-    # Resolve declared named params to their defaults (collection has no live
-    # filter state), turning {{name}} placeholders into positional $N binds.
+    # Resolve declared named params, turning {{name}} placeholders into
+    # positional $N binds.  Each declared param resolves to its default unless a
+    # caller-supplied override is present in *extra_params* (per-recipient
+    # locked params).  Overrides NARROW the result via the named binding only;
+    # they never reach the RLS policy slice (that is *policies*).
     sql = registered.sql
     params: list[Any] = []
     if registered.params:
         from app.connectors.planner import resolve_named_params
 
-        resolved = {p.name: (p.default if p.default is not None else None) for p in registered.params}
+        overrides = extra_params or {}
+        resolved = {}
+        for p in registered.params:
+            if p.name in overrides:
+                resolved[p.name] = overrides[p.name]
+            else:
+                resolved[p.name] = p.default if p.default is not None else None
         sql, params = resolve_named_params(sql, resolved)
 
     from app.connectors import plan as planner_plan
@@ -533,6 +553,7 @@ async def collect_canvas_data(
     repo: Repo,
     *,
     canvas: dict[str, Any] | None = None,
+    extra_params: dict[str, Any] | None = None,
 ) -> dict[str, list[dict[str, Any]]]:
     """Collect per-binding data for an org-scoped Canvas document.
 
@@ -569,6 +590,15 @@ async def collect_canvas_data(
     canvas:
         Optional pre-fetched canvas row.  When supplied, the repo lookup is
         skipped.
+    extra_params:
+        Optional per-recipient named-param overrides (e.g. a scheduled canvas
+        send's ``locked_params[recipient]``).  Forwarded to
+        :func:`run_query_rows` for ``query`` / ``metric`` bindings so the
+        recipient's ``{region: 'X'}`` actually NARROWS that recipient's binding
+        data via the named query binding — the per-recipient render no longer
+        collapses to the unfiltered owner view.  These bind named ``{{param}}``
+        placeholders ONLY; they NEVER alter the RLS policy slice, which comes
+        from ``claims["policies"]`` (the owner's verified snapshot) exclusively.
 
     Returns
     -------
@@ -623,7 +653,8 @@ async def collect_canvas_data(
             if kind == "query":
                 query_id = binding.get("query_id") or ""
                 columns, rows = await run_query_rows(
-                    query_id, org_id, repo, policies, ds_cache=ds_cache
+                    query_id, org_id, repo, policies,
+                    ds_cache=ds_cache, extra_params=extra_params,
                 )
                 entry["columns"] = columns
                 entry["rows"] = rows
@@ -645,7 +676,8 @@ async def collect_canvas_data(
                     # the metric definition (the source query_id).
                     source_query_id = getattr(mdef, "query_id", None) or metric_id
                     columns, rows = await run_query_rows(
-                        source_query_id, org_id, repo, policies, ds_cache=ds_cache
+                        source_query_id, org_id, repo, policies,
+                        ds_cache=ds_cache, extra_params=extra_params,
                     )
                     entry["columns"] = columns
                     entry["rows"] = rows

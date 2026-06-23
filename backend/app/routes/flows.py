@@ -274,7 +274,7 @@ from fastapi import APIRouter, Depends, Header, Query, Request, Response
 from pydantic import BaseModel, Field, field_validator
 
 from app.auth.deps import current_user, verified_identity
-from app.auth.roles import require_writer_default
+from app.auth.roles import require_approver_default, require_writer_default
 from app.auth.verify import VerifiedIdentity
 from app.config import get_settings
 from app.db import fetchrow
@@ -2938,7 +2938,7 @@ async def submit_writeback_route(
     return record
 
 
-@router.post("/writeback/{wb_id}/approval", status_code=200, dependencies=[Depends(require_writer_default)])
+@router.post("/writeback/{wb_id}/approval", status_code=200, dependencies=[Depends(require_approver_default)])
 async def writeback_approval_route(
     wb_id: str,
     body: WritebackApprovalIn,

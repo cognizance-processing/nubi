@@ -766,9 +766,16 @@ def build_rollup(
 
     max_rows = _rollup_max_rows()
 
+    # Wrap rollup SQL with a LIMIT of max_rows+1 so DuckDB stops streaming at
+    # the cap — Arrow allocation is bounded and we never materialize a full
+    # over-cap result into memory (OOM prevention).
+    capped_sql = (
+        f"SELECT * FROM ({rollup_sql}) __rollup_check LIMIT {max_rows + 1}"
+    )
+
     src = duckdb.connect(database=source_database or ":memory:", read_only=False)
     try:
-        rel = src.execute(rollup_sql)
+        rel = src.execute(capped_sql)
         result = rel.arrow()
         if hasattr(result, "read_all"):
             result = result.read_all()

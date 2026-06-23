@@ -1485,20 +1485,24 @@ async def test_route_writeback_submit_viewer_blocked_by_dependency(wb_client):
 
 
 # ---------------------------------------------------------------------------
-# FIX 3 [LOW authz]: POST /flows/writeback/{wb_id}/approval must have
-#     require_writer_default dependency so viewers are blocked at the gate.
+# FIX [LOW RBAC clarity]: POST /flows/writeback/{wb_id}/approval must have
+#     require_approver_default as its outer dependency so the real requirement
+#     (approver-only: owner/admin) is surfaced at the routing layer.  Members
+#     used to pass the outer require_writer_default gate then 403 inside the
+#     handler — redundant and misleading.
 # ---------------------------------------------------------------------------
 
 
-def test_writeback_approval_has_require_writer_default_dependency():
-    """POST /flows/writeback/{id}/approval must carry require_writer_default.
+def test_writeback_approval_has_require_approver_default_dependency():
+    """POST /flows/writeback/{id}/approval must carry require_approver_default.
 
-    The in-handler _require_approver_role check elevates to admin/owner, but
-    the outer dependency gate must also be present so viewers are rejected
-    before any handler code runs (defense-in-depth).
+    The outer dependency must enforce approver-only (owner/admin) access so
+    the real requirement is surfaced at the routing layer rather than inside
+    the handler body.  The in-handler _require_approver_role check is kept as
+    defense-in-depth.
     """
     import app.routes.flows as flows_mod
-    from app.auth.roles import require_writer_default
+    from app.auth.roles import require_approver_default
 
     approval_route = None
     for route in flows_mod.router.routes:
@@ -1513,9 +1517,49 @@ def test_writeback_approval_has_require_writer_default_dependency():
 
     assert approval_route is not None, "POST /writeback/{wb_id}/approval route not found"
     dep_callables = [d.dependency for d in (approval_route.dependencies or [])]
-    assert require_writer_default in dep_callables, (
-        "POST /flows/writeback/{wb_id}/approval must have require_writer_default "
-        "in dependencies — viewers can reach the handler and attempt approval!"
+    assert require_approver_default in dep_callables, (
+        "POST /flows/writeback/{wb_id}/approval must have require_approver_default "
+        "in dependencies — the real approver-only requirement must be at the routing layer."
+    )
+
+
+@pytest.mark.asyncio
+async def test_route_approval_member_403_at_outer_gate(wb_client):
+    """Member gets 403 at the outer dependency gate on the approval route.
+
+    Before the fix, a member (writer) would pass require_writer_default then
+    hit 403 inside the handler.  After the fix, require_approver_default fires
+    first so the rejection is clear at the routing layer.
+    Owner and admin are still allowed through the gate.
+    """
+    client, alice_id, bob_id, carol_id, org_id, wb_store, repo = wb_client
+
+    # Alice (owner) submits a gated write-back.
+    resp = await client.post(
+        "/api/v1/flows/writeback",
+        json={
+            "idempotency_key": str(uuid.uuid4()),
+            "rows": [{"id": 1}],
+            "target": {"connector_id": "c1", "object": "raw.t"},
+            "mode": "append",
+            "approval_required": True,
+            "dry_run": False,
+            "meta": {},
+        },
+        headers=_auth_headers(alice_id),
+    )
+    assert resp.status_code == 201
+    wb_id = resp.json()["id"]
+
+    # Bob (member — writer but NOT approver) must be blocked at the outer gate.
+    resp2 = await client.post(
+        f"/api/v1/flows/writeback/{wb_id}/approval",
+        json={"action": "approve"},
+        headers=_auth_headers(bob_id),
+    )
+    assert resp2.status_code == 403, (
+        f"Member must be blocked by require_approver_default dependency "
+        f"(expected 403, got {resp2.status_code})"
     )
 
 
@@ -1523,9 +1567,8 @@ def test_writeback_approval_has_require_writer_default_dependency():
 async def test_route_approval_viewer_forbidden(wb_client):
     """POST /flows/writeback/{id}/approval must return 403 for viewers.
 
-    Before the fix, the approval route lacked require_writer_default, meaning
-    viewers could reach the in-handler role check.  With the fix the dependency
-    gate fires first and returns 403.
+    The require_approver_default dependency gate fires before any handler code
+    and rejects viewers (and members) — only owner/admin may approve.
     """
     client, alice_id, bob_id, carol_id, org_id, wb_store, repo = wb_client
 
@@ -1553,7 +1596,7 @@ async def test_route_approval_viewer_forbidden(wb_client):
         headers=_auth_headers(carol_id),
     )
     assert resp2.status_code == 403, (
-        f"Viewer must be blocked by require_writer_default dependency (expected 403, "
+        f"Viewer must be blocked by require_approver_default dependency (expected 403, "
         f"got {resp2.status_code})"
     )
 

@@ -88,26 +88,34 @@ class PgRepo:
     """
 
     async def list(
-        self, resource: str, org_id: str, project_id: str | None = None
+        self,
+        resource: str,
+        org_id: str,
+        project_id: str | None = None,
+        limit: int | None = None,
     ) -> list[dict[str, Any]]:
-        """Return all rows for *resource* in *org_id*, ordered by ``created_at``.
+        """Return rows for *resource* in *org_id*, ordered by ``created_at``.
 
         When *project_id* is provided the result is additionally scoped to that
         project; when ``None`` all of the org's rows are returned (preserving
-        existing behaviour).
+        existing behaviour).  When *limit* is provided the DB query uses
+        ``LIMIT N`` so at most *limit* rows are transferred from the database.
         """
         table = _validate_resource(resource)
         # Table name comes from the allowlist — safe to format into the query.
+        # LIMIT is an integer constant — safe to format directly.
+        limit_clause = f" LIMIT {int(limit)}" if limit is not None else ""
         if project_id is not None:
             rows = await fetch(
                 f"SELECT * FROM {table} WHERE org_id = $1::uuid "
-                f"AND project_id = $2::uuid ORDER BY created_at ASC",
+                f"AND project_id = $2::uuid ORDER BY created_at ASC{limit_clause}",
                 org_id,
                 project_id,
             )
         else:
             rows = await fetch(
-                f"SELECT * FROM {table} WHERE org_id = $1::uuid ORDER BY created_at ASC",
+                f"SELECT * FROM {table} WHERE org_id = $1::uuid "
+                f"ORDER BY created_at ASC{limit_clause}",
                 org_id,
             )
         return [_record_to_dict(r) for r in rows]

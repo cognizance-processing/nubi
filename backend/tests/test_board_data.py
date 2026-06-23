@@ -3604,6 +3604,103 @@ async def test_resolve_org_connector_scan_limit_is_configurable() -> None:
 
 
 # ---------------------------------------------------------------------------
+# NEW (fix-29): [LOW] _resolve_org_connector passes limit= to repo.list (DB-bounded)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_resolve_org_connector_passes_limit_to_repo_list() -> None:
+    """[LOW] _resolve_org_connector passes limit=_CONNECTOR_SCAN_LIMIT to repo.list
+    so the DB query itself is bounded — not just a Python-side slice of all rows.
+
+    Before the fix, repo.list("datastores", org_id) fetched ALL rows from the DB
+    and the Python slice [:_CONNECTOR_SCAN_LIMIT] ran after all rows were already
+    in memory.  After the fix, repo.list receives limit=_CONNECTOR_SCAN_LIMIT so
+    only that many rows are transferred from the database.
+
+    Strategy: replace repo.list with a spy that records the keyword arguments it
+    receives.  Assert that limit= is passed and equals _CONNECTOR_SCAN_LIMIT.
+    """
+    import app.dashboards.board_data as _bd_mod
+    from app.dashboards.board_data import _resolve_org_connector
+
+    original_limit = _bd_mod._CONNECTOR_SCAN_LIMIT
+    small_limit = 5
+    _bd_mod._CONNECTOR_SCAN_LIMIT = small_limit
+
+    list_kwargs_seen: list[dict] = []
+
+    class _SpyRepo:
+        async def list(self, resource: str, org_id: str, *args, **kwargs):
+            list_kwargs_seen.append({"resource": resource, "org_id": org_id, **kwargs})
+            # Return an empty list — we only care that limit= was forwarded.
+            return []
+
+    mock_connector = object()
+
+    try:
+        with patch("app.routes.query._get_demo_connector", return_value=mock_connector):
+            connector, owned = await _resolve_org_connector("org-spy", _SpyRepo())
+    finally:
+        _bd_mod._CONNECTOR_SCAN_LIMIT = original_limit
+
+    # repo.list must have been called at least once (for "datastores").
+    datastore_calls = [c for c in list_kwargs_seen if c.get("resource") == "datastores"]
+    assert len(datastore_calls) >= 1, (
+        "repo.list('datastores', ...) was never called by _resolve_org_connector."
+    )
+
+    call = datastore_calls[0]
+    assert "limit" in call, (
+        "repo.list was called WITHOUT a limit= kwarg — DB fetch is unbounded. "
+        "The fix must pass limit=_CONNECTOR_SCAN_LIMIT to repo.list so the DB "
+        "query uses LIMIT N rather than fetching all rows."
+    )
+    assert call["limit"] == small_limit, (
+        f"repo.list received limit={call['limit']!r} but expected {small_limit} "
+        f"(_CONNECTOR_SCAN_LIMIT). The DB-level limit is not being passed correctly."
+    )
+
+    # Connector falls back to demo when the spy returns [].
+    assert connector is mock_connector
+    assert owned is False
+
+
+@pytest.mark.asyncio
+async def test_inmemory_repo_list_limit_is_honoured() -> None:
+    """[LOW] InMemoryRepo.list respects the limit= kwarg.
+
+    Ensures the in-memory implementation (used in tests) correctly honours
+    limit= so that tests that rely on bounded fetches get the right behaviour.
+    """
+    r = InMemoryRepo()
+    org = "org-limit-test"
+    for i in range(10):
+        await r.create(
+            "datastores",
+            org_id=org,
+            created_by="test",
+            name=f"ds-{i}",
+            config={"connector_type": "duckdb"},
+            id=f"ds-limit-{i}",
+        )
+
+    # Without limit: all 10 rows.
+    all_rows = await r.list("datastores", org)
+    assert len(all_rows) == 10
+
+    # With limit=3: exactly 3 rows.
+    limited = await r.list("datastores", org, limit=3)
+    assert len(limited) == 3, (
+        f"InMemoryRepo.list(limit=3) returned {len(limited)} rows; expected 3."
+    )
+
+    # With limit > total: all rows (no error).
+    over = await r.list("datastores", org, limit=100)
+    assert len(over) == 10
+
+
+# ---------------------------------------------------------------------------
 # NEW (fix-28b): [LOW] _CountingSemaphore idle-check is private-API-free
 # ---------------------------------------------------------------------------
 

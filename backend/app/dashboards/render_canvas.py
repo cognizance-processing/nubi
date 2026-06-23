@@ -148,6 +148,49 @@ def _sanitize_url_attrs_post_substitution(html: str) -> str:
 
     return _URL_ATTR_VALUE_RE.sub(_neutralize_url_attr, html)
 
+
+# ---------------------------------------------------------------------------
+# Post-substitution event-handler scanner
+# ---------------------------------------------------------------------------
+
+# Matches any on*= attribute that would fire a JS event handler.
+# Covers: onclick=, onerror=, onload=, onmouseover=, on{{x}}= patterns.
+# We look for the literal text "on" followed by one or more word chars, then
+# optional whitespace, then "=". This catches handlers that were composed
+# post-substitution from token fragments (e.g. "on" + token resolving to "click").
+_ON_HANDLER_ATTR_RE = re.compile(
+    r"""(?<![a-zA-Z0-9-])on\w+\s*=""",
+    re.IGNORECASE,
+)
+
+def _reject_on_handlers_post_substitution(html: str) -> str:
+    """Post-substitution pass: reject on*= event handlers formed by token expansion.
+
+    After ``{{token}}`` substitution an attribute name may now contain an
+    ``on*=`` event handler that was NOT present in the pre-substitution HTML
+    (e.g. ``<div on{{x}}=>`` where the token resolves to ``click`` → ``onclick``).
+    The pre-substitution validator approved the original HTML, but the composed
+    result must also be checked.
+
+    Note: ``javascript:`` in URL-typed attributes (href, src, action, …) is
+    already caught and neutralised by :func:`_sanitize_url_attrs_post_substitution`
+    (Layer 2).  This function (Layer 3) focuses exclusively on event-handler
+    attribute names composed by token expansion.
+
+    Raises
+    ------
+    ValueError
+        When a composed on*= handler is found, mirroring the hard rejection
+        applied by the pre-substitution validator.
+    """
+    if _ON_HANDLER_ATTR_RE.search(html):
+        raise ValueError(
+            "Canvas HTML failed safety validation: "
+            "on*= event-handler attribute composed by token expansion (post-substitution XSS)"
+        )
+    return html
+
+
 # ---------------------------------------------------------------------------
 # nubi-* custom element tags recognised by the renderer.
 # The renderer replaces these with static HTML equivalents.
@@ -436,6 +479,12 @@ def _bake_tokens(html: str, element_data: dict[str, Any]) -> str:
     # dangerous schemes that may have been composed from multiple tokens or
     # from a token embedded inside a longer URL value.
     rendered = _sanitize_url_attrs_post_substitution(rendered)
+
+    # Layer 3: post-substitution event-handler check — reject any on*= attribute
+    # or javascript: value that was COMPOSED by token expansion (e.g.
+    # <div on{{x}}=> where token resolves to "click" → "onclick=").
+    # This mirrors the pre-substitution validator but runs on the baked HTML.
+    rendered = _reject_on_handlers_post_substitution(rendered)
 
     return rendered
 

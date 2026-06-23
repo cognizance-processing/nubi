@@ -43,9 +43,13 @@ class Repo(Protocol):
     """
 
     async def list(
-        self, resource: str, org_id: str, project_id: str | None = None
+        self,
+        resource: str,
+        org_id: str,
+        project_id: str | None = None,
+        limit: int | None = None,
     ) -> list[dict[str, Any]]:
-        """Return all rows for *resource* that belong to *org_id*.
+        """Return rows for *resource* that belong to *org_id*.
 
         Parameters
         ----------
@@ -57,11 +61,16 @@ class Repo(Protocol):
             Optional project filter. When provided, only rows whose
             ``project_id`` matches are returned; when ``None`` all of the org's
             rows are returned (existing behaviour preserved).
+        limit:
+            Optional maximum number of rows to return.  When provided the DB
+            query itself is bounded (``LIMIT N``) so memory is capped at the
+            call site rather than after a full-table fetch.  When ``None`` all
+            matching rows are returned (existing behaviour).
 
         Returns
         -------
         list[dict]
-            Possibly empty list of row dicts.
+            Possibly empty list of row dicts, at most *limit* entries.
         """
         ...
 

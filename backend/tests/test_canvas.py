@@ -958,6 +958,96 @@ class TestCanvasSecurityRegressions:
             f"Offending task_config keys: {list(task_config.keys())}"
         )
 
+    @pytest.mark.asyncio
+    async def test_schedule_with_locked_params_sets_apply_user_permissions(
+        self, canvas_client_with_viewer, fake_db
+    ):
+        """locked_params present → task_config['apply_user_permissions'] is True.
+
+        Regression for HIGH bug: schedule_canvas built task_config with
+        locked_params but never set apply_user_permissions, so _handle_canvas's
+        per-recipient render gate (``if apply_rls and locked_params``) was never
+        entered and per-recipient named params were silently dropped (the
+        documented limitation).  With locked_params present the flag MUST be
+        True so the per-recipient render loop activates.
+        """
+        from app.flows.store import get_flow_store
+
+        client, owner_id, _owner_org, *_ = canvas_client_with_viewer
+
+        create_resp = await client.post(
+            "/api/v1/canvases",
+            json={"name": "Per-Recipient Canvas"},
+            headers=_auth_headers(owner_id),
+        )
+        assert create_resp.status_code == 201, create_resp.text
+        canvas_id = create_resp.json()["id"]
+
+        sched_resp = await client.post(
+            f"/api/v1/canvases/{canvas_id}/schedule",
+            json={
+                "recipients": ["alice@example.com", "bob@example.com"],
+                "format": "html",
+                "locked_params": {
+                    "alice@example.com": {"region": "EU"},
+                    "bob@example.com": {"region": "US"},
+                },
+            },
+            headers=_auth_headers(owner_id),
+        )
+        assert sched_resp.status_code == 201, sched_resp.text
+        flow_id = sched_resp.json()["flow_id"]
+
+        store = get_flow_store()
+        flow = await store.get_flow(flow_id)
+        assert flow is not None
+        task_config = (flow.get("spec") or {}).get("tasks", [{}])[0].get("config") or {}
+
+        assert task_config.get("apply_user_permissions") is True, (
+            "schedule with locked_params must set apply_user_permissions=True so "
+            "_handle_canvas enters the per-recipient render loop; otherwise the "
+            "per-recipient locked_params are silently dropped."
+        )
+        assert task_config.get("locked_params") == {
+            "alice@example.com": {"region": "EU"},
+            "bob@example.com": {"region": "US"},
+        }
+
+    @pytest.mark.asyncio
+    async def test_schedule_without_locked_params_keeps_single_render_fast_path(
+        self, canvas_client_with_viewer, fake_db
+    ):
+        """No locked_params → apply_user_permissions stays falsy (single-render fast path)."""
+        from app.flows.store import get_flow_store
+
+        client, owner_id, _owner_org, *_ = canvas_client_with_viewer
+
+        create_resp = await client.post(
+            "/api/v1/canvases",
+            json={"name": "Shared Canvas"},
+            headers=_auth_headers(owner_id),
+        )
+        assert create_resp.status_code == 201, create_resp.text
+        canvas_id = create_resp.json()["id"]
+
+        sched_resp = await client.post(
+            f"/api/v1/canvases/{canvas_id}/schedule",
+            json={"recipients": ["team@example.com"], "format": "html"},
+            headers=_auth_headers(owner_id),
+        )
+        assert sched_resp.status_code == 201, sched_resp.text
+        flow_id = sched_resp.json()["flow_id"]
+
+        store = get_flow_store()
+        flow = await store.get_flow(flow_id)
+        assert flow is not None
+        task_config = (flow.get("spec") or {}).get("tasks", [{}])[0].get("config") or {}
+
+        assert not task_config.get("apply_user_permissions"), (
+            "Empty locked_params must keep apply_user_permissions falsy so the "
+            "single-render fast path is preserved."
+        )
+
     # ── Finding 4 (MED): schedule sets top-level schedule + next_run_at ────────
 
     @pytest.mark.asyncio

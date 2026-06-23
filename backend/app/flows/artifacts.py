@@ -421,9 +421,13 @@ def _serialise(obj: Any, kind: str) -> bytes:
                 "joblib is required for artifact kind='joblib'. "
                 "Install it with: pip install joblib"
             ) from exc
-        buf = io.BytesIO()
-        joblib.dump(obj, buf)
-        return buf.getvalue()
+        # Route through _LimitedWriter so we abort mid-serialization if the
+        # object exceeds the cap, mirroring the pickle path.  joblib.dump calls
+        # .write() on the target, so _LimitedWriter is a drop-in replacement
+        # for io.BytesIO() here.
+        writer = _LimitedWriter(_ARTIFACT_MAX_BYTES)
+        joblib.dump(obj, writer)
+        return writer.getvalue()
     if kind == "bytes":
         if not isinstance(obj, (bytes, bytearray)):
             raise TypeError(

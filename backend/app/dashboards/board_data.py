@@ -81,17 +81,14 @@ _PROVIDER_MAX_BYTES: int = int(
     os.environ.get("NUBI_PROVIDER_MAX_BYTES", _DEFAULT_PROVIDER_MAX_BYTES)
 )
 
-# [LOW resource] Cap: max datastores inspected by _resolve_org_connector when
-# scanning for the first eligible (non-system, non-demo) datastore connector.
-# An org with many datastores would otherwise load them all into RAM on every
-# inline-provider call just to pick the first match.  We inspect at most this
-# many entries and pick the first eligible one.  The default (20) is generous
-# enough to survive any realistic ordering of system vs user-configured rows.
+# [LOW resource] Cap: max datastores fetched from the DB by _resolve_org_connector
+# when scanning for the first eligible (non-system, non-demo) datastore connector.
+# An org with many datastores would otherwise load them all from the DB on every
+# inline-provider call just to pick the first match.  We pass this limit directly
+# to repo.list() so the DB query uses LIMIT N — at most this many rows are
+# transferred from the database.  The default (20) is generous enough to survive
+# any realistic ordering of system vs user-configured rows.
 # Override via env var NUBI_CONNECTOR_SCAN_LIMIT.
-# Note: the underlying repo.list() call currently fetches all rows from the
-# database before Python-side slicing; a future repo-level LIMIT parameter
-# would make this a true O(1) DB read, but that requires a wider interface
-# change outside this module.
 _DEFAULT_CONNECTOR_SCAN_LIMIT = 20
 _CONNECTOR_SCAN_LIMIT: int = int(
     os.environ.get("NUBI_CONNECTOR_SCAN_LIMIT", _DEFAULT_CONNECTOR_SCAN_LIMIT)
@@ -784,24 +781,29 @@ async def _resolve_org_connector(
     Security: the repo lookup is already org-scoped (``repo.list("datastores",
     org_id)``), so cross-tenant reads are impossible here.
 
-    Bounding: we inspect at most ``_CONNECTOR_SCAN_LIMIT`` datastores (default
-    20).  For an org with many datastores, the user-configured connector almost
-    always appears in the first few rows (system/demo rows are typically
-    created first and real connectors added afterwards).  Inspecting only a
-    small prefix avoids loading thousands of rows into RAM per inline-provider
-    call.  The limit is configurable via NUBI_CONNECTOR_SCAN_LIMIT.
+    Bounding: we pass ``limit=_CONNECTOR_SCAN_LIMIT`` directly to ``repo.list``
+    so the DB query itself returns at most that many rows (default 20).  For an
+    org with many datastores, the user-configured connector almost always appears
+    in the first few rows (system/demo rows are typically created first and real
+    connectors added afterwards).  Bounding at the DB layer avoids transferring
+    thousands of rows over the wire per inline-provider call.  The limit is
+    configurable via NUBI_CONNECTOR_SCAN_LIMIT.
     """
     from app.routes.query import _get_demo_connector  # noqa: PLC0415
 
     try:
-        _all_datastores = await repo.list("datastores", org_id)
+        # [LOW resource] Bound at the DB layer: pass limit=_CONNECTOR_SCAN_LIMIT
+        # so the underlying SELECT uses LIMIT N and transfers at most that many
+        # rows from the database — not all rows followed by a Python-side slice.
+        # The Python-side slice below is a backstop for repo implementations that
+        # do not yet honour the limit kwarg.
+        _all_datastores = await repo.list(
+            "datastores", org_id, limit=_CONNECTOR_SCAN_LIMIT
+        )
     except Exception:  # noqa: BLE001
         _all_datastores = []
 
-    # [LOW resource] Bound: inspect only the first _CONNECTOR_SCAN_LIMIT rows so
-    # an org with thousands of datastores does not load them all into RAM just to
-    # pick the first eligible connector.  The slice is applied before filtering so
-    # even the Python-side iteration is bounded.
+    # Backstop: even if repo.list ignored the limit kwarg, cap iteration here.
     datastores = (_all_datastores or [])[:_CONNECTOR_SCAN_LIMIT]
 
     # Filter out system/demo datastores — only pick real user-configured connectors.

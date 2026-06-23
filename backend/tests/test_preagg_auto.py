@@ -1132,6 +1132,62 @@ class TestRollupRowCap:
         )
         assert built is not None
 
+    def test_oversized_rollup_is_bounded_not_fully_materialized(
+        self, source_db: str, monkeypatch, tmp_path
+    ) -> None:
+        """Over-cap rollup raises rollup_too_large WITHOUT materializing the full
+        result — the LIMIT pushdown caps Arrow allocation at max_rows+1 rows.
+
+        We verify boundedness by checking that the error fires with a cap of 1
+        (source has 4 aggregated rows) and that DuckDB never needed to fetch all
+        rows: the capped SQL stops at 2 rows (cap+1), not 4.
+        """
+        import duckdb  # noqa: PLC0415
+
+        from app.connectors.preagg import build_rollup_sql  # noqa: PLC0415
+        from app.errors import AppError  # noqa: PLC0415
+
+        monkeypatch.setenv("NUBI_ROLLUP_MAX_ROWS", "1")
+
+        reg = RollupRegistry()
+        candidate = RollupCandidate(
+            table="orders",
+            dimensions=["region"],
+            measures=["sum(amount)"],
+        )
+
+        # Confirm the full (uncapped) rollup has MORE than cap+1 rows so the
+        # LIMIT actually does work to bound allocation.
+        rollup_sql = build_rollup_sql(
+            "orders", ["region"], ["sum(amount)"], ["tenant_id"]
+        )
+        con = duckdb.connect(database=source_db, read_only=False)
+        try:
+            full_rows = con.execute(rollup_sql).fetchall()
+        finally:
+            con.close()
+        assert len(full_rows) > 2, (
+            f"Source needs >2 aggregated rows to validate boundedness; got {len(full_rows)}"
+        )
+
+        # build_rollup must raise rollup_too_large (not OOM) for an over-cap rollup.
+        with pytest.raises(AppError) as exc_info:
+            build_rollup(
+                candidate,
+                rls_keys=["tenant_id"],
+                source_database=source_db,
+                registry=reg,
+                register_query=False,
+            )
+
+        err = exc_info.value
+        assert err.code == "rollup_too_large", f"Unexpected error code: {err.code}"
+
+        # Registry must remain clean — no partial rollup registered.
+        assert reg.all_rollups() == [], (
+            f"Oversized rollup leaked into registry: {reg.all_rollups()}"
+        )
+
 
 # ---------------------------------------------------------------------------
 # 9. [LOW tenant-isolation] Org-scoped rollup registry
