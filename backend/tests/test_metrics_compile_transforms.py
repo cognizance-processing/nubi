@@ -29,6 +29,24 @@ from app.metrics.models import (
 # ---------------------------------------------------------------------------
 
 
+@pytest.fixture(autouse=True)
+def _relax_time_bound_guard(monkeypatch):
+    """Disable the time_comparisons date-bound guard by default for this module.
+
+    Most transform tests in this file build time_comparisons queries that assert
+    SQL SHAPE (LATERAL appears once, RANGE interval frames, re-aggregation
+    governance, ...) and intentionally exercise the UNBOUNDED tc path — they
+    predate the guard that now requires a date-range filter on the time column
+    for any tc query.  Rather than thread a synthetic date filter through every
+    one, we opt OUT of the guard here (NUBI_METRIC_REQUIRE_TIME_BOUND=0).
+
+    The dedicated guard tests (test_*_tc_*_rejected / _compiles / env opt-out)
+    re-enable or override this explicitly via their own monkeypatch.setenv so
+    they verify the real production-default behaviour.
+    """
+    monkeypatch.setenv("NUBI_METRIC_REQUIRE_TIME_BOUND", "0")
+
+
 def _orders_metric(**overrides) -> MetricDefinition:
     """Orders metric with delivered + ordered base measures (for PvD ratio)."""
     kwargs = dict(
@@ -5752,8 +5770,9 @@ def _hourly_tc_metric() -> MetricDefinition:
     )
 
 
-def test_hourly_tc_without_date_filter_rejected() -> None:
+def test_hourly_tc_without_date_filter_rejected(monkeypatch) -> None:
     """hour grain + time_comparisons + no time bound -> time_range_required."""
+    monkeypatch.delenv("NUBI_METRIC_REQUIRE_TIME_BOUND", raising=False)
     m = _hourly_tc_metric()
     mq = MetricQuery(
         metric_id="revenue",
@@ -5805,8 +5824,82 @@ def test_hourly_without_tc_not_gated() -> None:
     assert sql
 
 
-def test_coarse_grain_tc_without_date_filter_not_gated() -> None:
-    """day grain + time_comparisons without a time bound is NOT gated (coarse)."""
+def test_coarse_grain_tc_without_date_filter_rejected(monkeypatch) -> None:
+    """day grain + time_comparisons without a time bound is now GATED too.
+
+    fix (LOW): the time_range_required guard was extended from hour-only to ALL
+    grains — a coarse-grain (day/week/month/...) time-comparison query without a
+    bounding filter on the time column still fully materialises __base then
+    re-scans it per LATERAL window, so it must be gated.
+    """
+    monkeypatch.delenv("NUBI_METRIC_REQUIRE_TIME_BOUND", raising=False)
+    m = _hourly_tc_metric()
+    mq = MetricQuery(
+        metric_id="revenue",
+        dimensions=("region",),
+        time_grain="day",
+        time_comparisons=(TimeComparison(measure="revenue", kind="pop_pct"),),
+    )
+    with pytest.raises(MetricError) as ei:
+        compile_metric(m, mq)
+    assert ei.value.code == "time_range_required", ei.value.code
+
+
+def test_coarse_grain_tc_with_date_filter_compiles(monkeypatch) -> None:
+    """day grain + time_comparisons WITH a >=/<= bound compiles."""
+    monkeypatch.delenv("NUBI_METRIC_REQUIRE_TIME_BOUND", raising=False)
+    m = _hourly_tc_metric()
+    mq = MetricQuery(
+        metric_id="revenue",
+        dimensions=("region",),
+        time_grain="day",
+        time_comparisons=(TimeComparison(measure="revenue", kind="pop_pct"),),
+        filters=(
+            MetricFilter(field="created_at", op=">=", value="2026-01-01"),
+            MetricFilter(field="created_at", op="<=", value="2026-12-31"),
+        ),
+    )
+    sql, _ = compile_metric(m, mq)
+    assert sql
+
+
+def test_coarse_grain_without_tc_not_gated() -> None:
+    """A tc-free coarse query is never gated (guard is tc-scoped)."""
+    m = _hourly_tc_metric()
+    mq = MetricQuery(
+        metric_id="revenue", dimensions=("region",), time_grain="day"
+    )
+    sql, _ = compile_metric(m, mq)
+    assert sql
+
+
+def test_tc_with_default_filter_bounding_time_compiles(monkeypatch) -> None:
+    """A metric whose default_filters bound the time column needs no request bound.
+
+    The author has already governed the bucket count, so the guard is skipped.
+    """
+    monkeypatch.delenv("NUBI_METRIC_REQUIRE_TIME_BOUND", raising=False)
+    m = _simple_metric(
+        time_dimension=TimeDimension(
+            column="created_at",
+            grains=("hour", "day", "week", "month", "quarter", "year"),
+            default_grain="day",
+        ),
+        default_filters=("created_at >= DATE '2026-01-01'",),
+    )
+    mq = MetricQuery(
+        metric_id="revenue",
+        dimensions=("region",),
+        time_grain="day",
+        time_comparisons=(TimeComparison(measure="revenue", kind="pop_pct"),),
+    )
+    sql, _ = compile_metric(m, mq)
+    assert sql
+
+
+def test_tc_env_opt_out_restores_unbounded(monkeypatch) -> None:
+    """NUBI_METRIC_REQUIRE_TIME_BOUND=0 disables the guard (old behaviour)."""
+    monkeypatch.setenv("NUBI_METRIC_REQUIRE_TIME_BOUND", "0")
     m = _hourly_tc_metric()
     mq = MetricQuery(
         metric_id="revenue",

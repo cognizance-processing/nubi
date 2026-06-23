@@ -137,6 +137,53 @@ _MAX_FILTERS: int = int(os.environ.get("NUBI_MAX_FILTERS", 50))
 # O(N_dims × N_tc) resource + cardinality-explosion risk BEFORE the LIMIT lands.
 _MAX_DIMS: int = int(os.environ.get("NUBI_MAX_DIMS", 20))
 
+
+def _require_time_bound_enabled() -> bool:
+    """Whether the time_comparisons time-bound guard is active.
+
+    Default ENABLED.  Set ``NUBI_METRIC_REQUIRE_TIME_BOUND`` to ``0`` / ``false``
+    / ``off`` (case-insensitive) to disable it, restoring the old open-ended
+    behaviour where a time_comparisons query without a date bound is allowed to
+    fully materialise __base.  Read at call time (not import) so tests can
+    monkeypatch the env var.
+    """
+    val = os.environ.get("NUBI_METRIC_REQUIRE_TIME_BOUND", "")
+    return val.strip().lower() not in {"0", "false", "off"}
+
+
+# Bounding/equality ops that constitute a "date-range bound" on the time column:
+# < / <= / > / >= (range), = (single bucket), or in (an explicit finite set).
+_TIME_BOUND_OPS: frozenset[str] = frozenset({"<", "<=", ">", ">=", "=", "in"})
+
+# sqlglot node types that constitute a bounding predicate on the time column when
+# found in an author-trusted default_filter fragment (mirrors _TIME_BOUND_OPS).
+_TIME_BOUND_EXP = (exp.LT, exp.LTE, exp.GT, exp.GTE, exp.EQ, exp.In, exp.Between)
+
+
+def _default_filters_bound_time(
+    metric: MetricDefinition, time_col: str, dialect: str
+) -> bool:
+    """True iff the metric's author-trusted default_filters bound *time_col*.
+
+    A default_filter is "author-trusted" — when one of its fragments places a
+    bounding/equality predicate (``<``/``<=``/``>``/``>=``/``=``/``IN``/
+    ``BETWEEN``) directly on the time column we treat the time-bucket count as
+    already governed by the metric author and skip the time_range_required guard.
+    Parse failures are treated as "no bound" (fail toward requiring an explicit
+    request bound).
+    """
+    for frag in metric.default_filters:
+        try:
+            cond = sqlglot.condition(frag, dialect=dialect)
+        except Exception:
+            continue
+        for node in cond.walk():
+            if isinstance(node, _TIME_BOUND_EXP):
+                for col in node.find_all(exp.Column):
+                    if col.name == time_col:
+                        return True
+    return False
+
 # Valid SQL identifier pattern (for entity/time columns in latest_snapshot)
 _IDENT_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
@@ -1822,34 +1869,46 @@ def _govern(metric: MetricDefinition, mq: MetricQuery) -> str | None:
                 f"(set NUBI_MAX_TC_ENTRIES to override).",
             )
 
-        # FIX (MED resource — unbounded __base time-bucket explosion): the
-        # layered compiler builds __base as a GROUP BY over (dims × time
-        # buckets); time_comparisons then layer window fns / correlated
-        # LATERALs over it, and the outer LIMIT only prunes AFTER that full
-        # materialisation.  At the FINEST grain ('hour') the number of time
-        # buckets is unbounded by anything but the data's time span, so a
-        # time-comparison query at hour grain WITHOUT an explicit bound on the
-        # time column can materialise O(dim_cardinality × every_hour) rows
-        # before the LIMIT lands.  Require a date-range bound on the time column
-        # so the bucket count is governed by the operator's request, not the
-        # full table.  Only the finest grain is gated — coarser grains
-        # (day/week/...) are inherently bounded enough — so this cannot reject
-        # the common day/month time-series + comparison queries.
-        if mq.time_grain == "hour" and time_col is not None:
-            # A "date-range bound" is any bounding/equality op on the time
-            # column: <, <=, >, >= (range), = (single bucket), or in (an
-            # explicit finite set of buckets).
-            _BOUND_OPS = frozenset({"<", "<=", ">", ">=", "=", "in"})
-            has_time_bound = any(
-                f.field == time_col and f.op in _BOUND_OPS for f in mq.filters
+        # FIX (LOW resource — unbounded __base time-bucket explosion at ALL
+        # grains): the layered compiler builds __base as a GROUP BY over
+        # (dims × time buckets); time_comparisons then layer window fns /
+        # correlated LATERALs over it, and the outer LIMIT only prunes AFTER that
+        # full materialisation.  fix-52 gated ONLY the finest grain ('hour'), but
+        # coarse grains (day/week/month/...) WITHOUT a date bound still fully
+        # materialise __base and then re-scan it per LATERAL window — for a
+        # multi-year daily series that is O(dim_cardinality × every_day) rows
+        # before the LIMIT lands.  We therefore require a bounding/equality
+        # filter on the time column for ANY time_grain whenever time_comparisons
+        # is non-empty, so the bucket count is governed by the caller's request
+        # rather than the full table.
+        #
+        # Exceptions (no guard):
+        #   * the metric's author-trusted default_filters already bound the time
+        #     column (the author has governed the bucket count), or
+        #   * NUBI_METRIC_REQUIRE_TIME_BOUND is disabled (env opt-out), restoring
+        #     the old open-ended behaviour.
+        #
+        # The prior hour-grain message/behaviour is subsumed by this general
+        # check (an unbounded hour-grain tc query still raises time_range_required).
+        if (
+            time_col is not None
+            and _require_time_bound_enabled()
+        ):
+            has_request_bound = any(
+                f.field == time_col and f.op in _TIME_BOUND_OPS
+                for f in mq.filters
             )
-            if not has_time_bound:
+            if not has_request_bound and not _default_filters_bound_time(
+                metric, time_col, _DEFAULT_DIALECT
+            ):
                 raise MetricError(
                     "time_range_required",
-                    f"Time comparisons at the finest grain ('hour') on metric "
-                    f"{metric.id!r} require an explicit date-range filter on the "
-                    f"time column {time_col!r} (e.g. >=/<= bounds) to bound the "
-                    f"number of time buckets materialised in __base.",
+                    f"Time comparisons on metric {metric.id!r} require an "
+                    f"explicit date-range filter on the time column "
+                    f"{time_col!r} (e.g. >=/<= bounds, = a single bucket, or IN "
+                    f"an explicit set) to bound the number of time buckets "
+                    f"materialised in __base. Set "
+                    f"NUBI_METRIC_REQUIRE_TIME_BOUND=0 to disable this guard.",
                 )
 
         for tc in mq.time_comparisons:
