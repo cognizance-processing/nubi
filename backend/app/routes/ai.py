@@ -73,8 +73,9 @@ from pydantic import BaseModel
 
 from app.ai.grounding import build_catalog, build_prompt, ground
 from app.ai.provider import get_provider
-from app.auth.deps import current_user
+from app.auth.deps import current_user, verified_identity
 from app.auth.roles import require_writer, require_writer_default
+from app.auth.verify import VerifiedIdentity
 from app.compute.metering import record_usage
 from app.errors import AppError
 from app.features import enforce_quota
@@ -668,6 +669,7 @@ class ChatResponse(BaseModel):
 async def ai_chat(
     body: ChatRequest,
     _user: dict[str, Any] = Depends(current_user),
+    identity: VerifiedIdentity = Depends(verified_identity),
 ) -> ChatResponse:
     """Run the agentic AI chat loop and return a reply + the tool actions taken.
 
@@ -711,14 +713,16 @@ async def ai_chat(
     provider = get_provider()
 
     # Build first-party claims from the authenticated user.
-    # For first-party callers, policies are empty (no RLS restrictions).
     # SECURITY: carry the resolved org so metric tools can tenant-scope a
     # slug resolution against the shared (process-global) metric registry.
+    # Propagate any RLS policies from the verified token so that scoped
+    # internal / service-to-service callers do not have their policies
+    # silently stripped when the agent executes tool calls.
     claims: dict[str, Any] = {
         "kind": "access",
         "sub": str(_user.get("id", "")),
         "org": org_id,
-        "policies": {},
+        "policies": dict(identity.policies or {}),
         "scope": ["read:*", "write:*"],
     }
 
@@ -745,6 +749,7 @@ async def ai_chat(
 async def ai_chat_stream(
     body: ChatRequest,
     _user: dict[str, Any] = Depends(current_user),
+    identity: VerifiedIdentity = Depends(verified_identity),
 ) -> StreamingResponse:
     """Streaming variant of POST /ai/chat — Server-Sent Events.
 
@@ -768,11 +773,13 @@ async def ai_chat_stream(
     # when dispatched (the stream may be abandoned mid-flight by the client).
     await _record_ai_call(_user, org_id, endpoint="ai_chat_stream")
 
+    # Propagate any RLS policies from the verified token — same reasoning as
+    # ai_chat above (defense-in-depth for scoped / service-to-service callers).
     claims: dict[str, Any] = {
         "kind": "access",
         "sub": str(_user.get("id", "")),
         "org": org_id,
-        "policies": {},
+        "policies": dict(identity.policies or {}),
         "scope": ["read:*", "write:*"],
     }
     messages = [{"role": m.role, "content": m.content} for m in body.messages]

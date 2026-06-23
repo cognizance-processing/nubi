@@ -66,6 +66,8 @@ from app.dashboards.spec import (
     Widget,
     WidgetPos,
     WidgetSource,
+    _BASE_CTE_MAX_BYTES,
+    _SPEC_MAX_DATA_PROVIDERS,
     get_surface_layout,
     migrate_spec_to_surfaces,
     spec_json_schema,
@@ -1814,3 +1816,101 @@ class TestBet3Validation:
         spec, issues = validate_spec(data)
         assert spec is None, "Expected parse failure for invalid provider kind"
         assert len(issues) > 0
+
+
+# ---------------------------------------------------------------------------
+# Input-cap tests: base_cte max length + data list max length
+# ---------------------------------------------------------------------------
+
+
+class TestSpecInputCaps:
+    """Pydantic enforces _BASE_CTE_MAX_BYTES and _SPEC_MAX_DATA_PROVIDERS caps."""
+
+    # -- base_cte ----------------------------------------------------------------
+
+    def test_base_cte_at_limit_accepted(self):
+        """A base_cte exactly at the byte limit is accepted."""
+        cte = "A" * _BASE_CTE_MAX_BYTES
+        p = DataProvider(id="p1", kind="inline", base_cte=cte, results=[])
+        assert len(p.base_cte) == _BASE_CTE_MAX_BYTES
+
+    def test_base_cte_over_limit_rejected(self):
+        """A base_cte one byte over the limit is rejected by Pydantic."""
+        import pytest
+        from pydantic import ValidationError
+
+        cte = "A" * (_BASE_CTE_MAX_BYTES + 1)
+        with pytest.raises(ValidationError):
+            DataProvider(id="p1", kind="inline", base_cte=cte, results=[])
+
+    def test_oversized_base_cte_rejected_via_validate_spec(self):
+        """validate_spec returns None + issues for an oversized base_cte."""
+        data = _make_provider_spec()
+        data["data"][0]["base_cte"] = "X" * (_BASE_CTE_MAX_BYTES + 1)
+        spec, issues = validate_spec(data)
+        assert spec is None, "Oversized base_cte should cause validate_spec to return None"
+        assert len(issues) > 0
+
+    def test_normal_base_cte_passes_validate_spec(self):
+        """A normal (small) base_cte is accepted by validate_spec."""
+        data = _make_provider_spec()
+        data["data"][0]["base_cte"] = "WITH base AS (SELECT 1)"
+        spec, issues = validate_spec(data)
+        assert spec is not None, f"Normal base_cte should pass; issues: {issues}"
+
+    def test_none_base_cte_accepted(self):
+        """base_cte=None (flow provider) is always accepted regardless of the cap."""
+        p = DataProvider(id="p2", kind="flow", base_cte=None, results=[])
+        assert p.base_cte is None
+
+    # -- data list ---------------------------------------------------------------
+
+    def test_data_list_at_limit_accepted(self):
+        """A data list with exactly _SPEC_MAX_DATA_PROVIDERS entries is accepted."""
+        providers = [
+            {"id": f"p{i}", "kind": "flow", "params": {}, "base_cte": None, "results": []}
+            for i in range(_SPEC_MAX_DATA_PROVIDERS)
+        ]
+        data = _good_spec_dict()
+        data["data"] = providers
+        spec, issues = validate_spec(data)
+        assert spec is not None, f"Data list at limit should pass; issues: {issues}"
+        assert len(spec.data) == _SPEC_MAX_DATA_PROVIDERS
+
+    def test_data_list_over_limit_rejected(self):
+        """A data list one entry over _SPEC_MAX_DATA_PROVIDERS is rejected by Pydantic."""
+        import pytest
+        from pydantic import ValidationError
+
+        providers = [
+            DataProvider(id=f"p{i}", kind="flow", results=[])
+            for i in range(_SPEC_MAX_DATA_PROVIDERS + 1)
+        ]
+        with pytest.raises(ValidationError):
+            DashboardSpec(
+                version=1,
+                title="Overflow",
+                layout={"cols": 12, "row_height": 60},
+                widgets=[],
+                data=providers,
+            )
+
+    def test_oversized_data_list_rejected_via_validate_spec(self):
+        """validate_spec returns None + issues for a data list exceeding the cap."""
+        providers = [
+            {"id": f"p{i}", "kind": "flow", "params": {}, "base_cte": None, "results": []}
+            for i in range(_SPEC_MAX_DATA_PROVIDERS + 1)
+        ]
+        data = _good_spec_dict()
+        data["data"] = providers
+        spec, issues = validate_spec(data)
+        assert spec is None, (
+            "Over-cap data list should cause validate_spec to return None"
+        )
+        assert len(issues) > 0
+
+    def test_empty_data_list_passes(self):
+        """An empty data list (default) always passes."""
+        spec, issues = validate_spec(_good_spec_dict())
+        assert spec is not None
+        assert spec.data == []

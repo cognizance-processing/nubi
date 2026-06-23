@@ -4553,3 +4553,151 @@ async def test_route_rejects_params_too_large_bytes(route_client) -> None:
     assert resp.status_code == 400
     body = resp.json()
     assert body["error"]["code"] == "params_too_large"
+
+
+# ---------------------------------------------------------------------------
+# NEW [MED]: inline provider — concurrent requests are bounded (429 on contention)
+# NEW [MED]: inline provider — slow execution 504s at exec timeout
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_inline_provider_concurrent_requests_bounded_429(repo: InMemoryRepo) -> None:
+    """Concurrent cache-miss requests on an inline provider are bounded by the
+    per-(org, provider) semaphore.  When all slots are occupied and a new request
+    waits beyond _INLINE_PROVIDER_TIMEOUT_S, it receives a 429 'provider_busy'.
+
+    We simulate a fully-occupied semaphore by pre-acquiring all slots on a fresh
+    1-slot semaphore injected via _get_inline_provider_semaphore, then making a
+    new request with a short timeout.  The request cannot acquire and must raise
+    provider_busy (429).
+    """
+    import app.dashboards.board_data as bd
+
+    # Build a fresh 1-slot semaphore and pre-acquire its only slot to simulate
+    # a fully occupied semaphore (in-flight request holding the concurrency cap).
+    occupied_sem = bd._CountingSemaphore(1)
+    await occupied_sem.acquire()  # pre-occupy all capacity
+
+    try:
+        with (
+            # Redirect _get_inline_provider_semaphore to return our pre-occupied sem.
+            patch.object(bd, "_get_inline_provider_semaphore", return_value=occupied_sem),
+            # Short acquisition timeout so the test completes quickly.
+            patch.object(bd, "_INLINE_PROVIDER_TIMEOUT_S", 0.05),
+            patch("app.features.enforce_quota", new=AsyncMock()),
+        ):
+            with pytest.raises(AppError) as exc_info:
+                await resolve_provider_data(
+                    board_id=_BOARD_ID,
+                    provider_id=_PROVIDER_ID,
+                    params={"req": "contended"},
+                    org_id=_ORG,
+                    claims={"policies": {}},
+                    repo=repo,
+                )
+    finally:
+        occupied_sem.release()  # clean up the pre-acquired slot
+
+    assert exc_info.value.code == "provider_busy", (
+        f"Expected provider_busy (429), got code={exc_info.value.code!r}"
+    )
+    assert exc_info.value.status == 429, (
+        f"Expected HTTP 429, got {exc_info.value.status}"
+    )
+
+
+@pytest.mark.asyncio
+async def test_inline_provider_slow_execution_504s(repo: InMemoryRepo) -> None:
+    """A slow inline provider raises provider_timeout (504) at the exec timeout.
+
+    The per-(org, provider) slot is acquired fine, but post-acquisition execution
+    exceeds _INLINE_PROVIDER_EXEC_TIMEOUT_S, triggering a 504 'provider_timeout'.
+    The slot must be released in the finally block so subsequent requests can proceed.
+    """
+    import app.dashboards.board_data as bd
+
+    async def _slow_inline(*args: Any, **kwargs: Any) -> dict[str, pa.Table]:
+        await asyncio.sleep(60)  # far longer than the patched exec timeout
+        return {"revenue": _make_arrow_table(1)}
+
+    with (
+        patch.object(bd, "_INLINE_PROVIDER_EXEC_TIMEOUT_S", 0.05),
+        patch.object(bd, "_resolve_inline_provider", new=_slow_inline),
+        patch("app.features.enforce_quota", new=AsyncMock()),
+    ):
+        with pytest.raises(AppError) as exc_info:
+            await resolve_provider_data(
+                board_id=_BOARD_ID,
+                provider_id=_PROVIDER_ID,
+                params={},
+                org_id=_ORG,
+                claims={"policies": {}},
+                repo=repo,
+            )
+
+    assert exc_info.value.code == "provider_timeout", (
+        f"Expected provider_timeout (504), got code={exc_info.value.code!r}"
+    )
+    assert exc_info.value.status == 504, (
+        f"Expected HTTP 504, got {exc_info.value.status}"
+    )
+
+    # Slot must be released after the timeout (semaphore is idle again).
+    assert bd._get_inline_provider_semaphore(_ORG, _PROVIDER_ID).is_idle(), (
+        "Inline provider semaphore slot leaked after exec-timeout — "
+        "slot must be released in the finally block."
+    )
+
+
+@pytest.mark.asyncio
+async def test_inline_provider_exec_timeout_releases_slot_for_next_request(
+    repo: InMemoryRepo,
+) -> None:
+    """After a 504 exec-timeout, the inline semaphore slot is freed and a
+    subsequent fast request succeeds — proving the finally-release path works.
+    """
+    import app.dashboards.board_data as bd
+
+    # First: trigger a slow execution that times out.
+    async def _slow_inline(*args: Any, **kwargs: Any) -> dict[str, pa.Table]:
+        await asyncio.sleep(60)
+        return {"revenue": _make_arrow_table(1)}
+
+    with (
+        patch.object(bd, "_INLINE_PROVIDER_EXEC_TIMEOUT_S", 0.05),
+        patch.object(bd, "_resolve_inline_provider", new=_slow_inline),
+        patch("app.features.enforce_quota", new=AsyncMock()),
+    ):
+        with pytest.raises(AppError) as exc_info:
+            await resolve_provider_data(
+                board_id=_BOARD_ID,
+                provider_id=_PROVIDER_ID,
+                params={},
+                org_id=_ORG,
+                claims={"policies": {}},
+                repo=repo,
+            )
+    assert exc_info.value.code == "provider_timeout"
+
+    # Second: a fast request on the same (org, provider) with distinct params
+    # (cache miss → real execution path) should succeed now that the slot is free.
+    async def _fast_inline(*args: Any, **kwargs: Any) -> dict[str, pa.Table]:
+        return {"revenue": _make_arrow_table(2)}
+
+    with (
+        patch.object(bd, "_resolve_inline_provider", new=_fast_inline),
+        patch("app.features.enforce_quota", new=AsyncMock()),
+    ):
+        tables = await resolve_provider_data(
+            board_id=_BOARD_ID,
+            provider_id=_PROVIDER_ID,
+            params={"k": "v2"},  # distinct params → fresh cache miss → real execution
+            org_id=_ORG,
+            claims={"policies": {}},
+            repo=repo,
+        )
+    assert tables["revenue"].num_rows == 2, (
+        "Fast follow-up request failed — semaphore slot may not have been released "
+        "after the exec-timeout."
+    )

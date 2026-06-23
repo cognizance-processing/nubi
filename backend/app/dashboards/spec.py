@@ -481,6 +481,15 @@ _DEFAULT_WIDGET_HINTS = WidgetExportHints()
 # provider specs are rejected at validation time, before they reach the resolver.
 _PROVIDER_MAX_RESULTS_SPEC: int = 100
 
+# Maximum byte length for a DataProvider.base_cte SQL preamble.  64 KiB is
+# generous for any realistic CTE block; above that the planner re-parse cost
+# per cache-miss becomes unreasonable.
+_BASE_CTE_MAX_BYTES: int = 65_536
+
+# Maximum number of DataProvider entries in DashboardSpec.data.  Enforced at
+# parse time so oversized provider lists are rejected before store/execute.
+_SPEC_MAX_DATA_PROVIDERS: int = 200
+
 
 class ProviderResult(BaseModel):
     """A single named result-set produced by a :class:`DataProvider`.
@@ -553,9 +562,11 @@ class DataProvider(BaseModel):
     )
     base_cte: str | None = Field(
         default=None,
+        max_length=_BASE_CTE_MAX_BYTES,
         description=(
             "Shared base CTE SQL preamble for kind='inline' providers. "
-            "None for flow-backed providers."
+            "None for flow-backed providers. "
+            f"Maximum {_BASE_CTE_MAX_BYTES} bytes."
         ),
     )
     results: list[ProviderResult] = Field(
@@ -971,12 +982,13 @@ class DashboardSpec(BaseModel):
     )
     data: list[DataProvider] = Field(
         default_factory=list,
+        max_length=_SPEC_MAX_DATA_PROVIDERS,
         description=(
             "Board-level DataProvider declarations (BET-3 semantic engine). "
             "Empty list (default) = absent / not configured. Each entry declares "
             "a named data source that widgets can bind to via 'widget.source'. "
             "See DataProvider for the full contract and the later-wave notes on "
-            "the resolver + route."
+            f"the resolver + route. Maximum {_SPEC_MAX_DATA_PROVIDERS} entries."
         ),
     )
 

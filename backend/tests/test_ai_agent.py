@@ -31,6 +31,7 @@ from __future__ import annotations
 
 import uuid
 from typing import Any
+from unittest.mock import patch
 
 import pytest
 import pytest_asyncio
@@ -852,3 +853,44 @@ class TestAiChatEndpoint:
         assert "actions" in body, "Response must include 'actions'"
         assert isinstance(body["reply"], str) and body["reply"]
         assert isinstance(body["actions"], list)
+
+    # -------------------------------------------------------------------------
+    # RLS policy propagation (defense-in-depth)
+    # -------------------------------------------------------------------------
+
+    @pytest.mark.asyncio
+    async def test_chat_token_policies_propagated_to_agent_claims(self, agent_client):
+        """A token that carries RLS policies must NOT have them stripped.
+
+        When a first-party (or service-to-service) token is minted with
+        ``policies={'org_id': 'acme'}`` the agent's ``claims['policies']``
+        must mirror those policies exactly — previously the handler hardcoded
+        ``'policies': {}`` causing a silent RLS bypass for scoped callers.
+        """
+        ac, user_id = agent_client
+
+        # Mint a token that carries an RLS policy claim.
+        token = mint_access_token(user_id, extra_claims={"policies": {"org_id": "acme"}})
+        headers = {"Authorization": f"Bearer {token}"}
+
+        captured: list[dict[str, Any]] = []
+
+        # Intercept run_agent to inspect the claims it receives.
+        original_run_agent = run_agent
+
+        def _capturing_run_agent(messages, provider, claims, **kwargs):
+            captured.append(dict(claims))
+            return original_run_agent(messages, provider, claims, **kwargs)
+
+        with patch("app.ai.agent.run_agent", side_effect=_capturing_run_agent):
+            resp = await ac.post(
+                "/api/v1/ai/chat",
+                json={"messages": [{"role": "user", "content": "show me the data"}]},
+                headers=headers,
+            )
+
+        assert resp.status_code == 200, f"Unexpected status: {resp.status_code} {resp.text}"
+        assert captured, "run_agent was not called — test cannot verify policies"
+        assert captured[0].get("policies") == {"org_id": "acme"}, (
+            f"Expected policies={{'org_id': 'acme'}}, got {captured[0].get('policies')!r}"
+        )

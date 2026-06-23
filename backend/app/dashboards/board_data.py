@@ -198,6 +198,45 @@ _FLOW_PROVIDER_EXEC_TIMEOUT_S: float = float(
 )
 
 # ---------------------------------------------------------------------------
+# Per-(org_id, provider_id) INLINE provider concurrency guard
+# ---------------------------------------------------------------------------
+# kind='inline' providers call _resolve_inline_provider which executes SQL
+# directly against the org's connector (or the demo singleton).  Without a
+# concurrency cap, N concurrent cache-miss requests each run a live SQL query,
+# potentially exhausting the thread-pool or the DB connection pool.
+#
+# Fix: mirror the per-(org, provider) asyncio.Semaphore guard used for the
+# flow-provider path.  A separate registry keeps inline and flow limits
+# independently tunable.
+#
+# NUBI_INLINE_PROVIDER_CONCURRENCY : max concurrent inline SQL runs per (org, provider)
+#   (default 4 — same as flow interactive ceiling).
+# NUBI_INLINE_PROVIDER_TIMEOUT_S   : wait timeout before 429 "provider_busy"
+#   (default 10 s — same as flow path; applies only to slot ACQUISITION).
+# NUBI_INLINE_PROVIDER_EXEC_TIMEOUT_S : post-acquisition wall-clock execution
+#   timeout before 504 "provider_timeout" (default 60 s — inline SQL should be
+#   faster than a full multi-step flow, so we use a shorter budget).
+# NUBI_INLINE_PROVIDER_SEM_CAP     : max semaphore registry entries (default 1024).
+_DEFAULT_INLINE_PROVIDER_CONCURRENCY = 4
+_INLINE_PROVIDER_CONCURRENCY: int = int(
+    os.environ.get("NUBI_INLINE_PROVIDER_CONCURRENCY", _DEFAULT_INLINE_PROVIDER_CONCURRENCY)
+)
+_DEFAULT_INLINE_PROVIDER_TIMEOUT_S = 10.0
+_INLINE_PROVIDER_TIMEOUT_S: float = float(
+    os.environ.get("NUBI_INLINE_PROVIDER_TIMEOUT_S", _DEFAULT_INLINE_PROVIDER_TIMEOUT_S)
+)
+_DEFAULT_INLINE_PROVIDER_EXEC_TIMEOUT_S = 60.0
+_INLINE_PROVIDER_EXEC_TIMEOUT_S: float = float(
+    os.environ.get(
+        "NUBI_INLINE_PROVIDER_EXEC_TIMEOUT_S", _DEFAULT_INLINE_PROVIDER_EXEC_TIMEOUT_S
+    )
+)
+_DEFAULT_INLINE_PROVIDER_SEM_CAP = 1024
+_INLINE_PROVIDER_SEM_CAP: int = int(
+    os.environ.get("NUBI_INLINE_PROVIDER_SEM_CAP", _DEFAULT_INLINE_PROVIDER_SEM_CAP)
+)
+
+# ---------------------------------------------------------------------------
 # _CountingSemaphore — thin acquire/release-counting wrapper
 # ---------------------------------------------------------------------------
 # asyncio.Semaphore exposes ``_value`` (remaining token count) as a private
@@ -379,6 +418,58 @@ def _get_flow_provider_semaphore(org_id: str, provider_id: str) -> "_CountingSem
         sem = _CountingSemaphore(_FLOW_PROVIDER_CONCURRENCY)
         _flow_provider_semaphores[key] = sem
         return sem
+
+
+# ---------------------------------------------------------------------------
+# Per-(org_id, provider_id) INLINE provider semaphore registry
+# ---------------------------------------------------------------------------
+# Mirrors _flow_provider_semaphores for kind='inline' providers.
+_inline_provider_semaphores: "_collections.OrderedDict[tuple[str, str], _CountingSemaphore]" = (
+    _collections.OrderedDict()
+)
+_inline_provider_semaphores_lock = threading.Lock()
+
+
+def _inline_provider_semaphore_is_idle(sem: "_CountingSemaphore") -> bool:
+    """Return True when *sem* (inline registry) has no in-flight callers."""
+    return sem.is_idle()
+
+
+def _evict_idle_inline_provider_semaphores() -> None:
+    """Evict LRU idle entries from _inline_provider_semaphores until len <= cap.
+
+    Mirrors _evict_idle_flow_provider_semaphores for the inline registry.
+    Called while holding _inline_provider_semaphores_lock.
+    """
+    target = _INLINE_PROVIDER_SEM_CAP - 1
+    idle_keys = [
+        k for k, sem in _inline_provider_semaphores.items()
+        if _inline_provider_semaphore_is_idle(sem)
+    ]
+    for key in idle_keys:
+        if len(_inline_provider_semaphores) <= target:
+            break
+        _inline_provider_semaphores.pop(key, None)
+
+
+def _get_inline_provider_semaphore(org_id: str, provider_id: str) -> "_CountingSemaphore":
+    """Return the _CountingSemaphore for *(org_id, provider_id)* (inline registry).
+
+    LRU-capped via _INLINE_PROVIDER_SEM_CAP; concurrency limited to
+    _INLINE_PROVIDER_CONCURRENCY.  Mirrors _get_flow_provider_semaphore.
+    """
+    key = (org_id, provider_id)
+    with _inline_provider_semaphores_lock:
+        sem = _inline_provider_semaphores.get(key)
+        if sem is not None:
+            _inline_provider_semaphores.move_to_end(key)
+            return sem
+        if len(_inline_provider_semaphores) >= _INLINE_PROVIDER_SEM_CAP:
+            _evict_idle_inline_provider_semaphores()
+        sem = _CountingSemaphore(_INLINE_PROVIDER_CONCURRENCY)
+        _inline_provider_semaphores[key] = sem
+        return sem
+
 
 # ---------------------------------------------------------------------------
 # Per-connector threading lock registry
@@ -953,6 +1044,16 @@ async def _resolve_inline_provider(
                 # FIX [LOW injection]: validate result-name before interpolation
                 # into SQL so an attacker-influenced name cannot inject SQL.
                 _validate_result_name(r.name)
+                # SAFETY NOTE [LOW base_cte concat]: base_cte is user-supplied SQL
+                # f-string concatenated with a validated result-name, but the
+                # combined SQL is NEVER raw-injected into the connector — it is
+                # always parsed by planner_plan (sqlglot) first, and only the
+                # resulting physical_plan object is passed to connector.execute.
+                # A malformed or injected base_cte would cause a parse error here
+                # (caught by the except block below) rather than reaching the DB.
+                # The defensive guard below ensures the plan object is non-None
+                # before execution, blocking any future code path that might skip
+                # the planner step.
                 inner_sql = f"{provider.base_cte.rstrip(';')} SELECT * FROM {r.name}"
                 if _ROW_CAP > 0:
                     sql = f"SELECT * FROM ({inner_sql}) AS _nubi_inline_capped LIMIT {_ROW_CAP}"
@@ -974,6 +1075,18 @@ async def _resolve_inline_provider(
                         claims={"policies": policies},
                         params=[],
                     )
+                    # Defensive guard: planner_plan must return a non-None plan
+                    # object.  If it returns None (a future regression where the
+                    # planner is accidentally made optional) we raise immediately
+                    # rather than passing None to connector.execute, which would
+                    # silently bypass the parse+RLS step.
+                    if physical_plan is None:
+                        raise AppError(
+                            "inline_plan_error",
+                            f"Provider {provider.id!r} result {r.name!r}: "
+                            "planner returned None — refusing to execute un-parsed SQL.",
+                            500,
+                        )
                     # Use the connector resolved once above (hoisted out of the loop).
                     # FIX [MED connector]: resolve the org's actual connector rather
                     # than always falling back to the demo singleton.
@@ -1572,7 +1685,41 @@ async def resolve_provider_data(
         finally:
             _sem.release()
     elif provider.kind == "inline":
-        tables = await _resolve_inline_provider(provider, merged_params, org_id, claims, repo)
+        # FIX [MED inline concurrency]: mirror the flow-provider semaphore guard
+        # for the inline path.  Without it, N concurrent cache-miss requests each
+        # call _resolve_inline_provider directly, holding the per-connector lock
+        # and exhausting the thread/DB pool.  Apply a per-(org, provider)
+        # _CountingSemaphore + asyncio.wait_for for both the acquisition timeout
+        # (→ 429 "provider_busy") and the post-acquisition execution timeout
+        # (→ 504 "provider_timeout"), mirroring the flow-path guard exactly.
+        _inline_sem = _get_inline_provider_semaphore(org_id, provider_id)
+        try:
+            await asyncio.wait_for(
+                _inline_sem.acquire(),
+                timeout=_INLINE_PROVIDER_TIMEOUT_S,
+            )
+        except asyncio.TimeoutError:
+            raise AppError(
+                "provider_busy",
+                f"Provider {provider_id!r} is currently busy. "
+                f"Too many concurrent inline requests — retry after a moment.",
+                429,
+            )
+        try:
+            tables = await asyncio.wait_for(
+                _resolve_inline_provider(provider, merged_params, org_id, claims, repo),
+                timeout=_INLINE_PROVIDER_EXEC_TIMEOUT_S,
+            )
+        except asyncio.TimeoutError:
+            raise AppError(
+                "provider_timeout",
+                f"Provider {provider_id!r} inline execution exceeded "
+                f"{_INLINE_PROVIDER_EXEC_TIMEOUT_S:g}s "
+                f"(set NUBI_INLINE_PROVIDER_EXEC_TIMEOUT_S to raise the limit).",
+                504,
+            )
+        finally:
+            _inline_sem.release()
     else:
         raise AppError(
             "unknown_provider_kind",
