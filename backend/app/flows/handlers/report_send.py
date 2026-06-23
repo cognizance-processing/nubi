@@ -215,9 +215,6 @@ def handle(
     apply_rls: bool = bool(config.get("apply_user_permissions", False))
     locked_params: dict[str, dict[str, Any]] = dict(config.get("locked_params") or {})
 
-    # Captured RLS policies (set at schedule-definition time, no JWT at tick).
-    policies: dict[str, Any] = dict(config.get("policies") or {})
-
     # Notify channels (optional — Slack/Teams/etc in addition to email).
     notify_channels_cfg: list[dict[str, Any]] = list(config.get("notify_channels") or [])
 
@@ -233,12 +230,16 @@ def handle(
     if not subject:
         subject = f"Nubi Report: {board.get('name', board_id)}"
 
-    # ── 3. Build claims with captured policies (for RLS-aware renders) ────────
-    # Inject the captured policy view so render_report / _iter_widget_tables
-    # honours per-schedule RLS even without a live JWT.
+    # ── 3. Build claims for RLS-aware renders ─────────────────────────────────
+    # SECURITY [RLS cross-tenant]: render_claims is ALWAYS exactly the
+    # runtime-stamped exec_claims (the flow OWNER's verified policy snapshot,
+    # applied by _claims_with_owner_policies BEFORE handle() runs).  We must NOT
+    # let user-supplied config['policies'] override it — a first-party writer
+    # storing config.policies={other_tenant} in a flow spec would otherwise
+    # bypass the owner-policy snapshot and exfiltrate cross-tenant rows.
+    # Per-recipient row isolation comes from locked_params (named query params)
+    # only, never from policy overrides.
     render_claims: dict[str, Any] = dict(claims or {})
-    if policies:
-        render_claims["policies"] = policies  # task config always takes precedence
 
     # ── 4. Render + deliver ───────────────────────────────────────────────────
     sender = get_default_sender()
@@ -701,9 +702,6 @@ def _handle_canvas(
     apply_rls: bool = bool(config.get("apply_user_permissions", False))
     locked_params: dict[str, dict[str, Any]] = dict(config.get("locked_params") or {})
 
-    # Captured RLS policies.
-    policies: dict[str, Any] = dict(config.get("policies") or {})
-
     # Notify channels.
     notify_channels_cfg: list[dict[str, Any]] = list(config.get("notify_channels") or [])
 
@@ -720,9 +718,14 @@ def _handle_canvas(
         subject = f"Nubi Report: {canvas.get('name', canvas_id)}"
 
     # ── 3. Build render_claims ────────────────────────────────────────────────
+    # SECURITY [RLS cross-tenant]: render_claims is ALWAYS exactly the
+    # runtime-stamped exec_claims (the flow OWNER's verified policy snapshot,
+    # applied by _claims_with_owner_policies BEFORE handle() runs).  We must NOT
+    # let user-supplied config['policies'] override it — that would bypass the
+    # owner-policy snapshot and exfiltrate cross-tenant rows via a scheduled
+    # canvas report.  Per-recipient isolation flows through locked_params as
+    # extra NAMED query params only (extra_params), never as policy overrides.
     render_claims: dict[str, Any] = dict(claims or {})
-    if policies:
-        render_claims["policies"] = policies
 
     # ── 4. Render + deliver ───────────────────────────────────────────────────
     sender = get_default_sender()

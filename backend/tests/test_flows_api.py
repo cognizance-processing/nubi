@@ -727,3 +727,36 @@ class TestFlowScheduling:
             json={"name": "x", "query_id": "q", "schedule": "interval:1h"},
         )
         assert resp.status_code == 401
+
+
+# ---------------------------------------------------------------------------
+# /flows/compile runs user Python through the hardened sandbox (run_sandboxed),
+# NOT a raw subprocess.run that inherits the parent's full env / fs.
+# ---------------------------------------------------------------------------
+
+
+def test_compile_route_uses_run_sandboxed():
+    """The compile route must dispatch user Python via
+    app.compute.sandbox.run_sandboxed (the M4-SEC hardened path) and must NOT
+    fall back to a raw subprocess.run."""
+    import inspect
+
+    from app.routes.flows import compile_code
+
+    src = inspect.getsource(compile_code)
+    assert "run_sandboxed(" in src, "compile route must use run_sandboxed"
+    assert "subprocess.run(" not in src, (
+        "compile route must NOT use raw subprocess.run (loses sandbox hardening)"
+    )
+
+
+def test_compile_route_maps_timeout_to_compile_error():
+    """A sandbox timeout (run.timed_out) maps to AppError('compile_error', 400)."""
+    import inspect
+
+    from app.routes.flows import compile_code
+
+    src = inspect.getsource(compile_code)
+    assert "timed_out" in src
+    # The timeout branch raises a compile_error AppError.
+    assert "compile_error" in src

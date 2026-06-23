@@ -486,11 +486,16 @@ class InMemoryFlowStore:
         flow_run_id:
             The flow run whose task_runs are listed.
         limit:
-            Maximum number of rows to return.  When ``None`` (default) ALL
-            rows are returned — callers should supply a bound when using this
-            in a response path to avoid unbounded serialization.  SQL-level
-            LIMIT equivalent for the in-memory store.
+            Maximum number of rows to return.  When ``None`` (default) the cap
+            is the per-run ceiling ``_MAX_TASK_RUNS_PER_RUN`` so the full-row
+            load is bounded even on the map fan-in / readiness path (which
+            calls this with no explicit limit).  This is complete up to the
+            ceiling that fan-out already enforces, so readiness/drain
+            correctness is preserved.  Pass an explicit value to override (e.g.
+            a tighter per-route cap).  SQL-level LIMIT equivalent for the
+            in-memory store.
         """
+        effective_limit = limit if limit is not None else _MAX_TASK_RUNS_PER_RUN
         tr_ids = self._task_run_index.get(str(flow_run_id), [])
         rows = [
             deepcopy(self._task_runs[tid])
@@ -498,8 +503,8 @@ class InMemoryFlowStore:
             if tid in self._task_runs
         ]
         rows.sort(key=lambda r: (r["created_at"], r["task_key"]))
-        if limit is not None:
-            return rows[:limit]
+        if effective_limit is not None:
+            return rows[:effective_limit]
         return rows
 
     async def count_task_runs(self, flow_run_id: str) -> int:
@@ -1501,33 +1506,29 @@ class PgFlowStore:
         flow_run_id:
             The flow run whose task_runs are listed.
         limit:
-            Maximum number of rows to return.  When ``None`` (default) ALL
-            rows are returned — callers should supply a bound when using this
-            in a response path to avoid unbounded serialization.  Applied as
-            a SQL LIMIT so the DB never sends an unbounded result set.
+            Maximum number of rows to return.  When ``None`` (default) the cap
+            is the per-run ceiling ``_MAX_TASK_RUNS_PER_RUN`` so the full-row
+            load is bounded even on the map fan-in / readiness path (which
+            calls this with no explicit limit) — a 50k fan-out can no longer
+            stream every full row into RAM.  This is complete up to the ceiling
+            that fan-out already enforces, so readiness/drain correctness is
+            preserved.  Pass an explicit value to override (e.g. a tighter
+            per-route cap).  Applied as a SQL LIMIT so the DB never sends an
+            unbounded result set.
         """
         from app.db import fetch as db_fetch  # noqa: PLC0415
 
-        if limit is not None:
-            rows = await db_fetch(
-                """
-                SELECT * FROM task_runs
-                WHERE flow_run_id = $1::uuid
-                ORDER BY created_at ASC, task_key ASC
-                LIMIT $2
-                """,
-                flow_run_id,
-                limit,
-            )
-        else:
-            rows = await db_fetch(
-                """
-                SELECT * FROM task_runs
-                WHERE flow_run_id = $1::uuid
-                ORDER BY created_at ASC, task_key ASC
-                """,
-                flow_run_id,
-            )
+        effective_limit = limit if limit is not None else _MAX_TASK_RUNS_PER_RUN
+        rows = await db_fetch(
+            """
+            SELECT * FROM task_runs
+            WHERE flow_run_id = $1::uuid
+            ORDER BY created_at ASC, task_key ASC
+            LIMIT $2
+            """,
+            flow_run_id,
+            effective_limit,
+        )
         return [_row_to_task_run(r) for r in rows]
 
     async def count_task_runs(self, flow_run_id: str) -> int:

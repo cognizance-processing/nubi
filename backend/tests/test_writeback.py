@@ -564,6 +564,45 @@ async def test_connector_write_failure_sets_failed_state():
 # ---------------------------------------------------------------------------
 
 
+def _patch_connector_write(monkeypatch) -> list[dict[str, Any]]:
+    """Patch app.flows.handlers.connector_write.handle and record its calls.
+
+    The write-back commit path (submit/approve) now performs a REAL physical
+    write through ``connector_write.handle``.  In route tests there is no live
+    warehouse connector, so we replace ``handle`` with a recorder that captures
+    the rows / mode / target the route forwarded and returns a realistic
+    loader result.  Returns the list of recorded call dicts.
+    """
+    from app.flows.handlers import connector_write as _cw
+
+    calls: list[dict[str, Any]] = []
+
+    def _fake_handle(config, ctx, claims):
+        input_key = config["input"]
+        rows = list(ctx.inputs[input_key]["rows"])
+        target = config["target"]
+        mode = config["mode"]
+        calls.append(
+            {
+                "rows": rows,
+                "mode": mode,
+                "target": target,
+                "org_id": ctx.org_id,
+            }
+        )
+        return {
+            "rows_written": len(rows),
+            "strategy": "stream",
+            "mode": mode,
+            "target_object": target.get("object", ""),
+            "manifest": {},
+            "final_uris": [],
+        }
+
+    monkeypatch.setattr(_cw, "handle", _fake_handle)
+    return calls
+
+
 def _make_user(user_id: str | None = None, email: str = "alice@example.com") -> dict:
     uid = user_id or str(uuid.uuid4())
     return {
@@ -650,8 +689,13 @@ async def test_route_submit_viewer_forbidden(wb_client):
 
 # 13. POST /flows/writeback — 201 for member
 @pytest.mark.asyncio
-async def test_route_submit_member_succeeds(wb_client):
+async def test_route_submit_member_succeeds(wb_client, monkeypatch):
     client, alice_id, bob_id, carol_id, org_id, wb_store, repo = wb_client
+
+    # The commit path now performs a REAL connector write via
+    # connector_write.handle.  Stub it so the route does not require a real
+    # warehouse connector; assert it is invoked with the rows + mode below.
+    calls = _patch_connector_write(monkeypatch)
 
     resp = await client.post(
         "/api/v1/flows/writeback",
@@ -669,12 +713,21 @@ async def test_route_submit_member_succeeds(wb_client):
     assert resp.status_code == 201
     body = resp.json()
     assert body["state"] == "committed"
+    # The physical connector write actually ran (no fabricated commit).
+    assert len(calls) == 1
+    assert calls[0]["rows"] == [{"id": 1}]
+    assert calls[0]["mode"] == "append"
+    assert calls[0]["target"]["connector_id"] == "c1"
+    assert calls[0]["target"]["object"] == "raw.t"
 
 
 # 14. POST /flows/writeback (dry_run=True) returns dry-run diff
 @pytest.mark.asyncio
-async def test_route_submit_dry_run(wb_client):
+async def test_route_submit_dry_run(wb_client, monkeypatch):
     client, alice_id, bob_id, carol_id, org_id, wb_store, repo = wb_client
+
+    # Dry-run must NEVER reach the physical connector write.
+    calls = _patch_connector_write(monkeypatch)
 
     resp = await client.post(
         "/api/v1/flows/writeback",
@@ -696,6 +749,8 @@ async def test_route_submit_dry_run(wb_client):
     assert body["dry_run"] is True
     assert body["row_count"] == 2
     assert body["target_object"] == "raw.orders"
+    # No physical write happened on the dry-run path.
+    assert calls == []
 
 
 # 15. POST /flows/writeback/{id}/approval — 403 for member (not approver)
@@ -731,8 +786,10 @@ async def test_route_approval_member_forbidden(wb_client):
 
 # 16. POST /flows/writeback/{id}/approval — approve succeeds for owner
 @pytest.mark.asyncio
-async def test_route_approval_owner_approve(wb_client):
+async def test_route_approval_owner_approve(wb_client, monkeypatch):
     client, alice_id, bob_id, carol_id, org_id, wb_store, repo = wb_client
+
+    calls = _patch_connector_write(monkeypatch)
 
     resp = await client.post(
         "/api/v1/flows/writeback",
@@ -750,6 +807,8 @@ async def test_route_approval_owner_approve(wb_client):
     assert resp.status_code == 201
     wb_id = resp.json()["id"]
     assert resp.json()["state"] == "pending_approval"
+    # The gated submit must NOT write yet.
+    assert calls == []
 
     # Alice (owner) approves
     resp2 = await client.post(
@@ -759,12 +818,18 @@ async def test_route_approval_owner_approve(wb_client):
     )
     assert resp2.status_code == 200
     assert resp2.json()["state"] == "committed"
+    # The physical connector write ran exactly once on approval.
+    assert len(calls) == 1
+    assert calls[0]["rows"] == [{"id": 1}]
+    assert calls[0]["mode"] == "append"
 
 
 # 17. GET /flows/writeback — lists records for the org
 @pytest.mark.asyncio
-async def test_route_list_writebacks(wb_client):
+async def test_route_list_writebacks(wb_client, monkeypatch):
     client, alice_id, bob_id, carol_id, org_id, wb_store, repo = wb_client
+
+    _patch_connector_write(monkeypatch)
 
     for i in range(3):
         await client.post(
@@ -868,6 +933,7 @@ async def test_route_submit_within_row_cap_succeeds(wb_client, monkeypatch):
     import app.routes.flows as flows_module  # noqa: PLC0415
 
     monkeypatch.setattr(flows_module, "_MAX_WRITEBACK_ROWS", 5)
+    _patch_connector_write(monkeypatch)
 
     client, alice_id, bob_id, carol_id, org_id, wb_store, repo = wb_client
 
@@ -965,6 +1031,88 @@ def test_writeback_cap_apperror_has_correct_code_message_status():
         assert exc.code == "row_cap_exceeded"
         assert "rows_override" in exc.message
         assert exc.status == 400
+
+
+# ---------------------------------------------------------------------------
+# 21b. Approval/edit route commits the EDITED rows through the REAL connector
+#      write (no fabricated commit; the edited rows reach connector_write.handle)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_route_approval_edit_invokes_connector_with_edited_rows(
+    wb_client, monkeypatch
+):
+    client, alice_id, bob_id, carol_id, org_id, wb_store, repo = wb_client
+
+    calls = _patch_connector_write(monkeypatch)
+
+    # Gated submit (pending_approval) — no write yet.
+    resp = await client.post(
+        "/api/v1/flows/writeback",
+        json={
+            "idempotency_key": _idem(),
+            "rows": [{"id": 1, "v": "original"}],
+            "target": {"connector_id": "c1", "object": "raw.t"},
+            "mode": "append",
+            "approval_required": True,
+            "dry_run": False,
+            "meta": {},
+        },
+        headers=_auth_headers(alice_id),
+    )
+    assert resp.status_code == 201
+    wb_id = resp.json()["id"]
+    assert calls == []
+
+    # Approver edits + commits: the connector must receive the EDITED rows.
+    edited = [{"id": 1, "v": "corrected"}, {"id": 2, "v": "added"}]
+    resp2 = await client.post(
+        f"/api/v1/flows/writeback/{wb_id}/approval",
+        json={"action": "edit", "rows_override": edited},
+        headers=_auth_headers(alice_id),
+    )
+    assert resp2.status_code == 200
+    assert resp2.json()["state"] == "committed"
+    assert len(calls) == 1
+    assert calls[0]["rows"] == edited
+    assert calls[0]["mode"] == "append"
+    # Org context is server-pinned into the TaskContext (tenant isolation).
+    assert calls[0]["org_id"] == org_id
+
+
+@pytest.mark.asyncio
+async def test_route_approval_reject_does_not_invoke_connector(
+    wb_client, monkeypatch
+):
+    client, alice_id, bob_id, carol_id, org_id, wb_store, repo = wb_client
+
+    calls = _patch_connector_write(monkeypatch)
+
+    resp = await client.post(
+        "/api/v1/flows/writeback",
+        json={
+            "idempotency_key": _idem(),
+            "rows": [{"id": 1}],
+            "target": {"connector_id": "c1", "object": "raw.t"},
+            "mode": "append",
+            "approval_required": True,
+            "dry_run": False,
+            "meta": {},
+        },
+        headers=_auth_headers(alice_id),
+    )
+    wb_id = resp.json()["id"]
+
+    resp2 = await client.post(
+        f"/api/v1/flows/writeback/{wb_id}/approval",
+        json={"action": "reject"},
+        headers=_auth_headers(alice_id),
+    )
+    assert resp2.status_code == 200
+    assert resp2.json()["state"] == "rejected"
+    # Rejected write-backs never reach the physical connector write.
+    assert calls == []
 
 
 # ---------------------------------------------------------------------------

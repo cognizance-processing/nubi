@@ -1072,6 +1072,76 @@ class TestListTaskRunResultsCeiling:
 
 
 # ---------------------------------------------------------------------------
+# 8a. list_task_runs ceiling (full-row fan-in load bound)
+# ---------------------------------------------------------------------------
+
+
+class TestListTaskRunsCeiling:
+    """list_task_runs never returns more than _MAX_TASK_RUNS_PER_RUN rows.
+
+    advance_readiness calls list_task_runs (FULL rows) with no explicit
+    limit on the map fan-in / readiness path; without a default cap a 50k
+    fan-out would stream every full row into RAM.  Both the InMemory and Pg
+    implementations must bound the no-limit default at the per-run ceiling.
+    """
+
+    async def test_inmemory_never_exceeds_ceiling(self, monkeypatch):
+        """InMemory: inserting ceiling+1 task_runs returns at most ceiling."""
+        import app.flows.store as store_mod
+
+        cap = 5
+        monkeypatch.setattr(store_mod, "_MAX_TASK_RUNS_PER_RUN", cap)
+
+        store = InMemoryFlowStore()
+        flow = await _make_flow(store)
+        flow_run = await _make_flow_run(store, flow["id"])
+        run_id = flow_run["id"]
+
+        trs = [
+            {
+                "task_key": f"t{i}",
+                "org_id": "org-1",
+                "state": "pending",
+                "depends_on": [],
+            }
+            for i in range(cap + 1)
+        ]
+        await store.add_task_runs(run_id, trs)
+
+        # No explicit limit → default cap applies.
+        rows = await store.list_task_runs(run_id)
+        assert len(rows) <= cap, (
+            f"list_task_runs returned {len(rows)} rows; ceiling is {cap}"
+        )
+
+    async def test_pg_sql_includes_limit_parameter(self, monkeypatch):
+        """PgFlowStore: list_task_runs with no limit issues a LIMIT == ceiling."""
+        import app.db as app_db
+        from app.flows.store import PgFlowStore
+        import app.flows.store as store_mod
+
+        cap = 7
+        monkeypatch.setattr(store_mod, "_MAX_TASK_RUNS_PER_RUN", cap)
+
+        captured: list[tuple[str, tuple[Any, ...]]] = []
+
+        async def fake_fetch(query: str, *args: Any):
+            captured.append((query, args))
+            return []
+
+        monkeypatch.setattr(app_db, "fetch", fake_fetch)
+
+        pg = PgFlowStore()
+        run_id = str(uuid.uuid4())
+        await pg.list_task_runs(run_id)
+
+        assert captured, "expected at least one db.fetch call"
+        sql, args = captured[0]
+        assert "LIMIT" in sql.upper(), "SQL must contain a LIMIT clause"
+        assert cap in args, f"cap={cap} not found in SQL args {args}"
+
+
+# ---------------------------------------------------------------------------
 # 8b. list_task_run_results byte budget (defense-in-depth)
 # ---------------------------------------------------------------------------
 

@@ -658,6 +658,18 @@ async def _resolve_flow_provider(
             )
             tables[key] = tables[key].slice(0, _ROW_CAP)
 
+        # [MED resource] Enforce table-count cap WHILE accumulating so a provider
+        # returning thousands of named tables is rejected as soon as the limit is
+        # breached — before further tables are materialised into memory.
+        if _PROVIDER_MAX_TABLES > 0 and len(tables) > _PROVIDER_MAX_TABLES:
+            raise AppError(
+                "provider_result_too_large",
+                f"Provider {provider.id!r} returned more than {_PROVIDER_MAX_TABLES} "
+                f"result tables; aborting accumulation "
+                f"(set NUBI_PROVIDER_MAX_TABLES to raise the limit).",
+                422,
+            )
+
     # Fill in empty tables for declared results that produced nothing.
     for r in provider.results:
         if r.name not in tables:
@@ -927,6 +939,18 @@ async def _resolve_inline_provider(
                         exc,
                     )
                     tables[r.name] = pa.table({})
+
+            # [MED resource] Enforce table-count cap WHILE accumulating so a provider
+            # with many declared results is rejected as soon as the limit is breached
+            # — before further results are materialised into memory.
+            if _PROVIDER_MAX_TABLES > 0 and len(tables) > _PROVIDER_MAX_TABLES:
+                raise AppError(
+                    "provider_result_too_large",
+                    f"Provider {provider.id!r} returned more than {_PROVIDER_MAX_TABLES} "
+                    f"result tables; aborting accumulation "
+                    f"(set NUBI_PROVIDER_MAX_TABLES to raise the limit).",
+                    422,
+                )
 
     finally:
         # Close freshly-created (owned) connectors to release their underlying

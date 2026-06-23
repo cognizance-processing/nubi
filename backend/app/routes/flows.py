@@ -221,6 +221,55 @@ def _enforce_approval_policy(caller_value: bool) -> bool:
     """
     return _WRITEBACK_REQUIRE_APPROVAL or caller_value
 
+
+def _make_connector_write_fn(org_id: str) -> "Any":
+    """Build the REAL ``connector_write_fn`` for the write-back commit path.
+
+    The returned callable performs an ACTUAL physical write through the existing
+    pipeline (:func:`app.flows.handlers.connector_write.handle`): it resolves the
+    target connector from ``target['connector_id']``, stages the rows as Parquet
+    under the server-pinned per-run staging prefix, and loads them into the
+    target (promote / bulk / stream).  It returns the REAL ``rows_written``
+    reported by the loader layer — never a fabricated count.
+
+    This is wired into ``submit_writeback`` / ``approve_writeback`` (which own the
+    RBAC / approval / CAS state gates); this helper only performs the commit-time
+    write once those gates have passed.  Dry-run NEVER reaches here — the routes
+    short-circuit dry-run to ``dry_run_writeback`` before any record is created.
+
+    Parameters
+    ----------
+    org_id:
+        The verified org that owns the write-back.  Pinned into the
+        ``TaskContext`` for per-tenant isolation (the staging prefix and the
+        connector lookup are both scoped to this org); it is NEVER taken from
+        user-supplied task config.
+    """
+    from app.flows.executor import TaskContext  # noqa: PLC0415
+    from app.flows.handlers import connector_write  # noqa: PLC0415
+
+    def _write(rows: "list[dict[str, Any]]", target: "dict[str, Any]", mode: str) -> "dict[str, Any]":
+        # The handler reads the upstream rows from ctx.inputs[<input_key>];
+        # we bind them under a stable synthetic key and point the config at it.
+        _INPUT_KEY = "_writeback_rows"
+        config = {
+            "input": _INPUT_KEY,
+            "target": {
+                "connector_id": str(target.get("connector_id") or ""),
+                "object": str(target.get("object") or ""),
+            },
+            "mode": mode,
+        }
+        ctx = TaskContext(
+            inputs={_INPUT_KEY: {"rows": list(rows)}},
+            org_id=org_id,
+        )
+        # claims carries org context as a fallback; org isolation is server-pinned.
+        return connector_write.handle(config, ctx, {"org_id": org_id})
+
+    return _write
+
+
 from fastapi import APIRouter, Depends, Header, Query, Request, Response
 from pydantic import BaseModel, Field, field_validator
 
@@ -1182,10 +1231,17 @@ async def compile_code(
 
     Security
     --------
+    - Execution goes through ``app.compute.sandbox.run_sandboxed`` (the SAME
+      M4-SEC hardened path as the ``'python'`` task handler ``_handle_python``):
+      a scrubbed/minimal env, ``start_new_session=True`` (new process group)
+      with process-GROUP SIGKILL on timeout (so grandchildren cannot survive),
+      POSIX rlimits (RLIMIT_CPU = timeout + grace, plus memory / file-size /
+      nproc caps), and 1 MiB stdout/stderr caps with a truncation marker.
     - Source is written to a NamedTemporaryFile (cleaned up in ``finally``).
     - Only a minimal environment (``PATH``, ``PYTHONPATH``, ``HOME``, site
       packages) is forwarded so the subprocess can import nubi.flows.
-    - Execution is bounded by a hard 15-second timeout.
+    - Execution is bounded by a hard 15-second wall-clock timeout
+      (``timed_out`` maps to ``compile_error`` / 400).
 
     Request body
     ------------
@@ -1226,10 +1282,20 @@ async def compile_code(
     """
     import json as _json  # noqa: PLC0415
     import os  # noqa: PLC0415
-    import subprocess  # noqa: PLC0415
     import sys  # noqa: PLC0415
     import tempfile  # noqa: PLC0415
     import textwrap  # noqa: PLC0415
+
+    from app.compute.sandbox import (  # noqa: PLC0415
+        RLIMIT_CPU_GRACE_S,
+        STDERR_CAP_BYTES,
+        STDOUT_CAP_BYTES,
+        run_sandboxed,
+    )
+
+    # Hard compile timeout (wall-clock seconds).  Mirrors _handle_python's
+    # bounded execution; RLIMIT_CPU gets timeout + grace.
+    _COMPILE_TIMEOUT_S = 15
 
     code: str = (body.code or "").strip()
     if not code:
@@ -1305,29 +1371,40 @@ async def compile_code(
         _tmp.write(wrapper)
         _tmp_path = _tmp.name
 
+    # Run via the shared M4-SEC hardened sandbox (same helper as
+    # LocalSubprocessRunner / _handle_python): new process group + group-SIGKILL
+    # on timeout, POSIX rlimits, and 1 MiB stdout/stderr caps.  A raw
+    # subprocess.run here would inherit the parent's full env and leave orphan
+    # grandchildren alive on timeout.
     try:
-        proc = subprocess.run(
+        run = run_sandboxed(
             [sys.executable, _tmp_path],
-            capture_output=True,
-            text=True,
-            timeout=15,
             env=env,
+            timeout_s=_COMPILE_TIMEOUT_S,
+            cpu_limit_s=_COMPILE_TIMEOUT_S + RLIMIT_CPU_GRACE_S,
+            stdout_cap=STDOUT_CAP_BYTES,
+            stderr_cap=STDERR_CAP_BYTES,
         )
-    except subprocess.TimeoutExpired:
-        try:
-            os.unlink(_tmp_path)
-        except OSError:
-            pass
-        raise AppError("compile_error", "Compile timed out after 15 seconds.", 400)
     finally:
         try:
             os.unlink(_tmp_path)
         except OSError:
             pass
 
+    if run.timed_out:
+        # The process GROUP has already been SIGKILLed inside run_sandboxed.
+        raise AppError(
+            "compile_error",
+            f"Compile timed out after {_COMPILE_TIMEOUT_S} seconds.",
+            400,
+        )
+
+    _stdout_text = run.stdout.decode("utf-8", errors="replace")
+    _stderr_text = run.stderr.decode("utf-8", errors="replace")
+
     # Parse sentinel line from stdout.
     spec_dict: dict[str, Any] | None = None
-    for _line in (proc.stdout or "").splitlines():
+    for _line in _stdout_text.splitlines():
         if _line.startswith("__FLOW_SPEC__:"):
             try:
                 spec_dict = _json.loads(_line[len("__FLOW_SPEC__:"):])
@@ -1335,8 +1412,8 @@ async def compile_code(
                 spec_dict = None
             break
 
-    if proc.returncode != 0 or spec_dict is None:
-        stderr = (proc.stderr or "").strip()
+    if run.returncode != 0 or spec_dict is None:
+        stderr = _stderr_text.strip()
         msg = stderr[:600] if stderr else "No FlowSpec produced by compile()."
         raise AppError("compile_error", msg, 400)
 
@@ -2832,17 +2909,11 @@ async def submit_writeback_route(
             mode=body.mode,
         )
 
-    # Build a no-op connector_write_fn for the in-memory path:
-    # The actual connector write is performed by the caller's flow task
-    # (connector_write handler); here we record the write-back request and
-    # the commit result is the row snapshot itself (idempotent, no re-staging).
-    def _noop_write(rows: list, target: dict, mode: str) -> dict:
-        return {
-            "rows_written": len(rows),
-            "mode": mode,
-            "target_object": str(target.get("object") or ""),
-            "dry_run": False,
-        }
+    # REAL connector write: on commit (approval_required=False) submit_writeback
+    # invokes this fn, which stages the rows and physically loads them into the
+    # target connector via app.flows.handlers.connector_write.handle, returning
+    # the loader's REAL rows_written.  Dry-run never reaches here (handled above).
+    connector_write_fn = _make_connector_write_fn(org_id)
 
     # SECURITY (writeback authz): enforce server-side approval policy.
     # The caller may only INCREASE strictness (opt in to approval); they cannot
@@ -2860,7 +2931,7 @@ async def submit_writeback_route(
         mode=body.mode,
         created_by=user_id,
         approval_required=effective_approval_required,
-        connector_write_fn=_noop_write,
+        connector_write_fn=connector_write_fn,
         store=store,
         meta=body.meta,
     )
@@ -2905,13 +2976,11 @@ async def writeback_approval_route(
             400,
         )
 
-    def _noop_write(rows: list, target: dict, mode: str) -> dict:
-        return {
-            "rows_written": len(rows),
-            "mode": mode,
-            "target_object": str(target.get("object") or ""),
-            "dry_run": False,
-        }
+    # REAL connector write: approve_writeback invokes this on the approve/edit
+    # commit path; it physically loads the rows into the target connector via
+    # app.flows.handlers.connector_write.handle and returns the loader's REAL
+    # rows_written.  reject never calls it (no write committed).
+    connector_write_fn = _make_connector_write_fn(org_id)
 
     store = get_writeback_store()
     record = await approve_writeback(
@@ -2919,7 +2988,7 @@ async def writeback_approval_route(
         wb_id=wb_id,
         action=body.action,
         approver_id=user_id,
-        connector_write_fn=_noop_write,
+        connector_write_fn=connector_write_fn,
         store=store,
         rows_override=body.rows_override,
     )

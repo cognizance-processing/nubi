@@ -498,129 +498,159 @@ async def test_drain_flow_run_report_send():
 
 
 # ---------------------------------------------------------------------------
-# 9. Task-config policies always take precedence over flow-level snapshot
+# 9. SECURITY [RLS cross-tenant] — config.policies must NOT override the
+#    runtime-stamped owner-policy snapshot.
 # ---------------------------------------------------------------------------
 
 
-class TestPoliciesPrecedence:
-    """Regression test for the setdefault bug.
+class TestPoliciesOwnerSnapshotEnforced:
+    """SECURITY: render_claims is ALWAYS the runtime-stamped exec_claims.
 
-    The flow runtime injects a flow-level owner snapshot into exec_claims before
-    report_send runs.  When the task config also carries ``policies`` (e.g. a
-    per-tenant RLS slice captured at schedule-definition time) the task-config
-    value must win — not be silently ignored because the key is already present.
-
-    Strategy: patch ``app.flows.handlers.report_send._render`` (the module-local
-    dispatch helper) so we can capture the ``render_claims`` dict that the handler
-    built — specifically its ``"policies"`` value — without needing a real renderer.
-    We use ``inject_locked_params`` as a second capture point for the per-recipient
-    path; for the single-render path we spy on ``send_report``.
+    The flow runtime stamps exec_claims['policies'] from the flow OWNER's
+    VERIFIED token snapshot (via ``_claims_with_owner_policies``) BEFORE
+    ``handle()`` is called.  A first-party writer who stores
+    ``config.policies={other_tenant}`` in a flow spec must NOT be able to
+    override that snapshot — doing so would bypass the owner-policy snapshot and
+    exfiltrate cross-tenant rows via a scheduled report.  The handler therefore
+    NEVER reads ``config['policies']``; render_claims == the incoming
+    (owner-verified) exec_claims, unchanged.
     """
 
-    def _build_render_claims(
-        self,
-        config_policies: dict | None,
-        claims_policies: dict,
-    ) -> dict:
-        """Return the ``render_claims`` dict that handle() would construct.
-
-        Bypasses file I/O by importing and calling the same logic inline so
-        the test stays unit-level and deterministic.
-        """
-        incoming_claims: dict[str, Any] = {
-            "org_id": "org-test",
-            "policies": claims_policies,
-        }
-        # Reproduce the three lines under section 3 of handle():
-        policies: dict = config_policies or {}
-        render_claims: dict[str, Any] = dict(incoming_claims)
-        if policies:
-            render_claims["policies"] = policies  # should be assignment, not setdefault
-        return render_claims
-
-    def test_task_config_policies_override_flow_snapshot(self):
-        """When both task-config and flow-snapshot carry policies, task config wins."""
-        flow_snapshot = {"row_filter": "tenant = 'shared'"}
-        task_policies = {"row_filter": "tenant = 'acme'"}
-
-        render_claims = self._build_render_claims(
-            config_policies=task_policies,
-            claims_policies=flow_snapshot,
-        )
-
-        assert render_claims["policies"] == task_policies, (
-            f"Expected task-config policies {task_policies!r}, "
-            f"got {render_claims['policies']!r}. "
-            "The setdefault bug may have regressed."
-        )
-
-    def test_flow_snapshot_used_when_no_task_config_policies(self):
-        """When task config has no policies, the flow-level snapshot is preserved."""
-        flow_snapshot = {"row_filter": "tenant = 'shared'"}
-
-        render_claims = self._build_render_claims(
-            config_policies=None,
-            claims_policies=flow_snapshot,
-        )
-
-        # No task-config policies → render_claims["policies"] comes from the
-        # incoming claims (the flow-level snapshot).
-        assert render_claims["policies"] == flow_snapshot, (
-            f"Expected flow-snapshot policies {flow_snapshot!r}, "
-            f"got {render_claims['policies']!r}."
-        )
-
-    def test_handler_applies_task_policies_over_flow_snapshot(self):
-        """Integration: handle() with divergent task+flow policies uses task's."""
+    def test_config_policies_do_not_override_owner_snapshot_board(self):
+        """Board path: a foreign-tenant config.policies does NOT change the
+        applied RLS — render_claims keeps the owner's verified policies."""
         board = _make_board()
         sender = NullSender()
 
-        flow_snapshot = {"row_filter": "tenant = 'shared'"}
-        task_policies = {"row_filter": "tenant = 'acme'"}
+        owner_policies = {"tenant_id": "owner_tenant"}
+        foreign_policies = {"tenant_id": "other_tenant"}
 
         config: dict[str, Any] = {
             "board_id": board["id"],
             "org_id": board["org_id"],
             "format": "csv",
             "recipients": ["a@x.com"],
-            "policies": task_policies,
+            # Malicious: attempt to override owner RLS with a foreign tenant.
+            "policies": foreign_policies,
         }
-        # Simulate flow runtime injecting owner snapshot into exec_claims.
-        incoming_claims: dict[str, Any] = {
+        # Runtime has already stamped exec_claims with the owner snapshot.
+        exec_claims: dict[str, Any] = {
             "org_id": board["org_id"],
-            "policies": flow_snapshot,
+            "policies": owner_policies,
         }
 
         captured_claims: list[dict] = []
 
-        def _spy_render(board_obj, params, fmt, *, org_id="", render_claims=None):
-            # We cannot capture render_claims here directly, but we can validate
-            # the handler completes without error and the policies key is
-            # tracked via a side-channel set up with a mock on send_report.
+        def _capture_render(board_obj, params, fmt, *, org_id="", render_claims=None):
+            captured_claims.append(dict(render_claims or {}))
             return b"col\nval\n"
-
-        def _spy_send(sndr, target, rendered):
-            # At this point the handler has already evaluated render_claims;
-            # we capture via a closure variable set in _spy_render.
-            return 1
 
         with _patch_board(board):
             with patch("app.jobs.report.get_default_sender", return_value=sender):
                 with patch(
                     "app.flows.handlers.report_send._render",
-                    side_effect=_spy_render,
+                    side_effect=_capture_render,
                 ):
-                    with patch(
-                        "app.jobs.report.send_report",
-                        side_effect=_spy_send,
-                    ):
-                        result = report_send_handle(
-                            config, _ctx(), claims=incoming_claims
-                        )
+                    result = report_send_handle(config, _ctx(), claims=exec_claims)
 
-        # The handler must succeed and report one email sent.
         assert result["emails_sent"] == 1
         assert result["errors"] == []
+        assert len(captured_claims) == 1
+        assert captured_claims[0]["policies"] == owner_policies, (
+            "config.policies must NOT override the owner-verified RLS snapshot "
+            f"(cross-tenant exfil). Got {captured_claims[0]['policies']!r}, "
+            f"expected {owner_policies!r}."
+        )
+        assert captured_claims[0]["policies"] != foreign_policies
+
+    def test_config_policies_do_not_override_owner_snapshot_canvas(self):
+        """Canvas path: a foreign-tenant config.policies does NOT change the
+        applied RLS — render_claims keeps the owner's verified policies."""
+        owner_policies = {"tenant_id": "owner_tenant"}
+        foreign_policies = {"tenant_id": "other_tenant"}
+
+        canvas = {
+            "id": str(uuid.uuid4()),
+            "org_id": "org-test",
+            "name": "Test Canvas",
+            "config": {"doc": {"title": "Test Canvas", "blocks": []}},
+        }
+
+        config: dict[str, Any] = {
+            "canvas_id": canvas["id"],
+            "org_id": canvas["org_id"],
+            "format": "html",
+            "recipients": ["a@x.com"],
+            # Malicious: attempt to override owner RLS with a foreign tenant.
+            "policies": foreign_policies,
+        }
+        exec_claims: dict[str, Any] = {
+            "org_id": canvas["org_id"],
+            "policies": owner_policies,
+        }
+
+        captured_claims: list[dict] = []
+
+        def _capture_render(canvas_obj, fmt, *, org_id="", render_claims=None, extra_params=None):
+            captured_claims.append(dict(render_claims or {}))
+            return "<html>report</html>"
+
+        sender = NullSender()
+        with patch(
+            "app.flows.handlers.report_send._resolve_canvas_sync",
+            return_value=canvas,
+        ):
+            with patch("app.jobs.report.get_default_sender", return_value=sender):
+                with patch(
+                    "app.flows.handlers.report_send._render_canvas",
+                    side_effect=_capture_render,
+                ):
+                    result = report_send_handle(config, _ctx(), claims=exec_claims)
+
+        assert result["emails_sent"] == 1
+        assert result["errors"] == []
+        assert len(captured_claims) == 1
+        assert captured_claims[0]["policies"] == owner_policies, (
+            "config.policies must NOT override the owner-verified RLS snapshot "
+            f"on the canvas path. Got {captured_claims[0]['policies']!r}, "
+            f"expected {owner_policies!r}."
+        )
+        assert captured_claims[0]["policies"] != foreign_policies
+
+    def test_owner_snapshot_preserved_when_no_config_policies(self):
+        """When config has no policies, the owner snapshot in exec_claims is used."""
+        board = _make_board()
+        sender = NullSender()
+        owner_policies = {"tenant_id": "owner_tenant"}
+
+        config: dict[str, Any] = {
+            "board_id": board["id"],
+            "org_id": board["org_id"],
+            "format": "csv",
+            "recipients": ["a@x.com"],
+        }
+        exec_claims: dict[str, Any] = {
+            "org_id": board["org_id"],
+            "policies": owner_policies,
+        }
+
+        captured_claims: list[dict] = []
+
+        def _capture_render(board_obj, params, fmt, *, org_id="", render_claims=None):
+            captured_claims.append(dict(render_claims or {}))
+            return b"col\nval\n"
+
+        with _patch_board(board):
+            with patch("app.jobs.report.get_default_sender", return_value=sender):
+                with patch(
+                    "app.flows.handlers.report_send._render",
+                    side_effect=_capture_render,
+                ):
+                    result = report_send_handle(config, _ctx(), claims=exec_claims)
+
+        assert result["emails_sent"] == 1
+        assert len(captured_claims) == 1
+        assert captured_claims[0]["policies"] == owner_policies
 
 
 # ---------------------------------------------------------------------------

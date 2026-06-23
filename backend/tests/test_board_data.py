@@ -1753,6 +1753,159 @@ def test_provider_max_bytes_cap_is_configurable() -> None:
 
 
 # ---------------------------------------------------------------------------
+# FIX [MED]: _PROVIDER_MAX_TABLES guard fires WHILE accumulating (early exit)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_provider_max_tables_guard_fires_early_not_post_hoc(
+    repo: InMemoryRepo,
+) -> None:
+    """Over-limit flow provider is rejected without materializing all tables.
+
+    Before the fix the table-count guard only ran after _resolve_flow_provider
+    returned all tables (~line 1392), meaning a provider with N >> cap tables
+    would fully materialise N tables into memory before the AppError was raised.
+
+    After the fix the guard runs INSIDE the accumulation loop: as soon as the
+    running count exceeds _PROVIDER_MAX_TABLES the function raises immediately,
+    leaving the remaining task_run results un-materialised.
+
+    Verification strategy
+    ---------------------
+    * Set a small cap (2 tables).
+    * Supply a flow store whose task_runs produce many unique result keys
+      (total = cap + 10).  Each task_run key IS in provider.results so none
+      are filtered by the result_names guard.
+    * Instrument pa.table (via a call-counting wrapper) to count how many
+      Arrow tables are actually constructed during the aborted run.
+    * Assert:
+      a) AppError(code="provider_result_too_large", status=422) is raised.
+      b) Fewer than (total_task_runs) Arrow tables were constructed, proving
+         the remaining rows were never materialised.
+    """
+    import app.dashboards.board_data as _bd_mod
+    import app.flows.store as _fs_mod
+    import pyarrow as pa
+
+    SMALL_CAP = 2
+    TOTAL_RESULTS = SMALL_CAP + 10  # well over the cap
+
+    original_max = _bd_mod._PROVIDER_MAX_TABLES
+    _bd_mod._PROVIDER_MAX_TABLES = SMALL_CAP
+
+    # Build a DataProvider spec that declares all TOTAL_RESULTS result names.
+    result_names = [f"result_{i}" for i in range(TOTAL_RESULTS)]
+    spec = {
+        "version": 1,
+        "title": "Early-Guard Test Board",
+        "widgets": [
+            {"id": "w1", "type": "table", "source": {"provider": _PROVIDER_ID, "result": result_names[0]}}
+        ],
+        "data": [
+            {
+                "id": _PROVIDER_ID,
+                "kind": "flow",
+                "params": {},
+                "base_cte": None,
+                "results": [{"name": n, "grain": None} for n in result_names],
+            }
+        ],
+    }
+    await repo.update("boards", _ORG, _BOARD_ID, {"config": {"spec": spec}})
+
+    fake_flow = {"id": _PROVIDER_ID, "name": _PROVIDER_ID, "org_id": _ORG}
+    fake_flow_run = {"id": "early-guard-run-1", "state": "success"}
+
+    # One task_run per result name — all succeed with a tiny payload.
+    fake_task_runs = [
+        {
+            "task_key": n,
+            "state": "success",
+            "result": {"columns": ["v"], "rows": [[i]]},
+        }
+        for i, n in enumerate(result_names)
+    ]
+
+    # Count how many rows/columns-format tables are actually constructed by
+    # wrapping the pa.array constructor call counter inside the accumulation
+    # path.  We count task_runs processed by counting how many result dicts
+    # are decoded (each produces one pa.array call per column).
+    materialised_keys: list[str] = []
+
+    class _SpyStore:
+        async def get_flow(self, flow_id: str) -> dict:
+            return fake_flow
+
+        async def list_flows(self, **kwargs: Any) -> list:
+            return [fake_flow]
+
+        async def list_flow_runs(self, flow_id: str, limit: int = 10, **kwargs: Any) -> list:
+            return [fake_flow_run]
+
+        async def list_task_runs(self, run_id: str, limit: int | None = None) -> list:
+            result = list(fake_task_runs)
+            return result[:limit] if limit is not None else result
+
+    # Spy on _bd_mod.pa.array to count materialisation calls per task_run.
+    # We track unique task_keys by intercepting at a higher level: wrap the
+    # pa.table constructor used inside the flow accumulation loop.
+    real_pa_table = pa.table
+
+    def spy_pa_table(data, **kwargs):  # type: ignore[override]
+        # Record each table construction.  data is a dict when coming from
+        # the columns/rows branch of _resolve_flow_provider.
+        if isinstance(data, dict):
+            materialised_keys.append(str(len(materialised_keys)))
+        return real_pa_table(data, **kwargs)
+
+    async def _fake_enforce_quota(org_id: str, dimension: str, amount: float = 1.0) -> None:
+        pass
+
+    try:
+        with (
+            patch("app.features.enforce_quota", side_effect=_fake_enforce_quota),
+            patch.object(_fs_mod, "get_flow_store", return_value=_SpyStore()),
+            patch(
+                "app.flows.runtime.materialize_flow_run",
+                new=AsyncMock(return_value=fake_flow_run),
+            ),
+            patch(
+                "app.flows.runtime.drain_flow_run",
+                new=AsyncMock(return_value=fake_flow_run),
+            ),
+            # Patch pa.table inside the board_data module so the spy fires on
+            # every table construction inside _resolve_flow_provider.
+            patch.object(_bd_mod.pa, "table", side_effect=spy_pa_table),
+            pytest.raises(AppError) as exc_info,
+        ):
+            await resolve_provider_data(
+                board_id=_BOARD_ID,
+                provider_id=_PROVIDER_ID,
+                params={},
+                org_id=_ORG,
+                claims={"policies": {}},
+                repo=repo,
+            )
+
+        assert exc_info.value.code == "provider_result_too_large", (
+            f"Expected provider_result_too_large, got {exc_info.value.code!r}"
+        )
+        assert exc_info.value.status == 422
+
+        # The fix: materialised_keys must be strictly fewer than TOTAL_RESULTS,
+        # proving that not all task_run payloads were decoded into Arrow tables
+        # before the guard fired.
+        assert len(materialised_keys) < TOTAL_RESULTS, (
+            f"Guard fired POST-HOC: all {TOTAL_RESULTS} tables were materialised "
+            f"({len(materialised_keys)} pa.table calls) before the AppError was raised. "
+            f"The cap should have stopped accumulation after {SMALL_CAP + 1} tables."
+        )
+    finally:
+        _bd_mod._PROVIDER_MAX_TABLES = original_max
+
+
+# ---------------------------------------------------------------------------
 # NEW: [MED resource] flow provider result tables are row-capped (Fix part a)
 # ---------------------------------------------------------------------------
 
