@@ -145,6 +145,72 @@ def test_board_provider_data_route_throttles_after_cap(limited_app):
     assert 429 in codes[3:], codes
 
 
+def test_backfill_route_classified_as_flow_run(limited_app):
+    """/flows/<id>/backfill must be classified as 'flow-run' (not SKIP).
+
+    Backfill holds a worker for up to 600 s — same resource shape as a flow run
+    — so it must share the flowrun_rpm bucket to prevent worker-pool exhaustion.
+    """
+    from app.middleware.ratelimit import _classify
+
+    path = "/api/v1/flows/flow-abc-123/backfill"
+    route_class, rpm = _classify(path)
+    assert route_class == "flow-run", (
+        f"Backfill route must be classified as 'flow-run'; got {route_class!r}. "
+        "An unclassified backfill route allows unlimited concurrent worker-pool exhaustion."
+    )
+    assert rpm > 0, "flow-run rpm must be positive"
+
+
+def test_sweep_route_classified_as_flow_run(limited_app):
+    """/flows/<id>/sweep must be classified as 'flow-run' (not SKIP).
+
+    Sweep holds a worker for up to 300 s — same resource shape as a flow run
+    — so it must share the flowrun_rpm bucket.
+    """
+    from app.middleware.ratelimit import _classify
+
+    path = "/api/v1/flows/flow-abc-123/sweep"
+    route_class, rpm = _classify(path)
+    assert route_class == "flow-run", (
+        f"Sweep route must be classified as 'flow-run'; got {route_class!r}. "
+        "An unclassified sweep route allows unlimited concurrent worker-pool exhaustion."
+    )
+    assert rpm > 0, "flow-run rpm must be positive"
+
+
+def test_backfill_route_throttles_after_cap(limited_app):
+    """The backfill route IS throttled once the flow-run cap (3) is exceeded."""
+
+    @limited_app.post("/api/v1/flows/{flow_id}/backfill")
+    async def _dummy_backfill(flow_id: str) -> dict:
+        return {"ok": True}
+
+    client = TestClient(limited_app)
+    codes = [
+        client.post("/api/v1/flows/f1/backfill").status_code
+        for _ in range(6)
+    ]
+    assert codes[:3] == [200, 200, 200], codes
+    assert 429 in codes[3:], codes
+
+
+def test_sweep_route_throttles_after_cap(limited_app):
+    """The sweep route IS throttled once the flow-run cap (3) is exceeded."""
+
+    @limited_app.post("/api/v1/flows/{flow_id}/sweep")
+    async def _dummy_sweep(flow_id: str) -> dict:
+        return {"ok": True}
+
+    client = TestClient(limited_app)
+    codes = [
+        client.post("/api/v1/flows/f1/sweep").status_code
+        for _ in range(6)
+    ]
+    assert codes[:3] == [200, 200, 200], codes
+    assert 429 in codes[3:], codes
+
+
 def test_disabled_flag_is_noop(limited_app):
     """With enabled=False the middleware passes everything through (dev/test path)."""
     ratelimit._cfg.enabled = False

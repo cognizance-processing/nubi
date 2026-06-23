@@ -61,6 +61,49 @@ _MAX_BACKFILL_WINDOWS: int = int(os.environ.get("MAX_BACKFILL_WINDOWS", "500"))
 _MAX_WRITEBACK_ROWS: int = int(os.environ.get("NUBI_MAX_WRITEBACK_ROWS", "10000"))
 
 # ---------------------------------------------------------------------------
+# Per-org concurrency caps for long-running sweep / backfill operations
+# ---------------------------------------------------------------------------
+# Each backfill holds a worker for up to _BACKFILL_TIMEOUT_S (600 s).  Without
+# a per-org cap, a single org can exhaust the entire worker pool with concurrent
+# backfills, leaving no interactive capacity for other orgs.
+#
+# Semaphores are created lazily on first use (one per org) and live for the
+# process lifetime.  A non-blocking ``acquire()`` check (try_acquire pattern via
+# ``asyncio.wait_for(..., timeout=0)``) gives an instant 429 rather than
+# queuing behind the in-flight backfill — callers must retry explicitly.
+#
+# Sweep has the same 300 s shape; apply the same guard there.
+_MAX_CONCURRENT_BACKFILLS_PER_ORG: int = int(
+    os.environ.get("MAX_CONCURRENT_BACKFILLS_PER_ORG", "2")
+)
+_MAX_CONCURRENT_SWEEPS_PER_ORG: int = int(
+    os.environ.get("MAX_CONCURRENT_SWEEPS_PER_ORG", "2")
+)
+
+# Module-level dicts; keyed by org_id.  Populated lazily — no lock needed
+# because asyncio is single-threaded and dict access is GIL-protected.
+_backfill_sems: dict[str, asyncio.Semaphore] = {}
+_sweep_sems: dict[str, asyncio.Semaphore] = {}
+
+
+def _get_backfill_sem(org_id: str) -> asyncio.Semaphore:
+    """Return (creating if needed) the per-org backfill concurrency semaphore."""
+    sem = _backfill_sems.get(org_id)
+    if sem is None:
+        sem = asyncio.Semaphore(_MAX_CONCURRENT_BACKFILLS_PER_ORG)
+        _backfill_sems[org_id] = sem
+    return sem
+
+
+def _get_sweep_sem(org_id: str) -> asyncio.Semaphore:
+    """Return (creating if needed) the per-org sweep concurrency semaphore."""
+    sem = _sweep_sems.get(org_id)
+    if sem is None:
+        sem = asyncio.Semaphore(_MAX_CONCURRENT_SWEEPS_PER_ORG)
+        _sweep_sems[org_id] = sem
+    return sem
+
+# ---------------------------------------------------------------------------
 # Single-run wall-clock cap (HIGH resource — unbounded drain on request path)
 # ---------------------------------------------------------------------------
 # POST /flows/{id}/run, /flows/blend, and /flows/run-cell call drain_flow_run
@@ -2532,20 +2575,33 @@ async def sweep_flow(
             400,
         )
 
-    try:
-        result = await asyncio.wait_for(
-            run_sweep(
-                store=store,
-                flow=flow,
-                param_sets=body.param_sets,
-                trigger="sweep",
-                now=now,
-                claims=claims,
-                grid=body.grid,
-                max_cells=effective_max,
-            ),
-            timeout=_SWEEP_TIMEOUT_S,
+    # Per-org sweep concurrency cap: a sweep holds a worker for up to
+    # _SWEEP_TIMEOUT_S.  Reject immediately (non-blocking check) when the org
+    # has reached its concurrent-sweep limit so other requests keep getting served.
+    sweep_sem = _get_sweep_sem(org_id)
+    if not sweep_sem._value:  # fast non-blocking peek (no slot available)
+        raise AppError(
+            "too_many_requests",
+            f"Too many concurrent sweeps for this org "
+            f"(limit: {_MAX_CONCURRENT_SWEEPS_PER_ORG}). Retry later.",
+            429,
         )
+
+    try:
+        async with sweep_sem:
+            result = await asyncio.wait_for(
+                run_sweep(
+                    store=store,
+                    flow=flow,
+                    param_sets=body.param_sets,
+                    trigger="sweep",
+                    now=now,
+                    claims=claims,
+                    grid=body.grid,
+                    max_cells=effective_max,
+                ),
+                timeout=_SWEEP_TIMEOUT_S,
+            )
     except asyncio.TimeoutError:
         raise AppError(
             "sweep_timeout",
@@ -2637,22 +2693,36 @@ async def backfill_flow(
     # Apply server-side ceiling so callers cannot bypass the cap.
     effective_max_windows = min(body.max_windows, _MAX_BACKFILL_WINDOWS)
 
-    try:
-        result = await asyncio.wait_for(
-            run_backfill(
-                store=store,
-                flow=flow,
-                start=start,
-                end=end,
-                window=body.window,
-                trigger="backfill",
-                now=now,
-                claims=claims,
-                max_windows=effective_max_windows,
-                extra_params=body.params or {},
-            ),
-            timeout=_BACKFILL_TIMEOUT_S,
+    # Per-org backfill concurrency cap: a backfill holds a worker for up to
+    # _BACKFILL_TIMEOUT_S (600 s).  Reject immediately (non-blocking check) when
+    # the org has reached its concurrent-backfill limit so interactive requests
+    # keep getting served and the worker pool is never fully drained.
+    backfill_sem = _get_backfill_sem(org_id)
+    if not backfill_sem._value:  # fast non-blocking peek (no slot available)
+        raise AppError(
+            "too_many_requests",
+            f"Too many concurrent backfills for this org "
+            f"(limit: {_MAX_CONCURRENT_BACKFILLS_PER_ORG}). Retry later.",
+            429,
         )
+
+    try:
+        async with backfill_sem:
+            result = await asyncio.wait_for(
+                run_backfill(
+                    store=store,
+                    flow=flow,
+                    start=start,
+                    end=end,
+                    window=body.window,
+                    trigger="backfill",
+                    now=now,
+                    claims=claims,
+                    max_windows=effective_max_windows,
+                    extra_params=body.params or {},
+                ),
+                timeout=_BACKFILL_TIMEOUT_S,
+            )
     except asyncio.TimeoutError:
         raise AppError(
             "backfill_timeout",

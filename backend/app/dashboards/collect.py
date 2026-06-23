@@ -252,6 +252,38 @@ _PREFETCH_CONCURRENCY: int = max(
     int(os.environ.get("NUBI_PREFETCH_CONCURRENCY", _DEFAULT_PREFETCH_CONCURRENCY)),
 )
 
+# Process-global prefetch semaphore.
+# Without a global cap, N concurrent canvas/board loads each call _prefetch_datastores
+# with a fresh per-call Semaphore(_PREFETCH_CONCURRENCY) → N × _PREFETCH_CONCURRENCY
+# simultaneous repo.get('datastores') calls, exhausting the DB pool before any widget
+# query runs.  This semaphore is shared across ALL canvas/board loads in the process so
+# the total concurrent prefetch repo.get calls are bounded to
+# _GLOBAL_PREFETCH_CONCURRENCY regardless of how many concurrent loads are in flight.
+#
+# Default: 2 × _PREFETCH_CONCURRENCY — gives headroom for a couple of concurrent loads
+# while capping the global total.  Override via NUBI_PREFETCH_GLOBAL_CONCURRENCY.
+_DEFAULT_GLOBAL_PREFETCH_CONCURRENCY: int = _PREFETCH_CONCURRENCY * 2
+_GLOBAL_PREFETCH_CONCURRENCY: int = max(
+    1,
+    int(
+        os.environ.get("NUBI_PREFETCH_GLOBAL_CONCURRENCY", _DEFAULT_GLOBAL_PREFETCH_CONCURRENCY)
+    ),
+)
+# Lazy-init under threading.Lock — same pattern as the widget semaphore — to avoid
+# creating an asyncio.Semaphore at import time (Python 3.10+ requires a running loop).
+_global_prefetch_sem: "asyncio.Semaphore | None" = None
+_global_prefetch_sem_lock = threading.Lock()
+
+
+def _get_global_prefetch_sem() -> "asyncio.Semaphore":
+    """Return (creating if needed) the process-global prefetch semaphore."""
+    global _global_prefetch_sem  # noqa: PLW0603
+    if _global_prefetch_sem is None:
+        with _global_prefetch_sem_lock:
+            if _global_prefetch_sem is None:
+                _global_prefetch_sem = asyncio.Semaphore(_GLOBAL_PREFETCH_CONCURRENCY)
+    return _global_prefetch_sem
+
 
 # ---------------------------------------------------------------------------
 # Board / widget helpers
@@ -524,20 +556,34 @@ async def _prefetch_datastores(
     :func:`collect_canvas_data` to eliminate N identical ``repo.get`` calls
     when N widgets/bindings share the same datastore.
 
-    Concurrency is capped at ``_PREFETCH_CONCURRENCY`` (env
-    ``NUBI_PREFETCH_CONCURRENCY``, default 10) so that a canvas with up to
-    ``_MAX_CANVAS_BINDINGS`` (500) distinct datastores cannot fire 500
-    simultaneous DB connections before any widget query runs — previously this
-    path had no semaphore while the widget path had ``Semaphore(8)``.
+    Concurrency is capped by two semaphores held simultaneously:
+
+    1. **per-call semaphore** (``_PREFETCH_CONCURRENCY``, env
+       ``NUBI_PREFETCH_CONCURRENCY``, default 10) — limits concurrent prefetch
+       fetches *within* a single canvas/board load so one load cannot issue 500
+       simultaneous DB calls on its own.
+    2. **process-global semaphore** (``_GLOBAL_PREFETCH_CONCURRENCY``, env
+       ``NUBI_PREFETCH_GLOBAL_CONCURRENCY``, default ``_PREFETCH_CONCURRENCY*2=20``)
+       — limits the *total* concurrent prefetch fetches across ALL simultaneous
+       canvas/board loads in the process.  Without this, N concurrent loads each
+       create a fresh per-call semaphore and can still issue N × 10 simultaneous
+       DB calls.
+
+    Acquisition order: per-call semaphore first, then global semaphore.  This
+    mirrors the widget path's order (per-call → global) and avoids starvation or
+    deadlock (a load holding per-call slots cannot be indefinitely blocked from
+    acquiring global slots when the global cap is sized >= per-call cap).
     """
     if not ds_ids:
         return {}
 
-    semaphore = asyncio.Semaphore(_PREFETCH_CONCURRENCY)
+    per_call_sem = asyncio.Semaphore(_PREFETCH_CONCURRENCY)
+    global_sem = _get_global_prefetch_sem()
 
     async def _fetch_one(ds_id: str) -> tuple[str, Any]:
-        async with semaphore:
-            row = await repo.get("datastores", org_id, ds_id)
+        async with per_call_sem:
+            async with global_sem:
+                row = await repo.get("datastores", org_id, ds_id)
         return ds_id, row
 
     pairs = await asyncio.gather(*(_fetch_one(ds_id) for ds_id in ds_ids))

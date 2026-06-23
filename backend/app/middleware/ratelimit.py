@@ -419,9 +419,16 @@ def _classify(path: str) -> tuple[str | None, int]:
         if path == pfx or path.startswith(pfx):
             return None, 0
 
-    # Flow-run: POST /api/v1/flows/<id>/run  or  /api/v1/flows/run-cell
+    # Flow-run: POST /api/v1/flows/<id>/run, /api/v1/flows/run-cell,
+    #           /api/v1/flows/<id>/backfill, /api/v1/flows/<id>/sweep
+    # Backfill and sweep hold a worker for up to 600 s / 300 s respectively —
+    # the same resource footprint as a long flow run — so they share the same
+    # rpm bucket to prevent resource exhaustion via the scheduling surface.
     if path.startswith("/api/v1/flows/") and (
-        path.endswith("/run") or "/run-cell" in path
+        path.endswith("/run")
+        or "/run-cell" in path
+        or path.endswith("/backfill")
+        or path.endswith("/sweep")
     ):
         return "flow-run", _cfg.flowrun_rpm
 

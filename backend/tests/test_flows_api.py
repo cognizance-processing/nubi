@@ -1033,3 +1033,145 @@ class TestApiKeyOrgPin:
                 assert body["org_id"] != first_org
         finally:
             api_key_org_pin.reset(token)
+
+
+# ---------------------------------------------------------------------------
+# Per-org backfill concurrency cap (MED resource fix)
+# ---------------------------------------------------------------------------
+
+
+class TestBackfillConcurrencyCap:
+    """POST /flows/{id}/backfill must 429 when the org's slot limit is exhausted.
+
+    Strategy: manually drain the per-org semaphore (simulating 2 in-flight
+    backfills) then issue a real HTTP request — which should see 0 slots and
+    return 429 instantly without waiting 600 s.
+    """
+
+    @pytest.mark.asyncio
+    async def test_third_concurrent_backfill_returns_429(self, flows_client):
+        """A 3rd concurrent backfill for the same org -> 429 while 2 hold slots."""
+        import app.routes.flows as flows_mod
+
+        client, alice_id, alice_org_id, store, repo = flows_client
+
+        # Create a flow to backfill.
+        create_resp = await client.post(
+            "/api/v1/flows",
+            json={"name": "Backfill Flow", "spec": _VALID_SPEC},
+            headers=_auth_headers(alice_id),
+        )
+        assert create_resp.status_code == 201, create_resp.text
+        flow_id = create_resp.json()["id"]
+
+        # Ensure the semaphore for alice's org is fresh (cap=2).
+        # Clear stale state from other tests that may have run in the same process.
+        flows_mod._backfill_sems.pop(alice_org_id, None)
+        sem = flows_mod._get_backfill_sem(alice_org_id)
+        assert sem._value == flows_mod._MAX_CONCURRENT_BACKFILLS_PER_ORG
+
+        # Manually acquire 2 slots to simulate 2 in-flight backfills.
+        await sem.acquire()
+        await sem.acquire()
+        assert sem._value == 0, "Both slots must be occupied"
+
+        try:
+            # The 3rd request must be rejected immediately (no slot available).
+            resp = await client.post(
+                f"/api/v1/flows/{flow_id}/backfill",
+                json={
+                    "start": "2025-01-01T00:00:00Z",
+                    "end": "2025-01-03T00:00:00Z",
+                    "window": "1d",
+                },
+                headers=_auth_headers(alice_id),
+            )
+            assert resp.status_code == 429, (
+                f"Expected 429 when org backfill slots are full; got {resp.status_code}: {resp.text}"
+            )
+            body = resp.json()
+            assert body["error"]["code"] == "too_many_requests"
+        finally:
+            # Always release so the semaphore is not corrupted for future tests.
+            sem.release()
+            sem.release()
+
+    @pytest.mark.asyncio
+    async def test_backfill_succeeds_when_slot_available(self, flows_client):
+        """Backfill succeeds normally when the concurrency slot is free."""
+        import app.routes.flows as flows_mod
+
+        client, alice_id, alice_org_id, store, repo = flows_client
+
+        # Create a flow with a noop task so the backfill completes quickly.
+        create_resp = await client.post(
+            "/api/v1/flows",
+            json={"name": "Backfill OK", "spec": _VALID_SPEC},
+            headers=_auth_headers(alice_id),
+        )
+        assert create_resp.status_code == 201, create_resp.text
+        flow_id = create_resp.json()["id"]
+
+        # Ensure a fresh semaphore (no leaked state from other tests).
+        flows_mod._backfill_sems.pop(alice_org_id, None)
+
+        resp = await client.post(
+            f"/api/v1/flows/{flow_id}/backfill",
+            json={
+                "start": "2025-01-01T00:00:00Z",
+                "end": "2025-01-02T00:00:00Z",
+                "window": "1d",
+            },
+            headers=_auth_headers(alice_id),
+        )
+        assert resp.status_code == 200, resp.text
+        body = resp.json()
+        assert body["total"] == 1
+        assert body["succeeded"] == 1
+
+
+# ---------------------------------------------------------------------------
+# Per-org sweep concurrency cap (MED resource fix)
+# ---------------------------------------------------------------------------
+
+
+class TestSweepConcurrencyCap:
+    """POST /flows/{id}/sweep must 429 when the org's slot limit is exhausted."""
+
+    @pytest.mark.asyncio
+    async def test_third_concurrent_sweep_returns_429(self, flows_client):
+        """A 3rd concurrent sweep for the same org -> 429 while 2 hold slots."""
+        import app.routes.flows as flows_mod
+
+        client, alice_id, alice_org_id, store, repo = flows_client
+
+        create_resp = await client.post(
+            "/api/v1/flows",
+            json={"name": "Sweep Flow", "spec": _VALID_SPEC},
+            headers=_auth_headers(alice_id),
+        )
+        assert create_resp.status_code == 201, create_resp.text
+        flow_id = create_resp.json()["id"]
+
+        flows_mod._sweep_sems.pop(alice_org_id, None)
+        sem = flows_mod._get_sweep_sem(alice_org_id)
+        assert sem._value == flows_mod._MAX_CONCURRENT_SWEEPS_PER_ORG
+
+        await sem.acquire()
+        await sem.acquire()
+        assert sem._value == 0
+
+        try:
+            resp = await client.post(
+                f"/api/v1/flows/{flow_id}/sweep",
+                json={"param_sets": [{"x": 1}]},
+                headers=_auth_headers(alice_id),
+            )
+            assert resp.status_code == 429, (
+                f"Expected 429 when org sweep slots are full; got {resp.status_code}: {resp.text}"
+            )
+            body = resp.json()
+            assert body["error"]["code"] == "too_many_requests"
+        finally:
+            sem.release()
+            sem.release()
