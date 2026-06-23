@@ -676,6 +676,14 @@ def _sanitize_assets_css(css: str) -> str:
     #    browsers ignore inside tag names (prevents </sty\x00le> bypass).
     sanitized = re.sub(r"[\x00\x01-\x08\x0b\x0c\x0e-\x1f]", "", css)
 
+    # 0b. Strip CSS block comments from the emitted CSS.  IE silently removes
+    #     /* */ comment fragments from property values, turning
+    #     "expre/**/ssion(alert(1))" into "expression(alert(1))".  By stripping
+    #     comments here we both remove the dangerous content and ensure the
+    #     pattern checks below see the same form the browser would see.  This
+    #     also hardens @import and url() against comment-splitting bypasses.
+    sanitized = re.sub(r"/\*.*?\*/", "", sanitized, flags=re.DOTALL)
+
     # 1. Strip HTML tag breakout sequences.
     sanitized = re.sub(r"</\s*style", "", sanitized, flags=re.IGNORECASE)
     sanitized = re.sub(r"<\s*script", "", sanitized, flags=re.IGNORECASE)
@@ -687,10 +695,17 @@ def _sanitize_assets_css(css: str) -> str:
     sanitized = _CSS_URL_RE.sub(_neutralize_css_url, sanitized)
 
     # 4. Strip CSS expression() — IE legacy JS execution vector.
-    #    Matches expression followed by a balanced-enough parenthesised block,
-    #    tolerating internal whitespace and /* */ comment fragments.
+    #    Two passes are required:
+    #    a) Standard form and comment-collapsed form: after step 0b the
+    #       comment fragments are already gone, so "expre/**/ssion(..." is now
+    #       "expression(...)" and the plain pattern catches it.
+    #    b) Newline-split form: "expr\nession(...)" has a literal newline inside
+    #       the identifier itself.  We match this with a pattern that allows
+    #       arbitrary whitespace between every character of the keyword.
+    #       We do this by running a second targeted substitution using a pattern
+    #       constructed to tolerate embedded whitespace within the token.
     sanitized = re.sub(
-        r"expression\s*\([^)]*\)",
+        r"e\s*x\s*p\s*r\s*e\s*s\s*s\s*i\s*o\s*n\s*\([^)]*\)",
         "",
         sanitized,
         flags=re.IGNORECASE,

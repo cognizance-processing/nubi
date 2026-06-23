@@ -368,7 +368,10 @@ class RollupRegistry:
     """
 
     def __init__(self, max_entries: int | None = None) -> None:
-        self._by_sig: dict[str, str] = {}  # legacy: sig -> table name
+        # OrderedDict preserves insertion order so we can evict the oldest entry
+        # via popitem(last=False) in O(1).  Both _by_sig and _rollups use this
+        # to stay bounded at max_entries.
+        self._by_sig: OrderedDict[str, str] = OrderedDict()  # legacy: sig -> table name
         # OrderedDict gives O(1) move-to-end (LRU touch) and O(1) popitem(last=False)
         # (evict oldest).
         self._rollups: OrderedDict[str, BuiltRollup] = OrderedDict()
@@ -379,7 +382,21 @@ class RollupRegistry:
     # ── Legacy sig API (kept for existing tests / exact-match path) ──────────
 
     def register(self, sig: str, table: str) -> None:
-        """Legacy: register a rollup table name for an exact ``groupby_sig``."""
+        """Legacy: register a rollup table name for an exact ``groupby_sig``.
+
+        Bounded at ``self._max_entries``: when the dict is at capacity the
+        oldest-inserted entry is evicted first (FIFO / insertion-order eviction
+        via :class:`~collections.OrderedDict`).  This mirrors the LRU cap on
+        ``_rollups`` so repeated ``register()`` calls cannot grow ``_by_sig``
+        without bound.
+        """
+        if sig in self._by_sig:
+            # Refresh position — move to end so it is not evicted soon.
+            self._by_sig.move_to_end(sig)
+        else:
+            # Evict the oldest entry when at (or over) the cap.
+            while len(self._by_sig) >= self._max_entries:
+                self._by_sig.popitem(last=False)
         self._by_sig[sig] = table
 
     def lookup(self, sig: str) -> str | None:
@@ -408,11 +425,16 @@ class RollupRegistry:
             while len(self._rollups) >= self._max_entries:
                 evicted_id, evicted = self._rollups.popitem(last=False)
                 # Clean up the legacy sig index for the evicted entry.
+                # We must only remove the sig mapping when it still points to
+                # the evicted rollup's table — two rollups may share a
+                # rewrite_sig (e.g. rebuilt rollup), in which case the sig
+                # already points to the newer table and must not be removed.
                 if evicted.rewrite_sig and self._by_sig.get(evicted.rewrite_sig) == evicted.table:
                     del self._by_sig[evicted.rewrite_sig]
             self._rollups[rollup.rollup_id] = rollup
         if rollup.rewrite_sig:
-            self._by_sig[rollup.rewrite_sig] = rollup.table
+            # Use register() so _by_sig stays bounded at max_entries too.
+            self.register(rollup.rewrite_sig, rollup.table)
 
     def candidates_for_table(
         self, table: str, *, org_id: str | None = None

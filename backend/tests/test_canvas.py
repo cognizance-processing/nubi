@@ -2302,6 +2302,65 @@ class TestApiBindingPathValidation:
         hard = [i for i in issues if not i.lstrip().lower().startswith("[warn]")]
         assert any("expression" in i.lower() for i in hard), hard
 
+    def test_css_expression_comment_split_rejected_at_save_time(self):
+        """expre/**/ssion(...) comment-splitting bypass is rejected at save time.
+
+        IE strips CSS block comments from property values before evaluation, so
+        ``expre/**/ssion(alert(1))`` becomes ``expression(alert(1))`` in the
+        browser.  The validator must strip comments before pattern-matching.
+        """
+        doc = CanvasDoc.model_validate(
+            {
+                "html": "<div></div>",
+                "bindings": {},
+                "assets": {"css": "body { color: expre/**/ssion(alert(1)); }"},
+            }
+        )
+        ok, issues = validate_canvas_doc(doc)
+        assert ok is False, (
+            f"Expected hard error for expre/**/ssion() bypass in CSS, issues: {issues}"
+        )
+        hard = [i for i in issues if not i.lstrip().lower().startswith("[warn]")]
+        assert any("expression" in i.lower() for i in hard), hard
+
+    def test_css_expression_newline_split_rejected_at_save_time(self):
+        """expr\\nession(...) newline-splitting bypass is rejected at save time.
+
+        A literal newline inside the token name can evade a simple
+        ``expression\\s*(`` regex when re.DOTALL is not used.  The validator
+        must apply re.DOTALL (or strip newlines) so the pattern still fires.
+        """
+        doc = CanvasDoc.model_validate(
+            {
+                "html": "<div></div>",
+                "bindings": {},
+                "assets": {"css": "body { color: expr\nession(alert(1)); }"},
+            }
+        )
+        ok, issues = validate_canvas_doc(doc)
+        assert ok is False, (
+            f"Expected hard error for newline-split expression() in CSS, issues: {issues}"
+        )
+        hard = [i for i in issues if not i.lstrip().lower().startswith("[warn]")]
+        assert any("expression" in i.lower() for i in hard), hard
+
+    def test_css_benign_comment_in_safe_rule_accepted_at_save_time(self):
+        """Legitimate CSS comments in benign rules are stripped harmlessly at save time.
+
+        Stripping block comments must not cause false positives for normal CSS
+        that happens to contain comments (e.g. ``/* brand colour */``).
+        """
+        doc = CanvasDoc.model_validate(
+            {
+                "html": "<div></div>",
+                "bindings": {},
+                "assets": {"css": "/* brand colour */ body { color: red; /* fallback */ }"},
+            }
+        )
+        ok, issues = validate_canvas_doc(doc)
+        hard = [i for i in issues if not i.lstrip().lower().startswith("[warn]")]
+        assert hard == [], f"Benign CSS with comments should not produce hard errors: {hard}"
+
     def test_css_nul_byte_style_breakout_is_rejected_at_save_time(self):
         """assets.css with a NUL byte inside </style> is rejected as a hard error.
 

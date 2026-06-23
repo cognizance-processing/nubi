@@ -385,30 +385,70 @@ def validate_canvas_doc(doc: CanvasDoc, *, org_id: str | None = None) -> tuple[b
         # For tag-breakout checks, apply the same NUL-normalization as the render
         # path so that a smuggled NUL byte cannot bypass the regex below.
         _css_normalized = re.sub(r"[\x00\x01-\x08\x0b\x0c\x0e-\x1f]", "", css_value)
+        # Strip CSS block comments before checking injection patterns.  IE
+        # silently strips /* */ comment fragments from property values, so
+        # "expre/**/ssion(alert(1))" becomes "expression(alert(1))" after the
+        # browser removes the comment.  We apply the same transformation here
+        # so the patterns below see the comment-stripped form.  This also
+        # hardens @import and url() against the same comment-splitting bypass.
+        _css_no_comments = re.sub(r"/\*.*?\*/", "", _css_normalized, flags=re.DOTALL)
+        # Also collapse all whitespace (including newlines) so that a token
+        # split across lines (expr\nession) is normalised to a single token
+        # before the patterns are applied.  We use this collapsed form ONLY for
+        # the injection patterns — not for the tag-breakout patterns — because
+        # collapsing whitespace could change the semantics of selectors.
+        _css_collapsed = re.sub(r"\s+", "", _css_no_comments)
 
-        _css_hard_patterns = [
-            (r"</\s*style", "</style> tag in assets.css breaks out of a <style> block"),
-            (r"<\s*script", "<script in assets.css injects a script element"),
+        # Patterns are grouped by which normalised haystack they run against:
+        #
+        # TAG_PATTERNS: run against the NUL-normalised copy (whitespace and
+        #   newlines preserved so the </style> / <script regex work correctly).
+        #
+        # COMMENT_PATTERNS (@import, url): run against the comment-stripped
+        #   copy.  Whitespace is preserved so "@import 'js:'" is still matched
+        #   by "@import\s+" — but CSS block comments can no longer split the
+        #   token.
+        #
+        # COLLAPSED_PATTERNS (expression): run against the fully-collapsed copy
+        #   (no comments, no whitespace).  This catches both the comment-split
+        #   form (expre/**/ssion) and the newline-split form (expr\nession)
+        #   because collapsing normalises them both to "expression(".
+        _css_hard_patterns: list[tuple[str, str, str]] = [
             (
+                "tag",
+                r"</\s*style",
+                "</style> tag in assets.css breaks out of a <style> block",
+            ),
+            (
+                "tag",
+                r"<\s*script",
+                "<script in assets.css injects a script element",
+            ),
+            (
+                "comment",
                 r"@import\s+['\"]?\s*(javascript:|vbscript:|data:\s*text)",
                 "@import with javascript:, vbscript:, or data:text in assets.css "
                 "loads a malicious payload",
             ),
             (
+                "comment",
                 r"url\s*\(\s*['\"]?\s*(javascript:|vbscript:|data:\s*text)",
                 "url(javascript:), url(vbscript:), or url(data:text) in assets.css "
                 "executes a script via CSS url()",
             ),
             (
+                "collapsed",
                 r"expression\s*\(",
                 "expression() in assets.css executes JavaScript in IE/legacy clients",
             ),
         ]
-        # Check tag-breakout patterns against the NUL-normalized copy; check all
-        # others against the raw value so we catch obfuscated expression() forms.
-        _tag_patterns = {r"</\s*style", r"<\s*script"}
-        for _pattern, _description in _css_hard_patterns:
-            _haystack = _css_normalized if _pattern in _tag_patterns else css_value
+        _haystack_map = {
+            "tag": _css_normalized,
+            "comment": _css_no_comments,
+            "collapsed": _css_collapsed,
+        }
+        for _kind, _pattern, _description in _css_hard_patterns:
+            _haystack = _haystack_map[_kind]
             if re.search(_pattern, _haystack, re.IGNORECASE):
                 issues.append(
                     f"assets.css contains disallowed content: {_description}. "

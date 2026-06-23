@@ -1409,6 +1409,52 @@ class TestAssetsCssInjection:
             "EXPRESSION() (uppercase) survived assets.css render-time sanitization."
         )
 
+    def test_css_expression_comment_split_stripped_at_render_time(self):
+        """expre/**/ssion(...) comment-splitting bypass is neutralized at render time.
+
+        IE removes CSS block comments before evaluating property values, so
+        ``expre/**/ssion(alert(1))`` becomes ``expression(alert(1))``.
+        The render-time sanitizer must strip block comments first so that the
+        resulting dangerous token is then removed from the emitted CSS.
+        """
+        result = self._render_with_css("body { color: expre/**/ssion(alert(1)); }")
+        assert "expression(" not in result.lower(), (
+            "expre/**/ssion() comment-splitting bypass survived render-time sanitization "
+            "— XSS vector open."
+        )
+        # The dangerous content should be gone, not just blocked.
+        assert "expre" not in result.lower() or "ssion" not in result.lower() or (
+            "expre/**/ssion" not in result.lower()
+        ), "Comment-split expression survived in some form."
+
+    def test_css_expression_newline_split_stripped_at_render_time(self):
+        """expr\\nession(...) newline-splitting bypass is neutralized at render time.
+
+        A literal newline inside the token name evades a plain
+        ``expression\\s*(`` pattern without re.DOTALL.  After comment stripping
+        the remaining token contains a newline which the DOTALL flag then matches.
+        """
+        result = self._render_with_css("body { color: expr\nession(alert(1)); }")
+        assert "expression(" not in result.lower(), (
+            "Newline-split expression() survived render-time sanitization — XSS vector open."
+        )
+
+    def test_css_benign_comment_stripped_harmlessly_at_render_time(self):
+        """Legitimate CSS comments are stripped harmlessly at render time.
+
+        Stripping block comments must not break ordinary CSS that happens to
+        include comments.  The benign declarations must survive; only the
+        comment text itself is removed.
+        """
+        result = self._render_with_css(
+            "/* brand colour */ body { color: red; /* fallback */ }"
+        )
+        # The comment text is gone (stripped), but the rule survives.
+        assert "color: red" in result or "color:red" in result, (
+            "Benign CSS rule was incorrectly removed when stripping block comments."
+        )
+        assert "/*" not in result, "CSS block comment survived render-time stripping."
+
     def test_css_nul_byte_style_breakout_stripped_at_render_time(self):
         """NUL bytes inside </style> are normalized so the breakout sequence is caught.
 

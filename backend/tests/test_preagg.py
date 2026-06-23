@@ -236,6 +236,85 @@ class TestRollupRegistry:
         snap = reg.registered()
         assert snap == {"s1": "t1", "s2": "t2"}
 
+    def test_by_sig_bounded_under_many_register_calls(self) -> None:
+        """_by_sig must never exceed max_entries even under many register() calls.
+
+        This is the [LOW unbounded] fix: previously register() appended to a
+        plain dict with no cap, so repeated calls grew _by_sig without bound.
+        Now register() uses an OrderedDict capped at max_entries.
+        """
+        cap = 5
+        reg = RollupRegistry(max_entries=cap)
+
+        for i in range(50):
+            reg.register(f"sig_{i}", f"table_{i}")
+            assert len(reg._by_sig) <= cap, (
+                f"_by_sig exceeded cap {cap} after {i + 1} register() calls: "
+                f"size={len(reg._by_sig)}"
+            )
+
+        # The 5 newest sigs (sig_45..sig_49) must be present; older ones evicted.
+        for i in range(45, 50):
+            assert reg.lookup(f"sig_{i}") == f"table_{i}", (
+                f"sig_{i} should still be in _by_sig after 50 inserts"
+            )
+        # The oldest sig (sig_0) must have been evicted.
+        assert reg.lookup("sig_0") is None, "sig_0 (oldest) should have been evicted"
+
+    def test_register_update_existing_sig_refreshes_position(self) -> None:
+        """Re-registering the same sig updates its table and refreshes eviction order."""
+        cap = 3
+        reg = RollupRegistry(max_entries=cap)
+        reg.register("s1", "t1")
+        reg.register("s2", "t2")
+        reg.register("s3", "t3")
+
+        # Re-register s1 with a new table — s1 moves to MRU position.
+        reg.register("s1", "t1_updated")
+
+        # Now add s4 — s2 is now LRU, so s2 is evicted (not s1).
+        reg.register("s4", "t4")
+
+        assert len(reg._by_sig) == cap
+        assert reg.lookup("s1") == "t1_updated", "s1 should be retained (was refreshed)"
+        assert reg.lookup("s2") is None, "s2 (LRU) should be evicted"
+        assert reg.lookup("s3") == "t3"
+        assert reg.lookup("s4") == "t4"
+
+
+# ---------------------------------------------------------------------------
+# [LOW authz] Legacy /_preagg/register route must carry require_writer gate
+# ---------------------------------------------------------------------------
+
+
+def test_legacy_register_route_has_require_writer_gate() -> None:
+    """POST /_preagg/register must carry the require_writer dependency.
+
+    This is a static dependency-inspection check (no HTTP call needed):
+    the route's ``dependencies`` list must include ``require_writer`` so
+    viewer-role callers receive 403 rather than mutating the registry.
+
+    Regression: the route previously had only ``current_user`` (auth, not
+    authz), meaning any authenticated user — including viewers — could call
+    register() and pollute the rollup registry.
+    """
+    import app.routes.preagg as preagg_routes_mod
+    from app.auth.roles import require_writer
+
+    register_route = None
+    for route in preagg_routes_mod.router.routes:
+        if hasattr(route, "path") and route.path == "/_preagg/register":
+            register_route = route
+            break
+
+    assert register_route is not None, "Route /_preagg/register not found on router"
+
+    dep_callables = [d.dependency for d in (register_route.dependencies or [])]
+    assert require_writer in dep_callables, (
+        "require_writer dependency missing from POST /_preagg/register — "
+        "viewers can mutate the rollup registry!"
+    )
+
 
 class TestRouteToRollup:
     def _make_registry_for(self, sql: str, rollup_table: str) -> RollupRegistry:

@@ -338,7 +338,7 @@ class RegisterRollupIn(BaseModel):
     table: str
 
 
-@router.post("/_preagg/register")
+@router.post("/_preagg/register", dependencies=[Depends(require_writer)])
 async def legacy_register_rollup(
     body: RegisterRollupIn,
     _user: dict = Depends(current_user),

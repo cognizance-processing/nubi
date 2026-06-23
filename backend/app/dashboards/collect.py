@@ -89,6 +89,93 @@ def _execute_with_lock(connector: object, physical_plan: object) -> "pa.Table":
     with lock:
         return connector.execute(physical_plan)  # type: ignore[attr-defined]
 
+
+def _execute_and_convert(
+    connector: object,
+    physical_plan: object,
+    cap: int,
+    query_id: str = "",
+) -> "tuple[list[str], list[list[Any]]]":
+    """Execute, slice to *cap*, and convert to (columns, rows) — all off-loop.
+
+    This helper is designed to be called from ``asyncio.to_thread`` so that:
+    * The event loop is never blocked by connector.execute.
+    * The potentially CPU-intensive ``to_pylist()`` + row comprehension for up
+      to *cap* rows (100 k rows × many cols = 100–500 ms of pure Python) also
+      runs in a worker thread, not on the event loop.
+
+    The per-connector threading lock is acquired here (via ``_execute_with_lock``
+    internals) so concurrent threads never touch the same DuckDB connection.
+
+    Parameters
+    ----------
+    connector:
+        The connector whose ``execute`` method is called.
+    physical_plan:
+        The plan object passed to ``connector.execute``.
+    cap:
+        The row cap.  0 = unlimited.  When the result exceeds *cap*, the table
+        is sliced and a warning is logged (keyed by *query_id* for operator
+        visibility).
+    query_id:
+        Identifier used only in the truncation warning message.
+
+    Returns
+    -------
+    (columns, rows)
+        *columns* — list of column name strings.
+        *rows* — list of rows, each a list of scalar values in column order.
+    """
+    lock = _get_connector_lock(connector)
+    with lock:
+        arrow_table: pa.Table = connector.execute(physical_plan)  # type: ignore[attr-defined]
+
+    if cap > 0 and len(arrow_table) > cap:
+        logger.warning(
+            "collect: widget query_id=%r returned %d rows, truncating to %d "
+            "(set NUBI_COLLECT_ROW_CAP to raise limit)",
+            query_id,
+            len(arrow_table),
+            cap,
+        )
+        arrow_table = arrow_table.slice(0, cap)
+
+    columns = list(arrow_table.schema.names)
+    raw_records = arrow_table.to_pylist()
+    rows: list[list[Any]] = [[record.get(c) for c in columns] for record in raw_records]
+    return columns, rows
+
+
+def _execute_and_convert_api(
+    connector: object,
+    api_plan: object,
+    cap: int,
+    el_id: str = "",
+) -> "tuple[list[str], list[list[Any]]]":
+    """Execute an API (HTTP_JSON) connector plan off the event loop.
+
+    Identical in structure to :func:`_execute_and_convert` but uses *el_id*
+    in the truncation warning so Canvas binding logs are identifiable.
+    """
+    lock = _get_connector_lock(connector)
+    with lock:
+        result_table: pa.Table = connector.execute(api_plan)  # type: ignore[attr-defined]
+
+    if cap > 0 and len(result_table) > cap:
+        logger.warning(
+            "collect_canvas: api binding el_id=%r returned %d rows, "
+            "truncating to %d (set NUBI_COLLECT_ROW_CAP to raise limit)",
+            el_id,
+            len(result_table),
+            cap,
+        )
+        result_table = result_table.slice(0, cap)
+
+    columns = list(result_table.schema.names)
+    rows_raw = result_table.to_pylist()
+    rows: list[list[Any]] = [[r.get(c) for c in columns] for r in rows_raw]
+    return columns, rows
+
 # Maximum rows materialised per widget into Python memory.
 # Override via NUBI_COLLECT_ROW_CAP env-var (integer).  0 = unlimited.
 _DEFAULT_ROW_CAP = 100_000
@@ -260,25 +347,15 @@ async def run_query_rows(
     )
 
     try:
-        # [HIGH concurrency] Use _execute_with_lock so at most one thread
-        # executes against a given DuckDB connection at a time.  The demo
-        # connector is a process-wide singleton whose connection is NOT
-        # thread-safe; asyncio.to_thread would otherwise allow concurrent
-        # threads to collide on the same connection.
-        arrow_table = await asyncio.to_thread(_execute_with_lock, connector, physical_plan)
+        # [MED event-loop] _execute_and_convert acquires the per-connector lock,
+        # executes the plan, slices to cap, runs to_pylist() + the row
+        # comprehension — all inside the worker thread so the event loop is
+        # never blocked by execute *or* by the CPU-intensive Python conversion
+        # (up to 100 k rows × many cols = 100–500 ms for large results).
         cap = _ROW_CAP
-        if cap > 0 and len(arrow_table) > cap:
-            logger.warning(
-                "collect: widget query_id=%r returned %d rows, truncating to %d "
-                "(set NUBI_COLLECT_ROW_CAP to raise limit)",
-                query_id,
-                len(arrow_table),
-                cap,
-            )
-            arrow_table = arrow_table.slice(0, cap)
-        columns = list(arrow_table.schema.names)
-        raw_records = arrow_table.to_pylist()
-        rows: list[list[Any]] = [[record.get(c) for c in columns] for record in raw_records]
+        columns, rows = await asyncio.to_thread(
+            _execute_and_convert, connector, physical_plan, cap, query_id
+        )
         return columns, rows
     finally:
         # Only close connectors that were freshly created for this query
@@ -769,24 +846,15 @@ async def collect_canvas_data(
                     api_plan = planner_plan(
                         sql="SELECT *", claims={"policies": policies}, params=[]
                     )
-                    # [HIGH concurrency] Also lock the api connector execute.
-                    # HttpJsonConnector is typically not shared (each binding gets its
-                    # own instance), but applying the same lock pattern is consistent
-                    # and safe (a no-contention lock adds negligible overhead).
-                    result_table = await asyncio.to_thread(_execute_with_lock, connector, api_plan)
+                    # [MED event-loop] _execute_and_convert_api acquires the
+                    # per-connector lock, executes the plan, slices to cap, and
+                    # runs to_pylist() + row comprehension — all inside the
+                    # worker thread so the event loop is never blocked by the
+                    # HTTP fetch or Python conversion.
                     cap = _ROW_CAP
-                    if cap > 0 and len(result_table) > cap:
-                        logger.warning(
-                            "collect_canvas: api binding el_id=%r returned %d rows, "
-                            "truncating to %d (set NUBI_COLLECT_ROW_CAP to raise limit)",
-                            el_id,
-                            len(result_table),
-                            cap,
-                        )
-                        result_table = result_table.slice(0, cap)
-                    columns = list(result_table.schema.names)
-                    rows_raw = result_table.to_pylist()
-                    rows = [[r.get(c) for c in columns] for r in rows_raw]
+                    columns, rows = await asyncio.to_thread(
+                        _execute_and_convert_api, connector, api_plan, cap, el_id
+                    )
                     entry["columns"] = columns
                     entry["rows"] = rows
                 finally:
