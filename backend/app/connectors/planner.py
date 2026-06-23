@@ -794,7 +794,17 @@ def route_to_rollup_shape(
             # RLS keys are physically present in the rollup (they're grouped on too),
             # so they count as valid GROUP BY targets when checking the soundness rule.
             roll_all_dims = roll_dims | set(rollup.rls_keys)
-            if not q_dims.issubset(roll_all_dims):
+            # Build lowercased variants BEFORE any subset comparison so that
+            # mixed-case rollup dims ('Region', 'OrgId') are matched correctly
+            # against the lowercased q_dims / q_filter_cols produced by
+            # extract_shape (which always lowercases).  The old code built
+            # roll_all_dims_lc only after the first subset check, so the grain
+            # check (and the filter-cols check) used the un-lowercased set and
+            # silently skipped valid rollups whose dim names differ in case.
+            roll_all_dims_lc = {d.lower() for d in roll_all_dims}
+            # Rule 3 (grain soundness): query group-by ⊆ rollup full grain.
+            # Use the lowercased variant so mixed-case dims are not over-refused.
+            if not q_dims.issubset(roll_all_dims_lc):
                 continue
             # RLS-soundness check (fix-21): refuse to route the layered query to
             # a rollup whose grain does not carry every policy-hoisted dim.  This
@@ -802,7 +812,6 @@ def route_to_rollup_shape(
             # rollup that drops the per-tenant correlation column can never serve
             # this query — we fall back to the base instead of leaking across
             # tenants in the top-N membership subquery.
-            roll_all_dims_lc = {d.lower() for d in roll_all_dims}
             if not policy_hoisted_dims.issubset(roll_all_dims_lc):
                 continue
             # fix-22 (layered outer-RLS): every column the OUTER SELECT filters
@@ -826,8 +835,8 @@ def route_to_rollup_shape(
                     break
             if not ok_measures:
                 continue
-            roll_cols = roll_all_dims
-            if not q_filter_cols.issubset(roll_cols):
+            # Rule 5 (filter-cols soundness): lowercased variant for case consistency.
+            if not q_filter_cols.issubset(roll_all_dims_lc):
                 continue
 
             # All soundness rules pass → rewrite the inner aggregation.
@@ -854,7 +863,7 @@ def route_to_rollup_shape(
             )
             roll_partitions = _rollup_partition_cols(rollup)
             pruned = tuple(
-                sorted(c for c in roll_partitions if c in roll_cols and c in q_filter_cols)
+                sorted(c for c in roll_partitions if c in roll_all_dims_lc and c in q_filter_cols)
             )
             reason = f"layered: sound superset rewrite onto {rollup.table}"
             if pruned:
@@ -888,8 +897,13 @@ def route_to_rollup_shape(
         # roll_dims caused a query grouping by an rls_key (a physically-present
         # grain column) to be wrongly rejected (missed routing).
         roll_all_dims = roll_dims | set(rollup.rls_keys)
+        # Build lowercased variant BEFORE any subset comparison so that mixed-case
+        # rollup dims ('Region', 'OrgId') are not over-refused against the
+        # lowercased q_dims / q_filter_cols produced by extract_shape.
+        roll_all_dims_lc = {d.lower() for d in roll_all_dims}
         # Rule 3: query group-by ⊆ rollup full grain (dims + rls_keys).
-        if not q_dims.issubset(roll_all_dims):
+        # Use lowercased set to handle mixed-case rollup dim registrations.
+        if not q_dims.issubset(roll_all_dims_lc):
             continue
         # Rule 4: every measure re-aggregable AND materialized by the rollup.
         roll_measures = rollup.measure_funcs  # set of (func, col)
@@ -907,9 +921,12 @@ def route_to_rollup_shape(
         # `sum_amount`) does NOT exist in the rollup, so a `WHERE amount > 100`
         # would reference a missing column and produce wrong results / an error.
         # Such a filter is never sound post-rollup → leave the plan untouched.
-        roll_cols = roll_all_dims  # already includes rls_keys
-        if not q_filter_cols.issubset(roll_cols):
+        # Use lowercased set for case-consistent comparison with q_filter_cols.
+        if not q_filter_cols.issubset(roll_all_dims_lc):
             continue
+        # Keep roll_cols for partition-pruning (uses original case, compared
+        # against lowercased roll_partitions from _rollup_partition_cols).
+        roll_cols = roll_all_dims_lc  # already lowercased; used for pruning below
 
         # ── Rule 6 (partition pruning awareness, additive): if the rollup is
         # partitioned by a column that the rollup ALSO carries in its grain,

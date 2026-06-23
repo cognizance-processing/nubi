@@ -4962,3 +4962,312 @@ async def test_inline_provider_exec_timeout_releases_slot_for_next_request(
         "Fast follow-up request failed — semaphore slot may not have been released "
         "after the exec-timeout."
     )
+
+
+# ---------------------------------------------------------------------------
+# FIX [LOW stale inline cache]: changing base_cte produces a different cache key
+# ---------------------------------------------------------------------------
+
+
+def test_changing_base_cte_produces_different_cache_key() -> None:
+    """[LOW stale] Updating an inline provider's base_cte SQL produces a
+    different cache key so the old cached result is never served.
+
+    Before the fix, _provider_cache_key was keyed on
+    (org_id, board_id, provider_id, params_hash, rls_hash) with NO base_cte
+    component.  Two providers with the same id/board but different base_cte
+    SQL would share a cache key — the first SQL result would be served for
+    the full 5-min TTL even after the spec was updated.
+
+    After the fix, base_cte (for kind='inline') is hashed into the key so
+    distinct SQL always produces a distinct cache entry.
+    """
+    params: dict = {}
+    policies: dict = {}
+    org_id = "org-cte-test"
+    board_id = "board-cte-test"
+    provider_id = "p-cte"
+
+    cte_v1 = "WITH revenue AS (SELECT 1 AS amount)"
+    cte_v2 = "WITH revenue AS (SELECT 2 AS amount)"  # updated SQL
+
+    key_v1 = _provider_cache_key(org_id, provider_id, params, policies, board_id, cte_v1)
+    key_v2 = _provider_cache_key(org_id, provider_id, params, policies, board_id, cte_v2)
+    key_none = _provider_cache_key(org_id, provider_id, params, policies, board_id, None)
+
+    # Different SQL → different key (no stale hit after spec update).
+    assert key_v1 != key_v2, (
+        "Stale cache bug: changing base_cte must produce a different cache key. "
+        f"Both versions produced: {key_v1!r}"
+    )
+    # None/absent CTE is also distinct from an explicit CTE string.
+    assert key_none != key_v1
+    assert key_none != key_v2
+
+    # None and empty string are equivalent (both mean "no preamble").
+    key_empty = _provider_cache_key(org_id, provider_id, params, policies, board_id, "")
+    assert key_none == key_empty, (
+        "None and empty string base_cte must hash to the same sentinel."
+    )
+
+
+@pytest.mark.asyncio
+async def test_inline_provider_base_cte_change_busts_cache(repo: InMemoryRepo) -> None:
+    """[LOW stale] Changing base_cte on an inline provider causes a cache miss.
+
+    Steps:
+      1. Call resolve_provider_data with base_cte=None → populates cache (uses
+         run_query_rows path since no base_cte).
+      2. Update the board spec to base_cte="WITH revenue AS (...)" (different key).
+      3. Call again with the same params/policies → must be a cache miss because
+         the cache key now includes the base_cte hash.
+
+    If the cache key did NOT include base_cte, step 3 would return the stale
+    v1 result and _resolve_inline_provider (which we patch) would only be called
+    once.  After the fix it must be called twice.
+    """
+    spec_no_cte = {
+        "version": 1,
+        "title": "CTE Board",
+        "widgets": [
+            {"id": "w1", "type": "table", "source": {"provider": _PROVIDER_ID, "result": "revenue"}},
+        ],
+        "data": [
+            {
+                "id": _PROVIDER_ID,
+                "kind": "inline",
+                "params": {},
+                "base_cte": None,
+                "results": [{"name": "revenue", "grain": None}],
+            }
+        ],
+    }
+    spec_with_cte = {
+        **spec_no_cte,
+        "data": [
+            {
+                "id": _PROVIDER_ID,
+                "kind": "inline",
+                "params": {},
+                "base_cte": "WITH revenue AS (SELECT 99 AS amount)",
+                "results": [{"name": "revenue", "grain": None}],
+            }
+        ],
+    }
+
+    await repo.update("boards", _ORG, _BOARD_ID, {"config": {"spec": spec_no_cte}})
+
+    import app.dashboards.board_data as _bd_mod
+
+    resolve_call_count = 0
+
+    async def _fake_resolve_inline(provider: Any, merged_params: Any, org_id: Any,
+                                   claims: Any, repo: Any) -> dict[str, "pa.Table"]:
+        nonlocal resolve_call_count
+        resolve_call_count += 1
+        return {"revenue": pa.table({"amount": pa.array([float(resolve_call_count * 10)])})}
+
+    async def _fake_enforce_quota(org_id: str, dimension: str, amount: float = 1.0) -> None:
+        pass
+
+    with (
+        patch("app.features.enforce_quota", side_effect=_fake_enforce_quota),
+        patch.object(_bd_mod, "_resolve_inline_provider", side_effect=_fake_resolve_inline),
+    ):
+        # First call with base_cte=None — populates cache (key includes cte_hash for None).
+        tables_v1 = await resolve_provider_data(
+            board_id=_BOARD_ID,
+            provider_id=_PROVIDER_ID,
+            params={},
+            org_id=_ORG,
+            claims={"policies": {}},
+            repo=repo,
+        )
+        assert resolve_call_count == 1, "First call must execute the provider."
+
+        # Update spec to use a base_cte string (different key component).
+        await repo.update("boards", _ORG, _BOARD_ID, {"config": {"spec": spec_with_cte}})
+
+        # Second call with same params/policies but new base_cte — must be a cache miss.
+        tables_v2 = await resolve_provider_data(
+            board_id=_BOARD_ID,
+            provider_id=_PROVIDER_ID,
+            params={},
+            org_id=_ORG,
+            claims={"policies": {}},
+            repo=repo,
+        )
+
+    assert resolve_call_count == 2, (
+        f"Stale cache served: _resolve_inline_provider called {resolve_call_count} time(s) "
+        "but expected 2. Changing base_cte must bust the cache (base_cte hash must be in "
+        "the cache key)."
+    )
+    # The two results must be distinct (different base_cte → different execution).
+    val_v1 = tables_v1["revenue"].to_pydict()["amount"][0]
+    val_v2 = tables_v2["revenue"].to_pydict()["amount"][0]
+    assert val_v1 != val_v2, (
+        f"Stale cache: both calls returned the same value ({val_v1!r}) — "
+        "base_cte change did not produce a fresh result."
+    )
+
+
+# ---------------------------------------------------------------------------
+# FIX [LOW cap-bypass]: fill-empty path in _resolve_flow_provider respects cap
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_flow_provider_fill_empty_respects_column_cap() -> None:
+    """[LOW cap-bypass] Fill-empty tables in _resolve_flow_provider are routed
+    through _check_table_columns so the column cap is enforced consistently.
+
+    pa.table({}) has 0 columns so _check_table_columns trivially passes —
+    this test verifies it is called and does not raise for empty tables.
+    The important property is that the fill path is structurally consistent
+    with the normal accumulation path and cannot be used to bypass the guard
+    by a future code change that fills non-trivially-empty tables.
+    """
+    import app.dashboards.board_data as _bd_mod
+    from app.dashboards.board_data import _resolve_flow_provider
+    from app.dashboards.spec import ProviderResult
+
+    # Provider that declares a result that will NOT be returned by any task_run
+    # → fill-empty path fires for this result.
+    provider = DataProvider(
+        id="p-fill-test",
+        kind="flow",
+        params={},
+        results=[ProviderResult(name="missing_result")],
+    )
+
+    # Patch _check_table_columns to record calls without changing behaviour.
+    check_calls: list[tuple] = []
+    original_check = _bd_mod._check_table_columns
+
+    def _spy_check(tbl: Any, name: str, provider_id: str, max_columns: int = 0) -> None:
+        check_calls.append((name, tbl.num_columns, provider_id))
+        return original_check(tbl, name, provider_id, max_columns)
+
+    # Minimal fake store: flow exists, run succeeds, but produces NO task_runs
+    # so the fill-empty loop is triggered.
+    fake_flow = {"id": "p-fill-test", "name": "p-fill-test", "org_id": _ORG}
+    fake_flow_run = {"id": "fill-run-1", "state": "success"}
+
+    class _FakeStore:
+        async def get_flow(self, flow_id: str) -> dict:
+            return fake_flow
+
+        async def list_flows(self, **kwargs: Any) -> list:
+            return [fake_flow]
+
+        async def list_flow_runs(self, flow_id: str, limit: int = 10, **kwargs: Any) -> list:
+            return [fake_flow_run]
+
+        async def list_task_runs(self, run_id: str, limit: int | None = None) -> list:
+            return []  # no task_run results → fill-empty fires
+
+        async def materialize_flow_run(self, *args: Any, **kwargs: Any) -> dict:
+            return fake_flow_run
+
+        async def drain_flow_run(self, *args: Any, **kwargs: Any) -> dict:
+            return fake_flow_run
+
+    import app.flows.store as _fs_mod
+    import app.flows.runtime as _runtime_mod
+
+    with (
+        patch.object(_fs_mod, "get_flow_store", return_value=_FakeStore()),
+        patch.object(_bd_mod, "_check_table_columns", side_effect=_spy_check),
+        # materialize_flow_run and drain_flow_run are locally imported inside _resolve_flow_provider
+        patch.object(_runtime_mod, "materialize_flow_run", new=AsyncMock(return_value=fake_flow_run)),
+        patch.object(_runtime_mod, "drain_flow_run", new=AsyncMock(return_value=fake_flow_run)),
+    ):
+        tables = await _resolve_flow_provider(
+            provider,
+            {},
+            _ORG,
+            {"policies": {}},
+            org_flows_by_key={"p-fill-test": fake_flow},
+        )
+
+    # The missing result must be filled with an empty table.
+    assert "missing_result" in tables, f"fill-empty did not add 'missing_result': {list(tables)}"
+    assert tables["missing_result"].num_columns == 0
+    assert tables["missing_result"].num_rows == 0
+
+    # _check_table_columns must have been called for the filled-empty table.
+    filled_calls = [c for c in check_calls if c[0] == "missing_result"]
+    assert len(filled_calls) >= 1, (
+        "_check_table_columns was NOT called for the fill-empty table — "
+        "the fill path bypasses the column cap guard."
+    )
+
+
+@pytest.mark.asyncio
+async def test_flow_provider_fill_empty_table_count_cap_fires() -> None:
+    """[LOW cap-bypass] Fill-empty in _resolve_flow_provider enforces the
+    table-count cap via the results-count pre-check.
+
+    A provider with len(provider.results) > _PROVIDER_MAX_TABLES and NO
+    matching task_runs previously bypassed the cap because the count check
+    did not run before the fill-empty loop.  After the fix it raises
+    provider_result_too_large (422).
+    """
+    import app.dashboards.board_data as _bd_mod
+    from app.dashboards.board_data import _resolve_flow_provider
+    from app.dashboards.spec import ProviderResult
+
+    original_cap = _bd_mod._PROVIDER_MAX_TABLES
+    small_cap = 2
+    _bd_mod._PROVIDER_MAX_TABLES = small_cap
+
+    try:
+        # Declare more results than the cap; none will have task_run data.
+        over_limit_names = [f"missing_{i}" for i in range(small_cap + 1)]
+        provider = DataProvider(
+            id="p-fill-cap",
+            kind="flow",
+            params={},
+            results=[ProviderResult(name=n) for n in over_limit_names],
+        )
+
+        fake_flow = {"id": "p-fill-cap", "name": "p-fill-cap", "org_id": _ORG}
+        fake_flow_run = {"id": "fill-cap-run-1", "state": "success"}
+
+        class _FakeStore:
+            async def get_flow(self, flow_id: str) -> dict:
+                return fake_flow
+
+            async def list_flows(self, **kwargs: Any) -> list:
+                return [fake_flow]
+
+            async def list_flow_runs(self, flow_id: str, limit: int = 10, **kwargs: Any) -> list:
+                return [fake_flow_run]
+
+            async def list_task_runs(self, run_id: str, limit: int | None = None) -> list:
+                return []  # no task_run data → fill-empty loop fires
+
+        import app.flows.store as _fs_mod
+        import app.flows.runtime as _runtime_mod
+
+        with (
+            patch.object(_fs_mod, "get_flow_store", return_value=_FakeStore()),
+            patch.object(_runtime_mod, "materialize_flow_run", new=AsyncMock(return_value=fake_flow_run)),
+            patch.object(_runtime_mod, "drain_flow_run", new=AsyncMock(return_value=fake_flow_run)),
+            pytest.raises(AppError) as exc_info,
+        ):
+            await _resolve_flow_provider(
+                provider,
+                {},
+                _ORG,
+                {"policies": {}},
+                org_flows_by_key={"p-fill-cap": fake_flow},
+            )
+
+        assert exc_info.value.code == "provider_result_too_large", (
+            f"Expected provider_result_too_large, got {exc_info.value.code!r}"
+        )
+        assert exc_info.value.status == 422
+    finally:
+        _bd_mod._PROVIDER_MAX_TABLES = original_cap

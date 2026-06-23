@@ -590,8 +590,9 @@ def _provider_cache_key(
     params: dict[str, Any],
     policies: dict[str, Any],
     board_id: str = "",
+    base_cte: str | None = None,
 ) -> str:
-    """Composite cache key: ``provider:<org_id>:<board_id>:<pid>:<params_hash>:<rls_hash>``.
+    """Composite cache key: ``provider:<org_id>:<board_id>:<pid>:<params_hash>:<rls_hash>:<cte_hash>``.
 
     ``org_id`` is the first component so two different orgs sharing the same
     ``provider_id`` and empty policies can NEVER collide in the cache.
@@ -601,10 +602,18 @@ def _provider_cache_key(
     collision would otherwise serve board-A's data to board-B when both declare
     a provider with the same id but different board-level context.
 
+    ``base_cte`` (for kind='inline') is hashed into the key so that updating an
+    inline provider's SQL preamble (same provider_id/board_id) invalidates the
+    cached result immediately rather than serving stale data for the full 5-min TTL.
+    Pass ``provider.base_cte`` at call sites; ``None`` and ``""`` both hash to the
+    same sentinel so non-inline providers are unaffected.
+
     Stored in the base-scan cache namespace so it shares TTL + invalidation
     infrastructure without colliding with exact-result plan keys.
     """
-    return f"provider:{org_id}:{board_id}:{provider_id}:{_params_hash(params)}:{_rls_hash(policies)}"
+    # Normalise: None and empty string are equivalent (no preamble).
+    cte_hash = hashlib.sha256((base_cte or "").encode()).hexdigest()[:16]
+    return f"provider:{org_id}:{board_id}:{provider_id}:{_params_hash(params)}:{_rls_hash(policies)}:{cte_hash}"
 
 
 # ---------------------------------------------------------------------------
@@ -914,6 +923,18 @@ async def _resolve_flow_provider(
             )
 
     # Fill in empty tables for declared results that produced nothing.
+    # FIX [LOW cap-bypass]: route filled-empty tables through the same
+    # _check_table_columns + table-count cap as the normal accumulation path so
+    # a spec with many declared results cannot bypass the size guard.
+    # Guard on provider.results count first (mirrors the materialized path).
+    if _PROVIDER_MAX_TABLES > 0 and len(provider.results) > _PROVIDER_MAX_TABLES:
+        raise AppError(
+            "provider_result_too_large",
+            f"Provider {provider.id!r} declared {len(provider.results)} results; "
+            f"maximum allowed is {_PROVIDER_MAX_TABLES} "
+            f"(set NUBI_PROVIDER_MAX_TABLES to raise the limit).",
+            422,
+        )
     for r in provider.results:
         if r.name not in tables:
             logger.warning(
@@ -922,7 +943,21 @@ async def _resolve_flow_provider(
                 provider.id,
                 r.name,
             )
-            tables[r.name] = pa.table({})
+            empty_tbl = pa.table({})
+            # Empty tables have 0 columns so _check_table_columns is a no-op,
+            # but routing through it keeps the fill path consistent with the
+            # normal path and future-proofs against non-trivially-empty fills.
+            _check_table_columns(empty_tbl, r.name, provider.id, _PROVIDER_MAX_COLUMNS)
+            tables[r.name] = empty_tbl
+            # Enforce table-count cap on fill as well.
+            if _PROVIDER_MAX_TABLES > 0 and len(tables) > _PROVIDER_MAX_TABLES:
+                raise AppError(
+                    "provider_result_too_large",
+                    f"Provider {provider.id!r} returned more than {_PROVIDER_MAX_TABLES} "
+                    f"result tables; aborting accumulation "
+                    f"(set NUBI_PROVIDER_MAX_TABLES to raise the limit).",
+                    422,
+                )
 
     return tables
 
@@ -1604,7 +1639,14 @@ async def resolve_provider_data(
     # different orgs with the same provider_id + empty policies never collide.
     # FIX [LOW cross-board cache]: board_id is included so the same provider_id
     # on two different boards never shares a cache entry.
-    cache_key = _provider_cache_key(org_id, provider_id, merged_params, policies, board_id)
+    # FIX [LOW stale inline cache]: base_cte is hashed into the key so that
+    # changing an inline provider's SQL preamble (same provider_id/board_id)
+    # immediately invalidates the cached result instead of serving stale data
+    # for the full 5-min TTL.  Pass None for non-inline providers (no-op).
+    _base_cte_for_key = provider.base_cte if provider.kind == "inline" else None
+    cache_key = _provider_cache_key(
+        org_id, provider_id, merged_params, policies, board_id, _base_cte_for_key
+    )
 
     from app.connectors.cache import get_base_scan, put_base_scan  # noqa: PLC0415
 

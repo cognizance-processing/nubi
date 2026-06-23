@@ -479,6 +479,75 @@ class TestRouteSoundness:
         )
         assert result.plan is p  # untouched
 
+    def test_mixed_case_dims_routes_for_lowercase_query(self, source_db: str) -> None:
+        """FIX [LOW correctness]: a rollup with mixed-case dims is NOT silently skipped.
+
+        extract_shape lowercases all dimensions and filter columns, but the rollup
+        registry stores dims verbatim as registered (e.g. 'Region', 'TenantId').
+        Before the fix, the grain soundness check compared lowercased q_dims against
+        the un-lowercased roll_all_dims, so 'region' ⊄ {'Region', 'TenantId'} and the
+        rollup was silently skipped (over-broad refusal — missed routing).
+
+        After the fix, both sides are lowercased before comparison, so the rollup IS
+        found and the query IS routed.
+        """
+        from app.connectors.preagg import BuiltRollup  # noqa: PLC0415
+
+        reg = RollupRegistry()
+        # Register a rollup directly with mixed-case dims — simulates a rollup whose
+        # dimension names were registered with non-uniform casing.
+        mixed_rollup = BuiltRollup(
+            rollup_id="test-mixed-case",
+            table="rollup_orders_mixed",
+            source_table="orders",
+            dimensions=["Region"],          # mixed-case dim
+            measures=["sum(amount)", "count(*)"],
+            rls_keys=["TenantId"],          # mixed-case rls_key
+        )
+        reg.add_rollup(mixed_rollup)
+
+        # Query uses all-lowercase dims (as extract_shape always produces).
+        p = plan("SELECT region, SUM(amount) FROM orders GROUP BY region")
+        result = route_to_rollup_shape(p, reg)
+
+        assert result.routed is True, (
+            f"Mixed-case rollup dims ('Region', 'TenantId') must route for lowercase query. "
+            f"Reason: {result.reason}"
+        )
+        assert result.rollup_id == "test-mixed-case"
+
+    def test_mixed_case_dims_still_refuses_genuinely_absent_dim(
+        self, source_db: str
+    ) -> None:
+        """Soundness: mixed-case fix must NOT cause over-routing for absent dims.
+
+        A query grouping by 'product' (genuinely absent from the rollup grain, even
+        after case-folding) must still be refused.  The fix must only remove
+        false refusals caused by case mismatch — never weaken the soundness guarantee.
+        """
+        from app.connectors.preagg import BuiltRollup  # noqa: PLC0415
+
+        reg = RollupRegistry()
+        mixed_rollup = BuiltRollup(
+            rollup_id="test-mixed-case-2",
+            table="rollup_orders_mixed2",
+            source_table="orders",
+            dimensions=["Region"],
+            measures=["sum(amount)", "count(*)"],
+            rls_keys=["TenantId"],
+        )
+        reg.add_rollup(mixed_rollup)
+
+        # 'product' is not in the rollup grain even after lowercasing.
+        p = plan("SELECT product, SUM(amount) FROM orders GROUP BY product")
+        result = route_to_rollup_shape(p, reg)
+
+        assert result.routed is False, (
+            f"'product' is genuinely absent from the rollup grain; expected routed=False. "
+            f"Rewrite: {result.plan.sql if result.plan else 'n/a'}"
+        )
+        assert result.plan is p  # untouched
+
 
 # ---------------------------------------------------------------------------
 # 5. Layered CTE routing (windowed / derived metric queries)

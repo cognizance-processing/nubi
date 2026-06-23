@@ -2672,3 +2672,150 @@ async def test_cancelled_backfill_window_flow_run_not_left_running():
             "orphan run_id invariant violated. "
             "The BaseException handler in run_backfill must transition it to 'failed'."
         )
+
+
+# ---------------------------------------------------------------------------
+# FIX [MED OOM]: Phase 2 per-result byte cap (_SWEEP_PHASE2_RESULT_BYTES_CAP)
+# ---------------------------------------------------------------------------
+
+
+def test_phase2_result_bytes_cap_constant_exists():
+    """_SWEEP_PHASE2_RESULT_BYTES_CAP must exist in sweep module as a positive int."""
+    import app.flows.sweep as sweep_mod
+
+    assert hasattr(sweep_mod, "_SWEEP_PHASE2_RESULT_BYTES_CAP"), (
+        "_SWEEP_PHASE2_RESULT_BYTES_CAP constant missing from sweep.py"
+    )
+    assert isinstance(sweep_mod._SWEEP_PHASE2_RESULT_BYTES_CAP, int)
+    assert sweep_mod._SWEEP_PHASE2_RESULT_BYTES_CAP > 0, (
+        "_SWEEP_PHASE2_RESULT_BYTES_CAP must be a positive integer"
+    )
+
+
+def test_phase2_result_bytes_cap_default_is_512kib():
+    """_SWEEP_PHASE2_RESULT_BYTES_CAP default must be 512 KiB."""
+    import app.flows.sweep as sweep_mod
+
+    assert sweep_mod._SWEEP_PHASE2_RESULT_BYTES_CAP == 512 * 1024, (
+        f"Default Phase 2 cap must be 512 KiB (524288 bytes), "
+        f"got {sweep_mod._SWEEP_PHASE2_RESULT_BYTES_CAP}"
+    )
+
+
+async def test_phase2_oversized_result_replaced_with_sentinel(monkeypatch):
+    """An oversized query result in a sweep cell must be replaced by the load-time
+    sentinel at Phase 2 accumulation, not stored verbatim.
+
+    The sentinel must use the key '__phase2_truncated__' (distinct from
+    diff_surface's '__truncated__') so consumers can tell the blob was too big
+    to store at load time (not just too big to ship).
+    """
+    import app.flows.sweep as sweep_mod
+
+    # Lower the cap to 10 bytes so any non-trivial result triggers it.
+    monkeypatch.setattr(sweep_mod, "_SWEEP_PHASE2_RESULT_BYTES_CAP", 10)
+
+    reset_for_tests()
+    store = InMemoryFlowStore()
+    # _output_task returns {'value': N*10} — well over 10 bytes when serialised.
+    flow = await _make_flow(store, _output_task())
+
+    result = await run_sweep(
+        store=store,
+        flow=flow,
+        param_sets=[{"multiplier": 1}],
+        trigger="sweep",
+        now=NOW,
+        claims=CLAIMS,
+    )
+
+    assert result.succeeded == 1, "Cell must succeed"
+
+    cell = result.cells[0]
+    assert "compute" in cell.outputs, "'compute' task must appear in outputs"
+
+    stored = cell.outputs["compute"]
+    # Must be the Phase 2 sentinel, not the raw result.
+    assert stored.get("__phase2_truncated__") is True, (
+        f"Expected __phase2_truncated__ sentinel for oversized result, got: {stored!r}"
+    )
+    assert "size_bytes" in stored, "Sentinel must include size_bytes"
+    assert "cap_bytes" in stored, "Sentinel must include cap_bytes"
+    assert stored["cap_bytes"] == 10, f"cap_bytes must equal the patched cap (10), got {stored['cap_bytes']}"
+    assert stored["size_bytes"] > 10, (
+        f"size_bytes ({stored['size_bytes']}) must exceed the cap (10)"
+    )
+
+
+async def test_phase2_small_result_passes_through(monkeypatch):
+    """A result that fits within _SWEEP_PHASE2_RESULT_BYTES_CAP must be stored verbatim.
+
+    Bounded memory: only oversized blobs are replaced; small results must be
+    returned as-is so the diff surface still has meaningful data.
+    """
+    import app.flows.sweep as sweep_mod
+
+    # Large cap — nothing should be truncated.
+    monkeypatch.setattr(sweep_mod, "_SWEEP_PHASE2_RESULT_BYTES_CAP", 1024 * 1024)
+
+    reset_for_tests()
+    store = InMemoryFlowStore()
+    flow = await _make_flow(store, _output_task())  # returns {'value': N*10}
+
+    result = await run_sweep(
+        store=store,
+        flow=flow,
+        param_sets=[{"multiplier": 3}],
+        trigger="sweep",
+        now=NOW,
+        claims=CLAIMS,
+    )
+
+    assert result.succeeded == 1
+    cell = result.cells[0]
+    stored = cell.outputs.get("compute", {})
+
+    # Must NOT be a sentinel.
+    assert "__phase2_truncated__" not in stored, (
+        f"Small result must not be replaced by Phase 2 sentinel, got: {stored!r}"
+    )
+    assert stored.get("value") == 30, (
+        f"Expected raw result {{'value': 30}}, got {stored!r}"
+    )
+
+
+async def test_phase2_sentinel_distinct_from_diff_surface_truncation(monkeypatch):
+    """The Phase 2 sentinel key (__phase2_truncated__) must be distinct from
+    diff_surface's truncation marker (__truncated__) so consumers can
+    distinguish load-time OOM guards from response-time payload caps.
+    """
+    import app.flows.sweep as sweep_mod
+
+    # Cap Phase 2 very low so the sentinel fires.
+    monkeypatch.setattr(sweep_mod, "_SWEEP_PHASE2_RESULT_BYTES_CAP", 10)
+
+    reset_for_tests()
+    store = InMemoryFlowStore()
+    flow = await _make_flow(store, _output_task())
+
+    result = await run_sweep(
+        store=store,
+        flow=flow,
+        param_sets=[{"multiplier": 1}],
+        trigger="sweep",
+        now=NOW,
+        claims=CLAIMS,
+    )
+
+    assert result.succeeded == 1
+    stored = result.cells[0].outputs.get("compute", {})
+
+    # Phase 2 sentinel key.
+    assert "__phase2_truncated__" in stored, (
+        "Phase 2 load-time sentinel must use '__phase2_truncated__' key"
+    )
+    # diff_surface key must NOT be present in the stored cell.
+    assert "__truncated__" not in stored, (
+        "Phase 2 sentinel must NOT use diff_surface's '__truncated__' key — "
+        "the two markers must be distinct"
+    )

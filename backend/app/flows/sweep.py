@@ -122,6 +122,30 @@ _SWEEP_GATHER_CONCURRENCY: int = int(
 )
 
 # ---------------------------------------------------------------------------
+# Phase 2 per-result byte cap (load-time OOM guard).
+#
+# Phase 2 stores tr['result'] verbatim into cells[].outputs BEFORE
+# diff_surface()'s response-time caps apply.  Python executor results are
+# capped at 512 KiB, but QUERY results are only row-capped (100k rows) —
+# worst case: 50 cells × 500 task-runs × multi-MB each, all held in one
+# SweepResult.cells list before diff_surface() ever runs.
+#
+# This cap measures each result's JSON-serialised size at load time; if it
+# exceeds the cap the result is replaced with a compact sentinel:
+#
+#     {'__phase2_truncated__': True, 'size_bytes': ..., 'cap_bytes': ...}
+#
+# This sentinel is DISTINCT from diff_surface()'s '__truncated__' marker so
+# consumers can tell whether the blob was too big to store (phase2) or too big
+# to ship (diff_surface).
+#
+# Override via NUBI_SWEEP_PHASE2_RESULT_BYTES_CAP (bytes).  Default: 512 KiB.
+# ---------------------------------------------------------------------------
+_SWEEP_PHASE2_RESULT_BYTES_CAP: int = int(
+    os.environ.get("NUBI_SWEEP_PHASE2_RESULT_BYTES_CAP", str(512 * 1024))
+)
+
+# ---------------------------------------------------------------------------
 # Per-cell / per-window wall-clock execution timeout.
 #
 # run_sweep calls drain_flow_run once per CELL; run_backfill calls it once per
@@ -537,7 +561,20 @@ async def run_sweep(
             outputs: dict[str, Any] = {}
             for tr in task_runs:
                 if tr.get("state") == "success" and tr.get("result") is not None:
-                    outputs[tr["task_key"]] = tr["result"]
+                    result_val = tr["result"]
+                    if _SWEEP_PHASE2_RESULT_BYTES_CAP > 0:
+                        try:
+                            serialised = json.dumps(result_val, default=str)
+                        except Exception:  # noqa: BLE001
+                            serialised = str(result_val)
+                        size_bytes = len(serialised.encode("utf-8"))
+                        if size_bytes > _SWEEP_PHASE2_RESULT_BYTES_CAP:
+                            result_val = {
+                                "__phase2_truncated__": True,
+                                "size_bytes": size_bytes,
+                                "cap_bytes": _SWEEP_PHASE2_RESULT_BYTES_CAP,
+                            }
+                    outputs[tr["task_key"]] = result_val
             cells[cell_idx].outputs = outputs
 
     return SweepResult(
