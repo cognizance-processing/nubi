@@ -50,6 +50,7 @@ Example
 
 from __future__ import annotations
 
+import os
 from typing import Any, Iterator
 
 import pyarrow as pa
@@ -172,11 +173,18 @@ class HttpJsonConnector(Connector):
         # resolution exists for an attacker to rebind.
         pinned = resolve_and_pin(self._url)
 
+        # Build a bounded timeout from the environment so a slow/hung upstream
+        # cannot block the worker thread indefinitely.  All four timeout phases
+        # (connect, read, write, pool) are capped so even a partially-stalled
+        # connection cannot hold the worker forever.
+        _timeout_s = float(os.environ.get("NUBI_HTTP_CONNECTOR_TIMEOUT_S", "30"))
+        timeout = httpx.Timeout(_timeout_s)
+
         try:
-            response = _fetch_pinned(httpx, "GET", pinned, self._headers)
+            response = _fetch_pinned(httpx, "GET", pinned, self._headers, timeout=timeout)
             response.raise_for_status()
             body = response.json()
-        except (httpx.RequestError, httpx.HTTPStatusError) as exc:
+        except (httpx.TimeoutException, httpx.RequestError, httpx.HTTPStatusError) as exc:
             raise AppError(
                 "source_fetch_error",
                 f"Failed to fetch JSON source at {self._url!r}: {exc}",
@@ -244,6 +252,8 @@ def _fetch_pinned(
     method: str,
     pinned: PinnedTarget,
     headers: dict[str, str],
+    *,
+    timeout: Any = None,
 ) -> Any:
     """Issue an HTTP request to a pinned, SSRF-validated target.
 
@@ -284,6 +294,7 @@ def _fetch_pinned(
         target_url,
         headers=request_headers,
         extensions=extensions,
+        timeout=timeout,
     )
 
 

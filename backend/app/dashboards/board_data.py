@@ -81,6 +81,15 @@ _PROVIDER_MAX_BYTES: int = int(
     os.environ.get("NUBI_PROVIDER_MAX_BYTES", _DEFAULT_PROVIDER_MAX_BYTES)
 )
 
+# [MED resource] Cap: max columns per result table produced by a provider.
+# A table with thousands of columns balloons the Arrow IPC schema section and
+# saturates memory before the byte-cap fires.  Default 500.
+# Override via env var NUBI_PROVIDER_MAX_COLUMNS.
+_DEFAULT_PROVIDER_MAX_COLUMNS = 500
+_PROVIDER_MAX_COLUMNS: int = int(
+    os.environ.get("NUBI_PROVIDER_MAX_COLUMNS", _DEFAULT_PROVIDER_MAX_COLUMNS)
+)
+
 # [LOW resource] Cap: max datastores fetched from the DB by _resolve_org_connector
 # when scanning for the first eligible (non-system, non-demo) datastore connector.
 # An org with many datastores would otherwise load them all from the DB on every
@@ -603,6 +612,40 @@ def _provider_cache_key(
 # ---------------------------------------------------------------------------
 
 
+def _check_table_columns(
+    tbl: "pa.Table",
+    name: str,
+    provider_id: str,
+    max_columns: int = 0,
+) -> None:
+    """Raise ``AppError("provider_result_too_large", 422)`` if *tbl* has more
+    columns than *max_columns*.
+
+    Called immediately after a provider result table is built — before IPC
+    serialisation — so a table with thousands of columns never reaches
+    ``_tables_to_bytes`` where it would balloon the Arrow IPC schema section.
+
+    Parameters
+    ----------
+    tbl:
+        The Arrow table to check.
+    name:
+        Result name, used in the error message.
+    provider_id:
+        Provider id, used in the error message.
+    max_columns:
+        When > 0, enforce the cap.  Pass ``_PROVIDER_MAX_COLUMNS``.
+    """
+    if max_columns > 0 and tbl.num_columns > max_columns:
+        raise AppError(
+            "provider_result_too_large",
+            f"Provider {provider_id!r} result {name!r} has {tbl.num_columns} columns; "
+            f"maximum allowed is {max_columns} "
+            f"(set NUBI_PROVIDER_MAX_COLUMNS to raise the limit).",
+            422,
+        )
+
+
 def _tables_to_bytes(
     tables: dict[str, pa.Table],
     max_bytes: int = 0,
@@ -624,11 +667,14 @@ def _tables_to_bytes(
     ----------
     max_bytes:
         When > 0, raises ``AppError("provider_result_too_large", 422)`` as soon
-        as the running serialised total would exceed this limit — BEFORE
-        serialising further tables.  This prevents materialising GiBs of Arrow
-        IPC when a provider returns many large tables.  Pass
-        ``_PROVIDER_MAX_BYTES`` here so the cap fires early rather than after
-        full materialisation.
+        as the pre-estimated frame size for a table would push the running total
+        over this limit — WITHOUT serialising the table first.  This prevents
+        materialising hundreds of MiB of Arrow IPC for wide/tall tables when the
+        cap would fire anyway.  The pre-estimate uses ``tbl.nbytes`` (Arrow
+        in-memory buffer footprint) as a close lower-bound on IPC size; a
+        post-write backstop check on the real IPC size is kept for correctness
+        when IPC metadata overhead pushes a borderline table over the cap.
+        Pass ``_PROVIDER_MAX_BYTES`` here.
     """
     import io
     import struct
@@ -639,17 +685,31 @@ def _tables_to_bytes(
     running_bytes = 4  # the count header we just wrote
     for name, tbl in tables.items():
         name_b = name.encode("utf-8")
+        # Pre-estimate frame size using Arrow in-memory buffer footprint as a
+        # lower-bound on IPC size.  Reject BEFORE full serialisation so a single
+        # wide/tall table (e.g. 100 k rows × many cols) is never materialised to
+        # IPC bytes when it would exceed the cap anyway.
+        estimated_frame = 4 + len(name_b) + 4 + tbl.nbytes
+        if max_bytes > 0 and running_bytes + estimated_frame > max_bytes:
+            raise AppError(
+                "provider_result_too_large",
+                f"Provider result exceeds {max_bytes:,} bytes limit "
+                f"(pre-estimate: {running_bytes + estimated_frame:,} bytes; "
+                f"set NUBI_PROVIDER_MAX_BYTES to raise the limit).",
+                422,
+            )
         ipc_buf = io.BytesIO()
         writer = pa.ipc.new_stream(ipc_buf, tbl.schema)
         writer.write_table(tbl)
         writer.close()
         ipc_bytes = ipc_buf.getvalue()
-        # 4 (name_len) + len(name_b) + 4 (ipc_len) + len(ipc_bytes)
+        # Backstop: actual IPC size (includes schema/metadata overhead) may
+        # exceed tbl.nbytes — re-check with real frame size.
         frame_size = 4 + len(name_b) + 4 + len(ipc_bytes)
         if max_bytes > 0 and running_bytes + frame_size > max_bytes:
             raise AppError(
                 "provider_result_too_large",
-                f"Provider serialised result exceeds {max_bytes:,} bytes limit "
+                f"Provider result exceeds {max_bytes:,} bytes limit "
                 f"(set NUBI_PROVIDER_MAX_BYTES to raise the limit).",
                 422,
             )
@@ -834,6 +894,12 @@ async def _resolve_flow_provider(
                 _ROW_CAP,
             )
             tables[key] = tables[key].slice(0, _ROW_CAP)
+
+        # [MED resource] Enforce per-table column cap so a wide result table
+        # (thousands of columns) is rejected before IPC serialisation inflates
+        # the schema section into hundreds of MiB.
+        if key in tables:
+            _check_table_columns(tables[key], key, provider.id, _PROVIDER_MAX_COLUMNS)
 
         # [MED resource] Enforce table-count cap WHILE accumulating so a provider
         # returning thousands of named tables is rejected as soon as the limit is
@@ -1167,6 +1233,11 @@ async def _resolve_inline_provider(
                     )
                     tables[r.name] = pa.table({})
 
+            # [MED resource] Enforce per-table column cap so a wide result table
+            # is rejected before IPC serialisation inflates the schema section.
+            if r.name in tables:
+                _check_table_columns(tables[r.name], r.name, provider.id, _PROVIDER_MAX_COLUMNS)
+
             # [MED resource] Enforce table-count cap WHILE accumulating so a provider
             # with many declared results is rejected as soon as the limit is breached
             # — before further results are materialised into memory.
@@ -1362,6 +1433,11 @@ async def _resolve_materialized_flow_provider(
                 _ROW_CAP,
             )
             tables[key] = tables[key].slice(0, _ROW_CAP)
+
+        # [MED resource] Enforce per-table column cap so a wide result table
+        # is rejected before IPC serialisation inflates the schema section.
+        if key in tables:
+            _check_table_columns(tables[key], key, provider.id, _PROVIDER_MAX_COLUMNS)
 
         # [LOW resource] Enforce table-count cap WHILE accumulating so a materialized
         # provider returning thousands of named tables is rejected as soon as the

@@ -1723,6 +1723,148 @@ def test_tables_to_multi_ipc_stream_non_empty() -> None:
 
 
 # ---------------------------------------------------------------------------
+# [MED OOM] _tables_to_bytes pre-estimate fires before IPC materialisation
+# ---------------------------------------------------------------------------
+
+
+def test_tables_to_bytes_pre_estimate_rejects_oversized_without_serialising() -> None:
+    """_tables_to_bytes rejects an oversized table via pre-estimate (tbl.nbytes)
+    WITHOUT fully serialising it to IPC bytes.
+
+    The pre-estimate check uses ``tbl.nbytes`` as a lower-bound.  For a table
+    that clearly exceeds the cap (tbl.nbytes >> max_bytes), the AppError must
+    fire BEFORE ``pa.ipc.new_stream`` writes a single batch — confirmed by
+    patching ``pa.ipc.new_stream`` to assert it is never called when the
+    pre-estimate fires.
+    """
+    import app.dashboards.board_data as _bd_mod
+
+    # Build a table whose Arrow buffer footprint clearly exceeds 1 KiB.
+    # 10 000 int64 values = 80 000 bytes — well above a 1 KiB cap.
+    big_tbl = pa.table({"v": pa.array(list(range(10_000)), type=pa.int64())})
+    max_bytes = 1024  # 1 KiB — far below big_tbl.nbytes (~80 KiB)
+
+    assert big_tbl.nbytes > max_bytes, (
+        "pre-condition: table must be larger than cap for the test to be meaningful"
+    )
+
+    ipc_write_calls: list[str] = []
+
+    original_new_stream = pa.ipc.new_stream
+
+    def _spy_new_stream(sink: object, schema: object, **kw: object) -> object:
+        ipc_write_calls.append("called")
+        return original_new_stream(sink, schema, **kw)
+
+    # Patch pa.ipc.new_stream inside the board_data module so the spy intercepts
+    # any IPC serialisation attempt.
+    with patch.object(_bd_mod.pa.ipc, "new_stream", side_effect=_spy_new_stream):
+        with pytest.raises(AppError) as exc_info:
+            _tables_to_bytes({"big": big_tbl}, max_bytes=max_bytes)
+
+    assert exc_info.value.code == "provider_result_too_large"
+    assert exc_info.value.status == 422
+    assert ipc_write_calls == [], (
+        "IPC serialisation must NOT be attempted when the pre-estimate fires; "
+        f"pa.ipc.new_stream was called {len(ipc_write_calls)} time(s)"
+    )
+
+
+def test_tables_to_bytes_within_cap_serialises_correctly() -> None:
+    """Tables that fit within the byte cap are serialised and round-trip correctly."""
+    tbl_a = pa.table({"x": pa.array([1, 2, 3])})
+    tbl_b = pa.table({"y": pa.array(["a", "b"])})
+    # Use a generous cap so both tables fit.
+    blob = _tables_to_bytes({"a": tbl_a, "b": tbl_b}, max_bytes=10 * 1024 * 1024)
+    restored = _bytes_to_tables(blob)
+    assert restored["a"].to_pydict() == tbl_a.to_pydict()
+    assert restored["b"].to_pydict() == tbl_b.to_pydict()
+
+
+def test_tables_to_bytes_backstop_fires_when_ipc_overhead_exceeds_estimate() -> None:
+    """The backstop post-write check fires when IPC metadata pushes size over cap.
+
+    Construct a scenario where tbl.nbytes is 0 (empty table — no buffer data)
+    but the IPC stream for an empty table with many columns produces non-trivial
+    schema metadata.  Set max_bytes just above tbl.nbytes (0) but below the
+    actual IPC stream size.  The pre-estimate passes; the backstop must catch it.
+    """
+    import app.dashboards.board_data as _bd_mod
+
+    # An empty table with many string-typed columns: tbl.nbytes == 0 but the
+    # IPC stream encodes all column names + types in the schema message.
+    n_cols = 200
+    empty_tbl = pa.table({f"col_{i}": pa.array([], type=pa.utf8()) for i in range(n_cols)})
+    assert empty_tbl.nbytes == 0, "pre-condition: empty table has no buffer data"
+
+    # Serialize once to find actual IPC size.
+    actual_blob = _tables_to_bytes({"t": empty_tbl})
+    name_b = b"t"
+    # The frame for this table inside the blob is: 4 + len(name_b) + 4 + ipc_len.
+    # actual_blob = 4 (count) + 4 + 1 + 4 + ipc_bytes
+    header = 4 + 4 + len(name_b) + 4
+    actual_ipc_len = len(actual_blob) - header - 4  # subtract count header
+    # Re-derive: running_bytes starts at 4 (count); frame = 4+1+4+ipc_len.
+    actual_frame_size = 4 + len(name_b) + 4 + (len(actual_blob) - 4 - 4 - len(name_b) - 4)
+
+    # Set max_bytes to 1 so the backstop (not the pre-estimate) fires.
+    # Pre-estimate: 4 + 1 + 4 + 0 = 9 bytes; running_bytes=4 → estimated total=13.
+    # If max_bytes >= 13 the pre-estimate passes; set max_bytes=12 (below 13) to
+    # force the pre-estimate.  We actually want to test the backstop, so we need
+    # max_bytes to be >= estimated (13) but < actual frame size.
+    # Use max_bytes = 13 exactly: pre-estimate total == max_bytes → NOT > → passes.
+    # Backstop total = 4 + actual_frame_size > 13 if IPC overhead > 0 bytes for schema.
+    pre_estimate_total = 4 + (4 + len(name_b) + 4 + empty_tbl.nbytes)
+    # max_bytes == pre_estimate_total means running_bytes + estimated == max_bytes,
+    # which is NOT > max_bytes, so the pre-estimate passes.
+    max_bytes_for_backstop = pre_estimate_total
+
+    actual_total = 4 + actual_frame_size  # count header + frame
+    if actual_total <= max_bytes_for_backstop:
+        # IPC overhead is 0 or negligible; backstop cannot fire in this scenario.
+        # Skip assertion — the pre-estimate test above already covers the OOM path.
+        pytest.skip("IPC overhead not large enough to trigger backstop in this env")
+
+    with pytest.raises(AppError) as exc_info:
+        _tables_to_bytes({"t": empty_tbl}, max_bytes=max_bytes_for_backstop)
+
+    assert exc_info.value.code == "provider_result_too_large"
+    assert exc_info.value.status == 422
+
+
+def test_check_table_columns_rejects_over_cap() -> None:
+    """_check_table_columns raises provider_result_too_large for a table with
+    more columns than the cap."""
+    import app.dashboards.board_data as _bd_mod
+    from app.dashboards.board_data import _check_table_columns
+
+    n_cols = 10
+    wide_tbl = pa.table({f"c{i}": pa.array([i]) for i in range(n_cols)})
+
+    original_cap = _bd_mod._PROVIDER_MAX_COLUMNS
+    try:
+        _bd_mod._PROVIDER_MAX_COLUMNS = n_cols - 1  # cap below actual
+        with pytest.raises(AppError) as exc_info:
+            _check_table_columns(wide_tbl, "result_x", "my_provider", n_cols - 1)
+        assert exc_info.value.code == "provider_result_too_large"
+        assert exc_info.value.status == 422
+        assert "my_provider" in str(exc_info.value)
+        assert "result_x" in str(exc_info.value)
+    finally:
+        _bd_mod._PROVIDER_MAX_COLUMNS = original_cap
+
+
+def test_check_table_columns_allows_at_cap() -> None:
+    """_check_table_columns does NOT raise when columns == cap (boundary)."""
+    from app.dashboards.board_data import _check_table_columns
+
+    n_cols = 5
+    tbl = pa.table({f"c{i}": pa.array([i]) for i in range(n_cols)})
+    # Should not raise: exactly at the cap.
+    _check_table_columns(tbl, "result_y", "my_provider", n_cols)
+
+
+# ---------------------------------------------------------------------------
 # NEW: inline provider — cache-miss calls enforce_quota (FIX 1)
 # ---------------------------------------------------------------------------
 

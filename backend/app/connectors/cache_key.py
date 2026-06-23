@@ -193,9 +193,20 @@ def compute_base_scan_key(
     model + predicate + tenant will therefore hash to the same base-scan key,
     allowing the engine to share a single base-scan result between them.
 
-    SECURITY: the ``rls_policies`` dict is fully incorporated so different
-    tenants ALWAYS produce different keys — tenants cannot share a base-scan
-    entry even for structurally identical queries.
+    SECURITY — PARTIAL ISOLATION ONLY via RLS policies:
+    ``rls_policies`` is fully incorporated so tenants whose admins have
+    configured *different* row-level policies will produce different keys.
+    However, two tenants whose admins have configured ``policies={}`` (no
+    predicates) running the same SQL WILL produce the SAME raw base-scan key.
+    This mirrors the same risk as ``compute_cache_key`` (see module docstring).
+
+    REQUIRED: callers MUST wrap the returned key with :func:`scope_cache_key`
+    (passing ``org_id`` and ``effective_datastore_id``) before using it as a
+    cache store/fetch key.  The live usage in ``board_data._provider_cache_key``
+    satisfies this by embedding ``org_id`` directly in the key string.  The
+    route helpers (``routes/query.py``, ``routes/metrics.py``) compute this key
+    for future use but do NOT call ``get_base_scan``/``put_base_scan`` yet
+    (base-scan fusion is disabled — see module-level docstring).
 
     Returns ``None`` when *sql* cannot be parsed (SQL parse is best-effort;
     callers treat ``None`` as "no base-scan sharing possible").  The full

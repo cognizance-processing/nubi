@@ -29,11 +29,13 @@ import pytest
 
 from app.flows.artifacts import (
     InMemoryArtifactStore,
+    ObjectStoreArtifactStore,
     get_artifact,
     get_artifact_store,
     is_handle,
     make_handle,
     put_artifact,
+    reset_run_artifact_counts,
     set_artifact_store,
 )
 from app.flows.executor import TaskContext
@@ -1744,3 +1746,192 @@ def test_env_dev_no_hmac_key_sentinel_allowed_no_pytest_check():
     assert len(sentinel_warnings) >= 1, (
         f"Expected sentinel warning for ENV=dev; got: {[str(w.message) for w in caught]}"
     )
+
+
+# ---------------------------------------------------------------------------
+# 30. MED disk: tmpdir fallback emits a warning (ObjectStoreArtifactStore)
+# ---------------------------------------------------------------------------
+
+
+def test_tmpdir_fallback_emits_warning():
+    """ObjectStoreArtifactStore() with no ARTIFACTS_BASE_URI must warn operators.
+
+    MED disk fix: the tmpdir fallback has NO TTL, eviction, or quota guard and
+    will grow unboundedly in production.  A visible warning at construction time
+    lets operators notice the misconfiguration early.
+    """
+    import os  # noqa: PLC0415
+    import unittest.mock  # noqa: PLC0415
+    import warnings  # noqa: PLC0415
+
+    # Patch get_settings to raise (simulates absent config) so _default_uri
+    # falls through to the tmpdir branch.
+    with unittest.mock.patch(
+        "app.flows.artifacts.ObjectStoreArtifactStore._default_uri",
+        wraps=ObjectStoreArtifactStore._default_uri,
+    ):
+        # Remove ARTIFACTS_BASE_URI from env and mock get_settings to return
+        # an object without the attribute so the fallback is triggered.
+        env_no_uri = {k: v for k, v in os.environ.items() if k != "ARTIFACTS_BASE_URI"}
+        with unittest.mock.patch.dict("os.environ", env_no_uri, clear=True):
+            # Patch get_settings to raise so the URI lookup fails and the
+            # tmpdir branch runs.
+            with unittest.mock.patch(
+                "app.config.get_settings",
+                side_effect=RuntimeError("no settings"),
+            ):
+                with warnings.catch_warnings(record=True) as caught:
+                    warnings.simplefilter("always")
+                    store = ObjectStoreArtifactStore()
+
+    tmpdir_warnings = [
+        w for w in caught
+        if "ARTIFACTS_BASE_URI" in str(w.message)
+        or "temp" in str(w.message).lower()
+        or "tmpdir" in str(w.message).lower()
+        or "no ttl" in str(w.message).lower()
+    ]
+    assert len(tmpdir_warnings) >= 1, (
+        f"Expected at least one tmpdir fallback warning; got: {[str(w.message) for w in caught]}"
+    )
+    assert store._base_uri.startswith("file://"), (
+        f"Expected a file:// URI for tmpdir fallback; got: {store._base_uri!r}"
+    )
+
+
+# ---------------------------------------------------------------------------
+# 31. MED disk: delete() removes a blob from InMemoryArtifactStore
+# ---------------------------------------------------------------------------
+
+
+def test_delete_removes_blob_from_in_memory_store():
+    """InMemoryArtifactStore.delete() must remove the blob and free tracked bytes.
+
+    MED disk fix: without delete() callers have no way to clean up artifacts,
+    leading to unbounded memory / disk growth (especially in tests and long-running
+    dev servers that share a single store instance).
+    """
+    store = InMemoryArtifactStore()
+    data = b"some artifact bytes"
+    artifact_id = "delete-test-artifact-001"
+    org_id = "org-delete-test"
+
+    store.upload(artifact_id, org_id, data)
+    assert store.exists(artifact_id, org_id) is True
+    assert store._total_bytes == len(data)
+
+    # delete() must remove the blob.
+    store.delete(artifact_id, org_id)
+    assert store.exists(artifact_id, org_id) is False
+    assert store._total_bytes == 0
+
+    # delete() on a non-existent artifact must be idempotent (no exception).
+    store.delete(artifact_id, org_id)
+    store.delete("nonexistent-id", org_id)
+
+
+def test_delete_via_put_artifact_and_get_artifact():
+    """delete() removes a blob stored by put_artifact so get_artifact fails after.
+
+    Exercises the full put → delete → get cycle to confirm that delete()
+    integrates correctly with the signed-envelope path.
+    """
+    store = InMemoryArtifactStore()
+    obj = {"to_delete": True}
+    handle = put_artifact(obj, kind="json", org_id=ORG_A, store=store)
+
+    # Artifact is accessible.
+    loaded = get_artifact(handle, org_id=ORG_A, store=store)
+    assert loaded == obj
+
+    # delete() via the store directly.
+    store.delete(handle["artifact_id"], ORG_A)
+
+    # get_artifact must now raise FileNotFoundError (blob gone).
+    with pytest.raises(FileNotFoundError):
+        get_artifact(handle, org_id=ORG_A, store=store)
+
+
+# ---------------------------------------------------------------------------
+# 32. MED disk: per-run artifact count cap raises when exceeded
+# ---------------------------------------------------------------------------
+
+
+def test_per_run_artifact_count_cap_raises():
+    """put_artifact raises ValueError when NUBI_MAX_ARTIFACTS_PER_RUN is exceeded.
+
+    MED disk fix: without a count cap a single run can upload unbounded numbers
+    of artifacts, exhausting the configured object store (or the tmpdir fallback).
+    """
+    import unittest.mock  # noqa: PLC0415
+    from app.flows import artifacts as _art_mod  # noqa: PLC0415
+
+    store = InMemoryArtifactStore()
+    run_id = "run-count-cap-test"
+
+    reset_run_artifact_counts()
+    try:
+        with unittest.mock.patch.object(_art_mod, "_ARTIFACT_MAX_PER_RUN", 3):
+            # First three artifacts must succeed.
+            for i in range(3):
+                h = put_artifact(
+                    {"i": i}, kind="json", org_id=ORG_A,
+                    flow_run_id=run_id, store=store,
+                )
+                assert is_handle(h)
+
+            # The fourth must raise.
+            with pytest.raises(ValueError, match="Artifact count limit|NUBI_MAX_ARTIFACTS_PER_RUN"):
+                put_artifact(
+                    {"i": 3}, kind="json", org_id=ORG_A,
+                    flow_run_id=run_id, store=store,
+                )
+    finally:
+        reset_run_artifact_counts()
+
+
+def test_per_run_artifact_count_cap_disabled_zero():
+    """When NUBI_MAX_ARTIFACTS_PER_RUN=0 the count cap is disabled."""
+    import unittest.mock  # noqa: PLC0415
+    from app.flows import artifacts as _art_mod  # noqa: PLC0415
+
+    store = InMemoryArtifactStore()
+    run_id = "run-cap-disabled"
+
+    reset_run_artifact_counts()
+    try:
+        with unittest.mock.patch.object(_art_mod, "_ARTIFACT_MAX_PER_RUN", 0):
+            # With cap disabled, many artifacts must all succeed.
+            for i in range(10):
+                h = put_artifact(
+                    {"i": i}, kind="json", org_id=ORG_A,
+                    flow_run_id=run_id, store=store,
+                )
+                assert is_handle(h)
+    finally:
+        reset_run_artifact_counts()
+
+
+def test_per_run_artifact_count_no_run_id_skips_cap():
+    """When flow_run_id is None the count cap is NOT applied.
+
+    Artifacts produced outside of a run (e.g. standalone put_artifact calls in
+    scripts or tests) must not be constrained by the per-run cap.
+    """
+    import unittest.mock  # noqa: PLC0415
+    from app.flows import artifacts as _art_mod  # noqa: PLC0415
+
+    store = InMemoryArtifactStore()
+
+    reset_run_artifact_counts()
+    try:
+        with unittest.mock.patch.object(_art_mod, "_ARTIFACT_MAX_PER_RUN", 2):
+            # No flow_run_id → cap not applied; all succeed.
+            for i in range(5):
+                h = put_artifact(
+                    {"i": i}, kind="json", org_id=ORG_A,
+                    flow_run_id=None, store=store,
+                )
+                assert is_handle(h)
+    finally:
+        reset_run_artifact_counts()

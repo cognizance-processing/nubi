@@ -52,12 +52,17 @@ import hashlib
 import hmac
 import io
 import json
+import logging
 import os
 import pickle
 import re
+import threading
 import uuid
+import warnings
 from datetime import datetime, timezone
 from typing import Any, Literal
+
+logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
 # Size cap for artifact uploads (protects object-store from runaway writes).
@@ -66,6 +71,19 @@ from typing import Any, Literal
 # ---------------------------------------------------------------------------
 
 _ARTIFACT_MAX_BYTES: int = int(os.environ.get("NUBI_ARTIFACT_MAX_BYTES", 500 * 1024 * 1024))
+
+# ---------------------------------------------------------------------------
+# Per-run artifact count cap (MED disk unbounded fix).
+# Keyed by run_id; in-process/best-effort only (no DB migration needed).
+# Set NUBI_MAX_ARTIFACTS_PER_RUN=0 to disable (not recommended in production).
+# Default: 200 artifacts per run.
+# ---------------------------------------------------------------------------
+
+_ARTIFACT_MAX_PER_RUN: int = int(os.environ.get("NUBI_MAX_ARTIFACTS_PER_RUN", 200))
+
+# Thread-safe counter: run_id -> int
+_run_artifact_counts: dict[str, int] = {}
+_run_artifact_counts_lock = threading.Lock()
 
 
 # ---------------------------------------------------------------------------
@@ -627,6 +645,17 @@ class InMemoryArtifactStore:
         key = f"orgs/{org_id}/artifacts/{artifact_id}"
         return key in self._blobs
 
+    def delete(self, artifact_id: str, org_id: str) -> None:
+        """Delete the artifact blob for *artifact_id* owned by *org_id*.
+
+        Silently does nothing when the artifact does not exist (idempotent)
+        so callers can safely call delete() in finally-blocks without catching
+        ``FileNotFoundError``.
+        """
+        key = f"orgs/{org_id}/artifacts/{artifact_id}"
+        if key in self._blobs:
+            self._total_bytes -= len(self._blobs.pop(key))
+
     def clear(self) -> None:
         """Remove all stored blobs and reset the byte counter.
 
@@ -662,10 +691,20 @@ class ObjectStoreArtifactStore:
         except Exception:  # noqa: BLE001
             pass
         # Fallback: use a well-known temp dir (same across the process lifetime).
+        # Warn operators so they notice this in logs — artifacts written here have
+        # NO TTL, eviction, or quota guard and will grow unboundedly in production.
         import tempfile  # noqa: PLC0415
 
         tmp = os.path.join(tempfile.gettempdir(), "nubi-artifacts")
         os.makedirs(tmp, exist_ok=True)
+        _msg = (
+            "ARTIFACTS_BASE_URI is not set; artifact blobs will be written to "
+            f"a local temp directory ({tmp}) with NO TTL, eviction, or quota guard. "
+            "This is only safe for local development / CI. "
+            "Set ARTIFACTS_BASE_URI in production (e.g. s3://bucket/nubi-artifacts)."
+        )
+        warnings.warn(_msg, stacklevel=4)
+        logger.warning(_msg)
         return f"file://{tmp}"
 
     def _client(self) -> Any:
@@ -694,6 +733,20 @@ class ObjectStoreArtifactStore:
         key = self._key(artifact_id, org_id)
         client = self._client()
         return client.exists(key)
+
+    def delete(self, artifact_id: str, org_id: str) -> None:
+        """Delete the artifact blob for *artifact_id* owned by *org_id*.
+
+        Best-effort: silently ignores ``FileNotFoundError`` / ``KeyError`` so
+        callers can safely call delete() in finally-blocks.  Other storage
+        errors (auth, network) are allowed to propagate.
+        """
+        key = self._key(artifact_id, org_id)
+        client = self._client()
+        try:
+            client.delete(key)
+        except (FileNotFoundError, KeyError):
+            pass
 
 
 # ---------------------------------------------------------------------------
@@ -725,6 +778,16 @@ def set_artifact_store(
     """
     global _artifact_store
     _artifact_store = store
+
+
+def reset_run_artifact_counts() -> None:
+    """Clear all per-run artifact counters.
+
+    Intended for test teardown so a shared process can reuse run IDs without
+    carrying over counts from previous tests.
+    """
+    with _run_artifact_counts_lock:
+        _run_artifact_counts.clear()
 
 
 # ---------------------------------------------------------------------------
@@ -798,6 +861,23 @@ def put_artifact(
         )
 
     artifact_id = str(uuid.uuid4())
+
+    # Best-effort per-run artifact count cap (MED disk: unbounded tmpdir).
+    # Keyed by flow_run_id; in-process only (survives only for this process
+    # lifetime).  No DB migration required.  Set NUBI_MAX_ARTIFACTS_PER_RUN=0
+    # to disable.
+    if flow_run_id and _ARTIFACT_MAX_PER_RUN > 0:
+        with _run_artifact_counts_lock:
+            current_count = _run_artifact_counts.get(flow_run_id, 0)
+            if current_count >= _ARTIFACT_MAX_PER_RUN:
+                raise ValueError(
+                    f"Artifact count limit reached for run {flow_run_id!r}: "
+                    f"{current_count} artifacts already stored "
+                    f"(NUBI_MAX_ARTIFACTS_PER_RUN={_ARTIFACT_MAX_PER_RUN}). "
+                    "Raise NUBI_MAX_ARTIFACTS_PER_RUN or reduce the number of "
+                    "artifacts produced per run."
+                )
+            _run_artifact_counts[flow_run_id] = current_count + 1
 
     # Sign the serialised bytes before uploading so any tampering can be
     # detected at load time before pickle/joblib deserialisation.  The

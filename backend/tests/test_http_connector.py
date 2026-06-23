@@ -454,6 +454,104 @@ class TestHttpJsonConnectorHeaders:
 
 
 # ---------------------------------------------------------------------------
+# Timeout
+# ---------------------------------------------------------------------------
+
+
+class TestHttpJsonConnectorTimeout:
+    """Verify that every request carries an explicit, bounded timeout."""
+
+    def test_request_issued_with_explicit_timeout(self) -> None:
+        """httpx.request is called with a timeout= kwarg (not None / missing)."""
+        import httpx
+
+        conn = HttpJsonConnector({"url": "http://api.example.com/records"})
+        plan = _make_plan()
+
+        with _patched_fetch(_fake_httpx_get([])) as mock_request:
+            conn.execute(plan)
+
+        _, kwargs = mock_request.call_args
+        timeout = kwargs.get("timeout")
+        assert timeout is not None, "timeout must be passed explicitly to httpx.request"
+        assert isinstance(timeout, httpx.Timeout), (
+            "timeout must be an httpx.Timeout instance so all phases are bounded"
+        )
+
+    def test_default_timeout_is_30_seconds(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Without NUBI_HTTP_CONNECTOR_TIMEOUT_S the default is 30 s."""
+        import httpx
+
+        monkeypatch.delenv("NUBI_HTTP_CONNECTOR_TIMEOUT_S", raising=False)
+        conn = HttpJsonConnector({"url": "http://api.example.com/records"})
+        plan = _make_plan()
+
+        with _patched_fetch(_fake_httpx_get([])) as mock_request:
+            conn.execute(plan)
+
+        _, kwargs = mock_request.call_args
+        timeout: httpx.Timeout = kwargs["timeout"]
+        # httpx.Timeout(30) sets connect/read/write/pool all to 30.
+        assert timeout.connect == 30.0
+        assert timeout.read == 30.0
+
+    def test_custom_timeout_from_env(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """NUBI_HTTP_CONNECTOR_TIMEOUT_S overrides the default."""
+        import httpx
+
+        monkeypatch.setenv("NUBI_HTTP_CONNECTOR_TIMEOUT_S", "5")
+        conn = HttpJsonConnector({"url": "http://api.example.com/records"})
+        plan = _make_plan()
+
+        with _patched_fetch(_fake_httpx_get([])) as mock_request:
+            conn.execute(plan)
+
+        _, kwargs = mock_request.call_args
+        timeout: httpx.Timeout = kwargs["timeout"]
+        assert timeout.connect == 5.0
+        assert timeout.read == 5.0
+
+    def test_slow_upstream_raises_source_fetch_error_not_hang(self) -> None:
+        """A simulated slow upstream (TimeoutException) surfaces as AppError 502,
+        not a hung worker thread.  This is the key reliability property."""
+        import httpx
+
+        conn = HttpJsonConnector({"url": "http://slow.example.com/records"})
+        plan = _make_plan()
+
+        with patch.object(socket, "getaddrinfo", _fake_getaddrinfo(_PUBLIC_IP)):
+            with patch(
+                "httpx.request",
+                side_effect=httpx.ReadTimeout("timed out reading response"),
+            ):
+                with pytest.raises(AppError) as exc_info:
+                    conn.execute(plan)
+
+        err = exc_info.value
+        assert err.code == "source_fetch_error"
+        assert err.status == 502
+
+    def test_connect_timeout_surfaces_as_source_fetch_error(self) -> None:
+        """A connection-phase timeout (ConnectTimeout) is also caught and wrapped."""
+        import httpx
+
+        conn = HttpJsonConnector({"url": "http://unreachable.example.com/records"})
+        plan = _make_plan()
+
+        with patch.object(socket, "getaddrinfo", _fake_getaddrinfo(_PUBLIC_IP)):
+            with patch(
+                "httpx.request",
+                side_effect=httpx.ConnectTimeout("connection timed out"),
+            ):
+                with pytest.raises(AppError) as exc_info:
+                    conn.execute(plan)
+
+        err = exc_info.value
+        assert err.code == "source_fetch_error"
+        assert err.status == 502
+
+
+# ---------------------------------------------------------------------------
 # Registry integration
 # ---------------------------------------------------------------------------
 

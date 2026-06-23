@@ -2657,3 +2657,92 @@ class TestBuildRollupSourceReadOnly:
             assert len(rows) > 0, "In-memory source must be queryable"
         finally:
             mem_conn.close()
+
+
+# ---------------------------------------------------------------------------
+# [LOW] fix-41: _outer_filter_columns must NOT include ORDER BY columns
+# ---------------------------------------------------------------------------
+
+
+class TestOuterFilterColumnsOrderBy:
+    """_outer_filter_columns must scope to WHERE/HAVING predicates only.
+
+    Before fix-41 the helper walked the full WHERE tree, which in the layered
+    CTE path could pick up columns that appear in ORDER BY clauses (via correlated
+    subqueries inside WHERE) or — in a broader mis-reading — any column in the
+    outer SELECT.  That made the outer-RLS soundness check over-broad: a rollup
+    was rejected just because an ORDER BY column was absent from the rollup grain,
+    even though ORDER BY is not an RLS-injection target.
+
+    Fix: scope _outer_filter_columns to the direct WHERE and HAVING predicate
+    expressions only.  ORDER BY, GROUP BY, and SELECT-list columns are excluded.
+    """
+
+    def test_order_by_absent_col_does_not_block_routing(self, source_db: str) -> None:
+        """A layered query that ORDER BYs a column absent from the rollup grain
+        must STILL route correctly — ORDER BY is not a filter column and must
+        NOT be included in the outer-RLS soundness check (fix-41).
+
+        Setup: rollup grain = {tenant_id, region}.
+        Query: inner aggregates (region, SUM(amount)); outer ORDER BYs `amount`
+        (a derived measure column present in __base's SELECT list, but absent from
+        the rollup grain as a dimension).  Before fix-41 this caused over-broad
+        refusal; after fix-41 it routes because `amount` is not a filter column.
+        """
+        reg = RollupRegistry()
+        built = _build_orders_rollup(source_db, reg)
+
+        # Outer ORDER BYs `amount` — a column NOT in the rollup grain (amount is
+        # a measure, not a dimension/rls_key), but it IS projected by __base.
+        # It is NOT a WHERE/HAVING filter column, so routing must proceed.
+        layered_sql = (
+            "WITH __base AS ("
+            "SELECT region, SUM(amount) AS amount FROM orders GROUP BY region"
+            ") "
+            "SELECT region, amount FROM __base ORDER BY amount DESC"
+        )
+        p = plan(layered_sql, dialect="postgres")
+        result = route_to_rollup_shape(p, reg)
+
+        assert result.routed is True, (
+            f"ORDER BY on a non-filter column must not block routing. "
+            f"Reason: {result.reason}"
+        )
+        assert result.rollup_id is not None
+        rewritten = result.plan.sql.lower()
+        assert "rollup_orders" in rewritten, (
+            f"Expected rollup table in rewritten SQL: {result.plan.sql}"
+        )
+        assert "with __base as" in rewritten, "layered CTE form preserved"
+        # The ORDER BY must be preserved in the rewrite.
+        assert "order by" in rewritten, "ORDER BY must be preserved"
+
+    def test_where_on_absent_rls_col_still_refuses(self, source_db: str) -> None:
+        """A layered query that WHEREs on a column absent from the rollup grain
+        must STILL be refused — WHERE is an RLS-injection target (fix-22 guard).
+
+        This ensures fix-41 does not weaken the WHERE-column soundness check:
+        only ORDER BY is de-scoped, not WHERE.
+
+        Setup: rollup grain = {tenant_id, region}.
+        Outer WHERE on `channel` (absent from the rollup grain entirely).
+        The router must refuse routing (channel can't be evaluated post-rollup).
+        """
+        reg = RollupRegistry()
+        _build_orders_rollup(source_db, reg)
+
+        layered_sql = (
+            "WITH __base AS ("
+            "SELECT region, tenant_id, SUM(amount) AS amount FROM orders "
+            "GROUP BY region, tenant_id"
+            ") "
+            "SELECT region, amount FROM __base WHERE channel = 'web'"
+        )
+        p = plan(layered_sql, dialect="postgres")
+        result = route_to_rollup_shape(p, reg)
+
+        assert result.routed is False, (
+            f"WHERE on absent col 'channel' must refuse routing (not in rollup grain). "
+            f"Got routed=True. Rewrite: {result.plan.sql}"
+        )
+        assert result.plan is p  # plan untouched

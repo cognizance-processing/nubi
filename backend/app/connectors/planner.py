@@ -548,7 +548,7 @@ def _extract_layered_cte(
 
 
 def _outer_filter_columns(outer_sql: str, dialect: str) -> set[str]:
-    """Columns referenced in the OUTER SELECT's WHERE clause(s), lower-cased.
+    """Columns referenced in the OUTER SELECT's WHERE/HAVING predicate, lower-cased.
 
     For a layered ``WITH __base AS (<inner>) <outer>`` query the RLS predicate
     injected by ``plan()`` lands on the OUTER SELECT (``WHERE policy_col = val``),
@@ -561,15 +561,53 @@ def _outer_filter_columns(outer_sql: str, dialect: str) -> set[str]:
     extended to the layered outer-RLS case).  Any parse failure returns an empty
     set, but callers must treat an *unparseable* outer as non-routable separately
     (here we conservatively fall back via the caller's own guard).
+
+    SCOPE: Only columns from the direct WHERE and HAVING predicates of the
+    outermost SELECT are collected — ORDER BY, GROUP BY, and SELECT-list columns
+    are NOT included, nor are columns from subqueries nested within the WHERE.
+    An ORDER BY column that is absent from the rollup grain is NOT an RLS filter
+    target; including it would cause over-broad refusal (a rollup is rejected
+    just because an ORDER BY col isn't projected, even though it's not an RLS
+    filter).  fix-41 scopes this helper to filter/predicate columns only.
     """
     try:
         tree = parse_sql_cached(outer_sql, dialect=dialect)
     except Exception:
         return set()
+    if not isinstance(tree, exp.Select):
+        return set()
     cols: set[str] = set()
-    for where_node in tree.find_all(exp.Where):
-        for col in where_node.find_all(exp.Column):
-            cols.add(col.name.lower())
+
+    def _collect_cols_no_subquery(node: exp.Expression) -> None:
+        """Collect exp.Column names recursively, stopping at Subquery boundaries."""
+        if isinstance(node, exp.Subquery):
+            # Don't descend — columns inside a correlated subquery are scoped
+            # inside that subquery and are NOT RLS-injection targets on the outer.
+            return
+        if isinstance(node, exp.Column):
+            cols.add(node.name.lower())
+        for child in node.args.values():
+            if isinstance(child, exp.Expression):
+                _collect_cols_no_subquery(child)
+            elif isinstance(child, list):
+                for item in child:
+                    if isinstance(item, exp.Expression):
+                        _collect_cols_no_subquery(item)
+
+    # Collect columns from WHERE and HAVING predicate clauses ONLY.
+    # ORDER BY, GROUP BY, and SELECT-list columns are intentionally excluded —
+    # they are not RLS-injection targets and including them would cause
+    # over-broad refusal when a col absent from the rollup grain appears in
+    # ORDER BY but not in a filter (fix-41).
+    for clause_key in ("where", "having"):
+        clause_node = tree.args.get(clause_key)
+        if clause_node is None:
+            continue
+        # exp.Where / exp.Having wrap the predicate in .this; unwrap to the
+        # actual predicate expression before recursing.
+        predicate = clause_node.this if isinstance(clause_node, (exp.Where, exp.Having)) else clause_node
+        if predicate is not None:
+            _collect_cols_no_subquery(predicate)
     return cols
 
 
