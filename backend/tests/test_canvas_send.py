@@ -1387,3 +1387,40 @@ class TestAssetsCssInjection:
         # Benign declaration must survive.
         assert ".ok" in result
         assert "color: red" in result or "color:red" in result
+
+    # ── NEW: expression() and NUL-byte gaps ──────────────────────────────────
+
+    def test_css_expression_stripped_at_render_time(self):
+        """expression() is removed by _sanitize_assets_css at render time.
+
+        IE/legacy Outlook evaluate CSS expression() as JavaScript — e.g.
+        ``color: expression(alert(1))`` executes JS.  The render path must
+        strip the expression() call so it cannot survive into the output.
+        """
+        result = self._render_with_css("body { color: expression(alert(1)); }")
+        assert "expression(" not in result.lower(), (
+            "expression() survived assets.css render-time sanitization — XSS vector open."
+        )
+
+    def test_css_expression_uppercase_stripped_at_render_time(self):
+        """EXPRESSION() (uppercase) is also stripped by the render-time sanitizer."""
+        result = self._render_with_css("div { width: EXPRESSION(document.body.offsetWidth); }")
+        assert "expression(" not in result.lower(), (
+            "EXPRESSION() (uppercase) survived assets.css render-time sanitization."
+        )
+
+    def test_css_nul_byte_style_breakout_stripped_at_render_time(self):
+        """NUL bytes inside </style> are normalized so the breakout sequence is caught.
+
+        ``</sty\\x00le>`` parses as ``</style>`` in browsers (NUL is ignored
+        inside tag names).  The render-time sanitizer must strip NUL bytes
+        BEFORE applying the tag-breakout regex, so the injected closing tag is
+        removed and cannot terminate the enclosing <style> block early.
+        """
+        import re as _re
+        malicious = "body{color:red} </sty\x00le><script>alert(1)</script><style>"
+        result = self._render_with_css(malicious)
+        # No <script> tag must survive the render-time sanitizer.
+        assert not _re.search(r"<\s*script", result, _re.IGNORECASE), (
+            "NUL-byte </style> breakout + <script> survived render-time sanitization."
+        )

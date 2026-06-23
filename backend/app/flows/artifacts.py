@@ -355,18 +355,64 @@ def _estimate_obj_bytes(obj: Any) -> int | None:
     return None
 
 
+class _LimitedWriter:
+    """A file-like writer that aborts mid-serialization when the byte cap is hit.
+
+    Used as the target for ``pickle.Pickler`` so that oversized objects are
+    rejected *during* serialization rather than *after* a full
+    ``pickle.dumps()`` call has already built the entire oversized buffer in
+    memory (2× peak-memory + wasted work).
+
+    Parameters
+    ----------
+    max_bytes:
+        Hard ceiling on the total number of bytes that may be written.
+        When a ``write()`` call would push the running total past this
+        ceiling the writer raises ``ValueError`` immediately, aborting
+        the pickle operation mid-stream.  Set to ``0`` to disable the cap.
+    """
+
+    __slots__ = ("_max_bytes", "_written", "_buf")
+
+    def __init__(self, max_bytes: int) -> None:
+        self._max_bytes = max_bytes
+        self._written = 0
+        self._buf = io.BytesIO()
+
+    def write(self, data: bytes) -> int:
+        n = len(data)
+        self._written += n
+        if self._max_bytes > 0 and self._written > self._max_bytes:
+            raise ValueError(
+                f"Artifact size exceeded {self._max_bytes:,} bytes during "
+                "serialization (NUBI_ARTIFACT_MAX_BYTES). The object was too "
+                "large; reduce the artifact size or raise the limit."
+            )
+        self._buf.write(data)
+        return n
+
+    def getvalue(self) -> bytes:
+        return self._buf.getvalue()
+
+
 def _serialise(obj: Any, kind: str) -> bytes:
     """Serialise *obj* according to *kind*.
 
     Raises
     ------
     ValueError
-        If *kind* is unsupported.
+        If *kind* is unsupported or if the object exceeds the byte cap
+        *during* pickle serialization (mid-stream abort via _LimitedWriter).
     ImportError
         If ``joblib`` is requested but not installed.
     """
     if kind == "pickle":
-        return pickle.dumps(obj, protocol=pickle.HIGHEST_PROTOCOL)
+        # Route through _LimitedWriter so we abort mid-serialization if the
+        # object exceeds the cap, rather than building a full oversized buffer
+        # in memory and only then checking the size (2× OOM + wasted work).
+        writer = _LimitedWriter(_ARTIFACT_MAX_BYTES)
+        pickle.Pickler(writer, protocol=pickle.HIGHEST_PROTOCOL).dump(obj)
+        return writer.getvalue()
     if kind == "joblib":
         try:
             import joblib  # noqa: PLC0415

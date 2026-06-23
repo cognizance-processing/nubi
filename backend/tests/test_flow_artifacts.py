@@ -1270,6 +1270,53 @@ def test_spool_confinement_traversal_id_not_written():
 
 
 # ---------------------------------------------------------------------------
+# 27b. MED pre-serialization OOM: non-numpy pickle aborts mid-stream
+# ---------------------------------------------------------------------------
+
+
+def test_pickle_large_object_aborts_mid_serialization():
+    """A non-numpy/pandas object exceeding the cap raises DURING serialization.
+
+    Before the fix, put_artifact called pickle.dumps(obj) in one shot and only
+    checked the size AFTER the full oversized buffer was already in memory
+    (2× peak-memory).  With _LimitedWriter the pickling aborts mid-stream as
+    soon as the running byte count exceeds the cap, and no oversized blob is
+    ever stored.
+    """
+    import unittest.mock  # noqa: PLC0415
+    from app.flows import artifacts as _art_mod  # noqa: PLC0415
+
+    art_store = _mem_store()
+
+    # A plain Python object (not numpy/pandas) that pickles to more than 50 bytes.
+    # _estimate_obj_bytes returns None for dicts, so the old post-check path
+    # would have built the full pickle buffer before rejecting it.
+    big_obj = {"data": "x" * 200}  # serialises to >> 50 bytes
+
+    cap = 50  # tiny cap so we don't need a huge object
+
+    # Before the fix:
+    #   - _estimate_obj_bytes(big_obj) returns None (not numpy/pandas)
+    #   - _serialise calls pickle.dumps(big_obj) → full buffer in memory
+    #   - ValueError raised AFTER the full buffer exists
+    #
+    # After the fix:
+    #   - _serialise routes through _LimitedWriter
+    #   - ValueError raised DURING pickling, before the full buffer is built
+    #   - No oversized blob is stored in art_store
+
+    with unittest.mock.patch.object(_art_mod, "_ARTIFACT_MAX_BYTES", cap):
+        with pytest.raises(ValueError, match="exceeded|exceeds the maximum"):
+            put_artifact(big_obj, kind="pickle", org_id=ORG_A, store=art_store)
+
+    # Confirm no artifact was written to the store.
+    assert art_store._total_bytes == 0, (
+        f"Oversized blob was stored ({art_store._total_bytes} bytes); "
+        "expected nothing to be stored after mid-stream abort."
+    )
+
+
+# ---------------------------------------------------------------------------
 # 27. Org-bound HMAC: a blob signed for org A fails verify under org B
 # ---------------------------------------------------------------------------
 

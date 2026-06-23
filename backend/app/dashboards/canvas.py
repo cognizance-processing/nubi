@@ -372,13 +372,20 @@ def validate_canvas_doc(doc: CanvasDoc, *, org_id: str | None = None) -> tuple[b
     # ── 7. [LOW] CSS safety — reject malicious assets.css at SAVE TIME ──────────
     # The render path strips dangerous CSS, but we add a defence-in-depth hard
     # error at save time so attackers cannot persist XSS/CSRF payloads in the
-    # stored doc.  We reject the three canonical CSS injection vectors:
+    # stored doc.  We reject the canonical CSS injection vectors:
     #   a) </style>  — breaks out of a <style> block.
     #   b) <script   — injects a script element via CSS content.
     #   c) @import with javascript:, vbscript:, or data:text payloads — loads
     #      external scripts or data URIs via CSS @import rules.
+    #   d) expression() — IE/legacy-Outlook JS execution via CSS property values.
+    #   e) NUL bytes / non-whitespace ASCII control chars — smuggle tag-breakout
+    #      sequences past regex checks (e.g. </sty\x00le>).
     css_value = doc.assets.get("css") if isinstance(doc.assets, dict) else None
     if css_value and isinstance(css_value, str):
+        # For tag-breakout checks, apply the same NUL-normalization as the render
+        # path so that a smuggled NUL byte cannot bypass the regex below.
+        _css_normalized = re.sub(r"[\x00\x01-\x08\x0b\x0c\x0e-\x1f]", "", css_value)
+
         _css_hard_patterns = [
             (r"</\s*style", "</style> tag in assets.css breaks out of a <style> block"),
             (r"<\s*script", "<script in assets.css injects a script element"),
@@ -392,13 +399,30 @@ def validate_canvas_doc(doc: CanvasDoc, *, org_id: str | None = None) -> tuple[b
                 "url(javascript:), url(vbscript:), or url(data:text) in assets.css "
                 "executes a script via CSS url()",
             ),
+            (
+                r"expression\s*\(",
+                "expression() in assets.css executes JavaScript in IE/legacy clients",
+            ),
         ]
+        # Check tag-breakout patterns against the NUL-normalized copy; check all
+        # others against the raw value so we catch obfuscated expression() forms.
+        _tag_patterns = {r"</\s*style", r"<\s*script"}
         for _pattern, _description in _css_hard_patterns:
-            if re.search(_pattern, css_value, re.IGNORECASE):
+            _haystack = _css_normalized if _pattern in _tag_patterns else css_value
+            if re.search(_pattern, _haystack, re.IGNORECASE):
                 issues.append(
                     f"assets.css contains disallowed content: {_description}. "
                     "Remove the offending rule before saving."
                 )
+
+        # Also reject raw NUL bytes / control chars in the stored value — they
+        # serve no legitimate CSS purpose and exist only to confuse parsers.
+        if re.search(r"[\x00\x01-\x08\x0b\x0c\x0e-\x1f]", css_value):
+            issues.append(
+                "assets.css contains disallowed content: NUL bytes or ASCII control "
+                "characters in assets.css can bypass tag-breakout checks. "
+                "Remove the offending rule before saving."
+            )
 
     # Hard errors = any issue NOT prefixed with [warn]
     hard = [i for i in issues if not i.lstrip().lower().startswith("[warn]")]

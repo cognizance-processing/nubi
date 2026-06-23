@@ -605,6 +605,10 @@ def _sanitize_assets_css(css: str) -> str:
 
     Defenses applied (in order):
 
+    0. Normalize control characters — strip NUL bytes and other ASCII control
+       characters (U+0001–U+001F, excluding TAB/LF/CR which are whitespace) that
+       browsers silently ignore inside tag names.  This prevents ``</sty\\x00le>``
+       from bypassing the tag-breakout regex in step 1.
     1. Strip HTML tag breakout attempts — remove any ``</style`` and ``<script``
        sequences so the CSS cannot escape the enclosing ``<style>`` block.
     2. Remove all CSS ``@import`` rules entirely — these can pull in arbitrary
@@ -612,12 +616,19 @@ def _sanitize_assets_css(css: str) -> str:
     3. Neutralize dangerous ``url()`` values — replace ``url()`` whose target is a
        dangerous scheme (javascript:, vbscript:, data: non-image, protocol-relative
        ``//``, absolute http/https) with ``url(none)``.
+    4. Strip CSS ``expression(...)`` calls — IE/legacy-Outlook evaluated these as
+       JavaScript (e.g. ``color: expression(alert(1))``).  We remove the entire
+       ``expression(...)`` token regardless of internal whitespace or comment noise.
 
     Benign CSS (inline styles, relative paths, safe data:image/... URLs, normal
     class/property declarations) is left unchanged.
     """
+    # 0. Strip NUL bytes and other non-whitespace ASCII control characters that
+    #    browsers ignore inside tag names (prevents </sty\x00le> bypass).
+    sanitized = re.sub(r"[\x00\x01-\x08\x0b\x0c\x0e-\x1f]", "", css)
+
     # 1. Strip HTML tag breakout sequences.
-    sanitized = re.sub(r"</\s*style", "", css, flags=re.IGNORECASE)
+    sanitized = re.sub(r"</\s*style", "", sanitized, flags=re.IGNORECASE)
     sanitized = re.sub(r"<\s*script", "", sanitized, flags=re.IGNORECASE)
 
     # 2. Remove all @import rules.
@@ -625,6 +636,16 @@ def _sanitize_assets_css(css: str) -> str:
 
     # 3. Neutralize dangerous url() values.
     sanitized = _CSS_URL_RE.sub(_neutralize_css_url, sanitized)
+
+    # 4. Strip CSS expression() — IE legacy JS execution vector.
+    #    Matches expression followed by a balanced-enough parenthesised block,
+    #    tolerating internal whitespace and /* */ comment fragments.
+    sanitized = re.sub(
+        r"expression\s*\([^)]*\)",
+        "",
+        sanitized,
+        flags=re.IGNORECASE,
+    )
 
     return sanitized
 

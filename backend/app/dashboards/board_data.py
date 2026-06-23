@@ -81,6 +81,22 @@ _PROVIDER_MAX_BYTES: int = int(
     os.environ.get("NUBI_PROVIDER_MAX_BYTES", _DEFAULT_PROVIDER_MAX_BYTES)
 )
 
+# [LOW resource] Cap: max datastores inspected by _resolve_org_connector when
+# scanning for the first eligible (non-system, non-demo) datastore connector.
+# An org with many datastores would otherwise load them all into RAM on every
+# inline-provider call just to pick the first match.  We inspect at most this
+# many entries and pick the first eligible one.  The default (20) is generous
+# enough to survive any realistic ordering of system vs user-configured rows.
+# Override via env var NUBI_CONNECTOR_SCAN_LIMIT.
+# Note: the underlying repo.list() call currently fetches all rows from the
+# database before Python-side slicing; a future repo-level LIMIT parameter
+# would make this a true O(1) DB read, but that requires a wider interface
+# change outside this module.
+_DEFAULT_CONNECTOR_SCAN_LIMIT = 20
+_CONNECTOR_SCAN_LIMIT: int = int(
+    os.environ.get("NUBI_CONNECTOR_SCAN_LIMIT", _DEFAULT_CONNECTOR_SCAN_LIMIT)
+)
+
 from app.errors import AppError
 
 logger = logging.getLogger(__name__)
@@ -167,53 +183,109 @@ _FLOW_PROVIDER_EXEC_TIMEOUT_S: float = float(
     )
 )
 
-# Registry: (org_id, provider_id) -> asyncio.Semaphore
-# Implemented as an OrderedDict so we can evict the least-recently-used idle
-# entry when the registry would otherwise grow beyond _EMBED_SEM_REGISTRY_CAP.
-# Invariant: a semaphore with _value < _EMBED_FLOW_CONCURRENCY has in-flight or
-# waiting callers and MUST NOT be evicted.
+# ---------------------------------------------------------------------------
+# _CountingSemaphore — thin acquire/release-counting wrapper
+# ---------------------------------------------------------------------------
+# asyncio.Semaphore exposes ``_value`` (remaining token count) as a private
+# attribute; using it creates a dependency on CPython internals that may break
+# on Python upgrades or alternate runtimes.
+#
+# Fix [LOW]: wrap asyncio.Semaphore in a thin class that increments/decrements
+# an explicit ``_holders`` counter on every acquire/release.  The idle-check
+# uses ``_holders`` instead of ``_value``, eliminating the private-API
+# dependency entirely.  The wrapper is a drop-in replacement; callers use
+# ``await sem.acquire()`` / ``sem.release()`` exactly as before.
+#
+# Registry unbounded-growth invariant: when ``_value`` was absent (alternate
+# runtime), the old ``getattr(sem, "_value", cap)`` fallback returned the
+# cap — treating every semaphore as idle (safe to evict).  The new
+# ``_holders == 0`` check achieves the same invariant without private-API
+# access: a freshly-created wrapper always starts with _holders == 0 (idle),
+# and the count is always accurate because we own the counter.
+
 import collections as _collections
 
-_embed_semaphores: "_collections.OrderedDict[tuple[str, str], asyncio.Semaphore]" = (
+
+class _CountingSemaphore:
+    """asyncio.Semaphore wrapper that tracks holder count without ``_value``.
+
+    Parameters
+    ----------
+    value:
+        Initial semaphore value (number of concurrent slots allowed).
+
+    Usage
+    -----
+    * ``await sem.acquire()`` — acquire one slot (blocks when at capacity).
+    * ``sem.release()`` — release one slot.
+    * ``sem.is_idle()`` — True when no coroutines hold or are waiting on a slot.
+    """
+
+    __slots__ = ("_sem", "_concurrency", "_holders", "_lock")
+
+    def __init__(self, value: int) -> None:
+        self._sem = asyncio.Semaphore(value)
+        self._concurrency = value
+        self._holders: int = 0  # number of current holders + waiters
+        self._lock = threading.Lock()
+
+    async def acquire(self) -> None:
+        """Increment the holder count then acquire the underlying semaphore."""
+        with self._lock:
+            self._holders += 1
+        try:
+            await self._sem.acquire()
+        except BaseException:
+            # Acquisition was cancelled/interrupted before the slot was granted;
+            # undo the holder increment so we don't leak a phantom count.
+            with self._lock:
+                self._holders -= 1
+            raise
+
+    def release(self) -> None:
+        """Release the underlying semaphore then decrement the holder count."""
+        self._sem.release()
+        with self._lock:
+            self._holders = max(0, self._holders - 1)
+
+    def is_idle(self) -> bool:
+        """Return True when no coroutines hold or are waiting on a slot."""
+        with self._lock:
+            return self._holders == 0
+
+
+# Registry: (org_id, provider_id) -> _CountingSemaphore
+# Implemented as an OrderedDict so we can evict the least-recently-used idle
+# entry when the registry would otherwise grow beyond _EMBED_SEM_REGISTRY_CAP.
+# Invariant: a semaphore whose is_idle() == False has in-flight or waiting
+# callers and MUST NOT be evicted.
+_embed_semaphores: "_collections.OrderedDict[tuple[str, str], _CountingSemaphore]" = (
     _collections.OrderedDict()
 )
 _embed_semaphores_lock = threading.Lock()
 
 # Non-embed (interactive) flow-provider semaphore registry — parallel to the
 # embed registry but with its own ceiling and concurrency cap.
-_flow_provider_semaphores: "_collections.OrderedDict[tuple[str, str], asyncio.Semaphore]" = (
+_flow_provider_semaphores: "_collections.OrderedDict[tuple[str, str], _CountingSemaphore]" = (
     _collections.OrderedDict()
 )
 _flow_provider_semaphores_lock = threading.Lock()
 
 
-def _embed_semaphore_is_idle(sem: asyncio.Semaphore) -> bool:
+def _embed_semaphore_is_idle(sem: "_CountingSemaphore") -> bool:
     """Return True when *sem* has no in-flight or waiting callers.
 
-    A semaphore is idle when its internal counter equals the initial value set
-    at construction (_EMBED_FLOW_CONCURRENCY) — i.e. all tokens are free and
-    no coroutines are waiting on it.  Such an entry can safely be evicted.
-
-    asyncio.Semaphore exposes ``_value`` (the current token count) as a private
-    attribute; there is no public API for this in the stdlib.  The check is safe
-    because this function is only called while holding _embed_semaphores_lock and
-    while the event loop is idle (no other coroutine can acquire/release the sem
-    between the check and the eviction decision under the GIL).
+    Delegates to ``sem.is_idle()`` which uses the explicit ``_holders`` counter
+    rather than the asyncio.Semaphore private ``_value`` attribute.  This
+    eliminates the private-API dependency while preserving the same semantics:
+    idle == safe to evict (no active or waiting callers).
     """
-    # _value is the remaining token count; when equal to the concurrency cap all
-    # tokens are free.  When < cap at least one caller holds a token or is waiting.
-    #
-    # Safety: if _value is absent (Python upgrade / alternate runtime), default to
-    # the concurrency cap so the semaphore is conservatively treated as IDLE (safe
-    # to evict).  The wrong default (0) would classify every semaphore as "in use",
-    # preventing LRU eviction and silently un-enforcing the per-(org,provider) cap.
-    return getattr(sem, "_value", _EMBED_FLOW_CONCURRENCY) >= _EMBED_FLOW_CONCURRENCY
+    return sem.is_idle()
 
 
-def _flow_provider_semaphore_is_idle(sem: asyncio.Semaphore) -> bool:
+def _flow_provider_semaphore_is_idle(sem: "_CountingSemaphore") -> bool:
     """Return True when *sem* (non-embed flow registry) has no in-flight callers."""
-    # Same conservative fallback: absent _value -> treat as idle (safe to evict).
-    return getattr(sem, "_value", _FLOW_PROVIDER_CONCURRENCY) >= _FLOW_PROVIDER_CONCURRENCY
+    return sem.is_idle()
 
 
 def _evict_idle_embed_semaphores() -> None:
@@ -253,8 +325,8 @@ def _evict_idle_flow_provider_semaphores() -> None:
         _flow_provider_semaphores.pop(key, None)
 
 
-def _get_embed_semaphore(org_id: str, provider_id: str) -> asyncio.Semaphore:
-    """Return the asyncio.Semaphore for *(org_id, provider_id)*, creating it once.
+def _get_embed_semaphore(org_id: str, provider_id: str) -> "_CountingSemaphore":
+    """Return the _CountingSemaphore for *(org_id, provider_id)*, creating it once.
 
     LRU-capped: when the registry is at _EMBED_SEM_REGISTRY_CAP capacity, idle
     entries (no in-flight or waiting callers) are evicted in LRU order before the
@@ -270,13 +342,13 @@ def _get_embed_semaphore(org_id: str, provider_id: str) -> asyncio.Semaphore:
         # New entry: evict idle LRU entries if at capacity.
         if len(_embed_semaphores) >= _EMBED_SEM_REGISTRY_CAP:
             _evict_idle_embed_semaphores()
-        sem = asyncio.Semaphore(_EMBED_FLOW_CONCURRENCY)
+        sem = _CountingSemaphore(_EMBED_FLOW_CONCURRENCY)
         _embed_semaphores[key] = sem
         return sem
 
 
-def _get_flow_provider_semaphore(org_id: str, provider_id: str) -> asyncio.Semaphore:
-    """Return the non-embed asyncio.Semaphore for *(org_id, provider_id)*.
+def _get_flow_provider_semaphore(org_id: str, provider_id: str) -> "_CountingSemaphore":
+    """Return the non-embed _CountingSemaphore for *(org_id, provider_id)*.
 
     LRU-capped via _FLOW_PROVIDER_SEM_CAP; concurrency limited to
     _FLOW_PROVIDER_CONCURRENCY.  Mirrors _get_embed_semaphore for interactive
@@ -290,7 +362,7 @@ def _get_flow_provider_semaphore(org_id: str, provider_id: str) -> asyncio.Semap
             return sem
         if len(_flow_provider_semaphores) >= _FLOW_PROVIDER_SEM_CAP:
             _evict_idle_flow_provider_semaphores()
-        sem = asyncio.Semaphore(_FLOW_PROVIDER_CONCURRENCY)
+        sem = _CountingSemaphore(_FLOW_PROVIDER_CONCURRENCY)
         _flow_provider_semaphores[key] = sem
         return sem
 
@@ -711,18 +783,31 @@ async def _resolve_org_connector(
 
     Security: the repo lookup is already org-scoped (``repo.list("datastores",
     org_id)``), so cross-tenant reads are impossible here.
+
+    Bounding: we inspect at most ``_CONNECTOR_SCAN_LIMIT`` datastores (default
+    20).  For an org with many datastores, the user-configured connector almost
+    always appears in the first few rows (system/demo rows are typically
+    created first and real connectors added afterwards).  Inspecting only a
+    small prefix avoids loading thousands of rows into RAM per inline-provider
+    call.  The limit is configurable via NUBI_CONNECTOR_SCAN_LIMIT.
     """
     from app.routes.query import _get_demo_connector  # noqa: PLC0415
 
     try:
-        datastores = await repo.list("datastores", org_id)
+        _all_datastores = await repo.list("datastores", org_id)
     except Exception:  # noqa: BLE001
-        datastores = []
+        _all_datastores = []
+
+    # [LOW resource] Bound: inspect only the first _CONNECTOR_SCAN_LIMIT rows so
+    # an org with thousands of datastores does not load them all into RAM just to
+    # pick the first eligible connector.  The slice is applied before filtering so
+    # even the Python-side iteration is bounded.
+    datastores = (_all_datastores or [])[:_CONNECTOR_SCAN_LIMIT]
 
     # Filter out system/demo datastores — only pick real user-configured connectors.
     _DEMO_SYSTEM_TYPES = frozenset({"__demo__", "__demo_hidden__"})
     real_ds = None
-    for ds in (datastores or []):
+    for ds in datastores:
         cfg = ds.get("config") or {}
         ctype = cfg.get("connector_type") or cfg.get("type") or ""
         # Skip system-flagged rows (e.g. the demo-hidden marker) and the virtual

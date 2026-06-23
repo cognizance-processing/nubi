@@ -2176,6 +2176,64 @@ class TestApiBindingPathValidation:
         hard = [i for i in issues if not i.lstrip().lower().startswith("[warn]")]
         assert any("import" in i.lower() or "vbscript" in i.lower() for i in hard), hard
 
+    # -----------------------------------------------------------------------
+    # NEW: expression() and NUL-byte gaps (XSS hardening)
+    # -----------------------------------------------------------------------
+
+    def test_css_expression_is_rejected_at_save_time(self):
+        """assets.css containing expression() is rejected as a hard error.
+
+        IE and legacy Outlook evaluate CSS expression() as JavaScript, making
+        ``color: expression(alert(1))`` a live XSS vector in those clients.
+        """
+        doc = CanvasDoc.model_validate(
+            {
+                "html": "<div></div>",
+                "bindings": {},
+                "assets": {"css": "body { color: expression(alert(1)); }"},
+            }
+        )
+        ok, issues = validate_canvas_doc(doc)
+        assert ok is False, f"Expected hard error for expression() in CSS, issues: {issues}"
+        hard = [i for i in issues if not i.lstrip().lower().startswith("[warn]")]
+        assert any("expression" in i.lower() for i in hard), hard
+
+    def test_css_expression_uppercase_is_rejected_at_save_time(self):
+        """expression() rejection is case-insensitive (EXPRESSION, Expression)."""
+        doc = CanvasDoc.model_validate(
+            {
+                "html": "<div></div>",
+                "bindings": {},
+                "assets": {"css": "body { width: EXPRESSION(document.body.offsetWidth); }"},
+            }
+        )
+        ok, issues = validate_canvas_doc(doc)
+        assert ok is False, f"Expected hard error for EXPRESSION() in CSS, issues: {issues}"
+        hard = [i for i in issues if not i.lstrip().lower().startswith("[warn]")]
+        assert any("expression" in i.lower() for i in hard), hard
+
+    def test_css_nul_byte_style_breakout_is_rejected_at_save_time(self):
+        """assets.css with a NUL byte inside </style> is rejected as a hard error.
+
+        Browsers can ignore NUL bytes inside tag names, so ``</sty\\x00le>``
+        parses as ``</style>`` and breaks out of the enclosing style block.
+        The validator must normalise NUL bytes before running regex checks.
+        """
+        doc = CanvasDoc.model_validate(
+            {
+                "html": "<div></div>",
+                "bindings": {},
+                "assets": {"css": "body { color: red; } </sty\x00le><script>alert(1)</script>"},
+            }
+        )
+        ok, issues = validate_canvas_doc(doc)
+        assert ok is False, (
+            f"Expected hard error for NUL-byte </style> breakout in CSS, issues: {issues}"
+        )
+        hard = [i for i in issues if not i.lstrip().lower().startswith("[warn]")]
+        # Either the NUL-byte check or the tag-breakout check should fire.
+        assert len(hard) > 0, hard
+
     @pytest.mark.asyncio
     async def test_empty_path_is_accepted(self):
         """An empty path (binding with no 'path') uses the base URL as-is.

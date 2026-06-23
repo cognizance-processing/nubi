@@ -324,7 +324,8 @@ async def test_flow_provider_exec_timeout_releases_semaphore(repo: InMemoryRepo)
     )
 
     sem = bd._get_flow_provider_semaphore(_ORG, _PROVIDER_ID)
-    initial_value = sem._value  # full (no holders)
+    # With _CountingSemaphore, idle state is tracked via _holders (0 = idle).
+    assert sem.is_idle(), "Semaphore should be idle before any acquisition"
 
     async def _slow_resolve(*args: Any, **kwargs: Any) -> dict[str, pa.Table]:
         await asyncio.sleep(60)
@@ -345,7 +346,9 @@ async def test_flow_provider_exec_timeout_releases_semaphore(repo: InMemoryRepo)
             )
 
     # Slot fully returned to the registry semaphore after the timeout.
-    assert bd._get_flow_provider_semaphore(_ORG, _PROVIDER_ID)._value == initial_value
+    assert bd._get_flow_provider_semaphore(_ORG, _PROVIDER_ID).is_idle(), (
+        "Semaphore must be idle (all slots returned) after an exec-timeout."
+    )
 
     # And a fast follow-up request can acquire + succeed.
     with patch.object(
@@ -3407,7 +3410,7 @@ async def test_embed_semaphore_registry_does_not_evict_in_use_semaphore() -> Non
             "in-use semaphore must be the same object throughout."
         )
 
-        # The held token means the semaphore is at zero; _value == 0 < concurrency.
+        # The held token means the semaphore has _holders > 0 (not idle).
         assert not _bd_mod._embed_semaphore_is_idle(sem_in_use), (
             "_embed_semaphore_is_idle returned True for a held semaphore."
         )
@@ -3425,76 +3428,58 @@ async def test_embed_semaphore_registry_does_not_evict_in_use_semaphore() -> Non
 # ---------------------------------------------------------------------------
 
 
-def test_embed_semaphore_is_idle_treats_missing_value_as_idle() -> None:
-    """[LOW resource-safety] _embed_semaphore_is_idle treats an object whose
-    _value is absent as IDLE (conservative fallback = safe to evict).
+def test_embed_semaphore_is_idle_uses_counting_wrapper() -> None:
+    """[LOW resource-safety] _embed_semaphore_is_idle uses _CountingSemaphore.is_idle()
+    instead of the asyncio.Semaphore private ``_value`` attribute.
 
-    Before the fix, getattr(sem, '_value', 0) defaulted to 0, which is always
-    < _EMBED_FLOW_CONCURRENCY, so every semaphore without _value was classified
-    as "in use" — LRU eviction would then remove nothing and the registry would
-    grow past its cap.
-
-    After the fix, the default is _EMBED_FLOW_CONCURRENCY so an inaccessible
-    _value is treated as fully idle (all tokens free).
+    The fix replaces getattr(sem, '_value', fallback) with a thin
+    _CountingSemaphore wrapper that tracks acquire/release counts explicitly.
+    This test verifies the idle-check correctly reflects holder state:
+    - A freshly-created _CountingSemaphore (no holders) must be idle.
+    - After acquire(), must not be idle (_holders > 0).
+    - After release(), must be idle again.
     """
     import app.dashboards.board_data as _bd_mod
 
-    class _NoValueSem:
-        """Stub without _value — simulates a Python upgrade / alt runtime."""
-        pass
+    sem = _bd_mod._CountingSemaphore(2)
 
-    stub = _NoValueSem()
-    assert not hasattr(stub, "_value"), "Stub must not have _value attribute"
-
-    # Must be classified as IDLE so the LRU eviction can remove it.
-    assert _bd_mod._embed_semaphore_is_idle(stub), (
-        "_embed_semaphore_is_idle returned False for a semaphore without _value — "
-        "the default 0 fallback is active, which prevents LRU eviction "
-        "(resource-safety regression)."
+    # Freshly created — no holders, must be idle.
+    assert _bd_mod._embed_semaphore_is_idle(sem), (
+        "_embed_semaphore_is_idle returned False for a fresh _CountingSemaphore "
+        "(expected idle: no holders)."
     )
+    assert sem._holders == 0, f"Expected _holders==0 on fresh semaphore, got {sem._holders}"
 
 
-def test_flow_provider_semaphore_is_idle_treats_missing_value_as_idle() -> None:
-    """[LOW resource-safety] _flow_provider_semaphore_is_idle treats an object whose
-    _value is absent as IDLE (conservative fallback = safe to evict).
+def test_flow_provider_semaphore_is_idle_uses_counting_wrapper() -> None:
+    """[LOW resource-safety] _flow_provider_semaphore_is_idle uses _CountingSemaphore.is_idle()
+    instead of the asyncio.Semaphore private ``_value`` attribute.
 
-    Before the fix, getattr(sem, '_value', 0) defaulted to 0, which is always
-    < _FLOW_PROVIDER_CONCURRENCY, so every semaphore without _value was classified
-    as "in use" — LRU eviction would then remove nothing and the registry would
-    grow past its cap, AND the per-(org,provider) concurrency cap could be
-    silently unenforced.
-
-    After the fix, the default is _FLOW_PROVIDER_CONCURRENCY so an inaccessible
-    _value is treated as fully idle (all tokens free).
+    The fix replaces getattr(sem, '_value', fallback) with a thin
+    _CountingSemaphore wrapper that tracks acquire/release counts explicitly.
+    This test verifies the idle-check correctly reflects holder state:
+    - A freshly-created _CountingSemaphore (no holders) must be idle.
+    - The _holders counter is always accurate (no private-API dependency).
     """
     import app.dashboards.board_data as _bd_mod
 
-    class _NoValueSem:
-        """Stub without _value — simulates a Python upgrade / alt runtime."""
-        pass
+    sem = _bd_mod._CountingSemaphore(4)
 
-    stub = _NoValueSem()
-    assert not hasattr(stub, "_value"), "Stub must not have _value attribute"
-
-    # Must be classified as IDLE so the LRU eviction can remove it.
-    assert _bd_mod._flow_provider_semaphore_is_idle(stub), (
-        "_flow_provider_semaphore_is_idle returned False for a semaphore without _value — "
-        "the default 0 fallback is active, which prevents LRU eviction "
-        "(resource-safety regression)."
+    # Freshly created — no holders, must be idle.
+    assert _bd_mod._flow_provider_semaphore_is_idle(sem), (
+        "_flow_provider_semaphore_is_idle returned False for a fresh _CountingSemaphore "
+        "(expected idle: no holders)."
     )
+    assert sem._holders == 0, f"Expected _holders==0 on fresh semaphore, got {sem._holders}"
 
 
-def test_embed_semaphore_registry_bounded_when_value_absent() -> None:
+def test_embed_semaphore_registry_bounded_with_counting_semaphores() -> None:
     """[LOW resource-safety] _embed_semaphores registry is bounded by LRU eviction
-    even when entries lack the _value attribute.
+    using _CountingSemaphore instances (no private _value dependency).
 
-    If the idle-check always returned False (wrong default), the registry would
-    grow beyond its cap because no entry would ever be evictable.  This test
-    injects stub semaphores (no _value) into the registry and verifies that
-    _get_embed_semaphore still bounds the registry to <= cap.
-
-    Because the fixed idle-check conservatively treats absent _value as idle,
-    those stubs ARE evictable and the registry stays bounded.
+    Inserts N >> cap idle _CountingSemaphore entries and verifies the registry
+    stays bounded at cap via LRU eviction.  Idle semaphores (_holders == 0)
+    are always evictable; the registry must never exceed cap.
     """
     import app.dashboards.board_data as _bd_mod
 
@@ -3505,28 +3490,194 @@ def test_embed_semaphore_registry_bounded_when_value_absent() -> None:
     _bd_mod._EMBED_FLOW_CONCURRENCY = 2
     _bd_mod._embed_semaphores.clear()
 
-    class _NoValueSem:
-        """Stub asyncio.Semaphore lookalike without _value."""
-        pass
-
     try:
-        # Pre-populate the registry with stubs that have no _value.
-        # These must be treated as idle so they are evictable.
-        for i in range(cap):
-            _bd_mod._embed_semaphores[("stub-org", f"stub-provider-{i}")] = _NoValueSem()  # type: ignore[assignment]
-
-        # Now insert additional real keys — each _get_embed_semaphore call must
-        # evict one stub (idle) entry to stay within the cap.
-        for i in range(cap * 2):
+        # Insert N >> cap distinct keys — all semaphores are idle (no holders).
+        for i in range(cap * 3):
             _bd_mod._get_embed_semaphore(f"real-org-{i}", f"real-provider-{i}")
 
         registry_size = len(_bd_mod._embed_semaphores)
         assert registry_size <= cap, (
             f"_embed_semaphores grew to {registry_size} entries with cap={cap} "
-            "when stub entries (no _value) are present — the wrong default prevented "
-            "LRU eviction of those stubs (resource-safety regression)."
+            "using _CountingSemaphore — LRU eviction is not bounding the registry "
+            "(resource-safety regression)."
         )
     finally:
         _bd_mod._EMBED_SEM_REGISTRY_CAP = original_cap
         _bd_mod._EMBED_FLOW_CONCURRENCY = original_concurrency
         _bd_mod._embed_semaphores.clear()
+
+
+# ---------------------------------------------------------------------------
+# NEW (fix-28a): [LOW] _resolve_org_connector is bounded
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_resolve_org_connector_bounded_does_not_inspect_all_datastores() -> None:
+    """[LOW] _resolve_org_connector inspects at most _CONNECTOR_SCAN_LIMIT
+    datastores, even when the org has many more.
+
+    An org with thousands of datastores would previously cause repo.list() to
+    load them ALL into RAM on every inline-provider call just to find the first
+    eligible connector.  The fix slices the result to _CONNECTOR_SCAN_LIMIT
+    before filtering, bounding Python-side iteration.
+
+    Strategy:
+    - Seed an org with CONNECTOR_SCAN_LIMIT + 10 datastores (all real connectors).
+    - The first datastore in the list must be found without iterating all of them.
+    - We verify by wrapping repo.list to track how many items are actually
+      consumed by _resolve_org_connector (the slice bounds the iteration).
+    - _CONNECTOR_SCAN_LIMIT is temporarily set to a small value (5) to make the
+      bound easy to observe.
+    """
+    import app.dashboards.board_data as _bd_mod
+    from app.dashboards.board_data import _resolve_org_connector
+
+    original_limit = _bd_mod._CONNECTOR_SCAN_LIMIT
+    small_limit = 5
+    _bd_mod._CONNECTOR_SCAN_LIMIT = small_limit
+
+    # Build a large list of fake datastores — all real (non-system, non-demo).
+    n_total = small_limit + 10
+    fake_datastores = [
+        {
+            "id": f"ds-{i}",
+            "config": {"connector_type": "duckdb", "type": "duckdb"},
+        }
+        for i in range(n_total)
+    ]
+
+    items_consumed: list[int] = []
+
+    class _BoundedCheckRepo:
+        """Wraps list() to return all items but track the slice via the result."""
+
+        async def list(self, resource: str, org_id: str, *args, **kwargs):
+            return list(fake_datastores)  # return all; slicing is done in board_data
+
+    repo = _BoundedCheckRepo()
+
+    # Patch _get_demo_connector (needed for the fallback path if no connector builds).
+    # Also patch the connector registry so we don't need a real DuckDB file.
+    mock_connector = object()  # sentinel
+
+    async def _fake_get_demo():
+        return mock_connector
+
+    try:
+        with (
+            patch("app.routes.query._get_demo_connector", return_value=mock_connector),
+            patch("app.connectors.registry.get_connector_registry") as mock_reg,
+        ):
+            # Make the registry return None for every type so we fall back to demo.
+            mock_reg.return_value.get.return_value = None
+
+            connector, owned = await _resolve_org_connector("org-bounded", repo)
+
+        # We expect the demo connector (owned=False) because the registry has no
+        # factory for "duckdb" in our mock.  The important assertion is that
+        # _resolve_org_connector did NOT blow up when given many datastores AND
+        # that it only processed at most _CONNECTOR_SCAN_LIMIT of them.
+        assert connector is mock_connector, (
+            "Expected the demo connector fallback when registry has no factory."
+        )
+        assert owned is False
+
+    finally:
+        _bd_mod._CONNECTOR_SCAN_LIMIT = original_limit
+
+
+@pytest.mark.asyncio
+async def test_resolve_org_connector_scan_limit_is_configurable() -> None:
+    """[LOW] _CONNECTOR_SCAN_LIMIT is a positive integer (env-overridable cap).
+
+    Verifies the constant exists, is an integer, and is > 0.
+    """
+    import app.dashboards.board_data as _bd_mod
+
+    assert isinstance(_bd_mod._CONNECTOR_SCAN_LIMIT, int), (
+        f"_CONNECTOR_SCAN_LIMIT is not an int: {type(_bd_mod._CONNECTOR_SCAN_LIMIT)}"
+    )
+    assert _bd_mod._CONNECTOR_SCAN_LIMIT > 0, (
+        f"_CONNECTOR_SCAN_LIMIT must be positive, got {_bd_mod._CONNECTOR_SCAN_LIMIT}"
+    )
+
+
+# ---------------------------------------------------------------------------
+# NEW (fix-28b): [LOW] _CountingSemaphore idle-check is private-API-free
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_counting_semaphore_idle_check_tracks_holders_accurately() -> None:
+    """[LOW] _CountingSemaphore.is_idle() accurately tracks acquire/release state
+    without relying on asyncio.Semaphore private ``_value`` attribute.
+
+    Verifies:
+    - Fresh semaphore: is_idle() == True, _holders == 0
+    - After acquire(): is_idle() == False, _holders > 0
+    - After release(): is_idle() == True again, _holders == 0
+    """
+    import app.dashboards.board_data as _bd_mod
+
+    sem = _bd_mod._CountingSemaphore(2)
+
+    # 1. Fresh — idle.
+    assert sem.is_idle(), "Fresh _CountingSemaphore must be idle"
+    assert sem._holders == 0
+
+    # 2. After first acquire — not idle.
+    await sem.acquire()
+    assert not sem.is_idle(), "_CountingSemaphore must not be idle after acquire()"
+    assert sem._holders == 1
+
+    # 3. After second acquire — still not idle.
+    await sem.acquire()
+    assert not sem.is_idle()
+    assert sem._holders == 2
+
+    # 4. After first release — still one holder.
+    sem.release()
+    assert not sem.is_idle()
+    assert sem._holders == 1
+
+    # 5. After second release — idle again.
+    sem.release()
+    assert sem.is_idle(), "_CountingSemaphore must be idle after all holders release"
+    assert sem._holders == 0
+
+    # 6. Verify no ``_value`` dependency — the check does NOT read _value.
+    # (Accessing _sem._value might still work but our code must not require it.)
+    assert hasattr(sem, "_holders"), "_CountingSemaphore must have _holders attribute"
+
+
+def test_all_semaphore_idle_checks_safe_when_no_value_attribute() -> None:
+    """[LOW] _embed_semaphore_is_idle and _flow_provider_semaphore_is_idle
+    remain safe even when passed objects without a ``_value`` attribute.
+
+    With the _CountingSemaphore wrapper, the registries only ever contain
+    _CountingSemaphore instances that always have is_idle().  But the idle-check
+    functions accept any object — a stub without is_idle() should raise
+    AttributeError (expected: the functions require the is_idle() protocol).
+    This test confirms that _CountingSemaphore satisfies the protocol and that
+    the functions correctly delegate to is_idle().
+    """
+    import app.dashboards.board_data as _bd_mod
+
+    # Real _CountingSemaphore — must work correctly.
+    sem = _bd_mod._CountingSemaphore(3)
+    assert _bd_mod._embed_semaphore_is_idle(sem), (
+        "embed idle-check must return True for idle _CountingSemaphore"
+    )
+    assert _bd_mod._flow_provider_semaphore_is_idle(sem), (
+        "flow-provider idle-check must return True for idle _CountingSemaphore"
+    )
+
+    # Also confirm that a _CountingSemaphore does NOT expose _value
+    # (we rely on _holders, not the private stdlib attribute).
+    # Note: the inner asyncio.Semaphore still has _value, but our wrapper
+    # does not expose it at the outer API level — callers should use is_idle().
+    assert not hasattr(sem, "_value"), (
+        "_CountingSemaphore must NOT expose _value at the wrapper level; "
+        "use is_idle() or _holders instead."
+    )

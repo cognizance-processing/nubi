@@ -127,6 +127,16 @@ _MAP_ADD_BATCH_SIZE: int = _int_env("FLOWS_MAP_ADD_BATCH_SIZE", 500)
 #: Default: 4 MiB.
 _MAP_ITEMS_MAX_BYTES: int = _int_env("NUBI_MAP_ITEMS_MAX_BYTES", 4 * 1024 * 1024)
 
+#: Maximum byte size of the serialised map fan-IN aggregate ({items, item_count,
+#: collect_key}) written to the map parent's ``task_runs.result`` once all child
+#: tasks succeed.  The fan-OUT input (``_MAP_ITEMS_MAX_BYTES``) and per-task
+#: results (``_MAX_INLINE_RESULT_BYTES``) are capped, but without this cap a wide
+#: fan-out (e.g. 50k children × large results) would write one unbounded JSONB
+#: row → OOM.  When exceeded, the map task is FAILED (no oversized blob written)
+#: and the error directs callers to ``ctx.put_artifact()``.  Overridable via
+#: ``NUBI_MAP_FANIN_MAX_BYTES``.  Default: 64 MiB.
+_MAP_FANIN_MAX_BYTES: int = _int_env("NUBI_MAP_FANIN_MAX_BYTES", 64 * 1024 * 1024)
+
 #: HARD CEILING on the total number of task_runs a single flow_run may hold.
 #: A pathological map fan-out (N items × M body tasks) can otherwise insert an
 #: unbounded number of child task_runs, after which every drain/advance step
@@ -505,13 +515,37 @@ async def advance_readiness(
             map_config = tr.get("config") or {}
             collect_key: str = map_config.get("collect_key") or ""
             collected = _collect_map_results(children, map_key, collect_key)
+            _fanin_result = {
+                "items": collected,
+                "item_count": len(collected),
+                "collect_key": collect_key,
+            }
+            # Byte-cap the fan-IN aggregate BEFORE writing it: a wide fan-out
+            # (N children × large per-task results) would otherwise write one
+            # unbounded JSONB row → OOM.  When over cap, FAIL the map task and
+            # do NOT write the oversized blob.
+            _fanin_bytes = len(json.dumps(_fanin_result).encode())
+            if _fanin_bytes > _MAP_FANIN_MAX_BYTES:
+                _fanin_err = (
+                    f"map fan-in aggregate too large: {_fanin_bytes} bytes "
+                    f"(limit {_MAP_FANIN_MAX_BYTES} bytes / {_MAP_FANIN_MAX_BYTES // 1024} KiB). "
+                    "Have map body tasks return small references and write large "
+                    "outputs via ctx.put_artifact() instead of inlining results, "
+                    "or raise NUBI_MAP_FANIN_MAX_BYTES."
+                )
+                await store.update_task_run(map_task_run_id, {
+                    "state": "failed",
+                    "finished_at": now,
+                    "error": _fanin_err,
+                })
+                state_by_key[map_key] = "failed"
+                _map_or_branch_changed = True
+                _emit_task_event("task_failed", flow_run_id, map_key, "failed",
+                                 _fanin_err, 0, now)
+                continue
             await store.update_task_run(map_task_run_id, {
                 "state": "success",
-                "result": {
-                    "items": collected,
-                    "item_count": len(collected),
-                    "collect_key": collect_key,
-                },
+                "result": _fanin_result,
                 "finished_at": now,
             })
             state_by_key[map_key] = "success"

@@ -1403,6 +1403,154 @@ async def test_map_items_byte_cap_default_is_4mib():
 
 
 # ---------------------------------------------------------------------------
+# map fan-IN aggregate byte cap (_MAP_FANIN_MAX_BYTES) — OOM guard at fan-in
+# ---------------------------------------------------------------------------
+
+
+async def test_map_fanin_byte_cap_default_is_64mib():
+    """Default _MAP_FANIN_MAX_BYTES is 64 MiB (env unset)."""
+    import app.flows.runtime as rt
+
+    assert rt._MAP_FANIN_MAX_BYTES == 64 * 1024 * 1024, (
+        f"Expected default _MAP_FANIN_MAX_BYTES == {64 * 1024 * 1024}, "
+        f"got {rt._MAP_FANIN_MAX_BYTES}"
+    )
+
+
+async def test_map_fanin_byte_cap_fails_map_task_no_oversized_blob(monkeypatch):
+    """Oversized fan-in aggregate FAILS the map task and writes NO oversized blob.
+
+    All map children succeed, but the patched cap is tiny so the collected
+    aggregate exceeds it.  The map parent task_run must end 'failed' with an
+    error directing the caller to ctx.put_artifact(), and must NOT contain the
+    oversized {items, item_count} result blob.
+    """
+    import app.flows.runtime as rt
+    from app.flows.runtime import materialize_flow_run, drain_flow_run
+    from app.flows.registry import reset_for_tests
+    from app.flows.store import InMemoryFlowStore
+
+    reset_for_tests()
+
+    # 1-byte cap: any non-empty fan-in aggregate exceeds it.
+    monkeypatch.setattr(rt, "_MAP_FANIN_MAX_BYTES", 1)
+
+    store = InMemoryFlowStore()
+    spec = {
+        "version": 1,
+        "name": "fanin_cap_test",
+        "tasks": [
+            {
+                "key": "fan",
+                "kind": "map",
+                "needs": [],
+                "config": {
+                    "item_expr": "{{ params.items }}",
+                    "item_var": "item",
+                    "collect_key": "work",
+                    "body": [{"key": "work", "kind": "noop", "needs": [], "config": {}}],
+                },
+            }
+        ],
+    }
+    flow = await store.create_flow(
+        org_id="org-test", created_by="user-test", name="fanin_cap_test", spec=spec
+    )
+    flow_run = await materialize_flow_run(
+        store, flow, {"items": [{"x": 1}, {"x": 2}, {"x": 3}]}, "manual", NOW
+    )
+
+    final = await drain_flow_run(store, flow_run["id"], NOW, claims={})
+
+    all_trs = await store.list_task_runs(flow_run["id"])
+    map_tr = next((tr for tr in all_trs if tr["task_key"] == "fan"), None)
+    assert map_tr is not None, "map task_run 'fan' not found"
+    assert map_tr["state"] == "failed", (
+        f"Expected map task_run state 'failed', got {map_tr['state']!r}"
+    )
+    assert map_tr.get("error") and "ctx.put_artifact()" in map_tr["error"], (
+        f"Expected fan-in error directing to ctx.put_artifact(), got {map_tr.get('error')!r}"
+    )
+    # The oversized aggregate blob must NOT have been written.
+    map_result = map_tr.get("result") or {}
+    assert "items" not in map_result, (
+        f"Oversized fan-in blob was written despite cap: {map_result!r}"
+    )
+    # The flow_run itself must reflect the failure.
+    assert final["state"] == "failed", (
+        f"Expected flow_run state 'failed', got {final['state']!r}"
+    )
+
+    # All children should still have succeeded (failure is purely at fan-in).
+    children = [tr for tr in all_trs if "[" in tr["task_key"]]
+    assert children, "expected map children to exist"
+    assert all(c["state"] == "success" for c in children), (
+        f"Expected all children success, got {[(c['task_key'], c['state']) for c in children]}"
+    )
+
+
+async def test_map_fanin_within_cap_succeeds(monkeypatch):
+    """A normal-sized fan-in aggregate is written and the map task succeeds.
+
+    With a generous cap, the collected results are inlined into the map parent
+    task_run result and the flow_run completes successfully.
+    """
+    import app.flows.runtime as rt
+    from app.flows.runtime import materialize_flow_run, drain_flow_run
+    from app.flows.registry import reset_for_tests
+    from app.flows.store import InMemoryFlowStore
+
+    reset_for_tests()
+
+    # 64 MiB cap (default) — easily covers 3 tiny results.
+    monkeypatch.setattr(rt, "_MAP_FANIN_MAX_BYTES", 64 * 1024 * 1024)
+
+    store = InMemoryFlowStore()
+    spec = {
+        "version": 1,
+        "name": "fanin_ok_test",
+        "tasks": [
+            {
+                "key": "fan",
+                "kind": "map",
+                "needs": [],
+                "config": {
+                    "item_expr": "{{ params.items }}",
+                    "item_var": "item",
+                    "collect_key": "work",
+                    "body": [{"key": "work", "kind": "noop", "needs": [], "config": {}}],
+                },
+            }
+        ],
+    }
+    flow = await store.create_flow(
+        org_id="org-test", created_by="user-test", name="fanin_ok_test", spec=spec
+    )
+    flow_run = await materialize_flow_run(
+        store, flow, {"items": [{"x": 1}, {"x": 2}, {"x": 3}]}, "manual", NOW
+    )
+
+    final = await drain_flow_run(store, flow_run["id"], NOW, claims={})
+    assert final["state"] == "success", (
+        f"Expected flow_run state 'success', got {final['state']!r}"
+    )
+
+    all_trs = await store.list_task_runs(flow_run["id"])
+    map_tr = next((tr for tr in all_trs if tr["task_key"] == "fan"), None)
+    assert map_tr is not None and map_tr["state"] == "success", (
+        f"Expected map task_run 'success', got "
+        f"{map_tr['state'] if map_tr else 'MISSING'!r}"
+    )
+    map_result = map_tr.get("result") or {}
+    assert map_result.get("item_count") == 3, (
+        f"Expected item_count 3 in fan-in result, got {map_result!r}"
+    )
+    assert isinstance(map_result.get("items"), list) and len(map_result["items"]) == 3, (
+        f"Expected 3 collected items in fan-in result, got {map_result!r}"
+    )
+
+
+# ---------------------------------------------------------------------------
 # HARD CEILING: per-run task_run ceiling at map fan-out (_MAX_TASK_RUNS_PER_RUN)
 # ---------------------------------------------------------------------------
 
