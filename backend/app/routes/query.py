@@ -940,14 +940,62 @@ async def _build_connector_for_plan(
     ctype: str | None = cfg.get("connector_type") or cfg.get("type")
     _conn_kind = ctype or "unknown"
 
-    # ── Secret injection (M22-A) ──────────────────────────────────────────────
-    try:
-        from app.connectors.secret_store import get_secret_store as _get_secret_store
+    # ── Claim-templated field resolution (per-tenant datastores) ─────────────
+    # When the datastore carries a ``template_config`` dict (e.g.
+    # ``{"database": "ks_{{ claims.org }}"}``), resolve the template fields
+    # from the verified JWT claims in the physical plan.  This runs BEFORE
+    # secret injection so that resolved host/database values are available to
+    # the secret resolver if it needs them.
+    #
+    # Failure is hard — TemplateSecurityError propagates to the caller.
+    # No fallback, no partial resolution.
+    _template_cfg: dict | None = cfg.get("template_config")
+    if _template_cfg and isinstance(_template_cfg, dict):
+        try:
+            from app.connectors.claim_template import (
+                get_template_resolver as _get_tmpl_resolver,
+            )
+        except ImportError:
+            _template_cfg = None  # module absent — skip gracefully
 
-        _secret_store = _get_secret_store()
-        _secret: dict | None = await _secret_store.get(effective_datastore_id, org_id)
+        if _template_cfg:
+            _rls_claims: dict = dict(physical_plan.rls_claims or {})
+            _resolved_fields = _get_tmpl_resolver().resolve_config(
+                _template_cfg, _rls_claims
+            )
+            # Merge resolved fields into cfg — they override static config keys.
+            cfg.update(_resolved_fields)
+
+    # ── Secret injection (M22-A) ──────────────────────────────────────────────
+    # Use the pluggable secret resolver.  The default ``EncryptedStoreResolver``
+    # wraps the existing SecretStore call so existing connectors are unaffected.
+    # Templated datastores can specify ``secret_resolver = "external"`` in their
+    # config to route to a vault-backed resolver.  Failure is hard — any
+    # exception from the resolver propagates (no silent fallback to wrong-tenant
+    # credentials).
+    _rls_claims_for_secret: dict = dict(physical_plan.rls_claims or {})
+    try:
+        from app.connectors.secret_resolver import get_resolver as _get_resolver
+
+        _resolver = _get_resolver(cfg, org_id=org_id)
+        _secret: dict | None = await _resolver.resolve(
+            effective_datastore_id, _rls_claims_for_secret
+        )
+        # EncryptedStoreResolver returns {} for secret-less connectors; treat
+        # empty dict the same as None (no credentials to inject).
+        if not _secret:
+            _secret = None
     except ImportError:
+        # secret_resolver module absent (rare deploy edge case) — fall back to
+        # the legacy inline SecretStore call so nothing regresses.
         _secret = None
+        try:
+            from app.connectors.secret_store import get_secret_store as _get_secret_store
+
+            _secret_store = _get_secret_store()
+            _secret = await _secret_store.get(effective_datastore_id, org_id)
+        except ImportError:
+            _secret = None
 
     if _secret:
         if ctype == "postgres":
