@@ -645,3 +645,101 @@ test.describe('custom-element upgrade — all demo pages', () => {
     })
   }
 })
+
+// ---------------------------------------------------------------------------
+// .getToken property — generic loader contract
+//
+// Sets el.getToken = async () => 'test-jwt' on a custom element and verifies
+// that the property is accepted and readable on the live upgraded element.
+// We use nubi-kpi-react (React-based, uses defineNubiElement) to prove the
+// getter/setter added to NubiReactElement works correctly.
+// ---------------------------------------------------------------------------
+
+test.describe('getToken property — generic loader contract', () => {
+  const PAGE = '/embed/demo/kpi-react.html'
+
+  test('el.getToken setter accepts an async function', async ({ page }) => {
+    await page.goto(PAGE)
+    await waitForShadowDom(page, '#revenue-kpi')
+
+    const result = await page.evaluate(async () => {
+      const el = document.querySelector('#revenue-kpi')
+      if (!el) return { error: 'element not found' }
+
+      // Set the getToken property
+      el.getToken = async () => 'test-jwt'
+
+      // Read it back
+      const fn = el.getToken
+      if (typeof fn !== 'function') return { error: `getToken is not a function: ${typeof fn}` }
+
+      // Invoke it to confirm it returns the expected value
+      const tok = await fn()
+      return { tok, typeof: typeof fn }
+    })
+
+    expect(result.error).toBeUndefined()
+    expect(result.typeof).toBe('function')
+    expect(result.tok).toBe('test-jwt')
+  })
+
+  test('el.getToken = null clears the property', async ({ page }) => {
+    await page.goto(PAGE)
+    await waitForShadowDom(page, '#revenue-kpi')
+
+    const result = await page.evaluate(() => {
+      const el = document.querySelector('#revenue-kpi')
+      if (!el) return { error: 'element not found' }
+
+      el.getToken = async () => 'test-jwt'
+      el.getToken = null
+
+      return { getToken: el.getToken }
+    })
+
+    expect(result.error).toBeUndefined()
+    expect(result.getToken).toBeNull()
+  })
+
+  test('el.getToken property is not shared between element instances', async ({ page }) => {
+    await page.goto(PAGE)
+    await waitForShadowDom(page, '#revenue-kpi')
+
+    const result = await page.evaluate(async () => {
+      const el1 = document.querySelector('#revenue-kpi')
+      const el2 = document.querySelector('#users-kpi')
+      if (!el1 || !el2) return { error: 'elements not found' }
+
+      el1.getToken = async () => 'token-for-el1'
+      // el2 gets no getToken
+
+      const fn1 = el1.getToken
+      const fn2 = el2.getToken
+
+      return {
+        el1HasFn:  typeof fn1 === 'function',
+        el2HasFn:  typeof fn2 === 'function',
+        el1Result: fn1 ? await fn1() : null,
+      }
+    })
+
+    expect(result.error).toBeUndefined()
+    expect(result.el1HasFn).toBe(true)
+    // el2 should not have inherited el1's getToken
+    expect(result.el2HasFn).toBe(false)
+    expect(result.el1Result).toBe('token-for-el1')
+  })
+
+  test('window.__nubiVersion is set after bundle loads', async ({ page }) => {
+    await page.goto(PAGE)
+    // Wait for the bundle to execute (custom elements to register)
+    await waitForShadowDom(page, '#revenue-kpi')
+
+    const version = await page.evaluate(() => window.__nubiVersion)
+
+    expect(typeof version).toBe('string')
+    expect(version.length).toBeGreaterThan(0)
+    // Must match semver pattern
+    expect(version).toMatch(/^\d+\.\d+\.\d+/)
+  })
+})

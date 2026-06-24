@@ -6,7 +6,7 @@
  *
  * Exports
  * -------
- *  resolveToken(el)              — reads token attr or calls window[get-token fn]
+ *  resolveToken(el)              — reads .getToken prop, token attr, or calls window[get-token fn]
  *  fetchArrow(backend, queryId, token, signal?) → apache-arrow Table
  *  makeSampleKpiTable()          — single-row Table for KPI sample fallback
  *  makeSampleTableData()         — multi-row Table for table/chart sample fallback
@@ -18,13 +18,16 @@
 import { tableFromIPC, tableFromArrays, vectorFromArray, Int32, Float64 } from 'apache-arrow'
 
 // ---------------------------------------------------------------------------
-// Token resolution  (mirrors nubi-dashboard.js pattern exactly)
+// Token resolution
+// Precedence: .getToken property > token attribute > get-token window fn
 // ---------------------------------------------------------------------------
 
 /**
- * Resolve a JWT from a custom element:
- *   1. `token` attribute — static string.
- *   2. `get-token` attribute — name of a function on `window`.
+ * Resolve a JWT from a custom element using the following precedence:
+ *   1. `.getToken` property — a function set directly on the element instance.
+ *      Highest priority; allows programmatic token injection without attributes.
+ *   2. `token` attribute — static string baked into the HTML.
+ *   3. `get-token` attribute — name of a function on `window`.
  *
  * Returns null (not throws) on any failure so the caller can fall through to
  * the sample path gracefully.
@@ -33,9 +36,22 @@ import { tableFromIPC, tableFromArrays, vectorFromArray, Int32, Float64 } from '
  * @returns {Promise<string|null>}
  */
 export async function resolveToken(elem) {
+  // 1. Instance `.getToken` property (highest priority)
+  if (typeof elem.getToken === 'function') {
+    try {
+      const tok = await elem.getToken()
+      return tok ?? null
+    } catch (err) {
+      console.warn('[nubi-widget] getToken() property threw:', err.message)
+      return null
+    }
+  }
+
+  // 2. Static `token` attribute
   const staticToken = elem.getAttribute('token')
   if (staticToken) return staticToken
 
+  // 3. `get-token` attribute — name of a window function
   const fnName = elem.getAttribute('get-token')
   if (!fnName) return null
 

@@ -18,9 +18,25 @@
  *   nubi-metric-explorer — governed metric query builder
  *   nubi-dashboard       — read-only dashboard embed
  *
+ * Version exports
+ * ---------------
+ *   window.__nubiVersion   — version string set on load (e.g. "0.0.0")
+ *   export { version }     — same value as a named ESM export
+ *   export { NUBI_EMBED_VERSION } — alias for the named export
+ *
  * Usage in a bare HTML page:
  *   <script type="module" src="nubi-embed.js"></script>
  */
+
+// ── Version — injected at build time by vite.embed.config.js ─────────────────
+// __NUBI_EMBED_VERSION__ is replaced by Vite's `define` with the value from
+// package.json at bundle time, so no runtime file-system access is needed.
+/* global __NUBI_EMBED_VERSION__ */
+export const version = __NUBI_EMBED_VERSION__
+export const NUBI_EMBED_VERSION = __NUBI_EMBED_VERSION__
+if (typeof window !== 'undefined') {
+  window.__nubiVersion = __NUBI_EMBED_VERSION__
+}
 
 // ── Vanilla widgets (nubi-kpi, nubi-table, nubi-chart) ───────────────────────
 // index.js auto-registers on import via its module-level call to

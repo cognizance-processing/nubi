@@ -1,6 +1,17 @@
 import { defineConfig } from 'vitest/config'
+import { readFileSync } from 'fs'
+import { resolve } from 'path'
+
+const pkg = JSON.parse(
+  readFileSync(resolve(new URL('.', import.meta.url).pathname, '../package.json'), 'utf-8'),
+)
 
 export default defineConfig({
+  // Inject the same build-time global that vite.embed.config.js provides so
+  // tests can import nubi-embed-entry.js without a separate build step.
+  define: {
+    '__NUBI_EMBED_VERSION__': JSON.stringify(pkg.version),
+  },
   test: {
     // jsdom provides CustomElementRegistry, shadowRoot, CustomEvent, etc.
     environment: 'jsdom',

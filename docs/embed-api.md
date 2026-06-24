@@ -43,17 +43,71 @@ and Shadow DOM required).
 
 ---
 
+## Bundle version
+
+Every build stamps the version from `package.json` into the bundle at compile
+time. After the bundle loads you can read the version string from:
+
+| Access point | Example value |
+|---|---|
+| `window.__nubiVersion` | `"0.0.0"` |
+| ESM named export `version` | `"0.0.0"` |
+| ESM named export `NUBI_EMBED_VERSION` | `"0.0.0"` |
+
+```js
+import { version } from './nubi-embed.js'
+console.log(window.__nubiVersion) // also available globally
+```
+
+### Versioned bundle path convention
+
+The build produces two artifacts:
+
+| File | Usage |
+|------|-------|
+| `embed/dist/nubi-embed.js` | Stable "latest" alias. Always points to the most recent build. |
+| `embed/dist/nubi-embed-<version>.js` | Pinned version. Safe for long-cache headers. |
+
+Pin to a specific version in production by serving the versioned file:
+
+```html
+<script type="module" src="nubi-embed-0.0.0.js"></script>
+```
+
+---
+
 ## Token resolution
 
-Every component resolves its bearer token through two mutually exclusive
-attributes:
+Every component resolves its bearer token through three mechanisms, checked in
+priority order:
 
-| Attribute | Meaning |
-|-----------|---------|
-| `token` | A static JWT string baked into the HTML. Useful for server-side rendering. |
-| `get-token` | The name of a `window.*` function that returns `string \| Promise<string>`. Called before every request so short-lived tokens can be refreshed. |
+| Priority | Mechanism | Meaning |
+|----------|-----------|---------|
+| 1 (highest) | `.getToken` instance property | An async function set directly on the element: `el.getToken = async () => fetchToken()`. Useful for programmatic integration without touching HTML attributes. |
+| 2 | `token` attribute | A static JWT string baked into the HTML. Useful for server-side rendering. |
+| 3 | `get-token` attribute | The name of a `window.*` function that returns `string \| Promise<string>`. Called before every request so short-lived tokens can be refreshed. |
 
-When both are set `get-token` wins. If neither is set and `query-id` / `metric-id`
+```js
+// Highest-priority: set the property directly on the element
+const el = document.querySelector('nubi-dashboard')
+el.getToken = async () => {
+  const res = await fetch('/auth/token')
+  return res.text()
+}
+```
+
+```html
+<!-- Static token via attribute -->
+<nubi-kpi token="eyJ..." query-id="revenue"></nubi-kpi>
+
+<!-- Dynamic token via window function name -->
+<nubi-kpi get-token="getMyToken" query-id="revenue"></nubi-kpi>
+<script>
+  window.getMyToken = async () => fetchToken()
+</script>
+```
+
+If none of the three mechanisms is configured and `query-id` / `metric-id`
 is present, requests are made without an Authorization header (demo / public
 boards only).
 

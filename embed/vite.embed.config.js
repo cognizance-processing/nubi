@@ -19,14 +19,42 @@
 
 import { defineConfig } from 'vite'
 import react from '@vitejs/plugin-react'
-import { resolve } from 'path'
+import { resolve, dirname } from 'path'
+import { readFileSync, existsSync, copyFileSync } from 'fs'
+import { fileURLToPath } from 'url'
 
-const __embedDir = resolve(new URL(import.meta.url).pathname, '..')
+// __filename / __dirname equivalents for ESM configs
+// We derive from the config's own path so this works even after Vite bundles
+// the config into a temp file (import.meta.url points to the temp location in
+// that case, so we resolve relative to the known repo layout instead).
+const __configFile = fileURLToPath(import.meta.url)
+// vite.embed.config.js lives at <repo>/embed/vite.embed.config.js
+// After Vite temp-bundles the config the filename changes, so anchor off __dirname
+// using process.cwd() (which is always the repo root when npm scripts run).
+const __repoRoot = resolve(process.cwd())
+const __embedDir = resolve(__repoRoot, 'embed')
+
+const pkg = JSON.parse(readFileSync(resolve(__repoRoot, 'package.json'), 'utf-8'))
 
 export default defineConfig({
   plugins: [
     // @vitejs/plugin-react handles JSX transform (React 19 automatic runtime)
     react(),
+
+    // Copy nubi-embed.js → nubi-embed-<version>.js after bundle is written.
+    // Keeps embed/dist/nubi-embed.js as the stable "latest" alias while also
+    // providing a content-addressable versioned path for pinned hosts.
+    {
+      name: 'nubi-version-stamp',
+      closeBundle() {
+        const src = resolve(__embedDir, 'dist/nubi-embed.js')
+        const dst = resolve(__embedDir, `dist/nubi-embed-${pkg.version}.js`)
+        if (existsSync(src)) {
+          copyFileSync(src, dst)
+          console.log(`[nubi-version-stamp] copied → dist/nubi-embed-${pkg.version}.js`)
+        }
+      },
+    },
   ],
 
   // Run from the repo root so node_modules resolution works correctly
@@ -93,5 +121,7 @@ export default defineConfig({
     // Shim process.env for CJS deps that reference it
     'process.env': JSON.stringify({ NODE_ENV: 'production' }),
     'process.env.NODE_ENV': JSON.stringify('production'),
+    // Embed kit version — injected at build time from package.json
+    '__NUBI_EMBED_VERSION__': JSON.stringify(pkg.version),
   },
 })

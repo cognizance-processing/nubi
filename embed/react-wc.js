@@ -82,6 +82,25 @@ export function defineNubiElement(tag, ReactComponent, options = {}) {
       this._shadow = this.attachShadow({ mode: 'open' })
       this._reactRoot = null
       this._styleEl = null
+      /** @type {(() => string | Promise<string>) | null} */
+      this._getTokenFn = null
+    }
+
+    /**
+     * Programmatic token provider. Set this to an async function that returns
+     * a fresh JWT. Takes precedence over the `token` and `get-token` attributes.
+     * Compatible with `resolveToken()` in shared.js.
+     *
+     *   el.getToken = async () => fetchFreshToken()
+     *
+     * @type {(() => string | Promise<string>) | null}
+     */
+    get getToken() { return this._getTokenFn }
+    set getToken(fn) {
+      if (fn !== null && typeof fn !== 'function') {
+        throw new TypeError('getToken must be a function or null')
+      }
+      this._getTokenFn = fn
     }
 
     connectedCallback() {
