@@ -73,6 +73,14 @@ class _IssuerCreate(BaseModel):
         None, description="Allowed signing algorithms.  Defaults to ['RS256']."
     )
     enabled: bool = Field(True, description="When false, tokens from this issuer are rejected.")
+    host_mode: bool = Field(
+        False,
+        description="When true, org is resolved from the named JWT claim (no org_members lookup).",
+    )
+    org_claim: str | None = Field(
+        None,
+        description="JWT claim name carrying the org_id when host_mode is true.",
+    )
 
 
 class _IssuerUpdate(BaseModel):
@@ -84,6 +92,8 @@ class _IssuerUpdate(BaseModel):
     algorithms: list[str] | None = None
     audience: str | None = None
     enabled: bool | None = None
+    host_mode: bool | None = None
+    org_claim: str | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -137,6 +147,8 @@ def _sync_registry(org_id: str, rows: list[dict[str, Any]]) -> None:
                 jwks_uri=row.get("jwks_url") or "",
                 aud=row.get("audience", ""),
                 static_jwks=row.get("static_jwks_json"),
+                host_mode=row.get("host_mode", False),
+                org_claim=row.get("org_claim"),
             )
     except Exception:  # noqa: BLE001
         pass  # best-effort; verification falls through to DB lookup
@@ -188,6 +200,8 @@ async def create_jwt_issuer(
         static_jwks_json=body.static_jwks_json,
         algorithms=body.algorithms,
         enabled=body.enabled,
+        host_mode=body.host_mode,
+        org_claim=body.org_claim,
     )
 
     # Sync the in-process registry so immediately-following embed requests work.
@@ -226,8 +240,6 @@ async def update_jwt_issuer(
     org_id = await _get_user_org(user["id"], repo)
     store = get_issuers_store()
 
-    _UNSET = object()
-
     update_kwargs: dict[str, Any] = {}
     if body.name is not None:
         update_kwargs["name"] = body.name
@@ -237,11 +249,15 @@ async def update_jwt_issuer(
         update_kwargs["algorithms"] = body.algorithms
     if body.enabled is not None:
         update_kwargs["enabled"] = body.enabled
+    if body.host_mode is not None:
+        update_kwargs["host_mode"] = body.host_mode
     # For nullable fields use sentinel detection via model_fields_set.
     if "jwks_url" in body.model_fields_set:
         update_kwargs["jwks_url"] = body.jwks_url
     if "static_jwks_json" in body.model_fields_set:
         update_kwargs["static_jwks_json"] = body.static_jwks_json
+    if "org_claim" in body.model_fields_set:
+        update_kwargs["org_claim"] = body.org_claim
 
     row = await store.update(issuer_id, org_id, **update_kwargs)
     if row is None:

@@ -25,7 +25,7 @@ verified_identity
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, TYPE_CHECKING
 
 from fastapi import Depends, Request
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
@@ -127,6 +127,78 @@ async def current_user(
     return dict(row)
 
 
+async def _maybe_pin_host_mode_org(identity: "VerifiedIdentity") -> None:
+    """Pin the request's org from a host-mode embed token's claim (async).
+
+    Called only for embed tokens (``kind="embed"``).  Looks up the issuer
+    config for the token's ``iss`` claim; if the issuer is flagged
+    ``host_mode=True``, extracts the org value from the named claim, validates
+    it is non-empty, and sets the ``host_mode_org_pin`` ContextVar so that
+    ``get_user_org`` / ``resolve_org_id`` never touch ``org_members``.
+
+    Security invariants enforced here:
+    - Only issuers explicitly flagged ``host_mode`` trigger this path.
+    - Missing / empty org claim on a host-mode token → AppError 403.
+    - The scope on the identity is limited to embed/READ only (host-mode
+      tokens cannot carry write/admin scopes — enforced by the issuer's
+      scope policy, verified in tests).
+    - RLS policies come from the ``policies`` claim (already extracted into
+      ``identity.policies``); the org claim only selects the tenant.
+    """
+    from app.auth.issuers import get_issuer_registry  # noqa: PLC0415
+    from app.routes._org import host_mode_org_pin  # noqa: PLC0415
+
+    iss: str | None = identity.raw_claims.get("iss")
+    if not iss:
+        return  # no iss claim — non-host-mode embed token, skip
+
+    # 1. In-process registry (fast path)
+    registry = get_issuer_registry()
+    issuer_cfg = registry.get(iss)
+
+    if issuer_cfg is not None:
+        if not issuer_cfg.host_mode:
+            return  # standard embed token — org_members membership required
+        claim_name = issuer_cfg.org_claim or "org"
+        org_val = identity.raw_claims.get(claim_name)
+        if not org_val or not str(org_val).strip():
+            raise AppError(
+                "forbidden",
+                "Host-mode token is missing the required org claim.",
+                403,
+            )
+        host_mode_org_pin.set(str(org_val).strip())
+        return
+
+    # 2. DB fallback — check the issuers store
+    org_hint: str | None = identity.raw_claims.get("org")
+    if not org_hint:
+        return  # no org hint to scope the query; skip (non-host-mode)
+
+    try:
+        from app.security.issuers_store import get_issuers_store  # noqa: PLC0415
+
+        db_row = await get_issuers_store().get_enabled_by_iss(org_hint, iss)
+    except Exception:  # noqa: BLE001
+        db_row = None
+
+    if db_row is None:
+        return  # issuer not found or not enabled; skip
+
+    if not db_row.get("host_mode", False):
+        return  # issuer found but not host_mode
+
+    claim_name = db_row.get("org_claim") or "org"
+    org_val = identity.raw_claims.get(claim_name)
+    if not org_val or not str(org_val).strip():
+        raise AppError(
+            "forbidden",
+            "Host-mode token is missing the required org claim.",
+            403,
+        )
+    host_mode_org_pin.set(str(org_val).strip())
+
+
 async def verified_identity(
     request: Request,
     credentials: HTTPAuthorizationCredentials | None = Depends(_bearer),
@@ -161,6 +233,8 @@ async def verified_identity(
     AppError("origin_mismatch", 403)
         If the token's ``embed_origin`` claim does not match the request
         ``Origin`` header.
+    AppError("forbidden", 403)
+        If the token is a host-mode embed token missing the required org claim.
     """
     if credentials is None:
         raise AppError("unauthorized", "Authentication required.", 401)
@@ -170,6 +244,12 @@ async def verified_identity(
     expected_origin: str | None = request.headers.get("origin")
 
     identity = await verify_token_async(credentials.credentials, expected_origin=expected_origin)
+
+    # Host-mode embed tokens: pin the org from the JWT claim so downstream
+    # org-resolution helpers (get_user_org / resolve_org_id) never consult
+    # org_members for this request.
+    if identity.kind == "embed":
+        await _maybe_pin_host_mode_org(identity)
 
     # Denylist check for first-party (HS256) access tokens only.
     # Embed tokens are short-lived, audience-scoped and host-signed; they

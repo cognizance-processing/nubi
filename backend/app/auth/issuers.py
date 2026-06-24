@@ -48,6 +48,14 @@ class IssuerConfig:
         A PEM-encoded RSA/EC public key string.  Converted to a minimal JWKS
         on first use.  Mutually exclusive with ``static_jwks``; ``static_jwks``
         takes priority when both are set.
+    host_mode:
+        When ``True``, this issuer operates in "embedded host" tenancy mode.
+        The caller's org is resolved from the claim named by ``org_claim``
+        rather than via an ``org_members`` DB lookup.  Opt-in per issuer;
+        defaults to ``False`` so existing issuers are unaffected.
+    org_claim:
+        The JWT claim name whose value is used as the caller's ``org_id`` when
+        ``host_mode`` is ``True``.  ``None`` for non-host-mode issuers.
     """
 
     iss: str
@@ -56,6 +64,8 @@ class IssuerConfig:
     allowed_origins: list[str] = field(default_factory=list)
     static_jwks: dict[str, Any] | None = None
     static_public_key: str | None = None
+    host_mode: bool = False
+    org_claim: str | None = None
 
 
 class IssuerRegistry:
@@ -77,6 +87,8 @@ class IssuerRegistry:
         allowed_origins: list[str] | None = None,
         static_jwks: dict[str, Any] | None = None,
         static_public_key: str | None = None,
+        host_mode: bool = False,
+        org_claim: str | None = None,
     ) -> IssuerConfig:
         """Register (or overwrite) an issuer configuration.
 
@@ -94,6 +106,12 @@ class IssuerRegistry:
             Pre-built JWKS dict for tests.  When provided, no network fetch occurs.
         static_public_key:
             PEM public key for tests.  Ignored when ``static_jwks`` is set.
+        host_mode:
+            When ``True``, org is resolved from the JWT claim named by
+            ``org_claim`` rather than via an ``org_members`` DB lookup.
+        org_claim:
+            The JWT claim name carrying the ``org_id`` when ``host_mode`` is
+            ``True``.
 
         Returns
         -------
@@ -107,6 +125,8 @@ class IssuerRegistry:
             allowed_origins=allowed_origins or [],
             static_jwks=static_jwks,
             static_public_key=static_public_key,
+            host_mode=host_mode,
+            org_claim=org_claim,
         )
         self._issuers[iss] = cfg
         return cfg
