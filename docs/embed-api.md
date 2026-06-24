@@ -1,0 +1,386 @@
+# Embed API — versioned public contract (v1)
+
+This document is the **stable public contract** for the Nubi web-component embed
+kit. Hosts pin to a specific bundle version; breaking changes are gated behind a
+new major version number. The current version is **v1**.
+
+## Stability and deprecation
+
+- Fields and events marked here are stable for the lifetime of v1.
+- Deprecated attributes will remain functional for at least two minor releases
+  after the deprecation notice.
+- The bundle filename `nubi-embed.js` is stable. The export name `NubiEmbed`
+  (UMD global, also present on the ESM) is stable.
+
+---
+
+## Loading the bundle
+
+Build the bundle with:
+
+```bash
+npm run build:embed
+# Output: embed/dist/nubi-embed.js
+```
+
+Add a single `<script type="module">` tag — no import map, no `node_modules`,
+no bare specifiers. All dependencies (React 19, apache-arrow, ECharts) are
+bundled in:
+
+```html
+<script type="module" src="nubi-embed.js"></script>
+```
+
+After the script loads every component in the table below is registered as a
+custom element and ready to use.
+
+**Monaco editor is NOT bundled.** `<nubi-query-editor>` dynamically imports
+Monaco at runtime. Hosts that want the query editor must supply Monaco
+separately (CDN or their own bundler). All other components work without it.
+
+Target browsers: Chrome 89+, Firefox 90+, Safari 15+ (native Custom Elements
+and Shadow DOM required).
+
+---
+
+## Token resolution
+
+Every component resolves its bearer token through two mutually exclusive
+attributes:
+
+| Attribute | Meaning |
+|-----------|---------|
+| `token` | A static JWT string baked into the HTML. Useful for server-side rendering. |
+| `get-token` | The name of a `window.*` function that returns `string \| Promise<string>`. Called before every request so short-lived tokens can be refreshed. |
+
+When both are set `get-token` wins. If neither is set and `query-id` / `metric-id`
+is present, requests are made without an Authorization header (demo / public
+boards only).
+
+---
+
+## Component reference
+
+### `<nubi-dashboard>`
+
+Read-only dashboard embed. Loads a published dashboard by ID and renders its
+widgets with live cross-filtering.
+
+| Attribute | Required | Meaning |
+|-----------|----------|---------|
+| `get-token` / `token` | See above | Bearer JWT |
+| `backend` | No | API base URL. Default `http://localhost:8000`. |
+| `query` | Yes | Published dashboard ID or query slug to embed. |
+| `theme` | No | `"dark"` (default) or `"light"`. |
+
+---
+
+### `<nubi-kpi>`
+
+Big-number metric card. Executes a registered query and displays the first row's
+value, with optional KPI-target rendering.
+
+| Attribute | Required | Meaning |
+|-----------|----------|---------|
+| `get-token` / `token` | — | Bearer JWT |
+| `backend` | No | API base URL. Default `http://localhost:8000`. |
+| `query-id` | Yes | Registered query ID. |
+| `value-col` | Yes | Column name to read the KPI value from (first row). |
+| `label` | No | Display label. Defaults to `value-col`. |
+| `format` | No | `"number"` (default, auto-compact), `"currency"`, `"percent"`, `"integer"`. |
+| `target-col` | No | Column holding the target value (e.g. `"revenue_target"`). When set, enables KPI-target rendering (goal bar, % to goal, RAG chip). |
+| `rag-col` | No | Column for RAG status string (`"green"` / `"amber"` / `"red"`). Defaults to `"<value-col>_rag"` when `target-col` is set. |
+| `pct-col` | No | Column for pct-to-goal ratio. Defaults to `"<value-col>_pct_to_goal"` when `target-col` is set. |
+
+When `target-col` is absent (or the column is not in the result) no target UI
+is rendered — the widget is backward-compatible with queries that do not include
+target columns.
+
+**Events emitted:**
+- `nubi:widget-ready` — `{ rows, renderer: "kpi" }` — data loaded successfully.
+- `nubi:widget-error` — `{ message }` — fetch or render failed.
+
+**Sample fallback:** any fetch failure renders a clearly-labelled sample card so
+demo pages always display something meaningful.
+
+---
+
+### `<nubi-kpi-react>`
+
+React-based KPI card. Same attribute surface as `<nubi-kpi>` (excluding
+KPI-target attributes). Implemented with the `defineNubiElement` factory
+(`embed/react-wc.js`) which wraps a React component in an open shadow root.
+
+| Attribute | Required | Meaning |
+|-----------|----------|---------|
+| `get-token` / `token` | — | Bearer JWT |
+| `backend` | No | API base URL. Default `http://localhost:8000`. |
+| `query-id` | Yes | Registered query ID. |
+| `value-col` | Yes | Column to read the KPI value from. |
+| `label` | No | Card heading. |
+| `format` | No | `"number"` / `"currency"` / `"percent"` / `"integer"`. |
+| `theme` | No | `"dark"` (default) or `"light"`. Changing this attribute re-applies the theme CSS without a full re-mount. |
+
+---
+
+### `<nubi-chart>`
+
+Auto chart using ECharts. Reads Arrow IPC from `POST /query` and picks a chart
+type automatically. Switches to a WebGL scatter path above ~20,000 rows.
+
+| Attribute | Required | Meaning |
+|-----------|----------|---------|
+| `get-token` / `token` | — | Bearer JWT |
+| `backend` | No | API base URL. |
+| `query-id` | Yes | Registered query ID. |
+| `chart-type` | No | Override: `"bar"`, `"line"`, `"scatter"`, `"pie"`, `"area"`. Auto-detected when absent. |
+| `x-col` | No | Column for the X axis. Auto-selected when absent. |
+| `y-col` | No | Column for the Y axis / value. Auto-selected when absent. |
+| `theme` | No | `"dark"` / `"light"`. |
+
+---
+
+### `<nubi-table>`
+
+Data table for query results. Renders Arrow IPC rows as a paginated HTML table.
+
+| Attribute | Required | Meaning |
+|-----------|----------|---------|
+| `get-token` / `token` | — | Bearer JWT |
+| `backend` | No | API base URL. |
+| `query-id` | Yes | Registered query ID. |
+| `page-size` | No | Rows per page (default `50`). |
+| `theme` | No | `"dark"` / `"light"`. |
+
+**Events emitted:**
+- `nubi:select` — `{ column, value, row }` — user clicked a cell.
+
+---
+
+### `<nubi-explain>`
+
+Root-cause contribution analysis widget. Calls `POST /api/v1/metrics/{id}/explain`
+and renders per-dimension member delta bars sorted by explanatory power.
+
+| Attribute | Required | Meaning |
+|-----------|----------|---------|
+| `get-token` / `token` | — | Bearer JWT |
+| `backend` | No | API base URL. Default `http://localhost:8000`. |
+| `metric-id` | Yes | Metric slug to analyze. |
+| `current-start` | Yes | ISO datetime for current period start. |
+| `current-end` | Yes | ISO datetime for current period end. |
+| `comparison-start` | Yes | ISO datetime for comparison period start. |
+| `comparison-end` | Yes | ISO datetime for comparison period end. |
+| `top-n` | No | Max members per dimension (1–50, default `10`). |
+| `include-summary` | No | `"true"` to request a natural-language summary from the AI provider. |
+
+**Events emitted:**
+- `nubi:select` — `{ dimension, member, delta, direction, share }` — user clicked a member bar.
+- `nubi:error` — `{ message }` — fetch failed.
+
+**Sample fallback:** renders sample contribution data on any fetch failure.
+
+---
+
+### `<nubi-query-editor>`
+
+Scope-gated SQL / metric query workspace. Requires the host to supply Monaco
+editor separately (the bundle excludes it due to its ~7 MB size).
+
+| Attribute | Required | Meaning |
+|-----------|----------|---------|
+| `get-token` / `token` | — | Bearer JWT |
+| `backend` | No | API base URL. |
+| `query-id` | No | Pre-load a registered query by ID. |
+| `mode` | No | `"sql"`, `"metric"`, or `"auto"` (default). Auto detects from the loaded query. |
+| `theme` | No | `"dark"` (default) / `"light"`. |
+| `read-only` | No | Boolean attribute; forces read-only regardless of token scopes. |
+
+**Capability gating** (cosmetic UI — the server is the real enforcement gate):
+
+| Scope in token | Effect |
+|----------------|--------|
+| `author:sql` | SQL mode tab available; editor editable; Run and Save buttons enabled. |
+| `author:metric` | Metric mode tab available; editor editable; Run and Save buttons enabled. |
+| Neither | Editor locked; no run/save buttons (read-only indicator shown). |
+
+**Events emitted:**
+- `nubi:run` — `{ sql, queryId, params }` — user ran the query.
+- `nubi:save` — `{ sql, queryId, name }` — user saved.
+- `nubi:dirty` — `{ dirty: boolean }` — editor content diverged from or returned to saved state.
+- `nubi:error` — `{ message, code }` — error occurred.
+
+**Monaco shadow-DOM note**: Monaco injects styles into `document.head` and does
+not work inside a shadow root. The editor mounts in a light-DOM wrapper
+positioned absolutely over the shadow-root placeholder, aligned via a
+ResizeObserver.
+
+---
+
+### `<nubi-metric-explorer>`
+
+Governed metric query builder. No raw SQL surface. Provides a UI to pick a
+metric, dimensions, and time grain, then runs the governed metric query via
+`POST /metrics/{id}/query`.
+
+| Attribute | Required | Meaning |
+|-----------|----------|---------|
+| `get-token` / `token` | — | Bearer JWT |
+| `backend` | No | API base URL. |
+| `metric-id` | No | Pre-select a metric by ID/slug. |
+| `dimensions` | No | Comma-separated default selected dimensions. |
+| `theme` | No | `"dark"` (default) / `"light"`. |
+
+**Capability gating:**
+
+| Scope | Effect |
+|-------|--------|
+| `author:metric` | Controls enabled; Run button visible. |
+| No `author:metric` | Controls shown but disabled; read-only indicator displayed. |
+
+**Events emitted:**
+- `nubi:run` — `{ metricId, dimensions, timeGrain }` — query executed.
+- `nubi:select` — `{ column, value, row }` — user selected a result row/cell.
+- `nubi:error` — `{ message, code }` — error occurred.
+
+---
+
+## DOM events (outbound contract)
+
+All events bubble and are `composed: true` so they pierce shadow DOM boundaries
+and reach host-document listeners. Listen on the component element or any
+ancestor:
+
+```js
+document.querySelector('nubi-query-editor').addEventListener('nubi:run', e => {
+  console.log(e.detail.sql)
+})
+```
+
+| Event | Payload (`e.detail`) | Emitting components |
+|-------|---------------------|---------------------|
+| `nubi:run` | `{ sql?, queryId?, metricId?, dimensions?, timeGrain?, params? }` | query-editor, metric-explorer |
+| `nubi:save` | `{ queryId?, sql?, name? }` | query-editor |
+| `nubi:dirty` | `{ dirty: boolean }` | query-editor |
+| `nubi:select` | `{ column?, value?, row?, dimension?, member?, delta?, direction?, share? }` | table, metric-explorer, explain |
+| `nubi:error` | `{ message: string, code?: string }` | all components |
+
+---
+
+## Theme contract (25 tokens)
+
+Every component accepts a `theme` attribute (`"dark"` or `"light"`) and
+exposes all 25 CSS custom properties for fine-grained host overrides. Set them
+on the host element or in a parent `<style>`:
+
+```css
+nubi-kpi {
+  --nubi-primary: #7c3aed;
+  --nubi-bg: #0a0a0a;
+}
+```
+
+| Token | Dark default | Light default | Role |
+|-------|-------------|---------------|------|
+| `--nubi-bg` | `#0f1117` | `#ffffff` | Primary background |
+| `--nubi-bg-2` | `#1a1f2e` | `#f8f9fc` | Secondary background (toolbars) |
+| `--nubi-bg-3` | `#1e2433` | `#f1f3f7` | Tertiary background |
+| `--nubi-fg` | `#e2e8f0` | `#1a202c` | Primary foreground text |
+| `--nubi-fg-muted` | `#718096` | `#718096` | Muted / secondary text |
+| `--nubi-accent` | `#1e2433` | `#edf2f7` | Surface / accent fill |
+| `--nubi-border` | `#2d3748` | `#e2e8f0` | Border / divider |
+| `--nubi-primary` | `#6366f1` | `#4f46e5` | Brand / interactive primary |
+| `--nubi-primary-fg` | `#ffffff` | `#ffffff` | Text on primary background |
+| `--nubi-success` | `#10b981` | `#059669` | Success / green |
+| `--nubi-warning` | `#f59e0b` | `#d97706` | Warning / amber |
+| `--nubi-error` | `#ef4444` | `#dc2626` | Error / red |
+| `--nubi-radius` | `8px` | `8px` | Border radius (large) |
+| `--nubi-radius-sm` | `4px` | `4px` | Border radius (small) |
+| `--nubi-font-sans` | `system-ui, …` | `system-ui, …` | Sans-serif font stack |
+| `--nubi-font-mono` | `'Fira Code', …` | `'Fira Code', …` | Monospace font stack |
+| `--nubi-font-size-base` | `13px` | `13px` | Base font size |
+| `--nubi-font-size-sm` | `11px` | `11px` | Small font size |
+| `--nubi-font-size-xs` | `10px` | `10px` | Extra-small font size |
+| `--nubi-line-height` | `1.5` | `1.5` | Default line height |
+| `--nubi-toolbar-h` | `36px` | `36px` | Toolbar height |
+| `--nubi-z-editor` | `100` | `100` | Editor z-index layer |
+| `--nubi-z-overlay` | `200` | `200` | Overlay z-index layer |
+| `--nubi-z-popover` | `300` | `300` | Popover z-index layer |
+| `--nubi-transition` | `0.15s ease` | `0.15s ease` | Default CSS transition |
+
+---
+
+## Capability gating and server enforcement
+
+Scope-gated components (`nubi-query-editor`, `nubi-metric-explorer`) decode the
+JWT payload client-side to show or hide UI controls. This is **cosmetic only**.
+The server is the real enforcement gate:
+
+- `author:sql` is required by the backend to accept and execute raw SQL.
+- `author:metric` is required to save metric definitions.
+- `read:*` / `read:query` is required for all data queries.
+
+Removing a scope from the client-side token is not a security measure — the
+server will reject the request regardless. The client-side gating only improves
+UX by hiding inaccessible controls.
+
+Scope decoding is provided by `decodeScopes(token)` and `hasScope(scopes, required)`
+in `embed/nubi-context.js`. These functions never verify the token signature —
+they only parse the payload for UI purposes.
+
+---
+
+## Cross-filter event bus (`NubiContext`)
+
+For multi-widget pages where components should cross-filter each other, use
+`createNubiContext` from `embed/nubi-context.js` to create a shared event bus:
+
+```js
+import { createNubiContext } from './nubi-embed.js'
+
+const ctx = createNubiContext({
+  getTokenFn: window.getToken,
+  backend: 'https://api.example.com',
+})
+
+// Broadcast a filter from any source
+ctx.emitFilter('region', 'EMEA')
+
+// Subscribe in any component
+const unsub = ctx.onFilter(({ column, value }) => {
+  console.log('filter changed:', column, value)
+})
+```
+
+The bus is an in-page `EventTarget`; it does not make any network requests.
+
+---
+
+## OpenAPI schema
+
+The FastAPI app auto-generates an OpenAPI schema available at runtime at:
+
+```
+GET /openapi.json
+```
+
+(In development mode the interactive Swagger UI is at `/docs`.)
+
+To dump a static snapshot, run with the app's Python environment active:
+
+```bash
+cd backend
+python -c "
+import json, sys
+sys.path.insert(0, '.')
+from main import app
+print(json.dumps(app.openapi(), indent=2))
+" > ../docs/openapi.json
+```
+
+Importing `main` requires the full backend environment (database drivers,
+etc.). In CI without a live DB this import will fail; the recommended approach
+is to hit `GET /openapi.json` against a running dev instance and pipe the
+output to `docs/openapi.json`. A committed snapshot is not included in this
+repo for that reason — rely on the live `/openapi.json` route or generate it
+from a running instance.

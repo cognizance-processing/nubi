@@ -328,6 +328,10 @@ nubi/
 
 ## 🔌 Embedding quickstart
 
+> For the full versioned component API (all attributes, events, 25-token theme
+> contract, capability gating, and bundle build instructions) see
+> [**docs/embed-api.md**](docs/embed-api.md).
+
 ```html
 <!-- 1. Load the widget bundle -->
 <script type="module" src="https://cdn.example.com/nubi-dashboard.js"></script>
@@ -345,16 +349,20 @@ CSS custom properties control theming: `--nubi-bg`, `--nubi-fg`, `--nubi-accent`
 <details>
 <summary>Full embed integration steps</summary>
 
-**1. Register your issuer** in `app/auth/issuers.py`:
+**1. Register your issuer** via the admin API (`POST /api/v1/security/jwt-issuers`):
 
-```python
+```json
 {
-  "iss": "https://your-app.example.com",
-  "jwks_uri": "https://your-app.example.com/.well-known/jwks.json",
-  "aud": "nubi:your-project-id",
-  "allowed_origins": ["https://your-app.example.com"],
+  "name": "My App",
+  "issuer": "https://your-app.example.com",
+  "audience": "nubi:your-project-id",
+  "jwks_url": "https://your-app.example.com/.well-known/jwks.json"
 }
 ```
+
+Issuers are DB-backed and org-scoped. Manage them via the `/security/jwt-issuers`
+CRUD endpoints (see `backend/app/routes/jwt_issuers.py`). Changes are synced to
+the in-process registry immediately — no restart required.
 
 **2. Mint short-lived JWTs** (≤15 min, RS256 or ES256) from your backend:
 

@@ -654,3 +654,313 @@ cloud-specific provisioning stay in `ee/`. The `agent_run_zar_per_run` and
 `compute_zar_per_1000_cu` meters that Flow runs and write-backs consume are
 defined in `ee/` and injected into the OSS runtime via the billing hooks —
 the OSS core never imports from `ee/` directly.
+
+---
+
+## Claim-native embedded-host tenancy
+
+### What it is
+
+Standard embed JWTs require the user to already be a member of an org in the
+`org_members` table. **Host-mode** tenancy lets a third-party application manage
+tenancy itself: the JWT carries an `org_id` (or a configurable claim name) and
+Nubi trusts it without querying `org_members`.
+
+### Enabling host mode
+
+Set `host_mode: true` and `org_claim` on a JWT issuer via the admin API
+(`POST /security/jwt-issuers`):
+
+```json
+{
+  "name": "My App",
+  "issuer": "https://my-app.example.com",
+  "audience": "nubi:my-project",
+  "jwks_url": "https://my-app.example.com/.well-known/jwks.json",
+  "host_mode": true,
+  "org_claim": "tenant_id"
+}
+```
+
+When a token from this issuer arrives the auth layer reads
+`claims["tenant_id"]` (or `"org"` when `org_claim` is absent) and pins the
+request's org to that value — no `org_members` lookup occurs.
+
+### Security model
+
+- Only issuers explicitly flagged `host_mode: true` trigger this path. Standard
+  issuers still require `org_members` membership.
+- The org claim value MUST be a plain `string`. Arrays, objects, and booleans are
+  rejected with `403 forbidden`.
+- RLS policies still come from the `policies` claim in the JWT, verified by
+  the same token-signature check as all embed tokens. The org claim selects the
+  tenant; RLS policies govern what data that tenant sees.
+- Host-mode tokens cannot carry write or admin scopes — only read scopes are
+  honoured for embed tokens.
+- An X-Org-Id header that tries to redirect to a different org than the claim is
+  rejected with `403`.
+
+### Implementation path
+
+`backend/app/auth/deps.py` → `_maybe_pin_host_mode_org()` reads the verified
+`VerifiedIdentity`; `backend/app/routes/_org.py` exposes `host_mode_org_pin`
+(a `ContextVar`) consumed by `get_user_org` / `resolve_org_id` on every request.
+
+---
+
+## Templated datastores and the secret resolver
+
+### Claim templating
+
+A single datastore definition can serve many tenants by resolving connection
+fields (database, schema, host) from JWT claims at request time using
+`{{ claims.<name> }}` placeholders in the datastore's `template_config`:
+
+```yaml
+# In the datastore config
+template_config:
+  database: "ks_{{ claims.org }}"
+  schema:   "{{ claims.tenant }}_data"
+```
+
+The placeholder is resolved by `TemplateResolver` in
+`backend/app/connectors/claim_template.py`.
+
+### Security constraints
+
+1. **Allowlist**: placeholder names must be in the `CLAIM_ALLOWLIST`:
+   `org`, `sub`, `email`, `tenant`, `workspace`, `environment`, `region`.
+   Any other name raises `TemplateSecurityError` before substitution begins.
+
+2. **Value validation**: resolved values must match `^[a-zA-Z0-9_-]{1,128}$`.
+   SQL/shell injection characters (quotes, semicolons, slashes, spaces) cause
+   an immediate rejection.
+
+3. **Substitution is safe**: implemented with `re.sub` / string manipulation —
+   no `eval`, no `exec`, no Jinja2.
+
+### Pluggable secret resolver
+
+Credentials are likewise resolved per-tenant through the `SecretResolver`
+abstraction (`backend/app/connectors/secret_resolver.py`):
+
+| Kind | Behaviour |
+|------|-----------|
+| `"encrypted_store"` (default) | Uses the existing per-datastore encrypted secret store, scoped to `org_id` extracted from claims. Existing connectors are unaffected. |
+| `"external"` | Calls a registered async callable `(datastore_id, claims) -> dict`. Wire a vault client at startup via `set_external_resolver_factory()`. |
+
+Resolver failure always propagates — there is no fallback to a default credential
+set. A wrong-tenant credential silencing would be a security failure.
+
+---
+
+## Outbound webhooks
+
+### Event catalog
+
+Nubi fires outbound HTTPS webhooks for four platform events:
+
+| Event type | Fired when |
+|------------|-----------|
+| `watch_breach` | A monitored metric breaches its threshold (`backend/app/ai/watch.py`) |
+| `freshness_stale` | A flow run or dataset exceeds its freshness SLA |
+| `query_failed` | A query errors on an org's behalf |
+| `flow_completed` | A flow run finalises (success or failure) |
+
+### Envelope
+
+Every event is delivered as a JSON POST with this top-level shape:
+
+```json
+{
+  "type": "watch_breach",
+  "id": "a3f2c1d0-…",
+  "org_id": "9e1b…",
+  "occurred_at": "2024-02-15T10:23:45.123456+00:00",
+  "data": { "...event-specific fields..." }
+}
+```
+
+The `id` is a UUID4 unique per emission (idempotency key).
+
+#### `watch_breach` data
+
+```json
+{ "watch_id": "…", "name": "Revenue Watch", "metric_id": "revenue", "value": 48500.0, "explanation": "…" }
+```
+
+#### `freshness_stale` data
+
+```json
+{ "flow_run_id": "…", "flow_id": "…", "name": "…", "age_s": 7200.0, "sla_s": 3600.0 }
+```
+
+#### `query_failed` data
+
+```json
+{ "error_code": "connector_error", "message": "…", "datastore_id": "…", "query_id": "…" }
+```
+
+#### `flow_completed` data
+
+```json
+{ "flow_run_id": "…", "flow_id": "…", "name": "…", "state": "failed", "duration_s": 12.4, "failed_task": "step_3", "error": "…" }
+```
+
+### HMAC signing
+
+Each delivery is signed with HMAC-SHA256. The signed payload is
+`"{timestamp}.{body}"` (Stripe-style) where `body` is the canonical JSON
+(`sort_keys=True`, compact separators). Headers sent with every request:
+
+| Header | Value |
+|--------|-------|
+| `X-Nubi-Signature` | Hex HMAC-SHA256 of `"{ts}.{body}"` keyed by the endpoint secret |
+| `X-Nubi-Timestamp` | Unix timestamp (seconds) used in the signed payload |
+| `X-Nubi-Event` | Event type string (e.g. `watch_breach`) |
+| `Content-Type` | `application/json` |
+
+Verification example (Python):
+
+```python
+import hashlib, hmac, time
+
+def verify(secret: str, body: bytes, timestamp: int, signature: str) -> bool:
+    signed_payload = f"{timestamp}.".encode() + body
+    expected = hmac.new(secret.encode(), signed_payload, hashlib.sha256).hexdigest()
+    return hmac.compare_digest(expected, signature)
+```
+
+Reject events where `abs(time.time() - X-Nubi-Timestamp) > 300` to guard
+against replay attacks.
+
+### Per-org endpoint management
+
+Webhooks are configured per org via the REST API:
+
+```http
+POST   /api/v1/webhooks
+GET    /api/v1/webhooks
+GET    /api/v1/webhooks/{endpoint_id}
+PUT    /api/v1/webhooks/{endpoint_id}
+DELETE /api/v1/webhooks/{endpoint_id}
+```
+
+Create request body:
+
+```json
+{
+  "name": "My Webhook",
+  "url": "https://hooks.example.com/nubi",
+  "secret": "your-signing-secret",
+  "event_types": ["watch_breach", "flow_completed"],
+  "active": true
+}
+```
+
+The `secret` field is write-only — it is never returned by read endpoints.
+
+### SSRF protection
+
+URLs are validated at registration time AND at delivery time (defence-in-depth
+against DNS rebinding). Private/loopback IPs, cloud metadata endpoints, and
+non-HTTPS schemes are blocked. Registration of a blocked URL returns
+`400 ssrf_blocked`.
+
+### Delivery behaviour
+
+- Up to 4 attempts with exponential backoff (base 0.5 s, 10 s timeout per attempt).
+- `2xx` = success; other `4xx` (non-429) = permanent failure (no retry).
+- `5xx` and `429` are retried.
+- Fire-and-forget: delivery failure never propagates to the request or flow that
+  triggered the event.
+
+---
+
+## Declarative provisioning (`nubi apply` / `nubi plan`)
+
+### Bundle layout
+
+A bundle is a directory with a `bundle.yaml` manifest plus optional
+resource sub-directories:
+
+```
+mybundle/
+  bundle.yaml          # required
+  metrics/             # optional; *.yaml metric definitions
+    revenue.yaml
+  datastores.yaml      # optional; list of connector envelopes
+  dashboards/          # optional; *.json dashboard envelopes
+    main.json
+  queries/             # optional; *.yaml or *.json query envelopes
+    top_customers.yaml
+```
+
+`bundle.yaml` schema:
+
+```yaml
+apiVersion: nubi/v1
+kind: bundle
+metadata:
+  org: <org-id-or-slug>     # required
+  version: "1"              # required
+  project: <project-id>     # optional
+```
+
+### CLI commands
+
+```bash
+# Preview what would change (no writes):
+nubi plan ./mybundle
+
+# Apply the bundle idempotently:
+nubi apply ./mybundle
+```
+
+Both commands POST to `POST /api/v1/apply` with `dry_run: true` (plan) or
+`dry_run: false` (apply). Auth is a first-party Bearer token with write scope.
+
+### Idempotency
+
+Applying the same bundle twice is a true no-op. Every resource kind has a
+stable key:
+
+- **Metrics**: `config.metric.slug` — upserted by slug within the org.
+- **Dashboards**: `metadata.id` — create or update by UUID.
+- **Connectors**: `metadata.id` when present — otherwise create.
+- **Queries**: `metadata.id` when present — otherwise create.
+
+The server reports `"action": "unchanged"` for resources that are already
+up-to-date; `"action": "created"` or `"action": "updated"` when a write occurs.
+
+### Partial failure
+
+One failing envelope never aborts the rest. The response always returns
+HTTP 200; inspect `summary.failed` and per-resource `error` fields to detect
+problems:
+
+```json
+{
+  "results": [
+    { "kind": "query", "id": "…", "name": "Revenue", "action": "created" },
+    { "kind": "query", "id": null, "name": "Bad metric", "action": "failed", "error": "…" }
+  ],
+  "summary": { "created": 1, "updated": 0, "unchanged": 0, "failed": 1 },
+  "dry_run": false
+}
+```
+
+### HTTP API
+
+The same logic is available directly:
+
+```http
+POST /api/v1/apply
+Authorization: Bearer <first-party-token>
+
+{
+  "version": "1",
+  "resources": [<portability-envelope>, …],
+  "dry_run": false
+}
+```

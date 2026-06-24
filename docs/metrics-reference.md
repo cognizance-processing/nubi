@@ -166,3 +166,148 @@ it can only compose the metric's own governed vocabulary. `default_filters` and
 → `400` `MetricError`, because `customer_email` is not one of the metric's
 declared `dimensions`. Re-issue using only allowed dimensions (`region`,
 `status`) — or ask the metric's owner to add the dimension to the definition.
+
+---
+
+## KPI targets
+
+A metric may declare an optional **`target`** field (`MetricTarget` in `models.py`).
+When present the compiler emits four extra columns in every query result:
+
+| Column | Meaning |
+|--------|---------|
+| `<measure>_target` | The target value (constant literal or a trusted author SQL expression) |
+| `<measure>_vs_target` | `actual - target` signed delta |
+| `<measure>_pct_to_goal` | `actual / target` as a ratio (1.0 = 100 %) |
+| `<measure>_rag` | RAG status: `"green"` / `"amber"` / `"red"` |
+
+For example, if the primary measure is `revenue` the extra columns are
+`revenue_target`, `revenue_vs_target`, `revenue_pct_to_goal`, `revenue_rag`.
+
+### `MetricTarget` shape
+
+| Field | Type | Default | Meaning |
+|-------|------|---------|---------|
+| `value` | string | required | Target magnitude: a numeric literal (`"1000000"`) or a trusted author-governed SQL expression (e.g. a column name). Stored as a string; both forms are valid. |
+| `direction` | `"higher_is_better"` \| `"lower_is_better"` | `"higher_is_better"` | Whether a higher or lower actual value is better. |
+| `amber_threshold` | float | `0.8` | Fraction that enters the amber zone. For `higher_is_better`: amber when `actual / target >= amber_threshold` but `< 1.0`. For `lower_is_better`: amber when `actual / target <= 1 / amber_threshold` but `> 1.0`. |
+| `measure` | string \| null | null (→ primary measure) | Which base measure this target applies to. Must be a declared base measure of the metric. |
+
+### RAG semantics
+
+**`higher_is_better`** (default):
+- `green` when `actual >= target`
+- `amber` when `actual >= target * amber_threshold` (but `< target`)
+- `red` otherwise
+
+**`lower_is_better`**:
+- `green` when `actual <= target`
+- `amber` when `actual <= target / amber_threshold` (but `> target`)
+- `red` otherwise
+
+### Example definition with a target
+
+```json
+{
+  "id": "revenue",
+  "name": "Revenue",
+  "measure": { "name": "revenue", "agg": "sum", "expr": "amount", "format": "currency" },
+  "base_table": "orders",
+  "dimensions": [{ "name": "region", "type": "text" }],
+  "time_dimension": { "column": "created_at", "grains": ["month", "year"], "default_grain": "month" },
+  "target": {
+    "value": "1000000",
+    "direction": "higher_is_better",
+    "amber_threshold": 0.8
+  }
+}
+```
+
+Querying this metric returns `revenue`, `revenue_target` (always `1000000`),
+`revenue_vs_target`, `revenue_pct_to_goal`, and `revenue_rag` per row.
+
+When a metric has no `target` field the output is identical to pre-target
+behaviour — no extra columns are emitted.
+
+---
+
+## Contribution analysis: `POST /metrics/{id}/explain`
+
+Root-cause analysis that explains WHY the metric changed between two time
+windows by computing per-dimension member delta contributions.
+
+### Request body
+
+```json
+{
+  "current":    { "start": "2024-02-01T00:00:00", "end": "2024-03-01T00:00:00" },
+  "comparison": { "start": "2024-01-01T00:00:00", "end": "2024-02-01T00:00:00" },
+  "dimensions": ["region", "status"],
+  "top_n": 10,
+  "include_summary": false
+}
+```
+
+| Field | Type | Default | Meaning |
+|-------|------|---------|---------|
+| `current` | `TimeWindow` | required | `{start, end}` ISO datetimes for the current period (half-open `[start, end)`) |
+| `comparison` | `TimeWindow` | required | `{start, end}` for the comparison period |
+| `dimensions` | `string[]` \| null | null → all allowed dims | Subset of the metric's declared dimensions to analyze |
+| `top_n` | int (1–50) | `10` | Max member rows per dimension before collapsing into an "Other" bucket |
+| `include_summary` | bool | `false` | When `true`, requests a 1–2 sentence natural-language summary from the AI provider |
+
+**Requires**: the metric must declare a `time_dimension`; otherwise returns `400 no_time_dimension`.
+
+### Response shape
+
+```json
+{
+  "metric_id": "revenue",
+  "measure": "revenue",
+  "delta_total": 12500.0,
+  "current_total": 87500.0,
+  "comparison_total": 75000.0,
+  "dimensions": [
+    {
+      "dimension": "region",
+      "members": [
+        {
+          "member": "North",
+          "current": 42000.0,
+          "comparison": 34000.0,
+          "delta": 8000.0,
+          "share": 0.64,
+          "direction": "up"
+        }
+      ],
+      "other": null,
+      "coverage": 1.0,
+      "explanatory_power": 1.0
+    }
+  ],
+  "summary": null
+}
+```
+
+| Field | Meaning |
+|-------|---------|
+| `delta_total` | `current_total - comparison_total` |
+| `dimensions[]` | Sorted by `explanatory_power` descending |
+| `dimensions[].members[]` | Top-N members by `abs(delta)`, descending |
+| `members[].member` | The dimension member value (`str`, `int`, or `null`) |
+| `members[].current` / `comparison` | Measure total for that member in each period (`null` if absent) |
+| `members[].delta` | `current - comparison` (using 0 for absent periods) |
+| `members[].share` | `delta / abs(delta_total)` (0 when `delta_total ≈ 0`) |
+| `members[].direction` | `"up"` / `"down"` / `"flat"` |
+| `dimensions[].other` | Aggregated tail beyond `top_n`, or `null` if no tail. Same shape as a member, with `member = "Other"`. |
+| `dimensions[].coverage` | `sum(|top_n delta|) / sum(|all delta|)` — fraction of total movement explained by the shown members |
+| `dimensions[].explanatory_power` | `sum(|top_n delta|) / |delta_total|`, capped at 1.0 — used for dimension ranking |
+| `summary` | NL explanation (non-null only when `include_summary=true` and an AI provider is configured) |
+
+### Governance errors
+
+| HTTP | `code` | Cause |
+|------|--------|-------|
+| 400 | `unknown_dimension` | A name in `dimensions` is not declared on the metric |
+| 400 | `no_time_dimension` | The metric has no `time_dimension`; period comparison requires one |
+| 404 | (org scope) | Metric exists in another org (same 404 as a missing metric — no cross-org existence leak) |
