@@ -509,7 +509,13 @@ async def explain_breach(
 # ---------------------------------------------------------------------------
 
 
-async def fire_watch(watch: Watch, result: WatchResult, explanation: str) -> int:
+async def fire_watch(
+    watch: Watch,
+    result: WatchResult,
+    explanation: str,
+    *,
+    org_id: str | None = None,
+) -> int:
     """Dispatch a breach alert via the notify channels. Best-effort; never raises.
 
     Builds an alert event and sends it through ``app.chat.notify.channels_for``
@@ -517,8 +523,28 @@ async def fire_watch(watch: Watch, result: WatchResult, explanation: str) -> int
     The watch's ``channel_config`` (slack_webhook / slack_channel / whatsapp_to)
     selects the channels; with nothing configured the result is 0 (a no-op).
 
+    When *org_id* is known, an additional ``watch_breach`` outbound webhook is
+    emitted to the org's subscribed endpoints. This is purely additive to the
+    Slack/WhatsApp channels above and is fire-and-forget — a webhook failure can
+    never affect the channel send or the caller.
+
     Returns the number of channels the message was delivered to.
     """
+    # Additive outbound-webhook sink (best-effort, never raises).
+    try:
+        from app.webhooks.events import emit_watch_breach
+
+        emit_watch_breach(
+            org_id,
+            watch_id=watch.id,
+            name=watch.name,
+            metric_id=watch.metric_id,
+            value=result.value,
+            explanation=explanation,
+        )
+    except Exception as exc:  # noqa: BLE001 — webhooks are strictly best-effort.
+        logger.warning("fire_watch(%s): webhook emit failed: %s", watch.id, exc)
+
     try:
         from app.chat import notify
 
@@ -576,6 +602,9 @@ async def run_watch(
     if result.breached:
         explanation = await explain_breach(watch, result, provider=provider)
         summary["explanation"] = explanation
-        summary["sent"] = await fire_watch(watch, result, explanation)
+        _org_id = (claims or {}).get("org_id") or (claims or {}).get("org")
+        summary["sent"] = await fire_watch(
+            watch, result, explanation, org_id=_org_id
+        )
 
     return summary

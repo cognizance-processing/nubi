@@ -1608,6 +1608,24 @@ async def query(
 
         # ── 5. Serialise to Arrow IPC stream bytes ───────────────────────────
         full_bytes = table_to_ipc_bytes(arrow_table)
+    except Exception as _query_exc:  # noqa: BLE001 — re-raised below; emit first.
+        # ── Outbound webhook: query_failed (additive, best-effort) ───────────
+        # Emit before re-raising so the host product learns about the failure.
+        # Emitting NEVER changes the error returned to the caller.
+        try:
+            from app.webhooks.events import emit_query_failed  # noqa: PLC0415
+
+            _err_code = getattr(_query_exc, "code", None) or type(_query_exc).__name__
+            emit_query_failed(
+                org_id,
+                error_code=str(_err_code),
+                message=str(_query_exc),
+                datastore_id=effective_datastore_id,
+                query_id=getattr(registered, "id", None),
+            )
+        except Exception:  # noqa: BLE001 — webhooks must never mask the query error.
+            pass
+        raise
     finally:
         try:
             _net_cleanup()

@@ -194,6 +194,11 @@ import app.routes.snapshot  # noqa: F401, E402
 # /{resource} catch-all in resources.py.
 import app.routes.jwt_issuers  # noqa: F401, E402
 
+# Import outbound webhooks route (org-scoped CRUD for the event-sink) BEFORE
+# resources so the /webhooks prefix routes are registered ahead of the generic
+# /{resource} catch-all in resources.py.
+import app.webhooks.router  # noqa: F401, E402
+
 # Import datasets route (lakehouse CSV upload + materialise + catalog) BEFORE
 # resources so the /datasets prefix routes are registered ahead of the generic
 # /{resource} catch-all in resources.py.

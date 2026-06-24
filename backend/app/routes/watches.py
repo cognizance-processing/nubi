@@ -556,7 +556,9 @@ async def evaluate_watch_now(
     watch = _watch_from_record(record)
     metric = await _resolve_metric_for_watch(watch.metric_id, org_id)
 
-    claims = {"policies": identity.policies}
+    # org_id rides in claims so run_watch can emit the org-scoped watch_breach
+    # outbound webhook (additive to the in-app feed + Slack/WhatsApp channels).
+    claims = {"policies": identity.policies, "org_id": org_id}
     summary = await run_watch(watch, metric, claims)
     summary["id"] = watch.id
     await _feed_breach(summary, watch, identity=identity)

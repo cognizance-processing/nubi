@@ -1098,14 +1098,7 @@ async def _fire_flow_alert(
         flow_id = flow_run.get("flow_id")
         flow = await store.get_flow(flow_id) if flow_id else None
 
-        # Org-level default alert config (settings-driven; safe when absent).
-        org_defaults = _org_alert_defaults()
-        config = notify.resolve_alert_config(flow, org_defaults)
-
-        if not notify.should_alert(config, flow_run_state):
-            return
-
-        # ── Build the event payload ──────────────────────────────────────────
+        # ── Build the event facts (shared by the webhook emit + the alert) ───
         name = (flow or {}).get("name") or flow_run.get("flow_id") or "flow"
         org_id = flow_run.get("org_id")
 
@@ -1129,6 +1122,63 @@ async def _fire_flow_alert(
                     break
             if error is None:
                 error = flow_run.get("error")
+
+        # ── Outbound webhook: flow_completed (additive, independent gate) ────
+        # Fires for the org's subscribed endpoints REGARDLESS of the Slack/
+        # WhatsApp ``should_alert`` config below — host webhooks have their own
+        # subscription. Best-effort; never raises.
+        try:
+            from app.webhooks.events import emit_flow_completed  # noqa: PLC0415
+
+            emit_flow_completed(
+                org_id,
+                flow_run_id=flow_run_id,
+                flow_id=flow_id,
+                name=name,
+                state=flow_run_state,
+                duration_s=duration_s,
+                failed_task=failed_task,
+                error=error,
+            )
+        except Exception:  # noqa: BLE001
+            logger.debug(
+                "flow_completed webhook emit failed for flow_run %s",
+                flow_run_id,
+                exc_info=True,
+            )
+
+        # ── Freshness: emit freshness_stale when the run breaches its SLA ────
+        # The freshness signal is the flow's ``freshness_sla_s`` runtime hint
+        # (the SAME signal /runs/history surfaces via flag_sla_breach). When the
+        # run's duration exceeds that SLA we emit a freshness_stale event.
+        try:
+            spec = (flow or {}).get("spec") or {}
+            rc = spec.get("runtime_config") or {}
+            sla_s = rc.get("freshness_sla_s") or None
+            if sla_s and duration_s is not None and duration_s > float(sla_s):
+                from app.webhooks.events import emit_freshness_stale  # noqa: PLC0415
+
+                emit_freshness_stale(
+                    org_id,
+                    flow_run_id=flow_run_id,
+                    flow_id=flow_id,
+                    name=name,
+                    age_s=duration_s,
+                    sla_s=float(sla_s),
+                )
+        except Exception:  # noqa: BLE001
+            logger.debug(
+                "freshness_stale webhook emit failed for flow_run %s",
+                flow_run_id,
+                exc_info=True,
+            )
+
+        # Org-level default alert config (settings-driven; safe when absent).
+        org_defaults = _org_alert_defaults()
+        config = notify.resolve_alert_config(flow, org_defaults)
+
+        if not notify.should_alert(config, flow_run_state):
+            return
 
         event = {
             "kind": "flow_run",
