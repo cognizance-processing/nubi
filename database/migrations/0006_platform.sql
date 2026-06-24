@@ -99,6 +99,15 @@ CREATE TABLE IF NOT EXISTS jwt_issuers (
     algorithms      text[]      NOT NULL DEFAULT ARRAY['RS256'],
     audience        text        NOT NULL,           -- expected "aud" claim
     enabled         boolean     NOT NULL DEFAULT TRUE,
+    -- host_mode: when true the issuer is trusted as an "embedded host" -- the
+    -- caller's org is resolved from the named claim in org_claim, bypassing the
+    -- org_members lookup.  Opt-in per issuer; all other issuers keep requiring
+    -- membership.
+    host_mode       boolean     NOT NULL DEFAULT FALSE,
+    -- org_claim: the JWT claim name whose value is treated as the caller's
+    -- org_id when host_mode is enabled.  Required when host_mode = true
+    -- (enforced by application logic).
+    org_claim       text,
     created_by      uuid        REFERENCES users(id) ON DELETE SET NULL,
     created_at      timestamptz NOT NULL DEFAULT now(),
     updated_at      timestamptz NOT NULL DEFAULT now()

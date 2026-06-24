@@ -22,6 +22,12 @@ CREATE TABLE IF NOT EXISTS metrics (
     -- Serialized MetricDefinition: measure, dimensions, time_dimension,
     -- base_table/base_sql, datastore_id, default_filters, rls_keys, owner, etc.
     definition   jsonb       NOT NULL DEFAULT '{}',
+    -- Generated column: true when the definition JSONB contains a non-null
+    -- "target" key.  Allows cheap filtering/indexing without a JSON scan.
+    has_target   boolean     GENERATED ALWAYS AS (
+                     (definition -> 'target') IS NOT NULL
+                     AND (definition -> 'target') != 'null'::jsonb
+                 ) STORED,
     created_at   timestamptz NOT NULL DEFAULT now(),
     updated_at   timestamptz NOT NULL DEFAULT now(),
     UNIQUE (org_id, slug)
@@ -39,3 +45,11 @@ COMMENT ON COLUMN metrics.definition IS
 
 CREATE INDEX IF NOT EXISTS metrics_project_id_idx ON metrics (project_id);
 CREATE INDEX IF NOT EXISTS metrics_org_slug_idx   ON metrics (org_id, slug);
+
+COMMENT ON COLUMN metrics.has_target IS
+    'True when definition.target is present.  Generated column — do not set directly.';
+
+-- Partial index: cheap lookup for metrics that have a KPI target.
+CREATE INDEX IF NOT EXISTS metrics_has_target_idx
+    ON metrics (org_id, project_id)
+    WHERE has_target;
