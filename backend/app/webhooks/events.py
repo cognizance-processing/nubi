@@ -36,12 +36,14 @@ WATCH_BREACH = "watch_breach"
 FRESHNESS_STALE = "freshness_stale"
 QUERY_FAILED = "query_failed"
 FLOW_COMPLETED = "flow_completed"
+QUERY_EXECUTED = "query_executed"
 
 ALL_EVENT_TYPES: tuple[str, ...] = (
     WATCH_BREACH,
     FRESHNESS_STALE,
     QUERY_FAILED,
     FLOW_COMPLETED,
+    QUERY_EXECUTED,
 )
 
 
@@ -180,5 +182,44 @@ def emit_flow_completed(
             "duration_s": duration_s,
             "failed_task": failed_task,
             "error": error,
+        },
+    )
+
+
+def emit_query_executed(
+    org_id: str | None,
+    *,
+    query_id: str | None = None,
+    subject: str | None = None,
+    datasource_id: str | None = None,
+    row_count: int | None = None,
+) -> None:
+    """Emit ``query_executed`` on a SUCCESSFUL query execution (audit / POPIA log).
+
+    POPIA-safe by construction: this payload contains ONLY metadata — no row
+    data, no SQL text with literals, and no filter values that could carry PII.
+
+    Fields
+    ------
+    query_id:
+        The registered query id or metric slug, if any (None for ad-hoc SQL).
+    subject:
+        The caller's user-id or ``"embed"`` for embed-token callers.  This is
+        the *subject* of the query — never the queried subject's personal data.
+    datasource_id:
+        The org-scoped datastore id used for the query (None for the built-in
+        demo connector).
+    row_count:
+        Number of rows returned (the Arrow table row count).  Advisory — never
+        the actual rows.
+    """
+    emit_event(
+        QUERY_EXECUTED,
+        org_id,
+        {
+            "query_id": query_id,
+            "subject": subject,
+            "datasource_id": datasource_id,
+            "row_count": row_count,
         },
     )

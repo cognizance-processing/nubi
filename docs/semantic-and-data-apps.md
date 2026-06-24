@@ -758,7 +758,7 @@ set. A wrong-tenant credential silencing would be a security failure.
 
 ### Event catalog
 
-Nubi fires outbound HTTPS webhooks for four platform events:
+Nubi fires outbound HTTPS webhooks for five platform events:
 
 | Event type | Fired when |
 |------------|-----------|
@@ -766,6 +766,7 @@ Nubi fires outbound HTTPS webhooks for four platform events:
 | `freshness_stale` | A flow run or dataset exceeds its freshness SLA |
 | `query_failed` | A query errors on an org's behalf |
 | `flow_completed` | A flow run finalises (success or failure) |
+| `query_executed` | A query completes successfully — for host audit / POPIA logging (metadata-only, no row data) |
 
 ### Envelope
 
@@ -806,6 +807,23 @@ The `id` is a UUID4 unique per emission (idempotency key).
 ```json
 { "flow_run_id": "…", "flow_id": "…", "name": "…", "state": "failed", "duration_s": 12.4, "failed_task": "step_3", "error": "…" }
 ```
+
+#### `query_executed` data
+
+**POPIA-safe by construction** — this payload contains metadata only. No row data, no SQL literals with bound values, and no filter values that could carry personal information are ever included.
+
+```json
+{ "query_id": "my_query_slug", "subject": "user-uuid-or-embed", "datasource_id": "ds-uuid", "row_count": 42 }
+```
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `query_id` | string \| null | The registered query id or metric slug; `null` for ad-hoc SQL |
+| `subject` | string | The caller's user-id, or `"embed"` for embed-token callers |
+| `datasource_id` | string \| null | The org-scoped datastore id; `null` for the built-in demo connector |
+| `row_count` | integer \| null | Number of rows in the result set (never the rows themselves) |
+
+Use this event to maintain an immutable access log for regulatory compliance (POPIA, GDPR data-access logs). Subscribe only the endpoints that require this volume of events — it fires on every successful cache-MISS query execution.
 
 ### HMAC signing
 

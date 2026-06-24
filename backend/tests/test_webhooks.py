@@ -542,3 +542,279 @@ async def test_route_rejects_unknown_event_type(api_client: AsyncClient):
 async def test_route_get_missing_is_404(api_client: AsyncClient):
     resp = await api_client.get(f"/api/v1/webhooks/{uuid.uuid4()}")
     assert resp.status_code == 404
+
+
+# ===========================================================================
+# query_executed event — POPIA-safe audit webhook
+# ===========================================================================
+
+
+def test_query_executed_in_all_event_types():
+    """QUERY_EXECUTED constant is registered in the ALL_EVENT_TYPES catalog."""
+    assert events.QUERY_EXECUTED == "query_executed"
+    assert events.QUERY_EXECUTED in events.ALL_EVENT_TYPES
+    assert events.is_valid_event_type(events.QUERY_EXECUTED)
+
+
+def test_emit_query_executed_noop_without_org():
+    """emit_query_executed with no org_id must be a no-op — never raises."""
+    events.emit_query_executed(
+        None,
+        query_id="q1",
+        subject="user-abc",
+        datasource_id="ds-1",
+        row_count=5,
+    )
+    events.emit_query_executed("")
+
+
+def test_emit_query_executed_payload_has_no_raw_data():
+    """The envelope built by emit_query_executed must contain ONLY metadata fields."""
+    from app.webhooks.events import build_envelope, QUERY_EXECUTED
+
+    payload = {
+        "query_id": "my_query",
+        "subject": "user-uuid",
+        "datasource_id": "ds-uuid",
+        "row_count": 10,
+    }
+    envelope = build_envelope(QUERY_EXECUTED, _ORG_A, payload)
+
+    assert envelope["type"] == QUERY_EXECUTED
+    assert envelope["org_id"] == _ORG_A
+    data = envelope["data"]
+
+    # Required metadata fields present.
+    assert data["query_id"] == "my_query"
+    assert data["subject"] == "user-uuid"
+    assert data["datasource_id"] == "ds-uuid"
+    assert data["row_count"] == 10
+
+    # No raw rows / result data / SQL literals / PII fields in payload.
+    pii_keys = {"sql", "rows", "result", "data", "filter", "filters", "where", "params"}
+    assert not pii_keys.intersection(set(data.keys())), (
+        f"payload must not carry any of {pii_keys}; got keys: {set(data.keys())}"
+    )
+
+
+@pytest.mark.asyncio
+async def test_query_executed_delivered_only_to_subscribed_endpoint(monkeypatch):
+    """query_executed is delivered ONLY to endpoints that subscribed to it."""
+    from app.webhooks.models import set_webhook_store
+
+    store = InMemoryWebhookStore()
+    set_webhook_store(store)
+    try:
+        # Endpoint subscribed to query_executed.
+        await store.create(
+            _ORG_A, "audit-hook", "https://audit.example/hook", "s_audit", _USER,
+            event_types=[events.QUERY_EXECUTED],
+        )
+        # Endpoint subscribed to something else (should NOT receive query_executed).
+        await store.create(
+            _ORG_A, "breach-hook", "https://breach.example/hook", "s_breach", _USER,
+            event_types=[events.WATCH_BREACH],
+        )
+
+        class C(_RecordingClient):
+            calls = []
+
+            @classmethod
+            def _next(cls):
+                return _FakeResponse(200)
+
+        import httpx
+
+        monkeypatch.setattr(httpx, "AsyncClient", C)
+        n = await delivery.deliver_to_org(
+            _ORG_A, events.QUERY_EXECUTED,
+            build_envelope_for_test(_ORG_A),
+        )
+        assert n == 1  # only the subscribed endpoint received it
+        assert len(C.calls) == 1
+        assert C.calls[0]["url"] == "https://audit.example/hook"
+        assert C.calls[0]["headers"]["X-Nubi-Event"] == events.QUERY_EXECUTED
+    finally:
+        set_webhook_store(None)
+
+
+@pytest.mark.asyncio
+async def test_query_executed_not_delivered_to_unsubscribed_endpoint(monkeypatch):
+    """Endpoints not subscribed to query_executed receive zero deliveries."""
+    from app.webhooks.models import set_webhook_store
+
+    store = InMemoryWebhookStore()
+    set_webhook_store(store)
+    try:
+        await store.create(
+            _ORG_A, "other-hook", "https://other.example/hook", "s1", _USER,
+            event_types=[events.QUERY_FAILED, events.FLOW_COMPLETED],
+        )
+
+        class C(_RecordingClient):
+            calls = []
+
+        import httpx
+
+        monkeypatch.setattr(httpx, "AsyncClient", C)
+        n = await delivery.deliver_to_org(
+            _ORG_A, events.QUERY_EXECUTED,
+            build_envelope_for_test(_ORG_A),
+        )
+        assert n == 0
+        assert len(C.calls) == 0
+    finally:
+        set_webhook_store(None)
+
+
+@pytest.mark.asyncio
+async def test_query_executed_per_org_isolation(monkeypatch):
+    """Org A's query_executed event must never reach Org B's endpoint."""
+    from app.webhooks.models import set_webhook_store
+
+    store = InMemoryWebhookStore()
+    set_webhook_store(store)
+    try:
+        # Both orgs subscribe to query_executed.
+        await store.create(
+            _ORG_A, "hook-a", "https://a.example/hook", "sa", _USER,
+            event_types=[events.QUERY_EXECUTED],
+        )
+        await store.create(
+            _ORG_B, "hook-b", "https://b.example/hook", "sb", _USER,
+            event_types=[events.QUERY_EXECUTED],
+        )
+
+        class C(_RecordingClient):
+            calls = []
+
+            @classmethod
+            def _next(cls):
+                return _FakeResponse(200)
+
+        import httpx
+
+        monkeypatch.setattr(httpx, "AsyncClient", C)
+
+        # Emit for org A only — only org A's endpoint should be called.
+        n = await delivery.deliver_to_org(
+            _ORG_A, events.QUERY_EXECUTED,
+            build_envelope_for_test(_ORG_A),
+        )
+        assert n == 1
+        assert len(C.calls) == 1
+        assert C.calls[0]["url"] == "https://a.example/hook"
+
+        # Emit for org B only — only org B's endpoint should be called.
+        C.calls.clear()
+        n = await delivery.deliver_to_org(
+            _ORG_B, events.QUERY_EXECUTED,
+            build_envelope_for_test(_ORG_B),
+        )
+        assert n == 1
+        assert len(C.calls) == 1
+        assert C.calls[0]["url"] == "https://b.example/hook"
+    finally:
+        set_webhook_store(None)
+
+
+@pytest.mark.asyncio
+async def test_slow_or_failing_query_executed_never_breaks_caller(monkeypatch):
+    """A failing / slow webhook for query_executed must not break the caller."""
+    from app.webhooks.models import set_webhook_store
+
+    store = InMemoryWebhookStore()
+    set_webhook_store(store)
+    try:
+        await store.create(
+            _ORG_A, "bad-hook", "https://bad.example/hook", "s_bad", _USER,
+            event_types=[events.QUERY_EXECUTED],
+        )
+
+        class C(_RecordingClient):
+            calls = []
+
+            async def post(self, url, *, content, headers):
+                type(self).calls.append(1)
+                raise RuntimeError("connection timed out")
+
+        import httpx
+
+        monkeypatch.setattr(httpx, "AsyncClient", C)
+
+        # deliver_to_org must return 0 (no successes) without raising.
+        n = await delivery.deliver_to_org(
+            _ORG_A, events.QUERY_EXECUTED,
+            build_envelope_for_test(_ORG_A),
+        )
+        assert n == 0  # all deliveries failed — not raised
+
+        # emit_query_executed (the fire-and-forget helper) also must not raise.
+        events.emit_query_executed(
+            _ORG_A,
+            query_id="q1",
+            subject="user-abc",
+            datasource_id="ds-1",
+            row_count=7,
+        )
+        # No exception means pass.
+    finally:
+        set_webhook_store(None)
+
+
+@pytest.mark.asyncio
+async def test_emit_query_executed_dispatches_in_loop(monkeypatch):
+    """emit_query_executed inside a running event loop schedules a background task."""
+    import asyncio as _asyncio
+
+    from app.webhooks.models import set_webhook_store
+
+    store = InMemoryWebhookStore()
+    set_webhook_store(store)
+    try:
+        await store.create(
+            _ORG_A, "audit-wh", "https://audit.example/hook", "s_a", _USER,
+            event_types=[events.QUERY_EXECUTED],
+        )
+
+        class C(_RecordingClient):
+            calls = []
+
+            @classmethod
+            def _next(cls):
+                return _FakeResponse(200)
+
+        import httpx
+
+        monkeypatch.setattr(httpx, "AsyncClient", C)
+        events.emit_query_executed(
+            _ORG_A,
+            query_id="my_metric",
+            subject="user-uuid",
+            datasource_id="ds-uuid",
+            row_count=3,
+        )
+        await _asyncio.sleep(0.05)
+        assert len(C.calls) == 1
+        assert C.calls[0]["headers"]["X-Nubi-Event"] == events.QUERY_EXECUTED
+    finally:
+        set_webhook_store(None)
+
+
+# ---------------------------------------------------------------------------
+# Helper: build a minimal valid query_executed envelope for delivery tests.
+# ---------------------------------------------------------------------------
+
+def build_envelope_for_test(org_id: str) -> dict:
+    from app.webhooks.events import build_envelope, QUERY_EXECUTED
+
+    return build_envelope(
+        QUERY_EXECUTED,
+        org_id,
+        {
+            "query_id": "test_query",
+            "subject": "user-test",
+            "datasource_id": None,
+            "row_count": 1,
+        },
+    )

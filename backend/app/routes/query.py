@@ -1750,6 +1750,23 @@ async def query(
     except Exception:
         pass
 
+    # ── 6c. Outbound webhook: query_executed (audit / POPIA log) ─────────────
+    # Metadata-only — NO raw rows, NO SQL literals, NO filter values.
+    # Fire-and-forget via emit_query_executed (which calls emit_event / dispatch_event).
+    # A failure here NEVER reaches the caller.
+    try:
+        from app.webhooks.events import emit_query_executed  # noqa: PLC0415
+
+        emit_query_executed(
+            org_id,
+            query_id=getattr(registered, "id", None),
+            subject=str(identity.user_id or "embed"),
+            datasource_id=effective_datastore_id,
+            row_count=arrow_table.num_rows if arrow_table is not None else None,
+        )
+    except Exception:  # noqa: BLE001 — webhooks must never break the query path.
+        pass
+
     # ── 7. Stream the response with MISS header ───────────────────────────────
     # WARN-mode output-schema mismatch (A4): surface an advisory header so the
     # caller can detect the contract drift without the request failing.  STRICT
