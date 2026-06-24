@@ -70,3 +70,7 @@ test-results/
 # Playwright embed e2e artifacts
 playwright-report-embed/
 test-results-embed/
+
+# Python coverage artifacts
+.coverage
+backend/.coverage

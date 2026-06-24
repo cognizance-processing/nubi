@@ -77,7 +77,7 @@ def test_injection_class_rejected(bad_value: str, desc: str) -> None:
     from app.connectors.claim_template import TemplateResolver, TemplateSecurityError
 
     resolver = TemplateResolver()
-    with pytest.raises(TemplateSecurityError, match=""):
+    with pytest.raises(TemplateSecurityError, match="Resolved value for 'claims.org' contains characters outside the safe pattern"):
         resolver.resolve_template("prefix_{{ claims.org }}", {"org": bad_value})
 
 
