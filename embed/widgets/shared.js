@@ -39,7 +39,14 @@ export async function resolveToken(elem) {
   const fnName = elem.getAttribute('get-token')
   if (!fnName) return null
 
-  const fn = (typeof window !== 'undefined') ? window[fnName] : undefined
+  // The get-token function may be registered slightly AFTER the element upgrades
+  // (module-script execution order, async host bootstrap). Wait briefly for it
+  // rather than failing closed to read-only on the first tick.
+  let fn = (typeof window !== 'undefined') ? window[fnName] : undefined
+  for (let i = 0; i < 20 && typeof fn !== 'function'; i++) {
+    await new Promise((r) => setTimeout(r, 25))
+    fn = (typeof window !== 'undefined') ? window[fnName] : undefined
+  }
   if (typeof fn !== 'function') {
     console.warn(`[nubi-widget] window.${fnName} is not a function`)
     return null
