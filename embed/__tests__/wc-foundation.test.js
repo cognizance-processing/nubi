@@ -14,9 +14,15 @@
  * - Cross-filter bus logic is tested inline to avoid React context imports.
  */
 
-import { describe, it } from 'node:test'
-import assert from 'node:assert/strict'
+import { describe, it, expect } from 'vitest'
 import { JSDOM } from 'jsdom'
+
+// Compatibility shim: map assert.* → expect(...)
+const assert = {
+  ok: (val, msg) => expect(val, msg).toBeTruthy(),
+  equal: (a, b, msg) => expect(a, msg).toBe(b),
+  deepEqual: (a, b, msg) => expect(a, msg).toEqual(b),
+}
 
 // ---------------------------------------------------------------------------
 // Bootstrap a jsdom window so CustomEvent and document.createElement work
