@@ -21,6 +21,7 @@ Design notes
 from __future__ import annotations
 
 import os
+import threading
 from typing import TYPE_CHECKING, Iterator
 
 if TYPE_CHECKING:
@@ -303,6 +304,24 @@ class DuckDBConnector(Connector):
         else:
             self._conn = duckdb.connect(database=":memory:")
 
+        # Per-instance lock for thread-safe execute() / estimate() calls.
+        #
+        # DuckDB's single connection is NOT safe for concurrent execute() calls
+        # from multiple threads: a second conn.execute() issued before the first
+        # caller has consumed its result cursor silently overwrites the pending
+        # result, producing corrupt / empty output.  This is observed as
+        # non-deterministic delta values in the /explain route which fans out
+        # queries via asyncio.gather + asyncio.to_thread on the module-level
+        # demo singleton.
+        #
+        # conn.cursor() creates a lightweight duplicate connection but DOES NOT
+        # share Arrow replacement-scan tables registered via conn.register() —
+        # those are private to the originating connection. A per-instance lock
+        # is therefore the correct fix: it serialises concurrent execute() calls
+        # while keeping register()'d tables visible and adds no overhead for the
+        # common single-query case (uncontended lock acquisition is ~30 ns).
+        self._lock = threading.Lock()
+
         self.validate_capabilities()
 
     # ------------------------------------------------------------------
@@ -349,15 +368,26 @@ class DuckDBConnector(Connector):
         ------
         AppError
             ``code="query_error"`` (500) if DuckDB raises any exception.
+
         """
         try:
-            rel = self._conn.execute(plan.sql, plan.params)
-            # duckdb >=1.0 returns a RecordBatchReader from .arrow(); call
-            # .read_all() to materialise it as a pyarrow.Table.
-            result = rel.arrow()
-            if hasattr(result, "read_all"):
-                return result.read_all()
-            return result  # already a pa.Table in older builds
+            # Acquire the per-instance lock before executing so that concurrent
+            # asyncio.to_thread invocations on the same DuckDBConnector (e.g.
+            # the module-level demo singleton used by /explain's asyncio.gather
+            # fan-out) do not race on the shared result cursor.
+            #
+            # Note: conn.cursor() was considered but rejected — DuckDB cursors
+            # do NOT share Arrow replacement-scan tables registered via
+            # conn.register(), so cursor() breaks callers that seed tables that
+            # way (conformance tests, demo connector's "demo" table, etc.).
+            with self._lock:
+                rel = self._conn.execute(plan.sql, plan.params)
+                # duckdb >=1.0 returns a RecordBatchReader from .arrow(); call
+                # .read_all() to materialise it as a pyarrow.Table.
+                result = rel.arrow()
+                if hasattr(result, "read_all"):
+                    return result.read_all()
+                return result  # already a pa.Table in older builds
         except Exception as exc:
             raise AppError(
                 "query_error",
@@ -399,9 +429,10 @@ class DuckDBConnector(Connector):
         import re
 
         try:
-            rows = self._conn.execute(
-                f"EXPLAIN {plan.sql}", plan.params
-            ).fetchall()
+            with self._lock:
+                rows = self._conn.execute(
+                    f"EXPLAIN {plan.sql}", plan.params
+                ).fetchall()
         except Exception:  # noqa: BLE001 — advisory; never raise
             return None
 
