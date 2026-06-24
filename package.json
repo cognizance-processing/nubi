@@ -20,6 +20,7 @@
     "test:embed": "vitest run --config embed/vitest.config.js",
     "test:embed:watch": "vitest --config embed/vitest.config.js",
     "test:e2e": "playwright test",
+    "test:e2e:embed": "playwright test --config embed/e2e/playwright.config.js",
     "screenshots": "node scripts/docs-screenshots.mjs",
     "screenshots:auto": "bash scripts/screenshots.sh"
   },
