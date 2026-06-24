@@ -12,7 +12,7 @@
     "build": "vite build --mode main",
     "build:dev": "vite build --mode dev",
     "build:main": "vite build --mode main",
-    "build:embed": "vite build --config vite.embed.config.js",
+    "build:embed": "vite build --config embed/vite.embed.config.js",
     "build:widgets": "vite build --config vite.widgets.config.js",
     "lint": "eslint .",
     "preview": "vite preview",

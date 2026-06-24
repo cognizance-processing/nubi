@@ -5,19 +5,17 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>nubi-query-editor demo</title>
 
-  <!-- Monaco CDN (for demo only; production uses the Vite authoring bundle) -->
+  <!-- Monaco web worker shim — fall back to main-thread when workers unavailable -->
   <script>
-    // Monaco web worker shim — fall back to main-thread when workers unavailable
     window.MonacoEnvironment = { getWorkerUrl: () => '' }
   </script>
 
-  <!-- The authoring component bundle (served from Vite dev server or local file server) -->
-  <!-- In production: <script type="module" src="/embed/widgets/authoring-index.js"></script> -->
-  <script type="module">
-    // Inline registration for demo (no bundler needed)
-    import { registerNubiAuthoringWidgets } from '../widgets/authoring-index.js'
-    registerNubiAuthoringWidgets()
+  <!-- Load the self-contained Nubi embed bundle.
+       All custom elements auto-register on import; no import map needed.
+       Monaco editor is loaded separately (too large to inline). -->
+  <script type="module" src="../dist/nubi-embed.js"></script>
 
+  <script type="module">
     // -----------------------------------------------------------------------
     // Demo: build mock JWT tokens for each scope scenario
     // -----------------------------------------------------------------------
@@ -84,6 +82,7 @@
     <p style="font-size:12px;color:#718096;margin-top:4px">
       Open browser console to see emitted events.
       Scope gating is cosmetic — the server enforces the real gate.
+      Monaco editor loads asynchronously (requires a server or CDN).
     </p>
   </div>
 

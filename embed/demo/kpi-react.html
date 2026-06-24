@@ -112,6 +112,11 @@
   <h2>Event log (<code>nubi:select</code>)</h2>
   <pre id="log">// Click a KPI card to see events here…</pre>
 
+  <!-- Load the self-contained Nubi embed bundle.
+       All custom elements (including nubi-kpi-react) auto-register on import.
+       No bare specifiers, no node_modules, no import map required. -->
+  <script type="module" src="../dist/nubi-embed.js"></script>
+
   <script type="module">
     // ---------------------------------------------------------------------------
     // Mock getToken (replace with your real auth function)
@@ -140,21 +145,6 @@
       log.textContent = `[${timestamp}] nubi:error — ${e.detail.error} (${e.detail.code ?? 'no code'})\n`
         + log.textContent
     })
-
-    // ---------------------------------------------------------------------------
-    // Load the nubi-kpi-react web component
-    // The path below assumes this demo is served from the repo root
-    // ---------------------------------------------------------------------------
-    // When building with Vite: import from the built bundle
-    // For dev / direct file serving: import from source
-    try {
-      await import('../widgets/nubi-kpi-react.js')
-      console.log('[demo] nubi-kpi-react registered')
-    } catch (err) {
-      document.getElementById('log').textContent =
-        `[error] Failed to load nubi-kpi-react.js: ${err.message}\n`
-        + '(Run the dev server: npm run dev, then open via http://localhost:5173)'
-    }
   </script>
 </body>
 </html>

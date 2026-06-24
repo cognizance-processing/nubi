@@ -5,10 +5,11 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>nubi-metric-explorer demo</title>
 
-  <script type="module">
-    import { registerNubiAuthoringWidgets } from '../widgets/authoring-index.js'
-    registerNubiAuthoringWidgets()
+  <!-- Load the self-contained Nubi embed bundle.
+       All custom elements auto-register on import; no import map needed. -->
+  <script type="module" src="../dist/nubi-embed.js"></script>
 
+  <script type="module">
     // -----------------------------------------------------------------------
     // Demo tokens
     // -----------------------------------------------------------------------
