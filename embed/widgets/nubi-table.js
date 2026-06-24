@@ -21,6 +21,7 @@
  */
 
 import { resolveToken, fetchArrow, makeSampleTableData, escapeHtml, formatCell, BASE_STYLES } from './shared.js'
+import { applyTheme } from '../theme.js'
 
 // ---------------------------------------------------------------------------
 // Styles
@@ -149,7 +150,7 @@ function buildTableHTML(table, colNames, limit) {
 // ---------------------------------------------------------------------------
 class NubiTable extends HTMLElement {
   static get observedAttributes() {
-    return ['query-id', 'limit', 'columns', 'token', 'get-token', 'backend']
+    return ['query-id', 'limit', 'columns', 'token', 'get-token', 'backend', 'theme']
   }
 
   constructor() {
@@ -158,9 +159,16 @@ class NubiTable extends HTMLElement {
     this._ac = null
   }
 
-  connectedCallback() { this._render() }
+  connectedCallback() {
+    applyTheme(this, this.getAttribute('theme') || 'dark')
+    this._render()
+  }
   disconnectedCallback() { this._abort() }
-  attributeChangedCallback(_n, old, val) { if (old !== val && this.isConnected) this._render() }
+  attributeChangedCallback(name, old, val) {
+    if (old === val) return
+    if (name === 'theme') applyTheme(this, val || 'dark')
+    if (this.isConnected) this._render()
+  }
 
   _abort() { if (this._ac) { this._ac.abort(); this._ac = null } }
 

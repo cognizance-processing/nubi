@@ -32,6 +32,7 @@
  */
 
 import { resolveToken, escapeHtml, el, BASE_STYLES } from './shared.js'
+import { applyTheme } from '../theme.js'
 
 // ---------------------------------------------------------------------------
 // Styles
@@ -291,6 +292,7 @@ class NubiExplain extends HTMLElement {
       'comparison-start', 'comparison-end',
       'top-n', 'include-summary',
       'token', 'get-token', 'backend',
+      'theme',
     ]
   }
 
@@ -300,10 +302,15 @@ class NubiExplain extends HTMLElement {
     this._ac = null
   }
 
-  connectedCallback() { this._render() }
+  connectedCallback() {
+    applyTheme(this, this.getAttribute('theme') || 'dark')
+    this._render()
+  }
   disconnectedCallback() { this._abort() }
-  attributeChangedCallback(_n, old, val) {
-    if (old !== val && this.isConnected) this._render()
+  attributeChangedCallback(name, old, val) {
+    if (old === val) return
+    if (name === 'theme') applyTheme(this, val || 'dark')
+    if (this.isConnected) this._render()
   }
 
   _abort() {

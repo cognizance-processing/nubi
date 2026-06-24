@@ -609,6 +609,126 @@ test.describe('theme — light vs dark', () => {
 })
 
 // ---------------------------------------------------------------------------
+// Light theme — every widget in widgets.html light section
+// ---------------------------------------------------------------------------
+
+test.describe('light theme — all widgets in widgets.html', () => {
+  const PAGE = '/embed/demo/widgets.html'
+
+  /**
+   * Wait until an element's inline style has --nubi-bg set to a light value.
+   * applyTheme() writes inline CSS custom properties, so we poll the host element.
+   */
+  async function waitForLightBg(page, selector, timeout = 10000) {
+    await page.waitForFunction(
+      (sel) => {
+        const el = document.querySelector(sel)
+        if (!el) return false
+        const bg = el.style.getPropertyValue('--nubi-bg').trim()
+        // Light preset uses #ffffff; dark preset uses #0f1117
+        return bg === '#ffffff'
+      },
+      selector,
+      { timeout },
+    )
+  }
+
+  /**
+   * Get the computed background of the shadow-root :host via inline CSS var.
+   * applyTheme sets --nubi-bg on the host element as an inline style property.
+   */
+  async function getHostBg(page, selector) {
+    return page.evaluate((sel) => {
+      const el = document.querySelector(sel)
+      if (!el) return null
+      return el.style.getPropertyValue('--nubi-bg').trim()
+    }, selector)
+  }
+
+  test('nubi-kpi with theme=light has light --nubi-bg token', async ({ page }) => {
+    await page.goto(PAGE)
+    await waitForLightBg(page, '#light-kpi')
+    const bg = await getHostBg(page, '#light-kpi')
+    expect(bg).toBe('#ffffff')
+  })
+
+  test('nubi-table with theme=light has light --nubi-bg token', async ({ page }) => {
+    await page.goto(PAGE)
+    await waitForLightBg(page, '#light-table')
+    const bg = await getHostBg(page, '#light-table')
+    expect(bg).toBe('#ffffff')
+  })
+
+  test('nubi-chart with theme=light has light --nubi-bg token', async ({ page }) => {
+    await page.goto(PAGE)
+    await waitForLightBg(page, '#light-chart')
+    const bg = await getHostBg(page, '#light-chart')
+    expect(bg).toBe('#ffffff')
+  })
+
+  test('nubi-explain with theme=light has light --nubi-bg token', async ({ page }) => {
+    await page.goto(PAGE)
+    await waitForLightBg(page, '#light-explain')
+    const bg = await getHostBg(page, '#light-explain')
+    expect(bg).toBe('#ffffff')
+  })
+
+  test('nubi-metric-explorer with theme=light has light --nubi-bg token', async ({ page }) => {
+    await page.goto(PAGE)
+    await waitForLightBg(page, '#light-metric-explorer')
+    const bg = await getHostBg(page, '#light-metric-explorer')
+    expect(bg).toBe('#ffffff')
+  })
+
+  test('dark nubi-kpi (no theme attr) has dark --nubi-bg token', async ({ page }) => {
+    await page.goto(PAGE)
+    // Wait for the first (dark) kpi to have the dark token set
+    await page.waitForFunction(
+      () => {
+        const el = document.querySelector('nubi-kpi:not([theme])')
+        if (!el) return false
+        return el.style.getPropertyValue('--nubi-bg').trim() === '#0f1117'
+      },
+      { timeout: 10000 },
+    )
+    const el = await page.evaluate(() => {
+      const el = document.querySelector('nubi-kpi:not([theme])')
+      return el ? el.style.getPropertyValue('--nubi-bg').trim() : null
+    })
+    expect(el).toBe('#0f1117')
+  })
+
+  test('nubi-kpi sample footer shows "preview · sample data" once (no duplication)', async ({ page }) => {
+    await page.goto(PAGE)
+    // Wait for any kpi to render its sample fallback
+    await page.waitForFunction(
+      () => {
+        const el = document.querySelector('#light-kpi')
+        if (!el?.shadowRoot) return false
+        return el.shadowRoot.querySelector('.nubi-sample-note')?.style.display !== 'none'
+      },
+      { timeout: 10000 },
+    )
+    const { noteText, sublabelText } = await page.evaluate(() => {
+      const el = document.querySelector('#light-kpi')
+      const sr = el.shadowRoot
+      const note = sr.querySelector('.nubi-sample-note')
+      const sublabel = sr.querySelector('.kpi-sublabel')
+      return {
+        noteText: note ? note.textContent.trim() : null,
+        sublabelText: sublabel ? sublabel.textContent.trim() : null,
+      }
+    })
+    // The note should say "preview · sample data"
+    expect(noteText).toBe('preview · sample data')
+    // The sublabel must NOT duplicate "sample data"
+    expect(sublabelText).not.toContain('sample data')
+    // Sublabel should be empty when sample is shown
+    expect(sublabelText).toBe('')
+  })
+})
+
+// ---------------------------------------------------------------------------
 // Cross-cutting: custom elements upgrade check across all demo pages
 // ---------------------------------------------------------------------------
 

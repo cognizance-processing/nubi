@@ -35,11 +35,12 @@
   <div class="light">
     <h2>Light theme</h2>
     <div class="grid">
-      <nubi-kpi value-col="revenue" label="Revenue" format="currency" theme="light" backend="http://localhost:9"></nubi-kpi>
-      <nubi-table theme="light" backend="http://localhost:9"></nubi-table>
-      <nubi-chart type="bar" x="name" y="value" theme="light" backend="http://localhost:9"></nubi-chart>
+      <nubi-kpi id="light-kpi" value-col="revenue" label="Revenue" format="currency" theme="light" backend="http://localhost:9"></nubi-kpi>
+      <nubi-table id="light-table" theme="light" backend="http://localhost:9"></nubi-table>
+      <nubi-chart id="light-chart" type="bar" x="name" y="value" theme="light" backend="http://localhost:9"></nubi-chart>
     </div>
-    <nubi-explain metric-id="revenue" theme="light" backend="http://localhost:9"></nubi-explain>
+    <nubi-explain id="light-explain" metric-id="revenue" theme="light" backend="http://localhost:9"></nubi-explain>
+    <nubi-metric-explorer id="light-metric-explorer" theme="light" backend="http://localhost:9" style="min-height:320px;display:block;margin-top:16px"></nubi-metric-explorer>
   </div>
 </body>
 </html>

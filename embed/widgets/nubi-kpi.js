@@ -41,6 +41,7 @@
  */
 
 import { resolveToken, fetchArrow, makeSampleKpiTable, escapeHtml, formatCell, BASE_STYLES } from './shared.js'
+import { applyTheme } from '../theme.js'
 
 // ---------------------------------------------------------------------------
 // RAG color map (uses Nubi theme tokens)
@@ -221,6 +222,7 @@ class NubiKpi extends HTMLElement {
       'query-id', 'value-col', 'label', 'format',
       'token', 'get-token', 'backend',
       'target-col', 'rag-col', 'pct-col',
+      'theme',
     ]
   }
 
@@ -230,9 +232,16 @@ class NubiKpi extends HTMLElement {
     this._ac = null
   }
 
-  connectedCallback() { this._render() }
+  connectedCallback() {
+    applyTheme(this, this.getAttribute('theme') || 'dark')
+    this._render()
+  }
   disconnectedCallback() { this._abort() }
-  attributeChangedCallback(_n, old, val) { if (old !== val && this.isConnected) this._render() }
+  attributeChangedCallback(name, old, val) {
+    if (old === val) return
+    if (name === 'theme') applyTheme(this, val || 'dark')
+    if (this.isConnected) this._render()
+  }
 
   _abort() { if (this._ac) { this._ac.abort(); this._ac = null } }
 
@@ -304,7 +313,8 @@ class NubiKpi extends HTMLElement {
     if (isSample) {
       badge.style.display = 'inline-block'
       note.style.display  = 'inline-block'
-      this._shadow.querySelector('.kpi-sublabel').textContent = 'sample data'
+      // Keep sublabel empty — the note already reads "preview · sample data"
+      this._shadow.querySelector('.kpi-sublabel').textContent = ''
     } else {
       badge.style.display = 'none'
       note.style.display  = 'none'

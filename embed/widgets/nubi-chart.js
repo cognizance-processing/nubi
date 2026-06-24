@@ -30,6 +30,7 @@
 
 import * as echarts from 'echarts'
 import { resolveToken, fetchArrow, makeSampleTableData, BASE_STYLES } from './shared.js'
+import { applyTheme } from '../theme.js'
 
 // ---------------------------------------------------------------------------
 // Styles
@@ -337,7 +338,7 @@ function buildChartOption({ chartType, table, x, y, color }) {
 
 class NubiChart extends HTMLElement {
   static get observedAttributes() {
-    return ['query-id', 'type', 'x', 'y', 'color', 'token', 'get-token', 'backend']
+    return ['query-id', 'type', 'x', 'y', 'color', 'token', 'get-token', 'backend', 'theme']
   }
 
   constructor() {
@@ -348,15 +349,20 @@ class NubiChart extends HTMLElement {
     this._ro = null          // ResizeObserver
   }
 
-  connectedCallback() { this._render() }
+  connectedCallback() {
+    applyTheme(this, this.getAttribute('theme') || 'dark')
+    this._render()
+  }
 
   disconnectedCallback() {
     this._abort()
     this._destroyChart()
   }
 
-  attributeChangedCallback(_n, old, val) {
-    if (old !== val && this.isConnected) this._render()
+  attributeChangedCallback(name, old, val) {
+    if (old === val) return
+    if (name === 'theme') applyTheme(this, val || 'dark')
+    if (this.isConnected) this._render()
   }
 
   _abort() {
