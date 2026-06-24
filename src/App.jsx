@@ -107,6 +107,7 @@ const BridgesSettings = lazy(() => import('./pages/app/settings/BridgesSettings.
 const UsageSettings = lazy(() => import('./pages/app/settings/UsageSettings.jsx'))
 const SecretsPage = lazy(() => import('./pages/app/SecretsPage.jsx'))
 const DataExplorerPage = lazy(() => import('./pages/app/DataExplorerPage.jsx'))
+const ExplorePage = lazy(() => import('./pages/app/ExplorePage.jsx'))
 
 // Admin portal (superadmin-only)
 const AdminLayout = lazy(() => import('./pages/admin/AdminLayout.jsx'))
@@ -305,6 +306,8 @@ export default function App() {
           <Route path="metrics/:id" element={<Navigate to="/queries" replace />} />
           <Route path="watches" element={<WatchesPage />} />
           <Route path="automations" element={<AutomationsPage />} />
+          {/* Explore — dogfood of embed/ components in the first-party SPA */}
+          <Route path="explore" element={<ExplorePage />} />
           {/* Usage moved into Settings — keep the old route as a redirect. */}
           <Route path="usage" element={<Navigate to="/settings/usage" replace />} />
           <Route path="editor" element={<EditorPage />} />
