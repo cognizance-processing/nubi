@@ -161,13 +161,17 @@ async def _maybe_pin_host_mode_org(identity: "VerifiedIdentity") -> None:
             return  # standard embed token — org_members membership required
         claim_name = issuer_cfg.org_claim or "org"
         org_val = identity.raw_claims.get(claim_name)
-        if not org_val or not str(org_val).strip():
+        # SECURITY: org claim must be a plain string — reject arrays, objects,
+        # numbers, and booleans.  A non-string claim that stringifies to a
+        # non-empty value (e.g. ["tenant_a"]) would otherwise bypass the empty
+        # check and pin a garbage org_id like "['tenant_a']".
+        if not isinstance(org_val, str) or not org_val.strip():
             raise AppError(
                 "forbidden",
                 "Host-mode token is missing the required org claim.",
                 403,
             )
-        host_mode_org_pin.set(str(org_val).strip())
+        host_mode_org_pin.set(org_val.strip())
         return
 
     # 2. DB fallback — check the issuers store
@@ -190,13 +194,15 @@ async def _maybe_pin_host_mode_org(identity: "VerifiedIdentity") -> None:
 
     claim_name = db_row.get("org_claim") or "org"
     org_val = identity.raw_claims.get(claim_name)
-    if not org_val or not str(org_val).strip():
+    # SECURITY: org claim must be a plain string (same type guard as the
+    # in-process registry path above).
+    if not isinstance(org_val, str) or not org_val.strip():
         raise AppError(
             "forbidden",
             "Host-mode token is missing the required org claim.",
             403,
         )
-    host_mode_org_pin.set(str(org_val).strip())
+    host_mode_org_pin.set(org_val.strip())
 
 
 async def verified_identity(

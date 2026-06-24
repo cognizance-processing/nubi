@@ -87,6 +87,24 @@ async def deliver_one(
     """
     import httpx  # noqa: PLC0415 — lazy so the module imports without httpx in odd envs
 
+    # SECURITY (SSRF): validate the URL before opening any connection.  Use
+    # guard_url (fail-open on NXDOMAIN) at delivery time — the endpoint was
+    # already validated at registration time, so this is a defence-in-depth
+    # guard against stored URLs that changed IP after registration (DNS rebind).
+    # Any ssrf_blocked AppError is logged and treated as a permanent failure.
+    try:
+        from app.connectors.ssrf import guard_url as _guard_url  # noqa: PLC0415
+
+        _guard_url(url)
+    except Exception as _ssrf_exc:  # noqa: BLE001
+        logger.warning(
+            "webhook %s -> %s blocked by SSRF guard: %s; not delivering",
+            event_type,
+            url,
+            _ssrf_exc,
+        )
+        return False
+
     body = canonical_body(payload)
     timestamp = int(time.time())
     signature = sign(secret, body, timestamp)

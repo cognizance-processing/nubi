@@ -45,6 +45,19 @@ def _validate_event_types(event_types: list[str]) -> None:
         )
 
 
+def _validate_webhook_url(url: str) -> None:
+    """Validate the webhook URL is safe to deliver to (SSRF guard).
+
+    Called at create and update time so a malicious URL is rejected immediately
+    rather than being stored and attempted on every future event delivery.
+    Raises ``AppError("ssrf_blocked", 400)`` for private/loopback/metadata IPs,
+    non-http(s) schemes, and URLs with no host.
+    """
+    from app.connectors.ssrf import guard_url as _guard_url  # noqa: PLC0415
+
+    _guard_url(url)
+
+
 @router.get("/")
 async def list_webhooks(
     user: dict[str, Any] = Depends(current_user),
@@ -67,6 +80,7 @@ async def create_webhook(
     from app.webhooks.models import get_webhook_store  # noqa: PLC0415
 
     _validate_event_types(body.event_types)
+    _validate_webhook_url(body.url)
 
     org_id = await _get_user_org(str(user["id"]), repo)
     return await get_webhook_store().create(
@@ -108,6 +122,8 @@ async def update_webhook(
 
     if body.event_types is not None:
         _validate_event_types(body.event_types)
+    if body.url is not None:
+        _validate_webhook_url(body.url)
 
     org_id = await _get_user_org(str(user["id"]), repo)
     row = await get_webhook_store().update(
