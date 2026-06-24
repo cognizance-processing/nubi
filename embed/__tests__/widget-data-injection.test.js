@@ -187,27 +187,44 @@ describe('_showError DOM logic', () => {
   }
 
   /**
-   * Simulate the _showError method from NubiKpi.
+   * Simulate the _showError method from NubiKpi (polished error-state, no giant font).
+   * Raw message is NOT shown in visible UI — only kept for the emitted event.
    */
-  function simulateShowError(shadow, message, label = 'Revenue') {
+  function simulateShowError(shadow, _rawMessage, label = 'Revenue') {
+    // Clear the big metric value — don't render giant text in error state
     const v = shadow.querySelector('.kpi-value')
     if (v) {
       v.className = 'kpi-value'
-      v.textContent = "Couldn't load data"
+      v.textContent = ''
     }
+
     const badge = shadow.querySelector('.nubi-badge')
     const note  = shadow.querySelector('.nubi-sample-note')
     if (badge) badge.style.display = 'none'
     if (note)  note.style.display  = 'none'
 
-    let errNote = shadow.querySelector('.kpi-error-note')
-    if (!errNote) {
-      errNote = document.createElement('div')
-      errNote.className = 'kpi-error-note'
+    // Inject friendly error UI
+    let errState = shadow.querySelector('.kpi-error-state')
+    if (!errState) {
+      errState = document.createElement('div')
+      errState.className = 'kpi-error-state'
+      errState.innerHTML = `
+        <span class="kpi-error-primary">Couldn't load data</span>
+        <span class="kpi-error-secondary">Check your connection or try again</span>
+      `
+      // Keep a hidden .kpi-error-note for e2e selector compatibility
+      let errNote = shadow.querySelector('.kpi-error-note')
+      if (!errNote) {
+        errNote = document.createElement('div')
+        errNote.className = 'kpi-error-note'
+        errNote.style.display = 'none'
+      }
       const footer = shadow.querySelector('.kpi-footer')
-      if (footer) footer.before(errNote)
+      if (footer) {
+        footer.before(errState)
+        footer.before(errNote)
+      }
     }
-    errNote.textContent = message || "Couldn't load data"
 
     const targetRow = shadow.querySelector('.kpi-target-row')
     if (targetRow) targetRow.style.display = 'none'
@@ -231,31 +248,52 @@ describe('_showError DOM logic', () => {
     expect(note.style.display).toBe('none')
   })
 
-  it('sets kpi-value to "Couldn\'t load data"', () => {
+  it('clears kpi-value text and does NOT use the big-number style for error', () => {
     const shadow = createMockKpiShadow()
     simulateShowError(shadow, 'Network error')
 
     const v = shadow.querySelector('.kpi-value')
-    expect(v.textContent).toBe("Couldn't load data")
+    // Value text must be cleared — error goes in kpi-error-state, not big font
+    expect(v.textContent).toBe('')
     expect(v.className).toBe('kpi-value')  // no nubi-loading class
   })
 
-  it('inserts kpi-error-note with the error message', () => {
+  it('inserts kpi-error-state with "Couldn\'t load data" primary text', () => {
     const shadow = createMockKpiShadow()
-    simulateShowError(shadow, 'HTTP 503 from http://localhost:9')
+    simulateShowError(shadow, 'Failed to fetch')
 
-    const errNote = shadow.querySelector('.kpi-error-note')
-    expect(errNote).not.toBeNull()
-    expect(errNote.textContent).toBe('HTTP 503 from http://localhost:9')
+    const errState = shadow.querySelector('.kpi-error-state')
+    expect(errState).not.toBeNull()
+    const primary = errState.querySelector('.kpi-error-primary')
+    expect(primary).not.toBeNull()
+    expect(primary.textContent).toContain("Couldn't load data")
   })
 
-  it('inserts kpi-error-note before the footer', () => {
+  it('error state shows secondary hint, not raw exception text', () => {
+    const shadow = createMockKpiShadow()
+    simulateShowError(shadow, 'Failed to fetch')
+
+    const errState = shadow.querySelector('.kpi-error-state')
+    // Raw exception text must NOT appear anywhere in visible DOM
+    expect(errState.textContent).not.toContain('Failed to fetch')
+    // Secondary hint should be present
+    const secondary = errState.querySelector('.kpi-error-secondary')
+    expect(secondary).not.toBeNull()
+    expect(secondary.textContent).toContain('Check your connection')
+  })
+
+  it('inserts kpi-error-note (hidden, for e2e selector compat) before the footer', () => {
     const shadow = createMockKpiShadow()
     simulateShowError(shadow, 'failed')
 
     const footer = shadow.querySelector('.kpi-footer')
     const errNote = shadow.querySelector('.kpi-error-note')
-    // errNote should be previousElementSibling of footer
+    expect(errNote).not.toBeNull()
+    // errNote is present in the DOM (used by e2e selector)
+    expect(errNote.style.display).toBe('none')
+    // kpi-error-state should also be inserted before footer
+    const errState = shadow.querySelector('.kpi-error-state')
+    expect(errState).not.toBeNull()
     expect(footer.previousElementSibling).toBe(errNote)
   })
 
@@ -275,12 +313,13 @@ describe('_showError DOM logic', () => {
     expect(labelEl.textContent).toBe('My Revenue')
   })
 
-  it('uses fallback message when no message provided', () => {
+  it('shows "Couldn\'t load data" regardless of raw error message', () => {
     const shadow = createMockKpiShadow()
     simulateShowError(shadow, '')
 
-    const errNote = shadow.querySelector('.kpi-error-note')
-    expect(errNote.textContent).toBe("Couldn't load data")
+    const errState = shadow.querySelector('.kpi-error-state')
+    expect(errState).not.toBeNull()
+    expect(errState.textContent).toContain("Couldn't load data")
   })
 })
 

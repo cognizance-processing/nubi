@@ -107,14 +107,31 @@ const CHART_STYLES = /* css */ `
 
   .nubi-error-state {
     display: flex;
+    flex-direction: column;
     align-items: center;
     justify-content: center;
+    gap: 6px;
     height: 100%;
-    color: var(--nubi-fg, #e2e8f0);
-    opacity: 0.5;
-    font-size: 13px;
     padding: 24px;
     text-align: center;
+  }
+
+  .nubi-error-primary {
+    font-size: 13px;
+    font-weight: 500;
+    color: var(--nubi-fg, #e2e8f0);
+    opacity: 0.6;
+  }
+
+  .nubi-error-primary::before {
+    content: '⚠ ';
+    font-size: 12px;
+  }
+
+  .nubi-error-secondary {
+    font-size: 11px;
+    color: var(--nubi-fg, #e2e8f0);
+    opacity: 0.35;
   }
 `
 
@@ -480,14 +497,17 @@ class NubiChart extends HTMLElement {
     this._setFooter(`${xCol} × ${yCol}`, isSample ? 'sample data' : '')
   }
 
-  _showChartError(msg) {
+  _showChartError(_rawMsg) {
     this._destroyChart()
     const body = this._shadow.querySelector('.chart-body')
     if (body) {
       body.innerHTML = ''
       const d = document.createElement('div')
       d.className = 'nubi-error-state'
-      d.textContent = msg || 'Couldn\'t load data'
+      d.innerHTML = `
+        <span class="nubi-error-primary">Couldn't load data</span>
+        <span class="nubi-error-secondary">Check your connection or try again</span>
+      `
       body.appendChild(d)
     }
     this._setBadge('error', 'error')
@@ -550,7 +570,7 @@ class NubiChart extends HTMLElement {
           detail: { message: err.message },
         }))
         if (this.hasAttribute('no-sample-fallback')) {
-          this._showChartError(err.message)
+          this._showChartError()
           return
         }
       }
@@ -560,7 +580,7 @@ class NubiChart extends HTMLElement {
 
     // Sample fallback
     if (this.hasAttribute('no-sample-fallback')) {
-      this._showChartError('No data source configured')
+      this._showChartError()
       return
     }
 

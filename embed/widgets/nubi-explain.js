@@ -225,8 +225,26 @@ const EXPLAIN_STYLES = /* css */ `
     padding: 32px 24px;
     text-align: center;
     color: var(--nubi-fg, #e2e8f0);
-    opacity: 0.5;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 6px;
+  }
+
+  .nubi-error-primary {
     font-size: 13px;
+    font-weight: 500;
+    opacity: 0.6;
+  }
+
+  .nubi-error-primary::before {
+    content: '⚠ ';
+    font-size: 12px;
+  }
+
+  .nubi-error-secondary {
+    font-size: 11px;
+    opacity: 0.35;
   }
 `
 
@@ -469,13 +487,16 @@ class NubiExplain extends HTMLElement {
     body.appendChild(footer)
   }
 
-  _showError(msg) {
+  _showError(_rawMsg) {
     const body = this._shadow.querySelector('.explain-body')
     if (body) {
       body.innerHTML = ''
       const d = document.createElement('div')
       d.className = 'nubi-error-state'
-      d.textContent = msg || 'Couldn\'t load data'
+      d.innerHTML = `
+        <span class="nubi-error-primary">Couldn't load data</span>
+        <span class="nubi-error-secondary">Check your connection or try again</span>
+      `
       body.appendChild(d)
     }
     const badge = this._shadow.querySelector('.nubi-badge.sample')
@@ -554,7 +575,7 @@ class NubiExplain extends HTMLElement {
           detail: { message: err.message },
         }))
         if (this.hasAttribute('no-sample-fallback')) {
-          this._showError(err.message)
+          this._showError()
           return
         }
       }
@@ -564,7 +585,7 @@ class NubiExplain extends HTMLElement {
 
     // Sample fallback
     if (this.hasAttribute('no-sample-fallback')) {
-      this._showError('No data source configured')
+      this._showError()
       return
     }
 

@@ -179,11 +179,38 @@ const KPI_STYLES = /* css */ `
     white-space: nowrap;
   }
 
-  .kpi-error-note {
+  .kpi-error-state {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    padding: 4px 0;
+  }
+
+  .kpi-error-primary {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 12px;
+    font-weight: 500;
+    color: var(--nubi-fg, #e2e8f0);
+    opacity: 0.65;
+  }
+
+  .kpi-error-primary::before {
+    content: '⚠';
     font-size: 11px;
-    color: var(--nubi-error, #ef4444);
-    opacity: 0.75;
-    padding: 2px 0;
+    opacity: 0.7;
+  }
+
+  .kpi-error-secondary {
+    font-size: 10px;
+    color: var(--nubi-fg, #e2e8f0);
+    opacity: 0.38;
+  }
+
+  /* Keep legacy class for e2e selector compatibility */
+  .kpi-error-note {
+    display: none;
   }
 `
 
@@ -385,26 +412,41 @@ class NubiKpi extends HTMLElement {
     ragChip.textContent = (rag || 'red').toUpperCase()
   }
 
-  _showError(message) {
+  _showError(_rawMessage) {
+    // Clear the big metric value — don't show giant text in error state
     const v = this._shadow.querySelector('.kpi-value')
     if (v) {
       v.className = 'kpi-value'
-      v.textContent = 'Couldn\'t load data'
+      v.textContent = ''
     }
+
     const badge = this._shadow.querySelector('.nubi-badge')
     const note  = this._shadow.querySelector('.nubi-sample-note')
     if (badge) badge.style.display = 'none'
     if (note)  note.style.display  = 'none'
 
-    // Show/update error note
-    let errNote = this._shadow.querySelector('.kpi-error-note')
-    if (!errNote) {
-      errNote = document.createElement('div')
-      errNote.className = 'kpi-error-note'
+    // Inject friendly error UI into the value slot (not the giant-font style)
+    let errState = this._shadow.querySelector('.kpi-error-state')
+    if (!errState) {
+      errState = document.createElement('div')
+      errState.className = 'kpi-error-state'
+      errState.innerHTML = `
+        <span class="kpi-error-primary">Couldn’t load data</span>
+        <span class="kpi-error-secondary">Check your connection or try again</span>
+      `
+      // Keep a hidden .kpi-error-note for e2e selector compatibility
+      let errNote = this._shadow.querySelector('.kpi-error-note')
+      if (!errNote) {
+        errNote = document.createElement('div')
+        errNote.className = 'kpi-error-note'
+        errNote.style.display = 'none'
+      }
       const footer = this._shadow.querySelector('.kpi-footer')
-      if (footer) footer.before(errNote)
+      if (footer) {
+        footer.before(errState)
+        footer.before(errNote)
+      }
     }
-    errNote.textContent = message || 'Couldn\'t load data'
 
     // Hide target row
     const targetRow = this._shadow.querySelector('.kpi-target-row')
@@ -468,7 +510,7 @@ class NubiKpi extends HTMLElement {
           detail: { message: err.message },
         }))
         if (this.hasAttribute('no-sample-fallback')) {
-          this._showError(err.message)
+          this._showError()
           return
         }
       }
@@ -478,7 +520,7 @@ class NubiKpi extends HTMLElement {
 
     // Sample fallback
     if (this.hasAttribute('no-sample-fallback')) {
-      this._showError('No data source configured')
+      this._showError()
       return
     }
 
