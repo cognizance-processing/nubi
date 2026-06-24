@@ -1961,6 +1961,228 @@ def bridge_start(
 
 
 # ---------------------------------------------------------------------------
+# apply / plan  (declarative resource-bundle provisioning)
+# ---------------------------------------------------------------------------
+
+
+def _render_apply_results(
+    results: list[dict],
+    dry_run: bool,
+    errors: list[str],
+) -> int:
+    """Print the apply results table; return exit code (0 = success, 1 = failures)."""
+    from rich.table import Table  # already imported at module level; re-import safe
+
+    title = "Apply plan (dry run)" if dry_run else "Apply results"
+    tbl = Table("Kind", "Name", "ID", "Action", title=title)
+
+    _ACTION_STYLES = {
+        "created": "green",
+        "updated": "yellow",
+        "unchanged": "dim",
+        "create": "green",
+        "update": "yellow",
+        "failed": "bold red",
+    }
+
+    any_failed = False
+    for r in results:
+        action = r.get("action", "?")
+        style = _ACTION_STYLES.get(action, "white")
+        tbl.add_row(
+            r.get("kind", "?"),
+            r.get("name") or "—",
+            r.get("id") or "—",
+            f"[{style}]{action.upper()}[/{style}]",
+        )
+        if action == "failed":
+            any_failed = True
+
+    console.print(tbl)
+
+    for r in results:
+        if r.get("action") == "failed" and r.get("error"):
+            err_console.print(f"  FAILED {r.get('kind')} {r.get('name')!r}: {r['error']}")
+
+    for err in errors:
+        err_console.print(f"  LOAD ERROR: {err}")
+
+    if errors or any_failed:
+        return 1
+    return 0
+
+
+@app.command()
+def apply(
+    bundle_dir: Path = typer.Argument(
+        ...,
+        exists=True,
+        file_okay=False,
+        help="Path to the bundle directory (must contain bundle.yaml).",
+    ),
+    dry_run: bool = typer.Option(
+        False,
+        "--dry-run",
+        help="Validate and plan without making any API calls (alias for nubi plan).",
+    ),
+    org: Optional[str] = typer.Option(
+        None,
+        "--org",
+        help="Override the org from bundle.yaml (UUID or slug).",
+    ),
+) -> None:
+    """Apply a declarative resource bundle to Nubi — idempotent.
+
+    Reads ``bundle.yaml`` from BUNDLE_DIR, then applies each resource (metrics,
+    datastores, dashboards, queries) to the server using create-or-update
+    semantics.  Running the same bundle twice is a true no-op.
+
+    Resources are applied in order: metrics → datastores → dashboards → queries.
+    A single failing resource does NOT abort the rest.  Exit code is 1 when any
+    resource fails; 0 on full success.
+
+    See ``nubi plan`` for a read-only diff without making changes.
+    """
+    from .bundle import BundleError, load_bundle  # noqa: PLC0415
+
+    _require_login()
+
+    try:
+        result = load_bundle(bundle_dir)
+    except BundleError as exc:
+        err_console.print(f"Bundle load failed: {exc}")
+        raise typer.Exit(code=1)
+
+    if result.errors and not result.envelopes:
+        # All resources failed to load — nothing to apply.
+        for err in result.errors:
+            err_console.print(f"LOAD ERROR: {err}")
+        raise typer.Exit(code=1)
+
+    if not result.envelopes and not result.errors:
+        console.print("[yellow]Bundle is empty — no resources to apply.[/yellow]")
+        raise typer.Exit(code=0)
+
+    # Resolve org: CLI flag > bundle.yaml metadata.org.
+    meta = result.meta.get("metadata") or {}
+    effective_org = org or meta.get("org")
+
+    # Build request payload.
+    payload: dict = {
+        "resources": result.envelopes,
+        "version": str(meta.get("version", "1")),
+        "dry_run": dry_run,
+    }
+    if effective_org:
+        payload["org"] = effective_org
+
+    if dry_run:
+        console.print("[yellow]Dry run — computing plan, no API calls will be made.[/yellow]")
+
+    try:
+        resp = _client.post("apply", json=payload)
+    except CLIError as exc:
+        err_console.print(f"Apply failed: {exc.message}")
+        raise typer.Exit(code=1)
+
+    body = resp.json()
+    api_results = body.get("results", [])
+    summary = body.get("summary", {})
+
+    exit_code = _render_apply_results(api_results, dry_run=dry_run, errors=result.errors)
+
+    # Summary line.
+    if dry_run:
+        console.print(
+            f"Plan: {summary.get('create', 0)} to create, "
+            f"{summary.get('update', 0)} to update."
+        )
+    else:
+        console.print(
+            f"[bold]Summary:[/bold] "
+            f"{summary.get('created', 0)} created, "
+            f"{summary.get('updated', 0)} updated, "
+            f"{summary.get('unchanged', 0)} unchanged, "
+            f"{summary.get('failed', 0)} failed."
+        )
+
+    if exit_code != 0:
+        raise typer.Exit(code=exit_code)
+
+
+@app.command()
+def plan(
+    bundle_dir: Path = typer.Argument(
+        ...,
+        exists=True,
+        file_okay=False,
+        help="Path to the bundle directory (must contain bundle.yaml).",
+    ),
+    org: Optional[str] = typer.Option(
+        None,
+        "--org",
+        help="Override the org from bundle.yaml (UUID or slug).",
+    ),
+) -> None:
+    """Show what ``nubi apply`` would do without making any API calls.
+
+    Validates the bundle and prints the planned actions (CREATE / UPDATE) for
+    each resource.  No writes are issued.  Equivalent to ``nubi apply --dry-run``.
+    """
+    from .bundle import BundleError, load_bundle  # noqa: PLC0415
+
+    _require_login()
+
+    try:
+        result = load_bundle(bundle_dir)
+    except BundleError as exc:
+        err_console.print(f"Bundle load failed: {exc}")
+        raise typer.Exit(code=1)
+
+    if result.errors and not result.envelopes:
+        for err in result.errors:
+            err_console.print(f"LOAD ERROR: {err}")
+        raise typer.Exit(code=1)
+
+    if not result.envelopes and not result.errors:
+        console.print("[yellow]Bundle is empty — no resources to plan.[/yellow]")
+        raise typer.Exit(code=0)
+
+    meta = result.meta.get("metadata") or {}
+    effective_org = org or meta.get("org")
+
+    payload: dict = {
+        "resources": result.envelopes,
+        "version": str(meta.get("version", "1")),
+        "dry_run": True,
+    }
+    if effective_org:
+        payload["org"] = effective_org
+
+    console.print("[yellow]Plan (dry run) — no changes will be made.[/yellow]")
+
+    try:
+        resp = _client.post("apply", json=payload)
+    except CLIError as exc:
+        err_console.print(f"Plan failed: {exc.message}")
+        raise typer.Exit(code=1)
+
+    body = resp.json()
+    api_results = body.get("results", [])
+    summary = body.get("summary", {})
+
+    exit_code = _render_apply_results(api_results, dry_run=True, errors=result.errors)
+
+    console.print(
+        f"Plan: {summary.get('create', 0)} to create, "
+        f"{summary.get('update', 0)} to update."
+    )
+
+    if exit_code != 0:
+        raise typer.Exit(code=exit_code)
+
+
+# ---------------------------------------------------------------------------
 # Entry point
 # ---------------------------------------------------------------------------
 

@@ -163,6 +163,11 @@ import app.routes.portability  # noqa: F401, E402
 # reuse upsert_envelope + _is_connector_row.
 import app.routes.projects_bundle  # noqa: F401, E402
 
+# Declarative resource-bundle apply (files-as-code provisioning) — self-registers
+# on api_router; the /apply path is prepended so it wins over the /{resource}
+# catch-all.  Imported after portability so it can reuse upsert_envelope.
+import app.routes.apply  # noqa: F401, E402
+
 # Secrets (org-scoped named secret management) — self-registers on api_router
 # with its /secrets prefix; before the generic /{resource} catch-all.
 # Depends on NUBI_SECRETS_KEY being set in the environment (see module docstring).
