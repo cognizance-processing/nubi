@@ -1,165 +1,180 @@
 /**
- * nubi-kpi-react.js — <nubi-kpi-react> web component.
+ * nubi-kpi-react.js — React-based KPI card custom element.
  *
- * This is the dogfood proof that the React-to-custom-element wrapper works:
- * it takes KpiWidget (a real SPA React component) and ships it as a standalone
- * web component using defineNubiElement from embed/react-wc.js.
+ * Proof-of-concept for the defineNubiElement factory.
+ * Mirrors the vanilla <nubi-kpi> widget but renders via React.
  *
- * ATTRIBUTES
- * ----------
- * spec       JSON. A full widget spec object (type, encoding, props, etc.)
- *            See KpiWidget.jsx for shape details. Takes priority over
- *            individual shorthand attributes below.
- * data       JSON. An array of row objects to use as the data source instead
- *            of querying a backend. Shape: [{col: value, ...}, ...].
- * title      Display label override (sets widget.props.label if spec absent).
- * get-token  Name of a function on `window` returning Promise<string>|string.
- * base-url   Backend base URL. Defaults to http://localhost:8000.
+ * Registered as: <nubi-kpi-react>
  *
- * JS PROPERTIES
- * -------------
- * getToken   Function | string. Takes priority over get-token attribute.
- *
- * EVENTS
- * ------
- * nubi:select   — fired when the KPI card is clicked.
- *               detail: { id, rowIndex: 0, row: {} }
- *
- * CSS CUSTOM PROPERTIES
- * ---------------------
- * All --nubi-* tokens defined in embed/theme.js are supported.
- * Set them on the element or a parent to theme the component.
- *
- * EXAMPLE
- * -------
- *   <nubi-kpi-react
- *     spec='{"query_id":"revenue_total","encoding":{"value":"revenue"},"props":{"label":"Revenue","format":"currency"}}'
- *     get-token="myGetToken"
- *     base-url="https://api.example.com"
- *   ></nubi-kpi-react>
+ * Attributes (same surface as nubi-kpi):
+ *   query-id    — registered query ID to execute
+ *   value-col   — column name to read the KPI value from
+ *   label       — card heading
+ *   format      — 'number' | 'currency' | 'percent' | 'integer' (default 'number')
+ *   token       — static JWT string
+ *   get-token   — name of a window.* function that returns a JWT
+ *   backend     — API base URL (default 'http://localhost:8000')
  */
 
-import { createElement, useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useRef } from 'react'
+import { resolveToken, fetchArrow, makeSampleKpiTable } from './shared.js'
 import { defineNubiElement } from '../react-wc.js'
-import { emitSelect } from '../events.js'
-import KpiWidget from '../../src/dashboards/widgets/KpiWidget.jsx'
 
 // ---------------------------------------------------------------------------
-// KpiWrapper — bridges web-component props to KpiWidget's spec-based API
+// Formatters
 // ---------------------------------------------------------------------------
 
-/**
- * Internal wrapper that adapts flat web-component props into the spec object
- * KpiWidget expects, and wires up the click-to-select interaction.
- *
- * @param {{ spec?: object, data?: object[], title?: string, onSelect?: Function }} props
- */
-function KpiReactWrapper({ spec, data, title, onSelect }) {
-  // Build the widget spec from either the provided spec or shorthand attrs
-  const widgetSpec = spec || {
-    id:       'kpi-wc',
-    type:     'kpi',
-    query_id: null,
-    encoding: { value: data?.[0] ? Object.keys(data[0])[0] : 'value' },
-    props:    { label: title || 'KPI', format: 'number' },
+function formatValue(val, format) {
+  if (val == null) return '—'
+  switch (format) {
+    case 'currency':
+      return new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD', maximumFractionDigits: 0 }).format(val)
+    case 'percent':
+      return `${(Number(val) * 100).toFixed(1)}%`
+    case 'integer':
+      return Math.round(Number(val)).toLocaleString()
+    default: {
+      // Compact: 1.2M, 45.3K, etc.
+      const n = Number(val)
+      if (Math.abs(n) >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`
+      if (Math.abs(n) >= 1_000)     return `${(n / 1_000).toFixed(1)}K`
+      return n.toLocaleString()
+    }
   }
+}
 
-  // When `data` is provided inject it as a providerTable-compatible structure.
-  // KpiWidget accepts `providerTable` (an apache-arrow Table) but for the
-  // web-component data-attribute path we accept a plain object array and
-  // convert to a minimal duck-typed table.
-  const [providerTable, setProviderTable] = useState(null)
+// ---------------------------------------------------------------------------
+// React component
+// ---------------------------------------------------------------------------
+
+function NubiKpiReactComponent({
+  'query-id':   queryId,
+  'value-col':  valueCol = 'revenue',
+  label = 'KPI',
+  format = 'number',
+  token,
+  'get-token':  getTokenAttr,
+  backend = 'http://localhost:8000',
+}) {
+  const [displayVal, setDisplayVal] = useState(null)
+  const [isSample, setIsSample]     = useState(false)
+  const [loading, setLoading]       = useState(true)
+  const [errorMsg, setErrorMsg]     = useState(null)
+  const elemRef = useRef(null)
 
   useEffect(() => {
-    if (!data || !Array.isArray(data) || data.length === 0) {
-      setProviderTable(null)
-      return
-    }
+    let cancelled = false
+    const ac = new AbortController()
 
-    // Build a minimal duck-typed Arrow-like table from plain objects.
-    // KpiWidget only calls table.numRows, table.getChild(col).get(0), and
-    // table.getChild(col).toArray(), so this slim shim is sufficient.
-    const cols = Object.keys(data[0])
-    const duckTable = {
-      numRows: data.length,
-      schema: { fields: cols.map(name => ({ name })) },
-      getChild(col) {
-        const values = data.map(row => row[col] ?? null)
-        return {
-          get: (i) => values[i],
-          toArray: () => values,
+    async function load() {
+      setLoading(true)
+      setErrorMsg(null)
+
+      try {
+        // Fabricate a minimal element-like object for resolveToken
+        const fakeElem = {
+          getAttribute: (attr) => {
+            if (attr === 'token')     return token     ?? null
+            if (attr === 'get-token') return getTokenAttr ?? null
+            return null
+          },
         }
-      },
-    }
-    setProviderTable(duckTable)
-  }, [data])
+        const tok = await resolveToken(fakeElem)
 
-  const handleClick = useCallback(() => {
-    if (onSelect) {
-      onSelect({ rowIndex: 0, row: data?.[0] ?? {} })
-    }
-  }, [onSelect, data])
+        let table
+        if (queryId && tok) {
+          table = await fetchArrow(backend, queryId, tok, ac.signal)
+          setIsSample(false)
+        } else {
+          table = makeSampleKpiTable()
+          setIsSample(true)
+        }
 
-  return createElement(
-    'div',
-    {
-      style: { width: '100%', height: '100%', cursor: onSelect ? 'pointer' : 'default' },
-      onClick: handleClick,
+        if (!cancelled) {
+          const col = table.getChild(valueCol) ?? table.getChild(table.schema.fields[0]?.name)
+          setDisplayVal(col ? col.get(0) : null)
+          setLoading(false)
+        }
+      } catch (err) {
+        if (!cancelled) {
+          // Fall back to sample on any error
+          const table = makeSampleKpiTable()
+          const col = table.getChild(valueCol) ?? table.getChild(table.schema.fields[0]?.name)
+          setDisplayVal(col ? col.get(0) : null)
+          setIsSample(true)
+          setErrorMsg(err.message)
+          setLoading(false)
+        }
+      }
+    }
+
+    load()
+    return () => { cancelled = true; ac.abort() }
+  }, [queryId, valueCol, token, getTokenAttr, backend])
+
+  const styles = {
+    wrap: {
+      display: 'flex',
+      flexDirection: 'column',
+      padding: '16px 20px',
+      height: '100%',
+      boxSizing: 'border-box',
     },
-    createElement(KpiWidget, {
-      widget: widgetSpec,
-      providerTable: providerTable,
-    }),
+    top: {
+      display: 'flex',
+      alignItems: 'center',
+      justifyContent: 'space-between',
+      marginBottom: 8,
+    },
+    labelEl: {
+      fontSize: 'var(--nubi-font-size-sm, 11px)',
+      color: 'var(--nubi-fg-muted, #718096)',
+      textTransform: 'uppercase',
+      letterSpacing: '0.06em',
+      fontWeight: 600,
+    },
+    badge: {
+      fontSize: 'var(--nubi-font-size-xs, 10px)',
+      padding: '2px 6px',
+      borderRadius: 4,
+      fontWeight: 600,
+      background: isSample ? '#422006' : '#064e3b',
+      color:      isSample ? '#fed7aa' : '#6ee7b7',
+    },
+    value: {
+      fontSize: 32,
+      fontWeight: 700,
+      lineHeight: 1.2,
+      color: 'var(--nubi-fg, #e2e8f0)',
+      opacity: loading ? 0.3 : 1,
+      transition: 'opacity 0.2s ease',
+    },
+  }
+
+  return (
+    <div style={styles.wrap} ref={elemRef}>
+      <div style={styles.top}>
+        <span style={styles.labelEl}>{label}</span>
+        <span style={styles.badge}>{isSample ? 'SAMPLE' : 'LIVE'}</span>
+      </div>
+      <div style={styles.value}>
+        {loading ? '…' : formatValue(displayVal, format)}
+      </div>
+      {errorMsg && (
+        <div style={{ fontSize: 10, color: 'var(--nubi-error, #ef4444)', marginTop: 4 }}>
+          {errorMsg}
+        </div>
+      )}
+    </div>
   )
 }
 
 // ---------------------------------------------------------------------------
-// Register the custom element
+// Custom element registration
 // ---------------------------------------------------------------------------
 
-const NubiKpiReact = defineNubiElement(
-  'nubi-kpi-react',
-  KpiReactWrapper,
-  {
-    observedAttributes: ['spec', 'data', 'title', 'get-token', 'base-url'],
-
-    propTypes: {
-      spec:  'json',
-      data:  'json',
-      title: 'string',
-    },
-
-    defaultTheme: {},
-  },
-)
-
-// ---------------------------------------------------------------------------
-// Wire up nubi:select — extend the base class to intercept clicks
-// The factory-returned class is the right place to add element-level event
-// forwarding without touching the React component.
-// ---------------------------------------------------------------------------
-
-// Patch: listen for click on the shadow root and emit nubi:select.
-// We do this at the module level by adding a delegated listener after define.
-if (typeof customElements !== 'undefined') {
-  // Use a MutationObserver approach: each time a new <nubi-kpi-react> is
-  // connected to the DOM, attach a click listener that re-emits as nubi:select.
-  const _tag = 'nubi-kpi-react'
-  customElements.whenDefined(_tag).then(() => {
-    document.addEventListener('click', (e) => {
-      // Walk up to find the host element
-      let el = e.composedPath()[0]
-      while (el && el.tagName?.toLowerCase() !== _tag) {
-        el = el.parentNode || el.host
-      }
-      if (!el || el.tagName?.toLowerCase() !== _tag) return
-      emitSelect(el, {
-        id: el.getAttribute('id') || _tag,
-        rowIndex: 0,
-        row: {},
-      })
-    }, true)
-  }).catch(() => {/* ignore — element may not be registered in non-browser env */})
-}
-
-export { NubiKpiReact }
+export const NubiKpiReact = defineNubiElement('nubi-kpi-react', NubiKpiReactComponent, {
+  observedAttributes: ['query-id', 'value-col', 'label', 'format', 'token', 'get-token', 'backend'],
+  propTypes: {},
+  defaultTheme: 'dark',
+})

@@ -1,84 +1,115 @@
 /**
- * theme.js — Unified theme token contract for Nubi web components.
+ * theme.js — 25-token Nubi design system for embedded components.
  *
- * All <nubi-*> web components read their visual appearance from CSS custom
- * properties injected into their shadow root via `injectTheme()`. The token
- * names here are the ONLY names components should reference.
- *
- * Token groups
- * ------------
- *   Colors     --nubi-bg / fg / accent / border / surface / surface-alt /
- *              muted / error / success / warning
- *   Typography --nubi-font-family / font-size-base / font-size-sm / font-size-lg /
- *              font-weight-normal / font-weight-bold
- *   Spacing    --nubi-space-xs … xl
- *   Radius     --nubi-radius-sm / md / lg
- *   Branding   --nubi-brand-logo-url / brand-show (1 = show, 0 = hide)
+ * Exports
+ * -------
+ *  NUBI_THEME_TOKENS   — dark preset token map (default)
+ *  NUBI_THEME_PRESETS  — { dark, light } preset maps
+ *  NUBI_THEME_CSS      — CSS string of :host rules for shadow DOM injection
+ *  applyTheme(el, preset, overrides) — set CSS custom properties on an element
  */
 
-export const NUBI_TOKENS = Object.freeze([
-  '--nubi-bg', '--nubi-fg', '--nubi-accent', '--nubi-border',
-  '--nubi-surface', '--nubi-surface-alt', '--nubi-muted',
-  '--nubi-error', '--nubi-success', '--nubi-warning',
-  '--nubi-font-family', '--nubi-font-size-base', '--nubi-font-size-sm',
-  '--nubi-font-size-lg', '--nubi-font-weight-normal', '--nubi-font-weight-bold',
-  '--nubi-space-xs', '--nubi-space-sm', '--nubi-space-md',
-  '--nubi-space-lg', '--nubi-space-xl',
-  '--nubi-radius-sm', '--nubi-radius-md', '--nubi-radius-lg',
-  '--nubi-brand-logo-url', '--nubi-brand-show',
-])
+/** @type {Record<string, string>} */
+export const NUBI_THEME_TOKENS = {
+  /* Backgrounds */
+  '--nubi-bg':              '#0f1117',
+  '--nubi-bg-2':            '#1a1f2e',
+  '--nubi-bg-3':            '#1e2433',
+  /* Foreground */
+  '--nubi-fg':              '#e2e8f0',
+  '--nubi-fg-muted':        '#718096',
+  /* Surface */
+  '--nubi-accent':          '#1e2433',
+  '--nubi-border':          '#2d3748',
+  /* Palette */
+  '--nubi-primary':         '#6366f1',
+  '--nubi-primary-fg':      '#ffffff',
+  '--nubi-success':         '#10b981',
+  '--nubi-warning':         '#f59e0b',
+  '--nubi-error':           '#ef4444',
+  /* Shape */
+  '--nubi-radius':          '8px',
+  '--nubi-radius-sm':       '4px',
+  /* Typography */
+  '--nubi-font-sans':       "system-ui, -apple-system, 'Segoe UI', sans-serif",
+  '--nubi-font-mono':       "'Fira Code', 'Cascadia Code', Consolas, monospace",
+  '--nubi-font-size-base':  '13px',
+  '--nubi-font-size-sm':    '11px',
+  '--nubi-font-size-xs':    '10px',
+  '--nubi-line-height':     '1.5',
+  /* Layout */
+  '--nubi-toolbar-h':       '36px',
+  /* Z-layers */
+  '--nubi-z-editor':        '100',
+  '--nubi-z-overlay':       '200',
+  '--nubi-z-popover':       '300',
+  /* Motion */
+  '--nubi-transition':      '0.15s ease',
+}
 
-export const NUBI_TOKEN_DEFAULTS = Object.freeze({
-  '--nubi-bg':          '#0f1117',
-  '--nubi-fg':          '#e2e8f0',
-  '--nubi-accent':      '#1e2433',
-  '--nubi-border':      '#2d3748',
-  '--nubi-surface':     '#16223b',
-  '--nubi-surface-alt': '#1c2d47',
-  '--nubi-muted':       '#566377',
-  '--nubi-error':       '#ef4444',
-  '--nubi-success':     '#10b981',
-  '--nubi-warning':     '#f59e0b',
-  '--nubi-font-family':        "system-ui, -apple-system, 'Segoe UI', sans-serif",
-  '--nubi-font-size-base':     '13px',
-  '--nubi-font-size-sm':       '11px',
-  '--nubi-font-size-lg':       '16px',
-  '--nubi-font-weight-normal': '400',
-  '--nubi-font-weight-bold':   '600',
-  '--nubi-space-xs': '4px',
-  '--nubi-space-sm': '8px',
-  '--nubi-space-md': '12px',
-  '--nubi-space-lg': '20px',
-  '--nubi-space-xl': '32px',
-  '--nubi-radius-sm': '4px',
-  '--nubi-radius-md': '8px',
-  '--nubi-radius-lg': '12px',
-  '--nubi-brand-logo-url': '',
-  '--nubi-brand-show':     '1',
-})
+const NUBI_THEME_TOKENS_LIGHT = {
+  '--nubi-bg':              '#ffffff',
+  '--nubi-bg-2':            '#f8f9fc',
+  '--nubi-bg-3':            '#f1f3f7',
+  '--nubi-fg':              '#1a202c',
+  '--nubi-fg-muted':        '#718096',
+  '--nubi-accent':          '#edf2f7',
+  '--nubi-border':          '#e2e8f0',
+  '--nubi-primary':         '#4f46e5',
+  '--nubi-primary-fg':      '#ffffff',
+  '--nubi-success':         '#059669',
+  '--nubi-warning':         '#d97706',
+  '--nubi-error':           '#dc2626',
+  '--nubi-radius':          '8px',
+  '--nubi-radius-sm':       '4px',
+  '--nubi-font-sans':       "system-ui, -apple-system, 'Segoe UI', sans-serif",
+  '--nubi-font-mono':       "'Fira Code', 'Cascadia Code', Consolas, monospace",
+  '--nubi-font-size-base':  '13px',
+  '--nubi-font-size-sm':    '11px',
+  '--nubi-font-size-xs':    '10px',
+  '--nubi-line-height':     '1.5',
+  '--nubi-toolbar-h':       '36px',
+  '--nubi-z-editor':        '100',
+  '--nubi-z-overlay':       '200',
+  '--nubi-z-popover':       '300',
+  '--nubi-transition':      '0.15s ease',
+}
 
-export const BRANDING_OFF_TOKENS = Object.freeze({
-  '--nubi-brand-show': '0',
-})
+/** Preset maps keyed by name. */
+export const NUBI_THEME_PRESETS = {
+  dark:  NUBI_THEME_TOKENS,
+  light: NUBI_THEME_TOKENS_LIGHT,
+}
 
 /**
- * Inject a `:host { …token vars… }` style block into a shadow root.
- * Tagged with `data-nubi-theme` so subsequent calls replace rather than
- * append. Tokens resolve as: tokenOverrides > NUBI_TOKEN_DEFAULTS.
+ * Build a CSS string of :host { … } custom property declarations.
+ * Suitable for injection into a <style> element inside a shadow root.
  *
- * @param {ShadowRoot} shadowRoot
- * @param {Record<string, string>} [tokenOverrides]
+ * @param {Record<string,string>} tokens
+ * @returns {string}
  */
-export function injectTheme(shadowRoot, tokenOverrides = {}) {
-  const merged = { ...NUBI_TOKEN_DEFAULTS, ...tokenOverrides }
-  const lines = Object.entries(merged).map(([k, v]) => `  ${k}: ${v};`).join('\n')
-  const css = `:host {\n${lines}\n}`
+function buildThemeCss(tokens) {
+  const decls = Object.entries(tokens)
+    .map(([k, v]) => `  ${k}: ${v};`)
+    .join('\n')
+  return `:host {\n${decls}\n}\n`
+}
 
-  let styleEl = shadowRoot.querySelector('style[data-nubi-theme]')
-  if (!styleEl) {
-    styleEl = document.createElement('style')
-    styleEl.setAttribute('data-nubi-theme', '1')
-    shadowRoot.insertBefore(styleEl, shadowRoot.firstChild)
+/** CSS string for the dark preset — inject into shadow DOM <style> tags. */
+export const NUBI_THEME_CSS = buildThemeCss(NUBI_THEME_TOKENS)
+
+/**
+ * Apply theme tokens as inline CSS custom properties on any element.
+ * Each widget's host element gets independent theming via this call.
+ *
+ * @param {HTMLElement} element        — the element to style (usually `this` in a CE)
+ * @param {'dark'|'light'} [preset]    — base preset (default 'dark')
+ * @param {Record<string,string>} [overrides] — token overrides to merge on top
+ */
+export function applyTheme(element, preset = 'dark', overrides = {}) {
+  const base = NUBI_THEME_PRESETS[preset] ?? NUBI_THEME_PRESETS.dark
+  const merged = { ...base, ...overrides }
+  for (const [k, v] of Object.entries(merged)) {
+    element.style.setProperty(k, v)
   }
-  styleEl.textContent = css
 }

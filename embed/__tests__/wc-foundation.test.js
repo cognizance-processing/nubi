@@ -1,62 +1,57 @@
 /**
  * wc-foundation.test.js — Unit tests for the React web-component foundation.
  *
- * Run with:
- *   node --test embed/__tests__/wc-foundation.test.js
+ * Reconciled against the canonical (authoring) theme.js and events.js APIs:
+ *   theme.js  → NUBI_THEME_TOKENS, NUBI_THEME_PRESETS, NUBI_THEME_CSS, applyTheme
+ *   events.js → NUBI_RUN/SAVE/DIRTY/ERROR/SELECT, emitRun/emitSave/emitDirty/emitError/emitSelect
+ *   nubi-context.js → decodeScopes, hasScope
  *
  * Strategy
  * --------
- * - Uses jsdom (already a devDependency) to provide DOM APIs.
+ * - Uses vitest + jsdom environment (configured in embed/vitest.config.js).
  * - theme.js and events.js have no React dependency — imported directly.
- * - All assertions use node:assert/strict.
- * - defineNubiElement attribute-coercion logic is tested inline (factory
- *   brings in React; we keep those tests hermetic by inlining the coercion).
- * - Cross-filter bus logic is tested inline to avoid React context imports.
+ * - defineNubiElement attribute-coercion logic is tested inline.
+ * - Cross-filter bus logic is tested inline to avoid heavy context imports.
  */
 
 import { describe, it, expect } from 'vitest'
-import { JSDOM } from 'jsdom'
 
+// ---------------------------------------------------------------------------
 // Compatibility shim: map assert.* → expect(...)
+// ---------------------------------------------------------------------------
+
 const assert = {
-  ok: (val, msg) => expect(val, msg).toBeTruthy(),
-  equal: (a, b, msg) => expect(a, msg).toBe(b),
+  ok:        (val, msg)  => expect(val, msg).toBeTruthy(),
+  equal:     (a, b, msg) => expect(a, msg).toBe(b),
   deepEqual: (a, b, msg) => expect(a, msg).toEqual(b),
 }
 
 // ---------------------------------------------------------------------------
-// Bootstrap a jsdom window so CustomEvent and document.createElement work
-// ---------------------------------------------------------------------------
-
-const { window: jsWindow } = new JSDOM('<!DOCTYPE html><html><body></body></html>', {
-  url: 'http://localhost',
-})
-globalThis.window    = jsWindow
-globalThis.document  = jsWindow.document
-globalThis.CustomEvent = jsWindow.CustomEvent
-globalThis.HTMLElement = jsWindow.HTMLElement
-
-// ---------------------------------------------------------------------------
 // Import modules under test
+// (jsdom environment is provided by vitest.config.js + setup.js)
 // ---------------------------------------------------------------------------
 
 import {
-  NUBI_TOKENS,
-  NUBI_TOKEN_DEFAULTS,
-  BRANDING_OFF_TOKENS,
-  injectTheme,
+  NUBI_THEME_TOKENS,
+  NUBI_THEME_PRESETS,
+  NUBI_THEME_CSS,
+  applyTheme,
 } from '../theme.js'
 
 import {
-  emitNubiEvent,
+  NUBI_RUN,
+  NUBI_SAVE,
+  NUBI_DIRTY,
+  NUBI_ERROR,
+  NUBI_SELECT,
+  emitRun,
   emitSave,
   emitDirty,
-  emitRun,
-  emitSelect,
-  emitCrossFilter,
-  emitNavigate,
   emitError,
+  emitSelect,
 } from '../events.js'
+
+import { decodeScopes, hasScope } from '../nubi-context.js'
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -64,11 +59,13 @@ import {
 
 /**
  * Make a minimal mock element that tracks dispatched events.
+ * Uses the jsdom CustomEvent / EventTarget from the vitest environment.
  */
 function makeMockElement() {
   const listeners = {}
   return {
     tagName: 'NUBI-TEST',
+    style: { setProperty: () => {} },
     dispatchEvent(event) {
       ;(listeners[event.type] || []).forEach(cb => cb(event))
     },
@@ -79,341 +76,330 @@ function makeMockElement() {
   }
 }
 
-/**
- * Make a minimal mock shadow root backed by document.createElement.
- * querySelector only handles 'style[data-nubi-theme]'.
- */
-function makeMockShadowRoot() {
-  const styleEl = document.createElement('style')
-  styleEl.setAttribute('data-nubi-theme', '1')
-  // Pre-populate so querySelector finds it on repeated calls
-  let injected = false
-
-  return {
-    _styleEl: styleEl,
-    querySelector(sel) {
-      if (sel === 'style[data-nubi-theme]') return injected ? styleEl : null
-      return null
-    },
-    insertBefore(node) {
-      injected = true
-    },
-    appendChild(node) {
-      injected = true
-    },
-  }
-}
-
 // ---------------------------------------------------------------------------
-// theme tests
+// theme tests (canonical: 25-token design system)
 // ---------------------------------------------------------------------------
 
 describe('theme', () => {
-  it('NUBI_TOKEN_DEFAULTS contains all required color tokens', () => {
-    const required = [
-      '--nubi-bg', '--nubi-fg', '--nubi-accent', '--nubi-border',
-      '--nubi-surface', '--nubi-muted', '--nubi-error',
-      '--nubi-success', '--nubi-warning',
-    ]
+  it('NUBI_THEME_TOKENS contains the required background tokens', () => {
+    const required = ['--nubi-bg', '--nubi-bg-2', '--nubi-bg-3']
     for (const tok of required) {
-      assert.ok(tok in NUBI_TOKEN_DEFAULTS, `missing token: ${tok}`)
+      assert.ok(tok in NUBI_THEME_TOKENS, `missing token: ${tok}`)
     }
   })
 
-  it('NUBI_TOKEN_DEFAULTS contains typography tokens', () => {
-    assert.ok('--nubi-font-family'   in NUBI_TOKEN_DEFAULTS)
-    assert.ok('--nubi-font-size-base' in NUBI_TOKEN_DEFAULTS)
-    assert.ok('--nubi-font-weight-bold' in NUBI_TOKEN_DEFAULTS)
+  it('NUBI_THEME_TOKENS contains foreground tokens', () => {
+    assert.ok('--nubi-fg' in NUBI_THEME_TOKENS)
+    assert.ok('--nubi-fg-muted' in NUBI_THEME_TOKENS)
   })
 
-  it('NUBI_TOKEN_DEFAULTS contains spacing tokens', () => {
-    const spacers = [
-      '--nubi-space-xs', '--nubi-space-sm', '--nubi-space-md',
-      '--nubi-space-lg', '--nubi-space-xl',
-    ]
-    for (const tok of spacers) {
-      assert.ok(tok in NUBI_TOKEN_DEFAULTS, `missing spacing token: ${tok}`)
+  it('NUBI_THEME_TOKENS contains semantic color tokens', () => {
+    const required = ['--nubi-primary', '--nubi-success', '--nubi-warning', '--nubi-error']
+    for (const tok of required) {
+      assert.ok(tok in NUBI_THEME_TOKENS, `missing token: ${tok}`)
     }
   })
 
-  it('NUBI_TOKEN_DEFAULTS contains radius tokens', () => {
-    assert.ok('--nubi-radius-sm' in NUBI_TOKEN_DEFAULTS)
-    assert.ok('--nubi-radius-md' in NUBI_TOKEN_DEFAULTS)
-    assert.ok('--nubi-radius-lg' in NUBI_TOKEN_DEFAULTS)
+  it('NUBI_THEME_TOKENS contains typography tokens', () => {
+    assert.ok('--nubi-font-sans'       in NUBI_THEME_TOKENS)
+    assert.ok('--nubi-font-mono'       in NUBI_THEME_TOKENS)
+    assert.ok('--nubi-font-size-base'  in NUBI_THEME_TOKENS)
   })
 
-  it('BRANDING_OFF_TOKENS sets --nubi-brand-show to 0', () => {
-    assert.equal(BRANDING_OFF_TOKENS['--nubi-brand-show'], '0')
+  it('NUBI_THEME_TOKENS contains shape tokens', () => {
+    assert.ok('--nubi-radius'    in NUBI_THEME_TOKENS)
+    assert.ok('--nubi-radius-sm' in NUBI_THEME_TOKENS)
   })
 
-  it('NUBI_TOKEN_DEFAULTS --nubi-brand-show defaults to 1', () => {
-    assert.equal(NUBI_TOKEN_DEFAULTS['--nubi-brand-show'], '1')
+  it('NUBI_THEME_TOKENS contains z-layer tokens', () => {
+    assert.ok('--nubi-z-editor'  in NUBI_THEME_TOKENS)
+    assert.ok('--nubi-z-overlay' in NUBI_THEME_TOKENS)
+    assert.ok('--nubi-z-popover' in NUBI_THEME_TOKENS)
   })
 
-  it('NUBI_TOKENS list covers all token names', () => {
-    // Every key in NUBI_TOKEN_DEFAULTS should appear in NUBI_TOKENS
-    for (const k of Object.keys(NUBI_TOKEN_DEFAULTS)) {
-      assert.ok(NUBI_TOKENS.includes(k), `${k} missing from NUBI_TOKENS`)
-    }
+  it('NUBI_THEME_TOKENS has exactly 25 tokens', () => {
+    assert.equal(Object.keys(NUBI_THEME_TOKENS).length, 25)
   })
 
-  it('injectTheme inserts :host block with --nubi-bg', () => {
-    const styleEl = document.createElement('style')
-    styleEl.setAttribute('data-nubi-theme', '1')
-    const sr = {
-      _styleEl: styleEl,
-      querySelector(sel) { return sel === 'style[data-nubi-theme]' ? styleEl : null },
-      insertBefore() {},
-      appendChild() {},
-    }
-    injectTheme(sr, {})
-    assert.ok(styleEl.textContent.includes(':host {'), 'should contain :host block')
-    assert.ok(styleEl.textContent.includes('--nubi-bg'), 'should contain --nubi-bg')
+  it('NUBI_THEME_PRESETS has dark and light presets', () => {
+    assert.ok('dark'  in NUBI_THEME_PRESETS)
+    assert.ok('light' in NUBI_THEME_PRESETS)
   })
 
-  it('injectTheme sets custom token overrides in shadow root', () => {
-    const styleEl = document.createElement('style')
-    styleEl.setAttribute('data-nubi-theme', '1')
-    const sr = {
-      querySelector() { return styleEl },
-      insertBefore() {},
-      appendChild() {},
-    }
-    injectTheme(sr, { '--nubi-bg': '#ff0000', '--nubi-brand-show': '0' })
-    assert.ok(styleEl.textContent.includes('--nubi-bg: #ff0000'), 'override should be set')
-    assert.ok(styleEl.textContent.includes('--nubi-brand-show: 0'), 'brand-show override should be set')
+  it('dark preset is NUBI_THEME_TOKENS', () => {
+    assert.equal(NUBI_THEME_PRESETS.dark, NUBI_THEME_TOKENS)
   })
 
-  it('injectTheme merges overrides with defaults', () => {
-    const styleEl = document.createElement('style')
-    styleEl.setAttribute('data-nubi-theme', '1')
-    const sr = {
-      querySelector() { return styleEl },
-      insertBefore() {},
-      appendChild() {},
-    }
-    injectTheme(sr, { '--nubi-accent': '#custom-color' })
-    assert.ok(styleEl.textContent.includes('--nubi-accent: #custom-color'))
-    assert.ok(styleEl.textContent.includes('--nubi-fg:'))  // non-overridden default present
+  it('light preset has same token keys as dark preset', () => {
+    const darkKeys  = Object.keys(NUBI_THEME_PRESETS.dark).sort()
+    const lightKeys = Object.keys(NUBI_THEME_PRESETS.light).sort()
+    assert.deepEqual(darkKeys, lightKeys)
   })
 
-  it('injectTheme creates new style element when none exists', () => {
-    let inserted = null
-    const sr = {
-      querySelector() { return null },  // no existing element
-      insertBefore(node) { inserted = node },
-      appendChild() {},
-    }
-    injectTheme(sr, {})
-    assert.ok(inserted, 'should have inserted a new style element')
-    assert.ok(inserted.textContent.includes(':host {'))
+  it('light preset --nubi-bg is white (#ffffff)', () => {
+    assert.equal(NUBI_THEME_PRESETS.light['--nubi-bg'], '#ffffff')
+  })
+
+  it('NUBI_THEME_CSS is a non-empty string containing :host', () => {
+    assert.ok(typeof NUBI_THEME_CSS === 'string' && NUBI_THEME_CSS.length > 0)
+    assert.ok(NUBI_THEME_CSS.includes(':host {'))
+    assert.ok(NUBI_THEME_CSS.includes('--nubi-bg'))
+  })
+
+  it('applyTheme sets CSS custom properties on an element', () => {
+    const el = document.createElement('div')
+    applyTheme(el, 'dark')
+    // The inline style should be set (jsdom supports setProperty)
+    const bg = el.style.getPropertyValue('--nubi-bg')
+    assert.ok(bg && bg.length > 0, `expected --nubi-bg to be set, got: "${bg}"`)
+  })
+
+  it('applyTheme respects overrides', () => {
+    const el = document.createElement('div')
+    applyTheme(el, 'dark', { '--nubi-bg': '#abcdef' })
+    const bg = el.style.getPropertyValue('--nubi-bg')
+    assert.equal(bg, '#abcdef')
+  })
+
+  it('applyTheme falls back to dark preset for unknown preset name', () => {
+    const el = document.createElement('div')
+    applyTheme(el, 'ocean')  // unknown preset
+    const bg = el.style.getPropertyValue('--nubi-bg')
+    // Should fall back to dark preset value
+    assert.equal(bg, NUBI_THEME_TOKENS['--nubi-bg'])
   })
 })
 
 // ---------------------------------------------------------------------------
-// events tests
+// events tests (canonical event name constants + emit helpers)
 // ---------------------------------------------------------------------------
 
 describe('events', () => {
-  it('emitNubiEvent fires with bubbles and composed true', () => {
+  it('event name constants are correct', () => {
+    assert.equal(NUBI_RUN,    'nubi:run')
+    assert.equal(NUBI_SAVE,   'nubi:save')
+    assert.equal(NUBI_DIRTY,  'nubi:dirty')
+    assert.equal(NUBI_ERROR,  'nubi:error')
+    assert.equal(NUBI_SELECT, 'nubi:select')
+  })
+
+  it('emitRun fires nubi:run with bubbles and composed true', () => {
     const el = makeMockElement()
     let received = null
-    el.addEventListener('nubi:test', (e) => { received = e })
+    el.addEventListener('nubi:run', (e) => { received = e })
 
-    emitNubiEvent(el, 'nubi:test', { foo: 'bar' })
+    emitRun(el, { sql: 'SELECT 1' })
 
     assert.ok(received, 'event should have been received')
-    assert.equal(received.detail.foo, 'bar')
-    assert.equal(received.bubbles, true)
+    assert.equal(received.detail.sql, 'SELECT 1')
+    assert.equal(received.bubbles,  true)
     assert.equal(received.composed, true)
   })
 
-  it('emitSave fires nubi:save with id and spec', () => {
+  it('emitSave fires nubi:save with queryId and name', () => {
     const el = makeMockElement()
     let detail = null
     el.addEventListener('nubi:save', (e) => { detail = e.detail })
 
-    emitSave(el, { id: 'widget-1', spec: { type: 'kpi' } })
+    emitSave(el, { queryId: 'q-1', name: 'My query' })
 
-    assert.ok(detail, 'should have received detail')
-    assert.equal(detail.id, 'widget-1')
-    assert.deepEqual(detail.spec, { type: 'kpi' })
+    assert.ok(detail)
+    assert.equal(detail.queryId, 'q-1')
+    assert.equal(detail.name, 'My query')
   })
 
-  it('emitDirty fires nubi:dirty with isDirty flag', () => {
+  it('emitDirty fires nubi:dirty with dirty flag', () => {
     const el = makeMockElement()
     let detail = null
     el.addEventListener('nubi:dirty', (e) => { detail = e.detail })
 
-    emitDirty(el, { id: 'w', isDirty: true })
+    emitDirty(el, { dirty: true })
 
     assert.ok(detail)
-    assert.equal(detail.isDirty, true)
+    assert.equal(detail.dirty, true)
   })
 
-  it('emitRun fires nubi:run with query', () => {
+  it('emitError fires nubi:error with message', () => {
     const el = makeMockElement()
     let detail = null
-    el.addEventListener('nubi:run', (e) => { detail = e.detail })
+    el.addEventListener('nubi:error', (e) => { detail = e.detail })
 
-    emitRun(el, { id: 'w', query: 'SELECT 1' })
+    emitError(el, { message: 'Network timeout', code: 'ERR_TIMEOUT' })
 
     assert.ok(detail)
-    assert.equal(detail.query, 'SELECT 1')
+    assert.equal(detail.message, 'Network timeout')
+    assert.equal(detail.code, 'ERR_TIMEOUT')
   })
 
-  it('emitSelect fires nubi:select with rowIndex and row', () => {
+  it('emitError fires without code field', () => {
+    const el = makeMockElement()
+    let detail = null
+    el.addEventListener('nubi:error', (e) => { detail = e.detail })
+
+    emitError(el, { message: 'oops' })
+
+    assert.ok(detail)
+    assert.equal(detail.message, 'oops')
+    assert.equal(detail.code, undefined)
+  })
+
+  it('emitSelect fires nubi:select with column, value, row', () => {
     const el = makeMockElement()
     let detail = null
     el.addEventListener('nubi:select', (e) => { detail = e.detail })
 
-    emitSelect(el, { id: 'kpi', rowIndex: 3, row: { revenue: 42 } })
+    emitSelect(el, { column: 'region', value: 'North', row: { region: 'North', revenue: 42 } })
 
     assert.ok(detail)
-    assert.equal(detail.rowIndex, 3)
-    assert.deepEqual(detail.row, { revenue: 42 })
+    assert.equal(detail.column, 'region')
+    assert.equal(detail.value, 'North')
+    assert.deepEqual(detail.row, { region: 'North', revenue: 42 })
   })
 
-  it('emitCrossFilter fires nubi:cross-filter with correct detail', () => {
-    const el = makeMockElement()
-    let detail = null
-    el.addEventListener('nubi:cross-filter', (e) => { detail = e.detail })
-
-    emitCrossFilter(el, { filterId: 'country', values: ['US', 'ZA'] })
-
-    assert.ok(detail)
-    assert.equal(detail.filterId, 'country')
-    assert.deepEqual(detail.values, ['US', 'ZA'])
-  })
-
-  it('emitNavigate fires nubi:navigate with href and target', () => {
-    const el = makeMockElement()
-    let detail = null
-    el.addEventListener('nubi:navigate', (e) => { detail = e.detail })
-
-    emitNavigate(el, { href: '/dashboard/123', target: '_blank' })
-
-    assert.ok(detail)
-    assert.equal(detail.href, '/dashboard/123')
-    assert.equal(detail.target, '_blank')
-  })
-
-  it('emitError fires nubi:error with id, error, and code', () => {
-    const el = makeMockElement()
-    let detail = null
-    el.addEventListener('nubi:error', (e) => { detail = e.detail })
-
-    emitError(el, { id: 'kpi-1', error: 'Network timeout', code: 'ERR_TIMEOUT' })
-
-    assert.ok(detail)
-    assert.equal(detail.id, 'kpi-1')
-    assert.equal(detail.error, 'Network timeout')
-    assert.equal(detail.code, 'ERR_TIMEOUT')
-  })
-
-  it('emitError fires nubi:error without code', () => {
-    const el = makeMockElement()
-    let detail = null
-    el.addEventListener('nubi:error', (e) => { detail = e.detail })
-
-    emitError(el, { id: 'k', error: 'oops' })
-
-    assert.ok(detail)
-    assert.equal(detail.error, 'oops')
-    assert.equal(detail.code, undefined)
-  })
-
-  it('nubi:cross-filter event has composed:true', () => {
+  it('emitSelect event has composed:true (escapes shadow DOM)', () => {
     const el = makeMockElement()
     let evt = null
-    el.addEventListener('nubi:cross-filter', (e) => { evt = e })
+    el.addEventListener('nubi:select', (e) => { evt = e })
 
-    emitCrossFilter(el, { filterId: 'year', values: [2024] })
+    emitSelect(el, { column: 'x', value: 1 })
 
     assert.ok(evt)
-    assert.equal(evt.composed, true, 'cross-filter must escape shadow DOM')
-    assert.equal(evt.bubbles, true)
+    assert.equal(evt.composed, true)
+    assert.equal(evt.bubbles,  true)
   })
 })
 
 // ---------------------------------------------------------------------------
 // Attribute coercion (defineNubiElement internals — tested inline)
+// Mirrors the coerce() function in react-wc.js exactly.
 // ---------------------------------------------------------------------------
 
 describe('defineNubiElement attribute coercion', () => {
-  // Inline coercion function mirrors react-wc.js exactly
-  function coerceAttr(value, type, attrName) {
+  function coerceAttr(value, type) {
     if (value === null) {
       if (type === 'boolean') return false
       return null
     }
     switch (type) {
-      case 'number': {
-        const n = Number(value)
-        return Number.isNaN(n) ? null : n
-      }
-      case 'boolean':
-        return value !== 'false' && value !== '0'
-      case 'json':
-        try { return JSON.parse(value) }
-        catch { return null }
-      case 'string':
-      default:
-        return value
+      case 'boolean': return value !== 'false' && value !== '0'
+      case 'number':  return parseFloat(value)
+      case 'json':    try { return JSON.parse(value) } catch { return null }
+      default:        return value
     }
   }
 
   it('maps string attribute to string prop', () => {
-    assert.equal(coerceAttr('hello', 'string', 'x'), 'hello')
+    assert.equal(coerceAttr('hello', 'string'), 'hello')
   })
 
   it('maps number attribute to number prop', () => {
-    assert.equal(coerceAttr('42', 'number', 'x'), 42)
-    assert.equal(coerceAttr('-5.5', 'number', 'x'), -5.5)
-  })
-
-  it('maps non-numeric string to null for number type', () => {
-    assert.equal(coerceAttr('not-a-number', 'number', 'x'), null)
+    assert.equal(coerceAttr('42', 'number'), 42)
+    assert.equal(coerceAttr('-5.5', 'number'), -5.5)
   })
 
   it('maps boolean attribute — true cases', () => {
-    assert.equal(coerceAttr('true', 'boolean', 'x'), true)
-    assert.equal(coerceAttr('', 'boolean', 'x'), true)
-    assert.equal(coerceAttr('1', 'boolean', 'x'), true)
+    assert.equal(coerceAttr('true', 'boolean'),  true)
+    assert.equal(coerceAttr('', 'boolean'),       true)
+    assert.equal(coerceAttr('1', 'boolean'),      true)
   })
 
   it('maps boolean attribute — false cases', () => {
-    assert.equal(coerceAttr('false', 'boolean', 'x'), false)
-    assert.equal(coerceAttr('0', 'boolean', 'x'), false)
+    assert.equal(coerceAttr('false', 'boolean'), false)
+    assert.equal(coerceAttr('0', 'boolean'),     false)
   })
 
   it('maps absent boolean attribute (null) to false', () => {
-    assert.equal(coerceAttr(null, 'boolean', 'x'), false)
+    assert.equal(coerceAttr(null, 'boolean'), false)
   })
 
   it('maps json attribute to parsed object', () => {
-    assert.deepEqual(coerceAttr('{"a":1}', 'json', 'x'), { a: 1 })
-    assert.deepEqual(coerceAttr('[1,2,3]', 'json', 'x'), [1, 2, 3])
+    assert.deepEqual(coerceAttr('{"a":1}', 'json'), { a: 1 })
+    assert.deepEqual(coerceAttr('[1,2,3]', 'json'), [1, 2, 3])
   })
 
   it('maps invalid json to null', () => {
-    assert.equal(coerceAttr('{bad json}', 'json', 'x'), null)
+    assert.equal(coerceAttr('{bad json}', 'json'), null)
   })
 
   it('maps absent attribute (null) to null for string/number/json', () => {
-    assert.equal(coerceAttr(null, 'string', 'x'), null)
-    assert.equal(coerceAttr(null, 'number', 'x'), null)
-    assert.equal(coerceAttr(null, 'json', 'x'), null)
+    assert.equal(coerceAttr(null, 'string'), null)
+    assert.equal(coerceAttr(null, 'number'), null)
+    assert.equal(coerceAttr(null, 'json'),   null)
   })
 })
 
 // ---------------------------------------------------------------------------
-// Cross-filter bus (from nubi-context.js — logic tested inline)
+// decodeScopes + hasScope (nubi-context.js)
+// ---------------------------------------------------------------------------
+
+describe('decodeScopes', () => {
+  function makeToken(scopes = []) {
+    const header  = btoa(JSON.stringify({ alg: 'none', typ: 'JWT' }))
+      .replace(/\+/g, '-').replace(/\//g, '_').replace(/=/g, '')
+    const payload = btoa(JSON.stringify({
+      sub: 'test', iat: 1000, exp: 9999, scope: scopes.join(' '),
+    })).replace(/\+/g, '-').replace(/\//g, '_').replace(/=/g, '')
+    return `${header}.${payload}.fakesig`
+  }
+
+  it('returns [] for null/undefined token', () => {
+    assert.deepEqual(decodeScopes(null),      [])
+    assert.deepEqual(decodeScopes(undefined), [])
+    assert.deepEqual(decodeScopes(''),        [])
+  })
+
+  it('returns [] for malformed token', () => {
+    assert.deepEqual(decodeScopes('not.a.valid.jwt'), [])
+  })
+
+  it('decodes space-delimited scopes', () => {
+    const tok = makeToken(['read', 'write', 'author:sql'])
+    assert.deepEqual(decodeScopes(tok), ['read', 'write', 'author:sql'])
+  })
+
+  it('decodes single scope', () => {
+    const tok = makeToken(['author:metric'])
+    assert.deepEqual(decodeScopes(tok), ['author:metric'])
+  })
+
+  it('returns [] when scope claim is empty string', () => {
+    const tok = makeToken([])
+    assert.deepEqual(decodeScopes(tok), [])
+  })
+})
+
+describe('hasScope', () => {
+  it('returns true when scope is present', () => {
+    assert.equal(hasScope(['read', 'author:sql'], 'author:sql'), true)
+  })
+
+  it('returns false when scope is absent', () => {
+    assert.equal(hasScope(['read'], 'author:sql'), false)
+  })
+
+  it('wildcard * matches everything', () => {
+    assert.equal(hasScope(['*'], 'author:sql'),    true)
+    assert.equal(hasScope(['*'], 'author:metric'), true)
+    assert.equal(hasScope(['*'], 'read'),          true)
+  })
+
+  it('namespace wildcard author:* matches author:sql and author:metric', () => {
+    assert.equal(hasScope(['author:*'], 'author:sql'),    true)
+    assert.equal(hasScope(['author:*'], 'author:metric'), true)
+  })
+
+  it('namespace wildcard does NOT match cross-namespace', () => {
+    assert.equal(hasScope(['author:*'], 'read'), false)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Cross-filter bus (inline implementation matching nubi-context.js semantics)
 // ---------------------------------------------------------------------------
 
 describe('crossFilterBus', () => {
   function createCrossFilterBus() {
-    const _filters = new Map()
+    const _filters   = new Map()
     const _listeners = new Set()
     return {
       subscribe(cb) {
@@ -451,11 +437,11 @@ describe('crossFilterBus', () => {
 
   it('getFilters returns current state', () => {
     const bus = createCrossFilterBus()
-    bus.publish({ filterId: 'year', values: [2024] })
+    bus.publish({ filterId: 'year',  values: [2024] })
     bus.publish({ filterId: 'month', values: [6, 7] })
 
     const f = bus.getFilters()
-    assert.deepEqual(f.get('year'), [2024])
+    assert.deepEqual(f.get('year'),  [2024])
     assert.deepEqual(f.get('month'), [6, 7])
   })
 
@@ -479,43 +465,5 @@ describe('crossFilterBus', () => {
 
     assert.equal(a, 1)
     assert.equal(b, 1)
-  })
-})
-
-// ---------------------------------------------------------------------------
-// nubi-kpi-react — lightweight proof tests (no React render needed)
-// ---------------------------------------------------------------------------
-
-describe('nubi-kpi-react contract', () => {
-  it('emitSelect fires nubi:select with composed:true', () => {
-    const el = makeMockElement()
-    let evt = null
-    el.addEventListener('nubi:select', (e) => { evt = e })
-
-    emitSelect(el, { id: 'kpi-react', rowIndex: 0, row: { value: 100 } })
-
-    assert.ok(evt, 'nubi:select must fire')
-    assert.equal(evt.composed, true, 'event must escape shadow DOM')
-    assert.equal(evt.bubbles, true, 'event must bubble')
-    assert.equal(evt.detail.id, 'kpi-react')
-    assert.equal(evt.detail.rowIndex, 0)
-    assert.deepEqual(evt.detail.row, { value: 100 })
-  })
-
-  it('BRANDING_OFF_TOKENS disables branding (contract verification)', () => {
-    assert.equal(BRANDING_OFF_TOKENS['--nubi-brand-show'], '0')
-    assert.equal(NUBI_TOKEN_DEFAULTS['--nubi-brand-show'], '1')
-  })
-
-  it('injectTheme with BRANDING_OFF_TOKENS sets brand-show to 0', () => {
-    const styleEl = document.createElement('style')
-    styleEl.setAttribute('data-nubi-theme', '1')
-    const sr = {
-      querySelector() { return styleEl },
-      insertBefore() {},
-      appendChild() {},
-    }
-    injectTheme(sr, BRANDING_OFF_TOKENS)
-    assert.ok(styleEl.textContent.includes('--nubi-brand-show: 0'))
   })
 })
