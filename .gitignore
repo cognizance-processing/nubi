@@ -66,3 +66,7 @@ test-results/
 
 # Local managed-lakehouse storage (demo .duckdb + parquet)
 .local-lake/
+
+# Playwright embed e2e artifacts
+playwright-report-embed/
+test-results-embed/
