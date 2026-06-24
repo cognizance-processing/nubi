@@ -703,42 +703,41 @@ async def compile_metric_dry(
 
 
 # ---------------------------------------------------------------------------
-# POST /metrics/{id}/query  — compile + execute (Arrow, like POST /query)
+# execute_metric_query — reusable execution core (used by /query and /explain)
 # ---------------------------------------------------------------------------
 
 
-@api_router.post("/metrics/{metric_id}/query")
-async def query_metric(
-    metric_id: str,
-    body: dict,
-    request: Request,
-    identity: VerifiedIdentity = Depends(verified_identity),
+async def execute_metric_query(
+    metric: MetricDefinition,
+    mq: MetricQuery,
+    identity: VerifiedIdentity,
+    org_id: str | None,
+    org_lookup_error: Exception | None,
+    repo: Any,
 ) -> StreamingResponse:
-    """Compile a metric query and execute it through the /query execution path.
+    """Compile, plan, cache-check, execute and meter a governed metric query.
 
-    REUSES the existing machinery (no fork):
-      compile_metric → resolve_named_params → planner.plan (RLS injected from
-      identity.policies) → rollup routing → cache → _build_connector_for_plan
-      (org-scoped datastore + secret + capability-gated RLS refusal) →
-      connector.execute → Arrow IPC bytes → metering.
+    This is the reusable execution core extracted from ``query_metric``.  All
+    inputs are already resolved by the caller; this function is responsible only
+    for the data-access chain and response assembly:
 
-    Embed-safe: raw SQL is never accepted — only the governed metric + dims +
-    filters. RLS is threaded EXACTLY like /query: claims come exclusively from
-    the verified token.
+      1. compile_metric(metric, mq, dialect, policy_cols)
+         → (sql_with_{{params}}, params_dict)
+      2. resolve_named_params(sql, named_params)
+         → (positional_sql, $N params)
+      3. planner_plan(sql, claims, params, dialect=_COMPILED_METRIC_DIALECT)
+         — RLS injected EXCLUSIVELY from ``identity.policies``
+      4. route_to_rollup_shape(physical_plan, registry, org_id)
+      5. scope_cache_key(plan.cache_key, org_id, datastore_id) + cache.get(...)
+      6. _build_connector_for_plan(plan, datastore_id, org_id, ...) →
+         connector.execute(plan)
+      7. Metering (compute + query_scan) — best-effort.
+      8. cache.put(...) + StreamingResponse (Arrow IPC bytes).
 
-    TENANT ISOLATION (SEC): org-scoped resolution — a slug only resolves +
-    executes within the caller's org. Without this, org A could execute org B's
-    base_sql (and bind it to B's datastore id). Combined with token-only RLS this
-    closes both definition disclosure and cross-tenant execution.
+    RLS is sourced EXCLUSIVELY from ``identity.policies`` — never from the
+    request body.  The response shape (Arrow IPC stream, headers) is identical
+    to what ``query_metric`` previously returned directly.
     """
-    _require_read_scope(identity)
-    org_id = await _caller_org(identity, request)
-    metric = await _resolve_metric(metric_id, org_id)
-
-    payload = dict(body or {})
-    payload["metric_id"] = metric_id
-    mq = MetricQuery.from_dict(payload)
-
     # ── 1. Compile the governed metric → (sql with {{params}}, params dict) ──
     # SECURITY/CORRECTNESS (RLS top-N): thread the ACTIVE RLS policy column names
     # (the keys of identity.policies, which the planner will inject as
@@ -788,18 +787,9 @@ async def query_metric(
         dialect=metric_dialect,
     )
 
-    # ── 5a. Org attribution (must precede routing + the scoped cache lookup) ──
-    # Resolve org_id for quota, metering, scoped cache key derivation, AND the
-    # org-scoped rollup lookup below.
-    # SECURITY: the cache key must be scoped by org_id + effective_datastore_id
-    # to prevent cross-tenant collisions when two orgs have policies={} and run
-    # the same metric SQL.  effective_datastore_id is known here (metric binding).
-    repo = get_repo()
-    org_id, org_lookup_error = await _resolve_caller_org(identity, repo)
-
     effective_datastore_id = metric.datastore_id or None
 
-    # ── 5b. Conservative rollup routing (RLS preserved) — same as /query ─────
+    # ── 5. Conservative rollup routing (RLS preserved) — same as /query ──────
     # SECURITY/CORRECTNESS: pass org_id so ONLY this org's rollups are candidates.
     # Without it org-scoped rollups (build_rollup_for_metric(..., org_id)) are
     # never served, and an unscoped rollup could leak across tenants.  Org-scoping
@@ -939,4 +929,54 @@ async def query_metric(
         ipc_stream_from_bytes(full_bytes),
         media_type=_ARROW_STREAM_MEDIA_TYPE,
         headers={"X-Nubi-Cache": "MISS"},
+    )
+
+
+# ---------------------------------------------------------------------------
+# POST /metrics/{id}/query  — compile + execute (Arrow, like POST /query)
+# ---------------------------------------------------------------------------
+
+
+@api_router.post("/metrics/{metric_id}/query")
+async def query_metric(
+    metric_id: str,
+    body: dict,
+    request: Request,
+    identity: VerifiedIdentity = Depends(verified_identity),
+) -> StreamingResponse:
+    """Compile a metric query and execute it through the /query execution path.
+
+    REUSES the existing machinery (no fork):
+      compile_metric → resolve_named_params → planner.plan (RLS injected from
+      identity.policies) → rollup routing → cache → _build_connector_for_plan
+      (org-scoped datastore + secret + capability-gated RLS refusal) →
+      connector.execute → Arrow IPC bytes → metering.
+
+    Embed-safe: raw SQL is never accepted — only the governed metric + dims +
+    filters. RLS is threaded EXACTLY like /query: claims come exclusively from
+    the verified token.
+
+    TENANT ISOLATION (SEC): org-scoped resolution — a slug only resolves +
+    executes within the caller's org. Without this, org A could execute org B's
+    base_sql (and bind it to B's datastore id). Combined with token-only RLS this
+    closes both definition disclosure and cross-tenant execution.
+    """
+    _require_read_scope(identity)
+    org_id = await _caller_org(identity, request)
+    metric = await _resolve_metric(metric_id, org_id)
+
+    payload = dict(body or {})
+    payload["metric_id"] = metric_id
+    mq = MetricQuery.from_dict(payload)
+
+    repo = get_repo()
+    org_id, org_lookup_error = await _resolve_caller_org(identity, repo)
+
+    return await execute_metric_query(
+        metric=metric,
+        mq=mq,
+        identity=identity,
+        org_id=org_id,
+        org_lookup_error=org_lookup_error,
+        repo=repo,
     )
