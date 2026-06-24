@@ -177,9 +177,11 @@ async def mint_embed_dev_token(
 
     scopes = body.scope if body.scope else ["read:*"]
 
-    # Scope allowlist: only read: prefixes are permitted on this dev helper.
-    # write:, edit:, admin:, delete: scopes would produce fully-valid first-party
-    # tokens accepted by verified_identity — disallow them unconditionally.
+    # Scope allowlist: read: and author: prefixes are permitted on this dev
+    # helper.  write:, edit:, admin:, delete: scopes would produce fully-valid
+    # first-party tokens accepted by verified_identity — disallow them
+    # unconditionally.  author:sql and author:metric are allowed here so that
+    # local embed development can test capability-gated authoring flows.
     _FORBIDDEN_SCOPE_PREFIXES = ("write:", "edit:", "admin:", "delete:")
     for s in scopes:
         if any(s.startswith(p) for p in _FORBIDDEN_SCOPE_PREFIXES):

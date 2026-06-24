@@ -46,8 +46,13 @@ _EMBED_ALGS = frozenset({"RS256", "RS384", "RS512", "ES256", "ES384", "ES512"})
 # Algorithms that are always rejected regardless of path.
 _BLOCKED_ALGS = frozenset({"none", "None", "NONE"})
 
-# Default scopes granted to a verified first-party (HS256) access token.
-_FIRST_PARTY_SCOPES: list[str] = ["read:*", "edit:*"]
+# Default scopes granted to a verified first-party (HS256) access token that
+# carries no explicit ``scope`` claim (i.e. a normal login session).
+# ``author:sql`` and ``author:metric`` are included so that existing admin /
+# analyst sessions keep raw-SQL and metric-authoring capabilities without any
+# token migration.  Restricted tokens (agent sandbox, embed) mint explicit
+# scope lists and skip this default.
+_FIRST_PARTY_SCOPES: list[str] = ["read:*", "edit:*", "author:sql", "author:metric"]
 
 
 @dataclass
