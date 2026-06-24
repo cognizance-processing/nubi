@@ -108,7 +108,7 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
 from app.auth.deps import verified_identity
-from app.auth.scopes import has_scope
+from app.auth.scopes import has_scope, SCOPE_AUTHOR_SQL
 from app.auth.verify import VerifiedIdentity
 from app.connectors import plan as planner_plan
 from app.connectors.arrow_io import ipc_stream_from_bytes, table_to_ipc_bytes
@@ -710,6 +710,18 @@ async def _resolve_request_plan(
                 )
             effective_sql = registered.sql
         else:
+            # ── AUTHORING SCOPE GATE ──────────────────────────────────────────
+            # Raw SQL execution (no registered query_id) requires author:sql.
+            # Fail closed: absent scope → 403, regardless of any other claims.
+            # This is the first-party branch (embed tokens are already blocked
+            # above by the M3-SEC allowlist gate before reaching here).
+            if not has_scope(_scopes, SCOPE_AUTHOR_SQL):
+                raise _AppError(
+                    "insufficient_scope",
+                    "Token does not carry the required scope: author:sql — "
+                    "raw SQL execution is not permitted without this scope.",
+                    403,
+                )
             registered = None
             effective_sql = body.sql
 

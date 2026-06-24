@@ -25,9 +25,43 @@ is_agent_caller(claims) / author_kind(claims)
 require_env_write(claims, resource, env, *, protected)
     Enforce env-scoped write tokens (agent sandbox); raise 403 when the token's
     write scopes do not authorise a write/promotion to *env*.
+
+Authoring scopes (embed strategy)
+----------------------------------
+These scopes gate write / authoring capabilities so that the same editor UI can
+be embedded anywhere while its capabilities derive exclusively from the token:
+
+``author:sql``  (= :data:`SCOPE_AUTHOR_SQL`)
+    Permits execution of arbitrary raw SQL through the query endpoint.  The
+    raw-SQL path in POST /query is *fail-closed*: if the token lacks this scope
+    (and the caller is not resolving a registered query_id), the server returns
+    403 ``insufficient_scope``.  Embed tokens (kind='embed') are **always**
+    blocked from raw SQL by the M3-SEC allowlist gate, regardless of whether
+    they carry this scope.
+
+``author:metric``  (= :data:`SCOPE_AUTHOR_METRIC`)
+    Permits creating, editing, and registering metrics.  Embed tokens may carry
+    this scope to allow governed metric authoring via the metric registry.
+
+First-party login JWTs carry both ``author:sql`` and ``author:metric`` (via
+``_FIRST_PARTY_SCOPES`` in ``app.auth.verify``), so existing admin / analyst
+sessions are unaffected.  Read-only or embed-end-user tokens omit both.
 """
 
 from __future__ import annotations
+
+# ---------------------------------------------------------------------------
+# Authoring scope constants
+# ---------------------------------------------------------------------------
+
+#: Permits execution of arbitrary raw SQL (first-party / author sessions only).
+#: POST /query fails closed with 403 when this scope is absent on the raw-SQL
+#: path.  Embed tokens are always blocked from raw SQL by the M3-SEC gate,
+#: independent of this scope.
+SCOPE_AUTHOR_SQL: str = "author:sql"
+
+#: Permits creation / modification of governed metrics via POST /metrics etc.
+SCOPE_AUTHOR_METRIC: str = "author:metric"
 
 from typing import Any
 
