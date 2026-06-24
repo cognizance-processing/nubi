@@ -12,9 +12,23 @@
  * get-token   Name of a window function returning Promise<string>|string.
  * backend     Base URL of the Nubi API. Defaults to http://localhost:8000.
  *
+ * KPI TARGET ATTRIBUTES (all optional — absent = no target rendering)
+ * -----------------------------------------------------------------------
+ * target-col      Column name that holds the target value (e.g. "revenue_target").
+ *                 When present the widget renders a goal line, % to target, and a
+ *                 RAG chip driven by the data columns the compiler emits.
+ * rag-col         Column name for the RAG status string ("green"/"amber"/"red").
+ *                 Defaults to "<value-col>_rag" when target-col is set.
+ * pct-col         Column name for the pct_to_goal ratio.
+ *                 Defaults to "<value-col>_pct_to_goal" when target-col is set.
+ *
+ * When target-col is absent (or the column is missing from the result) the widget
+ * renders exactly as before — no target UI is shown.
+ *
  * CSS CUSTOM PROPERTIES
  * ---------------------
  * --nubi-bg, --nubi-fg, --nubi-accent, --nubi-border  (standard Nubi theme vars)
+ * --nubi-success, --nubi-warning, --nubi-error         (RAG colors)
  *
  * EVENTS
  * ------
@@ -27,6 +41,15 @@
  */
 
 import { resolveToken, fetchArrow, makeSampleKpiTable, escapeHtml, formatCell, BASE_STYLES } from './shared.js'
+
+// ---------------------------------------------------------------------------
+// RAG color map (uses Nubi theme tokens)
+// ---------------------------------------------------------------------------
+const RAG_COLORS = {
+  green:  'var(--nubi-success, #10b981)',
+  amber:  'var(--nubi-warning, #f59e0b)',
+  red:    'var(--nubi-error,   #ef4444)',
+}
 
 // ---------------------------------------------------------------------------
 // Styles
@@ -103,6 +126,57 @@ const KPI_STYLES = /* css */ `
     border-radius: 3px;
     text-align: left;
   }
+
+  /* ── KPI Target styles ── */
+
+  .kpi-target-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    width: 100%;
+  }
+
+  .kpi-goal-bar-wrap {
+    flex: 1;
+    height: 4px;
+    background: var(--nubi-border, #2d3748);
+    border-radius: 2px;
+    overflow: hidden;
+  }
+
+  .kpi-goal-bar {
+    height: 100%;
+    border-radius: 2px;
+    transition: width 0.3s ease;
+  }
+
+  .kpi-rag-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    font-size: 10px;
+    font-weight: 700;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    padding: 2px 7px;
+    border-radius: 10px;
+    opacity: 0.9;
+    white-space: nowrap;
+    color: #fff;
+  }
+
+  .kpi-rag-chip.green  { background: var(--nubi-success, #10b981); }
+  .kpi-rag-chip.amber  { background: var(--nubi-warning, #f59e0b); }
+  .kpi-rag-chip.red    { background: var(--nubi-error, #ef4444); }
+
+  .kpi-pct-label {
+    font-size: 11px;
+    font-weight: 600;
+    font-variant-numeric: tabular-nums;
+    color: var(--nubi-fg, #e2e8f0);
+    opacity: 0.7;
+    white-space: nowrap;
+  }
 `
 
 // ---------------------------------------------------------------------------
@@ -129,12 +203,25 @@ function formatValue(raw, fmt) {
   }
 }
 
+/**
+ * Format a pct_to_goal ratio (0–N) as a human-readable percent string.
+ * e.g. 0.83 → "83%" · 1.0 → "100%" · 1.25 → "125%"
+ */
+function formatPct(ratio) {
+  const pct = Math.round(Number(ratio) * 100)
+  return `${pct}%`
+}
+
 // ---------------------------------------------------------------------------
 // NubiKpi — custom element
 // ---------------------------------------------------------------------------
 class NubiKpi extends HTMLElement {
   static get observedAttributes() {
-    return ['query-id', 'value-col', 'label', 'format', 'token', 'get-token', 'backend']
+    return [
+      'query-id', 'value-col', 'label', 'format',
+      'token', 'get-token', 'backend',
+      'target-col', 'rag-col', 'pct-col',
+    ]
   }
 
   constructor() {
@@ -169,12 +256,33 @@ class NubiKpi extends HTMLElement {
         <span class="nubi-badge sample" style="display:none">SAMPLE</span>
       </div>
       <div class="kpi-value nubi-loading">…</div>
+      <div class="kpi-target-row" style="display:none">
+        <div class="kpi-goal-bar-wrap">
+          <div class="kpi-goal-bar"></div>
+        </div>
+        <span class="kpi-pct-label"></span>
+        <span class="kpi-rag-chip"></span>
+      </div>
       <div class="kpi-footer">
         <span class="kpi-sublabel"></span>
         <span class="nubi-sample-note visible" style="display:none">preview · sample data</span>
       </div>
     `
     this._shadow.appendChild(wrap)
+  }
+
+  /**
+   * Resolve target-related column names from attributes.
+   * Returns null when target-col is not configured.
+   */
+  _targetCols(valueCol) {
+    const targetCol = this.getAttribute('target-col')
+    if (!targetCol) return null
+    return {
+      target: targetCol,
+      rag:    this.getAttribute('rag-col')  || `${valueCol}_rag`,
+      pct:    this.getAttribute('pct-col')  || `${valueCol}_pct_to_goal`,
+    }
   }
 
   _showValue(table, isSample) {
@@ -191,16 +299,72 @@ class NubiKpi extends HTMLElement {
     this._shadow.querySelector('.kpi-value').textContent = display
 
     const badge = this._shadow.querySelector('.nubi-badge')
-    const note = this._shadow.querySelector('.nubi-sample-note')
+    const note  = this._shadow.querySelector('.nubi-sample-note')
+
     if (isSample) {
       badge.style.display = 'inline-block'
-      note.style.display = 'inline-block'
+      note.style.display  = 'inline-block'
       this._shadow.querySelector('.kpi-sublabel').textContent = 'sample data'
     } else {
       badge.style.display = 'none'
-      note.style.display = 'none'
+      note.style.display  = 'none'
       this._shadow.querySelector('.kpi-sublabel').textContent = `query: ${this.getAttribute('query-id') || ''}`
     }
+
+    // ── Target / RAG rendering ───────────────────────────────────────────────
+    this._renderTarget(table, valueCol)
+  }
+
+  /**
+   * Render the KPI target row if the result carries target columns.
+   *
+   * When target-col attribute is present AND the Arrow table contains the
+   * column, renders:
+   *   • a goal-progress bar (clamped 0–100 %)
+   *   • a pct-to-goal label (e.g. "83%")
+   *   • a RAG chip ("green" / "amber" / "red")
+   *
+   * When absent, hides the target row (no-op for callers without targets).
+   */
+  _renderTarget(table, valueCol) {
+    const targetRow = this._shadow.querySelector('.kpi-target-row')
+    const cols = this._targetCols(valueCol)
+
+    if (!cols) {
+      targetRow.style.display = 'none'
+      return
+    }
+
+    // Try to read the rag / pct columns from the result.
+    const ragVec = table.getChild(cols.rag)
+    const pctVec = table.getChild(cols.pct)
+
+    const rag = ragVec ? String(ragVec.get(0) ?? '').toLowerCase() : null
+    const pct = pctVec ? Number(pctVec.get(0)) : null
+
+    if (rag === null && pct === null) {
+      // Columns not present in the data — hide target row gracefully.
+      targetRow.style.display = 'none'
+      return
+    }
+
+    targetRow.style.display = 'flex'
+
+    // Goal bar (0–100%, capped)
+    const goalBar = this._shadow.querySelector('.kpi-goal-bar')
+    const barColor = RAG_COLORS[rag] ?? RAG_COLORS.red
+    const barPct = pct !== null ? Math.min(Math.max(pct * 100, 0), 100) : 0
+    goalBar.style.width = `${barPct.toFixed(1)}%`
+    goalBar.style.background = barColor
+
+    // % to goal label
+    const pctLabel = this._shadow.querySelector('.kpi-pct-label')
+    pctLabel.textContent = pct !== null ? formatPct(pct) : ''
+
+    // RAG chip
+    const ragChip = this._shadow.querySelector('.kpi-rag-chip')
+    ragChip.className = `kpi-rag-chip ${rag || 'red'}`
+    ragChip.textContent = (rag || 'red').toUpperCase()
   }
 
   async _render() {

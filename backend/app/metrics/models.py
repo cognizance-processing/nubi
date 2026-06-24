@@ -14,6 +14,9 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass, field
 from typing import Any, Literal
 
+# ── KPI target direction vocabulary ─────────────────────────────────────────
+TargetDirection = Literal["higher_is_better", "lower_is_better"]
+
 # ── Vocabularies ────────────────────────────────────────────────────────────
 
 AggFunc = Literal[
@@ -161,6 +164,46 @@ class TimeDimension:
 
 
 @dataclass(frozen=True)
+class MetricTarget:
+    """An optional KPI target attached to a metric definition.
+
+    When present the compiler emits four extra columns in the result:
+    ``<measure>_target``   — the target value (constant or per-row expression).
+    ``<measure>_vs_target`` — ``actual - target`` (signed delta).
+    ``<measure>_pct_to_goal`` — ``actual / target`` as a ratio (1.0 = 100 %).
+    ``<measure>_rag``      — RAG status: ``"green"`` / ``"amber"`` / ``"red"``.
+
+    RAG thresholds are interpreted relative to ``direction``:
+    * ``"higher_is_better"`` (default): green when actual >= target,
+      amber when actual >= target * amber_threshold, red otherwise.
+    * ``"lower_is_better"``: green when actual <= target,
+      amber when actual <= target / amber_threshold, red otherwise.
+
+    Attributes
+    ----------
+    value:           The target magnitude — a numeric literal or a trusted SQL
+                     expression (author-governed, inlined verbatim like
+                     ``default_filters``).  E.g. ``1_000_000`` or
+                     ``"budget_col"``.  Stored as a string so both forms are
+                     uniform in JSONB.
+    direction:       Whether a higher or lower actual value is better.
+    amber_threshold: Fraction at which we enter "amber" (default 0.8).
+                     For ``higher_is_better``: amber when
+                     ``actual / target >= amber_threshold`` but < 1.0.
+                     For ``lower_is_better``: amber when
+                     ``actual / target <= 1 / amber_threshold`` but > 1.0.
+    measure:         The measure name this target applies to.  Defaults to the
+                     metric's primary measure name.  Must be a declared base
+                     measure of the metric.
+    """
+
+    value: str
+    direction: TargetDirection = "higher_is_better"
+    amber_threshold: float = 0.8
+    measure: str | None = None
+
+
+@dataclass(frozen=True)
 class MetricDefinition:
     """A governed metric definition, compiled to SQL on demand.
 
@@ -190,6 +233,10 @@ class MetricDefinition:
     extra_measures: tuple[Measure, ...] = ()
     # Ratio / derived measures computed from the base measures (post-aggregation).
     derived_measures: tuple[DerivedMeasure, ...] = ()
+    # Optional KPI target.  When set the compiler emits target/actual/%-to-goal/RAG
+    # columns.  When None (default) the output is byte-identical to the pre-target
+    # behaviour — existing callers and conformance vectors are unaffected.
+    target: MetricTarget | None = None
 
     def dimension(self, name: str) -> Dimension | None:
         """Return the allowed :class:`Dimension` named *name*, or ``None``."""
@@ -231,6 +278,8 @@ class MetricDefinition:
         derived = tuple(
             _derived_measure_from(m) for m in (data.get("derived_measures") or ())
         )
+        target_raw = data.get("target")
+        target = _metric_target_from(target_raw) if target_raw else None
         return cls(
             id=str(data["id"]),
             name=str(data.get("name") or data["id"]),
@@ -247,6 +296,7 @@ class MetricDefinition:
             required_scope=data.get("required_scope"),
             extra_measures=extra,
             derived_measures=derived,
+            target=target,
         )
 
 
@@ -434,6 +484,15 @@ def _time_dimension_from(d: dict[str, Any]) -> TimeDimension:
     )
 
 
+def _metric_target_from(d: dict[str, Any]) -> MetricTarget:
+    return MetricTarget(
+        value=str(d["value"]),
+        direction=d.get("direction", "higher_is_better"),
+        amber_threshold=float(d.get("amber_threshold", 0.8)),
+        measure=d.get("measure"),
+    )
+
+
 class MetricError(Exception):
     """Raised when a metric definition or query violates the governance contract.
 
@@ -456,11 +515,13 @@ __all__ = [
     "YEAR_LAG_BY_GRAIN",
     "DimType",
     "FilterOp",
+    "TargetDirection",
     "ALL_TIME_GRAINS",
     "Measure",
     "DerivedMeasure",
     "Dimension",
     "TimeDimension",
+    "MetricTarget",
     "MetricDefinition",
     "MetricFilter",
     "TimeComparison",
