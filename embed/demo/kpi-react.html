@@ -1,0 +1,160 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Nubi KPI React — Web Component Demo</title>
+  <style>
+    /* Host-page theme tokens — these cascade into the shadow root */
+    :root {
+      --nubi-bg:       #0a1020;
+      --nubi-fg:       #e7edf6;
+      --nubi-accent:   #1b2a47;
+      --nubi-border:   #21304a;
+      --nubi-surface:  #111a2e;
+      --nubi-success:  #10b981;
+      --nubi-error:    #ef4444;
+      --nubi-warning:  #f59e0b;
+      --nubi-font-family: system-ui, -apple-system, sans-serif;
+    }
+
+    body {
+      margin: 0;
+      padding: 32px;
+      background: var(--nubi-bg, #0a1020);
+      color: var(--nubi-fg, #e7edf6);
+      font-family: var(--nubi-font-family, system-ui);
+    }
+
+    h1 { font-size: 18px; margin: 0 0 24px; opacity: .8; }
+    h2 { font-size: 13px; margin: 24px 0 8px; opacity: .55; letter-spacing: .06em; text-transform: uppercase; }
+
+    .cards {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+      gap: 16px;
+      margin-bottom: 32px;
+    }
+
+    nubi-kpi-react {
+      display: block;
+      height: 120px;
+      border-radius: 10px;
+      border: 1px solid var(--nubi-border);
+      overflow: hidden;
+    }
+
+    /* Override branding on specific cards */
+    nubi-kpi-react.no-brand {
+      --nubi-brand-show: 0;
+    }
+
+    /* Accent colour overrides per card */
+    nubi-kpi-react.teal {
+      --nubi-accent: #0d9488;
+      --nubi-bg:     #0d1a1a;
+    }
+
+    pre#log {
+      background: #111827;
+      border: 1px solid #21304a;
+      border-radius: 8px;
+      padding: 16px;
+      font-size: 12px;
+      min-height: 80px;
+      max-height: 200px;
+      overflow: auto;
+      color: #93c5fd;
+      white-space: pre-wrap;
+      word-break: break-all;
+    }
+  </style>
+</head>
+<body>
+  <h1>nubi-kpi-react · demo</h1>
+
+  <h2>KPI cards (static data via <code>data</code> attribute)</h2>
+  <div class="cards">
+    <!-- Card 1: plain data array, default theme -->
+    <nubi-kpi-react
+      id="revenue-kpi"
+      data='[{"revenue": 124500}]'
+      spec='{"id":"rev","type":"kpi","query_id":null,"encoding":{"value":"revenue"},"props":{"label":"Total Revenue","format":"currency"}}'
+    ></nubi-kpi-react>
+
+    <!-- Card 2: teal accent theme -->
+    <nubi-kpi-react
+      id="users-kpi"
+      class="teal"
+      data='[{"users": 8341}]'
+      spec='{"id":"users","type":"kpi","query_id":null,"encoding":{"value":"users"},"props":{"label":"Active Users","format":"integer"}}'
+    ></nubi-kpi-react>
+
+    <!-- Card 3: percent format, no branding -->
+    <nubi-kpi-react
+      id="conv-kpi"
+      class="no-brand"
+      data='[{"conversion_rate": 0.0342}]'
+      spec='{"id":"conv","type":"kpi","query_id":null,"encoding":{"value":"conversion_rate"},"props":{"label":"Conversion Rate","format":"percent"}}'
+    ></nubi-kpi-react>
+  </div>
+
+  <h2>Live backend demo (uses get-token)</h2>
+  <div class="cards">
+    <nubi-kpi-react
+      id="live-kpi"
+      get-token="nubiGetToken"
+      base-url="http://localhost:8000"
+      spec='{"id":"live","type":"kpi","query_id":"demo_revenue","encoding":{"value":"total"},"props":{"label":"Live Revenue","format":"currency"}}'
+    ></nubi-kpi-react>
+  </div>
+
+  <h2>Event log (<code>nubi:select</code>)</h2>
+  <pre id="log">// Click a KPI card to see events here…</pre>
+
+  <script type="module">
+    // ---------------------------------------------------------------------------
+    // Mock getToken (replace with your real auth function)
+    // ---------------------------------------------------------------------------
+    window.nubiGetToken = async function () {
+      // In production: return a JWT from your auth provider
+      // For demo: return a placeholder token
+      return 'demo-token-replace-me'
+    }
+
+    // ---------------------------------------------------------------------------
+    // Listen for nubi:select events from all KPI cards
+    // ---------------------------------------------------------------------------
+    document.addEventListener('nubi:select', (e) => {
+      const log = document.getElementById('log')
+      const timestamp = new Date().toISOString().slice(11, 23)
+      const entry = `[${timestamp}] nubi:select — id=${e.detail.id} rowIndex=${e.detail.rowIndex}\n`
+        + `  row: ${JSON.stringify(e.detail.row)}\n`
+      log.textContent = entry + log.textContent
+    })
+
+    // Also listen for nubi:error
+    document.addEventListener('nubi:error', (e) => {
+      const log = document.getElementById('log')
+      const timestamp = new Date().toISOString().slice(11, 23)
+      log.textContent = `[${timestamp}] nubi:error — ${e.detail.error} (${e.detail.code ?? 'no code'})\n`
+        + log.textContent
+    })
+
+    // ---------------------------------------------------------------------------
+    // Load the nubi-kpi-react web component
+    // The path below assumes this demo is served from the repo root
+    // ---------------------------------------------------------------------------
+    // When building with Vite: import from the built bundle
+    // For dev / direct file serving: import from source
+    try {
+      await import('../widgets/nubi-kpi-react.js')
+      console.log('[demo] nubi-kpi-react registered')
+    } catch (err) {
+      document.getElementById('log').textContent =
+        `[error] Failed to load nubi-kpi-react.js: ${err.message}\n`
+        + '(Run the dev server: npm run dev, then open via http://localhost:5173)'
+    }
+  </script>
+</body>
+</html>
