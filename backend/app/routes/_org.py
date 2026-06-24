@@ -36,6 +36,13 @@ api_key_org_pin: contextvars.ContextVar[str | None] = contextvars.ContextVar(
     "api_key_org_pin", default=None
 )
 
+# When the caller authenticated with a host-mode embed token, the org is
+# pinned from the verified JWT claim (no org_members row required).
+# A contextvar keeps the binding request-scoped.
+host_mode_org_pin: contextvars.ContextVar[str | None] = contextvars.ContextVar(
+    "host_mode_org_pin", default=None
+)
+
 
 # ── Org resolution helpers ────────────────────────────────────────────────────
 
@@ -68,6 +75,11 @@ async def get_user_org(user_id: str, repo: Repo) -> str:
     pinned = api_key_org_pin.get()
     if pinned:
         return pinned
+
+    # Host-mode embed tokens pin the org from the verified JWT claim.
+    host_pinned = host_mode_org_pin.get()
+    if host_pinned:
+        return host_pinned
 
     # InMemoryRepo exposes get_org_for_user(); use it when available.
     if hasattr(repo, "get_org_for_user"):
@@ -158,6 +170,19 @@ async def resolve_org_id(user_id: str, repo: Repo, request: Request) -> str:
                 403,
             )
         return pinned
+
+    # Host-mode embed tokens are pinned to a single org (from the JWT claim);
+    # reject any X-Org-Id that tries to redirect to a different org.
+    host_pinned = host_mode_org_pin.get()
+    if host_pinned:
+        requested = request.headers.get("x-org-id", "").strip()
+        if requested and requested != host_pinned:
+            raise AppError(
+                "forbidden",
+                "This embed token is scoped to a different organisation.",
+                403,
+            )
+        return host_pinned
 
     requested_org_id = request.headers.get("x-org-id", "").strip()
 

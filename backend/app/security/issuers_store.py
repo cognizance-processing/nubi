@@ -11,7 +11,8 @@ Schema
 The ``jwt_issuers`` table (migration 0024) has the columns:
 
     id, org_id, name, issuer, jwks_url, static_jwks_json,
-    algorithms, audience, enabled, created_by, created_at, updated_at
+    algorithms, audience, enabled, created_by, created_at, updated_at,
+    host_mode, org_claim
 
 Public API
 ----------
@@ -49,7 +50,8 @@ _UNSET: Any = object()
 JwtIssuerRow = dict[str, Any]
 """
 Dict with keys: id, org_id, name, issuer, jwks_url, static_jwks_json,
-algorithms, audience, enabled, created_by, created_at, updated_at
+algorithms, audience, enabled, created_by, created_at, updated_at,
+host_mode, org_claim
 """
 
 
@@ -85,6 +87,8 @@ class InMemoryIssuersStore:
         static_jwks_json: dict[str, Any] | None = None,
         algorithms: list[str] | None = None,
         enabled: bool = True,
+        host_mode: bool = False,
+        org_claim: str | None = None,
     ) -> JwtIssuerRow:
         """Create and return a new issuer row.
 
@@ -112,6 +116,8 @@ class InMemoryIssuersStore:
             "created_by": str(created_by),
             "created_at": now,
             "updated_at": now,
+            "host_mode": host_mode,
+            "org_claim": org_claim,
         }
         self._rows[row_id] = row
         return deepcopy(row)
@@ -127,6 +133,8 @@ class InMemoryIssuersStore:
         algorithms: list[str] | None = None,
         audience: str | None = None,
         enabled: bool | None = None,
+        host_mode: Any = _UNSET,
+        org_claim: Any = _UNSET,
     ) -> JwtIssuerRow | None:
         """Update fields on an existing issuer row.
 
@@ -150,6 +158,10 @@ class InMemoryIssuersStore:
             row["audience"] = audience
         if enabled is not None:
             row["enabled"] = enabled
+        if host_mode is not _UNSET:
+            row["host_mode"] = host_mode
+        if org_claim is not _UNSET:
+            row["org_claim"] = org_claim
         row["updated_at"] = datetime.now(timezone.utc)
         self._rows[str(issuer_id)] = row
         return deepcopy(row)
@@ -219,6 +231,8 @@ class PgIssuersStore:
         static_jwks_json: dict[str, Any] | None = None,
         algorithms: list[str] | None = None,
         enabled: bool = True,
+        host_mode: bool = False,
+        org_claim: str | None = None,
     ) -> JwtIssuerRow:
         """Insert a new issuer row; raise ``AppError`` on duplicate."""
         from app.db import fetchrow as db_fetchrow  # noqa: PLC0415
@@ -238,13 +252,16 @@ class PgIssuersStore:
                 """
                 INSERT INTO jwt_issuers
                     (org_id, name, issuer, jwks_url, static_jwks_json, algorithms,
-                     audience, enabled, created_by, created_at, updated_at)
+                     audience, enabled, created_by, created_at, updated_at,
+                     host_mode, org_claim)
                 VALUES
                     ($1::uuid, $2, $3, $4, $5::jsonb, $6::text[],
-                     $7, $8, $9::uuid, $10, $10)
+                     $7, $8, $9::uuid, $10, $10,
+                     $11, $12)
                 RETURNING
                     id, org_id, name, issuer, jwks_url, static_jwks_json,
-                    algorithms, audience, enabled, created_by, created_at, updated_at
+                    algorithms, audience, enabled, created_by, created_at, updated_at,
+                    host_mode, org_claim
                 """,
                 org_id,
                 name,
@@ -256,6 +273,8 @@ class PgIssuersStore:
                 enabled,
                 created_by,
                 now,
+                host_mode,
+                org_claim,
             )
         except Exception as exc:  # noqa: BLE001
             _msg = str(exc).lower()
@@ -281,6 +300,8 @@ class PgIssuersStore:
         algorithms: list[str] | None = None,
         audience: str | None = None,
         enabled: bool | None = None,
+        host_mode: Any = _UNSET,
+        org_claim: Any = _UNSET,
     ) -> JwtIssuerRow | None:
         """Partial-update an issuer row; return updated row or ``None``."""
         from app.db import fetchrow as db_fetchrow  # noqa: PLC0415
@@ -317,6 +338,14 @@ class PgIssuersStore:
             sets.append(f"enabled = ${idx}")
             params.append(enabled)
             idx += 1
+        if host_mode is not _UNSET:
+            sets.append(f"host_mode = ${idx}")
+            params.append(host_mode)
+            idx += 1
+        if org_claim is not _UNSET:
+            sets.append(f"org_claim = ${idx}")
+            params.append(org_claim)
+            idx += 1
 
         sql = f"""
             UPDATE jwt_issuers
@@ -324,7 +353,8 @@ class PgIssuersStore:
             WHERE id = $1::uuid AND org_id = $2::uuid
             RETURNING
                 id, org_id, name, issuer, jwks_url, static_jwks_json,
-                algorithms, audience, enabled, created_by, created_at, updated_at
+                algorithms, audience, enabled, created_by, created_at, updated_at,
+                host_mode, org_claim
         """
         row = await db_fetchrow(sql, *params)
         if row is None:
@@ -356,7 +386,8 @@ class PgIssuersStore:
         rows = await db_fetch(
             """
             SELECT id, org_id, name, issuer, jwks_url, static_jwks_json,
-                   algorithms, audience, enabled, created_by, created_at, updated_at
+                   algorithms, audience, enabled, created_by, created_at, updated_at,
+                   host_mode, org_claim
             FROM jwt_issuers
             WHERE org_id = $1::uuid
             ORDER BY created_at ASC
@@ -372,7 +403,8 @@ class PgIssuersStore:
         row = await db_fetchrow(
             """
             SELECT id, org_id, name, issuer, jwks_url, static_jwks_json,
-                   algorithms, audience, enabled, created_by, created_at, updated_at
+                   algorithms, audience, enabled, created_by, created_at, updated_at,
+                   host_mode, org_claim
             FROM jwt_issuers
             WHERE id = $1::uuid AND org_id = $2::uuid
             """,
@@ -392,7 +424,8 @@ class PgIssuersStore:
         row = await db_fetchrow(
             """
             SELECT id, org_id, name, issuer, jwks_url, static_jwks_json,
-                   algorithms, audience, enabled, created_by, created_at, updated_at
+                   algorithms, audience, enabled, created_by, created_at, updated_at,
+                   host_mode, org_claim
             FROM jwt_issuers
             WHERE org_id = $1::uuid AND issuer = $2 AND enabled = TRUE
             LIMIT 1
