@@ -109,6 +109,7 @@ from app.metrics.models import (
     MetricDefinition,
     MetricError,
     MetricQuery,
+    MetricTarget,
     TimeGrain,
     YEAR_LAG_BY_GRAIN,
     DerivedMeasure,
@@ -276,7 +277,9 @@ def compile_metric(
     time_alias = _govern(metric, mq)
 
     # ── 2. Decide path: FLAT vs LAYERED ─────────────────────────────────────
-    needs_layer = bool(metric.derived_measures) or mq.has_transforms()
+    # A target forces the layered path because target/RAG columns are
+    # post-aggregation arithmetic computed in the outer SELECT over __base.
+    needs_layer = bool(metric.derived_measures) or mq.has_transforms() or metric.target is not None
 
     if not needs_layer:
         return _compile_flat(metric, mq, time_alias, dialect)
@@ -538,6 +541,12 @@ def _compile_layered(
         formula_sql = _compile_derived_formula(dm, base_measure_names)
         formula_expr = sqlglot.parse_one(formula_sql, dialect=dialect)
         outer_select_exprs.append(exp.alias_(formula_expr, dm.name))
+
+    # (d2) KPI target columns: actual/target/pct_to_goal/RAG
+    if metric.target is not None:
+        outer_select_exprs.extend(
+            _target_exprs(metric.target, metric.measure.name, dialect)
+        )
 
     # (e) time-intelligence window functions (non-snapshot)
     # Partition by non-time dims (requested dims + rls extras, no time alias).
@@ -1492,6 +1501,16 @@ def _build_other_select(
     for tc in regular_comparisons:
         select_exprs.append(exp.alias_(exp.Null(), tc.out_name()))
 
+    # (f) KPI target columns — recomputed from the re-aggregated base measures.
+    # The Other arm re-aggregates base measures into bare_name_to_agg_node so
+    # actual references are already correct column references; the target
+    # expressions reference the measure column by name which will resolve
+    # correctly because the re-agg nodes are aliased with those names.
+    if metric.target is not None:
+        select_exprs.extend(
+            _target_exprs(metric.target, metric.measure.name, dialect)
+        )
+
     # ── GROUP BY: time alias (if any) + every non-ranked dim ─────────────────
     group_exprs: list[exp.Expression] = []
     if time_alias is not None:
@@ -1527,6 +1546,96 @@ def _build_other_select(
     if group_exprs:
         other_select = other_select.group_by(*group_exprs)
     return other_select
+
+
+# ---------------------------------------------------------------------------
+# KPI target column builder
+# ---------------------------------------------------------------------------
+
+
+def _target_exprs(
+    target: "MetricTarget",
+    measure_name: str,
+    dialect: str,
+) -> list[exp.Expression]:
+    """Emit the four KPI target columns for the outer SELECT.
+
+    Columns emitted (all prefixed with the measure name):
+    * ``<measure>_target``       — the target value literal/expression.
+    * ``<measure>_vs_target``    — ``actual - target`` signed delta.
+    * ``<measure>_pct_to_goal``  — ``actual / target`` ratio (1.0 = 100 %).
+    * ``<measure>_rag``          — ``'green'`` / ``'amber'`` / ``'red'``.
+
+    ``target.value`` is treated as a trusted author-governed SQL expression
+    (like ``default_filters``): it is parsed by sqlglot and inlined.
+
+    The ``target_measure`` used for actual/ratio is the declared primary measure
+    (``measure_name``), not the full ``metric.measures()`` list.
+
+    RAG logic (DuckDB ``CASE WHEN`` expression):
+    higher_is_better:
+        green  when actual >= target
+        amber  when actual >= target * amber_threshold
+        red    otherwise
+    lower_is_better:
+        green  when actual <= target
+        amber  when actual <= target / NULLIF(amber_threshold, 0)
+        red    otherwise
+
+    The amber_threshold column is inlined as a literal.
+    """
+    # Resolve measure name for the target (default: metric's primary measure).
+    m_name = target.measure if target.measure else measure_name
+
+    # Parse the target value as a trusted expression (e.g. "1000000" or
+    # "budget_col").  sqlglot.parse_one on a bare number/name is safe.
+    try:
+        target_val = sqlglot.parse_one(str(target.value), dialect=dialect)
+    except Exception:
+        target_val = exp.Literal.number(0)
+
+    m_col = exp.column(m_name)
+    prefix = m_name
+    thresh = exp.Literal.number(target.amber_threshold)
+
+    # <measure>_target
+    target_col = exp.alias_(target_val.copy(), f"{prefix}_target")
+
+    # <measure>_vs_target = actual - target
+    vs_target = exp.alias_(
+        exp.Sub(this=m_col.copy(), expression=target_val.copy()),
+        f"{prefix}_vs_target",
+    )
+
+    # <measure>_pct_to_goal = actual / NULLIF(target, 0)
+    pct_sql = f"{m_col.sql(dialect=dialect)} / NULLIF({target_val.sql(dialect=dialect)}, 0)"
+    pct_expr = sqlglot.parse_one(pct_sql, dialect=dialect)
+    pct_to_goal = exp.alias_(pct_expr, f"{prefix}_pct_to_goal")
+
+    # <measure>_rag — CASE WHEN expression
+    t_sql = target_val.sql(dialect=dialect)
+    m_sql = m_col.sql(dialect=dialect)
+    thr_sql = thresh.sql(dialect=dialect)
+
+    if target.direction == "higher_is_better":
+        rag_sql = (
+            f"CASE "
+            f"WHEN {m_sql} >= {t_sql} THEN 'green' "
+            f"WHEN {m_sql} >= {t_sql} * {thr_sql} THEN 'amber' "
+            f"ELSE 'red' END"
+        )
+    else:  # lower_is_better
+        rag_sql = (
+            f"CASE "
+            f"WHEN {m_sql} <= {t_sql} THEN 'green' "
+            f"WHEN {m_sql} <= {t_sql} / NULLIF({thr_sql}, 0) THEN 'amber' "
+            f"ELSE 'red' END"
+        )
+
+    rag_expr = sqlglot.parse_one(rag_sql, dialect=dialect)
+    rag_col = exp.alias_(rag_expr, f"{prefix}_rag")
+
+    return [target_col, vs_target, pct_to_goal, rag_col]
 
 
 # ---------------------------------------------------------------------------
