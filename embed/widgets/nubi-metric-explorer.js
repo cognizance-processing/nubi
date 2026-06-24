@@ -77,7 +77,7 @@ const EXPLORER_STYLES = /* css */ `
     letter-spacing: 0.05em;
   }
   .scope-indicator.metric { background: #064e3b; color: #6ee7b7; }
-  .scope-indicator.readonly { background: #450a0a; color: #fca5a5; }
+  .scope-indicator.readonly { background: var(--nubi-bg-2, #1a1f2e); color: var(--nubi-fg-muted, #718096); border: 1px solid var(--nubi-border, #2d3748); }
 
   /* Controls */
   .nubi-me-controls {
@@ -224,7 +224,7 @@ const EXPLORER_STYLES = /* css */ `
   .no-scope-banner {
     margin: 12px;
     padding: 10px 14px;
-    background: #1a0808;
+    background: var(--nubi-bg-2, #1a1f2e);
     border: 1px solid var(--nubi-border, #2d3748);
     border-radius: var(--nubi-radius-sm, 4px);
     color: var(--nubi-fg-muted, #718096);

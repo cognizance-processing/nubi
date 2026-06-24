@@ -110,7 +110,7 @@ const EDITOR_STYLES = /* css */ `
   .scope-badge.sql    { background: #1e1b4b; color: #a5b4fc; }
   .scope-badge.metric { background: #064e3b; color: #6ee7b7; }
   .scope-badge.both   { background: #1e2433; color: #93c5fd; }
-  .scope-badge.readonly { background: #450a0a; color: #fca5a5; }
+  .scope-badge.readonly { background: var(--nubi-bg-2, #1a1f2e); color: var(--nubi-fg-muted, #718096); border: 1px solid var(--nubi-border, #2d3748); }
 
   .btn-run, .btn-save {
     padding: 3px 12px;
@@ -461,13 +461,20 @@ export class NubiQueryEditor extends HTMLElement {
     ta.className = 'nubi-qe-textarea'
     ta.readOnly = readOnly
     ta.placeholder = readOnly ? '-- Read-only mode' : '-- Write SQL here…'
+    // Use CSS custom properties via the host element's computed style for theming;
+    // hard-coded fallbacks mirror the dark theme defaults.
     ta.style.cssText = `
       width: 100%; height: 100%;
       box-sizing: border-box;
-      background: #0f1117; color: #e2e8f0;
+      background: var(--nubi-bg, #0f1117);
+      color: var(--nubi-fg, #e2e8f0);
       border: none; outline: none; resize: none;
-      font-family: 'Fira Code', Consolas, monospace;
-      font-size: 13px; padding: 12px; line-height: 1.5;
+      font-family: var(--nubi-font-mono, 'Fira Code', Consolas, monospace);
+      font-size: var(--nubi-font-size-base, 13px);
+      padding: 12px;
+      line-height: var(--nubi-line-height, 1.5);
+      opacity: ${readOnly ? '0.7' : '1'};
+      cursor: ${readOnly ? 'default' : 'text'};
     `
     ta.value = this._currentSql || ''
     ta.addEventListener('input', () => {
@@ -475,6 +482,15 @@ export class NubiQueryEditor extends HTMLElement {
       const dirty = ta.value !== this._savedSql
       emitDirty(this, { dirty })
     })
+    // Ctrl/Cmd+Enter → Run (mirrors Monaco keybinding)
+    if (!readOnly) {
+      ta.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) {
+          e.preventDefault()
+          this._run()
+        }
+      })
+    }
     this._editorWrapEl.appendChild(ta)
     this._textareaEl = ta
   }

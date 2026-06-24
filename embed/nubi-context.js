@@ -23,9 +23,13 @@ import { resolveToken as resolveTokenAttr, fetchArrow } from './widgets/shared.j
 // ---------------------------------------------------------------------------
 
 /**
- * Decode the `scope` or `scopes` claim from a JWT payload.
- * Handles both space-delimited strings and arrays.
+ * Decode the `scope`, `scopes`, or `scp` claim from a JWT payload.
+ * Handles both space-delimited strings (RFC 6749) and arrays.
  * Returns [] on any parse failure.
+ *
+ * Mirrors the Python `parse_scopes` in backend/app/auth/scopes.py:
+ *   - accepts `scope` (string or list) or `scopes` fallback
+ *   - also tolerates the `scp` claim (used by some OIDC providers)
  *
  * @param {string|null|undefined} token — raw JWT string
  * @returns {string[]}
@@ -40,10 +44,11 @@ export function decodeScopes(token) {
     const padded = b64 + '='.repeat((4 - (b64.length % 4)) % 4)
     const json = atob(padded)
     const payload = JSON.parse(json)
-    const raw = payload.scope ?? payload.scopes ?? ''
-    return Array.isArray(raw)
-      ? raw.filter(Boolean)
-      : String(raw).split(' ').filter(Boolean)
+    // Precedence: scope → scopes → scp (mirrors backend parse_scopes)
+    const raw = payload.scope ?? payload.scopes ?? payload.scp ?? ''
+    if (Array.isArray(raw)) return raw.map(String).filter(Boolean)
+    // space-delimited string (RFC 6749)
+    return String(raw).split(' ').filter(Boolean)
   } catch {
     return []
   }
@@ -52,21 +57,28 @@ export function decodeScopes(token) {
 /**
  * Return true if `scopes` contains the given required scope,
  * respecting wildcard patterns:
- *   '*'         → matches everything
- *   'author:*'  → matches any 'author:…' scope
+ *   '*'               → matches everything (super-admin sentinel)
+ *   'read:*'          → matches any 'read:…' scope (including 'read:a:b')
+ *   'read:dashboard:*'→ matches 'read:dashboard:abc' but NOT 'read:other:abc'
  *
- * Mirrors the Python `has_scope` in backend/app/auth/scopes.py.
+ * Exactly mirrors the Python `has_scope` in backend/app/auth/scopes.py:
+ *   prefix = granted[:-1]  (strip trailing '*')
+ *   required.startswith(prefix)
  *
  * @param {string[]} scopes
  * @param {string} required
  * @returns {boolean}
  */
 export function hasScope(scopes, required) {
-  if (scopes.includes('*')) return true
-  if (scopes.includes(required)) return true
-  // Wildcard prefix: 'author:*' matches 'author:sql'
-  const [ns] = required.split(':')
-  if (scopes.includes(`${ns}:*`)) return true
+  for (const granted of scopes) {
+    if (granted === required) return true
+    if (granted === '*') return true
+    if (granted.endsWith(':*')) {
+      // e.g. 'read:*' → prefix 'read:'  — matches any scope beginning with 'read:'
+      const prefix = granted.slice(0, -1)  // everything before the trailing '*'
+      if (required.startsWith(prefix)) return true
+    }
+  }
   return false
 }
 

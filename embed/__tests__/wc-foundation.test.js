@@ -342,6 +342,14 @@ describe('decodeScopes', () => {
     return `${header}.${payload}.fakesig`
   }
 
+  function makeTokenRaw(claims) {
+    const header  = btoa(JSON.stringify({ alg: 'none', typ: 'JWT' }))
+      .replace(/\+/g, '-').replace(/\//g, '_').replace(/=/g, '')
+    const payload = btoa(JSON.stringify({ sub: 'test', iat: 1000, exp: 9999, ...claims }))
+      .replace(/\+/g, '-').replace(/\//g, '_').replace(/=/g, '')
+    return `${header}.${payload}.fakesig`
+  }
+
   it('returns [] for null/undefined token', () => {
     assert.deepEqual(decodeScopes(null),      [])
     assert.deepEqual(decodeScopes(undefined), [])
@@ -352,7 +360,13 @@ describe('decodeScopes', () => {
     assert.deepEqual(decodeScopes('not.a.valid.jwt'), [])
   })
 
-  it('decodes space-delimited scopes', () => {
+  it('decodes space-delimited scope string (RFC 6749 format)', () => {
+    const tok = makeToken(['read:*', 'author:sql', 'author:metric'])
+    const scopes = decodeScopes(tok)
+    assert.deepEqual(scopes, ['read:*', 'author:sql', 'author:metric'])
+  })
+
+  it('decodes space-delimited scopes with multiple tokens', () => {
     const tok = makeToken(['read', 'write', 'author:sql'])
     assert.deepEqual(decodeScopes(tok), ['read', 'write', 'author:sql'])
   })
@@ -366,6 +380,49 @@ describe('decodeScopes', () => {
     const tok = makeToken([])
     assert.deepEqual(decodeScopes(tok), [])
   })
+
+  it('decodes scope claim that is an array (not a string)', () => {
+    const tok = makeTokenRaw({ scope: ['read:*', 'author:sql'] })
+    const scopes = decodeScopes(tok)
+    assert.deepEqual(scopes, ['read:*', 'author:sql'])
+  })
+
+  it('decodes scopes claim (plural) as fallback when scope absent', () => {
+    const tok = makeTokenRaw({ scopes: ['read:*', 'author:metric'] })
+    const scopes = decodeScopes(tok)
+    assert.deepEqual(scopes, ['read:*', 'author:metric'])
+  })
+
+  it('decodes scp claim as final fallback', () => {
+    const tok = makeTokenRaw({ scp: 'read:* author:sql' })
+    const scopes = decodeScopes(tok)
+    assert.ok(scopes.includes('read:*'),    'should include read:*')
+    assert.ok(scopes.includes('author:sql'), 'should include author:sql')
+  })
+
+  it('decodes scp claim as array', () => {
+    const tok = makeTokenRaw({ scp: ['author:metric', 'read:*'] })
+    const scopes = decodeScopes(tok)
+    assert.ok(scopes.includes('author:metric'), 'should include author:metric')
+    assert.ok(scopes.includes('read:*'),        'should include read:*')
+  })
+
+  it('scope takes precedence over scopes and scp', () => {
+    const tok = makeTokenRaw({ scope: 'author:sql', scopes: ['author:metric'], scp: 'read:*' })
+    const scopes = decodeScopes(tok)
+    assert.deepEqual(scopes, ['author:sql'])
+  })
+
+  it('author:metric space-delimited token is not read-only (hasScope check)', () => {
+    const tok = makeTokenRaw({ scope: 'read:* author:metric' })
+    const scopes = decodeScopes(tok)
+    assert.ok(scopes.includes('author:metric'), 'author:metric must be in parsed scopes')
+    // Simulate the read-only check: forceRO || (!hasSql && !hasMetric)
+    const hasSql    = hasScope(scopes, 'author:sql')
+    const hasMetric = hasScope(scopes, 'author:metric')
+    const readOnly  = !hasSql && !hasMetric
+    assert.equal(readOnly, false, 'author:metric token must NOT be read-only')
+  })
 })
 
 describe('hasScope', () => {
@@ -377,10 +434,11 @@ describe('hasScope', () => {
     assert.equal(hasScope(['read'], 'author:sql'), false)
   })
 
-  it('wildcard * matches everything', () => {
-    assert.equal(hasScope(['*'], 'author:sql'),    true)
-    assert.equal(hasScope(['*'], 'author:metric'), true)
-    assert.equal(hasScope(['*'], 'read'),          true)
+  it('wildcard * matches everything (super-admin sentinel)', () => {
+    assert.equal(hasScope(['*'], 'author:sql'),        true)
+    assert.equal(hasScope(['*'], 'author:metric'),     true)
+    assert.equal(hasScope(['*'], 'read'),              true)
+    assert.equal(hasScope(['*'], 'read:dashboard:x'),  true)
   })
 
   it('namespace wildcard author:* matches author:sql and author:metric', () => {
@@ -390,6 +448,31 @@ describe('hasScope', () => {
 
   it('namespace wildcard does NOT match cross-namespace', () => {
     assert.equal(hasScope(['author:*'], 'read'), false)
+  })
+
+  it('read:* matches read:anything and read:a:b (multi-segment)', () => {
+    // Matches backend: prefix = 'read:' → required.startsWith('read:')
+    assert.equal(hasScope(['read:*'], 'read:dashboard'),     true)
+    assert.equal(hasScope(['read:*'], 'read:dashboard:abc'), true)
+    assert.equal(hasScope(['read:*'], 'read:'),              true)
+  })
+
+  it('read:dashboard:* matches read:dashboard:abc but NOT read:other:abc', () => {
+    assert.equal(hasScope(['read:dashboard:*'], 'read:dashboard:abc'),  true)
+    assert.equal(hasScope(['read:dashboard:*'], 'read:other:abc'),      false)
+    assert.equal(hasScope(['read:dashboard:*'], 'read:dashboard'),      false)
+  })
+
+  it('empty scopes array returns false', () => {
+    assert.equal(hasScope([], 'author:sql'), false)
+  })
+
+  it('author:metric token resolves as NOT read-only', () => {
+    const scopes = ['read:*', 'author:metric']
+    const hasSql    = hasScope(scopes, 'author:sql')
+    const hasMetric = hasScope(scopes, 'author:metric')
+    assert.equal(hasMetric, true,  'author:metric must be present')
+    assert.equal(!hasSql && !hasMetric, false, 'must not be read-only')
   })
 })
 
