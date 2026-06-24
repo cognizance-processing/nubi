@@ -940,3 +940,330 @@ async def query_metric(
         media_type=_ARROW_STREAM_MEDIA_TYPE,
         headers={"X-Nubi-Cache": "MISS"},
     )
+
+
+# ---------------------------------------------------------------------------
+# POST /metrics/{id}/explain  — root-cause contribution analysis
+# ---------------------------------------------------------------------------
+# Pydantic request/response models for the explain endpoint.
+
+
+from typing import List, Optional
+
+from pydantic import Field
+
+
+class TimeWindow(BaseModel):
+    """A half-open time window [start, end)."""
+
+    start: str  # ISO datetime
+    end: str
+
+
+class ExplainRequest(BaseModel):
+    """Request body for POST /metrics/{id}/explain."""
+
+    current: TimeWindow
+    comparison: TimeWindow
+    dimensions: Optional[List[str]] = None   # None → use all allowed dims
+    top_n: int = Field(default=10, ge=1, le=50)
+    include_summary: bool = False
+
+
+class MemberContributionResponse(BaseModel):
+    member: Any
+    current: Optional[float] = None
+    comparison: Optional[float] = None
+    delta: float
+    share: float
+    direction: str
+
+
+class DimensionBreakdownResponse(BaseModel):
+    dimension: str
+    members: List[MemberContributionResponse]
+    other: Optional[MemberContributionResponse] = None
+    coverage: float
+    explanatory_power: float
+
+
+class ExplainResponse(BaseModel):
+    metric_id: str
+    measure: str
+    delta_total: float
+    current_total: float
+    comparison_total: float
+    dimensions: List[DimensionBreakdownResponse]
+    summary: Optional[str] = None
+
+
+async def _fetch_metric_rows(
+    metric: MetricDefinition,
+    mq: MetricQuery,
+    identity: "VerifiedIdentity",
+    org_id: str | None,
+    repo: Any,
+) -> list[dict[str, Any]]:
+    """Compile + plan + execute a MetricQuery, returning list of row dicts.
+
+    This mirrors _run_metric from watch.py but uses the route's identity/org
+    context (matching what query_metric does) and runs CPU-bound steps in
+    threads. RLS comes EXCLUSIVELY from identity.policies.
+    """
+    from app.connectors.planner import resolve_named_params as _resolve_named_params
+    from app.connectors import plan as _planner_plan
+    from app.routes.query import _build_connector_for_plan as _bcp
+
+    policy_cols = tuple((identity.policies or {}).keys())
+    metric_dialect = _COMPILED_METRIC_DIALECT
+
+    try:
+        sql, named_params = await asyncio.to_thread(
+            compile_metric,
+            metric,
+            mq,
+            dialect=metric_dialect,
+            policy_cols=policy_cols,
+        )
+    except MetricError as exc:
+        raise AppError(exc.code, exc.message, 400) from exc
+
+    effective_sql, effective_params = _resolve_named_params(sql, named_params)
+    claims = {"policies": identity.policies}
+
+    physical_plan = await asyncio.to_thread(
+        _planner_plan,
+        sql=effective_sql,
+        claims=claims,
+        params=effective_params,
+        dialect=metric_dialect,
+    )
+
+    connector, _conn_kind, net_cleanup = await _bcp(
+        physical_plan,
+        metric.datastore_id or None,
+        org_id,
+        None,
+        repo,
+    )
+    try:
+        arrow_table = await asyncio.to_thread(connector.execute, physical_plan)
+    finally:
+        try:
+            net_cleanup()
+        except Exception:  # noqa: BLE001
+            pass
+
+    return list(arrow_table.to_pylist())
+
+
+@api_router.post("/metrics/{metric_id}/explain")
+async def explain_metric(
+    metric_id: str,
+    body: ExplainRequest,
+    request: Request,
+    identity: VerifiedIdentity = Depends(verified_identity),
+) -> dict:
+    """Root-cause contribution analysis for a metric over two time windows.
+
+    For each allowed dimension, fetches the measure grouped by that dimension
+    for both the current and comparison periods, then computes per-member
+    delta contributions and ranks dimensions by explanatory power.
+
+    TENANT ISOLATION (SEC): org-scoped metric resolution; RLS from token only.
+    Time windows are passed as user filters — no raw SQL accepted.
+    """
+    _require_read_scope(identity)
+    org_id = await _caller_org(identity, request)
+    metric = await _resolve_metric(metric_id, org_id)
+
+    # Determine dimensions to analyze
+    allowed_dim_names = [d.name for d in metric.dimensions]
+    if body.dimensions is not None:
+        unknown = [d for d in body.dimensions if d not in allowed_dim_names]
+        if unknown:
+            raise AppError(
+                "unknown_dimension",
+                f"Dimension(s) not declared on metric: {unknown}",
+                400,
+            )
+        analyze_dims = body.dimensions
+    else:
+        analyze_dims = allowed_dim_names
+
+    # Validate time dimension requirement
+    if metric.time_dimension is None:
+        raise AppError(
+            "no_time_dimension",
+            "This metric has no time_dimension; period comparison is not supported.",
+            400,
+        )
+
+    td = metric.time_dimension
+    time_col = td.column
+    top_n = body.top_n
+    repo = get_repo()
+
+    # Semaphore to cap concurrent queries (2 periods * N dims + 2 totals)
+    _sem_cap = min(8, max(2, len(analyze_dims) * 2 + 2))
+    sem = asyncio.Semaphore(_sem_cap)
+
+    async def _run_dim_period(dim_name: str, tw: TimeWindow) -> list[dict[str, Any]]:
+        """Run a grouped metric query for one dimension + one time window."""
+        async with sem:
+            mq = MetricQuery.from_dict({
+                "metric_id": metric_id,
+                "dimensions": [dim_name],
+                "filters": [
+                    {"field": time_col, "op": ">=", "value": tw.start},
+                    {"field": time_col, "op": "<", "value": tw.end},
+                ],
+            })
+            return await _fetch_metric_rows(metric, mq, identity, org_id, repo)
+
+    async def _run_total_period(tw: TimeWindow) -> list[dict[str, Any]]:
+        """Run a total (no groupby) metric query for one time window."""
+        async with sem:
+            mq = MetricQuery.from_dict({
+                "metric_id": metric_id,
+                "dimensions": [],
+                "filters": [
+                    {"field": time_col, "op": ">=", "value": tw.start},
+                    {"field": time_col, "op": "<", "value": tw.end},
+                ],
+            })
+            return await _fetch_metric_rows(metric, mq, identity, org_id, repo)
+
+    # Build all tasks: totals first, then per-dim per-period
+    total_tasks = [
+        _run_total_period(body.current),
+        _run_total_period(body.comparison),
+    ]
+    dim_tasks = []
+    dim_task_keys: list[tuple[str, str]] = []  # (dim_name, period)
+    for dim_name in analyze_dims:
+        dim_tasks.append(_run_dim_period(dim_name, body.current))
+        dim_task_keys.append((dim_name, "current"))
+        dim_tasks.append(_run_dim_period(dim_name, body.comparison))
+        dim_task_keys.append((dim_name, "comparison"))
+
+    # Run everything concurrently
+    all_results = await asyncio.gather(
+        *total_tasks, *dim_tasks, return_exceptions=True
+    )
+
+    # Extract totals
+    measure_name = metric.measure.name
+    total_results = all_results[:2]
+    dim_results = all_results[2:]
+
+    def _extract_total(rows_or_exc: Any) -> float:
+        if isinstance(rows_or_exc, Exception):
+            return 0.0
+        rows = rows_or_exc
+        if not rows:
+            return 0.0
+        val = rows[0].get(measure_name)
+        try:
+            return float(val) if val is not None else 0.0
+        except (TypeError, ValueError):
+            return 0.0
+
+    current_total = _extract_total(total_results[0])
+    comparison_total = _extract_total(total_results[1])
+
+    # Aggregate per-dimension results into dicts
+    # dim_results[i] corresponds to dim_task_keys[i]
+    current_aggs: dict[str, dict[Any, float]] = {}
+    comparison_aggs: dict[str, dict[Any, float]] = {}
+
+    for i, (dim_name, period) in enumerate(dim_task_keys):
+        result = dim_results[i]
+        if isinstance(result, Exception):
+            agg: dict[Any, float] = {}
+        else:
+            agg = {}
+            for row in result:
+                member = row.get(dim_name)
+                val = row.get(measure_name)
+                try:
+                    agg[member] = float(val) if val is not None else 0.0
+                except (TypeError, ValueError):
+                    agg[member] = 0.0
+
+        if period == "current":
+            current_aggs[dim_name] = agg
+        else:
+            comparison_aggs[dim_name] = agg
+
+    # Build dimension_breakdowns dict
+    dimension_breakdowns = {
+        dim_name: (current_aggs.get(dim_name, {}), comparison_aggs.get(dim_name, {}))
+        for dim_name in analyze_dims
+    }
+
+    # Call pure math
+    from app.metrics.explain import build_explain_result  # noqa: PLC0415
+
+    explain_result = build_explain_result(
+        metric_id=metric_id,
+        measure=measure_name,
+        current_total=current_total,
+        comparison_total=comparison_total,
+        dimension_breakdowns=dimension_breakdowns,
+        top_n=top_n,
+    )
+
+    # Optional NL summary via the AI provider
+    summary: str | None = None
+    if body.include_summary:
+        try:
+            from app.ai.provider import get_provider  # noqa: PLC0415
+
+            provider = get_provider()
+            dims_text = "; ".join(
+                f"{d.dimension}: top driver {d.members[0].member if d.members else 'n/a'}"
+                for d in explain_result.dimensions[:3]
+            )
+            prompt = (
+                f"Metric '{metric_id}' ({measure_name}) changed by "
+                f"{explain_result.delta_total:+.2f} "
+                f"(current={explain_result.current_total:.2f}, "
+                f"comparison={explain_result.comparison_total:.2f}). "
+                f"Top drivers: {dims_text}. "
+                "Explain in 1-2 sentences."
+            )
+            summary = await asyncio.to_thread(provider.complete, prompt)
+        except Exception:  # noqa: BLE001 — NL summary is best-effort
+            summary = ""
+
+    # Serialize to response shape
+    def _mc_to_resp(mc: Any) -> dict[str, Any]:
+        return {
+            "member": mc.member,
+            "current": mc.current,
+            "comparison": mc.comparison,
+            "delta": mc.delta,
+            "share": mc.share,
+            "direction": mc.direction,
+        }
+
+    dims_out = []
+    for bd in explain_result.dimensions:
+        dims_out.append({
+            "dimension": bd.dimension,
+            "members": [_mc_to_resp(m) for m in bd.members],
+            "other": _mc_to_resp(bd.other) if bd.other else None,
+            "coverage": bd.coverage,
+            "explanatory_power": bd.explanatory_power,
+        })
+
+    return {
+        "metric_id": explain_result.metric_id,
+        "measure": explain_result.measure,
+        "delta_total": explain_result.delta_total,
+        "current_total": explain_result.current_total,
+        "comparison_total": explain_result.comparison_total,
+        "dimensions": dims_out,
+        "summary": summary,
+    }
