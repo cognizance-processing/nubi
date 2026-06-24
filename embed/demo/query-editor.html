@@ -1,0 +1,144 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>nubi-query-editor demo</title>
+
+  <!-- Monaco CDN (for demo only; production uses the Vite authoring bundle) -->
+  <script>
+    // Monaco web worker shim — fall back to main-thread when workers unavailable
+    window.MonacoEnvironment = { getWorkerUrl: () => '' }
+  </script>
+
+  <!-- The authoring component bundle (served from Vite dev server or local file server) -->
+  <!-- In production: <script type="module" src="/embed/widgets/authoring-index.js"></script> -->
+  <script type="module">
+    // Inline registration for demo (no bundler needed)
+    import { registerNubiAuthoringWidgets } from '../widgets/authoring-index.js'
+    registerNubiAuthoringWidgets()
+
+    // -----------------------------------------------------------------------
+    // Demo: build mock JWT tokens for each scope scenario
+    // -----------------------------------------------------------------------
+
+    function makeToken(scopes) {
+      const header  = btoa('{"alg":"none","typ":"JWT"}')
+        .replace(/\+/g,'-').replace(/\//g,'_').replace(/=/g,'')
+      const payload = btoa(JSON.stringify({
+        sub: 'demo-user', exp: Math.floor(Date.now()/1000)+3600,
+        scope: scopes.join(' ')
+      })).replace(/\+/g,'-').replace(/\//g,'_').replace(/=/g,'')
+      return `${header}.${payload}.demodemo`
+    }
+
+    // Expose tokens as global window.* functions (get-token pattern)
+    window.getTokenSqlOnly    = () => makeToken(['read:*', 'author:sql'])
+    window.getTokenMetricOnly = () => makeToken(['read:*', 'author:metric'])
+    window.getTokenBoth       = () => makeToken(['read:*', 'author:sql', 'author:metric'])
+    window.getTokenReadOnly   = () => makeToken(['read:*'])
+
+    // Log all nubi events to console for demo inspection
+    for (const name of ['nubi:run','nubi:save','nubi:dirty','nubi:error','nubi:select']) {
+      document.addEventListener(name, e => console.log(`[event] ${name}`, e.detail))
+    }
+  </script>
+
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      background: #0f1117;
+      color: #e2e8f0;
+      font-family: system-ui, -apple-system, sans-serif;
+      padding: 24px;
+      display: flex;
+      flex-direction: column;
+      gap: 32px;
+    }
+    h1 { font-size: 20px; font-weight: 700; color: #6366f1; margin-bottom: 4px; }
+    h2 { font-size: 14px; font-weight: 600; color: #a0aec0; margin-bottom: 8px; }
+    .demo-section {
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+    .demo-meta {
+      font-size: 11px;
+      color: #4a5568;
+      font-family: 'Fira Code', Consolas, monospace;
+      padding: 6px 10px;
+      background: #1a1f2e;
+      border-radius: 4px;
+      border: 1px solid #2d3748;
+    }
+    nubi-query-editor {
+      height: 320px;
+      width: 100%;
+      border-radius: 8px;
+    }
+  </style>
+</head>
+<body>
+  <div>
+    <h1>&lt;nubi-query-editor&gt; demo</h1>
+    <p style="font-size:12px;color:#718096;margin-top:4px">
+      Open browser console to see emitted events.
+      Scope gating is cosmetic — the server enforces the real gate.
+    </p>
+  </div>
+
+  <!-- Scenario 1: SQL only -->
+  <div class="demo-section">
+    <h2>Scenario 1 — SQL mode only (author:sql scope)</h2>
+    <div class="demo-meta">scopes: read:* author:sql | get-token: window.getTokenSqlOnly</div>
+    <nubi-query-editor
+      get-token="getTokenSqlOnly"
+      backend="http://localhost:8000"
+      mode="auto"
+    ></nubi-query-editor>
+  </div>
+
+  <!-- Scenario 2: Metric only -->
+  <div class="demo-section">
+    <h2>Scenario 2 — Metric builder only (author:metric scope, no SQL)</h2>
+    <div class="demo-meta">scopes: read:* author:metric | get-token: window.getTokenMetricOnly</div>
+    <nubi-query-editor
+      get-token="getTokenMetricOnly"
+      backend="http://localhost:8000"
+      mode="auto"
+    ></nubi-query-editor>
+  </div>
+
+  <!-- Scenario 3: Both -->
+  <div class="demo-section">
+    <h2>Scenario 3 — Full authoring (author:sql + author:metric)</h2>
+    <div class="demo-meta">scopes: read:* author:sql author:metric | get-token: window.getTokenBoth</div>
+    <nubi-query-editor
+      get-token="getTokenBoth"
+      backend="http://localhost:8000"
+      mode="auto"
+    ></nubi-query-editor>
+  </div>
+
+  <!-- Scenario 4: Read-only -->
+  <div class="demo-section">
+    <h2>Scenario 4 — Read-only (no authoring scopes)</h2>
+    <div class="demo-meta">scopes: read:* | get-token: window.getTokenReadOnly</div>
+    <nubi-query-editor
+      get-token="getTokenReadOnly"
+      backend="http://localhost:8000"
+    ></nubi-query-editor>
+  </div>
+
+  <!-- Scenario 5: Forced read-only attr override -->
+  <div class="demo-section">
+    <h2>Scenario 5 — Force read-only via attribute (overrides token scope)</h2>
+    <div class="demo-meta">scopes: read:* author:sql | attribute: read-only</div>
+    <nubi-query-editor
+      get-token="getTokenSqlOnly"
+      backend="http://localhost:8000"
+      read-only
+    ></nubi-query-editor>
+  </div>
+</body>
+</html>

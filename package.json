@@ -17,6 +17,8 @@
     "lint": "eslint .",
     "preview": "vite preview",
     "test:dash": "node --test 'src/**/*.test.mjs'",
+    "test:embed": "vitest run --config embed/vitest.config.js",
+    "test:embed:watch": "vitest --config embed/vitest.config.js",
     "test:e2e": "playwright test",
     "screenshots": "node scripts/docs-screenshots.mjs",
     "screenshots:auto": "bash scripts/screenshots.sh"
@@ -62,6 +64,7 @@
     "jsdom": "^26.1.0",
     "postcss": "^8.5.6",
     "tailwindcss": "^3.4.19",
-    "vite": "^7.3.1"
+    "vite": "^7.3.1",
+    "vitest": "^3.2.6"
   }
 }

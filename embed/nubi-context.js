@@ -1,0 +1,139 @@
+/**
+ * nubi-context.js — Shared context factory for multi-widget pages.
+ *
+ * createNubiContext({ token?, getTokenFn?, backend }) → NubiContext
+ *
+ * NubiContext provides:
+ *  - resolveToken()        → Promise<string|null>  — resolves the JWT
+ *  - fetch(queryId, sig?)  → Promise<Table>         — Arrow IPC fetch
+ *  - bus: EventTarget       — in-page cross-filter event bus
+ *  - emitFilter(col, val)   — broadcast a filter event on the bus
+ *  - onFilter(handler)      → () => void             — subscribe; returns unsub fn
+ *  - backend: string
+ *
+ * decodeScopes(token) — standalone export; base64-decodes the JWT payload
+ *   and returns the scope array.  Never verifies the signature (UI gating only;
+ *   the server is the real gate).
+ */
+
+import { resolveToken as resolveTokenAttr, fetchArrow } from './widgets/shared.js'
+
+// ---------------------------------------------------------------------------
+// Scope decoder (UI capability gating — cosmetic, server enforces real gate)
+// ---------------------------------------------------------------------------
+
+/**
+ * Decode the `scope` or `scopes` claim from a JWT payload.
+ * Handles both space-delimited strings and arrays.
+ * Returns [] on any parse failure.
+ *
+ * @param {string|null|undefined} token — raw JWT string
+ * @returns {string[]}
+ */
+export function decodeScopes(token) {
+  if (!token) return []
+  try {
+    const parts = token.split('.')
+    if (parts.length < 2) return []
+    // Base64url → base64 → JSON
+    const b64 = parts[1].replace(/-/g, '+').replace(/_/g, '/')
+    const padded = b64 + '='.repeat((4 - (b64.length % 4)) % 4)
+    const json = atob(padded)
+    const payload = JSON.parse(json)
+    const raw = payload.scope ?? payload.scopes ?? ''
+    return Array.isArray(raw)
+      ? raw.filter(Boolean)
+      : String(raw).split(' ').filter(Boolean)
+  } catch {
+    return []
+  }
+}
+
+/**
+ * Return true if `scopes` contains the given required scope,
+ * respecting wildcard patterns:
+ *   '*'         → matches everything
+ *   'author:*'  → matches any 'author:…' scope
+ *
+ * Mirrors the Python `has_scope` in backend/app/auth/scopes.py.
+ *
+ * @param {string[]} scopes
+ * @param {string} required
+ * @returns {boolean}
+ */
+export function hasScope(scopes, required) {
+  if (scopes.includes('*')) return true
+  if (scopes.includes(required)) return true
+  // Wildcard prefix: 'author:*' matches 'author:sql'
+  const [ns] = required.split(':')
+  if (scopes.includes(`${ns}:*`)) return true
+  return false
+}
+
+// ---------------------------------------------------------------------------
+// Cross-filter bus
+// ---------------------------------------------------------------------------
+
+const FILTER_EVENT = 'nubi:filter'
+
+// ---------------------------------------------------------------------------
+// Context factory
+// ---------------------------------------------------------------------------
+
+/**
+ * @typedef {Object} NubiContext
+ * @property {() => Promise<string|null>} resolveToken
+ * @property {(queryId: string, signal?: AbortSignal) => Promise<import('apache-arrow').Table>} fetch
+ * @property {EventTarget} bus
+ * @property {(column: string, value: unknown) => void} emitFilter
+ * @property {(handler: (e: CustomEvent) => void) => () => void} onFilter
+ * @property {string} backend
+ */
+
+/**
+ * Create a shared NubiContext for coordinating multiple widgets on one page.
+ *
+ * @param {{ token?: string, getTokenFn?: () => Promise<string>, backend?: string }} opts
+ * @returns {NubiContext}
+ */
+export function createNubiContext({ token, getTokenFn, backend = 'http://localhost:8000' } = {}) {
+  const bus = new EventTarget()
+
+  /** Resolve a JWT; static string > provided function > null */
+  async function resolveToken() {
+    if (token) return token
+    if (typeof getTokenFn === 'function') {
+      try { return await getTokenFn() ?? null } catch { return null }
+    }
+    return null
+  }
+
+  /**
+   * Fetch an Arrow table for the given registered query ID.
+   * @param {string} queryId
+   * @param {AbortSignal} [signal]
+   */
+  async function fetch(queryId, signal) {
+    const tok = await resolveToken()
+    return fetchArrow(backend, queryId, tok, signal)
+  }
+
+  /** Broadcast a cross-filter selection on the bus. */
+  function emitFilter(column, value) {
+    bus.dispatchEvent(new CustomEvent(FILTER_EVENT, {
+      detail: { column, value },
+    }))
+  }
+
+  /**
+   * Subscribe to cross-filter events.
+   * @param {(e: CustomEvent) => void} handler
+   * @returns {() => void} unsubscribe
+   */
+  function onFilter(handler) {
+    bus.addEventListener(FILTER_EVENT, handler)
+    return () => bus.removeEventListener(FILTER_EVENT, handler)
+  }
+
+  return { resolveToken, fetch, bus, emitFilter, onFilter, backend }
+}
