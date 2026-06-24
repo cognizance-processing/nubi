@@ -40,7 +40,7 @@
  * Any failure falls back to a visible sample card so demo pages always render.
  */
 
-import { resolveToken, fetchArrow, makeSampleKpiTable, escapeHtml, formatCell, BASE_STYLES } from './shared.js'
+import { resolveToken, fetchArrow, makeSampleKpiTable, escapeHtml, formatCell, BASE_STYLES, rowsToArrowTable } from './shared.js'
 import { applyTheme } from '../theme.js'
 
 // ---------------------------------------------------------------------------
@@ -178,6 +178,13 @@ const KPI_STYLES = /* css */ `
     opacity: 0.7;
     white-space: nowrap;
   }
+
+  .kpi-error-note {
+    font-size: 11px;
+    color: var(--nubi-error, #ef4444);
+    opacity: 0.75;
+    padding: 2px 0;
+  }
 `
 
 // ---------------------------------------------------------------------------
@@ -222,7 +229,7 @@ class NubiKpi extends HTMLElement {
       'query-id', 'value-col', 'label', 'format',
       'token', 'get-token', 'backend',
       'target-col', 'rag-col', 'pct-col',
-      'theme',
+      'theme', 'data', 'no-sample-fallback',
     ]
   }
 
@@ -318,7 +325,8 @@ class NubiKpi extends HTMLElement {
     } else {
       badge.style.display = 'none'
       note.style.display  = 'none'
-      this._shadow.querySelector('.kpi-sublabel').textContent = `query: ${this.getAttribute('query-id') || ''}`
+      const qid = this.getAttribute('query-id')
+      this._shadow.querySelector('.kpi-sublabel').textContent = qid ? `query: ${qid}` : 'data'
     }
 
     // ── Target / RAG rendering ───────────────────────────────────────────────
@@ -377,6 +385,35 @@ class NubiKpi extends HTMLElement {
     ragChip.textContent = (rag || 'red').toUpperCase()
   }
 
+  _showError(message) {
+    const v = this._shadow.querySelector('.kpi-value')
+    if (v) {
+      v.className = 'kpi-value'
+      v.textContent = 'Couldn\'t load data'
+    }
+    const badge = this._shadow.querySelector('.nubi-badge')
+    const note  = this._shadow.querySelector('.nubi-sample-note')
+    if (badge) badge.style.display = 'none'
+    if (note)  note.style.display  = 'none'
+
+    // Show/update error note
+    let errNote = this._shadow.querySelector('.kpi-error-note')
+    if (!errNote) {
+      errNote = document.createElement('div')
+      errNote.className = 'kpi-error-note'
+      const footer = this._shadow.querySelector('.kpi-footer')
+      if (footer) footer.before(errNote)
+    }
+    errNote.textContent = message || 'Couldn\'t load data'
+
+    // Hide target row
+    const targetRow = this._shadow.querySelector('.kpi-target-row')
+    if (targetRow) targetRow.style.display = 'none'
+    const label = this.getAttribute('label') || this.getAttribute('value-col') || 'KPI'
+    const labelEl = this._shadow.querySelector('.kpi-label')
+    if (labelEl) labelEl.textContent = label
+  }
+
   async _render() {
     this._abort()
     const ac = new AbortController()
@@ -387,6 +424,23 @@ class NubiKpi extends HTMLElement {
     // Show loading state
     this._shadow.querySelector('.kpi-value').className = 'kpi-value nubi-loading'
     this._shadow.querySelector('.kpi-value').textContent = '…'
+
+    // Inline data injection — bypasses fetch entirely
+    const dataAttr = this.getAttribute('data')
+    if (dataAttr) {
+      try {
+        const rows = JSON.parse(dataAttr)
+        const table = rowsToArrowTable(rows)
+        this._showValue(table, false)
+        this.dispatchEvent(new CustomEvent('nubi:widget-ready', {
+          bubbles: true, composed: true,
+          detail: { rows: table.numRows, renderer: 'kpi' },
+        }))
+      } catch (err) {
+        console.warn('[nubi-kpi] invalid data attribute:', err.message)
+      }
+      return
+    }
 
     const queryId = this.getAttribute('query-id')
     const backend = this._backend()
@@ -413,12 +467,21 @@ class NubiKpi extends HTMLElement {
           bubbles: true, composed: true,
           detail: { message: err.message },
         }))
+        if (this.hasAttribute('no-sample-fallback')) {
+          this._showError(err.message)
+          return
+        }
       }
     }
 
     if (ac.signal.aborted) return
 
     // Sample fallback
+    if (this.hasAttribute('no-sample-fallback')) {
+      this._showError('No data source configured')
+      return
+    }
+
     const sample = makeSampleKpiTable()
     this._showValue(sample, true)
     this.dispatchEvent(new CustomEvent('nubi:widget-ready', {

@@ -863,3 +863,145 @@ test.describe('getToken property — generic loader contract', () => {
     expect(version).toMatch(/^\d+\.\d+\.\d+/)
   })
 })
+
+// ---------------------------------------------------------------------------
+// kpi-targets.html — inline data injection + KPI target/RAG rendering
+// ---------------------------------------------------------------------------
+
+test.describe('kpi-targets demo — inline data + RAG chips', () => {
+  const PAGE = '/embed/demo/kpi-targets.html'
+
+  test('page loads with zero console errors', async ({ page }) => {
+    const getErrors = attachErrorCollector(page)
+    await page.goto(PAGE)
+    await page.waitForTimeout(1500)
+    const errors = getErrors()
+    expect(errors, `Unexpected errors:\n${errors.join('\n')}`).toHaveLength(0)
+  })
+
+  for (const rag of ['green', 'amber', 'red']) {
+    test(`RAG chip is visible and labeled ${rag.toUpperCase()} for ${rag} card`, async ({ page }) => {
+      await page.goto(PAGE)
+      const chipText = await page.waitForFunction(
+        (r) => {
+          const el = document.querySelector(`[data-rag="${r}"]`)
+          if (!el?.shadowRoot) return null
+          const chip = el.shadowRoot.querySelector('.kpi-rag-chip')
+          return chip && chip.textContent.trim() ? chip.textContent.trim() : null
+        },
+        rag,
+        { timeout: 8000 },
+      )
+      const text = await chipText.jsonValue()
+      expect(text).toBe(rag.toUpperCase())
+    })
+  }
+
+  test('goal bar is visible for green card', async ({ page }) => {
+    await page.goto(PAGE)
+    const barWidth = await page.waitForFunction(
+      () => {
+        const el = document.querySelector('[data-rag="green"]')
+        if (!el?.shadowRoot) return null
+        const bar = el.shadowRoot.querySelector('.kpi-goal-bar')
+        return bar ? bar.style.width : null
+      },
+      { timeout: 8000 },
+    )
+    const w = await barWidth.jsonValue()
+    expect(w).not.toBeNull()
+    expect(w).not.toBe('')
+    expect(w).not.toBe('0%')
+  })
+
+  test('no SAMPLE badge shown on data-injection cards', async ({ page }) => {
+    await page.goto(PAGE)
+    await page.waitForTimeout(2000)
+    const hasSample = await page.evaluate(() => {
+      return [...document.querySelectorAll('nubi-kpi')].some(el => {
+        if (!el?.shadowRoot) return false
+        const badge = el.shadowRoot.querySelector('.nubi-badge')
+        return badge && badge.style.display !== 'none' && badge.textContent.includes('SAMPLE')
+      })
+    })
+    expect(hasSample).toBe(false)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// error-state.html — no-sample-fallback error mode
+// ---------------------------------------------------------------------------
+
+test.describe('error-state demo — no-sample-fallback', () => {
+  const PAGE = '/embed/demo/error-state.html'
+
+  test('page loads with zero console errors (network errors suppressed)', async ({ page }) => {
+    const getErrors = attachErrorCollector(page)
+    await page.goto(PAGE)
+    await page.waitForTimeout(2500)
+    const errors = getErrors()
+    expect(errors, `Unexpected errors:\n${errors.join('\n')}`).toHaveLength(0)
+  })
+
+  test('nubi-kpi with no-sample-fallback shows error state, not SAMPLE badge', async ({ page }) => {
+    await page.goto(PAGE)
+    // Wait for shadow DOM
+    await page.waitForFunction(
+      () => {
+        const el = document.querySelector('nubi-kpi[no-sample-fallback]')
+        return el?.shadowRoot && el.shadowRoot.childElementCount > 0
+      },
+      { timeout: 8000 },
+    )
+    await page.waitForTimeout(3000) // wait for fetch to fail
+
+    const result = await page.evaluate(() => {
+      const el = document.querySelector('nubi-kpi[no-sample-fallback]')
+      if (!el?.shadowRoot) return { error: 'no element' }
+      const sr = el.shadowRoot
+      const badge = sr.querySelector('.nubi-badge')
+      const sampleNote = sr.querySelector('.nubi-sample-note')
+      const errNote = sr.querySelector('.kpi-error-note')
+      return {
+        sampleBadgeVisible: badge ? badge.style.display !== 'none' : false,
+        sampleNoteVisible: sampleNote ? sampleNote.style.display !== 'none' : false,
+        errNoteExists: !!errNote,
+      }
+    })
+
+    expect(result.sampleBadgeVisible).toBe(false)
+    expect(result.sampleNoteVisible).toBe(false)
+    expect(result.errNoteExists).toBe(true)
+  })
+
+  test('nubi-kpi with no-sample-fallback emits nubi:widget-error event', async ({ page }) => {
+    // Set up error capture before navigation so we don't miss the event
+    await page.addInitScript(() => {
+      window.__embedErrorDetail = null
+      window.addEventListener('DOMContentLoaded', () => {
+        document.addEventListener('nubi:widget-error', e => {
+          window.__embedErrorDetail = e.detail
+        })
+      })
+    })
+
+    await page.goto(PAGE)
+
+    await page.waitForFunction(
+      () => {
+        const el = document.querySelector('nubi-kpi[no-sample-fallback]')
+        return el?.shadowRoot && el.shadowRoot.childElementCount > 0
+      },
+      { timeout: 8000 },
+    )
+
+    await page.waitForFunction(
+      () => window.__embedErrorDetail !== null,
+      { timeout: 10000 },
+    )
+
+    const detail = await page.evaluate(() => window.__embedErrorDetail)
+    expect(detail).not.toBeNull()
+    expect(typeof detail.message).toBe('string')
+  })
+})

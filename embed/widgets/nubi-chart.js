@@ -29,7 +29,7 @@
  */
 
 import * as echarts from 'echarts'
-import { resolveToken, fetchArrow, makeSampleTableData, BASE_STYLES } from './shared.js'
+import { resolveToken, fetchArrow, makeSampleTableData, BASE_STYLES, rowsToArrowTable } from './shared.js'
 import { applyTheme } from '../theme.js'
 
 // ---------------------------------------------------------------------------
@@ -103,6 +103,18 @@ const CHART_STYLES = /* css */ `
     font-size: 10px;
     padding: 2px 7px;
     border: none;
+  }
+
+  .nubi-error-state {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    height: 100%;
+    color: var(--nubi-fg, #e2e8f0);
+    opacity: 0.5;
+    font-size: 13px;
+    padding: 24px;
+    text-align: center;
   }
 `
 
@@ -338,7 +350,7 @@ function buildChartOption({ chartType, table, x, y, color }) {
 
 class NubiChart extends HTMLElement {
   static get observedAttributes() {
-    return ['query-id', 'type', 'x', 'y', 'color', 'token', 'get-token', 'backend', 'theme']
+    return ['query-id', 'type', 'x', 'y', 'color', 'token', 'get-token', 'backend', 'theme', 'data', 'no-sample-fallback']
   }
 
   constructor() {
@@ -468,6 +480,21 @@ class NubiChart extends HTMLElement {
     this._setFooter(`${xCol} × ${yCol}`, isSample ? 'sample data' : '')
   }
 
+  _showChartError(msg) {
+    this._destroyChart()
+    const body = this._shadow.querySelector('.chart-body')
+    if (body) {
+      body.innerHTML = ''
+      const d = document.createElement('div')
+      d.className = 'nubi-error-state'
+      d.textContent = msg || 'Couldn\'t load data'
+      body.appendChild(d)
+    }
+    this._setBadge('error', 'error')
+    const note = this._shadow.querySelector('.nubi-sample-note')
+    if (note) note.style.display = 'none'
+  }
+
   async _render() {
     this._abort()
     const ac = new AbortController()
@@ -478,6 +505,23 @@ class NubiChart extends HTMLElement {
     // Reset body to loading state
     const body = this._shadow.querySelector('.chart-body')
     if (body) body.innerHTML = '<div class="nubi-loading">Loading</div>'
+
+    // Inline data injection — bypasses fetch entirely
+    const dataAttr = this.getAttribute('data')
+    if (dataAttr) {
+      try {
+        const rows = JSON.parse(dataAttr)
+        const table = rowsToArrowTable(rows)
+        this._renderChart(table, false)
+        this.dispatchEvent(new CustomEvent('nubi:widget-ready', {
+          bubbles: true, composed: true,
+          detail: { rows: table.numRows, renderer: 'echarts' },
+        }))
+      } catch (err) {
+        console.warn('[nubi-chart] invalid data attribute:', err.message)
+      }
+      return
+    }
 
     const queryId = this.getAttribute('query-id')
     const backend = this._backend()
@@ -505,12 +549,21 @@ class NubiChart extends HTMLElement {
           bubbles: true, composed: true,
           detail: { message: err.message },
         }))
+        if (this.hasAttribute('no-sample-fallback')) {
+          this._showChartError(err.message)
+          return
+        }
       }
     }
 
     if (ac.signal.aborted) return
 
     // Sample fallback
+    if (this.hasAttribute('no-sample-fallback')) {
+      this._showChartError('No data source configured')
+      return
+    }
+
     const sample = makeSampleTableData()
     this._renderChart(sample, true)
     this.dispatchEvent(new CustomEvent('nubi:widget-ready', {

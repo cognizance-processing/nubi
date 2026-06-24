@@ -220,6 +220,14 @@ const EXPLAIN_STYLES = /* css */ `
     flex-shrink: 0;
   }
   .nubi-badge.sample { background: #422006; color: #fed7aa; }
+
+  .nubi-error-state {
+    padding: 32px 24px;
+    text-align: center;
+    color: var(--nubi-fg, #e2e8f0);
+    opacity: 0.5;
+    font-size: 13px;
+  }
 `
 
 // ---------------------------------------------------------------------------
@@ -292,7 +300,7 @@ class NubiExplain extends HTMLElement {
       'comparison-start', 'comparison-end',
       'top-n', 'include-summary',
       'token', 'get-token', 'backend',
-      'theme',
+      'theme', 'data', 'no-sample-fallback',
     ]
   }
 
@@ -461,6 +469,19 @@ class NubiExplain extends HTMLElement {
     body.appendChild(footer)
   }
 
+  _showError(msg) {
+    const body = this._shadow.querySelector('.explain-body')
+    if (body) {
+      body.innerHTML = ''
+      const d = document.createElement('div')
+      d.className = 'nubi-error-state'
+      d.textContent = msg || 'Couldn\'t load data'
+      body.appendChild(d)
+    }
+    const badge = this._shadow.querySelector('.nubi-badge.sample')
+    if (badge) badge.style.display = 'none'
+  }
+
   async _render() {
     this._abort()
     const ac = new AbortController()
@@ -470,6 +491,18 @@ class NubiExplain extends HTMLElement {
 
     const body = this._shadow.querySelector('.explain-body')
     body.innerHTML = '<div class="nubi-loading">Loading…</div>'
+
+    // Inline data injection — bypasses fetch entirely
+    const dataAttr = this.getAttribute('data')
+    if (dataAttr) {
+      try {
+        const data = JSON.parse(dataAttr)
+        this._renderData(data, false)
+      } catch (err) {
+        console.warn('[nubi-explain] invalid data attribute:', err.message)
+      }
+      return
+    }
 
     const metricId    = this.getAttribute('metric-id')
     const currentStart   = this.getAttribute('current-start')
@@ -520,12 +553,21 @@ class NubiExplain extends HTMLElement {
           composed: true,
           detail: { message: err.message },
         }))
+        if (this.hasAttribute('no-sample-fallback')) {
+          this._showError(err.message)
+          return
+        }
       }
     }
 
     if (ac.signal.aborted) return
 
     // Sample fallback
+    if (this.hasAttribute('no-sample-fallback')) {
+      this._showError('No data source configured')
+      return
+    }
+
     this._renderData(_makeSampleData(), true)
   }
 }

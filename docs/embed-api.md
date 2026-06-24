@@ -157,6 +157,40 @@ target columns.
 **Sample fallback:** any fetch failure renders a clearly-labelled sample card so
 demo pages always display something meaningful.
 
+### Inline data injection
+
+All vanilla widgets (`<nubi-kpi>`, `<nubi-table>`, `<nubi-chart>`, `<nubi-explain>`) accept a `data` attribute for static/SSR embeds:
+
+| Attribute | Widgets | Meaning |
+|-----------|---------|---------|
+| `data` | kpi, table, chart, explain | Inline JSON data. When present, skips all fetching and renders directly. Array of row objects for kpi/table/chart; response-shaped JSON for explain. |
+| `no-sample-fallback` | kpi, table, chart, explain | Boolean. When set, a fetch failure renders a clean error state instead of sample data. Default: show sample (back-compat). |
+
+**Example — static KPI with target and RAG:**
+
+```html
+<nubi-kpi
+  value-col="revenue"
+  label="Revenue"
+  format="currency"
+  target-col="revenue_target"
+  rag-col="revenue_rag"
+  pct-col="revenue_pct_to_goal"
+  data='[{"revenue":124500,"revenue_target":100000,"revenue_pct_to_goal":1.25,"revenue_rag":"green"}]'
+></nubi-kpi>
+```
+
+**Example — suppress sample fallback on fetch failure:**
+
+```html
+<nubi-kpi
+  no-sample-fallback
+  query-id="revenue"
+  value-col="revenue"
+  backend="https://api.example.com"
+></nubi-kpi>
+```
+
 ---
 
 ### `<nubi-kpi-react>`

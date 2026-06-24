@@ -20,7 +20,7 @@
  * nubi:widget-error  { message }
  */
 
-import { resolveToken, fetchArrow, makeSampleTableData, escapeHtml, formatCell, BASE_STYLES } from './shared.js'
+import { resolveToken, fetchArrow, makeSampleTableData, escapeHtml, formatCell, BASE_STYLES, rowsToArrowTable } from './shared.js'
 import { applyTheme } from '../theme.js'
 
 // ---------------------------------------------------------------------------
@@ -121,6 +121,14 @@ const TABLE_STYLES = /* css */ `
     gap: 8px;
     flex-shrink: 0;
   }
+
+  .nubi-error-state {
+    padding: 24px;
+    text-align: center;
+    color: var(--nubi-fg, #e2e8f0);
+    opacity: 0.5;
+    font-size: 13px;
+  }
 `
 
 // ---------------------------------------------------------------------------
@@ -150,7 +158,7 @@ function buildTableHTML(table, colNames, limit) {
 // ---------------------------------------------------------------------------
 class NubiTable extends HTMLElement {
   static get observedAttributes() {
-    return ['query-id', 'limit', 'columns', 'token', 'get-token', 'backend', 'theme']
+    return ['query-id', 'limit', 'columns', 'token', 'get-token', 'backend', 'theme', 'data', 'no-sample-fallback']
   }
 
   constructor() {
@@ -237,6 +245,23 @@ class NubiTable extends HTMLElement {
     }
   }
 
+  _showError(msg) {
+    const tw = this._shadow.querySelector('.nubi-table-wrap')
+    if (tw) {
+      tw.innerHTML = ''
+      const d = document.createElement('div')
+      d.className = 'nubi-error-state'
+      d.textContent = msg || 'Couldn\'t load data'
+      tw.appendChild(d)
+    }
+    const badge = this._shadow.querySelector('.nubi-badge')
+    const note  = this._shadow.querySelector('.nubi-sample-note')
+    if (badge) badge.style.display = 'none'
+    if (note)  note.classList.remove('visible')
+    const footer = this._shadow.querySelector('.nubi-footer')
+    if (footer) footer.textContent = ''
+  }
+
   async _render() {
     this._abort()
     const ac = new AbortController()
@@ -246,6 +271,23 @@ class NubiTable extends HTMLElement {
 
     const tw = this._shadow.querySelector('.nubi-table-wrap')
     if (tw) tw.innerHTML = '<div class="nubi-loading">Loading</div>'
+
+    // Inline data injection — bypasses fetch entirely
+    const dataAttr = this.getAttribute('data')
+    if (dataAttr) {
+      try {
+        const rows = JSON.parse(dataAttr)
+        const table = rowsToArrowTable(rows)
+        this._showTable(table, false)
+        this.dispatchEvent(new CustomEvent('nubi:widget-ready', {
+          bubbles: true, composed: true,
+          detail: { rows: table.numRows, renderer: 'table' },
+        }))
+      } catch (err) {
+        console.warn('[nubi-table] invalid data attribute:', err.message)
+      }
+      return
+    }
 
     const queryId = this.getAttribute('query-id')
     const backend = this._backend()
@@ -272,12 +314,21 @@ class NubiTable extends HTMLElement {
           bubbles: true, composed: true,
           detail: { message: err.message },
         }))
+        if (this.hasAttribute('no-sample-fallback')) {
+          this._showError(err.message)
+          return
+        }
       }
     }
 
     if (ac.signal.aborted) return
 
     // Sample fallback
+    if (this.hasAttribute('no-sample-fallback')) {
+      this._showError('No data source configured')
+      return
+    }
+
     const sample = makeSampleTableData()
     this._showTable(sample, true)
     this.dispatchEvent(new CustomEvent('nubi:widget-ready', {

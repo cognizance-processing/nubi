@@ -1,0 +1,153 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Nubi KPI Targets — Inline Data Demo</title>
+  <script type="module" src="../dist/nubi-embed.js"></script>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      font-family: system-ui, -apple-system, 'Segoe UI', sans-serif;
+      background: #0f1117;
+      color: #e2e8f0;
+      min-height: 100vh;
+    }
+
+    .section {
+      padding: 40px;
+    }
+
+    .section-label {
+      font-size: 11px;
+      font-weight: 600;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      opacity: 0.45;
+      margin-bottom: 20px;
+    }
+
+    .cards {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(220px, 280px));
+      gap: 16px;
+    }
+
+    nubi-kpi {
+      width: 100%;
+      height: 140px;
+    }
+
+    /* Light section */
+    .section-light {
+      background: #f8f9fc;
+      color: #1a202c;
+    }
+
+    .section-light .section-label {
+      color: #1a202c;
+    }
+  </style>
+</head>
+<body>
+
+  <!-- Dark section -->
+  <div class="section">
+    <div class="section-label">Dark theme — inline data injection — RAG states</div>
+    <div class="cards">
+
+      <!-- Green: pct_to_goal = 1.25 (125%) -->
+      <nubi-kpi
+        data-rag="green"
+        value-col="revenue"
+        label="Revenue (Green)"
+        format="currency"
+        target-col="revenue_target"
+        rag-col="revenue_rag"
+        pct-col="revenue_pct_to_goal"
+        backend="http://localhost:9"
+        theme="dark"
+        data='[{"revenue":124500,"revenue_target":100000,"revenue_pct_to_goal":1.25,"revenue_rag":"green"}]'
+      ></nubi-kpi>
+
+      <!-- Amber: pct_to_goal = 0.85 (85%) -->
+      <nubi-kpi
+        data-rag="amber"
+        value-col="revenue"
+        label="Revenue (Amber)"
+        format="currency"
+        target-col="revenue_target"
+        rag-col="revenue_rag"
+        pct-col="revenue_pct_to_goal"
+        backend="http://localhost:9"
+        theme="dark"
+        data='[{"revenue":85000,"revenue_target":100000,"revenue_pct_to_goal":0.85,"revenue_rag":"amber"}]'
+      ></nubi-kpi>
+
+      <!-- Red: pct_to_goal = 0.5 (50%) -->
+      <nubi-kpi
+        data-rag="red"
+        value-col="revenue"
+        label="Revenue (Red)"
+        format="currency"
+        target-col="revenue_target"
+        rag-col="revenue_rag"
+        pct-col="revenue_pct_to_goal"
+        backend="http://localhost:9"
+        theme="dark"
+        data='[{"revenue":50000,"revenue_target":100000,"revenue_pct_to_goal":0.5,"revenue_rag":"red"}]'
+      ></nubi-kpi>
+
+    </div>
+  </div>
+
+  <!-- Light section -->
+  <div class="section section-light">
+    <div class="section-label">Light theme — inline data injection — RAG states</div>
+    <div class="cards">
+
+      <!-- Green: pct_to_goal = 1.25 (125%) -->
+      <nubi-kpi
+        value-col="users"
+        label="Active Users (Green)"
+        format="integer"
+        target-col="users_target"
+        rag-col="users_rag"
+        pct-col="users_pct_to_goal"
+        backend="http://localhost:9"
+        theme="light"
+        data='[{"users":12500,"users_target":10000,"users_pct_to_goal":1.25,"users_rag":"green"}]'
+      ></nubi-kpi>
+
+      <!-- Amber: pct_to_goal = 0.85 (85%) -->
+      <nubi-kpi
+        value-col="users"
+        label="Active Users (Amber)"
+        format="integer"
+        target-col="users_target"
+        rag-col="users_rag"
+        pct-col="users_pct_to_goal"
+        backend="http://localhost:9"
+        theme="light"
+        data='[{"users":8500,"users_target":10000,"users_pct_to_goal":0.85,"users_rag":"amber"}]'
+      ></nubi-kpi>
+
+      <!-- Red: pct_to_goal = 0.5 (50%) -->
+      <nubi-kpi
+        value-col="users"
+        label="Active Users (Red)"
+        format="integer"
+        target-col="users_target"
+        rag-col="users_rag"
+        pct-col="users_pct_to_goal"
+        backend="http://localhost:9"
+        theme="light"
+        data='[{"users":5000,"users_target":10000,"users_pct_to_goal":0.5,"users_rag":"red"}]'
+      ></nubi-kpi>
+
+    </div>
+  </div>
+
+</body>
+</html>

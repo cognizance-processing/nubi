@@ -1,0 +1,155 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Nubi Error States — no-sample-fallback Demo</title>
+  <script type="module" src="../dist/nubi-embed.js"></script>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      font-family: system-ui, -apple-system, 'Segoe UI', sans-serif;
+      background: #0f1117;
+      color: #e2e8f0;
+      min-height: 100vh;
+    }
+
+    .section {
+      padding: 40px;
+    }
+
+    .section-label {
+      font-size: 11px;
+      font-weight: 600;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      opacity: 0.45;
+      margin-bottom: 20px;
+    }
+
+    .cards {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(260px, 320px));
+      gap: 16px;
+      margin-bottom: 16px;
+    }
+
+    nubi-kpi    { width: 100%; height: 140px; }
+    nubi-table  { width: 100%; height: 240px; }
+    nubi-chart  { width: 100%; height: 240px; }
+    nubi-explain { width: 100%; height: 280px; }
+
+    /* Light section */
+    .section-light {
+      background: #f8f9fc;
+      color: #1a202c;
+    }
+
+    .section-light .section-label {
+      color: #1a202c;
+    }
+  </style>
+</head>
+<body>
+
+  <!-- Dark section -->
+  <div class="section">
+    <div class="section-label">Dark theme — no-sample-fallback — dead backend</div>
+
+    <div class="cards">
+      <!-- nubi-kpi with no-sample-fallback -->
+      <nubi-kpi
+        no-sample-fallback
+        query-id="revenue"
+        value-col="revenue"
+        label="Revenue"
+        backend="http://localhost:9"
+        theme="dark"
+      ></nubi-kpi>
+
+      <!-- nubi-table with no-sample-fallback -->
+      <nubi-table
+        no-sample-fallback
+        query-id="sales"
+        backend="http://localhost:9"
+        theme="dark"
+      ></nubi-table>
+    </div>
+
+    <div class="cards">
+      <!-- nubi-chart with no-sample-fallback -->
+      <nubi-chart
+        no-sample-fallback
+        query-id="sales"
+        x="date"
+        y="revenue"
+        backend="http://localhost:9"
+        theme="dark"
+      ></nubi-chart>
+
+      <!-- nubi-explain with no-sample-fallback -->
+      <nubi-explain
+        no-sample-fallback
+        metric-id="revenue"
+        current-start="2024-01-01T00:00:00"
+        current-end="2024-01-31T23:59:59"
+        comparison-start="2023-12-01T00:00:00"
+        comparison-end="2023-12-31T23:59:59"
+        backend="http://localhost:9"
+        theme="dark"
+      ></nubi-explain>
+    </div>
+  </div>
+
+  <!-- Light section -->
+  <div class="section section-light">
+    <div class="section-label">Light theme — no-sample-fallback — dead backend</div>
+
+    <div class="cards">
+      <!-- nubi-kpi with no-sample-fallback (light) -->
+      <nubi-kpi
+        no-sample-fallback
+        query-id="revenue"
+        value-col="revenue"
+        label="Revenue"
+        backend="http://localhost:9"
+        theme="light"
+      ></nubi-kpi>
+
+      <!-- nubi-table with no-sample-fallback (light) -->
+      <nubi-table
+        no-sample-fallback
+        query-id="sales"
+        backend="http://localhost:9"
+        theme="light"
+      ></nubi-table>
+    </div>
+
+    <div class="cards">
+      <!-- nubi-chart with no-sample-fallback (light) -->
+      <nubi-chart
+        no-sample-fallback
+        query-id="sales"
+        x="date"
+        y="revenue"
+        backend="http://localhost:9"
+        theme="light"
+      ></nubi-chart>
+
+      <!-- nubi-explain with no-sample-fallback (light) -->
+      <nubi-explain
+        no-sample-fallback
+        metric-id="revenue"
+        current-start="2024-01-01T00:00:00"
+        current-end="2024-01-31T23:59:59"
+        comparison-start="2023-12-01T00:00:00"
+        comparison-end="2023-12-31T23:59:59"
+        backend="http://localhost:9"
+        theme="light"
+      ></nubi-explain>
+    </div>
+  </div>
+
+</body>
+</html>

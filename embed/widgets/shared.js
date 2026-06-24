@@ -214,6 +214,33 @@ export function el(tag, attrs = {}, children = []) {
 }
 
 /**
+ * Convert an array of plain row objects into an Arrow Table.
+ * Used by the inline `data` attribute injection path.
+ * Safe: values go into typed arrays; no innerHTML on user strings.
+ *
+ * @param {Record<string, unknown>[]} rows
+ * @returns {import('apache-arrow').Table}
+ */
+export function rowsToArrowTable(rows) {
+  if (!Array.isArray(rows) || rows.length === 0) {
+    return tableFromArrays({ _empty: vectorFromArray([]) })
+  }
+  const keys = Object.keys(rows[0])
+  const arrays = {}
+  for (const key of keys) {
+    const vals = rows.map(r => {
+      const v = r[key]
+      return v === undefined ? null : v
+    })
+    const isNum = vals.every(v => v === null || typeof v === 'number')
+    arrays[key] = isNum
+      ? vectorFromArray(vals, new Float64())
+      : vectorFromArray(vals.map(v => (v === null || v === undefined) ? '' : String(v)))
+  }
+  return tableFromArrays(arrays)
+}
+
+/**
  * Build a simple CSS string that can be injected into Shadow DOM <style>.
  * Shared CSS custom-property baseline used by all widgets.
  */
