@@ -1,0 +1,45 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Nubi widgets demo — kpi / table / chart / explain</title>
+  <script type="module" src="../dist/nubi-embed.js"></script>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body { background: #0f1117; color: #e2e8f0; font-family: system-ui, sans-serif; padding: 24px; }
+    h1 { font-size: 18px; color: #6366f1; margin-bottom: 16px; }
+    h2 { font-size: 13px; color: #a0aec0; margin: 24px 0 8px; text-transform: uppercase; letter-spacing: .04em; }
+    .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 16px; }
+    .light { background: #f8f9fc; color: #1a202c; padding: 16px; border-radius: 8px; margin-top: 24px; }
+    .light h2 { color: #4a5568; }
+    nubi-kpi, nubi-table, nubi-chart { display: block; min-height: 140px; }
+    nubi-chart { min-height: 240px; }
+    nubi-explain { display: block; min-height: 320px; }
+  </style>
+</head>
+<body>
+  <h1>&lt;nubi-*&gt; widget gallery (sample-data fallback, no backend)</h1>
+
+  <h2>KPI · Table · Chart (dark)</h2>
+  <div class="grid">
+    <nubi-kpi value-col="revenue" label="Revenue" format="currency" backend="http://localhost:9"></nubi-kpi>
+    <nubi-kpi value-col="count" label="Orders" backend="http://localhost:9"></nubi-kpi>
+    <nubi-table backend="http://localhost:9"></nubi-table>
+    <nubi-chart type="bar" x="name" y="value" backend="http://localhost:9"></nubi-chart>
+  </div>
+
+  <h2>Explain — root-cause contribution (dark)</h2>
+  <nubi-explain metric-id="revenue" backend="http://localhost:9"></nubi-explain>
+
+  <div class="light">
+    <h2>Light theme</h2>
+    <div class="grid">
+      <nubi-kpi value-col="revenue" label="Revenue" format="currency" theme="light" backend="http://localhost:9"></nubi-kpi>
+      <nubi-table theme="light" backend="http://localhost:9"></nubi-table>
+      <nubi-chart type="bar" x="name" y="value" theme="light" backend="http://localhost:9"></nubi-chart>
+    </div>
+    <nubi-explain metric-id="revenue" theme="light" backend="http://localhost:9"></nubi-explain>
+  </div>
+</body>
+</html>
