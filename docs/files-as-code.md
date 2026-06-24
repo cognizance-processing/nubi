@@ -45,8 +45,8 @@ The design reuses these, do not reinvent them:
   project's `git` jsonb stores only `token_ref` (never the token). `POST /git/sync`,
   `GET /git/history`, `POST /git/restore` operate on the workspace repo.
 - **Two secret stores**:
-  - Flow/org secrets — `backend/app/secrets/store.py` (`secrets` table, migration
-    0015), routes `POST/GET /secrets`, `DELETE /secrets/{name}`. Resolves
+  - Flow/org secrets — `backend/app/secrets/store.py` (`secrets` table, declared
+    in `database/migrations/0003_resources.sql`), routes `POST/GET /secrets`, `DELETE /secrets/{name}`. Resolves
     `{{ secrets.NAME }}` via `resolve_all(org_id)` in the flows runtime.
   - Connector secrets — `backend/app/connectors/secret_store.py` (`connector_secrets`
     table, one blob per `datastore_id`, AES-256-GCM). Allow-listed secret keys in

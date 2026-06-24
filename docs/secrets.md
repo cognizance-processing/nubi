@@ -32,7 +32,7 @@ python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().d
 
 Set `NUBI_SECRETS_KEY` before starting the server. The key is read lazily — misconfiguration surfaces at the first set or resolve call with a clear error, not silently at import time. Decrypting a value encrypted under a different key fails loudly rather than returning garbage.
 
-> The production store is asyncpg-backed (`secrets` table, migration `0015`). Tests inject an `InMemorySecretStore`. Both expose the same interface, so route handlers are unchanged across environments.
+> The production store is asyncpg-backed (`secrets` table, declared in `database/migrations/0003_resources.sql`). Tests inject an `InMemorySecretStore`. Both expose the same interface, so route handlers are unchanged across environments.
 
 ---
 
