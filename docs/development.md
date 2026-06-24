@@ -82,7 +82,11 @@ into a weird state.
 | Suite          | Command                                        | Needs                       |
 |----------------|------------------------------------------------|-----------------------------|
 | Backend        | `cd backend && python -m pytest tests/`        | venv only — DB is faked in-memory (`tests/conftest.py`) |
+| MCP server     | `cd mcp && pytest tests/`                      | venv only                   |
+| CLI            | `cd cli && pytest tests/`                      | venv only                   |
 | Frontend units | `npm run test:dash`                            | node only                   |
+| Embed units    | `npm run test:embed`                           | node only (vitest)          |
+| Embed E2E      | `npm run test:e2e:embed`                       | node, Playwright (requires the embed bundle built: `npm run build:embed`) |
 | Lint           | `npm run lint`                                 | node only                   |
 | End-to-end     | `bash scripts/e2e.sh`                          | docker, node, python        |
 
@@ -100,9 +104,15 @@ The same script powers the screenshot pipeline via the `E2E_RUN_CMD` override
 
 ## Conventions
 
-- **Migrations** are plain SQL files in `database/migrations/`, applied in
-  filename order by `migrate.py`. Never edit an applied migration — add a new
-  one.
+- **Migrations** use an **in-place convention**: every SQL file is written so
+  the full schema for its tables is expressed using `CREATE TABLE IF NOT EXISTS`
+  (and `CREATE INDEX IF NOT EXISTS`). When a table needs a new column, the
+  column is added to the `CREATE TABLE` statement in that file **and** the
+  database is reset from scratch (`npm run db:reset:demo`). There are **no
+  `ALTER TABLE` or `DROP TABLE` statements** in migration files — the schema is
+  always reconstructed from the current state of the files, not accumulated
+  incrementally. Never add a new migration file just to `ALTER` an existing
+  table; instead fold the change into the relevant existing file and reset.
 - **Secrets never round-trip**: connector credentials are AES-256-GCM
   encrypted at rest and come back blank from the API. See
   [Secrets](/docs/secrets).

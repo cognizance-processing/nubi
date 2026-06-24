@@ -35,6 +35,7 @@ Nubi is a batteries-included BI and embedded-analytics platform. The kernel runs
 | [**Metrics reference**](/docs/metrics-reference) | Agent/MCP reference for declaring and querying governed metrics via `POST /metrics/{id}/query` |
 | [**AI, Chat & MCP**](/docs/ai-and-mcp) | Grounded ask, agentic chat, 14 agent tools, MCP server (15 tools), Slack/WhatsApp gateway |
 | [**Embedding**](/docs/embedding) | JWT minting (RS256/ES256), per-viewer RLS, token-locked params, `<nubi-dashboard>` |
+| [**Embed API v1**](/docs/embed-api) | Versioned public contract for the web-component kit — all attributes, events, 25-token theme contract, capability gating, `NubiContext` cross-filter bus |
 | [**Organization & Settings**](/docs/organization-settings) | Members, roles and invites; integrations; usage; project settings and the Git connection |
 | [**How-to guides**](/docs/how-to) | Worked examples: semantic metrics (define/query/derive/time-intel/top-N); pre-agg build; Flows sweep/backfill/triggers/write-back/action-widgets; Canvas authoring + bindings; DataProvider boards |
 | [**API Reference**](/docs/api-reference) | Full HTTP API reference — /metrics, /canvas/canvases, /ai/canvas, /flows sweep/backfill/triggers/writeback, /boards/providers/data |
