@@ -51,7 +51,7 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
 from app.auth.deps import verified_identity
-from app.auth.scopes import has_scope
+from app.auth.scopes import has_scope, SCOPE_AUTHOR_METRIC
 from app.auth.verify import VerifiedIdentity
 from app.connectors import plan as planner_plan
 from app.connectors.arrow_io import ipc_stream_from_bytes, table_to_ipc_bytes
@@ -97,10 +97,37 @@ def _require_read_scope(identity: VerifiedIdentity) -> None:
 
 
 def _require_first_party_write(identity: VerifiedIdentity) -> None:
-    """Reject embed tokens from metric writes (mirror register_query)."""
+    """Reject embed tokens + restricted read-only tokens from metric writes.
+
+    Security fix (audit-55): first-party tokens with an EXPLICIT ``scope``
+    claim of ``read:query`` (or other read-only scopes) must not be able to
+    create/modify metrics.  A full session token carries no explicit scope (so
+    ``_FIRST_PARTY_SCOPES`` is used, which includes ``author:metric``).  An
+    explicitly-restricted first-party token (e.g. one minted by the embed dev-
+    token endpoint with a narrow scope) must pass the same author gate as the
+    M3 embed path.
+
+    Rules:
+      1. ``kind='embed'`` tokens → always 403 (unchanged).
+      2. First-party tokens with an EXPLICIT scope list that does NOT include
+         ``author:metric`` (or a wildcard covering it, such as ``*``) → 403.
+      3. First-party tokens with NO explicit scope (full session) → allowed
+         (``_FIRST_PARTY_SCOPES`` includes ``author:metric``).
+    """
     if identity.kind == "embed":
         raise AppError("forbidden", "Embed tokens cannot register metrics.", 403)
-    _require_read_scope(identity)
+
+    # Check if this first-party token has an explicit scope list that lacks
+    # author:metric.  A full session token has no scope claim, so identity.scope
+    # comes from _FIRST_PARTY_SCOPES (which includes author:metric).
+    # A deliberately restricted token (e.g. scope=read:query) must be blocked.
+    if not has_scope(identity.scope, SCOPE_AUTHOR_METRIC):
+        raise AppError(
+            "insufficient_scope",
+            "Token does not carry the required scope: author:metric — "
+            "metric authoring is not permitted with this token.",
+            403,
+        )
 
 
 async def _caller_org(identity: VerifiedIdentity, request: Request) -> str | None:

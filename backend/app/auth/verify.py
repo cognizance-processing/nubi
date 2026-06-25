@@ -161,6 +161,17 @@ def _select_key_from_jwks(
     """
     from app.errors import AppError
 
+    # Safety: asyncpg may hand us a JSON string for JSONB columns.  Parse it.
+    if isinstance(jwks, str):
+        import json as _json_inner  # noqa: PLC0415
+        try:
+            jwks = _json_inner.loads(jwks)
+        except (_json_inner.JSONDecodeError, ValueError):
+            raise AppError("invalid_token", "Token is invalid or has expired.", 401)
+
+    if not isinstance(jwks, dict):
+        raise AppError("invalid_token", "Token is invalid or has expired.", 401)
+
     keys: list[dict[str, Any]] = jwks.get("keys", [])
     if not keys:
         raise AppError("invalid_token", "Token is invalid or has expired.", 401)
@@ -200,7 +211,17 @@ def _resolve_jwks(issuer_cfg: Any) -> dict[str, Any]:
     Priority: ``static_jwks`` > ``static_public_key`` > ``jwks_uri`` (network).
     """
     if issuer_cfg.static_jwks is not None:
-        return issuer_cfg.static_jwks
+        _sjwks = issuer_cfg.static_jwks
+        # asyncpg returns JSONB as a Python string on some configurations.
+        # If the stored value is a string, parse it to a dict before use.
+        if isinstance(_sjwks, str):
+            import json as _json  # noqa: PLC0415
+            try:
+                _sjwks = _json.loads(_sjwks)
+            except (_json.JSONDecodeError, ValueError):
+                _sjwks = None
+        if _sjwks is not None:
+            return _sjwks
 
     if issuer_cfg.static_public_key is not None:
         return _build_jwks_from_static_key(issuer_cfg.static_public_key)

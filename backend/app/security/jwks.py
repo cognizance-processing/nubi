@@ -62,6 +62,16 @@ def resolve_signing_key(
     static_jwks: dict[str, Any] | None = issuer_row.get("static_jwks_json")
     jwks_url: str | None = issuer_row.get("jwks_url")
 
+    # asyncpg may return JSONB columns as raw JSON strings on some
+    # configurations.  Parse to dict here so callers always receive a dict.
+    if isinstance(static_jwks, str):
+        import json as _json  # noqa: PLC0415
+
+        try:
+            static_jwks = _json.loads(static_jwks)
+        except (_json.JSONDecodeError, ValueError):
+            static_jwks = None
+
     if static_jwks is not None:
         jwks = static_jwks
     elif jwks_url:

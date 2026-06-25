@@ -75,7 +75,7 @@ import os
 import threading
 import time
 from collections import OrderedDict
-from typing import Iterable, NamedTuple
+from typing import Any, Iterable, NamedTuple
 
 logger = logging.getLogger("nubi.connectors.cache")
 
@@ -859,15 +859,18 @@ def _bytes_to_str(value) -> str:
 _cache_instance: ContentAddressedCache | None = None
 _cache_lock = threading.Lock()
 
-# The selected active backend (memory singleton OR a RedisCacheBackend),
-# resolved lazily on first get_cache() and cached thereafter.
-_active_backend: ContentAddressedCache | RedisCacheBackend | None = None
+# The selected active backend (memory singleton OR RedisCacheBackend, OR an
+# EncryptedCache wrapping either).  Resolved lazily on first get_cache() and
+# cached thereafter.  Typed as Any to avoid importing EncryptedCache at module
+# level (which would create a circular dependency risk); callers rely on duck-
+# typing over the get/put/stats/… surface rather than isinstance checks.
+_active_backend: "ContentAddressedCache | RedisCacheBackend | Any | None" = None
 
 
 def get_cache(
     max_entries: int | None = None,
     ttl: float = _DEFAULT_TTL_SECONDS,
-) -> ContentAddressedCache | RedisCacheBackend:
+) -> "ContentAddressedCache | RedisCacheBackend":
     """Return the active cache backend.
 
     Selection (lazy + cached):
@@ -903,16 +906,42 @@ def _select_backend(
 ) -> ContentAddressedCache | RedisCacheBackend:
     """Pick the Redis backend when a shared store is up, else in-memory.
 
+    If ``cache_encryption_key()`` returns a non-empty key the chosen backend is
+    wrapped in an :class:`~app.connectors.cache_encryption.EncryptedCache` so
+    every stored entry is AES-256-GCM encrypted at rest.  The wrapping is
+    transparent to all callers — the public surface is identical.
+
     Caller holds ``_cache_lock``.
     """
     try:
         from app.cache.redis_client import redis_available  # noqa: PLC0415
 
         if redis_available():
-            return RedisCacheBackend(ttl=ttl)
+            inner = RedisCacheBackend(ttl=ttl)
+        else:
+            inner = _get_memory_singleton(max_entries=max_entries, ttl=ttl)
     except Exception as exc:  # noqa: BLE001 — never fail selection on infra
         logger.warning("redis cache: availability check failed, using memory: %s", exc)
-    return _get_memory_singleton(max_entries=max_entries, ttl=ttl)
+        inner = _get_memory_singleton(max_entries=max_entries, ttl=ttl)
+
+    # Custody capability 4: transparent query-cache encryption at rest.
+    # Lazy import guards against any circular-import risk at module load time.
+    try:
+        from app.lakehouse.custody import cache_encryption_key  # noqa: PLC0415
+
+        enc_key = cache_encryption_key()
+        if enc_key:
+            from app.connectors.cache_encryption import EncryptedCache  # noqa: PLC0415
+
+            logger.info("cache: encryption at rest enabled (AES-256-GCM + per-tenant AAD)")
+            return EncryptedCache(inner, enc_key)
+    except Exception as exc:  # noqa: BLE001 — never let encryption config break the cache
+        logger.warning(
+            "cache: failed to initialise encryption wrapper; falling back to plaintext: %s",
+            exc,
+        )
+
+    return inner
 
 
 def _get_memory_singleton(

@@ -256,6 +256,15 @@ import app.routes.usage  # noqa: F401, E402
 # OPTIMIZER package (app.lakehouse) — this is the provisioning surface.
 import app.routes.lakehouse  # noqa: F401, E402
 
+# Data-custody tier (opt-in, gated by NUBI_CUSTODY_ENABLED).  These mount the
+# /lake/* surfaces — the versioned write/ingest API and bulk export-to-bucket —
+# and self-register on api_router at import time.  The routes themselves
+# fail-closed (403 custody_disabled) when the tier is off, so importing them
+# unconditionally is safe; the prefixes are specific (/lake/...) so they sit
+# ahead of the generic /{resource} catch-all in resources.py below.
+import app.routes.ingest  # noqa: F401, E402
+import app.routes.lake_export  # noqa: F401, E402
+
 # Import demo-parquet serving route (D2: browser-side demo compute) BEFORE
 # resources so the /demo-parquet/* prefix routes register ahead of the generic
 # /{resource} and /{resource}/{id} catch-alls in resources.py.

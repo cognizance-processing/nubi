@@ -445,6 +445,8 @@ class PgIssuersStore:
 
 def _pg_row_to_dict(row: Any) -> JwtIssuerRow:
     """Convert an asyncpg Record to a plain dict, normalising types."""
+    import json as _json  # noqa: PLC0415
+
     d = dict(row)
     for key in ("id", "org_id", "created_by"):
         if key in d and d[key] is not None and not isinstance(d[key], str):
@@ -456,7 +458,15 @@ def _pg_row_to_dict(row: Any) -> JwtIssuerRow:
     # algorithms comes back as a list from asyncpg (text[]) — ensure it is.
     if "algorithms" in d and d["algorithms"] is None:
         d["algorithms"] = ["RS256"]
-    # static_jwks_json from asyncpg may be a dict already (JSONB auto-parsed).
+    # static_jwks_json from asyncpg may be returned as a JSON string (asyncpg
+    # does not automatically decode JSONB → dict on all versions/configurations).
+    # Parse it here so callers always receive a dict (or None).
+    jwks_val = d.get("static_jwks_json")
+    if isinstance(jwks_val, str):
+        try:
+            d["static_jwks_json"] = _json.loads(jwks_val)
+        except (_json.JSONDecodeError, ValueError):
+            d["static_jwks_json"] = None
     return d
 
 
