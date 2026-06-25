@@ -148,9 +148,13 @@ datastore must be a managed lake in the caller's org (else `404`); part `relpath
 and `partition` are validated and the final key is asserted to remain under the
 server-pinned datastore prefix before any write.
 
-> Session state uses an in-process store + object-storage sidecars for the OSS
-> build (no migration). A Postgres-backed store is the documented production path
-> (mirrors the writeback governance store).
+> **Ingest session store (migration 0017):** In production, session state is
+> persisted in the `ingest_sessions` Postgres table (migration `0017_ingest_sessions.sql`),
+> backed by `PgIngestSessionStore`.  The idempotency index
+> `UNIQUE (org_id, datastore_id, idempotency_key)` and a CAS `WHERE state = $from`
+> guarantee exactly-once opens and serialised commits across concurrent callers.
+> In test and local dev (no DB pool), the store falls back to
+> `InMemoryIngestSessionStore` automatically — no config change needed.
 
 ---
 

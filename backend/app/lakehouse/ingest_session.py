@@ -279,6 +279,227 @@ class InMemoryIngestSessionStore(IngestSessionStore):
 
 
 # ---------------------------------------------------------------------------
+# PgIngestSessionStore — asyncpg-backed production implementation
+# ---------------------------------------------------------------------------
+
+
+def _pg_row_to_record(row: Any) -> dict[str, Any]:
+    """Convert an asyncpg Record to a plain dict matching the InMemory shape.
+
+    * UUID columns → str
+    * timestamptz columns → ISO-8601 string (tz-aware)
+    * JSONB columns: asyncpg normally parses them; handle str fallback.
+    """
+    d = dict(row)
+    # UUID → str
+    for key in ("id", "org_id", "user_id"):
+        if key in d and d[key] is not None and not isinstance(d[key], str):
+            d[key] = str(d[key])
+    # timestamptz → ISO-8601 string
+    for key in ("created_at", "updated_at"):
+        val = d.get(key)
+        if isinstance(val, datetime):
+            if val.tzinfo is None:
+                val = val.replace(tzinfo=timezone.utc)
+            d[key] = val.isoformat()
+    # JSONB columns: schema / result may arrive as str on some asyncpg configs
+    for key in ("schema", "result"):
+        val = d.get(key)
+        if isinstance(val, (str, bytes, bytearray)):
+            try:
+                d[key] = json.loads(val)
+            except Exception:  # noqa: BLE001
+                pass
+    return d
+
+
+class PgIngestSessionStore(IngestSessionStore):
+    """asyncpg-backed ingest-session store for production use (migration 0017).
+
+    All operations are org-scoped (cross-org → ``None``).
+
+    Idempotency
+    -----------
+    ``create`` uses ``INSERT … ON CONFLICT (org_id, datastore_id,
+    idempotency_key) DO NOTHING`` followed by a re-select so concurrent retries
+    with the same key always return the existing session.
+
+    State transitions (CAS)
+    -----------------------
+    ``transition`` executes::
+
+        UPDATE ingest_sessions
+        SET state=$new, updated_at=now(), [result=…, error=…]
+        WHERE id=$id AND org_id=$org AND datastore_id=$ds
+          AND ($from IS NULL OR state = $from)
+        RETURNING …
+
+    If no row is updated (state mismatch or not-found) it returns ``None``,
+    letting the caller handle the concurrent-commit race.
+    """
+
+    # ── create ───────────────────────────────────────────────────────────────
+
+    async def create(
+        self,
+        org_id: str,
+        datastore_id: str,
+        user_id: str,
+        mode: str,
+        idempotency_key: str,
+        schema: list[dict[str, str]],
+        partition: str | None,
+        run_id: str,
+        table_name: str = "default",
+    ) -> dict[str, Any]:
+        from app.db import fetchrow as _fetchrow  # noqa: PLC0415
+
+        schema_json = json.dumps(list(schema))
+        row = await _fetchrow(
+            """
+            INSERT INTO ingest_sessions
+                (org_id, datastore_id, user_id, mode, idempotency_key,
+                 schema, partition, table_name, run_id, state,
+                 result, error, created_at, updated_at)
+            VALUES
+                ($1::uuid, $2::uuid, $3::uuid, $4, $5,
+                 $6::jsonb, $7, $8, $9, 'open',
+                 NULL, NULL, now(), now())
+            ON CONFLICT (org_id, datastore_id, idempotency_key) DO NOTHING
+            RETURNING
+                id, org_id, datastore_id, user_id, mode, idempotency_key,
+                schema, partition, table_name, run_id, state, result, error,
+                created_at, updated_at
+            """,
+            org_id,
+            datastore_id,
+            user_id,
+            mode,
+            idempotency_key,
+            schema_json,
+            partition,
+            table_name,
+            run_id,
+        )
+        if row is None:
+            # Concurrent caller won the race; re-select the existing session.
+            row = await _fetchrow(
+                """
+                SELECT id, org_id, datastore_id, user_id, mode, idempotency_key,
+                       schema, partition, table_name, run_id, state, result, error,
+                       created_at, updated_at
+                FROM ingest_sessions
+                WHERE org_id = $1::uuid
+                  AND datastore_id = $2::uuid
+                  AND idempotency_key = $3
+                """,
+                org_id,
+                datastore_id,
+                idempotency_key,
+            )
+        if row is None:  # pragma: no cover — should never happen
+            raise RuntimeError("ingest_sessions INSERT returned no row.")
+        return _pg_row_to_record(row)
+
+    # ── get_by_idempotency_key ───────────────────────────────────────────────
+
+    async def get_by_idempotency_key(
+        self,
+        org_id: str,
+        datastore_id: str,
+        idempotency_key: str,
+    ) -> dict[str, Any] | None:
+        from app.db import fetchrow as _fetchrow  # noqa: PLC0415
+
+        row = await _fetchrow(
+            """
+            SELECT id, org_id, datastore_id, user_id, mode, idempotency_key,
+                   schema, partition, table_name, run_id, state, result, error,
+                   created_at, updated_at
+            FROM ingest_sessions
+            WHERE org_id = $1::uuid
+              AND datastore_id = $2::uuid
+              AND idempotency_key = $3
+            """,
+            org_id,
+            datastore_id,
+            idempotency_key,
+        )
+        return _pg_row_to_record(row) if row is not None else None
+
+    # ── get ──────────────────────────────────────────────────────────────────
+
+    async def get(
+        self,
+        org_id: str,
+        datastore_id: str,
+        session_id: str,
+    ) -> dict[str, Any] | None:
+        from app.db import fetchrow as _fetchrow  # noqa: PLC0415
+
+        row = await _fetchrow(
+            """
+            SELECT id, org_id, datastore_id, user_id, mode, idempotency_key,
+                   schema, partition, table_name, run_id, state, result, error,
+                   created_at, updated_at
+            FROM ingest_sessions
+            WHERE id = $1::uuid
+              AND org_id = $2::uuid
+              AND datastore_id = $3::uuid
+            """,
+            session_id,
+            org_id,
+            datastore_id,
+        )
+        return _pg_row_to_record(row) if row is not None else None
+
+    # ── transition (CAS) ─────────────────────────────────────────────────────
+
+    async def transition(
+        self,
+        org_id: str,
+        datastore_id: str,
+        session_id: str,
+        new_state: str,
+        *,
+        from_state: str | None = None,
+        result: dict[str, Any] | None = None,
+        error: str | None = None,
+    ) -> dict[str, Any] | None:
+        from app.db import fetchrow as _fetchrow  # noqa: PLC0415
+
+        result_json: str | None = json.dumps(result) if result is not None else None
+
+        row = await _fetchrow(
+            """
+            UPDATE ingest_sessions
+            SET state        = $4,
+                updated_at   = now(),
+                result       = CASE WHEN $5::jsonb IS NOT NULL
+                                    THEN $5::jsonb ELSE result END,
+                error        = CASE WHEN $6 IS NOT NULL
+                                    THEN $6 ELSE error END
+            WHERE id          = $1::uuid
+              AND org_id      = $2::uuid
+              AND datastore_id = $3::uuid
+              AND ($7::text IS NULL OR state = $7)
+            RETURNING
+                id, org_id, datastore_id, user_id, mode, idempotency_key,
+                schema, partition, table_name, run_id, state, result, error,
+                created_at, updated_at
+            """,
+            session_id,
+            org_id,
+            datastore_id,
+            new_state,
+            result_json,
+            error,
+            from_state,
+        )
+        return _pg_row_to_record(row) if row is not None else None
+
+
+# ---------------------------------------------------------------------------
 # Module singleton
 # ---------------------------------------------------------------------------
 
@@ -286,10 +507,25 @@ _store: IngestSessionStore | None = None
 
 
 def get_ingest_session_store() -> IngestSessionStore:
-    """Return the active ingest-session store (lazily constructed)."""
+    """Return the active ingest-session store (lazily constructed).
+
+    Production (asyncpg pool initialised):
+        Returns a ``PgIngestSessionStore`` backed by the pool.
+
+    Test / local dev (no real DB / pool not up):
+        Returns an ``InMemoryIngestSessionStore`` — the hermetic default so
+        existing tests run without any database dependency.
+
+    Tests inject their own store via :func:`set_ingest_session_store`.
+    """
     global _store
     if _store is None:
-        _store = InMemoryIngestSessionStore()
+        try:
+            from app.db import get_pool  # noqa: PLC0415
+            get_pool()  # raises RuntimeError when pool is not initialised
+            _store = PgIngestSessionStore()
+        except (RuntimeError, ImportError):
+            _store = InMemoryIngestSessionStore()
     return _store
 
 
