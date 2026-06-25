@@ -74,10 +74,65 @@ from app.errors import AppError
 # ---------------------------------------------------------------------------
 
 
+def _rls_col_mask(col_array: pa.ChunkedArray, policy_value: Any) -> pa.Array:
+    """Build a boolean mask for a single policy column, handling all policy shapes.
+
+    Policy value shapes (mirrors planner.py E.1 contract):
+
+    1. **Scalar** — equality: ``col = value``
+    2. **List**   — IN membership: ``col IN (v1, v2, ...)``
+       An empty list yields an all-False mask (fail-closed — no rows match).
+    3. **Range dict** — inequality band using keys ``gte``, ``gt``, ``lte``, ``lt``, ``eq``.
+       Each key produces one mask; masks are AND-ed together.
+       ``eq`` is treated as equality.
+
+    All comparisons use ``pyarrow.compute`` functions — no Python-level loops over
+    rows.  The result is a boolean array whose length matches ``col_array``.
+    """
+    if isinstance(policy_value, list):
+        if not policy_value:
+            # Empty IN list → impossible predicate → all-False mask (fail-closed).
+            return pc.cast(
+                pa.array([False] * len(col_array), type=pa.bool_()),
+                pa.bool_(),
+            )
+        # Build OR of individual equality masks (isin semantics).
+        mask = pc.equal(col_array, policy_value[0])
+        for v in policy_value[1:]:
+            mask = pc.or_(mask, pc.equal(col_array, v))
+        return mask
+
+    elif isinstance(policy_value, dict):
+        # Range band: AND of all recognised key predicates.
+        # Start with an all-True mask and narrow it.
+        mask = pa.array([True] * len(col_array), type=pa.bool_())
+        for key, val in policy_value.items():
+            if key == "eq":
+                mask = pc.and_(mask, pc.equal(col_array, val))
+            elif key == "gte":
+                mask = pc.and_(mask, pc.greater_equal(col_array, val))
+            elif key == "gt":
+                mask = pc.and_(mask, pc.greater(col_array, val))
+            elif key == "lte":
+                mask = pc.and_(mask, pc.less_equal(col_array, val))
+            elif key == "lt":
+                mask = pc.and_(mask, pc.less(col_array, val))
+            # Unrecognised keys are silently ignored (mirrors planner.py).
+        return mask
+
+    else:
+        # Scalar (str, int, float, bool) — equality (back-compat).
+        return pc.equal(col_array, policy_value)
+
+
 def apply_rls_postfetch(table: pa.Table, policies: dict[str, Any]) -> pa.Table:
     """Filter *table* to rows that satisfy all RLS *policies*.
 
-    Each entry in *policies* is an equality constraint ``{column: value}``.
+    Each entry in *policies* is a policy constraint ``{column: policy_value}``
+    where policy_value may be a scalar (equality), a list (IN membership), or
+    a range dict (inequality band).  See the module docstring and planner.py for
+    the full E.1 policy schema.
+
     Multiple policies are combined with AND (only rows matching every policy
     are retained).
 
@@ -98,14 +153,15 @@ def apply_rls_postfetch(table: pa.Table, policies: dict[str, Any]) -> pa.Table:
     table:
         The raw Arrow table returned by the source.
     policies:
-        A ``{column_name: expected_value}`` dict.  Each key must be present
-        in *table*'s schema.  An empty dict returns *table* unchanged.
+        A ``{column_name: policy_value}`` dict.  Each key must be present in
+        *table*'s schema.  An empty dict returns *table* unchanged.
+        policy_value shapes: scalar → equality, list → IN, dict → range band.
 
     Returns
     -------
     pyarrow.Table
         A filtered table containing only rows where every policy column
-        equals its expected value.
+        satisfies its policy constraint.
 
     Raises
     ------
@@ -134,11 +190,12 @@ def apply_rls_postfetch(table: pa.Table, policies: dict[str, Any]) -> pa.Table:
             status=403,
         )
 
-    # Build a combined boolean mask: AND of all per-column equality masks.
+    # Build a combined boolean mask: AND of all per-column policy masks.
+    # Each column uses shape-aware _rls_col_mask to handle scalar/list/range.
     mask: pa.ChunkedArray | pa.Array | None = None
     for col, value in policies.items():
         col_array = table.column(col)
-        col_mask = pc.equal(col_array, value)
+        col_mask = _rls_col_mask(col_array, value)
         if mask is None:
             mask = col_mask
         else:

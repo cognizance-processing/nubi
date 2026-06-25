@@ -19,11 +19,35 @@ When called with no ``limit`` and no ``predicates`` arguments the pipeline
 produces EXACTLY the same SQL and cache_key as the M1 planner.  Steps 4 and 6
 are no-ops in that case, so the transform order and output are unchanged.
 
-RLS contract (M1 — equality-only)
------------------------------------
-``claims["policies"]`` is a ``{column: value}`` dict.  Each entry becomes an
-``AND col = 'value'`` predicate added to the WHERE clause.  The cache key
-derives from exactly this same dict so the two are always in sync.
+RLS contract (E.1 — extended predicates, token-only)
+------------------------------------------------------
+``claims["policies"]`` is a ``{column: policy_value}`` dict sourced EXCLUSIVELY
+from the verified JWT token.  The request body CANNOT supply or alter policies.
+
+Each policy_value may be one of three shapes:
+
+1. **Scalar** (str / int / float / bool) — back-compat equality:
+       col = value
+   Example: ``{"region": "WC"}`` → ``WHERE region = 'WC'``
+
+2. **List** — IN set membership:
+       col IN (v1, v2, ...)
+   Example: ``{"store_id": [10, 11, 12]}`` → ``WHERE store_id IN (10, 11, 12)``
+   An empty list is an impossible predicate (no rows can match) → ``1 = 0``.
+
+3. **Range dict** — inequality band. Supported keys: ``gte``, ``gt``, ``lte``, ``lt``, ``eq``:
+       col >= a AND col < b   (for ``{"gte": a, "lt": b}``)
+   Any combination of the five keys may appear; each becomes a separate predicate
+   ANDed together.  ``eq`` is treated as equality (same as scalar form).
+   Example: ``{"amount": {"gte": 100, "lt": 500}}``
+       → ``WHERE amount >= 100 AND amount < 500``
+
+All three forms are injected at AST level (sqlglot nodes), NEVER via f-string or
+string concatenation.  Values are embedded as typed AST literals so the SQL dialect
+renderer handles escaping — SQL injection via policy values is impossible.
+
+Policies come EXCLUSIVELY from the verified token — never from the request body.
+The cache key derives from exactly this same dict so the two are always in sync.
 
 Thread safety
 -------------
@@ -61,6 +85,25 @@ _NAMED_PLACEHOLDER_RE = re.compile(r"\{\{([A-Za-z_][A-Za-z0-9_]*)\}\}")
 # ---------------------------------------------------------------------------
 
 
+def _make_literal(value: Any) -> exp.Expression:
+    """Convert a Python scalar to a typed sqlglot AST literal.
+
+    Typed mapping:
+    - ``bool``         → ``exp.Boolean``
+    - ``int`` / ``float`` → ``exp.Literal.number``
+    - anything else   → ``exp.Literal.string(str(value))``
+
+    Values are NEVER string-concatenated — they are embedded as AST nodes so
+    the SQL renderer handles dialect-appropriate escaping.
+    """
+    if isinstance(value, bool):
+        return exp.Boolean(this=value)
+    elif isinstance(value, (int, float)):
+        return exp.Literal.number(value)
+    else:
+        return exp.Literal.string(str(value))
+
+
 def _make_eq_predicate(column: str, value: Any) -> exp.EQ:
     """Build an AST ``column = value`` equality node for a single RLS claim.
 
@@ -69,10 +112,7 @@ def _make_eq_predicate(column: str, value: Any) -> exp.EQ:
     column:
         The column name (unquoted identifier).
     value:
-        The scalar value.  Typed mapping:
-        - ``bool``  → ``exp.Boolean``
-        - ``int`` / ``float`` → ``exp.Literal.number``
-        - anything else → ``exp.Literal.string(str(value))``
+        The scalar value.  Typed mapping via :func:`_make_literal`.
 
     Returns
     -------
@@ -80,15 +120,103 @@ def _make_eq_predicate(column: str, value: Any) -> exp.EQ:
         A sqlglot EQ expression node ready to be added to a WHERE clause.
     """
     lhs = exp.Column(this=exp.Identifier(this=column, quoted=False))
+    return exp.EQ(this=lhs, expression=_make_literal(value))
 
-    if isinstance(value, bool):
-        rhs: exp.Expression = exp.Boolean(this=value)
-    elif isinstance(value, (int, float)):
-        rhs = exp.Literal.number(value)
+
+def _make_in_predicate(column: str, values: list) -> exp.Expression:
+    """Build an AST ``column IN (v1, v2, ...)`` node for an IN-list RLS policy.
+
+    Parameters
+    ----------
+    column:
+        The column name (unquoted identifier).
+    values:
+        The list of values.  Each element is converted to a typed AST literal
+        via :func:`_make_literal`.  An empty list yields an impossible predicate
+        ``1 = 0`` (fail-closed: no rows match).
+
+    Returns
+    -------
+    exp.Expression
+        Either an ``exp.In`` node (non-empty list) or ``exp.EQ(1, 0)`` (empty).
+    """
+    if not values:
+        # Impossible predicate — no row can satisfy IN () — fail closed.
+        return exp.EQ(
+            this=exp.Literal.number(1),
+            expression=exp.Literal.number(0),
+        )
+    lhs = exp.Column(this=exp.Identifier(this=column, quoted=False))
+    return exp.In(
+        this=lhs,
+        expressions=[_make_literal(v) for v in values],
+    )
+
+
+def _make_range_predicates(column: str, range_spec: dict) -> list[exp.Expression]:
+    """Build AST inequality nodes from a range-dict RLS policy.
+
+    Supported keys in *range_spec*: ``gte``, ``gt``, ``lte``, ``lt``, ``eq``.
+    Each key produces one predicate; they are all returned as a flat list to
+    be AND-ed together by the caller.
+
+    Parameters
+    ----------
+    column:
+        The column name (unquoted identifier).
+    range_spec:
+        Dict with a subset of keys ``{"gte", "gt", "lte", "lt", "eq"}``.
+        Any unrecognised key is silently ignored (fail-open for future keys;
+        callers should validate before reaching the planner).
+
+    Returns
+    -------
+    list[exp.Expression]
+        One predicate node per recognised key.  Empty if *range_spec* has no
+        recognised keys.
+
+    Security note: all values are converted via :func:`_make_literal` — no
+    string concatenation.  SQL injection via range values is impossible.
+    """
+    lhs = exp.Column(this=exp.Identifier(this=column, quoted=False))
+    preds: list[exp.Expression] = []
+    for key, val in range_spec.items():
+        rhs = _make_literal(val)
+        if key == "eq":
+            preds.append(exp.EQ(this=lhs, expression=rhs))
+        elif key == "gte":
+            preds.append(exp.GTE(this=lhs, expression=rhs))
+        elif key == "gt":
+            preds.append(exp.GT(this=lhs, expression=rhs))
+        elif key == "lte":
+            preds.append(exp.LTE(this=lhs, expression=rhs))
+        elif key == "lt":
+            preds.append(exp.LT(this=lhs, expression=rhs))
+        # Unrecognised keys are silently ignored.
+    return preds
+
+
+def _make_rls_predicates(column: str, policy_value: Any) -> list[exp.Expression]:
+    """Dispatch a single policy entry to the appropriate AST predicate builder.
+
+    This is the single entry-point for converting a ``{column: policy_value}``
+    pair from ``claims["policies"]`` into one or more sqlglot AST predicate
+    nodes ready to be injected into a WHERE clause.
+
+    Policy value shapes (see module docstring for full spec):
+    - Scalar  → one ``exp.EQ`` node
+    - List    → one ``exp.In`` node (or ``1=0`` for empty list)
+    - Range dict → one or more inequality nodes
+
+    All paths use typed AST literals — never string concatenation.
+    """
+    if isinstance(policy_value, list):
+        return [_make_in_predicate(column, policy_value)]
+    elif isinstance(policy_value, dict):
+        return _make_range_predicates(column, policy_value)
     else:
-        rhs = exp.Literal.string(str(value))
-
-    return exp.EQ(this=lhs, expression=rhs)
+        # Scalar (str, int, float, bool) — back-compat equality.
+        return [_make_eq_predicate(column, policy_value)]
 
 
 def _collect_predicates(node: exp.Expression | None, dialect: str) -> list[str]:
@@ -303,9 +431,12 @@ def plan(
 
     injected_predicates: list[str] = []
     for col_name, col_value in sorted(policies.items()):
-        pred_node = _make_eq_predicate(col_name, col_value)
-        tree = tree.where(pred_node)
-        injected_predicates.append(pred_node.sql(dialect=dialect))
+        # Dispatch to shape-aware builder: scalar→EQ, list→IN, dict→range band.
+        # All paths produce AST nodes — never string concatenation.
+        pred_nodes = _make_rls_predicates(col_name, col_value)
+        for pred_node in pred_nodes:
+            tree = tree.where(pred_node)
+            injected_predicates.append(pred_node.sql(dialect=dialect))
 
     # ── 6. Push LIMIT (M2-A; no-op when None) ───────────────────────────────
     if limit is not None:
@@ -337,6 +468,58 @@ def plan(
         rls_claims=claims,
         cache_key=cache_key,
     )
+
+
+# ---------------------------------------------------------------------------
+# E.2: Hierarchical scope expansion helper (async, token-only)
+# ---------------------------------------------------------------------------
+
+
+async def expand_rls_policies(
+    policies: dict[str, Any],
+    org_id: str,
+) -> dict[str, Any]:
+    """Expand any scalar policy values that have hierarchy children.
+
+    For each ``{column: scalar_value}`` entry in *policies*, if the dimension
+    has registered children in ``access_hierarchy`` for *org_id*, the scalar
+    is replaced by the list of children (which will later produce an IN predicate
+    in the planner).  Non-hierarchical dimensions pass through unchanged.
+
+    This function MUST be called with *org_id* and *policies* sourced from the
+    VERIFIED TOKEN — never from request input.  The expansion source is trusted
+    DB data (org-scoped), not attacker-controlled.
+
+    Parameters
+    ----------
+    policies:
+        ``{column: policy_value}`` dict from the verified token.  Only scalar
+        values are considered for expansion; list/dict values pass through.
+    org_id:
+        The organisation whose ``access_hierarchy`` to query.  MUST come from
+        the verified token.
+
+    Returns
+    -------
+    dict[str, Any]
+        A new policies dict with scalar values potentially replaced by child
+        lists.  The original dict is never mutated.
+
+    Security: cross-org leakage is impossible because ``HierarchyResolver.resolve``
+    always filters by org_id using parameterised queries (never string concat).
+    """
+    from app.connectors.rls_hierarchy import get_hierarchy_resolver  # noqa: PLC0415
+
+    resolver = get_hierarchy_resolver()
+    expanded: dict[str, Any] = {}
+    for col, val in policies.items():
+        if isinstance(val, (list, dict)):
+            # Already an IN-list or range — pass through unchanged.
+            expanded[col] = val
+        else:
+            # Scalar — attempt hierarchy expansion.
+            expanded[col] = await resolver.expand_policy(org_id, col, val)
+    return expanded
 
 
 # ---------------------------------------------------------------------------
