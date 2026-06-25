@@ -16,6 +16,7 @@ Covers:
 
 from __future__ import annotations
 
+import os
 import uuid
 
 import pytest
@@ -265,3 +266,227 @@ def test_worker_claim_cas_single_winner():
     second = store.claim_job(jid, "worker-2")
     assert first is not None and first["state"] == "running"
     assert second is None  # already claimed → no second winner
+
+
+# ---------------------------------------------------------------------------
+# Task B: engine-level FS sandbox — DuckDBStorageConnector.for_export()
+#
+# These tests verify that the engine-level lockdown (allowed_directories +
+# enable_external_access=false + lock_configuration) blocks host-FS access
+# EVEN IF the SQL denylist (_FILE_ACCESS_FUNC_RE) were bypassed.
+#
+# Specifically:
+#   1. The engine refuses /etc/passwd at the engine level (not just denylist).
+#   2. The engine refuses other-org lake paths at the engine level.
+#   3. The legitimate export (read_parquet from org-pinned prefix → COPY TO
+#      dest) STILL works through the same hardened connector.
+#   4. A full HTTP export (path B/C, table export) succeeds end-to-end.
+# ---------------------------------------------------------------------------
+
+
+def test_for_export_engine_blocks_etc_passwd(tmp_path):
+    """Engine-level sandbox: /etc/passwd is inaccessible even without denylist."""
+    import duckdb
+    import pyarrow as pa
+    import pyarrow.parquet as pq
+
+    from app.connectors.duckdb_storage import DuckDBStorageConnector
+
+    lake_dir = tmp_path / "lake"
+    dest_dir = tmp_path / "dest"
+    lake_dir.mkdir()
+    dest_dir.mkdir()
+
+    # Write a minimal lake parquet so the connector has something legit to read.
+    (lake_dir / "orders").mkdir()
+    pq.write_table(
+        pa.table({"id": [1, 2], "amount": [100, 200]}),
+        str(lake_dir / "orders" / "data.parquet"),
+    )
+
+    connector = DuckDBStorageConnector.for_export(
+        lake_prefix_dir=str(lake_dir),
+        dest_dir=str(dest_dir),
+    )
+
+    # /etc/passwd must be blocked AT THE ENGINE LEVEL — this simulates a
+    # denylist bypass (the denylist is not invoked here, only the engine).
+    with pytest.raises(Exception) as exc_info:
+        connector._inner._conn.execute(
+            "SELECT * FROM read_csv('/etc/passwd')"
+        ).fetchall()
+
+    err_msg = str(exc_info.value).lower()
+    # DuckDB raises PermissionException when external access is disabled.
+    assert "permission" in err_msg or "disabled" in err_msg or "access" in err_msg, (
+        f"Expected a DuckDB permission error, got: {exc_info.value}"
+    )
+
+
+def test_for_export_engine_blocks_other_org_lake(tmp_path):
+    """Engine-level sandbox: another org's lake prefix is inaccessible."""
+    import pyarrow as pa
+    import pyarrow.parquet as pq
+
+    from app.connectors.duckdb_storage import DuckDBStorageConnector
+
+    # Alice's lake (allowed).
+    alice_lake = tmp_path / "orgs" / "alice" / "lake" / "ds1"
+    alice_lake.mkdir(parents=True)
+    (alice_lake / "orders").mkdir()
+    pq.write_table(
+        pa.table({"id": [1], "amount": [100]}),
+        str(alice_lake / "orders" / "data.parquet"),
+    )
+
+    # Bob's lake (must be blocked — different org).
+    bob_lake = tmp_path / "orgs" / "bob" / "lake" / "ds2"
+    bob_lake.mkdir(parents=True)
+    pq.write_table(
+        pa.table({"secret": ["top-secret"]}),
+        str(bob_lake / "private.parquet"),
+    )
+
+    dest_dir = tmp_path / "dest"
+    dest_dir.mkdir()
+
+    connector = DuckDBStorageConnector.for_export(
+        lake_prefix_dir=str(alice_lake),
+        dest_dir=str(dest_dir),
+    )
+
+    # Bob's lake is outside the allowed_directories — must be blocked by engine.
+    with pytest.raises(Exception) as exc_info:
+        connector._inner._conn.execute(
+            f"SELECT * FROM read_parquet('{bob_lake}/private.parquet')"
+        ).fetchall()
+
+    err_msg = str(exc_info.value).lower()
+    assert "permission" in err_msg or "disabled" in err_msg or "access" in err_msg, (
+        f"Expected engine permission error for cross-org access, got: {exc_info.value}"
+    )
+
+
+def test_for_export_legit_read_parquet_still_works(tmp_path):
+    """Legitimate export (org-pinned read_parquet glob → COPY TO) still works."""
+    import pyarrow as pa
+    import pyarrow.parquet as pq
+
+    from app.connectors.duckdb_storage import DuckDBStorageConnector
+
+    lake_dir = tmp_path / "lake"
+    dest_dir = tmp_path / "dest"
+    orders_dir = lake_dir / "orders"
+    orders_dir.mkdir(parents=True)
+    dest_dir.mkdir()
+
+    pq.write_table(
+        pa.table({"id": [1, 2, 3], "amount": [10, 20, 30]}),
+        str(orders_dir / "data.parquet"),
+    )
+
+    connector = DuckDBStorageConnector.for_export(
+        lake_prefix_dir=str(lake_dir),
+        dest_dir=str(dest_dir),
+    )
+
+    # Legitimate glob read from the org-pinned prefix.
+    src_glob = str(lake_dir / "orders" / "**" / "*.parquet")
+    result = connector._inner._conn.execute(
+        f"SELECT * FROM read_parquet('{src_glob}', union_by_name=true)"
+    ).fetchall()
+    assert sorted(result) == [(1, 10), (2, 20), (3, 30)], (
+        f"Legitimate read_parquet failed — got {result}"
+    )
+
+    # COPY TO dest_dir succeeds.
+    dest_file = str(dest_dir / "orders.parquet")
+    sql = f"SELECT * FROM read_parquet('{src_glob}', union_by_name=true)"
+    connector._inner._conn.execute(
+        f"COPY ({sql}) TO '{dest_file}' (FORMAT parquet)"
+    )
+    written = pq.read_table(dest_file).to_pydict()
+    assert written == {"id": [1, 2, 3], "amount": [10, 20, 30]}, (
+        f"COPY TO produced wrong output: {written}"
+    )
+
+
+def test_for_export_engine_blocks_denylist_bypass_variants(tmp_path):
+    """Engine blocks file-read attempts even for variants not in the regex denylist.
+
+    This is the core defence-in-depth test: even if _FILE_ACCESS_FUNC_RE
+    misses a function name (e.g. a future DuckDB alias or a case variant),
+    the engine-level sandbox catches it.
+    """
+    import pyarrow as pa
+    import pyarrow.parquet as pq
+
+    from app.connectors.duckdb_storage import DuckDBStorageConnector
+
+    lake_dir = tmp_path / "lake"
+    dest_dir = tmp_path / "dest"
+    lake_dir.mkdir()
+    dest_dir.mkdir()
+
+    connector = DuckDBStorageConnector.for_export(
+        lake_prefix_dir=str(lake_dir),
+        dest_dir=str(dest_dir),
+    )
+
+    # Simulate denylist bypass: try to read /etc/hosts using read_text
+    # (which IS in the denylist, but here we're testing engine blocks it
+    # independently of the denylist — so the engine catches it even if
+    # the caller doesn't invoke _validate_export_sql first).
+    bypass_attempts = [
+        "SELECT * FROM read_text('/etc/hosts')",
+        "SELECT * FROM glob('/etc/*')",
+        "SELECT line FROM read_blob('/etc/passwd')",
+    ]
+    for sql in bypass_attempts:
+        with pytest.raises(Exception) as exc_info:
+            connector._inner._conn.execute(sql).fetchall()
+        err_msg = str(exc_info.value).lower()
+        assert "permission" in err_msg or "disabled" in err_msg or "access" in err_msg, (
+            f"Engine did NOT block denylist-bypass variant {sql!r}: {exc_info.value}"
+        )
+
+
+@pytest.mark.asyncio
+async def test_http_table_export_legit_still_works(custody_env, tmp_path):
+    """Full HTTP table export (path B) succeeds end-to-end with the hardened connector."""
+    import pyarrow as pa
+    import pyarrow.parquet as pq
+
+    e = custody_env
+    lake_dir = e["lake_dir"]
+
+    # Seed the alice lake with a real parquet file.
+    from app.lakehouse.managed import lake_prefix
+
+    prefix = lake_prefix(e["alice_org"], e["alice_ds"])
+    orders_dir = os.path.join(lake_dir, prefix, "orders")
+    os.makedirs(orders_dir, exist_ok=True)
+    pq.write_table(
+        pa.table({"id": [10, 20], "val": ["a", "b"]}),
+        os.path.join(orders_dir, "data.parquet"),
+    )
+
+    dest_dir = str(tmp_path / "export_out")
+    os.makedirs(dest_dir, exist_ok=True)
+
+    from tests.security._custody_fixtures import auth_headers
+
+    r = await e["client"].post(
+        f"/api/v1/lake/{e['alice_ds']}/export",
+        json={"dest_uri": f"file://{dest_dir}", "table": "orders"},
+        headers=auth_headers(e["alice_id"]),
+    )
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["tables_exported"] == 1
+
+    # Verify the written parquet is correct.
+    written_path = os.path.join(dest_dir, "orders.parquet")
+    assert os.path.exists(written_path), f"output file not found: {written_path}"
+    result = pq.read_table(written_path).to_pydict()
+    assert result == {"id": [10, 20], "val": ["a", "b"]}, f"wrong output: {result}"

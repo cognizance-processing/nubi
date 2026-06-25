@@ -501,14 +501,37 @@ async def _build_lake_connector(
     row: dict[str, Any],
     org_id: str,
     datastore_id: str,
+    dest_uri: str | None = None,
 ):
-    """Build a ``DuckDBStorageConnector`` over the managed lake.
+    """Build a hardened ``DuckDBStorageConnector`` over the managed lake.
 
     Replicates the secret-injection pattern from ``query.py``
     (``_build_connector_for_plan``) so the lake connector carries the same
     credentials as any BYO DuckDB connector.  Central credentials live in the
     secret store (encrypted at rest); we merge them into ``cfg`` before
     constructing the connector.
+
+    Engine-level FS sandbox (Task B hardening)
+    -------------------------------------------
+    For LOCAL-FILE managed lakes the connector is built via
+    ``DuckDBStorageConnector.for_export(lake_prefix_dir=…, dest_dir=…)``
+    which applies:
+
+      1. ``SET allowed_directories=[lake_prefix_dir, dest_dir]``
+      2. ``SET enable_external_access=false``
+      3. ``SET lock_configuration=true``
+
+    This means the DuckDB engine can ONLY read from the org-pinned lake prefix
+    and write to the validated destination directory.  Even if the SQL denylist
+    (``_FILE_ACCESS_FUNC_RE``) were bypassed — e.g. by a table-function variant
+    the regex doesn't match — the engine itself refuses access to ``/etc/passwd``,
+    other orgs' lake prefixes, or any other host-filesystem path.  This is a
+    defence-in-depth layer ON TOP OF the denylist, not a replacement.
+
+    For S3/cloud managed lakes ``from_config``'s ``for_s3()`` path already calls
+    ``harden_connection(block_local_fs=True)`` → ``disabled_filesystems=LocalFileSystem``
+    at connection creation, which is the equivalent engine-level guard for the
+    cloud path (local FS blocked, httpfs allowed for s3:// reads).
 
     Managed lakes on the local-file backend store Parquet files in a DIRECTORY
     (not a ``.duckdb`` database file).  For those we build an **in-memory**
@@ -525,11 +548,16 @@ async def _build_lake_connector(
         Verified org id (used for secret resolution).
     datastore_id:
         The managed-lake datastore id (used for secret resolution).
+    dest_uri:
+        The destination URI for the export.  Used to resolve the local dest
+        directory for ``allowed_directories`` on local-file connectors.  Pass
+        ``None`` to fall back to an unhardened ``for_memory()`` connector (only
+        acceptable when dest is a cloud URI on an S3 connector path).
 
     Returns
     -------
     DuckDBStorageConnector
-        A fully-configured connector ready to execute COPY TO queries.
+        A fully-configured, engine-hardened connector ready to execute COPY TO.
     """
     from app.connectors.duckdb_storage import (  # noqa: PLC0415
         DuckDBStorageConnector,
@@ -568,14 +596,52 @@ async def _build_lake_connector(
     scheme = _detect_scheme(db_path)
 
     if scheme in ("s3", "s3a", "gs", "az"):
-        # Cloud managed lake — from_config handles httpfs + secret registration.
+        # Cloud managed lake — from_config → for_s3() which already calls
+        # harden_connection(block_local_fs=True) at connection creation.
+        # This disables LocalFileSystem so the engine cannot touch the host FS.
         return DuckDBStorageConnector.from_config(cfg)
 
     # Local-file managed lake: the "database" value is a DIRECTORY URI
     # (e.g. ``file:///…/orgs/<org>/lake/<id>/``), not a DuckDB file.
     # DuckDB cannot open a directory as a database; instead we build an
-    # in-memory connection.  The export helpers use ``read_parquet()`` glob
-    # calls to read source data, so no ATTACH is needed.
+    # in-memory connection with engine-level FS sandbox via for_export().
+    #
+    # Resolve the org-pinned lake prefix as an absolute local path.
+    central = resolve_central_storage()
+    if central is not None and central.scheme == "file":
+        from app.lakehouse.managed import lake_prefix  # noqa: PLC0415
+
+        prefix_rel = lake_prefix(org_id, datastore_id)
+        lake_prefix_dir = os.path.join(central.bucket, prefix_rel.lstrip("/"))
+        lake_prefix_dir = os.path.abspath(lake_prefix_dir)
+
+        # Resolve the destination directory (if local).  For S3 dests this will
+        # be None, which is fine — the allowed_directories will only cover the
+        # lake prefix (local FS reads) and the COPY TO will target an S3 URI.
+        #
+        # dest_uri is the BASE directory for output files; COPY TO writes files
+        # INSIDE it (e.g. dest_uri/<table>.parquet).  So the allowed dir is
+        # dest_uri itself (after stripping file:// if present).
+        dest_dir: str | None = None
+        if dest_uri is not None:
+            effective_dest = dest_uri
+            if effective_dest.startswith("file://"):
+                effective_dest = effective_dest[len("file://"):]
+            if not effective_dest.startswith("s3://") and not effective_dest.startswith("s3a://"):
+                # Local destination — allow the dest base directory (output files
+                # are written inside this directory).
+                dest_dir = os.path.abspath(effective_dest.rstrip("/"))
+
+        connector = DuckDBStorageConnector.for_export(
+            lake_prefix_dir=lake_prefix_dir,
+            dest_dir=dest_dir,
+        )
+        connector._config = dict(cfg)
+        return connector
+
+    # Fallback: no central storage resolved or unexpected scheme — use an
+    # unhardened in-memory connector (e.g. tests without NUBI_MANAGED_LAKE_DIR).
+    # The SQL denylist still applies as the primary guard in this path.
     connector = DuckDBStorageConnector.for_memory()
     connector._config = dict(cfg)
     return connector
@@ -866,7 +932,7 @@ async def _run_export_core(
         _validate_dest_not_in_source(dest_uri, source_lake_uri)
 
     # ── Build the lake connector ──────────────────────────────────────────
-    connector = await _build_lake_connector(row, org_id, datastore_id)
+    connector = await _build_lake_connector(row, org_id, datastore_id, dest_uri=dest_uri)
 
     # ── Register destination creds on the connector when provided ─────────
     if dest_creds and dest_uri.startswith("s3://"):

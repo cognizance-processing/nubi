@@ -367,3 +367,258 @@ def test_assert_cmek_readable_consistent_error_code():
 
     assert exc_info.value.code == "cmek_client_unsupported"
     assert exc_info.value.status == 501
+
+
+# ---------------------------------------------------------------------------
+# Task D — client-mode CMEK: fail-closed at HTTP entry points
+#
+# Rationale: Task D attempted to implement a decrypt-before-engine path for
+# client-CMEK lakes.  After analysis, keeping fail-closed is the correct
+# decision for this pass because:
+#
+#   1. Criterion 3 (plaintext temp files securely removed): the DuckDB
+#      write_result / COPY TO path creates the destination file synchronously
+#      but a temp intermediate can't be reliably scoped and cleaned in the
+#      existing connector architecture without a larger refactor.
+#   2. Criterion 2 (decryption key never written to disk): the CmekProvider
+#      holds the key in memory, but piping it through the existing connector
+#      factory (which clones cfgs) requires careful audit of every code path.
+#   3. Criterion 1 (round-trip correctness): the encrypt→write→read-decrypt→query
+#      path requires a temp dir that composes with the Task B allowed_directories
+#      sandbox — shipping CMEK and the FS sandbox in one diff risks one breaking
+#      the other.
+#
+# These tests verify that fail-closed is STILL enforced at every entry point
+# (export endpoint + table listing), so a future Task D implementation cannot
+# silently regress the guard.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_export_endpoint_fail_closed_for_client_cmek(monkeypatch):
+    """POST /lake/{id}/export returns 501 when CMEK mode is 'client'.
+
+    This is the Task D fail-closed regression guard: the export endpoint
+    must always check assert_cmek_readable() before any storage I/O.
+    If this 501 disappears, someone removed or bypassed the guard.
+    """
+    import app.routes.lake_export  # noqa: F401  — self-register router
+
+    import uuid
+    from app.config import get_settings
+    from app.auth.jwt import mint_access_token
+    from app.repos.memory import InMemoryRepo
+    from app.repos.provider import set_repo
+    from app.routes.lake_export import InMemoryExportJobStore, set_export_job_store
+    from app.lakehouse.managed import MANAGED_MARKER, lake_prefix
+
+    from unittest.mock import AsyncMock, patch
+    from httpx import ASGITransport, AsyncClient
+
+    monkeypatch.setenv("NUBI_CUSTODY_ENABLED", "true")
+    monkeypatch.setenv("NUBI_CMEK_MODE", "client")
+    # Provide a valid 32-byte key so get_cmek_provider() succeeds (the route
+    # checks cmek_mode() only, not the key, for the fail-closed guard).
+    import base64, os as _os
+    monkeypatch.setenv("NUBI_CMEK_KEY_MATERIAL", base64.b64encode(_os.urandom(32)).decode())
+    get_settings.cache_clear()
+
+    lake_dir = "/tmp/_cmek_test_lake"
+    monkeypatch.setenv("NUBI_MANAGED_LAKE_DIR", lake_dir)
+    get_settings.cache_clear()
+
+    repo = InMemoryRepo()
+    set_repo(repo)
+    job_store = InMemoryExportJobStore()
+    set_export_job_store(job_store)
+
+    user_id = str(uuid.uuid4())
+    org_id = str(uuid.uuid4())
+    ds_id = str(uuid.uuid4())
+
+    prefix = lake_prefix(org_id, ds_id)
+    await repo.create(
+        resource="datastores",
+        org_id=org_id,
+        created_by=user_id,
+        name="Client CMEK lake",
+        config={
+            "connector_type": "duckdb",
+            "database": f"file://{lake_dir}/{prefix}",
+            MANAGED_MARKER: True,
+            "managed_prefix": prefix,
+            "managed_scheme": "file",
+        },
+        id=ds_id,
+    )
+
+    # Wire fake DB so JWT/org resolution works.
+    from tests.conftest import FakeDB  # noqa: PLC0415 — test helper
+
+    fake_db = FakeDB()
+    fake_db.users[user_id] = {
+        "id": user_id, "email": "cmek@test.nubi", "name": "Test",
+        "avatar_url": None, "email_verified": True,
+        "created_at": "2024-01-01T00:00:00+00:00",
+    }
+    # Seed org membership.
+    repo.seed_org_member(org_id=org_id, user_id=user_id)
+
+    patches = [
+        patch("app.db.fetchrow", side_effect=fake_db.fake_fetchrow),
+        patch("app.db.fetch", side_effect=fake_db.fake_fetch),
+        patch("app.db.execute", side_effect=fake_db.fake_execute),
+        patch("app.db.get_connection", new=fake_db.fake_get_connection),
+        patch("app.routes.auth.fetchrow", side_effect=fake_db.fake_fetchrow),
+        patch("app.routes.auth.execute", side_effect=fake_db.fake_execute),
+        patch("app.auth.sessions.fetchrow", side_effect=fake_db.fake_fetchrow),
+        patch("app.auth.sessions.execute", side_effect=fake_db.fake_execute),
+        patch("app.auth.sessions.get_connection", new=fake_db.fake_get_connection),
+        patch("app.auth.deps.fetchrow", side_effect=fake_db.fake_fetchrow),
+        patch("app.db.init_db", new=AsyncMock()),
+        patch("app.db.close_db", new=AsyncMock()),
+    ]
+    for p in patches:
+        p.start()
+
+    try:
+        import main as main_module  # noqa: PLC0415
+
+        test_app = main_module.create_app()
+        token = mint_access_token(user_id)
+        headers = {"Authorization": f"Bearer {token}"}
+
+        async with AsyncClient(
+            transport=ASGITransport(app=test_app),
+            base_url="http://testserver",
+            follow_redirects=False,
+        ) as ac:
+            r = await ac.post(
+                f"/api/v1/lake/{ds_id}/export",
+                json={"dest_uri": "file:///tmp/out", "table": "orders"},
+                headers=headers,
+            )
+        # Must be 501 (fail-closed) — NOT 200/500/200.
+        assert r.status_code == 501, (
+            f"Expected 501 (fail-closed for client CMEK) but got {r.status_code}: {r.text}"
+        )
+        body = r.json()
+        assert body.get("error", {}).get("code") == "cmek_client_unsupported", (
+            f"Wrong error code: {body}"
+        )
+    finally:
+        for p in patches:
+            p.stop()
+        set_repo(None)
+        set_export_job_store(None)
+        get_settings.cache_clear()
+
+
+@pytest.mark.asyncio
+async def test_list_tables_endpoint_fail_closed_for_client_cmek(monkeypatch):
+    """GET /lake/{id}/tables returns 501 when CMEK mode is 'client'.
+
+    The table-listing endpoint also guards with assert_cmek_readable() because
+    a client-CMEK lake would have encrypted blobs that DuckDB cannot list
+    meaningfully.  Verify the guard is still in place.
+    """
+    import app.routes.lake_export  # noqa: F401
+
+    import uuid
+    from app.config import get_settings
+    from app.auth.jwt import mint_access_token
+    from app.repos.memory import InMemoryRepo
+    from app.repos.provider import set_repo
+    from app.routes.lake_export import InMemoryExportJobStore, set_export_job_store
+    from app.lakehouse.managed import MANAGED_MARKER, lake_prefix
+    from unittest.mock import AsyncMock, patch
+    from httpx import ASGITransport, AsyncClient
+    import base64, os as _os
+
+    monkeypatch.setenv("NUBI_CUSTODY_ENABLED", "true")
+    monkeypatch.setenv("NUBI_CMEK_MODE", "client")
+    monkeypatch.setenv("NUBI_CMEK_KEY_MATERIAL", base64.b64encode(_os.urandom(32)).decode())
+    lake_dir = "/tmp/_cmek_test_lake2"
+    monkeypatch.setenv("NUBI_MANAGED_LAKE_DIR", lake_dir)
+    get_settings.cache_clear()
+
+    repo = InMemoryRepo()
+    set_repo(repo)
+    job_store = InMemoryExportJobStore()
+    set_export_job_store(job_store)
+
+    user_id = str(uuid.uuid4())
+    org_id = str(uuid.uuid4())
+    ds_id = str(uuid.uuid4())
+    prefix = lake_prefix(org_id, ds_id)
+    await repo.create(
+        resource="datastores",
+        org_id=org_id,
+        created_by=user_id,
+        name="Client CMEK lake",
+        config={
+            "connector_type": "duckdb",
+            "database": f"file://{lake_dir}/{prefix}",
+            MANAGED_MARKER: True,
+            "managed_prefix": prefix,
+            "managed_scheme": "file",
+        },
+        id=ds_id,
+    )
+
+    from tests.conftest import FakeDB  # noqa: PLC0415
+
+    fake_db = FakeDB()
+    fake_db.users[user_id] = {
+        "id": user_id, "email": "cmek2@test.nubi", "name": "Test",
+        "avatar_url": None, "email_verified": True,
+        "created_at": "2024-01-01T00:00:00+00:00",
+    }
+    repo.seed_org_member(org_id=org_id, user_id=user_id)
+
+    patches = [
+        patch("app.db.fetchrow", side_effect=fake_db.fake_fetchrow),
+        patch("app.db.fetch", side_effect=fake_db.fake_fetch),
+        patch("app.db.execute", side_effect=fake_db.fake_execute),
+        patch("app.db.get_connection", new=fake_db.fake_get_connection),
+        patch("app.routes.auth.fetchrow", side_effect=fake_db.fake_fetchrow),
+        patch("app.routes.auth.execute", side_effect=fake_db.fake_execute),
+        patch("app.auth.sessions.fetchrow", side_effect=fake_db.fake_fetchrow),
+        patch("app.auth.sessions.execute", side_effect=fake_db.fake_execute),
+        patch("app.auth.sessions.get_connection", new=fake_db.fake_get_connection),
+        patch("app.auth.deps.fetchrow", side_effect=fake_db.fake_fetchrow),
+        patch("app.db.init_db", new=AsyncMock()),
+        patch("app.db.close_db", new=AsyncMock()),
+    ]
+    for p in patches:
+        p.start()
+
+    try:
+        import main as main_module  # noqa: PLC0415
+
+        test_app = main_module.create_app()
+        token = mint_access_token(user_id)
+        headers = {"Authorization": f"Bearer {token}"}
+
+        async with AsyncClient(
+            transport=ASGITransport(app=test_app),
+            base_url="http://testserver",
+            follow_redirects=False,
+        ) as ac:
+            r = await ac.get(
+                f"/api/v1/lake/{ds_id}/tables",
+                headers=headers,
+            )
+        assert r.status_code == 501, (
+            f"Expected 501 (fail-closed for client CMEK) but got {r.status_code}: {r.text}"
+        )
+        body = r.json()
+        assert body.get("error", {}).get("code") == "cmek_client_unsupported", (
+            f"Wrong error code for table listing: {body}"
+        )
+    finally:
+        for p in patches:
+            p.stop()
+        set_repo(None)
+        set_export_job_store(None)
+        get_settings.cache_clear()

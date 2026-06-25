@@ -43,6 +43,7 @@ def harden_connection(
     *,
     block_local_fs: bool = False,
     disable_external_access: bool = False,
+    allowed_directories: "list[str] | None" = None,
 ) -> None:
     """Apply defence-in-depth settings to *conn*, then freeze the configuration.
 
@@ -67,6 +68,18 @@ def harden_connection(
         connections whose data is fully registered/attached up front (demo
         tables, read-only local DB files).  Mutually exclusive with httpfs
         reads — do not combine with ``block_local_fs``.
+    allowed_directories:
+        An explicit allow-list of absolute directory paths that DuckDB may
+        read/write even when ``enable_external_access=false``.  When provided,
+        these paths are applied via ``SET allowed_directories=[...]`` BEFORE
+        ``SET enable_external_access=false`` so only those paths (and nothing
+        else on the host filesystem) are accessible.  Use this for the
+        export connector: set it to ``[lake_prefix_dir, dest_dir]`` so the
+        engine can read the org-pinned lake prefix and write to the dest,
+        but cannot touch ``/etc/passwd``, other orgs' lake prefixes, or any
+        other host path — even if the SQL denylist (``_FILE_ACCESS_FUNC_RE``)
+        were bypassed.  Must be used together with
+        ``disable_external_access=True``.
 
     Resource limits:
     ``NUBI_DUCKDB_MEMORY_LIMIT`` DEFAULTS to a safe cap (``"2GB"``) so every
@@ -104,6 +117,14 @@ def harden_connection(
     temp_dir = os.getenv("NUBI_DUCKDB_TEMP_DIR", "")
     if temp_dir:
         statements.append(f"SET temp_directory='{temp_dir}'")
+    if allowed_directories:
+        # Escape single quotes in paths (paranoia — paths are server-generated
+        # from trusted org/datastore ids, but defence-in-depth).
+        def _sq(p: str) -> str:
+            return p.replace("'", "''")
+
+        dirs_literal = ", ".join(f"'{_sq(p)}'" for p in allowed_directories)
+        statements.append(f"SET allowed_directories=[{dirs_literal}]")
     if disable_external_access:
         statements.append("SET enable_external_access=false")
     elif block_local_fs:

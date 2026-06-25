@@ -347,6 +347,87 @@ class DuckDBStorageConnector(Connector, FileConnectorMixin):
         return cls(DuckDBConnector(), is_cloud=False)
 
     @classmethod
+    def for_export(
+        cls,
+        *,
+        lake_prefix_dir: str,
+        dest_dir: str | None = None,
+    ) -> "DuckDBStorageConnector":
+        """Return a hardened in-memory connector for local-file managed-lake exports.
+
+        Engine-level FS sandbox
+        -----------------------
+        Sets ``allowed_directories=[lake_prefix_dir, dest_dir]`` + then
+        ``enable_external_access=false`` + ``lock_configuration=true`` so that
+        even if the SQL denylist (``_FILE_ACCESS_FUNC_RE``) is bypassed — e.g.
+        by a table function variant the regex doesn't match — the engine itself
+        refuses access to any path outside the org-pinned lake prefix and the
+        validated dest.  This means ``/etc/passwd``, another org's lake prefix,
+        and any other host-filesystem path are inaccessible AT THE ENGINE LEVEL,
+        not just at the denylist layer.
+
+        Design notes
+        ------------
+        * ``lake_prefix_dir`` must be an **absolute** local path derived
+          server-side from ``resolve_central_storage().bucket`` +
+          ``lake_prefix(org_id, datastore_id)`` — never from user input.
+        * ``dest_dir`` is the parent directory of the destination file (local
+          exports) or ``None`` (S3 destinations).  When ``None`` the
+          ``allowed_directories`` list is ``[lake_prefix_dir]`` and the COPY TO
+          must target an S3 URI (httpfs) — but local-file export connectors
+          should always pass the dest dir.
+        * The ``autoinstall_known_extensions=false`` / ``autoload_known_extensions=false``
+          block extension auto-loading (prevents side-channel install attacks).
+
+        Parameters
+        ----------
+        lake_prefix_dir:
+            Absolute local path of the org-pinned lake prefix directory,
+            e.g. ``/var/lake/orgs/<org_id>/lake/<datastore_id>``.  DuckDB will
+            be able to read Parquet from this path and any sub-path.
+        dest_dir:
+            Absolute local path of the destination directory (parent of the
+            output file).  DuckDB will be able to write Parquet/CSV here.
+            Pass ``None`` when the destination is a cloud URI (not local).
+
+        Returns
+        -------
+        DuckDBStorageConnector
+            A fully hardened connector ready for the local-file export path.
+        """
+        try:
+            import duckdb  # noqa: PLC0415
+        except ImportError as exc:
+            from app.errors import AppError  # noqa: PLC0415
+
+            raise AppError(
+                "driver_unavailable",
+                "DuckDB is not installed.  Add 'duckdb>=1.0' to requirements.txt.",
+                status=500,
+            ) from exc
+
+        conn = duckdb.connect(database=":memory:")
+
+        # Build the allowed-directories list from server-pinned paths only.
+        allowed: list[str] = [lake_prefix_dir]
+        if dest_dir is not None:
+            allowed.append(dest_dir)
+
+        # Harden: allow ONLY the org-pinned lake prefix and dest dir; disable
+        # all other external access (local FS + remote URLs).  This is
+        # STRONGER than the SQL denylist alone: the engine refuses any path
+        # outside allowed_directories regardless of which table function is used.
+        from app.connectors.duckdb_conn import harden_connection  # noqa: PLC0415
+
+        harden_connection(
+            conn,
+            disable_external_access=True,
+            allowed_directories=allowed,
+        )
+
+        return cls(DuckDBConnector(conn), is_cloud=False)
+
+    @classmethod
     def for_local_path(cls, path: str, *, read_only: bool = True) -> "DuckDBStorageConnector":
         """Return a connector backed by the DuckDB file at *path*.
 
