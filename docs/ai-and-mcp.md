@@ -309,6 +309,101 @@ litellm completion model=anthropic/claude-opus-4-8 prompt_tokens=812 completion_
 
 ---
 
+---
+
+## External MCP server integration (Nubi calls your server)
+
+Beyond the stdio server above, Nubi's agent loop can also **call an external
+MCP server** that you register via the API. This is the integration model for
+SaaS hosts like KeyOne whose entire integration point is an MCP server.
+
+### How it works
+
+When the AI agent processes a request for an org:
+
+1. It fetches the org's enabled MCP servers from the `mcp_servers` table.
+2. It calls `tools/list` on each server (Streamable-HTTP transport, SSRF-guarded).
+3. It presents those tools to the LLM **alongside Nubi's built-in tools**,
+   namespaced as `serverName.toolName` (e.g. `keyOne.fetch_contract`).
+4. It dispatches any `serverName.toolName` tool calls to the correct MCP server
+   via `tools/call`.
+
+### Registering a server
+
+```http
+POST /api/v1/mcp/servers
+Authorization: Bearer <token>
+Content-Type: application/json
+
+{
+  "name": "keyOne",
+  "url": "https://mcp.keyOne.example.com/mcp",
+  "transport": "http",
+  "auth_token": "sk-keyOne-bearer-token",
+  "enabled": true
+}
+```
+
+Full CRUD:
+
+```
+GET    /api/v1/mcp/servers
+POST   /api/v1/mcp/servers
+GET    /api/v1/mcp/servers/{id}
+PUT    /api/v1/mcp/servers/{id}
+DELETE /api/v1/mcp/servers/{id}
+```
+
+The `auth_token` is **encrypted at rest** (AES-256-GCM) and is **never
+returned** in GET or list responses.
+
+### SSRF protection
+
+URLs are validated at create and update time: private IPv4/IPv6, loopback,
+link-local, and cloud metadata IPs (169.254.169.254, fd00:ec2::254) are
+unconditionally blocked. Connections use DNS-pinned transports to prevent
+rebinding attacks.
+
+### Consuming Nubi as an MCP server (HTTP endpoint)
+
+In addition to the stdio server above, Nubi exposes a JSON-RPC 2.0 MCP
+endpoint over HTTP for server-to-server use:
+
+```
+POST /api/v1/mcp
+Authorization: Bearer <nubi-token>
+Content-Type: application/json
+```
+
+Methods: `initialize`, `tools/list`, `tools/call`.
+
+Tool calls execute under the caller's JWT claims with full RLS enforcement —
+the same security guarantees as the REST API. See the Implementation section
+of this file for the full tool catalog.
+
+### Database migration
+
+```sql
+-- database/migrations/0019_mcp_servers.sql
+CREATE TABLE IF NOT EXISTS mcp_servers (
+    id              uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+    org_id          uuid NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
+    name            text NOT NULL,
+    url             text NOT NULL,
+    transport       text NOT NULL DEFAULT 'http',
+    auth_secret_ciphertext  bytea     NULL,
+    auth_secret_nonce       bytea     NULL,
+    auth_secret_key_version integer   NULL,
+    enabled         boolean NOT NULL DEFAULT true,
+    created_by      uuid NULL REFERENCES users(id) ON DELETE SET NULL,
+    created_at      timestamptz NOT NULL DEFAULT now(),
+    updated_at      timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_mcp_servers_org_enabled ON mcp_servers (org_id, enabled);
+```
+
+---
+
 ## Related
 
 - [Dashboards](/docs/dashboards) — widget types, chart types, and the editor.

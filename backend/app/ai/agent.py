@@ -65,6 +65,42 @@ from app.ai.provider import LLMProvider, NullProvider
 from app.ai.tools import execute_tool, tool_schemas
 from app.errors import AppError
 
+# ---------------------------------------------------------------------------
+# MCP-aware tool dispatch (lazy import to avoid circular deps at module load)
+# ---------------------------------------------------------------------------
+#
+# When the caller's claims include an org id, the agent uses
+# ``combined_tool_schemas`` and ``combined_execute_tool`` from
+# ``app.ai.mcp_tools`` so that external MCP servers' tools are discovered and
+# dispatched alongside Nubi's built-in tools.  Falls back to the pure
+# built-in registry when MCP tools are unavailable or the import fails.
+
+
+def _get_tool_schemas(claims: dict[str, Any]) -> list[dict[str, Any]]:
+    """Return tool schemas for the agent, including MCP tools when available."""
+    org_id = (claims or {}).get("org")
+    if org_id:
+        try:
+            from app.ai.mcp_tools import combined_tool_schemas  # noqa: PLC0415
+            return combined_tool_schemas(claims)
+        except Exception:  # noqa: BLE001
+            pass
+    return tool_schemas()
+
+
+def _dispatch_tool(
+    name: str, arguments: dict[str, Any], claims: dict[str, Any]
+) -> dict[str, Any]:
+    """Dispatch a tool call — built-in or namespaced MCP — and return the result."""
+    org_id = (claims or {}).get("org")
+    if org_id and "." in name:
+        try:
+            from app.ai.mcp_tools import combined_execute_tool  # noqa: PLC0415
+            return combined_execute_tool(name, arguments, claims)
+        except Exception as exc:  # noqa: BLE001
+            return {"error": {"code": "mcp_dispatch_error", "message": str(exc)}}
+    return execute_tool(name, arguments, claims)
+
 
 # ---------------------------------------------------------------------------
 # Internal helpers
@@ -120,9 +156,9 @@ def _extract_question(messages: list[dict[str, Any]]) -> str:
 # ---------------------------------------------------------------------------
 
 
-def _tool_use_system_prompt() -> str:
+def _tool_use_system_prompt(claims: dict[str, Any] | None = None) -> str:
     """Build the system prompt describing the tool-call protocol + tool catalog."""
-    schemas = tool_schemas()
+    schemas = _get_tool_schemas(claims or {})
     lines = [
         "You are Nubi's analytics assistant. You can call tools to answer the "
         "user's request. Prefer GOVERNED metrics (list_metrics / query_metric) "
@@ -257,7 +293,7 @@ def _run_real_provider_loop(
     execution threads *claims* through ``execute_tool`` so RLS is enforced and
     scope is never widened.  Bounded by *max_steps* tool calls.
     """
-    system = _tool_use_system_prompt()
+    system = _tool_use_system_prompt(claims)
     transcript: list[dict[str, Any]] = []
     actions: list[dict[str, Any]] = []
 
@@ -294,7 +330,7 @@ def _run_real_provider_loop(
         tool_name = call["tool"]
         arguments = call["arguments"]
         try:
-            result = execute_tool(tool_name, arguments, claims)
+            result = _dispatch_tool(tool_name, arguments, claims)
         except Exception as exc:  # noqa: BLE001 — surface tool errors to the model.
             result = {"error": {"code": "tool_error", "message": str(exc)}}
 
@@ -666,7 +702,7 @@ def _stream_real_provider_loop(
     ``tool_result`` / ``text`` / ``done`` events as each step happens. Every
     tool execution threads *claims* for RLS; bounded by *max_steps*.
     """
-    system = _tool_use_system_prompt()
+    system = _tool_use_system_prompt(claims)
     transcript: list[dict[str, Any]] = []
     actions: list[dict[str, Any]] = []
 
@@ -702,7 +738,7 @@ def _stream_real_provider_loop(
         yield {"type": "tool_start", "id": tid, "tool": tool_name, "arguments": arguments}
         time.sleep(pace * 6)
         try:
-            result = execute_tool(tool_name, arguments, claims)
+            result = _dispatch_tool(tool_name, arguments, claims)
             ok = not (isinstance(result, dict) and "error" in result)
         except Exception as exc:  # noqa: BLE001
             result = {"error": {"code": "tool_error", "message": str(exc)}}
