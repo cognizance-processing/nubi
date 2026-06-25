@@ -271,6 +271,11 @@ import app.routes.lake_export  # noqa: F401, E402
 # No auth on the file/manifest endpoints; query-map endpoint requires read scope.
 import app.routes.demo_parquet  # noqa: F401, E402
 
+# Import data-health route (GET /health/freshness, /health/score, /health/estate)
+# BEFORE resources so the /health prefix routes are registered ahead of the
+# generic /{resource} catch-all in resources.py.
+import app.routes.health  # noqa: F401, E402
+
 # Import resources route so it registers itself on api_router at import time.
 import app.routes.resources  # noqa: F401, E402
 
@@ -299,11 +304,16 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
     On shutdown: stop all background tasks, then drain and close the pool.
     """
     from app.flows.runtime import start_flow_worker, stop_flow_worker
+    from app.health.listener import register_health_listener
     from app.jobs.runtime import start_scheduler, stop_scheduler
     from app.metrics.registry import load_metrics_from_queries
     from app.queries.registry import load_persisted_queries
 
     await init_db()
+
+    # Register the freshness listener so flow_success events populate the
+    # dataset_freshness registry without polling.
+    register_health_listener()
 
     # Load persisted queries (from the `queries` table) into the runtime
     # registry so that dashboard widgets referencing only a query_id execute

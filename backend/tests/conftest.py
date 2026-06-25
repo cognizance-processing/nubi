@@ -509,6 +509,20 @@ def _reset_state():
         except Exception:
             pass
 
+        # ── Health freshness store ─────────────────────────────────────────────
+        try:
+            from app.health.store import InMemoryFreshnessStore, set_freshness_store
+            set_freshness_store(InMemoryFreshnessStore())
+        except Exception:
+            pass
+
+        # ── Health flow event listener ────────────────────────────────────────
+        try:
+            from app.health.listener import unregister_health_listener
+            unregister_health_listener()
+        except Exception:
+            pass
+
     _do_reset()
     yield
     _do_reset()
