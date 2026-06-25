@@ -32,20 +32,29 @@ CREATE INDEX IF NOT EXISTS flows_project_id_idx ON flows (project_id);
 -- targets under this env.
 
 CREATE TABLE IF NOT EXISTS flow_runs (
-    id           uuid        PRIMARY KEY DEFAULT gen_random_uuid(),
-    flow_id      uuid        NOT NULL REFERENCES flows(id) ON DELETE CASCADE,
-    org_id       uuid        NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
-    state        text        NOT NULL DEFAULT 'pending'
-                             CHECK (state IN ('pending','running','success','failed','cancelled')),
-    params       jsonb       NOT NULL DEFAULT '{}'::jsonb,
-    trigger      text        NOT NULL DEFAULT 'manual'
-                             CHECK (trigger IN ('manual','schedule','event','agent','sweep','backfill')),
-    env          text,
-    scheduled_at timestamptz,
-    started_at   timestamptz,
-    finished_at  timestamptz,
-    error        text,
-    created_at   timestamptz NOT NULL DEFAULT now()
+    id              uuid        PRIMARY KEY DEFAULT gen_random_uuid(),
+    flow_id         uuid        NOT NULL REFERENCES flows(id) ON DELETE CASCADE,
+    org_id          uuid        NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
+    state           text        NOT NULL DEFAULT 'pending'
+                                CHECK (state IN ('pending','running','success','failed','cancelled')),
+    params          jsonb       NOT NULL DEFAULT '{}'::jsonb,
+    trigger         text        NOT NULL DEFAULT 'manual'
+                                CHECK (trigger IN ('manual','schedule','event','agent','sweep','backfill')),
+    env             text,
+    scheduled_at    timestamptz,
+    started_at      timestamptz,
+    finished_at     timestamptz,
+    error           text,
+    -- B2: integer seed for this run's stochastic cells (derived from the
+    -- run_id for reproducibility across retries).  NULL = no seed.
+    seed            bigint,
+    -- B2: snapshot of the flow spec version/hash at trigger time.
+    -- Stored as jsonb for extensibility (e.g. {version: 3, hash: "..."}).
+    code_version    jsonb,
+    -- B2: full copy of the resolved params at trigger time (independent
+    -- of any later spec edits).
+    params_snapshot jsonb,
+    created_at      timestamptz NOT NULL DEFAULT now()
 );
 
 CREATE INDEX IF NOT EXISTS flow_runs_flow_id_idx ON flow_runs (flow_id);
@@ -129,19 +138,6 @@ CREATE TABLE IF NOT EXISTS flow_watermarks (
     updated_at  timestamptz NOT NULL DEFAULT now(),
     PRIMARY KEY (flow_id, model_key, env)
 );
-
--- ── B2: Run-level seed + code-version snapshot columns on flow_runs ──────────
--- seed:         integer seed for this run's stochastic cells (derived from the
---               run_id for reproducibility across retries).  NULL = no seed.
--- code_version: a snapshot of the flow spec version/hash at trigger time.
---               Stored as jsonb for extensibility (e.g. {version: 3, hash: "..."}).
--- params_snapshot: full copy of the resolved params at trigger time (independent
---               of any later spec edits).
-
-ALTER TABLE flow_runs
-    ADD COLUMN IF NOT EXISTS seed              bigint,
-    ADD COLUMN IF NOT EXISTS code_version      jsonb,
-    ADD COLUMN IF NOT EXISTS params_snapshot   jsonb;
 
 -- ── B2: flow_run_outputs — data-lineage: output → flow_run link ───────────────
 -- Records which flow run PRODUCED a named output table / dataset so

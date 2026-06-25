@@ -1,37 +1,17 @@
--- Migration 0027: EE billing invoices + tier CHECK fix.
+-- Migration 0027: EE billing invoices.
 --
 -- Forward-only; never edit after applying.
 --
--- 1. Relax the subscriptions.tier CHECK to include the 'starter' and 'team'
---    tiers.  The original 0017 CHECK only allowed ('free','pro','enterprise'),
---    which predates the Starter (v3) and Team tiers now in tiers.py.
---
--- 2. invoices — one row per billing cycle per org.  Records the base
+-- 1. invoices — one row per billing cycle per org.  Records the base
 --    subscription, metered overages NOT covered by the prepaid wallet, VAT
 --    (only when VAT-registered), and the total collected via Paystack (ZAR).
 --    A jsonb snapshot of the issuing business entity is stored so historical
 --    invoices remain reproducible even if company details change later.
 --
--- 3. invoice_counters — per-year monotonic sequence for human-readable
+-- 2. invoice_counters — per-year monotonic sequence for human-readable
 --    invoice numbers (e.g. NUBI-2026-000123).
 
--- ── 1. subscriptions tier CHECK (free / starter / team / pro / enterprise) ──
-
-ALTER TABLE subscriptions
-    DROP CONSTRAINT IF EXISTS subscriptions_tier_check;
-
--- Remap legacy 5-tier 'business' rows (permitted by the 0018 CHECK) to
--- 'enterprise' — the canonical mapping in tiers.py
--- (billing_tier_from_license_tier).  Postgres validates existing rows when
--- the constraint below is added, so this must run first or the migration
--- aborts on any DB holding a 'business' subscription.
-UPDATE subscriptions SET tier = 'enterprise' WHERE tier = 'business';
-
-ALTER TABLE subscriptions
-    ADD CONSTRAINT subscriptions_tier_check
-    CHECK (tier IN ('free', 'starter', 'team', 'pro', 'enterprise'));
-
--- ── 2. invoices ─────────────────────────────────────────────────────────────
+-- ── 1. invoices ─────────────────────────────────────────────────────────────
 
 CREATE TABLE IF NOT EXISTS invoices (
     id                  uuid          PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -71,7 +51,7 @@ CREATE INDEX IF NOT EXISTS idx_invoices_status
     ON invoices (status, issued_at DESC)
     WHERE status IN ('pending', 'past_due');
 
--- ── 3. invoice_counters (human-readable per-year sequence) ──────────────────
+-- ── 2. invoice_counters (human-readable per-year sequence) ──────────────────
 
 CREATE TABLE IF NOT EXISTS invoice_counters (
     year        int     PRIMARY KEY,

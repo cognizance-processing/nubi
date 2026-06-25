@@ -45,10 +45,6 @@ CREATE TABLE IF NOT EXISTS wallet_topup_config (
     updated_at                   TIMESTAMPTZ  NOT NULL DEFAULT NOW()
 );
 
--- Backfill for databases that created the table before topup_in_flight_at existed
--- (keeps the migration safe to re-run, mirroring the IF NOT EXISTS pattern above).
-ALTER TABLE wallet_topup_config ADD COLUMN IF NOT EXISTS topup_in_flight_at TIMESTAMPTZ;
-
 -- ---------------------------------------------------------------------------
 -- wallet_ledger: append-only ledger of every credit and debit.
 -- Rows are never updated; corrections use ADJUSTMENT_CREDIT / ADJUSTMENT_DEBIT.
@@ -95,7 +91,6 @@ CREATE INDEX IF NOT EXISTS idx_wallet_ledger_org_created
 -- billing-cycle overage draw, …) may produce at most ONE effective ledger row.
 -- TOPUP_FAILED rows are excluded — a failed attempt records the reference for
 -- audit but must never block the later successful credit for the same charge.
-DROP INDEX IF EXISTS idx_wallet_ledger_ref;
 CREATE UNIQUE INDEX IF NOT EXISTS uq_wallet_ledger_ref
     ON wallet_ledger (ref_id)
     WHERE ref_id IS NOT NULL AND entry_type <> 'TOPUP_FAILED';
