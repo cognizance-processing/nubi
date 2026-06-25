@@ -123,6 +123,38 @@ def _seq_client(statuses: list[int]):
     return C
 
 
+import socket as _socket  # noqa: E402
+
+
+def _patch_delivery(monkeypatch, client_instance, *, timeout_capture: list | None = None):
+    """Patch deliver_one so it bypasses DNS + SSRF and uses *client_instance*.
+
+    deliver_one now calls ``resolve_and_pin`` (single DNS resolution) and then
+    ``_build_pinned_client`` to get an httpx.AsyncClient.  For unit tests that
+    care about retry logic / headers / subscription gating — not the pinning
+    mechanism itself — we:
+
+    1. Patch ``socket.getaddrinfo`` → always returns a safe public IP so that
+       ``guard_url`` + ``resolve_and_pin`` pass without real DNS.
+    2. Patch ``delivery._build_pinned_client`` → returns *client_instance*.
+       If *timeout_capture* is given, the list is populated with the kwargs
+       passed to _build_pinned_client so tests can verify timeout propagation.
+    """
+
+    def _fake_getaddrinfo(host, *args, **kwargs):
+        return [(_socket.AF_INET, _socket.SOCK_STREAM, _socket.IPPROTO_TCP, "", ("93.184.216.34", 0))]
+
+    monkeypatch.setattr(_socket, "getaddrinfo", _fake_getaddrinfo)
+
+    def _fake_build(pinned_ip, hostname, scheme, port, timeout_s):
+        if timeout_capture is not None:
+            timeout_capture.append({"pinned_ip": pinned_ip, "hostname": hostname,
+                                    "scheme": scheme, "port": port, "timeout_s": timeout_s})
+        return client_instance
+
+    monkeypatch.setattr(delivery, "_build_pinned_client", _fake_build)
+
+
 # ===========================================================================
 # 1. Per-event-type delivery gating
 # ===========================================================================
@@ -148,9 +180,8 @@ async def test_each_event_type_delivered_only_when_subscribed(
 
         C = _seq_client([200])
         C.calls = []
-        import httpx
 
-        monkeypatch.setattr(httpx, "AsyncClient", C)
+        _patch_delivery(monkeypatch, C())
 
         # Subscribed event → delivered once.
         n = await delivery.deliver_to_org(_ORG_A, subscribed_type, {"x": 1})
@@ -242,9 +273,8 @@ async def test_inactive_endpoint_not_delivered_to(monkeypatch):
         await store.update(row["id"], _ORG_A, active=False)
 
         C = _seq_client([200])
-        import httpx
 
-        monkeypatch.setattr(httpx, "AsyncClient", C)
+        _patch_delivery(monkeypatch, C())
         n = await delivery.deliver_to_org(_ORG_A, FLOW_COMPLETED, {"x": 1})
         assert n == 0
         assert len(C.calls) == 0
@@ -398,9 +428,8 @@ def test_canonical_body_returns_bytes():
 async def test_retry_on_5xx_then_succeeds(status, monkeypatch):
     """5xx followed by 200 → True, called exactly twice."""
     C = _seq_client([status, 200])
-    import httpx
 
-    monkeypatch.setattr(httpx, "AsyncClient", C)
+    _patch_delivery(monkeypatch, C())
     ok = await delivery.deliver_one(
         "https://h.example/hook",
         "s",
@@ -417,9 +446,8 @@ async def test_retry_on_5xx_then_succeeds(status, monkeypatch):
 async def test_retry_on_5xx_exhaust_returns_false(status, monkeypatch):
     """Persistent 5xx exhausts all attempts and returns False."""
     C = _seq_client([status] * 4)
-    import httpx
 
-    monkeypatch.setattr(httpx, "AsyncClient", C)
+    _patch_delivery(monkeypatch, C())
     ok = await delivery.deliver_one(
         "https://h.example/hook",
         "s",
@@ -441,9 +469,8 @@ async def test_retry_on_5xx_exhaust_returns_false(status, monkeypatch):
 async def test_retry_on_429(monkeypatch):
     """429 is retried (not a permanent failure)."""
     C = _seq_client([429, 200])
-    import httpx
 
-    monkeypatch.setattr(httpx, "AsyncClient", C)
+    _patch_delivery(monkeypatch, C())
     ok = await delivery.deliver_one(
         "https://h.example/hook",
         "s",
@@ -459,9 +486,8 @@ async def test_retry_on_429(monkeypatch):
 async def test_retry_on_429_multiple_then_succeeds(monkeypatch):
     """429, 429, 200 → True after 3 attempts."""
     C = _seq_client([429, 429, 200])
-    import httpx
 
-    monkeypatch.setattr(httpx, "AsyncClient", C)
+    _patch_delivery(monkeypatch, C())
     ok = await delivery.deliver_one(
         "https://h.example/hook",
         "s",
@@ -478,9 +504,8 @@ async def test_retry_on_429_multiple_then_succeeds(monkeypatch):
 async def test_429_not_treated_as_permanent_4xx(monkeypatch):
     """429 must NOT stop delivery the way other 4xx codes do."""
     C = _seq_client([429, 200])
-    import httpx
 
-    monkeypatch.setattr(httpx, "AsyncClient", C)
+    _patch_delivery(monkeypatch, C())
     ok = await delivery.deliver_one(
         "https://h.example/hook",
         "s",
@@ -504,9 +529,8 @@ async def test_429_not_treated_as_permanent_4xx(monkeypatch):
 async def test_stop_on_permanent_4xx(status, monkeypatch):
     """Non-429 4xx responses cause immediate stop with False and only 1 attempt."""
     C = _seq_client([status, 200])  # 200 should never be reached
-    import httpx
 
-    monkeypatch.setattr(httpx, "AsyncClient", C)
+    _patch_delivery(monkeypatch, C())
     ok = await delivery.deliver_one(
         "https://h.example/hook",
         "s",
@@ -535,9 +559,7 @@ async def test_exhaust_all_attempts_on_transport_error(monkeypatch):
             type(self).calls.append({"url": url})
             raise RuntimeError("connection refused")
 
-    import httpx
-
-    monkeypatch.setattr(httpx, "AsyncClient", BoomClient)
+    _patch_delivery(monkeypatch, BoomClient())
     ok = await delivery.deliver_one(
         "https://h.example/hook",
         "s",
@@ -561,9 +583,7 @@ async def test_transport_error_never_raises(monkeypatch):
             type(self).calls.append(1)
             raise ConnectionError("network down")
 
-    import httpx
-
-    monkeypatch.setattr(httpx, "AsyncClient", ExplodingClient)
+    _patch_delivery(monkeypatch, ExplodingClient())
     # Must not raise, must return False.
     result = await delivery.deliver_one(
         "https://h.example/hook",
@@ -583,22 +603,17 @@ async def test_transport_error_never_raises(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_timeout_s_passed_to_httpx_async_client(monkeypatch):
-    """timeout_s parameter value must be forwarded to the httpx client constructor."""
-    received_kwargs: list[dict] = []
+    """timeout_s parameter value must be forwarded to _build_pinned_client."""
+    timeout_capture: list[dict] = []
 
-    class TimeoutCapture(_RecordingClient):
+    class C(_RecordingClient):
         calls: list[dict] = []
-
-        def __init__(self, *args, **kwargs):
-            received_kwargs.append(kwargs)
 
         @classmethod
         def _next(cls):
             return _FakeResponse(200)
 
-    import httpx
-
-    monkeypatch.setattr(httpx, "AsyncClient", TimeoutCapture)
+    _patch_delivery(monkeypatch, C(), timeout_capture=timeout_capture)
     await delivery.deliver_one(
         "https://h.example/hook",
         "s",
@@ -608,8 +623,8 @@ async def test_timeout_s_passed_to_httpx_async_client(monkeypatch):
         base_backoff_s=0.0,
         timeout_s=42.0,
     )
-    assert received_kwargs, "AsyncClient was never instantiated"
-    assert received_kwargs[0].get("timeout") == 42.0
+    assert timeout_capture, "_build_pinned_client was never called"
+    assert timeout_capture[0]["timeout_s"] == 42.0
 
 
 # ===========================================================================
@@ -879,9 +894,7 @@ async def test_empty_event_types_zero_deliveries(monkeypatch):
         class C(_RecordingClient):
             calls: list[dict] = []
 
-        import httpx
-
-        monkeypatch.setattr(httpx, "AsyncClient", C)
+        _patch_delivery(monkeypatch, C())
         n = await delivery.deliver_to_org(_ORG_A, WATCH_BREACH, {"x": 1})
         assert n == 0
         assert len(C.calls) == 0
@@ -921,9 +934,8 @@ async def test_deliver_to_org_three_subscribed_endpoints(monkeypatch):
             )
 
         C = _seq_client([200, 200, 200])
-        import httpx
 
-        monkeypatch.setattr(httpx, "AsyncClient", C)
+        _patch_delivery(monkeypatch, C())
         n = await delivery.deliver_to_org(_ORG_A, WATCH_BREACH, {"x": 1})
         assert n == 3
         assert len(C.calls) == 3
@@ -951,9 +963,8 @@ async def test_deliver_to_org_only_subscribed_endpoints(monkeypatch):
         )
 
         C = _seq_client([200])
-        import httpx
 
-        monkeypatch.setattr(httpx, "AsyncClient", C)
+        _patch_delivery(monkeypatch, C())
         n = await delivery.deliver_to_org(_ORG_A, FLOW_COMPLETED, {"x": 1})
         assert n == 1
         assert len(C.calls) == 1
@@ -995,9 +1006,7 @@ async def test_deliver_to_org_partial_success_counted(monkeypatch):
                 cls._i += 1
                 return _FakeResponse(code)
 
-        import httpx
-
-        monkeypatch.setattr(httpx, "AsyncClient", C)
+        _patch_delivery(monkeypatch, C())
         n = await delivery.deliver_to_org(_ORG_A, FRESHNESS_STALE, {"x": 1})
         # 2 succeed, 1 permanent failure.
         assert n == 2
@@ -1289,9 +1298,8 @@ def test_all_emit_helpers_never_raise_with_valid_kwargs(emit_fn, kwargs):
 async def test_deliver_one_sets_correct_headers(monkeypatch):
     """deliver_one must set all four required headers on the POST."""
     C = _seq_client([200])
-    import httpx
 
-    monkeypatch.setattr(httpx, "AsyncClient", C)
+    _patch_delivery(monkeypatch, C())
     ok = await delivery.deliver_one(
         "https://h.example/hook",
         "header-secret",
@@ -1314,9 +1322,8 @@ async def test_deliver_one_sets_correct_headers(monkeypatch):
 async def test_deliver_one_signature_verifiable_from_headers(monkeypatch):
     """The signature in X-Nubi-Signature must verify against the sent body."""
     C = _seq_client([200])
-    import httpx
 
-    monkeypatch.setattr(httpx, "AsyncClient", C)
+    _patch_delivery(monkeypatch, C())
     await delivery.deliver_one(
         "https://h.example/hook",
         "verify-me",
@@ -1435,9 +1442,8 @@ async def test_dispatch_event_delivers_when_subscribed(monkeypatch):
         )
 
         C = _seq_client([200])
-        import httpx
 
-        monkeypatch.setattr(httpx, "AsyncClient", C)
+        _patch_delivery(monkeypatch, C())
         delivery.dispatch_event(_ORG_A, FRESHNESS_STALE, {"x": 1})
         await asyncio.sleep(0.1)
         assert len(C.calls) == 1
@@ -1491,9 +1497,8 @@ async def test_deliver_to_org_no_endpoints_returns_zero(monkeypatch):
     set_webhook_store(store)
     try:
         C = _seq_client([])
-        import httpx
 
-        monkeypatch.setattr(httpx, "AsyncClient", C)
+        _patch_delivery(monkeypatch, C())
         n = await delivery.deliver_to_org(_ORG_C, WATCH_BREACH, {"x": 1})
         assert n == 0
         assert len(C.calls) == 0
