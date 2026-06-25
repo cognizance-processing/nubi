@@ -2189,6 +2189,13 @@ async def create_flow(
         next_run_at=next_run_at,
         project_id=project_id,
     )
+    # Snapshot initial spec as version 1.
+    await store.add_flow_version(
+        flow_id=flow["id"],
+        org_id=org_id,
+        spec=flow.get("spec") or {},
+        created_by=str(user["id"]),
+    )
     return _serialize_flow(flow)
 
 
@@ -2358,6 +2365,14 @@ async def update_flow(
     updated = await store.update_flow(flow_id, fields)
     if updated is None:
         raise AppError("not_found", "Flow not found.", 404)
+    # Snapshot spec change as a new version (only when spec changed).
+    if body.spec is not None and updated:
+        await store.add_flow_version(
+            flow_id=flow_id,
+            org_id=org_id,
+            spec=updated.get("spec") or {},
+            created_by=str(user["id"]),
+        )
     return _serialize_flow(updated)
 
 
@@ -3312,6 +3327,162 @@ async def writeback_approval_route(
         rows_override=body.rows_override,
     )
     return record
+
+
+# ---------------------------------------------------------------------------
+# New endpoints: environments, spec version history, revert
+# ---------------------------------------------------------------------------
+
+
+@router.get("/{flow_id}/environments", status_code=200)
+async def list_flow_environments(
+    flow_id: str,
+    user: dict[str, Any] = Depends(current_user),
+    repo: Repo = Depends(get_repo),
+) -> dict[str, Any]:
+    """List environments and their watermarks for a flow.
+
+    Returns {environments: [{key, env_id, watermarks: {model_key: wm}}]}
+    Org-scoped. Any authenticated user can read (viewer-friendly).
+    """
+    org_id = await _get_user_org(str(user["id"]), repo)
+    store = get_flow_store()
+    flow = await _require_flow_in_org(flow_id, org_id, store)
+
+    # Collect all watermarks for this flow from the store.
+    # InMemoryFlowStore._watermarks is keyed (flow_id, model_key, env).
+    envs: dict[str, dict[str, Any]] = {}  # env_key -> {watermarks}
+    wm_store = store
+    # Iterate the internal watermark dict
+    for (fid, model_key, env_key), wm in list(getattr(wm_store, "_watermarks", {}).items()):
+        if str(fid) != str(flow_id):
+            continue
+        if env_key not in envs:
+            envs[env_key] = {"key": env_key, "watermarks": {}}
+        envs[env_key]["watermarks"][model_key] = wm
+
+    return {
+        "flow_id": flow_id,
+        "environments": list(envs.values()),
+    }
+
+
+@router.get("/{flow_id}/versions", status_code=200)
+async def list_flow_versions(
+    flow_id: str,
+    user: dict[str, Any] = Depends(current_user),
+    repo: Repo = Depends(get_repo),
+) -> dict[str, Any]:
+    """List all spec versions for a flow (newest first).
+
+    Org-scoped. Any authenticated user can read.
+    Returns {flow_id, versions: [{id, version, created_by, created_at}]}.
+    Specs are excluded from the list for compactness; fetch a specific version
+    to get the spec.
+    """
+    org_id = await _get_user_org(str(user["id"]), repo)
+    store = get_flow_store()
+    await _require_flow_in_org(flow_id, org_id, store)
+
+    versions = await store.list_flow_versions(flow_id)
+    versions_desc = list(reversed(versions))
+    return {
+        "flow_id": flow_id,
+        "versions": [
+            {
+                "id": v["id"],
+                "version": v["version"],
+                "created_by": v.get("created_by"),
+                "created_at": _dt_iso(v.get("created_at")),
+            }
+            for v in versions_desc
+        ],
+    }
+
+
+@router.get("/{flow_id}/versions/{version_num}", status_code=200)
+async def get_flow_version(
+    flow_id: str,
+    version_num: int,
+    user: dict[str, Any] = Depends(current_user),
+    repo: Repo = Depends(get_repo),
+) -> dict[str, Any]:
+    """Fetch a specific spec version for a flow.
+
+    Returns {id, flow_id, org_id, version, spec, created_by, created_at}.
+    Org-scoped. Any authenticated user can read.
+    """
+    org_id = await _get_user_org(str(user["id"]), repo)
+    store = get_flow_store()
+    await _require_flow_in_org(flow_id, org_id, store)
+
+    ver = await store.get_flow_version(flow_id, version_num)
+    if ver is None:
+        raise AppError("not_found", f"Version {version_num} not found for this flow.", 404)
+
+    return {
+        "id": ver["id"],
+        "flow_id": ver["flow_id"],
+        "org_id": ver["org_id"],
+        "version": ver["version"],
+        "spec": _strip_owner_policies(ver["spec"]),
+        "created_by": ver.get("created_by"),
+        "created_at": _dt_iso(ver.get("created_at")),
+    }
+
+
+@router.post("/{flow_id}/revert/{version_num}", status_code=200, dependencies=[Depends(require_writer_default)])
+async def revert_flow_to_version(
+    flow_id: str,
+    version_num: int,
+    user: dict[str, Any] = Depends(current_user),
+    identity: VerifiedIdentity = Depends(verified_identity),
+    repo: Repo = Depends(get_repo),
+) -> dict[str, Any]:
+    """Revert a flow's spec to a prior version.
+
+    Snapshots the CURRENT spec as a new version first (so revert is undoable),
+    then updates the flow's live spec to the target version's spec. The result
+    is a new version entry with the reverted spec.
+
+    Writer-gated + org-scoped.
+    Returns the updated flow.
+    """
+    org_id = await _get_user_org(str(user["id"]), repo)
+    store = get_flow_store()
+    flow = await _require_flow_in_org(flow_id, org_id, store)
+
+    target_ver = await store.get_flow_version(flow_id, version_num)
+    if target_ver is None:
+        raise AppError("not_found", f"Version {version_num} not found for this flow.", 404)
+
+    # Snapshot the current spec as a new version before reverting.
+    current_spec = flow.get("spec") or {}
+    await store.add_flow_version(
+        flow_id=flow_id,
+        org_id=org_id,
+        spec=current_spec,
+        created_by=str(user["id"]),
+    )
+
+    # Apply the target version's spec as the new live spec.
+    reverted_spec = _snapshot_owner_policies(
+        dict(target_ver["spec"]),
+        identity,
+    )
+    updated_flow = await store.update_flow(flow_id, {"spec": reverted_spec})
+    if updated_flow is None:
+        raise AppError("not_found", "Flow not found after revert.", 404)
+
+    # Record the revert as a new version entry too.
+    await store.add_flow_version(
+        flow_id=flow_id,
+        org_id=org_id,
+        spec=reverted_spec,
+        created_by=str(user["id"]),
+    )
+
+    return _serialize_flow(updated_flow)
 
 
 # ---------------------------------------------------------------------------

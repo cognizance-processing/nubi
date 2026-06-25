@@ -158,6 +158,9 @@ class InMemoryFlowStore:
         # B2: data-lineage output records keyed by id.
         self._run_outputs: dict[str, dict] = {}            # output_id → output record
         self._run_output_index: dict[str, list[str]] = {}  # run_id → [output_id]
+        # Flow spec version history
+        self._flow_spec_versions: dict[str, dict] = {}      # version_id → version record
+        self._flow_version_index: dict[str, list[str]] = {} # flow_id → [version_id, ...] in order
 
     # ------------------------------------------------------------------
     # Flow operations
@@ -884,6 +887,50 @@ class InMemoryFlowStore:
         if wm is not None:
             await self.set_watermark(flow_id, model_key, dst_env, wm)
         return wm
+
+    # ------------------------------------------------------------------
+    # Flow spec version history
+    # ------------------------------------------------------------------
+
+    async def add_flow_version(
+        self,
+        flow_id: str,
+        org_id: str,
+        spec: dict,
+        created_by: str | None = None,
+    ) -> dict:
+        """Snapshot a spec as the next version for flow_id."""
+        import uuid as _uuid
+        version_id = str(_uuid.uuid4())
+        flow_ids = self._flow_version_index.setdefault(str(flow_id), [])
+        version_num = len(flow_ids) + 1
+        now = datetime.now(timezone.utc)
+        record = {
+            "id": version_id,
+            "flow_id": str(flow_id),
+            "org_id": str(org_id),
+            "version": version_num,
+            "spec": deepcopy(spec),
+            "created_by": str(created_by) if created_by else None,
+            "created_at": now,
+        }
+        self._flow_spec_versions[version_id] = record
+        flow_ids.append(version_id)
+        return deepcopy(record)
+
+    async def list_flow_versions(self, flow_id: str) -> list[dict]:
+        """Return all versions for flow_id, ordered by version ASC."""
+        ids = self._flow_version_index.get(str(flow_id), [])
+        return [deepcopy(self._flow_spec_versions[vid]) for vid in ids if vid in self._flow_spec_versions]
+
+    async def get_flow_version(self, flow_id: str, version: int) -> dict | None:
+        """Return a specific version, or None."""
+        ids = self._flow_version_index.get(str(flow_id), [])
+        for vid in ids:
+            rec = self._flow_spec_versions.get(vid)
+            if rec and rec["version"] == version:
+                return deepcopy(rec)
+        return None
 
 
 # ---------------------------------------------------------------------------
