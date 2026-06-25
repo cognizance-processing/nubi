@@ -111,9 +111,57 @@ silently downgrading to the shared-bucket `prefix` provider.
 
 | Mode | Guarantee | Mechanism | Status |
 |---|---|---|---|
-| `none` | Bucket-default + app-layer encryption | — | Supported |
+| `none` | Bucket-default AES-256 at-rest only | — | Supported |
 | `kms` | Customer-managed key; operator **can** read via the KMS grant (residency/control, not zero-knowledge) | Bucket default KMS key (`default_kms_key_name` / SSE-KMS) — transparent to the engine | Supported |
-| `client` | Deployer-held key the operator **never** sees | App-layer AES-256-GCM envelope before upload | **Fail-closed (501)** — not yet wired into the engine read path; the lake is read directly by DuckDB, which cannot decrypt app-layer blobs. Use `kms` until end-to-end decrypt exists. |
+| `client` | Deployer-held key the operator **never** sees | App-layer AES-256-GCM envelope before upload | **Fail-closed (501) at every entry point** — see below |
+
+#### Why `client` mode is fail-closed — and where the guard lives
+
+The query engine (DuckDB) reads Parquet objects **directly from cloud/local storage** with no
+app-layer mediation.  If the app were to write AES-256-GCM encrypted blobs and DuckDB then
+read them as raw Parquet, the result would be **silent data corruption** — not a decryption
+error, just garbage query results, with no indication that anything is wrong.
+
+To prevent this, every entry point that could write or read lake objects is individually
+guarded by a single centralized helper (`cmek.assert_cmek_readable(mode)` in
+`app/lakehouse/cmek.py`).  The guard raises `ManagedLakehouseError("cmek_client_unsupported",
+…, 501)` when `mode == "client"` and is a no-op for `none` and `kms`.
+
+**Guarded entry points** (as of this commit):
+
+| Entry point | File | Guard position |
+|---|---|---|
+| `DedicatedBucketProvider.provision()` | `app/lakehouse/dedicated.py` | Top of method, before bucket creation |
+| `PrefixIsolatedProvider.provision()` | `app/lakehouse/managed.py` | Top of method, before row creation |
+| `open_ingest_session()` | `app/routes/ingest.py` | After custody gate, before session open |
+| `upload_part()` | `app/routes/ingest.py` | After custody gate, before staging write |
+| `commit_session()` | `app/routes/ingest.py` | After custody gate, before lake promote |
+| `export_lake()` | `app/routes/lake_export.py` | After custody gate, before DuckDB read |
+| `list_lake_tables()` | `app/routes/lake_export.py` | After custody gate, before storage listing |
+
+The guard is intentionally **belt-and-suspenders** at the ingest step: open/upload/commit each
+check independently so a CMEK mode change between steps cannot sneak through.
+
+#### Forward path for `client` mode (design decision — tracked, not built)
+
+Three options exist; none is cheap or risk-free.  This is an intentional, documented
+limitation — not a gap.
+
+1. **Decrypting proxy** — a thin sidecar in front of the object store that holds the key in
+   memory and decrypts on the fly for every DuckDB read.  Adds latency and a new trust
+   boundary (the proxy can see plaintext); must handle DuckDB's parallel read threads.
+
+2. **DuckDB extension** — a custom loadable extension that registers a VFS layer
+   intercepting `read_parquet()` and decrypting blobs.  High complexity; must track DuckDB
+   API changes; testing for silent-corruption edge cases is non-trivial.
+
+3. **Decrypt-before-engine** — the app materialises decrypted Parquet into an ephemeral temp
+   area for each query, then DuckDB reads the temp copy.  High I/O cost and a window where
+   plaintext exists at rest in the temp area (defeats part of the custody guarantee).
+
+Until one of these paths is designed, reviewed, and tested against silent-corruption scenarios,
+`client` mode remains fail-closed at every write/read entry point.  Use `mode=kms` for
+customer-managed keys today.
 
 ---
 

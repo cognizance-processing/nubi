@@ -645,6 +645,20 @@ async def export_lake(
     # ── Tier gate (fail-closed) ────────────────────────────────────────────
     assert_custody_enabled()
 
+    # ── CMEK client-mode guard (fail-closed) ──────────────────────────────
+    # Export reads the managed lake via DuckDB, which reads objects directly
+    # from storage.  If the lake were in client mode, DuckDB would read
+    # encrypted blobs as raw Parquet — SILENT DATA CORRUPTION.  Reject
+    # before any storage I/O.
+    from app.lakehouse.cmek import assert_cmek_readable  # noqa: PLC0415
+    from app.lakehouse.custody import cmek_mode  # noqa: PLC0415
+    from app.lakehouse.managed import ManagedLakehouseError  # noqa: PLC0415
+
+    try:
+        assert_cmek_readable(cmek_mode())
+    except ManagedLakehouseError as _cmek_exc:
+        raise AppError(_cmek_exc.code, _cmek_exc.message, _cmek_exc.status) from _cmek_exc
+
     # ── Org resolution ────────────────────────────────────────────────────
     org_id = await resolve_org_id(str(user["id"]), repo, request)
 
@@ -851,6 +865,18 @@ async def list_lake_tables(
     """
     # ── Tier gate (fail-closed) ────────────────────────────────────────────
     assert_custody_enabled()
+
+    # ── CMEK client-mode guard (fail-closed) ──────────────────────────────
+    # Table listing reads object keys from the lake storage; if the lake were
+    # in client mode the objects would be encrypted blobs DuckDB cannot read.
+    from app.lakehouse.cmek import assert_cmek_readable  # noqa: PLC0415
+    from app.lakehouse.custody import cmek_mode  # noqa: PLC0415
+    from app.lakehouse.managed import ManagedLakehouseError  # noqa: PLC0415
+
+    try:
+        assert_cmek_readable(cmek_mode())
+    except ManagedLakehouseError as _cmek_exc:
+        raise AppError(_cmek_exc.code, _cmek_exc.message, _cmek_exc.status) from _cmek_exc
 
     # ── Org resolution ────────────────────────────────────────────────────
     org_id = await resolve_org_id(str(user["id"]), repo, request)
