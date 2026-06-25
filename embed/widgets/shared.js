@@ -213,6 +213,74 @@ export function el(tag, attrs = {}, children = []) {
   return node
 }
 
+// ---------------------------------------------------------------------------
+// Metric query helper (shared by nubi-metric-explorer + nubi-query-editor)
+// ---------------------------------------------------------------------------
+
+/**
+ * Fetch the list of metrics from the backend.
+ *
+ * @param {string} backend  — Base URL without trailing slash
+ * @param {string|null} token — Bearer JWT
+ * @param {AbortSignal} [signal]
+ * @returns {Promise<Array<{id:string,name:string,dimensions:string[],timeGrains:string[]}>>}
+ */
+export async function fetchMetricList(backend, token, signal) {
+  const url = `${backend}/api/v1/metrics`
+  const headers = {}
+  if (token) headers['Authorization'] = `Bearer ${token}`
+  const resp = await fetch(url, { headers, signal, credentials: 'omit' })
+  if (!resp.ok) throw new Error(`HTTP ${resp.status} from ${url}`)
+  const data = await resp.json()
+  const list = Array.isArray(data) ? data : (data.metrics || data.items || [])
+  return list.map(m => ({
+    id:         m.id || m.metric_id || m.slug || m.name,
+    name:       m.name || m.label || m.id || m.slug,
+    dimensions: (m.dimensions || m.dimension_columns || []).map(d =>
+      typeof d === 'string' ? d : (d.name || String(d))
+    ),
+    timeGrains: m.time_grains || m.timeGrains ||
+      (m.time_dimension && m.time_dimension.grains) ||
+      ['day', 'week', 'month'],
+  }))
+}
+
+/**
+ * POST a governed metric query and return an Apache Arrow Table.
+ *
+ * @param {string} backend    — Base URL without trailing slash
+ * @param {string} metricId   — Metric id / slug
+ * @param {string[]} dimensions — Selected dimension columns
+ * @param {string} timeGrain  — Grain string or '' for no time grouping
+ * @param {string|null} token — Bearer JWT
+ * @param {AbortSignal} [signal]
+ * @returns {Promise<import('apache-arrow').Table>}
+ */
+export async function fetchMetricQuery(backend, metricId, dimensions, timeGrain, token, signal) {
+  const url = `${backend}/api/v1/metrics/${encodeURIComponent(metricId)}/query`
+  const headers = {
+    'Content-Type': 'application/json',
+    'Accept': 'application/vnd.apache.arrow.stream',
+  }
+  if (token) headers['Authorization'] = `Bearer ${token}`
+
+  const body = { dimensions }
+  if (timeGrain) body.time_grain = timeGrain
+
+  const resp = await fetch(url, {
+    method: 'POST',
+    headers,
+    body: JSON.stringify(body),
+    credentials: 'omit',
+    signal,
+  })
+  if (!resp.ok) throw new Error(`HTTP ${resp.status}`)
+
+  const buf = await resp.arrayBuffer()
+  const { tableFromIPC } = await import('apache-arrow')
+  return tableFromIPC(new Uint8Array(buf))
+}
+
 /**
  * Convert an array of plain row objects into an Arrow Table.
  * Used by the inline `data` attribute injection path.
