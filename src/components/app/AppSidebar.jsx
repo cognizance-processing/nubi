@@ -8,6 +8,8 @@
  *  - On mobile: rendered as an off-canvas drawer controlled by `mobileOpen` prop
  *
  * Nav items:
+ *   Overview     /overview
+ *   Workqueue    /workqueue
  *   Home         /home
  *   Connectors   /connectors
  *   Data         /data
@@ -40,6 +42,8 @@ import {
   BookOpen,
   PanelTop,
   Compass,
+  LayoutGrid,
+  ListChecks,
 } from 'lucide-react'
 import { useAuth } from '../../contexts/AuthContext.jsx'
 import { useUi } from '../../contexts/UiContext.jsx'
@@ -51,6 +55,8 @@ import Logo from '../Logo.jsx'
 // ---------------------------------------------------------------------------
 
 const NAV_ITEMS = [
+  { label: 'Overview',    to: '/overview',    Icon: LayoutGrid },
+  { label: 'Workqueue',   to: '/workqueue',   Icon: ListChecks },
   { label: 'Home',        to: '/home',        Icon: Home },
   { label: 'Connectors',  to: '/connectors',  Icon: Plug },
   { label: 'Data',        to: '/data',        Icon: Table2 },

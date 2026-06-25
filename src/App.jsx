@@ -14,6 +14,8 @@
  *   AUTHENTICATED (AppShell — sidebar + topbar + chat panel)
  *   Wrapped in ProtectedRoute > UiProvider > OrgProvider
  *
+ *   /overview           → OverviewPage
+ *   /workqueue          → WorkqueuePage
  *   /home               → HomePage
  *   /connectors         → ConnectorsPage
  *   /queries            → QueriesPage
@@ -108,6 +110,8 @@ const UsageSettings = lazy(() => import('./pages/app/settings/UsageSettings.jsx'
 const SecretsPage = lazy(() => import('./pages/app/SecretsPage.jsx'))
 const DataExplorerPage = lazy(() => import('./pages/app/DataExplorerPage.jsx'))
 const ExplorePage = lazy(() => import('./pages/app/ExplorePage.jsx'))
+const OverviewPage = lazy(() => import('./pages/app/OverviewPage.jsx'))
+const WorkqueuePage = lazy(() => import('./pages/app/WorkqueuePage.jsx'))
 
 // Admin portal (superadmin-only)
 const AdminLayout = lazy(() => import('./pages/admin/AdminLayout.jsx'))
@@ -287,6 +291,9 @@ export default function App() {
           {/* Redirect legacy /dashboard → /home */}
           <Route path="dashboard" element={<Navigate to="/home" replace />} />
 
+          {/* Top-level workspace nav items */}
+          <Route path="overview" element={<OverviewPage />} />
+          <Route path="workqueue" element={<WorkqueuePage />} />
           <Route path="home" element={<HomePage />} />
           <Route path="invite/:token" element={<InviteAcceptPage />} />
           <Route path="connectors" element={<ConnectorsPage />} />
