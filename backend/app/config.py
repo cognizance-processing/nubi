@@ -194,6 +194,50 @@ class Settings(BaseSettings):
     CONNECTOR_SECRET_KEY_VERSION: int = 1
     CONNECTOR_SECRET_KEYS: str = ""  # JSON map of version->b64key; overrides above when set
 
+    # ── Custody / BYO-storage tier (data residency & key custody) ────────────
+    # An opt-in capability set for deployers who must OWN their storage + keys
+    # and pin data to a region (POPIA / GDPR data-residency).  Ships in OSS core,
+    # OFF by default; packaged as the paid "custody" tier.  When enabled, the
+    # custody routes (versioned write/ingest API + bulk export) mount and the
+    # dedicated-bucket provider, CMEK and region enforcement become available.
+    # Every capability below is independently optional — turn on only what you
+    # need.  The authoritative gate is this flag (see app.lakehouse.custody).
+    NUBI_CUSTODY_ENABLED: bool = False
+
+    # Managed-lakehouse storage provider:
+    #   "prefix"    — (default) per-datastore key prefix inside one central
+    #                 bucket (orgs/<org>/lake/<datastore>/).  In a self-hosted
+    #                 deployment this central bucket can already be the deployer's
+    #                 OWN bucket (point NUBI_BUCKET_URI at it) — BYO storage.
+    #   "dedicated" — a dedicated, deployer-owned bucket per managed datastore
+    #                 (stronger physical isolation; the deployer owns bucket+IAM).
+    NUBI_LAKEHOUSE_PROVIDER: str = "prefix"   # 'prefix' | 'dedicated'
+
+    # Region pin for managed-lake storage + the query cache.  When set (e.g.
+    # "africa-south1"), provisioning records the region on every managed lake and
+    # refuses storage whose configured region does not match — a hard
+    # data-residency guarantee.  Empty ⇒ no pinning.
+    NUBI_LAKE_REGION: str = ""
+
+    # Customer-managed encryption key (CMEK) mode for managed-lake objects:
+    #   "none"   — (default) Nubi app-layer + bucket-default encryption only.
+    #   "kms"    — envelope-encrypt with a cloud-KMS key the deployer owns
+    #              (NUBI_CMEK_KEY_URI).  The operator CAN still read via the KMS
+    #              grant — this is residency/control, not zero-knowledge.
+    #   "client" — encrypt with a deployer-held key the operator never sees
+    #              (NUBI_CMEK_KEY_MATERIAL).  Strongest custody: the operator
+    #              cannot read plaintext without the key.
+    NUBI_CMEK_MODE: str = "none"            # 'none' | 'kms' | 'client'
+    NUBI_CMEK_KEY_URI: str = ""             # KMS key resource id/uri (mode='kms')
+    NUBI_CMEK_KEY_MATERIAL: str = ""        # base64 32-byte key (mode='client')
+
+    # Query-cache encryption at rest.  When a base64-encoded 32-byte key is set,
+    # cached result bytes (in-process LRU + Redis) are AES-256-GCM encrypted
+    # before storage and decrypted on read, with the per-tenant scoped cache key
+    # bound into the AAD so ciphertext can never be replayed across tenants.
+    # Empty ⇒ cache stored as-is (default).
+    NUBI_CACHE_ENCRYPTION_KEY: str = ""
+
     # ── Chat webhook signing secrets ────────────────────────────────────────
     # When set, real HMAC-SHA256 signature verification is enforced on the
     # corresponding webhook endpoint.  Defaults to "" so that existing

@@ -411,7 +411,7 @@ class PrefixIsolatedProvider(ManagedLakehouseProvider):
         normal connector that surfaces in ``GET /connectors`` (distinguished by
         the ``managed_lake`` marker so the UI renders it as its own card).
         """
-        return {
+        cfg: dict[str, Any] = {
             "connector_type": "duckdb",
             "database": lake_uri(self._central, org_id, datastore_id),
             MANAGED_MARKER: True,
@@ -419,6 +419,17 @@ class PrefixIsolatedProvider(ManagedLakehouseProvider):
             "managed_scheme": self._central.scheme,
             "description": "Nubi-managed lakehouse (isolated, provisioned for you).",
         }
+        # Custody-tier metadata: record the configured region + CMEK mode on the
+        # row (audit + residency enforcement).  No-ops when the tier is off.
+        from app.lakehouse.custody import cmek_mode, lake_region  # noqa: PLC0415
+
+        region = lake_region()
+        if region:
+            cfg["managed_region"] = region
+        mode = cmek_mode()
+        if mode != "none":
+            cfg["cmek_mode"] = mode
+        return cfg
 
     def _central_secret(self) -> dict[str, Any]:
         """Central creds shaped for the duckdb_storage connector's secret blob."""
@@ -622,12 +633,34 @@ def _delete_object(client: Any, key: str) -> None:
 # ---------------------------------------------------------------------------
 
 
-def get_provider(repo: Repo) -> PrefixIsolatedProvider | None:
+def get_provider(repo: Repo) -> ManagedLakehouseProvider | None:
     """Return a managed-lakehouse provider, or ``None`` if central storage
-    is not configured (degrade path)."""
+    is not configured (degrade path).
+
+    Provider selection is a single dispatch point (custody-tier seam):
+
+    * ``prefix`` (default) — :class:`PrefixIsolatedProvider`: per-datastore key
+      prefix in the central bucket.
+    * ``dedicated`` — :class:`~app.lakehouse.dedicated.DedicatedBucketProvider`:
+      a deployer-owned bucket per managed datastore.  Only used when the custody
+      tier is enabled AND the module is present; any import/availability failure
+      degrades safely back to the prefix provider so the lakehouse never breaks.
+    """
     central = resolve_central_storage()
     if central is None:
         return None
+    from app.lakehouse.custody import lakehouse_provider_kind  # noqa: PLC0415
+
+    if lakehouse_provider_kind() == "dedicated":
+        try:
+            from app.lakehouse.dedicated import DedicatedBucketProvider  # noqa: PLC0415
+
+            return DedicatedBucketProvider(repo, central)
+        except Exception:  # noqa: BLE001 — never break provisioning on a bad provider
+            logger.warning(
+                "custody: dedicated provider unavailable, falling back to prefix",
+                exc_info=True,
+            )
     return PrefixIsolatedProvider(repo, central)
 
 
