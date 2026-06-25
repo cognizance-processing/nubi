@@ -445,6 +445,93 @@ test.describe('live embed backend — metric-explorer fetches REAL data', () => 
     // METRIC tab must be present
     expect(tabs).toContain('METRIC')
   })
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // B8: query-editor in metric mode runs a governed query → real rows rendered
+  //
+  // The query-editor's metric builder must POST to /api/v1/metrics/{id}/query
+  // and render the result table (not DEFAULT_METRICS, not a no-op).
+  // ─────────────────────────────────────────────────────────────────────────
+
+  test('query-editor (metric mode) runs governed metric query → real rows rendered', async ({ page }) => {
+    const getErrors = attachErrorCollector(page)
+    const url = buildFixtureUrl(AUTHOR_TOKEN, READONLY_TOKEN || AUTHOR_TOKEN)
+    await page.goto(url)
+    await waitForFixtureReady(page)
+    await waitForShadowDom(page, '#qe-metric')
+
+    // Wait for the METRIC tab/badge to settle (scope resolved, metric list loaded)
+    await page.waitForFunction(
+      () => {
+        const el = document.querySelector('#qe-metric')
+        if (!el?.shadowRoot) return false
+        const badge = el.shadowRoot.querySelector('.scope-badge')
+        return badge && badge.textContent.trim() === 'METRIC'
+      },
+      { timeout: 10000 },
+    )
+
+    // Also wait for the metric controls to render (metric select populated)
+    await page.waitForFunction(
+      () => {
+        const el = document.querySelector('#qe-metric')
+        if (!el?.shadowRoot) return false
+        const sel = el.shadowRoot.querySelector('[data-role="metric"]')
+        return sel && sel.options.length > 0
+      },
+      { timeout: 10000 },
+    )
+
+    // Click the Run button in the query-editor toolbar
+    const clicked = await page.evaluate(() => {
+      const el = document.querySelector('#qe-metric')
+      if (!el?.shadowRoot) return false
+      const btn = el.shadowRoot.querySelector('.btn-run')
+      if (!btn || btn.disabled) return false
+      btn.click()
+      return true
+    })
+    expect(clicked, 'Run button not found or disabled in query-editor shadow DOM').toBe(true)
+
+    // Wait for the result table to appear inside .nubi-qe-metric-results
+    await page.waitForFunction(
+      () => {
+        const el = document.querySelector('#qe-metric')
+        if (!el?.shadowRoot) return false
+        const results = el.shadowRoot.querySelector('.nubi-qe-metric-results')
+        if (!results) return false
+        const table = results.querySelector('.qe-metric-table')
+        if (table) return true
+        // Also accept status bar showing "N rows"
+        const status = el.shadowRoot.querySelector('.nubi-qe-status')
+        return status && /\d+ rows/.test(status.textContent)
+      },
+      { timeout: 25000 },
+    )
+
+    // Verify: result table has rows (real data, not empty)
+    const rowCount = await page.evaluate(() => {
+      const el = document.querySelector('#qe-metric')
+      if (!el?.shadowRoot) return 0
+      const results = el.shadowRoot.querySelector('.nubi-qe-metric-results')
+      if (!results) return 0
+      const tbody = results.querySelector('.qe-metric-table tbody')
+      return tbody ? tbody.querySelectorAll('tr').length : 0
+    })
+    expect(rowCount, 'Expected real rows in query-editor metric result table but got 0').toBeGreaterThan(0)
+
+    // Verify: no error state
+    const hasErr = await page.evaluate(() => {
+      const el = document.querySelector('#qe-metric')
+      if (!el?.shadowRoot) return false
+      return !!el.shadowRoot.querySelector('.qe-metric-error')
+    })
+    expect(hasErr, 'query-editor metric mode is showing an error state after run').toBe(false)
+
+    // Console must be clean
+    const errors = getErrors()
+    expect(errors, `Unexpected errors after query-editor metric run:\n${errors.join('\n')}`).toHaveLength(0)
+  })
 })
 
 // ---------------------------------------------------------------------------

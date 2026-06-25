@@ -34,11 +34,20 @@
  *  nubi:error  — { message, code }
  */
 
-import { resolveToken }            from './shared.js'
+import { resolveToken, BASE_STYLES, escapeHtml, formatCell, fetchMetricList, fetchMetricQuery } from './shared.js'
 import { decodeScopes, hasScope }  from '../nubi-context.js'
 import { emitRun, emitSave, emitDirty, emitError } from '../events.js'
-import { BASE_STYLES }             from './shared.js'
 import { applyTheme }              from '../theme.js'
+
+// ---------------------------------------------------------------------------
+// Default metric definitions (fallback when no backend configured)
+// ---------------------------------------------------------------------------
+
+const DEFAULT_METRICS = [
+  { id: 'revenue',      name: 'Revenue',      dimensions: ['date', 'region', 'product', 'channel'], timeGrains: ['day', 'week', 'month', 'quarter', 'year'] },
+  { id: 'orders',       name: 'Orders',       dimensions: ['date', 'region', 'channel'],            timeGrains: ['day', 'week', 'month'] },
+  { id: 'active_users', name: 'Active Users', dimensions: ['date', 'region', 'platform'],           timeGrains: ['day', 'week', 'month'] },
+]
 
 // ---------------------------------------------------------------------------
 // Styles
@@ -166,16 +175,24 @@ const EDITOR_STYLES = /* css */ `
   /* Metric builder (non-SQL mode) */
   .nubi-qe-metric-builder {
     flex: 1;
-    padding: 16px;
-    overflow-y: auto;
     display: flex;
     flex-direction: column;
+    overflow: hidden;
+  }
+  .nubi-qe-metric-controls {
+    padding: 12px 16px;
+    display: flex;
+    flex-wrap: wrap;
     gap: 12px;
+    border-bottom: 1px solid var(--nubi-border, #2d3748);
+    background: var(--nubi-bg-2, #1a1f2e);
+    flex-shrink: 0;
   }
   .metric-row {
     display: flex;
     flex-direction: column;
     gap: 4px;
+    min-width: 120px;
   }
   .metric-label {
     font-size: var(--nubi-font-size-sm, 11px);
@@ -185,15 +202,59 @@ const EDITOR_STYLES = /* css */ `
     letter-spacing: 0.05em;
   }
   .metric-select, .metric-input {
-    padding: 6px 10px;
-    background: var(--nubi-bg-2, #1a1f2e);
+    padding: 5px 8px;
+    background: var(--nubi-bg, #0f1117);
     border: 1px solid var(--nubi-border, #2d3748);
     border-radius: var(--nubi-radius-sm, 4px);
     color: var(--nubi-fg, #e2e8f0);
-    font-size: var(--nubi-font-size-base, 13px);
+    font-size: var(--nubi-font-size-sm, 11px);
   }
   .metric-select:disabled, .metric-input:disabled {
     opacity: 0.4; cursor: not-allowed;
+  }
+  /* Metric results table */
+  .nubi-qe-metric-results {
+    flex: 1;
+    overflow: auto;
+  }
+  .qe-metric-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: var(--nubi-font-size-sm, 11px);
+  }
+  .qe-metric-table th {
+    position: sticky;
+    top: 0;
+    background: var(--nubi-bg-2, #1a1f2e);
+    border-bottom: 1px solid var(--nubi-border, #2d3748);
+    padding: 6px 10px;
+    text-align: left;
+    font-weight: 600;
+    color: var(--nubi-fg-muted, #718096);
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    font-size: var(--nubi-font-size-xs, 10px);
+  }
+  .qe-metric-table td {
+    padding: 5px 10px;
+    border-bottom: 1px solid var(--nubi-border, #2d3748);
+    color: var(--nubi-fg, #e2e8f0);
+  }
+  .qe-metric-table tr:hover td { background: var(--nubi-accent, #1e2433); }
+  .qe-metric-empty, .qe-metric-loading {
+    padding: 24px;
+    text-align: center;
+    color: var(--nubi-fg-muted, #718096);
+    font-size: var(--nubi-font-size-sm, 11px);
+  }
+  .qe-metric-error {
+    margin: 12px;
+    padding: 10px 14px;
+    background: #1a0808;
+    border: 1px solid var(--nubi-error, #ef4444);
+    border-radius: var(--nubi-radius-sm, 4px);
+    color: var(--nubi-error, #ef4444);
+    font-size: var(--nubi-font-size-sm, 11px);
   }
 
   /* Status bar */
@@ -219,7 +280,7 @@ const EDITOR_STYLES = /* css */ `
 
 export class NubiQueryEditor extends HTMLElement {
   static get observedAttributes() {
-    return ['token', 'get-token', 'backend', 'query-id', 'mode', 'theme', 'read-only']
+    return ['token', 'get-token', 'backend', 'query-id', 'metric-id', 'mode', 'theme', 'read-only']
   }
 
   constructor() {
@@ -243,6 +304,10 @@ export class NubiQueryEditor extends HTMLElement {
     this._activeMode  = 'sql'  // 'sql' | 'metric'
     this._statusMsg   = ''
     this._statusKind  = ''     // '' | 'error' | 'success'
+
+    // Metric builder state
+    this._backendMetrics = null  // fetched from /api/v1/metrics
+    this._metricDef      = null  // currently selected metric definition
   }
 
   // --------------------------------------------------------------------------
@@ -273,6 +338,11 @@ export class NubiQueryEditor extends HTMLElement {
   attributeChangedCallback(name, oldVal, newVal) {
     if (oldVal === newVal) return
     if (name === 'theme') applyTheme(this, newVal || 'dark')
+    if (name === 'metric-id' || name === 'backend') {
+      // Reset cached metric state so next render re-fetches
+      this._backendMetrics = null
+      this._metricDef      = null
+    }
     if (this.isConnected) this._resolveAndGate()
   }
 
@@ -298,7 +368,10 @@ export class NubiQueryEditor extends HTMLElement {
         <button class="btn-run"  disabled style="display:none">Run</button>
       </div>
       <div class="nubi-qe-placeholder"></div>
-      <div class="nubi-qe-metric-builder" style="display:none"></div>
+      <div class="nubi-qe-metric-builder" style="display:none">
+        <div class="nubi-qe-metric-controls"></div>
+        <div class="nubi-qe-metric-results"><div class="qe-metric-empty">Select a metric and click Run.</div></div>
+      </div>
       <div class="nubi-qe-status"></div>
     `
     this._shadow.appendChild(wrap)
@@ -632,7 +705,8 @@ export class NubiQueryEditor extends HTMLElement {
       placeholder.style.display = 'none'
       if (this._editorWrapEl) this._editorWrapEl.style.display = 'none'
       metricBuilder.style.display = ''
-      this._renderMetricBuilder(readOnly)
+      // _renderMetricBuilder is async (may fetch metric list); fire-and-forget is fine
+      this._renderMetricBuilder(readOnly).catch(() => {})
     }
   }
 
@@ -640,38 +714,196 @@ export class NubiQueryEditor extends HTMLElement {
   // Metric builder UI
   // --------------------------------------------------------------------------
 
-  _renderMetricBuilder(readOnly) {
-    const builder = this._shadow.querySelector('.nubi-qe-metric-builder')
-    builder.innerHTML = /* html */ `
-      <div class="metric-row">
-        <label class="metric-label">Metric</label>
-        <select class="metric-select" ${readOnly ? 'disabled' : ''}>
-          <option value="">Select a metric…</option>
-          <option value="revenue">Revenue</option>
-          <option value="orders">Orders</option>
-          <option value="users">Active Users</option>
-        </select>
-      </div>
-      <div class="metric-row">
-        <label class="metric-label">Dimensions</label>
-        <select class="metric-select" multiple style="height:80px" ${readOnly ? 'disabled' : ''}>
-          <option value="date">Date</option>
-          <option value="region">Region</option>
-          <option value="product">Product</option>
-          <option value="channel">Channel</option>
-        </select>
-      </div>
-      <div class="metric-row">
-        <label class="metric-label">Time Grain</label>
-        <select class="metric-select" ${readOnly ? 'disabled' : ''}>
-          <option value="day">Day</option>
-          <option value="week">Week</option>
-          <option value="month">Month</option>
-          <option value="quarter">Quarter</option>
-          <option value="year">Year</option>
-        </select>
-      </div>
-    `
+  /**
+   * Render (or re-render) the metric controls panel.
+   * When a backend is configured, fetch the live metric list first; fall back
+   * to DEFAULT_METRICS when there is no backend or the fetch fails.
+   */
+  async _renderMetricBuilder(readOnly) {
+    const controls = this._shadow.querySelector('.nubi-qe-metric-controls')
+    if (!controls) return
+
+    const backend  = (this.getAttribute('backend') || '').replace(/\/$/, '')
+    const metricId = this.getAttribute('metric-id') || ''
+
+    // Fetch live metric list when backend is configured (once per load)
+    if (backend && !this._backendMetrics) {
+      try {
+        const token = await resolveToken(this)
+        this._backendMetrics = await fetchMetricList(backend, token, this._ac?.signal)
+      } catch { /* fall through to defaults */ }
+    }
+
+    // Resolve the current metric definition
+    if (!this._metricDef) {
+      if (backend && this._backendMetrics) {
+        this._metricDef = this._backendMetrics.find(m => m.id === metricId) ||
+                          this._backendMetrics[0] || DEFAULT_METRICS[0]
+      } else if (backend && metricId) {
+        // Backend configured but list fetch failed — synthesise minimal def
+        this._metricDef = { id: metricId, name: metricId, dimensions: [], timeGrains: ['day', 'week', 'month'] }
+      } else {
+        this._metricDef = DEFAULT_METRICS.find(m => m.id === metricId) || DEFAULT_METRICS[0]
+      }
+    }
+
+    this._buildMetricControls(controls, readOnly)
+  }
+
+  /**
+   * Populate the metric controls panel DOM from `this._metricDef` and
+   * `this._backendMetrics` (or DEFAULT_METRICS as fallback).
+   */
+  _buildMetricControls(controls, readOnly) {
+    controls.innerHTML = ''
+
+    const backend = (this.getAttribute('backend') || '').replace(/\/$/, '')
+    const def = this._metricDef || DEFAULT_METRICS[0]
+
+    // Metric selector
+    const metricRow = document.createElement('div')
+    metricRow.className = 'metric-row'
+    const metricLabel = document.createElement('div')
+    metricLabel.className = 'metric-label'
+    metricLabel.textContent = 'Metric'
+    const metricSelect = document.createElement('select')
+    metricSelect.className = 'metric-select'
+    metricSelect.disabled = readOnly
+    metricSelect.dataset.role = 'metric'
+
+    const metricOptions = backend && this._backendMetrics?.length
+      ? this._backendMetrics.map(m => ({ id: m.id, name: m.name }))
+      : DEFAULT_METRICS.map(m => ({ id: m.id, name: m.name }))
+
+    metricOptions.forEach(m => {
+      const opt = document.createElement('option')
+      opt.value = m.id
+      opt.textContent = m.name
+      opt.selected = m.id === def.id
+      metricSelect.appendChild(opt)
+    })
+    metricSelect.addEventListener('change', () => this._onMetricBuilderChange(metricSelect.value))
+    metricRow.appendChild(metricLabel)
+    metricRow.appendChild(metricSelect)
+    controls.appendChild(metricRow)
+
+    // Dimensions (multiple select)
+    const dimRow = document.createElement('div')
+    dimRow.className = 'metric-row'
+    const dimLabel = document.createElement('div')
+    dimLabel.className = 'metric-label'
+    dimLabel.textContent = 'Dimensions'
+    const dimSelect = document.createElement('select')
+    dimSelect.className = 'metric-select'
+    dimSelect.disabled = readOnly
+    dimSelect.multiple = true
+    dimSelect.style.height = '70px'
+    dimSelect.dataset.role = 'dimensions'
+    ;(def.dimensions || []).forEach(d => {
+      const opt = document.createElement('option')
+      opt.value = d
+      opt.textContent = d
+      opt.selected = true
+      dimSelect.appendChild(opt)
+    })
+    dimRow.appendChild(dimLabel)
+    dimRow.appendChild(dimSelect)
+    controls.appendChild(dimRow)
+
+    // Time grain
+    const grainRow = document.createElement('div')
+    grainRow.className = 'metric-row'
+    const grainLabel = document.createElement('div')
+    grainLabel.className = 'metric-label'
+    grainLabel.textContent = 'Time Grain'
+    const grainSelect = document.createElement('select')
+    grainSelect.className = 'metric-select'
+    grainSelect.disabled = readOnly
+    grainSelect.dataset.role = 'time-grain'
+    // When backend configured: add "— none —" as default (avoids forcing VARCHAR time columns)
+    if (backend) {
+      const noneOpt = document.createElement('option')
+      noneOpt.value = ''
+      noneOpt.textContent = '— none —'
+      grainSelect.appendChild(noneOpt)
+    }
+    ;(def.timeGrains || ['day', 'week', 'month']).forEach(g => {
+      const opt = document.createElement('option')
+      opt.value = g
+      opt.textContent = g.charAt(0).toUpperCase() + g.slice(1)
+      grainSelect.appendChild(opt)
+    })
+    grainRow.appendChild(grainLabel)
+    grainRow.appendChild(grainSelect)
+    controls.appendChild(grainRow)
+  }
+
+  _onMetricBuilderChange(newId) {
+    const backend = (this.getAttribute('backend') || '').replace(/\/$/, '')
+    if (backend && this._backendMetrics) {
+      this._metricDef = this._backendMetrics.find(m => m.id === newId) ||
+                        { id: newId, name: newId, dimensions: [], timeGrains: ['day', 'week', 'month'] }
+    } else {
+      this._metricDef = DEFAULT_METRICS.find(m => m.id === newId) || DEFAULT_METRICS[0]
+    }
+    // Re-render controls to update dimensions + time grains for the new metric
+    const controls = this._shadow.querySelector('.nubi-qe-metric-controls')
+    if (controls) this._buildMetricControls(controls, false)
+  }
+
+  _getMetricSelections() {
+    const controls = this._shadow.querySelector('.nubi-qe-metric-controls')
+    const metricSelect = controls?.querySelector('[data-role="metric"]')
+    const dimSelect    = controls?.querySelector('[data-role="dimensions"]')
+    const grainSelect  = controls?.querySelector('[data-role="time-grain"]')
+
+    const metricId   = metricSelect?.value || this._metricDef?.id || ''
+    const dimensions = dimSelect
+      ? [...dimSelect.selectedOptions].map(o => o.value)
+      : []
+    const timeGrain  = grainSelect?.value || ''
+    return { metricId, dimensions, timeGrain }
+  }
+
+  _renderMetricResults(table) {
+    const resultsEl = this._shadow.querySelector('.nubi-qe-metric-results')
+    if (!resultsEl) return
+
+    if (!table || table.numRows === 0) {
+      resultsEl.innerHTML = '<div class="qe-metric-empty">No results.</div>'
+      return
+    }
+
+    const fields = table.schema.fields.map(f => f.name)
+    const tbl = document.createElement('table')
+    tbl.className = 'qe-metric-table'
+
+    const thead = document.createElement('thead')
+    const headerRow = document.createElement('tr')
+    fields.forEach(f => {
+      const th = document.createElement('th')
+      th.textContent = f
+      headerRow.appendChild(th)
+    })
+    thead.appendChild(headerRow)
+    tbl.appendChild(thead)
+
+    const tbody = document.createElement('tbody')
+    for (let r = 0; r < table.numRows; r++) {
+      const row = document.createElement('tr')
+      fields.forEach(f => {
+        const col = table.getChild(f)
+        const val = col ? col.get(r) : null
+        const td = document.createElement('td')
+        td.textContent = formatCell(val)
+        row.appendChild(td)
+      })
+      tbody.appendChild(row)
+    }
+    tbl.appendChild(tbody)
+
+    resultsEl.innerHTML = ''
+    resultsEl.appendChild(tbl)
   }
 
   // --------------------------------------------------------------------------
@@ -717,19 +949,41 @@ export class NubiQueryEditor extends HTMLElement {
         emitError(this, { message: err.message })
       }
     } else {
-      // Metric mode — gather selections
-      const builder = this._shadow.querySelector('.nubi-qe-metric-builder')
-      const selects = builder?.querySelectorAll('.metric-select')
-      const metricId   = selects?.[0]?.value || ''
-      const dimSelect  = selects?.[1]
-      const dimensions = dimSelect
-        ? [...dimSelect.selectedOptions].map(o => o.value)
-        : []
-      const timeGrain  = selects?.[2]?.value || 'day'
+      // Metric mode — gather selections and POST to governed metric endpoint
+      const { metricId, dimensions, timeGrain } = this._getMetricSelections()
 
+      if (!metricId) {
+        this._setStatus('Select a metric first', 'error')
+        return
+      }
+
+      const resultsEl = this._shadow.querySelector('.nubi-qe-metric-results')
+      if (resultsEl) resultsEl.innerHTML = '<div class="qe-metric-loading">Running metric query…</div>'
       this._setStatus('Running metric…', '')
+
+      // Emit nubi:run immediately with the selection (mirrors old behaviour for no-backend use);
+      // a second emit with rowCount follows on successful backend response.
       emitRun(this, { metricId, dimensions, timeGrain })
-      this._setStatus('Done', 'success')
+
+      this._abort()
+      this._ac = new AbortController()
+
+      try {
+        const token   = await resolveToken(this)
+        const backend = (this.getAttribute('backend') || 'http://localhost:8000').replace(/\/$/, '')
+
+        const table = await fetchMetricQuery(backend, metricId, dimensions, timeGrain, token, this._ac.signal)
+        this._renderMetricResults(table)
+
+        const rowCount = table.numRows
+        this._setStatus(`${rowCount.toLocaleString()} rows`, 'success')
+        emitRun(this, { metricId, dimensions, timeGrain, rowCount })
+      } catch (err) {
+        if (err.name === 'AbortError') return
+        if (resultsEl) resultsEl.innerHTML = `<div class="qe-metric-error">${escapeHtml(err.message)}</div>`
+        this._setStatus(err.message, 'error')
+        emitError(this, { message: err.message })
+      }
     }
   }
 
