@@ -208,6 +208,29 @@ def test_canonical_body_is_stable():
 # Delivery: success / retry / failure-never-raises
 # ===========================================================================
 
+import socket as _socket  # noqa: E402 — used only in helpers below
+
+
+def _patch_delivery(monkeypatch, client_instance):
+    """Patch deliver_one so it skips DNS resolution and uses *client_instance*.
+
+    deliver_one now calls ``_build_pinned_client`` to get an httpx.AsyncClient
+    that connects to the SSRF-checked, pinned IP.  For unit tests that only
+    care about retry logic / signature / header correctness — not the SSRF
+    guard — we patch two things:
+
+    1. ``socket.getaddrinfo`` → always returns a safe public IP so that
+       ``guard_url`` + ``resolve_and_pin`` pass without real DNS.
+    2. ``delivery._build_pinned_client`` → returns *client_instance* directly
+       so the test's recording mock captures the outbound POST.
+    """
+
+    def _fake_getaddrinfo(host, *args, **kwargs):
+        return [(_socket.AF_INET, _socket.SOCK_STREAM, _socket.IPPROTO_TCP, "", ("93.184.216.34", 0))]
+
+    monkeypatch.setattr(_socket, "getaddrinfo", _fake_getaddrinfo)
+    monkeypatch.setattr(delivery, "_build_pinned_client", lambda *a, **kw: client_instance)
+
 
 class _FakeResponse:
     def __init__(self, status_code: int) -> None:
@@ -239,8 +262,6 @@ class _RecordingClient:
 
 @pytest.mark.asyncio
 async def test_deliver_one_success(monkeypatch):
-    captured = {}
-
     class C(_RecordingClient):
         calls = []
 
@@ -248,9 +269,7 @@ async def test_deliver_one_success(monkeypatch):
         def _next(cls):
             return _FakeResponse(200)
 
-    import httpx
-
-    monkeypatch.setattr(httpx, "AsyncClient", C)
+    _patch_delivery(monkeypatch, C())
     ok = await delivery.deliver_one(
         "https://h.example/hook", "secret1", events.WATCH_BREACH, {"x": 1}
     )
@@ -277,9 +296,7 @@ async def test_deliver_one_retries_on_5xx_then_succeeds(monkeypatch):
             cls._i += 1
             return _FakeResponse(code)
 
-    import httpx
-
-    monkeypatch.setattr(httpx, "AsyncClient", C)
+    _patch_delivery(monkeypatch, C())
     # Zero backoff so the test is fast.
     ok = await delivery.deliver_one(
         "https://h.example/hook", "s", events.QUERY_FAILED, {"x": 1},
@@ -298,9 +315,7 @@ async def test_deliver_one_permanent_4xx_no_retry(monkeypatch):
         def _next(cls):
             return _FakeResponse(400)
 
-    import httpx
-
-    monkeypatch.setattr(httpx, "AsyncClient", C)
+    _patch_delivery(monkeypatch, C())
     ok = await delivery.deliver_one(
         "https://h.example/hook", "s", events.QUERY_FAILED, {"x": 1},
         base_backoff_s=0.0,
@@ -318,9 +333,7 @@ async def test_deliver_one_exhausts_attempts_on_transport_error(monkeypatch):
             type(self).calls.append(1)
             raise RuntimeError("connection refused")
 
-    import httpx
-
-    monkeypatch.setattr(httpx, "AsyncClient", C)
+    _patch_delivery(monkeypatch, C())
     ok = await delivery.deliver_one(
         "https://h.example/hook", "s", events.WATCH_BREACH, {"x": 1},
         max_attempts=3, base_backoff_s=0.0,
@@ -352,9 +365,7 @@ async def test_deliver_to_org_fires_for_subscribed_only(monkeypatch):
             def _next(cls):
                 return _FakeResponse(200)
 
-        import httpx
-
-        monkeypatch.setattr(httpx, "AsyncClient", C)
+        _patch_delivery(monkeypatch, C())
         n = await delivery.deliver_to_org(_ORG_A, events.WATCH_BREACH, {"x": 1})
         assert n == 1
         assert len(C.calls) == 1
@@ -412,9 +423,7 @@ async def test_emit_event_dispatches_in_loop(monkeypatch):
             def _next(cls):
                 return _FakeResponse(200)
 
-        import httpx
-
-        monkeypatch.setattr(httpx, "AsyncClient", C)
+        _patch_delivery(monkeypatch, C())
         events.emit_flow_completed(
             _ORG_A, flow_run_id="fr1", flow_id="f1", name="nightly",
             state="success",
@@ -623,9 +632,7 @@ async def test_query_executed_delivered_only_to_subscribed_endpoint(monkeypatch)
             def _next(cls):
                 return _FakeResponse(200)
 
-        import httpx
-
-        monkeypatch.setattr(httpx, "AsyncClient", C)
+        _patch_delivery(monkeypatch, C())
         n = await delivery.deliver_to_org(
             _ORG_A, events.QUERY_EXECUTED,
             build_envelope_for_test(_ORG_A),
@@ -692,9 +699,7 @@ async def test_query_executed_per_org_isolation(monkeypatch):
             def _next(cls):
                 return _FakeResponse(200)
 
-        import httpx
-
-        monkeypatch.setattr(httpx, "AsyncClient", C)
+        _patch_delivery(monkeypatch, C())
 
         # Emit for org A only — only org A's endpoint should be called.
         n = await delivery.deliver_to_org(
@@ -738,9 +743,7 @@ async def test_slow_or_failing_query_executed_never_breaks_caller(monkeypatch):
                 type(self).calls.append(1)
                 raise RuntimeError("connection timed out")
 
-        import httpx
-
-        monkeypatch.setattr(httpx, "AsyncClient", C)
+        _patch_delivery(monkeypatch, C())
 
         # deliver_to_org must return 0 (no successes) without raising.
         n = await delivery.deliver_to_org(
@@ -784,9 +787,7 @@ async def test_emit_query_executed_dispatches_in_loop(monkeypatch):
             def _next(cls):
                 return _FakeResponse(200)
 
-        import httpx
-
-        monkeypatch.setattr(httpx, "AsyncClient", C)
+        _patch_delivery(monkeypatch, C())
         events.emit_query_executed(
             _ORG_A,
             query_id="my_metric",
