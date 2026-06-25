@@ -54,6 +54,7 @@ Nubi is a batteries-included BI and embedded-analytics platform. The kernel runs
 | [**Self-Host**](/docs/self-host) | Detailed deployment guide — Docker Compose, SSL, managed Postgres, production hardening |
 | [**Open Core**](/docs/open-core) | The CE/EE split — what's open source and what stays EE (billing, Paystack, cloud) |
 | [**Open-Core Architecture**](/docs/architecture-open-core) | Feature-gate API, Docker CE/EE images, how EE billing slots in |
+| [**Data-Custody Tier**](/docs/custody-tier) | BYO storage + customer-managed keys + region pinning + host write/export API — the opt-in residency tier |
 | [**Connector Security**](/docs/connector-security) | AES-256-GCM secret encryption, key rotation, network modes |
 | [**Kernel Security**](/docs/kernel-security) | The two-kernel trust boundary — browser DuckDB-WASM vs. server Python sandbox |
 | [**Cache-Key Spec**](/docs/cache-key-spec) | The result cache keyed on SQL, params, and RLS policies |
