@@ -129,6 +129,11 @@ import app.routes.jobs  # noqa: F401, E402
 # ahead of the generic /{resource} catch-all in resources.py.
 import app.routes.flows  # noqa: F401, E402
 
+# Import transpile route (pure SQL dialect transpilation, no data access) BEFORE
+# resources so the /transpile prefix routes are registered ahead of the generic
+# /{resource} catch-all in resources.py.
+from app.routes import transpile as _transpile_routes  # noqa: F401, E402
+
 # Import variables route BEFORE resources so the /variables prefix routes are
 # registered ahead of the generic /{resource} catch-all in resources.py.
 import app.routes.variables  # noqa: F401, E402
