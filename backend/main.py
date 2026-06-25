@@ -281,6 +281,11 @@ import app.routes.demo_parquet  # noqa: F401, E402
 # generic /{resource} catch-all in resources.py.
 import app.routes.health  # noqa: F401, E402
 
+# Import MCP route (registry CRUD + Nubi-as-MCP-server endpoint) BEFORE
+# resources so the /mcp prefix routes register ahead of the generic
+# /{resource} catch-all in resources.py.
+import app.routes.mcp  # noqa: F401, E402
+
 # Import resources route so it registers itself on api_router at import time.
 import app.routes.resources  # noqa: F401, E402
 
