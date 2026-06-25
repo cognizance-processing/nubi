@@ -272,6 +272,7 @@ export class NubiMetricExplorer extends HTMLElement {
     this._ac = null
     this._scopes = []
     this._metricDef = null
+    this._backendMetrics = null
     this._resultTable = null
   }
 
@@ -344,7 +345,7 @@ export class NubiMetricExplorer extends HTMLElement {
 
   async _loadMetric(token) {
     const metricId = this.getAttribute('metric-id') || ''
-    const backend  = (this.getAttribute('backend') || 'http://localhost:8000').replace(/\/$/, '')
+    const backend  = (this.getAttribute('backend') || '').replace(/\/$/, '')
     const canAuthor = hasScope(this._scopes, 'author:metric')
 
     // Update scope indicator
@@ -352,22 +353,69 @@ export class NubiMetricExplorer extends HTMLElement {
     ind.className = `scope-indicator ${canAuthor ? 'metric' : 'readonly'}`
     ind.textContent = canAuthor ? 'METRIC' : 'READ-ONLY'
 
-    // Try to fetch metric definition from API; fall back to defaults
-    if (metricId && token) {
+    // When backend is configured, fetch the live metric list (and the specific def)
+    if (backend && token) {
+      // Fetch the list so the dropdown has real ids
       try {
-        const resp = await fetch(`${backend}/api/v1/metrics/${encodeURIComponent(metricId)}`, {
+        const listResp = await fetch(`${backend}/api/v1/metrics`, {
           headers: { 'Authorization': `Bearer ${token}` },
           signal: this._ac?.signal,
         })
-        if (resp.ok) {
-          this._metricDef = await resp.json()
+        if (listResp.ok) {
+          const data = await listResp.json()
+          // API may return { metrics: [...] } or a plain array
+          const list = Array.isArray(data) ? data : (data.metrics || data.items || [])
+          if (list.length > 0) {
+            this._backendMetrics = list
+          }
         }
-      } catch { /* fall through to defaults */ }
+      } catch { /* fall through */ }
+
+      // Fetch the specific metric definition
+      if (metricId) {
+        try {
+          const resp = await fetch(`${backend}/api/v1/metrics/${encodeURIComponent(metricId)}`, {
+            headers: { 'Authorization': `Bearer ${token}` },
+            signal: this._ac?.signal,
+          })
+          if (resp.ok) {
+            const raw = await resp.json()
+            // Normalise the API response into the shape _renderControls expects:
+            //   dimensions → array of strings (from either strings or {name,...} objects)
+            //   timeGrains → array of strings (from time_dimension.grains or time_grains)
+            const dims = (raw.dimensions || []).map(d =>
+              typeof d === 'string' ? d : (d.name || String(d))
+            )
+            const grains =
+              raw.timeGrains ||
+              raw.time_grains ||
+              (raw.time_dimension && raw.time_dimension.grains) ||
+              ['day', 'week', 'month']
+            this._metricDef = {
+              id:         raw.id || metricId,
+              name:       raw.name || metricId,
+              dimensions: dims,
+              timeGrains: Array.isArray(grains) ? grains : ['day', 'week', 'month'],
+            }
+          }
+        } catch { /* fall through to defaults */ }
+      }
     }
 
     if (!this._metricDef) {
-      // Find in defaults or use first
-      this._metricDef = DEFAULT_METRICS.find(m => m.id === metricId) || DEFAULT_METRICS[0]
+      if (backend && metricId) {
+        // Backend configured but fetch failed — synthesise a minimal def so the
+        // configured id is still used (avoids falling back to a default id).
+        this._metricDef = {
+          id:         metricId,
+          name:       metricId,
+          dimensions: [],
+          timeGrains: ['day', 'week', 'month'],
+        }
+      } else {
+        // No backend — use sample defaults
+        this._metricDef = DEFAULT_METRICS.find(m => m.id === metricId) || DEFAULT_METRICS[0]
+      }
     }
 
     this._renderControls(canAuthor)
@@ -412,7 +460,34 @@ export class NubiMetricExplorer extends HTMLElement {
     metricSelect.className = 'me-select'
     metricSelect.disabled = !canAuthor
     metricSelect.dataset.role = 'metric'
-    DEFAULT_METRICS.forEach(m => {
+
+    // Determine the source list for the dropdown.
+    // When a backend is configured, prefer the live metric list; if we couldn't
+    // fetch the list but we do have a metric definition, synthesise a single entry
+    // so the configured id is always an option.  Fall back to DEFAULT_METRICS
+    // only when no backend is configured.
+    const backend = (this.getAttribute('backend') || '').replace(/\/$/, '')
+    let metricOptions
+    if (backend) {
+      if (this._backendMetrics && this._backendMetrics.length > 0) {
+        metricOptions = this._backendMetrics.map(m => ({
+          id:   m.id || m.metric_id || m.slug || m.name,
+          name: m.name || m.label || m.id || m.metric_id || m.slug,
+        }))
+        // Ensure the current def is in the list (it may not be if the list API
+        // returned a different shape than expected).
+        if (def.id && !metricOptions.find(o => o.id === def.id)) {
+          metricOptions.unshift({ id: def.id, name: def.name || def.id })
+        }
+      } else {
+        // Backend configured but list fetch failed — at minimum expose the current metric
+        metricOptions = [{ id: def.id, name: def.name || def.id }]
+      }
+    } else {
+      metricOptions = DEFAULT_METRICS.map(m => ({ id: m.id, name: m.name }))
+    }
+
+    metricOptions.forEach(m => {
       const opt = document.createElement('option')
       opt.value = m.id
       opt.textContent = m.name
@@ -462,6 +537,16 @@ export class NubiMetricExplorer extends HTMLElement {
     grainSelect.className = 'me-select'
     grainSelect.disabled = !canAuthor
     grainSelect.dataset.role = 'time-grain'
+    // When a real backend is configured, add a "no time grouping" default so the
+    // first Run works without requiring the user to choose a time grain first.
+    // For the sample (no backend) case, keep the existing behaviour (first grain selected).
+    const backendConfigured = !!(this.getAttribute('backend') || '').replace(/\/$/, '')
+    if (backendConfigured) {
+      const noneOpt = document.createElement('option')
+      noneOpt.value = ''
+      noneOpt.textContent = '— none —'
+      grainSelect.appendChild(noneOpt)
+    }
     ;(def.timeGrains || ['day', 'week', 'month']).forEach(g => {
       const opt = document.createElement('option')
       opt.value = g
@@ -484,7 +569,26 @@ export class NubiMetricExplorer extends HTMLElement {
   }
 
   _onMetricChange(newId) {
-    this._metricDef = DEFAULT_METRICS.find(m => m.id === newId) || DEFAULT_METRICS[0]
+    const backend = (this.getAttribute('backend') || '').replace(/\/$/, '')
+    if (backend) {
+      // Try to find in the backend list we fetched; fall back to a minimal synthetic def
+      const found = this._backendMetrics?.find(m =>
+        (m.id || m.metric_id || m.slug || m.name) === newId
+      )
+      if (found) {
+        this._metricDef = {
+          id:         found.id || found.metric_id || found.slug || found.name,
+          name:       found.name || found.label || found.id,
+          dimensions: found.dimensions || found.dimension_columns || [],
+          timeGrains: found.time_grains || found.timeGrains || ['day', 'week', 'month'],
+        }
+      } else {
+        // Minimal synthetic def — we at least know the id
+        this._metricDef = { id: newId, name: newId, dimensions: [], timeGrains: ['day', 'week', 'month'] }
+      }
+    } else {
+      this._metricDef = DEFAULT_METRICS.find(m => m.id === newId) || DEFAULT_METRICS[0]
+    }
     this._shadow.querySelector('.metric-name').textContent = this._metricDef.name
     // Re-render dimension checkboxes
     const dimBoxes = this._shadow.querySelector('[data-role="dimensions"]')
@@ -531,7 +635,8 @@ export class NubiMetricExplorer extends HTMLElement {
     const dimensions = dimBoxes
       ? [...dimBoxes.querySelectorAll('input[type=checkbox]:checked')].map(c => c.value)
       : []
-    const timeGrain = grainSelect?.value || 'day'
+    // Empty value means "no time grouping" (backend case with "— none —" option)
+    const timeGrain = grainSelect?.value || ''
     return { metricId, dimensions, timeGrain }
   }
 
@@ -555,11 +660,16 @@ export class NubiMetricExplorer extends HTMLElement {
       }
       if (token) headers['Authorization'] = `Bearer ${token}`
 
-      // POST to the metric query endpoint
+      // POST to the metric query endpoint.
+      // Only include time_grain when one is actually selected (empty = no time grouping).
+      const requestBody = { dimensions }
+      if (timeGrain) {
+        requestBody.time_grain = timeGrain
+      }
       const resp = await fetch(`${backend}/api/v1/metrics/${encodeURIComponent(metricId)}/query`, {
         method: 'POST',
         headers,
-        body: JSON.stringify({ dimensions, time_grain: timeGrain }),
+        body: JSON.stringify(requestBody),
         credentials: 'omit',
         signal: this._ac.signal,
       })

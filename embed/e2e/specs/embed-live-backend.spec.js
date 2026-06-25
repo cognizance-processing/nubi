@@ -140,7 +140,7 @@ async function clickRunButton(page, selector) {
   return page.evaluate((sel) => {
     const el = document.querySelector(sel)
     if (!el?.shadowRoot) return false
-    const btn = el.shadowRoot.querySelector('.btn-run')
+    const btn = el.shadowRoot.querySelector('.btn-run-me')
     if (!btn) return false
     btn.click()
     return true
@@ -170,7 +170,7 @@ async function waitForResultTable(page, selector, timeout = 20000) {
       if (!el?.shadowRoot) return false
       // Either a result table OR a footer row count > 0
       const table  = el.shadowRoot.querySelector('.me-table')
-      const footer = el.shadowRoot.querySelector('.me-footer')
+      const footer = el.shadowRoot.querySelector('.nubi-me-footer')
       if (table) return true
       // Also accept the footer text "N rows" as confirmation
       if (footer && /\d+ rows/.test(footer.textContent)) return true
