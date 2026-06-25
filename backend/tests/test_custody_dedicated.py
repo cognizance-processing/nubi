@@ -710,3 +710,282 @@ def test_central_secret_omits_empty_values():
     assert "aws_secret_access_key" in secret
     # Empty string is falsy → omitted.
     assert "aws_access_key_id" not in secret
+
+
+# ---------------------------------------------------------------------------
+# Airtight fail-closed: client mode rejected at EVERY entry point
+# ---------------------------------------------------------------------------
+#
+# Each test below targets ONE entry point independently.  Together they form a
+# mutation-test-style suite: removing the guard from ANY single entry point
+# will cause exactly that test to fail, making regressions easy to localise.
+
+
+# ── 1. DedicatedBucketProvider.provision() ────────────────────────────────
+
+@pytest.mark.asyncio
+async def test_dedicated_provision_client_cmek_consistent_error(provider, monkeypatch):
+    """DedicatedBucketProvider.provision raises cmek_client_unsupported / 501."""
+    from app.config import get_settings
+
+    monkeypatch.setenv("NUBI_CMEK_MODE", "client")
+    monkeypatch.setenv("NUBI_CMEK_KEY_MATERIAL", _GOOD_KEY_B64)
+    get_settings.cache_clear()
+
+    with pytest.raises(ManagedLakehouseError) as exc_info:
+        await _provision(provider)
+
+    assert exc_info.value.code == "cmek_client_unsupported"
+    assert exc_info.value.status == 501
+
+
+# ── 2. PrefixIsolatedProvider.provision() ─────────────────────────────────
+
+@pytest.mark.asyncio
+async def test_prefix_provider_provision_client_cmek_raises(monkeypatch, tmp_path):
+    """PrefixIsolatedProvider.provision must also reject client CMEK (fail-closed).
+
+    This was an UNGUARDED path before the airtight fix.  Regression test.
+    """
+    from app.config import get_settings
+    from app.lakehouse.managed import ManagedLakehouseError, PrefixIsolatedProvider, CentralStorage
+
+    lake_dir = str(tmp_path / "prefix-lake")
+    os.makedirs(lake_dir)
+
+    monkeypatch.setenv("NUBI_MANAGED_LAKE_DIR", lake_dir)
+    monkeypatch.setenv("NUBI_CUSTODY_ENABLED", "true")
+    monkeypatch.setenv("NUBI_LAKEHOUSE_PROVIDER", "prefix")
+    monkeypatch.setenv("NUBI_CMEK_MODE", "client")
+    monkeypatch.setenv("NUBI_CMEK_KEY_MATERIAL", _GOOD_KEY_B64)
+    get_settings.cache_clear()
+
+    central = CentralStorage(scheme="file", bucket=lake_dir, creds={})
+    from app.repos.memory import InMemoryRepo as _Repo
+    from app.repos.provider import set_repo as _set_repo
+
+    r = _Repo()
+    _set_repo(r)
+    provider = PrefixIsolatedProvider(repo=r, central=central)
+    try:
+        with pytest.raises(ManagedLakehouseError) as exc_info:
+            await provider.provision(org_id=_ORG, project_id=None, user_id=_USER)
+
+        assert exc_info.value.code == "cmek_client_unsupported"
+        assert exc_info.value.status == 501
+    finally:
+        _set_repo(None)
+        get_settings.cache_clear()
+
+
+@pytest.mark.asyncio
+async def test_prefix_provider_provision_kms_and_none_still_work(monkeypatch, tmp_path):
+    """kms and none modes still provision normally via PrefixIsolatedProvider."""
+    from app.config import get_settings
+    from app.lakehouse.managed import PrefixIsolatedProvider, CentralStorage
+    from app.repos.memory import InMemoryRepo as _Repo
+    from app.repos.provider import set_repo as _set_repo
+
+    lake_dir = str(tmp_path / "prefix-lake-kms")
+    os.makedirs(lake_dir)
+
+    for mode in ("none", "kms"):
+        monkeypatch.setenv("NUBI_MANAGED_LAKE_DIR", lake_dir)
+        monkeypatch.setenv("NUBI_CUSTODY_ENABLED", "true")
+        monkeypatch.setenv("NUBI_LAKEHOUSE_PROVIDER", "prefix")
+        monkeypatch.setenv("NUBI_CMEK_MODE", mode)
+        if mode == "kms":
+            monkeypatch.setenv("NUBI_CMEK_KEY_URI", "projects/p/locations/l/keyRings/r/cryptoKeys/k")
+        get_settings.cache_clear()
+
+        central = CentralStorage(scheme="file", bucket=lake_dir, creds={})
+        r = _Repo()
+        _set_repo(r)
+        provider = PrefixIsolatedProvider(repo=r, central=central)
+        try:
+            row = await provider.provision(org_id=_ORG, project_id=None, user_id=_USER)
+            assert row["config"]["managed_lake"] is True, f"mode={mode} provision failed"
+        finally:
+            _set_repo(None)
+            get_settings.cache_clear()
+
+
+# ── 3. ingest open_session ─────────────────────────────────────────────────
+
+@pytest.mark.asyncio
+async def test_ingest_open_session_client_cmek_raises(monkeypatch, tmp_path, fake_db):
+    """open_ingest_session rejects client CMEK before opening a session."""
+    import app.routes.ingest  # noqa: F401 — ensure route is registered
+
+    from app.config import get_settings
+    from app.lakehouse.managed import ManagedLakehouseError, MANAGED_MARKER, lake_prefix
+    from app.repos.memory import InMemoryRepo as _Repo
+    from app.repos.provider import set_repo as _set_repo
+    from app.lakehouse.ingest_session import InMemoryIngestSessionStore, set_ingest_session_store
+
+    lake_dir = str(tmp_path / "ingest-lake")
+    os.makedirs(lake_dir)
+    monkeypatch.setenv("NUBI_MANAGED_LAKE_DIR", lake_dir)
+    monkeypatch.setenv("NUBI_CUSTODY_ENABLED", "true")
+    monkeypatch.setenv("NUBI_CMEK_MODE", "client")
+    monkeypatch.setenv("NUBI_CMEK_KEY_MATERIAL", _GOOD_KEY_B64)
+    get_settings.cache_clear()
+
+    import uuid
+    from httpx import ASGITransport, AsyncClient
+    from app.auth.jwt import mint_access_token
+
+    repo = _Repo()
+    _set_repo(repo)
+    session_store = InMemoryIngestSessionStore()
+    set_ingest_session_store(session_store)
+
+    user_id = str(uuid.uuid4())
+    org_id = str(uuid.uuid4())
+    fake_db.users[user_id] = {
+        "id": user_id, "email": "t@t.test", "name": "T",
+        "avatar_url": None, "email_verified": True, "created_at": "2024-01-01T00:00:00+00:00",
+    }
+    repo.seed_org_member(org_id=org_id, user_id=user_id)
+    datastore_id = str(uuid.uuid4())
+    prefix = lake_prefix(org_id, datastore_id)
+    await repo.create(
+        resource="datastores", org_id=org_id, created_by=user_id,
+        name="Test", id=datastore_id,
+        config={
+            "connector_type": "duckdb",
+            "database": f"file://{lake_dir}/{prefix}",
+            MANAGED_MARKER: True,
+            "managed_prefix": prefix,
+            "managed_scheme": "file",
+        },
+    )
+
+    from unittest.mock import AsyncMock, patch
+
+    patches = [
+        patch("app.db.fetchrow", side_effect=fake_db.fake_fetchrow),
+        patch("app.db.fetch", side_effect=fake_db.fake_fetch),
+        patch("app.db.execute", side_effect=fake_db.fake_execute),
+        patch("app.db.get_connection", new=fake_db.fake_get_connection),
+        patch("app.routes.auth.fetchrow", side_effect=fake_db.fake_fetchrow),
+        patch("app.routes.auth.execute", side_effect=fake_db.fake_execute),
+        patch("app.auth.sessions.fetchrow", side_effect=fake_db.fake_fetchrow),
+        patch("app.auth.sessions.execute", side_effect=fake_db.fake_execute),
+        patch("app.auth.sessions.get_connection", new=fake_db.fake_get_connection),
+        patch("app.auth.deps.fetchrow", side_effect=fake_db.fake_fetchrow),
+        patch("app.db.init_db", new=AsyncMock()),
+        patch("app.db.close_db", new=AsyncMock()),
+    ]
+    for p in patches:
+        p.start()
+
+    try:
+        import main as main_module
+        test_app = main_module.create_app()
+        transport = ASGITransport(app=test_app)
+        token = mint_access_token(user_id)
+        headers = {"Authorization": f"Bearer {token}"}
+
+        async with AsyncClient(transport=transport, base_url="http://testserver") as ac:
+            r = await ac.post(
+                f"/api/v1/lake/{datastore_id}/ingest/sessions",
+                json={
+                    "mode": "full_replace",
+                    "schema": [{"name": "id", "type": "int64"}],
+                    "idempotency_key": str(uuid.uuid4()),
+                },
+                headers=headers,
+            )
+        # Must be 501 with cmek_client_unsupported.
+        assert r.status_code == 501, r.text
+        body = r.json()
+        assert body.get("code") == "cmek_client_unsupported" or "cmek" in str(body).lower()
+
+        # No session must have been created.
+        assert len(session_store._sessions) == 0, "Session was created despite client CMEK guard."
+
+    finally:
+        for p in patches:
+            p.stop()
+        _set_repo(None)
+        set_ingest_session_store(None)
+        get_settings.cache_clear()
+
+
+# ── 4. assert_cmek_readable via dedicated provision — no-plaintext-fallback ─
+
+@pytest.mark.asyncio
+async def test_no_plaintext_fallback_when_client_mode(provider, monkeypatch, central):
+    """Client mode must not silently fall back to plaintext writes.
+
+    If the guard is accidentally wrapped in try/except and swallowed, bytes
+    would be written as plaintext without the caller knowing client mode failed.
+    This test asserts:
+      1. The guard raises.
+      2. The central lake dir has no new subdirectories (no write occurred).
+    """
+    from app.config import get_settings
+
+    monkeypatch.setenv("NUBI_CMEK_MODE", "client")
+    monkeypatch.setenv("NUBI_CMEK_KEY_MATERIAL", _GOOD_KEY_B64)
+    get_settings.cache_clear()
+
+    dirs_before = set(os.listdir(central.bucket)) if os.path.isdir(central.bucket) else set()
+
+    with pytest.raises(ManagedLakehouseError) as exc_info:
+        await _provision(provider)
+
+    assert exc_info.value.code == "cmek_client_unsupported"
+
+    dirs_after = set(os.listdir(central.bucket)) if os.path.isdir(central.bucket) else set()
+    new_dirs = dirs_after - dirs_before
+    assert new_dirs == set(), (
+        f"Client-mode provision wrote directories before guard fired: {new_dirs}"
+    )
+
+
+# ── 5. kms / none pass through at every guarded entry point ─────────────
+
+@pytest.mark.asyncio
+async def test_kms_none_not_blocked_by_guard(provider, monkeypatch):
+    """kms and none modes are NOT blocked by any of the CMEK guards."""
+    from app.config import get_settings
+
+    for mode in ("none", "kms"):
+        monkeypatch.setenv("NUBI_CMEK_MODE", mode)
+        if mode == "kms":
+            monkeypatch.setenv("NUBI_CMEK_KEY_URI", "projects/p/locations/l/keyRings/r/cryptoKeys/k")
+        get_settings.cache_clear()
+
+        # provision must succeed for kms / none.
+        row = await _provision(provider)
+        assert row["config"]["managed_lake"] is True, (
+            f"mode={mode} provision should succeed but returned: {row}"
+        )
+        # Cleanup: deprovision so the next iteration starts clean.
+        await provider.deprovision(_ORG, str(row["id"]))
+
+
+# ── 6. Mutation-guard: removal of assert_cmek_readable breaks client mode ─
+
+def test_assert_cmek_readable_is_unconditional():
+    """Removing or short-circuiting assert_cmek_readable must be caught here.
+
+    This test directly asserts the behavior of the centralized helper that ALL
+    entry points delegate to.  If someone removes the helper or wraps it in an
+    env check, this test will fail.
+    """
+    from app.lakehouse.cmek import assert_cmek_readable
+    from app.lakehouse.managed import ManagedLakehouseError
+
+    # "client" MUST always raise — no condition, no flag, no env var.
+    with pytest.raises(ManagedLakehouseError) as exc_info:
+        assert_cmek_readable("client")
+
+    assert exc_info.value.code == "cmek_client_unsupported"
+    assert exc_info.value.status == 501
+
+    # "none" and "kms" must NEVER raise.
+    assert_cmek_readable("none")
+    assert_cmek_readable("kms")

@@ -583,6 +583,19 @@ async def open_ingest_session(
     """
     assert_custody_enabled()
 
+    # Fail closed: client-mode CMEK cannot be used for lake writes.
+    # Opening a session that would eventually land encrypted blobs DuckDB
+    # reads as raw Parquet causes SILENT DATA CORRUPTION — reject at the
+    # earliest possible point (before any staging allocation).
+    from app.lakehouse.cmek import assert_cmek_readable  # noqa: PLC0415
+    from app.lakehouse.custody import cmek_mode  # noqa: PLC0415
+    from app.lakehouse.managed import ManagedLakehouseError  # noqa: PLC0415
+
+    try:
+        assert_cmek_readable(cmek_mode())
+    except ManagedLakehouseError as _cmek_exc:
+        raise AppError(_cmek_exc.code, _cmek_exc.message, _cmek_exc.status) from _cmek_exc
+
     user_id = str(user["id"])
     org_id = await resolve_org_id(user_id, repo, request)
 
@@ -712,6 +725,20 @@ async def upload_part(
     """
     assert_custody_enabled()
 
+    # Fail closed: client-mode CMEK cannot be used for lake writes.
+    # Belt-and-suspenders guard: open_session already blocks, but defend
+    # independently in case a session was created before the guard was added or
+    # a deployment change switches CMEK mode mid-session.  Zero bytes are
+    # written before this check.
+    from app.lakehouse.cmek import assert_cmek_readable  # noqa: PLC0415
+    from app.lakehouse.custody import cmek_mode  # noqa: PLC0415
+    from app.lakehouse.managed import ManagedLakehouseError  # noqa: PLC0415
+
+    try:
+        assert_cmek_readable(cmek_mode())
+    except ManagedLakehouseError as _cmek_exc:
+        raise AppError(_cmek_exc.code, _cmek_exc.message, _cmek_exc.status) from _cmek_exc
+
     user_id = str(user["id"])
     org_id = await resolve_org_id(user_id, repo, request)
 
@@ -819,6 +846,20 @@ async def commit_session(
     * 409 ``schema_incompatible`` — append schema narrows existing schema.
     """
     assert_custody_enabled()
+
+    # Fail closed: client-mode CMEK cannot be used for lake writes.
+    # Belt-and-suspenders guard at the commit step (the actual lake write):
+    # the open and upload steps also guard, but defend here independently so
+    # that a CMEK mode change between open and commit cannot sneak through.
+    # This guard runs BEFORE any bytes are promoted to the lake.
+    from app.lakehouse.cmek import assert_cmek_readable  # noqa: PLC0415
+    from app.lakehouse.custody import cmek_mode  # noqa: PLC0415
+    from app.lakehouse.managed import ManagedLakehouseError  # noqa: PLC0415
+
+    try:
+        assert_cmek_readable(cmek_mode())
+    except ManagedLakehouseError as _cmek_exc:
+        raise AppError(_cmek_exc.code, _cmek_exc.message, _cmek_exc.status) from _cmek_exc
 
     user_id = str(user["id"])
     org_id = await resolve_org_id(user_id, repo, request)

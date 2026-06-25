@@ -457,6 +457,13 @@ class PrefixIsolatedProvider(ManagedLakehouseProvider):
         """
         import uuid as _uuid  # noqa: PLC0415
 
+        from app.lakehouse.cmek import assert_cmek_readable  # noqa: PLC0415
+        from app.lakehouse.custody import cmek_mode  # noqa: PLC0415
+
+        # Fail closed: client-mode CMEK is not wired into the lake read path.
+        # Reject before any row or storage object is created.
+        assert_cmek_readable(cmek_mode())
+
         datastore_id = str(_uuid.uuid4())
         row = await self._repo.create(
             resource="datastores",

@@ -49,6 +49,89 @@ import os
 
 _NONCE_BYTES = 12  # GCM standard; 96-bit nonce
 
+# ---------------------------------------------------------------------------
+# Fail-closed guard — centralised, call from EVERY entry point
+# ---------------------------------------------------------------------------
+
+
+def assert_cmek_readable(mode: str) -> None:
+    """Raise ``ManagedLakehouseError("cmek_client_unsupported", …, 501)`` when
+    *mode* is ``"client"``.
+
+    **This is the single, canonical fail-closed guard for client-mode CMEK.**
+
+    Call it at the TOP of every entry point that could write or read lake
+    objects (provision, ingest session open/upload/commit, bulk export, and any
+    future path).  Never call it after bytes have already been written.
+
+    Rationale
+    ---------
+    Client-mode CMEK is app-layer AES-256-GCM encryption (see
+    :class:`CmekProvider`).  The query engine (DuckDB) reads lake objects
+    DIRECTLY from cloud/local storage and cannot decrypt app-layer blobs.
+    Writing encrypted objects that DuckDB then reads as raw Parquet would cause
+    SILENT DATA CORRUPTION — not a decryption error, just garbled results.
+
+    ``kms`` and ``none`` modes are fully supported:
+
+    * ``none`` — no app-layer encryption; bucket-level AES-256 at-rest only.
+    * ``kms``  — bucket-level KMS key; transparent to the engine.
+    * ``client`` — fail-closed (this function raises) until a decrypt proxy or
+      DuckDB extension is built.
+
+    Forward path (for when this is lifted)
+    ----------------------------------------
+    Three options exist; none is cheap or risk-free:
+
+    1. **Decrypting proxy** — a thin sidecar that serves DuckDB's storage reads,
+       decrypting on the fly.  Adds latency and a new trust boundary; the proxy
+       must hold the key in memory.
+
+    2. **DuckDB extension** — a custom DuckDB loadable extension that registers
+       a VFS layer that intercepts ``read_parquet()`` and decrypts blobs.
+       High complexity; must track DuckDB API changes.
+
+    3. **Decrypt-before-engine** — the app materialises decrypted Parquet into
+       a temp area before every query, then DuckDB reads the temp copy.  High
+       I/O cost and a window where plaintext exists at rest (temp area).
+
+    Until one of these paths is built, reviewed, and tested for silent-corruption
+    scenarios, client mode is rejected at every lake write/read entry point.
+
+    Parameters
+    ----------
+    mode:
+        The CMEK mode string from :func:`~app.lakehouse.custody.cmek_mode`.
+        Values ``"none"`` and ``"kms"`` pass through silently.
+        Value ``"client"`` raises.
+
+    Raises
+    ------
+    ManagedLakehouseError("cmek_client_unsupported", ..., 501)
+        Always, when ``mode == "client"``.
+    """
+    if mode == "client":
+        _MSG = (
+            "Client-held-key CMEK (mode='client') is not yet supported for "
+            "lake write/read operations.  The query engine (DuckDB) reads lake "
+            "objects directly from storage and cannot decrypt app-layer blobs — "
+            "writing encrypted objects that DuckDB reads as raw Parquet causes "
+            "SILENT DATA CORRUPTION.  "
+            "Use mode='kms' for customer-managed keys, or 'none' for "
+            "bucket-default AES-256 at-rest encryption.  "
+            "See docs/custody-tier.md § CMEK forward path for the tracked "
+            "design options (decrypt proxy / DuckDB extension / "
+            "decrypt-before-engine)."
+        )
+        # Raise ManagedLakehouseError so callers in managed.py / dedicated.py
+        # (which propagate that exception type) and route-level callers (which
+        # either catch ManagedLakehouseError directly or let it surface as 500)
+        # both get a consistent error.  Routes that need HTTP 501 should wrap
+        # ManagedLakehouseError as AppError — see ingest.py / lake_export.py.
+        from app.lakehouse.managed import ManagedLakehouseError  # noqa: PLC0415
+
+        raise ManagedLakehouseError("cmek_client_unsupported", _MSG, 501)
+
 
 class CmekProvider:
     """App-layer envelope encryption (or identity pass-through).

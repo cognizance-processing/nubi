@@ -268,3 +268,102 @@ def test_get_cmek_provider_wrong_length_raises(monkeypatch):
 
     with pytest.raises(ValueError, match="32 bytes"):
         get_cmek_provider()
+
+
+# ---------------------------------------------------------------------------
+# assert_cmek_readable — centralized fail-closed helper
+# ---------------------------------------------------------------------------
+#
+# These tests verify the single canonical guard that every entry point must
+# call.  If assert_cmek_readable is removed or softened for "client" mode,
+# these tests catch the regression.
+
+
+def test_assert_cmek_readable_client_raises():
+    """assert_cmek_readable('client') must raise ManagedLakehouseError 501."""
+    from app.lakehouse.cmek import assert_cmek_readable
+    from app.lakehouse.managed import ManagedLakehouseError
+
+    with pytest.raises(ManagedLakehouseError) as exc_info:
+        assert_cmek_readable("client")
+
+    err = exc_info.value
+    assert err.code == "cmek_client_unsupported"
+    assert err.status == 501
+    # Message must mention the root cause (DuckDB + silent data corruption).
+    assert "duckdb" in err.message.lower() or "engine" in err.message.lower()
+    assert "corrupt" in err.message.lower() or "direct" in err.message.lower()
+
+
+def test_assert_cmek_readable_none_passes():
+    """assert_cmek_readable('none') must not raise — none mode is supported."""
+    from app.lakehouse.cmek import assert_cmek_readable
+
+    assert_cmek_readable("none")  # Must not raise.
+
+
+def test_assert_cmek_readable_kms_passes():
+    """assert_cmek_readable('kms') must not raise — kms mode is supported."""
+    from app.lakehouse.cmek import assert_cmek_readable
+
+    assert_cmek_readable("kms")  # Must not raise.
+
+
+def test_assert_cmek_readable_client_is_always_rejected():
+    """Mutation guard: assert_cmek_readable must ALWAYS reject 'client'.
+
+    This test would catch a regression where someone added an environment
+    condition, feature-flag bypass, or short-circuit that silently allows
+    client mode through.  The guard must be unconditional on the mode string.
+    """
+    from app.lakehouse.cmek import assert_cmek_readable
+    from app.lakehouse.managed import ManagedLakehouseError
+
+    # Call multiple times: must raise every single time.
+    for _ in range(3):
+        with pytest.raises(ManagedLakehouseError) as exc_info:
+            assert_cmek_readable("client")
+        assert exc_info.value.code == "cmek_client_unsupported"
+        assert exc_info.value.status == 501
+
+
+def test_assert_cmek_readable_raises_before_any_write(tmp_path):
+    """Guard must raise ManagedLakehouseError — not write partial state then raise.
+
+    Simulates the scenario: if code wrote bytes and THEN called the guard,
+    data corruption could occur.  The guard itself must be side-effect-free
+    (raises immediately; no I/O).
+    """
+    from app.lakehouse.cmek import assert_cmek_readable
+    from app.lakehouse.managed import ManagedLakehouseError
+
+    sentinel = tmp_path / "should_not_exist.txt"
+
+    def _would_write_then_guard():
+        # Guard FIRST (correct order).
+        assert_cmek_readable("client")
+        # This line must never be reached.
+        sentinel.write_bytes(b"data")
+
+    with pytest.raises(ManagedLakehouseError):
+        _would_write_then_guard()
+
+    assert not sentinel.exists(), (
+        "File was written before the guard raised — guard must come before any I/O."
+    )
+
+
+def test_assert_cmek_readable_consistent_error_code():
+    """The error code must be exactly 'cmek_client_unsupported' and HTTP 501.
+
+    Guards at every entry point must emit the SAME error code so callers can
+    handle it uniformly.  If this changes, update ALL entry-point tests too.
+    """
+    from app.lakehouse.cmek import assert_cmek_readable
+    from app.lakehouse.managed import ManagedLakehouseError
+
+    with pytest.raises(ManagedLakehouseError) as exc_info:
+        assert_cmek_readable("client")
+
+    assert exc_info.value.code == "cmek_client_unsupported"
+    assert exc_info.value.status == 501
