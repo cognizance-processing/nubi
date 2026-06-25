@@ -613,3 +613,330 @@ async def test_path_escape_rejected(ingest_env):
     # 400 (our validator fires), 404 (no matching route), or 405 (wrong method
     # after path collapse) — any of these prove the traversal was blocked.
     assert r.status_code in (400, 404, 405), r.text
+
+
+# ---------------------------------------------------------------------------
+# Security regression tests (Bug 1 – partition path traversal)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_partition_dotdot_rejected(ingest_env):
+    """partition='..' → 400 invalid_partition, nothing written outside prefix."""
+    env = ingest_env
+    ds = env["datastore_id"]
+    r = await env["client"].post(
+        f"/api/v1/lake/{ds}/ingest/sessions",
+        json={
+            "mode": "append",
+            "partition": "..",
+            "schema": [{"name": "id", "type": "int64"}],
+            "idempotency_key": str(uuid.uuid4()),
+        },
+        headers=env["headers"],
+    )
+    assert r.status_code == 400, r.text
+    assert r.json()["error"]["code"] == "invalid_partition"
+    # Nothing should have been written to the lake dir.
+    lake_dir = env["lake_dir"]
+    all_files = []
+    for root, _dirs, files in os.walk(lake_dir):
+        for f in files:
+            all_files.append(os.path.join(root, f))
+    # No data files should exist yet (session was rejected at open).
+    data_files = [f for f in all_files if f.endswith(".parquet")]
+    assert data_files == [], f"Unexpected parquet files after rejected open: {data_files}"
+
+
+@pytest.mark.asyncio
+async def test_partition_traversal_rejected(ingest_env):
+    """partition='../../x' → 400 invalid_partition."""
+    env = ingest_env
+    ds = env["datastore_id"]
+    r = await env["client"].post(
+        f"/api/v1/lake/{ds}/ingest/sessions",
+        json={
+            "mode": "append",
+            "partition": "../../x",
+            "schema": [{"name": "id", "type": "int64"}],
+            "idempotency_key": str(uuid.uuid4()),
+        },
+        headers=env["headers"],
+    )
+    assert r.status_code == 400, r.text
+    assert r.json()["error"]["code"] == "invalid_partition"
+
+
+@pytest.mark.asyncio
+async def test_partition_slash_traversal_rejected(ingest_env):
+    """partition='a/../../b' → 400 invalid_partition."""
+    env = ingest_env
+    ds = env["datastore_id"]
+    r = await env["client"].post(
+        f"/api/v1/lake/{ds}/ingest/sessions",
+        json={
+            "mode": "append",
+            "partition": "a/../../b",
+            "schema": [{"name": "id", "type": "int64"}],
+            "idempotency_key": str(uuid.uuid4()),
+        },
+        headers=env["headers"],
+    )
+    assert r.status_code == 400, r.text
+    assert r.json()["error"]["code"] == "invalid_partition"
+
+
+# ---------------------------------------------------------------------------
+# Security regression tests (Bug 2 – schema check uses wrong key)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_multi_table_independent_schemas(ingest_env):
+    """Two tables in one datastore keep independent schemas.
+
+    table_a has columns (id, label); table_b has columns (ts, amount).
+    Appending to table_a must NOT see table_b's schema and vice-versa.
+    """
+    env = ingest_env
+    ds = env["datastore_id"]
+
+    # Seed table_a via full_replace.
+    s_a = await _open_session(
+        env["client"], env["headers"], ds,
+        mode="full_replace",
+        schema=[{"name": "id", "type": "int64"}, {"name": "label", "type": "string"}],
+        idempotency_key=str(uuid.uuid4()),
+    )
+    # Patch: pass table_name in the open body (helper doesn't support it, call directly).
+    r_a_open = await env["client"].post(
+        f"/api/v1/lake/{ds}/ingest/sessions",
+        json={
+            "mode": "full_replace",
+            "table_name": "table_a",
+            "schema": [{"name": "id", "type": "int64"}, {"name": "label", "type": "string"}],
+            "idempotency_key": str(uuid.uuid4()),
+        },
+        headers=env["headers"],
+    )
+    assert r_a_open.status_code == 201, r_a_open.text
+    sid_a = r_a_open.json()["session_id"]
+    pq_a = _build_parquet([{"id": 1, "label": "foo"}])
+    e_a = await _upload_part(env["client"], env["headers"], ds, sid_a, pq_a)
+    await _commit_session(
+        env["client"], env["headers"], ds, sid_a,
+        {"files": [e_a], "row_counts": {"part0.parquet": 1}},
+    )
+
+    # Seed table_b via full_replace.
+    r_b_open = await env["client"].post(
+        f"/api/v1/lake/{ds}/ingest/sessions",
+        json={
+            "mode": "full_replace",
+            "table_name": "table_b",
+            "schema": [{"name": "ts", "type": "timestamp"}, {"name": "amount", "type": "float64"}],
+            "idempotency_key": str(uuid.uuid4()),
+        },
+        headers=env["headers"],
+    )
+    assert r_b_open.status_code == 201, r_b_open.text
+    sid_b = r_b_open.json()["session_id"]
+    pq_b = _build_parquet([{"ts": 0, "amount": 9.99}])
+    e_b = await _upload_part(env["client"], env["headers"], ds, sid_b, pq_b)
+    await _commit_session(
+        env["client"], env["headers"], ds, sid_b,
+        {"files": [e_b], "row_counts": {"part0.parquet": 1}},
+    )
+
+    # Append to table_a with table_a schema only (no 'ts'/'amount') — must NOT
+    # fail with schema_incompatible because table_b's schema is NOT loaded for table_a.
+    r_a_append_open = await env["client"].post(
+        f"/api/v1/lake/{ds}/ingest/sessions",
+        json={
+            "mode": "append",
+            "table_name": "table_a",
+            "partition": "dt=2026-06-25",
+            "schema": [{"name": "id", "type": "int64"}, {"name": "label", "type": "string"}],
+            "idempotency_key": str(uuid.uuid4()),
+        },
+        headers=env["headers"],
+    )
+    assert r_a_append_open.status_code == 201, r_a_append_open.text
+    sid_a2 = r_a_append_open.json()["session_id"]
+    pq_a2 = _build_parquet([{"id": 2, "label": "bar"}])
+    e_a2 = await _upload_part(env["client"], env["headers"], ds, sid_a2, pq_a2)
+    r_commit = await env["client"].post(
+        f"/api/v1/lake/{ds}/ingest/sessions/{sid_a2}/commit",
+        json={"files": [e_a2], "row_counts": {"part0.parquet": 1}},
+        headers=env["headers"],
+    )
+    assert r_commit.status_code == 200, r_commit.text
+    assert r_commit.json()["published"] is True
+
+
+# ---------------------------------------------------------------------------
+# Security regression tests (Bug 3 – full_replace sweep blast radius)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_full_replace_does_not_delete_other_table(ingest_env):
+    """full_replace of table_a MUST NOT delete table_b's objects."""
+    env = ingest_env
+    ds = env["datastore_id"]
+
+    # Seed table_b.
+    r_b = await env["client"].post(
+        f"/api/v1/lake/{ds}/ingest/sessions",
+        json={
+            "mode": "full_replace",
+            "table_name": "table_b",
+            "schema": [{"name": "x", "type": "string"}],
+            "idempotency_key": str(uuid.uuid4()),
+        },
+        headers=env["headers"],
+    )
+    assert r_b.status_code == 201
+    sid_b = r_b.json()["session_id"]
+    pq_b = _build_parquet([{"x": "keep-me"}])
+    e_b = await _upload_part(env["client"], env["headers"], ds, sid_b, pq_b)
+    r_b_commit = await _commit_session(
+        env["client"], env["headers"], ds, sid_b,
+        {"files": [e_b], "row_counts": {"part0.parquet": 1}},
+    )
+    b_uri = r_b_commit["final_uris"][0]
+    b_path = b_uri.replace(f"file://{env['lake_dir']}/", env["lake_dir"] + "/")
+    assert os.path.isfile(b_path), "table_b file must exist after commit"
+
+    # Now full_replace table_a.
+    r_a = await env["client"].post(
+        f"/api/v1/lake/{ds}/ingest/sessions",
+        json={
+            "mode": "full_replace",
+            "table_name": "table_a",
+            "schema": [{"name": "y", "type": "int64"}],
+            "idempotency_key": str(uuid.uuid4()),
+        },
+        headers=env["headers"],
+    )
+    assert r_a.status_code == 201
+    sid_a = r_a.json()["session_id"]
+    pq_a = _build_parquet([{"y": 42}])
+    e_a = await _upload_part(env["client"], env["headers"], ds, sid_a, pq_a)
+    await _commit_session(
+        env["client"], env["headers"], ds, sid_a,
+        {"files": [e_a], "row_counts": {"part0.parquet": 1}},
+    )
+
+    # table_b's file must still exist.
+    assert os.path.isfile(b_path), (
+        f"table_b file was deleted by table_a full_replace sweep! path={b_path}"
+    )
+
+
+@pytest.mark.asyncio
+async def test_full_replace_preserves_nubi_sidecar(ingest_env):
+    """full_replace MUST NOT delete the _nubi/ schema sidecar."""
+    env = ingest_env
+    ds = env["datastore_id"]
+
+    # First full_replace to establish schema sidecar.
+    r1 = await env["client"].post(
+        f"/api/v1/lake/{ds}/ingest/sessions",
+        json={
+            "mode": "full_replace",
+            "table_name": "myTable",
+            "schema": [{"name": "id", "type": "int64"}],
+            "idempotency_key": str(uuid.uuid4()),
+        },
+        headers=env["headers"],
+    )
+    assert r1.status_code == 201
+    sid1 = r1.json()["session_id"]
+    pq1 = _build_parquet([{"id": 1}])
+    e1 = await _upload_part(env["client"], env["headers"], ds, sid1, pq1)
+    await _commit_session(
+        env["client"], env["headers"], ds, sid1,
+        {"files": [e1], "row_counts": {"part0.parquet": 1}},
+    )
+
+    # Verify sidecar exists.
+    from app.lakehouse.managed import lake_prefix
+    prefix = lake_prefix(env["org_id"], ds)
+    sidecar_path = os.path.join(env["lake_dir"], prefix, "_nubi", "schema.json")
+    assert os.path.isfile(sidecar_path), f"Schema sidecar not found at {sidecar_path}"
+
+    # Second full_replace (replaces the table content).
+    r2 = await env["client"].post(
+        f"/api/v1/lake/{ds}/ingest/sessions",
+        json={
+            "mode": "full_replace",
+            "table_name": "myTable",
+            "schema": [{"name": "id", "type": "int64"}],
+            "idempotency_key": str(uuid.uuid4()),
+        },
+        headers=env["headers"],
+    )
+    assert r2.status_code == 201
+    sid2 = r2.json()["session_id"]
+    pq2 = _build_parquet([{"id": 2}])
+    e2 = await _upload_part(env["client"], env["headers"], ds, sid2, pq2)
+    await _commit_session(
+        env["client"], env["headers"], ds, sid2,
+        {"files": [e2], "row_counts": {"part0.parquet": 1}},
+    )
+
+    # Sidecar must still exist after the second full_replace.
+    assert os.path.isfile(sidecar_path), (
+        f"Schema sidecar was deleted by full_replace sweep! path={sidecar_path}"
+    )
+
+
+@pytest.mark.asyncio
+async def test_full_replace_validates_schema(ingest_env):
+    """full_replace validates declared-vs-stored schema (type change rejected)."""
+    env = ingest_env
+    ds = env["datastore_id"]
+
+    # First full_replace: establishes schema with id:int64, label:string.
+    r1 = await env["client"].post(
+        f"/api/v1/lake/{ds}/ingest/sessions",
+        json={
+            "mode": "full_replace",
+            "table_name": "strictTable",
+            "schema": [{"name": "id", "type": "int64"}, {"name": "label", "type": "string"}],
+            "idempotency_key": str(uuid.uuid4()),
+        },
+        headers=env["headers"],
+    )
+    assert r1.status_code == 201
+    sid1 = r1.json()["session_id"]
+    pq1 = _build_parquet([{"id": 1, "label": "a"}])
+    e1 = await _upload_part(env["client"], env["headers"], ds, sid1, pq1)
+    await _commit_session(
+        env["client"], env["headers"], ds, sid1,
+        {"files": [e1], "row_counts": {"part0.parquet": 1}},
+    )
+
+    # Second full_replace: changes label type from string to int64 — must be rejected.
+    r2 = await env["client"].post(
+        f"/api/v1/lake/{ds}/ingest/sessions",
+        json={
+            "mode": "full_replace",
+            "table_name": "strictTable",
+            "schema": [{"name": "id", "type": "int64"}, {"name": "label", "type": "int64"}],
+            "idempotency_key": str(uuid.uuid4()),
+        },
+        headers=env["headers"],
+    )
+    assert r2.status_code == 201
+    sid2 = r2.json()["session_id"]
+    pq2 = _build_parquet([{"id": 2, "label": 99}])
+    e2 = await _upload_part(env["client"], env["headers"], ds, sid2, pq2)
+    r_commit = await env["client"].post(
+        f"/api/v1/lake/{ds}/ingest/sessions/{sid2}/commit",
+        json={"files": [e2], "row_counts": {"part0.parquet": 1}},
+        headers=env["headers"],
+    )
+    assert r_commit.status_code == 409, r_commit.text
+    assert r_commit.json()["error"]["code"] == "schema_incompatible"

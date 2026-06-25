@@ -425,3 +425,110 @@ class TestExportLake:
         )
         assert resp.status_code == 400
         assert resp.json()["error"]["code"] == "invalid_format"
+
+
+# ---------------------------------------------------------------------------
+# Regression tests — Bug 1: table-name SQL injection (CRITICAL)
+# ---------------------------------------------------------------------------
+
+
+class TestTableNameValidation:
+    """Regression tests for Bug 1: unvalidated `table` parameter SQL injection.
+
+    A single quote, semicolon, read_csv payload, path traversal, or other
+    dangerous characters in `table` must be rejected with 400/404 BEFORE any
+    DuckDB call — the injected string must never touch the SQL engine.
+    """
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("bad_table", [
+        "orders'--",                          # single quote breaks string literal
+        "orders; DROP TABLE x",               # semicolon + DDL injection
+        "../../../etc/passwd",                # path traversal via ..
+        "read_csv('/etc/passwd')",            # DuckDB file-read function payload
+        "orders\x00null",                     # null byte
+        "orders orders",                      # space (path-splittable)
+        "orders/subdir",                      # slash (path traversal)
+        "or'ders",                            # embedded quote
+    ])
+    async def test_invalid_table_name_rejected(self, lake_client, bad_table):
+        """Table names with unsafe chars are rejected with 400 (invalid_table_name)."""
+        ac, alice_id, org_id, repo, ds_id, dest_dir, table_name = lake_client
+        resp = await ac.post(
+            f"/api/v1/lake/{ds_id}/export",
+            json={"dest_uri": f"file://{dest_dir}", "table": bad_table},
+            headers=_auth_headers(alice_id),
+        )
+        assert resp.status_code in (400, 422), (
+            f"Expected 400/422 for table={bad_table!r}, got {resp.status_code}: {resp.text}"
+        )
+
+    @pytest.mark.asyncio
+    async def test_table_not_in_lake_returns_404(self, lake_client):
+        """A syntactically valid but non-existent table name returns 404."""
+        ac, alice_id, org_id, repo, ds_id, dest_dir, table_name = lake_client
+        resp = await ac.post(
+            f"/api/v1/lake/{ds_id}/export",
+            json={"dest_uri": f"file://{dest_dir}", "table": "nonexistent_table"},
+            headers=_auth_headers(alice_id),
+        )
+        assert resp.status_code == 404, resp.text
+        assert resp.json()["error"]["code"] == "table_not_found"
+
+    @pytest.mark.asyncio
+    async def test_valid_table_name_accepted(self, lake_client):
+        """A safe table name that exists in the lake exports successfully."""
+        ac, alice_id, org_id, repo, ds_id, dest_dir, table_name = lake_client
+        resp = await ac.post(
+            f"/api/v1/lake/{ds_id}/export",
+            json={"dest_uri": f"file://{dest_dir}", "table": table_name},
+            headers=_auth_headers(alice_id),
+        )
+        assert resp.status_code == 200, resp.text
+        assert resp.json()["tables_exported"] == 1
+
+
+# ---------------------------------------------------------------------------
+# Regression tests — Bug 2: dest_uri overlap with source lake
+# ---------------------------------------------------------------------------
+
+
+class TestDestUriOverlapValidation:
+    """Regression tests for Bug 2: dest_uri pointing into the managed-lake prefix."""
+
+    @pytest.mark.asyncio
+    async def test_dest_inside_source_lake_rejected(self, lake_client, monkeypatch):
+        """dest_uri that resolves to/under the source lake prefix → 400."""
+        import os
+        ac, alice_id, org_id, repo, ds_id, dest_dir, table_name = lake_client
+
+        from app.lakehouse.managed import lake_prefix, resolve_central_storage
+        from app.config import get_settings
+        get_settings.cache_clear()
+        central = resolve_central_storage()
+        if central is None:
+            pytest.skip("Central storage not configured — skipping overlap test")
+
+        prefix = lake_prefix(org_id, ds_id)
+        # Build a dest_uri that points directly into the source lake prefix.
+        source_lake_uri = f"{central.base_uri()}/{prefix.lstrip('/')}"
+        resp = await ac.post(
+            f"/api/v1/lake/{ds_id}/export",
+            json={"dest_uri": source_lake_uri},
+            headers=_auth_headers(alice_id),
+        )
+        assert resp.status_code == 400, (
+            f"Expected 400 for dest inside source lake, got {resp.status_code}: {resp.text}"
+        )
+        assert resp.json()["error"]["code"] == "invalid_dest_uri"
+
+    @pytest.mark.asyncio
+    async def test_dest_outside_source_lake_accepted(self, lake_client):
+        """dest_uri outside the source lake prefix is allowed (normal export)."""
+        ac, alice_id, org_id, repo, ds_id, dest_dir, table_name = lake_client
+        resp = await ac.post(
+            f"/api/v1/lake/{ds_id}/export",
+            json={"dest_uri": f"file://{dest_dir}"},
+            headers=_auth_headers(alice_id),
+        )
+        assert resp.status_code == 200, resp.text

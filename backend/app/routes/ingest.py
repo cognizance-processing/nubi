@@ -122,9 +122,44 @@ router = APIRouter(prefix="/lake", tags=["ingest"])
 
 _VALID_MODES = {"full_replace", "append"}
 
-# Partition component: printable chars, no slashes (single-level key segment).
-# E.g. "dt=2026-06-25", "region=za", "year=2026".
-_PARTITION_RE = re.compile(r"^[\w=\-\.]+$")
+# Partition component: safe single-level or multi-level key segment.
+# Each slash-separated component must start with a word character (not a dot)
+# so that '.' and '..' are structurally impossible.
+# E.g. "dt=2026-06-25", "region=za", "year=2026/month=06".
+_PARTITION_SEG_RE = re.compile(r"^\w[\w\-\.=]*$")
+
+
+def _validate_partition(partition: str) -> None:
+    """Validate a producer-supplied partition value.
+
+    Splits on '/' and applies per-segment rules:
+      - Each segment must match ``^\\w[\\w\\-\\.=]*$`` (starts with word char,
+        not a dot, so '.' and '..' are impossible).
+      - Explicitly rejects any segment equal to '.' or '..'.
+      - Rejects any segment containing '..' as a substring.
+    Raises ``AppError("invalid_partition", ..., 400)`` on violation.
+    """
+    segs = partition.split("/")
+    for seg in segs:
+        if not seg:
+            raise AppError(
+                "invalid_partition",
+                "partition must not contain empty segments.",
+                400,
+            )
+        if seg in (".", "..") or ".." in seg:
+            raise AppError(
+                "invalid_partition",
+                f"partition segment {seg!r} is not allowed (path traversal).",
+                400,
+            )
+        if not _PARTITION_SEG_RE.match(seg):
+            raise AppError(
+                "invalid_partition",
+                f"partition segment {seg!r} contains disallowed characters. "
+                "Each segment must start with a letter/digit/underscore.",
+                400,
+            )
 
 # Part relative path: must be a non-empty sequence of safe path segments.
 # No double-dots, no absolute start, no control chars.
@@ -396,11 +431,25 @@ def _build_promote_callable(
     # Normalise table_key to a slash-separated path (dots → slashes).
     table_path = table_key.replace(".", "/").strip("/")
 
+    import posixpath  # noqa: PLC0415
+
     def _final_key(staged_rel: str) -> str:
         leaf = staged_rel.rsplit("/", 1)[-1]
         if partition:
-            return f"{prefix}{table_path}/{partition}/{leaf}"
-        return f"{prefix}{table_path}/{leaf}"
+            candidate = f"{prefix}{table_path}/{partition}/{leaf}"
+        else:
+            candidate = f"{prefix}{table_path}/{leaf}"
+        # Belt-and-suspenders: normalise and assert the key stays under the
+        # server-pinned datastore prefix.  A crafted partition or table_key
+        # that somehow survived earlier validation cannot escape the prefix.
+        normalised = posixpath.normpath(candidate)
+        if not normalised.startswith(prefix.rstrip("/")):
+            raise AppError(
+                "invalid_partition",
+                "path_escape: resolved key escapes the datastore prefix.",
+                400,
+            )
+        return candidate
 
     return client, _final_key
 
@@ -472,6 +521,7 @@ def _session_response(record: dict[str, Any]) -> dict[str, Any]:
         "run_id": record["run_id"],
         "datastore_id": record["datastore_id"],
         "mode": record["mode"],
+        "table_name": record.get("table_name", "default"),
         "partition": record.get("partition"),
         "schema": record.get("schema", []),
         "state": record["state"],
@@ -551,13 +601,7 @@ async def open_ingest_session(
     partition = body.get("partition")
     if partition is not None:
         partition = str(partition).strip()
-        if not _PARTITION_RE.match(partition):
-            raise AppError(
-                "invalid_partition",
-                "partition must be a single safe key segment "
-                "(e.g. 'dt=2026-06-25'). No slashes.",
-                400,
-            )
+        _validate_partition(partition)
     if mode == "append" and not partition:
         raise AppError(
             "missing_partition",
@@ -567,6 +611,12 @@ async def open_ingest_session(
 
     schema_raw = body.get("schema") or []
     schema = _validate_schema(schema_raw)
+
+    # Optional table name: scopes the schema sidecar + lake prefix to a named
+    # table within the datastore.  Defaults to "default" for backward compat.
+    table_name = str(body.get("table_name") or "").strip() or "default"
+    # Validate: must be a safe single segment (no slashes, no dots-traversal).
+    _validate_partition(table_name)  # reuse the same per-segment rules
 
     idempotency_key = str(body.get("idempotency_key") or "").strip()
     if not idempotency_key:
@@ -599,6 +649,7 @@ async def open_ingest_session(
         schema=schema,
         partition=partition or None,
         run_id=run_id,
+        table_name=table_name,
     )
 
     staging = _get_staging_area(org_id, run_id)
@@ -889,17 +940,24 @@ async def _do_commit(
             422,
         ) from exc
 
-    # -- Schema evolution check (append mode) ----------------------------------
-    # We use the object_name = datastore_id + "_" + session-inferred table.
-    # Since the ingest API is table-centric via object_name in commit, we use
-    # a stable table key derived from the session's schema column names.
-    # The table key is stored alongside the schema sidecar.
-    # For simplicity: the table key = datastore_id (one schema per datastore).
-    # Producers who need multi-table should use separate datastores.
-    table_key = datastore_id
+    # -- Derive per-table key -------------------------------------------------
+    # table_name is set at session-open (defaults to "default").  It scopes
+    # both the schema sidecar slot and the lake storage prefix to the named
+    # table, allowing multiple tables to coexist within one datastore.
+    table_key = record.get("table_name") or "default"
+
+    # -- Schema evolution check ------------------------------------------------
+    # append: reject narrowing (remove / type-change).
+    # full_replace: validate declared schema matches stored schema if present.
+    existing_schema = _load_table_schema(org_id, datastore_id, table_key)
     if mode == "append":
-        existing_schema = _load_table_schema(org_id, datastore_id, table_key)
         if existing_schema:
+            _check_schema_compatible(existing_schema, schema, partition)
+    elif mode == "full_replace":
+        if existing_schema and schema:
+            # For full_replace, just verify declared schema is consistent with
+            # what was previously declared (prevents silent schema divergence
+            # across full-replace cycles).
             _check_schema_compatible(existing_schema, schema, partition)
 
     # -- Promote staged objects into the lake ---------------------------------
@@ -927,8 +985,18 @@ async def _do_commit(
     # module docstring).  The window between promote-done and sweep-done is
     # visible on concurrent reads — object stores have no multi-object atomicity.
     if mode == "full_replace":
+        from app.lakehouse.managed import lake_prefix  # noqa: PLC0415
+
+        _ds_prefix = lake_prefix(org_id, datastore_id)
+        _nubi_prefix = f"{_ds_prefix}_nubi/"
         existing_keys = _list_table_objects(org_id, datastore_id, table_key)
-        stale_keys = [k for k in existing_keys if k not in promoted_keys]
+        stale_keys = [
+            k for k in existing_keys
+            if k not in promoted_keys
+            # Belt-and-suspenders: NEVER delete the schema sidecar or session
+            # sidecars under _nubi/ regardless of table scope.
+            and not k.startswith(_nubi_prefix)
+        ]
         if stale_keys:
             _delete_keys(org_id, datastore_id, stale_keys)
             logger.info(

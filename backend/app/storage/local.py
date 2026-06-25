@@ -57,10 +57,25 @@ class LocalStorageClient(StorageClient):
     # ------------------------------------------------------------------
 
     def _abs(self, key: str) -> str:
-        """Return the absolute filesystem path for *key*."""
-        # Prevent path traversal
+        """Return the absolute filesystem path for *key*.
+
+        Normalises the joined path and asserts it stays under ``self._root``
+        to prevent path-traversal attacks (e.g. ``../../etc/passwd``).
+        Raises ``ValueError`` if the resolved path escapes the root.
+        """
         key = key.lstrip("/")
-        return os.path.join(self._root, key)
+        joined = os.path.join(self._root, key)
+        # normpath collapses '..' components without touching the filesystem,
+        # so it is safe to call even before the path exists.
+        normalised = os.path.normpath(joined)
+        root_norm = os.path.normpath(self._root)
+        # Ensure the normalised path is the root itself or a child of it.
+        if normalised != root_norm and not normalised.startswith(root_norm + os.sep):
+            raise ValueError(
+                f"Storage key {key!r} escapes the storage root. "
+                "Path traversal is not allowed."
+            )
+        return normalised
 
     def _ensure_parent(self, path: str) -> None:
         """Create parent directories for *path* if they do not exist."""

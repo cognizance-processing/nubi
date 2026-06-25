@@ -926,22 +926,51 @@ def _select_backend(
 
     # Custody capability 4: transparent query-cache encryption at rest.
     # Lazy import guards against any circular-import risk at module load time.
+    #
+    # FAIL-CLOSED (Bug 3 fix): when a cache encryption key IS configured but
+    # the EncryptedCache wrapper cannot be constructed (bad/short base64 key,
+    # import error, etc.), we MUST NOT silently fall back to plaintext — that
+    # would defeat the custody guarantee the operator asked for.  Instead we
+    # raise a clear RuntimeError naming the misconfig so the process fails to
+    # start rather than running with unencrypted cache storage.
+    #
+    # The "no key configured" path (enc_key is empty / falsy) still returns
+    # the plain inner backend — that is correct and intentional.
+    enc_key: str = ""
     try:
         from app.lakehouse.custody import cache_encryption_key  # noqa: PLC0415
 
         enc_key = cache_encryption_key()
-        if enc_key:
-            from app.connectors.cache_encryption import EncryptedCache  # noqa: PLC0415
-
-            logger.info("cache: encryption at rest enabled (AES-256-GCM + per-tenant AAD)")
-            return EncryptedCache(inner, enc_key)
-    except Exception as exc:  # noqa: BLE001 — never let encryption config break the cache
+    except Exception as exc:  # noqa: BLE001 — import / call failure
+        # If we cannot even determine whether a key is set, treat as "no key"
+        # (custody module not present → not a custody deployment).
         logger.warning(
-            "cache: failed to initialise encryption wrapper; falling back to plaintext: %s",
+            "cache: could not read cache_encryption_key(); treating as no-key: %s",
             exc,
         )
+        return inner
 
-    return inner
+    if not enc_key:
+        # No encryption key configured — return plain backend (correct path).
+        return inner
+
+    # Encryption key IS configured — wrapper must succeed or we fail closed.
+    try:
+        from app.connectors.cache_encryption import EncryptedCache  # noqa: PLC0415
+
+        logger.info("cache: encryption at rest enabled (AES-256-GCM + per-tenant AAD)")
+        return EncryptedCache(inner, enc_key)
+    except Exception as exc:
+        # Key was set but EncryptedCache could not be initialised (malformed
+        # key, wrong length, cryptography library missing, etc.).  Raising here
+        # fails the process startup rather than running with a plaintext cache
+        # that the operator explicitly opted out of.
+        raise RuntimeError(
+            f"cache: NUBI_CACHE_ENCRYPTION_KEY is set but the encryption "
+            f"wrapper could not be initialised — refusing to start with an "
+            f"unencrypted cache.  Fix or remove NUBI_CACHE_ENCRYPTION_KEY.  "
+            f"Underlying error: {exc}"
+        ) from exc
 
 
 def _get_memory_singleton(

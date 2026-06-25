@@ -642,9 +642,15 @@ def get_provider(repo: Repo) -> ManagedLakehouseProvider | None:
     * ``prefix`` (default) — :class:`PrefixIsolatedProvider`: per-datastore key
       prefix in the central bucket.
     * ``dedicated`` — :class:`~app.lakehouse.dedicated.DedicatedBucketProvider`:
-      a deployer-owned bucket per managed datastore.  Only used when the custody
-      tier is enabled AND the module is present; any import/availability failure
-      degrades safely back to the prefix provider so the lakehouse never breaks.
+      a deployer-owned bucket per managed datastore.  Only reaches this branch
+      when custody is enabled AND ``NUBI_LAKEHOUSE_PROVIDER=dedicated`` is
+      explicitly set.  Construction failures are **fatal** (fail-closed): a
+      deployer who explicitly requested dedicated isolation must NOT silently
+      receive the weaker prefix model.  Only a genuine ``ImportError`` (the
+      module is absent in an OSS build where custody was never compiled) may
+      downgrade — but in practice ``lakehouse_provider_kind()`` already returns
+      ``"prefix"`` unless custody is enabled, so reaching here means the module
+      must be present.
     """
     central = resolve_central_storage()
     if central is None:
@@ -652,15 +658,28 @@ def get_provider(repo: Repo) -> ManagedLakehouseProvider | None:
     from app.lakehouse.custody import lakehouse_provider_kind  # noqa: PLC0415
 
     if lakehouse_provider_kind() == "dedicated":
+        # Fail closed: the deployer explicitly requested dedicated isolation.
+        # Any construction failure must propagate — silently falling back to the
+        # prefix provider would give weaker-than-requested isolation without any
+        # visible signal.
         try:
             from app.lakehouse.dedicated import DedicatedBucketProvider  # noqa: PLC0415
-
-            return DedicatedBucketProvider(repo, central)
-        except Exception:  # noqa: BLE001 — never break provisioning on a bad provider
+        except ImportError:
+            # The dedicated module is genuinely absent (OSS build without the
+            # custody tier compiled in).  This is the only downgrade we permit.
             logger.warning(
-                "custody: dedicated provider unavailable, falling back to prefix",
+                "custody: dedicated module absent (OSS build?), falling back to prefix",
                 exc_info=True,
             )
+            return PrefixIsolatedProvider(repo, central)
+
+        # Any error constructing the provider is a deployment misconfiguration —
+        # let it propagate rather than silently weakening isolation.
+        logger.debug("custody: constructing DedicatedBucketProvider")
+        provider = DedicatedBucketProvider(repo, central)
+        logger.info("custody: using DedicatedBucketProvider (dedicated isolation)")
+        return provider
+
     return PrefixIsolatedProvider(repo, central)
 
 

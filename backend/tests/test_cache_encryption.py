@@ -315,3 +315,109 @@ def test_invalidate_all_delegates():
     n = enc.invalidate_all()
     assert n == 2
     assert enc.size() == 0
+
+
+# ---------------------------------------------------------------------------
+# Regression tests — Bug 3: cache encryption fail-CLOSED on misconfig
+# ---------------------------------------------------------------------------
+
+
+def test_bad_base64_key_raises_on_get_cache(monkeypatch):
+    """With a BAD base64 key + custody enabled, get_cache() RAISES (fail-closed).
+
+    The operator configured NUBI_CACHE_ENCRYPTION_KEY but it is not valid
+    base64.  The previous (buggy) code silently returned a plaintext backend;
+    the fix must raise RuntimeError so the process fails to start rather than
+    running with unencrypted cache storage.
+    """
+    # Set a clearly invalid (not base64) key.
+    monkeypatch.setenv("NUBI_CACHE_ENCRYPTION_KEY", "!!!not-valid-base64!!!")
+    monkeypatch.setenv("NUBI_CUSTODY_ENABLED", "true")
+
+    from app.config import get_settings
+    get_settings.cache_clear()
+    reset_cache_for_tests()
+
+    from app.connectors.cache import get_cache
+    with pytest.raises((RuntimeError, ValueError)):
+        get_cache()
+
+    # Cleanup.
+    reset_cache_for_tests()
+    get_settings.cache_clear()
+
+
+def test_wrong_length_key_raises_on_get_cache(monkeypatch):
+    """With a key that decodes to wrong length + custody enabled, get_cache() RAISES.
+
+    A 16-byte (128-bit) key is NOT a valid AES-256 key.  The fix must raise
+    rather than return a plaintext backend.
+    """
+    # 16-byte key → valid base64 but wrong length for AES-256.
+    short_key = base64.b64encode(secrets.token_bytes(16)).decode()
+    monkeypatch.setenv("NUBI_CACHE_ENCRYPTION_KEY", short_key)
+    monkeypatch.setenv("NUBI_CUSTODY_ENABLED", "true")
+
+    from app.config import get_settings
+    get_settings.cache_clear()
+    reset_cache_for_tests()
+
+    from app.connectors.cache import get_cache
+    with pytest.raises((RuntimeError, ValueError)):
+        get_cache()
+
+    # Cleanup.
+    reset_cache_for_tests()
+    get_settings.cache_clear()
+
+
+def test_no_key_with_custody_enabled_returns_plain_backend(monkeypatch):
+    """No key + custody enabled → plain backend (encryption is opt-in, not forced).
+
+    When NUBI_CUSTODY_ENABLED=true but no NUBI_CACHE_ENCRYPTION_KEY is set,
+    the cache runs without encryption (operator didn't ask for it).
+    This is the correct "key not configured" path.
+    """
+    monkeypatch.delenv("NUBI_CACHE_ENCRYPTION_KEY", raising=False)
+    monkeypatch.setenv("NUBI_CUSTODY_ENABLED", "true")
+
+    from app.config import get_settings
+    get_settings.cache_clear()
+    reset_cache_for_tests()
+
+    from app.connectors.cache import get_cache
+    cache = get_cache()
+
+    # Must NOT be an EncryptedCache (no key → plain backend).
+    assert not isinstance(cache, EncryptedCache), (
+        "With no encryption key, get_cache() must NOT return an EncryptedCache"
+    )
+
+    # Values stored as-is (not encrypted).
+    payload = b"plain_payload"
+    cache.put("plain_test_key", payload)
+    assert cache.get("plain_test_key") == payload
+
+    reset_cache_for_tests()
+    get_settings.cache_clear()
+
+
+def test_no_custody_returns_plain_backend(monkeypatch):
+    """No custody → plain backend regardless of any stale key env.
+
+    When NUBI_CUSTODY_ENABLED is false or absent, cache_encryption_key()
+    returns "" → plain backend (the "no key configured" path).
+    """
+    monkeypatch.delenv("NUBI_CACHE_ENCRYPTION_KEY", raising=False)
+    monkeypatch.delenv("NUBI_CUSTODY_ENABLED", raising=False)
+
+    from app.config import get_settings
+    get_settings.cache_clear()
+    reset_cache_for_tests()
+
+    from app.connectors.cache import get_cache
+    cache = get_cache()
+    assert not isinstance(cache, EncryptedCache)
+
+    reset_cache_for_tests()
+    get_settings.cache_clear()

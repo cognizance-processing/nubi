@@ -2,13 +2,26 @@
 
 Two encryption postures:
 
-* ``client`` — AES-256-GCM app-layer envelope encryption.  Objects are encrypted
-  with a deployer-held key derived from ``NUBI_CMEK_KEY_MATERIAL`` (base64, 32
-  bytes) BEFORE upload and decrypted on read.  The storage backend (bucket) never
-  sees plaintext.  A random 12-byte nonce is prepended to every ciphertext so
-  repeated encryptions of the same plaintext produce distinct blobs.
+* ``client`` — AES-256-GCM app-layer envelope encryption.  The crypto layer is
+  fully implemented (AES-256-GCM, random 12-byte nonce prepended, AAD binding).
 
-  Wire format::
+  **IMPORTANT — fail-closed status**: ``client`` mode is implemented here at the
+  cryptographic layer only.  It is NOT yet wired into the lake read path: the
+  query engine (DuckDB) reads lake objects directly from storage and cannot
+  decrypt app-layer blobs.  Writing encrypted objects that DuckDB then reads as
+  raw parquet would cause silent data corruption.
+
+  To prevent this, :class:`~app.lakehouse.dedicated.DedicatedBucketProvider`
+  **rejects** ``client`` mode at provision time with
+  ``ManagedLakehouseError("cmek_client_unsupported", ..., 501)`` (fail-closed).
+  No encrypted bytes are ever written to the lake.
+
+  This code is retained so that a future end-to-end decrypt path (e.g. a
+  proxy-layer or a custom DuckDB extension) can reuse the crypto primitives
+  without another review cycle.  Until that path exists, client mode must not be
+  enabled for lake writes.
+
+  Wire format (for reference)::
 
       | 12 bytes nonce | GCM ciphertext+tag (variable) |
 
@@ -19,7 +32,8 @@ Two encryption postures:
 
 * ``kms`` — the bucket's default CMEK/KMS key handles encryption at the storage
   layer (GCS ``default_kms_key_name`` / S3 SSE-KMS).  ``encrypt``/``decrypt`` are
-  identity operations here — the key never touches app memory.
+  identity operations here — the key never touches app memory.  **This is the
+  supported customer-managed-key mode for the dedicated-bucket provider.**
 
 * ``none`` — no app-layer encryption; bucket-level (AES-256 at-rest) only.
   ``encrypt``/``decrypt`` are identity.

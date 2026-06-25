@@ -39,10 +39,14 @@ Three modes, selected by ``NUBI_CMEK_MODE``:
   The KMS key resource name is recorded on ``config.cmek_key_id`` for audit.
   **Operator note**: the key IAM grant must include the service account that
   writes objects; see cloud provider docs for the CMEK service-account requirement.
-* ``client`` — app-layer AES-256-GCM envelope encryption via
-  :mod:`app.lakehouse.cmek`.  Objects are encrypted before upload and decrypted
-  after download so the storage backend never sees plaintext.  The deployer holds
-  the key (``NUBI_CMEK_KEY_MATERIAL``); Nubi never stores it.
+* ``client`` — **NOT SUPPORTED for this provider (fail-closed).**  App-layer
+  AES-256-GCM encryption is implemented at the crypto layer
+  (:mod:`app.lakehouse.cmek`) but is NOT wired into the lake read path: the
+  query engine (DuckDB) reads lake objects directly from storage and cannot
+  decrypt app-layer blobs.  Calling :meth:`provision` with ``client`` mode
+  raises :class:`~app.lakehouse.managed.ManagedLakehouseError` with code
+  ``cmek_client_unsupported`` and HTTP 501.  Use ``kms`` for
+  customer-managed keys, or ``none`` for bucket-default AES-256 at-rest.
 
 Storage backends
 ----------------
@@ -430,12 +434,31 @@ class DedicatedBucketProvider(ManagedLakehouseProvider):
         return cfg
 
     def _central_secret(self) -> dict[str, Any]:
-        """Central creds shaped for the secret store."""
+        """Central creds shaped for the secret store.
+
+        Persists the full non-default credential set needed to reconstruct the
+        storage client on a worker that has no ambient env credentials.  All
+        fields are optional — only non-empty values are included so the secret
+        stays minimal.  This mirrors what PrefixIsolatedProvider stores.
+        """
         c = self._central.creds
-        secret: dict[str, Any] = {}
-        if c.get("aws_secret_access_key"):
-            secret["aws_secret_access_key"] = c["aws_secret_access_key"]
-        return secret
+        # Keys that a worker needs to rebuild an S3/MinIO/GCS client.
+        _PERSIST_KEYS = (
+            "aws_access_key_id",
+            "aws_secret_access_key",
+            "endpoint_url",
+            "region_name",
+            # GCS service-account JSON fields (if present as flat keys).
+            "type",
+            "project_id",
+            "private_key_id",
+            "private_key",
+            "client_email",
+            "client_id",
+            "auth_uri",
+            "token_uri",
+        )
+        return {k: v for k in _PERSIST_KEYS if (v := c.get(k))}  # type: ignore[misc]
 
     # ------------------------------------------------------------------
     # Provision
@@ -457,9 +480,24 @@ class DedicatedBucketProvider(ManagedLakehouseProvider):
 
         from app.lakehouse.custody import cmek_key_uri, cmek_mode, lake_region  # noqa: PLC0415
 
+        cmek_mode_val = cmek_mode()
+        # Fail closed: client-mode CMEK is not yet wired into the lake read
+        # path (DuckDB cannot decrypt app-layer blobs).  Reject immediately so
+        # no encrypted-but-unreadable objects are ever written.
+        if cmek_mode_val == "client":
+            raise ManagedLakehouseError(
+                "cmek_client_unsupported",
+                (
+                    "Client-held-key CMEK (mode='client') is not yet supported "
+                    "for query/ingest because the lake is read directly by the "
+                    "engine (DuckDB cannot decrypt app-layer blobs). "
+                    "Use mode='kms' for customer-managed keys, or 'none'."
+                ),
+                501,
+            )
+
         datastore_id = str(_uuid.uuid4())
         region = lake_region()
-        cmek_mode_val = cmek_mode()
         kms_key = cmek_key_uri() if cmek_mode_val == "kms" else ""
 
         bucket_root = self._dedicated_root(org_id, datastore_id)
@@ -590,10 +628,12 @@ class DedicatedBucketProvider(ManagedLakehouseProvider):
     def _export_demo(self, org_id: str, datastore_id: str) -> dict[str, str]:
         """Write demo parquet under the dedicated bucket's lake prefix.
 
-        Objects are encrypted before upload when CMEK ``client`` mode is active
-        (the CMEK provider wraps the raw parquet bytes).  Idempotent — skips
-        tables already present (existence check uses the plaintext-keyed path;
-        the encrypted blob is opaque to the existence check).
+        Writes raw (unencrypted) parquet bytes so the query engine (DuckDB) can
+        read them directly.  CMEK ``client`` mode is rejected at :meth:`provision`
+        time (fail-closed) before seed ever runs, so this path only executes for
+        ``none`` and ``kms`` modes — both of which store plaintext from the app's
+        perspective (``kms`` encryption is transparent at the storage layer).
+        Idempotent — skips tables already present.
         """
         import io  # noqa: PLC0415
 
@@ -601,9 +641,6 @@ class DedicatedBucketProvider(ManagedLakehouseProvider):
 
         from seed_data.generators import DATASET_TABLES, build_dataset  # noqa: PLC0415
 
-        from app.lakehouse.cmek import get_cmek_provider  # noqa: PLC0415
-
-        cmek = get_cmek_provider()
         bucket_root = self._dedicated_root(org_id, datastore_id)
         client = self._storage_for_bucket(bucket_root)
         prefix = lake_prefix(org_id, datastore_id)
@@ -620,9 +657,9 @@ class DedicatedBucketProvider(ManagedLakehouseProvider):
                 buf = io.BytesIO()
                 pq.write_table(built[table], buf)
                 raw = buf.getvalue()
-                # Encrypt before upload (AAD = storage key path for binding).
-                blob = cmek.encrypt(raw, aad=key.encode())
-                client.upload_bytes(blob, key)
+                # Upload raw bytes — no app-layer encryption.  The engine reads
+                # these objects directly; encrypting them here would corrupt reads.
+                client.upload_bytes(raw, key)
                 written[table] = key
         return written
 

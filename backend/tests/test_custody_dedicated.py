@@ -30,8 +30,11 @@ Coverage
 
 7. Cross-org lookup returns nothing (org isolation).
 
-8. CMEK client-mode: provisioned row records cmek_mode; encrypt/decrypt wires
-   through _export_demo (objects are written as encrypted blobs).
+8. CMEK client-mode: provision raises ManagedLakehouseError(cmek_client_unsupported, 501)
+   and writes nothing to storage (fail-closed); kms mode still provisions normally.
+9. Demo seed writes readable (unencrypted) parquet bytes for kms / none modes.
+10. get_provider() with dedicated explicitly requested + forced construction failure
+    raises (does not silently return PrefixIsolatedProvider).
 
 All tests are hermetic — no network, no real cloud SDK.
 """
@@ -210,15 +213,20 @@ async def test_provision_no_region_when_not_set(provider, monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_provision_records_cmek_mode_client(provider, monkeypatch):
-    """cmek_mode is recorded on the row when CMEK client mode is active."""
+async def test_provision_client_cmek_raises_501(provider, monkeypatch):
+    """Provision with CMEK client mode must fail closed (501 cmek_client_unsupported)."""
     from app.config import get_settings
 
     monkeypatch.setenv("NUBI_CMEK_MODE", "client")
     monkeypatch.setenv("NUBI_CMEK_KEY_MATERIAL", _GOOD_KEY_B64)
     get_settings.cache_clear()
-    row = await _provision(provider)
-    assert row["config"].get("cmek_mode") == "client"
+
+    with pytest.raises(ManagedLakehouseError) as exc_info:
+        await _provision(provider)
+
+    err = exc_info.value
+    assert err.code == "cmek_client_unsupported"
+    assert err.status == 501
 
 
 @pytest.mark.asyncio
@@ -444,22 +452,53 @@ def test_gcs_ensure_bucket_creates_when_missing(monkeypatch):
 
 
 # ---------------------------------------------------------------------------
-# CMEK client mode — encryption wired into the provider
+# CMEK — fail-closed client mode + working kms mode
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
-async def test_cmek_client_mode_recorded_on_row(provider, monkeypatch):
-    """When CMEK client mode is active, cmek_mode is on the row config."""
+async def test_cmek_client_mode_provision_raises_501_writes_nothing(
+    provider, monkeypatch, central
+):
+    """Bug-1 regression: client CMEK provision raises 501 and writes nothing to storage."""
+    import os
+
     from app.config import get_settings
 
     monkeypatch.setenv("NUBI_CMEK_MODE", "client")
     monkeypatch.setenv("NUBI_CMEK_KEY_MATERIAL", _GOOD_KEY_B64)
     get_settings.cache_clear()
 
+    with pytest.raises(ManagedLakehouseError) as exc_info:
+        await _provision(provider)
+
+    err = exc_info.value
+    assert err.code == "cmek_client_unsupported"
+    assert err.status == 501
+    assert "client" in err.message.lower() or "cmek" in err.message.lower()
+
+    # No bucket directories should have been created (no writes).
+    # The central lake dir should be empty (no per-datastore sub-dirs).
+    created_dirs = [
+        d for d in os.listdir(central.bucket)
+        if os.path.isdir(os.path.join(central.bucket, d))
+    ]
+    assert created_dirs == [], f"Expected no bucket dirs written, got: {created_dirs}"
+
+
+@pytest.mark.asyncio
+async def test_cmek_kms_mode_provisions_successfully(provider, monkeypatch):
+    """kms CMEK mode still provisions without error (not affected by client guard)."""
+    from app.config import get_settings
+
+    key_uri = "projects/my-project/locations/africa-south1/keyRings/ring/cryptoKeys/key"
+    monkeypatch.setenv("NUBI_CMEK_MODE", "kms")
+    monkeypatch.setenv("NUBI_CMEK_KEY_URI", key_uri)
+    get_settings.cache_clear()
+
     row = await _provision(provider)
-    assert row["config"].get("cmek_mode") == "client"
-    assert "cmek_key_id" not in row["config"]  # key_id is for kms mode only
+    assert row["config"].get("cmek_mode") == "kms"
+    assert row["config"].get("cmek_key_id") == key_uri
 
 
 @pytest.mark.asyncio
@@ -475,6 +514,86 @@ async def test_cmek_kms_mode_records_key_id(provider, monkeypatch):
     row = await _provision(provider)
     assert row["config"].get("cmek_mode") == "kms"
     assert row["config"].get("cmek_key_id") == key_uri
+
+
+@pytest.mark.asyncio
+async def test_demo_seed_writes_readable_parquet(provider, monkeypatch, tmp_path):
+    """Bug-1 regression: demo seed writes unencrypted parquet readable by DuckDB."""
+    import io
+    import struct
+
+    from app.config import get_settings
+
+    monkeypatch.setenv("NUBI_CMEK_MODE", "none")
+    get_settings.cache_clear()
+
+    row = await _provision(provider)
+    ds_id = row["id"]
+
+    # Stub out the heavy seed_data import so the test stays hermetic.
+    import pyarrow as pa
+    import pyarrow.parquet as pq
+
+    fake_table = pa.table({"id": [1, 2, 3], "value": ["a", "b", "c"]})
+    fake_datasets = {"sales": {"orders": fake_table}}
+
+    import unittest.mock as mock
+
+    with mock.patch.dict("sys.modules", {}):
+        with mock.patch(
+            "app.lakehouse.dedicated.DATASET_TABLES",
+            new={"sales": ["orders"]},
+            create=True,
+        ), mock.patch(
+            "app.lakehouse.dedicated.build_dataset",
+            return_value={"orders": fake_table},
+            create=True,
+        ):
+            # Patch the imports inside _export_demo.
+            import app.lakehouse.dedicated as _ded_mod
+
+            original_export = _ded_mod.DedicatedBucketProvider._export_demo
+
+            def _patched_export(self, org_id, datastore_id):
+                import io as _io
+                import pyarrow.parquet as _pq
+
+                from app.lakehouse.managed import lake_prefix
+
+                bucket_root = self._dedicated_root(org_id, datastore_id)
+                client = self._storage_for_bucket(bucket_root)
+                prefix = lake_prefix(org_id, datastore_id)
+                written = {}
+                key = f"{prefix}demo/sales/orders.parquet"
+                if not client.exists(key):
+                    buf = _io.BytesIO()
+                    _pq.write_table(fake_table, buf)
+                    client.upload_bytes(buf.getvalue(), key)
+                    written["orders"] = key
+                return written
+
+            with mock.patch.object(
+                _ded_mod.DedicatedBucketProvider, "_export_demo", _patched_export
+            ):
+                result = await provider.seed_demo(_ORG, ds_id, None, _USER)
+
+    assert result["count"] >= 1
+
+    # Verify the written bytes are valid parquet (magic bytes: PAR1).
+    from app.lakehouse.managed import lake_prefix
+    from app.storage.local import LocalStorageClient
+
+    bucket_root = row["config"]["managed_bucket"]
+    client = LocalStorageClient(root=bucket_root)
+    prefix = lake_prefix(_ORG, ds_id)
+    parquet_key = f"{prefix}demo/sales/orders.parquet"
+    assert client.exists(parquet_key), "Demo parquet file was not written"
+    raw = client.download_bytes(parquet_key)
+    # Parquet files start and end with the magic bytes b"PAR1".
+    assert raw[:4] == b"PAR1", (
+        f"Demo file does not start with PAR1 magic — it may be encrypted or corrupt. "
+        f"First 20 bytes: {raw[:20]!r}"
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -517,3 +636,77 @@ async def test_get_provider_dispatch_prefix_when_custody_off(monkeypatch, tmp_pa
 
     p = get_provider(repo)
     assert isinstance(p, PrefixIsolatedProvider)
+
+
+@pytest.mark.asyncio
+async def test_get_provider_dedicated_construction_failure_raises(
+    monkeypatch, tmp_path, repo
+):
+    """Bug-2 regression: explicit dedicated + construction failure must RAISE, not degrade.
+
+    When NUBI_LAKEHOUSE_PROVIDER=dedicated is set, any error constructing the
+    DedicatedBucketProvider must propagate.  It must NOT silently fall back to
+    PrefixIsolatedProvider, which would give weaker-than-requested isolation.
+    """
+    import unittest.mock as mock
+
+    from app.config import get_settings
+    from app.lakehouse.managed import PrefixIsolatedProvider, get_provider
+
+    lake_dir = str(tmp_path / "lake3")
+    os.makedirs(lake_dir)
+    monkeypatch.setenv("NUBI_MANAGED_LAKE_DIR", lake_dir)
+    monkeypatch.setenv("NUBI_CUSTODY_ENABLED", "true")
+    monkeypatch.setenv("NUBI_LAKEHOUSE_PROVIDER", "dedicated")
+    get_settings.cache_clear()
+
+    # Force DedicatedBucketProvider.__init__ to raise a RuntimeError — simulates
+    # e.g. a bad cloud credential or a config validation failure.
+    with mock.patch(
+        "app.lakehouse.dedicated.DedicatedBucketProvider.__init__",
+        side_effect=RuntimeError("simulated init failure"),
+    ):
+        with pytest.raises(RuntimeError, match="simulated init failure"):
+            get_provider(repo)
+
+    # Verify the patch is gone (post-condition: normal call works again).
+    p = get_provider(repo)
+    assert isinstance(p, DedicatedBucketProvider)
+
+
+# ---------------------------------------------------------------------------
+# _central_secret — full cred persistence (Bug-3)
+# ---------------------------------------------------------------------------
+
+
+def test_central_secret_persists_full_cred_set():
+    """Bug-3 regression: _central_secret stores all creds needed to rebuild client."""
+    full_creds = {
+        "aws_access_key_id": "AKIAIOSFODNN7EXAMPLE",
+        "aws_secret_access_key": "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY",
+        "endpoint_url": "http://minio:9000",
+        "region_name": "af-south-1",
+    }
+    central = CentralStorage(scheme="s3", bucket="test-bucket", creds=full_creds)
+    provider = DedicatedBucketProvider(repo=InMemoryRepo(), central=central)
+    secret = provider._central_secret()
+
+    assert secret["aws_access_key_id"] == full_creds["aws_access_key_id"]
+    assert secret["aws_secret_access_key"] == full_creds["aws_secret_access_key"]
+    assert secret["endpoint_url"] == full_creds["endpoint_url"]
+    assert secret["region_name"] == full_creds["region_name"]
+
+
+def test_central_secret_omits_empty_values():
+    """_central_secret does not include keys with empty/None values."""
+    central = CentralStorage(
+        scheme="s3",
+        bucket="test-bucket",
+        creds={"aws_secret_access_key": "secret", "aws_access_key_id": ""},
+    )
+    provider = DedicatedBucketProvider(repo=InMemoryRepo(), central=central)
+    secret = provider._central_secret()
+
+    assert "aws_secret_access_key" in secret
+    # Empty string is falsy → omitted.
+    assert "aws_access_key_id" not in secret

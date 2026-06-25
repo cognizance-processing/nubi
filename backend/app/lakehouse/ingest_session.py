@@ -95,6 +95,7 @@ class IngestSessionStore:
         schema: list[dict[str, str]],
         partition: str | None,
         run_id: str,
+        table_name: str = "default",
     ) -> dict[str, Any]:
         """Create a new open session.  Must be idempotent via ``idempotency_key``."""
         raise NotImplementedError
@@ -176,6 +177,7 @@ class InMemoryIngestSessionStore(IngestSessionStore):
         schema: list[dict[str, str]],
         partition: str | None,
         run_id: str,
+        table_name: str = "default",
     ) -> dict[str, Any]:
         session_id = str(uuid.uuid4())
         now = self._now()
@@ -188,6 +190,7 @@ class InMemoryIngestSessionStore(IngestSessionStore):
             "idempotency_key": idempotency_key,
             "schema": list(schema),
             "partition": partition,
+            "table_name": table_name,
             "run_id": run_id,
             "state": "open",
             "result": None,

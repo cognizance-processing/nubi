@@ -169,6 +169,40 @@ def _validate_export_sql(sql: str) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Table-name guard (Bug 1 — SQL injection via table parameter)
+# ---------------------------------------------------------------------------
+
+# Only alphanumerics, underscores, hyphens, and dots are allowed.  This
+# rejects quotes, semicolons, slashes, spaces, and any other character that
+# could break out of a DuckDB string literal or path concatenation.
+_SAFE_TABLE_RE = re.compile(r"^[A-Za-z0-9_\-\.]+$")
+
+
+def _validate_table_name(table: str) -> None:
+    """Raise ``AppError("invalid_table_name", …, 400)`` for unsafe table names.
+
+    A table name is safe only when it matches the strict safe-segment regex
+    (``[A-Za-z0-9_-.]`` only) AND is non-empty.  Anything else — quotes,
+    semicolons, slashes, spaces, ``read_csv`` payloads, ``..`` traversal
+    sequences — is rejected before any interpolation occurs.
+
+    Parameters
+    ----------
+    table:
+        The caller-supplied table name from the request body.
+    """
+    if not table:
+        raise AppError("invalid_table_name", "Table name must not be empty.", 400)
+    if not _SAFE_TABLE_RE.match(table):
+        raise AppError(
+            "invalid_table_name",
+            f"Table name contains invalid characters: {table!r}.  "
+            "Only alphanumerics, underscores, hyphens, and dots are permitted.",
+            400,
+        )
+
+
+# ---------------------------------------------------------------------------
 # URI validation
 # ---------------------------------------------------------------------------
 
@@ -185,6 +219,33 @@ def _validate_dest_uri(dest_uri: str) -> None:
             f"dest_uri must be a well-formed storage URI containing '://' "
             f"(e.g. 's3://bucket/prefix/' or 'file:///local/dir/').  "
             f"Got: {dest_uri!r}",
+            400,
+        )
+
+
+def _validate_dest_not_in_source(dest_uri: str, source_base_uri: str) -> None:
+    """Raise ``AppError("invalid_dest_uri", …, 400)`` when dest is inside the source lake.
+
+    Normalises both URIs to their slash-terminated forms and rejects any
+    ``dest_uri`` that resolves to or under the managed-lake source prefix.
+    This prevents an export from overwriting or shadowing source data.
+
+    Parameters
+    ----------
+    dest_uri:
+        The deployer-supplied destination URI.
+    source_base_uri:
+        The full source lake URI (e.g. ``file:///managed/orgs/x/lake/y/``),
+        derived server-side from ``resolve_central_storage()`` + ``lake_prefix``.
+    """
+    # Normalise: ensure trailing slash so ``startswith`` is prefix-safe
+    # (avoids ``file:///lake/a`` matching ``file:///lake/ab/``).
+    dest_norm = dest_uri.rstrip("/") + "/"
+    src_norm = source_base_uri.rstrip("/") + "/"
+    if dest_norm.startswith(src_norm) or src_norm.startswith(dest_norm):
+        raise AppError(
+            "invalid_dest_uri",
+            "Destination must be outside the source lake.",
             400,
         )
 
@@ -611,9 +672,20 @@ async def export_lake(
     if body.sql:
         _validate_export_sql(body.sql)
 
+    # ── Validate table name (if supplied) — Bug 1 fix ────────────────────
+    # Must happen BEFORE any interpolation of body.table into SQL/paths.
+    if body.table:
+        _validate_table_name(body.table)
+
     # ── Resolve managed lake (org-scoped; 404 for cross-org / non-managed) ─
     row = await _resolve_managed_lake(datastore_id, org_id, repo)
     prefix = lake_prefix(org_id, datastore_id)
+
+    # ── Validate dest_uri is not inside the source lake — Bug 2 fix ──────
+    central_for_check = resolve_central_storage()
+    if central_for_check is not None:
+        source_lake_uri = f"{central_for_check.base_uri()}/{prefix.lstrip('/')}"
+        _validate_dest_not_in_source(body.dest_uri, source_lake_uri)
 
     # ── Build the lake connector (secret injection reused from query.py) ───
     connector = await _build_lake_connector(row, org_id, datastore_id)
@@ -684,6 +756,19 @@ async def export_lake(
 
     # ── Export path B: named table ────────────────────────────────────────
     elif body.table:
+        # Membership check: reject table names not present in the lake.
+        # This is a STRONGER guard on top of the regex check above —
+        # an attacker supplying a syntactically-valid but non-existent table
+        # name (e.g. to probe path traversal) gets a 404, not a silent
+        # empty export.  We discover tables here so the check is fresh.
+        available_tables = _discover_tables(org_id, datastore_id)
+        if body.table not in available_tables:
+            raise AppError(
+                "table_not_found",
+                f"Table {body.table!r} not found in this managed lake.  "
+                f"Available tables: {available_tables}",
+                404,
+            )
         result = _export_table_parquet(
             connector, prefix, body.table, body.dest_uri, fmt
         )
