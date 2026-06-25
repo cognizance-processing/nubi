@@ -59,7 +59,12 @@ Dev login: `admin@nubi.dev` / `nubi-admin-2026`.
 | Dashboard sanitizer | `npm run test:dash` | node only |
 | Embed unit tests | `npm run test:embed` | node only (vitest) |
 | Embed E2E | `npm run test:e2e:embed` | node, Playwright; build embed first: `npm run build:embed` |
+| API E2E | `npm run test:e2e:api` | python, live Postgres + DuckDB; requires `RUN_E2E=1` |
 | Full E2E | `bash scripts/e2e.sh` | docker, node, python |
+
+The API E2E suite (`backend/tests/e2e/`) drives a real uvicorn server against
+real Postgres and local parquet files. Gated by `RUN_E2E=1`. Seed the demo
+workspace first: `npm run db:reset:demo`.
 
 The backend conformance suite (`backend/tests/conformance/`) asserts that the
 planner produces golden Arrow output and byte-identical cache keys. It must stay

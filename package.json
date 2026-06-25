@@ -21,6 +21,7 @@
     "test:embed:watch": "vitest --config embed/vitest.config.js",
     "test:e2e": "playwright test",
     "test:e2e:embed": "playwright test --config embed/e2e/playwright.config.js",
+    "test:e2e:api": "cd backend && RUN_E2E=1 python -m pytest tests/e2e -q",
     "screenshots": "node scripts/docs-screenshots.mjs",
     "screenshots:auto": "bash scripts/screenshots.sh"
   },

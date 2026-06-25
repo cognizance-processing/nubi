@@ -89,6 +89,7 @@ into a weird state.
 | Embed E2E      | `npm run test:e2e:embed`                       | node, Playwright (requires the embed bundle built: `npm run build:embed`) |
 | Lint           | `npm run lint`                                 | node only                   |
 | End-to-end     | `bash scripts/e2e.sh`                          | docker, node, python        |
+| API E2E        | `npm run test:e2e:api`                         | python, live Postgres + DuckDB |
 
 `scripts/e2e.sh` is fully self-contained: it starts an ephemeral Postgres
 container on a free port, migrates, seeds the demo workspace, boots both
@@ -101,6 +102,53 @@ SKIP_DOCKER_PG=1 DATABASE_URL=... bash scripts/e2e.sh              # reuse a DB
 
 The same script powers the screenshot pipeline via the `E2E_RUN_CMD` override
 — see [Docs & screenshots](/docs/docs-and-screenshots).
+
+## End-to-end API tests
+
+`backend/tests/e2e/` contains a live HTTP E2E suite that drives a real uvicorn
+process against real Postgres and local parquet files (no mocks, no monkeypatches).
+
+**Pre-requisites**
+
+1. Demo workspace seeded: `npm run db:reset:demo` (one-time; re-run after `db:reset`)
+2. Postgres running (default: `postgresql://nubi:nubi@localhost:5432/nubi`)
+3. `.env` present with `JWT_SECRET` and `NUBI_SECRETS_KEY`
+
+**Run**
+
+```bash
+# Quick
+export RUN_E2E=1
+cd backend && python -m pytest tests/e2e -q
+
+# Or via npm
+npm run test:e2e:api
+```
+
+Without `RUN_E2E=1` the entire suite is skipped with a clear message — safe to
+run in CI pipelines that don't have a live database.
+
+**Coverage** (61 tests)
+
+| File | Area |
+|------|------|
+| `test_auth_tenancy.py` | JWT scopes, org isolation, 401/403/404 |
+| `test_query.py` | Raw SQL (`author:sql` scope), registered queries, Arrow IPC |
+| `test_metric_query.py` | Governed metrics — dimensions, filters, top_n, ordering |
+| `test_explain.py` | Delta/driver analysis, dimension breakdown, RAG arithmetic |
+| `test_kpi_targets.py` | Green/amber/red RAG columns (`_target`, `_vs_target`, `_pct_to_goal`, `_rag`) |
+| `test_webhooks.py` | CRUD, SSRF guard (localhost/RFC1918/cloud-metadata/file/ftp blocked) |
+| `test_provisioning.py` | `/apply` portability bundles — idempotent, dry_run |
+| `test_rls.py` | Row-level security via JWT `policies` claim |
+| `test_watches.py` | Threshold watches — create, evaluate, breach detection |
+
+**Known limitations**
+
+- `retail_nsv`'s `time_dimension.column` (`month`) is a pre-bucketed VARCHAR
+  (`'2025-06'`). DuckDB's `DATE_TRUNC` requires a `DATE`/`TIMESTAMP` input, so
+  `time_grain` on this metric raises a type error. The E2E tests work around
+  this where needed. Fixing the product requires migrating the column to
+  `DATE` type (tracked separately).
 
 ## Conventions
 
