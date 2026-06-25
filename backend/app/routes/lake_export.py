@@ -219,14 +219,54 @@ _NON_SELECT_PATTERNS = re.compile(
 # (multi-statement injection).
 _MULTI_STATEMENT_RE = re.compile(r";\s*\S")
 
+# DuckDB file-access / external-access constructs that turn a bare SELECT into
+# an arbitrary-file-read (and cross-tenant data exfiltration) primitive.
+#
+# The export `sql` path runs the caller's SELECT verbatim inside
+# ``COPY (<sql>) TO ...`` on an in-memory DuckDB connection that holds the
+# central-lake credentials and (for a local-file managed lake) has full host
+# filesystem access.  Without this guard a custody-tenant could write::
+#
+#     SELECT * FROM read_csv('/etc/passwd')
+#     SELECT * FROM read_parquet('file:///managed/orgs/<OTHER_ORG>/lake/**')
+#     SELECT * FROM read_parquet('s3://other-tenant-bucket/**')
+#
+# and read host files or ANOTHER ORG'S lake using the shared credentials.
+#
+# Legitimate `sql` exports are computed/constant SELECTs (no lake-file
+# reference) — to export lake data callers use ``table=`` (path B/C), whose
+# ``read_parquet(...)`` glob is built SERVER-SIDE from the org-pinned prefix and
+# never from caller SQL.  So denying these functions in caller SQL closes the
+# hole without removing any intended capability.
+_FILE_ACCESS_FUNC_RE = re.compile(
+    r"""
+    \b(
+        read_parquet | parquet_scan
+      | read_csv(?:_auto)? | read_csv_auto
+      | read_json(?:_auto)? | read_ndjson(?:_auto)? | read_json_objects
+      | read_text | read_blob
+      | read_xlsx | st_read | st_readosm
+      | glob | parquet_metadata | parquet_schema | parquet_file_metadata
+      | sniff_csv | csv_scan
+      | iceberg_scan | delta_scan
+      | postgres_scan(?:_pushdown)? | sqlite_scan | mysql_scan | mysql_query
+      | postgres_query | sqlite_query
+    )\s*\(
+    """,
+    re.IGNORECASE | re.VERBOSE,
+)
+
 
 def _validate_export_sql(sql: str) -> None:
     """Raise ``AppError("invalid_export_sql", …, 400)`` for unsafe SQL.
 
-    Allowed: a single, bare SELECT statement (including WITH … SELECT, i.e. CTEs).
+    Allowed: a single, bare SELECT statement (including WITH … SELECT, i.e. CTEs)
+    that references NO external files / connectors.
     Rejected: COPY, ATTACH, CREATE, DROP, INSERT, UPDATE, DELETE, REPLACE,
-    PRAGMA, CALL, EXECUTE, SET, multi-statement inputs, or anything that is
-    not a SELECT after stripping comments.
+    PRAGMA, CALL, EXECUTE, SET, multi-statement inputs, any DuckDB file-access
+    / external-scan table function (``read_parquet``, ``read_csv``, ``glob``,
+    ``postgres_scan`` …), or anything that is not a SELECT after stripping
+    comments.
 
     Parameters
     ----------
@@ -265,6 +305,22 @@ def _validate_export_sql(sql: str) -> None:
             "invalid_export_sql",
             f"Export SQL must start with SELECT or WITH (got {first_kw!r}).  "
             "Only bare SELECT statements are accepted.",
+            400,
+        )
+
+    # SECURITY (cross-tenant exfiltration / arbitrary file read): the caller's
+    # SELECT runs inside COPY (<sql>) TO ... on a connection holding the central
+    # lake credentials and (for local-file lakes) full host FS access.  A
+    # file-access table function in the SELECT would read arbitrary files or
+    # another org's lake.  Use ``table=`` to export lake data (server-pinned).
+    m = _FILE_ACCESS_FUNC_RE.search(cleaned)
+    if m is not None:
+        raise AppError(
+            "invalid_export_sql",
+            f"Export SQL must not call file-access or external-scan functions "
+            f"(found {m.group(1)!r}).  To export lake data use the 'table' "
+            "parameter instead — its source path is pinned to your lake "
+            "server-side.  The 'sql' parameter is for computed SELECTs only.",
             400,
         )
 

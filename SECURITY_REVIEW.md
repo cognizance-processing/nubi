@@ -5,6 +5,44 @@ Scope: `feat/embed-bi-substrate` (Waves 1–3 merged into `main`)
 
 ---
 
+## 2026-06-24 — Custody-tier adversarial audit (ingest / export / CMEK / cache / creds)
+
+Independent adversarial pass over the data-custody surface
+(`backend/app/routes/ingest.py`, `routes/lake_export.py`,
+`lakehouse/ingest_session.py`, `lakehouse/staging.py`, `lakehouse/dedicated.py`,
+`lakehouse/cmek.py`, `lakehouse/custody.py`, `connectors/cache_encryption.py`,
+`connectors/duckdb_storage.py`, `connectors/duckdb_conn.py`).
+
+### Findings
+
+| Area | Severity | Exploit | Fix | Test |
+|------|----------|---------|-----|------|
+| **Export `sql` path — arbitrary file read + cross-tenant exfiltration** | **HIGH** | `POST /lake/{id}/export` (and async `/export/jobs`) accepts a `sql` SELECT that is executed verbatim inside `COPY (<sql>) TO …` on an **un-hardened in-memory DuckDB** connection that holds the central-lake credentials and (for a local-file managed lake, via `for_memory()`) full host-FS access. A custody tenant could submit `SELECT * FROM read_csv('/etc/passwd')`, `SELECT * FROM read_parquet('file:///managed/orgs/<OTHER_ORG>/lake/**')`, or `read_parquet('s3://other-tenant-bucket/**')` to read host files or another org's lake using the shared credentials. The prior `_validate_export_sql` only blocked non-SELECT statements — `read_*`/`glob`/`*_scan` table functions inside a SELECT passed. | **FIXED** in `routes/lake_export.py`: added `_FILE_ACCESS_FUNC_RE` denylist to `_validate_export_sql`, rejecting `read_parquet`, `parquet_scan`, `read_csv(_auto)`, `read_json/ndjson`, `read_text`, `read_blob`, `read_xlsx`, `st_read`, `glob`, `parquet_metadata/schema`, `sniff_csv`, `csv_scan`, `iceberg_scan`, `delta_scan`, `postgres_scan/query`, `sqlite_scan/query`, `mysql_scan/query` in caller SQL (case-insensitive, function-call form only). Lake data is exported via `table=` whose `read_parquet` glob is built **server-side** from the org-pinned prefix — never from caller SQL — so no intended capability is lost. The guard is shared by the sync route and the async worker (both call `_validate_export_sql`). | `tests/security/test_export_security.py::test_file_access_functions_rejected` (11 payloads), `::test_file_access_blocked_end_to_end`, `::test_async_enqueue_rejects_file_access_sql`, `::test_safe_select_passes` (no false positives) |
+| Ingest partition / relpath / table-name traversal | — (verified safe) | Producer-supplied `partition`, part `relpath`, and `table_name` could in theory escape the lake prefix. | Verified: `_validate_partition` / `_validate_relpath` reject `.`/`..`/absolute/disallowed-char segments; `_build_promote_callable._final_key` re-normalises and asserts the key stays under the server-pinned prefix; `StagingArea._key` strips `..` independently. No change. | `test_ingest_security.py::test_partition_traversal_rejected` (9), `::test_part_relpath_validator_rejects_traversal` (8), `::test_table_name_traversal_rejected` |
+| `full_replace` sweep nuking sidecars / other tables | — (verified safe) | The full_replace sweep could delete `_nubi/` sidecars or another table's objects. | Verified: sweep scopes to `<prefix><table>/` and explicitly excludes `k.startswith(_nubi_prefix)`. No change. | `::test_full_replace_preserves_sidecars_and_other_tables` |
+| Ingest CAS / cross-org IDOR | — (verified safe) | Race two commits into an invalid state; org A reads/transitions org B's session. | Verified: `transition(from_state=…)` is a CAS (single winner); every store op gates on `org_id`+`datastore_id`. No change. | `::test_cas_transition_single_winner`, `::test_cross_org_store_get_returns_none`, `::test_cross_org_session_get_is_404` |
+| Export dest-overwrite / table-name injection | — (verified safe) | dest_uri inside the source lake; table-name SQL injection. | Verified: `_validate_dest_not_in_source` (prefix-safe both directions), `_validate_table_name` (strict charset). No change. | `test_export_security.py::test_dest_inside_source_rejected`, `::test_table_name_injection_rejected` |
+| Export job IDOR + `dest_creds_ref` leak | — (verified safe) | Org A reads org B's job; status endpoint echoes the secret-store key. | Verified: `get_job` is org-scoped + URL-datastore double-scoped; status response strips `dest_creds_ref`. No change. | `::test_export_job_idor_and_creds_ref_redacted`, `::test_export_job_wrong_datastore_is_404`, `test_secrets_creds.py::test_dest_creds_ref_never_returned` |
+| Export worker claim CAS | — (verified safe) | Two workers claim the same queued job. | Verified: `claim_job` only transitions `queued→running` (single winner). No change. | `::test_worker_claim_cas_single_winner` |
+| CMEK client-mode fail-closed | — (verified safe) | Client-mode CMEK silently writes app-encrypted blobs DuckDB reads as raw Parquet (corruption). | Verified: `assert_cmek_readable("client")` raises 501 and is called at provision, ingest open/upload/commit, export, tables-list. No change. | `test_cmek_cache.py::test_client_cmek_fails_closed_on_*` (3), `::test_assert_cmek_readable_blocks_client`, `::test_client_cmek_misconfig_fails_closed` |
+| Cache encryption cross-tenant replay / tamper | — (verified safe) | Copy org A's ciphertext into org B's slot; tamper bytes; wrong key → plaintext fallback. | Verified: AES-256-GCM with the scoped cache key as AAD; cross-tenant replay/tamper/wrong-key → `InvalidTag` → cache MISS (never wrong data, never 500); misconfigured key → `ValueError` at construction (no plaintext fallback). No change. | `::test_cache_cross_tenant_replay_fails`, `::test_cache_tampered_ciphertext_fails`, `::test_cache_wrong_key_fails`, `::test_cache_key_misconfig_rejected` |
+| Custody gate fail-closed on every `/lake/*` route | — (verified safe) | Reach ingest/export/tables with custody OFF. | Verified: `assert_custody_enabled()` at the top of all 9 `/lake/*` handlers (and the async worker). No change. | `test_custody_gate.py` (9 routes) |
+| BYO / secret-store creds leak + org-scoping | — (verified safe) | Deployer bucket creds returned by API; cross-org secret read. | Verified: `_row_with_usage` strips `aws_secret_access_key`; `SecretStore.get/delete` are org-scoped. No change. | `test_secrets_creds.py::test_row_with_usage_strips_aws_secret`, `::test_secret_store_is_org_scoped` |
+| Regressions (embed raw-SQL 403, author:metric gate, webhook SSRF) | — (verified safe) | Prior-audit invariants. | Re-asserted at unit level. No change. | `test_regression.py` (embed/metric gate, `guard_url`/`resolve_and_pin` SSRF, export SQL guards) |
+
+### Fixed vs documented
+
+* **Fixed (1 HIGH):** the export `sql` file-access / cross-tenant exfiltration hole in `routes/lake_export.py`.
+* **Documented / verified safe (everything else):** every other custody invariant was found correct and is now pinned by regression tests (118 new tests across 6 files).
+
+### Residual risk
+
+1. **Export `sql` defence-in-depth (LOW):** the fix is a SQL-text denylist on the caller's SELECT, not engine-level sandboxing. The `for_memory()` connector used for local-file lakes still has host-FS access at the engine level; a future hardening pass should additionally sandbox that connection (DuckDB `allowed_directories`/`enable_external_access=false` was attempted but is awkward to apply to an already-started in-memory DB in DuckDB 1.5.3 — it must be set at DB-start, which the current `for_memory()` factory does not support). The denylist is the correct, low-risk fix today; the table-export path (B/C) is already fully server-pinned and unaffected.
+2. **`/lakehouse/provision` is not custody-gated (BY DESIGN, informational):** `POST /lakehouse/provision` provisions the OSS prefix-isolated managed lake, which is intentionally available without the custody tier (the *dedicated-bucket* provider only activates when `NUBI_CUSTODY_ENABLED=true`, via `lakehouse_provider_kind()`). The custody-gated routes are the `/lake/*` data-plane (ingest/export/tables). Not changed — gating provision would break OSS managed-lake usage.
+3. Webhook DNS-rebinding on delivery (carried over from the 2026-06-24 Wave-4 section, LOW) — unchanged.
+
+---
+
 ## Findings Summary
 
 | # | Area | Severity | Exploit | Fix | Test |
