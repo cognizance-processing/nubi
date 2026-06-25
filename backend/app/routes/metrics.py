@@ -1334,3 +1334,41 @@ async def explain_metric(
         "dimensions": dims_out,
         "summary": summary,
     }
+
+
+# ---------------------------------------------------------------------------
+# GET /metrics/{id}/lineage  -- metric formula/column lineage (A.4)
+# ---------------------------------------------------------------------------
+
+
+@api_router.get("/metrics/{metric_id}/lineage")
+async def get_metric_lineage(
+    metric_id: str,
+    request: Request,
+    identity: VerifiedIdentity = Depends(verified_identity),
+) -> dict:
+    """Return the column-level lineage for a single metric (A.4).
+
+    Resolves the metric's measure/derived/dimensions/base_sql to its INPUT
+    COLUMNS and upstream source tables/columns using sqlglot analysis.
+
+    TENANT ISOLATION (SEC): org-scoped resolution -- cross-org metric id
+    returns 404 (same as all other /metrics/{id} routes).
+
+    Returns
+    -------
+    dict
+        ``{metric_id, name, measure, formula, input_columns, upstream}``
+
+        - ``measure``: ``{name, agg, expr}`` (primary measure).
+        - ``formula``: list of ``{name, formula}`` for derived measures.
+        - ``input_columns``: ``[{table, column}]`` from sqlglot walking the source.
+        - ``upstream``: list of source table names the metric reads from.
+    """
+    _require_read_scope(identity)
+    org_id = await _caller_org(identity, request)
+    metric = await _resolve_metric(metric_id, org_id)
+
+    from app.lineage.dag import resolve_metric_lineage  # noqa: PLC0415
+
+    return resolve_metric_lineage(metric)

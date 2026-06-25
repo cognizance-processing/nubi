@@ -318,4 +318,87 @@ async def post_cell_lineage(
 # imports app.routes.lineage after app.routes.resources, we rely on FastAPI's
 # sub-router merging: because our routes have a concrete prefix "/lineage" they
 # take precedence over the catch-all "/{resource}" in any router order.
+
+
+# ---------------------------------------------------------------------------
+# DAG endpoints (A.2)
+# ---------------------------------------------------------------------------
+
+
+@_router.get("/dag")
+async def get_lineage_dag(
+    _user: dict[str, Any] = Depends(current_user),
+) -> dict[str, Any]:
+    """Return the full inter-model dependency DAG (queries + metrics + tables).
+
+    Org-scoped: the caller's org determines which queries/metrics are visible.
+    For the system seed queries/metrics (no org) the full seed set is returned.
+
+    Returns
+    -------
+    dict
+        ``{"nodes": [...], "edges": [...]}``
+        Each node: ``{id, type, name, tables, outputs, columns}``.
+        Each edge: ``{from, to, via}``.
+    """
+    from app.lineage.dag import build_dag  # noqa: PLC0415
+    from app.metrics.registry import get_metric_registry  # noqa: PLC0415
+
+    registry = get_query_registry()
+    metric_registry = get_metric_registry()
+    dag = build_dag(registry.all(), metric_registry.all())
+    return dag.to_dict()
+
+
+@_router.get("/dag/{node_id:path}")
+async def get_lineage_dag_node(
+    node_id: str,
+    hops: int = 3,
+    _user: dict[str, Any] = Depends(current_user),
+) -> dict[str, Any]:
+    """Return the upstream/downstream neighbourhood of a single DAG node.
+
+    Parameters
+    ----------
+    node_id:
+        Id of the query, metric, or table node.
+    hops:
+        Maximum traversal depth (default 3, max 20).
+
+    Returns
+    -------
+    dict
+        ``{"node_id", "node", "hops", "upstream": [...ids], "downstream": [...ids]}``
+
+    Raises
+    ------
+    AppError("node_not_found", 404)
+        If *node_id* is not in the DAG.
+    """
+    from app.lineage.dag import build_dag  # noqa: PLC0415
+    from app.metrics.registry import get_metric_registry  # noqa: PLC0415
+
+    registry = get_query_registry()
+    metric_registry = get_metric_registry()
+    dag = build_dag(registry.all(), metric_registry.all())
+
+    node = dag.nodes.get(node_id)
+    if node is None:
+        raise AppError(
+            "node_not_found",
+            f"No DAG node found with id '{node_id}'.",
+            404,
+        )
+
+    hops = max(1, min(hops, 20))
+    return {
+        "node_id": node_id,
+        "node": node.to_dict(),
+        "hops": hops,
+        "upstream": dag.upstream(node_id, hops),
+        "downstream": dag.downstream(node_id, hops),
+    }
+
+
+# Register on the shared api_router (after all routes are defined)
 api_router.include_router(_router)
