@@ -199,3 +199,96 @@ is available (i.e. `GET /lineage/dag` is reachable), edges include
   "lineage_module_present": true
 }
 ```
+
+---
+
+## Schema drift
+
+Nubi tracks column-level schema changes — added, removed, or type-changed
+columns — for every observed dataset.  Detection is **best-effort and
+fire-and-forget**: it runs in a background task after each successful query and
+never blocks or breaks the query path.
+
+**First observation**: when a dataset is seen for the first time, Nubi stores a
+baseline snapshot and fires no events (there is no prior state to compare
+against).
+
+**Subsequent observations**: the incoming columns are compared against the last
+snapshot. If anything changed, Nubi writes `schema_drift_events` rows and emits
+a `SCHEMA_DRIFT` webhook event.
+
+### `GET /api/v1/health/drift`
+
+List recent schema-drift events for the org, newest-first.
+
+**Query params:**
+- `dataset_key` (optional) — filter to one dataset.
+- `limit` (optional, default 100, max 500)
+
+**Response `200`:**
+```json
+{
+  "org_id": "uuid",
+  "dataset_key": null,
+  "events": [
+    {
+      "id": "uuid",
+      "org_id": "uuid",
+      "dataset_key": "raw/orders",
+      "change_type": "added",
+      "column_name": "created_at",
+      "from_type": null,
+      "to_type": "timestamp",
+      "detected_at": "2026-06-26T12:00:00+00:00"
+    }
+  ]
+}
+```
+
+`change_type` is one of `added`, `removed`, or `type_changed`.
+
+### `GET /api/v1/health/drift/{dataset_key}`
+
+Drift history + current snapshot for one dataset.
+
+**Path params:** `dataset_key` — e.g. `raw/orders`.
+
+Returns **404** when the dataset has never been observed (no snapshot).
+
+**Response `200`:**
+```json
+{
+  "org_id": "uuid",
+  "dataset_key": "raw/orders",
+  "current_snapshot": [
+    { "name": "id", "type": "int64" },
+    { "name": "amount", "type": "float64" },
+    { "name": "created_at", "type": "timestamp" }
+  ],
+  "events": [...]
+}
+```
+
+### `SCHEMA_DRIFT` webhook event
+
+Fired when column drift is detected. Envelope data:
+
+```json
+{
+  "type": "schema_drift",
+  "id": "uuid",
+  "org_id": "uuid",
+  "occurred_at": "2026-06-26T12:00:00+00:00",
+  "data": {
+    "dataset_key": "raw/orders",
+    "changes": [
+      {
+        "change_type": "added",
+        "column_name": "created_at",
+        "from_type": null,
+        "to_type": "timestamp"
+      }
+    ]
+  }
+}
+```

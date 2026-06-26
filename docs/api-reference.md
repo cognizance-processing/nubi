@@ -1145,6 +1145,60 @@ conventions: `source/`, `raw/`, `ingest/` → `raw`; `model/`, `transform/` →
 
 ---
 
+## Schema drift
+
+### `GET /health/drift`
+
+List recent schema-drift events for the caller's org.
+
+**Auth:** Any valid token (embed or first-party) with a read scope.
+
+**Query params:**
+- `dataset_key` (optional) — filter to one dataset.
+- `limit` (optional, default 100, max 500)
+
+**Response `200`:**
+```json
+{
+  "org_id": "uuid",
+  "dataset_key": null,
+  "events": [
+    {
+      "id": "uuid",
+      "org_id": "uuid",
+      "dataset_key": "raw/orders",
+      "change_type": "added",
+      "column_name": "created_at",
+      "from_type": null,
+      "to_type": "timestamp",
+      "detected_at": "2026-06-26T12:00:00+00:00"
+    }
+  ]
+}
+```
+
+### `GET /health/drift/{dataset_key}`
+
+Drift history and current snapshot for one dataset. Returns **404** when the
+dataset has no baseline snapshot (never been observed).
+
+**Auth:** Any valid token with a read scope.
+
+**Response `200`:**
+```json
+{
+  "org_id": "uuid",
+  "dataset_key": "raw/orders",
+  "current_snapshot": [
+    { "name": "id", "type": "int64" },
+    { "name": "amount", "type": "float64" }
+  ],
+  "events": [...]
+}
+```
+
+---
+
 ## Lineage DAG
 
 All lineage endpoints require a valid first-party Bearer token (`current_user`).
