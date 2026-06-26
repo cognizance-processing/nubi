@@ -127,6 +127,47 @@ async def current_user(
     return dict(row)
 
 
+# ---------------------------------------------------------------------------
+# Host-mode scope stripping (Residual 1 fix)
+# ---------------------------------------------------------------------------
+
+#: Scope prefixes / exact values that are STRIPPED from host-mode tokens.
+#:
+#: Host-mode embed tokens are minted by an external issuer on behalf of end-users.
+#: Even if the issuer accidentally or maliciously includes write/admin scopes in
+#: the JWT, those scopes must not be honoured server-side.
+#:
+#: Kept:    read:*, author:metric (governed metric authoring via embed editor)
+#: Stripped: write:*, edit:*, admin (exact or "admin:*" prefix), author:sql
+_HOST_MODE_STRIPPED_PREFIXES: tuple[str, ...] = (
+    "write:",
+    "edit:",
+    "author:sql",
+)
+_HOST_MODE_STRIPPED_EXACT: frozenset[str] = frozenset({"admin"})
+
+
+def _strip_host_mode_write_scopes(scopes: list[str]) -> list[str]:
+    """Return *scopes* with all write/admin/author:sql entries removed.
+
+    Called ONLY on the host-mode code path; normal (non-host-mode) tokens
+    are never passed through this filter.
+
+    Kept:    read:*, read:query, author:metric, and any other read-only scope.
+    Stripped: write:*, edit:*, admin (exact or "admin:..."), author:sql.
+    """
+    safe: list[str] = []
+    for scope in scopes:
+        if scope in _HOST_MODE_STRIPPED_EXACT:
+            continue
+        if scope.startswith("admin:"):
+            continue
+        if any(scope.startswith(prefix) for prefix in _HOST_MODE_STRIPPED_PREFIXES):
+            continue
+        safe.append(scope)
+    return safe
+
+
 async def _maybe_pin_host_mode_org(identity: "VerifiedIdentity") -> None:
     """Pin the request's org from a host-mode embed token's claim (async).
 
@@ -138,10 +179,12 @@ async def _maybe_pin_host_mode_org(identity: "VerifiedIdentity") -> None:
 
     Security invariants enforced here:
     - Only issuers explicitly flagged ``host_mode`` trigger this path.
-    - Missing / empty org claim on a host-mode token → AppError 403.
-    - The scope on the identity is limited to embed/READ only (host-mode
-      tokens cannot carry write/admin scopes — enforced by the issuer's
-      scope policy, verified in tests).
+    - Missing / empty org claim on a host-mode token -> AppError 403.
+    - Write/admin/author:sql scopes are STRIPPED from ``identity.scope`` in-place
+      before this function returns.  Every downstream has_scope / require_scope
+      check sees a read-only scope set, regardless of what scopes the external
+      issuer embedded in the JWT.
+    - Normal (non-host-mode) tokens are NEVER passed through the scope stripper.
     - RLS policies come from the ``policies`` claim (already extracted into
       ``identity.policies``); the org claim only selects the tenant.
     """
@@ -172,6 +215,12 @@ async def _maybe_pin_host_mode_org(identity: "VerifiedIdentity") -> None:
                 403,
             )
         host_mode_org_pin.set(org_val.strip())
+        # SECURITY (Residual 1 fix): strip write/admin/author:sql scopes so
+        # the host-mode token is unconditionally limited to read-only access.
+        # Only the host-mode code path reaches this line; non-host-mode tokens
+        # are never passed through _strip_host_mode_write_scopes.
+        if identity.scope is not None:
+            identity.scope = _strip_host_mode_write_scopes(list(identity.scope))
         return
 
     # 2. DB fallback — check the issuers store
@@ -203,6 +252,9 @@ async def _maybe_pin_host_mode_org(identity: "VerifiedIdentity") -> None:
             403,
         )
     host_mode_org_pin.set(org_val.strip())
+    # SECURITY (Residual 1 fix): strip write/admin/author:sql scopes (DB path).
+    if identity.scope is not None:
+        identity.scope = _strip_host_mode_write_scopes(list(identity.scope))
 
 
 async def verified_identity(
