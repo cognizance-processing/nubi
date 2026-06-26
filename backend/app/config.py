@@ -164,29 +164,28 @@ class Settings(BaseSettings):
     # ── Kernel security ──────────────────────────────────────────────────────
     # Allow the local subprocess kernel in non-production environments (dev/test).
     # In production, set KERNEL_LOCAL_ENABLED=false and configure a sandboxed
-    # remote runner (E2B/Modal).  The default is True so that local development
+    # remote runner (E2B).  The default is True so that local development
     # works out of the box without any extra configuration.
     KERNEL_LOCAL_ENABLED: bool = True
 
     # ── Remote kernel provider ────────────────────────────────────────────────
-    # Set KERNEL_REMOTE_PROVIDER to 'e2b' or 'modal' to enable remote sandbox
-    # execution.  When a remote provider is configured (provider name + API key
-    # present), it is used in ALL environments including production.
+    # Set KERNEL_REMOTE_PROVIDER to 'e2b' to enable remote sandbox execution.
+    # When a remote provider is configured (provider name + API key present),
+    # it is used in ALL environments including production.
     #
     # E2B (primary, fully tested):
     #   KERNEL_REMOTE_PROVIDER=e2b
     #   E2B_API_KEY=e2b-...
     #   pip install e2b-code-interpreter
     #
-    # Modal (adapter, see remote_modal.py):
-    #   KERNEL_REMOTE_PROVIDER=modal
-    #   MODAL_TOKEN_ID=...
-    #   MODAL_TOKEN_SECRET=...
-    #   pip install modal
-    KERNEL_REMOTE_PROVIDER: str = ""   # '' | 'e2b' | 'modal'
+    # NOTE: 'modal' is an internal forward-compat stub only — the ModalRunner
+    # implementation always raises 503.  Do NOT set KERNEL_REMOTE_PROVIDER=modal
+    # in production; use 'e2b' instead.  The Modal env vars below are retained
+    # as placeholders for when a full Modal implementation lands.
+    KERNEL_REMOTE_PROVIDER: str = ""   # '' | 'e2b'  ('modal' is a stub — not for production use)
     E2B_API_KEY: str = ""              # E2B API key (e2b-code-interpreter)
-    MODAL_TOKEN_ID: str = ""           # Modal token ID
-    MODAL_TOKEN_SECRET: str = ""       # Modal token secret
+    MODAL_TOKEN_ID: str = ""           # Modal token ID (reserved — modal stub not yet implemented)
+    MODAL_TOKEN_SECRET: str = ""       # Modal token secret (reserved — modal stub not yet implemented)
 
     # ── Connector secret encryption ──────────────────────────────────────────
     # AES-256-GCM application-layer encryption for connector credentials.

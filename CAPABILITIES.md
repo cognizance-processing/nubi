@@ -12,7 +12,7 @@ of carrying redundant local shims.
   and a matching entry is added to [CHANGELOG.md](./CHANGELOG.md). See
   [Keeping these current](#keeping-these-current).
 
-_Last reviewed: 2026-06-26 · branch `feat/embed-bi-substrate`._
+_Last reviewed: 2026-06-26 · branch `wave/trim-stubs`._
 
 ---
 
@@ -145,6 +145,29 @@ emit a clean `error` SSE event; non-streaming `/ai/chat` returns HTTP 504). See
 | Retail cockpit / domain-specific engines | ⛔ | Host application logic |
 | Host app infra (CI/CD, Docker, deploy) | ⛔ | Host's platform |
 | Billing / Paystack / metered wallet | ⛔ (CE) | EE-only; not in the open-core/embeddable substrate |
+
+## K. Capability accuracy notice (advertised vs. implemented)
+
+The following EE tier features, network modes, and kernel providers appear in
+internal code as **forward-compat stubs** but are **not yet shipped**. They have
+been removed from the advertised/public surface (tier API response, config docs,
+schema enum) as of 2026-06-26 to avoid misleading hosts.
+
+| Feature | Previous advertised state | Current state | Roadmap |
+|---|---|---|---|
+| `has_sso_saml` (SAML IdP) | Tier flag exposed in `/ee/billing/tier` | Removed from API response; internal `TierLimits` skeleton retained | 🗓️ Roadmap |
+| `has_scim` (SCIM provisioning) | Tier flag exposed in `/ee/billing/tier` | Removed from API response; internal skeleton retained | 🗓️ Roadmap |
+| `has_white_label` (white-label rendering) | Tier flag exposed in `/ee/billing/tier` | Removed from API response; internal skeleton retained | 🗓️ Roadmap |
+| Network mode `ssh_tunnel` | Listed as valid mode in schema docstring, returned 501 | Internal defensive stub; removed from advertised schema enum | 🗓️ Roadmap |
+| Network mode `psc` (Private Service Connect) | Listed as valid mode in schema docstring, returned 501 | Internal defensive stub; removed from advertised schema enum | 🗓️ Roadmap |
+| Network mode `cloudsql_proxy` | Listed as valid mode in schema docstring, returned 501 | Internal defensive stub; removed from advertised schema enum | 🗓️ Roadmap |
+| Remote kernel provider `modal` | Listed as selectable in `KERNEL_REMOTE_PROVIDER` config | Stub only — `ModalRunner.run()` always 503s; removed from config docs | 🗓️ Roadmap |
+
+**Network modes available today**: `direct` and `bridge` (async proxy via Nubi bridge agent).
+**Remote kernel provider available today**: `e2b` (E2B Firecracker microVMs).
+**EE feature flags available in tier API today**: `has_rls`, `has_sso_google`,
+  `has_multi_tenant_workspaces`, `has_byoc`, `has_custom_domain`, `has_warehouse`,
+  `has_priority_support`, SLA fields.
 
 ---
 

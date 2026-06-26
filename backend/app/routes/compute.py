@@ -20,6 +20,9 @@ Security contract
   and ``E2B_API_KEY`` are set, E2BRunner is used in ALL environments (including
   production).  E2B sandboxes run in Firecracker microVMs with no access to the
   Nubi host, filesystem, network (IMDS), or secrets.
+* **Modal is a stub — not for production use**: ``KERNEL_REMOTE_PROVIDER=modal``
+  is an internal forward-compat stub; ModalRunner.run() always raises 503.
+  Only ``e2b`` is a viable remote provider.
 * **Local runner is dev-only**: ``LocalSubprocessRunner`` is only allowed when
   ``ENV != 'production'`` AND ``KERNEL_LOCAL_ENABLED=true``.  It is never used
   in production (raises 503 if production + no remote configured).
@@ -31,7 +34,8 @@ Security contract
 Runner selection (``_choose_runner``)
 --------------------------------------
 1. KERNEL_REMOTE_PROVIDER=='e2b' AND E2B_API_KEY set → E2BRunner (any env).
-2. KERNEL_REMOTE_PROVIDER=='modal' AND MODAL creds set → ModalRunner (any env).
+2. KERNEL_REMOTE_PROVIDER=='modal' AND MODAL creds set → ModalRunner stub (raises
+   503 internally; retained for forward-compat but not a usable provider).
 3. ENV != 'production' AND KERNEL_LOCAL_ENABLED → LocalSubprocessRunner.
 4. else → 503 kernel_disabled.
 
@@ -240,14 +244,14 @@ def _choose_runner():
     1. If KERNEL_REMOTE_PROVIDER=='e2b' AND E2B_API_KEY is set
        → E2BRunner (works in ANY env, including production).
     2. Elif KERNEL_REMOTE_PROVIDER=='modal' AND MODAL_TOKEN_ID/SECRET are set
-       → ModalRunner (works in ANY env, including production).
+       → ModalRunner stub (NOTE: ModalRunner.run() always raises 503 — this
+       path is a forward-compat skeleton only; do NOT use in production).
     3. Elif ENV != 'production' AND KERNEL_LOCAL_ENABLED
        → LocalSubprocessRunner (dev/test only).
     4. Else → raise AppError("kernel_disabled", 503).
 
-    The remote runner takes precedence over local in all environments.  When
-    a remote provider is configured, production code execution is safe (E2B /
-    Modal run in isolated microVMs or containers).
+    The remote runner takes precedence over local in all environments.  The
+    only production-viable remote provider is 'e2b'.
 
     Raises
     ------

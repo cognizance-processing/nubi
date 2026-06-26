@@ -8,13 +8,15 @@ What this suite verifies
     the plaintext-in-config).  We prove this by monkeypatching the DuckDB
     factory to capture its args and asserting the secret was merged into cfg.
 (3) network_mode='direct' (default/explicit) — passes through, query succeeds.
-(4) network_mode='bridge' → 501 network_mode_unavailable with a clear message.
-(5) network_mode='ssh_tunnel' → 501 with a clear message.
-(6) network_mode='psc' → 501 with a clear message.
-(7) network_mode='cloudsql_proxy' → 501 with a clear message.
+(4) network_mode='bridge' → 501 network_mode_unavailable with a clear message
+    (bridge is available via the async path only; sync resolver 501s).
+(5)–(7) ssh_tunnel / psc / cloudsql_proxy: these were previously advertised as
+    modes that returned 501. They are no longer in the advertised schema — they
+    are internal forward-compat stubs handled defensively inside resolve_network
+    but not presented to users. Tests removed; regression guard in unit tests.
 (8) Unit test: resolve_network('direct') returns a NetworkTarget with the
     correct host/port.
-(9) Unit test: resolve_network('bridge') raises AppError(501) naming the layer.
+(9) Unit test: resolve_network('bridge') raises AppError(501) on the sync path.
 
 Test strategy
 -------------
@@ -289,96 +291,6 @@ async def test_network_mode_bridge_returns_501(res_client):
 
 
 # ---------------------------------------------------------------------------
-# (5) network_mode='ssh_tunnel' → 501
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.asyncio
-async def test_network_mode_ssh_tunnel_returns_501(res_client):
-    """network_mode='ssh_tunnel' → 501 with clear message."""
-    client, user_id, org_id, repo = res_client
-
-    ds = await repo.create(
-        "datastores",
-        org_id=org_id,
-        created_by=user_id,
-        name="SSH tunnel DS",
-        config={"type": "duckdb", "network_mode": "ssh_tunnel"},
-    )
-    ds_id = ds["id"]
-
-    resp = await client.post(
-        "/api/v1/query",
-        json={"sql": "SELECT 1", "datastore_id": ds_id},
-        headers=_auth_headers(user_id),
-    )
-    assert resp.status_code == 501, resp.text
-    body = resp.json()
-    assert body["error"]["code"] == "network_mode_unavailable"
-    assert "ssh_tunnel" in body["error"]["message"].lower()
-
-
-# ---------------------------------------------------------------------------
-# (6) network_mode='psc' → 501
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.asyncio
-async def test_network_mode_psc_returns_501(res_client):
-    """network_mode='psc' → 501 with clear message."""
-    client, user_id, org_id, repo = res_client
-
-    ds = await repo.create(
-        "datastores",
-        org_id=org_id,
-        created_by=user_id,
-        name="PSC DS",
-        config={"type": "duckdb", "network_mode": "psc"},
-    )
-    ds_id = ds["id"]
-
-    resp = await client.post(
-        "/api/v1/query",
-        json={"sql": "SELECT 1", "datastore_id": ds_id},
-        headers=_auth_headers(user_id),
-    )
-    assert resp.status_code == 501, resp.text
-    body = resp.json()
-    assert body["error"]["code"] == "network_mode_unavailable"
-    assert "psc" in body["error"]["message"].lower()
-
-
-# ---------------------------------------------------------------------------
-# (7) network_mode='cloudsql_proxy' → 501
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.asyncio
-async def test_network_mode_cloudsql_proxy_returns_501(res_client):
-    """network_mode='cloudsql_proxy' → 501 with clear message."""
-    client, user_id, org_id, repo = res_client
-
-    ds = await repo.create(
-        "datastores",
-        org_id=org_id,
-        created_by=user_id,
-        name="CloudSQL proxy DS",
-        config={"type": "duckdb", "network_mode": "cloudsql_proxy"},
-    )
-    ds_id = ds["id"]
-
-    resp = await client.post(
-        "/api/v1/query",
-        json={"sql": "SELECT 1", "datastore_id": ds_id},
-        headers=_auth_headers(user_id),
-    )
-    assert resp.status_code == 501, resp.text
-    body = resp.json()
-    assert body["error"]["code"] == "network_mode_unavailable"
-    assert "cloudsql_proxy" in body["error"]["message"].lower()
-
-
-# ---------------------------------------------------------------------------
 # (8) Unit: resolve_network('direct') returns NetworkTarget with correct fields
 # ---------------------------------------------------------------------------
 
@@ -422,10 +334,17 @@ def test_resolve_network_bridge_raises_501():
     assert "bridge" in err.message.lower()
 
 
-def test_resolve_network_all_unimplemented_modes_raise_501():
-    """Unit: every non-direct mode raises AppError(501)."""
-    modes = ["bridge", "ssh_tunnel", "psc", "cloudsql_proxy"]
-    for mode in modes:
+def test_resolve_network_legacy_stub_modes_raise_501():
+    """Regression guard: ssh_tunnel / psc / cloudsql_proxy are internal stubs.
+
+    These modes are NOT advertised to users and are not in the connector schema
+    enum.  However, any datastore rows in the DB that were created with these
+    values (before they were de-advertised) must still receive a clear,
+    informative 501 error rather than crashing or returning 400.  This test
+    asserts the defensive guard inside resolve_network still fires correctly.
+    """
+    stub_modes = ["ssh_tunnel", "psc", "cloudsql_proxy"]
+    for mode in stub_modes:
         with pytest.raises(AppError) as exc_info:
             resolve_network({"network_mode": mode})
         err = exc_info.value
