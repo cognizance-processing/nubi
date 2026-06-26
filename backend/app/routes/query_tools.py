@@ -558,18 +558,11 @@ async def _resolve_datastore_connector(
             400,
         )
 
-    from app.connectors.duckdb_conn import DuckDBConnector
+    from app.connectors.duckdb_conn import DuckDBConnector, open_duckdb_readonly
 
     db_path = cfg.get("database") or cfg.get("path")
     if db_path and db_path not in (":memory:", ""):
-        import duckdb as _duckdb
-
-        conn = _duckdb.connect(database=db_path, read_only=True)
-        try:
-            conn.execute("SET enable_external_access=false")
-        except Exception:  # noqa: BLE001 — best-effort hardening
-            pass
-        return DuckDBConnector(conn)
+        return DuckDBConnector(open_duckdb_readonly(db_path))
     return DuckDBConnector()
 
 

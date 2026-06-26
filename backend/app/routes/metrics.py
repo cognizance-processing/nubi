@@ -68,6 +68,7 @@ from app.metrics.registry import (
 )
 from app.repos.provider import get_repo
 from app.routes import api_router
+from app.routes._org import require_not_embed
 from app.routes.query import (
     _ARROW_STREAM_MEDIA_TYPE,
     _build_connector_for_plan,
@@ -114,8 +115,7 @@ def _require_first_party_write(identity: VerifiedIdentity) -> None:
       3. First-party tokens with NO explicit scope (full session) → allowed
          (``_FIRST_PARTY_SCOPES`` includes ``author:metric``).
     """
-    if identity.kind == "embed":
-        raise AppError("forbidden", "Embed tokens cannot register metrics.", 403)
+    require_not_embed(identity, "register metrics")
 
     # Check if this first-party token has an explicit scope list that lacks
     # author:metric.  A full session token has no scope claim, so identity.scope
