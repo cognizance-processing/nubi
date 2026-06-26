@@ -114,6 +114,34 @@ async def _seed_demo(user_id: str) -> None:
             seed_note += f"; env pinning skipped: {envs['skipped']}"
     print(f"  demo data      [SEEDED ]  {project.get('name')} ({project_id}) — {seed_note}")
 
+    # Seed demo data-health / freshness so the Overview health panel and the
+    # <nubi-health> widget show real signals out of the box. In production these
+    # rows are written by the freshness listener on flow-success events; the demo
+    # bundle's report flows do not materialise datasets, so we seed a representative
+    # fresh/stale mix here (idempotent).
+    import datetime as _dt  # noqa: PLC0415
+
+    _now = _dt.datetime.now(_dt.timezone.utc)
+    _demo_freshness = [
+        ("model/revenue", 14, "fresh"),
+        ("raw/orders", 2, "fresh"),
+        ("raw/products", 5, "fresh"),
+        ("raw/sessions", 30, "stale"),
+    ]
+    for _key, _age_h, _status in _demo_freshness:
+        await execute(
+            "INSERT INTO dataset_freshness "
+            "(org_id, dataset_key, last_success_at, expected_interval_s, status, updated_at) "
+            "VALUES ($1::uuid, $2, $3, 86400, $4, $5) "
+            "ON CONFLICT (org_id, dataset_key) DO NOTHING",
+            org_id,
+            _key,
+            _now - _dt.timedelta(hours=_age_h),
+            _status,
+            _now,
+        )
+    print(f"  demo health    [SEEDED ]  {len(_demo_freshness)} dataset_freshness rows")
+
 
 async def main() -> None:
     demo = "--demo" in sys.argv
