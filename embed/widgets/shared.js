@@ -308,6 +308,30 @@ export function rowsToArrowTable(rows) {
   return tableFromArrays(arrays)
 }
 
+// ---------------------------------------------------------------------------
+// Generic JSON fetch helper
+// ---------------------------------------------------------------------------
+
+/**
+ * GET {backend}{path} with optional Bearer token.
+ * Returns the parsed JSON response.
+ *
+ * @param {string} backend   — Base URL without trailing slash
+ * @param {string} path      — API path starting with /
+ * @param {string|null} token — Bearer JWT; omitted when null
+ * @param {AbortSignal} [signal]
+ * @returns {Promise<unknown>}
+ * @throws {Error} on HTTP error (caller should catch + sample-fallback)
+ */
+export async function fetchJson(backend, path, token, signal) {
+  const url = `${backend.replace(/\/$/, '')}${path}`
+  const headers = { 'Accept': 'application/json' }
+  if (token) headers['Authorization'] = `Bearer ${token}`
+  const resp = await fetch(url, { headers, credentials: 'omit', signal })
+  if (!resp.ok) throw new Error(`HTTP ${resp.status} from ${url}`)
+  return resp.json()
+}
+
 /**
  * Build a simple CSS string that can be injected into Shadow DOM <style>.
  * Shared CSS custom-property baseline used by all widgets.

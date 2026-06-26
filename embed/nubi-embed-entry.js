@@ -59,3 +59,11 @@ import './widgets/authoring-index.js'
 // ── Legacy dashboard (nubi-dashboard) ────────────────────────────────────────
 // nubi-dashboard.js calls customElements.define() at module level.
 import './nubi-dashboard.js'
+
+// ── Lineage DAG widget (nubi-lineage) ─────────────────────────────────────────
+// nubi-lineage.js calls customElements.define() at module level.
+import './widgets/nubi-lineage.js'
+
+// ── Health score + freshness widget (nubi-health) ────────────────────────────
+// nubi-health.js calls customElements.define() at module level.
+import './widgets/nubi-health.js'
