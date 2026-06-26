@@ -13,7 +13,6 @@ Conventions:
 ## [Unreleased]
 
 ### Added
-<<<<<<< HEAD
 - **Metric spec version history + revert.** Every metric create or update
   snapshots the spec as an immutable version. New routes:
   `GET /metrics/{id}/versions` (list, newest first),
