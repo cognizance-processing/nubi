@@ -122,7 +122,7 @@ own. Embed/viewer tokens are exempt from usage metering.
 | Scoped audit: query-executed (POPIA), export audit | ✅ | webhook event / board config | [observability](docs/observability.md) |
 | **Unified action audit-log read API** (all mutations) | 🗓️ | — (scoped audits exist; no consolidated endpoint) | — |
 | Spec version/revert for **boards** | ✅ | `/environments` `/versions/board/...` | [transformation](docs/transformation.md) |
-| Spec version/revert for **metrics** | 🗓️ | — (flow/board pattern is the template) | — |
+| Spec version/revert for **metrics** | ✅ | `GET /metrics/{id}/versions`, `GET /metrics/{id}/versions/{v}`, `POST /metrics/{id}/revert/{v}` (`author:metric`) | [metrics-reference](docs/metrics-reference.md#spec-version-history--revert) |
 
 ## J. Explicitly out of scope (stays with the host)
 

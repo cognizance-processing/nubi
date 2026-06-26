@@ -599,6 +599,10 @@ async def create_metric(
         metric = MetricDefinition.from_dict({**metric.to_dict(), "id": canonical_id})
 
     get_metric_registry().register(metric)
+
+    # Snapshot version 1 for this new metric.
+    await _capture_metric_version(canonical_id, identity, metric.to_dict())
+
     return metric.to_dict()
 
 
@@ -642,6 +646,10 @@ async def update_metric(
 
     await _persist_metric(metric, identity, request)
     get_metric_registry().register(metric)
+
+    # Snapshot the updated spec as a new version.
+    await _capture_metric_version(metric_id, identity, metric.to_dict())
+
     return metric.to_dict()
 
 
@@ -1388,3 +1396,236 @@ async def get_metric_lineage(
     from app.lineage.dag import resolve_metric_lineage  # noqa: PLC0415
 
     return resolve_metric_lineage(metric)
+
+
+# ---------------------------------------------------------------------------
+# Metric spec version capture helper (internal)
+# ---------------------------------------------------------------------------
+
+
+async def _capture_metric_version(
+    metric_id: str,
+    identity: VerifiedIdentity,
+    spec: dict,
+) -> None:
+    """Snapshot *spec* as the next version for *metric_id*.
+
+    Stores in the in-memory version store (always) and attempts a best-effort
+    write to the ``metric_spec_versions`` Pg table. Errors are swallowed —
+    version capture must never break the write path.
+
+    ``identity.user_id`` is used as ``created_by``; ``identity.org`` is used
+    as ``org_id`` when available (embed tokens carry it directly; first-party
+    tokens fall back to the sentinel placeholder which routes will never expose
+    via the org-scoped list/get endpoints).
+    """
+    from app.metrics.versions import (  # noqa: PLC0415
+        get_metric_version_store,
+        pg_add_metric_version,
+    )
+
+    store = get_metric_version_store()
+    org_id = identity.org or "00000000-0000-0000-0000-000000000000"
+    user_id = str(identity.user_id) if identity.user_id else None
+
+    try:
+        await store.add_metric_version(
+            metric_id=metric_id,
+            org_id=org_id,
+            spec=spec,
+            created_by=user_id,
+        )
+    except Exception:  # noqa: BLE001
+        pass
+    try:
+        await pg_add_metric_version(
+            metric_id=metric_id,
+            org_id=org_id,
+            spec=spec,
+            created_by=user_id,
+        )
+    except Exception:  # noqa: BLE001
+        pass
+
+
+def _dt_iso_mv(dt: object) -> str | None:
+    """Serialise a datetime to ISO 8601 string (or None)."""
+    if dt is None:
+        return None
+    if hasattr(dt, "isoformat"):
+        return dt.isoformat()
+    return str(dt)
+
+
+# ---------------------------------------------------------------------------
+# GET /metrics/{id}/versions  — list spec versions (newest first)
+# ---------------------------------------------------------------------------
+
+
+@api_router.get("/metrics/{metric_id}/versions", status_code=200)
+async def list_metric_versions(
+    metric_id: str,
+    request: Request,
+    identity: VerifiedIdentity = Depends(verified_identity),
+) -> dict:
+    """List all spec versions for a metric, newest first.
+
+    Org-scoped: the metric must belong to the caller's org (same 404 on miss
+    or cross-org access as ``GET /metrics/{id}``).
+
+    Returns ``{metric_id, versions: [{id, version, created_by, created_at, note}]}``.
+    Specs are omitted from the list for compactness — fetch a specific version to
+    get the full spec.
+    """
+    _require_read_scope(identity)
+    org_id = await _caller_org(identity, request)
+
+    # Org-scope + existence check (404 on cross-org / not-found).
+    await _resolve_metric(metric_id, org_id)
+
+    from app.metrics.versions import (  # noqa: PLC0415
+        get_metric_version_store,
+        pg_list_metric_versions,
+    )
+
+    # Try Pg first; fall back to in-memory store.
+    versions: list[dict] = []
+    if org_id:
+        versions = await pg_list_metric_versions(metric_id, org_id)
+    if not versions:
+        versions = await get_metric_version_store().list_metric_versions(metric_id)
+
+    versions_desc = list(reversed(versions))
+    return {
+        "metric_id": metric_id,
+        "versions": [
+            {
+                "id": v["id"],
+                "version": v["version"],
+                "created_by": v.get("created_by"),
+                "created_at": _dt_iso_mv(v.get("created_at")),
+                "note": v.get("note"),
+            }
+            for v in versions_desc
+        ],
+    }
+
+
+# ---------------------------------------------------------------------------
+# GET /metrics/{id}/versions/{v}  — full spec at a specific version
+# ---------------------------------------------------------------------------
+
+
+@api_router.get("/metrics/{metric_id}/versions/{version_num}", status_code=200)
+async def get_metric_version(
+    metric_id: str,
+    version_num: int,
+    request: Request,
+    identity: VerifiedIdentity = Depends(verified_identity),
+) -> dict:
+    """Fetch the full spec snapshot at version *version_num*.
+
+    Returns ``{id, metric_id, org_id, version, spec, created_by, created_at, note}``.
+    Org-scoped. 404 on cross-org access, unknown metric, or unknown version.
+    """
+    _require_read_scope(identity)
+    org_id = await _caller_org(identity, request)
+
+    # Existence + org-scope check.
+    await _resolve_metric(metric_id, org_id)
+
+    from app.metrics.versions import (  # noqa: PLC0415
+        get_metric_version_store,
+        pg_get_metric_version,
+    )
+
+    ver: dict | None = None
+    if org_id:
+        ver = await pg_get_metric_version(metric_id, org_id, version_num)
+    if ver is None:
+        ver = await get_metric_version_store().get_metric_version(metric_id, version_num)
+    if ver is None:
+        raise AppError(
+            "not_found",
+            f"Version {version_num} not found for metric {metric_id!r}.",
+            404,
+        )
+
+    return {
+        "id": ver["id"],
+        "metric_id": ver["metric_id"],
+        "org_id": ver.get("org_id"),
+        "version": ver["version"],
+        "spec": ver.get("spec") or {},
+        "created_by": ver.get("created_by"),
+        "created_at": _dt_iso_mv(ver.get("created_at")),
+        "note": ver.get("note"),
+    }
+
+
+# ---------------------------------------------------------------------------
+# POST /metrics/{id}/revert/{v}  — revert live spec to an older version
+# ---------------------------------------------------------------------------
+
+
+@api_router.post("/metrics/{metric_id}/revert/{version_num}", status_code=200)
+async def revert_metric_to_version(
+    metric_id: str,
+    version_num: int,
+    request: Request,
+    identity: VerifiedIdentity = Depends(verified_identity),
+) -> dict:
+    """Revert a metric's live spec to a prior version and record the revert.
+
+    1. Resolves the target version (404 when unknown or cross-org).
+    2. Rebuilds a :class:`MetricDefinition` from the target version's spec.
+    3. Re-persists + re-registers the metric (so it is immediately live).
+    4. Records the reverted spec as a new version entry (the revert IS auditable).
+    5. Returns the reverted metric's full definition (``metric.to_dict()``).
+
+    Gated on ``author:metric`` (same as create/update/delete).
+    Org-scoped: cross-org access returns 404.
+    """
+    _require_first_party_write(identity)
+    org_id = await _caller_org(identity, request)
+
+    # Existence + org-scope check.
+    await _resolve_metric(metric_id, org_id)
+
+    from app.metrics.versions import (  # noqa: PLC0415
+        get_metric_version_store,
+        pg_get_metric_version,
+    )
+
+    ver: dict | None = None
+    if org_id:
+        ver = await pg_get_metric_version(metric_id, org_id, version_num)
+    if ver is None:
+        ver = await get_metric_version_store().get_metric_version(metric_id, version_num)
+    if ver is None:
+        raise AppError(
+            "not_found",
+            f"Version {version_num} not found for metric {metric_id!r}.",
+            404,
+        )
+
+    # Rebuild the MetricDefinition from the snapshotted spec.
+    spec = dict(ver.get("spec") or {})
+    spec["id"] = metric_id  # ensure the id stays canonical
+    try:
+        metric = MetricDefinition.from_dict(spec)
+    except (KeyError, TypeError, ValueError) as exc:
+        raise AppError(
+            "invalid_version_spec",
+            f"Version {version_num} spec is not a valid metric definition: {exc}",
+            400,
+        ) from exc
+
+    # Re-persist + re-register (mirrors update_metric).
+    await _persist_metric(metric, identity, request)
+    get_metric_registry().register(metric)
+
+    # Record the revert as a new version entry so it appears in the audit trail.
+    await _capture_metric_version(metric_id, identity, metric.to_dict())
+
+    return metric.to_dict()

@@ -236,6 +236,64 @@ executing. Useful for debugging, introspection, and agent grounding.
 
 ---
 
+### `GET /metrics/{id}/versions`
+
+List all spec versions for a metric, newest first. Specs are omitted from the
+list for compactness — use the single-version endpoint to fetch a full spec.
+
+**Auth:** Read scope. Org-scoped (cross-org → 404).
+
+**Response `200`:**
+```json
+{
+  "metric_id": "revenue",
+  "versions": [
+    { "id": "uuid", "version": 2, "created_by": "uuid", "created_at": "2026-06-26T10:00:00+00:00", "note": null },
+    { "id": "uuid", "version": 1, "created_by": "uuid", "created_at": "2026-06-25T09:00:00+00:00", "note": null }
+  ]
+}
+```
+
+---
+
+### `GET /metrics/{id}/versions/{v}`
+
+Fetch the full spec snapshot at version `v`.
+
+**Auth:** Read scope. Org-scoped (cross-org or unknown version → 404).
+
+**Response `200`:**
+```json
+{
+  "id": "uuid",
+  "metric_id": "revenue",
+  "org_id": "uuid",
+  "version": 1,
+  "spec": { "id": "revenue", "name": "Revenue", "measure": { "name": "revenue", "agg": "sum", "expr": "amount" }, "base_table": "orders" },
+  "created_by": "uuid",
+  "created_at": "2026-06-25T09:00:00+00:00",
+  "note": null
+}
+```
+
+---
+
+### `POST /metrics/{id}/revert/{v}`
+
+Revert a metric's live spec to version `v`. The reverted spec is immediately
+live (re-registered and re-persisted) and recorded as a new version entry so
+the revert is auditable.
+
+**Auth:** `author:metric` scope required. Org-scoped (cross-org → 404).
+
+**Response `200`:** Full `MetricDefinition.to_dict()` of the reverted metric.
+
+**Errors:**
+- `404` — unknown metric, cross-org access, or unknown version number.
+- `403` — token does not carry `author:metric`.
+
+---
+
 ## Canvas
 
 ### `POST /canvas/validate`

@@ -523,6 +523,20 @@ def _reset_state():
         except Exception:
             pass
 
+        # ── Metric version store ──────────────────────────────────────────────
+        try:
+            from app.metrics.versions import reset_metric_version_store_for_tests
+            reset_metric_version_store_for_tests()
+        except Exception:
+            pass
+
+        # ── Metric registry ───────────────────────────────────────────────────
+        try:
+            from app.metrics.registry import reset_for_tests as _reset_metric_reg
+            _reset_metric_reg()
+        except Exception:
+            pass
+
     _do_reset()
     yield
     _do_reset()

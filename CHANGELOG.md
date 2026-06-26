@@ -13,6 +13,13 @@ Conventions:
 ## [Unreleased]
 
 ### Added
+- **Metric spec version history + revert.** Every metric create or update
+  snapshots the spec as an immutable version. New routes:
+  `GET /metrics/{id}/versions` (list, newest first),
+  `GET /metrics/{id}/versions/{v}` (full spec at that version),
+  `POST /metrics/{id}/revert/{v}` (restore + record as new version; requires
+  `author:metric`). Mirrors the flow versioning pattern. Migration:
+  `0023_metric_spec_versions.sql`.
 - **MCP — full integration.** Nubi as an MCP server (`POST /mcp`, JSON-RPC
   `initialize`/`tools/list`/`tools/call`, ~14 built-in tools) **and** a per-org
   external MCP server registry (`/mcp/servers` CRUD) so an embedding host can

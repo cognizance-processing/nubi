@@ -314,6 +314,57 @@ windows by computing per-dimension member delta contributions.
 
 ---
 
+## Spec version history + revert
+
+Every metric write (create or update) automatically snapshots the spec as a new
+immutable version. The versions form a monotonically increasing per-metric audit
+trail that can be inspected and reverted.
+
+### `GET /metrics/{id}/versions`
+
+List all versions (newest first). Specs are omitted for compactness.
+
+```
+GET /api/v1/metrics/revenue/versions
+Authorization: Bearer <token>
+```
+
+**Response:**
+```json
+{
+  "metric_id": "revenue",
+  "versions": [
+    { "id": "uuid", "version": 2, "created_by": "uuid", "created_at": "2026-06-26T10:00:00+00:00", "note": null },
+    { "id": "uuid", "version": 1, "created_by": "uuid", "created_at": "2026-06-25T09:00:00+00:00", "note": null }
+  ]
+}
+```
+
+### `GET /metrics/{id}/versions/{v}`
+
+Fetch the full spec snapshot at a specific version number.
+
+```
+GET /api/v1/metrics/revenue/versions/1
+```
+
+**Response:** `{id, metric_id, org_id, version, spec, created_by, created_at, note}`.
+
+### `POST /metrics/{id}/revert/{v}`
+
+Revert the live metric spec to version `v`. The reverted spec is immediately
+live and recorded as a new version entry (so the revert itself is auditable
+and undoable). Returns the full `MetricDefinition`.
+
+```
+POST /api/v1/metrics/revenue/revert/1
+Authorization: Bearer <author:metric token>
+```
+
+**Auth:** Requires `author:metric` scope (same as create/update).
+
+---
+
 ## Metric lineage — `GET /metrics/{id}/lineage`
 
 Returns the full input-column lineage for a metric: which physical tables and
