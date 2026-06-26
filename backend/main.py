@@ -286,6 +286,11 @@ import app.routes.health  # noqa: F401, E402
 # /{resource} catch-all in resources.py.
 import app.routes.mcp  # noqa: F401, E402
 
+# Import unified audit-log route (GET /audit, GET /audit/{type}/{id}) BEFORE
+# resources so the /audit prefix routes register ahead of the generic
+# /{resource} catch-all in resources.py.  Auth-gated: owner/admin only.
+import app.routes.audit  # noqa: F401, E402
+
 # Import resources route so it registers itself on api_router at import time.
 import app.routes.resources  # noqa: F401, E402
 

@@ -13,6 +13,7 @@ Conventions:
 ## [Unreleased]
 
 ### Added
+- **Unified action audit-log.** Org-scoped audit_log table (migration 0025_audit_log.sql) records metadata-only entries for every mutation: create/update/delete on boards, queries, datastores, widgets, canvases, connectors, MCP servers, and secrets. Central record_audit() writer (app/audit.py) is fire-and-forget: a DB write failure never breaks the mutation path. Read API: GET /audit (paginated, filterable by resource_type/action/actor/since/until) and GET /audit/{resource_type}/{resource_id} - both gated to owner/admin (approver role) only; unauthenticated 401, non-approver 403; cross-org isolation enforced (org_id always from verified token membership). POPIA compliance: summary field contains metadata only - no row data, SQL literals, PII, or credential material.
 - **MCP — full integration.** Nubi as an MCP server (`POST /mcp`, JSON-RPC
   `initialize`/`tools/list`/`tools/call`, ~14 built-in tools) **and** a per-org
   external MCP server registry (`/mcp/servers` CRUD) so an embedding host can

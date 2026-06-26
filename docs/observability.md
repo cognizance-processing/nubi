@@ -146,3 +146,25 @@ Until then, treat `/ops/stats` numbers as a sample from one worker — useful fo
 spot-checks and trend direction, not as authoritative fleet-wide aggregates.
 This is the same per-process trade-off the rate-limiter (no-Redis fallback) and
 the cache (per-worker hit/miss) already make.
+
+---
+
+## Audit log (`GET /audit`)
+
+The unified action audit log records org-scoped metadata for every mutation
+(create / update / delete) across boards, queries, datastores, widgets,
+canvases, connectors, MCP servers, and secrets.
+
+**POPIA compliance:** the audit log stores metadata only — no row data, no
+SQL text with literals, no credential material. The `summary` field contains
+only non-sensitive keys (resource name, connector type, etc.).
+
+**Auth:** `GET /audit` and `GET /audit/{resource_type}/{resource_id}` require
+a valid first-party bearer token AND an owner/admin (approver) role.
+Unauthenticated → 401. Non-approver → 403.
+
+**Fire-and-forget writes:** `record_audit()` never raises and never blocks the
+mutation path it wraps. A DB write failure is logged at WARNING level only.
+
+See [api-reference.md#audit-log](api-reference.md#audit-log) for the full
+endpoint specification and response shape.

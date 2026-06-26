@@ -29,6 +29,7 @@ from typing import Any
 from fastapi import APIRouter, Depends, Response
 from pydantic import BaseModel
 
+from app.audit import record_audit as _record_audit
 from app.auth.deps import current_user
 from app.auth.roles import require_writer_default
 from app.errors import AppError
@@ -121,6 +122,16 @@ async def set_secret(
         value=body.value,
         created_by=str(user["id"]),
     )
+    # Audit — fire-and-forget; POPIA-safe: ONLY the name (not value) in summary.
+    await _record_audit(
+        org_id=org_id,
+        actor_user_id=str(user["id"]),
+        actor_kind="access",
+        action="secret.set",
+        resource_type="secret",
+        resource_id=str(secret.get("id") or ""),
+        summary={"name": name},
+    )
     return _serialize_secret(secret)
 
 
@@ -165,4 +176,14 @@ async def delete_secret(
     deleted = await store.delete_secret(org_id=org_id, name=name)
     if not deleted:
         raise AppError("not_found", f"Secret {name!r} not found.", 404)
+    # Audit — fire-and-forget; POPIA-safe: ONLY the name (not value) in summary.
+    await _record_audit(
+        org_id=org_id,
+        actor_user_id=str(user["id"]),
+        actor_kind="access",
+        action="secret.delete",
+        resource_type="secret",
+        resource_id=name,
+        summary={"name": name},
+    )
     return Response(status_code=204)
