@@ -50,6 +50,28 @@ _PUBLIC_SELECT = ", ".join(_PUBLIC_COLS)
 _UNSET: Any = object()
 
 
+def _encrypt_auth_token(auth_token: str) -> tuple[bytes, bytes, int]:
+    """Encrypt an MCP server auth token → (ciphertext, nonce, key_version).
+
+    Surfaces a clear 503 when the server's secret-encryption key is not
+    configured, instead of letting the crypto layer's ``RuntimeError`` bubble up
+    to the client as an opaque 500.
+    """
+    from app.security.crypto import encrypt_json  # noqa: PLC0415
+
+    try:
+        return encrypt_json({"token": auth_token})
+    except RuntimeError as exc:
+        from app.errors import AppError  # noqa: PLC0415
+
+        raise AppError(
+            "secret_encryption_unconfigured",
+            "Cannot store the MCP server auth token: secret encryption is not "
+            "configured on this server (set CONNECTOR_SECRET_KEY).",
+            503,
+        ) from exc
+
+
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -202,8 +224,7 @@ class McpServerStore:
         kv: int | None = None
 
         if auth_token is not None:
-            from app.security.crypto import encrypt_json  # noqa: PLC0415
-            ct, nonce, kv = encrypt_json({"token": auth_token})
+            ct, nonce, kv = _encrypt_auth_token(auth_token)
 
         row = await fetchrow(
             """
@@ -284,8 +305,7 @@ class McpServerStore:
                     params.append(None)
                     idx += 1
                 else:
-                    from app.security.crypto import encrypt_json  # noqa: PLC0415
-                    ct, nonce, kv = encrypt_json({"token": auth_token})
+                    ct, nonce, kv = _encrypt_auth_token(auth_token)
                     sets.append(f"auth_secret_ciphertext = ${idx}")
                     params.append(ct)
                     idx += 1
